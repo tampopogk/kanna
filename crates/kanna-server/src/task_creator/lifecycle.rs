@@ -308,6 +308,10 @@ pub(crate) async fn spawn_prepared_task_for_api_recording_stage_run_detailed(
         ))
     })?
     .map_err(PreparedTaskDeliveryError::BeforeAcknowledgement)?;
+    // The spawn is the next thing to cross the socket, so from here a later
+    // boot must resolve this launch by asking the daemon rather than starting
+    // a second agent.
+    mark_task_launch_submitted(db_path, &prepared.created_task.task_id);
     let created = match spawn_prepared_task_classified(daemon, prepared.clone()).await {
         Ok(created) => created,
         Err(SpawnPreparedError::BeforeAcknowledgement(message)) => {
@@ -447,7 +451,15 @@ async fn run_launch_setup_terminal(
             return Err(error);
         }
     };
-    build_launch_session_from_receipt(task_id, cwd, env, launch, &receipt)
+    let session = build_launch_session_from_receipt(task_id, cwd, env, launch, &receipt);
+    // A launch with a durable `task_launch` intent hands its receipt to that
+    // intent's retirement, so an interruption before the agent spawns can
+    // still be finished. A stage rerun has no such intent — its spawn window
+    // belongs to the stage operation — so its receipt is spent here.
+    if !task_has_launch_intent(db_path, task_id) {
+        super::setup_session::discard_setup_receipt(&plan.receipt_path);
+    }
+    session
 }
 
 /// Build the agent session a startup terminal was running for.
@@ -1334,7 +1346,64 @@ pub(super) fn persist_task_launch_intent(
 
 /// Retire a launch intent once its outcome is durable — the agent is spawned,
 /// or the failure is recorded against the task.
+/// Retire a launch's durable evidence once its outcome is durable.
+///
+/// The receipt goes with the intent, not before it: the receipt is the only
+/// copy of what setup exported, and deleting it the moment it was read left an
+/// interruption before the spawn with nothing to finish the launch from and
+/// nothing to explain it. They are removed together, after the agent is
+/// running or the failure is recorded.
 fn clear_task_launch_intent(db_path: &str, task_id: &str) {
+    for_each_task_launch_intent(db_path, task_id, |db, intent| {
+        if let Ok(payload) = parse_operation_payload::<TaskLaunchOperationPayload>(intent) {
+            let _ = std::fs::remove_file(&payload.receipt_path);
+        }
+        if let Err(error) = db.delete_lifecycle_operation_intent(&intent.id) {
+            log::warn!("failed to clear the launch intent {}: {error}", intent.id);
+        }
+    });
+}
+
+/// Record that this launch's agent spawn is about to cross the daemon socket.
+///
+/// From `submitted` onward the launch is never replayed: a later boot asks the
+/// daemon whether the session exists rather than starting a second one, which
+/// is the same rule the stage-spawn intent has always followed.
+#[cfg(test)]
+pub(super) fn mark_task_launch_submitted_for_test(db_path: &str, task_id: &str) {
+    mark_task_launch_submitted(db_path, task_id)
+}
+
+fn mark_task_launch_submitted(db_path: &str, task_id: &str) {
+    for_each_task_launch_intent(db_path, task_id, |db, intent| {
+        if let Err(error) = db.update_lifecycle_operation_phase(&intent.id, "submitted") {
+            log::warn!(
+                "failed to mark the launch intent {} submitted: {error}",
+                intent.id
+            );
+        }
+    });
+}
+
+/// Whether this task's launch is described by a durable `task_launch` intent.
+fn task_has_launch_intent(db_path: &str, task_id: &str) -> bool {
+    let Ok(db) = Db::open(db_path) else {
+        return false;
+    };
+    db.list_lifecycle_operation_intents()
+        .map(|intents| {
+            intents
+                .iter()
+                .any(|intent| intent.task_id == task_id && intent.kind == TASK_LAUNCH_OPERATION)
+        })
+        .unwrap_or(false)
+}
+
+fn for_each_task_launch_intent(
+    db_path: &str,
+    task_id: &str,
+    mut act: impl FnMut(&Db, &crate::db::LifecycleOperationIntent),
+) {
     let Ok(db) = Db::open(db_path) else {
         return;
     };
@@ -1349,9 +1418,7 @@ fn clear_task_launch_intent(db_path: &str, task_id: &str) {
         if intent.task_id != task_id || intent.kind != TASK_LAUNCH_OPERATION {
             continue;
         }
-        if let Err(error) = db.delete_lifecycle_operation_intent(&intent.id) {
-            log::warn!("failed to clear the launch intent {}: {error}", intent.id);
-        }
+        act(&db, &intent);
     }
 }
 
@@ -1647,6 +1714,26 @@ async fn reconcile_task_launch_operation(
 
     // A startup shell that is still running is an orphan: nothing is waiting
     // for it any more, and this boot cannot adopt the wait without racing the
+    // A launch whose spawn already crossed the socket is never started again.
+    // Whether it produced an agent is a question for the daemon, not for a
+    // second attempt: replaying it would give one task two agents.
+    if intent.phase == "submitted" {
+        let spawned = sessions
+            .iter()
+            .any(|session| session.session_id == payload.task_id);
+        if !spawned {
+            record_reconciled_launch_failure(
+                &config.db_path,
+                &payload,
+                "the server stopped while this launch's agent was being started, and no agent \
+                 session exists; it was not started again. See the startup terminal for this \
+                 stage.",
+            );
+        }
+        clear_task_launch_intent(&config.db_path, &payload.task_id);
+        return;
+    }
+
     // shell's own exit. It is left alone rather than killed — an install
     // halfway through is still doing work, and its terminal is still the
     // record of it — and the launch is failed where the operator can see it.
@@ -1678,16 +1765,28 @@ async fn reconcile_task_launch_operation(
         }
     };
 
-    // Setup succeeded and must never run again. The intent is retired before
-    // the spawn is attempted, for the same reason an uncertain delivery is
-    // never replayed: a launch is finished at most once, and a spawn that
-    // fails records its own durable failure.
-    clear_task_launch_intent(&config.db_path, &payload.task_id);
-    if let Err(error) = finish_reconciled_task_launch(config, daemon, &payload, receipt).await {
-        log::error!(
-            "failed to finish the launch of task {} after a restart: {error}",
-            payload.task_id
-        );
+    // Setup succeeded and must never run again, but the evidence that says so
+    // stays until this attempt has an outcome: deleting it here left an
+    // interruption before the spawn with no receipt to finish from and no
+    // intent to explain the task by. `submitted` is what stops a replay.
+    mark_task_launch_submitted(&config.db_path, &payload.task_id);
+    match finish_reconciled_task_launch(config, daemon, &payload, receipt).await {
+        Ok(()) => clear_task_launch_intent(&config.db_path, &payload.task_id),
+        Err(error) => {
+            log::error!(
+                "failed to finish the launch of task {} after a restart: {error}",
+                payload.task_id
+            );
+            record_reconciled_launch_failure(
+                &config.db_path,
+                &payload,
+                &format!(
+                    "the launch could not be finished after a restart ({error}); the agent was \
+                     never started. See the startup terminal for this stage."
+                ),
+            );
+            clear_task_launch_intent(&config.db_path, &payload.task_id);
+        }
     }
 }
 

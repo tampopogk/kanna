@@ -929,6 +929,122 @@ async fn a_launch_interrupted_after_setup_is_finished_once_on_the_next_startup()
     let _ = std::fs::remove_dir_all(&repo_root);
 }
 
+/// An interruption *after* the receipt was consumed and *before* the agent
+/// spawned must still be finishable.
+///
+/// The receipt is the only copy of what setup exported and the intent is the
+/// only record that a launch is outstanding. Deleting either on the way past
+/// left this window with nothing: no agent, no intent, no receipt, and nothing
+/// that would ever try again or explain it.
+#[tokio::test]
+async fn a_launch_interrupted_after_its_receipt_was_read_still_finishes() {
+    let _sidecar_guard = crate::test_sidecar_guard().await;
+    let kanna_cli = ensure_test_sidecar("kanna-cli");
+    let _kanna_mcp = ensure_test_sidecar("kanna-mcp");
+    let repo_root = write_setup_repo("launch-receipt-window", INSTALL_CODEX, false);
+    let mut config = test_config("launch-receipt-window");
+    config.kanna_cli_path = Some(kanna_cli.path().to_string_lossy().to_string());
+    let db = Db::open_for_tests(&config.db_path).unwrap();
+    db.insert_test_repo_with_path("repo-1", &repo_root.to_string_lossy(), "Repo One")
+        .unwrap();
+
+    let (task_id, plan) = begin_and_abandon_launch(&db, &config, "codex").await;
+    let daemon = spawn_fake_daemon_running_setup_terminals(config.daemon_dir.clone()).await;
+    let started = super::super::setup_session::start_setup_terminal(&config.daemon_dir, &plan)
+        .await
+        .unwrap();
+    super::super::lifecycle::record_started_setup_terminal(&config.db_path, &task_id, &plan)
+        .unwrap();
+    drop(started);
+    wait_for_setup_receipt(&plan.receipt_path).await;
+    wait_for_setup_session_exit(&daemon, &plan.session_id).await;
+
+    // The receipt this launch depends on is still on disk, because nothing has
+    // finished the launch yet.
+    assert!(
+        std::path::Path::new(&plan.receipt_path).exists(),
+        "the receipt must outlive the read that consumed it"
+    );
+
+    let mut client = DaemonClient::connect(&config.daemon_dir).await.unwrap();
+    super::super::reconcile_lifecycle_operations_on_startup(&mut client, &config, &db).await;
+
+    assert_eq!(
+        daemon.spawns().len(),
+        1,
+        "the interrupted launch is finished exactly once: {:?}",
+        daemon.spawns()
+    );
+    assert!(
+        !db.has_lifecycle_operation_for_task(&task_id).unwrap(),
+        "a finished launch leaves no intent behind"
+    );
+    assert!(
+        !std::path::Path::new(&plan.receipt_path).exists(),
+        "the receipt is spent once the launch has an outcome"
+    );
+
+    daemon.abort();
+    let _ = std::fs::remove_dir_all(&repo_root);
+}
+
+/// A launch whose spawn already crossed the socket is never started again.
+///
+/// The daemon is asked whether the agent exists; a second attempt would give
+/// one task two agents, and silence would leave the operator with nothing.
+#[tokio::test]
+async fn a_submitted_launch_is_never_spawned_twice_and_says_when_it_was_lost() {
+    let _sidecar_guard = crate::test_sidecar_guard().await;
+    let kanna_cli = ensure_test_sidecar("kanna-cli");
+    let _kanna_mcp = ensure_test_sidecar("kanna-mcp");
+    let repo_root = write_setup_repo("launch-submitted-window", INSTALL_CODEX, false);
+    let mut config = test_config("launch-submitted-window");
+    config.kanna_cli_path = Some(kanna_cli.path().to_string_lossy().to_string());
+    let db = Db::open_for_tests(&config.db_path).unwrap();
+    db.insert_test_repo_with_path("repo-1", &repo_root.to_string_lossy(), "Repo One")
+        .unwrap();
+
+    let (task_id, plan) = begin_and_abandon_launch(&db, &config, "codex").await;
+    let daemon = spawn_fake_daemon_running_setup_terminals(config.daemon_dir.clone()).await;
+    let started = super::super::setup_session::start_setup_terminal(&config.daemon_dir, &plan)
+        .await
+        .unwrap();
+    super::super::lifecycle::record_started_setup_terminal(&config.db_path, &task_id, &plan)
+        .unwrap();
+    drop(started);
+    wait_for_setup_receipt(&plan.receipt_path).await;
+    wait_for_setup_session_exit(&daemon, &plan.session_id).await;
+
+    // The spawn crossed the socket and its acknowledgement was lost.
+    super::super::lifecycle::mark_task_launch_submitted_for_test(&config.db_path, &task_id);
+
+    let mut client = DaemonClient::connect(&config.daemon_dir).await.unwrap();
+    super::super::reconcile_lifecycle_operations_on_startup(&mut client, &config, &db).await;
+
+    assert!(
+        daemon.spawns().is_empty(),
+        "a submitted launch must never be spawned a second time: {:?}",
+        daemon.spawns()
+    );
+    let run = db
+        .latest_stage_run(&task_id)
+        .unwrap()
+        .expect("the lost launch records a stage run");
+    assert_eq!(run.status, "failed");
+    let result = run.result.unwrap_or_default();
+    assert!(
+        result.contains(&plan.session_id),
+        "the failure names the startup terminal: {result}"
+    );
+    assert!(
+        !db.has_lifecycle_operation_for_task(&task_id).unwrap(),
+        "a resolved launch leaves no intent behind"
+    );
+
+    daemon.abort();
+    let _ = std::fs::remove_dir_all(&repo_root);
+}
+
 /// A launch whose setup failed while the server was down starts no agent, and
 /// says so where the person can act on it — naming the terminal that holds the
 /// output explaining why.

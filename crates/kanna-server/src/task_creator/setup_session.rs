@@ -503,10 +503,12 @@ fn read_setup_outcome(plan: &SetupTerminalPlan, exit_code: i32) -> SetupTerminal
         };
     }
     match read_receipt(&plan.receipt_path) {
-        Ok(receipt) => {
-            let _ = std::fs::remove_file(&plan.receipt_path);
-            SetupTerminalOutcome::Ready(receipt)
-        }
+        // Deliberately not deleted here: this receipt is the only copy of what
+        // setup exported, and the launch it belongs to has not reached a
+        // durable outcome yet. It is removed when the launch does — with the
+        // intent that describes it — so an interruption before the agent
+        // spawns still has something to finish from.
+        Ok(receipt) => SetupTerminalOutcome::Ready(receipt),
         Err(error) => {
             let _ = std::fs::remove_file(&plan.receipt_path);
             SetupTerminalOutcome::Failed {
@@ -523,9 +525,14 @@ fn read_setup_outcome(plan: &SetupTerminalPlan, exit_code: i32) -> SetupTerminal
 /// Read a receipt a startup terminal left behind, for a launch this process
 /// did not run itself. Reconciliation on the next boot has only the path.
 pub(crate) fn read_setup_receipt(path: &str) -> Result<SetupReceipt, String> {
-    let receipt = read_receipt(path)?;
-    let _ = std::fs::remove_file(path);
-    Ok(receipt)
+    // Left on disk for the same reason: reconciliation may still be
+    // interrupted before the agent it is finishing actually spawns.
+    read_receipt(path)
+}
+
+/// Remove a launch's receipt once that launch has a durable outcome.
+pub(crate) fn discard_setup_receipt(receipt_path: &str) {
+    let _ = std::fs::remove_file(receipt_path);
 }
 
 fn read_receipt(path: &str) -> Result<SetupReceipt, String> {
