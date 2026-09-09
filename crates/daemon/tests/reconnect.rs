@@ -279,6 +279,58 @@ fn input_if_session_rejects_a_different_observed_pid() {
     }
 }
 
+/// A retired startup terminal is still something a person has to be able to
+/// read: a failed stage advance says "see the startup terminal for this
+/// stage", and the live session is gone seconds later. The daemon therefore
+/// archives the final frame before it drops the session, and serves that
+/// archive to a snapshot request for the dead id.
+#[test]
+fn a_naturally_exited_session_keeps_a_readable_final_frame() {
+    let daemon = DaemonHandle::start();
+    let mut conn = daemon.connect();
+    let session_id = "archived-startup";
+
+    conn.send(&Cmd::Spawn {
+        session_id: session_id.to_string(),
+        executable: "/bin/sh".to_string(),
+        args: vec!["-c".to_string(), "printf 'STARTUP_SENTINEL\\n'".to_string()],
+        cwd: "/tmp".to_string(),
+        env: HashMap::new(),
+        cols: 80,
+        rows: 24,
+        terminal_prelude: None,
+    });
+    expect_session_created(&mut conn, session_id);
+
+    // Wait for the session to leave the live registry: from here on a
+    // snapshot can only be served from the archive.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        conn.send(&Cmd::List);
+        let live = match conn.recv() {
+            Evt::SessionList { sessions } => sessions
+                .iter()
+                .any(|session| session["session_id"] == session_id),
+            other => panic!("expected SessionList, got: {other:?}"),
+        };
+        if !live {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the spawned session never exited"
+        );
+        thread::sleep(Duration::from_millis(50));
+    }
+
+    let snapshot = recv_snapshot_for(&mut conn, session_id);
+    assert!(
+        snapshot.vt.contains("STARTUP_SENTINEL"),
+        "a retired terminal must still render its final frame: {:?}",
+        snapshot.vt
+    );
+}
+
 #[test]
 fn queued_logical_inputs_release_as_separate_real_pty_submissions() {
     let daemon = DaemonHandle::start();

@@ -781,6 +781,12 @@ pub(crate) async fn stream_output(
         }
     }
 
+    // The live snapshot dies with the session, so copy the final frame into
+    // the archive first: a retired terminal is still readable, and a failed
+    // stage advance points a person straight at it.
+    if let Err(error) = recovery_manager.archive_session(&session_id).await {
+        log::warn!("[stream] failed to archive session={session_id} final frame: {error}");
+    }
     let evt = Event::Exit {
         session_id: session_id.clone(),
         code: exit_code,

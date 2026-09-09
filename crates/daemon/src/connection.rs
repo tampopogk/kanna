@@ -1819,6 +1819,14 @@ pub(crate) async fn handle_command(
                 // killed Exit, and recovery teardown. The manager claim above
                 // independently ensures the handoff snapshot and this Kill
                 // agree on the exact outgoing incarnation.
+                // Same rule as a natural exit: the final frame is archived
+                // before the live session is dropped, so an explicitly
+                // retired terminal stays readable.
+                if let Err(error) = recovery_manager.archive_session(&session_id).await {
+                    log::warn!(
+                        "[kill] failed to archive session={session_id} final frame: {error}"
+                    );
+                }
                 let exit_evt = Event::Exit {
                     session_id: session_id.clone(),
                     code: 128 + libc::SIGKILL,
@@ -1935,10 +1943,28 @@ pub(crate) async fn handle_command(
                             agent_provider: None,
                         }
                     }
-                    Ok(None) => error_event(
-                        Some(protocol::ErrorCode::SessionNotFound),
-                        format!("session not found: {}", session_id),
-                    ),
+                    // A retired terminal keeps a bounded archive of its final
+                    // frame precisely so it stays readable after the live
+                    // session is gone.
+                    Ok(None) => match recovery_manager.read_archived_snapshot(&session_id) {
+                        Ok(Some(snapshot)) => {
+                            log::info!(
+                                "[snapshot] session={} served from the retired-terminal archive vt_len={}",
+                                session_id,
+                                snapshot.serialized.len()
+                            );
+                            Event::Snapshot {
+                                session_id,
+                                snapshot: recovery_snapshot_to_terminal_snapshot(snapshot),
+                                agent_provider: None,
+                            }
+                        }
+                        Ok(None) => error_event(
+                            Some(protocol::ErrorCode::SessionNotFound),
+                            format!("session not found: {}", session_id),
+                        ),
+                        Err(error) => error_event(None, error),
+                    },
                     Err(error) => error_event(None, error),
                 },
             };

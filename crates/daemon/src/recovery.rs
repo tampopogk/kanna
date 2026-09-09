@@ -356,6 +356,94 @@ impl RecoveryManager {
         Ok(())
     }
 
+    /// Persist a session's final frame where it outlives the live session.
+    ///
+    /// A retired terminal (a stage's startup shell, a teardown) is still a
+    /// thing a person must be able to read: its diagnostics are the whole
+    /// reason a failed stage advance points at it. The live snapshot cannot
+    /// carry that — `end_session` deletes it the moment the process exits —
+    /// so the last frame is copied into a separate archive first, and only
+    /// the archive is served after the session is gone. It is a bounded
+    /// rendering of the final screen, not a raw ANSI transcript.
+    pub async fn archive_session(&self, session_id: &str) -> Result<bool, String> {
+        let Some(snapshot) = self.get_snapshot(session_id).await? else {
+            return Ok(false);
+        };
+
+        let archive_dir = self.archive_dir();
+        std::fs::create_dir_all(&archive_dir).map_err(|error| {
+            format!(
+                "failed to create recovery archive dir {:?}: {}",
+                archive_dir, error
+            )
+        })?;
+
+        let serialized = bound_archived_frame(&snapshot.serialized);
+        let archived = PersistedRecoverySnapshot {
+            session_id: session_id.to_string(),
+            serialized,
+            cols: snapshot.cols,
+            rows: snapshot.rows,
+            cursor_row: Some(snapshot.cursor_row),
+            cursor_col: Some(snapshot.cursor_col),
+            cursor_visible: Some(snapshot.cursor_visible),
+            saved_at: snapshot.saved_at,
+            sequence: snapshot.sequence,
+        };
+        let payload = serde_json::to_vec(&archived).map_err(|error| {
+            format!("failed to serialize archived recovery snapshot: {}", error)
+        })?;
+        let path = self.archive_path(session_id)?;
+        let temp_path =
+            path.with_extension(format!("json.tmp-{}-{}", std::process::id(), now_millis()));
+        std::fs::write(&temp_path, payload).map_err(|error| {
+            format!(
+                "failed to write archived recovery snapshot {:?}: {}",
+                temp_path, error
+            )
+        })?;
+        std::fs::rename(&temp_path, &path).map_err(|error| {
+            format!(
+                "failed to publish archived recovery snapshot {:?}: {}",
+                path, error
+            )
+        })?;
+        Ok(true)
+    }
+
+    pub fn read_archived_snapshot(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<RecoverySnapshot>, String> {
+        let path = self.archive_path(session_id)?;
+        read_persisted_snapshot_file(&path, session_id)
+    }
+
+    pub fn has_archived_snapshot(&self, session_id: &str) -> bool {
+        self.archive_path(session_id)
+            .map(|path| path.exists())
+            .unwrap_or(false)
+    }
+
+    pub fn remove_archived_snapshot(&self, session_id: &str) {
+        if let Ok(path) = self.archive_path(session_id) {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+
+    fn archive_dir(&self) -> PathBuf {
+        self.snapshot_dir.join("archive")
+    }
+
+    fn archive_path(&self, session_id: &str) -> Result<PathBuf, String> {
+        if !crate::session_id::is_safe(session_id) {
+            return Err(format!(
+                "refusing to derive an archive path from unsafe session id {session_id:?}"
+            ));
+        }
+        Ok(self.archive_dir().join(format!("{}.json", session_id)))
+    }
+
     pub fn seed_snapshot_for_next_start(
         &self,
         session_id: &str,
@@ -395,6 +483,10 @@ impl RecoveryManager {
                 "refusing to start a recovery session with unsafe id {session_id:?}"
             ));
         }
+        // A new incarnation of this id owns the terminal now; the previous
+        // one's archived final frame is history and must not be served as
+        // this session's.
+        self.remove_archived_snapshot(session_id);
         match self
             .request(RecoveryCommand::StartSession {
                 session_id: session_id.to_string(),
@@ -532,38 +624,7 @@ impl RecoveryManager {
         session_id: &str,
     ) -> Result<Option<RecoverySnapshot>, String> {
         let path = self.snapshot_path(session_id)?;
-        if !path.exists() {
-            return Ok(None);
-        }
-
-        let payload = std::fs::read(&path)
-            .map_err(|error| format!("failed to read recovery snapshot {:?}: {}", path, error))?;
-        let snapshot: PersistedRecoverySnapshot = serde_json::from_slice(&payload)
-            .map_err(|error| format!("failed to parse recovery snapshot {:?}: {}", path, error))?;
-        if snapshot.session_id != session_id {
-            return Err(format!(
-                "persisted recovery snapshot mismatched session: expected {}, got {}",
-                session_id, snapshot.session_id
-            ));
-        }
-
-        Ok(Some(RecoverySnapshot {
-            serialized: snapshot.serialized,
-            cols: snapshot.cols,
-            rows: snapshot.rows,
-            // The client-facing snapshot has no way to say "cursor unknown": it
-            // feeds `TerminalSnapshot`, whose cursor fields are concrete and are
-            // applied by the renderer, so a v0.0.30 snapshot falls back to the
-            // origin here. The AUTHORITATIVE resume path does better — the worker's
-            // `SessionMirror::restore` skips repositioning entirely when the cursor
-            // is unknown. The asymmetry is deliberate: the alternative is widening
-            // `TerminalSnapshot` and every renderer that consumes it.
-            cursor_row: snapshot.cursor_row.unwrap_or(0),
-            cursor_col: snapshot.cursor_col.unwrap_or(0),
-            cursor_visible: snapshot.cursor_visible.unwrap_or(true),
-            saved_at: snapshot.saved_at,
-            sequence: snapshot.sequence,
-        }))
+        read_persisted_snapshot_file(&path, session_id)
     }
 
     pub async fn flush_and_shutdown(&self) {
@@ -850,6 +911,62 @@ impl RecoveryManager {
         }
         Ok(self.snapshot_file(session_id))
     }
+}
+
+/// The largest final frame an archived terminal keeps.
+///
+/// The archive is a bounded record, not a transcript: a runaway startup script
+/// must not be able to grow a per-session file without limit. Over the cap the
+/// most recent output is what a person needs, so the tail is kept.
+const MAX_ARCHIVED_FRAME_BYTES: usize = 256 * 1024;
+
+fn bound_archived_frame(serialized: &str) -> String {
+    if serialized.len() <= MAX_ARCHIVED_FRAME_BYTES {
+        return serialized.to_string();
+    }
+    let mut start = serialized.len() - MAX_ARCHIVED_FRAME_BYTES;
+    while start < serialized.len() && !serialized.is_char_boundary(start) {
+        start += 1;
+    }
+    format!("[earlier output truncated]\r\n{}", &serialized[start..])
+}
+
+fn read_persisted_snapshot_file(
+    path: &Path,
+    session_id: &str,
+) -> Result<Option<RecoverySnapshot>, String> {
+    if !path.exists() {
+        return Ok(None);
+    }
+
+    let payload = std::fs::read(path)
+        .map_err(|error| format!("failed to read recovery snapshot {:?}: {}", path, error))?;
+    let snapshot: PersistedRecoverySnapshot = serde_json::from_slice(&payload)
+        .map_err(|error| format!("failed to parse recovery snapshot {:?}: {}", path, error))?;
+    if snapshot.session_id != session_id {
+        return Err(format!(
+            "persisted recovery snapshot mismatched session: expected {}, got {}",
+            session_id, snapshot.session_id
+        ));
+    }
+
+    Ok(Some(RecoverySnapshot {
+        serialized: snapshot.serialized,
+        cols: snapshot.cols,
+        rows: snapshot.rows,
+        // The client-facing snapshot has no way to say "cursor unknown": it
+        // feeds `TerminalSnapshot`, whose cursor fields are concrete and are
+        // applied by the renderer, so a v0.0.30 snapshot falls back to the
+        // origin here. The AUTHORITATIVE resume path does better — the worker's
+        // `SessionMirror::restore` skips repositioning entirely when the cursor
+        // is unknown. The asymmetry is deliberate: the alternative is widening
+        // `TerminalSnapshot` and every renderer that consumes it.
+        cursor_row: snapshot.cursor_row.unwrap_or(0),
+        cursor_col: snapshot.cursor_col.unwrap_or(0),
+        cursor_visible: snapshot.cursor_visible.unwrap_or(true),
+        saved_at: snapshot.saved_at,
+        sequence: snapshot.sequence,
+    }))
 }
 
 fn lock_sequences(
