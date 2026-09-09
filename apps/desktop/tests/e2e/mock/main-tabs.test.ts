@@ -367,10 +367,19 @@ describe("main content area tabs", () => {
        else store.selectedItemId = null;
        setTimeout(function() { cb("ok"); }, 200);`
     );
-    await sleep(400);
 
-    // A repository has no agent session, so its tab set starts empty.
-    expect(await openTabIds(client)).toEqual([]);
+    // A repository has no agent session, so its tab set starts empty. The
+    // deselect is reactive, so this waits for it to land rather than for a
+    // fixed interval — on a loaded machine the old sleep expired first and
+    // read the task's tabs.
+    let repoTabs: string[] = ["agent"];
+    const deselected = Date.now() + 10_000;
+    while (Date.now() < deselected) {
+      repoTabs = await openTabIds(client);
+      if (repoTabs.length === 0) break;
+      await sleep(100);
+    }
+    expect(repoTabs).toEqual([]);
 
     await pressShortcut(client, { key: "g", meta: true });
     await waitForActiveTab(client, "graph");
@@ -799,17 +808,36 @@ describe("main content area tabs", () => {
     await waitForActiveTab(client, "file:README.md");
 
     await pressShortcut(client, { key: "o", meta: true });
-    await sleep(1200);
 
-    const recorded = await tauriInvoke(client, "run_script", {
+    // macOS resolves the temp fixture path through /private; compare the real
+    // paths rather than the spelling each side happened to use.
+    const realPath = (path: string) => path.replace(/^\/private/, "");
+    // The recorder is a separate process, so this waits for it to have written
+    // rather than for a fixed interval, then asserts what it wrote. A second,
+    // wrong invocation would still be there to see.
+    let lines: string[] = [];
+    const recordedBy = Date.now() + 10_000;
+    while (Date.now() < recordedBy) {
+      const recorded = await tauriInvoke(client, "run_script", {
+        script: `cat "${ideLog}" 2>/dev/null || true`,
+        cwd: worktreePath,
+        env: {},
+      }) as string;
+      lines = String(recorded)
+        .split("\n")
+        .map((line) => realPath(line.trim()))
+        .filter(Boolean);
+      if (lines.length > 0) break;
+      await sleep(100);
+    }
+    // Give a second invocation, if the binding fired twice, time to land.
+    await sleep(500);
+    const settled = await tauriInvoke(client, "run_script", {
       script: `cat "${ideLog}" 2>/dev/null || true`,
       cwd: worktreePath,
       env: {},
     }) as string;
-    // macOS resolves the temp fixture path through /private; compare the real
-    // paths rather than the spelling each side happened to use.
-    const realPath = (path: string) => path.replace(/^\/private/, "");
-    const lines = String(recorded)
+    lines = String(settled)
       .split("\n")
       .map((line) => realPath(line.trim()))
       .filter(Boolean);
