@@ -193,6 +193,18 @@ export function formatPendingTaskSessionMessage(retrySeconds: number): string {
 }
 
 
+/**
+ * The attach-only view found no session and nothing will start one.
+ *
+ * Said once, not on a loop: a task that is closed, or whose agent has exited
+ * with no recovery snapshot, has no launch left to wait for, and a "startup
+ * terminal runs first" notice repeating forever would be describing something
+ * that is not happening.
+ */
+export function formatMissingInitialTaskSessionMessage(): string {
+  return "\r\n\x1b[33mKnock, knock, Neo. Kanna couldn't find a live agent session for this task.\x1b[0m\r\n";
+}
+
 export function isDaemonHandoffFailure(error: unknown): boolean {
   return getAppErrorCode(error) === HANDOFF_LOST_CODE;
 }

@@ -206,6 +206,7 @@ function openTaskTerminalView(
   title?: string,
   live?: boolean,
   archived?: boolean,
+  exitCode?: number | null,
 ): void {
   mainTabs.openTabInScope(mainTabScopeKeyForTask(taskId), {
     kind: "terminal",
@@ -213,6 +214,7 @@ function openTaskTerminalView(
     terminalTitle: title,
     terminalLive: live,
     terminalArchived: archived,
+    terminalExitCode: exitCode,
     terminalTaskId: taskId,
   });
 }

@@ -111,6 +111,7 @@ export function useTaskTerminalTabs({
         terminalTitle: terminalTabTitle(terminal),
         terminalLive: terminal.state === "live",
         terminalArchived: terminal.archived,
+        terminalExitCode: terminal.exitCode,
         terminalTaskId: id,
       };
       if (openedByReconciliation.has(key) && !tabs.isOpen(`terminal:${sessionId}`)) {

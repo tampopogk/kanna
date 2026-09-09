@@ -166,6 +166,9 @@ pub(super) async fn open_desktop_terminal_view(
                 // kept; without this the tab has to assume it was not, and
                 // says the output is gone while the archive sits beside it.
                 "archived": terminal.archived,
+                // What it exited with, so a failed startup opened this way
+                // says so rather than reading as an ordinary finish.
+                "exitCode": terminal.exit_code,
             }));
             Ok((task_id, request.session_id, title))
         })

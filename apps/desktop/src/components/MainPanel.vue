@@ -73,6 +73,20 @@ const item = computed(() => props.uiSlot?.task ?? null);
 const tabs = computed<MainTab[]>(() => props.views?.tabs.tabs.value ?? []);
 const activeTabId = computed(() => props.views?.tabs.activeTabId.value ?? AGENT_TAB_ID);
 const agentTabActive = computed(() => activeTabId.value === AGENT_TAB_ID);
+/**
+ * Whether a launch could still create this task's agent session.
+ *
+ * The agent view cannot tell "the startup terminal is still running" from
+ * "this agent is gone for good" — the daemon refuses the attach identically —
+ * so the panel answers from the task's own record. A closed task has no launch
+ * left, and an `exited` runtime state is the server's verdict that the session
+ * ended unreplaced.
+ */
+const agentSessionCanStart = computed(() => {
+  const item = props.item;
+  if (!item) return false;
+  return item.closed_at == null && item.runtime_state !== "exited";
+});
 const openViewTabs = computed(() => tabs.value.filter((tab) => tab.kind !== "agent"));
 /**
  * The panel's own empty state — "no task selected", or the agent-install help
@@ -657,6 +671,7 @@ function dismissCommandHint() {
             :session-id="item.id"
             :active="agentTabActive"
             :agent-type="item.agent_type || 'pty'"
+            :agent-session-can-start="agentSessionCanStart"
             :agent-provider="item.agent_provider"
             :repo-path="repoPath"
             :worktree-path="taskWorktreePath"
@@ -709,6 +724,7 @@ function dismissCommandHint() {
           :title="tab.terminalTitle || $t('mainTabs.terminal')"
           :live="tab.terminalLive"
           :archived="tab.terminalArchived"
+          :exit-code="tab.terminalExitCode"
           :active="activeTabId === tab.id"
         />
         <TreeExplorerModal

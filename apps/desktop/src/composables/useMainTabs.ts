@@ -59,6 +59,14 @@ export interface MainTabDescriptor {
   terminalLive?: boolean;
   /** `terminal` tabs: whether the server kept the terminal's final frame. */
   terminalArchived?: boolean;
+  /**
+   * `terminal` tabs: the status the process exited with, once it has.
+   *
+   * A startup shell that failed is the whole reason its output is kept, so
+   * the tab has to be able to say so; without this a setup that exited 23
+   * read as "Startup · review finished."
+   */
+  terminalExitCode?: number | null;
   /** `terminal` tabs: the task that owns the terminal, which addresses it. */
   terminalTaskId?: string;
 }

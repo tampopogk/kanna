@@ -664,7 +664,7 @@ pub(crate) async fn run(command: TaskCommands) {
         } => {
             let mut args = serde_json::json!({ "task_id": task_id });
             insert_optional(&mut args, "machine_id", machine_id);
-            run_catalog_tool("kanna_list_task_terminals", &args, server_url.as_deref()).await;
+            run_catalog_task_tool("kanna_list_task_terminals", &args, server_url.as_deref()).await;
         }
         TaskCommands::OpenTerminal {
             task_id,
@@ -677,7 +677,7 @@ pub(crate) async fn run(command: TaskCommands) {
                 "session_id": session_id,
             });
             insert_optional(&mut args, "machine_id", machine_id);
-            run_catalog_tool("kanna_open_terminal", &args, server_url.as_deref()).await;
+            run_catalog_task_tool("kanna_open_terminal", &args, server_url.as_deref()).await;
         }
         TaskCommands::Logs {
             task_id,

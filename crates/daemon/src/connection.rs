@@ -1823,16 +1823,18 @@ pub(crate) async fn handle_command(
                     None,
                     format!("failed to snapshot live session {}: {}", session_id, error),
                 ),
-                None => match recovery_manager.get_snapshot(&session_id).await {
+                // The session is gone, so the archive is the authority: it is
+                // this session's own final frame, captured before the daemon
+                // dropped it (SPEC invariant 12). The recovery mirror is a
+                // lossy fallback — fed by fire-and-forget writes on a persist
+                // debounce — so consulting it first served a stale frame for
+                // any shell that outlived that debounce, and a mirror error
+                // hid a perfectly good archive behind it.
+                None => match recovery_manager.read_archived_snapshot(&session_id) {
                     Ok(Some(snapshot)) => {
                         log::info!(
-                            "[snapshot] session={} served from recovery rows={} cols={} cursor=({:?}, {:?}) visible={:?} vt_len={}",
+                            "[snapshot] session={} served from the retired-terminal archive vt_len={}",
                             session_id,
-                            snapshot.rows,
-                            snapshot.cols,
-                            snapshot.cursor_row,
-                            snapshot.cursor_col,
-                            snapshot.cursor_visible,
                             snapshot.serialized.len()
                         );
                         Event::Snapshot {
@@ -1841,14 +1843,19 @@ pub(crate) async fn handle_command(
                             agent_provider: None,
                         }
                     }
-                    // A retired terminal keeps a bounded archive of its final
-                    // frame precisely so it stays readable after the live
-                    // session is gone.
-                    Ok(None) => match recovery_manager.read_archived_snapshot(&session_id) {
+                    // No archive: a session from before archiving, or one
+                    // whose frame could not be captured. The mirror is what
+                    // is left, and its own failure is the answer.
+                    Ok(None) => match recovery_manager.get_snapshot(&session_id).await {
                         Ok(Some(snapshot)) => {
                             log::info!(
-                                "[snapshot] session={} served from the retired-terminal archive vt_len={}",
+                                "[snapshot] session={} served from recovery rows={} cols={} cursor=({:?}, {:?}) visible={:?} vt_len={}",
                                 session_id,
+                                snapshot.rows,
+                                snapshot.cols,
+                                snapshot.cursor_row,
+                                snapshot.cursor_col,
+                                snapshot.cursor_visible,
                                 snapshot.serialized.len()
                             );
                             Event::Snapshot {
@@ -1863,6 +1870,9 @@ pub(crate) async fn handle_command(
                         ),
                         Err(error) => error_event(None, error),
                     },
+                    // An archive that exists and cannot be read is a real
+                    // failure and is reported as one, rather than quietly
+                    // becoming the mirror's older idea of this session.
                     Err(error) => error_event(None, error),
                 },
             };

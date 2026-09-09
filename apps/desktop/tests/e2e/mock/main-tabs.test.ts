@@ -653,7 +653,7 @@ describe("main content area tabs", () => {
        const ctx = window.__KANNA_E2E__.setupState;
        const db = ctx.db.value || ctx.db;
        db.execute("INSERT INTO terminal_session (id, repo_id, pipeline_item_id, label, cwd, daemon_session_id, role, stage, attempt, state, title, exit_code, retired_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))",
-         ["${retiredSessionId}", "${repoId}", "${taskId}", "setup", "${testRepoPath}", "${retiredSessionId}", "setup", "in progress", 3, "retired", "Startup · in progress", 0])
+         ["${retiredSessionId}", "${repoId}", "${taskId}", "setup", "${testRepoPath}", "${retiredSessionId}", "setup", "in progress", 3, "retired", "Startup · in progress", 23])
          .then(function() {
            return db.execute("INSERT INTO terminal_session_archive (session_id, cols, rows, vt) VALUES (?, ?, ?, ?)",
              ["${retiredSessionId}", 80, 24, "ARCHIVED_FRAME_SENTINEL\\r\\n"]);
@@ -687,12 +687,15 @@ describe("main content area tabs", () => {
     }
     expect(lines.some((line) => line.includes("ARCHIVED_FRAME_SENTINEL"))).toBe(true);
 
-    // And it never claims the output was not kept.
+    // And it says what the startup actually exited with — the reason its
+    // output is worth keeping — rather than reading as an ordinary finish, and
+    // never claims the output was not kept.
     const banner = await client.executeSync<string>(
       `const status = document.querySelector('[data-testid="task-terminal-finished"]');
        return status ? status.textContent.trim() : "";`
     );
     expect(banner).not.toContain("was not kept");
+    expect(banner).toContain("status 23");
 
     await client.executeAsync<string>(
       `const cb = arguments[arguments.length - 1];

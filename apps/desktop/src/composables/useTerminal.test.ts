@@ -920,6 +920,118 @@ describe("useTerminal", () => {
     ]);
   });
 
+  /**
+   * A task's agent session is created after its launch's startup terminal
+   * exits, so an attach-only view that finds nothing is normally early rather
+   * than broken — and waits.
+   */
+  it("waits for an agent session a launch could still start", async () => {
+    const { useTerminal } = await import("./useTerminal");
+    // The session is missing on the very first attach — the launch has not
+    // created it yet — so nothing is respawned and the view must decide what
+    // to say.
+    installKspStreamClient({
+      onAttach: (_taskId, handlers) => {
+        handlers.onError?.("session_not_found", "session not found: session-1");
+      },
+    });
+    invokeMock.mockImplementation(async () => null);
+
+    const TestHarness = defineComponent({
+      setup() {
+        // The agent view's real configuration: an attach-only task terminal,
+        // which is what makes a missing session ambiguous in the first place.
+        const { init, startListening } = useTerminal(
+          "session-1",
+          { cwd: "/tmp/task", prompt: "hello", spawnFn: async () => {} },
+          {
+            agentProvider: "codex",
+            worktreePath: "/tmp/task",
+            agentSessionCanStart: () => true,
+          },
+        );
+        return { init, startListening };
+      },
+      render() {
+        return h("div");
+      },
+    });
+
+    const wrapper = mount(TestHarness);
+    const terminalElement = document.createElement("div");
+    Object.defineProperty(terminalElement, "offsetWidth", { configurable: true, value: 800 });
+    Object.defineProperty(terminalElement, "offsetHeight", { configurable: true, value: 600 });
+    terminalElement.querySelector = vi.fn(() => null) as typeof terminalElement.querySelector;
+    terminalElement.closest = vi.fn(() => null) as typeof terminalElement.closest;
+    wrapper.vm.init(terminalElement);
+    await wrapper.vm.startListening();
+
+    await flushAsyncWork();
+
+    const terminal = terminals[0];
+    const written = terminal.write.mock.calls
+      .map(([data]) => (typeof data === "string" ? data : ""))
+      .join("");
+    expect(written).toContain("startup terminal runs first");
+    expect(written).not.toContain("Knock, knock, Neo.");
+
+    wrapper.unmount();
+  });
+
+  /**
+   * The same refusal on a closed task, or one whose agent has exited, means
+   * the opposite: nothing is going to start, so promising a startup terminal
+   * that is not running — forever, on a backoff — describes something that is
+   * not happening.
+   */
+  it("says so once when no launch can start this task's agent session", async () => {
+    const { useTerminal } = await import("./useTerminal");
+    installKspStreamClient({
+      onAttach: (_taskId, handlers) => {
+        handlers.onError?.("session_not_found", "session not found: session-1");
+      },
+    });
+    invokeMock.mockImplementation(async () => null);
+
+    const TestHarness = defineComponent({
+      setup() {
+        const { init, startListening } = useTerminal(
+          "session-1",
+          { cwd: "/tmp/task", prompt: "hello", spawnFn: async () => {} },
+          {
+            agentProvider: "codex",
+            worktreePath: "/tmp/task",
+            agentSessionCanStart: () => false,
+          },
+        );
+        return { init, startListening };
+      },
+      render() {
+        return h("div");
+      },
+    });
+
+    const wrapper = mount(TestHarness);
+    const terminalElement = document.createElement("div");
+    Object.defineProperty(terminalElement, "offsetWidth", { configurable: true, value: 800 });
+    Object.defineProperty(terminalElement, "offsetHeight", { configurable: true, value: 600 });
+    terminalElement.querySelector = vi.fn(() => null) as typeof terminalElement.querySelector;
+    terminalElement.closest = vi.fn(() => null) as typeof terminalElement.closest;
+    wrapper.vm.init(terminalElement);
+    await wrapper.vm.startListening();
+
+    await flushAsyncWork();
+
+    const terminal = terminals[0];
+    const written = terminal.write.mock.calls
+      .map(([data]) => (typeof data === "string" ? data : ""))
+      .join("");
+    expect(written).toContain("Knock, knock, Neo.");
+    expect(written).not.toContain("startup terminal runs first");
+
+    wrapper.unmount();
+  });
+
   it("respawns a task terminal from a KSP missing-session error when recovery scrollback exists", async () => {
     const spawnFn = vi.fn(async () => {});
     const { useTerminal } = await import("./useTerminal");

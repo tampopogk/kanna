@@ -17,6 +17,7 @@ import i18n from "../i18n"
 import { createTerminalDisposalController } from "./terminalDisposal"
 import {
   formatAttachFailureMessage,
+  formatMissingInitialTaskSessionMessage,
   formatPendingTaskSessionMessage,
   getRespawnToastKey,
   getReconnectKeyboardPush,
@@ -404,11 +405,21 @@ export function createTerminalSessionLifecycle(params: {
       if (isMissingDaemonSessionFailure(normalizedError) && getTerminalRecoveryMode(params.spawnOptions, params.options) === "attach-only") {
         // A task's agent session is created *after* its launch's startup
         // terminal exits, so a missing session on a view that has never
-        // attached is normally just "not yet". Keep the backoff looking rather
-        // than settling on an empty terminal that will never fill: giving up
-        // here left the agent tab blank for the whole life of a task whose
-        // setup took longer than the first attach.
-        reportPendingTaskSession()
+        // attached is "not yet" — while a launch could still produce one.
+        // Keep the backoff looking rather than settling on an empty terminal
+        // that will never fill: giving up here left the agent tab blank for
+        // the whole life of a task whose setup took longer than the first
+        // attach.
+        //
+        // For a closed task, or one whose agent has exited, nothing will
+        // start: a missing PTY is the end of the story, not the beginning,
+        // and polling it would promise a startup terminal that is not
+        // running. The caller holds the task's record and answers.
+        if (params.options?.agentSessionCanStart?.() ?? true) {
+          reportPendingTaskSession()
+        } else {
+          params.terminal.value?.write(formatMissingInitialTaskSessionMessage())
+        }
       } else {
         reportAttachFailure(normalizedError.message)
       }

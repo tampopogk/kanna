@@ -12,6 +12,8 @@ const props = defineProps<{
   /** False while another main-area tab is in front of the agent session. */
   active?: boolean;
   agentType?: string;
+  /** False when no launch could still create this task's agent session. */
+  agentSessionCanStart?: boolean;
   agentProvider?: AgentProvider;
   worktreePath?: string;
   repoPath?: string;
@@ -50,6 +52,7 @@ function buildSpawnOptions() {
         :agent-provider="agentProvider"
         :worktree-path="worktreePath"
         :agent-terminal="true"
+        :agent-session-can-start="agentSessionCanStart"
         :recover-session="recoverTaskSession"
       />
     </KeepAlive>

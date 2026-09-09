@@ -92,6 +92,43 @@ describe("keeping a task's terminal tabs in step with the server", () => {
     expect(tabs.activeTabId.value).toBe("agent");
   });
 
+  it("carries a finished startup terminal's exit status onto its tab", async () => {
+    // A startup shell that failed is the whole reason its output is kept, so
+    // the status has to reach the tab that renders the banner: without it a
+    // setup that exited 23 read as an ordinary finish.
+    const tabs = tabsForTask("task-1");
+    const state = ref<DesktopTaskTerminal>(
+      terminal({ state: "live", exitCode: null, archived: false }),
+    );
+    const fetchTerminals = vi.fn(async (): Promise<DesktopTaskTerminals> => ({
+      taskId: "task-1",
+      agentSessionId: "task-1",
+      terminals: [state.value],
+    }));
+    const { reconcile } = useTaskTerminalTabs({
+      tabs,
+      taskId: computed(() => "task-1"),
+      revision: computed(() => 1),
+      fetchTerminals,
+    });
+
+    await reconcile();
+    const live = tabs.tabs.value.find((tab) => tab.id === "terminal:setup-task-1-1");
+    expect(live?.terminalLive).toBe(true);
+    expect(live?.terminalExitCode).toBeNull();
+
+    // The same terminal, once its shell has exited: re-reconciling has to
+    // update the tab that is already open rather than leave it saying the
+    // startup is still running.
+    state.value = terminal({ state: "retired", exitCode: 23, archived: true });
+    await reconcile();
+
+    const retired = tabs.tabs.value.find((tab) => tab.id === "terminal:setup-task-1-1");
+    expect(retired?.terminalLive).toBe(false);
+    expect(retired?.terminalArchived).toBe(true);
+    expect(retired?.terminalExitCode).toBe(23);
+  });
+
   it("does not reopen a terminal tab the reader closed", async () => {
     const tabs = tabsForTask("task-1");
     const fetchTerminals = vi.fn(async (): Promise<DesktopTaskTerminals> => ({

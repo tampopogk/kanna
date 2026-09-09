@@ -72,6 +72,7 @@ interface UseAppLifecycleOptions {
     title?: string,
     live?: boolean,
     archived?: boolean,
+    exitCode?: number | null,
   ) => void;
   preferences: AppPreferences;
   remoteTaskDiagnostics: Ref<unknown>;
@@ -108,6 +109,7 @@ type DesktopViewOpenAny =
     title?: string;
     live?: boolean;
     archived?: boolean;
+    exitCode?: number | null;
   };
 
 function parseDesktopViewOpenEvent(payload: unknown): DesktopViewOpenAny {
@@ -118,6 +120,7 @@ function parseDesktopViewOpenEvent(payload: unknown): DesktopViewOpenAny {
       title?: unknown;
       live?: unknown;
       archived?: unknown;
+      exitCode?: unknown;
     })
     | null;
   if (!command || typeof command.taskId !== "string") {
@@ -134,6 +137,9 @@ function parseDesktopViewOpenEvent(payload: unknown): DesktopViewOpenAny {
       title: typeof command.title === "string" ? command.title : undefined,
       live: typeof command.live === "boolean" ? command.live : undefined,
       archived: typeof command.archived === "boolean" ? command.archived : undefined,
+      exitCode: typeof command.exitCode === "number" || command.exitCode === null
+        ? command.exitCode
+        : undefined,
     };
   }
   if (typeof command.path !== "string" || (command.view !== undefined && command.view !== "file")) {
@@ -445,6 +451,7 @@ export function useAppLifecycle({
               command.title,
               command.live,
               command.archived,
+              command.exitCode,
             );
           } else {
             openTaskFileView(command.taskId, command.path, command.line);
