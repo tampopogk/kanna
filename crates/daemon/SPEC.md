@@ -40,11 +40,16 @@ kanna-daemon manages persistent PTY sessions for Claude CLI agents. It runs as a
     finished terminal is still something a person has to be able to read: a
     failed launch points at the startup terminal that explains it, and that
     terminal is gone seconds later. So on the way out, at a natural exit and at
-    an explicit `Kill` alike, the daemon copies the headless terminal's final
-    snapshot into a bounded per-session archive *before* the session is removed
-    and before the `Exit` is broadcast, and a `Snapshot` for an id the daemon no
-    longer has falls back to that archive. It is a rendered final frame, not a
-    raw transcript, and it is dropped when a new session claims the same id.
+    an explicit `Kill` alike, the daemon copies the session's final frame into a
+    bounded per-session archive *before `end_session` and before the `Exit` is
+    broadcast*, and a `Snapshot` for an id the daemon no longer has falls back
+    to that archive. The frame is read from the session's **own headless
+    terminal** — the source a live `Snapshot` serves — while the caller still
+    holds the session; the recovery sidecar's mirror is only the fallback,
+    because it is fed by fire-and-forget writes that are dropped when its queue
+    is full and answers nothing while its worker is restarting. It is a rendered
+    final frame, not a raw transcript, and it is dropped when a new session
+    claims the same id.
 13. **Authorize the successor before handoff state.** For every supported handoff version, the sender authenticates the peer as a daemon directly spawned by the trusted app-launcher executable before it acquires daemon-lifecycle ownership, seals a registry, snapshots a session, writes `HandoffReady`, or transfers a descriptor.
 
 ## Startup Sequence

@@ -365,9 +365,35 @@ impl RecoveryManager {
     /// so the last frame is copied into a separate archive first, and only
     /// the archive is served after the session is gone. It is a bounded
     /// rendering of the final screen, not a raw ANSI transcript.
-    pub async fn archive_session(&self, session_id: &str) -> Result<bool, String> {
-        let Some(snapshot) = self.get_snapshot(session_id).await? else {
-            return Ok(false);
+    ///
+    /// `authoritative` is the session's own headless terminal — the source the
+    /// live `Snapshot` command serves. It is what the archive is made from
+    /// whenever the caller still holds the session, because the recovery
+    /// sidecar's mirror is *fed* by fire-and-forget writes: it drops mirrored
+    /// chunks when its queue is full and answers nothing at all while the
+    /// worker is restarting, so an archive taken from it can be short or
+    /// missing while the real final frame is right there. The sidecar remains
+    /// the fallback for a caller that no longer has the session.
+    pub async fn archive_session(
+        &self,
+        session_id: &str,
+        authoritative: Option<crate::protocol::TerminalSnapshot>,
+    ) -> Result<bool, String> {
+        let snapshot = match authoritative {
+            Some(frame) => RecoverySnapshot {
+                serialized: frame.vt,
+                cols: frame.cols,
+                rows: frame.rows,
+                cursor_row: frame.cursor_row,
+                cursor_col: frame.cursor_col,
+                cursor_visible: frame.cursor_visible,
+                saved_at: frame.saved_at,
+                sequence: frame.sequence,
+            },
+            None => match self.get_snapshot(session_id).await? {
+                Some(snapshot) => snapshot,
+                None => return Ok(false),
+            },
         };
 
         let archive_dir = self.archive_dir();

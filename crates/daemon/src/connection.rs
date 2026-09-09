@@ -1821,8 +1821,25 @@ pub(crate) async fn handle_command(
                 // agree on the exact outgoing incarnation.
                 // Same rule as a natural exit: the final frame is archived
                 // before the live session is dropped, so an explicitly
-                // retired terminal stays readable.
-                if let Err(error) = recovery_manager.archive_session(&session_id).await {
+                // retired terminal stays readable — and it is read from the
+                // killed session's own headless terminal, not from the
+                // recovery mirror, which can be behind or unavailable.
+                let final_frame = match &session {
+                    Some(session) => match session.snapshot(&session_id).await {
+                        Ok(frame) => Some(frame),
+                        Err(error) => {
+                            log::warn!(
+                                "[kill] could not read session={session_id} final frame from its                                  own terminal; falling back to the recovery mirror: {error}"
+                            );
+                            None
+                        }
+                    },
+                    None => None,
+                };
+                if let Err(error) = recovery_manager
+                    .archive_session(&session_id, final_frame)
+                    .await
+                {
                     log::warn!(
                         "[kill] failed to archive session={session_id} final frame: {error}"
                     );
