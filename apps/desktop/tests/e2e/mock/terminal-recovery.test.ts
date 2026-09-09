@@ -6,6 +6,8 @@ import { WebDriverClient } from "../helpers/webdriver";
 import { resetDatabase, importTestRepo, cleanupWorktrees } from "../helpers/reset";
 import { cleanupFixtureRepos, createFixtureRepo } from "../helpers/fixture-repo";
 import { tauriInvoke } from "../helpers/vue";
+import { localProcessFetch } from "@kanna/local-process-fetch";
+import { resolveAppKannaServer } from "../helpers/kannaServer";
 
 interface DaemonSessionInfo {
   session_id?: string;
@@ -72,7 +74,7 @@ describe("terminal recovery", () => {
       repoId,
       repoPath: testRepoPath,
       prompt: "Reattach after an unseen stage-swap respawn",
-      setup: ["printf 'ORIGINAL_READY\\n'; while true; do sleep 60; done"],
+      marker: "ORIGINAL_READY",
     });
     taskIds.push(taskId);
     await waitForSessionPresence(client, taskId, true);
@@ -84,7 +86,7 @@ describe("terminal recovery", () => {
       repoId,
       repoPath: testRepoPath,
       prompt: "Temporary task used to pause the frozen task's terminal",
-      setup: ["printf 'OTHER_READY\\n'; while true; do sleep 60; done"],
+      marker: "OTHER_READY",
     });
     taskIds.push(otherTaskId);
 
@@ -301,14 +303,24 @@ async function createRecoverableTask(
     prompt: string;
     agentProvider?: "claude" | "codex";
     setup?: string[];
+    /**
+     * The line this task's *agent* prints before parking. Setup runs in its own
+     * startup terminal now, so a marker printed there is not in the terminal
+     * these tests reattach to; the fake provider the agent runs prints it
+     * instead, which is the session under test.
+     */
+    marker?: string;
   },
 ): Promise<string> {
   const agentProvider = options.agentProvider ?? "claude";
-  const customTaskOption = options.setup
+  const setup = options.marker
+    ? [installProviderScript(agentProvider, agentReadyScript(options.marker))]
+    : options.setup;
+  const customTaskOption = setup
     ? `customTask: {
          executionMode: "pty",
          agentProvider: ${JSON.stringify(agentProvider)},
-         setup: ${JSON.stringify(options.setup)},
+         setup: ${JSON.stringify(setup)},
        },`
     : "";
   const taskId = await client.executeAsync<string>(
@@ -325,11 +337,76 @@ async function createRecoverableTask(
   if (!/^[0-9a-f]{8}$/.test(taskId)) {
     throw new Error(`recoverable task creation failed: ${taskId}`);
   }
+  // Every recoverable task's agent says something; without an override that is
+  // the repository fixture's own first-launch line.
+  await waitForAgentOutput(client, taskId, options.marker ?? "ORIGINAL_READY");
   return taskId;
 }
 
+/**
+ * Wait until the task's agent has started and said its line.
+ *
+ * A launch runs its setup in a startup terminal and only then starts the
+ * agent, so a task exists for a few seconds before its agent session does.
+ * These tests read the *rendered* terminal, and a hidden window renders
+ * streamed output lazily — but an attach always writes the session's snapshot.
+ * Waiting here, through the server rather than the view, is what puts the
+ * marker in that snapshot and keeps the assertions about the view rather than
+ * about how quickly a backgrounded renderer catches up.
+ */
+async function waitForAgentOutput(
+  client: WebDriverClient,
+  taskId: string,
+  marker: string,
+  timeoutMs = 60_000,
+): Promise<void> {
+  const server = await resolveAppKannaServer(client);
+  const deadline = Date.now() + timeoutMs;
+  let latest = "";
+  while (Date.now() < deadline) {
+    const response = await localProcessFetch(
+      `${server.baseUrl}/v1/tasks/${encodeURIComponent(taskId)}/logs?tail=40`,
+    );
+    if (response.ok) {
+      latest = await response.text();
+      if (latest.includes(marker)) return;
+    }
+    await sleep(200);
+  }
+  throw new Error(`timed out waiting for ${taskId}'s agent to print ${marker}; latest=${latest}`);
+}
+
+/** Where a task's fake provider CLI is installed, relative to its workspace. */
+const PROVIDER_BIN_DIR = ".kanna/test-provider-bin";
+
+/**
+ * A fake agent CLI: prints one line and parks.
+ *
+ * These tests are about the task's own terminal surviving a kill and a
+ * respawn, so what they need is a session that stays alive and says something
+ * they can find. That used to be arranged with repository `setup` that never
+ * exited — but setup now runs in the launch's own startup terminal, so a
+ * marker printed there lands in a session these tests never attach to, and a
+ * setup that never exits means no agent is ever started. The marker belongs to
+ * the agent, so the agent is what prints it.
+ */
+function agentReadyScript(marker: string): string {
+  return `printf '${marker}\\n'; while true; do sleep 60; done`;
+}
+
+/** The setup that installs that CLI where the workspace PATH will find it. */
+function installProviderScript(provider: string, body: string): string {
+  return [
+    `mkdir -p ${PROVIDER_BIN_DIR}`,
+    `printf '#!/bin/sh\\n${body}\\n' > ${PROVIDER_BIN_DIR}/${provider}`,
+    `chmod +x ${PROVIDER_BIN_DIR}/${provider}`,
+  ].join(" && ");
+}
+
 async function configureTerminalRecoveryFixture(repoPath: string): Promise<void> {
-  const setupCommand = [
+  // First launch says ORIGINAL_READY, every later one RESPAWN_READY, so a
+  // respawned session is distinguishable from the one it replaced.
+  const readyScript = [
     "if [ -f .kanna/terminal-recovery-respawn.ready ]; then",
     "printf 'RESPAWN_READY\\n';",
     "else",
@@ -341,7 +418,19 @@ async function configureTerminalRecoveryFixture(repoPath: string): Promise<void>
 
   await writeFile(
     `${repoPath}/.kanna/config.json`,
-    JSON.stringify({ setup: [setupCommand] }, null, 2),
+    JSON.stringify(
+      {
+        // Both providers these tests launch, because setup runs before the
+        // agent is resolved and the workspace PATH is what resolves it.
+        setup: [
+          installProviderScript("claude", readyScript),
+          installProviderScript("codex", readyScript),
+        ],
+        workspace: { path: { prepend: [PROVIDER_BIN_DIR] } },
+      },
+      null,
+      2,
+    ),
   );
   await runCommand(["git", "add", ".kanna/config.json"], repoPath);
   await runCommand(["git", "commit", "-m", "configure terminal recovery fixture"], repoPath);
