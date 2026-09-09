@@ -95,6 +95,8 @@ export function useTaskTerminalTabs({
         terminalSessionId: sessionId,
         terminalTitle: terminalTabTitle(terminal),
         terminalLive: terminal.state === "live",
+        terminalArchived: terminal.archived,
+        terminalTaskId: id,
       };
       if (openedByReconciliation.has(key) && !tabs.isOpen(`terminal:${sessionId}`)) {
         // The reader closed it. Leave it closed.

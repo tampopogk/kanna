@@ -2113,7 +2113,8 @@ rule; it used to run detached with nowhere to print at all.
 `teardown` / `legacy_agent`), the `stage` and launch `attempt` it belongs to,
 whether it is still `live`, and the status a finished one exited with.
 `GET /v1/tasks/{task_id}/terminals` (`kanna_list_task_terminals`) is how a
-client asks which terminals a task has rather than deriving one from its id, and
+client asks which terminals a task has — and whether each one's final frame was
+archived — rather than deriving one from its id, and
 `POST /v1/desktop/views/open-terminal` (`kanna_open_terminal`) opens one as a
 tab — a view, never a spawn.
 
@@ -2157,6 +2158,35 @@ because startup is repo work of unbounded length and a request held open for it
 would time out while the terminal it is waiting for is still printing. A
 headless (SDK) launch has no terminal to watch, so its setup still runs where it
 did.
+
+That background finish is a **durable lifecycle operation**, not a promise held
+in one process. The startup terminal is a daemon session and outlives the server
+that started it; the code waiting for it does not. A `task_launch` intent is
+therefore written to `lifecycle_operation_intent` *before* the terminal starts,
+and the next server generation resolves it from evidence rather than from a held
+future: the daemon says whether that shell is still running, and the receipt
+says whether setup finished — the startup shell writes it as its last step and
+only gets there when everything before it succeeded. A launch whose setup
+finished is completed exactly once, rebuilding the agent session from the task's
+own record and never re-running setup that already succeeded; anything else
+records a failed stage run that names the startup terminal. The same intent
+covers the inline path a dormant-task start and the merge agent use.
+
+**A retired terminal is still readable.** Its PTY is gone seconds after the
+process exits — the daemon removes the session and the recovery sidecar deletes
+its live snapshot — so a client that attached to a retired id would sit in a
+retry loop where a failed stage advance's diagnostics should be. Before dropping
+a session the daemon writes the headless terminal's **final frame** to a bounded
+archive (a rendered frame, not a raw ANSI transcript), at a natural exit and at
+an explicit kill alike, and serves it to a snapshot request for the dead id. The
+server copies that frame into the task's own record when it retires the
+terminal, so it outlives the daemon's snapshot directory;
+`GET /v1/tasks/{task_id}/terminals` reports `archived` for each terminal and
+`GET /v1/tasks/{task_id}/terminals/{session_id}/archive` serves the frame. A
+retired tab renders that archive read-only — input and resize are refused
+because there is nothing to receive them — and survives a desktop restart. A
+terminal that finished without an archive says so rather than being presented as
+readable.
 
 ## Desktop View Commands
 

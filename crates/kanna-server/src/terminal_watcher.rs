@@ -443,12 +443,83 @@ fn is_agent_terminal_session(state: &http_api::AppState, session_id: &str) -> bo
 /// Mark a non-agent terminal finished. The row stays: its scrollback is the
 /// durable record of what that launch's startup or teardown did, and a stage
 /// that has moved on is exactly when someone wants to read it.
-fn retire_finished_terminal_session(state: &http_api::AppState, session_id: &str, code: i32) {
-    let Ok(db) = Db::open(&state.config().db_path) else {
+/// The largest final frame the durable archive keeps for one terminal.
+const MAX_ARCHIVED_TERMINAL_FRAME_BYTES: usize = 256 * 1024;
+
+async fn retire_finished_terminal_session(state: &http_api::AppState, session_id: &str, code: i32) {
+    let config = state.config();
+    archive_finished_terminal_frame(&config.db_path, &config.daemon_dir, session_id).await;
+    let Ok(db) = Db::open(&config.db_path) else {
         return;
     };
     if let Err(error) = db.retire_task_terminal_session(session_id, Some(code as i64)) {
         log::warn!("failed to retire the finished terminal {session_id}: {error}");
+    }
+}
+
+/// Copy a finished terminal's final frame into the task's durable record.
+///
+/// Called before the retirement is recorded: a tab that is told the terminal
+/// is retired must find something to render, and the daemon archived this
+/// frame on its way out precisely so it can be read now.
+pub(crate) async fn archive_finished_terminal_frame(
+    db_path: &str,
+    daemon_dir: &str,
+    session_id: &str,
+) {
+    // The frame is read before the database is opened: a `Db` handle is not
+    // `Send`, and holding one across the daemon round trip would make every
+    // caller's future unspawnable.
+    let frame = match archived_terminal_frame(daemon_dir, session_id).await {
+        Ok(Some(frame)) => frame,
+        Ok(None) => return,
+        Err(error) => {
+            log::warn!("could not read the final frame of terminal {session_id}: {error}");
+            return;
+        }
+    };
+    let Ok(db) = Db::open(db_path) else {
+        return;
+    };
+    let (cols, rows, vt) = frame;
+    if let Err(error) =
+        db.record_terminal_session_archive(session_id, cols as i64, rows as i64, &vt)
+    {
+        log::warn!("failed to archive the finished terminal {session_id}: {error}");
+    }
+}
+
+pub(crate) async fn archived_terminal_frame(
+    daemon_dir: &str,
+    session_id: &str,
+) -> Result<Option<(u16, u16, String)>, String> {
+    use kanna_daemon::protocol::{Command as DaemonCommand, Event as DaemonEvent};
+
+    let mut daemon = daemon_client::DaemonClient::connect(daemon_dir)
+        .await
+        .map_err(|error| format!("daemon error: {error}"))?;
+    match daemon
+        .send_command(&DaemonCommand::Snapshot {
+            session_id: session_id.to_string(),
+        })
+        .await
+        .map_err(|error| format!("daemon error: {error}"))?
+    {
+        DaemonEvent::Snapshot { snapshot, .. } => {
+            let mut vt = snapshot.vt;
+            if vt.len() > MAX_ARCHIVED_TERMINAL_FRAME_BYTES {
+                let mut start = vt.len() - MAX_ARCHIVED_TERMINAL_FRAME_BYTES;
+                while start < vt.len() && !vt.is_char_boundary(start) {
+                    start += 1;
+                }
+                vt = format!("[earlier output truncated]\r\n{}", &vt[start..]);
+            }
+            Ok(Some((snapshot.cols, snapshot.rows, vt)))
+        }
+        // A terminal the daemon no longer knows anything about simply has no
+        // archive; the row says so and the tab must not offer to render one.
+        DaemonEvent::Error { .. } => Ok(None),
+        other => Err(format!("unexpected daemon snapshot response: {other:?}")),
     }
 }
 
@@ -798,7 +869,7 @@ pub(crate) async fn terminal_state_watcher_once(
                 // completion path over it would resolve the wrong session and
                 // could finish a run whose agent is still working.
                 if !is_agent_terminal_session(state, &session_id) {
-                    retire_finished_terminal_session(state, &session_id, code);
+                    retire_finished_terminal_session(state, &session_id, code).await;
                     replacements.consume(&session_id);
                     continue;
                 }

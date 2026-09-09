@@ -701,11 +701,13 @@ function dismissCommandHint() {
           @close="closeTab(tab.id)"
         />
         <TaskTerminalPanel
-          v-else-if="tab.kind === 'terminal' && tab.terminalSessionId"
+          v-else-if="tab.kind === 'terminal' && tab.terminalSessionId && (tab.terminalTaskId || item?.id)"
           v-show="activeTabId === tab.id"
+          :task-id="tab.terminalTaskId || item?.id || ''"
           :session-id="tab.terminalSessionId"
           :title="tab.terminalTitle || $t('mainTabs.terminal')"
           :live="tab.terminalLive"
+          :archived="tab.terminalArchived"
           :active="activeTabId === tab.id"
         />
         <TreeExplorerModal

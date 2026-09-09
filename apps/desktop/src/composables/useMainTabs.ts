@@ -57,6 +57,10 @@ export interface MainTabDescriptor {
   terminalTitle?: string;
   /** `terminal` tabs: false once the process behind it has exited. */
   terminalLive?: boolean;
+  /** `terminal` tabs: whether the server kept the terminal's final frame. */
+  terminalArchived?: boolean;
+  /** `terminal` tabs: the task that owns the terminal, which addresses it. */
+  terminalTaskId?: string;
 }
 
 export interface MainTab extends MainTabDescriptor {
@@ -119,6 +123,7 @@ function persistedDescriptor(tab: MainTabDescriptor): MainTabDescriptor {
   if (tab.shellScope !== undefined) descriptor.shellScope = tab.shellScope;
   if (tab.terminalSessionId !== undefined) descriptor.terminalSessionId = tab.terminalSessionId;
   if (tab.terminalTitle !== undefined) descriptor.terminalTitle = tab.terminalTitle;
+  if (tab.terminalTaskId !== undefined) descriptor.terminalTaskId = tab.terminalTaskId;
   return descriptor;
 }
 

@@ -53,7 +53,7 @@ use super::task_input::send_task_input;
 use super::task_logs::task_logs;
 use super::task_ports::{claim_task_ports, release_task_ports};
 use super::task_raw_input::send_task_raw_input;
-use super::task_terminals::list_task_terminals;
+use super::task_terminals::{list_task_terminals, read_task_terminal_archive};
 use super::tasks::{
     create_task, get_task, get_task_children, get_task_inputs, list_closed_task_identities,
     list_recent_tasks, put_task, search_tasks, update_task,
@@ -218,6 +218,10 @@ pub fn router(state: Arc<AppState>) -> Router {
         )
         .route("/v1/tasks/{task_id}/logs", get(task_logs))
         .route("/v1/tasks/{task_id}/terminals", get(list_task_terminals))
+        .route(
+            "/v1/tasks/{task_id}/terminals/{session_id}/archive",
+            get(read_task_terminal_archive),
+        )
         // Photo attachments ride in this route's JSON body, so it alone opts
         // out of axum's default 2 MiB limit. See
         // `task_input_attachments::MAX_TASK_INPUT_BODY_BYTES` for the budget.

@@ -449,6 +449,8 @@
   },
   "taskTerminal": {
     "finished": "{title} finished.",
-    "finishedWithStatus": "{title} finished with status {status}."
+    "finishedWithStatus": "{title} finished with status {status}.",
+    "noArchive": "{title} finished. Its output was not kept.",
+    "archiveFailed": "Could not read {title}'s output."
   }
 }

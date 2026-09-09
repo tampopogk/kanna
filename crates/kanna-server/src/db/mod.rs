@@ -61,7 +61,7 @@ pub use task_events::{
 #[allow(unused_imports)]
 pub use task_inputs::{RawInputWriteRecord, TaskInputRecord, TaskInputSource};
 pub use terminal_sessions::{
-    NewTaskTerminalSession, TaskTerminalSession, ROLE_SETUP, ROLE_TEARDOWN,
+    NewTaskTerminalSession, TaskTerminalSession, TerminalSessionArchive, ROLE_SETUP, ROLE_TEARDOWN,
 };
 #[allow(unused_imports)]
 pub use transfer_work::{TransferWorkItem, MAX_TRANSFER_WORK_ATTEMPTS};
@@ -143,6 +143,7 @@ pub(crate) const CURRENT_SCHEMA_MIGRATIONS: &[&str] = &[
     "065_stage_run_provider_override",
     "066_durable_task_event_cursor_handles",
     "067_terminal_session_roles",
+    "068_terminal_session_archive",
 ];
 
 #[derive(Debug, Serialize)]
@@ -2054,6 +2055,23 @@ fn run_schema_migrations(conn: &Connection) -> Result<(), rusqlite::Error> {
             "UPDATE terminal_session SET role = 'legacy_agent' WHERE role = 'agent';
              CREATE INDEX IF NOT EXISTS idx_terminal_session_task_role
                ON terminal_session(pipeline_item_id, role, state);",
+        )
+    })?;
+
+    run_migration(conn, "068_terminal_session_archive", |conn| {
+        // A retired terminal is still readable. The daemon keeps the final
+        // frame only as long as its own snapshot directory survives, so the
+        // durable copy lives here: the frame a person reads after a failed
+        // stage advance must outlive the daemon, the app, and the machine's
+        // next reboot.
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS terminal_session_archive (
+               session_id TEXT PRIMARY KEY,
+               cols INTEGER NOT NULL,
+               rows INTEGER NOT NULL,
+               vt TEXT NOT NULL,
+               archived_at TEXT NOT NULL DEFAULT (datetime('now'))
+             );",
         )
     })?;
 

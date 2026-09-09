@@ -41,6 +41,22 @@ pub struct TaskTerminalSession {
     pub exit_code: Option<i64>,
     pub created_at: String,
     pub retired_at: Option<String>,
+    /// Whether this terminal's final frame was archived when it finished.
+    ///
+    /// A retired terminal that has one is readable; one that does not must not
+    /// be presented as though it were, which is what a client uses this for.
+    pub archived: bool,
+}
+
+/// A retired terminal's final frame, as the headless terminal rendered it.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TerminalSessionArchive {
+    pub session_id: String,
+    pub cols: i64,
+    pub rows: i64,
+    pub vt: String,
+    pub archived_at: String,
 }
 
 pub struct NewTaskTerminalSession<'a> {
@@ -58,7 +74,9 @@ pub struct NewTaskTerminalSession<'a> {
 
 const SELECT_COLUMNS: &str = "id, pipeline_item_id, repo_id, daemon_session_id, role, stage, \
                               attempt, state, stage_run_id, title, cwd, exit_code, created_at, \
-                              retired_at";
+                              retired_at, \
+                              EXISTS(SELECT 1 FROM terminal_session_archive a \
+                                     WHERE a.session_id = terminal_session.daemon_session_id)";
 
 fn row_to_session(row: &rusqlite::Row<'_>) -> Result<TaskTerminalSession, rusqlite::Error> {
     Ok(TaskTerminalSession {
@@ -76,6 +94,7 @@ fn row_to_session(row: &rusqlite::Row<'_>) -> Result<TaskTerminalSession, rusqli
         exit_code: row.get(11)?,
         created_at: row.get(12)?,
         retired_at: row.get(13)?,
+        archived: row.get::<_, i64>(14)? != 0,
     })
 }
 
@@ -187,6 +206,55 @@ impl Db {
             params![daemon_session_id, exit_code],
         )?;
         Ok(())
+    }
+
+    /// Keep a retired terminal's final frame where it outlives the daemon.
+    ///
+    /// The daemon archives the frame before it drops the live session, but its
+    /// snapshot directory is machine state a reinstall or a cleanup may
+    /// remove. The copy a person reads days later — after a failed stage
+    /// advance said "see the startup terminal for this stage" — belongs with
+    /// the rest of the task's durable record.
+    pub fn record_terminal_session_archive(
+        &self,
+        daemon_session_id: &str,
+        cols: i64,
+        rows: i64,
+        vt: &str,
+    ) -> Result<(), rusqlite::Error> {
+        self.conn.execute(
+            "INSERT INTO terminal_session_archive (session_id, cols, rows, vt)
+             VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(session_id) DO UPDATE SET
+               cols = excluded.cols,
+               rows = excluded.rows,
+               vt = excluded.vt,
+               archived_at = datetime('now')",
+            params![daemon_session_id, cols, rows, vt],
+        )?;
+        Ok(())
+    }
+
+    pub fn read_terminal_session_archive(
+        &self,
+        daemon_session_id: &str,
+    ) -> Result<Option<TerminalSessionArchive>, rusqlite::Error> {
+        self.conn
+            .query_row(
+                "SELECT cols, rows, vt, archived_at FROM terminal_session_archive
+                 WHERE session_id = ?1",
+                [daemon_session_id],
+                |row| {
+                    Ok(TerminalSessionArchive {
+                        session_id: daemon_session_id.to_string(),
+                        cols: row.get(0)?,
+                        rows: row.get(1)?,
+                        vt: row.get(2)?,
+                        archived_at: row.get(3)?,
+                    })
+                },
+            )
+            .optional()
     }
 
     /// Whether this daemon session is a task's current agent terminal — the

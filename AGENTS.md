@@ -388,8 +388,18 @@ bundled `kanna-cli setup-receipt`, whose private launch-scoped file the server
 merges into the agent's spawn environment before resolving the provider
 executable. Setup that fails, times out, or leaves no receipt starts no agent.
 `GET /v1/tasks/{id}/terminals` (`kanna_list_task_terminals`) says which
-terminals a task has; `kanna_open_terminal` opens one as a tab, as a view and
-never a spawn. Headless (SDK) launches have no terminal to watch and keep their
+terminals a task has, and whether each one's final frame was archived;
+`kanna_open_terminal` opens one as a tab, as a view and never a spawn. A retired
+terminal has no PTY to attach to, so its tab renders that **archive** — the
+bounded final frame the daemon captures before it drops a session, kept with the
+task's durable record and served by
+`GET /v1/tasks/{id}/terminals/{session_id}/archive` — read-only, and a terminal
+that kept none says so instead of looping on an attach that cannot succeed. A
+background launch is itself durable: a `task_launch` lifecycle intent is written
+before the startup terminal starts, so a server restart in that window finishes
+the launch exactly once (setup exited cleanly and left a receipt) or records a
+failed stage run naming the startup terminal, and never re-runs setup that
+succeeded. Headless (SDK) launches have no terminal to watch and keep their
 previous setup path. See `docs/kanna-server-boundary.md`.
 
 **A loopback address is not authority.** `kanna-server` listens on a port any

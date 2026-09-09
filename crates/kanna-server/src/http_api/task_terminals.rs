@@ -14,7 +14,7 @@
 
 use super::lan_trust::PrivilegedTaskAccess;
 use super::state::AppState;
-use crate::db::{Db, TaskTerminalSession};
+use crate::db::{Db, TaskTerminalSession, TerminalSessionArchive};
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::Json;
@@ -71,6 +71,68 @@ pub(super) async fn list_task_terminals(
             agent_session_id,
             terminals,
         }))
+    })
+    .await
+}
+
+/// The final frame of a terminal that has finished.
+///
+/// A retired terminal is not attachable — its PTY is gone — so a client that
+/// opens its tab reads this instead of looping on an attach that can never
+/// succeed. It is the headless terminal's own rendering of the last screen,
+/// captured before the daemon dropped the session.
+pub(super) async fn read_task_terminal_archive(
+    _access: PrivilegedTaskAccess,
+    State(state): State<Arc<AppState>>,
+    Path((task_id, session_id)): Path<(String, String)>,
+) -> Result<Json<TerminalSessionArchive>, (StatusCode, String)> {
+    super::blocking::run_handler_blocking("task terminal archive", move || {
+        let db = Db::open(&state.config().db_path).map_err(|error| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("db error: {error}"),
+            )
+        })?;
+        let resolved = db
+            .resolve_pipeline_item_id(&task_id)
+            .map_err(|error| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("db error: {error}"),
+                )
+            })?
+            .ok_or_else(|| (StatusCode::NOT_FOUND, format!("task not found: {task_id}")))?;
+        // The archive is addressed through the task that owns the terminal, so
+        // a caller cannot read one terminal's frame by naming another task.
+        let terminals = db.list_task_terminal_sessions(&resolved).map_err(|error| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("db error: {error}"),
+            )
+        })?;
+        if !terminals
+            .iter()
+            .any(|terminal| terminal.daemon_session_id.as_deref() == Some(session_id.as_str()))
+        {
+            return Err((
+                StatusCode::NOT_FOUND,
+                format!("terminal not found for task {resolved}: {session_id}"),
+            ));
+        }
+        db.read_terminal_session_archive(&session_id)
+            .map_err(|error| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("db error: {error}"),
+                )
+            })?
+            .map(Json)
+            .ok_or_else(|| {
+                (
+                    StatusCode::NOT_FOUND,
+                    format!("no archived frame for terminal {session_id}"),
+                )
+            })
     })
     .await
 }

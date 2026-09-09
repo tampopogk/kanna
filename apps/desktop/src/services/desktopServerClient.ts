@@ -305,6 +305,21 @@ export interface DesktopTaskTerminal {
   exitCode: number | null;
   createdAt: string;
   retiredAt: string | null;
+  /**
+   * Whether this terminal's final frame was kept when it finished.
+   *
+   * A retired terminal with an archive is readable; one without it is not,
+   * and must not be offered as though it were.
+   */
+  archived: boolean;
+}
+
+export interface DesktopTerminalArchive {
+  sessionId: string;
+  cols: number;
+  rows: number;
+  vt: string;
+  archivedAt: string;
 }
 
 export interface DesktopTaskTerminals {
@@ -316,6 +331,15 @@ export interface DesktopTaskTerminals {
 export async function fetchDesktopTaskTerminals(taskId: string): Promise<DesktopTaskTerminals> {
   return await requestJson<DesktopTaskTerminals>(
     `/v1/tasks/${encodeURIComponent(taskId)}/terminals`,
+  );
+}
+
+export async function fetchDesktopTerminalArchive(
+  taskId: string,
+  sessionId: string,
+): Promise<DesktopTerminalArchive> {
+  return await requestJson<DesktopTerminalArchive>(
+    `/v1/tasks/${encodeURIComponent(taskId)}/terminals/${encodeURIComponent(sessionId)}/archive`,
   );
 }
 

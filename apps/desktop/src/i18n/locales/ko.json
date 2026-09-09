@@ -447,6 +447,8 @@
   },
   "taskTerminal": {
     "finished": "{title}이(가) 완료되었습니다.",
-    "finishedWithStatus": "{title}이(가) 상태 {status}(으)로 종료되었습니다."
+    "finishedWithStatus": "{title}이(가) 상태 {status}(으)로 종료되었습니다.",
+    "noArchive": "{title}이(가) 완료되었습니다. 출력은 보관되지 않았습니다.",
+    "archiveFailed": "{title}의 출력을 읽을 수 없습니다."
   }
 }

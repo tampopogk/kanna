@@ -178,7 +178,7 @@ impl Db {
             CREATE TABLE lifecycle_operation_intent (
                 id TEXT PRIMARY KEY,
                 task_id TEXT NOT NULL REFERENCES pipeline_item(id) ON DELETE CASCADE,
-                kind TEXT NOT NULL CHECK (kind IN ('post', 'stage_spawn')),
+                kind TEXT NOT NULL CHECK (kind IN ('post', 'stage_spawn', 'task_launch')),
                 phase TEXT NOT NULL CHECK (phase IN ('prepared', 'spawn_ready', 'submitted', 'committed')),
                 payload_json TEXT NOT NULL,
                 created_at TEXT NOT NULL DEFAULT (datetime('now'))
@@ -238,6 +238,14 @@ impl Db {
                 exit_code INTEGER,
                 retired_at TEXT,
                 created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+
+            CREATE TABLE terminal_session_archive (
+                session_id TEXT PRIMARY KEY,
+                cols INTEGER NOT NULL,
+                rows INTEGER NOT NULL,
+                vt TEXT NOT NULL,
+                archived_at TEXT NOT NULL DEFAULT (datetime('now'))
             );
 
             CREATE TABLE task_blocker (
