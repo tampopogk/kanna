@@ -598,8 +598,17 @@ fn hostile_seed_snapshot_ids_cannot_overwrite_planted_files() {
     }
 }
 
+/// A session that has exited keeps exactly one readable thing: the archive.
+///
+/// This used to assert that a `Snapshot` for an exited id is refused, which was
+/// true while the live recovery snapshot was the only copy — it is deleted with
+/// the session. SPEC invariant 12 replaced that: the daemon archives the final
+/// frame on the way out precisely so a retired startup terminal can still be
+/// read, and the snapshot path falls back to it. What still has to hold is that
+/// the *live* snapshot is gone, which is what separates the archive from a
+/// session the daemon is somehow still serving.
 #[test]
-fn daemon_does_not_serve_snapshot_after_session_exit() {
+fn daemon_serves_an_exited_session_from_its_archive_only() {
     let daemon = DaemonHandle::start();
     let session_id = "exiting-session";
     let mut conn = daemon.connect();
@@ -635,16 +644,39 @@ fn daemon_does_not_serve_snapshot_after_session_exit() {
     let exit_code = conn.recv_until_exit(session_id);
     assert_eq!(exit_code, 0);
 
+    let archive = daemon
+        ._dir
+        .join("terminal-recovery")
+        .join("archive")
+        .join(format!("{session_id}.json"));
+    let deadline = std::time::Instant::now() + Duration::from_secs(15);
+    while !archive.exists() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "no archived final frame was written at {archive:?}"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    // The live snapshot dies with the session; only the archive is left.
+    assert!(
+        !daemon
+            ._dir
+            .join("terminal-recovery")
+            .join(format!("{session_id}.json"))
+            .exists(),
+        "the live recovery snapshot must not outlive the session"
+    );
+
     conn.send(&Cmd::Snapshot {
         session_id: session_id.to_string(),
     });
     match conn.recv() {
-        Evt::Error { message, .. } => assert!(
-            message.contains("session not found"),
-            "unexpected snapshot error: {}",
-            message
+        Evt::Snapshot { snapshot, .. } => assert!(
+            snapshot.vt.contains("done"),
+            "the archive must carry the session's final frame: {:?}",
+            snapshot.vt
         ),
-        other => panic!("expected snapshot error, got {:?}", other),
+        other => panic!("expected the archived snapshot, got {:?}", other),
     }
 }
 
