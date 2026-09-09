@@ -1,10 +1,11 @@
-import { watch, type ComputedRef } from "vue";
+import { onScopeDispose, watch, type ComputedRef } from "vue";
 
 import {
   fetchDesktopTaskTerminals,
   type DesktopTaskTerminal,
 } from "../services/desktopServerClient";
 import { mainTabScopeKeyForTask, type MainTabsController } from "./useMainTabs";
+import { listen } from "../listen";
 
 /**
  * Which of a task's terminals get a tab of their own.
@@ -48,6 +49,20 @@ interface UseTaskTerminalTabsOptions {
    */
   revision: ComputedRef<unknown>;
   fetchTerminals?: typeof fetchDesktopTaskTerminals;
+}
+
+/**
+ * Whether a daemon session id names one of a task's own-tab terminals.
+ *
+ * A startup terminal is `setup-{task}-{attempt}` and a teardown is
+ * `td-{branch}`; the agent's session is the task id itself. This is the edge
+ * that says "the server has just recorded a terminal", which the task row does
+ * not: a stage advance writes nothing to `pipeline_item` until its transition
+ * lands, so for the whole of that stage's setup the snapshot revision the tabs
+ * otherwise reconcile on never moves.
+ */
+function isOwnTabTerminalSessionId(sessionId: string): boolean {
+  return sessionId.startsWith("setup-") || sessionId.startsWith("td-");
 }
 
 /**
@@ -110,6 +125,24 @@ export function useTaskTerminalTabs({
   }
 
   watch([taskId, revision], () => void reconcile(), { immediate: true });
+
+  // The other edge: a terminal the server has just started. Reconciling here
+  // is what makes a stage advance's startup tab appear while its setup is
+  // still running, instead of only when the reader happens to reselect the
+  // task. It is an event, not a timer — a session that is never created
+  // costs nothing.
+  const listening = listen("session_created", (event: unknown) => {
+    const sessionId = (event as { payload?: { session_id?: string } } | undefined)
+      ?.payload?.session_id;
+    if (!sessionId || !isOwnTabTerminalSessionId(sessionId)) return;
+    void reconcile();
+  }).catch((error: unknown) => {
+    console.warn("[task-terminals] could not watch for new terminals:", error);
+    return null;
+  });
+  onScopeDispose(() => {
+    void listening.then((unlisten) => unlisten?.());
+  });
 
   return { reconcile };
 }

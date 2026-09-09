@@ -534,6 +534,159 @@ describe("main content area tabs", () => {
     await sleep(1_200);
   });
 
+  /**
+   * A stage advance records its startup terminal before that setup runs, and
+   * writes nothing to the task row until the transition lands — so the tab
+   * cannot wait on the snapshot revision the reader's task otherwise changes
+   * on. The edge it waits on instead is the terminal's own session being
+   * created, which is what this drives: the record, then the daemon session,
+   * with the reader sitting on the task the whole time.
+   *
+   * The advance itself is a server concern and is covered there; what has to
+   * be proven here is that the desktop reacts to a terminal appearing without
+   * the reader reselecting and without a poll.
+   */
+  it("shows a stage's startup terminal while its setup is still running", async () => {
+    await selectTask(taskId);
+    await closeViewTabs(client);
+    await waitForActiveTab(client, "agent");
+
+    const stageSetupSessionId = `setup-${taskId}-2`;
+    const repoId = await getVueState(client, "selectedRepoId") as string;
+    const recorded = await client.executeAsync<string>(
+      `const cb = arguments[arguments.length - 1];
+       const ctx = window.__KANNA_E2E__.setupState;
+       const db = ctx.db.value || ctx.db;
+       db.execute("INSERT INTO terminal_session (id, repo_id, pipeline_item_id, label, cwd, daemon_session_id, role, stage, attempt, state, title) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+         ["${stageSetupSessionId}", "${repoId}", "${taskId}", "setup", "${testRepoPath}", "${stageSetupSessionId}", "setup", "review", 2, "live", "Startup · review"])
+         .then(function() { cb("ok"); })
+         .catch(function(e) { cb("err:" + (e && e.message ? e.message : String(e))); });`
+    );
+    if (typeof recorded === "string" && recorded.startsWith("err:")) {
+      throw new Error(`recording the stage startup terminal failed: ${recorded.slice(4)}`);
+    }
+
+    // The daemon session the launch starts next. Nothing selects, reselects,
+    // or touches the task row from here on.
+    const spawned = await tauriInvoke(client, "spawn_session", {
+      sessionId: stageSetupSessionId,
+      cwd: testRepoPath,
+      executable: "/bin/zsh",
+      args: ["-c", "printf 'STAGE_SETUP_RUNNING\\n'; while true; do sleep 60; done"],
+      env: {},
+      cols: 80,
+      rows: 24,
+    });
+    if (spawned && typeof spawned === "object" && "__error" in spawned) {
+      throw new Error(`spawning the stage startup terminal failed: ${String((spawned as { __error: unknown }).__error)}`);
+    }
+
+    const deadline = Date.now() + 15_000;
+    let tabs: string[] = [];
+    while (Date.now() < deadline) {
+      tabs = await openTabIds(client);
+      if (tabs.includes(`terminal:${stageSetupSessionId}`)) break;
+      await sleep(200);
+    }
+    expect(tabs).toContain(`terminal:${stageSetupSessionId}`);
+    // It appeared while the setup is still running, so it is the live view
+    // rather than a finished one's archive.
+    expect(await activeTabId(client)).toBe("agent");
+    const listedLive = await client.executeSync<boolean>(
+      `const tab = document.querySelector('[data-testid="main-tab-terminal:${stageSetupSessionId}"]');
+       return Boolean(tab);`
+    );
+    expect(listedLive).toBe(true);
+
+    await tauriInvoke(client, "kill_session", { sessionId: stageSetupSessionId }).catch(() => null);
+    await client.executeAsync<string>(
+      `const cb = arguments[arguments.length - 1];
+       const ctx = window.__KANNA_E2E__.setupState;
+       const db = ctx.db.value || ctx.db;
+       db.execute("DELETE FROM terminal_session WHERE id = ?", ["${stageSetupSessionId}"])
+         .then(function() { cb("ok"); })
+         .catch(function(e) { cb("err:" + (e && e.message ? e.message : String(e))); });`
+    );
+    await closeViewTabs(client);
+    await sleep(1_200);
+  });
+
+  /**
+   * `kanna_open_terminal` on a terminal that has already finished has to show
+   * what it printed. The command carries what the server knows about that
+   * terminal — including whether its final frame was kept — because a tab that
+   * assumed the worst told the reader the output was gone while the archive
+   * sat beside it.
+   */
+  it("renders the archived frame of a retired terminal opened through the tab surface", async () => {
+    await selectTask(taskId);
+    await closeViewTabs(client);
+    await waitForActiveTab(client, "agent");
+
+    const server = await resolveAppKannaServer(client);
+    const retiredSessionId = `setup-${taskId}-3`;
+    const repoId = await getVueState(client, "selectedRepoId") as string;
+    const archived = await client.executeAsync<string>(
+      `const cb = arguments[arguments.length - 1];
+       const ctx = window.__KANNA_E2E__.setupState;
+       const db = ctx.db.value || ctx.db;
+       db.execute("INSERT INTO terminal_session (id, repo_id, pipeline_item_id, label, cwd, daemon_session_id, role, stage, attempt, state, title, exit_code, retired_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))",
+         ["${retiredSessionId}", "${repoId}", "${taskId}", "setup", "${testRepoPath}", "${retiredSessionId}", "setup", "in progress", 3, "retired", "Startup · in progress", 0])
+         .then(function() {
+           return db.execute("INSERT INTO terminal_session_archive (session_id, cols, rows, vt) VALUES (?, ?, ?, ?)",
+             ["${retiredSessionId}", 80, 24, "ARCHIVED_FRAME_SENTINEL\\r\\n"]);
+         })
+         .then(function() { cb("ok"); })
+         .catch(function(e) { cb("err:" + (e && e.message ? e.message : String(e))); });`
+    );
+    if (typeof archived === "string" && archived.startsWith("err:")) {
+      throw new Error(`recording the retired terminal failed: ${archived.slice(4)}`);
+    }
+
+    const opened = await localProcessFetch(`${server.baseUrl}/v1/desktop/views/open-terminal`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ taskId, sessionId: retiredSessionId }),
+    });
+    expect(opened.ok).toBe(true);
+
+    await waitForActiveTab(client, `terminal:${retiredSessionId}`);
+
+    const deadline = Date.now() + 15_000;
+    let lines: string[] = [];
+    while (Date.now() < deadline) {
+      lines = await client.executeSync<string[]>(
+        `const buffers = window.__KANNA_E2E__.terminalBuffers;
+         if (!buffers || !buffers.sessionIds().includes("${retiredSessionId}")) return [];
+         return buffers.lines("${retiredSessionId}");`
+      );
+      if (lines.some((line) => line.includes("ARCHIVED_FRAME_SENTINEL"))) break;
+      await sleep(200);
+    }
+    expect(lines.some((line) => line.includes("ARCHIVED_FRAME_SENTINEL"))).toBe(true);
+
+    // And it never claims the output was not kept.
+    const banner = await client.executeSync<string>(
+      `const status = document.querySelector('[data-testid="task-terminal-finished"]');
+       return status ? status.textContent.trim() : "";`
+    );
+    expect(banner).not.toContain("was not kept");
+
+    await client.executeAsync<string>(
+      `const cb = arguments[arguments.length - 1];
+       const ctx = window.__KANNA_E2E__.setupState;
+       const db = ctx.db.value || ctx.db;
+       db.execute("DELETE FROM terminal_session_archive WHERE session_id = ?", ["${retiredSessionId}"])
+         .then(function() {
+           return db.execute("DELETE FROM terminal_session WHERE id = ?", ["${retiredSessionId}"]);
+         })
+         .then(function() { cb("ok"); })
+         .catch(function(e) { cb("err:" + (e && e.message ? e.message : String(e))); });`
+    );
+    await closeViewTabs(client);
+    await sleep(1_200);
+  });
+
   it("brings a task's tabs back after the app restarts, and forgets a closed task's", async () => {
     await selectTask(taskId);
     await closeViewTabs(client);
