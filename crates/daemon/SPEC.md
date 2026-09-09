@@ -23,7 +23,19 @@ kanna-daemon manages persistent PTY sessions for Claude CLI agents. It runs as a
    and may pan/scroll it; their viewport is not a PTY resize.
 9. **Always broadcast.** Before exiting during handoff, the old daemon broadcasts `ShuttingDown` to all subscribers.
 10. **Always reconnect.** Apps detect daemon restart (via `ShuttingDown` or EOF) and automatically reconnect + re-attach all tracked sessions.
-11. **Authorize the successor before handoff state.** For every supported handoff version, the sender authenticates the peer as a daemon directly spawned by the trusted app-launcher executable before it acquires daemon-lifecycle ownership, seals a registry, snapshots a session, writes `HandoffReady`, or transfers a descriptor.
+11. **A session without an agent provider is a plain terminal.** `Spawn` takes
+    `agent_provider` as an option, and `None` is the whole of the contract: the
+    session's `Classifier` resolves no rules, so no waiting-prompt snippet, no
+    composer text, and no provider-shaped status is ever derived from its
+    output. This is what a task's *startup* shell (where the repository's setup
+    commands run before the agent starts) and its *teardown* shell are spawned
+    as. It is a rule about derived surfaces only — the raw PTY transcript,
+    attachment, resize, and recovery all behave exactly as they do for a
+    provider session. A caller that spawns a plain shell with a provider set
+    would have setup output read through that provider's detection rules, which
+    is how a setup script printing something shaped like CLI chrome becomes an
+    agent that appears to be waiting for an answer.
+12. **Authorize the successor before handoff state.** For every supported handoff version, the sender authenticates the peer as a daemon directly spawned by the trusted app-launcher executable before it acquires daemon-lifecycle ownership, seals a registry, snapshots a session, writes `HandoffReady`, or transfers a descriptor.
 
 ## Startup Sequence
 

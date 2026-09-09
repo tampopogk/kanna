@@ -1,3 +1,4 @@
+use crate::db::Db;
 use crate::{daemon_client, http_api, session_replacements};
 use std::sync::Arc;
 use tokio::sync::mpsc;
@@ -419,6 +420,38 @@ pub(crate) async fn terminal_state_watcher_loop(
     }
 }
 
+/// Whether this daemon session is a task's agent terminal.
+///
+/// An id with no recorded terminal at all answers yes: that is a session from
+/// before a task owned more than one, or one the daemon knows and the database
+/// does not, and both behave exactly as they always did. Only a row that
+/// positively says `setup` or `teardown` is excluded, so a lookup failure can
+/// never silently stop an agent's completion from being observed.
+fn is_agent_terminal_session(state: &http_api::AppState, session_id: &str) -> bool {
+    let Ok(db) = Db::open(&state.config().db_path) else {
+        return true;
+    };
+    match db.is_agent_terminal_session(session_id) {
+        Ok(is_agent) => is_agent,
+        Err(error) => {
+            log::warn!("failed to read the terminal role for {session_id}: {error}");
+            true
+        }
+    }
+}
+
+/// Mark a non-agent terminal finished. The row stays: its scrollback is the
+/// durable record of what that launch's startup or teardown did, and a stage
+/// that has moved on is exactly when someone wants to read it.
+fn retire_finished_terminal_session(state: &http_api::AppState, session_id: &str, code: i32) {
+    let Ok(db) = Db::open(&state.config().db_path) else {
+        return;
+    };
+    if let Err(error) = db.retire_task_terminal_session(session_id, Some(code as i64)) {
+        log::warn!("failed to retire the finished terminal {session_id}: {error}");
+    }
+}
+
 pub(crate) async fn terminal_state_watcher_once(
     state: &http_api::AppState,
     replacements: &session_replacements::SessionReplacements,
@@ -758,6 +791,16 @@ pub(crate) async fn terminal_state_watcher_once(
                             "failed to mark queued input uncertain after exit for {session_id}: {error}"
                         ),
                     }
+                }
+                // A task now owns more than one terminal, and only one of
+                // them is its agent. A startup or teardown shell ending is
+                // that shell finishing its own job; running the agent-facing
+                // completion path over it would resolve the wrong session and
+                // could finish a run whose agent is still working.
+                if !is_agent_terminal_session(state, &session_id) {
+                    retire_finished_terminal_session(state, &session_id, code);
+                    replacements.consume(&session_id);
+                    continue;
                 }
                 // Consume the replacement entry even when the event is
                 // self-describing — a leftover entry would swallow a future

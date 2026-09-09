@@ -267,6 +267,14 @@ pub(crate) async fn spawn_prepared_task_for_api_recording_stage_run_detailed(
     daemon: &mut DaemonClient,
     mut prepared: PreparedTaskSpawn,
 ) -> Result<crate::mobile_api::CreateTaskResponse, PreparedTaskDeliveryError> {
+    // Setup runs first, in its own terminal, and the agent session is built
+    // from what that shell leaves behind. Nothing about the run is recorded
+    // until it succeeds: a launch whose startup failed never had an agent.
+    if let Some(plan) = prepared.setup_terminal.take() {
+        run_new_task_setup_terminal(db_path, daemon.daemon_dir(), &mut prepared, plan, None)
+            .await
+            .map_err(PreparedTaskDeliveryError::BeforeAcknowledgement)?;
+    }
     let run_id = generate_stage_run_id(&prepared.created_task.task_id);
     let mut completion_context = initialize_completion_context(
         &mut prepared.env,
@@ -330,6 +338,252 @@ pub(crate) async fn spawn_prepared_task_for_api_recording_stage_run_detailed(
         worktree_path: Some(created.worktree_path),
     };
     Ok(created)
+}
+
+/// Run a launch's startup terminal, then build the agent session it precedes.
+///
+/// The provider is *not* re-resolved here. It was bound and stamped on the
+/// task when the launch was prepared, and setup installing a different
+/// candidate does not get to change which agent this task is; what setup is
+/// allowed to change is where that provider's executable is found, which is
+/// exactly what rebuilding against the receipt's PATH picks up. (A stage
+/// transition is the one launch that *does* re-resolve, because its provider
+/// is not stamped until it starts — see `finish_deferred_stage_setup`.)
+/// Record a startup terminal the daemon has acknowledged.
+///
+/// Written after the acknowledgement, not before it: a launch whose terminal
+/// never started never had one, and a row for it would be a terminal nobody
+/// can open. The window this leaves is a single round trip, and the desktop
+/// reconstructs its tabs from these records rather than from a live event.
+pub(crate) fn record_started_setup_terminal(
+    db_path: &str,
+    task_id: &str,
+    plan: &super::setup_session::SetupTerminalPlan,
+) -> Result<(), String> {
+    let db = Db::open(db_path).map_err(|error| format!("db error: {error}"))?;
+    let repo_id = db
+        .get_pipeline_item(task_id)
+        .map_err(|error| format!("db error: {error}"))?
+        .map(|item| item.repo_id)
+        .ok_or_else(|| format!("task not found: {task_id}"))?;
+    super::setup_session::record_setup_terminal(&db, &repo_id, task_id, None, plan)
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_launch_setup_terminal(
+    db_path: &str,
+    daemon_dir: &str,
+    task_id: &str,
+    cwd: &str,
+    env: &mut std::collections::HashMap<String, String>,
+    plan: super::setup_session::SetupTerminalPlan,
+    launch: Option<super::types::DeferredNewTaskLaunch>,
+    started: Option<super::setup_session::StartedSetupTerminal>,
+) -> Result<(PreparedSessionSpawn, Option<String>), String> {
+    // The terminal is recorded once the daemon has acknowledged it, whichever
+    // caller started it: a launch whose terminal never started never had one,
+    // and a row for it would be a terminal nobody can open.
+    let outcome = match started {
+        Some(started) => {
+            super::setup_session::wait_setup_terminal(started, daemon_dir, &plan, None).await
+        }
+        None => match super::setup_session::start_setup_terminal(daemon_dir, &plan).await {
+            Ok(started) => {
+                record_started_setup_terminal(db_path, task_id, &plan)?;
+                super::setup_session::wait_setup_terminal(started, daemon_dir, &plan, None).await
+            }
+            Err(error) => Err(error),
+        },
+    };
+    let retire = |exit_code: Option<i64>| {
+        if let Ok(db) = Db::open(db_path) {
+            if let Err(error) = db.retire_task_terminal_session(&plan.session_id, exit_code) {
+                log::warn!(
+                    "failed to retire the startup terminal {}: {error}",
+                    plan.session_id
+                );
+            }
+        }
+    };
+    let receipt = match outcome {
+        Ok(super::setup_session::SetupTerminalOutcome::Ready(receipt)) => {
+            retire(Some(0));
+            receipt
+        }
+        Ok(super::setup_session::SetupTerminalOutcome::Failed { exit_code, reason }) => {
+            retire(Some(exit_code as i64));
+            return Err(reason);
+        }
+        Err(error) => {
+            retire(None);
+            return Err(error);
+        }
+    };
+    if !receipt.cwd.is_empty() && receipt.cwd != cwd {
+        // Not carried: the agent starts in the task's workspace root, which is
+        // the directory every other surface — the recorded run, the worktree,
+        // the diff — already names.
+        log::info!(
+            "startup for {task_id} finished in {} rather than the workspace root; the agent still \
+             starts in {cwd}",
+            receipt.cwd
+        );
+    }
+    super::setup_session::apply_setup_receipt(env, &receipt);
+    let Some(launch) = launch else {
+        return Err("a startup terminal ran without a pending agent launch".to_string());
+    };
+    let (mut session, provider_session_id) = super::build_prepared_session(
+        launch.provider,
+        launch.agent_type,
+        task_id,
+        &launch.stage_name,
+        &launch.workflow_name,
+        Some(launch.stage_transition.as_str()),
+        "unspecified",
+        launch.final_prompt,
+        launch.model,
+        launch.effort,
+        launch.permission_mode,
+        launch.allowed_tools,
+        launch.disallowed_tools,
+        launch.max_turns,
+        launch.max_budget_usd,
+        launch.mcp_config_path,
+        env,
+        cwd,
+        // Setup has run: the executable can be resolved now, against the PATH
+        // that setup left behind.
+        &[],
+        false,
+        launch.resume_session_id.as_deref(),
+        launch.transfer_import.as_ref(),
+        launch.local_config_override.as_ref(),
+    )?;
+    if let Some((cols, rows)) = launch.geometry {
+        if let PreparedSessionSpawn::Pty {
+            cols: session_cols,
+            rows: session_rows,
+            ..
+        } = &mut session
+        {
+            *session_cols = cols;
+            *session_rows = rows;
+        }
+    }
+    Ok((session, provider_session_id))
+}
+
+async fn run_new_task_setup_terminal(
+    db_path: &str,
+    daemon_dir: &str,
+    prepared: &mut PreparedTaskSpawn,
+    plan: super::setup_session::SetupTerminalPlan,
+    started: Option<super::setup_session::StartedSetupTerminal>,
+) -> Result<(), String> {
+    let task_id = prepared.created_task.task_id.clone();
+    let cwd = prepared.cwd.clone();
+    let launch = prepared.deferred_launch.take();
+    let (session, provider_session_id) = run_launch_setup_terminal(
+        db_path,
+        daemon_dir,
+        &task_id,
+        &cwd,
+        &mut prepared.env,
+        plan,
+        launch,
+        started,
+    )
+    .await?;
+    prepared.session = session;
+    prepared.provider_session_id = provider_session_id;
+    Ok(())
+}
+
+async fn run_rerun_setup_terminal(
+    db_path: &str,
+    daemon_dir: &str,
+    prepared: &mut PreparedStageRerun,
+    plan: super::setup_session::SetupTerminalPlan,
+) -> Result<(), String> {
+    let task_id = prepared.task_id.clone();
+    let cwd = prepared.cwd.clone();
+    let launch = prepared.deferred_launch.take();
+    let (session, provider_session_id) = run_launch_setup_terminal(
+        db_path,
+        daemon_dir,
+        &task_id,
+        &cwd,
+        &mut prepared.env,
+        plan,
+        launch,
+        None,
+    )
+    .await?;
+    prepared.session = session;
+    prepared.provider_session_id = provider_session_id;
+    Ok(())
+}
+
+/// Start a new task's launch and let it finish in the background.
+///
+/// The startup terminal is brought up *now*, so a daemon that cannot run it is
+/// a failure this caller sees and can retry; everything after that — the setup
+/// itself, which is repo work of unbounded length, and the agent spawn it
+/// precedes — happens on a detached task. A request held open for an install
+/// or a container build would time out while the terminal it is waiting for is
+/// still printing, and the task would be invisible until it did.
+pub(crate) async fn begin_prepared_task_launch(
+    db_path: &str,
+    daemon_dir: &str,
+    mut prepared: PreparedTaskSpawn,
+    on_settled: impl FnOnce() + Send + 'static,
+) -> Result<crate::mobile_api::CreateTaskResponse, String> {
+    let Some(plan) = prepared.setup_terminal.take() else {
+        return Err("this launch has no startup terminal to begin".to_string());
+    };
+    let task_id = prepared.created_task.task_id.clone();
+    let started = super::setup_session::start_setup_terminal(daemon_dir, &plan).await?;
+    record_started_setup_terminal(db_path, &task_id, &plan)?;
+    let response = prepared.create_response();
+    let db_path = db_path.to_string();
+    let daemon_dir = daemon_dir.to_string();
+    tokio::spawn(async move {
+        if let Err(error) =
+            finish_prepared_task_launch(&db_path, &daemon_dir, prepared, plan, started).await
+        {
+            // The failure is recorded against the task by the paths below, and
+            // the startup terminal holding the output that explains it is
+            // still there to read.
+            log::error!("task {task_id} failed to launch: {error}");
+        }
+        on_settled();
+    });
+    Ok(response)
+}
+
+async fn finish_prepared_task_launch(
+    db_path: &str,
+    daemon_dir: &str,
+    mut prepared: PreparedTaskSpawn,
+    plan: super::setup_session::SetupTerminalPlan,
+    started: super::setup_session::StartedSetupTerminal,
+) -> Result<(), String> {
+    let task_id = prepared.created_task.task_id.clone();
+    if let Err(error) =
+        run_new_task_setup_terminal(db_path, daemon_dir, &mut prepared, plan, Some(started)).await
+    {
+        let db = Db::open(db_path).map_err(|open_error| format!("db error: {open_error}"))?;
+        record_prepared_task_spawn_failure(&db, &prepared, &error)?;
+        return Err(error);
+    }
+    let mut daemon = DaemonClient::connect(daemon_dir)
+        .await
+        .map_err(|error| format!("daemon error: {error}"))?;
+    spawn_prepared_task_for_api_with_diagnostics(db_path, &mut daemon, prepared)
+        .await
+        .map(|_| ())
+        .map_err(|error| format!("task {task_id} failed to spawn: {error}"))
 }
 
 pub(crate) async fn spawn_prepared_task_for_api_with_diagnostics(
@@ -404,7 +658,9 @@ pub(crate) async fn spawn_prepared_stage_run_for_api(
         .as_ref()
         .map(|teardown| teardown.session_id.clone());
 
-    if let Err(error) = super::finish_deferred_stage_setup(&mut prepared) {
+    if let Err(error) =
+        super::finish_deferred_stage_setup(db_path, daemon.daemon_dir(), &mut prepared).await
+    {
         let error = rollback_prepared_stage_fork(&prepared, error);
         return Err(record_stage_transition_failure(db_path, &prepared, error));
     }
@@ -1817,7 +2073,9 @@ pub(crate) async fn rerun_prepared_stage_for_api(
             .map_err(|e| format!("db error: {}", e))?;
     }
     kill_session_replacing(daemon, replacements, &session_id).await?;
-    if let Err(error) = prepare_deferred_rerun_setup(&mut prepared) {
+    if let Err(error) =
+        prepare_deferred_rerun_setup(db_path, daemon.daemon_dir(), &mut prepared).await
+    {
         return Err(record_failure(error));
     }
     if let Some(snapshot) = prepared.recovery_snapshot.as_ref() {
@@ -1889,7 +2147,20 @@ pub(crate) async fn rerun_prepared_stage_for_api(
     }
 }
 
-fn prepare_deferred_rerun_setup(prepared: &mut PreparedStageRerun) -> Result<(), String> {
+/// Run a rerun's setup before its agent starts.
+///
+/// A PTY rerun gets a startup terminal of its own, like every other launch —
+/// a rerun is a new launch, so it does not reuse the terminal a previous one
+/// left behind. A headless rerun has no terminal to watch, so its setup stays
+/// where it was.
+async fn prepare_deferred_rerun_setup(
+    db_path: &str,
+    daemon_dir: &str,
+    prepared: &mut PreparedStageRerun,
+) -> Result<(), String> {
+    if let Some(plan) = prepared.setup_terminal.take() {
+        return run_rerun_setup_terminal(db_path, daemon_dir, prepared, plan).await;
+    }
     if prepared.deferred_setup.is_empty() {
         return Ok(());
     }
@@ -1997,7 +2268,7 @@ fn spawn_session_command(
             env,
             cols,
             rows,
-            agent_provider: Some(agent_provider),
+            agent_provider,
             agent_executable,
             terminal_prelude,
             operator_input_only,
@@ -4449,7 +4720,7 @@ mod teardown_deadline_tests {
                     args: vec![],
                     cols: 80,
                     rows: 24,
-                    agent_provider: kanna_daemon::protocol::AgentProvider::Claude,
+                    agent_provider: None,
                 },
             }),
         )

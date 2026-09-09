@@ -125,6 +125,14 @@ async fn spawn_fake_daemon_session_created_once(
     })
 }
 
+/// See [`crate::setup_terminal_fixture`]: a daemon that really runs the
+/// startup terminals a launch asks it to spawn.
+async fn spawn_fake_daemon_running_setup_terminals(
+    daemon_dir: String,
+) -> crate::setup_terminal_fixture::SetupTerminalDaemon {
+    crate::setup_terminal_fixture::spawn_setup_terminal_daemon(&daemon_dir).await
+}
+
 /// Fake daemon that accepts one connection, reads the first command, and
 /// never replies — the wedged-daemon shape from the 2026-07-24 outage. The
 /// connection stays open so the client observes a stall, not an EOF.
@@ -487,27 +495,11 @@ impl Drop for ScopedTestSidecar {
 }
 
 fn ensure_test_sidecar(name: &str) -> ScopedTestSidecar {
-    use std::os::unix::fs::PermissionsExt;
-
-    let sidecar_path = std::env::current_exe()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .join(name);
-    if sidecar_path.exists() {
-        return ScopedTestSidecar {
-            path: sidecar_path,
-            remove_on_drop: false,
-        };
-    }
-
-    std::fs::write(&sidecar_path, "#!/bin/sh\nexit 0\n").unwrap();
-    let mut permissions = std::fs::metadata(&sidecar_path).unwrap().permissions();
-    permissions.set_mode(0o755);
-    std::fs::set_permissions(&sidecar_path, permissions).unwrap();
     ScopedTestSidecar {
-        path: sidecar_path,
-        remove_on_drop: true,
+        // The stub outlives the test that staged it; see
+        // `setup_terminal_fixture::ensure_test_sidecar_stub` for why.
+        path: crate::setup_terminal_fixture::ensure_test_sidecar_stub(name),
+        remove_on_drop: false,
     }
 }
 

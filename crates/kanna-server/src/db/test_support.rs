@@ -228,7 +228,16 @@ impl Db {
                 pipeline_item_id TEXT,
                 label TEXT,
                 cwd TEXT,
-                daemon_session_id TEXT
+                daemon_session_id TEXT,
+                role TEXT NOT NULL DEFAULT 'agent',
+                stage TEXT,
+                attempt INTEGER NOT NULL DEFAULT 1,
+                state TEXT NOT NULL DEFAULT 'live',
+                stage_run_id TEXT,
+                title TEXT,
+                exit_code INTEGER,
+                retired_at TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
             );
 
             CREATE TABLE task_blocker (

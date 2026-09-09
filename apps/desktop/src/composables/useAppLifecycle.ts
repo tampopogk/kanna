@@ -66,6 +66,12 @@ interface UseAppLifecycleOptions {
    * named task's own tab set. It never changes what this window has selected.
    */
   openTaskFileView: (taskId: string, filePath: string, line?: number) => void;
+  openTaskTerminalView: (
+    taskId: string,
+    sessionId: string,
+    title?: string,
+    live?: boolean,
+  ) => void;
   preferences: AppPreferences;
   remoteTaskDiagnostics: Ref<unknown>;
   restoreMainTabs: () => Promise<void>;
@@ -92,17 +98,39 @@ interface DesktopViewOpenCommand {
   line?: number;
 }
 
-function parseDesktopViewOpenEvent(payload: unknown): DesktopViewOpenCommand {
-  const command = payload as Partial<DesktopViewOpenCommand> & { view?: string } | null;
-  if (
-    !command
-    || typeof command.taskId !== "string"
-    || typeof command.path !== "string"
-    || (command.view !== undefined && command.view !== "file")
-  ) {
+type DesktopViewOpenAny =
+  | ({ view: "file" } & DesktopViewOpenCommand)
+  | { view: "terminal"; taskId: string; sessionId: string; title?: string; live?: boolean };
+
+function parseDesktopViewOpenEvent(payload: unknown): DesktopViewOpenAny {
+  const command = payload as
+    | (Partial<DesktopViewOpenCommand> & {
+      view?: string;
+      sessionId?: unknown;
+      title?: unknown;
+      live?: unknown;
+    })
+    | null;
+  if (!command || typeof command.taskId !== "string") {
+    throw new Error("malformed desktop view open command");
+  }
+  if (command.view === "terminal") {
+    if (typeof command.sessionId !== "string") {
+      throw new Error("malformed desktop view open command");
+    }
+    return {
+      view: "terminal",
+      taskId: command.taskId,
+      sessionId: command.sessionId,
+      title: typeof command.title === "string" ? command.title : undefined,
+      live: typeof command.live === "boolean" ? command.live : undefined,
+    };
+  }
+  if (typeof command.path !== "string" || (command.view !== undefined && command.view !== "file")) {
     throw new Error("malformed desktop view open command");
   }
   return {
+    view: "file",
     taskId: command.taskId,
     path: command.path,
     line: typeof command.line === "number" ? command.line : undefined,
@@ -129,6 +157,7 @@ export function useAppLifecycle({
   openFilePreview,
   openImageUrlPreview,
   openTaskFileView,
+  openTaskTerminalView,
   preferences,
   remoteTaskDiagnostics,
   restoreMainTabs,
@@ -399,7 +428,11 @@ export function useAppLifecycle({
       const unlistenDesktopViewOpen = await listen("desktop-view-open", (event: unknown) => {
         try {
           const command = parseDesktopViewOpenEvent(eventPayload(event));
-          openTaskFileView(command.taskId, command.path, command.line);
+          if (command.view === "terminal") {
+            openTaskTerminalView(command.taskId, command.sessionId, command.title, command.live);
+          } else {
+            openTaskFileView(command.taskId, command.path, command.line);
+          }
         } catch (e: unknown) {
           console.error("[App] failed to handle desktop view open command:", e);
         }

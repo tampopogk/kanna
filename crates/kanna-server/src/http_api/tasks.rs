@@ -876,6 +876,26 @@ pub(super) async fn create_task_with_requested_id(
             resolved_blocker_ids,
         } => (prepared, resolved_blocker_ids),
     };
+    // A launch whose setup runs in a startup terminal finishes in the
+    // background. Its terminal is started here, so a daemon that cannot run it
+    // still fails this request; what is left to the background is setup itself
+    // — repo work of unbounded length — and the agent spawn that follows it.
+    if prepared.has_setup_terminal() {
+        let background_state = Arc::clone(&state);
+        let created = crate::task_creator::begin_prepared_task_launch(
+            &state.config.db_path,
+            &state.config.daemon_dir,
+            prepared,
+            move || background_state.publish_state_changed(StateChangeScope::Tasks),
+        )
+        .await
+        .map_err(|error| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, error))?;
+        state.publish_state_changed(StateChangeScope::Tasks);
+        if !resolved_blocker_ids.is_empty() {
+            state.publish_state_changed(StateChangeScope::Blockers);
+        }
+        return Ok(Json(created));
+    }
     let mut daemon = crate::daemon_client::DaemonClient::connect(&state.config.daemon_dir)
         .await
         .map_err(|e| {

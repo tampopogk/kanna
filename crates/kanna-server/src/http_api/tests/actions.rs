@@ -4549,10 +4549,8 @@ async fn rerun_stage_route_uses_stage_rerunner() {
 
 #[tokio::test]
 async fn advance_stage_route_records_stage_run_for_spawned_next_task() {
-    use kanna_daemon::protocol::{AgentProvider, Command as DaemonCommand, Event as DaemonEvent};
+    use kanna_daemon::protocol::{AgentProvider, Command as DaemonCommand};
     use std::time::{SystemTime, UNIX_EPOCH};
-    use tokio::io::{AsyncWriteExt, BufReader};
-    use tokio::net::UnixListener;
 
     let _sidecar_guard = crate::test_sidecar_guard().await;
 
@@ -4622,63 +4620,13 @@ async fn advance_stage_route_records_stage_run_for_spawned_next_task() {
     let daemon_dir = std::env::temp_dir().join(format!("kanna-http-advance-daemon-{unique}"));
     std::fs::create_dir_all(&daemon_dir).unwrap();
     let socket_path = daemon_socket_path_for_dir(&daemon_dir.to_string_lossy());
-    let _ = std::fs::remove_file(&socket_path);
-    let daemon_listener = UnixListener::bind(&socket_path).unwrap();
-    let daemon_server = tokio::spawn(async move {
-        let (stream, _) = daemon_listener.accept().await.unwrap();
-        let (read_half, mut write_half) = stream.into_split();
-        let mut reader = BufReader::new(read_half);
-        loop {
-            let command = read_test_daemon_command(&mut reader, &mut write_half).await;
-            if super::answer_terminal_carryover_probe(&command, &mut write_half).await {
-                continue;
-            }
-            let session_id = match command {
-                // Durable stage swap kills the previous session in place
-                // before respawning the same session id.
-                DaemonCommand::Kill { .. } => {
-                    let response = DaemonEvent::Error {
-                        code: Some(kanna_daemon::protocol::ErrorCode::SessionNotFound),
-                        message: "session not found".to_string(),
-                    };
-                    write_half
-                        .write_all(
-                            format!("{}\n", serde_json::to_string(&response).unwrap()).as_bytes(),
-                        )
-                        .await
-                        .unwrap();
-                    continue;
-                }
-                DaemonCommand::Spawn {
-                    session_id,
-                    cwd,
-                    agent_provider,
-                    ..
-                } => {
-                    assert_eq!(agent_provider, Some(AgentProvider::Claude));
-                    assert!(cwd.contains(".kanna-worktrees/task-"));
-                    session_id
-                }
-                DaemonCommand::SpawnAgent { session_id, params } => {
-                    assert_eq!(params.agent_provider, AgentProvider::Claude);
-                    assert!(params.cwd.contains(".kanna-worktrees/task-"));
-                    session_id
-                }
-                other => panic!("expected stage advance spawn command, got {:?}", other),
-            };
-            write_half
-                .write_all(
-                    format!(
-                        "{}\n",
-                        serde_json::to_string(&DaemonEvent::SessionCreated { session_id }).unwrap()
-                    )
-                    .as_bytes(),
-                )
-                .await
-                .unwrap();
-            break;
-        }
-    });
+    // The stage's setup runs in a startup terminal, so this fixture runs that
+    // shell for real and records the agent spawn that follows it. The gate the
+    // setup script waits on is what keeps the request under test detached from
+    // it.
+    let daemon_server =
+        crate::setup_terminal_fixture::spawn_setup_terminal_daemon(&daemon_dir.to_string_lossy())
+            .await;
 
     let (kanna_cli_path, created_sidecar) = ensure_test_kanna_cli_sidecar();
     let config = Config {
@@ -4804,8 +4752,42 @@ async fn advance_stage_route_records_stage_run_for_spawned_next_task() {
         .find(|event| event.event_type == "stage.changed")
         .expect("stage.changed event");
     assert_eq!(stage_changed.payload["trigger"], "operator");
+    // The agent this stage spawned is a separate session from the startup
+    // terminal that provisioned its workspace, and it runs in the forked
+    // worktree.
+    let spawns = daemon_server.spawns();
+    assert_eq!(spawns.len(), 1, "one agent spawn per stage: {spawns:?}");
+    match &spawns[0] {
+        DaemonCommand::Spawn {
+            cwd,
+            agent_provider,
+            session_id,
+            ..
+        } => {
+            assert_eq!(*agent_provider, Some(AgentProvider::Claude));
+            assert!(cwd.contains(".kanna-worktrees/task-"));
+            assert_eq!(session_id, "source-1");
+        }
+        DaemonCommand::SpawnAgent { params, session_id } => {
+            assert_eq!(params.agent_provider, AgentProvider::Claude);
+            assert!(params.cwd.contains(".kanna-worktrees/task-"));
+            assert_eq!(session_id, "source-1");
+        }
+        other => panic!("expected the stage's agent spawn, got {other:?}"),
+    }
+    let terminals = db.list_task_terminal_sessions("source-1").unwrap();
+    let startup = terminals
+        .iter()
+        .find(|terminal| terminal.role == "setup")
+        .expect("the stage records its own startup terminal");
+    assert_eq!(startup.stage.as_deref(), Some("review"));
+    assert_ne!(
+        startup.daemon_session_id.as_deref(),
+        Some("source-1"),
+        "a stage's startup terminal is a different session from its agent"
+    );
 
-    daemon_server.await.unwrap();
+    daemon_server.abort();
     if created_sidecar {
         let _ = std::fs::remove_file(&kanna_cli_path);
     }
@@ -4818,7 +4800,6 @@ async fn advance_stage_route_records_stage_run_for_spawned_next_task() {
 async fn advance_stage_route_notifies_after_detached_setup_failure_is_persisted() {
     use std::os::unix::fs::PermissionsExt;
     use std::time::{SystemTime, UNIX_EPOCH};
-    use tokio::net::UnixListener;
 
     let unique = format!(
         "{}-{}",
@@ -4881,22 +4862,13 @@ async fn advance_stage_route_notifies_after_detached_setup_failure_is_persisted(
     std::fs::write(&kanna_cli_path, "#!/bin/sh\nexit 0\n").unwrap();
     std::fs::set_permissions(&kanna_cli_path, std::fs::Permissions::from_mode(0o755)).unwrap();
     let socket_path = daemon_socket_path_for_dir(&daemon_dir.to_string_lossy());
-    let _ = std::fs::remove_file(&socket_path);
-    let daemon_listener = UnixListener::bind(&socket_path).unwrap();
-    // Accept (and immediately EOF) connections for the whole test: a
-    // single-accept fake would strand later connections in the closed
-    // listener's backlog, hanging the detached worker until the daemon
-    // command timeout instead of failing fast.
-    let (first_contact_tx, first_contact_rx) = tokio::sync::oneshot::channel();
-    let daemon_server = tokio::spawn(async move {
-        let (_stream, _) = daemon_listener.accept().await.unwrap();
-        let _ = first_contact_tx.send(());
-        loop {
-            let Ok((_stream, _)) = daemon_listener.accept().await else {
-                break;
-            };
-        }
-    });
+    // The stage's setup runs in a startup terminal now, so the daemon is what
+    // runs it: a fixture that only accepted connections would fail this
+    // transition on the connection rather than on the setup it is about to be
+    // asked to run.
+    let daemon_server =
+        crate::setup_terminal_fixture::spawn_setup_terminal_daemon(&daemon_dir.to_string_lossy())
+            .await;
 
     let config = Config {
         relay_url: "wss://relay.example".to_string(),
@@ -4971,19 +4943,29 @@ async fn advance_stage_route_notifies_after_detached_setup_failure_is_persisted(
     let failed = db.latest_stage_run("source-1").unwrap().unwrap();
     assert_eq!(failed.stage, "review");
     assert_eq!(failed.status, "failed");
+    // The output that explains the failure lives in the stage's startup
+    // terminal, which is the point of giving the launch one; the recorded
+    // failure names it and the status it stopped on.
     assert!(
         failed
             .result
             .as_deref()
-            .is_some_and(|result| result.contains("route setup failed")),
-        "failed run should retain setup diagnostics: {:?}",
+            .is_some_and(|result| result.contains("workspace setup failed (exit 23)")
+                && result.contains("startup terminal")),
+        "failed run should say what stopped and where to read it: {:?}",
         failed.result
     );
-
-    tokio::time::timeout(std::time::Duration::from_secs(5), first_contact_rx)
-        .await
-        .expect("the detached worker should contact the daemon")
-        .unwrap();
+    let terminals = db.list_task_terminal_sessions("source-1").unwrap();
+    let startup = terminals
+        .iter()
+        .find(|terminal| terminal.role == "setup")
+        .expect("a failed launch still records its startup terminal");
+    assert_eq!(startup.state, "retired");
+    assert_eq!(startup.exit_code, Some(23));
+    assert!(
+        daemon_server.spawns().is_empty(),
+        "a launch whose startup failed must not start an agent"
+    );
     daemon_server.abort();
     let _ = std::fs::remove_file(&socket_path);
     let _ = std::fs::remove_dir_all(&daemon_dir);

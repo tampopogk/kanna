@@ -45,8 +45,8 @@ fn builtin_single_reviewer_workflow_ships_approve_as_pr_stage_post() {
     let _ = std::fs::remove_dir_all(&repo_root);
 }
 
-#[test]
-fn one_stage_operation_keeps_prompt_spawn_and_teardown_on_pinned_revision() {
+#[tokio::test]
+async fn one_stage_operation_keeps_prompt_spawn_and_teardown_on_pinned_revision() {
     let repo_root = init_git_repo("stage-operation-pinned-revision");
     let config = test_config("stage-operation-pinned-revision");
     let db = Db::open_for_tests(&config.db_path).unwrap();
@@ -194,7 +194,12 @@ fn one_stage_operation_keeps_prompt_spawn_and_teardown_on_pinned_revision() {
     assert_eq!(run.agent_provider, "opencode");
     assert_eq!(run.model.as_deref(), Some("v1-repo-model"));
     assert!(!worktree.join("v1-stage.marker").exists());
-    super::super::finish_deferred_stage_setup(&mut run).unwrap();
+    // The stage's setup now runs in a startup terminal of its own, so the
+    // daemon is what runs it and the server waits for that session to exit.
+    let _daemon = spawn_fake_daemon_running_setup_terminals(config.daemon_dir.clone()).await;
+    super::super::finish_deferred_stage_setup(&config.db_path, &config.daemon_dir, &mut run)
+        .await
+        .unwrap();
     assert!(worktree.join("v1-stage.marker").is_file());
     assert!(!worktree.join("v2-stage.marker").exists());
 
@@ -386,10 +391,15 @@ async fn rerun_stage_uses_compiled_post_action_stage_prompt_and_stage_setup() {
     let prepared = prepare_rerun_stage_for_api(&db, &config, "task-1").unwrap();
     assert_eq!(prepared.task_id, "task-1");
     assert_eq!(prepared.cwd, worktree.to_string_lossy());
+    let startup = prepared
+        .setup_terminal_command()
+        .expect("a rerun with stage setup opens a startup terminal of its own")
+        .to_string();
+    assert!(startup.contains("setup-rerun.marker"));
     match &prepared.session {
         PreparedSessionSpawn::Pty { args, .. } => {
             let command = args.join(" ");
-            assert!(command.contains("setup-rerun.marker"));
+            assert!(!command.contains("setup-rerun.marker"));
             assert!(command.contains("Commit agent."));
             assert!(command.contains(
                 "Commit Fix rerun after {\"status\":\"success\",\"summary\":\"implemented\"}"
@@ -398,7 +408,10 @@ async fn rerun_stage_uses_compiled_post_action_stage_prompt_and_stage_setup() {
         }
         PreparedSessionSpawn::Agent { .. } => panic!("expected pty rerun"),
     }
-    let fake_daemon = spawn_fake_daemon_fork_transition(config.daemon_dir.clone(), 1).await;
+    // A rerun's stage setup runs in a startup terminal of its own, so the
+    // daemon has to be one that really runs it before the rerun's own
+    // kill-and-respawn sequence begins.
+    let fake_daemon = spawn_fake_daemon_running_setup_terminals(config.daemon_dir.clone()).await;
     let mut daemon = DaemonClient::connect(&config.daemon_dir).await.unwrap();
     rerun_prepared_stage_for_api(
         &config.db_path,
@@ -408,7 +421,10 @@ async fn rerun_stage_uses_compiled_post_action_stage_prompt_and_stage_setup() {
     )
     .await
     .unwrap();
-    let commands = fake_daemon.await.unwrap();
+    // The startup terminal is a separate session and is not in this log; what
+    // the rerun does to the task's own session is still kill, then respawn.
+    let commands = fake_daemon.commands();
+    fake_daemon.abort();
     assert!(matches!(
         commands.first(),
         Some(kanna_daemon::protocol::Command::Kill { session_id }) if session_id == "task-1"
@@ -417,6 +433,7 @@ async fn rerun_stage_uses_compiled_post_action_stage_prompt_and_stage_setup() {
         commands.get(1),
         Some(kanna_daemon::protocol::Command::Spawn { session_id, .. }) if session_id == "task-1"
     ));
+    assert!(worktree.join("setup-rerun.marker").is_file());
     assert_eq!(
         db.get_pipeline_item("task-1")
             .unwrap()
@@ -497,7 +514,7 @@ async fn acknowledged_stage_survives_db_failure_restart_and_can_complete() {
             args: Vec::new(),
             cols: 80,
             rows: 24,
-            agent_provider: kanna_daemon::protocol::AgentProvider::Codex,
+            agent_provider: Some(kanna_daemon::protocol::AgentProvider::Codex),
         },
         deferred_setup: None,
         setup_timeout_signal: None,
@@ -3512,7 +3529,7 @@ fn current_stage_spawn_fixture(
             args: Vec::new(),
             cols: 80,
             rows: 24,
-            agent_provider: DaemonAgentProvider::Codex,
+            agent_provider: Some(DaemonAgentProvider::Codex),
         },
         deferred_setup: None,
         setup_timeout_signal: None,

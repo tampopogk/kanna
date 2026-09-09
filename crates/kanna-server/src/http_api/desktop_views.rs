@@ -90,6 +90,96 @@ pub(super) async fn open_desktop_view(
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub(super) struct OpenDesktopTerminalRequest {
+    task_id: String,
+    session_id: String,
+}
+
+/// Ask a desktop window to show one of a task's terminals.
+///
+/// The session is resolved against that task's own recorded terminals before
+/// anything is queued, for the same reason the file lane resolves a path: a
+/// mistyped or borrowed session id becomes an error the caller can act on
+/// instead of a window that opens a terminal belonging to another task. The
+/// command opens a *view*; it never spawns, restarts, or writes to a session,
+/// so a startup terminal that has exited opens showing what it printed and
+/// nothing else happens.
+pub(super) async fn open_desktop_terminal_view(
+    _access: PrivilegedTaskAccess,
+    State(state): State<Arc<AppState>>,
+    Json(request): Json<OpenDesktopTerminalRequest>,
+) -> Result<Json<Value>, (StatusCode, String)> {
+    let (task_id, session_id, title) =
+        super::blocking::run_handler_blocking("desktop terminal view open", move || {
+            let db = Db::open(&state.config().db_path).map_err(|error| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("db error: {error}"),
+                )
+            })?;
+            let task_id = db
+                .resolve_pipeline_item_id(&request.task_id)
+                .map_err(|error| {
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        format!("db error: {error}"),
+                    )
+                })?
+                .ok_or_else(|| {
+                    (
+                        StatusCode::NOT_FOUND,
+                        format!("task not found: {}", request.task_id),
+                    )
+                })?;
+            let terminals = db.list_task_terminal_sessions(&task_id).map_err(|error| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("db error: {error}"),
+                )
+            })?;
+            let terminal = terminals
+                .into_iter()
+                .find(|terminal| {
+                    terminal.daemon_session_id.as_deref() == Some(request.session_id.as_str())
+                })
+                .ok_or_else(|| {
+                    (
+                        StatusCode::NOT_FOUND,
+                        format!(
+                            "session {} is not a terminal of task {task_id}",
+                            request.session_id
+                        ),
+                    )
+                })?;
+            let title = terminal
+                .title
+                .clone()
+                .unwrap_or_else(|| terminal.role.clone());
+            state.desktop_view_commands().append(json!({
+                "type": "desktop_view_open",
+                "view": "terminal",
+                "taskId": task_id,
+                "sessionId": request.session_id,
+                "title": title,
+                "live": terminal.state == "live",
+            }));
+            Ok((task_id, request.session_id, title))
+        })
+        .await?;
+
+    Ok(Json(json!({
+        // Requested, not shown — the same honesty the file lane owes: this
+        // asks whichever desktop window is watching the task to open the view.
+        "requested": true,
+        "view": "terminal",
+        "taskId": task_id,
+        "sessionId": session_id,
+        "title": title,
+    })))
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub(super) struct DesktopViewCommandsQuery {
     cursor: Option<u64>,
     stream_id: Option<String>,

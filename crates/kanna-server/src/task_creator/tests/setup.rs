@@ -179,8 +179,15 @@ fn seed_source_task(
     source_worktree
 }
 
+/// A launch's startup output goes to its own terminal, and what that shell
+/// exports still reaches the agent.
+///
+/// This is the whole point of splitting the shells, and both halves have to
+/// hold together: the setup commands must not be in the agent's own command
+/// line any more, *and* the provider that setup installs — which exists only
+/// on the PATH that shell exported — must still be what the agent runs.
 #[tokio::test]
-async fn initial_pty_task_streams_setup_before_starting_setup_created_provider() {
+async fn a_launch_runs_setup_in_its_own_terminal_and_the_agent_inherits_what_it_exported() {
     let _sidecar_guard = crate::test_sidecar_guard().await;
     let kanna_cli = ensure_test_sidecar("kanna-cli");
     let _kanna_mcp = ensure_test_sidecar("kanna-mcp");
@@ -226,115 +233,108 @@ async fn initial_pty_task_streams_setup_before_starting_setup_created_provider()
     )
     .unwrap();
 
-    let expected = std::path::Path::new(&prepared.cwd).join(".kanna/setup-bin/codex");
+    let installed = std::path::Path::new(&prepared.cwd).join(".kanna/setup-bin/codex");
     assert!(
-        !expected.exists(),
-        "PTY setup must wait for the daemon terminal bootstrap"
+        !installed.exists(),
+        "preparing a task must not run its setup"
     );
-    let (pty_executable, pty_args) = match &prepared.session {
+    let startup = prepared
+        .setup_terminal_command()
+        .expect("a launch with setup opens a startup terminal")
+        .to_string();
+    assert!(startup.contains("Running startup..."), "startup: {startup}");
+    assert!(
+        startup.contains(INSTALL_STREAMING_CODEX),
+        "startup: {startup}"
+    );
+    assert!(startup.contains("setup-receipt"), "startup: {startup}");
+    match &prepared.session {
         PreparedSessionSpawn::Pty {
-            executable,
             args,
             agent_provider,
             ..
         } => {
-            assert_eq!(*agent_provider, DaemonAgentProvider::Codex);
+            assert_eq!(*agent_provider, Some(DaemonAgentProvider::Codex));
             let command = args.last().expect("PTY command");
-            assert!(command.contains("Running startup..."), "command: {command}");
             assert!(
-                command.contains(INSTALL_STREAMING_CODEX),
-                "setup must run in the PTY command: {command}"
+                !command.contains(INSTALL_STREAMING_CODEX),
+                "setup must not also run in the agent shell: {command}"
             );
-            (executable.clone(), args.clone())
         }
         _ => panic!("expected PTY session"),
-    };
-
-    let zdotdir = std::path::Path::new(&prepared.cwd).join(".kanna/test-zdotdir");
-    std::fs::create_dir_all(&zdotdir).unwrap();
-    let mut pty_env = prepared.env.clone();
-    pty_env.insert("ZDOTDIR".to_string(), zdotdir.to_string_lossy().to_string());
-    let mut process = kanna_daemon::pty::PtySession::spawn(
-        &pty_executable,
-        &pty_args,
-        &prepared.cwd,
-        &pty_env,
-        80,
-        24,
-    )
-    .unwrap();
-    let mut output_reader = std::fs::File::from(process.try_clone_io_fd().unwrap());
-    let mut output = Vec::new();
-    let provider_ran = expected.parent().unwrap().join("codex-ran");
-    // The assertions below are about the *order* of the bootstrap's output, and
-    // the loop exits on the two events that prove it completed. How long a
-    // login shell plus setup plus provider takes is a property of the machine,
-    // so this deadline only contains a wedged PTY.
-    let deadline = tokio::time::Instant::now() + EVENTUAL_PROGRESS_GUARD;
-    loop {
-        let mut buffer = [0_u8; 4096];
-        loop {
-            match output_reader.read(&mut buffer) {
-                Ok(0) => break,
-                Ok(count) => output.extend_from_slice(&buffer[..count]),
-                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
-                Err(error) => panic!("failed to read PTY output: {error}"),
-            }
-        }
-        let text = String::from_utf8_lossy(&output);
-        let provider_output_seen = text
-            .match_indices("PROVIDER_OUTPUT_SENTINEL")
-            .nth(1)
-            .is_some();
-        if provider_ran.is_file() && provider_output_seen {
-            break;
-        }
-        if tokio::time::Instant::now() >= deadline {
-            let _ = process.kill();
-            panic!("PTY bootstrap did not finish: {text}");
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     }
-    let _ = process.kill();
-    let _ = process.try_wait();
 
-    let output = String::from_utf8_lossy(&output);
-    let startup_index = output.find("Running startup...").expect("startup banner");
-    let setup_output_index = output
-        .match_indices("SETUP_OUTPUT_SENTINEL")
-        .nth(1)
-        .map(|(index, _)| index)
-        .expect("setup output after the echoed setup command");
-    let provider_index = output
-        .match_indices("PROVIDER_OUTPUT_SENTINEL")
-        .nth(1)
-        .map(|(index, _)| index)
-        .expect("provider output after the echoed setup command");
-    assert!(startup_index < setup_output_index, "output: {output}");
-    assert!(setup_output_index < provider_index, "output: {output}");
+    let cwd = prepared.cwd.clone();
+    let task_id = prepared.task_id().to_string();
+    let _daemon = spawn_fake_daemon_running_setup_terminals(config.daemon_dir.clone()).await;
+    let mut client = DaemonClient::connect(&config.daemon_dir).await.unwrap();
+    super::super::spawn_prepared_task_for_api_recording_stage_run(
+        &config.db_path,
+        &mut client,
+        prepared,
+    )
+    .await
+    .expect("the launch completes once its startup terminal exits cleanly");
+
+    assert!(
+        installed.exists(),
+        "the startup terminal must have run the repository's setup"
+    );
+    let terminals = db.list_task_terminal_sessions(&task_id).unwrap();
+    let setup_terminal = terminals
+        .iter()
+        .find(|terminal| terminal.role == "setup")
+        .expect("the launch records its startup terminal");
+    assert_eq!(setup_terminal.state, "retired");
+    assert_eq!(setup_terminal.exit_code, Some(0));
+    assert_ne!(
+        setup_terminal.daemon_session_id.as_deref(),
+        Some(task_id.as_str()),
+        "a startup terminal is a different session from the task's agent"
+    );
+    // The receipt is private to the launch and is not left behind.
+    let receipts = std::path::Path::new(&config.daemon_dir).join("setup-receipts");
+    let leftover = std::fs::read_dir(&receipts)
+        .map(|entries| entries.count())
+        .unwrap_or(0);
+    assert_eq!(
+        leftover, 0,
+        "the startup receipt must not outlive the launch"
+    );
+    let _ = cwd;
 
     let _ = std::fs::remove_dir_all(&repo_root);
 }
 
+/// Setup that fails says so, in the terminal holding the output that explains
+/// it, and exits with the failing status so no agent is started into a
+/// half-provisioned workspace.
 #[test]
-fn pty_setup_failure_keeps_output_and_prevents_provider_launch() {
+fn a_failed_startup_keeps_its_output_and_leaves_no_receipt() {
     let workspace = std::env::temp_dir().join(format!(
-        "kanna-pty-visible-setup-failure-{}",
+        "kanna-startup-terminal-failure-{}",
         std::process::id()
     ));
     let _ = std::fs::remove_dir_all(&workspace);
     std::fs::create_dir_all(&workspace).unwrap();
-    let command = super::super::build_task_shell_command(
-        "touch provider-ran",
+    let receipt = workspace.join("receipt.json");
+    let mut env = std::collections::HashMap::new();
+    env.insert("PATH".to_string(), "/usr/bin:/bin".to_string());
+    let plan = super::super::setup_session::plan_setup_terminal(
+        &workspace.to_string_lossy(),
+        "task-1",
+        "in progress",
+        1,
+        &workspace.to_string_lossy(),
+        &env,
         &["printf 'SETUP_FAILURE_OUTPUT\\n' && exit 23".to_string()],
         None,
         None,
         None,
-        Some("/usr/bin:/bin"),
     );
 
     let output = Command::new("/bin/zsh")
-        .args(["--login", "-c", &command])
+        .args(["--login", "-c", &plan.command])
         .current_dir(&workspace)
         .output()
         .unwrap();
@@ -344,8 +344,12 @@ fn pty_setup_failure_keeps_output_and_prevents_provider_launch() {
     assert!(stdout.contains("Running startup..."), "stdout: {stdout}");
     assert!(stdout.contains("SETUP_FAILURE_OUTPUT"), "stdout: {stdout}");
     assert!(
-        !workspace.join("provider-ran").exists(),
-        "provider must not launch after setup fails"
+        stdout.contains("The agent was not started"),
+        "the terminal must say why nothing followed it: {stdout}"
+    );
+    assert!(
+        !receipt.exists(),
+        "a failed startup must leave nothing for an agent to inherit"
     );
 
     let _ = std::fs::remove_dir_all(&workspace);
@@ -404,18 +408,25 @@ fn initial_pty_task_binds_first_provider_before_setup() {
         !installed.exists(),
         "provider selection must not run setup before the PTY starts"
     );
-    match prepared.session {
+    match &prepared.session {
         PreparedSessionSpawn::Pty {
             args,
             agent_provider,
             ..
         } => {
-            assert_eq!(agent_provider, DaemonAgentProvider::Claude);
+            assert_eq!(*agent_provider, Some(DaemonAgentProvider::Claude));
             let command = args.last().expect("PTY command");
-            assert!(command.contains(INSTALL_CODEX), "command: {command}");
+            // Setup belongs to the startup terminal now. Leaving it in the
+            // agent's shell is what used to mix an install's output into the
+            // agent's scrollback.
+            assert!(!command.contains(INSTALL_CODEX), "command: {command}");
         }
         _ => panic!("expected PTY session"),
     }
+    let startup = prepared
+        .setup_terminal_command()
+        .expect("a launch with setup opens a startup terminal");
+    assert!(startup.contains(INSTALL_CODEX), "startup: {startup}");
 
     let _ = std::fs::remove_dir_all(&repo_root);
 }
@@ -530,8 +541,14 @@ async fn stage_fork_runs_repo_setup_before_resolving_pty_provider() {
         "request-path preparation must not run repository setup"
     );
     assert!(run.has_deferred_setup());
-    super::super::finish_deferred_stage_setup(&mut run).unwrap();
-    assert!(expected.exists(), "detached finalization must run setup");
+    let _daemon = spawn_fake_daemon_running_setup_terminals(config.daemon_dir.clone()).await;
+    super::super::finish_deferred_stage_setup(&config.db_path, &config.daemon_dir, &mut run)
+        .await
+        .unwrap();
+    assert!(
+        expected.exists(),
+        "the stage's startup terminal must run its setup"
+    );
     assert!(!run.has_deferred_setup());
     let (pty_executable, pty_args) = match &run.session {
         PreparedSessionSpawn::Pty {
@@ -540,7 +557,7 @@ async fn stage_fork_runs_repo_setup_before_resolving_pty_provider() {
             agent_provider,
             ..
         } => {
-            assert_eq!(*agent_provider, DaemonAgentProvider::Codex);
+            assert_eq!(*agent_provider, Some(DaemonAgentProvider::Codex));
             let command = args.last().expect("PTY command");
             assert!(
                 command.contains(expected.to_string_lossy().as_ref()),
@@ -728,11 +745,10 @@ async fn timed_out_stage_fork_setup_kills_group_records_failure_and_removes_fork
         fork_path.exists(),
         "preparation should leave the fork for detached setup"
     );
-    let fake_daemon = spawn_fake_daemon_read_then_stall(config.daemon_dir.clone()).await;
+    let fake_daemon = spawn_fake_daemon_running_setup_terminals(config.daemon_dir.clone()).await;
     let mut daemon = DaemonClient::connect(&config.daemon_dir).await.unwrap();
-    // A plain OS thread, not a task: `finish_deferred_stage_setup` supervises
-    // the setup process with blocking calls, so nothing else on this runtime
-    // would get to run while it is in flight.
+    // A plain OS thread, not a task: the armer has to observe the grandchild
+    // while the runtime is busy waiting on the startup terminal's exit.
     let armer_pid_file = grandchild_pid_file.clone();
     let armer = std::thread::spawn(move || {
         let deadline = std::time::Instant::now() + EVENTUAL_PROGRESS_GUARD;
@@ -760,13 +776,22 @@ async fn timed_out_stage_fork_setup_kills_group_records_failure_and_removes_fork
     let grandchild = armer.join().expect("timeout armer should not panic");
 
     assert!(
-        error.contains("workspace setup timed out"),
+        error.contains("workspace startup timed out"),
         "error: {error}"
     );
+    // The output that explains the hang lives in the startup terminal, which
+    // is the point of giving the launch one; the failure names it rather than
+    // trying to carry a captured copy.
     assert!(
-        error.contains("setup-started"),
-        "error should preserve captured setup output: {error}"
+        error.contains("startup terminal"),
+        "the failure should point at the terminal holding the output: {error}"
     );
+    let terminals = db.list_task_terminal_sessions("task-1").unwrap();
+    let startup = terminals
+        .iter()
+        .find(|terminal| terminal.role == "setup")
+        .expect("a timed-out launch still records its startup terminal");
+    assert_eq!(startup.state, "retired");
     assert!(
         !fork_path.exists(),
         "failed fork should remove {fork_path:?}"
@@ -775,7 +800,10 @@ async fn timed_out_stage_fork_setup_kills_group_records_failure_and_removes_fork
     assert_eq!(failed.stage, "review");
     assert_eq!(failed.status, "failed");
     assert!(
-        failed.result.unwrap().contains("workspace setup timed out"),
+        failed
+            .result
+            .unwrap()
+            .contains("workspace startup timed out"),
         "failed run should preserve setup diagnostics"
     );
     assert_eq!(

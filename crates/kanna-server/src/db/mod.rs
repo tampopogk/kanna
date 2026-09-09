@@ -30,6 +30,7 @@ mod snapshot;
 mod stage_runs;
 mod task_events;
 mod task_inputs;
+mod terminal_sessions;
 #[cfg(test)]
 mod test_support;
 #[cfg(test)]
@@ -59,6 +60,9 @@ pub use task_events::{
 };
 #[allow(unused_imports)]
 pub use task_inputs::{RawInputWriteRecord, TaskInputRecord, TaskInputSource};
+pub use terminal_sessions::{
+    NewTaskTerminalSession, TaskTerminalSession, ROLE_SETUP, ROLE_TEARDOWN,
+};
 #[allow(unused_imports)]
 pub use transfer_work::{TransferWorkItem, MAX_TRANSFER_WORK_ATTEMPTS};
 pub use transfers::{
@@ -138,6 +142,7 @@ pub(crate) const CURRENT_SCHEMA_MIGRATIONS: &[&str] = &[
     "064_blocked_state_events",
     "065_stage_run_provider_override",
     "066_durable_task_event_cursor_handles",
+    "067_terminal_session_roles",
 ];
 
 #[derive(Debug, Serialize)]
@@ -2013,6 +2018,42 @@ fn run_schema_migrations(conn: &Connection) -> Result<(), rusqlite::Error> {
             CREATE INDEX IF NOT EXISTS idx_task_event_cursor_handle_touched
             ON task_event_cursor_handle(last_touched);
             "#,
+        )
+    })?;
+
+    run_migration(conn, "067_terminal_session_roles", |conn| {
+        // A task's PTY history stops being one anonymous stream here. Setup
+        // and the agent run in separate sessions, and each stage launches its
+        // own, so every row has to say which one it is and which launch it
+        // belongs to. Existing rows are the pre-split mixed session: they are
+        // the task's agent terminal, and they keep serving as it.
+        add_column(
+            conn,
+            "terminal_session",
+            "role",
+            "TEXT NOT NULL DEFAULT 'agent'",
+        )?;
+        add_column(conn, "terminal_session", "stage", "TEXT")?;
+        add_column(
+            conn,
+            "terminal_session",
+            "attempt",
+            "INTEGER NOT NULL DEFAULT 1",
+        )?;
+        add_column(
+            conn,
+            "terminal_session",
+            "state",
+            "TEXT NOT NULL DEFAULT 'live'",
+        )?;
+        add_column(conn, "terminal_session", "stage_run_id", "TEXT")?;
+        add_column(conn, "terminal_session", "title", "TEXT")?;
+        add_column(conn, "terminal_session", "exit_code", "INTEGER")?;
+        add_column(conn, "terminal_session", "retired_at", "TEXT")?;
+        conn.execute_batch(
+            "UPDATE terminal_session SET role = 'legacy_agent' WHERE role = 'agent';
+             CREATE INDEX IF NOT EXISTS idx_terminal_session_task_role
+               ON terminal_session(pipeline_item_id, role, state);",
         )
     })?;
 

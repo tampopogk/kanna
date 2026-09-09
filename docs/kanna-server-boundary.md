@@ -2092,6 +2092,72 @@ and a target whose resolved path leaves the worktree root is rejected, including
 symlink escapes. The surface is read-only: there are no write, delete, download,
 git, or search-in-files operations.
 
+## A Task Owns Several Terminals
+
+A task used to have exactly one PTY, and its id *was* that session's id, so
+"the task", "the task's session" and "the task's terminal" were one noun. The
+repo's startup commands ran inside the agent's own login shell — `pnpm install`
+and the agent's first turn sharing one scrollback — and a stage transition
+respawned the same session id over the top of it, which is why reading a stage
+boundary needed the outgoing terminal's history copied into its replacement.
+
+A launch now owns a **pair**. The repo's setup runs first, visibly, in a plain
+`setup` terminal of its own; when that shell exits cleanly the server starts the
+agent in the `agent` session. Every launch — task creation, a stage advance, a
+rerun — opens its own setup terminal, so a stage boundary is a terminal
+boundary and a stage's startup output is still there to read after the stage has
+moved on. Teardown of a departing workspace is a `teardown` terminal by the same
+rule; it used to run detached with nowhere to print at all.
+
+`terminal_session` carries what each one is: `role` (`setup` / `agent` /
+`teardown` / `legacy_agent`), the `stage` and launch `attempt` it belongs to,
+whether it is still `live`, and the status a finished one exited with.
+`GET /v1/tasks/{task_id}/terminals` (`kanna_list_task_terminals`) is how a
+client asks which terminals a task has rather than deriving one from its id, and
+`POST /v1/desktop/views/open-terminal` (`kanna_open_terminal`) opens one as a
+tab — a view, never a spawn.
+
+Three invariants hold this together:
+
+- **Only the agent terminal answers to the task id.** Task logs, delivered
+  input, raw keys, completion, the composer and waiting-prompt surfaces all
+  resolve a task to its agent session, and `terminal_session.role` is what makes
+  that resolution exact rather than a guess at a label. A `setup` session's
+  `Exit` is that shell finishing its own job, never an agent completing:
+  the watcher checks the role before running the agent-facing completion path,
+  and a session id with no record at all is treated as the agent, so a lookup
+  failure can never silently stop a real completion from being observed.
+- **A plain terminal is spawned without a provider.** `agent_provider: None`
+  resolves no detection rules, so a setup script that prints something shaped
+  like CLI chrome cannot be read as an agent waiting for an answer. Teardown was
+  previously spawned as Claude and is now plain for the same reason.
+- **What setup exports still reaches the agent.** The single shell gave that
+  away for free; splitting it means carrying it deliberately. The setup shell's
+  last successful step is the bundled `kanna-cli setup-receipt`, which writes
+  that shell's environment and working directory to a private, launch-scoped
+  file under the daemon directory. The server merges it into the agent's spawn
+  environment — dropping only the shell's own bookkeeping — resolves the
+  provider executable against the PATH setup left behind, and deletes the
+  receipt. It is a *readiness* receipt: it says setup finished and what it left
+  behind, and nothing about the task's outcome passes through it. Setup that
+  fails, times out, or leaves no receipt starts no agent and records the failure
+  against the task; the terminal holding the output that explains it stays.
+
+Rows written before the split carry `role = 'legacy_agent'`: one mixed session,
+deliberately not divided or restarted, still serving as that task's agent
+terminal until its next launch. The intra-terminal alternate/normal-buffer
+history that task 05ffa8d1 landed is unchanged, and a stage transition still
+carries the outgoing *agent* terminal's history into its replacement — with
+startup noise no longer in it, that chained scrollback is now clean agent
+history rather than a mixture of two things.
+
+A launch whose setup runs in a terminal finishes in the background: `POST
+/v1/tasks` answers as soon as the task, its workspace and its branch exist,
+because startup is repo work of unbounded length and a request held open for it
+would time out while the terminal it is waiting for is still printing. A
+headless (SDK) launch has no terminal to watch, so its setup still runs where it
+did.
+
 ## Desktop View Commands
 
 `POST /v1/desktop/views/open` (`kanna_open_file`) asks whichever desktop windows

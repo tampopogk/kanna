@@ -237,7 +237,7 @@ fn open_creates_and_migrates_fresh_profile_database() {
             |row| row.get(0),
         )
         .expect("latest migration");
-    assert_eq!(latest_migration, "066_durable_task_event_cursor_handles");
+    assert_eq!(latest_migration, "067_terminal_session_roles");
     assert_eq!(
         index_columns(&db.conn, "idx_pipeline_item_parent_created_id"),
         vec!["parent_task_id", "created_at", "id"],
@@ -3888,4 +3888,139 @@ fn workflow_edit_audit_and_execution_supersession_survive_feed_pruning() {
         .unwrap();
     assert_eq!(events.len(), 1);
     assert_eq!(events[0].event_type, "task.workflow_changed");
+}
+
+/// A task's terminals are addressed by what they are, not by the task's id.
+///
+/// The startup shell a launch runs its setup in is a task terminal too, so
+/// every agent-facing surface — logs, delivered input, completion — has to be
+/// able to tell them apart. Resolving the task's session must never land on a
+/// setup terminal, and a startup shell that has exited keeps its record so the
+/// output explaining what a stage's setup did survives the stage.
+#[test]
+fn a_task_s_startup_terminal_is_never_mistaken_for_its_agent_session() {
+    let path = Db::test_db_path("terminal-session-roles");
+    let db = Db::open_for_tests(&path).expect("open test db");
+    db.insert_test_repo("repo-1", "Repo One").expect("repo");
+    db.insert_test_pipeline_item(
+        "task-1",
+        "repo-1",
+        "do the thing",
+        None,
+        "in progress",
+        "2026-09-08T00:00:00Z",
+    )
+    .expect("task");
+
+    db.upsert_task_terminal_session(super::NewTaskTerminalSession {
+        id: "agent-task-1",
+        repo_id: "repo-1",
+        task_id: Some("task-1"),
+        daemon_session_id: Some("task-1"),
+        role: "agent",
+        stage: Some("in progress"),
+        attempt: 1,
+        stage_run_id: None,
+        title: Some("Agent"),
+        cwd: Some("/tmp/wt"),
+    })
+    .expect("agent terminal");
+    db.upsert_task_terminal_session(super::NewTaskTerminalSession {
+        id: "setup-task-1-1",
+        repo_id: "repo-1",
+        task_id: Some("task-1"),
+        daemon_session_id: Some("setup-task-1-1"),
+        role: "setup",
+        stage: Some("in progress"),
+        attempt: 1,
+        stage_run_id: None,
+        title: Some("Startup · in progress"),
+        cwd: Some("/tmp/wt"),
+    })
+    .expect("setup terminal");
+
+    assert_eq!(
+        db.resolve_task_terminal_session_id("task-1")
+            .expect("resolve")
+            .as_deref(),
+        Some("task-1"),
+        "a startup terminal must never answer as the task's agent session"
+    );
+    assert!(db
+        .is_agent_terminal_session("task-1")
+        .expect("agent role lookup"));
+    assert!(!db
+        .is_agent_terminal_session("setup-task-1-1")
+        .expect("setup role lookup"));
+    // A session the database has never heard of is treated as the agent, so a
+    // lookup gap can never silently stop a real completion being observed.
+    assert!(db
+        .is_agent_terminal_session("some-unrecorded-session")
+        .expect("unknown role lookup"));
+
+    // Every launch gets its own startup terminal rather than reusing one.
+    assert_eq!(
+        db.next_task_terminal_attempt("task-1").expect("attempt"),
+        2,
+        "the next launch must not land on an existing terminal's id"
+    );
+
+    db.retire_task_terminal_session("setup-task-1-1", Some(0))
+        .expect("retire");
+    let terminals = db.list_task_terminal_sessions("task-1").expect("list");
+    let setup = terminals
+        .iter()
+        .find(|terminal| terminal.role == "setup")
+        .expect("the retired startup terminal is still recorded");
+    assert_eq!(setup.state, "retired");
+    assert_eq!(setup.exit_code, Some(0));
+    assert_eq!(
+        db.resolve_task_terminal_session_id("task-1")
+            .expect("resolve after retirement")
+            .as_deref(),
+        Some("task-1"),
+    );
+
+    drop(db);
+    let _ = std::fs::remove_file(path);
+}
+
+/// A task that ran before terminals had roles keeps exactly one mixed session,
+/// and it is still that task's agent terminal.
+#[test]
+fn a_pre_split_mixed_session_still_answers_as_the_task_s_agent() {
+    let path = Db::test_db_path("terminal-session-legacy");
+    let db = Db::open_for_tests(&path).expect("open test db");
+    db.insert_test_repo("repo-1", "Repo One").expect("repo");
+    db.insert_test_pipeline_item(
+        "task-2",
+        "repo-1",
+        "older task",
+        None,
+        "in progress",
+        "2026-09-08T00:00:00Z",
+    )
+    .expect("task");
+    db.conn
+        .execute(
+            "INSERT INTO terminal_session
+               (id, repo_id, pipeline_item_id, label, cwd, daemon_session_id, role, attempt, state)
+             VALUES ('agent-task-2', 'repo-1', 'task-2', 'agent', '/tmp/wt', 'task-2',
+                     'legacy_agent', 1, 'live')",
+            [],
+        )
+        .expect("legacy terminal");
+
+    assert_eq!(
+        db.resolve_task_terminal_session_id("task-2")
+            .expect("resolve")
+            .as_deref(),
+        Some("task-2"),
+    );
+    assert!(db
+        .is_agent_terminal_session("task-2")
+        .expect("legacy role lookup"));
+
+    drop(db);
+    let _ = std::fs::remove_file(path);
 }

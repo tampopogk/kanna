@@ -38,6 +38,7 @@ mod task_input;
 mod task_logs;
 mod task_ports;
 mod task_raw_input;
+mod task_terminals;
 mod tasks;
 mod transfer_sidecar;
 mod transfers;

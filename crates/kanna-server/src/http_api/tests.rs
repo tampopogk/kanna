@@ -148,22 +148,12 @@ fn ensure_test_kanna_cli_sidecar() -> (PathBuf, bool) {
 }
 
 fn ensure_test_sidecar(name: &str) -> (PathBuf, bool) {
-    use std::os::unix::fs::PermissionsExt;
-
-    let sidecar_path = std::env::current_exe()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .join(name);
-    if sidecar_path.exists() {
-        return (sidecar_path, false);
-    }
-
-    std::fs::write(&sidecar_path, "#!/bin/sh\nexit 0\n").unwrap();
-    let mut permissions = std::fs::metadata(&sidecar_path).unwrap().permissions();
-    permissions.set_mode(0o755);
-    std::fs::set_permissions(&sidecar_path, permissions).unwrap();
-    (sidecar_path, true)
+    // The stub outlives the test that staged it; see
+    // `setup_terminal_fixture::ensure_test_sidecar_stub` for why.
+    (
+        crate::setup_terminal_fixture::ensure_test_sidecar_stub(name),
+        false,
+    )
 }
 
 const TEST_PROVIDER_NEUTRAL_WORKFLOW: &str = "test-provider-neutral";

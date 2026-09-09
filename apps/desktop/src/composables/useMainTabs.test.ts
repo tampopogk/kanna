@@ -332,3 +332,69 @@ describe("useMainTabs", () => {
     expect(parsed?.scopes["item:b"]).toBeUndefined();
   });
 });
+
+describe("a task's other terminals", () => {
+  it("keeps one tab per session, so a task can show several at once", () => {
+    const { tabs } = setup();
+
+    tabs.openTab({ kind: "terminal", terminalSessionId: "setup-task-a-1" });
+    tabs.openTab({ kind: "terminal", terminalSessionId: "setup-task-a-2" });
+
+    expect(tabs.tabs.value.map((tab) => tab.id)).toEqual([
+      AGENT_TAB_ID,
+      "terminal:setup-task-a-1",
+      "terminal:setup-task-a-2",
+    ]);
+  });
+
+  it("re-aims the tab already showing a session rather than stacking a duplicate", () => {
+    const { tabs } = setup();
+
+    tabs.openTab({
+      kind: "terminal",
+      terminalSessionId: "setup-task-a-1",
+      terminalLive: true,
+    });
+    tabs.openTab({
+      kind: "terminal",
+      terminalSessionId: "setup-task-a-1",
+      terminalTitle: "Startup · review",
+      terminalLive: false,
+    });
+
+    expect(tabs.tabs.value).toHaveLength(2);
+    const terminal = tabs.tabs.value.find((tab) => tab.kind === "terminal");
+    expect(terminal?.terminalTitle).toBe("Startup · review");
+    expect(terminal?.terminalLive).toBe(false);
+  });
+
+  it("is restorable, because the session id is the launch's rather than remembered state", () => {
+    const { tabs } = setup();
+    tabs.openTab({
+      kind: "terminal",
+      terminalSessionId: "setup-task-a-1",
+      terminalTitle: "Startup · in progress",
+      // Liveness is read from the server on restore, never from storage: a
+      // stored "live" would outlive the process it describes.
+      terminalLive: true,
+    });
+
+    const snapshot = tabs.snapshotScopes();
+    expect(snapshot.scopes["item:task-a"].tabs).toContainEqual({
+      kind: "terminal",
+      terminalSessionId: "setup-task-a-1",
+      terminalTitle: "Startup · in progress",
+    });
+  });
+
+  it("closes like any other view, and reopening shows the same terminal", () => {
+    const { tabs } = setup();
+    tabs.openTab({ kind: "terminal", terminalSessionId: "setup-task-a-1" });
+
+    tabs.closeTab("terminal:setup-task-a-1");
+    expect(tabs.isOpen("terminal:setup-task-a-1")).toBe(false);
+
+    tabs.openTab({ kind: "terminal", terminalSessionId: "setup-task-a-1" });
+    expect(tabs.isOpen("terminal:setup-task-a-1")).toBe(true);
+  });
+});

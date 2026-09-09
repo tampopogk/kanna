@@ -77,6 +77,15 @@ pub(crate) enum Commands {
         #[command(subcommand)]
         command: MachineCommands,
     },
+    /// Write the startup shell's environment and cwd for the server that
+    /// launches the agent after it. Invoked by Kanna's own setup terminal;
+    /// hidden because it is not an operator command.
+    #[command(hide = true)]
+    SetupReceipt {
+        /// Where to write the receipt
+        #[arg(long)]
+        output: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -1003,6 +1012,9 @@ async fn main() {
         }
         Commands::Machine { command } => {
             commands::tool::run_machine(command).await;
+        }
+        Commands::SetupReceipt { output } => {
+            commands::setup_receipt::run(&output);
         }
     }
 }

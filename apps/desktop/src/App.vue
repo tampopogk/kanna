@@ -23,6 +23,7 @@ import {
   useMainTabs,
 } from "./composables/useMainTabs";
 import { useMainTabPersistence } from "./composables/useMainTabPersistence";
+import { useTaskTerminalTabs } from "./composables/useTaskTerminalTabs";
 import { useAppPreferences } from "./composables/useAppPreferences";
 import { useAppTaskTransfer } from "./composables/useAppTaskTransfer";
 import { useTransferFailureToasts } from "./composables/useTransferFailureToasts";
@@ -193,6 +194,25 @@ function openTaskFileView(taskId: string, filePath: string, line?: number): void
     initialLine: line,
   });
 }
+
+/**
+ * An agent asked this desktop to show one of a task's terminals — the startup
+ * shell whose output explains what its setup did. It lands in that task's tab
+ * set, as a view: opening a terminal never starts one.
+ */
+function openTaskTerminalView(
+  taskId: string,
+  sessionId: string,
+  title?: string,
+  live?: boolean,
+): void {
+  mainTabs.openTabInScope(mainTabScopeKeyForTask(taskId), {
+    kind: "terminal",
+    terminalSessionId: sessionId,
+    terminalTitle: title,
+    terminalLive: live,
+  });
+}
 const mainTabs = useMainTabs({
   scopeKey: mainTabScopeKey,
   onTabClosed: (tab) => {
@@ -238,6 +258,18 @@ const mainTabPersistence = useMainTabPersistence({
     window.localStorage.setItem(key, value);
   },
   storageKey: mainTabsStorageKey,
+});
+/**
+ * A task's startup and teardown terminals get tabs of their own, read from the
+ * server rather than derived from the task id: a launch opens one before the
+ * agent runs, and a stage advance opens another, so which terminals exist is
+ * something only the server knows. Re-reading whenever the snapshot changes is
+ * what makes a new stage's startup terminal appear without polling for it.
+ */
+useTaskTerminalTabs({
+  tabs: mainTabs,
+  taskId: computed(() => mainPanelItem.value?.id ?? null),
+  revision: computed(() => mainPanelItem.value?.updated_at ?? null),
 });
 const appModals = useAppModals({
   isMobile,
@@ -453,6 +485,7 @@ const {
   openFilePreview,
   openImageUrlPreview,
   openTaskFileView,
+  openTaskTerminalView,
   preferences,
   remoteTaskDiagnostics,
   restoreMainTabs: mainTabPersistence.hydrate,

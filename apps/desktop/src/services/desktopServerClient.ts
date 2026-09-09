@@ -280,6 +280,45 @@ export async function fetchDesktopTaskDetail(taskId: string): Promise<DesktopTas
   return await requestJson<DesktopTaskDetail>(`/v1/tasks/${encodeURIComponent(taskId)}`);
 }
 
+/**
+ * One terminal a task owns.
+ *
+ * A task used to have exactly one, derived from its id. A launch now runs its
+ * setup in a `setup` terminal of its own and the agent in an `agent` one, and
+ * every launch — a stage advance, a rerun — opens a new pair, so the terminals
+ * a task has are read from the server rather than derived. `legacyAgent` is a
+ * session from before the split: one mixed terminal, still serving as that
+ * task's agent, deliberately not restarted or divided.
+ */
+export interface DesktopTaskTerminal {
+  id: string;
+  taskId: string | null;
+  repoId: string;
+  daemonSessionId: string | null;
+  role: "setup" | "agent" | "teardown" | "legacy_agent";
+  stage: string | null;
+  attempt: number;
+  state: "live" | "retired";
+  stageRunId: string | null;
+  title: string | null;
+  cwd: string | null;
+  exitCode: number | null;
+  createdAt: string;
+  retiredAt: string | null;
+}
+
+export interface DesktopTaskTerminals {
+  taskId: string;
+  agentSessionId: string | null;
+  terminals: DesktopTaskTerminal[];
+}
+
+export async function fetchDesktopTaskTerminals(taskId: string): Promise<DesktopTaskTerminals> {
+  return await requestJson<DesktopTaskTerminals>(
+    `/v1/tasks/${encodeURIComponent(taskId)}/terminals`,
+  );
+}
+
 export interface CreateDesktopTaskRequest {
   requestedTaskId?: string;
   repoId: string;

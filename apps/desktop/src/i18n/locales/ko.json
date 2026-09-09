@@ -383,6 +383,7 @@
     "diff": "변경 사항",
     "shell": "셸",
     "repoShell": "저장소 셸",
+    "terminal": "터미널",
     "files": "파일",
     "graph": "커밋",
     "analytics": "분석",
@@ -443,5 +444,9 @@
   },
   "common": {
     "loading": "로딩 중..."
+  },
+  "taskTerminal": {
+    "finished": "{title}이(가) 완료되었습니다.",
+    "finishedWithStatus": "{title}이(가) 상태 {status}(으)로 종료되었습니다."
   }
 }

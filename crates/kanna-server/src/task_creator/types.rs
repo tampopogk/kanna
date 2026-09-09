@@ -105,11 +105,79 @@ pub(crate) struct PreparedTaskSpawn {
     pub(super) provider_session_id: Option<String>,
     pub(super) recovery_snapshot: Option<crate::mobile_api::CreateTaskRecoverySnapshot>,
     pub(super) session: PreparedSessionSpawn,
+    /// The startup terminal this launch runs its setup in, before the agent
+    /// starts. Present only for a PTY launch with setup commands; the session
+    /// above is provisional while it is, and is rebuilt from the startup
+    /// shell's own environment once that terminal exits cleanly.
+    pub(super) setup_terminal: Option<super::setup_session::SetupTerminalPlan>,
+    pub(super) deferred_launch: Option<DeferredNewTaskLaunch>,
+}
+
+/// What it takes to build a new task's agent session *after* its startup
+/// terminal has run. The provider is already bound and stamped on the task —
+/// setup may install it, but it does not get to change which one this task is
+/// — so only the executable, the search path, and the shell command are
+/// resolved late, against the environment setup actually left behind.
+#[derive(Clone)]
+pub(super) struct DeferredNewTaskLaunch {
+    pub(super) provider: AgentProvider,
+    pub(super) agent_type: super::provider::AgentSessionType,
+    pub(super) stage_name: String,
+    pub(super) workflow_name: String,
+    pub(super) stage_transition: String,
+    pub(super) final_prompt: String,
+    pub(super) model: Option<String>,
+    pub(super) effort: Option<String>,
+    pub(super) permission_mode: Option<String>,
+    pub(super) allowed_tools: Vec<String>,
+    pub(super) disallowed_tools: Vec<String>,
+    pub(super) max_turns: Option<u32>,
+    pub(super) max_budget_usd: Option<f64>,
+    pub(super) mcp_config_path: Option<String>,
+    pub(super) resume_session_id: Option<String>,
+    pub(super) transfer_import: Option<crate::mobile_api::TransferImportSummary>,
+    pub(super) local_config_override: Option<super::local_config::LocalConfigOverride>,
+    pub(super) geometry: Option<(u16, u16)>,
 }
 
 impl PreparedTaskSpawn {
     pub(crate) fn task_id(&self) -> &str {
         &self.created_task.task_id
+    }
+
+    /// Whether this launch runs its setup in a startup terminal first.
+    ///
+    /// A caller on a request path uses this to decide whether it can wait for
+    /// the agent: startup is repo work of unbounded length — a dependency
+    /// install, a container build — and a create request that blocks on it
+    /// would time out long before the terminal it is waiting for finished
+    /// printing.
+    pub(crate) fn has_setup_terminal(&self) -> bool {
+        self.setup_terminal.is_some()
+    }
+
+    /// The startup terminal's shell command, for tests that assert setup runs
+    /// there rather than inside the agent's own shell.
+    #[cfg(test)]
+    pub(crate) fn setup_terminal_command(&self) -> Option<&str> {
+        self.setup_terminal
+            .as_ref()
+            .map(|plan| plan.command.as_str())
+    }
+
+    /// The response describing the task this launch created. Everything in it
+    /// is settled before the agent starts, which is what lets a launch with a
+    /// startup terminal answer its caller and finish in the background.
+    pub(crate) fn create_response(&self) -> crate::mobile_api::CreateTaskResponse {
+        crate::mobile_api::CreateTaskResponse {
+            task_id: self.created_task.task_id.clone(),
+            repo_id: self.created_task.repo_id.clone(),
+            title: self.created_task.title.clone(),
+            prompt: self.created_task.prompt.clone(),
+            stage: self.created_task.stage.clone(),
+            agent_type: self.created_task.agent_type.clone(),
+            worktree_path: Some(self.created_task.worktree_path.clone()),
+        }
     }
 }
 
@@ -120,7 +188,10 @@ pub(crate) enum PreparedSessionSpawn {
         args: Vec<String>,
         cols: u16,
         rows: u16,
-        agent_provider: DaemonAgentProvider,
+        /// The provider whose detection rules this session's output is read
+        /// with. `None` is a plain terminal — a startup or teardown shell —
+        /// and is what keeps its output out of prompt and composer detection.
+        agent_provider: Option<DaemonAgentProvider>,
         /// The provider CLI this shell command line runs, resolved here to an
         /// absolute path. `executable` is the login shell that runs repo setup
         /// first, so the daemon cannot find the CLI by inspecting its own
@@ -194,8 +265,24 @@ pub(crate) struct PreparedStageRerun {
     /// Headless reruns execute setup only after the prior session is killed,
     /// then resolve their executable from the initialized workspace.
     pub(super) deferred_setup: Vec<String>,
+    /// A PTY rerun runs its setup in a startup terminal of its own, like every
+    /// other launch, and rebuilds the agent session from what that shell
+    /// leaves behind.
+    pub(super) setup_terminal: Option<super::setup_session::SetupTerminalPlan>,
+    pub(super) deferred_launch: Option<DeferredNewTaskLaunch>,
     pub(super) recovery_snapshot: Option<crate::mobile_api::CreateTaskRecoverySnapshot>,
     pub(super) session: PreparedSessionSpawn,
+}
+
+impl PreparedStageRerun {
+    /// The startup terminal's shell command, for tests that assert a rerun's
+    /// setup runs there rather than inside the agent's own shell.
+    #[cfg(test)]
+    pub(crate) fn setup_terminal_command(&self) -> Option<&str> {
+        self.setup_terminal
+            .as_ref()
+            .map(|plan| plan.command.as_str())
+    }
 }
 
 /// A stage-run workspace forked from the task's committed tip: swaps get a
@@ -293,8 +380,8 @@ pub(crate) struct PreparedStageRunSpawn {
     /// worker. The provisional provider/session above are never spawned while
     /// this is present.
     pub(super) deferred_setup: Option<DeferredStageSetup>,
-    /// Test seam: when armed, workspace setup reports its hard timeout. See
-    /// `workspace_commands::run_workspace_command_with_armed_timeout_for_test`.
+    /// Test seam: when armed, this launch's startup terminal reports its hard
+    /// timeout. See `setup_session::run_setup_terminal_with_armed_timeout`.
     #[cfg(test)]
     pub(super) setup_timeout_signal: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
 }

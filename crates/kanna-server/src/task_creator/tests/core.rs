@@ -5059,7 +5059,7 @@ fn prepare_task_uses_create_request_agent_selector() {
             agent_provider,
             ..
         } => {
-            assert_eq!(agent_provider, DaemonAgentProvider::Codex);
+            assert_eq!(agent_provider, Some(DaemonAgentProvider::Codex));
             let command = args.join(" ");
             assert!(command.contains("setup agent prompt"));
             assert!(!command.contains("implement agent prompt"));
@@ -5366,11 +5366,17 @@ fn prepare_task_persists_create_spawn_options_and_custom_setup() {
             .exists(),
         "PTY setup must be deferred until the terminal starts"
     );
-    match prepared.session {
+    let startup = prepared
+        .setup_terminal_command()
+        .expect("a launch with setup opens a startup terminal")
+        .to_string();
+    // Setup runs in the startup terminal, not in the agent's own shell.
+    assert!(startup.contains("custom-setup-ran"));
+    assert!(startup.contains("Running startup..."));
+    match &prepared.session {
         PreparedSessionSpawn::Pty { args, .. } => {
             let command = args.join(" ");
-            assert!(command.contains("custom-setup-ran"));
-            assert!(command.contains("Running startup..."));
+            assert!(!command.contains("custom-setup-ran"));
             assert!(command.contains("--model 'opus'"));
             assert!(command.contains("--permission-mode acceptEdits"));
             assert!(command.contains("--allowedTools Bash"));

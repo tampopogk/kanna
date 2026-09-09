@@ -385,6 +385,7 @@
     "diff": "Diff",
     "shell": "Shell",
     "repoShell": "Repo shell",
+    "terminal": "Terminal",
     "files": "Files",
     "graph": "Commits",
     "analytics": "Analytics",
@@ -445,5 +446,9 @@
   },
   "common": {
     "loading": "Loading..."
+  },
+  "taskTerminal": {
+    "finished": "{title} finished.",
+    "finishedWithStatus": "{title} finished with status {status}."
   }
 }

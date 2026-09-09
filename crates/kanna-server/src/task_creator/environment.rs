@@ -299,30 +299,6 @@ pub(super) fn run_workspace_setup_commands(
     )
 }
 
-#[cfg(test)]
-pub(super) fn run_workspace_setup_commands_with_armed_timeout(
-    setup_cmds: &[String],
-    worktree_path: &str,
-    env: &HashMap<String, String>,
-    armed_timeout: &std::sync::atomic::AtomicBool,
-) -> Result<(), String> {
-    let command = build_task_shell_command(
-        "true",
-        setup_cmds,
-        None,
-        None,
-        env.get("KANNA_CLI_PATH").map(String::as_str),
-        env.get("PATH").map(String::as_str),
-    );
-    crate::workspace_commands::run_workspace_command_with_armed_timeout_for_test(
-        "workspace setup",
-        &command,
-        Path::new(worktree_path),
-        env,
-        armed_timeout,
-    )
-}
-
 pub(super) fn append_executable_parent_to_path(
     path: Option<&str>,
     executable: &str,

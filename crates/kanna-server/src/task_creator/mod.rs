@@ -9,6 +9,7 @@ mod merge;
 mod prompt;
 mod provider;
 mod resume;
+pub(crate) mod setup_session;
 mod stages;
 mod terminal_marker;
 mod types;
@@ -47,8 +48,8 @@ use provider::{
 use std::collections::HashMap;
 use std::str::FromStr;
 use types::{
-    CreatedTask, DeferredStageSetup, ForkedWorkspace, PreparedRunWorkspace, PreparedSessionSpawn,
-    RunWorkspaceSpec, TaskCreationRequest,
+    CreatedTask, DeferredNewTaskLaunch, DeferredStageSetup, ForkedWorkspace, PreparedRunWorkspace,
+    PreparedSessionSpawn, RunWorkspaceSpec, TaskCreationRequest,
 };
 pub(crate) use types::{
     PrepareTaskError, PreparedStageRerun, PreparedStageRunSpawn, PreparedStageTransition,
@@ -63,8 +64,8 @@ pub(crate) use definitions::ResolvedAgentDefinition;
 pub(crate) use definitions::DEFAULT_REVISION_LIMIT;
 pub(crate) use environment::{resolve_agent_executable, warm_login_shell_path};
 pub(crate) use lifecycle::{
-    daemon_session_presence, dispatch_prepared_post_for_api, kill_session_replacing,
-    prepared_task_id, prune_completion_contexts_on_startup,
+    begin_prepared_task_launch, daemon_session_presence, dispatch_prepared_post_for_api,
+    kill_session_replacing, prepared_task_id, prune_completion_contexts_on_startup,
     reconcile_lifecycle_operations_on_startup, remove_completion_contexts,
     rerun_prepared_stage_for_api, resolve_legacy_completion_retry_run,
     rollback_prepared_stage_run_for_api, rollback_prepared_task_for_api,
@@ -676,6 +677,44 @@ pub(crate) fn prepare_rerun_stage_for_api(
         .unwrap_or_default();
     let defer_headless_setup = agent_type == AgentSessionType::Agent && !stage_setup.is_empty();
     let stage_run_model = model.clone();
+    // A PTY rerun's setup runs in a startup terminal of its own, like every
+    // other launch. The session built below is provisional while one is
+    // pending: it is rebuilt against the environment that shell exports.
+    let (setup_terminal, deferred_launch) = plan_launch_setup_terminal(
+        LaunchSetupInputs {
+            task_id,
+            daemon_dir: &config.daemon_dir,
+            worktree_path: &worktree_path,
+            spawn_env: &spawn_env,
+            setup: &stage_setup,
+            attempt: db
+                .next_task_terminal_attempt(task_id)
+                .map_err(|error| format!("db error: {error}"))?,
+            transfer_import: None,
+            local_config_override: repo_config.local_override.as_ref(),
+            geometry: None,
+        },
+        DeferredNewTaskLaunch {
+            provider,
+            agent_type,
+            stage_name: stage_name.clone(),
+            workflow_name: workflow_name.clone(),
+            stage_transition: current_stage.policy.transition.as_str().to_string(),
+            final_prompt: prompt.clone(),
+            model: model.clone(),
+            effort: effort.clone(),
+            permission_mode: permission_mode.clone(),
+            allowed_tools: allowed_tools.clone(),
+            disallowed_tools: Vec::new(),
+            max_turns: None,
+            max_budget_usd: None,
+            mcp_config_path: mcp_config_path.clone(),
+            resume_session_id: None,
+            transfer_import: None,
+            local_config_override: repo_config.local_override.clone(),
+            geometry: None,
+        },
+    );
     let (session, provider_session_id) = build_prepared_session(
         provider,
         agent_type,
@@ -724,6 +763,8 @@ pub(crate) fn prepare_rerun_stage_for_api(
         } else {
             Vec::new()
         },
+        setup_terminal,
+        deferred_launch,
         recovery_snapshot: None,
         session,
     })
@@ -815,6 +856,41 @@ pub(crate) fn prepare_create_task_repair_for_api(
         )?;
         let defer_headless_setup =
             agent_type == AgentSessionType::Agent && !resolved.setup.is_empty();
+        let (setup_terminal, deferred_launch) = plan_launch_setup_terminal(
+            LaunchSetupInputs {
+                task_id,
+                daemon_dir: &config.daemon_dir,
+                worktree_path: &worktree_path,
+                spawn_env: &spawn_env,
+                setup: &resolved.setup,
+                attempt: db
+                    .next_task_terminal_attempt(task_id)
+                    .map_err(|error| format!("db error: {error}"))?,
+                transfer_import: resolved.transfer_import.as_ref(),
+                local_config_override: repo_config.local_override.as_ref(),
+                geometry: resolved.initial_terminal_geometry,
+            },
+            DeferredNewTaskLaunch {
+                provider,
+                agent_type,
+                stage_name: resolved.stage_name.clone(),
+                workflow_name: resolved.workflow_name.clone(),
+                stage_transition: resolved.stage_transition.as_str().to_string(),
+                final_prompt: resolved.final_prompt.clone(),
+                model: resolved.model.clone(),
+                effort: resolved.effort.clone(),
+                permission_mode: resolved.permission_mode.clone(),
+                allowed_tools: resolved.allowed_tools.clone(),
+                disallowed_tools: resolved.disallowed_tools.clone(),
+                max_turns: resolved.max_turns,
+                max_budget_usd: resolved.max_budget_usd,
+                mcp_config_path: mcp_config_path.clone(),
+                resume_session_id: resolved.resume_session_id.clone(),
+                transfer_import: resolved.transfer_import.clone(),
+                local_config_override: repo_config.local_override.clone(),
+                geometry: resolved.initial_terminal_geometry,
+            },
+        );
         let (mut session, provider_session_id) = build_prepared_session(
             provider,
             agent_type,
@@ -871,6 +947,8 @@ pub(crate) fn prepare_create_task_repair_for_api(
             } else {
                 Vec::new()
             },
+            setup_terminal,
+            deferred_launch,
             recovery_snapshot: resolved.recovery_snapshot,
             session,
         }));
@@ -939,6 +1017,41 @@ pub(crate) fn prepare_create_task_repair_for_api(
     // it rather than composed from a layer written for another provider.
     let model = resolved.model_for(provider);
     let effort = resolved.effort_for(provider);
+    let (setup_terminal, deferred_launch) = plan_launch_setup_terminal(
+        LaunchSetupInputs {
+            task_id,
+            daemon_dir: &config.daemon_dir,
+            worktree_path: &worktree_path,
+            spawn_env: &spawn_env,
+            setup: &setup,
+            attempt: db
+                .next_task_terminal_attempt(task_id)
+                .map_err(|error| format!("db error: {error}"))?,
+            transfer_import: resolved.transfer_import.as_ref(),
+            local_config_override: repo_config.local_override.as_ref(),
+            geometry: resolved.initial_terminal_geometry,
+        },
+        DeferredNewTaskLaunch {
+            provider,
+            agent_type,
+            stage_name: resolved.stage_name.clone(),
+            workflow_name: resolved.workflow_name.clone(),
+            stage_transition: resolved.stage_transition.as_str().to_string(),
+            final_prompt: resolved.final_prompt.clone(),
+            model: model.clone(),
+            effort: effort.clone(),
+            permission_mode: resolved.permission_mode.clone(),
+            allowed_tools: resolved.allowed_tools.clone(),
+            disallowed_tools: resolved.disallowed_tools.clone(),
+            max_turns: resolved.max_turns,
+            max_budget_usd: resolved.max_budget_usd,
+            mcp_config_path: mcp_config_path.clone(),
+            resume_session_id: resolved.resume_session_id.clone(),
+            transfer_import: resolved.transfer_import.clone(),
+            local_config_override: repo_config.local_override.clone(),
+            geometry: resolved.initial_terminal_geometry,
+        },
+    );
     let (mut session, provider_session_id) = build_prepared_session(
         provider,
         agent_type,
@@ -994,6 +1107,8 @@ pub(crate) fn prepare_create_task_repair_for_api(
         } else {
             Vec::new()
         },
+        setup_terminal,
+        deferred_launch,
         recovery_snapshot: resolved.recovery_snapshot,
         session,
     }))
@@ -1285,6 +1400,50 @@ pub(in crate::task_creator) fn prepare_stage_run_spawn(
     })
 }
 
+/// Everything a launch needs to decide whether it opens a startup terminal.
+struct LaunchSetupInputs<'a> {
+    task_id: &'a str,
+    daemon_dir: &'a str,
+    worktree_path: &'a str,
+    spawn_env: &'a HashMap<String, String>,
+    setup: &'a [String],
+    attempt: i64,
+    transfer_import: Option<&'a crate::mobile_api::TransferImportSummary>,
+    local_config_override: Option<&'a LocalConfigOverride>,
+    geometry: Option<(u16, u16)>,
+}
+
+/// Split a launch into "run setup, visibly" and "then start the agent".
+///
+/// A launch with no setup, and a headless launch (which has no terminal to
+/// watch), keep the single-session shape they always had. Everything else
+/// gets a startup terminal of its own, and the agent session built alongside
+/// it is provisional until that terminal exits.
+fn plan_launch_setup_terminal(
+    inputs: LaunchSetupInputs<'_>,
+    launch: DeferredNewTaskLaunch,
+) -> (
+    Option<setup_session::SetupTerminalPlan>,
+    Option<DeferredNewTaskLaunch>,
+) {
+    if inputs.setup.is_empty() || launch.agent_type == AgentSessionType::Agent {
+        return (None, None);
+    }
+    let plan = setup_session::plan_setup_terminal(
+        inputs.daemon_dir,
+        inputs.task_id,
+        &launch.stage_name,
+        inputs.attempt,
+        inputs.worktree_path,
+        inputs.spawn_env,
+        inputs.setup,
+        inputs.transfer_import,
+        inputs.local_config_override,
+        inputs.geometry,
+    );
+    (Some(plan), Some(launch))
+}
+
 fn unavailable_provider_error(provider_candidates: &[AgentProvider]) -> String {
     format!(
         "None of the configured agent providers are available: {}.",
@@ -1296,29 +1455,82 @@ fn unavailable_provider_error(provider_candidates: &[AgentProvider]) -> String {
     )
 }
 
-pub(crate) fn finish_deferred_stage_setup(
+/// Run a stage's setup in its own startup terminal, then build the agent
+/// session it precedes.
+///
+/// This used to run in a detached server worker with nowhere to print, which
+/// is why a stage that failed to provision looked, from the outside, like a
+/// stage that simply never started. It now runs in a terminal of its own, one
+/// per launch, so a stage boundary is a terminal boundary and the output that
+/// explains a failed advance is still there to read afterwards.
+pub(crate) async fn finish_deferred_stage_setup(
+    db_path: &str,
+    daemon_dir: &str,
     prepared: &mut PreparedStageRunSpawn,
 ) -> Result<(), String> {
     let Some(deferred) = prepared.deferred_setup.take() else {
         return Ok(());
     };
-    #[cfg(test)]
-    let setup_result = match prepared.setup_timeout_signal.as_deref() {
-        Some(signal) => environment::run_workspace_setup_commands_with_armed_timeout(
-            &deferred.commands,
-            &prepared.cwd,
-            &prepared.env,
-            signal,
-        ),
-        None => run_workspace_setup_commands(&deferred.commands, &prepared.cwd, &prepared.env),
+    let (repo_id, attempt) = {
+        let db = Db::open(db_path).map_err(|error| format!("db error: {error}"))?;
+        let repo_id = db
+            .get_pipeline_item(&prepared.task_id)
+            .map_err(|error| format!("db error: {error}"))?
+            .map(|item| item.repo_id)
+            .ok_or_else(|| format!("task not found: {}", prepared.task_id))?;
+        let attempt = db
+            .next_task_terminal_attempt(&prepared.task_id)
+            .map_err(|error| format!("db error: {error}"))?;
+        (repo_id, attempt)
     };
-    #[cfg(not(test))]
-    let setup_result =
-        run_workspace_setup_commands(&deferred.commands, &prepared.cwd, &prepared.env);
-    if let Err(error) = setup_result {
-        prepared.deferred_setup = Some(deferred);
-        return Err(error);
+    let plan = setup_session::plan_setup_terminal(
+        daemon_dir,
+        &prepared.task_id,
+        &prepared.run_stage,
+        attempt,
+        &prepared.cwd,
+        &prepared.env,
+        &deferred.commands,
+        None,
+        deferred.local_config_override.as_ref(),
+        None,
+    );
+    {
+        let db = Db::open(db_path).map_err(|error| format!("db error: {error}"))?;
+        setup_session::record_setup_terminal(&db, &repo_id, &prepared.task_id, None, &plan)?;
     }
+    #[cfg(test)]
+    let armed_timeout = prepared.setup_timeout_signal.as_deref();
+    #[cfg(not(test))]
+    let armed_timeout = None;
+    let outcome = setup_session::run_setup_terminal(daemon_dir, &plan, armed_timeout).await;
+    let retire = |exit_code: Option<i64>| {
+        if let Ok(db) = Db::open(db_path) {
+            if let Err(error) = db.retire_task_terminal_session(&plan.session_id, exit_code) {
+                log::warn!(
+                    "failed to retire the startup terminal {}: {error}",
+                    plan.session_id
+                );
+            }
+        }
+    };
+    let receipt = match outcome {
+        Ok(setup_session::SetupTerminalOutcome::Ready(receipt)) => {
+            retire(Some(0));
+            receipt
+        }
+        Ok(setup_session::SetupTerminalOutcome::Failed { exit_code, reason }) => {
+            retire(Some(exit_code as i64));
+            prepared.deferred_setup = Some(deferred);
+            return Err(reason);
+        }
+        Err(error) => {
+            retire(None);
+            prepared.deferred_setup = Some(deferred);
+            return Err(error);
+        }
+    };
+    setup_session::apply_setup_receipt(&mut prepared.env, &receipt);
     let provider = deferred
         .provider_candidates
         .iter()
@@ -1511,6 +1723,25 @@ fn prepare_workspace_teardown_with_extra(
     let spawn_env =
         build_spawn_env(config, task_id, &port_env, &worktree_path, repo_config).ok()?;
     let session_id = format!("td-{branch}");
+    // Teardown gets a terminal record like every other task shell. It used to
+    // run detached with nowhere to be shown, so a cleanup command that failed
+    // left only a log line; recording it here is what lets the departing
+    // workspace's cleanup be read as its own labelled terminal rather than
+    // appended to an agent's scrollback.
+    if let Err(error) = db.upsert_task_terminal_session(crate::db::NewTaskTerminalSession {
+        id: &format!("teardown-{session_id}"),
+        repo_id: &repo.id,
+        task_id: Some(task_id),
+        daemon_session_id: Some(&session_id),
+        role: crate::db::ROLE_TEARDOWN,
+        stage: Some(stage_name),
+        attempt: db.next_task_terminal_attempt(task_id).unwrap_or(1),
+        stage_run_id: None,
+        title: Some(&format!("Teardown · {branch}")),
+        cwd: Some(&worktree_path),
+    }) {
+        log::warn!("failed to record the teardown terminal for {task_id}: {error}");
+    }
     let shell_command = build_teardown_shell_command(&teardown);
     Some(PreparedWorkspaceTeardown {
         session_id,
@@ -1530,7 +1761,10 @@ fn prepare_workspace_teardown_with_extra(
             ],
             cols: 80,
             rows: 24,
-            agent_provider: AgentProvider::Claude,
+            // Teardown is a plain shell, not a provider session. Reading its
+            // output through a provider's detection rules could report a
+            // cleanup script's chrome as an agent waiting for an answer.
+            agent_provider: None,
         },
     })
 }
@@ -1705,11 +1939,26 @@ fn build_prepared_session(
                 Some(worktree_path),
                 provider_session.as_ref(),
             );
+            // Setup does not run here any more: it runs, visibly, in this
+            // launch's own startup terminal, and this shell starts only after
+            // that one exits cleanly. `setup` still says *whether* setup runs
+            // before this session, because that is what decides whether the
+            // provider executable can be resolved now or has to be left to
+            // PATH inside the shell.
+            // The workspace banners belong with the workspace commands they
+            // explain. When a startup terminal runs they are printed there,
+            // above the setup output; only a launch with no setup at all
+            // still shows them here.
+            let (banner_transfer_import, banner_local_config) = if setup.is_empty() {
+                (transfer_import, local_config_override)
+            } else {
+                (None, None)
+            };
             let full_cmd = build_task_shell_command(
                 &agent_cmd,
-                setup,
-                transfer_import,
-                local_config_override,
+                &[],
+                banner_transfer_import,
+                banner_local_config,
                 spawn_env.get("KANNA_CLI_PATH").map(String::as_str),
                 shell_path.as_deref(),
             );
@@ -1724,7 +1973,7 @@ fn build_prepared_session(
                     ],
                     cols: 80,
                     rows: 24,
-                    agent_provider: provider,
+                    agent_provider: Some(provider),
                     agent_executable: Some(executable.clone()),
                 },
                 provider_session_id,
@@ -2532,6 +2781,42 @@ pub(crate) fn prepare_start_dormant_task_for_api(
     };
     let stage_run_model = model.clone();
     let stage_run_effort = effort.clone();
+    // A dormant task starting for the first time launches like any other: if
+    // it has setup, that setup runs in its own startup terminal and the agent
+    // session below is rebuilt from what that shell leaves behind.
+    let (setup_terminal, deferred_launch) = plan_launch_setup_terminal(
+        LaunchSetupInputs {
+            task_id,
+            daemon_dir: &config.daemon_dir,
+            worktree_path: &worktree_path,
+            spawn_env: &spawn_env,
+            setup: &setup,
+            attempt: 1,
+            transfer_import: None,
+            local_config_override: repo_config.local_override.as_ref(),
+            geometry: None,
+        },
+        DeferredNewTaskLaunch {
+            provider,
+            agent_type,
+            stage_name: stage_name.clone(),
+            workflow_name: workflow_name.clone(),
+            stage_transition: stage.policy.transition.as_str().to_string(),
+            final_prompt: final_prompt.clone(),
+            model: model.clone(),
+            effort: effort.clone(),
+            permission_mode: permission_mode.clone(),
+            allowed_tools: allowed_tools.clone(),
+            disallowed_tools: disallowed_tools.clone(),
+            max_turns,
+            max_budget_usd,
+            mcp_config_path: mcp_config_path.clone(),
+            resume_session_id: None,
+            transfer_import: None,
+            local_config_override: repo_config.local_override.clone(),
+            geometry: None,
+        },
+    );
     let (session, provider_session_id) = match build_prepared_session(
         provider,
         agent_type,
@@ -2589,6 +2874,8 @@ pub(crate) fn prepare_start_dormant_task_for_api(
         provider_session_id,
         recovery_snapshot,
         session,
+        setup_terminal,
+        deferred_launch,
     }))
 }
 
@@ -2841,6 +3128,8 @@ fn prepare_task_spawn_with_error(
         agent_type,
         model: stage_run_model,
         effort: stage_run_effort,
+        setup_terminal,
+        deferred_launch,
     } = match prepared {
         Ok(prepared) => prepared,
         Err(err) => {
@@ -2898,6 +3187,8 @@ fn prepare_task_spawn_with_error(
         provider_session_id,
         recovery_snapshot: resolved.recovery_snapshot,
         session,
+        setup_terminal,
+        deferred_launch,
     })
 }
 
@@ -3387,6 +3678,11 @@ struct PreparedNewTaskSession {
     provider_session_id: Option<String>,
     provider: AgentProvider,
     agent_type: AgentSessionType,
+    /// Present when this launch has setup to run: the startup terminal it runs
+    /// in, and everything needed to build the agent session afterwards against
+    /// the environment that terminal leaves behind.
+    setup_terminal: Option<setup_session::SetupTerminalPlan>,
+    deferred_launch: Option<DeferredNewTaskLaunch>,
     /// Resolved for `provider`, which is only settled here — the task record
     /// and the create intent are stamped with these values afterwards.
     model: Option<String>,
@@ -3466,6 +3762,7 @@ fn prepare_new_task_session(
     };
     let model = resolved.model_for(provider);
     let effort = resolved.effort_for(provider);
+    let deferred_mcp_config_path = mcp_config_path.clone();
     let (mut session, provider_session_id) = build_prepared_session(
         provider,
         agent_type,
@@ -3497,6 +3794,44 @@ fn prepare_new_task_session(
             *rows = initial_rows;
         }
     }
+    // A PTY launch with setup runs it in its own startup terminal. The session
+    // built above is provisional while that is pending: it is rebuilt after
+    // the startup shell exits, against the environment that shell exported.
+    let (setup_terminal, deferred_launch) = plan_launch_setup_terminal(
+        LaunchSetupInputs {
+            task_id,
+            daemon_dir: &config.daemon_dir,
+            worktree_path,
+            spawn_env: &spawn_env,
+            setup: session_setup,
+            // A task's first launch; a stage advance or rerun counts on from
+            // whatever this task's terminals already number.
+            attempt: 1,
+            transfer_import: resolved.transfer_import.as_ref(),
+            local_config_override: repo_config.local_override.as_ref(),
+            geometry: resolved.initial_terminal_geometry,
+        },
+        DeferredNewTaskLaunch {
+            provider,
+            agent_type,
+            stage_name: resolved.stage_name.clone(),
+            workflow_name: resolved.workflow_name.clone(),
+            stage_transition: resolved.stage_transition.as_str().to_string(),
+            final_prompt: resolved.final_prompt.clone(),
+            model: model.clone(),
+            effort: effort.clone(),
+            permission_mode: resolved.permission_mode.clone(),
+            allowed_tools: resolved.allowed_tools.clone(),
+            disallowed_tools: resolved.disallowed_tools.clone(),
+            max_turns: resolved.max_turns,
+            max_budget_usd: resolved.max_budget_usd,
+            mcp_config_path: deferred_mcp_config_path,
+            resume_session_id: resolved.resume_session_id.clone(),
+            transfer_import: resolved.transfer_import.clone(),
+            local_config_override: repo_config.local_override.clone(),
+            geometry: resolved.initial_terminal_geometry,
+        },
+    );
     Ok(PreparedNewTaskSession {
         spawn_env,
         session,
@@ -3505,6 +3840,8 @@ fn prepare_new_task_session(
         agent_type,
         model,
         effort,
+        setup_terminal,
+        deferred_launch,
     })
 }
 

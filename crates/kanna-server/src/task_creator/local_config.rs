@@ -99,7 +99,7 @@ const OVERRIDABLE_KEYS: &[OverridableKey] = &[
 /// machine is not running the committed configuration.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(super) struct LocalConfigOverride {
+pub(crate) struct LocalConfigOverride {
     path: String,
     keys: Vec<String>,
 }

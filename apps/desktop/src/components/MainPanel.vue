@@ -23,6 +23,7 @@ import MainTabBar from "./MainTabBar.vue";
 import DiffModal from "./DiffModal.vue";
 import FilePreviewModal from "./FilePreviewModal.vue";
 import ShellModal from "./ShellModal.vue";
+import TaskTerminalPanel from "./TaskTerminalPanel.vue";
 import TreeExplorerModal from "./TreeExplorerModal.vue";
 import CommitGraphModal from "./CommitGraphModal.vue";
 import AnalyticsModal from "./AnalyticsModal.vue";
@@ -221,7 +222,8 @@ function dismissActiveTab(): boolean {
   const tab = controller?.activeTab.value;
   if (!controller || !tab || tab.kind === "agent") return false;
   // A shell tab is a live terminal; Escape belongs to whatever runs in it.
-  if (tab.kind === "shell") return false;
+  // A task terminal is one too — its startup script may still be running.
+  if (tab.kind === "shell" || tab.kind === "terminal") return false;
   // A view with its own layered dismiss — a file's search, the tree's filter,
   // the graph's detail pane — gets to close that first.
   if (viewRefs.get(tab.id)?.dismiss?.() === false) return true;
@@ -697,6 +699,14 @@ function dismissCommandHint() {
           embedded
           :active="activeTabId === tab.id"
           @close="closeTab(tab.id)"
+        />
+        <TaskTerminalPanel
+          v-else-if="tab.kind === 'terminal' && tab.terminalSessionId"
+          v-show="activeTabId === tab.id"
+          :session-id="tab.terminalSessionId"
+          :title="tab.terminalTitle || $t('mainTabs.terminal')"
+          :live="tab.terminalLive"
+          :active="activeTabId === tab.id"
         />
         <TreeExplorerModal
           v-else-if="tab.kind === 'tree'"

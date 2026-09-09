@@ -382,6 +382,7 @@
     "diff": "差分",
     "shell": "シェル",
     "repoShell": "リポジトリシェル",
+    "terminal": "ターミナル",
     "files": "ファイル",
     "graph": "コミット",
     "analytics": "分析",
@@ -442,5 +443,9 @@
   },
   "common": {
     "loading": "読み込み中..."
+  },
+  "taskTerminal": {
+    "finished": "{title} は完了しました。",
+    "finishedWithStatus": "{title} はステータス {status} で終了しました。"
   }
 }
