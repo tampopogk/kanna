@@ -449,5 +449,9 @@
     "finishedWithStatus": "{title} finished with status {status}.",
     "noArchive": "{title} finished. Its output was not kept.",
     "archiveFailed": "Could not read {title}'s output."
+  },
+  "workspaceLog": {
+    "empty": "Nothing has happened in this workspace yet.",
+    "openOutput": "Open output"
   }
 }

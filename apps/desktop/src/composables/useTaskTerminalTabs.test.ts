@@ -94,6 +94,9 @@ describe("keeping a task's terminal tabs in step with the server", () => {
 
     expect(tabs.tabs.value.map((tab) => tab.id)).toEqual([
       "agent",
+      // The workspace log comes with the task's own terminals; it is the
+      // chronological view they are entries in.
+      "workspace",
       "terminal:setup-task-1-1",
       "terminal:setup-task-1-2",
     ]);
@@ -181,6 +184,38 @@ describe("keeping a task's terminal tabs in step with the server", () => {
       "terminal:agent-task-1-1",
       "terminal:agent-task-1-2",
     ]);
+  });
+
+  it("opens one read-only workspace log for the task's operations", async () => {
+    // The log is what replaces a permanent startup tab per stage: workspace
+    // creation, the startup script, the agent, teardown, then the next
+    // stage's startup, in one place.
+    const tabs = tabsForTask("task-1");
+    const fetchTerminals = vi.fn(async (): Promise<DesktopTaskTerminals> => ({
+      taskId: "task-1",
+      agentSessionId: "task-1",
+      terminals: [
+        terminal({ id: "setup-task-1-1", daemonSessionId: "setup-task-1-1" }),
+        terminal({
+          id: "setup-task-1-2",
+          daemonSessionId: "setup-task-1-2",
+          stage: "review",
+          attempt: 2,
+        }),
+      ],
+    }));
+    const { reconcile } = useTaskTerminalTabs({
+      tabs,
+      taskId: computed(() => "task-1"),
+      revision: computed(() => 1),
+      fetchTerminals,
+    });
+
+    await reconcile();
+    await reconcile();
+
+    expect(tabs.tabs.value.filter((tab) => tab.kind === "workspace")).toHaveLength(1);
+    expect(tabs.activeTabId.value).toBe("agent");
   });
 
   it("does not reopen a terminal tab the reader closed", async () => {

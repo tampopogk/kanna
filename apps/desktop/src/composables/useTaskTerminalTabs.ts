@@ -107,6 +107,18 @@ export function useTaskTerminalTabs({
     }
     if (taskId.value !== id) return;
     const scope = mainTabScopeKeyForTask(id);
+    // One read-only log of the workspace around the agent — creation, the
+    // startup script, the agent starting and finishing, teardown, then the
+    // next stage's startup. It replaces the permanent startup tab a launch
+    // used to keep: those are entries here, and their output is reopened from
+    // the log rather than held open forever.
+    if (terminals.some((terminal) => terminal.role === "setup" || terminal.role === "teardown")) {
+      const workspaceKey = `${id}:workspace`;
+      if (!openedByReconciliation.has(workspaceKey) || tabs.isOpen("workspace")) {
+        openedByReconciliation.add(workspaceKey);
+        tabs.openTabInScope(scope, { kind: "workspace" }, { activate: false });
+      }
+    }
     for (const terminal of terminals) {
       if (!isOwnTabTerminal(terminal)) continue;
       const sessionId = terminal.daemonSessionId;

@@ -334,6 +334,31 @@ export async function fetchDesktopTaskTerminals(taskId: string): Promise<Desktop
   );
 }
 
+/** One thing that happened to a task's workspace, in the order it happened. */
+export interface DesktopTaskActivityEntry {
+  kind: "terminal" | "agent";
+  at: string;
+  title: string;
+  stage: string | null;
+  attempt: number | null;
+  exitCode: number | null;
+  terminalSessionId: string | null;
+  archived: boolean;
+  status: string | null;
+  result: string | null;
+}
+
+export interface DesktopTaskActivity {
+  taskId: string;
+  entries: DesktopTaskActivityEntry[];
+}
+
+export async function fetchDesktopTaskActivity(taskId: string): Promise<DesktopTaskActivity> {
+  return await requestJson<DesktopTaskActivity>(
+    `/v1/tasks/${encodeURIComponent(taskId)}/activity`,
+  );
+}
+
 export async function fetchDesktopTerminalArchive(
   taskId: string,
   sessionId: string,

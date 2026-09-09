@@ -446,5 +446,9 @@
     "finishedWithStatus": "{title} はステータス {status} で終了しました。",
     "noArchive": "{title} は完了しました。出力は保存されていません。",
     "archiveFailed": "{title} の出力を読み取れませんでした。"
+  },
+  "workspaceLog": {
+    "empty": "このワークスペースではまだ何も実行されていません。",
+    "openOutput": "出力を開く"
   }
 }

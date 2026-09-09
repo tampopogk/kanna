@@ -151,3 +151,128 @@ pub(super) async fn read_task_terminal_archive(
     })
     .await
 }
+
+/// One thing that happened to a task's workspace, in the order it happened.
+///
+/// The owner's shape is a single read-only log of workspace operations —
+/// creation, the startup script, the agent starting and finishing, teardown,
+/// then the next stage's startup — rather than a permanent terminal tab per
+/// stage. Nothing new is stored for it: a task's terminals and its runs
+/// already record all of this, and this is the chronological reading of them.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct TaskActivityEntry {
+    /// `terminal` for a startup or teardown shell, `agent` for a run.
+    kind: &'static str,
+    at: String,
+    title: String,
+    stage: Option<String>,
+    attempt: Option<i64>,
+    /// Present for a terminal that has finished.
+    exit_code: Option<i64>,
+    /// The terminal record this entry can be reopened from, when it has one.
+    terminal_session_id: Option<String>,
+    /// Whether that terminal's output was kept.
+    archived: bool,
+    /// For an agent run: how it ended, once it has.
+    status: Option<String>,
+    result: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct TaskActivityResponse {
+    task_id: String,
+    entries: Vec<TaskActivityEntry>,
+}
+
+pub(super) async fn read_task_activity(
+    _access: PrivilegedTaskAccess,
+    State(state): State<Arc<AppState>>,
+    Path(task_id): Path<String>,
+) -> Result<Json<TaskActivityResponse>, (StatusCode, String)> {
+    super::blocking::run_handler_blocking("task activity", move || {
+        let db = Db::open(&state.config().db_path).map_err(|error| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("db error: {error}"),
+            )
+        })?;
+        let resolved = db
+            .resolve_pipeline_item_id(&task_id)
+            .map_err(|error| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("db error: {error}"),
+                )
+            })?
+            .ok_or_else(|| (StatusCode::NOT_FOUND, format!("task not found: {task_id}")))?;
+
+        let terminals = db.list_task_terminal_sessions(&resolved).map_err(|error| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("db error: {error}"),
+            )
+        })?;
+        let runs = db.list_stage_runs_for_task(&resolved).map_err(|error| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("db error: {error}"),
+            )
+        })?;
+
+        let mut entries: Vec<TaskActivityEntry> = Vec::new();
+        for terminal in &terminals {
+            // A finished agent attempt is its own tab, not a log line: the log
+            // is about the workspace around the agent, and repeating the
+            // agent's own output here would be the chaining this replaces.
+            if terminal.role != crate::db::ROLE_SETUP && terminal.role != crate::db::ROLE_TEARDOWN {
+                continue;
+            }
+            entries.push(TaskActivityEntry {
+                kind: "terminal",
+                at: terminal.created_at.clone(),
+                title: terminal
+                    .title
+                    .clone()
+                    .unwrap_or_else(|| terminal.role.clone()),
+                stage: terminal.stage.clone(),
+                attempt: Some(terminal.attempt),
+                exit_code: terminal.exit_code,
+                terminal_session_id: Some(terminal.id.clone()),
+                archived: terminal.archived,
+                status: Some(terminal.state.clone()),
+                result: None,
+            });
+        }
+        for run in &runs {
+            if run.kind != "main" {
+                continue;
+            }
+            entries.push(TaskActivityEntry {
+                kind: "agent",
+                at: run.started_at.clone(),
+                title: match run.agent.as_deref() {
+                    Some(agent) => format!("{agent} · {}", run.stage),
+                    None => format!("Agent · {}", run.stage),
+                },
+                stage: Some(run.stage.clone()),
+                attempt: None,
+                exit_code: None,
+                terminal_session_id: None,
+                archived: false,
+                status: Some(run.status.clone()),
+                result: run.result.clone(),
+            });
+        }
+        // One order, by when each thing began: a stage's startup, then its
+        // agent, then the next stage's startup.
+        entries.sort_by(|left, right| left.at.cmp(&right.at));
+
+        Ok(Json(TaskActivityResponse {
+            task_id: resolved,
+            entries,
+        }))
+    })
+    .await
+}

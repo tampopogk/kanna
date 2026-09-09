@@ -507,7 +507,10 @@ describe("main content area tabs", () => {
       if (tabs.includes(`terminal:${setupSessionId}`)) break;
       await sleep(200);
     }
-    expect(tabs).toEqual(["agent", `terminal:${setupSessionId}`]);
+    // The workspace log arrives with the task's own terminals: it is the
+    // chronological view of what this launch did, and the startup terminal is
+    // one entry in it.
+    expect(tabs).toEqual(["agent", "workspace", `terminal:${setupSessionId}`]);
     // A startup terminal appearing must not pull the reader off the agent.
     expect(await activeTabId(client)).toBe("agent");
 
@@ -526,7 +529,7 @@ describe("main content area tabs", () => {
        return true;`
     );
     await sleep(300);
-    expect(await openTabIds(client)).toEqual(["agent"]);
+    expect(await openTabIds(client)).toEqual(["agent", "workspace"]);
 
     const still = await localProcessFetch(`${server.baseUrl}/v1/tasks/${taskId}/terminals`);
     const stillListed = await still.json() as { terminals: { role: string }[] };

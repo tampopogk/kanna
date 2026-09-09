@@ -25,6 +25,7 @@ import DiffModal from "./DiffModal.vue";
 import FilePreviewModal from "./FilePreviewModal.vue";
 import ShellModal from "./ShellModal.vue";
 import TaskTerminalPanel from "./TaskTerminalPanel.vue";
+import WorkspaceLogPanel from "./WorkspaceLogPanel.vue";
 import TreeExplorerModal from "./TreeExplorerModal.vue";
 import CommitGraphModal from "./CommitGraphModal.vue";
 import AnalyticsModal from "./AnalyticsModal.vue";
@@ -82,6 +83,23 @@ const agentTabActive = computed(() => activeTabId.value === AGENT_TAB_ID);
  * left, and an `exited` runtime state is the server's verdict that the session
  * ended unreplaced.
  */
+/**
+ * Reopen one of the task's retained terminals from the Workspace log.
+ *
+ * Closing such a tab hides the view and leaves the record alone, so the log is
+ * where it is found again.
+ */
+function openRetainedTerminal(terminalSessionId: string): void {
+  const taskId = props.item?.id;
+  if (!taskId) return;
+  props.views?.tabs.openTab({
+    kind: "terminal",
+    terminalSessionId,
+    terminalTaskId: taskId,
+    terminalLive: false,
+  });
+}
+
 const agentSessionCanStart = computed(() => {
   const item = props.item;
   if (!item) return false;
@@ -726,6 +744,14 @@ function dismissCommandHint() {
           :archived="tab.terminalArchived"
           :exit-code="tab.terminalExitCode"
           :active="activeTabId === tab.id"
+        />
+        <WorkspaceLogPanel
+          v-else-if="tab.kind === 'workspace' && item?.id"
+          v-show="activeTabId === tab.id"
+          :task-id="item.id"
+          :revision="item.updated_at"
+          :active="activeTabId === tab.id"
+          @open-terminal="openRetainedTerminal"
         />
         <TreeExplorerModal
           v-else-if="tab.kind === 'tree'"

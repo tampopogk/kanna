@@ -16,6 +16,7 @@ export type MainTabKind =
   | "file"
   | "shell"
   | "terminal"
+  | "workspace"
   | "tree"
   | "graph"
   | "analytics"
@@ -114,6 +115,10 @@ export function isRestorableTab(tab: MainTabDescriptor): boolean {
       return false;
     case "file":
       return Boolean(tab.filePath) && !tab.remoteContent;
+    case "workspace":
+      // The log is a read of durable server records, so it rebuilds honestly
+      // from nothing but the task it belongs to.
+      return true;
     case "terminal":
       // Restorable for the same reason a shell tab is: the session id is the
       // launch's, recorded on the server, so the tab reattaches to whatever
@@ -185,6 +190,7 @@ const TAB_SHORTCUT_CONTEXTS: Record<MainTabKind, ShortcutContext> = {
   file: "file",
   shell: "shell",
   terminal: "shell",
+  workspace: "main",
   tree: "tree",
   graph: "graph",
   analytics: "main",
@@ -203,6 +209,8 @@ export function mainTabId(descriptor: MainTabDescriptor): string {
       return AGENT_TAB_ID;
     case "shell":
       return descriptor.shellScope === "repo" ? "shell:repo" : "shell";
+    case "workspace":
+      return "workspace";
     case "terminal":
       return `terminal:${descriptor.terminalSessionId ?? ""}`;
     case "file":
