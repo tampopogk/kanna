@@ -314,7 +314,7 @@ async function createRecoverableTask(
 ): Promise<string> {
   const agentProvider = options.agentProvider ?? "claude";
   const setup = options.marker
-    ? [installProviderScript(agentProvider, agentReadyScript(options.marker))]
+    ? [installProviderScript(agentProvider, options.marker)]
     : options.setup;
   const customTaskOption = setup
     ? `customTask: {
@@ -390,16 +390,19 @@ const PROVIDER_BIN_DIR = ".kanna/test-provider-bin";
  * setup that never exits means no agent is ever started. The marker belongs to
  * the agent, so the agent is what prints it.
  */
-function agentReadyScript(marker: string): string {
-  return `printf '${marker}\\n'; while true; do sleep 60; done`;
-}
-
-/** The setup that installs that CLI where the workspace PATH will find it. */
-function installProviderScript(provider: string, body: string): string {
+function installProviderScript(provider: string, marker: string): string {
+  const target = `${PROVIDER_BIN_DIR}/${provider}`;
+  // One `printf '%s\n'` per script line, with the marker line passed as an
+  // argument rather than folded into the format string. Writing the whole
+  // script as a single quoted format string cannot work: the script itself
+  // contains single quotes, which close the setup command's own quoting, and
+  // the `\n` the agent must print is then eaten by the writing printf — which
+  // is how this fixture came to install an agent that printed a literal
+  // `ORIGINAL_READYn`.
   return [
     `mkdir -p ${PROVIDER_BIN_DIR}`,
-    `printf '#!/bin/sh\\n${body}\\n' > ${PROVIDER_BIN_DIR}/${provider}`,
-    `chmod +x ${PROVIDER_BIN_DIR}/${provider}`,
+    `printf '%s\\n' '#!/bin/sh' "printf '${marker}\\\\n'" 'while true; do sleep 60; done' > ${target}`,
+    `chmod +x ${target}`,
   ].join(" && ");
 }
 
