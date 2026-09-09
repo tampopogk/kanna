@@ -2132,8 +2132,22 @@ async fn resolve_task_session_id(db_path: String, task_id: String) -> Result<Str
     .map_err(|error| format!("session lookup worker failed: {error}"))?
 }
 
+/// Terminal ids that name a daemon session directly rather than a task whose
+/// agent session has to be looked up.
+///
+/// A worktree or repository shell (`shell-…`) always worked this way. A task's
+/// *other* terminals — the startup shell a launch runs its setup in
+/// (`setup-…`) and a departing workspace's teardown (`td-…`) — are sessions in
+/// exactly the same sense, and a client that opens one is naming that session,
+/// not the task. Resolving them as task ids finds no task and answers
+/// `no_session`, which is what left a live startup terminal's tab empty and
+/// reconnecting over the output it exists to show.
 fn direct_terminal_session_id(task_id: &str) -> Option<String> {
-    task_id.starts_with("shell-").then(|| task_id.to_string())
+    const DIRECT_SESSION_PREFIXES: [&str; 3] = ["shell-", "setup-", "td-"];
+    DIRECT_SESSION_PREFIXES
+        .iter()
+        .any(|prefix| task_id.starts_with(prefix))
+        .then(|| task_id.to_string())
 }
 
 async fn run_terminal_control(
@@ -2805,8 +2819,8 @@ impl StreamConn {
 
     fn enqueue_terminal_control(&mut self, task_id: String, command: TerminalControlCommand) {
         if !self.terminal_controls.contains_key(&task_id) {
-            let session_id = task_id.starts_with("shell-").then(|| task_id.to_string());
-            let control = self.create_terminal_control(task_id.clone(), session_id);
+            let control =
+                self.create_terminal_control(task_id.clone(), direct_terminal_session_id(&task_id));
             self.terminal_controls.insert(task_id.clone(), control);
         }
 

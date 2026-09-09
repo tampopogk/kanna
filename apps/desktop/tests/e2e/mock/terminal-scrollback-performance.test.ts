@@ -1,5 +1,6 @@
 import { setTimeout as sleep } from "node:timers/promises";
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { installParkingFakeAgent } from "../helpers/fakeAgent";
 import { WebDriverClient } from "../helpers/webdriver";
 import { resetDatabase, importTestRepo, cleanupWorktrees } from "../helpers/reset";
 import { cleanupFixtureRepos, createFixtureRepo } from "../helpers/fixture-repo";
@@ -185,7 +186,7 @@ async function createDeterministicAgentTask(
          customTask: {
            executionMode: "pty",
            agentProvider: "claude",
-           setup: [${JSON.stringify(setupCommand)}],
+           setup: ${JSON.stringify(setupCommand)},
          },
        })
      ).then((id) => cb(id)).catch((error) => cb("__error:" + (error?.message || String(error))));`,
@@ -196,9 +197,27 @@ async function createDeterministicAgentTask(
   return taskId;
 }
 
-function buildNumberedOutputCommand(prefix: string, count: number, initialDelaySeconds = 0): string {
-  const delay = initialDelaySeconds > 0 ? `sleep ${initialDelaySeconds}; ` : "";
-  return `${delay}awk -v prefix=${shellQuote(prefix)} -v count=${count} 'BEGIN { for (i = 1; i <= count; i++) printf "%s%05d\\n", prefix, i; printf "%sEND\\n", prefix }'; while true; do sleep 60; done`;
+/**
+ * Setup that installs the agent whose scrollback this measures.
+ *
+ * These lines have to be in the *agent's* terminal — that is the session the
+ * snapshot and reattach paths under test serve — and setup now runs in a
+ * terminal of its own, so printing them there would measure nothing and a
+ * setup that parked would leave the task with no agent at all.
+ */
+function buildNumberedOutputCommand(
+  prefix: string,
+  count: number,
+  initialDelaySeconds = 0,
+): string[] {
+  const lines: string[] = [];
+  if (initialDelaySeconds > 0) {
+    lines.push(`sleep ${initialDelaySeconds}`);
+  }
+  lines.push(
+    `awk -v prefix=${shellQuote(prefix)} -v count=${count} 'BEGIN { for (i = 1; i <= count; i++) printf "%s%05d\\n", prefix, i; printf "%sEND\\n", prefix }'`,
+  );
+  return installParkingFakeAgent("claude", lines);
 }
 
 function shellQuote(value: string): string {

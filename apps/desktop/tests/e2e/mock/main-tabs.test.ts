@@ -589,14 +589,27 @@ describe("main content area tabs", () => {
       await sleep(200);
     }
     expect(tabs).toContain(`terminal:${stageSetupSessionId}`);
-    // It appeared while the setup is still running, so it is the live view
-    // rather than a finished one's archive.
+    // A startup terminal appearing must not pull the reader off the agent.
     expect(await activeTabId(client)).toBe("agent");
-    const listedLive = await client.executeSync<boolean>(
-      `const tab = document.querySelector('[data-testid="main-tab-terminal:${stageSetupSessionId}"]');
-       return Boolean(tab);`
+
+    // And it shows the setup that is running: a live startup terminal is a
+    // session in its own right, so the tab attaches to it directly rather
+    // than resolving the task's agent session and finding nothing.
+    await client.executeSync(
+      `document.querySelector('[data-testid="main-tab-terminal:${stageSetupSessionId}"]').click();`
     );
-    expect(listedLive).toBe(true);
+    const liveDeadline = Date.now() + 20_000;
+    let liveLines: string[] = [];
+    while (Date.now() < liveDeadline) {
+      liveLines = await client.executeSync<string[]>(
+        `const buffers = window.__KANNA_E2E__.terminalBuffers;
+         if (!buffers || !buffers.sessionIds().includes("${stageSetupSessionId}")) return [];
+         return buffers.lines("${stageSetupSessionId}");`
+      );
+      if (liveLines.some((line) => line.includes("STAGE_SETUP_RUNNING"))) break;
+      await sleep(200);
+    }
+    expect(liveLines.some((line) => line.includes("STAGE_SETUP_RUNNING"))).toBe(true);
 
     await tauriInvoke(client, "kill_session", { sessionId: stageSetupSessionId }).catch(() => null);
     await client.executeAsync<string>(
