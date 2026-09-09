@@ -428,8 +428,15 @@ pub(crate) async fn terminal_state_watcher_loop(
 /// positively says `setup` or `teardown` is excluded, so a lookup failure can
 /// never silently stop an agent's completion from being observed.
 fn is_agent_terminal_session(state: &http_api::AppState, session_id: &str) -> bool {
-    let Ok(db) = Db::open(&state.config().db_path) else {
-        return true;
+    let db = match Db::open(&state.config().db_path) {
+        Ok(db) => db,
+        Err(error) => {
+            log::warn!(
+                "could not open the database to read the terminal role for {session_id}; \
+                 treating it as the task's agent: {error}"
+            );
+            return true;
+        }
     };
     match db.is_agent_terminal_session(session_id) {
         Ok(is_agent) => is_agent,
@@ -449,8 +456,16 @@ const MAX_ARCHIVED_TERMINAL_FRAME_BYTES: usize = 256 * 1024;
 async fn retire_finished_terminal_session(state: &http_api::AppState, session_id: &str, code: i32) {
     let config = state.config();
     archive_finished_terminal_frame(&config.db_path, &config.daemon_dir, session_id).await;
-    let Ok(db) = Db::open(&config.db_path) else {
-        return;
+    let db = match Db::open(&config.db_path) {
+        Ok(db) => db,
+        Err(error) => {
+            // The row stays `live` for a terminal whose process is gone; say
+            // so, because nothing else will notice.
+            log::warn!(
+                "could not open the database to retire the finished terminal {session_id}: {error}"
+            );
+            return;
+        }
     };
     if let Err(error) = db.retire_task_terminal_session(session_id, Some(code as i64)) {
         log::warn!("failed to retire the finished terminal {session_id}: {error}");
@@ -478,8 +493,15 @@ pub(crate) async fn archive_finished_terminal_frame(
             return;
         }
     };
-    let Ok(db) = Db::open(db_path) else {
-        return;
+    let db = match Db::open(db_path) {
+        Ok(db) => db,
+        Err(error) => {
+            log::warn!(
+                "could not open the database to archive the final frame of terminal \
+                 {session_id}: {error}"
+            );
+            return;
+        }
     };
     let (cols, rows, vt) = frame;
     if let Err(error) =
@@ -518,7 +540,15 @@ pub(crate) async fn archived_terminal_frame(
         }
         // A terminal the daemon no longer knows anything about simply has no
         // archive; the row says so and the tab must not offer to render one.
-        DaemonEvent::Error { .. } => Ok(None),
+        // It is logged because "the daemon dropped the frame" and "there was
+        // never a frame" reach the reader as the same empty tab.
+        DaemonEvent::Error { code, message } => {
+            log::warn!(
+                "the daemon has no final frame for terminal {session_id}: {message} \
+                 (code {code:?})"
+            );
+            Ok(None)
+        }
         other => Err(format!("unexpected daemon snapshot response: {other:?}")),
     }
 }
