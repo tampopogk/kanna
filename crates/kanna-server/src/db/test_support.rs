@@ -9,15 +9,21 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 impl Db {
+    /// A database path this run alone owns.
+    ///
+    /// `suffix` is a label, not an identity: several tasks' gates run
+    /// concurrently on one machine, so the same label is asked for by several
+    /// live processes at once. [`crate::test_paths`] adds what makes the path
+    /// theirs alone, so two callers never name one file — and `open_for_tests`
+    /// below never deletes a database another run is using.
     pub fn test_db_path(suffix: &str) -> String {
-        std::env::temp_dir()
-            .join(format!("kanna-server-db-{suffix}.sqlite"))
-            .to_string_lossy()
-            .to_string()
+        crate::test_paths::unique_test_file(&format!("kanna-server-db-{suffix}"), "sqlite")
     }
 
     #[cfg(test)]
     pub fn open_for_tests(path: &str) -> Result<Self, rusqlite::Error> {
+        kanna_runtime_defaults::database_access::check(std::path::Path::new(path), true)
+            .map_err(rusqlite::Error::InvalidParameterName)?;
         let path_buf = PathBuf::from(path);
         let _ = std::fs::remove_file(&path_buf);
         // Removing only the database leaves a previous run's WAL and shared
@@ -140,7 +146,6 @@ impl Db {
                 runtime_event_baseline TEXT,
                 runtime_event_pending_at TEXT,
                 blocked_event_baseline INTEGER NOT NULL DEFAULT 0,
-                input_blocked TEXT,
                 composer_text TEXT,
                 composer_attestation TEXT
             );
@@ -212,6 +217,27 @@ impl Db {
             );
             CREATE INDEX idx_stage_run_task_started ON stage_run(task_id, started_at);
 
+            CREATE TABLE task_provider_rejection (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                task_id TEXT NOT NULL,
+                stage_run_id TEXT NOT NULL,
+                stage TEXT NOT NULL,
+                provider TEXT NOT NULL,
+                model TEXT,
+                effort TEXT,
+                source TEXT NOT NULL CHECK (source IN ('pty', 'sdk')),
+                rule_id TEXT NOT NULL,
+                matched_text TEXT NOT NULL,
+                scope TEXT NOT NULL DEFAULT '',
+                cli_version TEXT,
+                recovery TEXT NOT NULL,
+                replacement_run_id TEXT,
+                observed_at TEXT NOT NULL DEFAULT (datetime('now')),
+                UNIQUE (stage_run_id, provider, scope)
+            );
+            CREATE INDEX idx_task_provider_rejection_task_stage
+            ON task_provider_rejection(task_id, stage);
+
             CREATE TABLE settings (
                 key TEXT PRIMARY KEY,
                 value TEXT NOT NULL
@@ -269,6 +295,13 @@ impl Db {
                 PRIMARY KEY (pipeline_item_id, activity)
             );
 
+            CREATE TABLE event_subscription (
+                id TEXT PRIMARY KEY,
+                task_id TEXT NOT NULL REFERENCES pipeline_item(id) ON DELETE CASCADE,
+                revision INTEGER NOT NULL,
+                record TEXT NOT NULL
+            );
+            CREATE INDEX idx_event_subscription_task ON event_subscription(task_id);
             CREATE TABLE task_event (
                 seq INTEGER PRIMARY KEY AUTOINCREMENT,
                 task_id TEXT NOT NULL,
@@ -295,19 +328,6 @@ impl Db {
             );
             CREATE INDEX idx_task_input_task_id ON task_input(task_id, id);
 
-            CREATE TABLE queued_task_input (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                task_id TEXT NOT NULL,
-                source TEXT NOT NULL,
-                message TEXT NOT NULL,
-                state TEXT NOT NULL CHECK (state IN ('preparing', 'held', 'uncertain')),
-                reason TEXT,
-                session_pid INTEGER,
-                queued_at TEXT NOT NULL DEFAULT (datetime('now'))
-            );
-            CREATE INDEX idx_queued_task_input_task_id
-                ON queued_task_input(task_id, id);
-
             CREATE TABLE task_transfer (
                 id TEXT PRIMARY KEY,
                 direction TEXT NOT NULL,
@@ -324,7 +344,8 @@ impl Db {
                 payload_json TEXT,
                 sidecar_cleanup_completed_at TEXT,
                 claim_owner_token TEXT,
-                claim_expires_at TEXT
+                claim_expires_at TEXT,
+                dismissed_at TEXT
             );
             CREATE UNIQUE INDEX idx_task_transfer_active_outgoing_source
             ON task_transfer(source_task_id)
@@ -600,6 +621,26 @@ impl Db {
     }
 
     #[cfg(test)]
+    /// Stamp a stage run with the explicit provider override an advance would
+    /// have carried, so a test can exercise the layer that outranks every
+    /// other resolution step.
+    pub fn set_test_stage_run_provider_override(
+        &self,
+        run_id: &str,
+        provider_override: &crate::db::StageProviderOverride,
+    ) -> Result<(), rusqlite::Error> {
+        let encoded = serde_json::to_string(provider_override).map_err(|error| {
+            rusqlite::Error::ToSqlConversionFailure(Box::new(std::io::Error::other(
+                error.to_string(),
+            )))
+        })?;
+        self.conn.execute(
+            "UPDATE stage_run SET provider_override = ?2 WHERE id = ?1",
+            rusqlite::params![run_id, encoded],
+        )?;
+        Ok(())
+    }
+
     pub fn update_test_pipeline_item_stage_context(
         &self,
         id: &str,

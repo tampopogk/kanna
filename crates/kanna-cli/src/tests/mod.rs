@@ -187,6 +187,38 @@ fn typed_tool_surfaces() -> BTreeMap<&'static str, TypedToolSurface> {
             },
         ),
         (
+            "kanna_subscribe_events",
+            TypedToolSurface {
+                command_path: &["task", "subscribe-events"],
+                param_args: &[
+                    ("task_id", "task_id"),
+                    ("repo_id", "repo_id"),
+                    ("parent_task_id", "parent_task_id"),
+                    ("task_ids", "task_ids"),
+                    ("exclude_task_ids", "exclude_task_ids"),
+                    ("local_only", "local_only"),
+                    ("delivery", "delivery"),
+                ],
+            },
+        ),
+        (
+            "kanna_read_event_subscription",
+            TypedToolSurface {
+                command_path: &["task", "read-event-subscription"],
+                param_args: &[
+                    ("subscription_id", "subscription_id"),
+                    ("acknowledge_batch_id", "acknowledge_batch_id"),
+                ],
+            },
+        ),
+        (
+            "kanna_unsubscribe_events",
+            TypedToolSurface {
+                command_path: &["task", "unsubscribe-events"],
+                param_args: &[("subscription_id", "subscription_id")],
+            },
+        ),
+        (
             "kanna_wait_events",
             TypedToolSurface {
                 command_path: &["task", "wait-events"],
@@ -197,7 +229,9 @@ fn typed_tool_surfaces() -> BTreeMap<&'static str, TypedToolSurface> {
                     ("repo_remote_url_hash", "repo_remote_url_hash"),
                     ("exclude_task_ids", "exclude_task_id"),
                     ("exclude_event_types", "exclude_event_type"),
+                    ("event_types", "event_type"),
                     ("include_self", "include_self"),
+                    ("exclude_own", "exclude_own"),
                     ("local_only", "local_only"),
                     ("include_current_activity", "include_current_activity"),
                     ("short_cursor", "short_cursor"),
@@ -205,6 +239,9 @@ fn typed_tool_surfaces() -> BTreeMap<&'static str, TypedToolSurface> {
                     ("cursor", "cursor"),
                     ("timeout_secs", "timeout_secs"),
                     ("limit", "limit"),
+                    ("min_events", "min_events"),
+                    ("debounce_ms", "debounce_ms"),
+                    ("min_interval_ms", "min_interval_ms"),
                 ],
             },
         ),

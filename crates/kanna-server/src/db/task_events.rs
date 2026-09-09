@@ -103,11 +103,6 @@ pub enum TaskEventKind {
     /// durable `task_input` row this event announces, readable through
     /// `GET /v1/tasks/{id}/inputs`.
     InputDelivered,
-    /// A logical input whose write outcome could not be proven was retired
-    /// when the exact PTY incarnation that owned it exited or was replaced.
-    /// No `task_input` row is created: the event makes the loss visible
-    /// without falsely claiming that the agent received the message.
-    InputDeliveryExpired,
     /// Discrete terminal keys or explicit bytes were written into the task's
     /// live PTY from outside its session — a call to
     /// `POST /v1/tasks/{id}/raw-input`. This is deliberately a separate kind
@@ -119,14 +114,6 @@ pub enum TaskEventKind {
     /// written; `payload.status` is the call's verdict and `payload.sessionPid`
     /// the PTY incarnation it was fenced to.
     RawInputDelivered,
-    /// The task's agent session started or stopped refusing messages
-    /// delivered into it from outside. `payload.inputBlocked` names the reason
-    /// while it is blocked (`inherited-draft-unknown`) and is null when it
-    /// clears. A blocked session is not a failed one and not a busy one: it is
-    /// running normally and silently dropping nothing — every delivery into it
-    /// is refused, including the pre-close merge handoff, until the composer it
-    /// inherited is resolved.
-    InputBlocked,
     /// A detached workspace teardown failed to start or exceeded its deadline.
     TeardownFailed,
     /// A durable lifecycle operation intent (an accepted post, or a stage
@@ -153,6 +140,30 @@ pub enum TaskEventKind {
     /// The task's last unresolved blocker went away. Same derived predicate as
     /// [`Self::TaskBlocked`]; `payload.blockerTaskIds` is empty.
     TaskUnblocked,
+    /// A provider refused this task's turn because the allowance for the
+    /// scope it named is spent. A *positive* match on the provider's own
+    /// rejection output, never inferred from a session going quiet, and the
+    /// claim is exactly as wide as the provider made it: `payload.scope` is
+    /// the model or window the CLI named, and a null scope is "the CLI did
+    /// not say", never "this provider is unavailable".
+    ///
+    /// `payload.provider`, `model`, `effort` and `stageRunId` identify the
+    /// refused attempt; `payload.source` is `pty` or `sdk`; `payload.ruleId`
+    /// and `payload.matchedText` are the pattern and the sentence, so the
+    /// claim can be checked. `payload.recovery` says what was done about it,
+    /// and `payload.replacementRunId` names the fallback run when one
+    /// started. This event is a record, not a verdict: it never finishes a
+    /// run, never advances a stage, and never turns a failure into a success.
+    ProviderQuotaRejected,
+    /// Every recovery this task had is spent, so it is waiting for a person.
+    ///
+    /// The one actionable state, emitted once per rejection that parks —
+    /// never on a loop. `payload.reason` is the recovery verdict
+    /// (`parked-no-candidates`, `parked-work-observed`,
+    /// `parked-override-binding`, `parked-no-candidate-list`),
+    /// `payload.rejectedProviders` lists what has been refused at this stage,
+    /// and `payload.action` says in words what a human can do about it.
+    ProviderQuotaParked,
 }
 
 impl TaskEventKind {
@@ -174,14 +185,14 @@ impl TaskEventKind {
             Self::MergeSignaled => "task.merge_signaled",
             Self::MergeHandoffMissing => "task.merge_handoff_missing",
             Self::InputDelivered => "task.input_delivered",
-            Self::InputDeliveryExpired => "task.input_delivery_expired",
             Self::RawInputDelivered => "task.raw_input_delivered",
-            Self::InputBlocked => "task.input_blocked",
             Self::TeardownFailed => "task.teardown_failed",
             Self::LifecycleOperationRetired => "task.lifecycle_operation_retired",
             Self::TransferFinalizing => "task.transfer_finalizing",
             Self::TaskBlocked => "task.blocked",
             Self::TaskUnblocked => "task.unblocked",
+            Self::ProviderQuotaRejected => "task.provider_quota_rejected",
+            Self::ProviderQuotaParked => "task.provider_quota_parked",
         }
     }
 
@@ -203,14 +214,14 @@ impl TaskEventKind {
         Self::MergeSignaled,
         Self::MergeHandoffMissing,
         Self::InputDelivered,
-        Self::InputDeliveryExpired,
         Self::RawInputDelivered,
-        Self::InputBlocked,
         Self::TeardownFailed,
         Self::LifecycleOperationRetired,
         Self::TransferFinalizing,
         Self::TaskBlocked,
         Self::TaskUnblocked,
+        Self::ProviderQuotaRejected,
+        Self::ProviderQuotaParked,
     ];
 }
 
@@ -352,18 +363,30 @@ fn exclusion_clause(column: &str, exclude_task_ids: &[String]) -> String {
     format!(" AND {column} NOT IN ({placeholders})")
 }
 
+/// The allow-list counterpart of [`exclusion_clause`]. An empty list allows
+/// everything, so it contributes no clause at all rather than an `IN ()` that
+/// would match nothing.
+fn inclusion_clause(column: &str, include_values: &[String]) -> String {
+    if include_values.is_empty() {
+        return String::new();
+    }
+    let placeholders = vec!["?"; include_values.len()].join(", ");
+    format!(" AND {column} IN ({placeholders})")
+}
+
 fn exclusion_params(exclude_task_ids: &[String]) -> impl Iterator<Item = SqlValue> + '_ {
     exclude_task_ids
         .iter()
         .map(|task_id| SqlValue::Text(task_id.clone()))
 }
 
-/// What a reader wants dropped from whichever scope it chose.
+/// What a reader wants dropped from — or kept out of — whichever scope it
+/// chose.
 ///
-/// Both lists are filters, never scopes: neither participates in cursor
-/// identity, so a watcher may change either between two calls and keep its
-/// checkpoint. Filtering happens in SQL rather than after the read because the
-/// point of an exclusion is that the wait does *not* return — a manager that
+/// All three lists are filters, never scopes: none participates in cursor
+/// identity, so a watcher may change any of them between two calls and keep
+/// its checkpoint. Filtering happens in SQL rather than after the read because
+/// the point of a filter is that the wait does *not* return — a manager that
 /// dropped `task.activity_changed` must sleep through a human reading a task,
 /// not wake up and discard the row.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -372,27 +395,88 @@ pub struct TaskEventFilters {
     pub exclude_task_ids: Vec<String>,
     /// Event type names (`task.activity_changed`, …) that are dropped.
     pub exclude_event_types: Vec<String>,
+    /// Event type names the reader wants, to the exclusion of everything else.
+    /// Empty means every type is allowed — the allow-list is the complement of
+    /// `exclude_event_types` for a manager that knows the short list it acts
+    /// on and would otherwise have to enumerate every noisy type instead.
+    pub include_event_types: Vec<String>,
+    /// Drop the announcements of deliveries a manager declared itself the
+    /// author of. It breaks the loop where an orchestrator sends input to a
+    /// task and then waits on it: without this the delivery's own
+    /// `task.input_delivered` row ends the very next wait, before the agent it
+    /// spoke to has done anything.
+    ///
+    /// The match is positive and is exactly as wide as the delivering caller's
+    /// own declaration: `payload.source == "manager"` on
+    /// `task.input_delivered` and `task.raw_input_delivered`. An operator's
+    /// delivery is a human intervening in a task a manager is watching and is
+    /// never dropped, and a caller that declared nothing is indistinguishable
+    /// from that human, so it is not dropped either.
+    pub exclude_own_deliveries: bool,
 }
 
+/// Delivery announcements, and the source label that makes one a manager's own
+/// echo. Matched in SQL so a suppressed echo does not end the wait at all.
+const DELIVERY_EVENT_TYPES: [&str; 2] = ["task.input_delivered", "task.raw_input_delivered"];
+const OWN_DELIVERY_SOURCE: &str = "manager";
+
 impl TaskEventFilters {
-    pub fn excludes_event_type(&self, event_type: &str) -> bool {
-        self.exclude_event_types
+    /// Whether a row of this type survives both type lists. An explicit
+    /// exclusion still wins over the allow-list, so a caller that names both
+    /// gets the narrower feed rather than a contradiction.
+    pub fn allows_event_type(&self, event_type: &str) -> bool {
+        if self
+            .exclude_event_types
             .iter()
             .any(|excluded| excluded == event_type)
+        {
+            return false;
+        }
+        self.include_event_types.is_empty()
+            || self
+                .include_event_types
+                .iter()
+                .any(|included| included == event_type)
     }
 
-    /// `AND …` clauses for both lists, in the order [`Self::params`] binds
+    /// `AND …` clauses for every filter, in the order [`Self::params`] binds
     /// them.
     fn clauses(&self, task_id_column: &str) -> String {
         format!(
-            "{}{}",
+            "{}{}{}{}",
             exclusion_clause(task_id_column, &self.exclude_task_ids),
-            exclusion_clause("type", &self.exclude_event_types)
+            exclusion_clause("type", &self.exclude_event_types),
+            inclusion_clause("type", &self.include_event_types),
+            self.own_delivery_clause()
         )
     }
 
+    fn own_delivery_clause(&self) -> String {
+        if !self.exclude_own_deliveries {
+            return String::new();
+        }
+        let placeholders = vec!["?"; DELIVERY_EVENT_TYPES.len()].join(", ");
+        format!(" AND NOT (type IN ({placeholders}) AND json_extract(payload, '$.source') = ?)")
+    }
+
+    fn own_delivery_params(&self) -> Vec<SqlValue> {
+        if !self.exclude_own_deliveries {
+            return Vec::new();
+        }
+        DELIVERY_EVENT_TYPES
+            .iter()
+            .map(|event_type| SqlValue::Text((*event_type).to_string()))
+            .chain(std::iter::once(SqlValue::Text(
+                OWN_DELIVERY_SOURCE.to_string(),
+            )))
+            .collect()
+    }
+
     fn params(&self) -> impl Iterator<Item = SqlValue> + '_ {
-        exclusion_params(&self.exclude_task_ids).chain(exclusion_params(&self.exclude_event_types))
+        exclusion_params(&self.exclude_task_ids)
+            .chain(exclusion_params(&self.exclude_event_types))
+            .chain(exclusion_params(&self.include_event_types))
+            .chain(self.own_delivery_params())
     }
 }
 
@@ -444,6 +528,17 @@ impl Db {
         Ok(())
     }
 
+    pub fn task_runtime_is_settled(&self, task_id: &str) -> rusqlite::Result<bool> {
+        Ok(!self
+            .list_non_busy_task_runtime_states(
+                &TaskEventScope::Tasks(vec![task_id.to_owned()]),
+                &TaskEventFilters::default(),
+                None,
+                1,
+            )?
+            .is_empty())
+    }
+
     pub fn list_non_busy_task_runtime_states(
         &self,
         scope: &TaskEventScope,
@@ -456,6 +551,7 @@ impl Db {
              WHERE closed_at IS NULL
                AND runtime_status IN ('idle', 'waiting', 'exited')
                AND runtime_event_pending_at IS NULL
+               AND runtime_event_baseline = runtime_status
                AND (? IS NULL OR id > ?)
                AND {}{}
              ORDER BY id ASC
@@ -831,62 +927,21 @@ impl Db {
         Ok(rows_affected > 0)
     }
 
-    /// Record whether messages delivered into this task's agent session are
-    /// being refused, and why. `None` clears it.
-    ///
-    /// Returns whether the stored value changed; each edge appends one
-    /// `task.input_blocked` event. Kept off `activity` and `runtime_status`
-    /// deliberately — a wedged session is `idle` and reads as perfectly
-    /// healthy through both, which is exactly why the wedge was invisible
-    /// until an unrelated agent's delivery failed against it.
-    pub fn update_pipeline_item_input_blocked(
+    /// A live daemon session with no rendered verdict is unknown, including
+    /// immediately after a handoff.  Clear any stale projection rather than
+    /// presenting the predecessor's idle value as current evidence.
+    pub fn clear_unobserved_live_runtime_status(
         &self,
-        task_id: &str,
-        input_blocked: Option<&str>,
+        session_id: &str,
     ) -> Result<bool, rusqlite::Error> {
-        self.with_immediate_transaction(|db| {
-            let previous: Option<Option<String>> = db
-                .conn
-                .query_row(
-                    "SELECT input_blocked FROM pipeline_item WHERE id = ? AND closed_at IS NULL",
-                    [task_id],
-                    |row| row.get(0),
-                )
-                .optional()?;
-            let Some(previous) = previous else {
-                return Ok(false);
-            };
-            if previous.as_deref() == input_blocked {
-                return Ok(false);
-            }
-            db.conn.execute(
-                "UPDATE pipeline_item
-                 SET input_blocked = ?, updated_at = datetime('now')
-                 WHERE id = ?",
-                (input_blocked, task_id),
-            )?;
-            db.append_task_event(
-                task_id,
-                TaskEventKind::InputBlocked,
-                json!({ "inputBlocked": input_blocked }),
-            )?;
-            Ok(true)
-        })
-    }
-
-    #[cfg(test)]
-    pub fn get_pipeline_item_input_blocked(
-        &self,
-        task_id: &str,
-    ) -> Result<Option<String>, rusqlite::Error> {
-        self.conn
-            .query_row(
-                "SELECT input_blocked FROM pipeline_item WHERE id = ?",
-                [task_id],
-                |row| row.get(0),
-            )
-            .optional()
-            .map(Option::flatten)
+        let rows_affected = self.conn.execute(
+            "UPDATE pipeline_item
+             SET runtime_status = NULL, runtime_event_pending_at = NULL,
+                 updated_at = datetime('now')
+             WHERE id = ? AND closed_at IS NULL",
+            [session_id],
+        )?;
+        Ok(rows_affected > 0)
     }
 
     #[cfg(test)]

@@ -3646,16 +3646,16 @@ fn read_agent_definition_loads_builtin_task_manager_agent_with_codex_first() {
     assert!(definition
         .prompt
         .contains("Scope the watch to the whole repository"));
+    assert!(definition.prompt.contains("kanna_subscribe_events"));
     assert!(definition
         .prompt
-        .contains("kanna-cli task watch --repo-id <repo-id>"));
+        .contains("tasks already settled before you subscribed"));
     assert!(definition
         .prompt
-        .contains("starts at the live tail without replaying history"));
+        .contains("Do not depend on remembering to background or re-arm a watcher each turn"));
     assert!(definition
         .prompt
-        .contains("Do not hand-roll shell/Python wrappers around `kanna_wait_events`"));
-    assert!(definition.prompt.contains("A wake means “drain the feed,”"));
+        .contains("A wake means “read the mailbox”"));
     assert!(definition
         .prompt
         .contains("manager-facing settled activity is server-debounced for 10 seconds"));
@@ -6829,7 +6829,7 @@ fn prepare_task_uses_builtin_default_workflow_when_repo_has_no_local_default_wor
         firebase_project_id: "kanna-local".to_string(),
         firebase_auth_emulator_url: None,
         firebase_firestore_emulator_host: None,
-        daemon_dir: "/tmp/kanna-daemon".to_string(),
+        daemon_dir: crate::test_paths::unique_test_path_string("kanna-daemon"),
         db_path: Db::test_db_path("default-workflow-fallback"),
         kanna_cli_path: None,
         desktop_id: "desktop-1".to_string(),
@@ -6841,7 +6841,7 @@ fn prepare_task_uses_builtin_default_workflow_when_repo_has_no_local_default_wor
         lan_port: 48120,
         transfer_port: 4455,
         activity_event_debounce_seconds: 300,
-        pairing_store_path: "/tmp/kanna-pairings.json".to_string(),
+        pairing_store_path: crate::test_paths::unique_test_file("kanna-pairings", "json"),
     };
     let db = Db::open_for_tests(&config.db_path).unwrap();
     db.insert_test_repo_with_path("repo-1", &repo_root.to_string_lossy(), "Repo One")
@@ -6959,7 +6959,7 @@ fn prepare_task_prefers_explicit_then_repo_then_agent_definition_over_default_pr
         firebase_project_id: "kanna-local".to_string(),
         firebase_auth_emulator_url: None,
         firebase_firestore_emulator_host: None,
-        daemon_dir: "/tmp/kanna-daemon".to_string(),
+        daemon_dir: crate::test_paths::unique_test_path_string("kanna-daemon"),
         db_path: Db::test_db_path("default-agent-provider"),
         kanna_cli_path: None,
         desktop_id: "desktop-1".to_string(),
@@ -6971,7 +6971,7 @@ fn prepare_task_prefers_explicit_then_repo_then_agent_definition_over_default_pr
         lan_port: 48120,
         transfer_port: 4455,
         activity_event_debounce_seconds: 300,
-        pairing_store_path: "/tmp/kanna-pairings.json".to_string(),
+        pairing_store_path: crate::test_paths::unique_test_file("kanna-pairings", "json"),
     };
     let db = Db::open_for_tests(&config.db_path).unwrap();
     db.insert_test_repo_with_path("repo-1", &repo_root.to_string_lossy(), "Repo One")

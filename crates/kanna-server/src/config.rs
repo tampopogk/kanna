@@ -205,7 +205,9 @@ impl Config {
             Ok(p) => PathBuf::from(p),
             Err(_) => data_root.join("Kanna").join("server.toml"),
         };
-        load_from_path(&config_path, &data_root)
+        let config = load_from_path(&config_path, &data_root)?;
+        kanna_runtime_defaults::database_access::check(Path::new(&config.db_path), cfg!(test))?;
+        Ok(config)
     }
 }
 
@@ -217,19 +219,9 @@ mod tests {
     };
     use std::fs;
     use std::path::PathBuf;
-    use std::time::{SystemTime, UNIX_EPOCH};
 
     fn unique_test_dir(label: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!(
-            "kanna-server-config-{label}-{}-{}",
-            std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        fs::create_dir_all(&dir).unwrap();
-        dir
+        crate::test_paths::unique_test_dir(&format!("kanna-server-config-{label}"))
     }
 
     #[test]

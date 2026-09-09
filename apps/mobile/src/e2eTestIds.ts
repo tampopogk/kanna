@@ -52,8 +52,16 @@ export const MOBILE_E2E_IDS = {
   taskAttachmentPreview: "mobile.task-attachment-preview",
   taskAttachmentRemove: "mobile.task-attachment-remove",
   taskAttachmentError: "mobile.task-attachment-error",
+  taskTerminalControl: "mobile.task-terminal-control",
   taskInputStatus: "mobile.task-input-status",
-  taskQueuedInputStatus: "mobile.task-queued-input-status",
+  taskTerminalDirectInputToggle: "mobile.task-terminal-direct-input-toggle",
+  taskTerminalDirectInputStatus: "mobile.task-terminal-direct-input-status",
+  taskTerminalKeyStrip: "mobile.task-terminal-key-strip",
+  taskTerminalKeyDisabledReason: "mobile.task-terminal-key-disabled-reason",
+  taskTerminalKey(key: string): string {
+    return `mobile.task-terminal-key.${key}`;
+  },
+  taskInputStatusDismiss: "mobile.task-input-status-dismiss",
   taskQuickReplyRail: "mobile.quick-reply.rail",
   taskQuickReplyPicker: "mobile.quick-reply.picker",
   taskQuickReplyPickerCancel: "mobile.quick-reply.picker.cancel",
@@ -61,6 +69,7 @@ export const MOBILE_E2E_IDS = {
   agentMessageView: "mobile.agent-message-view",
   agentMessageReady: "mobile.agent-message-ready",
   terminalOverlay: "mobile.terminal-overlay",
+  terminalReconnectBadge: "mobile.terminal-reconnect-badge",
   taskCreationRecoverButton: "mobile.task-creation.recover",
   taskPinAction(taskId: string): string {
     return `mobile.task-pin-action.${taskId}`;
@@ -68,8 +77,12 @@ export const MOBILE_E2E_IDS = {
   taskPinError(taskId: string): string {
     return `mobile.task-pin-error.${taskId}`;
   },
+  taskRunningIndicator(taskId: string): string {
+    return `mobile.task-running.${taskId}`;
+  },
   taskBlockedPlaceholder: "mobile.task-blocked-placeholder",
   terminalInspection: "mobile.terminal-inspection",
+  terminalLoadingIndications: "mobile.terminal-loading-indications",
   terminalScrollTop: "mobile.terminal-scroll-top",
   visualCompanionButton: "mobile.visual-companion.button",
   visualCompanionUnread: "mobile.visual-companion.unread",

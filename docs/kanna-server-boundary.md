@@ -11,6 +11,33 @@ The desktop frontend itself is planned to become a `kanna-server` client as well
 - daemon: PTY and session ownership, terminal input and output, agent process lifecycle
 - SQLite DB: repo and task persistence, task metadata, query backing for server resources
 
+## Database opening authority
+
+`kanna-server` validates database access at configuration load, before legacy
+relocation touches either file, and immediately before every `Db::open` or
+`Db::open_migrated`. Test fixture deletion is guarded too. Task-transfer's
+independent companion SQLite opener uses the same runtime-defaults check.
+Path resolution, including canonical/legacy preference, does not grant access.
+
+Close-time worktree cleanup is a server-owned command appended after repository
+teardown. The teardown retains task isolation. Only the cleanup command restores
+`KANNA_TASK_ID` / `KANNA_WORKTREE` to the parent server's values and forwards its
+explicit desktop authorization, after checking database access in that parent.
+Other isolation signals remain intact, and the cleanup opener checks again.
+
+The real desktop database requires explicit `KANNA_DESKTOP_DB_ACCESS=desktop`,
+supplied by the desktop when it launches the server. "Real" covers the shipped
+app, the staging desktop — an owner's daily driver, not a scratch instance —
+and the legacy identifier; the guarded set is derived from those identifier
+constants, so renaming one moves its protection with it. Isolated/test/worktree
+processes cannot override the veto with that authorization. `kd` supplies
+`KANNA_DB_ISOLATED=1`; macOS's ignored `XDG_DATA_HOME` also vetoes production
+access. The guard protects the OS account's production paths independently of
+caller-controlled HOME, including aliases and not-yet-created databases.
+No schema, migration, filename or storage location changes. See
+[database access protection](dev/dev-workflow.md#database-access-protection)
+for the complete caller contract and rejected alternatives.
+
 ## KSP State Invalidation
 
 `StateChanged` remains a correctness invalidation, but task activity no longer
@@ -58,78 +85,69 @@ scope still tells an older consumer exactly what to invalidate.
 ## Terminal Input Boundaries
 
 `POST /v1/tasks/{task_id}/input` carries one logical message, not raw terminal
-bytes. The daemon is the authoritative queue owner: it submits the message
-immediately when the composer is clear, lifts a readable human draft off the
-composer and puts it back around the delivery, and retains the message only for
-a composer it can neither read nor safely swap. The
-accepted queue is session-scoped, survives server/frontend reconnects and
-transactional daemon handoff, and is never redirected to a later run or stage.
+bytes. The daemon writes it immediately: the text, framed as a paste when the
+terminal supports it, followed by its submission boundary, as one write. It
+does not inspect the composer first, and there is no condition under which it
+retains, defers, or refuses the message.
 
-**A `204` means submitted, not queued.** The message and its Enter are one
-delivery in two PTY writes, and the daemon acknowledges only after the second,
-so a success answer cannot be given for text still sitting unsent at the
-composer. A message retained behind a draft answers `202` with
-`status: "queued"`, `reason: "input_held_by_draft"`, and the task's
-`queuedInputCount`: it stays queued for the producer's boundary and every task
-summary exposes that backlog and reason. **That answer is now the exception,
-not the rule** — see "A typed draft no longer waits for its human" below. It is first stored in
-`queued_task_input`, not falsely recorded as delivered. Reported by the product owner on 2026-08-20, when replies sent from
-mobile sat at the agent's prompt until someone pressed Enter at that terminal
-while the phone had been told they were delivered.
+**A live session always takes the message.** Until 2026-09-08 the daemon parked
+a delivery behind a human's unsent draft, and withheld its Enter from a
+terminal that would not stop repainting; ten seconds later the same session
+began refusing every later message until somebody typed into that terminal. It
+reproduced three times in one day on 0.3.0-staging.12 — including an owner
+answering a consultation from their phone, whose answer never arrived and whose
+machine had no way to clear it. The owner's decision is recorded verbatim: *"The
+input protection is killing me. I'd rather have collisions."* A message that
+occasionally lands after somebody's half-typed line is far cheaper than one that
+silently never arrives, so the collision is the accepted outcome and the hold is
+gone. Nothing is queued, nothing is parked, and no session refuses input because
+of what is on its composer.
 
-**A keystroke that cannot type does not hold anything.** The desktop declares
-every non-Enter keydown a draft, so opening a task's terminal and pressing an
-arrow, an Escape or a PageUp — or clicking, or scrolling — used to park every
-later phone or manager delivery behind a line nobody had typed, and the phone
-was shown a queued-input banner while that composer was visibly empty (owner
-report, 2026-09-05). The daemon now classifies the bytes of each declared draft
-write and only counts the ones that can put text at a composer: navigation,
-scrolling, deletion, mouse and focus reports, a bare Escape and the abandon
-keys create nothing, so they declare no draft. Cursor up and down are the
-exception — they recall a previous line *into* the composer, so they count like
-typing. A real draft still holds, and still releases at the producer's own
-submission boundary or when the composer is attested empty, which is what a
-cleared draft renders as. The full classification and why Escape/Ctrl-C/Ctrl-U
-are inert rather than clearing are in `crates/daemon/SPEC.md`.
+**A `204` means written, boundary included.** The message and its Enter are one
+PTY write, so the acknowledgement means what a caller assumes it means. The
+remaining failures are about the *session*, not the composer:
+`no_live_agent_session` when there is no live PTY session or it was replaced
+before acceptance, and `503 delivery_uncertain` when the round trip to the
+daemon was lost after the bytes may already have reached the PTY — which must
+not be retried blindly, and is deliberately not recorded as delivered.
 
-**A composer painted grey is not a draft.** Claude Code paints the last
-submitted line back as a faint tab-to-accept ghost, so a session whose ledger
-armed once never rendered a textually empty composer again and held every
-delivery for the rest of its life — reported by the owner on 2026-09-07, who
-could see the text was grey while typed text is not. The daemon now reads the
-composer row's styling and cursor as well as its text, and treats the line as
-the provider's own suggestion when *both* every cell after the prompt is faint
-and the cursor sits at the start of the composer rather than after the text.
-Either signal alone is not enough. The ledger stays the primary evidence: a
-frame may only ever clear it, never arm it.
+**What survives is composer attestation.** The typed-byte ledger that used to
+decide whether to hold a message still runs, because it answers a different
+question the codebase depends on: whether text on a `❯` line was typed by
+somebody or is the provider's own chrome. Nothing may be read as an instruction
+unless it is attested `typed`.
 
-**A terminal reply is not a keystroke.** An emulator answers the application's
-own questions — colour reports, device attributes, XTVERSION — up the same PTY
-input path a human types on, and the plain terminal-input frame declares every
-byte it carries a draft unless the client marks it control. Those replies'
-payloads used to be counted as typed characters, arming the ledger on a
-terminal nobody had touched. They are now classified and excluded.
-
-**A typed draft no longer waits for its human.** When the daemon can read the
-composer, and the ledger says it watched the line being typed, it copies the
-draft off the composer, submits the message on its own, and writes the draft
-back byte for byte — attested `typed` again, as it was. Keystrokes that arrive
-mid-swap are buffered and replayed onto the restored draft in order, so nothing
-a human types is lost or lands inside the delivery. Every step is verified
-against the rendered composer and an unverifiable one abandons without writing
-anything, leaving the draft untouched and the message queued. So
-`input_held_by_draft` now means a composer the daemon could not read or could
-not verify: an unmeasured provider, a draft inherited without its ledger, a
-dialog, a busy frame, a wrapped multi-line draft, a cursor left mid-line, or a
-clear that did not clear. The mechanics, the abort cases and what happens when
-a submission cannot be proven are in `crates/daemon/SPEC.md`.
-
-A held message is kept, not dropped, and mobile's banner says so: it names the
-count, the reason, and that Kanna sends it once the draft is submitted or
-cleared, so nobody resends and delivers it twice.
+- **A keystroke that cannot type declares no draft.** The desktop declares
+  every non-Enter keydown a draft, so opening a task's terminal and pressing an
+  arrow, an Escape or a PageUp — or clicking, or scrolling — used to arm the
+  ledger and make an empty composer read as a human's unsent line (owner
+  report, 2026-09-05). The daemon classifies the bytes of each declared draft
+  write and only counts the ones that can put text at a composer: navigation,
+  scrolling, deletion, mouse and focus reports, a bare Escape and the abandon
+  keys create nothing. Cursor up and down are the exception — they recall a
+  previous line *into* the composer, so they count like typing. The full
+  classification and why Escape/Ctrl-C/Ctrl-U are inert rather than clearing is
+  in `crates/daemon/SPEC.md`.
+- **A composer painted grey is not a draft.** Claude Code paints the last
+  submitted line back as a faint tab-to-accept ghost, so a session whose ledger
+  armed once never rendered a textually empty composer again and reported
+  `typed` for the rest of its life — reported by the owner on 2026-09-07, who
+  could see the text was grey while typed text is not. The daemon reads the
+  composer row's styling and cursor as well as its text, and treats the line as
+  the provider's own suggestion when *both* every cell after the prompt is
+  faint and the cursor sits at the start of the composer rather than after the
+  text. Either signal alone is not enough. The ledger stays the primary
+  evidence: a frame may only ever clear it, never arm it.
+- **A terminal reply is not a keystroke.** An emulator answers the
+  application's own questions — colour reports, device attributes, XTVERSION —
+  up the same PTY input path a human types on, and the plain terminal-input
+  frame declares every byte it carries a draft unless the client marks it
+  control. Those replies' payloads used to be counted as typed characters,
+  arming the ledger on a terminal nobody had touched. They are classified and
+  excluded.
 
 When the terminal application has enabled bracketed-paste mode, the daemon
-frames the text as one paste before the fenced Enter — for a message with an
+frames the text as one paste before the trailing Enter — for a message with an
 embedded CR or LF, and for any message of at least 256 bytes. The PTY is
 otherwise only a byte stream, and the daemon's writes are not the CLI's reads: a
 PTY master takes about a kilobyte per write, so a longer message reaches the CLI
@@ -138,23 +156,16 @@ several editor actions and submits only a trailing fragment. Measured on
 2026-09-05 against Claude Code 2.1.261: a 1,191-byte single-line message was
 written as 1022 + 169 bytes, and only the 169-byte tail was submitted.
 Unadvertised mode and input short enough to arrive in one write remain unframed,
-preserving literal-text and provider slash-command semantics.
+preserving literal-text and provider slash-command semantics. The paste markers
+travel in-band with the bytes, so however the kernel queue divides them the
+closing marker still ends the editor operation and the CR after it is a
+submission rather than pasted text.
 
-**The Enter waits for the terminal to settle.** Submission is not inferred from
-PTY bytes, and it is not inferred from elapsed time either. A CLI repaints while
-it consumes an input burst, so an Enter written into that repaint is taken as
-part of the burst and the message sits unsent at the composer while the delivery
-reports success — the owner's 1,227-byte dictated message on 2026-09-05 drained
-for about 19 seconds, its Enter went out 150 ms in, and nothing ran for six
-minutes. The daemon now holds the Enter until nothing has been drawn for a
-settle window that restarts on every output chunk, bounded at 25 seconds. When
-that bound elapses the Enter is withheld rather than written blind, and
-`POST /v1/tasks/{task_id}/input` answers `503` with
-`reason: "delivery_uncertain"`: the text is on that composer, a human at that
-terminal may still submit it, and a retry would put a second copy behind it.
-Nothing is recorded as delivered. The parked text then leaves that session's
-composer attestation `unknown` and every later delivery is refused — see below
-and `crates/daemon/SPEC.md`.
+The writer holds a fixed short pause after one delivered message's submission
+boundary before the next queued message may own the composer: a CLI needs a
+processing turn after Enter, and two deliveries written back to back without one
+arrive merged. It is write pacing, not a protection — it always elapses, it
+never inspects the terminal, and it cannot withhold a message.
 
 Raw terminal producers classify each frame as draft, submission, or control.
 Desktop keyboard events declare unmodified Enter; mobile LAN and relay clients
@@ -195,12 +206,11 @@ draft/submission/control class, and only the named `enter` key declares a
 submission. A carriage return inside `bytes` is refused rather than written:
 submission is never inferred from bytes in a stream, so an undeclared CR would
 be counted as composer content while the CLI that received it had already
-submitted the line — leaving every later delivered message held behind a draft
-that no longer existed. Everything else is declared a draft, and the daemon's
-existing content classification decides whether it can latch one, so navigation
-and control keys hold nothing. Raw input is deliberately not a way to clear
-draft state: there is no caller-chosen class, and the global draft interlock is
-unchanged.
+submitted the line — leaving the daemon's composer attestation describing a
+prompt that no longer holds what it says. Everything else is declared a draft,
+and the daemon's existing content classification decides whether it can latch
+one, so navigation and control keys arm nothing. Raw input is deliberately not
+a way to clear attestation: there is no caller-chosen class.
 
 **Fenced, ordered, and honest about what it wrote.** Discovery and delivery both
 hold the task's lifecycle lease, and every write is fenced to the PTY process ID
@@ -376,8 +386,8 @@ cutover. Repeated proposals for the applied size are no-ops; no-viewer state
 retains the last applied size. Geometry changes use an ordered snapshot and a
 new stream generation rather than byte-offset replay, while resume within
 unchanged geometry remains incremental. Snapshot application never echoes a
-resize request. Geometry does not clear draft bytes, alter composer
-attestation, or release held logical input.
+resize request. Geometry does not clear draft bytes or alter composer
+attestation.
 
 Mixed versions are deliberately conservative. New clients against an old owner
 suppress automatic remote sizing and report that takeover is unavailable. On a
@@ -552,7 +562,7 @@ in `docs/task-specs/c9f5721b.md` and enforced by the router authorization tests.
 - `GET /v1/tasks/search?query=...`
 - `GET /v1/tasks/{task_id}/children` (durable direct-child fan-out history; includes closed children)
 - `GET /v1/tasks/{task_id}/inputs?tail=...` (durable instruction history: every message delivered into the task's agent session from outside it)
-- `GET /v1/task-events?taskIds=...|parentTaskId=...|repoId=...|repoRemoteUrlHash=...&excludeTaskIds=...&cursor=...&timeoutSecs=...&limit=...` (multi-task, multi-machine event feed; blocks server-side until an event arrives or the window elapses; `excludeTaskIds` is a filter over the chosen scope, see [Task Event Feed](#task-event-feed))
+- `GET /v1/task-events?taskIds=...|parentTaskId=...|repoId=...|repoRemoteUrlHash=...&excludeTaskIds=...&excludeEventTypes=...&eventTypes=...&excludeOwn=...&cursor=...&timeoutSecs=...&limit=...&minEvents=...&debounceMs=...&minIntervalMs=...` (multi-task, multi-machine event feed; blocks server-side until the batch is complete or the window elapses; `excludeTaskIds`, `excludeEventTypes`, `eventTypes` and `excludeOwn` are filters over the chosen scope, see [Task Event Feed](#task-event-feed))
 - `POST /v1/tasks`
 - `POST /v1/tasks/{task_id}/input` (optionally with one base64 image `attachment`; see [Image attachments](#image-attachments))
 - `POST /v1/tasks/{task_id}/actions/complete-stage`
@@ -789,13 +799,35 @@ new peers from retained history. A server that has no relay route keeps the
 native cursor shape and, for an account-wide-authorized caller, adds a
 relay-unavailable `machineErrors` warning.
 Agent-facing catalog calls set `shortCursor=true`. The server then retains the
-full native or `ks1.` checkpoint behind a durable `kh1.` plus eight-hex-digit
-handle. Each successful resume advances that same handle, so a busy watcher
-does not accumulate abandoned entries or evict its live checkpoint. The
-mapping is stored in the server database and survives server and relay
-restarts; abandoned mappings are pruned with the 14-day event-retention
-window. An unknown or corrupt handle is a handle-resolution failure, distinct
-from a native cursor whose event position predates retained history. Callers
+full native or `ks1.` checkpoint behind a durable
+`kh1.<issuer>.<nonce>` handle, where both fields are eight hex digits and the
+issuer identifies the server that minted it. Each successful resume advances
+that same handle, so a busy watcher does not accumulate abandoned entries or
+evict its live checkpoint. The mapping is stored in the server database and
+survives server and relay restarts; abandoned mappings are pruned with the
+14-day event-retention window.
+
+A handle is only resolvable on the server that issued it — its process cache
+and its `task_event_cursor_handle` rows are local — and the two ways it can
+fail to resolve are answered differently, because they are different faults:
+
+- **This server issued it and no longer holds it.** The wait **restarts from
+  retained history and returns a new handle**, reporting `cursorReset: true`
+  and a `cursorResetReason` naming the handle. This is the recovery the
+  response used to instruct the caller to perform; the server performs it
+  instead, because a caller that re-armed mechanically got an instantaneous,
+  permanent 400 it could repeat at machine speed. One did, ~100 times a second
+  for eleven hours, writing 22.8 GB of one identical line. Nothing is lost:
+  the handle only stops resolving once its checkpoint has aged out, and
+  retained history is replayed in full.
+- **Another machine issued it.** The wait is refused with `400` naming the
+  issuing token and this server, because no retry here can ever resolve it and
+  this server's retained history is not what the caller is watching. That
+  refusal is a routing fault — the wait belongs on the issuing machine — not
+  an expiry, and it must never be reported as one.
+
+A handle-resolution failure remains distinct from a native cursor whose event
+position predates retained history. Callers
 that omit `shortCursor` keep receiving the deployed stateless
 cursor shapes, and numeric, `p1.`, `p3.`, `kc1.`, and `ks1.` inputs remain
 accepted; resuming one with short cursors enabled upgrades the response.
@@ -981,8 +1013,8 @@ reachable only by whoever held a private stdio pipe.
   control. Absence of the field is not evidence of a stale cursor.
   Single-consumer: a read prunes through the cursor it is given, so exactly one
   desktop process subscribes. This feed carries only *advisory* events —
-  pairing progress and remote terminal frames. The four state-mutating events
-  (`incoming_transfer_request`, `task_pull_requested`,
+  pairing progress and remote terminal frames. The state-mutating events
+  (`incoming_transfer_request`, `task_pull_requested`, `task_pull_refused`,
   `outgoing_transfer_committed`, `outgoing_transfer_finalization_requested`)
   never reach it: the sidecar's stdout reader appends them straight to the
   transfer engine's durable work queue in this process. A full advisory log
@@ -1056,6 +1088,8 @@ intents:
   "Agent-facing task transfer" below.
 - `POST /v1/transfers/{transfer_id}/actions/approve`
 - `POST /v1/transfers/{transfer_id}/actions/reject-incoming`
+- `POST /v1/transfers/{transfer_id}/actions/dismiss-failure` — marks a `failed`
+  transfer read so it stops marking its task; the record itself survives.
 
 Progress reaches the UI through the snapshot's `transfer_status`, which the
 sidebar already renders. There is no bespoke event protocol between the engine
@@ -1086,7 +1120,7 @@ without MCP:
 | `kanna_pull_task` | `task pull` | `POST /v1/transfers/actions/pull-task` |
 | `kanna_task_transfers` | `task transfers` | `GET /v1/tasks/{id}/transfers` |
 
-Four things are contract rather than convenience:
+These things are contract rather than convenience:
 
 - **A destination is canonical identity.** `to_machine` / `from_machine` accept
   a machine (desktop) id from `kanna_list_machines` or a transfer peer id from
@@ -1111,6 +1145,27 @@ Four things are contract rather than convenience:
   `sourceTaskId` and `localTaskId`. A pull's `requestId` is stable for repeats
   within the sidecar's five-minute window, so an unchanged id is a duplicate
   rather than a second move.
+- **A refused pull is recorded on the machine that asked.** A pull is answered
+  synchronously with a request id and fulfilled minutes later by the *source's*
+  engine, so a source that refuses has no reply left to travel back on. It
+  therefore reports the refusal as its own peer request, and the requester
+  records it as a `failed` incoming transfer with a `sourceTaskId` and no
+  `localTaskId` — nothing arrived and nothing will. `kanna_task_transfers`
+  answers for that source id even though no such task exists here, which is
+  what it used to answer 404 to, and the snapshot carries the row as a
+  `transferAlerts` entry so a window has something to show for a move it
+  started. Best effort in one direction only: the refusal is already durable on
+  the source, and a requester that cannot be reached never turns a refusal into
+  retried work.
+- **A transfer failure is reported until it is read.** Nothing else retires
+  one — the move that would have replaced it is the one that did not happen —
+  so a task wore its `⇄✗` marker for the rest of its life.
+  `POST /v1/transfers/{transfer_id}/actions/dismiss-failure` marks a `failed`
+  transfer read (`dismissedAt` on the summary), which stops the marker and the
+  alert without touching the record; a later `completed` transfer of the same
+  task retires it on its own. Only a `failed` transfer may be dismissed: an
+  in-flight one is the current truth about the task, and hiding it would lose
+  the move.
 - **A route that cannot carry the transfer is refused before anything is
   queued.** The relay authenticates every tunnel dial, and the Firebase
   credential it dials with is minted by the signed-in renderer and pushed to
@@ -1119,10 +1174,13 @@ Four things are contract rather than convenience:
   followed by `expected auth_ok text frame` on a socket nobody was watching. The
   server now reads that credential's own `exp` (`cloud_transfer_proxy.rs`), and
   a cloud route inside the expiry margin is reported unusable — with the fix,
-  which is opening the signed-in desktop app on that machine, or using the LAN
-  while both machines share a network. A stale cloud route behind a healthy LAN
-  route costs only the fallback, and the response says so rather than
-  downgrading silently. A cloud-routed *pull* additionally depends on the source
+  which is starting a transfer from the signed-in desktop app on that machine
+  (it refreshes the route as it goes), or using the LAN while both machines
+  share a network. What that check reads is strictly *this* machine's outbound
+  credential: a transfer that just arrived here was dialled with the other
+  machine's, so an incoming move proves nothing about the route reported here.
+  A stale cloud route behind a healthy LAN route costs only the fallback, and
+  the response says so rather than downgrading silently. A cloud-routed *pull* additionally depends on the source
   machine's own credential, which this machine cannot see; the tool description
   says so.
 
@@ -1313,7 +1371,12 @@ cursor-based, not snapshot-diffed:
   one — the log cannot drift from the state.
 - The wait blocks inside the server, bounded by
   `kanna_tool_catalog::MAX_WAIT_TIMEOUT_SECS`, so `kanna-mcp` and `kanna-cli`
-  each issue one plain GET and neither owns a polling loop.
+  each issue one plain GET and neither owns a polling loop. The ceiling stays
+  240s for every path including MCP: `CLIENT_TOOL_CALL_BUDGET_SECS` is 300s
+  because that is where MCP clients abort a `tools/call` and discard its
+  result, and a static assertion keeps a minute of headroom under it. Fewer
+  calls therefore come from batching what one call returns, not from longer
+  ones — see [Batching a task-event wait](#batching-a-task-event-wait).
 - `task.awaiting_input` comes from the daemon's `Waiting` session status, which
   is a positive match on a prompt the agent CLI rendered. It is deliberately
   never inferred from a session going quiet; see
@@ -1349,7 +1412,8 @@ cursor-based, not snapshot-diffed:
   deployed watchers keyed on it keep working. New callers watch
   `task.runtime_changed`; `kanna-cli task watch` suppresses the alias as
   redundant with an event already in the batch.
-- With `includeCurrentActivity=true`, the wait is also level-triggered:
+- Fresh waits default to `includeCurrentActivity=true` and are level-triggered
+  even with `from=now`; explicit `false` preserves edge-only reads:
   every scoped task whose current non-busy state has already survived that
   debounce is returned immediately as a synthetic `task.runtime_changed`
   response row without consuming or inventing a sequence number. It uses daemon
@@ -1363,6 +1427,13 @@ cursor-based, not snapshot-diffed:
   still owe a native page, so it cannot report `hasMore: false` before every
   peer continuation has been consumed. Durable events appended during that
   drain remain ordered by, and advance, their own sequence checkpoint.
+  Snapshot payloads name `reconciliationReason` (`idle_without_verdict`,
+  `awaiting_input`, `session_exited`, or `settled`) and include the current
+  stage, latest run, and `latestRunFinishedWithoutCompletion`. These are
+  observations for reconciliation, not new completion outcomes. A continuation
+  cursor acknowledges the initial scan; subsequent waits return edges rather
+  than the same settled tasks forever. Closed tasks and tasks without an
+  observed settled runtime are excluded. Human read state is never an ack.
 - `task.awaiting_advance` is appended atomically when an un-killed daemon Exit
   ends a manual-transition main run without a stage verdict. It is useful
   terminal context, but managers use the level-triggered runtime-settled wait
@@ -1394,6 +1465,25 @@ cursor-based, not snapshot-diffed:
   themselves. `payload.blocked` is the new state and `payload.blockerTaskIds`
   lists the still-unresolved blockers (empty on `task.unblocked`). Closed tasks
   publish nothing: nothing depends on the blocked state of finished work.
+- `task.provider_quota_rejected` announces that a provider positively refused
+  this task's turn because the allowance for the scope it named is spent. It is
+  matched on the CLI's own rejection chrome at a measured version, or on the
+  headless SDK's `rate_limit_info.status`, and is never inferred from a session
+  going quiet. `payload.provider`, `model`, `effort`, `stage` and `stageRunId`
+  identify the refused attempt; `payload.scope` is what the *provider* named
+  (`null` means it named none, which is never "this provider is unavailable");
+  `payload.source` is `pty` or `sdk`; `payload.ruleId`, `payload.matchedText`
+  and `payload.cliVersion` are the evidence, so the claim can be checked rather
+  than believed. `payload.recovery` is what was done —
+  `fallback-started` with `payload.replacementRunId`, or a `parked-*` verdict.
+  The event never finishes a run, advances a stage, or turns a failure into a
+  success.
+- `task.provider_quota_parked` is the one actionable state: nothing is left to
+  try, so the task is waiting for a person. `payload.reason` is the recovery
+  verdict, `payload.rejectedProviders` lists everything refused at this stage,
+  and `payload.action` says what a human can do about it. Emitted once per
+  refusal that parks — there is no retry loop behind it. See
+  [`docs/specs/provider-quota-recovery.md`](specs/provider-quota-recovery.md).
 - `task.input_delivered` announces a message delivered into a task's agent
   session from outside it. `payload.source` is the caller-declared author
   (`operator`, `manager`, `unspecified`); historical retained events may carry
@@ -1413,10 +1503,6 @@ cursor-based, not snapshot-diffed:
   `task_input` row behind it, because a keystroke answering a menu is an action
   and not something somebody said. See
   [Raw terminal keys](#raw-terminal-keys).
-- `task.input_blocked` reports that a task's agent session started or stopped
-  refusing messages delivered into it. `payload.inputBlocked` names the reason
-  while it is blocked and is `null` when it clears; today the only reason is
-  `inherited-draft-unknown`. See [Refused task input](#refused-task-input).
 - `task.teardown_failed` reports that detached best-effort workspace teardown
   failed to start or exceeded its hard deadline. Its payload contains
   `sessionId` and `error`; the same failure is written to the server log.
@@ -1497,6 +1583,101 @@ set adds the caller's own id to `exclude_task_ids` unless `include_self` /
 taken literally — the former is already explicit and the latter excludes the
 parent structurally.
 
+`eventTypes` (comma-separated event type names) is the allow-list complement
+of `excludeEventTypes`, and the third filter over the chosen scope. It exists
+because the exclusion list is the wrong shape for the common manager: one that
+acts on `run.finished`, `task.pr_created`, `task.revision_requested`,
+`task.merge_signaled`, `task.input_delivered`, `task.created` and
+`task.closed` had to enumerate every noisy type instead, and silently started
+waking on every type added afterwards. Empty means every type. An explicit
+`excludeEventTypes` entry still wins, so naming both narrows rather than
+contradicts; a name matching no event type simply matches nothing. Like the
+two exclusion lists it is filtered in SQL, is not part of any cursor, and
+consumes what it drops rather than deferring it — a watcher that widens the
+list later does not get the dropped rows replayed. It is forwarded verbatim to
+every machine leg of an aggregate wait, and an allow-list that does not name
+`task.runtime_changed` suppresses the synthetic `includeCurrentActivity` rows
+with it.
+
+`excludeOwn` breaks the loop where an orchestrator sends input to a task and
+then waits on it: the delivery's own `task.input_delivered` row ends the very
+next wait, before the agent it spoke to has done anything, and the manager
+wakes again on each status flip that follows. It drops `task.input_delivered`
+and `task.raw_input_delivered` rows whose `payload.source` is `manager` —
+raw terminal writes count as own for the same reason ordinary ones do. The
+match is positive and exactly as wide as the delivering caller's own
+declaration. **An operator delivery is never dropped**, because a human
+intervening in a watched task is precisely what a manager must see, and a
+delivery whose caller declared nothing is indistinguishable from that human,
+so it is not dropped either — a manager that wants the suppression declares
+`source: "manager"` on `kanna_send_task_input`, which is what the input record
+asks of it anyway. The label is as far as the record goes: `task_input` records
+*that* a manager spoke, not *which* one, so `excludeOwn` also drops a peer
+manager's delivery into a task this one is watching. That is the honest reading
+of the data — inventing an identity the row does not carry would be worse — and
+a manager that must see its peers' deliveries passes `excludeOwn=false` and
+filters them itself, or reads them with `kanna_task_inputs`, which is the
+durable record and is unaffected. Also a filter, never part of the cursor. Its default is
+client policy, not a server default: `args_with_self_exclusion` in
+`kanna-tool-catalog` sets it for a call made from inside a task session
+(`KANNA_TASK_ID`), on every scope rather than only the repository one, because
+the loop it breaks happens under an explicit `taskIds` watch. The typed
+`kanna-cli task wait-events` applies the same rule; a direct HTTP caller that
+omits it keeps the unfiltered feed.
+
+### Batching a task-event wait
+
+Three parameters shape *when* one wait returns. None of them changes *what* it
+eventually returns: the cursor contract is unchanged, so a batched boundary
+delivers every event exactly once, in sequence order, and a batch that is cut
+short by its timeout still acknowledges what it collected.
+
+- `minEvents` (default 1) holds the wait until that many filtered events have
+  accumulated. It is capped at `limit`, since a response cannot carry more than
+  a page — otherwise asking for more than a page would turn every wait into a
+  timeout.
+- `debounceMs` (default 0, ceiling 60s) keeps collecting for that long after
+  the **first** event of the batch, so a burst — a run finishing, its post
+  starting, a stage change, a PR created — comes back as one response. The
+  window is opened once and never restarted by later events, so a steady stream
+  cannot defer a response indefinitely.
+- `minIntervalMs` (default 0, ceiling 60s) floors how long one call takes
+  before it returns events, measured from the start of the call rather than
+  from an event. It is the rate limit for a caller that loops: however fast
+  events arrive, it wakes at most once per interval. There is no per-caller
+  server state behind it and deliberately so — a wait has no authenticated
+  caller, and the loop's own cadence is what the floor governs.
+
+They compose: the wait returns once it holds `minEvents` and every hold window
+has closed. Two things override all three, because waiting cannot improve
+them — `hasMore`, and a full page. Both mean the caller must call again
+immediately anyway. And the timeout overrides them in the other direction: an
+elapsed window returns whatever accumulated, `waitOutcome: "timeout"` with a
+possibly non-empty `events` array, rather than holding events back for a batch
+the caller never asked to wait longer for.
+
+`minEvents` and `debounceMs` compose with the cross-machine fan-out the way the
+timeout does — enforced by the machine serving the wait, over every leg's
+events together. They are deliberately *not* forwarded to the legs: a
+per-machine minimum would hold one machine's events back while the fan-out
+already had enough of them, and a per-machine debounce would stack on the one
+applied at the top. A leg that has already answered is simply re-armed while
+the batch is still filling, which is how a burst split across machines comes
+back as one response. `kanna-mcp`'s own `km1` client fan-in applies the same
+rule, from the same `kanna_tool_catalog::task_event_batch_is_complete`, so
+`minEvents` counts the same events on every path. The filters are the opposite
+case and *are* forwarded verbatim, because a leg must not return rows the
+caller asked to drop.
+
+The point of all of this is the cost of watching. A singleton manager that
+watched a repository in 100-second legs made ~4,700 requests in two days —
+every leg returned in seconds because runtime flicker counts as an event, and
+79% of that session's token spend was this one surface. `minEvents`,
+`debounceMs`, `eventTypes`, `minIntervalMs` and `excludeOwn` move that cost
+into the server. The complement for continuous management remains
+`kanna_subscribe_events`, whose durable mailbox owns observation; this is the
+cheap version for plain polling.
+
 A cursor is bound to its scope. Resuming a `repoId` cursor with `taskIds` or
 `parentTaskId` (or vice versa) is rejected with HTTP 400 `cursor belongs to a
 different task-event scope`; a watcher that changes scope must start at the
@@ -1555,30 +1736,12 @@ answered.
   messages into another task's PTY or append completion rows to `task_input`.
   Managers observe completion through `kanna_wait_events` for fan-out or
   `kanna_wait_task` for a single task, backed by durable run and task events.
-- **Held deliveries move through a durable FIFO.** The server reserves a
-  `queued_task_input` row before daemon submission, bound to the exact child
-  PID used by `SubmitInputIfSession` as the daemon-session incarnation fence.
-  A held response keeps that row visible; each incarnation-bearing
-  `LogicalInputReleased` daemon event transactionally moves exactly the oldest
-  matching row into `task_input`, preserving boundaries, source, and order.
-  `SessionList.pending_logical_input_count` reconciles missed release events
-  only against held rows owned by that same incarnation. A row owned by a
-  replaced or exited session is retired; it is not promoted from the
-  replacement's pending count. Retirement deletes the queue row and appends
-  `task.input_delivery_expired`, carrying the old PID, queue id, prior state,
-  and reason. It deliberately creates no `task_input` row because the old
-  incarnation never proved delivery.
-- **Interrupted preparation is ambiguous, not delivery evidence.** A server
-  restart converts any leftover `preparing` reservation to
-  `delivery_uncertain`: the server cannot prove whether the daemon accepted and
-  perhaps flushed it before the interruption. A live, exact-incarnation
-  `LogicalInputReleased` edge may consume a `preparing` row when it races the
-  HTTP held-state update, because that edge itself proves acceptance. Reconnect
-  never makes that inference. An uncertain row remains a FIFO barrier for its
-  incarnation: later release evidence cannot be attributed past it, because
-  the event may describe the ambiguous slot itself. It remains sender-visible
-  while that incarnation lives; exit or replacement expires it observably as
-  described above, so it cannot wedge a later PTY incarnation's queue.
+- **A row is written after the daemon answers.** The server records the
+  delivery once the daemon has confirmed the bytes reached the PTY, and not
+  before. There is no queue table and no pending state: nothing is ever
+  retained, so there is nothing to reconcile across a restart. Rows that used
+  to sit `queued` against an empty composer for hours — bookkeeping for a hold
+  that had already resolved — no longer exist.
 - **Uncertain deliveries are not recorded.** A `delivery_uncertain` response
   means the bytes may or may not have reached the PTY; a row asserting the agent
   was told something it may never have heard is a worse record than a missing
@@ -1611,49 +1774,6 @@ from it that nothing was ever sent. The review and qa-dispatcher agent
 definitions require reading this surface before making any claim about what was
 or was not instructed.
 
-## Refused Task Input
-
-A daemon that adopted a session across a restart or handoff never watched that
-terminal being typed into, so it cannot know whether an unsubmitted line is
-sitting at the prompt. It refuses to submit a logical message into such a
-session rather than append to someone else's draft — the guard the
-draft-isolation work established, and it is not weakened here.
-
-The session is alive and idle the whole time it refuses, so `activity`,
-`runtimeState`, and `readState` all report a perfectly healthy task. That is how
-one was found: a finishing task's merge handoff failed against an idle merge
-singleton, and the only record of the wedge was inside the failing task's own
-stage result.
-
-The daemon now resolves most of these itself, by reading the composer it
-inherited rather than waiting for a keystroke (see `crates/daemon/SPEC.md`).
-What remains — a composer holding text this daemon cannot prove is gone — is a
-human's decision about that screen, and it is surfaced rather than discovered.
-Two causes reach it: a session adopted across a restart or handoff whose
-composer holds text nobody here saw typed, and a logical message the daemon
-wrote whose submission it could not prove (above), which parks its text on that
-composer. Both are reported through the one `inherited-draft-unknown` value,
-whose name still says only the first; the value is deliberately unchanged
-because it is read by mobile, desktop, the event feed and the tool catalog, and
-its operational meaning covers both — nothing was delivered, retrying changes
-nothing, and a human at that terminal has to resolve it.
-
-- `GET /v1/tasks/{task_id}` reports `inputBlocked` (`inherited-draft-unknown`,
-  or absent when the session accepts input). The value is written by the
-  terminal watcher from the daemon's own `logical_input_blocked`, reconciled
-  from `List` against every daemon generation — a session becomes blocked at
-  adoption — and updated live from the daemon's `InputBlockedChanged` event.
-- `task.input_blocked` announces each edge in the event feed.
-- `POST /v1/tasks/{task_id}/input` answers `409` with `reason: "input_blocked"`
-  and a message naming what unblocks it. Nothing was delivered, so nothing is
-  recorded as delivered, and retrying changes nothing.
-- Every server-side delivery that meets the refusal records it on the *target*
-  and marks that task `unread`, so a wedged singleton stops reading as idle in
-  the sidebar. This includes the pre-close merge-handoff backstop, which
-  additionally refuses the close so
-  the finishing task parks at its final stage instead of disappearing with an
-  un-handed-off PR.
-
 ## The Composer Is Not Session Output
 
 A CLI's composer line — the `❯` a Claude session sits at, the `›` Codex draws —
@@ -1671,24 +1791,20 @@ every surface that means "what the session said":
   reached that composer since its last producer-declared submission boundary,
   so `text` may be a human's unsent line), `not-typed` (the daemon watched the
   session and counted none, so `text` is provably the provider's own chrome or
-  suggestion), or `unknown` (nothing can be proven about that composer: a
-  session inherited from before attestation, or one where the daemon wrote a
-  message and could not prove its submission, so its text is parked there).
-  The field is **absent** until a session reports one, which is a different
-  answer from `unknown`.
+  suggestion), or `unknown` (nothing can be proven about that composer — a
+  session inherited from before attestation, or from a predecessor daemon that
+  handed over no ledger). The field is **absent** until a session reports one,
+  which is a different answer from `unknown`.
 - **`typed` is the ledger's verdict, and the rendered frame can overturn it
   towards `not-typed`.** A composer whose every cell is painted faint with the
   cursor still at its start is the provider's own suggestion, whatever the
   ledger counted earlier; that frame resolves the session to `not-typed`. It
   never goes the other way — no frame has ever been allowed to assert that
   somebody typed something.
-- **A parked Kanna-written message is `unknown`, never `not-typed`.** It was not
-  typed, but `not-typed` asserts the composer is *clear* — it is what lets the
-  next delivery go straight out — and a later message written onto parked text
-  is submitted as one sentence nobody wrote. `unknown` is the honest answer and
-  holds later messages exactly as an inherited composer does. It stays a claim
-  about proof, not about authorship: the ledger is still never told that
-  somebody typed something they did not.
+- **Attestation decides what may be *read*, never whether a message is
+  delivered.** A logical message goes out over any composer, attested or not.
+  What `unknown` costs is that nothing on that line may be treated as an
+  instruction — which is the whole point of the ledger.
 - `waitingPromptSnippet` (and the deprecated input-only `snippet` alias) never
   contains composer-line text. The
   daemon's snippet extraction cuts at the composer's *position*, not by a
@@ -1716,12 +1832,11 @@ The broader meaning and future of `waitingPromptSnippet` is deliberately out of
 scope here and tracked by issue #1213. Event delivery never gates on snippet
 presence; beyond excluding composer rows, its existing semantics are unchanged.
 
-The same ledger decides whether a delivered message is held — see
-"Refused Task Input" above and `crates/daemon/SPEC.md`. Zero typed bytes is
-positive proof that no unsent line exists, so the message is written even while
-the CLI renders suggestion text; `typed` and `unknown` still hold. The ledger
-counts only bytes that can *create* composer content, so a session someone only
-navigated, scrolled or clicked in stays `not-typed`.
+The ledger counts only bytes that can *create* composer content, so a session
+someone only navigated, scrolled or clicked in stays `not-typed`. It decides
+what may be read from a composer, and nothing else: a delivered message is
+written over any composer, whatever the ledger says. See
+`crates/daemon/SPEC.md`.
 
 ## Task Parentage
 
@@ -1794,13 +1909,13 @@ Which dimension each consumer reads:
   resolve that case, at the cost of also resolving on every busy task nobody had
   read.
 
-  This is deliberate: a parked agent has not finished, and a wait that says it
-  has is the defect this predicate was changed to remove. But a caller that
-  waits on an agent which may park without a verdict — the specialty-review join
-  in [qa-dispatch-review.md](specs/qa-dispatch-review.md) is the one in-tree
-  case — must carry its own bounded terminating condition rather than looping on
-  `waitOutcome: "timeout"` forever. The signature to bound on is a
-  non-`busy` `runtimeState` alongside a `running` `latestRun`.
+  The default `until: "reconcile"` returns this already-settled task instead.
+  Task detail's `runtimeSettled` uses the same observed non-busy baseline and
+  completed debounce as the synthetic feed scan, never human read state or
+  absence of output. It also resolves for recorded termination. Explicit
+  `until: "finished"` retains the contract above; `until: "closed"` requires
+  closure. A resolved reconciliation wait asks the caller to inspect work;
+  it does not create a verdict, advance a stage, or claim a turn is complete.
 - **Supervisors and orchestrators** read `runtimeState` to decide whether a task
   is alive. A quiet-task alarm keyed on `activity` fires on tasks whose agents
   are demonstrably running.
@@ -1813,6 +1928,43 @@ finalizes the run, so it never fires
 for the orchestrated kills behind a stage swap, rerun, or close. Starting a new
 running `stage_run` clears a stale `exited` back to absent, so a fresh session
 is never reported as already gone.
+
+## Provider Quota Rejection
+
+A CLI that refuses a turn for a spent allowance prints its refusal and parks at
+its composer. The session is alive, the run is `running`, and both `activity`
+and `runtimeState` report a perfectly healthy idle task — which is exactly why a
+day of exhausted quota once read as an ordinary dead session and a rerun
+re-spawned the same exhausted provider.
+
+The server therefore records the refusal as its own durable fact and, where the
+contract allows it, walks the stage's ordered candidate list once:
+
+- The daemon classifies the refusal positively (measured PTY chrome, or the
+  SDK's own `rate_limit_info.status == "rejected"`) and broadcasts
+  `ProviderNotice`. It is a notice, not a status: the session keeps whatever
+  the grid proves about it.
+- `task_provider_rejection` holds one row per `(stage_run, provider, stated
+  scope)`. That uniqueness de-duplicates a replayed or re-adopted announcement,
+  so one refusal is one observation and one attempt.
+- Recovery takes the same single-flight task-mutation guard a close, rerun or
+  stage change takes, closes the refused run as `failed` with the provider's own
+  sentence *before* spawning anything, and starts the next candidate in the same
+  task, stage, workspace and session with that candidate's own model and effort.
+  The workspace is never reset, forked or recreated.
+- An explicit single-provider override is binding, and a refusal that arrives
+  after the workspace changed parks instead of replacing. Every parked verdict
+  is one state with an `action` sentence and no retry loop.
+- `kanna_get_task` reports `providerRejection` for the stage the task currently
+  occupies, including every provider refused there. `rerun_stage` re-resolves
+  around that set. `resume` cannot: it reopens the recorded provider's *own*
+  conversation, and re-pointing that would be a fresh session wearing a
+  resume's name. A past refusal does not refuse it — reopening once the
+  allowance has reset is exactly what the `parked-work-observed` action tells
+  the operator to do. Use `kanna_rerun_stage` when the stage's other candidates
+  should be considered.
+
+Full contract: [`docs/specs/provider-quota-recovery.md`](specs/provider-quota-recovery.md).
 
 ## Activity Confirmation in `kanna-mcp`
 
@@ -2363,7 +2515,100 @@ The CLI remains the shell/script interface; MCP is the structured agent-tool int
 - `kanna-cli machine transfer-peers [--machine-id <MACHINE_ID>] [--server-url <URL>]` calls `GET /v1/transfers/peers` and prints the machines a task can be moved to or from, with each one's current route.
 - `kanna-cli task push --task-id <TASK_ID> --to-machine <MACHINE_OR_PEER_ID> [--transport auto|lan|cloud] [--intent-key <KEY>] [--machine-id <MACHINE_ID>] [--server-url <URL>]` calls `POST /v1/tasks/{task_id}/actions/push-to-peer`. It runs on the machine that owns the task, so `--machine-id` is how a task is pushed off a sibling machine. It schedules the transfer; the response reports `moved: false`.
 - `kanna-cli task pull --source-task-id <TASK_ID> --from-machine <MACHINE_OR_PEER_ID> [--transport auto|lan|cloud] [--server-url <URL>]` calls `POST /v1/transfers/actions/pull-task`. It always runs on the machine the task is moving to and takes no `--machine-id`. It delivers the request; the response reports `moved: false` and a `requestId` that is stable for repeats inside the source's request window.
-- `kanna-cli task transfers --task-id <TASK_ID> [--machine-id <MACHINE_ID>] [--server-url <URL>]` calls `GET /v1/tasks/{task_id}/transfers` and prints the recorded moves with the coarse `pending` / `completed` / `failed` / `rejected` verdict. This is the surface that answers whether a scheduled move happened; a push or pull result never does.
+- `kanna-cli task transfers --task-id <TASK_ID> [--machine-id <MACHINE_ID>] [--server-url <URL>]` calls `GET /v1/tasks/{task_id}/transfers` and prints the recorded moves with the coarse `pending` / `completed` / `failed` / `rejected` verdict. This is the surface that answers whether a scheduled move happened; a push or pull result never does. A task id that names no task *here* still answers when a transfer was recorded against it — a pull this machine asked for and the source refused — rather than 404.
 
 The provider support and daemon-loss trigger matrix is documented in
 [`2026-07-30-session-death-recovery.md`](2026-07-30-session-death-recovery.md).
+
+### Mobile build observations
+
+`POST /v1/mobile/build` accepts the paired installation's self-reported
+`environment`, `channel`, `runtimeVersion`, `nativeVersion`, `nativeBuild`,
+`updateId`, and `source` (`ota`, `embedded`, `development`, `unknown`). Nullable
+identity fields mean unknown; embedded/development launches report no applied
+OTA id. The existing LAN pairing credential authenticates the installation;
+the server derives the device id from that credential, never the body. Relay
+account authority alone cannot report for an installation. Reports persist in
+the pairing store under its existing mutation lock, with a server-written
+`reportedAtUnixMs` (Unix milliseconds). Unpairing removes the observation. These are diagnostic claims,
+never authorization inputs.
+
+`GET /v1/mobile/builds` requires desktop-local access and returns `desktopId`
+and `devices: [{deviceId, deviceName, build}]`. `build` is null for older clients
+that have never reported. It explicitly projects public diagnostic fields and
+never exposes secret hashes or push credentials. `kd mobile ota` reads this
+endpoint; it does not read the pairing file or SQLite. Mobile reporting is best
+effort during trusted LAN connection setup and does not block using an older
+server. Remote-only operation does not refresh this observation.
+
+
+## Event subscriptions and harness delivery
+
+`POST /v1/event-subscriptions` (`kanna_subscribe_events`) registers a manager
+by `taskId` and one task/parent/repository scope (its own repository by default).
+It is a direct-desktop control, not a relay or paired-device endpoint. The
+manager itself is always excluded. Registration immediately returns any
+already-settled work, then the server owns observation independently of MCP
+request lifetime or provider background execution. Filters and cursors are the
+existing task-event implementation; no new completion detector is introduced.
+
+The durable `event_subscription` row binds to the manager's current run,
+stage, and branch. Stage replacement or closure stops the worker. One pending
+page bounds the mailbox; later events stay in the feed until it is acknowledged.
+`POST /v1/event-subscriptions/{id}/read` (`kanna_read_event_subscription`) is a
+non-destructive read unless `acknowledgeBatchId` matches the pending batch.
+Only that acknowledgement advances the stored cursor. A stale batch is refused;
+CAS revisions prevent a late wait or delivery response overwriting an ack.
+Registration retries reuse the active mailbox and reject conflicting settings.
+`POST /v1/event-subscriptions/{id}/unsubscribe` stops observation and preserves
+the pending page. Corresponding typed CLI commands are `task subscribe-events`,
+`task read-event-subscription`, and `task unsubscribe-events`.
+
+The first returned page is already observed by the registering caller. A later
+page receives one coalesced wake. Wakes contain only the subscription and batch
+identity; the mailbox contains the actual events. Delivery is a separate adapter:
+
+- `input` (default): a labelled Kanna supervisory message through the existing
+  logical-input queue, task mutation guard, and daemon PID fence. Delivered
+  messages carry the reserved `engine` input source, unavailable to public
+  caller declarations. A daemon-held input reports `wakeState: queued`;
+  `notified` means submission was accepted, not that the model read or acted
+  on it. No composer or draft handling is duplicated.
+- `codex_app_server` (explicit opt-in): connect through `codex app-server proxy`,
+  initialize, verify the recorded native thread's worktree (or discover the unique loaded
+  root thread for that worktree on a fresh run), then call
+  `turn/start` with empty `input` and a standalone `toolOutput`. This requires
+  a Codex harness sharing the app server and exposing a unique loaded root thread for the stage worktree;
+  generic MCP notifications do not establish that capability. A failed native
+  delivery does not silently fall back and risk a duplicate turn.
+- `poll`: retain the mailbox without waking; `wakeState: ready` explicitly
+  reports this. It is for a harness that supplies its own scheduling.
+
+Server startup resumes active rows. A row left `sending` by a crash becomes
+`uncertain`; its page remains readable and the layer does not blindly submit
+another turn. The layer retries only what provably never reached the
+daemon and is expected to clear on its own — `daemon_unavailable`,
+`daemon_state_unknown`, and the task-mutation lease conflict — by leaving
+the batch `pending` with the failure text in `error` and re-attempting on
+the next notification, so an app upgrade's daemon handoff delays a wake
+instead of dropping it. Everything else parks on the mailbox as
+`wakeState: error`: an uncertain or draft-held submission whose bytes may
+already have reached the PTY, a stale subscription, a genuinely dead
+session, an unsupported adapter, and the Codex thread-identity refusals.
+Retrying is never the mailbox's own recovery from a delivery that might
+have landed. Watch errors, including
+partial machine coverage, become pending attention batches and receive a wake;
+acknowledging that error pauses observation so a persistent fault cannot create
+a wake loop. Registering again with the same settings resumes that paused
+position. Only an explicit unsubscribe discards it for a fresh registration;
+reconcile gaps and current state first if the cursor itself cannot be resumed.
+Persistence of a mailbox is not an exactly-once delivery or cursor-retention
+promise: relay resilience and durable cursor recovery remain task f63b3698's
+work. Deploy that recovery before relying on unattended cross-machine
+continuity. A fresh level-triggered scan is useful independently, including
+when an idle task produced no new event after observation began.
+
+MCP dispatch is concurrent and bounded to 64 in-flight requests: a long wait
+cannot serialize mailbox reads behind itself. Subscriptions need no long MCP
+call at all. No debounce values change. The human sidebar receives KSP
+`ServerFrame::StateChanged` directly, independently of the debounced event feed.

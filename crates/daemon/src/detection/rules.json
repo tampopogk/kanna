@@ -94,6 +94,7 @@
     {
       "provider": "claude",
       "versionProbe": { "args": ["--version"] },
+      "noticeRows": 24,
 
       "vocabulary": {
         "composerPrompts": [
@@ -225,6 +226,22 @@
           "when": { "structural": "claude-active-subagent" }
         },
         {
+          "id": "claude/busy/update-installed-active",
+          "status": "busy",
+          "channel": "grid",
+          "versions": "*",
+          "priority": 42,
+          "when": { "structural": "claude-update-installed-active" }
+        },
+        {
+          "id": "claude/busy/active-task",
+          "status": "busy",
+          "channel": "grid",
+          "versions": "*",
+          "priority": 45,
+          "when": { "anyLineWrapped": { "contains": "Waiting for task" } }
+        },
+        {
           "id": "claude/waiting/selected-menu-option",
           "status": "waiting",
           "channel": "grid",
@@ -256,12 +273,28 @@
           "priority": 10,
           "when": { "text": { "startsWithGlyphWord": "titleBusyGlyphs" } }
         }
+      ],
+
+      "notices": [
+        {
+          "id": "claude/notice/quota-rejection",
+          "kind": "quota-rejection",
+          "versions": ">=2.1.265",
+          "priority": 10,
+          "when": {
+            "anyLineWrapped": {
+              "containsAll": ["reached your", "limit. Run /usage-credits"]
+            }
+          },
+          "scope": { "between": ["reached your ", " limit"] }
+        }
       ]
     },
 
     {
       "provider": "codex",
       "versionProbe": { "args": ["--version"] },
+      "noticeRows": 24,
 
       "vocabulary": {
         "composerPrompts": [
@@ -312,6 +345,30 @@
 
       "rules": [
         {
+          "id": "codex/busy/working-background-terminal",
+          "status": "busy",
+          "channel": "grid",
+          "versions": "*",
+          "priority": 12,
+          "when": {
+            "anyLineWrapped": {
+              "allOf": [
+                { "contains": "Working (" },
+                { "contains": "background terminal running" },
+                { "contains": "esc to interrupt" }
+              ]
+            }
+          }
+        },
+        {
+          "id": "codex/busy/background-terminal",
+          "status": "busy",
+          "channel": "grid",
+          "versions": "*",
+          "priority": 14,
+          "when": { "anyLineWrapped": { "contains": "Waiting for background terminal" } }
+        },
+        {
           "id": "codex/busy/interrupt-marker",
           "status": "busy",
           "channel": "grid",
@@ -326,6 +383,23 @@
           "versions": "*",
           "priority": 60,
           "when": { "lastNonEmptyLine": { "startsWithGlyph": "idlePromptGlyphs" } }
+        }
+      ],
+
+      "notices": [
+        {
+          "id": "codex/notice/quota-rejection",
+          "kind": "quota-rejection",
+          "versions": ">=0.153",
+          "priority": 10,
+          "when": {
+            "anyLineWrapped": {
+              "containsAll": [
+                "hit your usage limit",
+                "chatgpt.com/codex/settings/usage"
+              ]
+            }
+          }
         }
       ]
     },

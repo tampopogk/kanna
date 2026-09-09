@@ -270,6 +270,8 @@ function validateTask(
     task.activityRevision,
     `${path}.activityRevision`,
   );
+  const runtimeState = optionalTaskRuntimeState(task.runtimeState, `${path}.runtimeState`);
+  const readState = optionalTaskReadState(task.readState, `${path}.readState`);
   const blockerRevision = optionalNonNegativeInteger(
     task.blockerRevision,
     `${path}.blockerRevision`,
@@ -283,24 +285,6 @@ function validateTask(
     throw new Error(`${path}.transitionRevision must be null or a non-empty string`);
   }
   const pinOrder = optionalNullableInteger(task.pinOrder, `${path}.pinOrder`);
-  const queuedInputCount = optionalNonNegativeInteger(
-    task.queuedInputCount,
-    `${path}.queuedInputCount`,
-  ) ?? 0;
-  const queuedInputReason = optionalNullableString(
-    task.queuedInputReason,
-    `${path}.queuedInputReason`,
-    32,
-  );
-  if (
-    queuedInputReason !== null
-    && !new Set(["input_held_by_draft", "delivery_uncertain", "sending"]).has(
-      queuedInputReason,
-    )
-  ) {
-    throw new Error(`${path}.queuedInputReason is invalid`);
-  }
-
   return {
     ...(cloudTaskId === undefined ? {} : { cloudTaskId }),
     localRepoId,
@@ -321,13 +305,13 @@ function validateTask(
     displayName: nullableString(task.displayName, `${path}.displayName`, 512),
     stage: requiredString(task.stage, `${path}.stage`, 64),
     activity: requiredString(task.activity, `${path}.activity`, 32),
+    ...(runtimeState === undefined ? {} : { runtimeState }),
+    ...(readState === undefined ? {} : { readState }),
     ...(activityRevision === undefined ? {} : { activityRevision }),
     ...(blockerRevision === undefined ? {} : { blockerRevision }),
     transitionRevision,
     status,
     hasRunningPost: optionalBoolean(task.hasRunningPost, `${path}.hasRunningPost`),
-    queuedInputCount,
-    queuedInputReason,
     repo: {
       cloudRepoId: requiredString(repo.cloudRepoId, `${path}.repo.cloudRepoId`, 128),
       name: requiredString(repo.name, `${path}.repo.name`, 256),
@@ -1246,6 +1230,20 @@ function optionalNullableUnicodeString(
 ): string | null {
   if (value === undefined) return null;
   return nullableUnicodeString(value, field, maxLength);
+}
+
+function optionalTaskRuntimeState(value: unknown, field: string): string | undefined {
+  if (value === undefined) return undefined;
+  if (value === "busy" || value === "waiting" || value === "idle" || value === "exited") {
+    return value;
+  }
+  throw new Error(`${field} must be busy, waiting, idle, or exited when present`);
+}
+
+function optionalTaskReadState(value: unknown, field: string): string | undefined {
+  if (value === undefined) return undefined;
+  if (value === "read" || value === "unread") return value;
+  throw new Error(`${field} must be read or unread when present`);
 }
 
 // Missing on snapshots from older desktop publishers; treated as "no running post".

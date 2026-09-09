@@ -20,7 +20,7 @@ use libghostty_vt::{
 
 use crate::detection::progress::ProgressScanner;
 use crate::detection::schema::ProgressState;
-use crate::detection::{Classifier, Evidence, Verdict};
+use crate::detection::{Classifier, Evidence, Notice, Verdict};
 use crate::protocol::{AgentProvider, SessionStatus, TerminalSnapshot};
 
 #[allow(unused_imports)]
@@ -348,6 +348,29 @@ impl HeadlessTerminal {
         }))
     }
 
+    /// The provider-stated notice this frame carries, if any.
+    ///
+    /// Read over its own window: a refusal is printed into the transcript and
+    /// the CLI keeps drawing chrome beneath it, so the sentence is further
+    /// from the bottom of the screen than any status row.
+    pub fn visible_notice(
+        &mut self,
+        classifier: &mut Classifier,
+    ) -> HeadlessTerminalResult<Option<Notice>> {
+        if classifier.provider().is_none() {
+            return Ok(None);
+        }
+        let rows = classifier.notice_rows();
+        let lines = self.visible_footer_lines(rows)?;
+        let title = self.title();
+        let progress = self.progress_state();
+        Ok(classifier.notice(&Evidence {
+            lines: &lines,
+            title: &title,
+            progress,
+        }))
+    }
+
     pub fn visible_status(
         &mut self,
         classifier: &mut Classifier,
@@ -404,40 +427,6 @@ impl HeadlessTerminal {
             return Ok(ComposerState::SuggestionOnly);
         }
         Ok(ComposerState::Unknown)
-    }
-
-    /// The composer row a human could have a swappable draft on, read from the
-    /// cells rather than from normalised text.
-    ///
-    /// `None` whenever this frame is not a plain, idle, readable composer —
-    /// a dialog, a busy repaint, an alternate screen, a provider whose
-    /// composer has never been measured, or a line the row scan cannot pin
-    /// back to a cell row. Everything a caller needs to decide whether it may
-    /// lift text off that line is in the returned row; nothing here decides it.
-    pub fn plain_composer_row(
-        &mut self,
-        classifier: &mut Classifier,
-    ) -> HeadlessTerminalResult<Option<ComposerRow>> {
-        if classifier.composer_prompts().is_empty() {
-            return Ok(None);
-        }
-        // Deliberately no alternate-screen guard. Claude Code draws its whole
-        // TUI — composer included — on the alternate screen (`ESC[?1049h` is
-        // in every live session's own byte stream), so refusing one would
-        // refuse every real composer there is. What actually separates a
-        // composer from a full-screen application here is the composer shape
-        // itself: a measured prompt glyph with nothing but provider chrome
-        // under it, on a frame that is neither busy nor waiting.
-        if !self.status_frame_complete() {
-            return Ok(None);
-        }
-        let rows = classifier.status_rows();
-        let lines = self.visible_footer_lines(rows)?;
-        let Some((index, _)) = classifier.composer_reading(&lines) else {
-            return Ok(None);
-        };
-        let composer_line = lines[index].clone();
-        self.composer_row_for_line(&composer_line, classifier)
     }
 
     /// Find the cell row that rendered `normalized_line` and read its styling.
@@ -906,6 +895,43 @@ mod tests {
             "Thinking hard",
             INTERRUPT_MARKER
         ));
+    }
+
+    #[test]
+    fn captured_handoff_footer_variants_remain_busy() {
+        let claude = verdict_for(
+            AgentProvider::Claude,
+            &[
+                "✽ Channeling… (25m 21s · esc to interrupt)",
+                "✔ Update installed · Restart to update",
+                "Waiting for task (esc to give additional instructions)",
+            ],
+        )
+        .expect("captured Claude handoff frame should classify");
+        assert_eq!(claude.status, SessionStatus::Busy);
+
+        let codex = verdict_for(
+            AgentProvider::Codex,
+            &["Waiting for background terminal (20m 39s • esc to interrupt)"],
+        )
+        .expect("captured Codex handoff frame should classify");
+        assert_eq!(codex.status, SessionStatus::Busy);
+
+        // Captured on the owner's MacBook Pro at 06:11 UTC on 2026-09-09
+        // while the daemon incorrectly reported this review session idle.
+        // The line is clipped by the real 80-column terminal, but its active
+        // spinner, interrupt hint, and running background-terminal count are
+        // all visible evidence of a live Codex turn.
+        let codex_working_background = verdict_for(
+            AgentProvider::Codex,
+            &["• Working (1m 58s • esc to interrupt) · 1 background terminal running · /ps to …"],
+        )
+        .expect("captured active Codex background-terminal frame should classify");
+        assert_eq!(codex_working_background.status, SessionStatus::Busy);
+        assert_eq!(
+            codex_working_background.rule_id,
+            "codex/busy/working-background-terminal"
+        );
     }
 
     #[test]
@@ -1639,61 +1665,6 @@ mod tests {
                 .unwrap(),
             ComposerState::Unknown
         );
-    }
-
-    /// What a swap is allowed to lift off the composer, read from the cells:
-    /// exactly the bytes left of the cursor, interior spacing and multibyte
-    /// intact, and nothing the provider drew.
-    #[test]
-    fn a_typed_draft_is_captured_byte_exact_from_the_cells() {
-        let mut terminal = HeadlessTerminal::new(120, 10, 10_000).unwrap();
-        terminal.write(claude_composer_frame("héllo  wörld ").as_bytes());
-        // 13 rendered cells of draft, so the cursor sits at column 2 + 13.
-        terminal.write(b"\x1b[3;16H");
-
-        let row = terminal
-            .plain_composer_row(&mut rules_for(AgentProvider::Claude))
-            .unwrap()
-            .expect("a plain composer row");
-        assert_eq!(row.before_cursor.as_deref(), Some("héllo  wörld "));
-        assert!(row.cursor_at_end);
-        assert!(!row.all_faint);
-        assert!(!row.cursor_at_start);
-    }
-
-    /// Claude Code draws its composer on the alternate screen, so a composer
-    /// row must still be readable there.
-    #[test]
-    fn a_composer_on_the_alternate_screen_is_still_a_composer() {
-        let mut terminal = HeadlessTerminal::new(120, 10, 10_000).unwrap();
-        terminal.write(b"\x1b[?1049h");
-        terminal.write(claude_composer_frame("half typed").as_bytes());
-        terminal.write(b"\x1b[3;13H");
-
-        let row = terminal
-            .plain_composer_row(&mut rules_for(AgentProvider::Claude))
-            .unwrap()
-            .expect("a composer row on the alternate screen");
-        assert_eq!(row.before_cursor.as_deref(), Some("half typed"));
-    }
-
-    /// A permission prompt is not a plain composer, whatever it draws below.
-    #[test]
-    fn a_waiting_permission_prompt_has_no_plain_composer_row() {
-        let mut terminal = HeadlessTerminal::new(120, 10, 10_000).unwrap();
-        terminal.write(
-            concat!(
-                "Do you want to allow this command?\r\n",
-                "❯ 1. Yes\r\n",
-                "  2. No\r\n",
-            )
-            .as_bytes(),
-        );
-
-        assert!(terminal
-            .plain_composer_row(&mut rules_for(AgentProvider::Claude))
-            .unwrap()
-            .is_none());
     }
 
     /// Everything past the composer box's closing divider is Claude's status

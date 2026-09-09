@@ -17,6 +17,7 @@ import type {
   TaskTerminalOutputSource,
   TaskTerminalStatus
 } from "../state/sessionStore";
+import type { TaskTerminalInputKind } from "../lib/api/client";
 import {
   createTerminalOutput,
   EMPTY_TERMINAL_OUTPUT,
@@ -30,6 +31,7 @@ import {
 import {
   buildTerminalAppendScript,
   buildTerminalBottomInsetScript,
+  buildTerminalDirectInputScript,
   buildTerminalDocument,
   buildTerminalPrependScript,
   buildTerminalReplaceScript,
@@ -58,11 +60,20 @@ interface TerminalWebViewProps {
   rows: number | null;
   fullscreen?: boolean;
   bottomInset?: number;
+  directInputEnabled?: boolean;
+  directInputFocusRequest?: number;
+  /** The composer's resting obstruction, with the software keyboard excluded.
+   * Capacity is measured against this so opening the keyboard does not reflow
+   * the PTY of a session this viewer controls. Defaults to `bottomInset`. */
+  capacityInset?: number;
   selectionToolbarTop?: number;
   onConsolePress?: () => void;
   onMentionedFilesChange?: (history: TerminalFileMentionHistory) => void;
   onOpenFile?: (path: string, line?: number) => void;
-  onTerminalInput?: (dataB64: string) => void;
+  onTerminalInput?: (dataB64: string, kind: TaskTerminalInputKind) => void;
+  /** What this phone can display at its current zoom, measured inside the
+   * page. The daemon owns the grid; this is only what the viewer proposes. */
+  onCapacityChange?: (cols: number, rows: number) => void;
   /** The reader scrolled near the top of the loaded buffer. Whether there is
    * older scrollback to fetch is the app's question, not the page's. */
   onRequestScrollback?: () => void;
@@ -81,7 +92,7 @@ interface TerminalWebViewHandle {
   injectJavaScript(script: string): void;
 }
 
-type PendingScriptKind = "resize" | "bottom-inset";
+type PendingScriptKind = "resize" | "bottom-inset" | "direct-input";
 
 interface PendingTerminalState {
   contentRevision: number;
@@ -91,6 +102,8 @@ interface PendingTerminalState {
 
 interface TerminalInspection {
   byteCount: number;
+  gridBottomGap?: number;
+  gridTopGap?: number;
   cols: number | null;
   cursorColumn?: number | null;
   cursorRow?: number | null;
@@ -117,11 +130,15 @@ export function TerminalWebViewComponent({
   rows,
   fullscreen = false,
   bottomInset,
+  directInputEnabled = false,
+  directInputFocusRequest = 0,
+  capacityInset,
   selectionToolbarTop,
   onConsolePress,
   onMentionedFilesChange,
   onOpenFile,
   onTerminalInput,
+  onCapacityChange,
   onRequestScrollback
 }: TerminalWebViewProps) {
   const webViewRef = useRef<TerminalWebViewHandle>(null);
@@ -159,6 +176,16 @@ export function TerminalWebViewComponent({
   const [renderedOutputEpoch, setRenderedOutputEpoch] = useState<number | null>(
     null
   );
+  // Whether a grid has ever been painted for this task in this document.
+  //
+  // The loading overlay answers "is there anything to look at?", never "is the
+  // transport live?". A reconnect swaps the buffer underneath an already
+  // painted grid — the server replays the gap, or replaces the whole grid in
+  // one injected write — so re-raising the spinner for it would blink the
+  // reader out of content that stayed correct and readable throughout. Only a
+  // genuinely blank surface (a task switch, a reloaded document) earns it back.
+  const [hasRenderedTerminalContent, setHasRenderedTerminalContent] =
+    useState(false);
   const [terminalInspection, setTerminalInspection] =
     useState<TerminalInspection | null>(null);
   const [terminalSelection, setTerminalSelection] = useState("");
@@ -184,9 +211,10 @@ export function TerminalWebViewComponent({
   // source object across renders so a re-render never walks it as a prop diff
   // candidate, let alone reloads it.
   const source = useMemo(() => ({ html: document }), [document]);
+  const resolvedCapacityInset = capacityInset ?? resolvedBottomInset;
   const bottomInsetScript = useMemo(
-    () => buildTerminalBottomInsetScript(resolvedBottomInset),
-    [resolvedBottomInset]
+    () => buildTerminalBottomInsetScript(resolvedBottomInset, resolvedCapacityInset),
+    [resolvedBottomInset, resolvedCapacityInset]
   );
 
   const terminalDiagnosticDetails = () => ({
@@ -232,6 +260,14 @@ export function TerminalWebViewComponent({
           ...resizeScripts,
           script,
           ...remainingScripts
+        ];
+      } else {
+        pendingScriptsRef.current = [
+          ...pendingScriptsRef.current.filter(
+            (pendingScript) =>
+              !pendingScript.includes("__setTerminalDirectInput")
+          ),
+          script
         ];
       }
       return;
@@ -350,6 +386,8 @@ export function TerminalWebViewComponent({
       setSelectionCopyError(null);
       setSelectionCopyPending(false);
       previousTaskIdRef.current = taskId;
+      setHasRenderedTerminalContent(false);
+      setRenderedOutputEpoch(null);
       const sourceSnapshot = terminalOutputSource?.getSnapshot();
       const initialSnapshot =
         sourceSnapshot?.taskId === taskId
@@ -433,6 +471,13 @@ export function TerminalWebViewComponent({
     injectOrQueueScript(bottomInsetScript, "bottom-inset");
   }, [bottomInsetScript]);
 
+  useEffect(() => {
+    injectOrQueueScript(
+      buildTerminalDirectInputScript(directInputEnabled),
+      "direct-input"
+    );
+  }, [directInputEnabled, directInputFocusRequest]);
+
   const handleMessage = (event: WebViewMessageEvent) => {
     let payload: {
       type?: unknown;
@@ -443,7 +488,10 @@ export function TerminalWebViewComponent({
       line?: unknown;
       text?: unknown;
       dataB64?: unknown;
+      kind?: unknown;
       contentRevision?: unknown;
+      cols?: unknown;
+      rows?: unknown;
     };
 
     try {
@@ -504,9 +552,26 @@ export function TerminalWebViewComponent({
       if (
         typeof payload.dataB64 === "string" &&
         payload.dataB64.length > 0 &&
-        payload.dataB64.length <= MAX_TERMINAL_INPUT_LENGTH
+        payload.dataB64.length <= MAX_TERMINAL_INPUT_LENGTH &&
+        (payload.kind === "draft" ||
+          payload.kind === "submission" ||
+          payload.kind === "control")
       ) {
-        onTerminalInput?.(payload.dataB64);
+        onTerminalInput?.(payload.dataB64, payload.kind);
+      }
+      return;
+    }
+
+    if (payload.type === "terminal-capacity") {
+      if (
+        typeof payload.cols === "number" &&
+        Number.isInteger(payload.cols) &&
+        payload.cols > 0 &&
+        typeof payload.rows === "number" &&
+        Number.isInteger(payload.rows) &&
+        payload.rows > 0
+      ) {
+        onCapacityChange?.(payload.cols, payload.rows);
       }
       return;
     }
@@ -537,6 +602,7 @@ export function TerminalWebViewComponent({
         payload.contentRevision === activeOutputEpochRef.current
       ) {
         setRenderedOutputEpoch(payload.contentRevision);
+        setHasRenderedTerminalContent(true);
       }
       return;
     }
@@ -551,7 +617,8 @@ export function TerminalWebViewComponent({
         ? pendingScriptsRef.current
         : [
             ...(cols && rows ? [buildTerminalResizeScript(cols, rows)] : []),
-            bottomInsetScript
+            bottomInsetScript,
+            buildTerminalDirectInputScript(directInputEnabled)
           ];
     pendingScriptsRef.current = [];
     for (const script of pending) {
@@ -565,8 +632,17 @@ export function TerminalWebViewComponent({
     );
   };
 
-  const isTerminalContentReady =
-    status === "live" && renderedOutputEpoch === outputEpoch;
+  const isTerminalContentReady = hasRenderedTerminalContent;
+  // Every raise of the overlay, counted so an E2E can hold a reconnect to at
+  // most one. A hidden->shown transition is the whole event; the count only
+  // moves when the reader would actually see a new spinner.
+  const loadingIndicationCountRef = useRef(0);
+  const [loadingIndicationCount, setLoadingIndicationCount] = useState(0);
+  useEffect(() => {
+    if (isTerminalContentReady) return;
+    loadingIndicationCountRef.current += 1;
+    setLoadingIndicationCount(loadingIndicationCountRef.current);
+  }, [isTerminalContentReady]);
 
   const clearTerminalSelection = () => {
     selectionContextRef.current.version += 1;
@@ -633,6 +709,16 @@ export function TerminalWebViewComponent({
         </Text>
       ) : null}
       {ENABLE_E2E_TERMINAL_INSPECTION ? (
+        <Text
+          accessibilityLabel={`terminal-loading-indications:${loadingIndicationCount}`}
+          pointerEvents="none"
+          style={styles.e2eTerminalInspection}
+          testID={MOBILE_E2E_IDS.terminalLoadingIndications}
+        >
+          {`terminal-loading-indications:${loadingIndicationCount}`}
+        </Text>
+      ) : null}
+      {ENABLE_E2E_TERMINAL_INSPECTION ? (
         <Pressable
           accessibilityLabel="Scroll terminal to top for E2E inspection"
           onPress={() => webViewRef.current?.injectJavaScript(
@@ -675,6 +761,7 @@ export function TerminalWebViewComponent({
         onLoadStart={() => {
           bridgeReadyRef.current = false;
           setRenderedOutputEpoch(null);
+          setHasRenderedTerminalContent(false);
           selectionContextRef.current.version += 1;
           selectionContextRef.current.copyPending = false;
           setTerminalSelection("");
@@ -682,7 +769,8 @@ export function TerminalWebViewComponent({
           setSelectionCopyPending(false);
           pendingScriptsRef.current = [
             ...(cols && rows ? [buildTerminalResizeScript(cols, rows)] : []),
-            bottomInsetScript
+            bottomInsetScript,
+            buildTerminalDirectInputScript(directInputEnabled)
           ];
           pendingTerminalStateRef.current = latestTerminalStateRef.current;
         }}
@@ -723,6 +811,7 @@ export function TerminalWebViewComponent({
           });
         }}
         onMessage={handleMessage}
+        keyboardDisplayRequiresUserAction={!directInputEnabled}
         scrollEnabled
         source={source}
         style={fullscreen ? styles.webviewFullscreen : styles.webview}

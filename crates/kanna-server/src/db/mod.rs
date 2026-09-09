@@ -20,10 +20,12 @@ use std::time::Duration;
 mod analytics;
 mod blockers;
 mod create_intents;
+mod event_subscriptions;
 mod lifecycle_operations;
 mod operator_events;
 mod pipeline_items;
 mod ports;
+mod provider_rejections;
 mod repos;
 mod settings;
 mod snapshot;
@@ -49,6 +51,9 @@ pub use pipeline_items::MergeSignalSource;
 #[allow(unused_imports)]
 pub use pipeline_items::WorkflowReplacement;
 #[allow(unused_imports)]
+pub use provider_rejections::{
+    NewProviderRejection, ProviderRejection, QuotaRecovery, QuotaRejectionSource,
+};
 pub(crate) use repos::RepoOrderInput;
 #[allow(unused_imports)]
 pub use stage_runs::{
@@ -69,6 +74,8 @@ pub use transfers::{
     is_active_outgoing_transfer_conflict, NewTaskTransfer, NewTaskTransferProvenance,
     PendingIncomingTransfer, TaskTransfer,
 };
+
+pub(crate) use event_subscriptions::EventSubscription;
 
 const SQLITE_BUSY_TIMEOUT_MS: u64 = 10_000;
 const SQLITE_WAL_AUTOCHECKPOINT_PAGES: i64 = 100;
@@ -142,9 +149,14 @@ pub(crate) const CURRENT_SCHEMA_MIGRATIONS: &[&str] = &[
     "064_blocked_state_events",
     "065_stage_run_provider_override",
     "066_durable_task_event_cursor_handles",
-    "067_terminal_session_roles",
-    "068_terminal_session_archive",
-    "069_task_launch_lifecycle_operation",
+    "067_remove_input_hold_state",
+    "068_task_transfer_dismissed_at",
+    "069_retire_pre_existing_transfer_alerts",
+    "070_provider_quota_rejection_log",
+    "071_event_subscriptions",
+    "072_terminal_session_roles",
+    "073_terminal_session_archive",
+    "074_task_launch_lifecycle_operation",
 ];
 
 #[derive(Debug, Serialize)]
@@ -175,14 +187,6 @@ pub struct PipelineItem {
     /// the task's agent session — `busy` | `waiting` | `idle` | `exited`, or
     /// `None` when no session has ever reported one.
     pub runtime_status: Option<String>,
-    /// Why the task's agent session refuses messages delivered into it, or
-    /// `None` when it accepts them. Today the only value is
-    /// `inherited-draft-unknown`: the daemon cannot prove that composer is
-    /// clear, either because it adopted the session across a restart or
-    /// handoff and the composer holds text nobody here saw typed, or because a
-    /// delivered message's text is parked there unsubmitted. Submitting would
-    /// append to an unsent line.
-    pub input_blocked: Option<String>,
     /// The text the task's agent session currently renders on its composer
     /// line, or `None` when it draws no readable composer. Never folded into
     /// `last_output_preview`: this is what somebody is about to say, or what
@@ -301,8 +305,6 @@ pub struct SnapshotPipelineItem {
     pub created_at: Option<String>,
     pub updated_at: Option<String>,
     pub has_running_post: i64,
-    pub queued_input_count: i64,
-    pub queued_input_reason: Option<String>,
     /// The runtime dimension, carried so a freshly loaded window renders work
     /// in progress without waiting for the next live change.
     pub runtime_state: Option<String>,
@@ -374,10 +376,29 @@ pub struct SnapshotEntry {
     pub items: Vec<SnapshotPipelineItem>,
 }
 
+/// A failed transfer that belongs to no task on this machine.
+///
+/// Every other transfer failure is reported on the task it was moving, and the
+/// sidebar draws it there. A pull the source refuses has no such task: nothing
+/// arrived and nothing ever will, so without this the machine that *asked* for
+/// the move shows the operator nothing at all.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SnapshotTransferAlert {
+    pub transfer_id: String,
+    pub direction: String,
+    /// The task id on the machine that has it. There is no local one.
+    pub source_task_id: Option<String>,
+    pub source_peer_id: Option<String>,
+    pub error: Option<String>,
+    pub started_at: Option<String>,
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UiSnapshot {
     pub entries: Vec<SnapshotEntry>,
+    pub transfer_alerts: Vec<SnapshotTransferAlert>,
     pub repo_sidebar_order: HashMap<String, i64>,
     pub task_blockers: Vec<SnapshotTaskBlocker>,
     pub blocker_task_states: HashMap<String, SnapshotBlockerTaskState>,
@@ -509,7 +530,6 @@ pub struct NewStageRun<'a> {
 
 pub struct OpenAgentTask {
     pub task_id: String,
-    pub session_id: String,
     /// The task's repository id on *this* installation. Repository ids are
     /// installation-local, so a sibling desktop asking about this singleton
     /// can only learn the owner's id by being told it.
@@ -566,6 +586,8 @@ pub(crate) fn relocate_legacy_database_if_needed(
     legacy_path: &Path,
     canonical_path: &Path,
 ) -> Result<bool, String> {
+    kanna_runtime_defaults::database_access::check(legacy_path, cfg!(test))?;
+    kanna_runtime_defaults::database_access::check(canonical_path, cfg!(test))?;
     if !legacy_path.exists() {
         return Ok(false);
     }
@@ -2023,7 +2045,80 @@ fn run_schema_migrations(conn: &Connection) -> Result<(), rusqlite::Error> {
         )
     })?;
 
-    run_migration(conn, "067_terminal_session_roles", |conn| {
+    run_migration(conn, "067_remove_input_hold_state", |conn| {
+        // The owner's 2026-09-08 decision: a delivered message is written to
+        // the PTY with its submission boundary, always. Nothing is ever
+        // retained behind a human's draft and no session refuses input, so
+        // there is no queue to persist and no per-task blocked reason to
+        // report. Both were bookkeeping that outlived the mechanism — and
+        // outlived it visibly, sitting on tasks for hours against composers
+        // that had been empty the whole time.
+        conn.execute_batch(
+            r#"
+            DROP INDEX IF EXISTS idx_queued_task_input_session;
+            DROP INDEX IF EXISTS idx_queued_task_input_task_id;
+            DROP TABLE IF EXISTS queued_task_input;
+            "#,
+        )?;
+        drop_column(conn, "pipeline_item", "input_blocked");
+        Ok(())
+    })?;
+
+    // A failed transfer is reported on its task until something replaces it,
+    // and nothing ever does: the move never happened, so no later row outranks
+    // it and the task wears the failure marker for the rest of its life. This
+    // is the operator saying they have read it.
+    run_migration(conn, "068_task_transfer_dismissed_at", |conn| {
+        add_column(conn, "task_transfer", "dismissed_at", "TEXT")
+    })?;
+
+    // A `failed` transfer with no local task is now reported to the window as
+    // a snapshot alert, and every one of those is *news* — a move onto this
+    // machine that did not arrive. History is not news. Without this, the
+    // first launch after upgrading would announce every incoming transfer that
+    // ever died before it created a task, all at once, for failures the
+    // operator can no longer do anything about. The rows themselves are
+    // untouched; `kanna_task_transfers` still answers with them.
+    run_migration(
+        conn,
+        "069_retire_pre_existing_transfer_alerts",
+        retire_pre_existing_transfer_alerts,
+    )?;
+
+    run_migration(conn, "070_provider_quota_rejection_log", |conn| {
+        conn.execute_batch(
+            r#"
+            CREATE TABLE IF NOT EXISTS task_provider_rejection (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                task_id TEXT NOT NULL REFERENCES pipeline_item(id) ON DELETE CASCADE,
+                stage_run_id TEXT NOT NULL,
+                stage TEXT NOT NULL,
+                provider TEXT NOT NULL,
+                model TEXT,
+                effort TEXT,
+                source TEXT NOT NULL CHECK (source IN ('pty', 'sdk')),
+                rule_id TEXT NOT NULL,
+                matched_text TEXT NOT NULL,
+                scope TEXT NOT NULL DEFAULT '',
+                cli_version TEXT,
+                recovery TEXT NOT NULL,
+                replacement_run_id TEXT,
+                observed_at TEXT NOT NULL DEFAULT (datetime('now')),
+                UNIQUE (stage_run_id, provider, scope)
+            );
+            CREATE INDEX IF NOT EXISTS idx_task_provider_rejection_task_stage
+            ON task_provider_rejection(task_id, stage);
+            "#,
+        )
+    })?;
+
+    run_migration(
+        conn,
+        "071_event_subscriptions",
+        create_event_subscription_schema,
+    )?;
+
+    run_migration(conn, "072_terminal_session_roles", |conn| {
         // A task's PTY history stops being one anonymous stream here. Setup
         // and the agent run in separate sessions, and each stage launches its
         // own, so every row has to say which one it is and which launch it
@@ -2059,7 +2154,7 @@ fn run_schema_migrations(conn: &Connection) -> Result<(), rusqlite::Error> {
         )
     })?;
 
-    run_migration(conn, "068_terminal_session_archive", |conn| {
+    run_migration(conn, "073_terminal_session_archive", |conn| {
         // A retired terminal is still readable. The daemon keeps the final
         // frame only as long as its own snapshot directory survives, so the
         // durable copy lives here: the frame a person reads after a failed
@@ -2076,7 +2171,7 @@ fn run_schema_migrations(conn: &Connection) -> Result<(), rusqlite::Error> {
         )
     })?;
 
-    run_migration(conn, "069_task_launch_lifecycle_operation", |conn| {
+    run_migration(conn, "074_task_launch_lifecycle_operation", |conn| {
         // A launch that finishes in the background is a lifecycle operation
         // like the others: the startup terminal runs, and the agent it
         // precedes is started by a task in this process. Without a durable
@@ -2106,6 +2201,37 @@ fn run_schema_migrations(conn: &Connection) -> Result<(), rusqlite::Error> {
     })?;
 
     Ok(())
+}
+
+/// Marks every task-less failure this database already holds as read.
+///
+/// Named rather than inlined into its migration so the test that pins the
+/// upgrade can replay the real thing against rows that predate it, which is
+/// the only way to observe what an upgrading operator sees.
+pub(crate) fn retire_pre_existing_transfer_alerts(
+    conn: &Connection,
+) -> Result<(), rusqlite::Error> {
+    conn.execute(
+        "UPDATE task_transfer
+         SET dismissed_at = datetime('now')
+         WHERE status = 'failed'
+           AND local_task_id IS NULL
+           AND dismissed_at IS NULL",
+        [],
+    )?;
+
+    Ok(())
+}
+
+fn create_event_subscription_schema(conn: &Connection) -> rusqlite::Result<()> {
+    conn.execute_batch(
+        "CREATE TABLE event_subscription (
+        id TEXT PRIMARY KEY,
+        task_id TEXT NOT NULL REFERENCES pipeline_item(id) ON DELETE CASCADE,
+        revision INTEGER NOT NULL,
+        record TEXT NOT NULL
+    ); CREATE INDEX idx_event_subscription_task ON event_subscription(task_id);",
+    )
 }
 
 fn create_contextless_completion_attempt_schema(conn: &Connection) -> Result<(), rusqlite::Error> {
@@ -2410,12 +2536,16 @@ impl Db {
     }
 
     pub fn open(path: &str) -> Result<Self, rusqlite::Error> {
+        kanna_runtime_defaults::database_access::check(Path::new(path), cfg!(test))
+            .map_err(rusqlite::Error::InvalidParameterName)?;
         let conn = Connection::open_with_flags(path, database_open_flags())?;
         configure_shared_database_connection(&conn)?;
         Ok(Self { conn })
     }
 
     pub fn open_migrated(path: &str) -> Result<Self, rusqlite::Error> {
+        kanna_runtime_defaults::database_access::check(Path::new(path), cfg!(test))
+            .map_err(rusqlite::Error::InvalidParameterName)?;
         let conn = Connection::open_with_flags(path, database_open_flags())?;
         configure_shared_database_connection(&conn)?;
         run_schema_migrations(&conn)?;

@@ -131,6 +131,11 @@ pub(crate) struct TaskEventsParams<'a> {
     /// Event type names dropped from the chosen scope, so the wait does not
     /// return for something the caller would only discard.
     pub(crate) exclude_event_types: &'a [String],
+    /// Event type names to receive to the exclusion of every other type. Empty
+    /// means every type, which is the unfiltered feed.
+    pub(crate) event_types: &'a [String],
+    /// Drop the caller's own manager-labelled delivery announcements.
+    pub(crate) exclude_own: bool,
     pub(crate) local_only: bool,
     pub(crate) include_current_activity: bool,
     pub(crate) short_cursor: bool,
@@ -138,6 +143,12 @@ pub(crate) struct TaskEventsParams<'a> {
     pub(crate) cursor: Option<&'a str>,
     pub(crate) timeout_secs: u64,
     pub(crate) limit: Option<i64>,
+    /// Hold the wait open until this many filtered events accumulate.
+    pub(crate) min_events: Option<i64>,
+    /// Keep collecting for this long after the batch's first event.
+    pub(crate) debounce_ms: Option<u64>,
+    /// Floor on how long one call takes before it returns events.
+    pub(crate) min_interval_ms: Option<u64>,
 }
 
 pub(crate) fn task_events_path(params: &TaskEventsParams<'_>) -> String {
@@ -178,12 +189,22 @@ pub(crate) fn task_events_path(params: &TaskEventsParams<'_>) -> String {
             encode_path_segment(&params.exclude_event_types.join(","))
         ));
     }
+    if !params.event_types.is_empty() {
+        query.push(format!(
+            "eventTypes={}",
+            encode_path_segment(&params.event_types.join(","))
+        ));
+    }
+    if params.exclude_own {
+        query.push("excludeOwn=true".to_string());
+    }
     if params.local_only {
         query.push("localOnly=true".to_string());
     }
-    if params.include_current_activity {
-        query.push("includeCurrentActivity=true".to_string());
-    }
+    query.push(format!(
+        "includeCurrentActivity={}",
+        params.include_current_activity
+    ));
     query.push(format!("shortCursor={}", params.short_cursor));
     if let Some(from) = params.from {
         query.push(format!("from={}", encode_path_segment(from)));
@@ -193,6 +214,15 @@ pub(crate) fn task_events_path(params: &TaskEventsParams<'_>) -> String {
     }
     if let Some(limit) = params.limit {
         query.push(format!("limit={limit}"));
+    }
+    if let Some(min_events) = params.min_events {
+        query.push(format!("minEvents={min_events}"));
+    }
+    if let Some(debounce_ms) = params.debounce_ms {
+        query.push(format!("debounceMs={debounce_ms}"));
+    }
+    if let Some(min_interval_ms) = params.min_interval_ms {
+        query.push(format!("minIntervalMs={min_interval_ms}"));
     }
     format!("/v1/task-events?{}", query.join("&"))
 }
@@ -222,8 +252,30 @@ pub(crate) fn task_logs_path_with_agent_view(
     }
 }
 
+/// One client for every request this process makes, carrying the identity
+/// header the server logs when a request fails. Built once: a runaway caller
+/// must be identifiable, and a fresh `reqwest::Client` per call also throws
+/// away the connection pool.
+pub(crate) fn http_client() -> &'static reqwest::Client {
+    static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+    CLIENT.get_or_init(|| {
+        let identity = kanna_tool_catalog::client_identity_header_value(
+            env!("CARGO_PKG_NAME"),
+            env!("CARGO_PKG_VERSION"),
+        );
+        let mut headers = reqwest::header::HeaderMap::new();
+        if let Ok(value) = reqwest::header::HeaderValue::from_str(&identity) {
+            headers.insert(kanna_tool_catalog::CLIENT_IDENTITY_HEADER, value);
+        }
+        reqwest::Client::builder()
+            .default_headers(headers)
+            .build()
+            .unwrap_or_default()
+    })
+}
+
 pub(crate) async fn get_json<T: DeserializeOwned>(base_url: &str, path: &str) -> Result<T, String> {
-    let mut request = reqwest::Client::new().get(join_server_url(base_url, path));
+    let mut request = http_client().get(join_server_url(base_url, path));
     if path.split('?').next() == Some("/v1/task-events") {
         if let Some(token) = read_task_events_token_from_env()? {
             request = request.bearer_auth(token);
@@ -274,7 +326,7 @@ pub(crate) async fn require_success(
 }
 
 pub(crate) async fn get_text(base_url: &str, path: &str) -> Result<String, String> {
-    let response = reqwest::Client::new()
+    let response = http_client()
         .get(join_server_url(base_url, path))
         .send()
         .await
@@ -291,7 +343,7 @@ pub(crate) async fn post_json<B: Serialize, T: DeserializeOwned>(
     path: &str,
     body: &B,
 ) -> Result<T, String> {
-    let response = reqwest::Client::new()
+    let response = http_client()
         .post(join_server_url(base_url, path))
         .json(body)
         .send()
@@ -309,7 +361,7 @@ pub(crate) async fn patch_json<B: Serialize, T: DeserializeOwned>(
     path: &str,
     body: &B,
 ) -> Result<T, String> {
-    let response = reqwest::Client::new()
+    let response = http_client()
         .patch(join_server_url(base_url, path))
         .json(body)
         .send()
@@ -327,7 +379,7 @@ pub(crate) async fn post_no_content_json<B: Serialize>(
     path: &str,
     body: &B,
 ) -> Result<(), String> {
-    let response = reqwest::Client::new()
+    let response = http_client()
         .post(join_server_url(base_url, path))
         .json(body)
         .send()
@@ -343,7 +395,7 @@ pub(crate) async fn post_catalog_json(
     path: &str,
     body: &Value,
 ) -> Result<Value, String> {
-    let response = reqwest::Client::new()
+    let response = http_client()
         .post(join_server_url(base_url, path))
         .json(body)
         .send()
@@ -364,7 +416,7 @@ pub(crate) async fn patch_catalog_json(
     path: &str,
     body: &Value,
 ) -> Result<Value, String> {
-    let response = reqwest::Client::new()
+    let response = http_client()
         .patch(join_server_url(base_url, path))
         .json(body)
         .send()
@@ -528,9 +580,12 @@ pub(crate) async fn task_logs_with_agent_view_via_api(
 
 pub(crate) fn parse_wait_until(value: &str) -> Result<WaitUntil, String> {
     match value {
+        "reconcile" => Ok(WaitUntil::Reconcile),
         "finished" => Ok(WaitUntil::Finished),
         "closed" => Ok(WaitUntil::Closed),
-        other => Err(format!("--until must be finished or closed, got {other}")),
+        other => Err(format!(
+            "--until must be reconcile, finished or closed, got {other}"
+        )),
     }
 }
 
@@ -542,12 +597,14 @@ pub(crate) fn task_matches_wait_until(task: &TaskDetail, until: WaitUntil) -> bo
         WaitTaskState {
             closed: task.closed_at.is_some(),
             runtime_state: task.runtime_state.as_deref(),
+            runtime_settled: task.runtime_settled,
             latest_run_status: task
                 .latest_run
                 .as_ref()
                 .and_then(|run| run.status.as_deref()),
         },
         match until {
+            WaitUntil::Reconcile => CatalogWaitUntil::Reconcile,
             WaitUntil::Finished => CatalogWaitUntil::Finished,
             WaitUntil::Closed => CatalogWaitUntil::Closed,
         },

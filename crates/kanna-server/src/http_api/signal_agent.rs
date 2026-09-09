@@ -107,6 +107,7 @@ pub(super) async fn signal_agent(
             agent_provider: payload.agent_provider,
             effort: payload.effort,
         },
+        false,
     )
     .await
     .map(Json)
@@ -203,6 +204,7 @@ async fn deliver_merge_handoff(
         "merge".to_string(),
         message,
         SingletonAgentOverrides::default(),
+        true,
     )
     .await?;
     // Recorded only after delivery: a task that still owes the merge agent a
@@ -264,9 +266,15 @@ pub(super) async fn ensure_merge_handoff_before_close(
         super::blocking::run_handler_blocking("merge handoff gap record", move || {
             let db = Db::open(&record_state.config.db_path)
                 .map_err(|error| db_write_error("db error", error))?;
-            db.record_task_merge_handoff_missing(&record_task_id, &record_reason)
-                .map_err(|error| db_write_error("db error", error))?;
+            // Unread first, then the event. The event says a task is parked
+            // for its human, so it must not be readable before the task is
+            // actually parked: a watcher that waits for it and then reads
+            // `activity` used to land in the gap between the two writes. The
+            // reverse order is also the safer half-completed state — the
+            // human still meets the task, with only the feed entry missing.
             db.update_pipeline_item_activity(&record_task_id, "unread")
+                .map_err(|error| db_write_error("db error", error))?;
+            db.record_task_merge_handoff_missing(&record_task_id, &record_reason)
                 .map_err(|error| db_write_error("db error", error))
         })
         .await?;
@@ -486,6 +494,7 @@ pub(super) async fn signal_agent_request(
     agent: String,
     message: String,
     overrides: SingletonAgentOverrides,
+    strict_recording: bool,
 ) -> Result<SignalAgentResponse, (axum::http::StatusCode, String)> {
     let message = message.trim().to_string();
     if message.is_empty() {
@@ -509,7 +518,7 @@ pub(super) async fn signal_agent_request(
                     machine_id.clone(),
                     "POST".to_string(),
                     path,
-                    serde_json::json!({ "input": message }),
+                    serde_json::json!({ "input": message, "strictRecording": strict_recording }),
                 )
                 .await
                 .map_err(|error| remote_singleton_unreachable(&machine_id, &task_id, error))?;
@@ -534,7 +543,7 @@ pub(super) async fn signal_agent_request(
             });
         }
         Some(SingletonOwner::Local(running)) => {
-            return signal_local_singleton(&state, &repo_id, &agent, &message, running).await;
+            return signal_local_singleton(&state, &message, running, strict_recording).await;
         }
         None => {}
     }
@@ -636,7 +645,12 @@ pub(super) async fn signal_agent_request(
                     // This is a state transition (closed reservation -> unowned),
                     // not a timer/retry loop. A competing creator remains fenced.
                     return Box::pin(signal_agent_request(
-                        state, repo_id, agent, message, overrides,
+                        state,
+                        repo_id,
+                        agent,
+                        message,
+                        overrides,
+                        strict_recording,
                     ))
                     .await;
                 }
@@ -654,7 +668,7 @@ pub(super) async fn signal_agent_request(
                         claim.machine_id.clone(),
                         "POST".to_string(),
                         path,
-                        serde_json::json!({ "input": message }),
+                    serde_json::json!({ "input": message, "strictRecording": strict_recording }),
                     )
                     .await
                     .map_err(|error| {
@@ -1019,50 +1033,27 @@ fn remote_singleton_unreachable(
 
 async fn signal_local_singleton(
     state: &Arc<AppState>,
-    repo_id: &str,
-    agent: &str,
     message: &str,
     running: crate::db::OpenAgentTask,
+    strict_recording: bool,
 ) -> Result<SignalAgentResponse, (axum::http::StatusCode, String)> {
-    let mut daemon = crate::daemon_client::DaemonClient::connect(&state.config.daemon_dir)
-        .await
-        .map_err(|e| {
-            (
-                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                format!("daemon error: {}", e),
-            )
-        })?;
-    // A singleton that refuses delivered input is the one failure here that
-    // no retry fixes and that nothing else would ever surface.
-    if let Err(error) =
-        super::task_input::try_submit_task_input(&mut daemon, &running.session_id, message).await
-    {
-        return Err(match error {
-            super::task_input::TaskInputError::InputBlocked(reason) => {
-                super::task_input::record_input_blocked_target(state, &running.session_id).await;
-                log::error!(
-                    "the {agent} agent for repo {repo_id} refuses delivered input: {reason}"
-                );
-                (axum::http::StatusCode::CONFLICT, reason)
-            }
-            super::task_input::TaskInputError::HeldByRawDraft(reason) => {
-                log::error!(
-                    "the {agent} agent for repo {repo_id} queued delivered input behind an unsent human line: {reason}"
-                );
-                (axum::http::StatusCode::CONFLICT, reason)
-            }
-            super::task_input::TaskInputError::SessionNotFound => (
-                axum::http::StatusCode::NOT_FOUND,
-                format!("session not found: {}", running.session_id),
-            ),
-            super::task_input::TaskInputError::Uncertain(message) => (
-                axum::http::StatusCode::SERVICE_UNAVAILABLE,
-                format!("terminal input delivery is uncertain: {message}"),
-            ),
-            super::task_input::TaskInputError::Other(message) => {
-                (axum::http::StatusCode::INTERNAL_SERVER_ERROR, message)
-            }
-        });
+    // Do not reuse `running.session_id`: following a handoff that can name a
+    // retired PTY. The ordinary input path discovers the daemon's live task
+    // session and fences its logical write to the observed PID.
+    if strict_recording {
+        super::task_input::deliver_server_task_input_strict(
+            Arc::clone(state),
+            running.task_id.clone(),
+            message.to_string(),
+        )
+        .await?;
+    } else {
+        super::task_input::deliver_server_task_input(
+            Arc::clone(state),
+            running.task_id.clone(),
+            message.to_string(),
+        )
+        .await?;
     }
     Ok(SignalAgentResponse {
         task_id: running.task_id,

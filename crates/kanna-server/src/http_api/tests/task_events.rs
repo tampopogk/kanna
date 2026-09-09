@@ -605,7 +605,7 @@ async fn repo_watch_can_start_at_current_tail_without_changing_cursorless_replay
 
     let tail = get_json_body(
         &app,
-        "/v1/task-events?repoId=repo-events&localOnly=true&from=now&timeoutSecs=0",
+        "/v1/task-events?includeCurrentActivity=false&repoId=repo-events&localOnly=true&from=now&timeoutSecs=0",
     )
     .await;
     assert_eq!(tail["waitOutcome"], "timeout");
@@ -618,7 +618,7 @@ async fn repo_watch_can_start_at_current_tail_without_changing_cursorless_replay
     let next = get_json_body(
         &app,
         &format!(
-            "/v1/task-events?repoId=repo-events&localOnly=true&from=now&cursor={tail_cursor}&timeoutSecs=0"
+            "/v1/task-events?includeCurrentActivity=false&repoId=repo-events&localOnly=true&from=now&cursor={tail_cursor}&timeoutSecs=0"
         ),
     )
     .await;
@@ -627,7 +627,7 @@ async fn repo_watch_can_start_at_current_tail_without_changing_cursorless_replay
 
     let replay = get_json_body(
         &app,
-        "/v1/task-events?repoId=repo-events&localOnly=true&timeoutSecs=0",
+        "/v1/task-events?includeCurrentActivity=false&repoId=repo-events&localOnly=true&timeoutSecs=0",
     )
     .await;
     assert!(
@@ -643,7 +643,7 @@ async fn repo_watch_limit_allows_pages_larger_than_the_default_one_hundred() {
     let (app, db_path) = events_router();
     let tail = get_json_body(
         &app,
-        "/v1/task-events?repoId=repo-events&localOnly=true&from=now&timeoutSecs=0",
+        "/v1/task-events?includeCurrentActivity=false&repoId=repo-events&localOnly=true&from=now&timeoutSecs=0",
     )
     .await;
     let cursor = cursor_of(&tail);
@@ -661,7 +661,7 @@ async fn repo_watch_limit_allows_pages_larger_than_the_default_one_hundred() {
     let page = get_json_body(
         &app,
         &format!(
-            "/v1/task-events?repoId=repo-events&localOnly=true&cursor={cursor}&limit=150&timeoutSecs=0"
+            "/v1/task-events?includeCurrentActivity=false&repoId=repo-events&localOnly=true&cursor={cursor}&limit=150&timeoutSecs=0"
         ),
     )
     .await;
@@ -691,7 +691,7 @@ async fn current_activity_pages_are_lossless_and_preserve_durable_events() {
 
     let drained = get_json_body(
         &app,
-        "/v1/task-events?repoId=repo-events&localOnly=true&limit=500&timeoutSecs=0",
+        "/v1/task-events?includeCurrentActivity=false&repoId=repo-events&localOnly=true&limit=500&timeoutSecs=0",
     )
     .await;
     let mut cursor = cursor_of(&drained);
@@ -1046,7 +1046,7 @@ async fn replayed_run_event_keeps_event_time_stage_after_task_advances() {
 
     let replay = get_json_body(
         &app,
-        "/v1/task-events?taskIds=child-a&localOnly=true&limit=500&timeoutSecs=0",
+        "/v1/task-events?includeCurrentActivity=false&taskIds=child-a&localOnly=true&limit=500&timeoutSecs=0",
     )
     .await;
     let historical = replay["events"]
@@ -1212,7 +1212,7 @@ fn runtime_changed_publishes_every_edge_and_never_the_read_state_flip() {
 async fn a_manager_excluding_the_display_dimension_does_not_wake_on_a_read_state_flip() {
     let (router, db_path) = events_router();
     let db = Db::open(&db_path).expect("open db");
-    let watch = "/v1/task-events?taskIds=child-a&localOnly=true\
+    let watch = "/v1/task-events?includeCurrentActivity=false&taskIds=child-a&localOnly=true\
                  &excludeEventTypes=task.activity_changed,task.runtime_settled";
     let watch = watch.replace(char::is_whitespace, "");
 
@@ -1254,7 +1254,7 @@ async fn blocked_edges_publish_for_a_rewrite_and_for_a_blocker_resolving() {
     let (router, db_path) = events_router();
     let db = Db::open(&db_path).expect("open db");
     let watch =
-        "/v1/task-events?taskIds=child-a&localOnly=true&excludeEventTypes=task.activity_changed";
+        "/v1/task-events?includeCurrentActivity=false&taskIds=child-a&localOnly=true&excludeEventTypes=task.activity_changed";
     let tail = get_json_body(&router, &format!("{watch}&from=now&timeoutSecs=0")).await;
 
     db.replace_task_blockers_atomically("child-a", &["child-b".to_string()])
@@ -1299,7 +1299,7 @@ async fn blocked_edges_publish_for_a_rewrite_and_for_a_blocker_resolving() {
 #[tokio::test]
 async fn orchestrator_receives_every_child_event_exactly_once_across_polls() {
     let (router, db_path) = events_router();
-    let watch = "/v1/task-events?taskIds=child-a,child-b,child-c";
+    let watch = "/v1/task-events?includeCurrentActivity=false&taskIds=child-a,child-b,child-c";
 
     // Fired before the orchestrator ever calls: a watcher that starts without a
     // cursor must still see what it missed, or a fan-out that raced its parent
@@ -1393,7 +1393,7 @@ async fn short_cursor_upgrades_legacy_state_and_preserves_call_to_call_continuit
 
     let legacy = get_json_body(
         &app,
-        "/v1/task-events?taskIds=child-a&localOnly=true&timeoutSecs=0",
+        "/v1/task-events?includeCurrentActivity=false&taskIds=child-a&localOnly=true&timeoutSecs=0",
     )
     .await;
     let legacy_cursor = cursor_of(&legacy);
@@ -1402,13 +1402,15 @@ async fn short_cursor_upgrades_legacy_state_and_preserves_call_to_call_continuit
     let upgraded = get_json_body(
         &app,
         &format!(
-            "/v1/task-events?taskIds=child-a&localOnly=true&shortCursor=true&cursor={legacy_cursor}&timeoutSecs=0"
+            "/v1/task-events?includeCurrentActivity=false&taskIds=child-a&localOnly=true&shortCursor=true&cursor={legacy_cursor}&timeoutSecs=0"
         ),
     )
     .await;
     let handle = cursor_of(&upgraded);
     assert!(handle.starts_with("kh1."));
-    assert_eq!(handle.len(), "kh1.".len() + 8);
+    // `kh1.<issuer>.<nonce>` — the issuer is what separates "you were away too
+    // long" from "you sent this to the wrong machine".
+    assert_eq!(handle.len(), "kh1.".len() + 8 + 1 + 8);
     assert!(upgraded["events"].as_array().is_some_and(Vec::is_empty));
 
     db.update_pipeline_item_stage("child-a", "review")
@@ -1416,7 +1418,7 @@ async fn short_cursor_upgrades_legacy_state_and_preserves_call_to_call_continuit
     let resumed = get_json_body(
         &app,
         &format!(
-            "/v1/task-events?taskIds=child-a&localOnly=true&shortCursor=true&cursor={handle}&timeoutSecs=0"
+            "/v1/task-events?includeCurrentActivity=false&taskIds=child-a&localOnly=true&shortCursor=true&cursor={handle}&timeoutSecs=0"
         ),
     )
     .await;
@@ -1432,7 +1434,7 @@ async fn short_cursor_does_not_skip_an_event_when_durable_checkpoint_update_fail
     let (app, db_path) = events_router();
     let armed = get_json_body(
         &app,
-        "/v1/task-events?taskIds=child-a&localOnly=true&shortCursor=true&from=now&timeoutSecs=0",
+        "/v1/task-events?includeCurrentActivity=false&taskIds=child-a&localOnly=true&shortCursor=true&from=now&timeoutSecs=0",
     )
     .await;
     let handle = cursor_of(&armed);
@@ -1449,7 +1451,7 @@ async fn short_cursor_does_not_skip_an_event_when_durable_checkpoint_update_fail
         .expect("install failure trigger");
 
     let uri = format!(
-        "/v1/task-events?taskIds=child-a&localOnly=true&shortCursor=true&cursor={handle}&timeoutSecs=0"
+        "/v1/task-events?includeCurrentActivity=false&taskIds=child-a&localOnly=true&shortCursor=true&cursor={handle}&timeoutSecs=0"
     );
     let failed = app
         .clone()
@@ -1477,7 +1479,7 @@ async fn short_cursor_survives_server_state_replacement_without_losing_events() 
     let app = router(state);
     let armed = get_json_body(
         &app,
-        "/v1/task-events?taskIds=child-a&localOnly=true&shortCursor=true&from=now&timeoutSecs=0",
+        "/v1/task-events?includeCurrentActivity=false&taskIds=child-a&localOnly=true&shortCursor=true&from=now&timeoutSecs=0",
     )
     .await;
     let handle = cursor_of(&armed);
@@ -1490,7 +1492,7 @@ async fn short_cursor_survives_server_state_replacement_without_losing_events() 
     let resumed = get_json_body(
         &restarted,
         &format!(
-            "/v1/task-events?taskIds=child-a&localOnly=true&shortCursor=true&cursor={handle}&timeoutSecs=0"
+            "/v1/task-events?includeCurrentActivity=false&taskIds=child-a&localOnly=true&shortCursor=true&cursor={handle}&timeoutSecs=0"
         ),
     )
     .await;
@@ -1501,32 +1503,116 @@ async fn short_cursor_survives_server_state_replacement_without_losing_events() 
     );
 }
 
+/// A handle this server issued and no longer holds is a checkpoint it cannot
+/// recover — but "restart without a cursor" is a recovery the server can
+/// perform itself, and the old 400 asked the caller to perform it instead. A
+/// caller that re-armed mechanically got an instantaneous, permanent failure
+/// it could repeat forever: one did, ~100 times a second for eleven hours,
+/// writing 22.8 GB of one identical line. Recovering in place is what makes
+/// the retry loop impossible rather than merely discouraged.
 #[tokio::test]
-async fn invalid_or_expired_short_cursor_names_the_safe_recovery() {
+async fn an_expired_short_cursor_restarts_from_retained_history_instead_of_failing() {
     let state = test_state_with_seed("desktop-task-events", "Task Events", seed_orchestration);
+    let db_path = state.config().db_path.clone();
     let app = router(Arc::clone(&state));
-    let expired = crate::http_api::task_events::issue_expired_short_cursor_for_test(&state);
-
-    for cursor in ["kh1.nothex00", expired.as_str()] {
-        let response = app
-            .clone()
-            .oneshot(
-                Request::get(format!(
-                    "/v1/task-events?taskIds=child-a&localOnly=true&shortCursor=true&cursor={cursor}&timeoutSecs=0"
-                ))
-                .body(Body::empty())
-                .expect("request"),
-            )
-            .await
-            .expect("response");
-        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .expect("error body");
-        let body = String::from_utf8_lossy(&body);
-        assert!(body.contains("restart without a cursor"), "{body}");
-        assert!(body.contains("replay retained history"), "{body}");
+    {
+        let db = Db::open(&db_path).expect("open db");
+        start_run(&db, "expired-run", "child-a", "in progress");
     }
+
+    for cursor in [
+        // Shaped like a handle from before the issuer field, and one this
+        // server minted and has since dropped from both tiers.
+        "kh1.nothex00".to_string(),
+        crate::http_api::task_events::issue_expired_short_cursor_for_test(&state),
+    ] {
+        let recovered = get_json_body(
+            &app,
+            &format!(
+                "/v1/task-events?includeCurrentActivity=false&taskIds=child-a&localOnly=true&shortCursor=true&cursor={cursor}&timeoutSecs=0"
+            ),
+        )
+        .await;
+        assert_eq!(recovered["cursorReset"], serde_json::json!(true));
+        let reason = recovered["cursorResetReason"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string();
+        assert!(
+            reason.contains(&cursor),
+            "reason must name the handle: {reason}"
+        );
+        assert!(
+            reason.contains("restarted from retained history"),
+            "{reason}"
+        );
+
+        // Retained history is replayed, so the reset loses nothing that was
+        // still on the feed.
+        assert!(
+            event_pairs(&recovered)
+                .iter()
+                .any(|(task_id, event_type)| task_id == "child-a" && event_type == "run.started"),
+            "retained history must be replayed: {recovered}"
+        );
+
+        // A fresh handle, so the change is visible in the response, and it
+        // works — the next poll blocks like any other rather than failing
+        // again. That is what breaks the loop.
+        let handle = cursor_of(&recovered);
+        assert_ne!(handle, cursor);
+        let next = get_json_body(
+            &app,
+            &format!(
+                "/v1/task-events?includeCurrentActivity=false&taskIds=child-a&localOnly=true&shortCursor=true&cursor={handle}&timeoutSecs=0"
+            ),
+        )
+        .await;
+        assert!(next.get("cursorReset").is_none(), "{next}");
+        assert_eq!(cursor_of(&next), handle);
+    }
+}
+
+/// The shape that actually produced the flood: a handle minted by one machine
+/// and replayed against another. Its checkpoint lives in the issuing server's
+/// cache and SQLite rows, so no retry here can ever resolve it — and reporting
+/// that as "invalid or expired" sent an operator looking for a retention bug
+/// instead of a misrouted wait. Refuse it by name; do not reset, because this
+/// server's retained history is not what the caller is watching.
+#[tokio::test]
+async fn a_short_cursor_from_another_machine_is_refused_by_name_not_reported_as_expired() {
+    let issuer = test_state_with_seed("desktop-cursor-issuer", "Issuer", seed_orchestration);
+    let issuer_app = router(Arc::clone(&issuer));
+    let armed = get_json_body(
+        &issuer_app,
+        "/v1/task-events?taskIds=child-a&localOnly=true&shortCursor=true&from=now&timeoutSecs=0",
+    )
+    .await;
+    let handle = cursor_of(&armed);
+
+    let other = test_state_with_seed("desktop-cursor-other", "Other", seed_orchestration);
+    let other_app = router(Arc::clone(&other));
+    let response = other_app
+        .oneshot(
+            Request::get(format!(
+                "/v1/task-events?taskIds=child-a&localOnly=true&shortCursor=true&cursor={handle}&timeoutSecs=0"
+            ))
+            .body(Body::empty())
+            .expect("request"),
+        )
+        .await
+        .expect("response");
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("error body");
+    let body = String::from_utf8_lossy(&body);
+    assert!(body.contains("issued by another machine"), "{body}");
+    assert!(body.contains("desktop-cursor-other"), "{body}");
+    assert!(
+        !body.contains("expired"),
+        "a misrouted wait is not an expiry: {body}"
+    );
 }
 
 /// Replaying a cursor is how a crashed orchestrator resumes. The same cursor
@@ -1535,7 +1621,7 @@ async fn invalid_or_expired_short_cursor_names_the_safe_recovery() {
 #[tokio::test]
 async fn a_replayed_cursor_returns_the_same_events_and_never_earlier_ones() {
     let (router, db_path) = events_router();
-    let watch = "/v1/task-events?taskIds=child-a";
+    let watch = "/v1/task-events?includeCurrentActivity=false&taskIds=child-a";
 
     {
         let db = Db::open(&db_path).expect("open db");
@@ -1579,7 +1665,7 @@ async fn a_truncated_batch_reports_more_and_the_next_call_continues_from_it() {
 
     let first = get_json_body(
         &router,
-        "/v1/task-events?taskIds=child-a&limit=2&timeoutSecs=1",
+        "/v1/task-events?includeCurrentActivity=false&taskIds=child-a&limit=2&timeoutSecs=1",
     )
     .await;
     assert_eq!(first["hasMore"], serde_json::json!(true));
@@ -1588,7 +1674,7 @@ async fn a_truncated_batch_reports_more_and_the_next_call_continues_from_it() {
     let second = get_json_body(
         &router,
         &format!(
-            "/v1/task-events?taskIds=child-a&limit=2&timeoutSecs=1&cursor={}",
+            "/v1/task-events?includeCurrentActivity=false&taskIds=child-a&limit=2&timeoutSecs=1&cursor={}",
             cursor_of(&first)
         ),
     )
@@ -1619,7 +1705,11 @@ async fn repo_scope_watches_tasks_the_caller_did_not_name() {
             .expect("advance unwatched stage");
     }
 
-    let body = get_json_body(&router, "/v1/task-events?repoId=repo-events&timeoutSecs=1").await;
+    let body = get_json_body(
+        &router,
+        "/v1/task-events?includeCurrentActivity=false&repoId=repo-events&timeoutSecs=1",
+    )
+    .await;
     assert_eq!(
         event_pairs(&body),
         vec![("child-b".to_string(), "stage.changed".to_string())]
@@ -1685,7 +1775,7 @@ async fn local_surface_aggregates_peer_repo_events_and_resumes_after_reconnect()
     let first = get_account_json_body(
         &source_router,
         &source,
-        "/v1/task-events?repoId=repo-source-id&timeoutSecs=1",
+        "/v1/task-events?includeCurrentActivity=false&repoId=repo-source-id&timeoutSecs=1",
     )
     .await;
     assert_eq!(first["waitOutcome"], "events");
@@ -1707,7 +1797,7 @@ async fn local_surface_aggregates_peer_repo_events_and_resumes_after_reconnect()
     // the aggregate output against its source of truth rather than a fixture.
     let peer_first = get_json_body(
         &peer_router,
-        "/v1/task-events?repoId=repo-peer-different-id&localOnly=true&timeoutSecs=0",
+        "/v1/task-events?includeCurrentActivity=false&repoId=repo-peer-different-id&localOnly=true&timeoutSecs=0",
     )
     .await;
     assert_eq!(event_pairs(&peer_first), event_pairs(&first));
@@ -1720,7 +1810,7 @@ async fn local_surface_aggregates_peer_repo_events_and_resumes_after_reconnect()
     let stale = get_account_json_body(
         &source_router,
         &source,
-        &format!("/v1/task-events?repoId=repo-source-id&cursor={first_cursor}&timeoutSecs=0"),
+        &format!("/v1/task-events?includeCurrentActivity=false&repoId=repo-source-id&cursor={first_cursor}&timeoutSecs=0"),
     )
     .await;
     assert_eq!(stale["waitOutcome"], "partial");
@@ -1736,7 +1826,7 @@ async fn local_surface_aggregates_peer_repo_events_and_resumes_after_reconnect()
         &source_router,
         &source,
         &format!(
-            "/v1/task-events?repoId=repo-source-id&cursor={}&timeoutSecs=0",
+            "/v1/task-events?includeCurrentActivity=false&repoId=repo-source-id&cursor={}&timeoutSecs=0",
             cursor_of(&stale)
         ),
     )
@@ -1752,7 +1842,7 @@ async fn local_surface_aggregates_peer_repo_events_and_resumes_after_reconnect()
         &source_router,
         &source,
         &format!(
-            "/v1/task-events?repoId=repo-source-id&cursor={}&timeoutSecs=0",
+            "/v1/task-events?includeCurrentActivity=false&repoId=repo-source-id&cursor={}&timeoutSecs=0",
             cursor_of(&caught_up)
         ),
     )
@@ -1762,7 +1852,7 @@ async fn local_surface_aggregates_peer_repo_events_and_resumes_after_reconnect()
 
     let peer_all = get_json_body(
         &peer_router,
-        "/v1/task-events?repoRemoteUrlHash=sha256%3Asame-origin-on-two-machines&localOnly=true&timeoutSecs=0",
+        "/v1/task-events?includeCurrentActivity=false&repoRemoteUrlHash=sha256%3Asame-origin-on-two-machines&localOnly=true&timeoutSecs=0",
     )
     .await;
     let aggregate_events = event_pairs(&first)
@@ -1814,7 +1904,7 @@ async fn aggregate_rejects_a_peer_cursor_error_instead_of_returning_a_wedged_con
     let response = app
         .oneshot(
             Request::get(format!(
-                "/v1/task-events?taskIds=remote-task&cursor={poisoned}&timeoutSecs=0"
+                "/v1/task-events?includeCurrentActivity=false&taskIds=remote-task&cursor={poisoned}&timeoutSecs=0"
             ))
             .header(axum::http::header::AUTHORIZATION, format!("Bearer {token}"))
             .body(Body::empty())
@@ -1833,6 +1923,78 @@ async fn aggregate_rejects_a_peer_cursor_error_instead_of_returning_a_wedged_con
     assert!(
         !body.contains("\"cursor\""),
         "must not issue a continuation: {body}"
+    );
+
+    relay.abort();
+}
+
+/// The fan-out must ask a leg with a rejected cursor exactly once. Its
+/// per-machine restart loop deliberately re-arms a leg that came back empty,
+/// which is right for a drained long poll and catastrophic for a leg that
+/// fails instantly: the outer wait would spin its peer for the whole timeout,
+/// once per poll, forever. Count the legs, not just the status code.
+#[tokio::test]
+async fn an_aggregate_leg_with_a_rejected_cursor_is_asked_once_per_poll() {
+    use axum::body::to_bytes;
+    use tower::ServiceExt;
+
+    let source = test_state_with_seed("desktop-leg-source", "Source", |_| {});
+    let peer = test_state_with_seed("desktop-leg-peer", "Peer", |db| {
+        db.insert_test_repo("repo-peer", "Peer Repo")
+            .expect("insert peer repo");
+        db.insert_test_pipeline_item(
+            "remote-task",
+            "repo-peer",
+            "remote task",
+            Some("Remote Task"),
+            "in progress",
+            "2026-09-08 00:00:00",
+        )
+        .expect("insert peer task");
+    });
+    let invokes = Arc::new(AtomicUsize::new(0));
+    let relay = connect_test_relay_peer_with_long_poll_budget(
+        &source,
+        Arc::clone(&peer),
+        Arc::clone(&invokes),
+        Arc::new(AtomicUsize::new(0)),
+    );
+    let app = router(Arc::clone(&source));
+    let poisoned = aggregate_tasks_cursor(
+        "desktop-leg-source",
+        "desktop-leg-peer",
+        &["remote-task"],
+        "0",
+        "ksh1.deadbeef",
+    );
+    let token = source
+        .local_task_events_token
+        .as_deref()
+        .expect("task-event credential");
+
+    // A real long-poll budget, so a leg that respawns has time to do it many
+    // times over: a zero timeout would pass whatever the loop did.
+    let response = app
+        .oneshot(
+            Request::get(format!(
+                "/v1/task-events?taskIds=remote-task&cursor={poisoned}&timeoutSecs=5"
+            ))
+            .header(axum::http::header::AUTHORIZATION, format!("Bearer {token}"))
+            .body(Body::empty())
+            .expect("request"),
+        )
+        .await
+        .expect("aggregate response");
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read error body");
+    let body = String::from_utf8(body.to_vec()).expect("utf8 error");
+    assert!(body.contains("machine desktop-leg-peer rejected its embedded task-event cursor"));
+    assert_eq!(
+        invokes.load(Ordering::SeqCst),
+        1,
+        "a leg whose cursor was rejected must not be retried within the poll"
     );
 
     relay.abort();
@@ -1887,7 +2049,7 @@ async fn manual_stage_agent_exit_emits_enriched_awaiting_advance_event() {
     let app = router(Arc::clone(&state));
     let initial = get_json_body(
         &app,
-        "/v1/task-events?taskIds=manual-task&localOnly=true&timeoutSecs=0",
+        "/v1/task-events?includeCurrentActivity=false&taskIds=manual-task&localOnly=true&timeoutSecs=0",
     )
     .await;
 
@@ -1968,7 +2130,7 @@ async fn manual_stage_agent_exit_emits_enriched_awaiting_advance_event() {
     let response = get_json_body(
         &app,
         &format!(
-            "/v1/task-events?taskIds=manual-task&localOnly=true&cursor={}&timeoutSecs=0",
+            "/v1/task-events?includeCurrentActivity=false&taskIds=manual-task&localOnly=true&cursor={}&timeoutSecs=0",
             cursor_of(&initial)
         ),
     )
@@ -2073,7 +2235,7 @@ async fn stage_start_emits_one_settled_working_edge_and_suppresses_a_resume_flic
     let initial = get_account_json_body(
         &source_router,
         &source,
-        "/v1/task-events?repoId=repo-start-source&timeoutSecs=1",
+        "/v1/task-events?includeCurrentActivity=false&repoId=repo-start-source&timeoutSecs=1",
     )
     .await;
     assert!(cursor_of(&initial).starts_with("ks1."));
@@ -2128,9 +2290,8 @@ async fn stage_start_emits_one_settled_working_edge_and_suppresses_a_resume_flic
                 state: SessionState::Active,
                 idle_seconds: 0,
                 status: SessionStatus::Busy,
+                status_observed: true,
                 kind: Default::default(),
-                logical_input_blocked: false,
-                pending_logical_input_count: None,
                 composer_text: None,
                 composer_attestation: Default::default(),
             })
@@ -2175,7 +2336,7 @@ async fn stage_start_emits_one_settled_working_edge_and_suppresses_a_resume_flic
         &source_router,
         &source,
         &format!(
-            "/v1/task-events?repoId=repo-start-source&excludeEventTypes=task.runtime_changed&cursor={}&timeoutSecs=5",
+            "/v1/task-events?includeCurrentActivity=false&repoId=repo-start-source&excludeEventTypes=task.runtime_changed&cursor={}&timeoutSecs=5",
             cursor_of(&initial)
         ),
     )
@@ -2211,7 +2372,7 @@ async fn stage_start_emits_one_settled_working_edge_and_suppresses_a_resume_flic
         &source_router,
         &source,
         &format!(
-            "/v1/task-events?repoId=repo-start-source&cursor={}&timeoutSecs=2",
+            "/v1/task-events?includeCurrentActivity=false&repoId=repo-start-source&cursor={}&timeoutSecs=2",
             cursor_of(&settled)
         ),
     )
@@ -2278,7 +2439,7 @@ async fn truncated_peer_legacy_parent_batch_preserves_acknowledged_watermarks() 
     let peer_router = router(Arc::clone(&peer));
     let acknowledged = get_json_body(
         &peer_router,
-        "/v1/task-events?taskIds=legacy-acknowledged&localOnly=true&timeoutSecs=0",
+        "/v1/task-events?includeCurrentActivity=false&taskIds=legacy-acknowledged&localOnly=true&timeoutSecs=0",
     )
     .await;
     let acknowledged_seq = acknowledged["events"][0]["seq"]
@@ -2302,7 +2463,7 @@ async fn truncated_peer_legacy_parent_batch_preserves_acknowledged_watermarks() 
     let peer_feed = get_json_body(
         &peer_router,
         &format!(
-            "/v1/task-events?parentTaskId=legacy-parent&localOnly=true&limit=500&cursor={legacy_cursor}&timeoutSecs=0"
+            "/v1/task-events?includeCurrentActivity=false&parentTaskId=legacy-parent&localOnly=true&limit=500&cursor={legacy_cursor}&timeoutSecs=0"
         ),
     )
     .await;
@@ -2333,7 +2494,7 @@ async fn truncated_peer_legacy_parent_batch_preserves_acknowledged_watermarks() 
         &source_router,
         &source,
         &format!(
-            "/v1/task-events?parentTaskId=legacy-parent&limit=500&cursor={aggregate_cursor}&timeoutSecs=30"
+            "/v1/task-events?includeCurrentActivity=false&parentTaskId=legacy-parent&limit=500&cursor={aggregate_cursor}&timeoutSecs=30"
         ),
     )
     .await;
@@ -2354,7 +2515,7 @@ async fn truncated_peer_legacy_parent_batch_preserves_acknowledged_watermarks() 
         &source_router,
         &source,
         &format!(
-            "/v1/task-events?parentTaskId=legacy-parent&limit=1&cursor={}&timeoutSecs=5",
+            "/v1/task-events?includeCurrentActivity=false&parentTaskId=legacy-parent&limit=1&cursor={}&timeoutSecs=5",
             cursor_of(&first)
         ),
     )
@@ -2411,7 +2572,7 @@ async fn truncated_peer_legacy_parent_batch_preserves_acknowledged_watermarks() 
         &source_router,
         &source,
         &format!(
-            "/v1/task-events?parentTaskId=legacy-parent&limit=500&cursor={}&timeoutSecs=0",
+            "/v1/task-events?includeCurrentActivity=false&parentTaskId=legacy-parent&limit=500&cursor={}&timeoutSecs=0",
             cursor_of(&second)
         ),
     )
@@ -2476,7 +2637,7 @@ async fn local_surface_aggregates_named_and_parent_scopes_when_tasks_live_only_o
     let named = get_account_json_body(
         &source_router,
         &source,
-        "/v1/task-events?taskIds=peer-only-child&timeoutSecs=0",
+        "/v1/task-events?includeCurrentActivity=false&taskIds=peer-only-child&timeoutSecs=0",
     )
     .await;
     assert_eq!(event_pairs(&named).len(), 1);
@@ -2485,7 +2646,7 @@ async fn local_surface_aggregates_named_and_parent_scopes_when_tasks_live_only_o
     let children = get_account_json_body(
         &source_router,
         &source,
-        "/v1/task-events?parentTaskId=durable-parent&timeoutSecs=0",
+        "/v1/task-events?includeCurrentActivity=false&parentTaskId=durable-parent&timeoutSecs=0",
     )
     .await;
     assert_eq!(event_pairs(&children), event_pairs(&named));
@@ -2621,9 +2782,11 @@ async fn unpaired_non_loopback_lan_wait_never_uses_the_account_relay_feed() {
     });
     let relay = connect_test_relay_peer(&source, peer, Arc::new(AtomicBool::new(true)));
     let app = router(Arc::clone(&source));
-    let mut request = Request::get("/v1/task-events?repoId=repo-lan-source&timeoutSecs=0")
-        .body(Body::empty())
-        .expect("request");
+    let mut request = Request::get(
+        "/v1/task-events?includeCurrentActivity=false&repoId=repo-lan-source&timeoutSecs=0",
+    )
+    .body(Body::empty())
+    .expect("request");
     request
         .extensions_mut()
         .insert(axum::extract::ConnectInfo(std::net::SocketAddr::from((
@@ -2700,7 +2863,7 @@ async fn unauthenticated_loopback_waits_get_the_local_feed_and_browsers_get_noth
         let app = app.clone();
         async move {
             let mut builder =
-                Request::get("/v1/task-events?repoId=repo-browser-source&timeoutSecs=0");
+                Request::get("/v1/task-events?includeCurrentActivity=false&repoId=repo-browser-source&timeoutSecs=0");
             for (name, value) in headers {
                 builder = builder.header(name, value);
             }
@@ -2769,13 +2932,13 @@ async fn unauthorized_resume_rejects_an_account_wide_cursor_without_losing_peer_
     let first = get_account_json_body(
         &app,
         &source,
-        "/v1/task-events?taskIds=downgrade-child&timeoutSecs=0",
+        "/v1/task-events?includeCurrentActivity=false&taskIds=downgrade-child&timeoutSecs=0",
     )
     .await;
     // A local process client that never proved the account-wide credential
     // cannot resume an account-wide cursor.
     let mut request = Request::get(format!(
-        "/v1/task-events?taskIds=downgrade-child&cursor={}&timeoutSecs=0",
+        "/v1/task-events?includeCurrentActivity=false&taskIds=downgrade-child&cursor={}&timeoutSecs=0",
         cursor_of(&first)
     ))
     .body(Body::empty())
@@ -2797,7 +2960,7 @@ async fn unauthorized_resume_rejects_an_account_wide_cursor_without_losing_peer_
     // A browser presenting the same cursor is refused one layer earlier, so it
     // learns nothing about the cursor's validity.
     let mut request = Request::get(format!(
-        "/v1/task-events?taskIds=downgrade-child&cursor={}&timeoutSecs=0",
+        "/v1/task-events?includeCurrentActivity=false&taskIds=downgrade-child&cursor={}&timeoutSecs=0",
         cursor_of(&first)
     ))
     .header(axum::http::header::ORIGIN, "https://attacker.example")
@@ -2844,7 +3007,7 @@ async fn fresh_zero_timeout_drains_local_events_without_waiting_for_an_unrespons
         get_account_json_body(
             &app,
             &source,
-            "/v1/task-events?taskIds=zero-local-child&timeoutSecs=0",
+            "/v1/task-events?includeCurrentActivity=false&taskIds=zero-local-child&timeoutSecs=0",
         ),
     )
     .await
@@ -2899,7 +3062,7 @@ async fn zero_timeout_resume_does_not_await_an_inherited_long_poll() {
     let (source, peer) = aggregate_pending_leg_states();
     let relay = connect_test_relay_peer(&source, peer, Arc::new(AtomicBool::new(true)));
     let app = router(Arc::clone(&source));
-    let scope = "/v1/task-events?taskIds=pending-local-child,pending-peer-child";
+    let scope = "/v1/task-events?includeCurrentActivity=false&taskIds=pending-local-child,pending-peer-child";
     let first = get_account_json_body(&app, &source, &format!("{scope}&timeoutSecs=30")).await;
     assert_eq!(event_pairs(&first).len(), 1);
 
@@ -2930,7 +3093,7 @@ async fn shrinking_limit_retains_one_peer_leg_and_resumes_past_only_emitted_even
         Arc::clone(&busy_count),
     );
     let app = router(Arc::clone(&source));
-    let scope = "/v1/task-events?taskIds=pending-local-child,pending-peer-child";
+    let scope = "/v1/task-events?includeCurrentActivity=false&taskIds=pending-local-child,pending-peer-child";
     let first =
         get_account_json_body(&app, &source, &format!("{scope}&limit=500&timeoutSecs=30")).await;
     assert_eq!(event_pairs(&first).len(), 1);
@@ -3033,7 +3196,7 @@ async fn empty_inherited_leg_is_rearmed_and_wakes_the_same_long_poll() {
         invoke_completed_tx,
     );
     let app = router(Arc::clone(&source));
-    let scope = "/v1/task-events?taskIds=pending-local-child,pending-peer-child";
+    let scope = "/v1/task-events?includeCurrentActivity=false&taskIds=pending-local-child,pending-peer-child";
     let first = get_account_json_body(&app, &source, &format!("{scope}&timeoutSecs=1")).await;
     assert_eq!(event_pairs(&first).len(), 1);
     assert_eq!(
@@ -3136,7 +3299,7 @@ fn parentage_router() -> (Router, String) {
 #[tokio::test]
 async fn watching_by_parent_delivers_child_events_without_naming_ids() {
     let (router, db_path) = parentage_router();
-    let watch = "/v1/task-events?parentTaskId=parent-1";
+    let watch = "/v1/task-events?includeCurrentActivity=false&parentTaskId=parent-1";
 
     {
         let db = Db::open(&db_path).expect("open db");
@@ -3248,7 +3411,7 @@ async fn watching_by_parent_delivers_child_events_without_naming_ids() {
 #[tokio::test]
 async fn parent_cursor_handles_reparent_away_and_back_without_replay_or_skip() {
     let (router, db_path) = parentage_router();
-    let watch = "/v1/task-events?parentTaskId=parent-1";
+    let watch = "/v1/task-events?includeCurrentActivity=false&parentTaskId=parent-1";
     {
         let db = Db::open(&db_path).expect("open db");
         db.update_pipeline_item_stage("child-a", "review")
@@ -3316,8 +3479,11 @@ async fn legacy_numeric_parent_cursor_deduplicates_then_upgrades_to_opaque() {
         db.update_pipeline_item_stage("child-a", "review")
             .expect("first child event");
     }
-    let acknowledged =
-        get_json_body(&router, "/v1/task-events?taskIds=child-a&timeoutSecs=1").await;
+    let acknowledged = get_json_body(
+        &router,
+        "/v1/task-events?includeCurrentActivity=false&taskIds=child-a&timeoutSecs=1",
+    )
+    .await;
     let legacy_cursor = cursor_of(&acknowledged);
     assert!(legacy_cursor.parse::<i64>().is_ok(), "fixed scope cursor");
 
@@ -3328,7 +3494,7 @@ async fn legacy_numeric_parent_cursor_deduplicates_then_upgrades_to_opaque() {
     }
     let upgraded = get_json_body(
         &router,
-        &format!("/v1/task-events?parentTaskId=parent-1&cursor={legacy_cursor}&timeoutSecs=1"),
+        &format!("/v1/task-events?includeCurrentActivity=false&parentTaskId=parent-1&cursor={legacy_cursor}&timeoutSecs=1"),
     )
     .await;
     assert_eq!(
@@ -3346,7 +3512,7 @@ async fn legacy_numeric_parent_cursor_deduplicates_then_upgrades_to_opaque() {
     }
     let next = get_json_body(
         &router,
-        &format!("/v1/task-events?parentTaskId=parent-1&cursor={opaque_cursor}&timeoutSecs=1"),
+        &format!("/v1/task-events?includeCurrentActivity=false&parentTaskId=parent-1&cursor={opaque_cursor}&timeoutSecs=1"),
     )
     .await;
     assert_eq!(
@@ -3363,8 +3529,11 @@ async fn legacy_p1_parent_cursor_drains_without_replay_then_compacts_to_p3() {
         db.update_pipeline_item_stage("child-a", "review")
             .expect("acknowledged child event");
     }
-    let acknowledged =
-        get_json_body(&router, "/v1/task-events?taskIds=child-a&timeoutSecs=1").await;
+    let acknowledged = get_json_body(
+        &router,
+        "/v1/task-events?includeCurrentActivity=false&taskIds=child-a&timeoutSecs=1",
+    )
+    .await;
     let acknowledged_seq = acknowledged["events"][0]["seq"]
         .as_i64()
         .expect("event seq");
@@ -3387,7 +3556,7 @@ async fn legacy_p1_parent_cursor_drains_without_replay_then_compacts_to_p3() {
 
     let upgraded = get_json_body(
         &router,
-        &format!("/v1/task-events?parentTaskId=parent-1&cursor={legacy_cursor}&timeoutSecs=1"),
+        &format!("/v1/task-events?includeCurrentActivity=false&parentTaskId=parent-1&cursor={legacy_cursor}&timeoutSecs=1"),
     )
     .await;
     assert_eq!(
@@ -3405,8 +3574,11 @@ async fn legacy_p1_parent_cursor_survives_a_child_reparented_away_before_compact
         db.update_pipeline_item_stage("child-a", "review")
             .expect("acknowledged child event");
     }
-    let acknowledged =
-        get_json_body(&router, "/v1/task-events?taskIds=child-a&timeoutSecs=1").await;
+    let acknowledged = get_json_body(
+        &router,
+        "/v1/task-events?includeCurrentActivity=false&taskIds=child-a&timeoutSecs=1",
+    )
+    .await;
     let acknowledged_seq = acknowledged["events"][0]["seq"]
         .as_i64()
         .expect("event seq");
@@ -3431,7 +3603,7 @@ async fn legacy_p1_parent_cursor_survives_a_child_reparented_away_before_compact
 
     let upgraded = get_json_body(
         &router,
-        &format!("/v1/task-events?parentTaskId=parent-1&cursor={legacy_cursor}&timeoutSecs=1"),
+        &format!("/v1/task-events?includeCurrentActivity=false&parentTaskId=parent-1&cursor={legacy_cursor}&timeoutSecs=1"),
     )
     .await;
     assert_eq!(
@@ -3457,7 +3629,7 @@ async fn legacy_p1_parent_cursor_paginates_an_adopted_child_then_compacts_once()
     }
     let established = get_json_body(
         &router,
-        "/v1/task-events?taskIds=child-a,child-b&timeoutSecs=1",
+        "/v1/task-events?includeCurrentActivity=false&taskIds=child-a,child-b&timeoutSecs=1",
     )
     .await;
     let established_events = established["events"].as_array().expect("events array");
@@ -3484,7 +3656,8 @@ async fn legacy_p1_parent_cursor_paginates_an_adopted_child_then_compacts_once()
         db.update_pipeline_item_parent("stranger", Some("parent-1"))
             .expect("adopt child after p1 issuance");
     }
-    let watch = "/v1/task-events?parentTaskId=parent-1&limit=1&timeoutSecs=0";
+    let watch =
+        "/v1/task-events?includeCurrentActivity=false&parentTaskId=parent-1&limit=1&timeoutSecs=0";
 
     let first = get_json_body(&router, &format!("{watch}&cursor={legacy_cursor}")).await;
     assert_eq!(
@@ -3533,7 +3706,8 @@ async fn legacy_p1_full_map_returns_a_consumable_adoptee_continuation() {
         db.update_pipeline_item_parent("stranger", Some("parent-1"))
             .expect("adopt child after full p1 issuance");
     }
-    let watch = "/v1/task-events?parentTaskId=parent-1&limit=1&timeoutSecs=0";
+    let watch =
+        "/v1/task-events?includeCurrentActivity=false&parentTaskId=parent-1&limit=1&timeoutSecs=0";
 
     let first = get_json_body(&router, &format!("{watch}&cursor={legacy_cursor}")).await;
     assert_eq!(
@@ -3619,7 +3793,7 @@ async fn legacy_p1_reads_membership_and_events_from_one_snapshot() {
     let replay = get_json_body(
         &router,
         &format!(
-            "/v1/task-events?parentTaskId=parent-1&cursor={}&timeoutSecs=0",
+            "/v1/task-events?includeCurrentActivity=false&parentTaskId=parent-1&cursor={}&timeoutSecs=0",
             cursor_of(&batch)
         ),
     )
@@ -3636,7 +3810,7 @@ async fn legacy_p1_reads_membership_and_events_from_one_snapshot() {
     let future = get_json_body(
         &router,
         &format!(
-            "/v1/task-events?parentTaskId=parent-1&cursor={}&timeoutSecs=1",
+            "/v1/task-events?includeCurrentActivity=false&parentTaskId=parent-1&cursor={}&timeoutSecs=1",
             cursor_of(&replay)
         ),
     )
@@ -3676,7 +3850,8 @@ async fn legacy_p1_compaction_preserves_an_away_child_acknowledgement() {
         db.update_pipeline_item_parent("stranger", Some("parent-1"))
             .expect("adopt child with retained events");
     }
-    let watch = "/v1/task-events?parentTaskId=parent-1&limit=1&timeoutSecs=0";
+    let watch =
+        "/v1/task-events?includeCurrentActivity=false&parentTaskId=parent-1&limit=1&timeoutSecs=0";
     let first = get_json_body(&router, &format!("{watch}&cursor={legacy_cursor}")).await;
     assert!(cursor_of(&first).starts_with("p1."));
     let second = get_json_body(&router, &format!("{watch}&cursor={}", cursor_of(&first))).await;
@@ -3740,7 +3915,7 @@ async fn legacy_p1_sparse_parent_ignores_large_unrelated_retained_history() {
     let cursor = legacy_parent_cursor("parent-1", serde_json::Map::new());
     let sparse = get_json_body(
         &router,
-        &format!("/v1/task-events?parentTaskId=parent-1&cursor={cursor}&timeoutSecs=1"),
+        &format!("/v1/task-events?includeCurrentActivity=false&parentTaskId=parent-1&cursor={cursor}&timeoutSecs=1"),
     )
     .await;
     assert_eq!(
@@ -3756,7 +3931,7 @@ async fn legacy_p1_sparse_parent_ignores_large_unrelated_retained_history() {
     let empty_cursor = legacy_parent_cursor("parent-1", serde_json::Map::new());
     let empty = get_json_body(
         &router,
-        &format!("/v1/task-events?parentTaskId=parent-1&cursor={empty_cursor}&timeoutSecs=0"),
+        &format!("/v1/task-events?includeCurrentActivity=false&parentTaskId=parent-1&cursor={empty_cursor}&timeoutSecs=0"),
     )
     .await;
     assert!(event_pairs(&empty).is_empty());
@@ -3843,7 +4018,7 @@ async fn parent_cursor_rejects_oversized_and_future_state() {
     let (router, _db_path) = parentage_router();
 
     let oversized = format!(
-        "/v1/task-events?parentTaskId=parent-1&cursor={}&timeoutSecs=0",
+        "/v1/task-events?includeCurrentActivity=false&parentTaskId=parent-1&cursor={}&timeoutSecs=0",
         "x".repeat(33 * 1024)
     );
     let response = router
@@ -3877,7 +4052,7 @@ async fn parent_cursor_rejects_oversized_and_future_state() {
         .clone()
         .oneshot(
             Request::get(format!(
-                "/v1/task-events?parentTaskId=parent-1&cursor={oversized_map_cursor}&timeoutSecs=0"
+                "/v1/task-events?includeCurrentActivity=false&parentTaskId=parent-1&cursor={oversized_map_cursor}&timeoutSecs=0"
             ))
             .body(Body::empty())
             .unwrap(),
@@ -3899,7 +4074,7 @@ async fn parent_cursor_rejects_oversized_and_future_state() {
     let response = router
         .oneshot(
             Request::get(format!(
-                "/v1/task-events?parentTaskId=parent-1&cursor={future_cursor}&timeoutSecs=0"
+                "/v1/task-events?includeCurrentActivity=false&parentTaskId=parent-1&cursor={future_cursor}&timeoutSecs=0"
             ))
             .body(Body::empty())
             .unwrap(),
@@ -3914,7 +4089,7 @@ async fn drained_parent_cursor_advances_past_large_unrelated_history() {
     let (router, db_path) = parentage_router();
     let initial = get_json_body(
         &router,
-        "/v1/task-events?parentTaskId=parent-1&timeoutSecs=0",
+        "/v1/task-events?includeCurrentActivity=false&parentTaskId=parent-1&timeoutSecs=0",
     )
     .await;
     let initial_cursor = cursor_of(&initial);
@@ -3937,7 +4112,7 @@ async fn drained_parent_cursor_advances_past_large_unrelated_history() {
 
     let drained = get_json_body(
         &router,
-        &format!("/v1/task-events?parentTaskId=parent-1&cursor={initial_cursor}&timeoutSecs=0"),
+        &format!("/v1/task-events?includeCurrentActivity=false&parentTaskId=parent-1&cursor={initial_cursor}&timeoutSecs=0"),
     )
     .await;
     assert!(event_pairs(&drained).is_empty());
@@ -3952,7 +4127,7 @@ async fn drained_parent_cursor_advances_past_large_unrelated_history() {
 
     let rechecked = get_json_body(
         &router,
-        &format!("/v1/task-events?parentTaskId=parent-1&cursor={cursor}&timeoutSecs=0"),
+        &format!("/v1/task-events?includeCurrentActivity=false&parentTaskId=parent-1&cursor={cursor}&timeoutSecs=0"),
     )
     .await;
     assert!(event_pairs(&rechecked).is_empty());
@@ -3977,7 +4152,7 @@ async fn parent_scope_paginates_without_replay_and_binds_opaque_cursor() {
 
     let first = get_json_body(
         &router,
-        "/v1/task-events?parentTaskId=parent-1&limit=2&timeoutSecs=1",
+        "/v1/task-events?includeCurrentActivity=false&parentTaskId=parent-1&limit=2&timeoutSecs=1",
     )
     .await;
     assert_eq!(first["hasMore"], serde_json::json!(true));
@@ -3986,7 +4161,7 @@ async fn parent_scope_paginates_without_replay_and_binds_opaque_cursor() {
     let second = get_json_body(
         &router,
         &format!(
-            "/v1/task-events?parentTaskId=parent-1&limit=2&cursor={parent_cursor}&timeoutSecs=1"
+            "/v1/task-events?includeCurrentActivity=false&parentTaskId=parent-1&limit=2&cursor={parent_cursor}&timeoutSecs=1"
         ),
     )
     .await;
@@ -4009,7 +4184,7 @@ async fn parent_scope_paginates_without_replay_and_binds_opaque_cursor() {
     let drained = get_json_body(
         &router,
         &format!(
-            "/v1/task-events?parentTaskId=parent-1&limit=2&cursor={drained_cursor}&timeoutSecs=0"
+            "/v1/task-events?includeCurrentActivity=false&parentTaskId=parent-1&limit=2&cursor={drained_cursor}&timeoutSecs=0"
         ),
     )
     .await;
@@ -4017,9 +4192,9 @@ async fn parent_scope_paginates_without_replay_and_binds_opaque_cursor() {
     assert!(event_pairs(&drained).is_empty());
 
     for path in [
-        format!("/v1/task-events?parentTaskId=stranger&cursor={drained_cursor}&timeoutSecs=0"),
-        format!("/v1/task-events?taskIds=child-a&cursor={drained_cursor}&timeoutSecs=0"),
-        format!("/v1/task-events?repoId=repo-events&cursor={drained_cursor}&timeoutSecs=0"),
+        format!("/v1/task-events?includeCurrentActivity=false&parentTaskId=stranger&cursor={drained_cursor}&timeoutSecs=0"),
+        format!("/v1/task-events?includeCurrentActivity=false&taskIds=child-a&cursor={drained_cursor}&timeoutSecs=0"),
+        format!("/v1/task-events?includeCurrentActivity=false&repoId=repo-events&cursor={drained_cursor}&timeoutSecs=0"),
     ] {
         let response = router
             .clone()
@@ -4079,7 +4254,7 @@ async fn parent_scope_handles_more_children_than_sqlite_expression_depth() {
 
     let first = get_json_body(
         &router,
-        "/v1/task-events?parentTaskId=parent-many&limit=1&timeoutSecs=1",
+        "/v1/task-events?includeCurrentActivity=false&parentTaskId=parent-many&limit=1&timeoutSecs=1",
     )
     .await;
     assert_eq!(
@@ -4095,7 +4270,7 @@ async fn parent_scope_handles_more_children_than_sqlite_expression_depth() {
     let drained = get_json_body(
         &router,
         &format!(
-            "/v1/task-events?parentTaskId=parent-many&limit=1&cursor={}&timeoutSecs=0",
+            "/v1/task-events?includeCurrentActivity=false&parentTaskId=parent-many&limit=1&cursor={}&timeoutSecs=0",
             cursor_of(&first)
         ),
     )
@@ -4122,7 +4297,7 @@ async fn parent_scope_sits_between_named_ids_and_the_whole_repo() {
     // Named ids win: the parent scope does not widen an explicit id list.
     let named = get_json_body(
         &router,
-        "/v1/task-events?taskIds=stranger&parentTaskId=parent-1&timeoutSecs=1",
+        "/v1/task-events?includeCurrentActivity=false&taskIds=stranger&parentTaskId=parent-1&timeoutSecs=1",
     )
     .await;
     assert_eq!(
@@ -4133,7 +4308,7 @@ async fn parent_scope_sits_between_named_ids_and_the_whole_repo() {
     // The parent scope wins over the repo: the sibling's event is not in it.
     let parented = get_json_body(
         &router,
-        "/v1/task-events?parentTaskId=parent-1&repoId=repo-events&timeoutSecs=1",
+        "/v1/task-events?includeCurrentActivity=false&parentTaskId=parent-1&repoId=repo-events&timeoutSecs=1",
     )
     .await;
     assert_eq!(
@@ -4145,7 +4320,7 @@ async fn parent_scope_sits_between_named_ids_and_the_whole_repo() {
     // silently observe an empty feed.
     let by_branch = get_json_body(
         &router,
-        "/v1/task-events?parentTaskId=branch-parent-1&timeoutSecs=1",
+        "/v1/task-events?includeCurrentActivity=false&parentTaskId=branch-parent-1&timeoutSecs=1",
     )
     .await;
     assert_eq!(
@@ -4156,9 +4331,11 @@ async fn parent_scope_sits_between_named_ids_and_the_whole_repo() {
     let unknown_parent = router
         .clone()
         .oneshot(
-            Request::get("/v1/task-events?parentTaskId=nope&timeoutSecs=1")
-                .body(Body::empty())
-                .unwrap(),
+            Request::get(
+                "/v1/task-events?includeCurrentActivity=false&parentTaskId=nope&timeoutSecs=1",
+            )
+            .body(Body::empty())
+            .unwrap(),
         )
         .await
         .expect("request");
@@ -4168,7 +4345,7 @@ async fn parent_scope_sits_between_named_ids_and_the_whole_repo() {
     // has not dispatched yet must be able to start watching first.
     let childless = get_json_body(
         &router,
-        "/v1/task-events?parentTaskId=stranger&timeoutSecs=1",
+        "/v1/task-events?includeCurrentActivity=false&parentTaskId=stranger&timeoutSecs=1",
     )
     .await;
     assert_eq!(childless["waitOutcome"], serde_json::json!("timeout"));
@@ -4188,7 +4365,7 @@ async fn task_ids_accept_branch_names_and_reject_unknown_tasks() {
     // Branch names resolve, as everywhere else a task id is accepted.
     let body = get_json_body(
         &router,
-        "/v1/task-events?taskIds=branch-child-a&timeoutSecs=1",
+        "/v1/task-events?includeCurrentActivity=false&taskIds=branch-child-a&timeoutSecs=1",
     )
     .await;
     assert_eq!(
@@ -4199,9 +4376,11 @@ async fn task_ids_accept_branch_names_and_reject_unknown_tasks() {
     let unknown = router
         .clone()
         .oneshot(
-            Request::get("/v1/task-events?taskIds=child-a,nope&timeoutSecs=1")
-                .body(Body::empty())
-                .unwrap(),
+            Request::get(
+                "/v1/task-events?includeCurrentActivity=false&taskIds=child-a,nope&timeoutSecs=1",
+            )
+            .body(Body::empty())
+            .unwrap(),
         )
         .await
         .expect("request");
@@ -4210,7 +4389,7 @@ async fn task_ids_accept_branch_names_and_reject_unknown_tasks() {
     let unscoped = router
         .clone()
         .oneshot(
-            Request::get("/v1/task-events?timeoutSecs=1")
+            Request::get("/v1/task-events?includeCurrentActivity=false&timeoutSecs=1")
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -4240,7 +4419,7 @@ async fn a_task_parked_on_a_prompt_emits_awaiting_input_once_per_block() {
     db.update_pipeline_item_runtime_status("child-a", "waiting", Some("How should I publish?"))
         .expect("waiting again");
 
-    let watch = "/v1/task-events?taskIds=child-a&excludeEventTypes=task.runtime_changed";
+    let watch = "/v1/task-events?includeCurrentActivity=false&taskIds=child-a&excludeEventTypes=task.runtime_changed";
     let body = get_json_body(&router, &format!("{watch}&timeoutSecs=1")).await;
     let events = body["events"].as_array().expect("events");
     assert_eq!(event_pairs(&body).len(), 1);
@@ -4298,7 +4477,7 @@ async fn every_provider_emits_debounced_activity_transitions_in_both_directions(
     let started = std::time::Instant::now();
     let body = get_json_body(
         &router,
-        "/v1/task-events?taskIds=child-a,child-b,child-c&excludeEventTypes=task.runtime_changed&timeoutSecs=15",
+        "/v1/task-events?includeCurrentActivity=false&taskIds=child-a,child-b,child-c&excludeEventTypes=task.runtime_changed&timeoutSecs=15",
     )
     .await;
     // The failure this guards is the wait blocking for its full 15s window,
@@ -4420,7 +4599,7 @@ async fn repo_scope_exclusion_drops_named_tasks_without_becoming_a_scope() {
 
     let unknown = get_json_body(
         &router,
-        "/v1/task-events?repoId=repo-events&localOnly=true&excludeTaskIds=no-such-task&timeoutSecs=0",
+        "/v1/task-events?includeCurrentActivity=false&repoId=repo-events&localOnly=true&excludeTaskIds=no-such-task&timeoutSecs=0",
     )
     .await;
     assert!(event_pairs(&unknown).contains(&("child-a".to_string(), "stage.changed".to_string())));
@@ -4437,7 +4616,7 @@ async fn repo_scope_exclusion_drops_named_tasks_without_becoming_a_scope() {
     let resumed_without = get_json_body(
         &router,
         &format!(
-            "/v1/task-events?repoId=repo-events&localOnly=true&cursor={}&timeoutSecs=0",
+            "/v1/task-events?includeCurrentActivity=false&repoId=repo-events&localOnly=true&cursor={}&timeoutSecs=0",
             cursor_of(&unknown)
         ),
     )
@@ -4452,7 +4631,7 @@ async fn repo_scope_exclusion_drops_named_tasks_without_becoming_a_scope() {
     let resumed_with = get_json_body(
         &router,
         &format!(
-            "/v1/task-events?repoId=repo-events&localOnly=true&excludeTaskIds=child-a&cursor={}&timeoutSecs=0",
+            "/v1/task-events?includeCurrentActivity=false&repoId=repo-events&localOnly=true&excludeTaskIds=child-a&cursor={}&timeoutSecs=0",
             cursor_of(&unknown)
         ),
     )
@@ -4464,7 +4643,7 @@ async fn repo_scope_exclusion_drops_named_tasks_without_becoming_a_scope() {
     let drained = get_json_body(
         &router,
         &format!(
-            "/v1/task-events?repoId=repo-events&localOnly=true&cursor={}&timeoutSecs=0",
+            "/v1/task-events?includeCurrentActivity=false&repoId=repo-events&localOnly=true&cursor={}&timeoutSecs=0",
             cursor_of(&resumed_with)
         ),
     )
@@ -4521,7 +4700,7 @@ async fn aggregate_repo_wait_forwards_exclusions_to_every_machine_leg() {
     let unfiltered = get_account_json_body(
         &source_router,
         &source,
-        "/v1/task-events?repoId=repo-source-id&timeoutSecs=1",
+        "/v1/task-events?includeCurrentActivity=false&repoId=repo-source-id&timeoutSecs=1",
     )
     .await;
     assert_eq!(
@@ -4532,7 +4711,7 @@ async fn aggregate_repo_wait_forwards_exclusions_to_every_machine_leg() {
     let filtered = get_account_json_body(
         &source_router,
         &source,
-        "/v1/task-events?repoId=repo-source-id&excludeTaskIds=remote-child&timeoutSecs=0",
+        "/v1/task-events?includeCurrentActivity=false&repoId=repo-source-id&excludeTaskIds=remote-child&timeoutSecs=0",
     )
     .await;
     assert_eq!(filtered["waitOutcome"], "timeout", "{filtered:#?}");
@@ -4550,7 +4729,7 @@ async fn aggregate_repo_wait_forwards_exclusions_to_every_machine_leg() {
         &source_router,
         &source,
         &format!(
-            "/v1/task-events?repoId=repo-source-id&cursor={}&timeoutSecs=1",
+            "/v1/task-events?includeCurrentActivity=false&repoId=repo-source-id&cursor={}&timeoutSecs=1",
             cursor_of(&filtered)
         ),
     )
@@ -4568,7 +4747,7 @@ async fn aggregate_repo_wait_forwards_exclusions_to_every_machine_leg() {
         &source_router,
         &source,
         &format!(
-            "/v1/task-events?repoId=repo-source-id&excludeTaskIds=remote-child&cursor={}&timeoutSecs=1",
+            "/v1/task-events?includeCurrentActivity=false&repoId=repo-source-id&excludeTaskIds=remote-child&cursor={}&timeoutSecs=1",
             cursor_of(&resumed)
         ),
     )
@@ -4578,7 +4757,7 @@ async fn aggregate_repo_wait_forwards_exclusions_to_every_machine_leg() {
         &source_router,
         &source,
         &format!(
-            "/v1/task-events?repoId=repo-source-id&cursor={}&timeoutSecs=0",
+            "/v1/task-events?includeCurrentActivity=false&repoId=repo-source-id&cursor={}&timeoutSecs=0",
             cursor_of(&quiet)
         ),
     )
@@ -4593,7 +4772,7 @@ async fn aggregate_repo_wait_forwards_exclusions_to_every_machine_leg() {
         &source_router,
         &source,
         &format!(
-            "/v1/task-events?repoId=repo-source-id&cursor={}&timeoutSecs=1",
+            "/v1/task-events?includeCurrentActivity=false&repoId=repo-source-id&cursor={}&timeoutSecs=1",
             cursor_of(&restarted)
         ),
     )
@@ -4602,6 +4781,935 @@ async fn aggregate_repo_wait_forwards_exclusions_to_every_machine_leg() {
         event_pairs(&after_restart),
         vec![("remote-child".to_string(), "task.closed".to_string())]
     );
+
+    relay.abort();
+}
+
+/// Regression for 6b4a48af: nobody called complete_stage and the manager
+/// starts watching only after the session has already parked.
+#[tokio::test]
+async fn fresh_wait_returns_already_parked_task_by_default_without_replaying_it() {
+    let (app, db_path) = events_router();
+    let db = Db::open(&db_path).unwrap();
+    start_run(&db, "parked-run", "child-a", "in progress");
+    settle_runtime_tasks(&db, &["child-a"]);
+    db.update_pipeline_item_runtime_status("child-b", "busy", None)
+        .unwrap();
+    db.update_pipeline_item_activity("child-b", "unread")
+        .unwrap();
+    let page = tokio::time::timeout(
+        Duration::from_secs(15),
+        get_json_body(
+            &app,
+            "/v1/task-events?repoId=repo-events&localOnly=true&from=now&timeoutSecs=240",
+        ),
+    )
+    .await
+    .expect("already settled work must not block the wait");
+    assert_eq!(
+        event_pairs(&page),
+        vec![("child-a".into(), "task.runtime_changed".into())]
+    );
+    let event = &page["events"][0];
+    assert_eq!(event["synthetic"], true);
+    assert!(event["seq"].is_null());
+    assert_eq!(event["payload"]["currentState"], true);
+    assert_eq!(
+        event["payload"]["reconciliationReason"],
+        "idle_without_verdict"
+    );
+    assert_eq!(event["payload"]["latestRunFinishedWithoutCompletion"], true);
+    assert_eq!(
+        event["payload"]["currentTask"]["latestRun"]["status"],
+        "running"
+    );
+    assert_eq!(
+        db.latest_stage_run("child-a").unwrap().unwrap().status,
+        "running"
+    );
+    let detail = get_json_body(&app, "/v1/tasks/child-a").await;
+    assert_eq!(detail["runtimeSettled"], true);
+    assert!(kanna_tool_catalog::task_value_matches_wait_until(
+        &detail,
+        kanna_tool_catalog::WaitUntil::Reconcile
+    ));
+    assert!(!kanna_tool_catalog::task_value_matches_wait_until(
+        &detail,
+        kanna_tool_catalog::WaitUntil::Finished
+    ));
+    let next = get_json_body(
+        &app,
+        &format!(
+            "/v1/task-events?repoId=repo-events&localOnly=true&cursor={}&timeoutSecs=0",
+            cursor_of(&page),
+        ),
+    )
+    .await;
+    assert!(
+        next["events"].as_array().unwrap().is_empty(),
+        "cursor acknowledges current state once"
+    );
+    let edges_only = get_json_body(&app,
+        "/v1/task-events?repoId=repo-events&localOnly=true&from=now&includeCurrentActivity=false&timeoutSecs=0",
+    ).await;
+    assert!(edges_only["events"].as_array().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn fresh_wait_does_not_guess_from_unsettled_idle_or_human_read_state() {
+    let (app, db_path) = events_router();
+    let db = Db::open(&db_path).unwrap();
+    start_run(&db, "parked-run", "child-a", "in progress");
+    db.update_pipeline_item_runtime_status("child-a", "busy", None)
+        .unwrap();
+    db.update_pipeline_item_runtime_status("child-a", "idle", None)
+        .unwrap();
+    db.update_pipeline_item_activity("child-a", "unread")
+        .unwrap();
+    let page = get_json_body(
+        &app,
+        "/v1/task-events?repoId=repo-events&localOnly=true&from=now&timeoutSecs=0",
+    )
+    .await;
+    assert!(page["events"].as_array().unwrap().is_empty());
+    assert!(!db.task_runtime_is_settled("child-a").unwrap());
+}
+
+pub(super) async fn subscription_request(
+    app: &Router,
+    method: &str,
+    path: &str,
+    body: Value,
+) -> (StatusCode, Value) {
+    let mut request = Request::builder()
+        .method(method)
+        .uri(path)
+        .header("content-type", "application/json")
+        .body(Body::from(body.to_string()))
+        .unwrap();
+    request.extensions_mut().insert(axum::extract::ConnectInfo(
+        "127.0.0.1:49123".parse::<std::net::SocketAddr>().unwrap(),
+    ));
+    let response = app.clone().oneshot(request).await.unwrap();
+    let status = response.status();
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let value =
+        serde_json::from_slice(&bytes).unwrap_or_else(|_| json!(String::from_utf8_lossy(&bytes)));
+    (status, value)
+}
+
+pub(super) async fn await_subscription(
+    state: &AppState,
+    id: &str,
+    predicate: impl Fn(&crate::db::EventSubscription) -> bool,
+) -> crate::db::EventSubscription {
+    tokio::time::timeout(Duration::from_secs(15), async {
+        loop {
+            let row = Db::open(&state.config().db_path)
+                .unwrap()
+                .event_subscription(id)
+                .unwrap()
+                .unwrap();
+            if predicate(&row) {
+                return row;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("subscription worker did not reach expected state")
+}
+
+#[tokio::test]
+async fn subscription_mailbox_bootstraps_once_persists_unacked_work_and_follows_events() {
+    let state = test_state_with_seed("subscription-mailbox", "Mailbox", seed_orchestration);
+    let db = Db::open(&state.config().db_path).unwrap();
+    start_run(&db, "manager-run", "child-c", "in progress");
+    start_run(&db, "parked-run", "child-a", "in progress");
+    settle_runtime_tasks(&db, &["child-a", "child-c"]);
+    let app = router(state.clone());
+    let request = json!({"taskId":"child-c", "localOnly":true, "delivery":"poll"});
+    let (status, initial) =
+        subscription_request(&app, "POST", "/v1/event-subscriptions", request.clone()).await;
+    assert_eq!(status, StatusCode::OK, "{initial}");
+    assert_eq!(
+        event_pairs(&initial["pending"]),
+        vec![("child-a".into(), "task.runtime_changed".into())]
+    );
+    assert_eq!(initial["wakeState"], "observed");
+    let id = initial["id"].as_str().unwrap();
+    let read_path = format!("/v1/event-subscriptions/{id}/read");
+    let (_, retried) = subscription_request(&app, "POST", "/v1/event-subscriptions", request).await;
+    assert_eq!(
+        initial, retried,
+        "registration retry must not duplicate or drop mailbox work"
+    );
+    let (status, _) = subscription_request(
+        &app,
+        "POST",
+        "/v1/event-subscriptions",
+        json!({"taskId":"child-c", "localOnly":true, "delivery":"input"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    let service = tokio::spawn(super::super::event_subscriptions::run(state.clone()));
+    let (_, read) = subscription_request(&app, "POST", &read_path, json!({})).await;
+    assert_eq!(read["pending"], initial["pending"]);
+    let (status, _) =
+        subscription_request(&app, "POST", &read_path, json!({"acknowledgeBatchId":99})).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    let (status, acked) = subscription_request(
+        &app,
+        "POST",
+        &read_path,
+        json!({"acknowledgeBatchId":initial["batchId"]}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(acked["pending"].is_null());
+    // The worker owns the continuing wait; no model call is running.
+    start_run(&db, "second-run", "child-b", "in progress");
+    settle_runtime_tasks(&db, &["child-b"]);
+    let next = await_subscription(&state, id, |row| row.wake_state == "ready").await;
+    assert!(next.pending.as_ref().unwrap()["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|event| event["taskId"] == "child-b"));
+    assert!(next.batch_id > initial["batchId"].as_i64().unwrap());
+    service.abort();
+    let _ = service.await;
+    // Reopen the database and restart the worker; no acknowledged state or
+    // pending page lives only in a harness background-process handle.
+    let reopened = Db::open(&state.config().db_path)
+        .unwrap()
+        .event_subscription(id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(reopened.pending, next.pending);
+    let service = tokio::spawn(super::super::event_subscriptions::run(state.clone()));
+    let (_, read) = subscription_request(&app, "POST", &read_path, json!({})).await;
+    assert_eq!(read["pending"], json!(next.pending));
+    db.update_pipeline_item_stage("child-c", "review").unwrap();
+    state.publish_state_changed(kanna_agent_protocol::StateChangeScope::Tasks);
+    await_subscription(&state, id, |row| !row.active).await;
+    service.abort();
+    let _ = service.await;
+}
+
+#[tokio::test]
+async fn subscription_restart_preserves_uncertain_delivery_and_ack_wins_a_late_result() {
+    let state = test_state_with_seed("subscription-uncertain", "Mailbox", seed_orchestration);
+    let db = Db::open(&state.config().db_path).unwrap();
+    start_run(&db, "manager-run", "child-c", "in progress");
+    settle_runtime_tasks(&db, &["child-a"]);
+    let app = router(state.clone());
+    let (status, initial) = subscription_request(
+        &app,
+        "POST",
+        "/v1/event-subscriptions",
+        json!({"taskId":"child-c", "localOnly":true, "delivery":"input"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let id = initial["id"].as_str().unwrap();
+    let mut interrupted = db.event_subscription(id).unwrap().unwrap();
+    interrupted.wake_state = "sending".into();
+    assert!(db.save_event_subscription(&mut interrupted).unwrap());
+    let service = tokio::spawn(super::super::event_subscriptions::run(state.clone()));
+    let mut late = await_subscription(&state, id, |row| row.wake_state == "uncertain").await;
+    assert_eq!(late.pending, Some(initial["pending"].clone()));
+    assert_eq!(db.count_task_inputs("child-c").unwrap(), 0);
+    let (status, acknowledged) = subscription_request(
+        &app,
+        "POST",
+        &format!("/v1/event-subscriptions/{id}/read"),
+        json!({"acknowledgeBatchId":late.batch_id}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(acknowledged["pending"].is_null());
+    late.wake_state = "notified".into();
+    assert!(
+        !db.save_event_subscription(&mut late).unwrap(),
+        "late delivery must not resurrect acknowledged work"
+    );
+    assert!(db
+        .event_subscription(id)
+        .unwrap()
+        .unwrap()
+        .pending
+        .is_none());
+    service.abort();
+    let _ = service.await;
+}
+
+#[tokio::test]
+async fn subscription_watch_failure_is_a_readable_attention_batch_and_does_not_spin() {
+    let state = test_state_with_seed("subscription-error", "Mailbox", seed_orchestration);
+    let db = Db::open(&state.config().db_path).unwrap();
+    start_run(&db, "manager-run", "child-c", "in progress");
+    let app = router(state.clone());
+    let (_, initial) = subscription_request(
+        &app,
+        "POST",
+        "/v1/event-subscriptions",
+        json!({"taskId":"child-c", "localOnly":true, "delivery":"poll"}),
+    )
+    .await;
+    let id = initial["id"].as_str().unwrap();
+    let mut row = db.event_subscription(id).unwrap().unwrap();
+    row.cursor = Some("invalid-position".into());
+    assert!(db.save_event_subscription(&mut row).unwrap());
+    let service = tokio::spawn(super::super::event_subscriptions::run(state.clone()));
+    let pending = await_subscription(&state, id, |row| row.wake_state == "ready").await;
+    assert!(pending.pending.as_ref().unwrap()["watchError"]
+        .as_str()
+        .unwrap()
+        .contains("event watch stopped"));
+    let (status, paused) = subscription_request(
+        &app,
+        "POST",
+        &format!("/v1/event-subscriptions/{id}/read"),
+        json!({"acknowledgeBatchId":pending.batch_id}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(paused["active"], false);
+    assert_eq!(
+        paused["cursor"], "invalid-position",
+        "an error cannot silently reset progress to now"
+    );
+    let (status, resumed) = subscription_request(
+        &app,
+        "POST",
+        "/v1/event-subscriptions",
+        json!({"taskId":"child-c", "localOnly":true, "delivery":"poll"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(resumed["id"], id);
+    assert_eq!(
+        resumed["cursor"], "invalid-position",
+        "retry preserves position; only an explicit unsubscribe starts a fresh watch"
+    );
+    service.abort();
+    let _ = service.await;
+}
+
+#[tokio::test]
+async fn subscriptions_require_a_direct_desktop_connection() {
+    let state = test_state_with_seed("subscription-access", "Mailbox", seed_orchestration);
+    let response = super::super::dispatch_authenticated_http_invoke(
+        state,
+        "POST",
+        "/v1/event-subscriptions",
+        json!({"taskId":"child-c"}),
+    )
+    .await;
+    assert_eq!(response.status, StatusCode::UNAUTHORIZED.as_u16());
+}
+
+// --- Batched waits -------------------------------------------------------
+//
+// The manager these cover watched a repository in 100-second legs for two
+// days. Every leg returned in seconds because runtime flicker counts as an
+// event, so it made thousands of calls and read every one of those responses
+// into its context. `minEvents`, `debounceMs`, `eventTypes`, `minIntervalMs`
+// and `excludeOwn` are that cost moved into the server, and the property they
+// must all keep is the one the cursor already promised: batching changes how
+// often a watcher wakes, never which events it is eventually given.
+
+/// The batch fills early, so the wait returns as soon as the third event lands
+/// rather than sitting out its window.
+#[tokio::test]
+async fn min_events_returns_as_soon_as_the_batch_fills() {
+    let (router, db_path) = events_router();
+    let watch = "/v1/task-events?includeCurrentActivity=false&taskIds=child-a,child-b,child-c";
+
+    {
+        let db = Db::open(&db_path).expect("open db");
+        start_run(&db, "run-a1", "child-a", "in progress");
+        db.update_pipeline_item_stage("child-a", "review")
+            .expect("advance stage");
+        db.update_pipeline_item_stage("child-b", "review")
+            .expect("advance stage");
+    }
+
+    let started = std::time::Instant::now();
+    let body = get_json_body(&router, &format!("{watch}&minEvents=3&timeoutSecs=20")).await;
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "a batch that is already full must not wait out its window"
+    );
+    assert_eq!(body["waitOutcome"], json!("events"));
+    assert_eq!(event_pairs(&body).len(), 3);
+}
+
+/// The window closes first. The events that did accumulate are returned — and
+/// acknowledged by the cursor, so the next call must not see them again.
+#[tokio::test]
+async fn min_events_returns_fewer_at_timeout_without_replaying_them() {
+    let (router, db_path) = events_router();
+    let watch = "/v1/task-events?includeCurrentActivity=false&taskIds=child-a,child-b,child-c";
+
+    {
+        let db = Db::open(&db_path).expect("open db");
+        start_run(&db, "run-a1", "child-a", "in progress");
+    }
+
+    let body = get_json_body(&router, &format!("{watch}&minEvents=5&timeoutSecs=1")).await;
+    assert_eq!(
+        body["waitOutcome"],
+        json!("timeout"),
+        "a window that closed short of minEvents is a timeout, not a full batch"
+    );
+    assert_eq!(
+        event_pairs(&body),
+        vec![("child-a".to_string(), "run.started".to_string())],
+        "whatever accumulated is still returned"
+    );
+    assert!(body["waitHint"]
+        .as_str()
+        .is_some_and(|hint| hint.contains("fewer than the 5 requested")));
+
+    let next = get_json_body(
+        &router,
+        &format!(
+            "{watch}&minEvents=5&timeoutSecs=1&cursor={}",
+            cursor_of(&body)
+        ),
+    )
+    .await;
+    assert_eq!(
+        event_pairs(&next),
+        Vec::new(),
+        "a timed-out batch acknowledged its events; they must not be replayed"
+    );
+}
+
+/// Three events 50 ms apart come back as one response, not three.
+#[tokio::test]
+async fn debounce_collects_a_burst_into_one_response() {
+    let (router, db_path) = events_router();
+    let watch = "/v1/task-events?includeCurrentActivity=false&taskIds=child-a,child-b,child-c";
+
+    let writer_db_path = db_path.clone();
+    let writer = tokio::spawn(async move {
+        let db = Db::open(&writer_db_path).expect("open db");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        start_run(&db, "run-a1", "child-a", "in progress");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        db.finish_stage_run("run-a1", "succeeded", Some("done"), None)
+            .expect("finish run");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        db.update_pipeline_item_stage("child-a", "review")
+            .expect("advance stage");
+    });
+
+    // The window is an order of magnitude wider than the burst it collects, so
+    // a loaded machine stretching the writer cannot turn this into a flake.
+    let body = get_json_body(&router, &format!("{watch}&debounceMs=3000&timeoutSecs=30")).await;
+    writer.await.expect("writer");
+    assert_eq!(body["waitOutcome"], json!("events"));
+    assert_eq!(
+        event_pairs(&body),
+        vec![
+            ("child-a".to_string(), "run.started".to_string()),
+            ("child-a".to_string(), "run.finished".to_string()),
+            ("child-a".to_string(), "stage.changed".to_string()),
+        ],
+        "a burst spread over 150ms must arrive as one response"
+    );
+}
+
+/// A lone event waits out the window and then returns; the window is opened by
+/// the first event, so it does not start from the call.
+#[tokio::test]
+async fn debounce_holds_a_lone_event_for_its_window_then_returns() {
+    let (router, db_path) = events_router();
+    let watch = "/v1/task-events?includeCurrentActivity=false&taskIds=child-a";
+
+    {
+        let db = Db::open(&db_path).expect("open db");
+        start_run(&db, "run-a1", "child-a", "in progress");
+    }
+
+    let started = std::time::Instant::now();
+    let body = get_json_body(&router, &format!("{watch}&debounceMs=700&timeoutSecs=20")).await;
+    let held = started.elapsed();
+    assert_eq!(body["waitOutcome"], json!("events"));
+    assert_eq!(event_pairs(&body).len(), 1);
+    assert!(
+        held >= Duration::from_millis(600),
+        "the lone event must be held for its debounce window (held {held:?})"
+    );
+    assert!(
+        held < Duration::from_secs(5),
+        "and released at the end of it, not at the timeout (held {held:?})"
+    );
+}
+
+/// The allow-list is a filter, so an unlisted type never appears — and the
+/// cursor still advances past it, exactly like an exclusion.
+#[tokio::test]
+async fn event_types_allow_list_drops_other_types_and_still_advances_the_cursor() {
+    let (router, db_path) = events_router();
+    let watch = "/v1/task-events?includeCurrentActivity=false&taskIds=child-a";
+
+    {
+        let db = Db::open(&db_path).expect("open db");
+        start_run(&db, "run-a1", "child-a", "in progress");
+        db.update_pipeline_item_stage("child-a", "review")
+            .expect("advance stage");
+        db.finish_stage_run("run-a1", "succeeded", Some("done"), None)
+            .expect("finish run");
+        db.update_pipeline_item_pr("child-a", Some(7), "https://github.com/o/r/pull/7")
+            .expect("record pr");
+    }
+
+    let body = get_json_body(
+        &router,
+        &format!("{watch}&eventTypes=run.finished,task.pr_created&timeoutSecs=1"),
+    )
+    .await;
+    assert_eq!(
+        event_pairs(&body),
+        vec![
+            ("child-a".to_string(), "run.finished".to_string()),
+            ("child-a".to_string(), "task.pr_created".to_string()),
+        ],
+        "only the named types are delivered"
+    );
+
+    // The dropped rows were consumed, not deferred: a watcher that widens its
+    // allow-list later does not get them replayed.
+    let widened = get_json_body(
+        &router,
+        &format!("{watch}&timeoutSecs=1&cursor={}", cursor_of(&body)),
+    )
+    .await;
+    assert_eq!(
+        event_pairs(&widened),
+        Vec::new(),
+        "the cursor advanced past the filtered rows"
+    );
+    assert_eq!(widened["waitOutcome"], json!("timeout"));
+}
+
+/// An explicit exclusion still wins over the allow-list, and the synthetic
+/// current-state rows go with the type they are named after.
+#[tokio::test]
+async fn event_types_allow_list_composes_with_exclusions_and_synthetic_state() {
+    let (router, db_path) = events_router();
+
+    {
+        let db = Db::open(&db_path).expect("open db");
+        start_run(&db, "run-a1", "child-a", "in progress");
+        db.finish_stage_run("run-a1", "succeeded", Some("done"), None)
+            .expect("finish run");
+        settle_runtime_tasks(&db, &["child-b"]);
+    }
+
+    let both = get_json_body(
+        &router,
+        "/v1/task-events?taskIds=child-a,child-b&includeCurrentActivity=true\
+         &eventTypes=run.finished,task.runtime_changed&timeoutSecs=1",
+    )
+    .await;
+    let types = event_pairs(&both)
+        .into_iter()
+        .map(|(_, event_type)| event_type)
+        .collect::<HashSet<_>>();
+    assert!(types.contains("run.finished"));
+    assert!(
+        types.contains("task.runtime_changed"),
+        "an allow-list naming the runtime type keeps its synthetic rows: {types:?}"
+    );
+
+    let narrowed = get_json_body(
+        &router,
+        "/v1/task-events?taskIds=child-a,child-b&includeCurrentActivity=true\
+         &eventTypes=run.finished,task.runtime_changed&excludeEventTypes=task.runtime_changed\
+         &timeoutSecs=1",
+    )
+    .await;
+    let types = event_pairs(&narrowed)
+        .into_iter()
+        .map(|(_, event_type)| event_type)
+        .collect::<HashSet<_>>();
+    assert_eq!(
+        types,
+        HashSet::from(["run.finished".to_string()]),
+        "an explicit exclusion narrows the allow-list rather than fighting it"
+    );
+}
+
+/// The cursor contract across a batched boundary: every event arrives exactly
+/// once, in order, whether it landed before the call, during it, or between
+/// two calls.
+#[tokio::test]
+async fn a_batched_boundary_loses_and_duplicates_nothing() {
+    let (router, db_path) = events_router();
+    let watch = "/v1/task-events?includeCurrentActivity=false&taskIds=child-a,child-b,child-c\
+                 &minEvents=3&debounceMs=300";
+
+    {
+        let db = Db::open(&db_path).expect("open db");
+        start_run(&db, "run-a1", "child-a", "in progress");
+    }
+
+    let writer_db_path = db_path.clone();
+    let writer = tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let db = Db::open(&writer_db_path).expect("open db");
+        db.finish_stage_run("run-a1", "succeeded", Some("done"), None)
+            .expect("finish run");
+        db.update_pipeline_item_stage("child-a", "review")
+            .expect("advance stage");
+    });
+
+    let first = get_json_body(&router, &format!("{watch}&timeoutSecs=20")).await;
+    writer.await.expect("writer");
+    let mut seen = event_pairs(&first);
+    let cursor = cursor_of(&first);
+
+    // Fired with nobody listening, straddling the boundary the batch closed on.
+    {
+        let db = Db::open(&db_path).expect("open db");
+        start_run(&db, "run-b1", "child-b", "in progress");
+        db.close_pipeline_item("child-c").expect("close child");
+    }
+
+    let second = get_json_body(&router, &format!("{watch}&timeoutSecs=1&cursor={cursor}")).await;
+    seen.extend(event_pairs(&second));
+    assert_eq!(
+        seen,
+        vec![
+            ("child-a".to_string(), "run.started".to_string()),
+            ("child-a".to_string(), "run.finished".to_string()),
+            ("child-a".to_string(), "stage.changed".to_string()),
+            ("child-b".to_string(), "run.started".to_string()),
+            ("child-c".to_string(), "task.closed".to_string()),
+        ],
+        "a batched boundary delivers every event exactly once, in sequence order"
+    );
+
+    let drained = get_json_body(
+        &router,
+        &format!("{watch}&timeoutSecs=1&cursor={}", cursor_of(&second)),
+    )
+    .await;
+    assert_eq!(event_pairs(&drained), Vec::new());
+}
+
+/// The feedback loop the owner named: send input to a task, wait on it
+/// immediately, and the delivery's own announcement ends the wait before the
+/// agent it spoke to has done anything. `excludeOwn` drops that echo; a human's
+/// delivery into the same task is never dropped.
+#[tokio::test]
+async fn a_manager_waiting_after_sending_input_does_not_wake_on_its_own_echo() {
+    let (router, db_path) = events_router();
+    let watch = "/v1/task-events?includeCurrentActivity=false&taskIds=child-a";
+
+    {
+        let db = Db::open(&db_path).expect("open db");
+        db.record_task_input(
+            "child-a",
+            crate::db::TaskInputSource::Manager,
+            "please rerun the failing test",
+        )
+        .expect("record manager input");
+        db.append_raw_input_event(
+            "child-a",
+            crate::db::TaskInputSource::Manager.as_str(),
+            4242,
+            "delivered",
+            &[crate::db::RawInputWriteRecord {
+                key: Some("enter".to_string()),
+                bytes_hex: "0d".to_string(),
+                class: "submission",
+                status: "written",
+            }],
+        )
+        .expect("record manager raw input");
+    }
+
+    let echoed = get_json_body(&router, &format!("{watch}&timeoutSecs=1")).await;
+    assert_eq!(
+        event_pairs(&echoed)
+            .into_iter()
+            .map(|(_, event_type)| event_type)
+            .collect::<Vec<_>>(),
+        vec![
+            "task.input_delivered".to_string(),
+            "task.raw_input_delivered".to_string()
+        ],
+        "without excludeOwn the echo is delivered, as it always was"
+    );
+
+    // The same feed, with the echo suppressed: the wait sleeps through its own
+    // delivery and returns only what the task then did.
+    let writer_db_path = db_path.clone();
+    let writer = tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        let db = Db::open(&writer_db_path).expect("open db");
+        db.record_task_input(
+            "child-a",
+            crate::db::TaskInputSource::Operator,
+            "and please look at the flake too",
+        )
+        .expect("record operator input");
+        start_run(&db, "run-a1", "child-a", "in progress");
+    });
+
+    let started = std::time::Instant::now();
+    let body = get_json_body(&router, &format!("{watch}&excludeOwn=true&timeoutSecs=20")).await;
+    writer.await.expect("writer");
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "the wait must still be woken by real work"
+    );
+    assert_eq!(
+        event_pairs(&body)
+            .into_iter()
+            .map(|(_, event_type)| event_type)
+            .collect::<Vec<_>>(),
+        vec![
+            "task.input_delivered".to_string(),
+            "run.started".to_string()
+        ],
+        "the manager's own two deliveries are dropped; the operator's is not"
+    );
+    let source = body["events"][0]["payload"]["source"]
+        .as_str()
+        .expect("delivery source");
+    assert_eq!(
+        source, "operator",
+        "a human intervening in a watched task is exactly what a manager must see"
+    );
+}
+
+/// Send input, wait immediately, and the status flips that follow do not each
+/// buy a wake-up: one call, held for its interval, carries the burst.
+#[tokio::test]
+async fn min_interval_consolidates_the_burst_that_follows_a_send() {
+    let (router, db_path) = events_router();
+    let watch = "/v1/task-events?includeCurrentActivity=false&taskIds=child-a&excludeOwn=true";
+
+    {
+        let db = Db::open(&db_path).expect("open db");
+        db.record_task_input("child-a", crate::db::TaskInputSource::Manager, "carry on")
+            .expect("record manager input");
+    }
+
+    // The task reacts over the next 150ms, the way a session does after input
+    // lands: a run starts, finishes, and the stage moves. The interval is an
+    // order of magnitude wider than that, so a loaded machine stretching the
+    // writer cannot turn a real assertion into a flake.
+    let writer_db_path = db_path.clone();
+    let writer = tokio::spawn(async move {
+        let db = Db::open(&writer_db_path).expect("open db");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        start_run(&db, "run-a1", "child-a", "in progress");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        db.finish_stage_run("run-a1", "succeeded", Some("done"), None)
+            .expect("finish run");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        db.update_pipeline_item_stage("child-a", "review")
+            .expect("advance stage");
+    });
+
+    let started = std::time::Instant::now();
+    let body = get_json_body(
+        &router,
+        &format!("{watch}&minIntervalMs=3000&timeoutSecs=30"),
+    )
+    .await;
+    let held = started.elapsed();
+    writer.await.expect("writer");
+    assert!(
+        held >= Duration::from_millis(2_900),
+        "the call is floored at its interval however early the first event lands (held {held:?})"
+    );
+    assert_eq!(
+        event_pairs(&body)
+            .into_iter()
+            .map(|(_, event_type)| event_type)
+            .collect::<Vec<_>>(),
+        vec![
+            "run.started".to_string(),
+            "run.finished".to_string(),
+            "stage.changed".to_string()
+        ],
+        "one response carries what the task did, with no echo of the send"
+    );
+}
+
+/// A full page is never held: `hasMore` means the caller must drain, and
+/// waiting cannot add anything to a response that is already full.
+#[tokio::test]
+async fn a_full_page_is_returned_immediately_despite_a_hold_window() {
+    let (router, db_path) = events_router();
+
+    {
+        let db = Db::open(&db_path).expect("open db");
+        start_run(&db, "run-a1", "child-a", "in progress");
+        db.update_pipeline_item_stage("child-a", "review")
+            .expect("advance stage");
+        db.update_pipeline_item_stage("child-a", "pr")
+            .expect("advance stage again");
+    }
+
+    let started = std::time::Instant::now();
+    let body = get_json_body(
+        &router,
+        "/v1/task-events?includeCurrentActivity=false&taskIds=child-a&limit=2\
+         &minEvents=2&debounceMs=30000&minIntervalMs=30000&timeoutSecs=20",
+    )
+    .await;
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "a page the caller must drain is not worth holding"
+    );
+    assert_eq!(body["waitOutcome"], json!("events"));
+    assert_eq!(body["hasMore"], json!(true));
+    assert_eq!(event_pairs(&body).len(), 2);
+}
+
+/// `minEvents` cannot exceed the page size, or a caller that asked for more
+/// events than a response can carry would always run to timeout.
+#[tokio::test]
+async fn min_events_is_capped_by_the_page_size() {
+    let (router, db_path) = events_router();
+
+    {
+        let db = Db::open(&db_path).expect("open db");
+        start_run(&db, "run-a1", "child-a", "in progress");
+        db.update_pipeline_item_stage("child-a", "review")
+            .expect("advance stage");
+    }
+
+    let started = std::time::Instant::now();
+    let body = get_json_body(
+        &router,
+        "/v1/task-events?includeCurrentActivity=false&taskIds=child-a&limit=2\
+         &minEvents=50&timeoutSecs=20",
+    )
+    .await;
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "minEvents above the limit must not turn every wait into a timeout"
+    );
+    assert_eq!(body["waitOutcome"], json!("events"));
+    assert_eq!(event_pairs(&body).len(), 2);
+}
+
+/// `minEvents` counts the fan-out's events together, not each machine's own:
+/// one event on each of two machines completes a batch of two, and the legs are
+/// re-armed while it fills rather than each ending the wait.
+#[tokio::test]
+async fn min_events_counts_events_across_every_machine_of_a_fan_out() {
+    const REMOTE_HASH: &str = "sha256:batched-across-two-machines";
+    let source = test_state_with_seed("desktop-source-batched", "Source Mac", |db| {
+        db.insert_test_repo("repo-source-id", "Kanna Source")
+            .expect("insert source repo");
+        db.patch_repo(
+            "repo-source-id",
+            crate::db::RepoPatch {
+                remote_url_hash: Some(Some(REMOTE_HASH)),
+                ..crate::db::RepoPatch::default()
+            },
+        )
+        .expect("set source remote hash");
+        db.insert_test_pipeline_item(
+            "local-child",
+            "repo-source-id",
+            "local child",
+            Some("Local Child"),
+            "in progress",
+            "2026-09-09 00:00:00",
+        )
+        .expect("insert source task");
+    });
+    let peer = test_state_with_seed("desktop-peer-batched", "Peer Mac", |db| {
+        db.insert_test_repo("repo-peer-different-id", "Kanna Peer")
+            .expect("insert peer repo");
+        db.patch_repo(
+            "repo-peer-different-id",
+            crate::db::RepoPatch {
+                remote_url_hash: Some(Some(REMOTE_HASH)),
+                ..crate::db::RepoPatch::default()
+            },
+        )
+        .expect("set peer remote hash");
+        db.insert_test_pipeline_item(
+            "remote-child",
+            "repo-peer-different-id",
+            "remote child",
+            Some("Remote Child"),
+            "in progress",
+            "2026-09-09 00:00:00",
+        )
+        .expect("insert peer task");
+    });
+    let connected = Arc::new(AtomicBool::new(true));
+    let relay = connect_test_relay_peer(&source, Arc::clone(&peer), Arc::clone(&connected));
+    let source_router = router(Arc::clone(&source));
+
+    // One event on each machine. Neither leg alone completes a batch of two.
+    Db::open(&source.config().db_path)
+        .expect("open source db")
+        .update_pipeline_item_stage("local-child", "review")
+        .expect("append source event");
+    Db::open(&peer.config().db_path)
+        .expect("open peer db")
+        .update_pipeline_item_stage("remote-child", "review")
+        .expect("append peer event");
+
+    let body = get_account_json_body(
+        &source_router,
+        &source,
+        "/v1/task-events?includeCurrentActivity=false&repoId=repo-source-id&minEvents=2&timeoutSecs=20",
+    )
+    .await;
+    assert_eq!(body["waitOutcome"], "events", "{body:#?}");
+    assert_eq!(body["machineErrors"], json!([]));
+    let machines = body["events"]
+        .as_array()
+        .expect("events")
+        .iter()
+        .map(|event| event["machineId"].as_str().unwrap_or_default().to_string())
+        .collect::<HashSet<_>>();
+    assert_eq!(
+        machines,
+        HashSet::from([
+            "desktop-source-batched".to_string(),
+            "desktop-peer-batched".to_string()
+        ]),
+        "a batch of two must be filled from both machines, not one twice"
+    );
+    assert_eq!(
+        event_pairs(&body)
+            .into_iter()
+            .map(|(task_id, _)| task_id)
+            .collect::<HashSet<_>>(),
+        HashSet::from(["local-child".to_string(), "remote-child".to_string()])
+    );
+
+    // The batched boundary is still a cursor: nothing is replayed after it.
+    let drained = get_account_json_body(
+        &source_router,
+        &source,
+        &format!(
+            "/v1/task-events?includeCurrentActivity=false&repoId=repo-source-id&minEvents=2&timeoutSecs=1&cursor={}",
+            cursor_of(&body)
+        ),
+    )
+    .await;
+    assert_eq!(event_pairs(&drained), Vec::new());
 
     relay.abort();
 }

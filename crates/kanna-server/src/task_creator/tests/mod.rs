@@ -39,6 +39,7 @@ static CODEX_HOME_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 mod core;
 mod local_config;
 mod provider_session;
+mod quota_recovery;
 mod recovery;
 mod revision;
 mod setup;
@@ -54,9 +55,23 @@ async fn read_fake_daemon_command(
     reader: &mut BufReader<tokio::net::unix::OwnedReadHalf>,
     writer: &mut tokio::net::unix::OwnedWriteHalf,
 ) -> kanna_daemon::protocol::Command {
+    read_fake_daemon_command_optional(reader, writer)
+        .await
+        .expect("fake daemon connection closed before the expected command")
+}
+
+/// The same read, for a fake daemon that serves a connection until the client
+/// closes it rather than until a fixed command count.
+async fn read_fake_daemon_command_optional(
+    reader: &mut BufReader<tokio::net::unix::OwnedReadHalf>,
+    writer: &mut tokio::net::unix::OwnedWriteHalf,
+) -> Option<kanna_daemon::protocol::Command> {
     loop {
         let mut line = String::new();
-        reader.read_line(&mut line).await.unwrap();
+        match reader.read_line(&mut line).await {
+            Ok(0) | Err(_) => return None,
+            Ok(_) => {}
+        }
         let command = serde_json::from_str(line.trim()).unwrap();
         if matches!(
             command,
@@ -71,7 +86,7 @@ async fn read_fake_daemon_command(
                 .unwrap();
             continue;
         }
-        return command;
+        return Some(command);
     }
 }
 
@@ -189,7 +204,7 @@ fn test_config(label: &str) -> Config {
         lan_port: 48120,
         transfer_port: 4455,
         activity_event_debounce_seconds: 300,
-        pairing_store_path: format!("/tmp/kanna-pairings-{label}.json"),
+        pairing_store_path: crate::test_paths::unique_test_file("kanna-pairings", "json"),
     }
 }
 
@@ -360,6 +375,17 @@ async fn spawn_fake_daemon_input_ok(
 /// then `SessionCreated` to each spawn, returning every command once
 /// `expected_spawns` spawns have arrived (a transition that tears down the
 /// left workspace sends a second spawn for the teardown session).
+/// Write one daemon event onto a fake daemon connection.
+async fn write_fake_daemon_event(
+    writer: &mut tokio::net::unix::OwnedWriteHalf,
+    event: &kanna_daemon::protocol::Event,
+) {
+    writer
+        .write_all(format!("{}\n", serde_json::to_string(event).unwrap()).as_bytes())
+        .await
+        .unwrap();
+}
+
 async fn spawn_fake_daemon_fork_transition(
     daemon_dir: String,
     expected_spawns: usize,

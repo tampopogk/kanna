@@ -137,6 +137,16 @@ static COMPANION_SERIALIZE_TEST_GATES: OnceLock<
 static COMPANION_CHANGED_SCAN_COUNTS: OnceLock<Mutex<HashMap<String, usize>>> = OnceLock::new();
 
 #[cfg(test)]
+struct CompanionScanCompletion {
+    count: AtomicUsize,
+    completed: Notify,
+}
+
+#[cfg(test)]
+static COMPANION_SCAN_COMPLETIONS: OnceLock<Mutex<HashMap<String, Arc<CompanionScanCompletion>>>> =
+    OnceLock::new();
+
+#[cfg(test)]
 fn companion_scan_test_key(db_path: &str, task_id: &str) -> String {
     serde_json::to_string(&(db_path, task_id)).expect("companion scan test key must serialize")
 }
@@ -161,6 +171,49 @@ fn changed_companion_scan_count(db_path: &str, task_id: &str) -> usize {
         .get(&companion_scan_test_key(db_path, task_id))
         .copied()
         .unwrap_or(0)
+}
+
+#[cfg(test)]
+fn record_companion_scan_completion(db_path: &str, task_id: &str) {
+    let key = companion_scan_test_key(db_path, task_id);
+    let completion = COMPANION_SCAN_COMPLETIONS
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .entry(key)
+        .or_insert_with(|| {
+            Arc::new(CompanionScanCompletion {
+                count: AtomicUsize::new(0),
+                completed: Notify::new(),
+            })
+        })
+        .clone();
+    completion.count.fetch_add(1, Ordering::AcqRel);
+    completion.completed.notify_waiters();
+}
+
+#[cfg(test)]
+async fn wait_for_companion_scan_completion(db_path: &str, task_id: &str, expected: usize) {
+    let key = companion_scan_test_key(db_path, task_id);
+    let completion = COMPANION_SCAN_COMPLETIONS
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .entry(key)
+        .or_insert_with(|| {
+            Arc::new(CompanionScanCompletion {
+                count: AtomicUsize::new(0),
+                completed: Notify::new(),
+            })
+        })
+        .clone();
+    loop {
+        let notified = completion.completed.notified();
+        if completion.count.load(Ordering::Acquire) >= expected {
+            return;
+        }
+        notified.await;
+    }
 }
 
 #[cfg(test)]
@@ -445,6 +498,7 @@ pub(super) struct CompanionResources {
     attachment_slots: Arc<Semaphore>,
     retained_bytes: Arc<AtomicUsize>,
     retained_available: Arc<Notify>,
+    retained_byte_limit: usize,
     pending_bytes: Arc<AtomicUsize>,
 }
 
@@ -458,7 +512,18 @@ impl Default for CompanionResources {
             attachment_slots: Arc::new(Semaphore::new(MAX_RELAY_COMPANION_ATTACHMENTS)),
             retained_bytes: Arc::new(AtomicUsize::new(0)),
             retained_available: Arc::new(Notify::new()),
+            retained_byte_limit: MAX_RELAY_COMPANION_RETAINED_BYTES,
             pending_bytes: Arc::new(AtomicUsize::new(0)),
+        }
+    }
+}
+
+#[cfg(test)]
+impl CompanionResources {
+    fn with_retained_byte_limit(retained_byte_limit: usize) -> Self {
+        Self {
+            retained_byte_limit,
+            ..Self::default()
         }
     }
 }
@@ -504,7 +569,13 @@ struct RetainedCompanionFrame {
 impl RetainedCompanionFrame {
     #[cfg(test)]
     fn try_new(frame: ServerFrame, total_retained_bytes: &Arc<AtomicUsize>) -> Option<Arc<Self>> {
-        Self::try_new_with_wakeup(frame, None, total_retained_bytes, None)
+        Self::try_new_with_wakeup(
+            frame,
+            None,
+            total_retained_bytes,
+            None,
+            MAX_RELAY_COMPANION_RETAINED_BYTES,
+        )
     }
 
     fn try_new_with_wakeup(
@@ -512,14 +583,10 @@ impl RetainedCompanionFrame {
         snapshot_includes_assets: Option<bool>,
         total_retained_bytes: &Arc<AtomicUsize>,
         retained_available: Option<Arc<Notify>>,
+        retained_byte_limit: usize,
     ) -> Option<Arc<Self>> {
         let retained_bytes = companion_frame_retained_bytes(&frame);
-        reserve_relay_bytes(
-            total_retained_bytes,
-            retained_bytes,
-            MAX_RELAY_COMPANION_RETAINED_BYTES,
-        )
-        .then(|| {
+        reserve_relay_bytes(total_retained_bytes, retained_bytes, retained_byte_limit).then(|| {
             Arc::new(Self {
                 frame: Arc::new(frame),
                 snapshot_includes_assets,
@@ -592,6 +659,7 @@ impl CompanionResources {
             CompanionScanRetention {
                 retained_bytes: Arc::clone(&self.retained_bytes),
                 retained_available: Arc::clone(&self.retained_available),
+                retained_byte_limit: self.retained_byte_limit,
             },
         );
         CompanionScanSubscription {
@@ -3965,6 +4033,7 @@ async fn stream_companion(
 struct CompanionScanRetention {
     retained_bytes: Arc<AtomicUsize>,
     retained_available: Arc<Notify>,
+    retained_byte_limit: usize,
 }
 
 fn spawn_companion_scan_source(
@@ -3979,6 +4048,7 @@ fn spawn_companion_scan_source(
     let CompanionScanRetention {
         retained_bytes,
         retained_available,
+        retained_byte_limit,
     } = retention;
     tokio::spawn(async move {
         let mut published = PublishedCompanionState::Never;
@@ -4010,6 +4080,8 @@ fn spawn_companion_scan_source(
                     ))
                 }
             };
+            #[cfg(test)]
+            record_companion_scan_completion(&db_path, &task_id);
             let mode_changed = {
                 let current_demand = asset_demand.borrow_and_update();
                 (*current_demand > 0) != include_assets
@@ -4064,6 +4136,7 @@ fn spawn_companion_scan_source(
                             snapshot_includes_assets,
                             &retained_bytes,
                             Some(Arc::clone(&retained_available)),
+                            retained_byte_limit,
                         ) {
                             frames.send_replace(Some(frame));
                             published = next_state;
@@ -4082,6 +4155,7 @@ fn spawn_companion_scan_source(
                                 None,
                                 &retained_bytes,
                                 Some(Arc::clone(&retained_available)),
+                                retained_byte_limit,
                             ) {
                                 frames.send_replace(Some(error));
                             }
@@ -4454,6 +4528,10 @@ fn halve_agent_event_strings(event: &mut AgentEvent) {
         }
         AgentEvent::TurnCompleted { .. } => {}
         AgentEvent::SessionEnded { message, .. } => halve_optional_string(message),
+        AgentEvent::QuotaRejected { scope, detail, .. } => {
+            halve_optional_string(scope);
+            halve_string(detail);
+        }
         AgentEvent::Diagnostic { message } => halve_string(message),
         AgentEvent::Raw { line, truncated } => {
             halve_string(line);
@@ -5857,7 +5935,7 @@ mod tests {
             firebase_project_id: "kanna-local".to_string(),
             firebase_auth_emulator_url: Some("http://127.0.0.1:9099".to_string()),
             firebase_firestore_emulator_host: Some("127.0.0.1:8080".to_string()),
-            daemon_dir: "/tmp/kanna-daemon".to_string(),
+            daemon_dir: crate::test_paths::unique_test_path_string("kanna-daemon"),
             db_path: crate::db::Db::test_db_path(desktop_id),
             kanna_cli_path: None,
             desktop_id: desktop_id.to_string(),
@@ -5869,7 +5947,7 @@ mod tests {
             lan_port: 48120,
             transfer_port: 4455,
             activity_event_debounce_seconds: 300,
-            pairing_store_path: format!("/tmp/kanna-pairings-{desktop_id}.json"),
+            pairing_store_path: crate::test_paths::unique_test_file("kanna-pairings", "json"),
         }
     }
 
@@ -6858,6 +6936,26 @@ mod tests {
             }
         }
 
+        fn activate_admission_bundle(worktree: &std::path::Path, session_id: &str) {
+            let session = worktree.join(".superpowers/brainstorm").join(session_id);
+            std::fs::create_dir_all(session.join("state")).unwrap();
+            std::fs::create_dir_all(session.join("content")).unwrap();
+            std::fs::write(session.join("state/server-info"), b"{}").unwrap();
+            std::fs::write(
+                session.join("content/screen.html"),
+                b"<main>companion</main>",
+            )
+            .unwrap();
+            let asset = vec![0_u8; 1024];
+            for index in 0..4 {
+                std::fs::write(
+                    session.join("content").join(format!("asset-{index}.png")),
+                    &asset,
+                )
+                .unwrap();
+            }
+        }
+
         async fn serve(&self) -> String {
             serve_router(crate::http_api::router(Arc::new(AppState::new(
                 self.config.clone(),
@@ -7815,8 +7913,8 @@ mod tests {
     #[tokio::test]
     async fn assetful_companion_stream_skips_retained_assetless_snapshot_during_upgrade() {
         let fixture = KspCompanionFixture::new("stream-demand-upgrade");
-        KspCompanionFixture::activate_maximum_bundle(&fixture.worktree, "session-1");
-        let resources = CompanionResources::default();
+        KspCompanionFixture::activate_admission_bundle(&fixture.worktree, "session-1");
+        let resources = CompanionResources::with_retained_byte_limit(16 * 1024);
         let db_path = fixture.db_path.to_string_lossy().to_string();
         let mut assetless = resources.subscribe(db_path.clone(), "task-1".into(), false);
         tokio::time::timeout(Duration::from_secs(10), assetless.frames.changed())
@@ -7856,14 +7954,15 @@ mod tests {
         let fixture = KspCompanionFixture::new("retained-admission-retry");
         let second_worktree = fixture.add_task("task-2");
         let third_worktree = fixture.add_task("task-3");
-        KspCompanionFixture::activate_maximum_bundle(&fixture.worktree, "session-1");
-        KspCompanionFixture::activate_maximum_bundle(&second_worktree, "session-2");
-        KspCompanionFixture::activate_maximum_bundle(&third_worktree, "session-3");
+        KspCompanionFixture::activate_admission_bundle(&fixture.worktree, "session-1");
+        KspCompanionFixture::activate_admission_bundle(&second_worktree, "session-2");
+        KspCompanionFixture::activate_admission_bundle(&third_worktree, "session-3");
 
-        let resources = CompanionResources::default();
+        let resources = CompanionResources::with_retained_byte_limit(16 * 1024);
         let db_path = fixture.db_path.to_string_lossy().to_string();
         let mut subscriptions = Vec::new();
         let mut snapshots = 0;
+        let mut accepted_task_ids = Vec::new();
         let mut resource_errors = 0;
         let task_ids = ["task-1", "task-2", "task-3"];
         let mut rejected_index = None;
@@ -7879,7 +7978,10 @@ mod tests {
                 .as_deref()
                 .map(|frame| frame.frame.as_ref())
             {
-                Some(ServerFrame::CompanionSnapshot { .. }) => snapshots += 1,
+                Some(ServerFrame::CompanionSnapshot { .. }) => {
+                    snapshots += 1;
+                    accepted_task_ids.push(task_id);
+                }
                 Some(ServerFrame::CompanionError { code, .. })
                     if code == "companion_resource_limit" =>
                 {
@@ -7893,7 +7995,14 @@ mod tests {
         assert_eq!(snapshots, 2);
         assert_eq!(resource_errors, 1);
 
-        tokio::time::sleep(Duration::from_secs(3)).await;
+        for task_id in accepted_task_ids {
+            tokio::time::timeout(
+                Duration::from_secs(10),
+                wait_for_companion_scan_completion(&db_path, task_id, 2),
+            )
+            .await
+            .expect("accepted source should finish its next scan cycle");
+        }
         for task_id in task_ids {
             assert_eq!(
                 changed_companion_scan_count(&db_path, task_id),
@@ -7939,11 +8048,11 @@ mod tests {
         let fixture = KspCompanionFixture::new("admission-demand-churn");
         let second_worktree = fixture.add_task("task-2");
         let third_worktree = fixture.add_task("task-3");
-        KspCompanionFixture::activate_maximum_bundle(&fixture.worktree, "session-1");
-        KspCompanionFixture::activate_maximum_bundle(&second_worktree, "session-2");
-        KspCompanionFixture::activate_maximum_bundle(&third_worktree, "session-3");
+        KspCompanionFixture::activate_admission_bundle(&fixture.worktree, "session-1");
+        KspCompanionFixture::activate_admission_bundle(&second_worktree, "session-2");
+        KspCompanionFixture::activate_admission_bundle(&third_worktree, "session-3");
 
-        let resources = CompanionResources::default();
+        let resources = CompanionResources::with_retained_byte_limit(16 * 1024);
         let db_path = fixture.db_path.to_string_lossy().to_string();
         let mut first = resources.subscribe(db_path.clone(), "task-1".into(), true);
         tokio::time::timeout(Duration::from_secs(10), first.frames.changed())
@@ -10071,7 +10180,7 @@ mod tests {
         let mut config = test_config(&unique, "KSP Geometry Barrier Reconnect");
         config.daemon_dir = daemon_dir.to_string_lossy().to_string();
         config.db_path = Db::test_db_path(&unique);
-        config.pairing_store_path = format!("/tmp/kanna-pairings-{unique}.json");
+        config.pairing_store_path = crate::test_paths::unique_test_file("kanna-pairings", "json");
         let _db = Db::open_for_tests(&config.db_path).expect("open test db");
 
         let state = Arc::new(AppState::new(config.clone()));
@@ -10250,7 +10359,7 @@ mod tests {
         let mut config = test_config("ksp-terminal-control", "KSP Terminal Control");
         config.daemon_dir = daemon_dir.to_string_lossy().to_string();
         config.db_path = Db::test_db_path(&unique);
-        config.pairing_store_path = format!("/tmp/kanna-pairings-{unique}.json");
+        config.pairing_store_path = crate::test_paths::unique_test_file("kanna-pairings", "json");
         let _db = Db::open_for_tests(&config.db_path).expect("open test db");
 
         let (daemon, mut commands) = spawn_fake_control_daemon(config.daemon_dir.clone(), 4).await;
@@ -10346,7 +10455,7 @@ mod tests {
         let mut config = test_config(&unique, "KSP Legacy Terminal Boundary");
         config.daemon_dir = daemon_dir.to_string_lossy().to_string();
         config.db_path = Db::test_db_path(&unique);
-        config.pairing_store_path = format!("/tmp/kanna-pairings-{unique}.json");
+        config.pairing_store_path = crate::test_paths::unique_test_file("kanna-pairings", "json");
         let _db = Db::open_for_tests(&config.db_path).expect("open test db");
 
         let (daemon, mut commands) = spawn_fake_control_daemon(config.daemon_dir.clone(), 1).await;
@@ -10403,7 +10512,7 @@ mod tests {
         let mut config = test_config("ksp-terminal-at-most-once", "KSP At Most Once");
         config.daemon_dir = daemon_dir.to_string_lossy().to_string();
         config.db_path = Db::test_db_path(&unique);
-        config.pairing_store_path = format!("/tmp/kanna-pairings-{unique}.json");
+        config.pairing_store_path = crate::test_paths::unique_test_file("kanna-pairings", "json");
         let _db = Db::open_for_tests(&config.db_path).expect("open test db");
 
         let (daemon, mut commands) =
@@ -10451,7 +10560,7 @@ mod tests {
         let mut config = test_config("ksp-terminal-no-ack", "KSP No ACK");
         config.daemon_dir = daemon_dir.to_string_lossy().to_string();
         config.db_path = Db::test_db_path(&unique);
-        config.pairing_store_path = format!("/tmp/kanna-pairings-{unique}.json");
+        config.pairing_store_path = crate::test_paths::unique_test_file("kanna-pairings", "json");
         let _db = Db::open_for_tests(&config.db_path).expect("open test db");
 
         let (daemon, mut commands) =
@@ -10523,7 +10632,7 @@ mod tests {
         let mut config = test_config("ksp-terminal-request-hol", "KSP Request HOL");
         config.daemon_dir = daemon_dir.to_string_lossy().to_string();
         config.db_path = Db::test_db_path(&unique);
-        config.pairing_store_path = format!("/tmp/kanna-pairings-{unique}.json");
+        config.pairing_store_path = crate::test_paths::unique_test_file("kanna-pairings", "json");
         let _db = Db::open_for_tests(&config.db_path).expect("open test db");
 
         let (daemon, mut commands) = spawn_fake_control_daemon(config.daemon_dir.clone(), 2).await;
@@ -10694,7 +10803,7 @@ mod tests {
         let mut config = test_config("ksp-request-saturation", "KSP Request Saturation");
         config.daemon_dir = daemon_dir.to_string_lossy().to_string();
         config.db_path = Db::test_db_path(&unique);
-        config.pairing_store_path = format!("/tmp/kanna-pairings-{unique}.json");
+        config.pairing_store_path = crate::test_paths::unique_test_file("kanna-pairings", "json");
         let _db = Db::open_for_tests(&config.db_path).expect("open test db");
 
         let (daemon, mut commands) =
@@ -10771,7 +10880,7 @@ mod tests {
         let mut config = test_config("ksp-terminal-agent-hol", "KSP Agent HOL");
         config.daemon_dir = daemon_dir.to_string_lossy().to_string();
         config.db_path = Db::test_db_path(&unique);
-        config.pairing_store_path = format!("/tmp/kanna-pairings-{unique}.json");
+        config.pairing_store_path = crate::test_paths::unique_test_file("kanna-pairings", "json");
         let db = Db::open_for_tests(&config.db_path).expect("open test db");
         db.insert_test_repo("repo-1", "Repo One")
             .expect("insert repo");
@@ -10903,7 +11012,7 @@ mod tests {
         );
         config.daemon_dir = daemon_dir.to_string_lossy().to_string();
         config.db_path = Db::test_db_path(&unique);
-        config.pairing_store_path = format!("/tmp/kanna-pairings-{unique}.json");
+        config.pairing_store_path = crate::test_paths::unique_test_file("kanna-pairings", "json");
         let _db = Db::open_for_tests(&config.db_path).expect("open test db");
 
         let (daemon, mut commands) =
@@ -10974,7 +11083,7 @@ mod tests {
         );
         config.daemon_dir = daemon_dir.to_string_lossy().to_string();
         config.db_path = Db::test_db_path(&unique);
-        config.pairing_store_path = format!("/tmp/kanna-pairings-{unique}.json");
+        config.pairing_store_path = crate::test_paths::unique_test_file("kanna-pairings", "json");
         let _db = Db::open_for_tests(&config.db_path).expect("open test db");
 
         let (daemon, mut commands) = spawn_fake_control_daemon(config.daemon_dir.clone(), 2).await;
@@ -11059,7 +11168,7 @@ mod tests {
         );
         config.daemon_dir = daemon_dir.to_string_lossy().to_string();
         config.db_path = Db::test_db_path(&unique);
-        config.pairing_store_path = format!("/tmp/kanna-pairings-{unique}.json");
+        config.pairing_store_path = crate::test_paths::unique_test_file("kanna-pairings", "json");
         let _db = Db::open_for_tests(&config.db_path).expect("open test db");
 
         let (daemon, mut commands) = spawn_fake_control_daemon(config.daemon_dir.clone(), 1).await;
@@ -11179,7 +11288,7 @@ mod tests {
         let mut config = test_config("ksp-terminal-cancel-backoff", "KSP Cancel Backoff");
         config.daemon_dir = daemon_dir.to_string_lossy().to_string();
         config.db_path = Db::test_db_path(&unique);
-        config.pairing_store_path = format!("/tmp/kanna-pairings-{unique}.json");
+        config.pairing_store_path = crate::test_paths::unique_test_file("kanna-pairings", "json");
         let _db = Db::open_for_tests(&config.db_path).expect("open test db");
 
         let state = Arc::new(AppState::new(config.clone()));
@@ -11776,7 +11885,7 @@ mod tests {
         let mut config = test_config("ksp-terminal-bytes", "KSP Terminal Bytes");
         config.daemon_dir = daemon_dir.to_string_lossy().to_string();
         config.db_path = Db::test_db_path(&unique);
-        config.pairing_store_path = format!("/tmp/kanna-pairings-{unique}.json");
+        config.pairing_store_path = crate::test_paths::unique_test_file("kanna-pairings", "json");
 
         let db = Db::open_for_tests(&config.db_path).expect("open test db");
         db.insert_test_repo("repo-1", "Repo One")
@@ -11942,13 +12051,17 @@ mod tests {
                 } else {
                     "after restart"
                 };
+                // The successor serves the session at the geometry it adopted,
+                // which the re-attach must carry to the viewer along with the
+                // snapshot: a grid hydrated at the wrong size renders wrong.
+                let (rows, cols) = if round == 0 { (24, 80) } else { (40, 120) };
                 let mut events = vec![
                     DaemonEvent::Snapshot {
                         session_id: "shell-wt-reattach-1".to_string(),
                         snapshot: kanna_daemon::protocol::TerminalSnapshot {
                             version: 1,
-                            rows: 24,
-                            cols: 80,
+                            rows,
+                            cols,
                             cursor_row: 0,
                             cursor_col: 0,
                             cursor_visible: true,
@@ -11991,7 +12104,7 @@ mod tests {
         let mut config = test_config("ksp-terminal-reattach", "KSP Terminal Reattach");
         config.daemon_dir = daemon_dir.to_string_lossy().to_string();
         config.db_path = Db::test_db_path(&unique);
-        config.pairing_store_path = format!("/tmp/kanna-pairings-{unique}.json");
+        config.pairing_store_path = crate::test_paths::unique_test_file("kanna-pairings", "json");
 
         let router = crate::http_api::router(Arc::new(AppState::new(config)));
         let url = serve_router(router).await;
@@ -12021,8 +12134,14 @@ mod tests {
 
         // First attach: snapshot + output, then the daemon connection dies.
         match recv_frame(&mut socket).await {
-            ServerFrame::TermSnapshot { data_b64, .. } => {
+            ServerFrame::TermSnapshot {
+                data_b64,
+                cols,
+                rows,
+                ..
+            } => {
                 assert_eq!(decode(data_b64), b"before restart");
+                assert_eq!((cols, rows), (80, 24));
             }
             other => panic!("expected first snapshot, got {other:?}"),
         }
@@ -12040,8 +12159,14 @@ mod tests {
         // The stream must transparently re-attach (no client action, no error
         // frame) and resync with a fresh snapshot instead of going silent.
         match recv_frame(&mut socket).await {
-            ServerFrame::TermSnapshot { data_b64, .. } => {
+            ServerFrame::TermSnapshot {
+                data_b64,
+                cols,
+                rows,
+                ..
+            } => {
                 assert_eq!(decode(data_b64), b"after restart");
+                assert_eq!((cols, rows), (120, 40));
             }
             other => panic!("expected re-attach snapshot, got {other:?}"),
         }
@@ -12172,7 +12297,7 @@ mod tests {
         let mut config = test_config("ksp-agent-reattach", "KSP Agent Reattach");
         config.daemon_dir = daemon_dir.to_string_lossy().to_string();
         config.db_path = Db::test_db_path(&unique);
-        config.pairing_store_path = format!("/tmp/kanna-pairings-{unique}.json");
+        config.pairing_store_path = crate::test_paths::unique_test_file("kanna-pairings", "json");
 
         let db = Db::open_for_tests(&config.db_path).expect("open test db");
         db.insert_test_repo("repo-1", "Repo One")
@@ -12898,7 +13023,7 @@ mod tests {
         let mut config = test_config("ksp-shell-attach", "KSP Shell Attach");
         config.daemon_dir = daemon_dir.to_string_lossy().to_string();
         config.db_path = Db::test_db_path(&unique);
-        config.pairing_store_path = format!("/tmp/kanna-pairings-{unique}.json");
+        config.pairing_store_path = crate::test_paths::unique_test_file("kanna-pairings", "json");
 
         let daemon = spawn_fake_daemon_once_with_response(
             config.daemon_dir.clone(),
@@ -12992,7 +13117,7 @@ mod tests {
         let mut config = test_config("ksp-set-model", "KSP Set Model");
         config.daemon_dir = daemon_dir.to_string_lossy().to_string();
         config.db_path = Db::test_db_path(&unique);
-        config.pairing_store_path = format!("/tmp/kanna-pairings-{unique}.json");
+        config.pairing_store_path = crate::test_paths::unique_test_file("kanna-pairings", "json");
 
         let db = Db::open_for_tests(&config.db_path).expect("open test db");
         db.insert_test_repo("repo-1", "Repo One")
@@ -13410,13 +13535,7 @@ mod tests {
 
     #[tokio::test]
     async fn loopback_ksp_task_summary_attachment_streams_live_snippet() {
-        let unique = format!(
-            "ksp-task-summary-{}",
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        );
+        let unique = crate::test_paths::unique_test_name("ksp-task-summary");
         let config = test_config(&unique, "KSP Task Summary");
         let db = Db::open_for_tests(&config.db_path).unwrap();
         db.insert_test_repo("repo-summary-ksp", "Summary KSP")
@@ -13472,15 +13591,8 @@ mod tests {
 
     #[tokio::test]
     async fn loopback_ksp_delivers_ordinary_input_to_merge_singleton() {
-        let unique = format!(
-            "ksp-merge-input-{}",
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        );
-        let daemon_dir = std::env::temp_dir().join(format!("{unique}-daemon"));
-        std::fs::create_dir_all(&daemon_dir).unwrap();
+        let unique = crate::test_paths::unique_test_name("ksp-merge-input");
+        let daemon_dir = crate::test_paths::unique_test_dir(&format!("{unique}-daemon"));
         let mut config = test_config(&unique, "KSP Merge Input");
         config.daemon_dir = daemon_dir.to_string_lossy().to_string();
         let db = Db::open_for_tests(&config.db_path).unwrap();
@@ -13922,7 +14034,8 @@ mod tests {
             let mut config = test_config(&unique, "KSP Windowed Terminal");
             config.daemon_dir = daemon_dir.to_string_lossy().to_string();
             config.db_path = Db::test_db_path(&unique);
-            config.pairing_store_path = format!("/tmp/kanna-pairings-{unique}.json");
+            config.pairing_store_path =
+                crate::test_paths::unique_test_file("kanna-pairings", "json");
 
             let db = Db::open_for_tests(&config.db_path).expect("open test db");
             db.insert_test_repo("repo-1", "Repo One")

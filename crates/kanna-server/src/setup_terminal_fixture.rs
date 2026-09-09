@@ -211,9 +211,8 @@ fn answer(
                     state: kanna_daemon::protocol::SessionState::Active,
                     idle_seconds: 0,
                     status: kanna_daemon::protocol::SessionStatus::Busy,
+                    status_observed: false,
                     kind: Default::default(),
-                    logical_input_blocked: false,
-                    pending_logical_input_count: None,
                     composer_text: None,
                     composer_attestation: Default::default(),
                 })

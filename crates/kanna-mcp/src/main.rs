@@ -1,22 +1,25 @@
 use base64::Engine;
 use clap::{Parser, Subcommand};
 use kanna_tool_catalog::{
-    args_with_repo_context, args_with_self_exclusion, clamp_wait_timeout_secs, encode_path_segment,
-    load_catalog, repo_context_task_id, resolve_request, runtime_info_snapshot,
-    task_value_matches_wait_until, wait_resolved_result, wait_timeout_result, Catalog, Method,
-    ResolvedRequest, ResponseKind, RuntimeAdapterIdentity, WaitUntil, DEFAULT_WAIT_TIMEOUT_SECS,
+    args_with_repo_context, args_with_self_exclusion, clamp_task_event_hold_ms,
+    clamp_task_event_limit, clamp_task_event_min_events, clamp_wait_timeout_secs,
+    encode_path_segment, load_catalog, repo_context_task_id, resolve_request,
+    runtime_info_snapshot, task_event_batch_is_complete, task_value_matches_wait_until,
+    wait_resolved_result, wait_timeout_result, Catalog, Method, ResolvedRequest, ResponseKind,
+    RuntimeAdapterIdentity, WaitUntil, DEFAULT_WAIT_TIMEOUT_SECS,
 };
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::env;
 use std::hash::{DefaultHasher, Hash, Hasher};
-use std::io::{BufRead, Write};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, SystemTime};
+use tokio::io::AsyncBufReadExt;
 
 const DEFAULT_SERVER_BASE_URL: &str = "http://127.0.0.1:48120";
 const MCP_PROTOCOL_VERSION: &str = "2025-11-25";
@@ -348,8 +351,30 @@ async fn require_success(
     ))
 }
 
+/// One client for every request this process makes, carrying the identity
+/// header the server logs when a request fails. Built once: a runaway caller
+/// must be identifiable, and a fresh `reqwest::Client` per call also throws
+/// away the connection pool.
+fn http_client() -> &'static reqwest::Client {
+    static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+    CLIENT.get_or_init(|| {
+        let identity = kanna_tool_catalog::client_identity_header_value(
+            env!("CARGO_PKG_NAME"),
+            env!("CARGO_PKG_VERSION"),
+        );
+        let mut headers = reqwest::header::HeaderMap::new();
+        if let Ok(value) = reqwest::header::HeaderValue::from_str(&identity) {
+            headers.insert(kanna_tool_catalog::CLIENT_IDENTITY_HEADER, value);
+        }
+        reqwest::Client::builder()
+            .default_headers(headers)
+            .build()
+            .unwrap_or_default()
+    })
+}
+
 async fn get_json<T: DeserializeOwned>(base_url: &str, path: &str) -> Result<T, String> {
-    let mut request = reqwest::Client::new().get(join_server_url(base_url, path));
+    let mut request = http_client().get(join_server_url(base_url, path));
     if path.split('?').next() == Some("/v1/task-events") {
         if let Some(token) = read_task_events_token_from_env()? {
             request = request.bearer_auth(token);
@@ -383,7 +408,7 @@ fn read_task_events_token_from_env() -> Result<Option<String>, String> {
 }
 
 async fn get_text(base_url: &str, path: &str) -> Result<String, String> {
-    let response = reqwest::Client::new()
+    let response = http_client()
         .get(join_server_url(base_url, path))
         .send()
         .await
@@ -399,7 +424,7 @@ async fn get_text(base_url: &str, path: &str) -> Result<String, String> {
 /// unavailable, and must not echo an arbitrary HTTP error body. The shared
 /// catalog sanitizer handles the successful JSON body.
 async fn get_runtime_status(base_url: &str, path: &str) -> Result<Value, String> {
-    let response = reqwest::Client::new()
+    let response = http_client()
         .get(join_server_url(base_url, path))
         .send()
         .await
@@ -601,7 +626,7 @@ async fn post_json<T: DeserializeOwned>(
     path: &str,
     body: &Value,
 ) -> Result<T, String> {
-    let response = reqwest::Client::new()
+    let response = http_client()
         .post(join_server_url(base_url, path))
         .json(body)
         .send()
@@ -623,7 +648,7 @@ async fn patch_json<T: DeserializeOwned>(
     path: &str,
     body: &Value,
 ) -> Result<T, String> {
-    let response = reqwest::Client::new()
+    let response = http_client()
         .patch(join_server_url(base_url, path))
         .json(body)
         .send()
@@ -805,7 +830,7 @@ async fn probe_task_on_machine(
         };
     }
 
-    let response = reqwest::Client::new()
+    let response = http_client()
         .get(join_server_url(base_url, &path))
         .send()
         .await
@@ -986,6 +1011,12 @@ fn spawn_machine_event_wait(
     // otherwise its local leg would recursively fan out and duplicate the
     // remote legs that kanna-mcp is deliberately retaining here.
     machine_args.insert("local_only".to_string(), Value::Bool(true));
+    // Batching belongs to the fan-in, not to a leg: a per-machine minimum
+    // would hold one machine's events back while this loop already had enough
+    // of them, and a per-machine debounce would stack on the one applied here.
+    machine_args.remove("min_events");
+    machine_args.remove("debounce_ms");
+    machine_args.remove("min_interval_ms");
     match session.cursor.cursors_by_machine.get(machine_id) {
         Some(cursor) => {
             machine_args.insert(
@@ -1190,6 +1221,28 @@ async fn wait_events_across_machines(
     let mut failed_machines = HashSet::new();
     let mut completed_machines = HashSet::new();
     let mut has_more = false;
+    // The same batching the server applies to its own fan-out, applied here to
+    // the client-held one, so `min_events` counts the events of every machine
+    // together on both paths.
+    let limit = clamp_task_event_limit(args.get("limit").and_then(Value::as_i64));
+    let min_events =
+        clamp_task_event_min_events(args.get("min_events").and_then(Value::as_i64), limit);
+    let debounce = Duration::from_millis(clamp_task_event_hold_ms(
+        args.get("debounce_ms").and_then(Value::as_u64),
+    ));
+    let min_interval = Duration::from_millis(clamp_task_event_hold_ms(
+        args.get("min_interval_ms").and_then(Value::as_u64),
+    ));
+    let mut debounce_deadline: Option<tokio::time::Instant> = None;
+    let interval_deadline = (!min_interval.is_zero())
+        .then(|| (tokio::time::Instant::now() + min_interval).min(deadline));
+    let hold_deadline = |debounce_deadline: Option<tokio::time::Instant>| match (
+        debounce_deadline,
+        interval_deadline,
+    ) {
+        (Some(debounce), Some(interval)) => Some(debounce.max(interval)),
+        (held, None) | (None, held) => held,
+    };
 
     loop {
         let remaining_secs = if timeout_secs == 0 {
@@ -1224,12 +1277,16 @@ async fn wait_events_across_machines(
             )?;
         }
 
+        let join_deadline = match hold_deadline(debounce_deadline) {
+            Some(hold_until) if events.len() >= min_events => hold_until,
+            _ => deadline,
+        };
         let joined = if timeout_secs == 0 && inherited_pending {
             session.pending.try_join_next()
         } else if timeout_secs == 0 {
             session.pending.join_next().await
         } else {
-            tokio::time::timeout_at(deadline, session.pending.join_next())
+            tokio::time::timeout_at(join_deadline, session.pending.join_next())
                 .await
                 .unwrap_or_default()
         };
@@ -1247,7 +1304,17 @@ async fn wait_events_across_machines(
             &mut has_more,
         )?;
 
-        if !events.is_empty() || has_more {
+        if !events.is_empty() && debounce_deadline.is_none() && !debounce.is_zero() {
+            debounce_deadline = Some((tokio::time::Instant::now() + debounce).min(deadline));
+        }
+        if task_event_batch_is_complete(
+            events.len(),
+            has_more,
+            limit,
+            min_events,
+            hold_deadline(debounce_deadline)
+                .is_none_or(|hold_until| tokio::time::Instant::now() >= hold_until),
+        ) {
             break;
         }
         if (timeout_secs == 0 && session.pending_machines.is_empty())
@@ -1672,19 +1739,56 @@ async fn serve_mcp(base_url: &str, cwd: &Path) -> Result<(), String> {
     }
     let catalog = Arc::new(RwLock::new(loaded.catalog));
     let multi_machine_waits = Arc::new(Mutex::new(MultiMachineWaitRegistry::default()));
-    let stdin = std::io::stdin();
     let stdout = Arc::new(Mutex::new(std::io::stdout()));
     let _watcher = spawn_catalog_watcher(cwd.to_path_buf(), catalog.clone(), stdout.clone());
-    for line in stdin.lock().lines() {
-        let line = line.map_err(|e| format!("failed to read stdin: {e}"))?;
-        if let Some(mut rendered) =
-            handle_mcp_line(&line, base_url, &catalog, &multi_machine_waits).await?
-        {
-            rendered.push('\n');
-            write_line(&stdout, &rendered)?;
+    serve_requests(
+        tokio::io::BufReader::new(tokio::io::stdin()),
+        base_url.to_owned(),
+        catalog,
+        multi_machine_waits,
+        stdout,
+    )
+    .await
+}
+
+// Dispatch independently: an outstanding event wait cannot block mailbox
+// reads or other tool requests on the same MCP connection.
+async fn serve_requests<R, W>(
+    reader: R,
+    base_url: String,
+    catalog: SharedCatalog,
+    waits: SharedMultiMachineWaits,
+    stdout: Arc<Mutex<W>>,
+) -> Result<(), String>
+where
+    R: tokio::io::AsyncBufRead + Unpin,
+    W: Write + Send + 'static,
+{
+    let mut lines = reader.lines();
+    let mut requests = tokio::task::JoinSet::new();
+    let mut eof = false;
+    loop {
+        tokio::select! {
+            line = lines.next_line(), if !eof && requests.len() < 64 => {
+                let Some(line) = line.map_err(|e| format!("failed to read stdin: {e}"))? else {
+                    eof = true;
+                    continue;
+                };
+                let (base_url, catalog, waits, stdout) = (base_url.clone(), catalog.clone(), waits.clone(), stdout.clone());
+                requests.spawn(async move {
+                    if let Some(mut rendered) = handle_mcp_line(&line, &base_url, &catalog, &waits).await? {
+                        rendered.push('\n');
+                        write_line(&stdout, &rendered)?;
+                    }
+                    Ok::<(), String>(())
+                });
+            },
+            Some(result) = requests.join_next(), if !requests.is_empty() => {
+                result.map_err(|e| format!("MCP request failed: {e}"))??;
+            },
+            else => return Ok(()),
         }
     }
-    Ok(())
 }
 
 #[tokio::main(flavor = "current_thread")]
@@ -1748,6 +1852,9 @@ mod tests {
                 "kanna_info",
                 "kanna_list_machines",
                 "kanna_guide",
+                "kanna_subscribe_events",
+                "kanna_read_event_subscription",
+                "kanna_unsubscribe_events",
                 "kanna_machine_stats",
                 "kanna_list_transfer_peers",
                 "kanna_list_repos",
@@ -2666,6 +2773,22 @@ mod wait_tests {
     }
 
     #[tokio::test(start_paused = true)]
+    async fn default_single_task_wait_returns_parked_work_without_a_verdict() {
+        let task = serde_json::json!({"id":"child-1", "runtimeState":"idle", "runtimeSettled":true,
+            "latestRun":{"status":"running"}});
+        let (base_url, polls) = spawn_task_detail_server(Arc::new(Mutex::new(task))).await;
+        let result = call_wait(
+            &base_url,
+            &shared_bundled_catalog(),
+            json!({"task_id":"child-1"}),
+        )
+        .await;
+        assert_eq!(result["waitOutcome"], "resolved");
+        assert_eq!(result["latestRun"]["status"], "running");
+        assert_eq!(polls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test(start_paused = true)]
     async fn default_wait_answers_inside_the_client_tool_call_budget() {
         let (base_url, polls) =
             spawn_task_detail_server(Arc::new(Mutex::new(running_task()))).await;
@@ -2778,5 +2901,89 @@ mod stdio_tests {
 
         assert_eq!(parsed["id"], json!(7));
         assert_eq!(parsed["result"]["serverInfo"]["name"], "kanna-mcp");
+    }
+}
+
+#[cfg(test)]
+mod concurrent_stdio_tests {
+    use super::*;
+    use serde_json::json;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    struct Output(tokio::sync::mpsc::UnboundedSender<String>);
+    impl Write for Output {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0
+                .send(String::from_utf8_lossy(bytes).into_owned())
+                .unwrap();
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn an_outstanding_wait_does_not_block_another_mcp_request() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base_url = format!("http://{}", listener.local_addr().unwrap());
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut buffer = vec![0; 8192];
+            assert!(socket.read(&mut buffer).await.unwrap() > 0);
+            started_tx.send(()).unwrap();
+            release_rx.await.unwrap();
+            let body = r#"{"id":"child","runtimeState":"exited"}"#;
+            socket
+                .write_all(
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    )
+                    .as_bytes(),
+                )
+                .await
+                .unwrap();
+        });
+        let (mut input, reader) = tokio::io::duplex(8192);
+        let (output, mut results) = tokio::sync::mpsc::unbounded_channel();
+        let service = tokio::spawn(serve_requests(
+            tokio::io::BufReader::new(reader),
+            base_url,
+            shared_bundled_catalog(),
+            Arc::new(Mutex::new(MultiMachineWaitRegistry::default())),
+            Arc::new(Mutex::new(Output(output))),
+        ));
+        input
+            .write_all(
+                format!(
+                    "{}\n",
+                    json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{
+                        "name":"kanna_wait_task","arguments":{"task_id":"child"}
+                    }})
+                )
+                .as_bytes(),
+            )
+            .await
+            .unwrap();
+        started_rx.await.unwrap();
+        input
+            .write_all(b"{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/list\"}\n")
+            .await
+            .unwrap();
+        // The first request is deliberately held until this assertion.
+        let result = tokio::time::timeout(Duration::from_secs(15), results.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(serde_json::from_str::<Value>(&result).unwrap()["id"], 2);
+        release_tx.send(()).unwrap();
+        let result = results.recv().await.unwrap();
+        assert_eq!(serde_json::from_str::<Value>(&result).unwrap()["id"], 1);
+        drop(input);
+        service.await.unwrap().unwrap();
+        server.await.unwrap();
     }
 }

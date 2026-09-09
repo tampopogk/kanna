@@ -548,6 +548,66 @@ describe("MainPanel", () => {
     ]);
   });
 
+  // A task running on another machine is shown under a `cloud:` presentation
+  // id no `kanna-server` owns, so its detail can only ever 404 — and the
+  // detail watcher re-fires on every activity and `updated_at` change the
+  // cloud index syncs. One selected remote task produced 82,047 of these
+  // lookups in a single session, each of which the local server then fanned
+  // out over the relay to every reachable peer.
+  it("never asks the local server for a remote task's detail", async () => {
+    const { default: MainPanel } = await import("../MainPanel.vue");
+    const remote = durableTask({ id: "cloud:61237c15", display_name: "Remote task" });
+
+    const wrapper = mount(MainPanel, {
+      props: {
+        uiSlot: readySlot(remote),
+        repoPath: "/tmp/repo",
+        hasRepos: true,
+        cloudTask: true,
+        cloudTerminalRef: {
+          ownerDesktopId: "desktop-remote",
+          ownerLocalTaskId: "61237c15",
+        },
+      },
+      global: {
+        mocks: { $t: (key: string) => key },
+        stubs: {
+          TaskHeader: true,
+          TerminalTabs: true,
+          CloudTerminalView: { template: '<div data-testid="cloud-terminal" />' },
+        },
+      },
+    });
+    await flushPromises();
+    expect(fetchTaskDetailMock).not.toHaveBeenCalled();
+
+    // The watcher fires on every cloud-index sync; none of them may ask.
+    for (const updatedAt of ["2026-09-08 01:00:00", "2026-09-08 01:00:01", "2026-09-08 01:00:02"]) {
+      await wrapper.setProps({
+        uiSlot: readySlot(durableTask({
+          id: "cloud:61237c15",
+          display_name: "Remote task",
+          updated_at: updatedAt,
+          activity_revision: Number(updatedAt.slice(-2)),
+        })),
+      });
+      await flushPromises();
+    }
+    expect(fetchTaskDetailMock).not.toHaveBeenCalled();
+
+    // A task that transfers in stops being remote without changing id, and
+    // must pick its detail back up.
+    await wrapper.setProps({
+      uiSlot: readySlot(durableTask({ id: "61237c15", display_name: "Local now" })),
+      cloudTask: false,
+      cloudTerminalRef: null,
+    });
+    await flushPromises();
+    expect(fetchTaskDetailMock).toHaveBeenCalledWith("61237c15");
+
+    wrapper.unmount();
+  });
+
   it("keeps setup ahead of stale blockers and cloud routing through all creating phases", async () => {
     const { default: MainPanel } = await import("../MainPanel.vue");
 
@@ -708,97 +768,6 @@ describe("MainPanel", () => {
 
     expect(wrapper.find('[data-testid="revision-recovery"]').exists()).toBe(true);
     expect(wrapper.find(".blocked-placeholder").exists()).toBe(false);
-  });
-
-  it("says so when the task's agent session is refusing delivered messages", async () => {
-    fetchTaskDetailMock.mockResolvedValue({
-      id: "task-pending",
-      stage: "merge",
-      closedAt: null,
-      latestRun: null,
-      revisionRounds: 0,
-      revisionLimit: 3,
-      childTaskIds: [],
-      inputBlocked: "inherited-draft-unknown",
-    });
-    const { default: MainPanel } = await import("../MainPanel.vue");
-    const wrapper = mount(MainPanel, {
-      props: {
-        uiSlot: readySlot(durableTask({ activity: "idle" })),
-        hasRepos: true,
-      },
-      global: {
-        mocks: { $t: (key: string) => key },
-        stubs: {
-          TaskHeader: { template: '<div data-testid="task-header" />' },
-          TerminalTabs: { template: '<div data-testid="terminal-tabs" />' },
-        },
-      },
-    });
-
-    await flushPromises();
-
-    // The session is alive and idle, so nothing else on this screen says
-    // anything is wrong — this banner is the only thing that does.
-    expect(wrapper.find('[data-testid="input-blocked"]').exists()).toBe(true);
-    wrapper.unmount();
-  });
-
-  it("keeps a draft-held stage post visible on the task until its composer clears", async () => {
-    fetchTaskDetailMock.mockResolvedValue({
-      id: "task-pending",
-      stage: "in progress",
-      closedAt: null,
-      latestRun: null,
-      revisionRounds: 0,
-      revisionLimit: 3,
-      childTaskIds: [],
-      composer: { text: "Find and fix a bug in @filename", attestation: "typed" },
-    });
-    const { default: MainPanel } = await import("../MainPanel.vue");
-    const wrapper = mount(MainPanel, {
-      props: {
-        uiSlot: readySlot(durableTask({
-          stage: "in progress",
-          has_running_post: 1,
-          active_post_action: "commit",
-        })),
-        hasRepos: true,
-      },
-      global: {
-        mocks: { $t: (key: string) => key },
-        stubs: {
-          TaskHeader: { template: '<div data-testid="task-header" />' },
-          TerminalTabs: { template: '<div data-testid="terminal-tabs" />' },
-        },
-      },
-    });
-
-    await flushPromises();
-
-    expect(wrapper.get('[data-testid="post-held-by-draft"]').text()).toContain("mainPanel.advanceHeldHint");
-    fetchTaskDetailMock.mockResolvedValue({
-      id: "task-pending",
-      stage: "in progress",
-      closedAt: null,
-      latestRun: null,
-      revisionRounds: 0,
-      revisionLimit: 3,
-      childTaskIds: [],
-      composer: { text: null, attestation: "not-typed" },
-    });
-    await wrapper.setProps({
-      uiSlot: readySlot(durableTask({
-        stage: "in progress",
-        has_running_post: 1,
-        active_post_action: "commit",
-        updated_at: "2026-09-01 01:50:00",
-      })),
-    });
-    await flushPromises();
-
-    expect(wrapper.find('[data-testid="post-held-by-draft"]').exists()).toBe(false);
-    wrapper.unmount();
   });
 
   it("shows no refused-input banner for a task whose session accepts messages", async () => {

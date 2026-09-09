@@ -37,6 +37,7 @@ const BUFFY_EMAIL = "upvote.sieve.7t@icloud.com";
 const BUFFY_PASSWORD = "password123";
 const CLOUD_PUBLICATION_TIMEOUT_MS = 30_000;
 const INPUT_TRACE_FILE = ".kanna-e2e-inputs";
+const TERMINAL_KEY_TRACE_FILE = ".kanna-e2e-terminal-keys";
 
 export const MOBILE_RELAY_PTY_HISTORY_FIXTURE = {
   completionSentinel: "MOBILE_PTY_SNAPSHOT_SENTINEL",
@@ -142,10 +143,13 @@ interface RemoteHarness {
     firestore: number;
     relay: number;
   };
+  restartDaemon(): Promise<void>;
+  startRelay(): Promise<void>;
   restartServerWithIdentity(identity: {
     desktopId: string;
     desktopSecret?: string | null;
   }): Promise<void>;
+  restartDaemon(): Promise<void>;
   startServer(): Promise<void>;
   stopRelay(): Promise<void>;
   stopServer(): Promise<void>;
@@ -208,6 +212,7 @@ interface TerminalFlowModule {
       snapshotHistory?: {
         sentinel: string;
       };
+      terminalKeyTraceFile?: string;
       terminalCols?: number;
       terminalRows?: number;
       waitingPromptSnippet?: string;
@@ -222,6 +227,7 @@ interface TerminalFlowModule {
 
 interface FirestoreFieldValue {
   booleanValue?: boolean;
+  integerValue?: string;
   mapValue?: { fields: FirestoreFields };
   nullValue?: null;
   stringValue?: string;
@@ -264,10 +270,18 @@ export interface MobileRelayHarness {
   lanOnlyTask: ScriptedTask;
   localTask: ScriptedTask;
   createPairingSession(): Promise<HarnessPairingSession>;
+  dropRelayTunnels(whileDown: () => Promise<void>): Promise<void>;
   emitFilePreviewLinks(): Promise<void>;
   expirePairingSession(): Promise<void>;
   prepareTaskUnreadForMarkRead(): Promise<void>;
+  setTaskBusyRead(): Promise<void>;
+  restoreTallTerminalGeometry(): Promise<void>;
+  observeAuthoritativeTerminalGeometry(
+    timeoutMs?: number,
+  ): Promise<{ cols: number; rows: number }>;
+  restoreDesktopTerminalControl(): Promise<void>;
   resyncTerminalConnection(): Promise<void>;
+  setTaskBusyUnread(): Promise<void>;
   setTaskActivity(activity: TaskActivity): Promise<void>;
   taskRow: {
     originalPromptSnippet: string;
@@ -279,6 +293,10 @@ export interface MobileRelayHarness {
   };
   taskOrdering: RelayTaskOrderingFixture;
   terminalEvents: TerminalEventCollector;
+  terminalKeys: {
+    count(key: "ESC" | "ENTER"): number;
+    waitForCount(key: "ESC" | "ENTER", count: number): Promise<void>;
+  };
   publishHybridCloudRefresh(): Promise<void>;
   setLanHttpEnabled(enabled: boolean): Promise<void>;
   stop(): Promise<void>;
@@ -429,7 +447,11 @@ export async function startMobileRelayHarness(
             // below registers this size first and remains the elected remote
             // controller while mobile follows the authoritative grid.
             terminalCols: 132,
-            terminalRows: 43,
+            // Shorter than the phone viewport so the rendered-grid E2E also
+            // proves the authoritative live row is bottom-anchored.
+            terminalRows: 20,
+            terminalKeyTraceFile: TERMINAL_KEY_TRACE_FILE,
+            traceTerminalKeys: true,
             waitingPromptSnippet: RELAY_WAITING_PROMPT,
           }
         : {}),
@@ -467,7 +489,7 @@ export async function startMobileRelayHarness(
       ? await remote.terminal.collectLocalTerminalEvents(harness, localTask.taskId)
       : remote.terminal.collectTerminalEvents(harness, localTask.taskId);
     if (mode === "relay") {
-      terminalEvents.resize(132, 43);
+      terminalEvents.resize(132, 20);
     }
     await remote.terminal.waitForTerminalOutput(
       terminalEvents,
@@ -493,7 +515,7 @@ export async function startMobileRelayHarness(
       historySnapshot = {
         cols: 132,
         dataB64: "",
-        rows: 43,
+        rows: 20,
         scrollbackLines: 0,
       };
     }
@@ -506,6 +528,7 @@ export async function startMobileRelayHarness(
           : "RELAY_GRID_CELL",
       expectedCols: historySnapshot?.cols ?? DEFAULT_MOBILE_TERMINAL_GEOMETRY.cols,
       expectedRows: historySnapshot?.rows ?? DEFAULT_MOBILE_TERMINAL_GEOMETRY.rows,
+      expectBottomAnchored: historySnapshot !== null,
       ...(historySnapshot === null
         ? {
             expectedCell: {
@@ -555,6 +578,9 @@ export async function startMobileRelayHarness(
       unresolvedTaskId: HYBRID_UNRESOLVED_TASK_ID
     };
     const taskOrdering = relayTaskOrderingFixture(localTask.repoId);
+    const terminalKeyTracePath = localTask.worktreePath === null
+      ? null
+      : join(localTask.worktreePath, TERMINAL_KEY_TRACE_FILE);
     const inputTracePath = localTask.worktreePath === null
       ? null
       : join(localTask.worktreePath, INPUT_TRACE_FILE);
@@ -640,11 +666,113 @@ export async function startMobileRelayHarness(
           task: localTask
         });
       },
+      async observeAuthoritativeTerminalGeometry(timeoutMs = 20_000) {
+        // The daemon owns the grid. A fresh observer's initial snapshot is
+        // that authority stated out loud, independent of what any renderer
+        // believes it is showing.
+        // The local KSP path, the same one this lane's desktop-shaped viewer
+        // uses; the relay collector does not carry terminal snapshots here.
+        // Read-only: a collector registers a viewer on resize() and nothing
+        // else, so observing cannot perturb the election it is measuring.
+        const observer = await remote.terminal.collectLocalTerminalEvents(
+          harness,
+          localTask.taskId
+        );
+        try {
+          const snapshot = await observer.waitForSnapshot(
+            { minEncodedChars: 0, sentinel: "" },
+            timeoutMs
+          );
+          return { cols: snapshot.cols, rows: snapshot.rows };
+        } finally {
+          observer.close();
+        }
+      },
+      async restoreDesktopTerminalControl() {
+        // Put the desktop-shaped viewer back in charge, the way releasing on
+        // the phone hands the terminal back to the machine it lives on.
+        // Restore whatever grid the fixture currently expects rather than a
+        // hardcoded pair: the lane's authoritative size is a fixture fact and
+        // has already changed once, and handing back the wrong one fails the
+        // rendering assertions that follow.
+        terminalEvents?.resize(
+          terminalFixture.expectedCols,
+          terminalFixture.expectedRows
+        );
+        terminalEvents?.takeControl();
+      },
+      async dropRelayTunnels(whileDown) {
+        // Take the relay down and bring it straight back. Every tunnel through
+        // it dies with it — the same transport loss the owner's server log
+        // showed seventeen times in six minutes — while the desktop, the
+        // daemon and the task all survive, so the only thing under test is
+        // what the phone does about a redial.
+        //
+        // `whileDown` runs in the first moments of the outage, which is the
+        // only place a caller can observe a gap that is genuinely shorter than
+        // the client's reconnect grace: once the relay is being restarted the
+        // elapsed time is a process boot, not a redial.
+        await harness.stopRelay();
+        try {
+          await whileDown();
+        } finally {
+          await harness.startRelay();
+        }
+      },
       async resyncTerminalConnection() {
         // Replace the daemon beneath the live KSP subscription. This forces
         // the terminal generation/snapshot recovery path without deleting
         // the task collection that owns the still-mounted detail screen.
         await harness.restartDaemon();
+      },
+      async restoreTallTerminalGeometry() {
+        terminalEvents?.resize(132, 43);
+        terminalEvents?.takeControl();
+        terminalFixture.expectedRows = 43;
+        terminalFixture.expectBottomAnchored = false;
+      },
+      async setTaskBusyUnread() {
+        // Establish unread while settled, then move only the runtime axis.
+        // This is the state that exposed the activity/runtime overload in the
+        // list: activity remains unread while runtime becomes busy.
+        // The preceding busy-and-read discriminator left the runtime already
+        // busy, so force a fresh busy edge before settling. The server derives
+        // unread from that genuine busy → idle transition when unselected,
+        // then preserves it when the task becomes busy again.
+        await setLocalTaskRuntimeStatus(harness, localTask.taskId, "idle");
+        await setLocalTaskRuntimeStatus(harness, localTask.taskId, "busy");
+        const ownerTask = await waitForLocalTaskDimensions(harness, localTask, {
+          activity: "unread",
+          runtimeState: "busy",
+          readState: "unread"
+        });
+        await waitForCloudTaskDimensions({
+          activity: "unread",
+          activityRevision: ownerTask.activityRevision,
+          auth,
+          harness,
+          readState: "unread",
+          runtimeState: "busy",
+          task: localTask
+        });
+      },
+      async setTaskBusyRead() {
+        await setLocalTaskRuntimeStatus(harness, localTask.taskId, "busy");
+        await postLocalTaskAction(harness, localTask.taskId, "mark-read");
+        const ownerTask = await waitForLocalTaskDimensions(harness, localTask, {
+          activity: "working",
+          runtimeState: "busy",
+          readState: "read"
+        });
+        await waitForCloudTaskDimensions({
+          activity: "working",
+          activityRevision: ownerTask.activityRevision,
+          auth,
+          harness,
+          readState: "read",
+          runtimeState: "busy",
+          task: localTask
+        });
       },
       setTaskActivity(activity) {
         return setPublishedTaskActivity({
@@ -664,6 +792,21 @@ export async function startMobileRelayHarness(
       },
       taskOrdering,
       terminalEvents,
+      terminalKeys: {
+        count(key) {
+          return terminalKeyTraceCount(terminalKeyTracePath, key);
+        },
+        async waitForCount(key, count) {
+          const deadline = Date.now() + 10_000;
+          while (Date.now() < deadline) {
+            if (terminalKeyTraceCount(terminalKeyTracePath, key) >= count) {
+              return;
+            }
+            await new Promise((resolve) => setTimeout(resolve, 100));
+          }
+          throw new Error(`Expected desktop PTY to receive ${key} ${count} times`);
+        }
+      },
       publishHybridCloudRefresh: () =>
         publishHybridCloudRefresh({ harness }),
       setLanHttpEnabled: (enabled) => updateHarnessMobileMachineControls(
@@ -703,7 +846,7 @@ export async function startMobileRelayHarness(
         // into the later WebView assertion instead of assuming phone geometry.
         const deadline = Date.now() + timeoutMs;
         let lastDimensions = "unobserved";
-        terminalEvents?.resize(132, 43);
+        terminalEvents?.resize(132, 20);
         terminalEvents?.takeControl();
         while (Date.now() < deadline) {
           const observer = remote.terminal.collectTerminalEvents(
@@ -958,6 +1101,16 @@ export function publishedCloudTaskId(
   return fields?.cloudTaskId?.stringValue?.trim() || fallbackId;
 }
 
+export function terminalKeyTraceCount(
+  path: string | null,
+  key: "ESC" | "ENTER",
+): number {
+  if (path === null || !existsSync(path)) return 0;
+  return readFileSync(path, "utf8")
+    .split(/\r?\n/)
+    .filter((candidate) => candidate === key).length;
+}
+
 export function scriptedInputTraceCount(
   path: string | null,
   input: string,
@@ -1078,8 +1231,13 @@ async function setPublishedTaskActivity(input: {
   task: ScriptedTask;
 }): Promise<void> {
   if (input.activity === "working") {
+    // A busy edge preserves unreadness. Mark the task read first, then make
+    // the runtime busy so this fixture requests the combined display value.
+    await postLocalTaskAction(input.harness, input.task.taskId, "mark-read");
     await setLocalTaskRuntimeStatus(input.harness, input.task.taskId, "busy");
   } else if (input.activity === "unread") {
+    // This establishes unread from either a settled or a live fixture state:
+    // busy preserves existing unreadness, while idle records it for a read task.
     await setLocalTaskRuntimeStatus(input.harness, input.task.taskId, "busy");
     await setLocalTaskRuntimeStatus(input.harness, input.task.taskId, "idle");
   } else {
@@ -1162,6 +1320,39 @@ async function waitForLocalTaskActivity(
   );
 }
 
+async function waitForLocalTaskDimensions(
+  harness: RemoteHarness,
+  task: ScriptedTask,
+  expected: { activity: TaskActivity; runtimeState: string; readState: string },
+  timeoutMs = 10_000,
+): Promise<{ activityRevision: number }> {
+  const deadline = Date.now() + timeoutMs;
+  let lastObserved: unknown = null;
+  while (Date.now() < deadline) {
+    const response = await localProcessFetch(
+      `${harness.lanBaseUrl}/v1/repos/${encodeURIComponent(task.repoId)}/tasks`,
+    );
+    if (response.ok) {
+      const tasks = await response.json() as Array<Record<string, unknown>>;
+      const observed = tasks.find((candidate) => candidate.id === task.taskId);
+      lastObserved = observed ?? null;
+      if (
+        observed?.activity === expected.activity &&
+        observed.runtimeState === expected.runtimeState &&
+        observed.readState === expected.readState &&
+        typeof observed.activityRevision === "number" &&
+        Number.isSafeInteger(observed.activityRevision) &&
+        observed.activityRevision >= 0
+      ) return { activityRevision: observed.activityRevision };
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  throw new Error(
+    `Expected owner task ${task.taskId} dimensions ${JSON.stringify(expected)}; ` +
+      `last observed ${JSON.stringify(lastObserved)}`,
+  );
+}
+
 async function waitForCloudTaskActivity(input: {
   activity: TaskActivity;
   auth: AuthSession;
@@ -1217,6 +1408,56 @@ async function waitForCloudTaskActivity(input: {
   throw new Error(
     `Expected published task ${input.task.taskId} activity ${input.activity}; ` +
       `last observed ${String(lastObserved)} with task id ${String(publishedTaskId)}`
+  );
+}
+
+async function waitForCloudTaskDimensions(input: {
+  activity: TaskActivity;
+  activityRevision: number;
+  auth: AuthSession;
+  harness: RemoteHarness;
+  readState: string;
+  runtimeState: string;
+  task: ScriptedTask;
+}, timeoutMs = CLOUD_PUBLICATION_TIMEOUT_MS): Promise<void> {
+  const path = [
+    "users", input.auth.uid, "desktops", input.harness.desktopId, "tasks"
+  ].map(encodeURIComponent).join("/");
+  const url =
+    `http://127.0.0.1:${input.harness.ports.firestore}/v1/projects/kanna-local/` +
+    `databases/(default)/documents/${path}?pageSize=100`;
+  const deadline = Date.now() + timeoutMs;
+  let lastObserved: unknown = null;
+  while (Date.now() < deadline) {
+    const response = await fetch(url, {
+      headers: { Authorization: `Bearer ${input.auth.idToken}` }
+    });
+    const body = await response.json().catch(() => null) as {
+      documents?: Array<{ fields?: FirestoreFields }>;
+    } | null;
+    const fields = body?.documents?.find((document) =>
+      document.fields?.ownerLocalTaskId?.stringValue === input.task.taskId &&
+      document.fields?.localRepoId?.stringValue === input.task.repoId
+    )?.fields;
+    lastObserved = fields ? {
+      activity: fields.activity?.stringValue,
+      runtimeState: fields.runtimeState?.stringValue,
+      readState: fields.readState?.stringValue,
+      activityRevision: fields.activityRevision?.integerValue
+    } : null;
+    if (
+      response.ok &&
+      fields?.activity?.stringValue === input.activity &&
+      fields.runtimeState?.stringValue === input.runtimeState &&
+      fields.readState?.stringValue === input.readState &&
+      fields.activityRevision?.integerValue === String(input.activityRevision)
+    ) return;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  throw new Error(
+    `Expected published task ${input.task.taskId} dimensions ` +
+      `${JSON.stringify({ activity: input.activity, runtimeState: input.runtimeState, readState: input.readState, activityRevision: input.activityRevision })}; ` +
+      `last observed ${JSON.stringify(lastObserved)}`,
   );
 }
 

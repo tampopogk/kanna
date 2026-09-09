@@ -773,14 +773,7 @@ async fn list_repos_omits_credential_bearing_remote_url() {
 async fn repo_agent_provider_route_stays_responsive_and_uses_workspace_local_executables() {
     use std::os::unix::fs::PermissionsExt;
 
-    let unique = format!(
-        "{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    );
+    let unique = super::unique_test_suffix();
     let repo_root = std::env::temp_dir().join(format!("kanna-provider-availability-{unique}"));
     init_test_git_repo(&repo_root);
     let provider_dir = repo_root.join(".kanna/provider-bin");
@@ -5730,7 +5723,11 @@ async fn task_logs_route_renders_agent_journal_tail() {
             .expect("time")
             .as_nanos()
     );
-    let journal_dir = PathBuf::from("/tmp/kanna-daemon").join("agent-journals");
+    // The route reads the journal out of the state's own daemon directory, so
+    // the fixture has to write into that one rather than into a shared name a
+    // concurrently running gate also owns.
+    let daemon_dir = crate::test_paths::unique_test_dir("kanna-daemon");
+    let journal_dir = daemon_dir.join("agent-journals");
     std::fs::create_dir_all(&journal_dir).unwrap();
     let journal_path = journal_dir.join(format!("{task_id}.ndjson"));
     let lines = [
@@ -5765,20 +5762,25 @@ async fn task_logs_route_renders_agent_journal_tail() {
     std::fs::write(&journal_path, lines).unwrap();
 
     let seeded_task_id = task_id.clone();
-    let app = super::test_router_with_seed("desktop-1", "Studio Mac", move |db| {
-        db.insert_test_repo("repo-1", "Repo One").unwrap();
-        db.insert_test_pipeline_item(
-            &seeded_task_id,
-            "repo-1",
-            "Read logs",
-            Some("Read logs"),
-            "in progress",
-            "2026-04-18 10:00:00",
-        )
-        .unwrap();
-        db.update_test_pipeline_item_agent_type(&seeded_task_id, "agent")
+    let app = super::router(super::test_state_with_daemon_dir(
+        "desktop-1",
+        "Studio Mac",
+        &daemon_dir.to_string_lossy(),
+        move |db| {
+            db.insert_test_repo("repo-1", "Repo One").unwrap();
+            db.insert_test_pipeline_item(
+                &seeded_task_id,
+                "repo-1",
+                "Read logs",
+                Some("Read logs"),
+                "in progress",
+                "2026-04-18 10:00:00",
+            )
             .unwrap();
-    });
+            db.update_test_pipeline_item_agent_type(&seeded_task_id, "agent")
+                .unwrap();
+        },
+    ));
 
     let response = app
         .oneshot(
@@ -5798,7 +5800,7 @@ async fn task_logs_route_renders_agent_journal_tail() {
         "tool result: tool output\nsecond assistant"
     );
 
-    let _ = std::fs::remove_file(journal_path);
+    let _ = std::fs::remove_dir_all(&daemon_dir);
 }
 
 #[tokio::test]
@@ -6251,9 +6253,10 @@ async fn create_pairing_session_route_uses_local_identity_without_desktop_secret
         lan_port: 48120,
         transfer_port: 4455,
         activity_event_debounce_seconds: 300,
-        pairing_store_path: PathBuf::from("/tmp/kanna-pairings-http-local.json")
-            .to_string_lossy()
-            .to_string(),
+        pairing_store_path: crate::test_paths::unique_test_file(
+            "kanna-pairings-http-local",
+            "json",
+        ),
     };
     let _ = crate::db::Db::open_for_tests(&config.db_path).unwrap();
     let app = super::router(Arc::new(super::AppState::new(config)));
@@ -7157,4 +7160,146 @@ async fn lan_repository_filesystem_and_definition_routes_require_pairing() {
     )
     .await;
     std::fs::remove_file(&state.config().pairing_store_path).unwrap();
+}
+
+#[tokio::test]
+async fn mobile_build_report_over_http_is_authenticated_persisted_and_redacted() {
+    let state = super::test_state_with_seed("desktop-build-report", "Build Mac", |_| {});
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let app = crate::http_api::router(Arc::clone(&state));
+    let server = tokio::spawn(async move {
+        axum::serve(
+            listener,
+            app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+        )
+        .await
+        .unwrap();
+    });
+    let client = reqwest::Client::builder().no_proxy().build().unwrap();
+    let base = format!("http://{address}");
+    let session: serde_json::Value = client
+        .post(format!("{base}/v1/pairing/sessions"))
+        .send()
+        .await
+        .unwrap()
+        .error_for_status()
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let claim: serde_json::Value = client.post(format!("{base}/v1/pairing/sessions/claim"))
+        .json(&serde_json::json!({"code": session["code"], "deviceId": "phone", "deviceName": "Owner iPhone"}))
+        .send().await.unwrap().error_for_status().unwrap().json().await.unwrap();
+    let secret = claim["deviceSecret"].as_str().unwrap();
+    let inventory: serde_json::Value = client
+        .get(format!("{base}/v1/mobile/builds"))
+        .send()
+        .await
+        .unwrap()
+        .error_for_status()
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(
+        inventory["devices"][0]["build"].is_null(),
+        "legacy clients remain unknown"
+    );
+    let build = serde_json::json!({
+        "environment": "staging", "channel": "staging", "runtimeVersion": "2.2.2",
+        "nativeVersion": "2.2.2", "nativeBuild": "42", "updateId": "old-update", "source": "ota"
+    });
+    for wrong_secret in [None, Some("wrong")] {
+        let mut request = client.post(format!("{base}/v1/mobile/build")).json(&build);
+        if let Some(secret) = wrong_secret {
+            request = request
+                .header("x-kanna-device-id", "phone")
+                .header("x-kanna-device-secret", secret);
+        }
+        assert_eq!(request.send().await.unwrap().status(), 401);
+    }
+    let response = client
+        .post(format!("{base}/v1/mobile/build"))
+        .header("x-kanna-device-id", "phone")
+        .header("x-kanna-device-secret", secret)
+        .json(&build)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 204);
+    let persisted = crate::pairing::PairingStore::load(std::path::Path::new(
+        &state.config().pairing_store_path,
+    ))
+    .unwrap();
+    assert_eq!(
+        persisted.trusted_devices["desktop-build-report"][0]
+            .mobile_build
+            .as_ref()
+            .unwrap()
+            .build
+            .runtime_version
+            .as_deref(),
+        Some("2.2.2")
+    );
+    let inventory = client
+        .get(format!("{base}/v1/mobile/builds"))
+        .send()
+        .await
+        .unwrap()
+        .error_for_status()
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert!(!inventory.contains(secret));
+    assert!(!inventory.contains("secret_hash"));
+    assert!(!inventory.contains("push_identity"));
+    let inventory: serde_json::Value = serde_json::from_str(&inventory).unwrap();
+    assert_eq!(inventory["devices"][0]["build"]["updateId"], "old-update");
+    assert!(inventory["devices"][0]["build"]["reportedAtUnixMs"].is_u64());
+    for (method, path) in [("GET", "/v1/mobile/builds"), ("POST", "/v1/mobile/build")] {
+        let response = crate::http_api::dispatch_authenticated_http_invoke(
+            Arc::clone(&state),
+            method,
+            path,
+            build.clone(),
+        )
+        .await;
+        assert_eq!(response.status, 401, "relay account authority cannot impersonate a paired installation or enumerate local inventory");
+    }
+    let mut invalid = build.clone();
+    invalid["runtimeVersion"] = serde_json::json!("x".repeat(129));
+    assert_eq!(
+        client
+            .post(format!("{base}/v1/mobile/build"))
+            .header("x-kanna-device-id", "phone")
+            .header("x-kanna-device-secret", secret)
+            .json(&invalid)
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        400
+    );
+    client
+        .delete(format!("{base}/v1/pairing/trusted-devices/phone"))
+        .send()
+        .await
+        .unwrap()
+        .error_for_status()
+        .unwrap();
+    let inventory: serde_json::Value = client
+        .get(format!("{base}/v1/mobile/builds"))
+        .send()
+        .await
+        .unwrap()
+        .error_for_status()
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(inventory["devices"], serde_json::json!([]));
+    server.abort();
+    let _ = server.await;
 }

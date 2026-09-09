@@ -23,6 +23,7 @@ import {
 import { parseCliArgs, runCli } from "../src/cli";
 import { nodeCommandRunner } from "../src/runtime/process";
 import { getTaskDefinition } from "../src/tasks/registry";
+import { kdTestScratchPrefix } from "./test-paths";
 
 interface SpawnResult {
   status: number | null;
@@ -333,7 +334,7 @@ describe("kd CLI", () => {
   it("serializes concurrent cold launchers and serves MCP from the shared install", async () => {
     const packageRoot = resolve(import.meta.dirname, "..");
     const repoRoot = resolve(packageRoot, "..", "..");
-    const tempRoot = mkdtempSync(join(tmpdir(), "kd launcher contract "));
+    const tempRoot = mkdtempSync(kdTestScratchPrefix("launcher-contract-"));
     const fixtureRepoRoots = Array.from({ length: 8 }, (_, index) =>
       join(tempRoot, `repo ${index + 1}`)
     );
@@ -390,6 +391,9 @@ describe("kd CLI", () => {
       const launcherDiagnostics = launches
         .map((launch) => launch.stderr)
         .join("");
+      // Every launch runs the built kd, which loads `node:sqlite`; the
+      // wrapper must keep Node's ExperimentalWarning for it off stderr.
+      expect(launcherDiagnostics).not.toMatch(/ExperimentalWarning/);
       expect(launcherDiagnostics.match(/Installing kd:/g)).toHaveLength(1);
       expect(
         launcherDiagnostics.match(/Waiting for kd installation:/g)?.length ??
@@ -497,7 +501,7 @@ describe("kd CLI", () => {
   it("bootstraps dependencies and installs kd from a clean clone", async () => {
     const packageRoot = resolve(import.meta.dirname, "..");
     const repoRoot = resolve(packageRoot, "..", "..");
-    const tempRoot = mkdtempSync(join(tmpdir(), "kd clean clone "));
+    const tempRoot = mkdtempSync(kdTestScratchPrefix("clean-clone-"));
     const fixtureRepoRoot = join(tempRoot, "repo");
     const home = join(tempRoot, "home");
     mkdirSync(home, { recursive: true });
@@ -615,6 +619,16 @@ describe("kd CLI", () => {
 
     await expect(runCli(["rust-cache", "--help"])).resolves.toBe(0);
     expect(log).toHaveBeenLastCalledWith(expect.stringContaining("Usage: kd rust-cache <command>"));
+
+    await expect(runCli(["release", "cut", "--help"])).resolves.toBe(0);
+    // The recut flags are implemented and confirmation-gated, so the help text has to
+    // name each one and what it must match; a silent recut flag is how an operator ends
+    // up reaching for a reset instead.
+    expect(log).toHaveBeenLastCalledWith(expect.stringContaining("Usage: kd release cut"));
+    expect(log).toHaveBeenLastCalledWith(expect.stringContaining("--recut"));
+    expect(log).toHaveBeenLastCalledWith(expect.stringContaining("--confirm-recut <staging-version|empty>"));
+    expect(log).toHaveBeenLastCalledWith(expect.stringContaining("--confirm-old-tip <sha>"));
+    expect(log).toHaveBeenLastCalledWith(expect.stringContaining("KANNA_RELEASE_REQUESTER"));
 
     await expect(runCli(["pages", "--help"])).resolves.toBe(0);
     // Matched exactly, so this pins `build-schema` as the only `pages` command rather
@@ -1303,7 +1317,7 @@ describe("kd CLI", () => {
       input: {},
     });
     expect(getTaskDefinition("test.rust").description).toBe(
-      "Run workspace Rust tests with daemon integration tests serialized.",
+      "Run workspace Rust tests with daemon integration tests serialized. --desktop adds the Tauri desktop crate on a platform whose default is headless.",
     );
     expect(parseCliArgs(["test", "desktop-e2e"])).toEqual({
       taskId: "test.desktop-e2e",

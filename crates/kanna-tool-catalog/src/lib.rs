@@ -187,6 +187,37 @@ const BUNDLED_CATALOG: &str = include_str!("catalog.json");
 /// MCP clients abort a `tools/call` on their own timer — Codex and Claude Code
 /// both cut at 300s — and when they do the calling agent loses the result
 /// entirely, including the tool's own "still running" answer.
+/// Header every first-party Kanna HTTP client sets so the server can name the
+/// caller in an error log.
+///
+/// Every request on the local listener arrives from `127.0.0.1`, so the peer
+/// address separates nothing: the CLI, this adapter, the desktop, and a
+/// sidecar are indistinguishable. A runaway client once wrote a million
+/// identical 400s into `kanna-server.log` and the line named neither the
+/// process that sent it nor the query it failed on. This is diagnostic only —
+/// it is caller-declared, unverified, and grants no authority whatsoever.
+pub const CLIENT_IDENTITY_HEADER: &str = "x-kanna-client";
+
+/// `<name>/<version> pid=<pid>[ task=<task id>]` — enough to find the process
+/// while it is still running, and to name the task session it belongs to after
+/// it is gone.
+pub fn client_identity_header_value(name: &str, version: &str) -> String {
+    let mut identity = format!("{name}/{version} pid={}", std::process::id());
+    if let Some(task_id) = std::env::var("KANNA_TASK_ID")
+        .ok()
+        .map(|task_id| task_id.trim().to_string())
+        .filter(|task_id| {
+            !task_id.is_empty()
+                && task_id
+                    .chars()
+                    .all(|character| character.is_ascii_alphanumeric() || character == '-')
+        })
+    {
+        identity.push_str(&format!(" task={task_id}"));
+    }
+    identity
+}
+
 pub const CLIENT_TOOL_CALL_BUDGET_SECS: u64 = 300;
 
 /// Hard ceiling on a single `kanna_wait_task` window, enforced here rather than
@@ -212,6 +243,58 @@ const _: () = assert!(DEFAULT_WAIT_TIMEOUT_SECS <= MAX_WAIT_TIMEOUT_SECS);
 
 pub fn clamp_wait_timeout_secs(timeout_secs: u64) -> u64 {
     timeout_secs.min(MAX_WAIT_TIMEOUT_SECS)
+}
+
+/// Rows in one `/v1/task-events` response when the caller does not choose, and
+/// the ceiling it may raise that to. Declared here rather than only in
+/// `catalog.json` for the same reason as the wait window: the server, the
+/// MCP fan-in and the CLI must agree on the page size, and an override catalog
+/// must not be able to move it.
+pub const DEFAULT_TASK_EVENT_LIMIT: i64 = 100;
+pub const MAX_TASK_EVENT_LIMIT: i64 = 500;
+
+/// Ceiling on `debounceMs` and `minIntervalMs`. The remaining wait window
+/// already caps both; this only stops a caller asking to hold a response
+/// longer than any batch it could plausibly be waiting for.
+pub const MAX_TASK_EVENT_HOLD_MS: u64 = 60_000;
+
+pub fn clamp_task_event_limit(limit: Option<i64>) -> i64 {
+    limit
+        .unwrap_or(DEFAULT_TASK_EVENT_LIMIT)
+        .clamp(1, MAX_TASK_EVENT_LIMIT)
+}
+
+/// `minEvents` is capped by the page size: a caller that asks to wait for more
+/// events than one response can carry would otherwise always run to timeout.
+pub fn clamp_task_event_min_events(min_events: Option<i64>, limit: i64) -> usize {
+    min_events.unwrap_or(1).clamp(1, limit) as usize
+}
+
+pub fn clamp_task_event_hold_ms(hold_ms: Option<u64>) -> u64 {
+    hold_ms.unwrap_or(0).min(MAX_TASK_EVENT_HOLD_MS)
+}
+
+/// Whether a batched task-event wait may return now — the one rule shared by
+/// the server's single-machine wait, its cross-machine fan-out, and the MCP
+/// client fan-in, so `minEvents` counts the same events on every path.
+///
+/// `hasMore` and a full page both mean waiting longer cannot add anything to
+/// *this* response, so they release it whatever the caller asked to hold for.
+/// Otherwise the batch is ready once it holds `min_events` and every hold
+/// window (`debounceMs`, `minIntervalMs`) has closed. Callers pass
+/// `hold_elapsed` because each owns its own clock — the shared part is the
+/// rule, not the timekeeping.
+pub fn task_event_batch_is_complete(
+    collected: usize,
+    has_more: bool,
+    limit: i64,
+    min_events: usize,
+    hold_elapsed: bool,
+) -> bool {
+    if has_more || collected >= limit.max(0) as usize {
+        return true;
+    }
+    collected >= min_events && hold_elapsed
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -358,6 +441,7 @@ pub enum ParamLoc {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum WaitUntil {
+    Reconcile,
     Finished,
     Closed,
 }
@@ -395,6 +479,7 @@ pub fn run_status_is_terminal(status: &str) -> bool {
 pub struct WaitTaskState<'a> {
     pub closed: bool,
     pub runtime_state: Option<&'a str>,
+    pub runtime_settled: bool,
     pub latest_run_status: Option<&'a str>,
 }
 
@@ -415,16 +500,17 @@ pub struct WaitTaskState<'a> {
 /// parked at its composer between turns and for one that never started, and
 /// neither has finished anything. Termination, not quiet, is the signal.
 ///
-/// The case that leaves behind: a PTY agent that finishes its turn and parks
-/// without recording a verdict keeps its daemon session — sessions die at a
-/// stage transition, a rerun, or a close — so nothing records a termination
-/// and this never resolves for it, where `unread` used to. That is the correct
-/// answer to "has it finished?", but it means a caller waiting on an agent
-/// which may park must bound its own retry loop rather than re-calling on
-/// `timeout` forever; a non-`busy` `runtime_state` with a `running` latest run
-/// is the signature to bound on. See `docs/kanna-server-boundary.md`.
+/// The default `Reconcile` also accepts `runtimeSettled`: the server's
+/// observation of non-busy runtime after the existing debounce. It surfaces
+/// parked work without turning that observation into a completion verdict.
+/// An older server without that field retains termination-only behavior.
 pub fn task_state_matches_wait_until(state: WaitTaskState<'_>, until: WaitUntil) -> bool {
     match until {
+        WaitUntil::Reconcile => {
+            (state.runtime_settled
+                && matches!(state.runtime_state, Some("idle" | "waiting" | "exited")))
+                || task_state_matches_wait_until(state, WaitUntil::Finished)
+        }
         WaitUntil::Closed => state.closed,
         WaitUntil::Finished => {
             state.closed
@@ -439,6 +525,10 @@ pub fn wait_task_state(task: &Value) -> WaitTaskState<'_> {
     WaitTaskState {
         closed: task.get("closedAt").is_some_and(|value| !value.is_null()),
         runtime_state: task.get("runtimeState").and_then(Value::as_str),
+        runtime_settled: task
+            .get("runtimeSettled")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
         latest_run_status: task
             .get("latestRun")
             .and_then(|run| run.get("status"))
@@ -1135,6 +1225,18 @@ pub fn args_with_self_exclusion(
         .and_then(Value::as_str)
         .is_some_and(|parent_task_id| !parent_task_id.trim().is_empty());
     let explicit_task_scope = explicit_task_ids || explicit_parent_scope;
+    // Echo suppression is not scope-dependent the way self-exclusion is: the
+    // loop it exists to break — send input to a child, wait, wake on the
+    // delivery announcement — happens under an explicit `task_ids` scope. A
+    // caller in a task session gets it by default on every scope, and an
+    // explicit value always wins.
+    if current_task_id
+        .map(str::trim)
+        .is_some_and(|task_id| !task_id.is_empty())
+        && !matches!(resolved_args.get("exclude_own"), Some(value) if !value.is_null())
+    {
+        resolved_args.insert("exclude_own".to_string(), Value::Bool(true));
+    }
     let Some(self_task_id) =
         task_event_self_exclusion(explicit_task_scope, include_self, current_task_id)
     else {
@@ -1227,7 +1329,9 @@ fn value_for_param(
                 return Err("status must be success or failure".to_string());
             }
             if tool.response_kind == ResponseKind::Wait && param.name == "until" {
-                return Err(format!("until must be finished or closed, got {rendered}"));
+                return Err(format!(
+                    "until must be reconcile, finished or closed, got {rendered}"
+                ));
             }
             return Err(format!(
                 "{} must be one of {}",
@@ -1341,7 +1445,7 @@ fn wait_spec(tool: &ToolDef, args: &Value) -> Result<WaitSpec, String> {
     let mut task_id = None;
     let mut timeout_secs = DEFAULT_WAIT_TIMEOUT_SECS;
     let mut poll_secs = DEFAULT_WAIT_POLL_SECS;
-    let mut until = WaitUntil::Finished;
+    let mut until = WaitUntil::Reconcile;
 
     for param in &tool.params {
         let Some(value) = value_for_param(tool, param, args)? else {
@@ -1353,9 +1457,14 @@ fn wait_spec(tool: &ToolDef, args: &Value) -> Result<WaitSpec, String> {
             "poll_secs" => poll_secs = integer_value(&value, &param.name, None, None)?,
             "until" => {
                 until = match string_value(&value, &param.name)?.as_str() {
+                    "reconcile" => WaitUntil::Reconcile,
                     "finished" => WaitUntil::Finished,
                     "closed" => WaitUntil::Closed,
-                    other => return Err(format!("until must be finished or closed, got {other}")),
+                    other => {
+                        return Err(format!(
+                            "until must be reconcile, finished or closed, got {other}"
+                        ))
+                    }
                 };
             }
             _ => {}
@@ -1427,6 +1536,40 @@ pub fn encode_path_segment(value: &str) -> String {
             _ => format!("%{byte:02X}").chars().collect(),
         })
         .collect()
+}
+
+fn run_finished_has_running_successor(event: &Value) -> bool {
+    let payload = &event["payload"];
+    let finished_run_id = payload.get("runId").and_then(Value::as_str);
+    let latest_run = &payload["currentTask"]["latestRun"];
+    latest_run.get("status").and_then(Value::as_str) == Some("running")
+        && match (
+            finished_run_id,
+            latest_run.get("id").and_then(Value::as_str),
+        ) {
+            (Some(finished), Some(latest)) => finished != latest,
+            // A running latest run is necessarily a successor even when an
+            // older server omitted one of the ids from its enrichment.
+            _ => true,
+        }
+}
+
+pub fn is_actionable_task_event(event: &Value) -> bool {
+    match event.get("type").and_then(Value::as_str) {
+        Some("run.started" | "stage.changed" | "task.created" | "task.input_delivered") => false,
+        // The read/unread display dimension. A person opening a task in the
+        // desktop moves it, which is information for that person and never a
+        // reason to wake the watcher; `task.runtime_changed` carries the
+        // runtime edge underneath it.
+        Some("task.activity_changed") => false,
+        // Deprecated alias of the busy-to-non-busy subset of
+        // `task.runtime_changed`, appended in the same transaction — so it is
+        // always redundant with an event already in this batch.
+        Some("task.runtime_settled") => false,
+        Some("task.runtime_changed") => event["payload"]["runtimeState"] != "busy",
+        Some("run.finished") => !run_finished_has_running_successor(event),
+        _ => true,
+    }
 }
 
 #[cfg(test)]

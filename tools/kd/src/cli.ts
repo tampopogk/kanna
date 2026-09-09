@@ -916,6 +916,9 @@ export function parseCliArgs(args: string[]): ParsedCliCommand {
   if (group === "test" && command === "rust") {
     return { taskId: "test.rust", input: {} };
   }
+  if (group === "test" && command === "headless-worker") {
+    return { taskId: "test.headless-worker", input: {} };
+  }
   if (group === "test" && command === "desktop-e2e") {
     return { taskId: "test.desktop-e2e", input: {} };
   }
@@ -1038,6 +1041,7 @@ const helpTopics: Record<string, string[]> = {
     "  release promote <staging-version> [--dry-run] [--arm64|--x86_64] [--override-soak <reason>]",
     "  release setup-notarization [--profile <name>] [--keychain <absolute-path>]",
     "  release cut [--major|--minor|--patch] [--version X.Y.0] [--abandon-series X.Y[,X.Y]] [--reason <why>]",
+    "  release cut --version X.Y.0 --recut --reason <why> --confirm-recut <staging-version|empty> --confirm-old-tip <sha> [--dry-run]",
     "  release reset-staging --to main|release/X.Y --reason <why> --confirm-abandon <staging-version> [--dry-run]",
     "  release status",
     "  cloud deploy --staging|--production [--ref <branch|tag|sha>] [--functions] [--portal] [--relay]",
@@ -1045,6 +1049,7 @@ const helpTopics: Record<string, string[]> = {
     "  relay stats --staging|--production [--open] [--dry-run]",
     "  pages build-schema --out-dir <dir>",
     "  test rust",
+    "  test headless-worker",
     "  test desktop-e2e",
     "  test desktop-e2e-operator",
     "  test desktop-mock-e2e",
@@ -1439,6 +1444,7 @@ const helpTopics: Record<string, string[]> = {
     "  release promote <staging-version> [--dry-run] [--arm64|--x86_64] [--override-soak <reason>]",
     "  release setup-notarization [--profile <name>] [--keychain <absolute-path>]",
     "  release cut [--major|--minor|--patch] [--version X.Y.0] [--abandon-series X.Y[,X.Y]] [--reason <why>]",
+    "  release cut --version X.Y.0 --recut --reason <why> --confirm-recut <staging-version|empty> --confirm-old-tip <sha> [--dry-run]",
     "  release reset-staging --to main|release/X.Y --reason <why> --confirm-abandon <staging-version> [--dry-run]",
     "  release status"
   ],
@@ -1477,6 +1483,7 @@ const helpTopics: Record<string, string[]> = {
   ],
   "release cut": [
     "Usage: kd release cut [--major|--minor|--patch] [--version X.Y.0] [--abandon-series X.Y[,X.Y]] [--reason <why>]",
+    "       kd release cut --version X.Y.0 --recut --reason <why> --confirm-recut <staging-version|empty> --confirm-old-tip <sha> [--dry-run]",
     "",
     "Cut a release/X.Y stabilization branch from origin/main for the next version series (default: --minor).",
     "The branch takes bugfix cherry-picks only; staging RCs shipped from it version themselves as X.Y.Z-staging.N.",
@@ -1484,7 +1491,29 @@ const helpTopics: Record<string, string[]> = {
     "--version X.Y.0 names the intended series directly, which is the only way to skip a series that is being abandoned",
     "rather than released. Every unreleased release/X.Y the cut steps over must be named with --abandon-series and",
     "explained with --reason; each is recorded as an annotated abandoned/release/X.Y tag at that branch's tip.",
-    "The abandoned branch is kept, never deleted or reused, and ship/promote then refuse that series."
+    "The abandoned branch is kept, never deleted or reused, and ship/promote then refuse that series.",
+    "",
+    "--recut moves the existing unreleased release/X.Y branch (named by --version X.Y.0) onto the current origin/main tip",
+    "instead of cutting a new series, so a staging RC for that series can include later main work while its freeze refuses",
+    "main publishes. It accepts --version, --reason, --dry-run, and the two confirmations only: no bump flag, no",
+    "--abandon-series. Both confirmations are checked against what kd observes, and a mismatch refuses the operation:",
+    "",
+    "  --confirm-recut <version|empty>  The staging version desktop-staging currently serves, exactly as kd release status",
+    "                                   prints it, or empty when the channel is positively uninitialized.",
+    "  --confirm-old-tip <sha>          The 40-character origin/release/X.Y tip observed before the move; the branch update",
+    "                                   uses it as an exact --force-with-lease, so a concurrent writer is refused, never",
+    "                                   overwritten.",
+    "  --reason <why>                   Required and single-line. It is recorded in the audit trail beside the requester",
+    "                                   taken from KANNA_RELEASE_REQUESTER (falling back to USER, then unknown), so set that",
+    "                                   variable to name the human who asked.",
+    "  --dry-run                        Runs every recut check and mutates nothing. Supported only with --recut.",
+    "",
+    "A recut refuses unless release/X.Y exists on origin, carries no commit of its own that is not already on main by patch",
+    "identity, has no production vX.Y.* tag, and has readable, verifiable channel state; a same-tip request is a no-op.",
+    "It archives the old tip as an annotated recut/release/X.Y-N tag before moving the branch, then prepends a",
+    "Lineage-Recut block to the desktop-staging release. Only the next RC built from that branch tip consumes the grant,",
+    "and only on a completed publish, which writes the recut-applied/<id> tag; a failed build consumes nothing.",
+    "See docs/specs/release-candidates.md."
   ],
   "release status": [
     "Usage: kd release status",
@@ -1581,6 +1610,13 @@ const helpTopics: Record<string, string[]> = {
     "Usage: kd test rust",
     "",
     "Run workspace Rust tests with daemon integration tests serialized."
+  ],
+  "test headless-worker": [
+    "Usage: kd test headless-worker",
+    "",
+    "Run the headless worker's exit gate end to end: create, execute, durable",
+    "input, completion, stage fork and close, plus a server restart and a",
+    "daemon replacement under a live session. Builds the binaries it drives.",
   ],
   "test desktop-e2e": [
     "Usage: kd test desktop-e2e",

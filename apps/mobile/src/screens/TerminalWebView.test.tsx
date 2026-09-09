@@ -168,11 +168,17 @@ async function renderTerminalWebView(input: {
   rows?: number | null;
   fullscreen?: boolean;
   bottomInset?: number;
+  directInputEnabled?: boolean;
+  directInputFocusRequest?: number;
   selectionToolbarTop?: number;
   onConsolePress?: () => void;
   onMentionedFilesChange?: (history: TerminalFileMentionHistory) => void;
   onOpenFile?: (path: string, line?: number) => void;
-  onTerminalInput?: (dataB64: string) => void;
+  onTerminalInput?: (
+    dataB64: string,
+    kind: "draft" | "submission" | "control"
+  ) => void;
+  onCapacityChange?: (cols: number, rows: number) => void;
   onRequestScrollback?: () => void;
   terminalOutputSource?: TaskTerminalOutputSource;
 }): Promise<ElementNode> {
@@ -190,11 +196,14 @@ async function renderTerminalWebView(input: {
     rows: input.rows ?? null,
     fullscreen: input.fullscreen,
     bottomInset: input.bottomInset,
+    directInputEnabled: input.directInputEnabled,
+    directInputFocusRequest: input.directInputFocusRequest,
     selectionToolbarTop: input.selectionToolbarTop,
     onConsolePress: input.onConsolePress,
     onMentionedFilesChange: input.onMentionedFilesChange,
     onOpenFile: input.onOpenFile,
     onTerminalInput: input.onTerminalInput,
+    onCapacityChange: input.onCapacityChange,
     onRequestScrollback: input.onRequestScrollback,
     terminalOutputSource: input.terminalOutputSource
   }) as ElementNode;
@@ -215,8 +224,14 @@ async function renderTerminalWebView(input: {
   return webView;
 }
 
-function bottomInsetScript(bottomInset: number): string {
-  return `window.__setTerminalBottomInset(${JSON.stringify({ bottomInset })}); true;`;
+function bottomInsetScript(
+  bottomInset: number,
+  capacityInset: number = bottomInset
+): string {
+  return `window.__setTerminalBottomInset(${JSON.stringify({
+    bottomInset,
+    capacityInset
+  })}); true;`;
 }
 
 interface BurstTerminalBuffer {
@@ -233,6 +248,8 @@ class BurstTerminal {
   options: { fontSize: number; smoothScrollDuration?: number; wordSeparator?: string };
   resets = 0;
   writes: unknown[] = [];
+  focused = false;
+  private dataHandler: ((data: string) => void) | null = null;
   private readonly deferredWriteCallbacks: Array<() => void> = [];
   dimensions = {
     css: { cell: { width: 9, height: 18 } }
@@ -298,7 +315,8 @@ class BurstTerminal {
     return { dispose() {} };
   }
 
-  onData(): { dispose(): void } {
+  onData(handler: (data: string) => void): { dispose(): void } {
+    this.dataHandler = handler;
     return { dispose() {} };
   }
 
@@ -319,6 +337,18 @@ class BurstTerminal {
   }
 
   clearSelection(): void {}
+
+  focus(): void {
+    this.focused = true;
+  }
+
+  blur(): void {
+    this.focused = false;
+  }
+
+  emitData(data: string): void {
+    this.dataHandler?.(data);
+  }
 
   resize(cols: number, rows: number): void {
     this.cols = cols;
@@ -382,6 +412,7 @@ function extractTerminalScript(html: string): string {
 function createBurstTerminalDocument(
   documentOptions: { deferWrites?: boolean } = {}
 ): {
+  messages: unknown[];
   terminal: BurstTerminal;
   window: Window & typeof globalThis;
 } {
@@ -400,7 +431,12 @@ function createBurstTerminalDocument(
   // test, so keep it pending just as it would be during one continuous burst.
   window.setTimeout = (() => 1) as typeof window.setTimeout;
   window.clearTimeout = (() => undefined) as typeof window.clearTimeout;
-  window.ReactNativeWebView = { postMessage() {} };
+  const messages: unknown[] = [];
+  window.ReactNativeWebView = {
+    postMessage(message: string) {
+      messages.push(JSON.parse(message) as unknown);
+    }
+  };
 
   let terminal: BurstTerminal | null = null;
   window.Terminal = class extends BurstTerminal {
@@ -431,7 +467,7 @@ function createBurstTerminalDocument(
   });
   window.eval(extractTerminalScript(html));
   if (!terminal) throw new Error("generated terminal script did not initialize xterm");
-  return { terminal, window };
+  return { messages, terminal, window };
 }
 
 function burstTerminalText(terminal: BurstTerminal): string {
@@ -445,6 +481,52 @@ function burstTerminalText(terminal: BurstTerminal): string {
     })
     .join("");
 }
+
+describe("authoritative terminal grid layout", () => {
+  it("bottom-anchors a grid shorter than the viewport", () => {
+    const { window } = createBurstTerminalDocument();
+    const root = window.document.getElementById("terminal-root");
+
+    (window as unknown as { __setTerminalDims(dims: { cols: number; rows: number }): void })
+      .__setTerminalDims({ cols: 132, rows: 20 });
+
+    expect(root?.style.height).toBe("360px");
+    expect(root?.style.marginTop).toBe("460px");
+  });
+
+  it("leaves a taller grid at the top so viewport panning still owns overflow", () => {
+    const { window } = createBurstTerminalDocument();
+    const root = window.document.getElementById("terminal-root");
+
+    (window as unknown as { __setTerminalDims(dims: { cols: number; rows: number }): void })
+      .__setTerminalDims({ cols: 132, rows: 60 });
+
+    expect(root?.style.height).toBe("1080px");
+    expect(root?.style.marginTop).toBe("0px");
+  });
+
+  it("re-anchors a short grid when input chrome and viewport dimensions change", () => {
+    const { window } = createBurstTerminalDocument();
+    const viewport = window.document.getElementById("viewport");
+    const root = window.document.getElementById("terminal-root");
+    if (!viewport) throw new Error("terminal viewport was not rendered");
+    const bridge = window as unknown as {
+      __setTerminalBottomInset(state: { bottomInset: number }): void;
+      __setTerminalDims(dims: { cols: number; rows: number }): void;
+    };
+    bridge.__setTerminalDims({ cols: 132, rows: 20 });
+
+    bridge.__setTerminalBottomInset({ bottomInset: 200 });
+    expect(root?.style.marginTop).toBe("284px");
+
+    Object.defineProperty(viewport, "clientHeight", {
+      configurable: true,
+      value: 500
+    });
+    window.dispatchEvent(new window.Event("resize"));
+    expect(root?.style.marginTop).toBe("0px");
+  });
+});
 
 function resolvedSelectionToolbarTop(tree: ElementNode | null): number | null {
   const toolbar = findByAccessibilityLabel(
@@ -486,6 +568,36 @@ describe("TerminalWebView", () => {
     const webView = await renderTerminalWebView({});
 
     expect(webView.props.webviewDebuggingEnabled).toBe(true);
+  });
+
+  it("forwards xterm keyboard data only while direct input is enabled", () => {
+    const bridge = createBurstTerminalDocument();
+    const directInputWindow = bridge.window as unknown as {
+      __setTerminalDirectInput(enabled: boolean): void;
+    };
+    bridge.messages.length = 0;
+
+    bridge.terminal.emitData("ignored");
+    expect(bridge.messages).toEqual([]);
+
+    directInputWindow.__setTerminalDirectInput(true);
+    expect(bridge.terminal.focused).toBe(true);
+    bridge.terminal.emitData("a");
+    bridge.terminal.emitData("\u001b[B");
+    bridge.terminal.emitData("\u001b[C");
+    bridge.terminal.emitData("\r");
+
+    expect(bridge.messages).toEqual([
+      { type: "terminal-input", dataB64: "YQ==", kind: "draft" },
+      { type: "terminal-input", dataB64: "G1tC", kind: "draft" },
+      { type: "terminal-input", dataB64: "G1tD", kind: "control" },
+      { type: "terminal-input", dataB64: "DQ==", kind: "submission" }
+    ]);
+
+    directInputWindow.__setTerminalDirectInput(false);
+    expect(bridge.terminal.focused).toBe(false);
+    bridge.terminal.emitData("ignored again");
+    expect(bridge.messages).toHaveLength(4);
   });
 
   it("captures terminal WebView load and process failures with bounded state", async () => {
@@ -688,14 +800,42 @@ describe("TerminalWebView", () => {
       } as WebViewMessageEvent);
     };
 
-    send({ type: "terminal-input", dataB64: "G1s8NjU7MTsxTQ==" });
+    send({
+      type: "terminal-input",
+      dataB64: "G1s8NjU7MTsxTQ==",
+      kind: "control"
+    });
     send({ type: "terminal-input", dataB64: "" });
     send({ type: "terminal-input", dataB64: 42 });
     send({ type: "terminal-input", dataB64: "A".repeat(9_000) });
     send({ type: "terminal-input" });
+    send({ type: "terminal-input", dataB64: "QQ==", kind: "unknown" });
 
     expect(onTerminalInput).toHaveBeenCalledOnce();
-    expect(onTerminalInput).toHaveBeenCalledWith("G1s8NjU7MTsxTQ==");
+    expect(onTerminalInput).toHaveBeenCalledWith(
+      "G1s8NjU7MTsxTQ==",
+      "control"
+    );
+  });
+
+  it("forwards the page's measured capacity", async () => {
+    const onCapacityChange = vi.fn();
+    const webView = await renderTerminalWebView({ onCapacityChange });
+    const post = (payload: unknown) =>
+      (webView.props.onMessage as (event: WebViewMessageEvent) => void)({
+        nativeEvent: { data: JSON.stringify(payload) }
+      } as WebViewMessageEvent);
+
+    post({ type: "terminal-capacity", cols: 65, rows: 34 });
+    expect(onCapacityChange).toHaveBeenCalledWith(65, 34);
+
+    // A page that has not laid out reports nothing; a malformed one is not a
+    // proposal either. Neither may reach the daemon as a geometry request.
+    post({ type: "terminal-capacity", cols: 0, rows: 34 });
+    post({ type: "terminal-capacity", cols: 65.5, rows: 34 });
+    post({ type: "terminal-capacity", cols: "65", rows: 34 });
+    post({ type: "terminal-capacity" });
+    expect(onCapacityChange).toHaveBeenCalledOnce();
   });
 
   it("forwards a near-the-top scroll as a scrollback request", async () => {
@@ -1146,6 +1286,14 @@ describe("TerminalWebView", () => {
     expect((webView.props.source as { html: string }).html).toContain("terminal-inspection");
   });
 
+  it("only relaxes the iOS keyboard gesture gate while direct input is active", async () => {
+    const inactive = await renderTerminalWebView({ directInputEnabled: false });
+    expect(inactive.props.keyboardDisplayRequiresUserAction).toBe(true);
+
+    const active = await renderTerminalWebView({ directInputEnabled: true });
+    expect(active.props.keyboardDisplayRequiresUserAction).toBe(false);
+  });
+
   it("ignores terminal inspection messages and instrumentation outside E2E builds", async () => {
     vi.stubEnv("EXPO_PUBLIC_KANNA_ENABLE_E2E_TRUST_SEED", "0");
     const webView = await renderTerminalWebView({});
@@ -1289,8 +1437,10 @@ describe("TerminalWebView", () => {
     ).toBeNull();
   });
 
-  it("ignores stale render acknowledgements and becomes pending again for reconnect snapshots", async () => {
+  it("keeps the rendered grid visible across a reconnect snapshot", async () => {
+    process.env.EXPO_PUBLIC_KANNA_ENABLE_E2E_TRUST_SEED = "1";
     const initialWebView = await renderTerminalWebView({ outputEpoch: 3 });
+    runEffects();
     (initialWebView.props.onMessage as (event: WebViewMessageEvent) => void)({
       nativeEvent: {
         data: JSON.stringify({
@@ -1304,11 +1454,27 @@ describe("TerminalWebView", () => {
       findByAccessibilityLabel(lastTree, "Loading terminal content")
     ).toBeNull();
 
-    const reconnectWebView = await renderTerminalWebView({ outputEpoch: 4 });
+    // A reconnect replaces the buffer under a grid the reader can still read.
+    // Raising the spinner for it blinks them out of content that never went
+    // away, once per redial on a link that redials every few seconds.
+    await renderTerminalWebView({ outputEpoch: 4 });
+    runEffects();
+    expect(
+      findByAccessibilityLabel(lastTree, "Loading terminal content")
+    ).toBeNull();
+    // One raise, for the first paint — not a second for the reconnect.
+    expect(
+      findByAccessibilityLabel(lastTree, "terminal-loading-indications:1")
+    ).not.toBeNull();
+  });
+
+  it("ignores stale render acknowledgements before the first grid renders", async () => {
+    const webView = await renderTerminalWebView({ outputEpoch: 4 });
     expect(
       findByAccessibilityLabel(lastTree, "Loading terminal content")
     ).not.toBeNull();
-    (reconnectWebView.props.onMessage as (event: WebViewMessageEvent) => void)({
+
+    (webView.props.onMessage as (event: WebViewMessageEvent) => void)({
       nativeEvent: {
         data: JSON.stringify({
           type: "terminal-content-ready",
@@ -1320,6 +1486,19 @@ describe("TerminalWebView", () => {
     expect(
       findByAccessibilityLabel(lastTree, "Loading terminal content")
     ).not.toBeNull();
+
+    (webView.props.onMessage as (event: WebViewMessageEvent) => void)({
+      nativeEvent: {
+        data: JSON.stringify({
+          type: "terminal-content-ready",
+          contentRevision: 4
+        })
+      }
+    } as WebViewMessageEvent);
+    await renderTerminalWebView({ outputEpoch: 4 });
+    expect(
+      findByAccessibilityLabel(lastTree, "Loading terminal content")
+    ).toBeNull();
   });
 
   it("finishes empty snapshots and does not return to loading for live output in the same epoch", async () => {

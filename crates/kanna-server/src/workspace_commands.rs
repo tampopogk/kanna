@@ -366,9 +366,10 @@ fn spawn_workspace_process(
     cwd: &Path,
     env: &HashMap<String, String>,
 ) -> Result<SupervisedChild, String> {
-    let mut command = Command::new("/bin/zsh");
+    let shell = crate::login_shell::login_shell();
+    let mut command = Command::new(shell.path());
     command
-        .args(["--login", "-c", shell_command])
+        .args(shell.login_args(shell_command))
         .current_dir(cwd)
         .envs(env)
         .stdout(Stdio::piped())

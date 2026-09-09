@@ -123,7 +123,13 @@ across the whole file, because the id is what an override replaces by.
 A rule is `{ id, status, channel, versions, priority, when }`. Rules are
 evaluated in ascending `priority`, then in file order; the first match wins and
 its `id` is the classification's provenance. `status` is exactly `busy`,
-`waiting` or `idle`.
+`waiting` or `idle`. Because the first match wins, a rule that specialises
+another — Codex's `Working (… esc to interrupt) · N background terminal running`
+row against the bare `esc to interrupt` marker — must carry the *lower*
+`priority`, or it can never fire: the verdict would still be right, but
+attributed to the generic rule, and the specific rule would be dead text. Write
+a provider's rules most-specific first, and keep the file order matching the
+evaluation order so the two never disagree.
 
 `channel` names the evidence the rule reads:
 
@@ -138,6 +144,45 @@ Grid rules are evaluated before title and progress rules regardless of
 non-grid channels answer the case the grid leaves unanswered — a `None` verdict,
 which is what latches a stale status — rather than competing with a frame that
 already proved something.
+
+### Notices
+
+A `notices` list sits beside `rules`, per provider and in `common`. A notice is
+`{ id, kind, versions, priority, when, scope? }` and reports something the
+provider *stated* rather than what the session is doing.
+
+Today there is one `kind`: `quota-rejection`, the CLI refusing a turn because
+the allowance for the scope it named is spent. It is a separate channel from
+`status` on purpose. A refused CLI prints its refusal and parks at its
+composer — a healthy `idle` session — so folding the fact into the status
+vocabulary would mean either inventing a runtime state for it or reporting a
+live agent as dead. A frame that matches a notice keeps whatever status its
+grid proves.
+
+Three rules differ from a status rule:
+
+- **Grid only.** A provider's sentence is drawn on the grid; a title or
+  progress predicate is refused at load, because a notice must be able to
+  report the text it matched.
+- **A version-bounded notice does not apply to an unmeasured CLI version.** The
+  permissive default below is right for a status verdict and wrong here: a
+  rejection is a claim that drives automatic provider recovery, and an
+  unmeasured version must not inherit somebody else's pattern as authority.
+- **Its own window.** `noticeRows` (default: the status window) governs how
+  many rendered rows the scan reads. A refusal is printed into the transcript
+  and the CLI keeps drawing chrome beneath it, so it sits further from the
+  bottom of the screen than any status row.
+
+`scope` is `{"between": [after, before]}` and reads the scope the provider
+named out of the matched text — `Fable` from "reached your **Fable** limit".
+Declarative for the same reason the matchers are. No scope is not "everything":
+it means the CLI did not say, which is what Codex's refusal does.
+
+The chrome these are measured against is version-tagged in
+`tests/cli-contract/fixtures/provider-quota-rejection.json` and compiled into
+the daemon's own tests, so a pattern and its evidence cannot drift apart. See
+[`provider-quota-recovery.md`](./provider-quota-recovery.md) for what the
+server does with one.
 
 ### Predicates
 
@@ -234,6 +279,12 @@ older daemon, and whenever the probe fails. Applying the union is what keeps an
 unknown-version session classifying exactly as well as it did before version
 gating existed; narrowing on unknown would trade a known failure mode for a
 worse one.
+
+**Notices are the exception**, and deliberately: a version-bounded notice is
+dropped outright for an unknown version. A status verdict describes the screen,
+so a guess from an unmeasured CLI beats no verdict; a notice asserts what the
+provider said and drives automatic recovery from it, so a guess is worse than
+silence.
 
 ## Capturing the CLI version
 

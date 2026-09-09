@@ -211,9 +211,9 @@ describe("cloud task index", () => {
         displayName: "Short renamed cloud task",
         stage: "in progress",
         activity: "working",
+        runtimeState: "busy",
+        readState: "read",
         activityRevision: 7,
-        queuedInputCount: 2,
-        queuedInputReason: "input_held_by_draft",
         status: "active",
         repo: {
           cloudRepoId: "repo-1",
@@ -250,9 +250,9 @@ describe("cloud task index", () => {
       agentProvider: "claude",
       agentType: "agent",
       activity: "working",
+      runtimeState: "busy",
+      readState: "read",
       activityRevision: 7,
-      queuedInputCount: 2,
-      queuedInputReason: "input_held_by_draft",
       parentTaskId: null,
       blockedByTaskIds: [],
       pinned: false,
@@ -623,28 +623,6 @@ describe("cloud task index", () => {
       "working",
       "unread",
       "idle",
-    ]);
-  });
-
-  it("forwards queued input status from raw Firestore documents", () => {
-    const onUpdate = vi.fn();
-    const listeners = captureSnapshotListeners();
-    createFirestoreTaskIndex({ kind: "firestore" } as never).subscribeRecentTasks(
-      "user-1",
-      onUpdate,
-    );
-    listeners.root().onNext({ docs: [desktopDocument("desktop-a")] });
-    listeners.child("desktop-a").onNext(taskSnapshot(validTask({
-      ownerDesktopId: "desktop-a",
-      queuedInputCount: 2,
-      queuedInputReason: "input_held_by_draft",
-    })));
-
-    expect(onUpdate).toHaveBeenLastCalledWith([
-      expect.objectContaining({
-        queuedInputCount: 2,
-        queuedInputReason: "input_held_by_draft",
-      }),
     ]);
   });
 

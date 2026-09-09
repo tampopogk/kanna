@@ -109,8 +109,14 @@ import {
   getRustCacheStatus,
   installRustCache
 } from "../runtime/rust-cache";
+import {
+  buildHeadlessWorkerBinariesCommand,
+  buildHeadlessWorkerGateCommand,
+} from "../runtime/headless-worker";
 import { executeRustTests } from "../runtime/rust-test";
 import { buildDesktopSidecars } from "../runtime/sidecars";
+import { configureExternalWorkspaceBuild, readExternalBuildRoot } from "../runtime/build-storage";
+import { withRustGate } from "../runtime/rust-gate";
 import { checkSetupPrerequisites, installSetupDependencies } from "../runtime/setup";
 import { getDevStatus } from "../runtime/status";
 import { executeTestAll } from "../runtime/test-all";
@@ -211,6 +217,10 @@ const devRestartInputSchema = devUpInputSchema.extend({
   staging: z.boolean().default(false),
   production: z.boolean().default(false),
   withCredentials: z.boolean().default(false)
+});
+
+const rustTestInputSchema = z.object({
+  desktop: z.boolean().default(false)
 });
 
 const devDownInputSchema = z.object({
@@ -561,7 +571,7 @@ export async function executeDevUpWithContext(input: DevUpInput, executor: Execu
   }
 
   if (input.deleteDb) {
-    await resetSqliteDb(executor.runner, dbTarget);
+    resetSqliteDb(dbTarget);
   }
 
   const env = applyEnvironmentProfile(executor.context.env, profile);
@@ -585,7 +595,7 @@ export async function executeDevUpWithContext(input: DevUpInput, executor: Execu
     reconcileKey: `dev:${formatEnvironmentProfile(profile)}`
   });
   if (input.seed) {
-    await seedSqliteDb(executor.runner, executor.context.repoRoot, env.KANNA_DB_PATH ?? "");
+    seedSqliteDb(executor.context.repoRoot, env.KANNA_DB_PATH ?? "");
   }
   if (input.attach) {
     await executor.runner.run("tmux", ["-L", executor.context.tmux.server, "attach", "-t", executor.context.tmux.session]);
@@ -1999,9 +2009,9 @@ async function executeDevSeed(input: z.infer<typeof seedInputSchema>): Promise<T
   const dbTarget = devDbTarget(context);
   assertNotProductionDb(dbTarget);
   if (input.deleteDb) {
-    await resetSqliteDb(nodeCommandRunner, dbTarget);
+    resetSqliteDb(dbTarget);
   }
-  await seedSqliteDb(nodeCommandRunner, context.repoRoot, context.env.KANNA_DB_PATH ?? "");
+  seedSqliteDb(context.repoRoot, context.env.KANNA_DB_PATH ?? "");
   return {
     ok: true,
     message: `Seeded ${context.env.KANNA_DB_PATH ?? ""}`,
@@ -2398,9 +2408,14 @@ export const taskDefinitions = [
       const context = await resolveDefaultContext(process.env);
       const cargoConfig = writeCargoConfig(context.repoRoot);
       const machineLocalConfig = syncMachineLocalConfig(context.repoRoot);
-      const legacyExternalBuild = migrateLegacyExternalWorkspaceBuild(context.repoRoot);
+      const externalBuildRoot = readExternalBuildRoot(context.homeDir, context.env);
+      const externalBuild = externalBuildRoot
+        ? configureExternalWorkspaceBuild(context.repoRoot, externalBuildRoot)
+        : undefined;
+      const legacyExternalBuild = externalBuild ? undefined : migrateLegacyExternalWorkspaceBuild(context.repoRoot);
       const lines = ["Synced Kanna dev environment files."];
-      if (legacyExternalBuild.status === "migrated") {
+      if (externalBuild) lines.push(`  using external Rust build root ${externalBuildRoot} (${externalBuild.target})`);
+      if (legacyExternalBuild?.status === "migrated") {
         lines.push(`  preserved legacy external build target ${legacyExternalBuild.target}`);
       }
       if (machineLocalConfig.status === "copied") {
@@ -2411,7 +2426,7 @@ export const taskDefinitions = [
       return {
         ok: true,
         message: lines.join("\n"),
-        data: { cargoConfig, machineLocalConfig, legacyExternalBuild }
+        data: { cargoConfig, machineLocalConfig, legacyExternalBuild, externalBuild }
       };
     }
   },
@@ -2457,7 +2472,11 @@ export const taskDefinitions = [
     inputSchema: emptyInputSchema,
     execute: async () => {
       const context = await resolveDefaultContext(process.env);
-      const staged = await buildDesktopSidecars(nodeCommandRunner, context.repoRoot, context.env);
+      const staged = await withRustGate({
+        homeDir: context.homeDir,
+        env: context.env,
+        run: (env) => buildDesktopSidecars(nodeCommandRunner, context.repoRoot, env)
+      });
       return {
         ok: true,
         message: `Built and staged ${staged.length} sidecars.`,
@@ -2836,15 +2855,36 @@ export const taskDefinitions = [
   },
   {
     id: "test.rust",
-    description: "Run workspace Rust tests with daemon integration tests serialized.",
+    description:
+      "Run workspace Rust tests with daemon integration tests serialized. --desktop adds the Tauri desktop crate on a platform whose default is headless.",
+    inputSchema: rustTestInputSchema,
+    execute: async (_context, input) => {
+      const parsed = rustTestInputSchema.parse(input);
+      const context = await resolveDefaultContext(process.env);
+      return withRustGate({
+        homeDir: context.homeDir,
+        env: context.env,
+        run: (env) => executeRustTests({
+          repoRoot: context.repoRoot,
+          env,
+          runner: nodeCommandRunner,
+          desktop: parsed.desktop
+        })
+      });
+    },
+  },
+  {
+    id: "test.headless-worker",
+    description:
+      "Run the headless worker's exit gate: create, execute, durable input, completion, stage fork, close, plus server restart and daemon replacement.",
     inputSchema: emptyInputSchema,
     execute: async () => {
       const context = await resolveDefaultContext(process.env);
-      return executeRustTests({
-        repoRoot: context.repoRoot,
-        env: context.env,
-        runner: nodeCommandRunner
-      });
+      const [buildCommand, buildArgs] = buildHeadlessWorkerBinariesCommand();
+      const built = await runBuiltCommand(buildCommand, buildArgs, context.repoRoot, context.env);
+      if (!built.ok) return built;
+      const [command, args] = buildHeadlessWorkerGateCommand();
+      return runBuiltCommand(command, args, context.repoRoot, context.env);
     },
   },
   {
@@ -3085,7 +3125,9 @@ export const taskDefinitions = [
     description: "Check Kanna development prerequisites.",
     inputSchema: emptyInputSchema,
     execute: async () => {
-      const result = await checkRequiredCommands(nodeCommandRunner, ["git", "pnpm", "tmux", "rustc", "cargo", "sqlite3"]);
+      // `sqlite3` is deliberately absent: `kd` uses the `node:sqlite` bundled
+      // with the Node it already requires, so a stock image needs no CLI.
+      const result = await checkRequiredCommands(nodeCommandRunner, ["git", "pnpm", "tmux", "rustc", "cargo"]);
       return {
         ok: result.ok,
         message: formatJsonResult(result.commands),

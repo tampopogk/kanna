@@ -7,7 +7,12 @@ import {
   type Firestore,
 } from "firebase/firestore";
 import type { AgentProvider } from "@kanna/agent-protocol";
-import type { TaskActivity, TaskSummary } from "../api/types";
+import type {
+  TaskActivity,
+  TaskReadState,
+  TaskRuntimeState,
+  TaskSummary,
+} from "../api/types";
 import { parseAgentProviderInventory } from "../api/agentProviders";
 import { buildCloudTaskId } from "../api/taskIdentity";
 import { canonicalRepoIdForHash } from "../api/repoIdentity";
@@ -24,9 +29,9 @@ export interface CloudTaskSnapshot {
   displayName?: string | null;
   stage: string;
   activity?: string | null;
+  runtimeState?: string | null;
+  readState?: string | null;
   activityRevision?: number;
-  queuedInputCount?: number;
-  queuedInputReason?: "input_held_by_draft" | "delivery_uncertain" | "sending" | null;
   status?: string;
   repo: { cloudRepoId: string; name: string; remoteUrlHash?: string | null };
   agent?: { provider?: string | null; type?: string | null } | null;
@@ -260,9 +265,9 @@ function parseCloudTaskSnapshot(value: unknown): CloudTaskSnapshot {
     displayName: optionalNullableString(value.displayName),
     stage: requiredString(value.stage, "stage"),
     activity: optionalNullableString(value.activity),
+    runtimeState: optionalNullableString(value.runtimeState),
+    readState: optionalNullableString(value.readState),
     activityRevision: optionalNonNegativeInteger(value.activityRevision),
-    queuedInputCount: optionalNonNegativeInteger(value.queuedInputCount),
-    queuedInputReason: parseQueuedInputReason(value.queuedInputReason),
     status: optionalString(value.status),
     repo: {
       cloudRepoId: requiredString(value.repo.cloudRepoId, "repo.cloudRepoId"),
@@ -334,17 +339,6 @@ function optionalNonNegativeInteger(value: unknown): number | undefined {
     : undefined;
 }
 
-function parseQueuedInputReason(
-  value: unknown,
-): CloudTaskSnapshot["queuedInputReason"] {
-  if (value === null) return null;
-  return value === "input_held_by_draft"
-      || value === "delivery_uncertain"
-      || value === "sending"
-    ? value
-    : undefined;
-}
-
 function optionalNullableNumber(value: unknown): number | null | undefined {
   if (value === null) return null;
   return typeof value === "number" && Number.isSafeInteger(value)
@@ -374,11 +368,11 @@ export function mapCloudTaskSnapshot(snapshot: CloudTaskSnapshot): CloudTaskSumm
     agentProvider: snapshot.agent?.provider ?? null,
     agentType: normalizeAgentType(snapshot.agent?.type),
     activity: normalizeTaskActivity(snapshot.activity),
+    runtimeState: normalizeTaskRuntimeState(snapshot.runtimeState),
+    readState: normalizeTaskReadState(snapshot.readState),
     ...(snapshot.activityRevision === undefined
       ? {}
       : { activityRevision: snapshot.activityRevision }),
-    queuedInputCount: snapshot.queuedInputCount ?? 0,
-    queuedInputReason: snapshot.queuedInputReason ?? null,
     parentTaskId: snapshot.parentTaskId ?? null,
     blockedByTaskIds: snapshot.blockedByTaskIds ?? [],
     // A document that never carried the field says nothing rather than saying
@@ -393,6 +387,16 @@ export function mapCloudTaskSnapshot(snapshot: CloudTaskSnapshot): CloudTaskSumm
     ownerLocalTaskId: snapshot.ownerLocalTaskId,
     ownerOnline: false,
   };
+}
+
+function normalizeTaskRuntimeState(value: string | null | undefined): TaskRuntimeState | null {
+  return value === "busy" || value === "waiting" || value === "idle" || value === "exited"
+    ? value
+    : null;
+}
+
+function normalizeTaskReadState(value: string | null | undefined): TaskReadState | null {
+  return value === "read" || value === "unread" ? value : null;
 }
 
 function mapCloudDesktopRecord(

@@ -160,11 +160,12 @@ fn apply_watcher_runtime_status(
         )
         .map_err(|error| format!("db error: {error}"))?;
 
-    // Busy is selection-independent: every live observer agrees it means
-    // working, so the watcher remains an authoritative writer even while a
-    // terminal client is attached. Idle/waiting still belong to the attached
-    // client because only it knows whether the task is selected (idle) or
-    // unselected (unread).
+    // Busy is selection-independent for the runtime dimension. It does not
+    // erase unread output: a live task can be both busy and unread. The
+    // watcher remains the authoritative runtime writer even while a terminal
+    // client is attached. Idle/waiting still belong to the attached client
+    // because only it knows whether the task is selected (idle) or unselected
+    // (unread).
     if state.terminal_attachments().is_attached(session_id) && status != "busy" {
         return Ok(Some(WatcherRuntimeStatusResult { task_id, changed }));
     }
@@ -183,149 +184,6 @@ fn apply_watcher_runtime_status(
         task_id,
         changed: true,
     }))
-}
-
-/// Mirror the daemon's blocked-input verdict onto the task.
-///
-/// Returns whether anything changed. Publishing is the caller's job, as it is
-/// for runtime status: one daemon event can move several fields and the
-/// desktop only needs to be told once.
-fn apply_watcher_input_blocked(
-    state: &http_api::AppState,
-    session_id: &str,
-    logical_input_blocked: bool,
-) -> Result<bool, String> {
-    let db = crate::db::Db::open(&state.config().db_path)
-        .map_err(|error| format!("db error: {error}"))?;
-    let Some(task_id) = db
-        .resolve_pipeline_item_id(session_id)
-        .map_err(|error| format!("db error: {error}"))?
-    else {
-        return Ok(false);
-    };
-    let changed = db
-        .update_pipeline_item_input_blocked(
-            &task_id,
-            logical_input_blocked.then_some(http_api::INPUT_BLOCKED_INHERITED_DRAFT),
-        )
-        .map_err(|error| format!("db error: {error}"))?;
-    if changed && logical_input_blocked {
-        log::warn!(
-            "task {task_id} refuses delivered input: its agent session was inherited and its \
-             composer holds text this daemon never saw typed"
-        );
-    }
-    Ok(changed)
-}
-
-fn record_released_task_input(
-    state: &http_api::AppState,
-    session_id: &str,
-    session_pid: u32,
-) -> Result<bool, String> {
-    let db = crate::db::Db::open(&state.config().db_path)
-        .map_err(|error| format!("db error: {error}"))?;
-    let Some(task_id) = db
-        .resolve_pipeline_item_id(session_id)
-        .map_err(|error| format!("db error: {error}"))?
-    else {
-        return Ok(false);
-    };
-    // A live release edge proves daemon acceptance even if it raced the HTTP
-    // handler's preparing -> held update. The incarnation fence prevents an
-    // edge from a replacement session consuming the old reservation.
-    db.deliver_next_released_task_input(&task_id, session_pid, true)
-        .map(|record| record.is_some())
-        .map_err(|error| format!("db error: {error}"))
-}
-
-fn reconcile_released_task_inputs(
-    state: &http_api::AppState,
-    session_id: &str,
-    session_pid: u32,
-    daemon_pending_count: usize,
-) -> Result<bool, String> {
-    let db = crate::db::Db::open(&state.config().db_path)
-        .map_err(|error| format!("db error: {error}"))?;
-    let Some(task_id) = db
-        .resolve_pipeline_item_id(session_id)
-        .map_err(|error| format!("db error: {error}"))?
-    else {
-        return Ok(false);
-    };
-    if db
-        .has_uncertain_task_inputs(&task_id, session_pid)
-        .map_err(|error| format!("db error: {error}"))?
-    {
-        return Ok(false);
-    }
-    let durable_pending = db
-        .count_held_task_inputs(&task_id, session_pid)
-        .map_err(|error| format!("db error: {error}"))?;
-    let released = durable_pending.saturating_sub(daemon_pending_count as i64);
-    let mut changed = false;
-    for _ in 0..released {
-        changed |= db
-            .deliver_next_released_task_input(&task_id, session_pid, false)
-            .map_err(|error| format!("db error: {error}"))?
-            .is_some();
-    }
-    Ok(changed)
-}
-
-fn reconcile_queued_task_input_incarnations(
-    state: &http_api::AppState,
-    sessions: &[kanna_daemon::protocol::SessionInfo],
-) -> Result<bool, String> {
-    use kanna_daemon::protocol::{SessionKind, SessionState};
-    use std::collections::HashMap;
-
-    let live: HashMap<&str, u32> = sessions
-        .iter()
-        .filter(|session| {
-            session.kind == SessionKind::Pty && matches!(session.state, SessionState::Active)
-        })
-        .map(|session| (session.session_id.as_str(), session.pid))
-        .collect();
-    let db = crate::db::Db::open(&state.config().db_path)
-        .map_err(|error| format!("db error: {error}"))?;
-    let owners = db
-        .queued_task_input_incarnations()
-        .map_err(|error| format!("db error: {error}"))?;
-    let mut changed = false;
-    for (task_id, session_pid) in owners {
-        if live.get(task_id.as_str()).copied() != Some(session_pid) {
-            changed |= db
-                .expire_task_inputs_for_incarnation(&task_id, session_pid)
-                .map_err(|error| format!("db error: {error}"))?
-                > 0;
-        }
-    }
-    Ok(changed)
-}
-
-fn expire_queued_task_input_incarnation(
-    state: &http_api::AppState,
-    session_id: &str,
-    session_pid: u32,
-) -> Result<bool, String> {
-    let db = crate::db::Db::open(&state.config().db_path)
-        .map_err(|error| format!("db error: {error}"))?;
-    let Some(task_id) = db
-        .resolve_pipeline_item_id(session_id)
-        .map_err(|error| format!("db error: {error}"))?
-    else {
-        return Ok(false);
-    };
-    db.expire_task_inputs_for_incarnation(&task_id, session_pid)
-        .map(|changed| changed > 0)
-        .map_err(|error| format!("db error: {error}"))
-}
-
-pub(crate) fn recover_interrupted_task_input_reservations(db_path: &str) -> Result<usize, String> {
-    let db = crate::db::Db::open(db_path).map_err(|error| format!("db error: {error}"))?;
-    db.mark_preparing_task_inputs_uncertain()
-        .map_err(|error| format!("db error: {error}"))
 }
 
 async fn reconcile_detached_terminal_status(
@@ -597,9 +455,6 @@ pub(crate) async fn terminal_state_watcher_once(
                     })
                     .map(|session| (session.session_id.clone(), session.pid)),
             );
-            if reconcile_queued_task_input_incarnations(state, &sessions)? {
-                state.publish_state_changed(kanna_agent_protocol::StateChangeScope::Tasks);
-            }
             for session in sessions {
                 let mut changed = match http_api::restore_task_run_for_live_session(
                     &config.db_path,
@@ -615,48 +470,38 @@ pub(crate) async fn terminal_state_watcher_once(
                         false
                     }
                 };
-                match apply_watcher_runtime_status(state, &session.session_id, session.status, None)
-                {
-                    Ok(Some(result)) => changed |= result.changed,
-                    Ok(None) => {}
-                    Err(error) => log::warn!(
-                        "failed to reconcile terminal status for {}: {}",
-                        session.session_id,
-                        error
-                    ),
-                }
-                // Every daemon generation is reconciled here, which matters
-                // for this field more than for status: a session becomes
-                // input-blocked at adoption, and this List is the first thing
-                // that runs against the daemon that adopted it.
-                match apply_watcher_input_blocked(
-                    state,
-                    &session.session_id,
-                    session.logical_input_blocked,
-                ) {
-                    Ok(blocked_changed) => changed |= blocked_changed,
-                    Err(error) => log::warn!(
-                        "failed to reconcile blocked input for {}: {}",
-                        session.session_id,
-                        error
-                    ),
-                }
-                if let Some(pending_count) = session.pending_logical_input_count {
-                    match reconcile_released_task_inputs(
+                if session.status_observed {
+                    match apply_watcher_runtime_status(
                         state,
                         &session.session_id,
-                        session.pid,
-                        pending_count,
+                        session.status,
+                        None,
                     ) {
-                        Ok(queue_changed) => changed |= queue_changed,
+                        Ok(Some(result)) => changed |= result.changed,
+                        Ok(None) => {}
                         Err(error) => log::warn!(
-                            "failed to reconcile queued input for {}: {}",
+                            "failed to reconcile terminal status for {}: {}",
+                            session.session_id,
+                            error
+                        ),
+                    }
+                } else {
+                    // A daemon handoff may have a live PTY before any frame
+                    // can be classified.  Null is the truthful projection;
+                    // never retain or invent idle during that interval.
+                    match crate::db::Db::open(&config.db_path)
+                        .and_then(|db| db.clear_unobserved_live_runtime_status(&session.session_id))
+                    {
+                        Ok(cleared) => changed |= cleared,
+                        Err(error) => log::warn!(
+                            "failed to clear unobserved terminal status for {}: {}",
                             session.session_id,
                             error
                         ),
                     }
                 }
-                // Same reason as the field above: an adopted session's
+                // Every daemon generation is reconciled here, which matters
+                // for this field more than for status: an adopted session's
                 // composer is whatever the provider left on screen, and this
                 // List is the first thing that runs against the daemon that
                 // adopted it.
@@ -704,12 +549,11 @@ pub(crate) async fn terminal_state_watcher_once(
                         if let Some(session) = replacement {
                             live_session_pids.insert(session_id.clone(), session.pid);
                         }
-                        let mut changed = reconcile_queued_task_input_incarnations(state, &sessions)?;
                         // A replacement deliberately reuses the task/session id, so the
-                        // old task projection cannot be cleared by identity alone. The
-                        // new daemon handle begins unblocked and therefore has no false
-                        // edge to publish; its List snapshot is authoritative for this
-                        // new PTY incarnation just as the startup List is for adoption.
+                        // old task projection cannot be cleared by identity alone. Its
+                        // List snapshot is authoritative for this new PTY incarnation
+                        // just as the startup List is for adoption.
+                        let mut changed = false;
                         if let Some(session) = replacement {
                             match apply_watcher_runtime_status(
                                 state,
@@ -723,31 +567,6 @@ pub(crate) async fn terminal_state_watcher_once(
                                     "failed to reconcile replacement terminal status for {}: {error}",
                                     session.session_id
                                 ),
-                            }
-                            match apply_watcher_input_blocked(
-                                state,
-                                &session.session_id,
-                                session.logical_input_blocked,
-                            ) {
-                                Ok(blocked_changed) => changed |= blocked_changed,
-                                Err(error) => log::warn!(
-                                    "failed to reconcile replacement blocked input for {}: {error}",
-                                    session.session_id
-                                ),
-                            }
-                            if let Some(pending_count) = session.pending_logical_input_count {
-                                match reconcile_released_task_inputs(
-                                    state,
-                                    &session.session_id,
-                                    session.pid,
-                                    pending_count,
-                                ) {
-                                    Ok(queue_changed) => changed |= queue_changed,
-                                    Err(error) => log::warn!(
-                                        "failed to reconcile replacement queued input for {}: {error}",
-                                        session.session_id
-                                    ),
-                                }
                             }
                             match persist_composer(
                                 state,
@@ -822,6 +641,48 @@ pub(crate) async fn terminal_state_watcher_once(
                     }
                 }
             }
+            DaemonEvent::ProviderNotice {
+                session_id,
+                kind,
+                session_kind,
+                agent_provider,
+                rule_id,
+                scope,
+                text,
+                cli_version,
+            } => match kind {
+                kanna_daemon::protocol::ProviderNoticeKind::QuotaRejection => {
+                    // A notice the daemon could not attribute to a provider
+                    // cannot be recorded against one, and "some provider
+                    // refused" is not a fact anything can act on.
+                    let Some(provider) = agent_provider else {
+                        log::warn!(
+                            "[quota] ignoring a rejection for {session_id} with no provider"
+                        );
+                        continue;
+                    };
+                    http_api::handle_quota_rejection(
+                        state,
+                        http_api::QuotaRejectionNotice {
+                            session_id,
+                            provider: provider.as_str().to_string(),
+                            scope,
+                            rule_id,
+                            text,
+                            cli_version,
+                            source: match session_kind {
+                                kanna_daemon::protocol::SessionKind::Pty => {
+                                    crate::db::QuotaRejectionSource::Pty
+                                }
+                                kanna_daemon::protocol::SessionKind::Agent => {
+                                    crate::db::QuotaRejectionSource::Sdk
+                                }
+                            },
+                        },
+                    )
+                    .await;
+                }
+            },
             DaemonEvent::ComposerChanged {
                 session_id,
                 composer_text,
@@ -842,57 +703,13 @@ pub(crate) async fn terminal_state_watcher_once(
                     error
                 ),
             },
-            DaemonEvent::InputBlockedChanged {
-                session_id,
-                logical_input_blocked,
-            } => match apply_watcher_input_blocked(state, &session_id, logical_input_blocked) {
-                Ok(true) => {
-                    state.publish_state_changed(kanna_agent_protocol::StateChangeScope::Tasks)
-                }
-                Ok(false) => {}
-                Err(error) => log::warn!(
-                    "failed to apply blocked input for {}: {}",
-                    session_id,
-                    error
-                ),
-            },
-            DaemonEvent::LogicalInputReleased {
-                session_id,
-                session_pid,
-            } => {
-                match record_released_task_input(state, &session_id, session_pid) {
-                    Ok(true) => {
-                        state.publish_state_changed(kanna_agent_protocol::StateChangeScope::Tasks)
-                    }
-                    Ok(false) => log::warn!(
-                        "daemon released queued logical input for {session_id}, but no durable queue row matched"
-                    ),
-                    Err(error) => log::warn!(
-                        "failed to record released task input for {session_id}: {error}"
-                    ),
-                }
-            }
             DaemonEvent::Exit {
                 session_id,
                 code,
                 killed,
                 resume_session_id,
             } => {
-                if let Some(session_pid) = live_session_pids.remove(&session_id) {
-                    match expire_queued_task_input_incarnation(
-                        state,
-                        &session_id,
-                        session_pid,
-                    ) {
-                        Ok(true) => state.publish_state_changed(
-                            kanna_agent_protocol::StateChangeScope::Tasks,
-                        ),
-                        Ok(false) => {}
-                        Err(error) => log::warn!(
-                            "failed to mark queued input uncertain after exit for {session_id}: {error}"
-                        ),
-                    }
-                }
+                live_session_pids.remove(&session_id);
                 // A task now owns more than one terminal, and only one of
                 // them is its agent. A startup or teardown shell ending is
                 // that shell finishing its own job; running the agent-facing
@@ -979,15 +796,7 @@ mod tests {
     use tokio::time::{timeout, Duration};
 
     fn unique_name(prefix: &str) -> String {
-        format!(
-            "{}-{}-{}",
-            prefix,
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        )
+        crate::test_paths::unique_test_name(prefix)
     }
 
     fn daemon_socket_path_for_dir(daemon_dir: &Path) -> PathBuf {
@@ -1013,7 +822,7 @@ mod tests {
             lan_port: 48120,
             transfer_port: 4455,
             activity_event_debounce_seconds: 300,
-            pairing_store_path: format!("/tmp/kanna-pairings-{unique}.json"),
+            pairing_store_path: crate::test_paths::unique_test_file("kanna-pairings", "json"),
         }
     }
 
@@ -1045,218 +854,6 @@ mod tests {
             "2026-04-18 10:00:00",
         )
         .unwrap();
-    }
-
-    fn active_pty_session(session_id: &str, pid: u32, pending: usize) -> SessionInfo {
-        SessionInfo {
-            session_id: session_id.to_string(),
-            pid,
-            cwd: "/tmp".to_string(),
-            state: SessionState::Active,
-            idle_seconds: 0,
-            status: SessionStatus::Idle,
-            kind: Default::default(),
-            logical_input_blocked: false,
-            pending_logical_input_count: Some(pending),
-            composer_text: None,
-            composer_attestation: Default::default(),
-        }
-    }
-
-    #[test]
-    fn logical_release_edges_advance_one_durable_input_each() {
-        let unique = unique_name("terminal-watcher-logical-input-release");
-        let daemon_dir = std::env::temp_dir().join(format!("{unique}-daemon"));
-        let config = test_config(&unique, &daemon_dir);
-        seed_plain_task(&config);
-        let db = Db::open(&config.db_path).unwrap();
-        for message in ["first queued message", "second queued message"] {
-            let id = db
-                .prepare_queued_task_input(
-                    "task-child",
-                    42,
-                    crate::db::TaskInputSource::Operator,
-                    message,
-                )
-                .unwrap()
-                .unwrap();
-            assert!(db
-                .mark_queued_task_input_held(id, 42, "typed draft")
-                .unwrap());
-        }
-        drop(db);
-
-        let state = http_api::AppState::new(config.clone());
-        assert!(record_released_task_input(&state, "task-child", 42).unwrap());
-        assert!(record_released_task_input(&state, "task-child", 42).unwrap());
-
-        let db = Db::open(&config.db_path).unwrap();
-        let delivered = db.list_task_inputs("task-child", 10).unwrap();
-        assert_eq!(
-            delivered
-                .iter()
-                .map(|record| record.message.as_str())
-                .collect::<Vec<_>>(),
-            ["first queued message", "second queued message"]
-        );
-        assert!(!record_released_task_input(&state, "task-child", 42).unwrap());
-        let _ = std::fs::remove_file(config.db_path);
-    }
-
-    #[test]
-    fn reconnect_promotes_only_same_incarnation_missed_releases() {
-        let unique = unique_name("terminal-watcher-same-incarnation-release");
-        let daemon_dir = std::env::temp_dir().join(format!("{unique}-daemon"));
-        let config = test_config(&unique, &daemon_dir);
-        seed_plain_task(&config);
-        let db = Db::open(&config.db_path).unwrap();
-        let id = db
-            .prepare_queued_task_input(
-                "task-child",
-                42,
-                crate::db::TaskInputSource::Operator,
-                "released while watcher was down",
-            )
-            .unwrap()
-            .unwrap();
-        assert!(db
-            .mark_queued_task_input_held(id, 42, "typed draft")
-            .unwrap());
-        drop(db);
-
-        let state = http_api::AppState::new(config.clone());
-        assert!(reconcile_released_task_inputs(&state, "task-child", 42, 0).unwrap());
-
-        let db = Db::open(&config.db_path).unwrap();
-        let delivered = db.list_task_inputs("task-child", 10).unwrap();
-        assert_eq!(delivered.len(), 1);
-        assert_eq!(delivered[0].message, "released while watcher was down");
-        assert_eq!(db.count_queued_task_inputs("task-child").unwrap(), 0);
-        let _ = std::fs::remove_file(config.db_path);
-    }
-
-    #[test]
-    fn replacement_and_exit_expire_old_incarnation_input_observably() {
-        let unique = unique_name("terminal-watcher-replaced-incarnation");
-        let daemon_dir = std::env::temp_dir().join(format!("{unique}-daemon"));
-        let config = test_config(&unique, &daemon_dir);
-        seed_plain_task(&config);
-        let db = Db::open(&config.db_path).unwrap();
-        for message in ["first lost on replacement", "second lost on replacement"] {
-            let id = db
-                .prepare_queued_task_input(
-                    "task-child",
-                    42,
-                    crate::db::TaskInputSource::Operator,
-                    message,
-                )
-                .unwrap()
-                .unwrap();
-            assert!(db
-                .mark_queued_task_input_held(id, 42, "typed draft")
-                .unwrap());
-        }
-        drop(db);
-
-        let state = http_api::AppState::new(config.clone());
-        assert!(reconcile_queued_task_input_incarnations(
-            &state,
-            &[active_pty_session("task-child", 99, 0)],
-        )
-        .unwrap());
-
-        let db = Db::open(&config.db_path).unwrap();
-        let exit_id = db
-            .prepare_queued_task_input(
-                "task-child",
-                99,
-                crate::db::TaskInputSource::Operator,
-                "lost when replacement exited",
-            )
-            .unwrap()
-            .unwrap();
-        assert_eq!(
-            db.queued_task_input_reason_for_id(exit_id)
-                .unwrap()
-                .as_deref(),
-            Some("sending")
-        );
-        drop(db);
-        assert!(expire_queued_task_input_incarnation(&state, "task-child", 99).unwrap());
-
-        let db = Db::open(&config.db_path).unwrap();
-        assert!(db.list_task_inputs("task-child", 10).unwrap().is_empty());
-        assert_eq!(db.queued_task_input_reason("task-child").unwrap(), None);
-        assert_eq!(db.count_queued_task_inputs("task-child").unwrap(), 0);
-        let expired = db
-            .list_task_events(
-                &crate::db::TaskEventScope::Tasks(vec!["task-child".to_string()]),
-                0,
-                db.latest_task_event_seq().unwrap(),
-                100,
-            )
-            .unwrap()
-            .into_iter()
-            .filter(|event| event.event_type == "task.input_delivery_expired")
-            .collect::<Vec<_>>();
-        assert_eq!(expired.len(), 3);
-        assert_eq!(expired[0].payload["sessionPid"], 42);
-        assert_eq!(expired[2].payload["sessionPid"], 99);
-        let _ = std::fs::remove_file(config.db_path);
-    }
-
-    #[test]
-    fn interrupted_preparing_reservation_becomes_delivery_uncertain() {
-        let unique = unique_name("terminal-watcher-interrupted-preparing");
-        let daemon_dir = std::env::temp_dir().join(format!("{unique}-daemon"));
-        let config = test_config(&unique, &daemon_dir);
-        seed_plain_task(&config);
-        let db = Db::open(&config.db_path).unwrap();
-        db.prepare_queued_task_input(
-            "task-child",
-            42,
-            crate::db::TaskInputSource::Operator,
-            "acceptance outcome unknown",
-        )
-        .unwrap()
-        .unwrap();
-        drop(db);
-
-        assert_eq!(
-            recover_interrupted_task_input_reservations(&config.db_path).unwrap(),
-            1
-        );
-        let state = http_api::AppState::new(config.clone());
-        assert!(!reconcile_released_task_inputs(&state, "task-child", 42, 0).unwrap());
-
-        let db = Db::open(&config.db_path).unwrap();
-        let later_id = db
-            .prepare_queued_task_input(
-                "task-child",
-                42,
-                crate::db::TaskInputSource::Operator,
-                "later held message",
-            )
-            .unwrap()
-            .unwrap();
-        assert!(db
-            .mark_queued_task_input_held(later_id, 42, "typed draft")
-            .unwrap());
-        drop(db);
-        assert!(
-            !record_released_task_input(&state, "task-child", 42).unwrap(),
-            "an ambiguous earlier FIFO slot must block attribution to a later held row"
-        );
-
-        let db = Db::open(&config.db_path).unwrap();
-        assert!(db.list_task_inputs("task-child", 10).unwrap().is_empty());
-        assert_eq!(
-            db.queued_task_input_reason("task-child")
-                .unwrap()
-                .as_deref(),
-            Some("delivery_uncertain")
-        );
-        let _ = std::fs::remove_file(config.db_path);
     }
 
     fn bind_daemon_listener(daemon_dir: &Path) -> (UnixListener, PathBuf) {
@@ -1308,153 +905,6 @@ mod tests {
     async fn write_raw_event(writer: &mut tokio::net::unix::OwnedWriteHalf, event: &str) {
         writer.write_all(event.as_bytes()).await.unwrap();
         writer.write_all(b"\n").await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn watcher_reconnect_promotes_a_missed_release_from_the_listed_incarnation() {
-        let unique = unique_name("terminal-watcher-reconnect-release-wiring");
-        let daemon_dir = std::env::temp_dir().join(format!("{unique}-daemon"));
-        let config = test_config(&unique, &daemon_dir);
-        seed_plain_task(&config);
-        let db = Db::open(&config.db_path).unwrap();
-        let id = db
-            .prepare_queued_task_input(
-                "task-child",
-                42,
-                crate::db::TaskInputSource::Operator,
-                "missed exact-incarnation release",
-            )
-            .unwrap()
-            .unwrap();
-        assert!(db
-            .mark_queued_task_input_held(id, 42, "typed draft")
-            .unwrap());
-        drop(db);
-
-        let replacements = session_replacements::SessionReplacements::default();
-        let (listener, socket_path) = bind_daemon_listener(&daemon_dir);
-        let state = Arc::new(http_api::AppState::new(config.clone()));
-        let watcher_state = Arc::clone(&state);
-        let watcher = tokio::spawn(async move {
-            terminal_state_watcher_once(&watcher_state, &replacements).await
-        });
-        let mut subscriber = expect_subscribe_with_sessions(
-            &listener,
-            vec![active_pty_session("task-child", 42, 0)],
-        )
-        .await;
-
-        let deadline = std::time::Instant::now() + Duration::from_secs(2);
-        loop {
-            let delivered = Db::open(&config.db_path)
-                .unwrap()
-                .list_task_inputs("task-child", 10)
-                .unwrap();
-            if delivered.len() == 1 {
-                assert_eq!(delivered[0].message, "missed exact-incarnation release");
-                break;
-            }
-            assert!(
-                std::time::Instant::now() < deadline,
-                "watcher did not reconcile the missed release"
-            );
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-        write_event(&mut subscriber, &DaemonEvent::ShuttingDown).await;
-        watcher.await.unwrap().unwrap();
-
-        let _ = std::fs::remove_file(socket_path);
-        let _ = std::fs::remove_dir_all(daemon_dir);
-        let _ = std::fs::remove_file(config.db_path);
-    }
-
-    #[tokio::test]
-    async fn watcher_replacement_and_exit_expire_without_false_delivery() {
-        let unique = unique_name("terminal-watcher-replacement-exit-wiring");
-        let daemon_dir = std::env::temp_dir().join(format!("{unique}-daemon"));
-        let config = test_config(&unique, &daemon_dir);
-        seed_plain_task(&config);
-        let db = Db::open(&config.db_path).unwrap();
-        let replaced_id = db
-            .prepare_queued_task_input(
-                "task-child",
-                41,
-                crate::db::TaskInputSource::Operator,
-                "owned by replaced session",
-            )
-            .unwrap()
-            .unwrap();
-        assert!(db
-            .mark_queued_task_input_held(replaced_id, 41, "typed draft")
-            .unwrap());
-        let exiting_id = db
-            .prepare_queued_task_input(
-                "task-child",
-                42,
-                crate::db::TaskInputSource::Operator,
-                "owned by exiting session",
-            )
-            .unwrap()
-            .unwrap();
-        assert!(db
-            .mark_queued_task_input_held(exiting_id, 42, "typed draft")
-            .unwrap());
-        drop(db);
-
-        let replacements = session_replacements::SessionReplacements::default();
-        let (listener, socket_path) = bind_daemon_listener(&daemon_dir);
-        let state = Arc::new(http_api::AppState::new(config.clone()));
-        let watcher_state = Arc::clone(&state);
-        let watcher = tokio::spawn(async move {
-            terminal_state_watcher_once(&watcher_state, &replacements).await
-        });
-        let mut subscriber = expect_subscribe_with_sessions(
-            &listener,
-            vec![active_pty_session("task-child", 42, 1)],
-        )
-        .await;
-
-        write_event(
-            &mut subscriber,
-            &DaemonEvent::Exit {
-                session_id: "task-child".to_string(),
-                code: 137,
-                resume_session_id: None,
-                killed: true,
-            },
-        )
-        .await;
-        let deadline = std::time::Instant::now() + Duration::from_secs(2);
-        loop {
-            let db = Db::open(&config.db_path).unwrap();
-            if db.count_queued_task_inputs("task-child").unwrap() == 0 {
-                assert!(db.list_task_inputs("task-child", 10).unwrap().is_empty());
-                let expired = db
-                    .list_task_events(
-                        &crate::db::TaskEventScope::Tasks(vec!["task-child".to_string()]),
-                        0,
-                        db.latest_task_event_seq().unwrap(),
-                        100,
-                    )
-                    .unwrap()
-                    .into_iter()
-                    .filter(|event| event.event_type == "task.input_delivery_expired")
-                    .count();
-                assert_eq!(expired, 2);
-                break;
-            }
-            assert!(
-                std::time::Instant::now() < deadline,
-                "watcher did not expire input owned by dead incarnations"
-            );
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-        write_event(&mut subscriber, &DaemonEvent::ShuttingDown).await;
-        watcher.await.unwrap().unwrap();
-
-        let _ = std::fs::remove_file(socket_path);
-        let _ = std::fs::remove_dir_all(daemon_dir);
-        let _ = std::fs::remove_file(config.db_path);
     }
 
     async fn expect_no_notification_connection(listener: &UnixListener) {
@@ -1909,238 +1359,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(daemon_dir);
     }
 
-    /// A session that refuses delivered input reads as a perfectly healthy
-    /// idle task everywhere else, which is how a wedged merge singleton was
-    /// discovered only through an unrelated agent's stage failure. The
-    /// reconcile that runs against every daemon generation is what has to
-    /// catch it: a session becomes blocked at adoption, and adoption is
-    /// exactly when this List runs.
-    #[tokio::test]
-    async fn watcher_records_and_clears_refused_input_for_an_inherited_session() {
-        let unique = unique_name("terminal-watcher-input-blocked");
-        let daemon_dir = std::env::temp_dir().join(format!("{unique}-daemon"));
-        let config = test_config(&unique, &daemon_dir);
-        seed_plain_task(&config);
-        let replacements = session_replacements::SessionReplacements::default();
-        let (listener, socket_path) = bind_daemon_listener(&daemon_dir);
-
-        let state = Arc::new(http_api::AppState::new(config.clone()));
-        let watcher_state = Arc::clone(&state);
-        let watcher_replacements = replacements.clone();
-        let watcher = tokio::spawn(async move {
-            terminal_state_watcher_once(&watcher_state, &watcher_replacements).await
-        });
-        let mut subscriber = expect_subscribe_with_sessions(
-            &listener,
-            vec![SessionInfo {
-                session_id: "task-child".to_string(),
-                pid: 42,
-                cwd: "/tmp".to_string(),
-                state: SessionState::Active,
-                idle_seconds: 0,
-                status: kanna_daemon::protocol::SessionStatus::Idle,
-                kind: Default::default(),
-                logical_input_blocked: true,
-                pending_logical_input_count: None,
-                composer_text: None,
-                composer_attestation: Default::default(),
-            }],
-        )
-        .await;
-
-        let db = Db::open(&config.db_path).unwrap();
-        let deadline = std::time::Instant::now() + Duration::from_secs(2);
-        loop {
-            if db
-                .get_pipeline_item_input_blocked("task-child")
-                .unwrap()
-                .as_deref()
-                == Some(http_api::INPUT_BLOCKED_INHERITED_DRAFT)
-            {
-                break;
-            }
-            assert!(
-                std::time::Instant::now() < deadline,
-                "the adopted session's refused input was never recorded"
-            );
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-        let blocked_events: Vec<_> = db
-            .list_task_events(
-                &crate::db::TaskEventScope::Tasks(vec!["task-child".to_string()]),
-                0,
-                db.latest_task_event_seq().unwrap(),
-                100,
-            )
-            .unwrap()
-            .into_iter()
-            .filter(|event| event.event_type == "task.input_blocked")
-            .collect();
-        assert_eq!(blocked_events.len(), 1);
-        assert_eq!(
-            blocked_events[0].payload["inputBlocked"],
-            serde_json::json!(http_api::INPUT_BLOCKED_INHERITED_DRAFT)
-        );
-
-        // Attestation on the daemon side clears it with no human involved.
-        write_event(
-            &mut subscriber,
-            &DaemonEvent::InputBlockedChanged {
-                session_id: "task-child".to_string(),
-                logical_input_blocked: false,
-            },
-        )
-        .await;
-        let deadline = std::time::Instant::now() + Duration::from_secs(2);
-        loop {
-            if db
-                .get_pipeline_item_input_blocked("task-child")
-                .unwrap()
-                .is_none()
-            {
-                break;
-            }
-            assert!(
-                std::time::Instant::now() < deadline,
-                "the cleared block was never applied"
-            );
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-
-        write_event(&mut subscriber, &DaemonEvent::ShuttingDown).await;
-        timeout(Duration::from_secs(2), watcher)
-            .await
-            .expect("watcher did not finish")
-            .unwrap()
-            .unwrap();
-        drop(listener);
-        let _ = std::fs::remove_file(socket_path);
-        let _ = std::fs::remove_dir_all(daemon_dir);
-    }
-
-    #[tokio::test]
-    async fn replacement_snapshot_clears_old_hold_and_expires_its_queue() {
-        let unique = unique_name("terminal-watcher-replacement-clears-input-hold");
-        let daemon_dir = std::env::temp_dir().join(format!("{unique}-daemon"));
-        let config = test_config(&unique, &daemon_dir);
-        seed_plain_task(&config);
-        let db = Db::open(&config.db_path).unwrap();
-        db.update_pipeline_item_input_blocked(
-            "task-child",
-            Some(http_api::INPUT_BLOCKED_INHERITED_DRAFT),
-        )
-        .unwrap();
-        let queue_id = db
-            .prepare_queued_task_input(
-                "task-child",
-                42,
-                crate::db::TaskInputSource::Manager,
-                "outcome became uncertain before replacement",
-            )
-            .unwrap()
-            .unwrap();
-        db.mark_queued_task_input_uncertain(queue_id, "terminal never settled")
-            .unwrap();
-        drop(db);
-
-        let (listener, socket_path) = bind_daemon_listener(&daemon_dir);
-        let server = tokio::spawn(async move {
-            let (subscriber_stream, _) = listener.accept().await.unwrap();
-            let (subscriber_read, mut subscriber_write) = subscriber_stream.into_split();
-            let mut subscriber_reader = BufReader::new(subscriber_read);
-            let mut line = String::new();
-            subscriber_reader.read_line(&mut line).await.unwrap();
-            assert!(matches!(
-                serde_json::from_str::<DaemonCommand>(line.trim()).unwrap(),
-                DaemonCommand::Subscribe
-            ));
-            write_event(&mut subscriber_write, &DaemonEvent::Ok).await;
-
-            let (control_stream, _) = listener.accept().await.unwrap();
-            let (control_read, mut control_write) = control_stream.into_split();
-            let mut control_reader = BufReader::new(control_read);
-            line.clear();
-            control_reader.read_line(&mut line).await.unwrap();
-            assert!(matches!(
-                serde_json::from_str::<DaemonCommand>(line.trim()).unwrap(),
-                DaemonCommand::List
-            ));
-            write_event(
-                &mut control_write,
-                &DaemonEvent::SessionList {
-                    sessions: vec![SessionInfo {
-                        logical_input_blocked: true,
-                        composer_attestation: ComposerAttestation::Unknown,
-                        ..active_pty_session("task-child", 42, 0)
-                    }],
-                },
-            )
-            .await;
-
-            write_event(
-                &mut subscriber_write,
-                &DaemonEvent::SessionCreated {
-                    session_id: "task-child".to_string(),
-                },
-            )
-            .await;
-            line.clear();
-            control_reader.read_line(&mut line).await.unwrap();
-            assert!(matches!(
-                serde_json::from_str::<DaemonCommand>(line.trim()).unwrap(),
-                DaemonCommand::List
-            ));
-            write_event(
-                &mut control_write,
-                &DaemonEvent::SessionList {
-                    sessions: vec![SessionInfo {
-                        composer_attestation: ComposerAttestation::NotTyped,
-                        ..active_pty_session("task-child", 99, 0)
-                    }],
-                },
-            )
-            .await;
-            tokio::time::sleep(Duration::from_millis(100)).await;
-            write_event(&mut subscriber_write, &DaemonEvent::ShuttingDown).await;
-        });
-
-        terminal_state_watcher_once(
-            &http_api::AppState::new(config.clone()),
-            &session_replacements::SessionReplacements::default(),
-        )
-        .await
-        .unwrap();
-        server.await.unwrap();
-
-        let db = Db::open(&config.db_path).unwrap();
-        assert_eq!(
-            db.get_pipeline_item_input_blocked("task-child").unwrap(),
-            None
-        );
-        assert_eq!(db.count_queued_task_inputs("task-child").unwrap(), 0);
-        let events = db
-            .list_task_events(
-                &crate::db::TaskEventScope::Tasks(vec!["task-child".to_string()]),
-                0,
-                db.latest_task_event_seq().unwrap(),
-                100,
-            )
-            .unwrap();
-        assert!(events.iter().any(|event| {
-            event.event_type == "task.input_blocked" && event.payload["inputBlocked"].is_null()
-        }));
-        assert_eq!(
-            events
-                .iter()
-                .filter(|event| event.event_type == "task.input_delivery_expired")
-                .count(),
-            1
-        );
-        let _ = std::fs::remove_file(socket_path);
-        let _ = std::fs::remove_dir_all(daemon_dir);
-        let _ = std::fs::remove_file(config.db_path);
-    }
-
     /// The seam between the daemon's ledger and the API. Both ends are proven
     /// on their own — the daemon's verdicts in its own unit and socket tests,
     /// the payload shape in `core_routes` against columns written by hand —
@@ -2176,9 +1394,8 @@ mod tests {
                 state: SessionState::Active,
                 idle_seconds: 0,
                 status: kanna_daemon::protocol::SessionStatus::Idle,
+                status_observed: true,
                 kind: Default::default(),
-                logical_input_blocked: false,
-                pending_logical_input_count: None,
                 composer_text: Some("check again in a minute".to_string()),
                 composer_attestation: ComposerAttestation::NotTyped,
             }],
@@ -2235,6 +1452,70 @@ mod tests {
             .unwrap()
             .unwrap();
         drop(listener);
+        let _ = std::fs::remove_file(socket_path);
+        let _ = std::fs::remove_dir_all(daemon_dir);
+    }
+
+    #[tokio::test]
+    async fn watcher_projects_unobserved_adoption_to_unknown_then_busy_event() {
+        let unique = unique_name("terminal-watcher-unmeasured-adoption");
+        let daemon_dir = std::env::temp_dir().join(format!("{unique}-daemon"));
+        let config = test_config(&unique, &daemon_dir);
+        seed_plain_task(&config);
+        Db::open(&config.db_path)
+            .unwrap()
+            .update_pipeline_item_runtime_status("task-child", "idle", None)
+            .unwrap();
+        let (listener, socket_path) = bind_daemon_listener(&daemon_dir);
+
+        let server = tokio::spawn(async move {
+            let mut subscriber = expect_subscribe_with_sessions(
+                &listener,
+                vec![SessionInfo {
+                    session_id: "task-child".to_string(),
+                    pid: 42,
+                    cwd: "/tmp".to_string(),
+                    state: SessionState::Active,
+                    idle_seconds: 0,
+                    // This is the daemon's bootstrap field, not a frame
+                    // verdict. It must never overwrite the DB as idle.
+                    status: kanna_daemon::protocol::SessionStatus::Idle,
+                    status_observed: false,
+                    kind: Default::default(),
+                    composer_text: None,
+                    composer_attestation: ComposerAttestation::Unknown,
+                }],
+            )
+            .await;
+            // The next PTY repaint is measured by the adopted daemon. Its
+            // Busy event, not a reconnect or viewer attach, restores the
+            // runtime projection from the honest unknown value.
+            write_event(
+                &mut subscriber,
+                &DaemonEvent::StatusChanged {
+                    session_id: "task-child".to_string(),
+                    status: kanna_daemon::protocol::SessionStatus::Busy,
+                    waiting_prompt_snippet: None,
+                },
+            )
+            .await;
+            write_event(&mut subscriber, &DaemonEvent::ShuttingDown).await;
+        });
+
+        terminal_state_watcher_once(
+            &http_api::AppState::new(config.clone()),
+            &session_replacements::SessionReplacements::default(),
+        )
+        .await
+        .unwrap();
+        server.await.unwrap();
+
+        let task = Db::open(&config.db_path)
+            .unwrap()
+            .get_pipeline_item("task-child")
+            .unwrap()
+            .unwrap();
+        assert_eq!(task.runtime_status.as_deref(), Some("busy"));
         let _ = std::fs::remove_file(socket_path);
         let _ = std::fs::remove_dir_all(daemon_dir);
     }
@@ -2715,8 +1996,8 @@ mod tests {
             .unwrap();
         assert_eq!(
             item.activity.as_deref(),
-            Some("working"),
-            "the next frame carrying the busy marker should undo the misread"
+            Some("unread"),
+            "the next busy frame must not erase unread output"
         );
         let events = Db::open(&config.db_path)
             .unwrap()
@@ -2764,9 +2045,13 @@ mod tests {
         let daemon_dir = std::env::temp_dir().join(format!("{unique}-daemon"));
         let config = test_config(&unique, &daemon_dir);
         seed_plain_task(&config);
+        // A read, stopped task: busy must still move it to `working` while a
+        // terminal client is attached, unlike attached idle, which the watcher
+        // leaves to the client. (`unread` would not move — busy never marks
+        // unread output read, see `activity_for_runtime_status`.)
         Db::open(&config.db_path)
             .unwrap()
-            .update_pipeline_item_activity("task-child", "unread")
+            .update_pipeline_item_activity("task-child", "idle")
             .unwrap();
         let (listener, socket_path) = bind_daemon_listener(&daemon_dir);
         let state = http_api::AppState::new(config.clone());
@@ -2903,9 +2188,8 @@ mod tests {
                         state: SessionState::Active,
                         idle_seconds: 0,
                         status: kanna_daemon::protocol::SessionStatus::Idle,
+                        status_observed: true,
                         kind: Default::default(),
-                        logical_input_blocked: false,
-                        pending_logical_input_count: None,
                         composer_text: None,
                         composer_attestation: Default::default(),
                     }],
@@ -2997,9 +2281,8 @@ mod tests {
                     state: SessionState::Active,
                     idle_seconds: 0,
                     status: kanna_daemon::protocol::SessionStatus::Busy,
+                    status_observed: true,
                     kind: Default::default(),
-                    logical_input_blocked: false,
-                    pending_logical_input_count: None,
                     composer_text: None,
                     composer_attestation: Default::default(),
                 }],
@@ -3078,9 +2361,8 @@ mod tests {
                         state: SessionState::Active,
                         idle_seconds: 0,
                         status: kanna_daemon::protocol::SessionStatus::Busy,
+                        status_observed: true,
                         kind: Default::default(),
-                        logical_input_blocked: false,
-                        pending_logical_input_count: None,
                         composer_text: None,
                         composer_attestation: Default::default(),
                     }],

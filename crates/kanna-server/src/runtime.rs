@@ -261,8 +261,10 @@ pub(crate) async fn run_server_services(
     // pings — and `RELAY_PONG_TIMEOUT` is 75s, so a long enough clone would tear
     // the relay down and take mobile offline.
     tokio::spawn(crate::transfer_engine::run(Arc::clone(&http_state)));
+    let subscription_service = http_api::event_subscriptions::run(Arc::clone(&http_state));
     if config.relay_url.trim().is_empty() {
         tokio::select! {
+            _ = subscription_service => {},
             result = http_api::serve(Arc::clone(&http_state)) => match result {
                 Ok(()) => log::warn!("LAN API exited unexpectedly"),
                 Err(err) => log::error!("LAN API failed: {}", err),
@@ -275,6 +277,7 @@ pub(crate) async fn run_server_services(
 
     let human_control_state = Arc::clone(&http_state);
     tokio::select! {
+        _ = subscription_service => {},
         result = http_api::serve(Arc::clone(&http_state)) => match result {
             Ok(()) => log::warn!("LAN API exited unexpectedly"),
             Err(err) => log::error!("LAN API failed: {}", err),
@@ -298,7 +301,6 @@ mod tests {
             Arc,
         },
         thread,
-        time::{SystemTime, UNIX_EPOCH},
     };
     use tokio::{
         io::{AsyncBufReadExt, AsyncWriteExt},
@@ -313,18 +315,7 @@ mod tests {
     }
 
     fn unique_path(label: &str, extension: &str) -> String {
-        std::env::temp_dir()
-            .join(format!(
-                "kanna-server-{label}-{}-{}.{}",
-                std::process::id(),
-                SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .unwrap()
-                    .as_nanos(),
-                extension,
-            ))
-            .to_string_lossy()
-            .to_string()
+        crate::test_paths::unique_test_file(&format!("kanna-server-{label}"), extension)
     }
 
     fn listed_session(
@@ -338,9 +329,8 @@ mod tests {
             state: kanna_daemon::protocol::SessionState::Active,
             idle_seconds: 0,
             status: kanna_daemon::protocol::SessionStatus::Idle,
+            status_observed: true,
             kind,
-            logical_input_blocked: false,
-            pending_logical_input_count: None,
             composer_text: None,
             composer_attestation: Default::default(),
         }

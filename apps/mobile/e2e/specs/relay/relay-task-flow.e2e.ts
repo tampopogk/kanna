@@ -12,6 +12,7 @@ import {
   type PtyTerminalFixture
 } from "../smoke/list-detail-back.e2e";
 import type { TaskActivity } from "../../../src/lib/api/types";
+import { TASK_COMPOSER_MAX_HEIGHT } from "../../../src/screens/taskComposerInput";
 import type {
   MobileRelayCompanionFixture,
   RelayTaskOrderingFixture
@@ -19,10 +20,32 @@ import type {
 
 const SCREEN_TIMEOUT_MS = 30_000;
 const POLL_INTERVAL_MS = 250;
+const GEOMETRY_POLL_INTERVAL_MS = 1_000;
 const IOS_APP_STATE_NOT_RUNNING = 1;
 const TASK_COMPOSER_PLACEHOLDER = "Reply…";
-const TASK_COMPOSER_MULTILINE_DRAFT =
-  "First relay line.\nSecond relay line.\nThird relay line.";
+// Deliberately longer than the five-line cap, so a composer that kept growing
+// with its content fails the height assertion instead of quietly filling the
+// screen.
+const TASK_COMPOSER_FIVE_LINE_DRAFT = [
+  "First relay line.",
+  "Second relay line.",
+  "Third relay line.",
+  "Fourth relay line.",
+  "Fifth relay line."
+].join("\n");
+const TASK_COMPOSER_MULTILINE_DRAFT = [
+  "First relay line.",
+  "Second relay line.",
+  "Third relay line.",
+  "Fourth relay line.",
+  "Fifth relay line.",
+  "Sixth relay line.",
+  "Seventh relay line.",
+  "Eighth relay line."
+].join("\n");
+// Five line-heights plus the input's own vertical padding, with room for iOS
+// rounding and the container inset around it.
+const TASK_COMPOSER_MAX_RENDERED_HEIGHT = TASK_COMPOSER_MAX_HEIGHT + 24;
 const TASK_ACTION_MENU_TITLE = "Task Actions";
 const TASK_ACTION_LABELS = [
   "Mentioned Files (0)",
@@ -48,11 +71,26 @@ interface RelayTaskFlowOptions {
   draft: string;
   customizedReply: string;
   fixture: PtyTerminalFixture;
+  observeAuthoritativeTerminalGeometry(): Promise<{ cols: number; rows: number }>;
   prepareTaskUnreadForMarkRead(): Promise<void>;
+  setTaskBusyRead(): Promise<void>;
+  restoreTallTerminalGeometry(): Promise<void>;
+  restoreDesktopTerminalControl(): Promise<void>;
+  dropRelayTunnels(whileDown: () => Promise<void>): Promise<void>;
   resyncTerminalConnection(): Promise<void>;
+  setTaskBusyUnread(): Promise<void>;
   setTaskActivity(activity: TaskActivity): Promise<void>;
   taskRow: RelayTaskRowExpectation;
   taskOrdering: RelayTaskOrderingFixture;
+  terminalKeys: {
+    count(key: "ESC" | "ENTER"): number;
+    waitForCount(key: "ESC" | "ENTER", count: number): Promise<void>;
+  };
+  /** The shared Expo readiness gate: dismisses the dev-client startup
+   * overlays and waits out a Metro bundle fetch. A relaunch goes through
+   * exactly that startup again, so it must be awaited the same way. */
+  captureScreenshot(name: string): Promise<void>;
+  waitForAppReady(readySelector?: string): Promise<void>;
   waitForLocalTaskActivity(activity: TaskActivity): Promise<void>;
   waitForMobileTerminalGeometry(): Promise<void>;
   waitForQuickReplyInput(): Promise<void>;
@@ -171,7 +209,9 @@ interface RelayUi {
   getTasksTab(): Promise<RelayElement>;
   getTaskSendButton(): Promise<RelayElement>;
   getTerminalOverlay(): Promise<RelayElement>;
+  getTerminalReconnectBadge(): Promise<RelayElement>;
   inspectTerminalWebView(): ReturnType<typeof inspectTerminalWebView>;
+  readTerminalLoadingIndications(): Promise<number>;
   isKeyboardShown(): Promise<boolean>;
   pause(ms: number): Promise<unknown>;
   waitUntil(
@@ -268,14 +308,83 @@ async function verifyRelayPtyStableResync(
   }
 }
 
+async function verifyRelayPtyTunnelDropIsInvisible(
+  ui: Pick<
+    RelayUi,
+    | "getAgentMessageView"
+    | "getTaskDetailScreen"
+    | "getTerminalOverlay"
+    | "getTerminalReconnectBadge"
+    | "inspectTerminalWebView"
+    | "pause"
+    | "readTerminalLoadingIndications"
+    | "waitUntil"
+  >,
+  fixture: PtyTerminalFixture,
+  dropTunnels: (whileDown: () => Promise<void>) => Promise<void>,
+): Promise<void> {
+  const before = await ui.inspectTerminalWebView();
+  if (before.kind !== "rendered" || !before.documentInstanceId) {
+    throw new Error(
+      `Expected a rendered terminal document before the tunnel drop: ${JSON.stringify(before)}`,
+    );
+  }
+  const loadingIndicationsBefore = await ui.readTerminalLoadingIndications();
+
+  await dropTunnels(async () => {
+    // Sampled in the first moments of the outage, inside the client's
+    // reconnect grace: a gap this short is not news, so the reader must be
+    // told nothing at all about it.
+    if (await (await ui.getTerminalReconnectBadge()).isExisting()) {
+      throw new Error(
+        "The connecting badge was shown for a sub-threshold transport gap",
+      );
+    }
+  });
+
+  // The grid is never taken away. Sampling right through the outage and the
+  // redial is the whole point: a single blank frame here is the regression.
+  for (let sample = 0; sample < 12; sample += 1) {
+    const overlay = await ui.getTerminalOverlay();
+    const inspection = await ui.inspectTerminalWebView();
+    if (
+      await overlay.isExisting() ||
+      inspection.kind !== "rendered" ||
+      inspection.documentInstanceId !== before.documentInstanceId ||
+      inspection.cols !== fixture.expectedCols
+    ) {
+      throw new Error(
+        `Terminal blanked or churned across the tunnel drop at sample ${sample}: ` +
+        `${JSON.stringify(inspection)}`,
+      );
+    }
+    await ui.pause(500);
+  }
+
+  await waitForRenderedPtyTerminal(ui, fixture);
+  const loadingIndications = await ui.readTerminalLoadingIndications();
+  if (loadingIndications > loadingIndicationsBefore + 1) {
+    throw new Error(
+      `One reconnect raised ${loadingIndications - loadingIndicationsBefore} ` +
+      "loading indications; at most one is allowed",
+    );
+  }
+  if (await (await ui.getTerminalReconnectBadge()).isExisting()) {
+    throw new Error("The connecting badge outlived the reconnect");
+  }
+}
+
 interface RelayTaskJourneys {
   verifyQuickReplyPersistence(): Promise<void>;
   verifyComposerReset(): Promise<void>;
   verifyFilePreview(): Promise<void>;
   verifyMarkedRead(): Promise<void>;
+  verifyMobileTerminalControl(): Promise<void>;
+  verifySendOutcomes(): Promise<void>;
   verifyPtySnapshotRevisit(): Promise<void>;
   verifyQuickReply(): Promise<void>;
   verifyTaskActionMenu(): Promise<void>;
+  verifyTerminalKeys(): Promise<void>;
   verifyVisualCompanion(): Promise<void>;
 }
 
@@ -284,24 +393,75 @@ export async function runRelayTaskJourneys(
 ): Promise<void> {
   await journeys.verifyQuickReplyPersistence();
   await journeys.verifyMarkedRead();
+  // Grid ownership is exercised before the revisit journey, whose stability
+  // check restarts the daemon underneath the session: an observer opened
+  // while that socket is gone sees no snapshot at all.
+  await journeys.verifyMobileTerminalControl();
+  // Both send outcomes are asserted early, while the lane is still healthy:
+  // they are what this change owes, and the journeys after them are known to
+  // move around between runs.
+  await journeys.verifySendOutcomes();
+  // The composer's five-line cap and its one-line reset after Send are native
+  // layout facts no jsdom test can show, so they run here rather than last:
+  // across twelve lane runs on this branch the tail was never reached, and
+  // the checks silently never executed.
+  await journeys.verifyComposerReset();
   await journeys.verifyPtySnapshotRevisit();
   // Exercise file discovery immediately after the terminal revisit, before
   // later menus can change the detail presentation state.
   await journeys.verifyFilePreview();
+  await journeys.verifyTerminalKeys();
   await journeys.verifyQuickReply();
   await journeys.verifyTaskActionMenu();
   await journeys.verifyVisualCompanion();
-  await journeys.verifyComposerReset();
+}
+
+async function verifyRelayTerminalKeys(
+  driver: Browser,
+  observation: RelayTaskFlowOptions["terminalKeys"]
+): Promise<void> {
+  const directInputToggle = await driver.$(
+    selectors.taskTerminalDirectInputToggle
+  );
+  await directInputToggle.waitForDisplayed({ timeout: SCREEN_TIMEOUT_MS });
+  await directInputToggle.click();
+  const escape = await driver.$(selectors.taskTerminalKey("escape"));
+  const enter = await driver.$(selectors.taskTerminalKey("enter"));
+  await escape.waitForDisplayed({ timeout: SCREEN_TIMEOUT_MS });
+  await enter.waitForDisplayed({ timeout: SCREEN_TIMEOUT_MS });
+  if (!(await escape.isEnabled()) || !(await enter.isEnabled())) {
+    throw new Error("Expected terminal keys to enable for the authenticated relay PTY");
+  }
+
+  const escapeCount = observation.count("ESC");
+  const enterCount = observation.count("ENTER");
+  await escape.click();
+  await observation.waitForCount("ESC", escapeCount + 1);
+  await driver.pause(750);
+  if (observation.count("ENTER") !== enterCount) {
+    throw new Error("Esc delivered a trailing Enter to the desktop PTY");
+  }
+
+  await enter.click();
+  await observation.waitForCount("ENTER", enterCount + 1);
+
+  await directInputToggle.click();
+  await (await driver.$(selectors.taskInput)).waitForDisplayed({
+    timeout: SCREEN_TIMEOUT_MS,
+  });
 }
 
 function createRelayQuickReplyPersistenceJourney(
   driver: Browser,
   ui: RelayUi,
   bundleId: string,
+  waitForAppReady: (readySelector?: string) => Promise<void>,
 ): RelayQuickReplyPersistenceJourney {
   const openEditor = async () => {
     await openRelayProfileSheet(ui);
-    const quickRepliesButton = await driver.$("~Open Quick Replies");
+    const quickRepliesButton = await driver.$(
+      selectors.accountQuickRepliesButton,
+    );
     await quickRepliesButton.waitForDisplayed({ timeout: SCREEN_TIMEOUT_MS });
     await ui.waitUntil(
       async () => await quickRepliesButton.isEnabled().catch(() => false),
@@ -338,8 +498,11 @@ function createRelayQuickReplyPersistenceJourney(
     async relaunchPreservingData() {
       await relaunchRelayAppPreservingData(driver, bundleId);
       await dismissSavePasswordPrompt(driver);
-      const appShell = await driver.$(selectors.appShell);
-      await appShell.waitForDisplayed({ timeout: SCREEN_TIMEOUT_MS });
+      // A relaunched dev client refetches its bundle from Metro and can put
+      // the Expo startup overlays back up. A bare 30s wait on the shell loses
+      // that race on a busy machine and cannot dismiss an overlay it does not
+      // know about; the readiness gate handles both.
+      await waitForAppReady();
       await returnToTaskListShell(ui);
     },
     async save() {
@@ -394,6 +557,12 @@ export async function verifyRelayPtyRenderedGridAndCursor(
       const cursorRow = lastInspection.cursorRow;
       const expectedCell = fixture.expectedCell;
       const expectedCursor = fixture.expectedCursor;
+      const bottomLayoutMatches = !fixture.expectBottomAnchored || (
+        typeof lastInspection.gridTopGap === "number" &&
+        lastInspection.gridTopGap > 0 &&
+        typeof lastInspection.gridBottomGap === "number" &&
+        lastInspection.gridBottomGap <= 1
+      );
       const renderedCell = expectedCell && lastInspection.visibleRows
         ? lastInspection.visibleRows[expectedCell.row]?.slice(
             expectedCell.column,
@@ -414,7 +583,8 @@ export async function verifyRelayPtyRenderedGridAndCursor(
         cursorRow < fixture.expectedRows &&
         (!expectedCell || renderedCell === expectedCell.text) &&
         (!expectedCursor ||
-          (cursorColumn === expectedCursor.column && cursorRow === expectedCursor.row))
+          (cursorColumn === expectedCursor.column && cursorRow === expectedCursor.row)) &&
+        bottomLayoutMatches
       );
     },
     {
@@ -423,7 +593,8 @@ export async function verifyRelayPtyRenderedGridAndCursor(
       timeoutMsg:
         `Expected the mobile WebView to render ${fixture.expectedCols}x${fixture.expectedRows} ` +
         `with cursor ${JSON.stringify(fixture.expectedCursor)} and cell ` +
-        `${JSON.stringify(fixture.expectedCell)}; last inspection ${JSON.stringify(lastInspection)}`,
+        `${JSON.stringify(fixture.expectedCell)}, excess space above the grid, and ` +
+        `its last row adjacent to the input chrome; last inspection ${JSON.stringify(lastInspection)}`,
     },
   );
 }
@@ -435,7 +606,26 @@ export async function verifyRelayPtyAuthoritativeScrollback(
 ): Promise<void> {
   const scrollTop = await driver.$(selectors.terminalScrollTop);
   await scrollTop.waitForExist({ timeout: SCREEN_TIMEOUT_MS });
+  const inspectionBeforeScroll = await (await driver.$(selectors.terminalInspection))
+    .getAttribute("value")
+    .catch(() => null);
   await scrollTop.click();
+
+  // Activating the native scroll affordance can briefly detach the WebView
+  // accessibility bridge. Wait for that exact inspection surface to return
+  // before asking the context inspector for the xterm grid.
+  await driver.waitUntil(
+    async () => {
+      const inspection = await driver.$(selectors.terminalInspection);
+      const value = await inspection.getAttribute("value").catch(() => null);
+      return value !== null && value !== inspectionBeforeScroll;
+    },
+    {
+      interval: POLL_INTERVAL_MS,
+      timeout: SCREEN_TIMEOUT_MS,
+      timeoutMsg: "Expected fresh terminal inspection after scroll-to-top",
+    },
+  );
 
   const expectedHistoryRow = /^MOBILE_PTY_HISTORY_\d{5}_X{100}$/;
   let lastInspection: Awaited<ReturnType<RelayUi["inspectTerminalWebView"]>> | null = null;
@@ -640,8 +830,23 @@ function createRelayUi(driver: Browser): RelayUi {
     async getTerminalOverlay() {
       return driver.$(selectors.terminalOverlay);
     },
+    async getTerminalReconnectBadge() {
+      return driver.$(selectors.terminalReconnectBadge);
+    },
     async inspectTerminalWebView() {
       return inspectTerminalWebView(createWebViewContextDriver(driver));
+    },
+    async readTerminalLoadingIndications() {
+      const marker = await driver.$(selectors.terminalLoadingIndications);
+      const label = await marker.getAttribute("label").catch(() => null);
+      const parts = String(label ?? "").split(":");
+      const count = Number(parts[parts.length - 1]);
+      if (!Number.isInteger(count)) {
+        throw new Error(
+          `Terminal loading-indication counter was unreadable: ${String(label)}`,
+        );
+      }
+      return count;
     },
     async isKeyboardShown() {
       return driver.isKeyboardShown();
@@ -696,12 +901,30 @@ export async function verifyRelayComposerResetJourney(
     | "isKeyboardShown"
     | "waitUntil"
   >,
+  actions: { captureScreenshot(name: string): Promise<void> },
 ): Promise<void> {
   const input = await ui.getTaskInput();
   await input.waitForDisplayed({ timeout: SCREEN_TIMEOUT_MS });
   const initialHeight = (await input.getSize()).height;
 
+  // Exactly the cap: five lines is the tallest the composer may render.
   await input.click();
+  await input.setValue(TASK_COMPOSER_FIVE_LINE_DRAFT);
+  let fiveLineHeight = initialHeight;
+  await ui.waitUntil(
+    async () => {
+      fiveLineHeight = (await input.getSize()).height;
+      return fiveLineHeight > initialHeight && await ui.isKeyboardShown();
+    },
+    {
+      interval: POLL_INTERVAL_MS,
+      timeout: SCREEN_TIMEOUT_MS,
+      timeoutMsg: "Expected the composer to grow to five lines",
+    },
+  );
+  await actions.captureScreenshot("05-composer-five-lines");
+
+  // A sixth line and beyond scrolls inside the input rather than growing it.
   await input.setValue(TASK_COMPOSER_MULTILINE_DRAFT);
 
   let expandedHeight = initialHeight;
@@ -718,31 +941,27 @@ export async function verifyRelayComposerResetJourney(
     },
   );
 
+  // Five lines is the cap, and past it the input scrolls itself rather than
+  // eating the screen. The draft is far longer than five lines, so a composer
+  // that kept growing would fail here.
+  if (expandedHeight > TASK_COMPOSER_MAX_RENDERED_HEIGHT) {
+    throw new Error(
+      `Expected the composer to stop growing at five lines (<= ` +
+        `${TASK_COMPOSER_MAX_RENDERED_HEIGHT}pt); it rendered ${expandedHeight}pt`,
+    );
+  }
+
+  if (expandedHeight > fiveLineHeight) {
+    throw new Error(
+      `Expected a draft past the cap to scroll inside the input, not grow it: ` +
+        `five lines rendered ${fiveLineHeight}pt, eight lines ${expandedHeight}pt`,
+    );
+  }
+  await actions.captureScreenshot("06-composer-past-cap-scrolling");
+
   const send = await ui.getTaskSendButton();
   await send.waitForDisplayed({ timeout: SCREEN_TIMEOUT_MS });
   await send.click();
-
-  const deliveryStatus = await ui.getTaskInputStatus();
-  await deliveryStatus.waitForDisplayed({ timeout: SCREEN_TIMEOUT_MS });
-  let lastDeliveryStatus: string | null = null;
-  try {
-    await ui.waitUntil(
-      async () => {
-        lastDeliveryStatus = await deliveryStatus.getAttribute("label");
-        return lastDeliveryStatus?.includes("accepted by the desktop") === true;
-      },
-      {
-        interval: POLL_INTERVAL_MS,
-        timeout: SCREEN_TIMEOUT_MS,
-        timeoutMsg: "Expected the desktop-accepted task input outcome",
-      },
-    );
-  } catch {
-    throw new Error(
-      "Expected the desktop-accepted task input outcome; " +
-        `last native accessibility label was ${JSON.stringify(lastDeliveryStatus)}`,
-    );
-  }
 
   let lastValue: string | null = null;
   let lastLabel: string | null = null;
@@ -784,6 +1003,190 @@ export async function verifyRelayComposerResetJourney(
         `keyboardShown=${lastKeyboardShown}`,
     );
   }
+
+  // A send that landed says nothing. The notice this replaced appeared on
+  // every message, and two of them stacked pushed the composer down the
+  // screen. The cleared composer is the confirmation.
+  const status = await ui.getTaskInputStatus();
+  if (await status.isExisting()) {
+    throw new Error(
+      "Expected no delivery notice after a successful send; found one labelled " +
+        `${JSON.stringify(await status.getAttribute("label").catch(() => null))}`,
+    );
+  }
+
+  await actions.captureScreenshot("07-composer-after-send-one-line");
+  process.stdout.write(
+    `[mobile-e2e] composer reset passed: one line ${initialHeight}pt, five lines ` +
+      `${fiveLineHeight}pt, past the cap ${expandedHeight}pt, grown to ` +
+      `${expandedHeight}pt within the ${TASK_COMPOSER_MAX_RENDERED_HEIGHT}pt cap, ` +
+      `back to ${lastResetHeight}pt after Send\n`,
+  );
+}
+
+/**
+ * What a send says. A delivered send says nothing at all — the cleared
+ * composer is the confirmation, and the notice this replaced appeared on every
+ * message and pushed the composer down the screen. A send that genuinely did
+ * not reach the desktop still has to say so, in a sentence rather than the
+ * response body it used to print at the owner, and must keep the text.
+ */
+export async function verifyRelaySendOutcomesJourney(
+  ui: Pick<
+    RelayUi,
+    "getTaskInput" | "getTaskInputStatus" | "getTaskSendButton" | "waitUntil"
+  >,
+  actions: {
+    captureScreenshot(name: string): Promise<void>;
+  },
+): Promise<void> {
+  const input = await ui.getTaskInput();
+  await input.waitForDisplayed({ timeout: SCREEN_TIMEOUT_MS });
+  const send = await ui.getTaskSendButton();
+
+  await input.click();
+  await input.setValue("Delivered send, which should say nothing.");
+  await actions.captureScreenshot("03-composer-before-send");
+  await send.click();
+
+  await ui.waitUntil(
+    async () => {
+      const value = await input.getAttribute("value").catch(() => null);
+      const label = await input.getAttribute("label").catch(() => null);
+      return value === "" || value === TASK_COMPOSER_PLACEHOLDER ||
+        label === TASK_COMPOSER_PLACEHOLDER;
+    },
+    {
+      interval: POLL_INTERVAL_MS,
+      timeout: SCREEN_TIMEOUT_MS,
+      timeoutMsg: "Expected a delivered send to clear the composer",
+    },
+  );
+  const quiet = await ui.getTaskInputStatus();
+  if (await quiet.isExisting()) {
+    throw new Error(
+      "Expected a delivered send to raise no notice; found one labelled " +
+        `${JSON.stringify(await quiet.getAttribute("label").catch(() => null))}`,
+    );
+  }
+  await actions.captureScreenshot("04-after-delivered-send-no-banner");
+
+  // The other half of this contract — a send that genuinely fails still says
+  // so, in a sentence rather than a response body, keeping the text — is
+  // asserted in TaskScreen.attachment.test.tsx rather than here. It is not
+  // inducible from outside the app: stopping the desktop disables the
+  // composer before a send can be offered, and replacing the daemon lets the
+  // app recover the session before the refusal lands. Both were tried against
+  // this harness. Rendering that toast needs the failure injected at the send
+  // callback, which is exactly what the component test does.
+  process.stdout.write("[mobile-e2e] send outcomes passed\n");
+}
+
+/**
+ * Taking control on the phone means "size this terminal for my phone". As a
+ * follower the mobile client correctly renders the daemon's authoritative
+ * grid — a desktop-shaped 132x43 here — but the owner reported that taking
+ * control changed nothing, because the phone registered a viewport it had
+ * never measured.
+ */
+export async function verifyRelayMobileTerminalControlJourney(
+  driver: Browser,
+  ui: Pick<RelayUi, "inspectTerminalWebView" | "waitUntil">,
+  fixture: PtyTerminalFixture,
+  actions: {
+    captureScreenshot(name: string): Promise<void>;
+    observeAuthoritativeTerminalGeometry(): Promise<{ cols: number; rows: number }>;
+    restoreDesktopTerminalControl(): Promise<void>;
+  },
+): Promise<void> {
+  const followed = await actions.observeAuthoritativeTerminalGeometry();
+  if (followed.cols !== fixture.expectedCols || followed.rows !== fixture.expectedRows) {
+    throw new Error(
+      `Expected the desktop-owned grid ${fixture.expectedCols}x${fixture.expectedRows} ` +
+        `before the phone takes control; observed ${followed.cols}x${followed.rows}`,
+    );
+  }
+
+  await actions.captureScreenshot("01-terminal-following-desktop-grid");
+  const control = await driver.$(selectors.taskTerminalControl);
+  await control.waitForDisplayed({ timeout: SCREEN_TIMEOUT_MS });
+  await control.click();
+
+  let taken: { cols: number; rows: number } = followed;
+  await ui.waitUntil(
+    async () => {
+      taken = await actions.observeAuthoritativeTerminalGeometry();
+      return taken.cols !== followed.cols || taken.rows !== followed.rows;
+    },
+    {
+      // Each probe opens its own observer, so poll far less often than the UI.
+      interval: GEOMETRY_POLL_INTERVAL_MS,
+      timeout: SCREEN_TIMEOUT_MS,
+      timeoutMsg:
+        "Expected taking terminal control on the phone to resize the daemon's PTY; " +
+        `it stayed at ${followed.cols}x${followed.rows}`,
+    },
+  );
+
+  if (taken.cols >= followed.cols) {
+    throw new Error(
+      `Expected the phone's measured grid to be narrower than the desktop's ` +
+        `${followed.cols} columns; it took control at ${taken.cols}x${taken.rows}`,
+    );
+  }
+  if (taken.cols < 20 || taken.rows < 8) {
+    throw new Error(
+      `Expected a readable measured grid, not a still-settling layout; ` +
+        `the phone took control at ${taken.cols}x${taken.rows}`,
+    );
+  }
+
+  process.stdout.write(
+    `[mobile-e2e] phone took control: daemon grid ${followed.cols}x${followed.rows} ` +
+      `-> ${taken.cols}x${taken.rows} (measured on this device at its current zoom)\n`,
+  );
+
+  // Every renderer still shows the daemon's grid, which is now the phone's.
+  let lastInspection: Awaited<ReturnType<RelayUi["inspectTerminalWebView"]>> | null = null;
+  await ui.waitUntil(
+    async () => {
+      lastInspection = await ui.inspectTerminalWebView();
+      return (
+        lastInspection.kind === "rendered" &&
+        lastInspection.cols === taken.cols &&
+        lastInspection.rows === taken.rows
+      );
+    },
+    {
+      interval: POLL_INTERVAL_MS,
+      timeout: SCREEN_TIMEOUT_MS,
+      timeoutMsg:
+        `Expected the WebView to render the grid it now owns (${taken.cols}x${taken.rows}); ` +
+        `last inspection ${JSON.stringify(lastInspection)}`,
+    },
+  );
+
+  await actions.captureScreenshot("02-terminal-fitted-after-taking-control");
+  await control.click();
+  await actions.restoreDesktopTerminalControl();
+  await ui.waitUntil(
+    async () => {
+      const released = await actions.observeAuthoritativeTerminalGeometry();
+      return (
+        released.cols === fixture.expectedCols && released.rows === fixture.expectedRows
+      );
+    },
+    {
+      interval: GEOMETRY_POLL_INTERVAL_MS,
+      timeout: SCREEN_TIMEOUT_MS,
+      timeoutMsg:
+        "Expected releasing control on the phone to hand the grid back to the desktop",
+    },
+  );
+  await verifyRelayPtyRenderedGridAndCursor(ui, fixture);
+  process.stdout.write(
+    `[mobile-e2e] terminal control take/release passed at ${taken.cols}x${taken.rows}\n`,
+  );
 }
 
 export async function verifyRelayQuickReplyJourney(
@@ -1452,7 +1855,10 @@ export async function assertRelayTaskRowPresentation(
     "TASK",
     "RECENT",
   ];
-  if (label !== expectedLabel || forbidden.some((value) => label.includes(value))) {
+  // iOS may append a visual truncation ellipsis to the accessibility label.
+  // The semantic row fields still have to match exactly.
+  const expectedLabels = [expectedLabel, `${expectedLabel}. …`];
+  if (!expectedLabels.includes(label) || forbidden.some((value) => label.includes(value))) {
     throw new Error(
       `Relay task row rendered unexpected content: ${JSON.stringify(label)}; ` +
         `expected ${JSON.stringify(expectedLabel)}`,
@@ -1673,6 +2079,61 @@ async function waitForTaskActivity(
   }
 }
 
+async function waitForTaskRowValue(
+  ui: Pick<RelayUi, "getTaskRowById" | "waitUntil">,
+  taskId: string,
+  expectedValues: readonly string[],
+): Promise<void> {
+  let lastObserved: string | null = null;
+  await ui.waitUntil(async () => {
+    const task = await ui.getTaskRowById(taskId);
+    lastObserved = await task.getAttribute("value").catch(() => null);
+    return lastObserved !== null && expectedValues.includes(lastObserved);
+  }, {
+    interval: POLL_INTERVAL_MS,
+    timeout: SCREEN_TIMEOUT_MS,
+    timeoutMsg:
+      `Expected relay task ${taskId} rendered value ${expectedValues.join(" or ")}; ` +
+      `last value was ${String(lastObserved)}`,
+  });
+}
+
+async function waitForBusyUnreadTaskRow(
+  ui: Pick<RelayUi, "getTaskRowById" | "waitUntil">,
+  taskId: string,
+): Promise<void> {
+  let lastObserved: string | null = null;
+  await ui.waitUntil(async () => {
+    const task = await ui.getTaskRowById(taskId);
+    lastObserved = await task.getAttribute("value").catch(() => null);
+    return lastObserved === "working, unread";
+  }, {
+    interval: POLL_INTERVAL_MS,
+    timeout: SCREEN_TIMEOUT_MS,
+    timeoutMsg:
+      `Expected relay task ${taskId} to render running and unread on the list ` +
+      `without visiting detail; last value was ${String(lastObserved)}`
+  });
+}
+
+async function waitForBusyReadTaskRow(
+  ui: Pick<RelayUi, "getTaskRowById" | "waitUntil">,
+  taskId: string,
+): Promise<void> {
+  let lastObserved: string | null = null;
+  await ui.waitUntil(async () => {
+    const task = await ui.getTaskRowById(taskId);
+    lastObserved = await task.getAttribute("value").catch(() => null);
+    return lastObserved === "working";
+  }, {
+    interval: POLL_INTERVAL_MS,
+    timeout: SCREEN_TIMEOUT_MS,
+    timeoutMsg:
+      `Expected relay task ${taskId} to render running and read on the list ` +
+      `without visiting detail; last value was ${String(lastObserved)}`
+  });
+}
+
 async function waitForSelectedTaskDetailActivity(
   ui: Pick<RelayUi, "getTaskDetailActivity" | "waitUntil">,
   expectedActivity: TaskActivity,
@@ -1706,7 +2167,9 @@ export async function verifyRelayTaskActivityTransitions(
 ): Promise<void> {
   await waitForTaskActivity(ui, taskId, "working");
   await setTaskActivity("unread");
-  await waitForTaskActivity(ui, taskId, "unread");
+  // The activity remains unread even if the independent runtime state returns
+  // to busy before the list samples it.
+  await waitForTaskRowValue(ui, taskId, ["unread", "working, unread"]);
   await setTaskActivity("idle");
   await waitForTaskActivity(ui, taskId, "idle");
 }
@@ -1724,7 +2187,7 @@ export async function verifyRelayTaskMarkedRead(
   },
 ): Promise<void> {
   await actions.prepareUnread();
-  await waitForTaskActivity(ui, taskId, "unread");
+  await waitForTaskRowValue(ui, taskId, ["unread", "working, unread"]);
   await actions.openTask();
   await actions.waitForOwnerIdle();
   await actions.waitForSelectedDetailIdle();
@@ -1849,6 +2312,20 @@ export async function runRelayTaskFlow(
     );
   }
   await assertRelayTaskRowPresentation(exactTaskRow, options.taskRow);
+  await options.setTaskBusyRead();
+  await waitForBusyReadTaskRow(ui, options.fixture.taskId);
+  const busyReadScreenshotPath =
+    process.env.KANNA_E2E_TASK_BUSY_READ_SCREENSHOT_PATH?.trim();
+  if (busyReadScreenshotPath) {
+    await driver.saveScreenshot(busyReadScreenshotPath);
+  }
+  await options.setTaskBusyUnread();
+  await waitForBusyUnreadTaskRow(ui, options.fixture.taskId);
+  const busyUnreadScreenshotPath =
+    process.env.KANNA_E2E_TASK_BUSY_UNREAD_SCREENSHOT_PATH?.trim();
+  if (busyUnreadScreenshotPath) {
+    await driver.saveScreenshot(busyUnreadScreenshotPath);
+  }
   await options.setTaskActivity("unread");
   await waitForTaskActivity(ui, options.fixture.taskId, "unread");
   if (!isTabletWorkspace) {
@@ -1868,6 +2345,7 @@ export async function runRelayTaskFlow(
           driver,
           ui,
           options.bundleId,
+          options.waitForAppReady,
         ),
         options.customizedReply,
       ),
@@ -1901,7 +2379,16 @@ export async function runRelayTaskFlow(
         await waitForTaskTerminalLive(ui);
         await waitForRenderedPtyTerminal(ui, options.fixture);
         await verifyRelayPtyRenderedGridAndCursor(ui, options.fixture);
-        await verifyRelayPtyAuthoritativeScrollback(driver, ui, options.fixture);
+        const terminalScreenshotPath =
+          process.env.KANNA_E2E_TERMINAL_SCREENSHOT_PATH?.trim();
+        if (terminalScreenshotPath && renderedTerminalVisits === 0) {
+          await driver.saveScreenshot(terminalScreenshotPath);
+        }
+        if (renderedTerminalVisits === 0) {
+          await options.restoreTallTerminalGeometry();
+        } else {
+          await verifyRelayPtyAuthoritativeScrollback(driver, ui, options.fixture);
+        }
         process.stdout.write(
           `[mobile-e2e] authoritative terminal render visit ${renderedTerminalVisits + 1} passed\n`,
         );
@@ -1913,10 +2400,43 @@ export async function runRelayTaskFlow(
             options.resyncTerminalConnection,
           );
           process.stdout.write("[mobile-e2e] terminal resync stability passed\n");
+          await verifyRelayPtyTunnelDropIsInvisible(
+            ui,
+            options.fixture,
+            options.dropRelayTunnels,
+          );
+          process.stdout.write(
+            "[mobile-e2e] terminal tunnel-drop invisibility passed\n",
+          );
         }
       },
       closeTask: closeTaskForJourney,
     }),
+    verifySendOutcomes: async () => {
+      await openRelayFixtureTask(ui, options.fixture.taskId);
+      await waitForTaskTerminalLive(ui);
+      await verifyRelaySendOutcomesJourney(ui, {
+        captureScreenshot: options.captureScreenshot,
+      });
+      await closeTaskForJourney();
+    },
+    verifyTerminalKeys: () =>
+      verifyRelayTerminalKeys(driver, options.terminalKeys),
+    // Opens the task itself and waits for a rendered authoritative terminal,
+    // so the daemon is known live before any geometry is observed, then
+    // returns to the list the way the other detail journeys do.
+    verifyMobileTerminalControl: async () => {
+      await openRelayFixtureTask(ui, options.fixture.taskId);
+      await waitForTaskTerminalLive(ui);
+      await waitForRenderedPtyTerminal(ui, options.fixture);
+      await verifyRelayMobileTerminalControlJourney(driver, ui, options.fixture, {
+        captureScreenshot: options.captureScreenshot,
+        observeAuthoritativeTerminalGeometry:
+          options.observeAuthoritativeTerminalGeometry,
+        restoreDesktopTerminalControl: options.restoreDesktopTerminalControl,
+      });
+      await closeTaskForJourney();
+    },
     verifyTaskActionMenu: () => verifyRelayTaskActionMenuJourney(
       ui,
       isTabletWorkspace
@@ -1941,7 +2461,16 @@ export async function runRelayTaskFlow(
       await options.emitFilePreviewLinks();
       await verifyMentionedFileMenuFlow(driver, ui, options.filePreview);
     },
-    verifyComposerReset: () => verifyRelayComposerResetJourney(ui),
+    // Owns its open/close like the other detail journeys: it now runs after
+    // verifySendOutcomes, which returns to the list.
+    verifyComposerReset: async () => {
+      await openRelayFixtureTask(ui, options.fixture.taskId);
+      await waitForTaskTerminalLive(ui);
+      await verifyRelayComposerResetJourney(ui, {
+        captureScreenshot: options.captureScreenshot,
+      });
+      await closeTaskForJourney();
+    },
     // On iPad this input follows the sidebar's alternate-task -> fixture-task
     // switch above, proving the existing single selected-task subscription is
     // the one that receives the composer message.

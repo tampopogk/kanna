@@ -26,11 +26,19 @@ export const selectors = {
   taskMoreButton: `~${MOBILE_E2E_IDS.taskMoreButton}`,
   taskInput: `~${MOBILE_E2E_IDS.taskInput}`,
   taskInputStatus: `~${MOBILE_E2E_IDS.taskInputStatus}`,
+  taskTerminalControl: `~${MOBILE_E2E_IDS.taskTerminalControl}`,
   taskSendButton: `~${MOBILE_E2E_IDS.taskSendButton}`,
+  taskTerminalDirectInputToggle:
+    `~${MOBILE_E2E_IDS.taskTerminalDirectInputToggle}`,
+  taskTerminalKey(key: string): string {
+    return `~${MOBILE_E2E_IDS.taskTerminalKey(key)}`;
+  },
   agentMessageView: `~${MOBILE_E2E_IDS.agentMessageView}`,
   agentMessageReady: `~${MOBILE_E2E_IDS.agentMessageReady}`,
   terminalOverlay: `~${MOBILE_E2E_IDS.terminalOverlay}`,
   terminalInspection: `~${MOBILE_E2E_IDS.terminalInspection}`,
+  terminalLoadingIndications: `~${MOBILE_E2E_IDS.terminalLoadingIndications}`,
+  terminalReconnectBadge: `~${MOBILE_E2E_IDS.terminalReconnectBadge}`,
   terminalScrollTop: `~${MOBILE_E2E_IDS.terminalScrollTop}`,
   visualCompanionButton: `~${MOBILE_E2E_IDS.visualCompanionButton}`,
   visualCompanionClose: `~${MOBILE_E2E_IDS.visualCompanionClose}`,

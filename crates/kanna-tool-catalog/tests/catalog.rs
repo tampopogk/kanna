@@ -1,10 +1,11 @@
 use kanna_tool_catalog::{
-    args_with_self_exclusion, bundled_catalog, clamp_wait_timeout_secs, repo_context_task_id,
-    resolve_request, resolve_request_with_repo_context, runtime_info_snapshot,
+    args_with_self_exclusion, bundled_catalog, clamp_task_event_hold_ms, clamp_task_event_limit,
+    clamp_task_event_min_events, clamp_wait_timeout_secs, repo_context_task_id, resolve_request,
+    resolve_request_with_repo_context, runtime_info_snapshot, task_event_batch_is_complete,
     task_event_self_exclusion, task_value_matches_wait_until, wait_resolved_result,
     wait_timeout_result, Catalog, Method, ParamLoc, ParamType, ResponseKind,
-    RuntimeAdapterIdentity, WaitUntil, CLIENT_TOOL_CALL_BUDGET_SECS, DEFAULT_WAIT_TIMEOUT_SECS,
-    MAX_WAIT_TIMEOUT_SECS,
+    RuntimeAdapterIdentity, WaitUntil, CLIENT_TOOL_CALL_BUDGET_SECS, DEFAULT_TASK_EVENT_LIMIT,
+    DEFAULT_WAIT_TIMEOUT_SECS, MAX_TASK_EVENT_HOLD_MS, MAX_TASK_EVENT_LIMIT, MAX_WAIT_TIMEOUT_SECS,
 };
 use serde_json::json;
 use std::fs;
@@ -24,6 +25,9 @@ fn bundled_catalog_parses_and_declares_all_tools() {
             "kanna_info",
             "kanna_list_machines",
             "kanna_guide",
+            "kanna_subscribe_events",
+            "kanna_read_event_subscription",
+            "kanna_unsubscribe_events",
             "kanna_machine_stats",
             "kanna_list_transfer_peers",
             "kanna_list_repos",
@@ -226,7 +230,7 @@ fn generated_schema_preserves_required_order_types_and_enums() {
         .expect("wait task tool");
     let until = &wait["inputSchema"]["properties"]["until"];
     assert_eq!(until["type"], json!("string"));
-    assert_eq!(until["enum"], json!(["finished", "closed"]));
+    assert_eq!(until["enum"], json!(["reconcile", "finished", "closed"]));
 
     let complete_stage = tools
         .as_array()
@@ -253,34 +257,20 @@ fn task_input_and_resume_descriptions_document_delivery_and_recovery_contracts()
     for required in [
         "live daemon PTY session",
         "PTY process ID",
-        "queues the logical message FIFO",
-        "daemon handoff",
-        "never carried into a later run or stage",
         "no_live_agent_session",
         "kanna_resume_task",
         "kanna_rerun_stage",
-        // A refusal a caller cannot tell from a transient fault is a caller
-        // that retries forever against a session only a human can unblock.
-        "input_blocked",
-        "retrying changes nothing",
-        // A held message was accepted but not delivered. A caller that cannot
-        // name this outcome resends and queues a second copy of a message the
-        // daemon already holds.
-        "input_held_by_draft",
-        "do not send it again",
+        // The owner's 2026-09-08 decision, stated where a caller reads it: a
+        // live session always takes the message, and a human's unsent draft is
+        // a collision rather than a reason to withhold it. A caller told
+        // otherwise waits for a delivery that already happened.
+        "always takes the message",
+        "without waiting for the terminal to settle",
+        "Nothing is ever queued, parked, or refused",
     ] {
         assert!(
             send_input.contains(required),
             "send-task-input must document `{required}`"
-        );
-    }
-
-    // Both signal tools reach the same daemon refusal through
-    // signal_agent.rs, so both have to name it where they name their others.
-    for name in ["kanna_signal_agent", "kanna_signal_merge_handoff"] {
-        assert!(
-            description(name).contains("input_held_by_draft"),
-            "{name} must document `input_held_by_draft`"
         );
     }
 
@@ -388,7 +378,7 @@ fn generated_schema_surfaces_descriptions_defaults_and_integer_bounds() {
     assert_eq!(poll["minimum"], json!(1));
     assert_eq!(
         wait["inputSchema"]["properties"]["until"]["default"],
-        json!("finished")
+        json!("reconcile")
     );
 }
 
@@ -1015,7 +1005,7 @@ fn wait_events_is_scoped_cursored_and_bounded_by_the_client_budget() {
     assert_eq!(request.kind, ResponseKind::Json);
     assert_eq!(
         request.path,
-        format!("/v1/task-events?taskIds=task-a%2Ctask-b&shortCursor=true&cursor=42&timeoutSecs={DEFAULT_WAIT_TIMEOUT_SECS}")
+        format!("/v1/task-events?taskIds=task-a%2Ctask-b&includeCurrentActivity=true&shortCursor=true&cursor=42&timeoutSecs={DEFAULT_WAIT_TIMEOUT_SECS}")
     );
     let tools = catalog.tools_list_value();
     let schema = tools
@@ -1040,7 +1030,7 @@ fn wait_events_is_scoped_cursored_and_bounded_by_the_client_budget() {
     .path;
     assert_eq!(
         repo_scoped,
-        format!("/v1/task-events?repoId=repo%201&shortCursor=true&timeoutSecs={MAX_WAIT_TIMEOUT_SECS}&limit=5"),
+        format!("/v1/task-events?repoId=repo%201&includeCurrentActivity=true&shortCursor=true&timeoutSecs={MAX_WAIT_TIMEOUT_SECS}&limit=5"),
         "an over-long window must be clamped before the client can kill the call"
     );
 
@@ -1055,7 +1045,7 @@ fn wait_events_is_scoped_cursored_and_bounded_by_the_client_budget() {
     .path;
     assert_eq!(
         parent_scoped,
-        format!("/v1/task-events?parentTaskId=parent%201&shortCursor=true&timeoutSecs={DEFAULT_WAIT_TIMEOUT_SECS}")
+        format!("/v1/task-events?parentTaskId=parent%201&includeCurrentActivity=true&shortCursor=true&timeoutSecs={DEFAULT_WAIT_TIMEOUT_SECS}")
     );
     let description = &catalog
         .tools
@@ -1098,7 +1088,7 @@ fn task_session_repo_defaulting_is_shared_by_every_catalog_client() {
         (
             "kanna_wait_events",
             json!({ "from": "now", "timeout_secs": 0 }),
-            "/v1/task-events?repoId=repo-current&shortCursor=true&from=now&timeoutSecs=0",
+            "/v1/task-events?repoId=repo-current&includeCurrentActivity=true&shortCursor=true&from=now&timeoutSecs=0",
         ),
     ] {
         assert_eq!(
@@ -1263,8 +1253,9 @@ fn wait_events_documents_every_event_type_the_server_emits() {
         "task.merge_handoff_missing",
         "task.input_delivered",
         "task.raw_input_delivered",
-        "task.input_blocked",
         "task.transfer_finalizing",
+        "task.provider_quota_rejected",
+        "task.provider_quota_parked",
     ] {
         assert!(
             description.contains(event_type),
@@ -1304,7 +1295,7 @@ fn wait_defaults_to_the_bounded_window_without_arguments() {
 
     assert_eq!(wait.timeout_secs, DEFAULT_WAIT_TIMEOUT_SECS);
     assert!(wait.timeout_secs < CLIENT_TOOL_CALL_BUDGET_SECS);
-    assert_eq!(wait.until, WaitUntil::Finished);
+    assert_eq!(wait.until, WaitUntil::Reconcile);
 }
 
 /// The cap lives in code, not only in `catalog.json`: `.kanna/mcp-tools.json`
@@ -1467,7 +1458,7 @@ fn preserves_validation_error_strings() {
             "kanna_wait_task",
             &json!({ "task_id": "task-1", "until": "later" })
         ),
-        Err("until must be finished or closed, got later".to_string())
+        Err("until must be reconcile, finished or closed, got later".to_string())
     );
     let unknown_tool = resolve_request(&catalog, "kanna_unknown", &json!({}))
         .expect_err("unknown tool should fail");
@@ -1475,7 +1466,7 @@ fn preserves_validation_error_strings() {
     assert!(
         unknown_tool.contains(
             "available tools: kanna_info, kanna_list_machines, kanna_guide, \
-             kanna_machine_stats, kanna_list_transfer_peers, kanna_list_repos,"
+             kanna_subscribe_events, kanna_read_event_subscription, kanna_unsubscribe_events, kanna_machine_stats, kanna_list_transfer_peers, kanna_list_repos,"
         ),
         "unknown tool error should list available tools: {unknown_tool}"
     );
@@ -2096,7 +2087,7 @@ fn wait_events_self_exclusion_is_shared_catalog_policy() {
     .expect("resolve defaulted wait");
     assert_eq!(
         resolved.path,
-        "/v1/task-events?repoId=repo-current&excludeTaskIds=manager-1&shortCursor=true&from=now&timeoutSecs=240"
+        "/v1/task-events?repoId=repo-current&excludeTaskIds=manager-1&excludeOwn=true&includeCurrentActivity=true&shortCursor=true&from=now&timeoutSecs=240"
     );
 
     let explicit_repo = args_with_self_exclusion(
@@ -2146,7 +2137,15 @@ fn wait_events_self_exclusion_is_shared_catalog_policy() {
     ] {
         let unchanged = args_with_self_exclusion("kanna_wait_events", &literal, Some("manager-1"))
             .expect("apply policy");
-        assert_eq!(unchanged, literal, "explicit scopes are taken literally");
+        let mut expected = literal.clone();
+        // Echo suppression is not scope-dependent: the loop it breaks — send
+        // input to a child, wait, wake on the delivery announcement — happens
+        // under exactly these explicit scopes.
+        expected["exclude_own"] = json!(true);
+        assert_eq!(
+            unchanged, expected,
+            "explicit scopes are taken literally apart from echo suppression"
+        );
     }
 
     let included = args_with_self_exclusion(
@@ -2157,13 +2156,36 @@ fn wait_events_self_exclusion_is_shared_catalog_policy() {
     .expect("apply policy");
     assert_eq!(
         included,
-        json!({ "repo_id": "repo-explicit", "exclude_task_ids": ["other"] })
+        json!({ "repo_id": "repo-explicit", "exclude_task_ids": ["other"], "exclude_own": true }),
+        "include_self opts out of self-exclusion only"
     );
 
     let outside_session =
         args_with_self_exclusion("kanna_wait_events", &json!({ "repo_id": "repo-1" }), None)
             .expect("apply policy");
-    assert_eq!(outside_session, json!({ "repo_id": "repo-1" }));
+    assert_eq!(
+        outside_session,
+        json!({ "repo_id": "repo-1" }),
+        "a caller that is not a task session has no own deliveries to suppress"
+    );
+
+    // The echo of a manager's own send is what wakes it a beat after it sends;
+    // an explicit value always wins over the session default, in both
+    // directions.
+    let kept_echo = args_with_self_exclusion(
+        "kanna_wait_events",
+        &json!({ "task_ids": ["child-a"], "exclude_own": false }),
+        Some("manager-1"),
+    )
+    .expect("apply policy");
+    assert_eq!(kept_echo["exclude_own"], json!(false));
+    let asked_outside_session = args_with_self_exclusion(
+        "kanna_wait_events",
+        &json!({ "task_ids": ["child-a"], "exclude_own": true }),
+        None,
+    )
+    .expect("apply policy");
+    assert_eq!(asked_outside_session["exclude_own"], json!(true));
 
     let other_tool = args_with_self_exclusion(
         "kanna_list_recent_tasks",
@@ -2186,6 +2208,119 @@ fn wait_events_self_exclusion_is_shared_catalog_policy() {
         None,
         "a blank task id is not a session"
     );
+}
+
+/// The batching parameters are the cheap answer to a manager that made ~4,700
+/// wait calls in two days. They must reach the wire — the shaping happens in
+/// the server, not the client — and carry the bounds the server enforces.
+#[test]
+fn wait_events_batching_parameters_reach_the_wire_with_their_bounds() {
+    let catalog = bundled_catalog();
+
+    for (name, key) in [
+        ("event_types", "eventTypes"),
+        ("exclude_own", "excludeOwn"),
+        ("min_events", "minEvents"),
+        ("debounce_ms", "debounceMs"),
+        ("min_interval_ms", "minIntervalMs"),
+    ] {
+        let param = catalog
+            .find_param("kanna_wait_events", name)
+            .unwrap_or_else(|| panic!("{name} must be declared"));
+        assert_eq!(
+            param.location,
+            ParamLoc::Query,
+            "{name} is shaped server-side"
+        );
+        assert_eq!(param.key.as_deref(), Some(key), "{name} wire key");
+    }
+
+    let min_events = catalog
+        .find_param("kanna_wait_events", "min_events")
+        .expect("min_events");
+    assert_eq!(min_events.min, Some(1));
+    assert_eq!(min_events.max, Some(MAX_TASK_EVENT_LIMIT as u64));
+    for name in ["debounce_ms", "min_interval_ms"] {
+        let hold = catalog
+            .find_param("kanna_wait_events", name)
+            .unwrap_or_else(|| panic!("{name}"));
+        assert_eq!(hold.min, Some(0), "{name}");
+        assert_eq!(
+            hold.max,
+            Some(MAX_TASK_EVENT_HOLD_MS),
+            "{name} must advertise the ceiling the server clamps to"
+        );
+    }
+
+    let resolved = resolve_request(
+        &catalog,
+        "kanna_wait_events",
+        &json!({
+            "task_ids": ["child-a"],
+            "event_types": ["run.finished", "task.pr_created"],
+            "exclude_own": true,
+            "min_events": 5,
+            "debounce_ms": 2000,
+            "min_interval_ms": 5000,
+        }),
+    )
+    .expect("resolve batched wait");
+    for expected in [
+        "eventTypes=run.finished%2Ctask.pr_created",
+        "excludeOwn=true",
+        "minEvents=5",
+        "debounceMs=2000",
+        "minIntervalMs=5000",
+    ] {
+        assert!(
+            resolved.path.contains(expected),
+            "{expected} missing from {}",
+            resolved.path
+        );
+    }
+
+    // The declared bounds are enforced on the way out, and the server clamps
+    // again on the way in, so the two cannot disagree about the ceiling.
+    let over_ceiling = resolve_request(
+        &catalog,
+        "kanna_wait_events",
+        &json!({ "task_ids": ["child-a"], "debounce_ms": 600_000 }),
+    )
+    .expect("resolve an over-ceiling hold window");
+    assert!(
+        over_ceiling
+            .path
+            .contains(&format!("debounceMs={MAX_TASK_EVENT_HOLD_MS}")),
+        "{}",
+        over_ceiling.path
+    );
+}
+
+/// One rule decides when a batched wait may return, shared by the server's own
+/// wait, its cross-machine fan-out, and the MCP client fan-in — so `min_events`
+/// counts the same events wherever the fan-out happens to live.
+#[test]
+fn the_batch_release_rule_is_shared_and_never_holds_a_full_page() {
+    // Nothing yet: the caller asked to wait for three.
+    assert!(!task_event_batch_is_complete(2, false, 100, 3, true));
+    assert!(task_event_batch_is_complete(3, false, 100, 3, true));
+    // Enough events, but the hold window is still open.
+    assert!(!task_event_batch_is_complete(3, false, 100, 3, false));
+    // A page the caller must drain is never held: waiting cannot add to it.
+    assert!(task_event_batch_is_complete(1, true, 100, 50, false));
+    assert!(task_event_batch_is_complete(100, false, 100, 50, false));
+
+    // A minimum above the page size would otherwise make every wait a timeout.
+    assert_eq!(clamp_task_event_min_events(Some(5_000), 100), 100);
+    assert_eq!(clamp_task_event_min_events(Some(0), 100), 1);
+    assert_eq!(clamp_task_event_min_events(None, 100), 1);
+    assert_eq!(clamp_task_event_limit(None), DEFAULT_TASK_EVENT_LIMIT);
+    assert_eq!(clamp_task_event_limit(Some(9_000)), MAX_TASK_EVENT_LIMIT);
+    assert_eq!(
+        clamp_task_event_hold_ms(Some(u64::MAX)),
+        MAX_TASK_EVENT_HOLD_MS
+    );
+    assert_eq!(clamp_task_event_hold_ms(None), 0);
 }
 
 /// `include_self` is advertised and validated like every other argument but
@@ -2213,7 +2348,7 @@ fn include_self_is_a_client_only_parameter() {
     .expect("resolve");
     assert_eq!(
         resolved.path,
-        "/v1/task-events?repoId=repo-1&excludeTaskIds=a%2Cb&shortCursor=true&timeoutSecs=0"
+        "/v1/task-events?repoId=repo-1&excludeTaskIds=a%2Cb&includeCurrentActivity=true&shortCursor=true&timeoutSecs=0"
     );
 
     let schema = bundled_catalog().tools_list_value();

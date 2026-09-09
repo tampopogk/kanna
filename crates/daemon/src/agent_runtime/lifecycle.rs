@@ -145,11 +145,12 @@ pub async fn agent_session_infos(agents: &AgentSessions) -> Vec<protocol::Sessio
                 state,
                 idle_seconds: record.last_activity_at.elapsed().as_secs(),
                 status: record.status,
+                // Agent-runtime status is emitted by the provider protocol,
+                // rather than guessed from a terminal bootstrap value.
+                status_observed: true,
                 kind: protocol::SessionKind::Agent,
                 // Agent sessions carry no terminal composer: their input is
-                // structured NDJSON, never a draft that could be concatenated.
-                logical_input_blocked: false,
-                pending_logical_input_count: Some(0),
+                // structured NDJSON, never a line somebody types.
                 composer_text: None,
                 composer_attestation: protocol::ComposerAttestation::NotTyped,
             }

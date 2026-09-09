@@ -9,6 +9,8 @@ mod desktop_views;
 mod e2e_mobile_controls;
 #[cfg(debug_assertions)]
 mod e2e_sql;
+pub(crate) mod event_subscriptions;
+mod harness_wake;
 mod ksp;
 mod lan_trust;
 mod machine_stats;
@@ -16,6 +18,7 @@ mod mobile_notifications;
 mod operator_events;
 mod pairing;
 mod preview;
+mod quota_recovery;
 mod repo_browser;
 mod repo_commands;
 mod repos;
@@ -99,13 +102,16 @@ pub async fn serve(state: std::sync::Arc<AppState>) -> Result<(), String> {
 /// creating the destination task, closing the source once its import is
 /// acknowledged — and must perform *those* actions rather than a second
 /// implementation of them.
+#[cfg(test)]
+pub(crate) use quota_recovery::parked_action_for_tests;
+pub(crate) use quota_recovery::{handle_quota_rejection, QuotaRejectionNotice};
 pub(crate) use task_actions::close_task_in_process;
 pub(crate) use tasks::create_task_in_process;
 
 pub(crate) use task_input::{
     handle_task_terminal_state, mark_task_session_interrupted,
     mark_task_session_interrupted_for_recovery, restore_task_run_for_live_session,
-    try_submit_task_input, TaskInputError, INPUT_BLOCKED_INHERITED_DRAFT,
+    try_submit_task_input, TaskInputError,
 };
 
 #[cfg(test)]

@@ -19,11 +19,11 @@ import type {
   KannaClient,
   TaskAgentSubscription,
   TaskCompanionSubscription,
+  TaskTerminalInputKind,
   TaskTerminalStreamEvent,
   TaskTerminalSubscription
 } from "../lib/api/client";
 import {
-  isInputHeldByDraft,
   ServerRefusalError
 } from "../lib/transports/serverRefusal";
 import type { CompanionEvent } from "@kanna/agent-protocol";
@@ -131,7 +131,11 @@ export interface MobileController {
     input: string,
     attachment?: TaskInputAttachment
   ): Promise<TaskInputSendOutcome>;
-  sendTaskTerminalInput(taskId: string, dataB64: string): void;
+  sendTaskTerminalInput(
+    taskId: string,
+    dataB64: string,
+    kind: TaskTerminalInputKind
+  ): void;
   resizeTaskTerminal(taskId: string, cols: number, rows: number): void;
   takeTaskTerminalControl(taskId: string): void;
   releaseTaskTerminalControl(taskId: string): void;
@@ -162,12 +166,6 @@ export interface MobileController {
  */
 export type TaskInputSendOutcome =
   | { status: "delivered" }
-  | {
-      status: "queued";
-      reason: "input_held_by_draft";
-      message: string;
-      queuedInputCount: number;
-    }
   | {
       status: "failed";
       reason: "transport_rejected" | "server_rejected";
@@ -281,24 +279,29 @@ function nestedServerRefusal(error: unknown): ServerRefusalError | null {
   return null;
 }
 
+/**
+ * What a person is shown about a refusal. `ServerRefusalError.message` carries
+ * a transport prefix and, on some routes, the raw response body — a screen
+ * that rendered it printed a JSON blob at the owner. `detail` is the desktop's
+ * own sentence; without one, say the status and nothing invented.
+ */
+function refusalDisplayMessage(refusal: ServerRefusalError): string {
+  return (
+    refusal.detail?.trim() ||
+    `The desktop refused the request (${refusal.status}).`
+  );
+}
+
 function taskInputOutcomeForError(error: unknown): TaskInputSendOutcome {
   const refusal = nestedServerRefusal(error);
   if (refusal) {
-    if (isInputHeldByDraft(refusal)) {
-      return {
-        status: "queued",
-        reason: "input_held_by_draft",
-        message: refusal.message,
-        queuedInputCount: 1
-      };
-    }
     if (refusal.reason === "delivery_uncertain") {
-      return { status: "uncertain", message: refusal.message };
+      return { status: "uncertain", message: refusalDisplayMessage(refusal) };
     }
     return {
       status: "failed",
       reason: "server_rejected",
-      message: refusal.message
+      message: refusalDisplayMessage(refusal)
     };
   }
 
@@ -1461,6 +1464,17 @@ export function createMobileController(
     }
   };
 
+  /** Push the latest measured viewport at a live attachment, ignoring the
+   * dedupe that suppresses an unchanged size. Used where the daemon-side
+   * registration is known to be new: a fresh attachment, or a takeover. */
+  const resendRequestedTaskTerminalGeometry = (taskId: string) => {
+    const geometry = requestedTaskTerminalGeometry;
+    if (geometry?.taskId !== taskId || activeTaskTerminal?.taskId !== taskId) {
+      return;
+    }
+    activeTaskTerminal.subscription.resize?.(geometry.cols, geometry.rows);
+  };
+
   const startTaskTerminal = (taskId: string) => {
     const routeIdentity = client.getTaskRouteIdentity?.(taskId) ?? taskId;
     if (
@@ -1533,6 +1547,12 @@ export function createMobileController(
             break;
           case "exit":
             store.setTaskTerminalStatus(streamTaskId, "closed");
+            break;
+          case "input_availability":
+            store.setTaskTerminalInputUnavailableReason(
+              streamTaskId,
+              event.unavailableReason
+            );
             break;
           case "error":
             if (event.code === "no_scrollback") {
@@ -3652,14 +3672,15 @@ export function createMobileController(
       }
     },
 
-    sendTaskTerminalInput(taskId, dataB64) {
+    sendTaskTerminalInput(taskId, dataB64, kind) {
       if (!dataB64 || activeTaskTerminal?.taskId !== taskId) {
         return;
       }
-      // The production mobile terminal currently emits only alt-screen
-      // mouse/scroll reports. Declare them as controls so they cannot create
-      // a phantom composer draft and strand a queued logical message.
-      activeTaskTerminal.subscription.sendInput?.(dataB64, false, true);
+      activeTaskTerminal.subscription.sendInput?.(
+        dataB64,
+        kind === "submission",
+        kind === "control"
+      );
     },
 
     requestTaskTerminalScrollback(taskId) {
@@ -3735,9 +3756,12 @@ export function createMobileController(
     },
 
     takeTaskTerminalControl(taskId) {
-      if (activeTaskTerminal?.taskId === taskId) {
-        activeTaskTerminal.subscription.takeControl?.();
-      }
+      if (activeTaskTerminal?.taskId !== taskId) return;
+      // Taking control means "size this terminal for my phone". The daemon
+      // adopts the controller's registered viewport, so the measurement has to
+      // be on the wire before the takeover is worth anything.
+      resendRequestedTaskTerminalGeometry(taskId);
+      activeTaskTerminal.subscription.takeControl?.();
     },
 
     releaseTaskTerminalControl(taskId) {

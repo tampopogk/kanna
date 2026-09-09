@@ -184,7 +184,7 @@ fn shell_single_quote(value: &str) -> String {
 /// The startup shell.
 ///
 /// It runs the same ordered commands, with the same `$ cmd` echo and the same
-/// `rehash`, that the agent's bootstrap shell used to run — a launch's startup
+/// `hash -r`, that the agent's bootstrap shell used to run — a launch's startup
 /// output should not change shape because it moved terminals. What is new is
 /// the tail: on success it writes the receipt and says the agent is starting;
 /// on failure it says so, in the terminal holding the output that explains it,
@@ -234,10 +234,12 @@ fn build_setup_shell_command(
             ));
             chain.push(cmd.clone());
         }
-        // zsh may cache a provider found earlier on PATH before setup
+        // A shell may cache a provider found earlier on PATH before setup
         // installs a workspace-local executable. Refresh its command table so
         // the just-provisioned binary is what the receipt's PATH resolves to.
-        chain.push("rehash".to_string());
+        // `hash -r` is POSIX and works in bash, dash and zsh alike; zsh's own
+        // `rehash` does not exist in the other two.
+        chain.push("hash -r".to_string());
     }
     let receipt_writer = match kanna_cli_path {
         Some(kanna_cli_path) => format!(
@@ -344,15 +346,15 @@ pub(crate) async fn start_setup_terminal(
     let mut control = DaemonClient::connect(daemon_dir)
         .await
         .map_err(|error| format!("daemon connection failed: {error}"))?;
+    // The startup shell is the user's login shell, like every other task shell:
+    // what setup can rely on being on PATH is whatever that shell's profiles
+    // put there, and hard-coding zsh would have made a Linux workspace run its
+    // setup in a shell the machine does not use.
+    let shell = crate::login_shell::login_shell();
     let spawn = DaemonCommand::Spawn {
         session_id: plan.session_id.clone(),
-        executable: "/bin/zsh".to_string(),
-        args: vec![
-            "--login".to_string(),
-            "-i".to_string(),
-            "-c".to_string(),
-            plan.command.clone(),
-        ],
+        executable: shell.path().to_string(),
+        args: shell.login_interactive_args(&plan.command),
         cwd: plan.cwd.clone(),
         env: plan.env.clone(),
         cols: plan.cols,
@@ -586,7 +588,7 @@ mod tests {
         let receipt = command.find("setup-receipt").expect("receipt writer");
         assert!(install < build, "setup commands keep their order");
         assert!(build < receipt, "the receipt is written after setup");
-        assert!(command.contains("rehash"));
+        assert!(command.contains("hash -r"));
     }
 
     #[test]

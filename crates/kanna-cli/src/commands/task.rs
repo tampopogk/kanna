@@ -2,7 +2,7 @@ use std::io::Write;
 use std::process;
 use std::time::Duration;
 
-use serde_json::Value;
+use serde_json::{json, Value};
 
 use crate::api::{
     advance_stage_via_api, block_task_via_api, close_task_via_api, create_task_via_api,
@@ -70,27 +70,32 @@ pub(crate) fn resolve_task_event_exclusions(
     exclusions
 }
 
+/// The typed CLI's application of the shared echo-suppression default: a wait
+/// issued from inside a task session drops its own manager-labelled delivery
+/// announcements unless the caller said otherwise. Unlike self-exclusion this
+/// does not depend on the scope — the loop it breaks happens under an explicit
+/// `--task-id` watch on the task that was just sent input.
+pub(crate) fn resolve_task_event_exclude_own(
+    explicit_exclude_own: Option<bool>,
+    current_task_id: Option<&str>,
+) -> bool {
+    explicit_exclude_own.unwrap_or_else(|| {
+        current_task_id
+            .map(str::trim)
+            .is_some_and(|task_id| !task_id.is_empty())
+    })
+}
+
 fn insert_optional(args: &mut Value, key: &str, value: Option<String>) {
     if let (Some(object), Some(value)) = (args.as_object_mut(), value) {
         object.insert(key.to_string(), Value::String(value));
     }
 }
 
-/// Run a task-transfer tool through the shared catalog.
-///
-/// These four commands deliberately have no typed HTTP path of their own. The
-/// transfer surface is the one an agent reaches for when a task has to change
-/// machines, and the CLI and MCP answers to "did it move?" must be the same
-/// object — so both resolve the same catalog declaration and print what the
-/// server returned, rather than each rendering its own idea of the result.
-async fn run_transfer_tool(name: &str, args: &Value, server_url: Option<&str>) {
-    run_catalog_tool(name, args, server_url).await;
-}
-
 /// Resolve a catalog declaration, call it, and print exactly what the server
 /// returned. Any command whose CLI answer must be the same object the MCP tool
 /// produces goes through here rather than rendering its own idea of the result.
-async fn run_catalog_tool(name: &str, args: &Value, server_url: Option<&str>) {
+async fn run_catalog_task_tool(name: &str, args: &Value, server_url: Option<&str>) {
     let catalog =
         crate::commands::tool::load_tool_catalog_from_current_dir().unwrap_or_else(|error| {
             eprintln!("Error: {error}");
@@ -115,38 +120,7 @@ fn current_task_id_from_env() -> Option<String> {
         .filter(|value| !value.trim().is_empty())
 }
 
-fn run_finished_has_running_successor(event: &Value) -> bool {
-    let payload = &event["payload"];
-    let finished_run_id = payload.get("runId").and_then(Value::as_str);
-    let latest_run = &payload["currentTask"]["latestRun"];
-    latest_run.get("status").and_then(Value::as_str) == Some("running")
-        && match (
-            finished_run_id,
-            latest_run.get("id").and_then(Value::as_str),
-        ) {
-            (Some(finished), Some(latest)) => finished != latest,
-            // A running latest run is necessarily a successor even when an
-            // older server omitted one of the ids from its enrichment.
-            _ => true,
-        }
-}
-
-pub(crate) fn is_actionable_task_event(event: &Value) -> bool {
-    match event.get("type").and_then(Value::as_str) {
-        Some("run.started" | "stage.changed" | "task.created" | "task.input_delivered") => false,
-        // The read/unread display dimension. A person opening a task in the
-        // desktop moves it, which is information for that person and never a
-        // reason to wake the watcher; `task.runtime_changed` carries the
-        // runtime edge underneath it.
-        Some("task.activity_changed") => false,
-        // Deprecated alias of the busy-to-non-busy subset of
-        // `task.runtime_changed`, appended in the same transaction — so it is
-        // always redundant with an event already in this batch.
-        Some("task.runtime_settled") => false,
-        Some("run.finished") => !run_finished_has_running_successor(event),
-        _ => true,
-    }
-}
+pub(crate) use kanna_tool_catalog::is_actionable_task_event;
 
 fn write_ndjson<W: Write>(writer: &mut W, value: &Value) -> Result<(), String> {
     serde_json::to_writer(&mut *writer, value)
@@ -213,13 +187,24 @@ pub(crate) async fn watch_task_events<W: Write>(
             // display dimension client-side while still advancing the cursor
             // past it — `--all` must still be able to show it.
             exclude_event_types: &[],
+            event_types: &[],
+            // The watch keeps the unfiltered feed and decides what is
+            // actionable itself, so `--all` can still show everything —
+            // including a raw delivery, which its filter does treat as
+            // actionable.
+            exclude_own: false,
             local_only: false,
-            include_current_activity: false,
+            include_current_activity: true,
             short_cursor: true,
             from: (first_call && cursor.is_none()).then_some("now"),
             cursor: cursor.as_deref(),
             timeout_secs,
             limit: None,
+            // The watch exits on the first actionable event to wake its
+            // harness, so batching the response would only delay that wake-up.
+            min_events: None,
+            debounce_ms: None,
+            min_interval_ms: None,
         };
         let batch = wait_task_events_via_api(base_url, &params).await?;
         first_call = false;
@@ -670,7 +655,7 @@ pub(crate) async fn run(command: TaskCommands) {
                 object.insert("line".to_string(), Value::from(line));
             }
             insert_optional(&mut args, "machine_id", machine_id);
-            run_catalog_tool("kanna_open_file", &args, server_url.as_deref()).await;
+            run_catalog_task_tool("kanna_open_file", &args, server_url.as_deref()).await;
         }
         TaskCommands::Terminals {
             task_id,
@@ -896,7 +881,7 @@ pub(crate) async fn run(command: TaskCommands) {
             insert_optional(&mut args, "transport", transport);
             insert_optional(&mut args, "intent_key", intent_key);
             insert_optional(&mut args, "machine_id", machine_id);
-            run_transfer_tool("kanna_push_task", &args, server_url.as_deref()).await;
+            run_catalog_task_tool("kanna_push_task", &args, server_url.as_deref()).await;
         }
         TaskCommands::Pull {
             source_task_id,
@@ -909,7 +894,7 @@ pub(crate) async fn run(command: TaskCommands) {
                 "from_machine": from_machine,
             });
             insert_optional(&mut args, "transport", transport);
-            run_transfer_tool("kanna_pull_task", &args, server_url.as_deref()).await;
+            run_catalog_task_tool("kanna_pull_task", &args, server_url.as_deref()).await;
         }
         TaskCommands::Transfers {
             task_id,
@@ -918,7 +903,7 @@ pub(crate) async fn run(command: TaskCommands) {
         } => {
             let mut args = serde_json::json!({ "task_id": task_id });
             insert_optional(&mut args, "machine_id", machine_id);
-            run_transfer_tool("kanna_task_transfers", &args, server_url.as_deref()).await;
+            run_catalog_task_tool("kanna_task_transfers", &args, server_url.as_deref()).await;
         }
         TaskCommands::SignalMerge {
             task_id,
@@ -1113,6 +1098,52 @@ pub(crate) async fn run(command: TaskCommands) {
             })
             .await;
         }
+        TaskCommands::SubscribeEvents {
+            task_id,
+            repo_id,
+            parent_task_id,
+            task_ids,
+            exclude_task_ids,
+            local_only,
+            delivery,
+            server_url,
+        } => {
+            let mut args = json!({"task_id": task_id, "task_ids":task_ids, "exclude_task_ids":exclude_task_ids, "local_only":local_only, "delivery":delivery});
+            if let Some(repo) = repo_id {
+                args["repo_id"] = json!(repo);
+            }
+            if let Some(parent) = parent_task_id {
+                args["parent_task_id"] = json!(parent);
+            }
+            run_catalog_task_tool("kanna_subscribe_events", &args, server_url.as_deref()).await;
+        }
+        TaskCommands::ReadEventSubscription {
+            subscription_id,
+            acknowledge_batch_id,
+            server_url,
+        } => {
+            let mut args = json!({"subscription_id":subscription_id});
+            if let Some(batch) = acknowledge_batch_id {
+                args["acknowledge_batch_id"] = json!(batch);
+            }
+            run_catalog_task_tool(
+                "kanna_read_event_subscription",
+                &args,
+                server_url.as_deref(),
+            )
+            .await;
+        }
+        TaskCommands::UnsubscribeEvents {
+            subscription_id,
+            server_url,
+        } => {
+            run_catalog_task_tool(
+                "kanna_unsubscribe_events",
+                &json!({"subscription_id":subscription_id}),
+                server_url.as_deref(),
+            )
+            .await;
+        }
         TaskCommands::WaitEvents {
             task_id,
             parent_task_id,
@@ -1120,7 +1151,9 @@ pub(crate) async fn run(command: TaskCommands) {
             repo_remote_url_hash,
             exclude_task_id,
             exclude_event_type,
+            event_type,
             include_self,
+            exclude_own,
             local_only,
             include_current_activity,
             short_cursor,
@@ -1128,15 +1161,21 @@ pub(crate) async fn run(command: TaskCommands) {
             cursor,
             timeout_secs,
             limit,
+            min_events,
+            debounce_ms,
+            min_interval_ms,
             server_url,
         } => {
             let base_url = resolve_server_base_url_from_env(server_url.as_deref());
+            let current_task_id = current_task_id_from_env();
             let exclude_task_ids = resolve_task_event_exclusions(
                 exclude_task_id,
                 !task_id.is_empty() || parent_task_id.is_some(),
                 include_self,
-                current_task_id_from_env().as_deref(),
+                current_task_id.as_deref(),
             );
+            let exclude_own =
+                resolve_task_event_exclude_own(exclude_own, current_task_id.as_deref());
             let params = crate::api::TaskEventsParams {
                 task_ids: &task_id,
                 parent_task_id: parent_task_id.as_deref(),
@@ -1144,6 +1183,8 @@ pub(crate) async fn run(command: TaskCommands) {
                 repo_remote_url_hash: repo_remote_url_hash.as_deref(),
                 exclude_task_ids: &exclude_task_ids,
                 exclude_event_types: &exclude_event_type,
+                event_types: &event_type,
+                exclude_own,
                 local_only,
                 include_current_activity,
                 short_cursor,
@@ -1151,6 +1192,9 @@ pub(crate) async fn run(command: TaskCommands) {
                 cursor: cursor.as_deref(),
                 timeout_secs,
                 limit,
+                min_events,
+                debounce_ms,
+                min_interval_ms,
             };
             let events = wait_task_events_via_api(&base_url, &params)
                 .await

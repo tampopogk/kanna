@@ -16,6 +16,7 @@ import {
   type DesktopTaskDetail,
 } from "../services/desktopServerClient";
 import { isBlockerResolved } from "../utils/blockerResolution";
+import { isRemotePresentationTaskId } from "../utils/remoteTaskIdentity";
 import { invoke } from "../invoke";
 import TaskHeader from "./TaskHeader.vue";
 import TerminalTabs from "./TerminalTabs.vue";
@@ -33,6 +34,7 @@ import { AGENT_TAB_ID, type MainTab } from "../composables/useMainTabs";
 import type { MainTabViewsController } from "./MainPanel.types";
 import type { BranchInclude, DiffScope, DiffScrollPositions } from "../composables/useAppModals";
 import type { MarkdownPreviewMode } from "../stores/markdownPreviewMode";
+import { shortcutHint, shortcutHintKeys } from "../composables/useKeyboardShortcuts";
 import CloudTerminalCache, {
   type CloudTerminalCacheEntry,
 } from "./CloudTerminalCache.vue";
@@ -299,23 +301,23 @@ const parkedRevisionAvailable = computed(() => {
     && latestRun.summary?.startsWith("Parked for human review:") === true;
 });
 
-/// A session the daemon refuses to deliver messages into is running normally
-/// and looks idle everywhere else, so the only sign of it used to be some
-/// other agent's stage failing. Say it on the task itself.
-const inputBlocked = computed(() => {
-  const task = item.value;
-  const detail = taskDetail.value;
-  if (!task || !detail || detail.id !== task.id) return false;
-  if (task.closed_at != null || detail.closedAt != null) return false;
-  return typeof detail.inputBlocked === "string" && detail.inputBlocked.length > 0;
-});
-
-const postHeldByDraft = computed(() => {
-  const task = item.value;
-  const detail = taskDetail.value;
-  if (!task || !detail || detail.id !== task.id || !task.has_running_post) return false;
-  if (task.closed_at != null || detail.closedAt != null) return false;
-  return detail.composer?.attestation === "typed";
+/**
+ * Task detail comes from the server that owns the task. A task running on
+ * another machine is shown here under a `cloud:` presentation id this server
+ * has never heard of, so asking for its detail is a guaranteed 404 — and the
+ * watcher below re-fires on every activity, stage and `updated_at` change the
+ * cloud index syncs, so it asked tens of thousands of times for one selected
+ * remote task. Every miss also fans out over the relay to each reachable
+ * peer, so the noise lands in the other machine's log too.
+ *
+ * Nothing is lost by not asking: every detail-derived affordance here (the
+ * parked revision recovery) is an owner-side operation, and `taskDetail` was
+ * never populated for a remote task anyway — the fetch always failed.
+ */
+const taskDetailIsLocal = computed(() => {
+  const taskId = item.value?.id;
+  if (!taskId) return false;
+  return !props.cloudTask && !isRemotePresentationTaskId(taskId);
 });
 
 let taskDetailRequest = 0;
@@ -338,6 +340,9 @@ watch(
     item.value?.stage ?? null,
     item.value?.updated_at ?? null,
     item.value?.has_running_post ?? 0,
+    // A task that transfers in stops being remote without changing id, and
+    // must pick up the detail it can now be asked for.
+    taskDetailIsLocal.value,
   ] as const,
   ([taskId], previous) => {
     if (taskId !== previous?.[0]) {
@@ -347,7 +352,11 @@ watch(
       revisionSummary.value = "";
       revisionPrompt.value = "";
     }
-    if (taskId) void loadTaskDetail(taskId);
+    if (taskId && taskDetailIsLocal.value) {
+      void loadTaskDetail(taskId);
+    } else if (taskDetail.value) {
+      taskDetail.value = null;
+    }
   },
   { immediate: true },
 );
@@ -568,14 +577,6 @@ function dismissCommandHint() {
         <span>Tasks</span>
       </div>
       <TaskHeader v-if="!maximized && headerItem" :item="headerItem" />
-      <section v-if="inputBlocked" class="input-blocked" data-testid="input-blocked">
-        <p class="input-blocked-title">{{ $t('mainPanel.inputBlockedTitle') }}</p>
-        <p class="input-blocked-hint">{{ $t('mainPanel.inputBlockedHint') }}</p>
-      </section>
-      <section v-if="postHeldByDraft" class="post-held" data-testid="post-held-by-draft">
-        <p class="post-held-title">{{ $t('mainPanel.advanceHeldTitle') }}</p>
-        <p class="post-held-hint">{{ $t('mainPanel.advanceHeldHint') }}</p>
-      </section>
       <section v-if="parkedRevisionAvailable" class="revision-recovery" data-testid="revision-recovery">
         <div>
           <p class="revision-recovery-title">{{ $t('mainPanel.revisionExhaustedTitle') }}</p>
@@ -790,14 +791,14 @@ function dismissCommandHint() {
             </section>
           </div>
           <p class="setup-hint">
-            {{ $t('mainPanel.agentInstallHint', { shellShortcut: '⇧⌘J' }) }}
+            {{ $t('mainPanel.agentInstallHint', { shellShortcut: shortcutHint('openShellRepoRoot') }) }}
           </p>
-          <p class="empty-hint">{{ $t('mainPanel.noReposHint', { shortcut: '⌘I' }) }}</p>
+          <p class="empty-hint">{{ $t('mainPanel.noReposHint', { shortcut: shortcutHint('createRepo') }) }}</p>
         </div>
       </template>
       <template v-else>
         <p class="empty-title">{{ $t('mainPanel.noTaskSelected') }}</p>
-        <p class="empty-hint">{{ $t('mainPanel.noTaskHint', { shortcut: '⇧⌘N' }) }}</p>
+        <p class="empty-hint">{{ $t('mainPanel.noTaskHint', { shortcut: shortcutHint('newTask') }) }}</p>
       </template>
     </div>
     <div
@@ -810,7 +811,7 @@ function dismissCommandHint() {
           {{ $t('mainPanel.commandHintPrefix') }}
         </span>
         <span class="command-hint-shortcut">
-          <kbd>⌘</kbd><kbd>/</kbd>
+          <kbd v-for="key in shortcutHintKeys('showShortcuts')" :key="key">{{ key }}</kbd>
         </span>
         <span class="command-hint-text">
           {{ $t('mainPanel.commandHintSuffix') }}
@@ -880,44 +881,6 @@ function dismissCommandHint() {
   flex-direction: column;
   flex: 1;
   min-height: 0;
-}
-
-.input-blocked {
-  padding: 10px 16px;
-  border-bottom: 1px solid var(--kn-warning);
-  background: var(--kn-warning-bg);
-}
-
-.post-held {
-  padding: 9px 12px;
-  border-bottom: 1px solid var(--kn-warning);
-  background: var(--kn-warning-bg);
-}
-
-.post-held-title {
-  margin: 0;
-  color: var(--kn-text-primary);
-  font-size: 13px;
-  font-weight: 600;
-}
-
-.post-held-hint {
-  margin: 2px 0 0;
-  color: var(--kn-text-muted);
-  font-size: 11px;
-}
-
-.input-blocked-title {
-  margin: 0;
-  color: var(--kn-text-primary);
-  font-size: 13px;
-  font-weight: 600;
-}
-
-.input-blocked-hint {
-  margin: 2px 0 0;
-  color: var(--kn-text-muted);
-  font-size: 11px;
 }
 
 .revision-recovery {
