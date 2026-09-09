@@ -228,7 +228,7 @@ fn open_creates_and_migrates_fresh_profile_database() {
             |row| row.get(0),
         )
         .expect("latest migration");
-    assert_eq!(latest_migration, "074_task_launch_lifecycle_operation");
+    assert_eq!(latest_migration, "075_terminal_archive_per_attempt");
     assert_eq!(
         index_columns(&db.conn, "idx_pipeline_item_parent_created_id"),
         vec!["parent_task_id", "created_at", "id"],
@@ -4230,6 +4230,94 @@ fn a_task_s_startup_terminal_is_never_mistaken_for_its_agent_session() {
             .as_deref(),
         Some("task-1"),
     );
+
+    drop(db);
+    let _ = std::fs::remove_file(path);
+}
+
+/// Each agent attempt keeps its own history, addressed by its own record.
+///
+/// A stage advance and a retry respawn the same daemon session id, so an
+/// archive keyed by that id held one frame — whichever attempt ended last —
+/// and the stage history this architecture exists to keep was one row deep.
+#[test]
+fn each_agent_attempt_keeps_its_own_retained_output() {
+    let path = Db::test_db_path("agent-attempt-history");
+    let db = Db::open_for_tests(&path).expect("open test db");
+    db.insert_test_repo("repo-1", "Repo One").expect("repo");
+    db.insert_test_pipeline_item(
+        "task-1",
+        "repo-1",
+        "do the thing",
+        None,
+        "review",
+        "2026-09-09T00:00:00Z",
+    )
+    .expect("task");
+
+    for (record_id, stage, attempt, frame) in [
+        ("agent-task-1-1", "in progress", 1, "FIRST_STAGE_OUTPUT"),
+        ("agent-task-1-2", "review", 2, "SECOND_STAGE_OUTPUT"),
+    ] {
+        db.upsert_task_terminal_session(super::NewTaskTerminalSession {
+            id: record_id,
+            repo_id: "repo-1",
+            task_id: Some("task-1"),
+            // The same daemon session id for both: that is the point.
+            daemon_session_id: Some("task-1"),
+            role: "agent",
+            stage: Some(stage),
+            attempt,
+            stage_run_id: None,
+            title: Some(&format!("Agent · {stage} · attempt {attempt}")),
+            cwd: Some("/tmp/wt"),
+        })
+        .expect("agent attempt");
+        db.record_terminal_session_archive(record_id, 80, 24, frame)
+            .expect("archive");
+        db.retire_task_terminal_session_record(record_id, Some(0))
+            .expect("retire");
+    }
+
+    assert_eq!(
+        db.read_terminal_session_archive("agent-task-1-1")
+            .expect("read first")
+            .expect("first attempt keeps its own frame")
+            .vt,
+        "FIRST_STAGE_OUTPUT",
+        "the later attempt must not overwrite the earlier one's output"
+    );
+    assert_eq!(
+        db.read_terminal_session_archive("agent-task-1-2")
+            .expect("read second")
+            .expect("second attempt keeps its own frame")
+            .vt,
+        "SECOND_STAGE_OUTPUT",
+    );
+
+    let terminals = db.list_task_terminal_sessions("task-1").expect("list");
+    let agents: Vec<_> = terminals
+        .iter()
+        .filter(|terminal| terminal.role == "agent")
+        .collect();
+    assert_eq!(agents.len(), 2, "both attempts are listed: {agents:?}");
+    assert!(
+        agents
+            .iter()
+            .all(|terminal| terminal.archived && terminal.state == "retired"),
+        "each finished attempt reports its own retained frame: {agents:?}"
+    );
+    // The live-agent surfaces are untouched: the task id still resolves to the
+    // task's agent session.
+    assert_eq!(
+        db.resolve_task_terminal_session_id("task-1")
+            .expect("resolve")
+            .as_deref(),
+        Some("task-1"),
+    );
+    assert!(db
+        .is_agent_terminal_session("task-1")
+        .expect("agent role lookup"));
 
     drop(db);
     let _ = std::fs::remove_file(path);

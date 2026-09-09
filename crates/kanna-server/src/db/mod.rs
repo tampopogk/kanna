@@ -66,7 +66,8 @@ pub use task_events::{
 #[allow(unused_imports)]
 pub use task_inputs::{RawInputWriteRecord, TaskInputRecord, TaskInputSource};
 pub use terminal_sessions::{
-    NewTaskTerminalSession, TaskTerminalSession, TerminalSessionArchive, ROLE_SETUP, ROLE_TEARDOWN,
+    NewTaskTerminalSession, TaskTerminalSession, TerminalSessionArchive, ROLE_AGENT, ROLE_SETUP,
+    ROLE_TEARDOWN,
 };
 #[allow(unused_imports)]
 pub use transfer_work::{TransferWorkItem, MAX_TRANSFER_WORK_ATTEMPTS};
@@ -157,6 +158,7 @@ pub(crate) const CURRENT_SCHEMA_MIGRATIONS: &[&str] = &[
     "072_terminal_session_roles",
     "073_terminal_session_archive",
     "074_task_launch_lifecycle_operation",
+    "075_terminal_archive_per_attempt",
 ];
 
 #[derive(Debug, Serialize)]
@@ -2197,6 +2199,31 @@ fn run_schema_migrations(conn: &Connection) -> Result<(), rusqlite::Error> {
              DROP TABLE lifecycle_operation_intent_old;
              CREATE UNIQUE INDEX idx_lifecycle_operation_intent_task
                ON lifecycle_operation_intent(task_id);",
+        )
+    })?;
+
+    run_migration(conn, "075_terminal_archive_per_attempt", |conn| {
+        // The archive was keyed by daemon session id. A task's agent keeps one
+        // session id across every stage and retry, so each attempt's final
+        // frame overwrote the last and the stage history the plan promises was
+        // one row deep. Key it by the terminal *record* instead — one row per
+        // attempt, which is what `terminal_session` already counts.
+        conn.execute_batch(
+            "ALTER TABLE terminal_session_archive RENAME TO terminal_session_archive_old;
+             CREATE TABLE terminal_session_archive (
+               terminal_session_id TEXT PRIMARY KEY
+                 REFERENCES terminal_session(id) ON DELETE CASCADE,
+               cols INTEGER NOT NULL,
+               rows INTEGER NOT NULL,
+               vt TEXT NOT NULL,
+               archived_at TEXT NOT NULL DEFAULT (datetime('now'))
+             );
+             INSERT OR IGNORE INTO terminal_session_archive
+               (terminal_session_id, cols, rows, vt, archived_at)
+               SELECT t.id, a.cols, a.rows, a.vt, a.archived_at
+               FROM terminal_session_archive_old a
+               JOIN terminal_session t ON t.daemon_session_id = a.session_id;
+             DROP TABLE terminal_session_archive_old;",
         )
     })?;
 

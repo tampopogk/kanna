@@ -19,7 +19,7 @@ use serde::Serialize;
 /// What a task terminal is. `agent` is the provider session the rest of the
 /// system already addresses by task id; `setup` is the startup shell that runs
 /// before it; `teardown` is the departing workspace's best-effort cleanup.
-const ROLE_AGENT: &str = "agent";
+pub const ROLE_AGENT: &str = "agent";
 pub const ROLE_SETUP: &str = "setup";
 pub const ROLE_TEARDOWN: &str = "teardown";
 const ROLE_LEGACY_AGENT: &str = "legacy_agent";
@@ -76,7 +76,7 @@ const SELECT_COLUMNS: &str = "id, pipeline_item_id, repo_id, daemon_session_id, 
                               attempt, state, stage_run_id, title, cwd, exit_code, created_at, \
                               retired_at, \
                               EXISTS(SELECT 1 FROM terminal_session_archive a \
-                                     WHERE a.session_id = terminal_session.daemon_session_id)";
+                                     WHERE a.terminal_session_id = terminal_session.id)";
 
 fn row_to_session(row: &rusqlite::Row<'_>) -> Result<TaskTerminalSession, rusqlite::Error> {
     Ok(TaskTerminalSession {
@@ -160,6 +160,27 @@ impl Db {
         rows.collect()
     }
 
+    /// The live terminal record a daemon session id currently belongs to.
+    ///
+    /// A task's agent keeps one daemon session id across every stage and retry,
+    /// so the id alone does not name an attempt; the newest live row for it
+    /// does, which is the attempt whose final frame an Exit belongs to.
+    pub fn live_terminal_session_record_id(
+        &self,
+        daemon_session_id: &str,
+    ) -> Result<Option<String>, rusqlite::Error> {
+        self.conn
+            .query_row(
+                "SELECT id FROM terminal_session
+                 WHERE daemon_session_id = ?1 AND state = 'live'
+                 ORDER BY attempt DESC, created_at DESC, id
+                 LIMIT 1",
+                [daemon_session_id],
+                |row| row.get(0),
+            )
+            .optional()
+    }
+
     /// The role a live daemon session is playing, or `None` when the id is not
     /// a recorded task terminal. Callers that must not treat setup output as
     /// agent output ask this before acting on a daemon event.
@@ -217,36 +238,36 @@ impl Db {
     /// the rest of the task's durable record.
     pub fn record_terminal_session_archive(
         &self,
-        daemon_session_id: &str,
+        terminal_session_id: &str,
         cols: i64,
         rows: i64,
         vt: &str,
     ) -> Result<(), rusqlite::Error> {
         self.conn.execute(
-            "INSERT INTO terminal_session_archive (session_id, cols, rows, vt)
+            "INSERT INTO terminal_session_archive (terminal_session_id, cols, rows, vt)
              VALUES (?1, ?2, ?3, ?4)
-             ON CONFLICT(session_id) DO UPDATE SET
+             ON CONFLICT(terminal_session_id) DO UPDATE SET
                cols = excluded.cols,
                rows = excluded.rows,
                vt = excluded.vt,
                archived_at = datetime('now')",
-            params![daemon_session_id, cols, rows, vt],
+            params![terminal_session_id, cols, rows, vt],
         )?;
         Ok(())
     }
 
     pub fn read_terminal_session_archive(
         &self,
-        daemon_session_id: &str,
+        terminal_session_id: &str,
     ) -> Result<Option<TerminalSessionArchive>, rusqlite::Error> {
         self.conn
             .query_row(
                 "SELECT cols, rows, vt, archived_at FROM terminal_session_archive
-                 WHERE session_id = ?1",
-                [daemon_session_id],
+                 WHERE terminal_session_id = ?1",
+                [terminal_session_id],
                 |row| {
                     Ok(TerminalSessionArchive {
-                        session_id: daemon_session_id.to_string(),
+                        session_id: terminal_session_id.to_string(),
                         cols: row.get(0)?,
                         rows: row.get(1)?,
                         vt: row.get(2)?,
@@ -255,6 +276,25 @@ impl Db {
                 },
             )
             .optional()
+    }
+
+    /// Retire one terminal *record*, named by its own id.
+    ///
+    /// The daemon-session-id form cannot name an agent attempt: a task's agent
+    /// keeps one session id across every stage and retry, so retiring by id
+    /// would retire whichever attempt happened to match.
+    pub fn retire_task_terminal_session_record(
+        &self,
+        terminal_session_id: &str,
+        exit_code: Option<i64>,
+    ) -> Result<(), rusqlite::Error> {
+        self.conn.execute(
+            "UPDATE terminal_session
+             SET state = 'retired', exit_code = ?2, retired_at = datetime('now')
+             WHERE id = ?1 AND state != 'retired'",
+            params![terminal_session_id, exit_code],
+        )?;
+        Ok(())
     }
 
     /// Whether this daemon session is a task's current agent terminal — the

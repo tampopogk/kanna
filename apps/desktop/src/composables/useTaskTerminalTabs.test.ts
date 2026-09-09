@@ -48,6 +48,16 @@ describe("which terminals get a tab", () => {
     expect(isOwnTabTerminal(terminal({ role: "legacy_agent" }))).toBe(false);
   });
 
+  it("keeps a finished agent attempt as history of its own", () => {
+    // A stage advance or a retry respawns the same session id, so without a
+    // tab per attempt the previous stage's output is simply gone — which is
+    // the chaining this architecture replaces.
+    expect(isOwnTabTerminal(terminal({ role: "agent", state: "retired" }))).toBe(true);
+    expect(
+      terminalTabTitle(terminal({ role: "agent", state: "retired", title: null, stage: "review", attempt: 2 })),
+    ).toBe("Agent · review · attempt 2");
+  });
+
   it("names a terminal by the stage that launched it", () => {
     expect(terminalTabTitle(terminal({ title: "Startup · review" }))).toBe("Startup · review");
     expect(terminalTabTitle(terminal({ title: null, stage: "review" }))).toBe("Startup · review");
@@ -127,6 +137,50 @@ describe("keeping a task's terminal tabs in step with the server", () => {
     expect(retired?.terminalLive).toBe(false);
     expect(retired?.terminalArchived).toBe(true);
     expect(retired?.terminalExitCode).toBe(23);
+  });
+
+  it("gives each finished agent attempt its own tab rather than one shared id", async () => {
+    const tabs = tabsForTask("task-1");
+    const fetchTerminals = vi.fn(async (): Promise<DesktopTaskTerminals> => ({
+      taskId: "task-1",
+      agentSessionId: "task-1",
+      terminals: [
+        // Both attempts ran in the same daemon session; only their records
+        // tell them apart.
+        terminal({
+          id: "agent-task-1-1",
+          daemonSessionId: "task-1",
+          role: "agent",
+          state: "retired",
+          stage: "in progress",
+          attempt: 1,
+          exitCode: 0,
+        }),
+        terminal({
+          id: "agent-task-1-2",
+          daemonSessionId: "task-1",
+          role: "agent",
+          state: "retired",
+          stage: "review",
+          attempt: 2,
+          exitCode: 0,
+        }),
+      ],
+    }));
+
+    const { reconcile } = useTaskTerminalTabs({
+      tabs,
+      taskId: computed(() => "task-1"),
+      revision: computed(() => 1),
+      fetchTerminals,
+    });
+    await reconcile();
+
+    expect(tabs.tabs.value.map((tab) => tab.id)).toEqual([
+      "agent",
+      "terminal:agent-task-1-1",
+      "terminal:agent-task-1-2",
+    ]);
   });
 
   it("does not reopen a terminal tab the reader closed", async () => {

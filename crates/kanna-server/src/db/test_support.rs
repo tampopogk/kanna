@@ -267,7 +267,7 @@ impl Db {
             );
 
             CREATE TABLE terminal_session_archive (
-                session_id TEXT PRIMARY KEY,
+                terminal_session_id TEXT PRIMARY KEY,
                 cols INTEGER NOT NULL,
                 rows INTEGER NOT NULL,
                 vt TEXT NOT NULL,

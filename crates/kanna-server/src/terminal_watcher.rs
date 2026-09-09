@@ -361,11 +361,94 @@ pub(crate) async fn archive_finished_terminal_frame(
             return;
         }
     };
+    // The frame belongs to the attempt that just ended, not to the id: a
+    // task's agent keeps one daemon session id across every stage and retry,
+    // and keying the archive by that id collapsed every attempt into one row.
+    let record_id = match db.live_terminal_session_record_id(session_id) {
+        Ok(Some(record_id)) => record_id,
+        Ok(None) => {
+            log::warn!(
+                "no live terminal record for {session_id}; its final frame has nowhere to go"
+            );
+            return;
+        }
+        Err(error) => {
+            log::warn!("could not resolve the terminal record for {session_id}: {error}");
+            return;
+        }
+    };
     let (cols, rows, vt) = frame;
     if let Err(error) =
-        db.record_terminal_session_archive(session_id, cols as i64, rows as i64, &vt)
+        db.record_terminal_session_archive(&record_id, cols as i64, rows as i64, &vt)
     {
         log::warn!("failed to archive the finished terminal {session_id}: {error}");
+    }
+}
+
+/// Keep a finished agent attempt's output where it can be reopened.
+///
+/// The attempt is named by the task's latest agent run, which is what a stage
+/// or retry advances; the frame is the daemon's own final one, captured before
+/// it drops the session. Nothing here touches the live-agent surfaces: no
+/// existing row is rewritten, and the task id still resolves to the task's
+/// agent session.
+async fn retain_finished_agent_attempt(state: &http_api::AppState, session_id: &str, code: i32) {
+    let config = state.config();
+    let frame = match archived_terminal_frame(&config.daemon_dir, session_id).await {
+        Ok(frame) => frame,
+        Err(error) => {
+            log::warn!("could not read the final frame of agent {session_id}: {error}");
+            None
+        }
+    };
+    let db = match Db::open(&config.db_path) {
+        Ok(db) => db,
+        Err(error) => {
+            log::warn!("could not open the database to retain agent {session_id}: {error}");
+            return;
+        }
+    };
+    let Ok(Some(task_id)) = db.resolve_pipeline_item_id(session_id) else {
+        // Not a task's agent session (a repository shell, say): nothing owns
+        // its output, so there is nothing to retain.
+        return;
+    };
+    let Ok(Some(item)) = db.get_pipeline_item(&task_id) else {
+        return;
+    };
+    let latest = db.latest_stage_run(&task_id).ok().flatten();
+    let attempt = db.next_task_terminal_attempt(&task_id).unwrap_or(1);
+    let stage = latest
+        .as_ref()
+        .map(|run| run.stage.clone())
+        .or_else(|| item.stage.clone())
+        .unwrap_or_else(|| "in progress".to_string());
+    let record_id = format!("agent-{task_id}-{attempt}");
+    let title = format!("Agent · {stage} · attempt {attempt}");
+    if let Err(error) = db.upsert_task_terminal_session(crate::db::NewTaskTerminalSession {
+        id: &record_id,
+        repo_id: &item.repo_id,
+        task_id: Some(&task_id),
+        daemon_session_id: Some(session_id),
+        role: crate::db::ROLE_AGENT,
+        stage: Some(&stage),
+        attempt,
+        stage_run_id: latest.as_ref().map(|run| run.id.as_str()),
+        title: Some(&title),
+        cwd: latest.as_ref().and_then(|run| run.cwd.as_deref()),
+    }) {
+        log::warn!("failed to record the finished agent attempt {record_id}: {error}");
+        return;
+    }
+    if let Some((cols, rows, vt)) = frame {
+        if let Err(error) =
+            db.record_terminal_session_archive(&record_id, cols as i64, rows as i64, &vt)
+        {
+            log::warn!("failed to archive the finished agent attempt {record_id}: {error}");
+        }
+    }
+    if let Err(error) = db.retire_task_terminal_session_record(&record_id, Some(code as i64)) {
+        log::warn!("failed to retire the finished agent attempt {record_id}: {error}");
     }
 }
 
@@ -720,6 +803,16 @@ pub(crate) async fn terminal_state_watcher_once(
                     replacements.consume(&session_id);
                     continue;
                 }
+                // An agent attempt that has ended becomes history, and history
+                // is per attempt: a stage advance or a retry respawns the same
+                // daemon session id, so without a record of its own each
+                // attempt's output was overwritten by the next one's. The row
+                // is written here rather than at spawn because this is the
+                // moment the output stops being live and starts being
+                // readable, and because a session that never ended has nothing
+                // to retain — the live agent is still addressed by the task id
+                // exactly as before.
+                retain_finished_agent_attempt(state, &session_id, code).await;
                 // Consume the replacement entry even when the event is
                 // self-describing — a leftover entry would swallow a future
                 // legitimate Exit for the same session id.
@@ -907,12 +1000,64 @@ mod tests {
         writer.write_all(b"\n").await.unwrap();
     }
 
+    /// Assert nothing *notified*, while answering the frame probes the watcher
+    /// now makes.
+    ///
+    /// Every agent Exit asks the daemon for that attempt's final frame, so the
+    /// harness sees a connection whether or not a notification happened. A
+    /// probe is answered session-not-found — the same "nothing to retain" the
+    /// real daemon gives for a session it has already dropped — and is not
+    /// counted; anything else is the notification these tests refuse.
     async fn expect_no_notification_connection(listener: &UnixListener) {
-        match timeout(Duration::from_millis(150), listener.accept()).await {
-            Err(_) => {}
-            Ok(Ok(_)) => panic!("killed exit unexpectedly opened a notification connection"),
-            Ok(Err(error)) => panic!("failed while checking for notification connection: {error}"),
+        let deadline = tokio::time::Instant::now() + Duration::from_millis(300);
+        loop {
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            if remaining.is_zero() {
+                return;
+            }
+            match timeout(remaining, listener.accept()).await {
+                Err(_) => return,
+                Ok(Ok((stream, _))) => {
+                    if !answer_frame_probe(stream).await {
+                        panic!("killed exit unexpectedly opened a notification connection");
+                    }
+                }
+                Ok(Err(error)) => {
+                    panic!("failed while checking for notification connection: {error}")
+                }
+            }
         }
+    }
+
+    /// Answer one `Snapshot` probe with session-not-found. Returns false when
+    /// the connection carried anything else.
+    async fn answer_frame_probe(stream: tokio::net::UnixStream) -> bool {
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+
+        let (read_half, mut write_half) = stream.into_split();
+        let mut reader = BufReader::new(read_half);
+        let mut line = String::new();
+        if timeout(Duration::from_millis(200), reader.read_line(&mut line))
+            .await
+            .map(|result| result.unwrap_or(0))
+            .unwrap_or(0)
+            == 0
+        {
+            return true;
+        }
+        let Ok(DaemonCommand::Snapshot { session_id }) =
+            serde_json::from_str::<DaemonCommand>(line.trim())
+        else {
+            return false;
+        };
+        let response = DaemonEvent::Error {
+            code: Some(kanna_daemon::protocol::ErrorCode::SessionNotFound),
+            message: format!("session not found: {session_id}"),
+        };
+        let _ = write_half
+            .write_all(format!("{}\n", serde_json::to_string(&response).unwrap()).as_bytes())
+            .await;
+        true
     }
 
     fn assert_task_not_completed(config: &Config) {

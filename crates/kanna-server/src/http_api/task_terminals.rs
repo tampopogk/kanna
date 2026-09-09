@@ -110,16 +110,31 @@ pub(super) async fn read_task_terminal_archive(
                 format!("db error: {error}"),
             )
         })?;
-        if !terminals
+        // Addressed by the terminal *record*, which is what names one attempt:
+        // a task's agent keeps one daemon session id across every stage, so the
+        // session id alone cannot say which attempt's frame is wanted. The
+        // record id is accepted first, and a daemon session id still resolves
+        // for the terminals that have only ever had one — a setup or teardown
+        // shell — so existing callers keep working.
+        let record_id = terminals
             .iter()
-            .any(|terminal| terminal.daemon_session_id.as_deref() == Some(session_id.as_str()))
-        {
-            return Err((
-                StatusCode::NOT_FOUND,
-                format!("terminal not found for task {resolved}: {session_id}"),
-            ));
-        }
-        db.read_terminal_session_archive(&session_id)
+            .find(|terminal| terminal.id == session_id)
+            .or_else(|| {
+                terminals
+                    .iter()
+                    .filter(|terminal| {
+                        terminal.daemon_session_id.as_deref() == Some(session_id.as_str())
+                    })
+                    .max_by_key(|terminal| terminal.attempt)
+            })
+            .map(|terminal| terminal.id.clone())
+            .ok_or_else(|| {
+                (
+                    StatusCode::NOT_FOUND,
+                    format!("terminal not found for task {resolved}: {session_id}"),
+                )
+            })?;
+        db.read_terminal_session_archive(&record_id)
             .map_err(|error| {
                 (
                     StatusCode::INTERNAL_SERVER_ERROR,

@@ -19,10 +19,13 @@ import { listen } from "../listen";
  * teardown and for a stage's setup, printed nowhere at all.
  */
 export function isOwnTabTerminal(terminal: DesktopTaskTerminal): boolean {
-  return (
-    Boolean(terminal.daemonSessionId)
-    && (terminal.role === "setup" || terminal.role === "teardown")
-  );
+  if (!terminal.daemonSessionId) return false;
+  if (terminal.role === "setup" || terminal.role === "teardown") return true;
+  // A *finished* agent attempt is history: a stage advance or a retry starts a
+  // new one, and the old output stays readable in a tab of its own rather than
+  // being chained into the next agent's scrollback. The live agent is still
+  // the agent tab and is never repeated here.
+  return terminal.role === "agent" && terminal.state === "retired";
 }
 
 /**
@@ -34,6 +37,10 @@ export function isOwnTabTerminal(terminal: DesktopTaskTerminal): boolean {
  */
 export function terminalTabTitle(terminal: DesktopTaskTerminal): string {
   if (terminal.title) return terminal.title;
+  if (terminal.role === "agent") {
+    const stage = terminal.stage ? ` · ${terminal.stage}` : "";
+    return `Agent${stage} · attempt ${terminal.attempt}`;
+  }
   const role = terminal.role === "teardown" ? "Teardown" : "Startup";
   return terminal.stage ? `${role} · ${terminal.stage}` : role;
 }
@@ -104,17 +111,21 @@ export function useTaskTerminalTabs({
       if (!isOwnTabTerminal(terminal)) continue;
       const sessionId = terminal.daemonSessionId;
       if (!sessionId) continue;
-      const key = `${id}:${sessionId}`;
+      // Keyed by the terminal *record*: every agent attempt shares the task's
+      // daemon session id, so keying tabs by that id would show one attempt
+      // and call it all of them.
+      const viewId = terminal.role === "agent" ? terminal.id : sessionId;
+      const key = `${id}:${viewId}`;
       const descriptor = {
         kind: "terminal" as const,
-        terminalSessionId: sessionId,
+        terminalSessionId: viewId,
         terminalTitle: terminalTabTitle(terminal),
         terminalLive: terminal.state === "live",
         terminalArchived: terminal.archived,
         terminalExitCode: terminal.exitCode,
         terminalTaskId: id,
       };
-      if (openedByReconciliation.has(key) && !tabs.isOpen(`terminal:${sessionId}`)) {
+      if (openedByReconciliation.has(key) && !tabs.isOpen(`terminal:${viewId}`)) {
         // The reader closed it. Leave it closed.
         continue;
       }
