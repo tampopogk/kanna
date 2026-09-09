@@ -162,6 +162,10 @@ pub(super) async fn open_desktop_terminal_view(
                 "sessionId": request.session_id,
                 "title": title,
                 "live": terminal.state == "live",
+                // A retired terminal is readable only if its final frame was
+                // kept; without this the tab has to assume it was not, and
+                // says the output is gone while the archive sits beside it.
+                "archived": terminal.archived,
             }));
             Ok((task_id, request.session_id, title))
         })

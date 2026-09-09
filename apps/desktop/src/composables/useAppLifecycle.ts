@@ -71,6 +71,7 @@ interface UseAppLifecycleOptions {
     sessionId: string,
     title?: string,
     live?: boolean,
+    archived?: boolean,
   ) => void;
   preferences: AppPreferences;
   remoteTaskDiagnostics: Ref<unknown>;
@@ -100,7 +101,14 @@ interface DesktopViewOpenCommand {
 
 type DesktopViewOpenAny =
   | ({ view: "file" } & DesktopViewOpenCommand)
-  | { view: "terminal"; taskId: string; sessionId: string; title?: string; live?: boolean };
+  | {
+    view: "terminal";
+    taskId: string;
+    sessionId: string;
+    title?: string;
+    live?: boolean;
+    archived?: boolean;
+  };
 
 function parseDesktopViewOpenEvent(payload: unknown): DesktopViewOpenAny {
   const command = payload as
@@ -109,6 +117,7 @@ function parseDesktopViewOpenEvent(payload: unknown): DesktopViewOpenAny {
       sessionId?: unknown;
       title?: unknown;
       live?: unknown;
+      archived?: unknown;
     })
     | null;
   if (!command || typeof command.taskId !== "string") {
@@ -124,6 +133,7 @@ function parseDesktopViewOpenEvent(payload: unknown): DesktopViewOpenAny {
       sessionId: command.sessionId,
       title: typeof command.title === "string" ? command.title : undefined,
       live: typeof command.live === "boolean" ? command.live : undefined,
+      archived: typeof command.archived === "boolean" ? command.archived : undefined,
     };
   }
   if (typeof command.path !== "string" || (command.view !== undefined && command.view !== "file")) {
@@ -429,7 +439,13 @@ export function useAppLifecycle({
         try {
           const command = parseDesktopViewOpenEvent(eventPayload(event));
           if (command.view === "terminal") {
-            openTaskTerminalView(command.taskId, command.sessionId, command.title, command.live);
+            openTaskTerminalView(
+              command.taskId,
+              command.sessionId,
+              command.title,
+              command.live,
+              command.archived,
+            );
           } else {
             openTaskFileView(command.taskId, command.path, command.line);
           }

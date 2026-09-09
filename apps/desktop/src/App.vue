@@ -205,12 +205,15 @@ function openTaskTerminalView(
   sessionId: string,
   title?: string,
   live?: boolean,
+  archived?: boolean,
 ): void {
   mainTabs.openTabInScope(mainTabScopeKeyForTask(taskId), {
     kind: "terminal",
     terminalSessionId: sessionId,
     terminalTitle: title,
     terminalLive: live,
+    terminalArchived: archived,
+    terminalTaskId: taskId,
   });
 }
 const mainTabs = useMainTabs({

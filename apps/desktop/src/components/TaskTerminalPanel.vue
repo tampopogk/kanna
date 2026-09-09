@@ -6,7 +6,10 @@ import TerminalView from "./TerminalView.vue";
 import { getTerminalTheme } from "../theme/theme";
 import { useThemeRuntime } from "../theme/runtime";
 import { registerE2ETerminalBuffer } from "../e2eTerminalBuffers";
-import { fetchDesktopTerminalArchive } from "../services/desktopServerClient";
+import {
+  DesktopServerRequestError,
+  fetchDesktopTerminalArchive,
+} from "../services/desktopServerClient";
 import { getAppErrorMessage } from "../appError";
 
 /**
@@ -40,7 +43,14 @@ const props = defineProps<{
    * retrying forever.
    */
   live?: boolean;
-  /** Whether the server kept this terminal's final frame. */
+  /**
+   * Whether the server kept this terminal's final frame.
+   *
+   * Undefined means *unknown*, not "no": a tab opened by an agent through
+   * `kanna_open_terminal` carries what the command said and nothing more, and
+   * treating silence as "not kept" told the reader the output was gone while
+   * the archive sat beside it. Unknown fetches, and a 404 is what decides.
+   */
   archived?: boolean;
   /** The status it exited with, when it has exited. */
   exitCode?: number | null;
@@ -50,12 +60,18 @@ const props = defineProps<{
 const termRef = ref<InstanceType<typeof TerminalView> | null>(null);
 const archiveEl = ref<HTMLElement | null>(null);
 const archiveError = ref<string | null>(null);
+const archiveMissing = ref(false);
 const { effectiveCodeTheme } = useThemeRuntime();
 
 let archiveTerminal: Terminal | null = null;
 let archiveFitAddon: FitAddon | null = null;
 let unregisterArchiveBuffer: (() => void) | null = null;
 let renderedArchiveFor: string | null = null;
+
+/** A 404 from the archive route means the frame was not kept, not a failure. */
+function isMissingArchiveError(error: unknown): boolean {
+  return error instanceof DesktopServerRequestError && error.status === 404;
+}
 
 function disposeArchiveTerminal(): void {
   unregisterArchiveBuffer?.();
@@ -78,9 +94,14 @@ async function renderArchive(): Promise<void> {
     archive = await fetchDesktopTerminalArchive(props.taskId, props.sessionId);
   } catch (error: unknown) {
     renderedArchiveFor = null;
-    archiveError.value = getAppErrorMessage(error);
+    // A terminal that kept no frame answers 404, which is not a fault to
+    // report — it is the answer, and the banner already says the output was
+    // not kept.
+    archiveMissing.value = isMissingArchiveError(error);
+    archiveError.value = archiveMissing.value ? null : getAppErrorMessage(error);
     return;
   }
+  archiveMissing.value = false;
   if (renderedArchiveFor !== props.sessionId || !archiveEl.value) return;
 
   const term = new Terminal({
@@ -113,9 +134,11 @@ watch(effectiveCodeTheme, (theme) => {
 });
 
 watch(
-  [() => props.live, () => props.sessionId, archiveEl],
+  [() => props.live, () => props.archived, () => props.sessionId, archiveEl],
   async () => {
-    if (props.live !== false || !props.archived) {
+    // `archived === false` is the one answer that means "there is nothing to
+    // fetch"; undefined is unknown and asks the server.
+    if (props.live !== false || props.archived === false) {
       disposeArchiveTerminal();
       return;
     }
@@ -143,7 +166,7 @@ onBeforeUnmount(disposeArchiveTerminal);
       <template v-if="archiveError">
         {{ $t('taskTerminal.archiveFailed', { title }) }} {{ archiveError }}
       </template>
-      <template v-else-if="!archived">
+      <template v-else-if="archived === false || archiveMissing">
         {{ $t('taskTerminal.noArchive', { title }) }}
       </template>
       <template v-else-if="exitCode === 0 || exitCode === null || exitCode === undefined">
