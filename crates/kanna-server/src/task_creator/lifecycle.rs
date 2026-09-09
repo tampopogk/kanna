@@ -271,9 +271,18 @@ pub(crate) async fn spawn_prepared_task_for_api_recording_stage_run_detailed(
     // from what that shell leaves behind. Nothing about the run is recorded
     // until it succeeds: a launch whose startup failed never had an agent.
     if let Some(plan) = prepared.setup_terminal.take() {
-        run_new_task_setup_terminal(db_path, daemon.daemon_dir(), &mut prepared, plan, None)
-            .await
-            .map_err(PreparedTaskDeliveryError::BeforeAcknowledgement)?;
+        if let Err(error) =
+            run_new_task_setup_terminal(db_path, daemon.daemon_dir(), &mut prepared, plan, None)
+                .await
+        {
+            // Startup failed, timed out, or left no receipt: this launch is
+            // over and its failure is recorded by the caller. The intent has
+            // to go with it — a stale one both blocks the next launch from
+            // recording its own (the table holds one per task) and makes the
+            // next boot record a second failure for this one.
+            clear_task_launch_intent(db_path, &prepared.created_task.task_id);
+            return Err(PreparedTaskDeliveryError::BeforeAcknowledgement(error));
+        }
     }
     let run_id = generate_stage_run_id(&prepared.created_task.task_id);
     let mut completion_context = initialize_completion_context(
@@ -616,20 +625,51 @@ async fn finish_prepared_task_launch(
     started: super::setup_session::StartedSetupTerminal,
 ) -> Result<(), String> {
     let task_id = prepared.created_task.task_id.clone();
+    // Every way this launch can end without an agent records the failure and
+    // retires the intent together. Leaving the intent behind would block the
+    // task's next launch from recording its own — the table holds one per
+    // task — and would have the next boot record a second failure for a
+    // launch whose receipt this one already consumed.
     if let Err(error) =
         run_new_task_setup_terminal(db_path, daemon_dir, &mut prepared, plan, Some(started)).await
     {
-        let db = Db::open(db_path).map_err(|open_error| format!("db error: {open_error}"))?;
-        record_prepared_task_spawn_failure(&db, &prepared, &error)?;
+        record_failed_task_launch(db_path, &task_id, &prepared, &error)?;
         return Err(error);
     }
-    let mut daemon = DaemonClient::connect(daemon_dir)
-        .await
-        .map_err(|error| format!("daemon error: {error}"))?;
+    let mut daemon = match DaemonClient::connect(daemon_dir).await {
+        Ok(daemon) => daemon,
+        Err(error) => {
+            // Setup succeeded and its receipt is already consumed, so no later
+            // boot can finish this launch: it ends here, visibly.
+            let error = format!("daemon error: {error}");
+            record_failed_task_launch(db_path, &task_id, &prepared, &error)?;
+            return Err(error);
+        }
+    };
     spawn_prepared_task_for_api_with_diagnostics(db_path, &mut daemon, prepared)
         .await
         .map(|_| ())
         .map_err(|error| format!("task {task_id} failed to spawn: {error}"))
+}
+
+/// End a launch that will not produce an agent: record the failure against the
+/// task and retire its intent together.
+///
+/// Leaving the intent behind would block the task's next launch from recording
+/// its own — the table holds one per task, so `persist_task_launch_intent`
+/// would keep the stale payload — and would have the next boot record a second
+/// failure for a launch whose receipt this one already consumed.
+fn record_failed_task_launch(
+    db_path: &str,
+    task_id: &str,
+    prepared: &PreparedTaskSpawn,
+    error: &str,
+) -> Result<(), String> {
+    let recorded = Db::open(db_path)
+        .map_err(|open_error| format!("db error: {open_error}"))
+        .and_then(|db| record_prepared_task_spawn_failure(&db, prepared, error));
+    clear_task_launch_intent(db_path, task_id);
+    recorded
 }
 
 pub(crate) async fn spawn_prepared_task_for_api_with_diagnostics(
@@ -1765,7 +1805,7 @@ fn record_reconciled_launch_failure(
 /// operation in the same server process. This is deliberately a single
 /// daemon List query: an uncertain delivery is never replayed, and a live
 /// caller is released as soon as the durable intent is resolved.
-async fn release_lifecycle_operation_for_task(
+pub(super) async fn release_lifecycle_operation_for_task(
     daemon: &mut DaemonClient,
     db_path: &str,
     task_id: &str,
@@ -1978,6 +2018,36 @@ fn reconcile_lifecycle_operation(
             }
             Err(error) => retire_unreconcilable_lifecycle_operation(db_path, intent, &error),
         },
+        // A launch in flight in *this* process. Its own future is still going
+        // to spawn the task's session, so there is nothing here to reconcile
+        // and everything to protect: retiring it would drop the guard, let a
+        // stage advance or a post run against a task whose agent is about to
+        // be spawned underneath it, and announce a retirement for work that is
+        // still happening. The intent stays, the guard refuses, and the launch
+        // clears it when it ends. A launch that outlived its server is
+        // resolved at startup instead, where the daemon can be asked whether
+        // its startup terminal is still running.
+        TASK_LAUNCH_OPERATION => {
+            match parse_operation_payload::<TaskLaunchOperationPayload>(intent) {
+                Ok(payload) if payload.task_id != intent.task_id => {
+                    retire_unreconcilable_lifecycle_operation(
+                        db_path,
+                        intent,
+                        &format!(
+                            "payload task {} disagrees with row task {}",
+                            payload.task_id, intent.task_id
+                        ),
+                    )
+                }
+                Ok(payload) => log::info!(
+                    "task {} has a launch in flight (startup terminal {}); refusing the operation \
+                 that asked for the guard",
+                    intent.task_id,
+                    payload.setup_session_id
+                ),
+                Err(error) => retire_unreconcilable_lifecycle_operation(db_path, intent, &error),
+            }
+        }
         kind => retire_unreconcilable_lifecycle_operation(
             db_path,
             intent,

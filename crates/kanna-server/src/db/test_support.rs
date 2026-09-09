@@ -435,6 +435,20 @@ impl Db {
     }
 
     #[cfg(test)]
+    /// How many events of one type this task has, for tests that assert a
+    /// retirement was *not* announced.
+    pub fn count_test_task_events_of_type(
+        &self,
+        task_id: &str,
+        event_type: &str,
+    ) -> Result<i64, rusqlite::Error> {
+        self.conn.query_row(
+            "SELECT COUNT(*) FROM task_event WHERE task_id = ?1 AND type = ?2",
+            (task_id, event_type),
+            |row| row.get(0),
+        )
+    }
+
     pub fn count_test_worktrees_for_task(
         &self,
         pipeline_item_id: &str,

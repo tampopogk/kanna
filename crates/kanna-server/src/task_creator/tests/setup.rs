@@ -1055,3 +1055,175 @@ async fn wait_for_setup_session_exit(
     }
     panic!("the startup terminal {session_id} never exited");
 }
+
+/// A launch whose setup fails records its failure once and takes its intent
+/// with it.
+///
+/// The intent is also the task's guard, and the table holds one per task: a
+/// stale one made the *next* launch run under the dead one's payload, and made
+/// the next boot record a second failure for a launch that had already failed
+/// visibly.
+#[tokio::test]
+async fn a_failed_setup_records_one_failure_and_leaves_no_launch_intent() {
+    let _sidecar_guard = crate::test_sidecar_guard().await;
+    let kanna_cli = ensure_test_sidecar("kanna-cli");
+    let _kanna_mcp = ensure_test_sidecar("kanna-mcp");
+    let repo_root = write_setup_repo(
+        "launch-failure-clears-intent",
+        "printf 'SETUP_FAILED_SENTINEL\\n' && exit 23",
+        false,
+    );
+    let mut config = test_config("launch-failure-clears-intent");
+    config.kanna_cli_path = Some(kanna_cli.path().to_string_lossy().to_string());
+    let db = Db::open_for_tests(&config.db_path).unwrap();
+    db.insert_test_repo_with_path("repo-1", &repo_root.to_string_lossy(), "Repo One")
+        .unwrap();
+
+    let prepared = prepare_launch(&db, &config, "codex");
+    let task_id = prepared.task_id().to_string();
+    let daemon = spawn_fake_daemon_running_setup_terminals(config.daemon_dir.clone()).await;
+    let mut client = DaemonClient::connect(&config.daemon_dir).await.unwrap();
+    let failure = super::super::spawn_prepared_task_for_api_with_diagnostics(
+        &config.db_path,
+        &mut client,
+        prepared,
+    )
+    .await
+    .expect_err("a launch whose setup exits non-zero starts no agent");
+    assert!(
+        failure.contains("see the startup terminal"),
+        "the failure names the terminal holding the output: {failure}"
+    );
+
+    let runs = db.list_stage_runs_for_task(&task_id).unwrap();
+    assert_eq!(
+        runs.len(),
+        1,
+        "exactly one run records the failure: {runs:?}"
+    );
+    assert_eq!(runs[0].status, "failed");
+    assert!(
+        !db.has_lifecycle_operation_for_task(&task_id).unwrap(),
+        "a recorded failure retires the launch intent"
+    );
+
+    // Nothing is left for the next boot to decide, so it must record nothing.
+    super::super::reconcile_lifecycle_operations_on_startup(&mut client, &config, &db).await;
+    assert_eq!(
+        db.list_stage_runs_for_task(&task_id).unwrap().len(),
+        1,
+        "startup must not record a second failure for a launch already failed"
+    );
+    assert!(daemon.spawns().is_empty(), "no agent was ever started");
+
+    daemon.abort();
+    let _ = std::fs::remove_dir_all(&repo_root);
+}
+
+/// A launch in flight refuses the task's next operation instead of being
+/// retired as an unknown kind.
+///
+/// The in-process guard reconciles a task's outstanding intent before allowing
+/// a stage advance or a post. It knew `post` and `stage_spawn` only, so a
+/// launch's own intent fell through to "unknown lifecycle operation kind" —
+/// dropping the guard, announcing a retirement for work that was still
+/// happening, and letting the next operation run against a task whose agent
+/// was about to be spawned underneath it.
+#[tokio::test]
+async fn a_launch_in_flight_refuses_the_next_operation_and_keeps_its_intent() {
+    let _sidecar_guard = crate::test_sidecar_guard().await;
+    let kanna_cli = ensure_test_sidecar("kanna-cli");
+    let _kanna_mcp = ensure_test_sidecar("kanna-mcp");
+    let repo_root = write_setup_repo(
+        "launch-in-flight-guard",
+        "while true; do sleep 60; done",
+        false,
+    );
+    let mut config = test_config("launch-in-flight-guard");
+    config.kanna_cli_path = Some(kanna_cli.path().to_string_lossy().to_string());
+    let db = Db::open_for_tests(&config.db_path).unwrap();
+    db.insert_test_repo_with_path("repo-1", &repo_root.to_string_lossy(), "Repo One")
+        .unwrap();
+
+    let mut prepared = prepare_launch(&db, &config, "codex");
+    let task_id = prepared.task_id().to_string();
+    let plan = prepared
+        .take_setup_terminal_for_test()
+        .expect("a launch with setup opens a startup terminal");
+    let daemon = spawn_fake_daemon_running_setup_terminals(config.daemon_dir.clone()).await;
+    super::super::lifecycle::persist_task_launch_intent(&config.db_path, &task_id, &plan).unwrap();
+    let _started = super::super::setup_session::start_setup_terminal(&config.daemon_dir, &plan)
+        .await
+        .unwrap();
+    super::super::lifecycle::record_started_setup_terminal(&config.db_path, &task_id, &plan)
+        .unwrap();
+
+    let mut client = DaemonClient::connect(&config.daemon_dir).await.unwrap();
+    let released = super::super::lifecycle::release_lifecycle_operation_for_task(
+        &mut client,
+        &config.db_path,
+        &task_id,
+    )
+    .await
+    .expect("the guard answers rather than failing");
+    assert!(
+        !released,
+        "an operation must not proceed while this task's launch is still in flight"
+    );
+    assert!(
+        db.has_lifecycle_operation_for_task(&task_id).unwrap(),
+        "the guard must not retire the launch it is protecting"
+    );
+    assert_eq!(
+        db.count_test_task_events_of_type(&task_id, "task.lifecycle_operation_retired")
+            .unwrap(),
+        0,
+        "nothing was retired, so nothing may be announced as retired"
+    );
+
+    let _ = client
+        .send_command(&kanna_daemon::protocol::Command::Kill {
+            session_id: plan.session_id.clone(),
+        })
+        .await;
+    daemon.abort();
+    let _ = std::fs::remove_dir_all(&repo_root);
+}
+
+/// Prepare a launch for a repo whose setup is the interesting part.
+fn prepare_launch(db: &Db, config: &Config, agent_provider: &str) -> PreparedTaskSpawn {
+    prepare_task_for_api(
+        db,
+        config,
+        CreateTaskRequest {
+            repo_id: "repo-1".to_string(),
+            prompt: "Run a launch whose setup decides the outcome".to_string(),
+            display_name: None,
+            workflow_name: None,
+            stage: None,
+            base_ref: None,
+            diff_base_ref: None,
+            agent: None,
+            agent_provider: Some(agent_provider.to_string()),
+            agent_type: Some("pty".to_string()),
+            terminal_cols: None,
+            terminal_rows: None,
+            model: None,
+            effort: None,
+            permission_mode: None,
+            allowed_tools: None,
+            disallowed_tools: None,
+            max_turns: None,
+            max_budget_usd: None,
+            setup_cmds: None,
+            task_template: None,
+            resume_session_id: None,
+            recovery_snapshot: None,
+            transfer_import: None,
+            notify_task_id: None,
+            parent_task_id: None,
+            blocker_task_ids: None,
+        },
+    )
+    .unwrap()
+}
