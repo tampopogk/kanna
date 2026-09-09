@@ -450,6 +450,90 @@ describe("main content area tabs", () => {
     expect(await openTabIds(client)).toEqual(["agent"]);
   });
 
+  it("shows a launch's startup terminal as its own tab, beside the agent session", async () => {
+    await selectTask(taskId);
+    await closeViewTabs(client);
+    await waitForActiveTab(client, "agent");
+
+    const server = await resolveAppKannaServer(client);
+    const setupSessionId = `setup-${taskId}-1`;
+    // A launch records its startup terminal when the daemon acknowledges it;
+    // the desktop reads that record rather than being told about it, which is
+    // what makes a tab appear after a missed event or a restart too.
+    const recorded = await client.executeAsync<string>(
+      `const cb = arguments[arguments.length - 1];
+       const ctx = window.__KANNA_E2E__.setupState;
+       const db = ctx.db.value || ctx.db;
+       db.execute("INSERT INTO terminal_session (id, repo_id, pipeline_item_id, label, cwd, daemon_session_id, role, stage, attempt, state, title) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+         ["${setupSessionId}", "${await getVueState(client, "selectedRepoId")}", "${taskId}", "setup", "${testRepoPath}", "${setupSessionId}", "setup", "in progress", 1, "live", "Startup · in progress"])
+         .then(function() { cb("ok"); })
+         .catch(function(e) { cb("err:" + (e && e.message ? e.message : String(e))); });`
+    );
+    if (typeof recorded === "string" && recorded.startsWith("err:")) {
+      throw new Error(`recording the startup terminal failed: ${recorded.slice(4)}`);
+    }
+    // The server is the source of truth for which terminals a task has, and a
+    // task now has more than one — only the agent one answers to the task id.
+    const terminals = await localProcessFetch(
+      `${server.baseUrl}/v1/tasks/${taskId}/terminals`,
+    );
+    expect(terminals.ok).toBe(true);
+    const listed = await terminals.json() as {
+      agentSessionId: string | null;
+      terminals: { role: string; daemonSessionId: string | null }[];
+    };
+    expect(listed.agentSessionId).toBe(taskId);
+    expect(listed.terminals.some((terminal) =>
+      terminal.role === "setup" && terminal.daemonSessionId === setupSessionId
+    )).toBe(true);
+
+    // Re-selecting is what re-reads the task's terminals.
+    await selectTask(secondTaskId);
+    await selectTask(taskId);
+
+    const deadline = Date.now() + 10_000;
+    let tabs: string[] = [];
+    while (Date.now() < deadline) {
+      tabs = await openTabIds(client);
+      if (tabs.includes(`terminal:${setupSessionId}`)) break;
+      await sleep(200);
+    }
+    expect(tabs).toEqual(["agent", `terminal:${setupSessionId}`]);
+    // A startup terminal appearing must not pull the reader off the agent.
+    expect(await activeTabId(client)).toBe("agent");
+
+    const label = await client.executeSync<string | null>(
+      `const tab = document.querySelector('[data-testid="main-tab-terminal:${setupSessionId}"] .main-tab-label');
+       return tab ? tab.textContent.trim() : null;`
+    );
+    expect(label).toBe("Startup · in progress");
+
+    // It is a view of a session the launch owns, so closing it hides the view
+    // and leaves the record alone: reopening shows the same terminal.
+    await client.executeSync(
+      `const close = document.querySelector('[data-testid="main-tab-close-terminal:${setupSessionId}"]');
+       if (!close) throw new Error("the startup terminal tab has no close button");
+       close.click();
+       return true;`
+    );
+    await sleep(300);
+    expect(await openTabIds(client)).toEqual(["agent"]);
+
+    const still = await localProcessFetch(`${server.baseUrl}/v1/tasks/${taskId}/terminals`);
+    const stillListed = await still.json() as { terminals: { role: string }[] };
+    expect(stillListed.terminals.some((terminal) => terminal.role === "setup")).toBe(true);
+
+    await client.executeAsync<string>(
+      `const cb = arguments[arguments.length - 1];
+       const ctx = window.__KANNA_E2E__.setupState;
+       const db = ctx.db.value || ctx.db;
+       db.execute("DELETE FROM terminal_session WHERE id = ?", ["${setupSessionId}"])
+         .then(function() { cb("ok"); })
+         .catch(function(e) { cb("err:" + (e && e.message ? e.message : String(e))); });`
+    );
+    await sleep(1_200);
+  });
+
   it("brings a task's tabs back after the app restarts, and forgets a closed task's", async () => {
     await selectTask(taskId);
     await closeViewTabs(client);
