@@ -260,6 +260,20 @@ fn typed_tool_surfaces() -> BTreeMap<&'static str, TypedToolSurface> {
             },
         ),
         (
+            "kanna_list_task_terminals",
+            TypedToolSurface {
+                command_path: &["task", "terminals"],
+                param_args: &[("task_id", "task_id")],
+            },
+        ),
+        (
+            "kanna_open_terminal",
+            TypedToolSurface {
+                command_path: &["task", "open-terminal"],
+                param_args: &[("task_id", "task_id"), ("session_id", "session_id")],
+            },
+        ),
+        (
             "kanna_search_tasks",
             TypedToolSurface {
                 command_path: &["task", "search"],

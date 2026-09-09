@@ -672,6 +672,28 @@ pub(crate) async fn run(command: TaskCommands) {
             insert_optional(&mut args, "machine_id", machine_id);
             run_catalog_tool("kanna_open_file", &args, server_url.as_deref()).await;
         }
+        TaskCommands::Terminals {
+            task_id,
+            machine_id,
+            server_url,
+        } => {
+            let mut args = serde_json::json!({ "task_id": task_id });
+            insert_optional(&mut args, "machine_id", machine_id);
+            run_catalog_tool("kanna_list_task_terminals", &args, server_url.as_deref()).await;
+        }
+        TaskCommands::OpenTerminal {
+            task_id,
+            session_id,
+            machine_id,
+            server_url,
+        } => {
+            let mut args = serde_json::json!({
+                "task_id": task_id,
+                "session_id": session_id,
+            });
+            insert_optional(&mut args, "machine_id", machine_id);
+            run_catalog_tool("kanna_open_terminal", &args, server_url.as_deref()).await;
+        }
         TaskCommands::Logs {
             task_id,
             tail,
