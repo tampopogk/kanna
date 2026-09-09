@@ -144,6 +144,7 @@ pub(crate) const CURRENT_SCHEMA_MIGRATIONS: &[&str] = &[
     "066_durable_task_event_cursor_handles",
     "067_terminal_session_roles",
     "068_terminal_session_archive",
+    "069_task_launch_lifecycle_operation",
 ];
 
 #[derive(Debug, Serialize)]
@@ -2072,6 +2073,35 @@ fn run_schema_migrations(conn: &Connection) -> Result<(), rusqlite::Error> {
                vt TEXT NOT NULL,
                archived_at TEXT NOT NULL DEFAULT (datetime('now'))
              );",
+        )
+    })?;
+
+    run_migration(conn, "069_task_launch_lifecycle_operation", |conn| {
+        // A launch that finishes in the background is a lifecycle operation
+        // like the others: the startup terminal runs, and the agent it
+        // precedes is started by a task in this process. Without a durable
+        // intent a restart in that window leaves a task with no agent, no
+        // stage run, and nothing that ever tries again.
+        //
+        // The kind is part of a CHECK, so widening it means rebuilding the
+        // table; the rows are in-flight operations and are carried across.
+        conn.execute_batch(
+            "ALTER TABLE lifecycle_operation_intent RENAME TO lifecycle_operation_intent_old;
+             CREATE TABLE lifecycle_operation_intent (
+                id TEXT PRIMARY KEY,
+                task_id TEXT NOT NULL REFERENCES pipeline_item(id) ON DELETE CASCADE,
+                kind TEXT NOT NULL CHECK (kind IN ('post', 'stage_spawn', 'task_launch')),
+                phase TEXT NOT NULL CHECK (phase IN ('prepared', 'spawn_ready', 'submitted', 'committed')),
+                payload_json TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+             );
+             INSERT INTO lifecycle_operation_intent
+               (id, task_id, kind, phase, payload_json, created_at)
+               SELECT id, task_id, kind, phase, payload_json, created_at
+               FROM lifecycle_operation_intent_old;
+             DROP TABLE lifecycle_operation_intent_old;
+             CREATE UNIQUE INDEX idx_lifecycle_operation_intent_task
+               ON lifecycle_operation_intent(task_id);",
         )
     })?;
 

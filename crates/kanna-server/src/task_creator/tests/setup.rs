@@ -287,6 +287,27 @@ async fn a_launch_runs_setup_in_its_own_terminal_and_the_agent_inherits_what_it_
         .expect("the launch records its startup terminal");
     assert_eq!(setup_terminal.state, "retired");
     assert_eq!(setup_terminal.exit_code, Some(0));
+    // A retired startup terminal has to stay readable: the launch captures its
+    // final frame before recording the retirement, and the terminals list says
+    // so, so a tab knows there is something to render instead of attaching to
+    // a session that no longer exists.
+    let setup_session_id = setup_terminal
+        .daemon_session_id
+        .clone()
+        .expect("a started startup terminal records its daemon session");
+    assert!(
+        setup_terminal.archived,
+        "a retired startup terminal must report that its final frame was kept"
+    );
+    let archive = db
+        .read_terminal_session_archive(&setup_session_id)
+        .unwrap()
+        .expect("the retired startup terminal keeps its final frame");
+    assert!(
+        archive.vt.contains(&setup_session_id),
+        "the archived frame is this terminal's: {:?}",
+        archive.vt
+    );
     assert_ne!(
         setup_terminal.daemon_session_id.as_deref(),
         Some(task_id.as_str()),
@@ -846,4 +867,191 @@ async fn timed_out_stage_fork_setup_kills_group_records_failure_and_removes_fork
 
     let _ = std::fs::remove_file(grandchild_pid_file);
     let _ = std::fs::remove_dir_all(&repo_root);
+}
+
+/// A launch that outlives the server that began it is finished on the next
+/// boot, exactly once.
+///
+/// The startup terminal is a daemon session, so it keeps running when the
+/// server stops; the task waiting for it does not. Before this, the agent was
+/// simply never started: no session, no stage run, and nothing that ever tried
+/// again — a regression against the arrangement where setup ran inside the
+/// agent's own shell.
+#[tokio::test]
+async fn a_launch_interrupted_after_setup_is_finished_once_on_the_next_startup() {
+    let _sidecar_guard = crate::test_sidecar_guard().await;
+    let kanna_cli = ensure_test_sidecar("kanna-cli");
+    let _kanna_mcp = ensure_test_sidecar("kanna-mcp");
+    let repo_root = write_setup_repo("launch-reconcile-success", INSTALL_CODEX, false);
+    let mut config = test_config("launch-reconcile-success");
+    config.kanna_cli_path = Some(kanna_cli.path().to_string_lossy().to_string());
+    let db = Db::open_for_tests(&config.db_path).unwrap();
+    db.insert_test_repo_with_path("repo-1", &repo_root.to_string_lossy(), "Repo One")
+        .unwrap();
+
+    let (task_id, plan) = begin_and_abandon_launch(&db, &config, "codex").await;
+    let daemon = spawn_fake_daemon_running_setup_terminals(config.daemon_dir.clone()).await;
+    let started = super::super::setup_session::start_setup_terminal(&config.daemon_dir, &plan)
+        .await
+        .unwrap();
+    super::super::lifecycle::record_started_setup_terminal(&config.db_path, &task_id, &plan)
+        .unwrap();
+    // The process that was waiting for this terminal is gone: the shell runs
+    // on, and nothing is listening for its exit.
+    drop(started);
+    wait_for_setup_receipt(&plan.receipt_path).await;
+    wait_for_setup_session_exit(&daemon, &plan.session_id).await;
+
+    let mut client = DaemonClient::connect(&config.daemon_dir).await.unwrap();
+    super::super::reconcile_lifecycle_operations_on_startup(&mut client, &config, &db).await;
+
+    let spawns = daemon.spawns();
+    assert_eq!(
+        spawns.len(),
+        1,
+        "startup finishes the launch with exactly one agent spawn: {spawns:?}"
+    );
+    let run = db
+        .latest_stage_run(&task_id)
+        .unwrap()
+        .expect("the finished launch records a stage run");
+    assert_eq!(run.status, "running");
+    assert!(
+        !db.has_lifecycle_operation_for_task(&task_id).unwrap(),
+        "a finished launch leaves no intent for a later boot to run again"
+    );
+
+    daemon.abort();
+    let _ = std::fs::remove_dir_all(&repo_root);
+}
+
+/// A launch whose setup failed while the server was down starts no agent, and
+/// says so where the person can act on it — naming the terminal that holds the
+/// output explaining why.
+#[tokio::test]
+async fn a_launch_whose_setup_failed_while_the_server_was_down_records_a_failure() {
+    let _sidecar_guard = crate::test_sidecar_guard().await;
+    let kanna_cli = ensure_test_sidecar("kanna-cli");
+    let _kanna_mcp = ensure_test_sidecar("kanna-mcp");
+    let repo_root = write_setup_repo(
+        "launch-reconcile-failure",
+        "printf 'SETUP_FAILED_SENTINEL\\n' && exit 23",
+        false,
+    );
+    let mut config = test_config("launch-reconcile-failure");
+    config.kanna_cli_path = Some(kanna_cli.path().to_string_lossy().to_string());
+    let db = Db::open_for_tests(&config.db_path).unwrap();
+    db.insert_test_repo_with_path("repo-1", &repo_root.to_string_lossy(), "Repo One")
+        .unwrap();
+
+    let (task_id, plan) = begin_and_abandon_launch(&db, &config, "codex").await;
+    let daemon = spawn_fake_daemon_running_setup_terminals(config.daemon_dir.clone()).await;
+    let started = super::super::setup_session::start_setup_terminal(&config.daemon_dir, &plan)
+        .await
+        .unwrap();
+    super::super::lifecycle::record_started_setup_terminal(&config.db_path, &task_id, &plan)
+        .unwrap();
+    drop(started);
+    wait_for_setup_session_exit(&daemon, &plan.session_id).await;
+
+    let mut client = DaemonClient::connect(&config.daemon_dir).await.unwrap();
+    super::super::reconcile_lifecycle_operations_on_startup(&mut client, &config, &db).await;
+
+    assert!(
+        daemon.spawns().is_empty(),
+        "a failed startup starts no agent: {:?}",
+        daemon.spawns()
+    );
+    let run = db
+        .latest_stage_run(&task_id)
+        .unwrap()
+        .expect("the unfinished launch records a stage run");
+    assert_eq!(run.status, "failed");
+    let result = run.result.unwrap_or_default();
+    assert!(
+        result.contains(&plan.session_id),
+        "the failure names the startup terminal: {result}"
+    );
+    assert!(
+        !db.has_lifecycle_operation_for_task(&task_id).unwrap(),
+        "a resolved launch leaves no intent behind"
+    );
+
+    daemon.abort();
+    let _ = std::fs::remove_dir_all(&repo_root);
+}
+
+/// Prepare a launch and record its durable intent, then hand back the startup
+/// terminal plan without ever running the task that would finish it — which is
+/// what a server that stops mid-launch leaves behind.
+async fn begin_and_abandon_launch(
+    db: &Db,
+    config: &Config,
+    agent_provider: &str,
+) -> (String, super::super::setup_session::SetupTerminalPlan) {
+    let mut prepared = prepare_task_for_api(
+        db,
+        config,
+        CreateTaskRequest {
+            repo_id: "repo-1".to_string(),
+            prompt: "Finish this launch after a restart".to_string(),
+            display_name: None,
+            workflow_name: None,
+            stage: None,
+            base_ref: None,
+            diff_base_ref: None,
+            agent: None,
+            agent_provider: Some(agent_provider.to_string()),
+            agent_type: Some("pty".to_string()),
+            terminal_cols: None,
+            terminal_rows: None,
+            model: None,
+            effort: None,
+            permission_mode: None,
+            allowed_tools: None,
+            disallowed_tools: None,
+            max_turns: None,
+            max_budget_usd: None,
+            setup_cmds: None,
+            task_template: None,
+            resume_session_id: None,
+            recovery_snapshot: None,
+            transfer_import: None,
+            notify_task_id: None,
+            parent_task_id: None,
+            blocker_task_ids: None,
+        },
+    )
+    .unwrap();
+    let task_id = prepared.task_id().to_string();
+    let plan = prepared
+        .take_setup_terminal_for_test()
+        .expect("a launch with setup opens a startup terminal");
+    super::super::lifecycle::persist_task_launch_intent(&config.db_path, &task_id, &plan).unwrap();
+    (task_id, plan)
+}
+
+async fn wait_for_setup_receipt(path: &str) {
+    let deadline = std::time::Instant::now() + EVENTUAL_PROGRESS_GUARD;
+    while std::time::Instant::now() < deadline {
+        if std::path::Path::new(path).exists() {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    panic!("the startup terminal never wrote its receipt at {path}");
+}
+
+async fn wait_for_setup_session_exit(
+    daemon: &crate::setup_terminal_fixture::SetupTerminalDaemon,
+    session_id: &str,
+) {
+    let deadline = std::time::Instant::now() + EVENTUAL_PROGRESS_GUARD;
+    while std::time::Instant::now() < deadline {
+        if !daemon.is_running(session_id) {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    panic!("the startup terminal {session_id} never exited");
 }

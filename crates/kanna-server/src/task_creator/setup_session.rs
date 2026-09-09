@@ -518,6 +518,14 @@ fn read_setup_outcome(plan: &SetupTerminalPlan, exit_code: i32) -> SetupTerminal
     }
 }
 
+/// Read a receipt a startup terminal left behind, for a launch this process
+/// did not run itself. Reconciliation on the next boot has only the path.
+pub(crate) fn read_setup_receipt(path: &str) -> Result<SetupReceipt, String> {
+    let receipt = read_receipt(path)?;
+    let _ = std::fs::remove_file(path);
+    Ok(receipt)
+}
+
 fn read_receipt(path: &str) -> Result<SetupReceipt, String> {
     let raw = std::fs::read(path).map_err(|error| format!("cannot read {path}: {error}"))?;
     if raw.is_empty() {

@@ -156,6 +156,15 @@ impl PreparedTaskSpawn {
         self.setup_terminal.is_some()
     }
 
+    /// Take this launch's startup terminal plan, for tests that drive the
+    /// terminal themselves rather than letting a launch task run it.
+    #[cfg(test)]
+    pub(crate) fn take_setup_terminal_for_test(
+        &mut self,
+    ) -> Option<super::setup_session::SetupTerminalPlan> {
+        self.setup_terminal.take()
+    }
+
     /// The startup terminal's shell command, for tests that assert setup runs
     /// there rather than inside the agent's own shell.
     #[cfg(test)]

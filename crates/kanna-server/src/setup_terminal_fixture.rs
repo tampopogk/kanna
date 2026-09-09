@@ -26,6 +26,8 @@ pub(crate) struct SetupTerminalDaemon {
     /// the agent spawns. A launch's startup terminals are run rather than
     /// recorded — they are the thing this fixture exists to execute.
     commands: Arc<Mutex<Vec<DaemonCommand>>>,
+    /// Session id -> process group of the startup terminals still running.
+    groups: Arc<Mutex<HashMap<String, i32>>>,
 }
 
 impl SetupTerminalDaemon {
@@ -44,6 +46,11 @@ impl SetupTerminalDaemon {
                 )
             })
             .collect()
+    }
+
+    /// Whether a startup terminal this fixture ran is still alive.
+    pub(crate) fn is_running(&self, session_id: &str) -> bool {
+        self.groups.lock().unwrap().contains_key(session_id)
     }
 
     pub(crate) fn abort(&self) {
@@ -65,6 +72,7 @@ pub(crate) async fn spawn_setup_terminal_daemon(daemon_dir: &str) -> SetupTermin
     // Session id -> process group, so `Kill` can reach a setup script's own
     // children the way the real daemon's reaper does.
     let groups: Arc<Mutex<HashMap<String, i32>>> = Arc::default();
+    let live_groups = Arc::clone(&groups);
     let commands: Arc<Mutex<Vec<DaemonCommand>>> = Arc::default();
     let recorded = Arc::clone(&commands);
     let task = tokio::spawn(async move {
@@ -117,7 +125,11 @@ pub(crate) async fn spawn_setup_terminal_daemon(daemon_dir: &str) -> SetupTermin
             });
         }
     });
-    SetupTerminalDaemon { task, commands }
+    SetupTerminalDaemon {
+        task,
+        commands,
+        groups: live_groups,
+    }
 }
 
 fn answer(
@@ -147,9 +159,24 @@ fn answer(
             recorded.lock().unwrap().push(command.clone());
             DaemonEvent::Ok
         }
-        DaemonCommand::Snapshot { session_id } => DaemonEvent::Error {
-            code: Some(kanna_daemon::protocol::ErrorCode::SessionNotFound),
-            message: format!("session not found: {session_id}"),
+        // A real daemon archives a terminal's final frame before it drops the
+        // session and serves that archive to a snapshot of the dead id; this
+        // fixture stands in for it with a frame that names the session, which
+        // is what lets a test prove the server keeps it.
+        DaemonCommand::Snapshot { session_id } => DaemonEvent::Snapshot {
+            session_id: session_id.clone(),
+            snapshot: kanna_daemon::protocol::TerminalSnapshot {
+                version: 1,
+                rows: 24,
+                cols: 80,
+                cursor_row: 0,
+                cursor_col: 0,
+                cursor_visible: true,
+                vt: format!("final frame of {session_id}\r\n"),
+                saved_at: 0,
+                sequence: 1,
+            },
+            agent_provider: None,
         },
         DaemonCommand::Kill { session_id } if !groups.lock().unwrap().contains_key(session_id) => {
             // A stage swap or rerun kills the outgoing agent session, which
@@ -170,6 +197,28 @@ fn answer(
             }
             DaemonEvent::Ok
         }
+        // Startup reconciliation asks what is still running before it decides
+        // whether a launch can still be finished.
+        DaemonCommand::List => DaemonEvent::SessionList {
+            sessions: groups
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|(session_id, pid)| kanna_daemon::protocol::SessionInfo {
+                    session_id: session_id.clone(),
+                    pid: *pid as u32,
+                    cwd: String::new(),
+                    state: kanna_daemon::protocol::SessionState::Active,
+                    idle_seconds: 0,
+                    status: kanna_daemon::protocol::SessionStatus::Busy,
+                    kind: Default::default(),
+                    logical_input_blocked: false,
+                    pending_logical_input_count: None,
+                    composer_text: None,
+                    composer_attestation: Default::default(),
+                })
+                .collect(),
+        },
         DaemonCommand::Spawn {
             session_id,
             executable,

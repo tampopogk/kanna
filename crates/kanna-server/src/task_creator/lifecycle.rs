@@ -315,6 +315,9 @@ pub(crate) async fn spawn_prepared_task_for_api_recording_stage_run_detailed(
                 Ok(Err(error)) => format!("{message}; diagnostics failed: {error}"),
                 Err(error) => format!("{message}; diagnostics worker failed: {error}"),
             };
+            // The launch has an outcome now, and it is recorded against the
+            // task: nothing is left for a later boot to finish.
+            clear_task_launch_intent(db_path, &prepared.created_task.task_id);
             return Err(PreparedTaskDeliveryError::BeforeAcknowledgement(message));
         }
         Err(SpawnPreparedError::UncertainDelivery(message)) => {
@@ -322,12 +325,18 @@ pub(crate) async fn spawn_prepared_task_for_api_recording_stage_run_detailed(
             // acknowledgement was lost. Preserve the context that process
             // received; the caller quarantines this task instead of retrying.
             completion_context.persist();
+            // A spawn that may have created the agent must never be retried,
+            // by this server or by a later boot.
+            clear_task_launch_intent(db_path, &prepared.created_task.task_id);
             return Err(PreparedTaskDeliveryError::AfterAcknowledgement(message));
         }
     };
     // From this point the daemon has acknowledged a process which owns this
     // path. Keep it even if later database bookkeeping fails.
     completion_context.persist();
+    // The agent is running: the launch is finished and must never be finished
+    // a second time by a later boot.
+    clear_task_launch_intent(db_path, &prepared.created_task.task_id);
     let created = crate::mobile_api::CreateTaskResponse {
         task_id: created.task_id,
         repo_id: created.repo_id,
@@ -395,7 +404,17 @@ async fn run_launch_setup_terminal(
             Err(error) => Err(error),
         },
     };
-    let retire = |exit_code: Option<i64>| {
+    // The startup terminal's final frame is what a failed stage advance points
+    // a person at, so it is captured before the row says the terminal is
+    // retired — the daemon keeps it only until its own snapshot state is
+    // cleaned up.
+    let retire = async |exit_code: Option<i64>| {
+        crate::terminal_watcher::archive_finished_terminal_frame(
+            db_path,
+            daemon_dir,
+            &plan.session_id,
+        )
+        .await;
         if let Ok(db) = Db::open(db_path) {
             if let Err(error) = db.retire_task_terminal_session(&plan.session_id, exit_code) {
                 log::warn!(
@@ -407,18 +426,35 @@ async fn run_launch_setup_terminal(
     };
     let receipt = match outcome {
         Ok(super::setup_session::SetupTerminalOutcome::Ready(receipt)) => {
-            retire(Some(0));
+            retire(Some(0)).await;
             receipt
         }
         Ok(super::setup_session::SetupTerminalOutcome::Failed { exit_code, reason }) => {
-            retire(Some(exit_code as i64));
+            retire(Some(exit_code as i64)).await;
             return Err(reason);
         }
         Err(error) => {
-            retire(None);
+            retire(None).await;
             return Err(error);
         }
     };
+    build_launch_session_from_receipt(task_id, cwd, env, launch, &receipt)
+}
+
+/// Build the agent session a startup terminal was running for.
+///
+/// Split out because a launch can be finished twice over: once by the task
+/// that ran the startup terminal, and once by the next server generation
+/// reconciling a launch that outlived the process which began it. Both must
+/// build the same session from the same receipt, and neither may re-run setup
+/// that already succeeded.
+pub(super) fn build_launch_session_from_receipt(
+    task_id: &str,
+    cwd: &str,
+    env: &mut std::collections::HashMap<String, String>,
+    launch: Option<super::types::DeferredNewTaskLaunch>,
+    receipt: &super::setup_session::SetupReceipt,
+) -> Result<(PreparedSessionSpawn, Option<String>), String> {
     if !receipt.cwd.is_empty() && receipt.cwd != cwd {
         // Not carried: the agent starts in the task's workspace root, which is
         // the directory every other surface — the recorded run, the worktree,
@@ -429,7 +465,7 @@ async fn run_launch_setup_terminal(
             receipt.cwd
         );
     }
-    super::setup_session::apply_setup_receipt(env, &receipt);
+    super::setup_session::apply_setup_receipt(env, receipt);
     let Some(launch) = launch else {
         return Err("a startup terminal ran without a pending agent launch".to_string());
     };
@@ -484,6 +520,12 @@ async fn run_new_task_setup_terminal(
     let task_id = prepared.created_task.task_id.clone();
     let cwd = prepared.cwd.clone();
     let launch = prepared.deferred_launch.take();
+    if started.is_none() {
+        // The inline path holds a request open across the same window a
+        // background launch runs detached in, and loses the same way when the
+        // server stops inside it.
+        persist_task_launch_intent(db_path, &task_id, &plan)?;
+    }
     let (session, provider_session_id) = run_launch_setup_terminal(
         db_path,
         daemon_dir,
@@ -543,6 +585,10 @@ pub(crate) async fn begin_prepared_task_launch(
         return Err("this launch has no startup terminal to begin".to_string());
     };
     let task_id = prepared.created_task.task_id.clone();
+    // Durable before the terminal exists: everything after this point runs on
+    // a detached task, and a server that stops there must leave behind a
+    // record that says this launch never finished.
+    persist_task_launch_intent(db_path, &task_id, &plan)?;
     let started = super::setup_session::start_setup_terminal(daemon_dir, &plan).await?;
     record_started_setup_terminal(db_path, &task_id, &plan)?;
     let response = prepared.create_response();
@@ -1182,6 +1228,93 @@ struct StageOperationPayload {
     rollback_on_failure: bool,
 }
 
+/// What it takes to finish a new task's launch after a restart.
+///
+/// A launch runs the repository's setup in a startup terminal and starts the
+/// agent only once that shell exits. Between those two moments the work lives
+/// in a task in this process: a server that stops there leaves a task with a
+/// worktree, a startup terminal, no agent, and no stage run — and nothing that
+/// ever tries again. This is the durable record that says the launch is
+/// outstanding, written before the terminal starts.
+///
+/// It carries what reconciliation needs to *decide*, not a frozen copy of the
+/// spawn: the receipt the startup shell writes is the evidence that setup
+/// succeeded, and the task's own record is what the agent session is rebuilt
+/// from, exactly as a rerun rebuilds it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct TaskLaunchOperationPayload {
+    version: u8,
+    task_id: String,
+    /// The startup terminal's daemon session — the one a failure names.
+    setup_session_id: String,
+    /// Where the startup shell writes what it exported.
+    receipt_path: String,
+    stage: String,
+    cwd: String,
+}
+
+const TASK_LAUNCH_OPERATION: &str = "task_launch";
+
+/// Record that a launch is outstanding, before its startup terminal starts.
+///
+/// A task that already owns a lifecycle operation — a stage transition
+/// carrying its own intent — keeps it: that operation already covers the
+/// restart window, and the table holds one per task.
+pub(super) fn persist_task_launch_intent(
+    db_path: &str,
+    task_id: &str,
+    plan: &super::setup_session::SetupTerminalPlan,
+) -> Result<(), String> {
+    let payload = TaskLaunchOperationPayload {
+        version: 1,
+        task_id: task_id.to_string(),
+        setup_session_id: plan.session_id.clone(),
+        receipt_path: plan.receipt_path.clone(),
+        stage: plan.stage.clone(),
+        cwd: plan.cwd.clone(),
+    };
+    let payload_json = serde_json::to_string(&payload)
+        .map_err(|error| format!("could not serialize task launch intent: {error}"))?;
+    let db = Db::open(db_path).map_err(|error| format!("db error: {error}"))?;
+    if db
+        .has_lifecycle_operation_for_task(task_id)
+        .map_err(|error| format!("db error: {error}"))?
+    {
+        return Ok(());
+    }
+    db.insert_lifecycle_operation_intent(
+        &plan.session_id,
+        task_id,
+        TASK_LAUNCH_OPERATION,
+        "prepared",
+        &payload_json,
+    )
+    .map_err(|error| format!("db error: {error}"))
+}
+
+/// Retire a launch intent once its outcome is durable — the agent is spawned,
+/// or the failure is recorded against the task.
+fn clear_task_launch_intent(db_path: &str, task_id: &str) {
+    let Ok(db) = Db::open(db_path) else {
+        return;
+    };
+    let intents = match db.list_lifecycle_operation_intents() {
+        Ok(intents) => intents,
+        Err(error) => {
+            log::warn!("failed to read lifecycle intents for {task_id}: {error}");
+            return;
+        }
+    };
+    for intent in intents {
+        if intent.task_id != task_id || intent.kind != TASK_LAUNCH_OPERATION {
+            continue;
+        }
+        if let Err(error) = db.delete_lifecycle_operation_intent(&intent.id) {
+            log::warn!("failed to clear the launch intent {}: {error}", intent.id);
+        }
+    }
+}
+
 fn persist_stage_operation_intent(
     db_path: &str,
     prepared: &PreparedStageRunSpawn,
@@ -1398,9 +1531,10 @@ fn parse_stage_trigger(value: &str) -> Option<crate::db::StageTrigger> {
 /// second spawn or post input.
 pub(crate) async fn reconcile_lifecycle_operations_on_startup(
     daemon: &mut DaemonClient,
-    db_path: &str,
+    config: &crate::config::Config,
     db: &Db,
 ) {
+    let db_path = config.db_path.as_str();
     let intents = match db.list_lifecycle_operation_intents() {
         Ok(intents) => intents,
         Err(error) => {
@@ -1425,7 +1559,205 @@ pub(crate) async fn reconcile_lifecycle_operations_on_startup(
     };
 
     for intent in intents {
+        if intent.kind == TASK_LAUNCH_OPERATION {
+            reconcile_task_launch_operation(config, daemon, &intent, sessions.as_deref()).await;
+            continue;
+        }
         reconcile_lifecycle_operation(db_path, daemon.daemon_dir(), &intent, sessions.as_deref());
+    }
+}
+
+/// Finish, or fail, a launch this server generation did not begin.
+///
+/// The startup terminal is a daemon session, so it outlives the server that
+/// started it — but the code waiting for it does not. On this boot the launch
+/// is resolved from evidence rather than from a held future: the daemon says
+/// whether the shell is still running, and the receipt says whether setup
+/// finished cleanly, because the startup shell writes it as its last step and
+/// only reaches that step when everything before it succeeded.
+async fn reconcile_task_launch_operation(
+    config: &crate::config::Config,
+    daemon: &mut DaemonClient,
+    intent: &crate::db::LifecycleOperationIntent,
+    sessions: Option<&[kanna_daemon::protocol::SessionInfo]>,
+) {
+    let payload = match parse_operation_payload::<TaskLaunchOperationPayload>(intent) {
+        Ok(payload) => payload,
+        Err(error) => {
+            retire_unreconcilable_lifecycle_operation(&config.db_path, intent, &error);
+            return;
+        }
+    };
+    if payload.task_id != intent.task_id {
+        retire_unreconcilable_lifecycle_operation(
+            &config.db_path,
+            intent,
+            &format!(
+                "payload task {} disagrees with row task {}",
+                payload.task_id, intent.task_id
+            ),
+        );
+        return;
+    }
+    let Some(sessions) = sessions else {
+        // An unavailable daemon does not prove anything about the startup
+        // terminal. Leave the intent durable for the next generation.
+        return;
+    };
+
+    // A startup shell that is still running is an orphan: nothing is waiting
+    // for it any more, and this boot cannot adopt the wait without racing the
+    // shell's own exit. It is left alone rather than killed — an install
+    // halfway through is still doing work, and its terminal is still the
+    // record of it — and the launch is failed where the operator can see it.
+    if sessions
+        .iter()
+        .any(|session| session.session_id == payload.setup_session_id)
+    {
+        record_reconciled_launch_failure(
+            &config.db_path,
+            &payload,
+            "the server restarted while this launch's startup terminal was running; the agent was              never started. See the startup terminal for this stage.",
+        );
+        clear_task_launch_intent(&config.db_path, &payload.task_id);
+        return;
+    }
+
+    let receipt = match super::setup_session::read_setup_receipt(&payload.receipt_path) {
+        Ok(receipt) => receipt,
+        Err(error) => {
+            record_reconciled_launch_failure(
+                &config.db_path,
+                &payload,
+                &format!(
+                    "workspace startup left no receipt ({error}); the agent was never started.                      See the startup terminal for this stage."
+                ),
+            );
+            clear_task_launch_intent(&config.db_path, &payload.task_id);
+            return;
+        }
+    };
+
+    // Setup succeeded and must never run again. The intent is retired before
+    // the spawn is attempted, for the same reason an uncertain delivery is
+    // never replayed: a launch is finished at most once, and a spawn that
+    // fails records its own durable failure.
+    clear_task_launch_intent(&config.db_path, &payload.task_id);
+    if let Err(error) = finish_reconciled_task_launch(config, daemon, &payload, receipt).await {
+        log::error!(
+            "failed to finish the launch of task {} after a restart: {error}",
+            payload.task_id
+        );
+    }
+}
+
+async fn finish_reconciled_task_launch(
+    config: &crate::config::Config,
+    daemon: &mut DaemonClient,
+    payload: &TaskLaunchOperationPayload,
+    receipt: super::setup_session::SetupReceipt,
+) -> Result<(), String> {
+    // The agent session is rebuilt from the task's own record, exactly as a
+    // rerun of this stage would rebuild it — the prepared spawn the original
+    // process held is gone, and reconstructing it from durable state is what
+    // makes the launch finishable by a different process at all.
+    let mut prepared = {
+        let db = Db::open(&config.db_path).map_err(|error| format!("db error: {error}"))?;
+        super::prepare_rerun_stage_for_api(&db, config, &payload.task_id)
+    }
+    .map_err(|error| {
+        record_reconciled_launch_failure(
+            &config.db_path,
+            payload,
+            &format!(
+                "the launch could not be finished after a restart ({error}); the agent was never                  started. See the startup terminal for this stage."
+            ),
+        );
+        error
+    })?;
+    // Setup already ran, in the terminal this intent names: what it exported
+    // comes from the receipt, and the plan this rerun prepared is discarded
+    // rather than run a second time.
+    prepared.setup_terminal = None;
+    let cwd = prepared.cwd.clone();
+    match prepared.deferred_launch.take() {
+        // A launch whose agent session is still provisional: it is built here
+        // from the receipt, exactly as the startup terminal's own waiter would
+        // have built it.
+        Some(launch) => {
+            let (session, provider_session_id) = build_launch_session_from_receipt(
+                &payload.task_id,
+                &cwd,
+                &mut prepared.env,
+                Some(launch),
+                &receipt,
+            )?;
+            prepared.session = session;
+            prepared.provider_session_id = provider_session_id;
+        }
+        // A workspace that is already provisioned resolves its agent without a
+        // startup terminal of its own, so the prepared session stands; what
+        // setup exported is still carried into it.
+        None => super::setup_session::apply_setup_receipt(&mut prepared.env, &receipt),
+    }
+    rerun_prepared_stage_for_api(
+        &config.db_path,
+        daemon,
+        &crate::session_replacements::SessionReplacements::default(),
+        prepared,
+    )
+    .await
+    .map(|_| ())
+}
+
+/// Record, against the task, that a launch this server did not finish is over.
+///
+/// The message names the startup terminal on purpose: its output is the only
+/// place that says what setup actually did, and the terminal survives the
+/// launch that ran it.
+fn record_reconciled_launch_failure(
+    db_path: &str,
+    payload: &TaskLaunchOperationPayload,
+    reason: &str,
+) {
+    let Ok(db) = Db::open(db_path) else {
+        return;
+    };
+    let result = format!("{reason} (startup terminal {})", payload.setup_session_id);
+    if let Err(error) = db.cancel_running_stage_runs(&payload.task_id) {
+        log::warn!(
+            "failed to cancel running runs for the unfinished launch of {}: {error}",
+            payload.task_id
+        );
+    }
+    if let Err(error) = db.update_pipeline_item_activity(&payload.task_id, "unread") {
+        log::warn!(
+            "failed to mark {} unread after an unfinished launch: {error}",
+            payload.task_id
+        );
+    }
+    let run_id = generate_stage_run_id(&payload.task_id);
+    if let Err(error) = db.insert_stage_run(crate::db::NewStageRun {
+        id: &run_id,
+        task_id: &payload.task_id,
+        stage: &payload.stage,
+        kind: "main",
+        agent: None,
+        agent_provider: None,
+        model: None,
+        effort: None,
+        status: "failed",
+        result: Some(&result),
+        feedback: Some("startup terminal did not finish this launch"),
+        session_id: Some(&payload.task_id),
+        provider_session_id: None,
+        cwd: Some(&payload.cwd),
+        resumed_from_run_id: None,
+    }) {
+        log::warn!(
+            "failed to record the unfinished launch of {}: {error}",
+            payload.task_id
+        );
     }
 }
 
@@ -3751,6 +4083,31 @@ mod lifecycle_operation_tests {
         dir
     }
 
+    /// Startup reconciliation resolves a launch from the task's own record, so
+    /// it needs the whole server config rather than a database path.
+    fn reconcile_config(db_path: &str, daemon_dir: &str) -> crate::config::Config {
+        crate::config::Config {
+            relay_url: "wss://relay.example".to_string(),
+            device_token: "device-token".to_string(),
+            firebase_project_id: "kanna-local".to_string(),
+            firebase_auth_emulator_url: None,
+            firebase_firestore_emulator_host: None,
+            daemon_dir: daemon_dir.to_string(),
+            db_path: db_path.to_string(),
+            kanna_cli_path: None,
+            desktop_id: "desktop-1".to_string(),
+            desktop_secret: Some("desktop-secret".to_string()),
+            desktop_name: "Studio Mac".to_string(),
+            version: "test-version".to_string(),
+            environment: "development".to_string(),
+            lan_host: "0.0.0.0".to_string(),
+            lan_port: 48120,
+            transfer_port: 4455,
+            activity_event_debounce_seconds: 300,
+            pairing_store_path: format!("{db_path}.pairings.json"),
+        }
+    }
+
     fn fixture(name: &str, task_id: &str) -> (String, Db) {
         let db_path = Db::test_db_path(&format!("lifecycle-operation-{name}"));
         let db = Db::open_for_tests(&db_path).unwrap();
@@ -3949,7 +4306,12 @@ mod lifecycle_operation_tests {
             .await
             .unwrap();
         daemon.set_connected_pid_for_test(41);
-        reconcile_lifecycle_operations_on_startup(&mut daemon, &db_path, &db).await;
+        reconcile_lifecycle_operations_on_startup(
+            &mut daemon,
+            &reconcile_config(&db_path, daemon_dir.to_str().unwrap()),
+            &db,
+        )
+        .await;
         server.await.unwrap();
         assert_eq!(
             db.stage_run("run-main").unwrap().unwrap().status,
@@ -4071,7 +4433,12 @@ mod lifecycle_operation_tests {
             .await
             .unwrap();
         daemon.set_connected_pid_for_test(41);
-        reconcile_lifecycle_operations_on_startup(&mut daemon, &db_path, &db).await;
+        reconcile_lifecycle_operations_on_startup(
+            &mut daemon,
+            &reconcile_config(&db_path, daemon_dir.to_str().unwrap()),
+            &db,
+        )
+        .await;
         server.await.unwrap();
         let item = db.get_pipeline_item(task_id).unwrap().unwrap();
         assert_eq!(item.stage.as_deref(), Some("review"));
@@ -4212,7 +4579,12 @@ mod lifecycle_operation_tests {
         let daemon_dir = daemon_dir_for("undecodable");
         let (mut daemon, server) = scripted_list_daemon(&daemon_dir, Vec::new()).await;
 
-        reconcile_lifecycle_operations_on_startup(&mut daemon, &db_path, &db).await;
+        reconcile_lifecycle_operations_on_startup(
+            &mut daemon,
+            &reconcile_config(&db_path, daemon_dir.to_str().unwrap()),
+            &db,
+        )
+        .await;
         server.await.unwrap();
 
         assert!(db.list_lifecycle_operation_intents().unwrap().is_empty());
@@ -4241,7 +4613,12 @@ mod lifecycle_operation_tests {
         let daemon_dir = daemon_dir_for("mismatched");
         let (mut daemon, server) = scripted_list_daemon(&daemon_dir, Vec::new()).await;
 
-        reconcile_lifecycle_operations_on_startup(&mut daemon, &db_path, &db).await;
+        reconcile_lifecycle_operations_on_startup(
+            &mut daemon,
+            &reconcile_config(&db_path, daemon_dir.to_str().unwrap()),
+            &db,
+        )
+        .await;
         server.await.unwrap();
 
         assert!(db.list_lifecycle_operation_intents().unwrap().is_empty());
@@ -4291,7 +4668,12 @@ mod lifecycle_operation_tests {
         let daemon_dir = daemon_dir_for(&format!("closed-task-{phase}"));
         let (mut daemon, server) = scripted_list_daemon(&daemon_dir, Vec::new()).await;
 
-        reconcile_lifecycle_operations_on_startup(&mut daemon, &db_path, &db).await;
+        reconcile_lifecycle_operations_on_startup(
+            &mut daemon,
+            &reconcile_config(&db_path, daemon_dir.to_str().unwrap()),
+            &db,
+        )
+        .await;
         server.await.unwrap();
 
         assert!(db.list_lifecycle_operation_intents().unwrap().is_empty());
@@ -4378,7 +4760,12 @@ mod lifecycle_operation_tests {
         let daemon_dir = daemon_dir_for("unreadable-trigger");
         let (mut daemon, server) = scripted_list_daemon(&daemon_dir, Vec::new()).await;
 
-        reconcile_lifecycle_operations_on_startup(&mut daemon, &db_path, &db).await;
+        reconcile_lifecycle_operations_on_startup(
+            &mut daemon,
+            &reconcile_config(&db_path, daemon_dir.to_str().unwrap()),
+            &db,
+        )
+        .await;
         server.await.unwrap();
 
         assert!(db.list_lifecycle_operation_intents().unwrap().is_empty());
@@ -4438,7 +4825,12 @@ mod lifecycle_operation_tests {
         let daemon_dir = daemon_dir_for("unreadable-transition");
         let (mut daemon, server) = scripted_list_daemon(&daemon_dir, Vec::new()).await;
 
-        reconcile_lifecycle_operations_on_startup(&mut daemon, &db_path, &db).await;
+        reconcile_lifecycle_operations_on_startup(
+            &mut daemon,
+            &reconcile_config(&db_path, daemon_dir.to_str().unwrap()),
+            &db,
+        )
+        .await;
         server.await.unwrap();
 
         assert!(db.list_lifecycle_operation_intents().unwrap().is_empty());
@@ -4507,7 +4899,12 @@ mod lifecycle_operation_tests {
         };
         let (mut daemon, server) = scripted_list_daemon(&daemon_dir, sessions).await;
 
-        reconcile_lifecycle_operations_on_startup(&mut daemon, &db_path, &db).await;
+        reconcile_lifecycle_operations_on_startup(
+            &mut daemon,
+            &reconcile_config(&db_path, daemon_dir.to_str().unwrap()),
+            &db,
+        )
+        .await;
         server.await.unwrap();
 
         assert!(db.list_lifecycle_operation_intents().unwrap().is_empty());
@@ -4614,7 +5011,12 @@ mod lifecycle_operation_tests {
             .await
             .unwrap();
         daemon.set_connected_pid_for_test(41);
-        reconcile_lifecycle_operations_on_startup(&mut daemon, &db_path, &db).await;
+        reconcile_lifecycle_operations_on_startup(
+            &mut daemon,
+            &reconcile_config(&db_path, daemon_dir.to_str().unwrap()),
+            &db,
+        )
+        .await;
         server.await.unwrap();
         assert!(db.list_lifecycle_operation_intents().unwrap().is_empty());
         let _ = std::fs::remove_dir_all(daemon_dir);

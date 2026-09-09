@@ -1504,7 +1504,17 @@ pub(crate) async fn finish_deferred_stage_setup(
     #[cfg(not(test))]
     let armed_timeout = None;
     let outcome = setup_session::run_setup_terminal(daemon_dir, &plan, armed_timeout).await;
-    let retire = |exit_code: Option<i64>| {
+    // The startup terminal's final frame is what a failed stage advance points
+    // a person at, so it is captured before the row says the terminal is
+    // retired — the daemon keeps it only until its own snapshot state is
+    // cleaned up.
+    let retire = async |exit_code: Option<i64>| {
+        crate::terminal_watcher::archive_finished_terminal_frame(
+            db_path,
+            daemon_dir,
+            &plan.session_id,
+        )
+        .await;
         if let Ok(db) = Db::open(db_path) {
             if let Err(error) = db.retire_task_terminal_session(&plan.session_id, exit_code) {
                 log::warn!(
@@ -1516,16 +1526,16 @@ pub(crate) async fn finish_deferred_stage_setup(
     };
     let receipt = match outcome {
         Ok(setup_session::SetupTerminalOutcome::Ready(receipt)) => {
-            retire(Some(0));
+            retire(Some(0)).await;
             receipt
         }
         Ok(setup_session::SetupTerminalOutcome::Failed { exit_code, reason }) => {
-            retire(Some(exit_code as i64));
+            retire(Some(exit_code as i64)).await;
             prepared.deferred_setup = Some(deferred);
             return Err(reason);
         }
         Err(error) => {
-            retire(None);
+            retire(None).await;
             prepared.deferred_setup = Some(deferred);
             return Err(error);
         }
