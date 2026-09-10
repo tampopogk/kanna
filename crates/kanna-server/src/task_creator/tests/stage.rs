@@ -3891,6 +3891,107 @@ async fn a_rerun_retains_the_attempt_it_replaces() {
     let _ = std::fs::remove_dir_all(&repo_root);
 }
 
+/// An attempt that ended on its own is retained once, by the watcher.
+///
+/// The daemon keeps answering `Snapshot` for a session it has already dropped,
+/// out of its own archive (SPEC invariant 12), so a kill site that probes
+/// afterwards reads the same screen the watcher already filed and records it
+/// again — a byte-identical archive under a second record, which then takes
+/// over the run in the workspace log and puts two tabs in the bar for one
+/// agent. This drives the resume that follows a natural exit against exactly
+/// that daemon.
+#[tokio::test]
+async fn a_rerun_after_a_natural_exit_does_not_retain_the_attempt_twice() {
+    let repo_root = init_git_repo("rerun-after-natural-exit");
+    write_post_workflow_fixtures(&repo_root);
+    let config = test_config("rerun-after-natural-exit");
+    let db = Db::open_for_tests(&config.db_path).unwrap();
+    seed_post_workflow_task(&config, &db, &repo_root);
+    db.insert_stage_run(NewStageRun {
+        id: "run-exited-main",
+        task_id: "task-1",
+        stage: "in progress",
+        kind: "main",
+        agent: Some("implement"),
+        agent_provider: Some("claude"),
+        model: None,
+        effort: None,
+        status: "running",
+        result: None,
+        feedback: None,
+        session_id: Some("task-1"),
+        provider_session_id: None,
+        cwd: Some(
+            repo_root
+                .join(".kanna-worktrees/task-source")
+                .to_string_lossy()
+                .to_string()
+                .as_str(),
+        ),
+        resumed_from_run_id: None,
+    })
+    .unwrap();
+    // What the terminal watcher already wrote when the agent exited.
+    db.upsert_task_terminal_session(crate::db::NewTaskTerminalSession {
+        id: "agent-task-1-1",
+        repo_id: "repo-1",
+        task_id: Some("task-1"),
+        daemon_session_id: Some("task-1"),
+        role: crate::db::ROLE_AGENT,
+        stage: Some("in progress"),
+        attempt: 1,
+        stage_run_id: Some("run-exited-main"),
+        title: Some("Agent · in progress · attempt 1"),
+        cwd: None,
+    })
+    .unwrap();
+    db.record_terminal_session_archive("agent-task-1-1", 80, 24, "EXITED_AGENT_FRAME")
+        .unwrap();
+    db.retire_task_terminal_session_record("agent-task-1-1", Some(0))
+        .unwrap();
+
+    let prepared = prepare_rerun_stage_for_api(&db, &config, "task-1").unwrap();
+    // This daemon has no live session; it answers Snapshot out of its archive,
+    // which is what makes the second read look like fresh output.
+    let fake_daemon = spawn_sentinel_frame_daemon(&config.daemon_dir).await;
+    let mut daemon = DaemonClient::connect(&config.daemon_dir).await.unwrap();
+    rerun_prepared_stage_for_api(
+        &config.db_path,
+        &mut daemon,
+        &crate::session_replacements::SessionReplacements::default(),
+        prepared,
+    )
+    .await
+    .unwrap();
+    fake_daemon.wait_for_spawn().await;
+
+    let retained: Vec<_> = db
+        .list_task_terminal_sessions("task-1")
+        .unwrap()
+        .into_iter()
+        .filter(|terminal| {
+            terminal.role == crate::db::ROLE_AGENT
+                && terminal.stage_run_id.as_deref() == Some("run-exited-main")
+        })
+        .collect();
+    assert_eq!(
+        retained.len(),
+        1,
+        "the run keeps the one attempt that ran it: {retained:?}"
+    );
+    assert_eq!(retained[0].id, "agent-task-1-1");
+    assert_eq!(
+        db.read_terminal_session_archive("agent-task-1-1")
+            .unwrap()
+            .expect("the watcher's archive is untouched")
+            .vt,
+        "EXITED_AGENT_FRAME",
+        "the kill site must not overwrite what the exit already kept"
+    );
+
+    let _ = std::fs::remove_dir_all(&repo_root);
+}
+
 /// The submitted phase is the boundary that decides how a crash is
 /// reconciled, so it must begin at the socket. At the last command before the
 /// Spawn write the durable run row already exists — it has to, or the child

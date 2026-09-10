@@ -132,7 +132,12 @@ export function useTaskTerminalTabs({
     // terminal is suppressed stranded every attempt the reader had closed,
     // with no way back to any of them. It still never steals focus, so its
     // return costs the reader nothing.
-    if (terminals.some((terminal) => terminal.role === "setup" || terminal.role === "teardown")) {
+    //
+    // Any terminal at all is enough. Keying it to a startup or teardown shell
+    // meant a repo that declares no setup commands got retained attempt tabs
+    // and no log to reopen them from, and the log is the only thing that
+    // reopens one.
+    if (terminals.length > 0) {
       tabs.openTabInScope(scope, { kind: "workspace" }, { activate: false });
     }
     for (const terminal of terminals) {

@@ -591,6 +591,14 @@ describe("main content area tabs", () => {
     );
     expect(label).toBe("Startup · in progress");
 
+    // And the log is named for what it is. Without a label key of its own it
+    // fell back to the agent's, so the bar showed two tabs called "Agent".
+    const workspaceLabel = await client.executeSync<string | null>(
+      `const tab = document.querySelector('[data-testid="main-tab-workspace"] .main-tab-label');
+       return tab ? tab.textContent.trim() : null;`
+    );
+    expect(workspaceLabel).toBe("Workspace");
+
     // It is a view of a session the launch owns, so closing it hides the view
     // and leaves the record alone: reopening shows the same terminal.
     await client.executeSync(
@@ -743,6 +751,45 @@ describe("main content area tabs", () => {
     }
 
     try {
+    // First the way reconciliation opens one: behind the tab on screen. xterm
+    // measures its character cell when the terminal is opened, so a terminal
+    // opened into a box with no size painted empty rows over a full buffer —
+    // the archive was in memory and invisible on screen. Assert what is
+    // painted, not what was written.
+    await selectTask(secondTaskId);
+    await selectTask(taskId);
+    const hiddenDeadline = Date.now() + 15_000;
+    let hiddenTabs: string[] = [];
+    while (Date.now() < hiddenDeadline) {
+      hiddenTabs = await openTabIds(client);
+      if (hiddenTabs.includes(`terminal:${retiredSessionId}`)) break;
+      await sleep(250);
+    }
+    expect(hiddenTabs).toContain(`terminal:${retiredSessionId}`);
+    expect(await activeTabId(client)).toBe("agent");
+
+    await client.executeSync(
+      `document.querySelector('[data-testid="main-tab-terminal:${retiredSessionId}"]').click();`
+    );
+    await waitForActiveTab(client, `terminal:${retiredSessionId}`);
+    const paintedDeadline = Date.now() + 15_000;
+    let painted = "";
+    while (Date.now() < paintedDeadline) {
+      painted = await client.executeSync<string>(
+        `const rows = document.querySelector('[data-testid="task-terminal-archive"] .xterm-rows');
+         return rows ? rows.textContent : "";`
+      );
+      if (painted.includes("ARCHIVED_FRAME_SENTINEL")) break;
+      await sleep(250);
+    }
+    expect(painted).toContain("ARCHIVED_FRAME_SENTINEL");
+    await client.executeSync(
+      `const close = document.querySelector('[data-testid="main-tab-close-terminal:${retiredSessionId}"]');
+       if (close) close.click();
+       return true;`
+    );
+    await sleep(300);
+
     const opened = await localProcessFetch(`${server.baseUrl}/v1/desktop/views/open-terminal`, {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -764,6 +811,20 @@ describe("main content area tabs", () => {
       await sleep(200);
     }
     expect(lines.some((line) => line.includes("ARCHIVED_FRAME_SENTINEL"))).toBe(true);
+
+    // Painted, not merely buffered — the same assertion for a tab that was
+    // active from the moment it mounted.
+    const activePaintedDeadline = Date.now() + 15_000;
+    let activePainted = "";
+    while (Date.now() < activePaintedDeadline) {
+      activePainted = await client.executeSync<string>(
+        `const rows = document.querySelector('[data-testid="task-terminal-archive"] .xterm-rows');
+         return rows ? rows.textContent : "";`
+      );
+      if (activePainted.includes("ARCHIVED_FRAME_SENTINEL")) break;
+      await sleep(250);
+    }
+    expect(activePainted).toContain("ARCHIVED_FRAME_SENTINEL");
 
     // And it says what the startup actually exited with — the reason its
     // output is worth keeping — rather than reading as an ordinary finish, and

@@ -673,6 +673,19 @@ async fn stage_fork_runs_repo_setup_before_resolving_pty_provider() {
         _ => unreachable!(),
     }
 
+    // The receipt carries the setup shell's whole environment and belongs to
+    // this one spawn. A stage advance has no launch intent to hand it to, so
+    // it is spent here; left behind, one accrued per stage per task forever.
+    // Only the count is read — never the contents.
+    let receipts = std::path::Path::new(&config.daemon_dir).join("setup-receipts");
+    let leftover = std::fs::read_dir(&receipts)
+        .map(|entries| entries.count())
+        .unwrap_or(0);
+    assert_eq!(
+        leftover, 0,
+        "the stage's startup receipt must not outlive its transition"
+    );
+
     let _ = std::fs::remove_dir_all(&repo_root);
 }
 

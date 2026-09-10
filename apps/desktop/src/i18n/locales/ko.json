@@ -381,6 +381,7 @@
     "shell": "셸",
     "repoShell": "저장소 셸",
     "terminal": "터미널",
+    "workspace": "작업 공간",
     "files": "파일",
     "graph": "커밋",
     "analytics": "분석",

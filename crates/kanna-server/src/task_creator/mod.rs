@@ -1711,6 +1711,12 @@ pub(crate) async fn finish_deferred_stage_setup(
         }
     };
     setup_session::apply_setup_receipt(&mut prepared.env, &receipt);
+    // Spent. The file holds the whole setup shell's environment, and a stage
+    // advance has no `task_launch` intent to hand it to — applying it to this
+    // spawn's env *is* the durable outcome, and `deferred_setup` has been
+    // taken, so a later attempt runs setup again rather than reading this.
+    // Left behind, one accumulated per stage per task, forever.
+    setup_session::discard_setup_receipt(&plan.receipt_path);
     let provider = deferred
         .provider_candidates
         .iter()

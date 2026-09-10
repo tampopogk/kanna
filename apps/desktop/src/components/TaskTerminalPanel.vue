@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { nextTick, onBeforeUnmount, ref, watch } from "vue";
+import { nextFrameOrTimeout } from "../utils/animationFrame";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import TerminalView from "./TerminalView.vue";
@@ -67,6 +68,35 @@ let archiveTerminal: Terminal | null = null;
 let archiveFitAddon: FitAddon | null = null;
 let unregisterArchiveBuffer: (() => void) | null = null;
 let renderedArchiveFor: string | null = null;
+let archiveResizeObserver: ResizeObserver | null = null;
+
+/**
+ * Wait until the container has a settled, non-zero size.
+ *
+ * xterm measures its character cell when the terminal is opened, and a
+ * terminal opened into a box that has not been laid out — a tab reconciliation
+ * opened behind the one on screen, or the first frame of an already-active
+ * one — measures zero and paints empty rows. `fit()` afterwards resizes the
+ * buffer but does not re-measure, so the frame stayed invisible while its
+ * bytes sat in the buffer. The live view solves this the same way before it
+ * connects.
+ */
+async function waitForStableLayout(el: HTMLElement): Promise<void> {
+  let last = { width: 0, height: 0 };
+  for (let i = 0; i < 10; i++) {
+    const current = { width: el.offsetWidth, height: el.offsetHeight };
+    if (
+      current.width > 0 &&
+      current.height > 0 &&
+      current.width === last.width &&
+      current.height === last.height
+    ) {
+      return;
+    }
+    last = current;
+    await nextFrameOrTimeout();
+  }
+}
 
 /** A 404 from the archive route means the frame was not kept, not a failure. */
 function isMissingArchiveError(error: unknown): boolean {
@@ -74,6 +104,8 @@ function isMissingArchiveError(error: unknown): boolean {
 }
 
 function disposeArchiveTerminal(): void {
+  archiveResizeObserver?.disconnect();
+  archiveResizeObserver = null;
   unregisterArchiveBuffer?.();
   unregisterArchiveBuffer = null;
   archiveTerminal?.dispose();
@@ -85,6 +117,10 @@ function disposeArchiveTerminal(): void {
 async function renderArchive(): Promise<void> {
   const el = archiveEl.value;
   if (!el || renderedArchiveFor === props.sessionId) return;
+  // Nothing is painted into a hidden tab: xterm would measure its cell against
+  // a box with no size and render blank rows over a full buffer. A tab opened
+  // behind the one on screen renders when the reader comes to it.
+  if (props.active === false) return;
   disposeArchiveTerminal();
   archiveError.value = null;
   renderedArchiveFor = props.sessionId;
@@ -120,13 +156,24 @@ async function renderArchive(): Promise<void> {
   });
   const fitAddon = new FitAddon();
   term.loadAddon(fitAddon);
+  await nextTick();
+  await waitForStableLayout(archiveEl.value);
+  if (renderedArchiveFor !== props.sessionId || !archiveEl.value) {
+    term.dispose();
+    return;
+  }
   term.open(archiveEl.value);
   term.write(archive.vt);
   archiveTerminal = term;
   archiveFitAddon = fitAddon;
   unregisterArchiveBuffer = registerE2ETerminalBuffer(props.sessionId, term);
-  await nextTick();
   fitAddon.fit();
+  // The panel is laid out by the tab area around it, so its size changes
+  // without anything here being told; refitting keeps the frame filling it.
+  archiveResizeObserver = new ResizeObserver(() => {
+    if (archiveEl.value?.offsetWidth && archiveEl.value.offsetHeight) archiveFitAddon?.fit();
+  });
+  archiveResizeObserver.observe(archiveEl.value);
 }
 
 watch(effectiveCodeTheme, (theme) => {
@@ -153,6 +200,8 @@ watch(
     if (!active) return;
     await nextTick();
     termRef.value?.fit?.();
+    // A retired tab that was opened behind this one has nothing rendered yet.
+    if (props.live === false && props.archived !== false) await renderArchive();
     archiveFitAddon?.fit();
   },
 );

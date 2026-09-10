@@ -181,6 +181,8 @@ describe("keeping a task's terminal tabs in step with the server", () => {
 
     expect(tabs.tabs.value.map((tab) => tab.id)).toEqual([
       "agent",
+      // The log comes with any terminal the task has, these two included.
+      "workspace",
       "terminal:agent-task-1-1",
       "terminal:agent-task-1-2",
     ]);
@@ -215,6 +217,41 @@ describe("keeping a task's terminal tabs in step with the server", () => {
     await reconcile();
 
     expect(tabs.tabs.value.filter((tab) => tab.kind === "workspace")).toHaveLength(1);
+    expect(tabs.activeTabId.value).toBe("agent");
+  });
+
+  it("opens the log for a task whose repo runs no setup at all", async () => {
+    // A repo that declares no setup or teardown commands has no startup shell,
+    // so keying the log to one left such a task with retained attempt tabs and
+    // nothing to reopen them from once they were closed.
+    const tabs = tabsForTask("task-1");
+    const fetchTerminals = vi.fn(async (): Promise<DesktopTaskTerminals> => ({
+      taskId: "task-1",
+      agentSessionId: "task-1",
+      terminals: [
+        terminal({
+          id: "agent-task-1-1",
+          daemonSessionId: "task-1",
+          role: "agent",
+          state: "retired",
+          stageRunId: "run-1",
+          title: "Agent · in progress · attempt 1",
+          exitCode: 0,
+          retiredAt: "2026-09-08T00:01:00Z",
+        }),
+      ],
+    }));
+    const { reconcile } = useTaskTerminalTabs({
+      tabs,
+      taskId: computed(() => "task-1"),
+      revision: computed(() => 1),
+      fetchTerminals,
+    });
+
+    await reconcile();
+
+    expect(tabs.isOpen("workspace")).toBe(true);
+    expect(tabs.isOpen("terminal:agent-task-1-1")).toBe(true);
     expect(tabs.activeTabId.value).toBe("agent");
   });
 

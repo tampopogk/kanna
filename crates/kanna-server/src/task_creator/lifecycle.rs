@@ -359,17 +359,6 @@ async fn retain_outgoing_agent_attempt(
     session_id: &str,
     outgoing_run_id: Option<&str>,
 ) {
-    let frame =
-        match crate::terminal_watcher::archived_terminal_frame_over(daemon, session_id).await {
-            Ok(frame) => frame,
-            Err(error) => {
-                log::warn!(
-                    "could not read the outgoing agent frame for {task_id} session {session_id}: \
-                 {error}"
-                );
-                None
-            }
-        };
     let Ok(db) = Db::open(db_path) else {
         return;
     };
@@ -389,11 +378,44 @@ async fn retain_outgoing_agent_attempt(
             .ok()
             .and_then(|runs| runs.into_iter().rfind(|run| run.kind == "main")),
     };
+    // An attempt that ended on its own was already retained by the terminal
+    // watcher, at its `Exit`. The daemon still answers `Snapshot` for that dead
+    // id out of its own archive, so probing here would read the same screen
+    // again and file it as a second attempt: the observed duplicate was a
+    // byte-identical archive under a new record, pointing the log's run at the
+    // copy and putting two tabs in the bar for one agent. The kill site retains
+    // only what was still running when it arrived.
+    if let Some(run) = outgoing_run.as_ref() {
+        let already_retained = db
+            .list_task_terminal_sessions(task_id)
+            .unwrap_or_default()
+            .into_iter()
+            .any(|terminal| {
+                terminal.role == crate::db::ROLE_AGENT
+                    && terminal.state == "retired"
+                    && terminal.stage_run_id.as_deref() == Some(run.id.as_str())
+            });
+        if already_retained {
+            return;
+        }
+    }
+
     let stage = outgoing_run
         .as_ref()
         .map(|run| run.stage.clone())
         .or_else(|| item.stage.clone())
         .unwrap_or_else(|| "in progress".to_string());
+    let frame =
+        match crate::terminal_watcher::archived_terminal_frame_over(daemon, session_id).await {
+            Ok(frame) => frame,
+            Err(error) => {
+                log::warn!(
+                    "could not read the outgoing agent frame for {task_id} session {session_id}: \
+                 {error}"
+                );
+                None
+            }
+        };
     // Nothing was captured, so there is no history to keep. Writing a record
     // anyway would put an entry in the task's log whose tab opens on an empty
     // screen — which is what a task whose agent never started would get.

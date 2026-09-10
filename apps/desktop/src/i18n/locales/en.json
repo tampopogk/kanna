@@ -383,6 +383,7 @@
     "shell": "Shell",
     "repoShell": "Repo shell",
     "terminal": "Terminal",
+    "workspace": "Workspace",
     "files": "Files",
     "graph": "Commits",
     "analytics": "Analytics",

@@ -380,6 +380,7 @@
     "shell": "シェル",
     "repoShell": "リポジトリシェル",
     "terminal": "ターミナル",
+    "workspace": "ワークスペース",
     "files": "ファイル",
     "graph": "コミット",
     "analytics": "分析",

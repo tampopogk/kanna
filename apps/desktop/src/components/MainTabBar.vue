@@ -31,6 +31,7 @@ const FIXED_LABEL_KEYS: Partial<Record<MainTab["kind"], string>> = {
   graph: "mainTabs.graph",
   analytics: "mainTabs.analytics",
   preferences: "mainTabs.preferences",
+  workspace: "mainTabs.workspace",
 };
 
 function lastPathSegment(value: string): string {
