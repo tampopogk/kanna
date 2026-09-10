@@ -392,7 +392,33 @@ pub(crate) async fn archive_finished_terminal_frame(
 /// it drops the session. Nothing here touches the live-agent surfaces: no
 /// existing row is rewritten, and the task id still resolves to the task's
 /// agent session.
-async fn retain_finished_agent_attempt(state: &http_api::AppState, session_id: &str, code: i32) {
+/// What a finished attempt was, read while it is still the only thing this
+/// session id has been.
+pub(crate) struct FinishedAgentAttempt {
+    task_id: String,
+    repo_id: String,
+    session_id: String,
+    record_id: String,
+    stage: String,
+    stage_run_id: Option<String>,
+    cwd: Option<String>,
+    title: String,
+    attempt: i64,
+    frame: Option<(u16, u16, String)>,
+}
+
+/// Read the attempt that just ended — its screen and its identity — before
+/// anything can take its place.
+///
+/// This half is order-sensitive and cannot be deferred: completing the run can
+/// advance the stage, which respawns the *same* daemon session id, and a frame
+/// or a stage run resolved after that describes the agent that replaced this
+/// one. Writing it down is a different matter, and waits (see
+/// `persist_finished_agent_attempt`).
+async fn capture_finished_agent_attempt(
+    state: &http_api::AppState,
+    session_id: &str,
+) -> Option<FinishedAgentAttempt> {
     let config = state.config();
     let frame = match archived_terminal_frame(&config.daemon_dir, session_id).await {
         Ok(frame) => frame,
@@ -405,16 +431,16 @@ async fn retain_finished_agent_attempt(state: &http_api::AppState, session_id: &
         Ok(db) => db,
         Err(error) => {
             log::warn!("could not open the database to retain agent {session_id}: {error}");
-            return;
+            return None;
         }
     };
+    // Not a task's agent session (a repository shell, say): nothing owns its
+    // output, so there is nothing to retain.
     let Ok(Some(task_id)) = db.resolve_pipeline_item_id(session_id) else {
-        // Not a task's agent session (a repository shell, say): nothing owns
-        // its output, so there is nothing to retain.
-        return;
+        return None;
     };
     let Ok(Some(item)) = db.get_pipeline_item(&task_id) else {
-        return;
+        return None;
     };
     let latest = db.latest_stage_run(&task_id).ok().flatten();
     let attempt = db.next_task_terminal_attempt(&task_id).unwrap_or(1);
@@ -423,31 +449,66 @@ async fn retain_finished_agent_attempt(state: &http_api::AppState, session_id: &
         .map(|run| run.stage.clone())
         .or_else(|| item.stage.clone())
         .unwrap_or_else(|| "in progress".to_string());
-    let record_id = format!("agent-{task_id}-{attempt}");
-    let title = format!("Agent · {stage} · attempt {attempt}");
-    if let Err(error) = db.upsert_task_terminal_session(crate::db::NewTaskTerminalSession {
-        id: &record_id,
-        repo_id: &item.repo_id,
-        task_id: Some(&task_id),
-        daemon_session_id: Some(session_id),
-        role: crate::db::ROLE_AGENT,
-        stage: Some(&stage),
+    Some(FinishedAgentAttempt {
+        record_id: format!("agent-{task_id}-{attempt}"),
+        title: format!("Agent · {stage} · attempt {attempt}"),
+        stage_run_id: latest.as_ref().map(|run| run.id.clone()),
+        cwd: latest.as_ref().and_then(|run| run.cwd.clone()),
+        repo_id: item.repo_id,
+        session_id: session_id.to_string(),
+        task_id,
+        stage,
         attempt,
-        stage_run_id: latest.as_ref().map(|run| run.id.as_str()),
-        title: Some(&title),
-        cwd: latest.as_ref().and_then(|run| run.cwd.as_deref()),
+        frame,
+    })
+}
+
+/// Write the captured attempt down.
+///
+/// Deliberately after the exit has been recorded. These are three write
+/// transactions against the database the server is also finishing the run in,
+/// and keeping history is not what the rest of the system is waiting for: a
+/// manager, a `kanna_wait_task`, and the desktop all wait on the durable
+/// `exited` verdict, which used to queue behind this.
+fn persist_finished_agent_attempt(
+    state: &http_api::AppState,
+    attempt: FinishedAgentAttempt,
+    code: i32,
+) {
+    let db = match Db::open(&state.config().db_path) {
+        Ok(db) => db,
+        Err(error) => {
+            log::warn!(
+                "could not open the database to retain agent {}: {error}",
+                attempt.session_id
+            );
+            return;
+        }
+    };
+    let record_id = attempt.record_id.as_str();
+    if let Err(error) = db.upsert_task_terminal_session(crate::db::NewTaskTerminalSession {
+        id: record_id,
+        repo_id: &attempt.repo_id,
+        task_id: Some(&attempt.task_id),
+        daemon_session_id: Some(&attempt.session_id),
+        role: crate::db::ROLE_AGENT,
+        stage: Some(&attempt.stage),
+        attempt: attempt.attempt,
+        stage_run_id: attempt.stage_run_id.as_deref(),
+        title: Some(&attempt.title),
+        cwd: attempt.cwd.as_deref(),
     }) {
         log::warn!("failed to record the finished agent attempt {record_id}: {error}");
         return;
     }
-    if let Some((cols, rows, vt)) = frame {
+    if let Some((cols, rows, vt)) = attempt.frame.as_ref() {
         if let Err(error) =
-            db.record_terminal_session_archive(&record_id, cols as i64, rows as i64, &vt)
+            db.record_terminal_session_archive(record_id, *cols as i64, *rows as i64, vt)
         {
             log::warn!("failed to archive the finished agent attempt {record_id}: {error}");
         }
     }
-    if let Err(error) = db.retire_task_terminal_session_record(&record_id, Some(code as i64)) {
+    if let Err(error) = db.retire_task_terminal_session_record(record_id, Some(code as i64)) {
         log::warn!("failed to retire the finished agent attempt {record_id}: {error}");
     }
 }
@@ -833,10 +894,21 @@ pub(crate) async fn terminal_state_watcher_once(
                 // attempt's history. Everything else — a natural exit, a close
                 // — ends with no successor, so this is the moment its output
                 // stops being live and starts being readable.
-                if !replacement.replaced {
-                    retain_finished_agent_attempt(state, &session_id, code).await;
-                }
+                //
+                // Read now, write later: the screen and the identity have to be
+                // read before anything can take this session id, but recording
+                // them must not stand in front of the exit itself.
+                let finished_attempt = if replacement.replaced {
+                    None
+                } else {
+                    capture_finished_agent_attempt(state, &session_id).await
+                };
                 if replacement.replaced || killed {
+                    // A kill with no replacement registered still ended an
+                    // attempt, and nothing will respawn to overwrite it.
+                    if let Some(attempt) = finished_attempt {
+                        persist_finished_agent_attempt(state, attempt, code);
+                    }
                     // Orchestrated kill (stage swap, rerun, close) — not the
                     // agent finishing, so there is no terminal-state
                     // finalization. The provider resume id the
@@ -882,6 +954,10 @@ pub(crate) async fn terminal_state_watcher_once(
                         code,
                         error
                     );
+                }
+                // The exit is durable now; the history it left behind follows.
+                if let Some(attempt) = finished_attempt {
+                    persist_finished_agent_attempt(state, attempt, code);
                 }
             }
             DaemonEvent::ShuttingDown => return Ok(()),
