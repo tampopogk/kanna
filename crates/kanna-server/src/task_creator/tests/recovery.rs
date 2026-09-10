@@ -140,7 +140,9 @@ async fn spawn_rejected_resume_fake_daemon(
         let (snapshot_stream, _) = listener.accept().await.unwrap();
         let (snapshot_read, mut snapshot_write) = snapshot_stream.into_split();
         let mut snapshot_reader = BufReader::new(snapshot_read);
-        let command = read_fake_daemon_command(&mut snapshot_reader, &mut snapshot_write).await;
+        let command =
+            super::read_scripted_fake_daemon_command(&mut snapshot_reader, &mut snapshot_write)
+                .await;
         assert!(
             matches!(command, kanna_daemon::protocol::Command::Snapshot { .. }),
             "expected the recovery to read the session terminal, got {command:?}"

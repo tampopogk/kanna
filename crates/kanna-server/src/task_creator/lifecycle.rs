@@ -318,16 +318,40 @@ pub(crate) fn record_started_setup_terminal(
     super::setup_session::record_setup_terminal(&db, &repo_id, task_id, None, plan)
 }
 
-/// Keep the agent attempt a stage transition is about to replace.
+/// Kill a task's agent session, keeping the attempt it was running.
 ///
-/// Called with the session still alive and the outgoing run still the only one
-/// this session has served. Both facts stop being true within milliseconds:
-/// the kill and the respawn share a session id, and the incoming run is
-/// inserted between them, so a frame or a label read afterwards belongs to the
-/// agent that replaced this one.
+/// Every way an agent session ends by somebody's decision — a stage advance, a
+/// rerun, a close — ends with a Kill, and only the sender of that Kill still
+/// holds what the attempt was: the session is alive, so its final frame can
+/// still be read, and the run it served is still the task's latest. Both facts
+/// stop being true within milliseconds. A stage advance and a rerun respawn on
+/// the same session id, so a frame read after the Exit belongs to the agent
+/// that replaced this one; that is precisely what the terminal watcher cannot
+/// do, and why it retains only an attempt that exited on its own.
 ///
-/// Best effort in every direction — a task must never fail to advance over
-/// retained history — but silent only where there is genuinely nothing to say.
+/// So retention belongs to the kill rather than to each caller's memory to ask
+/// for it. Callers that know which run was outgoing say so; the rest have it
+/// resolved here, where the answer is still correct.
+///
+/// Only the task's own agent session goes through here. A worktree shell or a
+/// teardown terminal is not an attempt and keeps its plain kill.
+pub(crate) async fn kill_task_agent_session_retaining(
+    db_path: &str,
+    daemon: &mut DaemonClient,
+    replacements: &SessionReplacements,
+    task_id: &str,
+    session_id: &str,
+    outgoing_run_id: Option<&str>,
+) -> Result<(), String> {
+    retain_outgoing_agent_attempt(db_path, daemon, task_id, session_id, outgoing_run_id).await;
+    kill_session_replacing_for_run(daemon, replacements, session_id, outgoing_run_id).await
+}
+
+/// Keep the agent attempt a kill is about to end.
+///
+/// Best effort in every direction — a task must never fail to advance, retry,
+/// or close over retained history — but silent only where there is genuinely
+/// nothing to say.
 async fn retain_outgoing_agent_attempt(
     db_path: &str,
     daemon: &mut DaemonClient,
@@ -352,12 +376,30 @@ async fn retain_outgoing_agent_attempt(
     let Ok(Some(item)) = db.get_pipeline_item(task_id) else {
         return;
     };
-    let outgoing_run = outgoing_run_id.and_then(|run_id| db.stage_run(run_id).ok().flatten());
+    // Named by the caller when it knows, and otherwise the task's latest main
+    // run — which at the kill site is still the outgoing one, because nothing
+    // has replaced it yet. It is deliberately the latest *main* run rather
+    // than the latest run of any kind: a post runs in this same session, but
+    // the attempt served the stage, and the workspace log reaches a retained
+    // attempt through the main run it belongs to.
+    let outgoing_run = match outgoing_run_id {
+        Some(run_id) => db.stage_run(run_id).ok().flatten(),
+        None => db
+            .list_stage_runs_for_task(task_id)
+            .ok()
+            .and_then(|runs| runs.into_iter().rfind(|run| run.kind == "main")),
+    };
     let stage = outgoing_run
         .as_ref()
         .map(|run| run.stage.clone())
         .or_else(|| item.stage.clone())
         .unwrap_or_else(|| "in progress".to_string());
+    // Nothing was captured, so there is no history to keep. Writing a record
+    // anyway would put an entry in the task's log whose tab opens on an empty
+    // screen — which is what a task whose agent never started would get.
+    let Some((cols, rows, vt)) = frame else {
+        return;
+    };
     let attempt = db.next_task_terminal_attempt(task_id).unwrap_or(1);
     let record_id = format!("agent-{task_id}-{attempt}");
     let title = format!("Agent · {stage} · attempt {attempt}");
@@ -376,12 +418,9 @@ async fn retain_outgoing_agent_attempt(
         log::warn!("failed to record the outgoing agent attempt {record_id}: {error}");
         return;
     }
-    if let Some((cols, rows, vt)) = frame {
-        if let Err(error) =
-            db.record_terminal_session_archive(&record_id, cols as i64, rows as i64, &vt)
-        {
-            log::warn!("failed to archive the outgoing agent attempt {record_id}: {error}");
-        }
+    if let Err(error) = db.record_terminal_session_archive(&record_id, cols as i64, rows as i64, &vt)
+    {
+        log::warn!("failed to archive the outgoing agent attempt {record_id}: {error}");
     }
     // No exit status: this attempt was replaced rather than ending on one.
     if let Err(error) = db.retire_task_terminal_session_record(&record_id, None) {
@@ -803,20 +842,13 @@ pub(crate) async fn spawn_prepared_stage_run_for_api(
     // agent's opening frame under the incoming stage's name. The run being
     // killed is already resolved above, and that is the identity the record
     // carries.
-    retain_outgoing_agent_attempt(
-        db_path,
-        daemon,
-        &task_id,
-        &session_id,
-        outgoing_run_id.as_deref(),
-    )
-    .await;
-
     // Only a freshly forked workspace is rolled back on failure; a resumed
     // workspace pre-exists this spawn and must survive it.
-    if let Err(error) = kill_session_replacing_for_run(
+    if let Err(error) = kill_task_agent_session_retaining(
+        db_path,
         daemon,
         replacements,
+        &task_id,
         &session_id,
         outgoing_run_id.as_deref(),
     )
@@ -2555,7 +2587,10 @@ pub(crate) async fn rerun_prepared_stage_for_api(
         db.cancel_running_stage_runs(&task_id)
             .map_err(|e| format!("db error: {}", e))?;
     }
-    kill_session_replacing(daemon, replacements, &session_id).await?;
+    // A retry replaces this attempt on the same session id, so its output is
+    // kept the same way a stage advance keeps the stage it leaves.
+    kill_task_agent_session_retaining(db_path, daemon, replacements, &task_id, &session_id, None)
+        .await?;
     if let Err(error) =
         prepare_deferred_rerun_setup(db_path, daemon.daemon_dir(), &mut prepared).await
     {

@@ -1007,9 +1007,24 @@ async fn requested_task_retry_repairs_prepare_before_daemon_spawn() {
     assert_eq!(db.count_test_worktrees_for_repo("repo-1").unwrap(), 1);
     // The task's own agent terminal, plus the startup terminal this launch ran
     // its setup in. The repair did not create a second of either.
+    // The task's own agent terminal, plus the startup terminal this launch ran
+    // its setup in. The repair did not create a second of either: the attempt
+    // it replaced is kept as retired history, which is not a duplicate of
+    // anything and has no live session behind it.
+    let terminals = db.list_task_terminal_sessions(task_id).unwrap();
+    let live: Vec<_> = terminals
+        .iter()
+        .filter(|terminal| terminal.state == "live")
+        .collect();
+    assert_eq!(live.len(), 1, "{terminals:?}");
+    assert_eq!(live[0].role, crate::db::ROLE_AGENT, "{terminals:?}");
     assert_eq!(
-        db.count_test_terminal_sessions_for_repo("repo-1").unwrap(),
-        2
+        terminals
+            .iter()
+            .filter(|terminal| terminal.role == crate::db::ROLE_SETUP)
+            .count(),
+        1,
+        "{terminals:?}"
     );
     let runs = db.list_stage_runs_for_task(task_id).unwrap();
     assert_eq!(runs.len(), 1);

@@ -671,6 +671,7 @@ describe("main content area tabs", () => {
       throw new Error(`recording the retired terminal failed: ${archived.slice(4)}`);
     }
 
+    try {
     const opened = await localProcessFetch(`${server.baseUrl}/v1/desktop/views/open-terminal`, {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -716,9 +717,25 @@ describe("main content area tabs", () => {
     await sleep(300);
     expect(await openTabIds(client)).not.toContain(`terminal:${retiredSessionId}`);
 
-    await client.executeSync(
-      `document.querySelector('[data-testid="main-tab-workspace"]').click();`
-    );
+    // The Workspace tab is opened by the reconciliation that reads the task's
+    // terminals, and a record written straight into the database moves neither
+    // edge that triggers one. Leaving and returning to the task is the edge a
+    // person would use, and it is the same read.
+    await selectTask(secondTaskId);
+    await selectTask(taskId);
+    const workspaceDeadline = Date.now() + 15_000;
+    let workspaceTab = false;
+    while (Date.now() < workspaceDeadline) {
+      workspaceTab = await client.executeSync<boolean>(
+        `const tab = document.querySelector('[data-testid="main-tab-workspace"]');
+         if (!tab) return false;
+         tab.click();
+         return true;`
+      );
+      if (workspaceTab) break;
+      await sleep(250);
+    }
+    expect(workspaceTab).toBe(true);
     const reopenDeadline = Date.now() + 15_000;
     let reopened = false;
     while (Date.now() < reopenDeadline) {
@@ -735,19 +752,23 @@ describe("main content area tabs", () => {
     await sleep(300);
     expect(await openTabIds(client)).toContain(`terminal:${retiredSessionId}`);
 
-    await client.executeAsync<string>(
-      `const cb = arguments[arguments.length - 1];
-       const ctx = window.__KANNA_E2E__.setupState;
-       const db = ctx.db.value || ctx.db;
-       db.execute("DELETE FROM terminal_session_archive WHERE terminal_session_id = ?", ["${retiredSessionId}"])
-         .then(function() {
-           return db.execute("DELETE FROM terminal_session WHERE id = ?", ["${retiredSessionId}"]);
-         })
-         .then(function() { cb("ok"); })
-         .catch(function(e) { cb("err:" + (e && e.message ? e.message : String(e))); });`
-    );
-    await closeViewTabs(client);
-    await sleep(1_200);
+    } finally {
+      // Always: a seeded record left behind is a terminal the next test's task
+      // still has, and the restart test counts what comes back.
+      await client.executeAsync<string>(
+        `const cb = arguments[arguments.length - 1];
+         const ctx = window.__KANNA_E2E__.setupState;
+         const db = ctx.db.value || ctx.db;
+         db.execute("DELETE FROM terminal_session_archive WHERE terminal_session_id = ?", ["${retiredSessionId}"])
+           .then(function() {
+             return db.execute("DELETE FROM terminal_session WHERE id = ?", ["${retiredSessionId}"]);
+           })
+           .then(function() { cb("ok"); })
+           .catch(function(e) { cb("err:" + (e && e.message ? e.message : String(e))); });`
+      );
+      await closeViewTabs(client);
+      await sleep(1_200);
+    }
   });
 
   it("brings a task's tabs back after the app restarts, and forgets a closed task's", async () => {
