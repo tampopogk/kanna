@@ -25,6 +25,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::mpsc;
 use std::thread;
+use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 /// Cross-process readiness is eventual. This deadline only contains a fixture
@@ -361,11 +362,18 @@ fn daemon_socket_path(daemon_dir: &Path) -> PathBuf {
 pub struct FakeDaemon {
     events: mpsc::Sender<String>,
     subscribed: mpsc::Receiver<()>,
+    snapshots: mpsc::Receiver<String>,
+    shutdown: mpsc::Sender<()>,
+    worker: Option<JoinHandle<()>>,
     socket_path: PathBuf,
 }
 
 impl Drop for FakeDaemon {
     fn drop(&mut self) {
+        let _ = self.shutdown.send(());
+        if let Some(worker) = self.worker.take() {
+            let _ = worker.join();
+        }
         let _ = std::fs::remove_file(&self.socket_path);
     }
 }
@@ -401,16 +409,29 @@ impl FakeDaemon {
                  must change with it",
             );
     }
+
+    pub fn await_snapshot(&self, task_id: &str) {
+        let actual = self
+            .snapshots
+            .recv_timeout(EVENTUAL_PROGRESS_GUARD)
+            .expect("kanna-server never requested the agent's final Snapshot");
+        assert_eq!(actual, task_id, "Snapshot requested for the wrong session");
+    }
 }
 
 fn spawn_fake_daemon(daemon_dir: &Path) -> FakeDaemon {
     let socket_path = daemon_socket_path(daemon_dir);
     let _ = std::fs::remove_file(&socket_path);
     let listener = UnixListener::bind(&socket_path).expect("bind fake daemon socket");
+    listener
+        .set_nonblocking(true)
+        .expect("make fake daemon listener nonblocking");
     let (events, event_queue) = mpsc::channel::<String>();
     let (handshake_done, subscribed) = mpsc::channel::<()>();
+    let (snapshot_done, snapshots) = mpsc::channel::<String>();
+    let (shutdown, shutdown_queue) = mpsc::channel::<()>();
 
-    thread::spawn(move || {
+    let worker = thread::spawn(move || {
         // Production starts the terminal watcher before the protected-input
         // startup gate, so either connection can win the race. Accept both
         // lifecycles in their natural order while requiring every command.
@@ -423,7 +444,23 @@ fn spawn_fake_daemon(daemon_dir: &Path) -> FakeDaemon {
             || !watcher_listed
             || subscription.is_none()
         {
-            let (mut connection, _) = listener.accept().expect("accept daemon connection");
+            if shutdown_queue.try_recv().is_ok() {
+                return;
+            }
+            let (mut connection, _) = match listener.accept() {
+                Ok(accepted) => accepted,
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    thread::sleep(Duration::from_millis(10));
+                    continue;
+                }
+                Err(error) => panic!("accept daemon connection: {error}"),
+            };
+            connection
+                .set_nonblocking(false)
+                .expect("make fake daemon connection blocking");
+            connection
+                .set_read_timeout(Some(Duration::from_secs(1)))
+                .expect("bound fake daemon command read");
             let mut reader =
                 BufReader::new(connection.try_clone().expect("clone daemon connection"));
             let mut line = String::new();
@@ -483,9 +520,68 @@ fn spawn_fake_daemon(daemon_dir: &Path) -> FakeDaemon {
             return;
         }
 
-        while let Ok(event) = event_queue.recv() {
-            if writeln!(subscription, "{event}").is_err() {
+        loop {
+            if shutdown_queue.try_recv().is_ok() {
                 return;
+            }
+
+            match event_queue.recv_timeout(Duration::from_millis(10)) {
+                Ok(event) => {
+                    if writeln!(subscription, "{event}").is_err() {
+                        return;
+                    }
+                }
+                Err(mpsc::RecvTimeoutError::Timeout) => {}
+                Err(mpsc::RecvTimeoutError::Disconnected) => return,
+            }
+
+            loop {
+                let (mut connection, _) = match listener.accept() {
+                    Ok(accepted) => accepted,
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
+                    Err(error) => panic!("accept daemon command after subscription: {error}"),
+                };
+                connection
+                    .set_nonblocking(false)
+                    .expect("make fake daemon connection blocking");
+                connection
+                    .set_read_timeout(Some(Duration::from_secs(1)))
+                    .expect("bound fake daemon command read");
+                let mut line = String::new();
+                BufReader::new(connection.try_clone().expect("clone daemon connection"))
+                    .read_line(&mut line)
+                    .expect("read daemon command after subscription");
+                let command: Value =
+                    serde_json::from_str(line.trim()).expect("parse daemon command");
+                assert_eq!(command["type"], json!("Snapshot"), "{command}");
+                let session_id = command["session_id"]
+                    .as_str()
+                    .expect("Snapshot session id")
+                    .to_string();
+                writeln!(
+                    connection,
+                    "{}",
+                    json!({
+                        "type": "Snapshot",
+                        "session_id": session_id,
+                        "snapshot": {
+                            "version": 1,
+                            "rows": 24,
+                            "cols": 80,
+                            "cursor_row": 0,
+                            "cursor_col": 0,
+                            "cursor_visible": true,
+                            "saved_at": 0,
+                            "sequence": 0,
+                            "vt": "fixture final frame"
+                        },
+                        "agent_provider": null
+                    })
+                )
+                .expect("answer final Snapshot");
+                if snapshot_done.send(session_id).is_err() {
+                    return;
+                }
             }
         }
     });
@@ -493,6 +589,9 @@ fn spawn_fake_daemon(daemon_dir: &Path) -> FakeDaemon {
     FakeDaemon {
         events,
         subscribed,
+        snapshots,
+        shutdown,
+        worker: Some(worker),
         socket_path,
     }
 }
