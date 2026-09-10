@@ -27,6 +27,7 @@ mod setup_terminal_fixture;
 mod task_creator;
 mod task_diff;
 mod task_files;
+mod task_graph;
 mod task_input_attachments;
 mod task_transfer_tunnel;
 mod terminal_attachments;
