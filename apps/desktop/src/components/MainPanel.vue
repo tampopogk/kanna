@@ -41,7 +41,8 @@ import CloudTerminalCache, {
   type CloudTerminalCacheEntry,
 } from "./CloudTerminalCache.vue";
 
-const props = defineProps<{
+const props = withDefaults(
+  defineProps<{
   uiSlot: TaskUiSlot | null;
   repoPath?: string;
   spawnPtySession?: (sessionId: string, cwd: string, prompt: string, cols: number, rows: number) => Promise<void>;
@@ -67,7 +68,14 @@ const props = defineProps<{
    * agent session it has always been.
    */
   views?: MainTabViewsController;
-}>();
+  }>(),
+  {
+    // Vue casts an absent Boolean prop to `false`, which would make "not read
+    // yet" indistinguishable from "no launch can start" — and the view would
+    // give up on an agent whose setup is still running. Keep it undefined.
+    agentLaunchPending: undefined,
+  },
+);
 
 const emit = defineEmits<{
   (e: "back"): void;
@@ -115,9 +123,12 @@ function openRetainedTerminal(payload: {
 }
 
 const agentSessionCanStart = computed(() => {
-  const item = props.item;
-  if (!item) return false;
-  if (item.closed_at != null || item.runtime_state === "exited") return false;
+  // The panel's own selected task, not a prop: MainPanel has no `item` prop,
+  // and reading one made this predicate permanently false at runtime as well
+  // as breaking the build.
+  const task = item.value;
+  if (!task) return false;
+  if (task.closed_at != null || task.runtime_state === "exited") return false;
   // A launch that failed leaves no runtime state at all — it never had a
   // session to report one — so the item alone cannot tell a failed launch from
   // one whose startup terminal is still running. The server's answer does.
