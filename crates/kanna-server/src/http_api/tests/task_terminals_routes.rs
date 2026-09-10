@@ -218,7 +218,8 @@ async fn closing_a_task_keeps_its_agent_screen_and_the_log_can_reopen_it() {
         // close reads is a frame — not the empty answer a session-less fixture
         // gives, which would prove nothing about what was kept.
         while killed.len() < 3 {
-            let command = super::read_scripted_test_daemon_command(&mut reader, &mut write_half).await;
+            let command =
+                super::read_scripted_test_daemon_command(&mut reader, &mut write_half).await;
             let response = match &command {
                 DaemonCommand::Snapshot { session_id } if session_id == "710917fb" => {
                     DaemonEvent::Snapshot {
@@ -347,7 +348,9 @@ async fn closing_a_task_keeps_its_agent_screen_and_the_log_can_reopen_it() {
     )
     .await;
     assert_eq!(activity.status, 200, "{:?}", activity.body);
-    let body = activity.body.expect("the activity route answers with a body");
+    let body = activity
+        .body
+        .expect("the activity route answers with a body");
     let agent = body["entries"]
         .as_array()
         .unwrap()

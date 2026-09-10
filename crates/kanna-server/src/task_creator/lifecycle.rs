@@ -418,7 +418,8 @@ async fn retain_outgoing_agent_attempt(
         log::warn!("failed to record the outgoing agent attempt {record_id}: {error}");
         return;
     }
-    if let Err(error) = db.record_terminal_session_archive(&record_id, cols as i64, rows as i64, &vt)
+    if let Err(error) =
+        db.record_terminal_session_archive(&record_id, cols as i64, rows as i64, &vt)
     {
         log::warn!("failed to archive the outgoing agent attempt {record_id}: {error}");
     }
