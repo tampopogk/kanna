@@ -341,7 +341,7 @@ async fn closing_a_task_keeps_its_agent_screen_and_the_log_can_reopen_it() {
     // The record only matters if the log can reach it: a closed task's tabs
     // are gone, and this is the only way back to what its agent printed.
     let activity = crate::http_api::dispatch_authenticated_http_invoke(
-        state,
+        Arc::clone(&state),
         "GET",
         "/v1/tasks/710917fb/activity",
         Value::Null,
@@ -360,6 +360,25 @@ async fn closing_a_task_keeps_its_agent_screen_and_the_log_can_reopen_it() {
         .expect("the closed task's agent run is listed");
     assert_eq!(agent["terminalSessionId"], attempt.id);
     assert_eq!(agent["archived"], true);
+
+    // And undoing the close does not take it away again: reopening changes the
+    // task row and nothing else, so what its agent printed stays history.
+    let db = Db::open(&db_path).expect("reopen db");
+    db.reopen_pipeline_item("710917fb").unwrap();
+    assert!(db
+        .get_pipeline_item("710917fb")
+        .unwrap()
+        .unwrap()
+        .closed_at
+        .is_none());
+    assert_eq!(
+        db.read_terminal_session_archive(&attempt.id)
+            .unwrap()
+            .expect("undoing a close keeps the attempt it kept")
+            .vt,
+        "CLOSING_AGENT_FRAME"
+    );
+    drop(db);
 
     let _ = std::fs::remove_dir_all(daemon_dir);
     let _ = std::fs::remove_file(db_path);
