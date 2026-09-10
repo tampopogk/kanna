@@ -394,7 +394,8 @@
   },
   "taskHeader": {
     "branchLabel": "branch:",
-    "prPrefix": "PR #"
+    "prPrefix": "PR #",
+    "stageAdvancePending": "Stage change pending"
   },
   "app": {
     "selectRepoFirst": "Select a repository first",
