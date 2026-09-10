@@ -97,8 +97,11 @@ const agentTabActive = computed(() => activeTabId.value === AGENT_TAB_ID);
  * because the log already knows both and the tab would otherwise reopen as an
  * anonymous "Terminal" that had finished for no stated reason.
  */
-function openRetainedTerminal(entry: DesktopTaskActivityEntry): void {
-  const taskId = props.item?.id;
+function openRetainedTerminal(payload: {
+  entry: DesktopTaskActivityEntry;
+  taskId: string;
+}): void {
+  const { entry, taskId } = payload;
   if (!taskId || !entry.terminalSessionId) return;
   props.views?.tabs.openTab({
     kind: "terminal",

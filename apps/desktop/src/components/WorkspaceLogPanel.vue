@@ -31,7 +31,12 @@ const props = defineProps<{
 }>();
 
 const emit = defineEmits<{
-  (event: "open-terminal", entry: DesktopTaskActivityEntry): void;
+  /**
+   * Carries the task this log belongs to. The reopen used to read the task
+   * from the panel around it, which is not always the one whose log was
+   * clicked — and a reopen with no task silently opened nothing.
+   */
+  (event: "open-terminal", payload: { entry: DesktopTaskActivityEntry; taskId: string }): void;
 }>();
 
 const entries = ref<DesktopTaskActivityEntry[]>([]);
@@ -100,7 +105,7 @@ function entryStatus(entry: DesktopTaskActivityEntry): string {
           type="button"
           class="workspace-log-open"
           :data-testid="`workspace-log-open-${entry.terminalSessionId}`"
-          @click="emit('open-terminal', entry)"
+          @click="emit('open-terminal', { entry, taskId })"
         >
           {{ $t('workspaceLog.openOutput') }}
         </button>

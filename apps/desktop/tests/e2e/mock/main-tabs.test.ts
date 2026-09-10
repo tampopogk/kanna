@@ -776,12 +776,28 @@ describe("main content area tabs", () => {
     let painted = "";
     while (Date.now() < paintedDeadline) {
       painted = await client.executeSync<string>(
-        `const rows = document.querySelector('[data-testid="task-terminal-archive"] .xterm-rows');
+        `const rows = document.querySelector('[data-testid="task-terminal-archive"][data-session-id="${retiredSessionId}"] .xterm-rows');
          return rows ? rows.textContent : "";`
       );
       if (painted.includes("ARCHIVED_FRAME_SENTINEL")) break;
       await sleep(250);
     }
+    const compositor = await client.executeAsync<string>(
+      `const cb = arguments[arguments.length - 1];
+       var fired = false;
+       requestAnimationFrame(function () { fired = true; });
+       setTimeout(function () {
+         cb(JSON.stringify({
+           visibilityState: document.visibilityState,
+           hasFocus: document.hasFocus(),
+           rafFiredWithin250ms: fired,
+         }));
+       }, 250);`
+    );
+    // xterm paints on an animation frame, and a window that is not composited
+    // stops delivering them. Without this, a blank archive and a suspended
+    // compositor are the same failure, and the run proves nothing either way.
+    expect(compositor).toContain('"rafFiredWithin250ms":true');
     expect(painted).toContain("ARCHIVED_FRAME_SENTINEL");
     await client.executeSync(
       `const close = document.querySelector('[data-testid="main-tab-close-terminal:${retiredSessionId}"]');
@@ -818,7 +834,7 @@ describe("main content area tabs", () => {
     let activePainted = "";
     while (Date.now() < activePaintedDeadline) {
       activePainted = await client.executeSync<string>(
-        `const rows = document.querySelector('[data-testid="task-terminal-archive"] .xterm-rows');
+        `const rows = document.querySelector('[data-testid="task-terminal-archive"][data-session-id="${retiredSessionId}"] .xterm-rows');
          return rows ? rows.textContent : "";`
       );
       if (activePainted.includes("ARCHIVED_FRAME_SENTINEL")) break;
@@ -830,7 +846,7 @@ describe("main content area tabs", () => {
     // output is worth keeping — rather than reading as an ordinary finish, and
     // never claims the output was not kept.
     const banner = await client.executeSync<string>(
-      `const status = document.querySelector('[data-testid="task-terminal-finished"]');
+      `const status = document.querySelector('[data-testid="task-terminal-finished"][data-session-id="${retiredSessionId}"]');
        return status ? status.textContent.trim() : "";`
     );
     expect(banner).not.toContain("was not kept");
@@ -849,12 +865,9 @@ describe("main content area tabs", () => {
     await sleep(300);
     expect(await openTabIds(client)).not.toContain(`terminal:${retiredSessionId}`);
 
-    // The Workspace tab is opened by the reconciliation that reads the task's
-    // terminals, and a record written straight into the database moves neither
-    // edge that triggers one. Leaving and returning to the task is the edge a
-    // person would use, and it is the same read.
-    await selectTask(secondTaskId);
-    await selectTask(taskId);
+    // The log is already open: reconciliation gives every task one, and this
+    // task's terminals were read when the tab above appeared. Leaving and
+    // returning to the task here only re-created the panel under the click.
     const workspaceDeadline = Date.now() + 15_000;
     let workspaceTab = false;
     while (Date.now() < workspaceDeadline) {
@@ -881,8 +894,16 @@ describe("main content area tabs", () => {
       await sleep(250);
     }
     expect(reopened).toBe(true);
-    await sleep(300);
-    expect(await openTabIds(client)).toContain(`terminal:${retiredSessionId}`);
+    // Wait for the tab the click is about, not for a clock: the log re-reads
+    // the task's activity around this, so a fixed pause is a race.
+    const reopenedDeadline = Date.now() + 15_000;
+    let reopenedTabs: string[] = [];
+    while (Date.now() < reopenedDeadline) {
+      reopenedTabs = await openTabIds(client);
+      if (reopenedTabs.includes(`terminal:${retiredSessionId}`)) break;
+      await sleep(250);
+    }
+    expect(reopenedTabs).toContain(`terminal:${retiredSessionId}`);
 
     } finally {
       // Always: a seeded record left behind is a terminal the next test's task

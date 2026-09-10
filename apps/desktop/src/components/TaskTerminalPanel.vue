@@ -211,7 +211,12 @@ onBeforeUnmount(disposeArchiveTerminal);
 
 <template>
   <div class="task-terminal-panel">
-    <div v-if="live === false" class="task-terminal-status" data-testid="task-terminal-finished">
+    <div
+      v-if="live === false"
+      class="task-terminal-status"
+      data-testid="task-terminal-finished"
+      :data-session-id="sessionId"
+    >
       <template v-if="archiveError">
         {{ $t('taskTerminal.archiveFailed', { title }) }} {{ archiveError }}
       </template>
@@ -230,6 +235,7 @@ onBeforeUnmount(disposeArchiveTerminal);
       ref="archiveEl"
       class="task-terminal-archive"
       data-testid="task-terminal-archive"
+      :data-session-id="sessionId"
     />
     <div v-else-if="live === undefined" class="task-terminal-status">
       {{ $t('common.loading') }}
