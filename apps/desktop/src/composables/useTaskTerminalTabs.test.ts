@@ -218,6 +218,36 @@ describe("keeping a task's terminal tabs in step with the server", () => {
     expect(tabs.activeTabId.value).toBe("agent");
   });
 
+  it("brings the workspace log back after the reader closes it", async () => {
+    // The log is the task's index, not one of its documents. Closing a
+    // retained attempt is only safe because the log is where it is found
+    // again, and nothing else in the app opens the log — so a closed log that
+    // stayed closed stranded every attempt behind it.
+    const tabs = tabsForTask("task-1");
+    const fetchTerminals = vi.fn(async (): Promise<DesktopTaskTerminals> => ({
+      taskId: "task-1",
+      agentSessionId: "task-1",
+      terminals: [terminal({ id: "setup-task-1-1", daemonSessionId: "setup-task-1-1" })],
+    }));
+    const { reconcile } = useTaskTerminalTabs({
+      tabs,
+      taskId: computed(() => "task-1"),
+      revision: computed(() => 1),
+      fetchTerminals,
+    });
+
+    await reconcile();
+    expect(tabs.isOpen("workspace")).toBe(true);
+
+    tabs.closeTab("workspace");
+    expect(tabs.isOpen("workspace")).toBe(false);
+
+    await reconcile();
+    expect(tabs.isOpen("workspace")).toBe(true);
+    // And it comes back where it was, without taking the reader off the agent.
+    expect(tabs.activeTabId.value).toBe("agent");
+  });
+
   it("reports the server's answer on whether a launch can still start the agent", async () => {
     // A failed launch leaves no runtime state — it never had a session to
     // report one — so the agent view cannot tell it from a startup terminal

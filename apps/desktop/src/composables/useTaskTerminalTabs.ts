@@ -124,12 +124,16 @@ export function useTaskTerminalTabs({
     // next stage's startup. It replaces the permanent startup tab a launch
     // used to keep: those are entries here, and their output is reopened from
     // the log rather than held open forever.
+    //
+    // Unlike every other tab here, this one is reopened after the reader
+    // closes it. It is the task's index, not one of its documents: closing a
+    // retained attempt is only safe because the log is where it is found
+    // again, and nothing else opens the log. Suppressing it the way a startup
+    // terminal is suppressed stranded every attempt the reader had closed,
+    // with no way back to any of them. It still never steals focus, so its
+    // return costs the reader nothing.
     if (terminals.some((terminal) => terminal.role === "setup" || terminal.role === "teardown")) {
-      const workspaceKey = `${id}:workspace`;
-      if (!openedByReconciliation.has(workspaceKey) || tabs.isOpen("workspace")) {
-        openedByReconciliation.add(workspaceKey);
-        tabs.openTabInScope(scope, { kind: "workspace" }, { activate: false });
-      }
+      tabs.openTabInScope(scope, { kind: "workspace" }, { activate: false });
     }
     for (const terminal of terminals) {
       if (!isOwnTabTerminal(terminal)) continue;
