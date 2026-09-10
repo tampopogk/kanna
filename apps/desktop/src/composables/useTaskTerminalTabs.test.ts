@@ -218,6 +218,86 @@ describe("keeping a task's terminal tabs in step with the server", () => {
     expect(tabs.activeTabId.value).toBe("agent");
   });
 
+  it("reports the server's answer on whether a launch can still start the agent", async () => {
+    // A failed launch leaves no runtime state — it never had a session to
+    // report one — so the agent view cannot tell it from a startup terminal
+    // that is still running. This is the fact it waits on instead.
+    const tabs = tabsForTask("task-1");
+    const pending = ref<boolean | undefined>(true);
+    const fetchTerminals = vi.fn(async (): Promise<DesktopTaskTerminals> => ({
+      taskId: "task-1",
+      agentSessionId: "task-1",
+      terminals: [terminal({})],
+      agentLaunchPending: pending.value,
+    }));
+    const { reconcile, agentLaunchPending } = useTaskTerminalTabs({
+      tabs,
+      taskId: computed(() => "task-1"),
+      revision: computed(() => 1),
+      fetchTerminals,
+    });
+
+    await reconcile();
+    expect(agentLaunchPending.value).toBe(true);
+
+    pending.value = false;
+    await reconcile();
+    expect(agentLaunchPending.value).toBe(false);
+  });
+
+  it("reopens a closed attempt tab when the workspace log asks for it", async () => {
+    // Reconciliation never reopens a tab the reader closed — that is their
+    // decision — which is exactly why the log must be able to, and why the
+    // reopened tab has to come back labelled and with its status rather than
+    // as an anonymous terminal that finished for no stated reason.
+    const tabs = tabsForTask("task-1");
+    const fetchTerminals = vi.fn(async (): Promise<DesktopTaskTerminals> => ({
+      taskId: "task-1",
+      agentSessionId: "task-1",
+      terminals: [
+        terminal({
+          id: "agent-task-1-1",
+          daemonSessionId: "task-1",
+          role: "agent",
+          state: "retired",
+          stage: "in progress",
+          attempt: 1,
+          exitCode: 0,
+          title: "Agent · in progress · attempt 1",
+        }),
+      ],
+    }));
+    const { reconcile } = useTaskTerminalTabs({
+      tabs,
+      taskId: computed(() => "task-1"),
+      revision: computed(() => 1),
+      fetchTerminals,
+    });
+
+    await reconcile();
+    expect(tabs.isOpen("terminal:agent-task-1-1")).toBe(true);
+
+    tabs.closeTab("terminal:agent-task-1-1");
+    await reconcile();
+    expect(tabs.isOpen("terminal:agent-task-1-1")).toBe(false);
+
+    // What the Workspace log's Open button does, with what its entry carries.
+    tabs.openTab({
+      kind: "terminal",
+      terminalSessionId: "agent-task-1-1",
+      terminalTitle: "Agent · in progress · attempt 1",
+      terminalTaskId: "task-1",
+      terminalLive: false,
+      terminalArchived: true,
+      terminalExitCode: 0,
+    });
+
+    const reopened = tabs.tabs.value.find((tab) => tab.id === "terminal:agent-task-1-1");
+    expect(reopened?.terminalTitle).toBe("Agent · in progress · attempt 1");
+    expect(reopened?.terminalLive).toBe(false);
+    expect(reopened?.terminalArchived).toBe(true);
+  });
+
   it("does not reopen a terminal tab the reader closed", async () => {
     const tabs = tabsForTask("task-1");
     const fetchTerminals = vi.fn(async (): Promise<DesktopTaskTerminals> => ({

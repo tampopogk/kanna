@@ -3707,6 +3707,202 @@ async fn stage_spawn_rolls_back_its_fork_when_the_guard_cannot_be_read() {
     let _ = std::fs::remove_dir_all(&repo_root);
 }
 
+/// A transition retains the agent it replaces, not the one it starts.
+///
+/// The kill and the respawn share a session id and the incoming run is
+/// inserted between them, so anything that reads a frame or a label after the
+/// kill describes the successor. This drives a real transition against a
+/// daemon that answers Snapshot differently before and after the kill, and
+/// asserts the retained record holds the frame, stage and run of the attempt
+/// that was killed.
+#[tokio::test]
+async fn a_stage_transition_retains_the_outgoing_agent_not_its_replacement() {
+    let repo_root = init_git_repo("stage-retains-outgoing-agent");
+    write_post_workflow_fixtures(&repo_root);
+    let config = test_config("stage-retains-outgoing-agent");
+    let db = Db::open_for_tests(&config.db_path).unwrap();
+    seed_post_workflow_task(&config, &db, &repo_root);
+    // The outgoing stage's own main run: the identity the retained attempt has
+    // to carry.
+    db.insert_stage_run(NewStageRun {
+        id: "run-outgoing-main",
+        task_id: "task-1",
+        stage: "in progress",
+        kind: "main",
+        agent: Some("build"),
+        agent_provider: Some("claude"),
+        model: None,
+        effort: None,
+        status: "running",
+        result: None,
+        feedback: None,
+        session_id: Some("task-1"),
+        provider_session_id: None,
+        cwd: Some("/tmp/outgoing"),
+        resumed_from_run_id: None,
+    })
+    .unwrap();
+    db.insert_stage_run(NewStageRun {
+        id: "run-post",
+        task_id: "task-1",
+        stage: "commit",
+        kind: "post",
+        agent: Some("commit"),
+        agent_provider: Some("claude"),
+        model: None,
+        effort: None,
+        status: "succeeded",
+        result: None,
+        feedback: None,
+        session_id: Some("task-1"),
+        provider_session_id: None,
+        cwd: None,
+        resumed_from_run_id: None,
+    })
+    .unwrap();
+    let run = match prepare_advance_stage_for_api(&db, &config, "task-1").unwrap() {
+        PreparedStageTransition::Run(run) => run,
+        other => panic!(
+            "expected a forked stage transition, got {:?}",
+            std::mem::discriminant(&other)
+        ),
+    };
+
+    std::fs::create_dir_all(&config.daemon_dir).unwrap();
+    let socket_path = test_daemon_socket_path(&config.daemon_dir);
+    let _ = std::fs::remove_file(&socket_path);
+    let listener = UnixListener::bind(&socket_path).unwrap();
+    // Retention opens its own connection while the control connection is still
+    // in use, so this serves them concurrently. The frame it answers changes at
+    // the kill: a probe taken afterwards would be the successor's.
+    let killed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let (spawned_tx, spawned_rx) = tokio::sync::oneshot::channel::<()>();
+    let spawned_tx = std::sync::Arc::new(std::sync::Mutex::new(Some(spawned_tx)));
+    let fake_daemon = tokio::spawn(async move {
+        loop {
+            let (stream, _) = listener.accept().await.unwrap();
+            let killed = std::sync::Arc::clone(&killed);
+            let spawned_tx = std::sync::Arc::clone(&spawned_tx);
+            tokio::spawn(async move {
+                let (read_half, mut write_half) = stream.into_split();
+                let mut reader = BufReader::new(read_half);
+                loop {
+                    let mut line = String::new();
+                    if reader.read_line(&mut line).await.unwrap_or(0) == 0 {
+                        return;
+                    }
+                    let command =
+                        serde_json::from_str::<kanna_daemon::protocol::Command>(line.trim())
+                            .unwrap();
+                    let response = match &command {
+                        kanna_daemon::protocol::Command::Snapshot { session_id } => {
+                            let vt = if killed.load(std::sync::atomic::Ordering::SeqCst) {
+                                "INCOMING_AGENT_FRAME"
+                            } else {
+                                "OUTGOING_AGENT_FRAME"
+                            };
+                            kanna_daemon::protocol::Event::Snapshot {
+                                session_id: session_id.clone(),
+                                snapshot: kanna_daemon::protocol::TerminalSnapshot {
+                                    version: 1,
+                                    rows: 24,
+                                    cols: 80,
+                                    cursor_row: 0,
+                                    cursor_col: 0,
+                                    cursor_visible: true,
+                                    vt: vt.to_string(),
+                                    saved_at: 0,
+                                    sequence: 1,
+                                },
+                                agent_provider: None,
+                            }
+                        }
+                        kanna_daemon::protocol::Command::Kill { .. } => {
+                            killed.store(true, std::sync::atomic::Ordering::SeqCst);
+                            kanna_daemon::protocol::Event::Ok
+                        }
+                        kanna_daemon::protocol::Command::NegotiateProtectedInput { .. } => {
+                            kanna_daemon::protocol::Event::ProtectedInputReady {
+                                version: kanna_daemon::protocol::PROTECTED_INPUT_PROTOCOL_VERSION,
+                            }
+                        }
+                        kanna_daemon::protocol::Command::NegotiateRawInput { .. } => {
+                            kanna_daemon::protocol::Event::RawInputReady {
+                                version: kanna_daemon::protocol::RAW_INPUT_PROTOCOL_VERSION,
+                            }
+                        }
+                        kanna_daemon::protocol::Command::NegotiateTerminalGeometry { .. } => {
+                            kanna_daemon::protocol::Event::TerminalGeometryReady {
+                                version: kanna_daemon::protocol::TERMINAL_GEOMETRY_PROTOCOL_VERSION,
+                            }
+                        }
+                        kanna_daemon::protocol::Command::Spawn { session_id, .. }
+                        | kanna_daemon::protocol::Command::SpawnAgent { session_id, .. } => {
+                            if let Some(tx) = spawned_tx.lock().unwrap().take() {
+                                let _ = tx.send(());
+                            }
+                            kanna_daemon::protocol::Event::SessionCreated {
+                                session_id: session_id.clone(),
+                            }
+                        }
+                        _ => kanna_daemon::protocol::Event::Ok,
+                    };
+                    if write_half
+                        .write_all(
+                            format!("{}\n", serde_json::to_string(&response).unwrap()).as_bytes(),
+                        )
+                        .await
+                        .is_err()
+                    {
+                        return;
+                    }
+                }
+            });
+        }
+    });
+
+    let mut daemon = DaemonClient::connect(&config.daemon_dir).await.unwrap();
+    spawn_prepared_stage_run_for_api(
+        &config.db_path,
+        &mut daemon,
+        &crate::session_replacements::SessionReplacements::default(),
+        *run,
+    )
+    .await
+    .unwrap();
+    spawned_rx.await.unwrap();
+    fake_daemon.abort();
+
+    let terminals = db.list_task_terminal_sessions("task-1").unwrap();
+    let retained: Vec<_> = terminals
+        .iter()
+        .filter(|terminal| terminal.role == crate::db::ROLE_AGENT)
+        .collect();
+    assert_eq!(
+        retained.len(),
+        1,
+        "the transition retains exactly the attempt it replaced: {retained:?}"
+    );
+    let attempt = retained[0];
+    assert_eq!(
+        attempt.stage_run_id.as_deref(),
+        Some("run-outgoing-main"),
+        "the retained attempt names the run that was killed, not the one starting"
+    );
+    assert_eq!(attempt.stage.as_deref(), Some("in progress"));
+    assert_eq!(attempt.state, "retired");
+    assert_eq!(
+        db.read_terminal_session_archive(&attempt.id)
+            .unwrap()
+            .expect("the replaced attempt keeps its own frame")
+            .vt,
+        "OUTGOING_AGENT_FRAME",
+        "the frame must be the one the killed agent had, not its successor's"
+    );
+
+    let _ = std::fs::remove_dir_all(&repo_root);
+}
+
 /// The submitted phase is the boundary that decides how a crash is
 /// reconciled, so it must begin at the socket. At the last command before the
 /// Spawn write the durable run row already exists — it has to, or the child

@@ -17,9 +17,11 @@ import { getAppErrorMessage } from "../appError";
  * is not one shell: the entries come from different sessions and different
  * workspaces, which is why it can span stages at all.
  *
- * A finished agent's own output is deliberately absent — that is its own tab,
- * kept per stage and attempt. Repeating it here would be the cross-stage
- * chaining this replaces.
+ * A finished agent's own output is not inlined here — that is its own tab,
+ * kept per stage and attempt, and repeating it would be the cross-stage
+ * chaining this replaces. What its entry carries instead is the handle to
+ * reopen it, which is what makes closing such a tab safe: the log is where it
+ * is found again.
  */
 const props = defineProps<{
   taskId: string;
@@ -29,7 +31,7 @@ const props = defineProps<{
 }>();
 
 const emit = defineEmits<{
-  (event: "open-terminal", terminalSessionId: string): void;
+  (event: "open-terminal", entry: DesktopTaskActivityEntry): void;
 }>();
 
 const entries = ref<DesktopTaskActivityEntry[]>([]);
@@ -98,7 +100,7 @@ function entryStatus(entry: DesktopTaskActivityEntry): string {
           type="button"
           class="workspace-log-open"
           :data-testid="`workspace-log-open-${entry.terminalSessionId}`"
-          @click="emit('open-terminal', entry.terminalSessionId)"
+          @click="emit('open-terminal', entry)"
         >
           {{ $t('workspaceLog.openOutput') }}
         </button>

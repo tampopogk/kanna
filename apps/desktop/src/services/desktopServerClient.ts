@@ -326,6 +326,14 @@ export interface DesktopTaskTerminals {
   taskId: string;
   agentSessionId: string | null;
   terminals: DesktopTaskTerminal[];
+  /**
+   * Whether a launch could still produce this task's agent session.
+   *
+   * The daemon refuses an attach identically whether the startup terminal is
+   * still running or the launch failed, so this is the server's answer to the
+   * difference. Optional so an older server simply leaves the question open.
+   */
+  agentLaunchPending?: boolean;
 }
 
 export async function fetchDesktopTaskTerminals(taskId: string): Promise<DesktopTaskTerminals> {

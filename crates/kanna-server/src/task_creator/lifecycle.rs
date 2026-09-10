@@ -318,6 +318,77 @@ pub(crate) fn record_started_setup_terminal(
     super::setup_session::record_setup_terminal(&db, &repo_id, task_id, None, plan)
 }
 
+/// Keep the agent attempt a stage transition is about to replace.
+///
+/// Called with the session still alive and the outgoing run still the only one
+/// this session has served. Both facts stop being true within milliseconds:
+/// the kill and the respawn share a session id, and the incoming run is
+/// inserted between them, so a frame or a label read afterwards belongs to the
+/// agent that replaced this one.
+///
+/// Best effort in every direction — a task must never fail to advance over
+/// retained history — but silent only where there is genuinely nothing to say.
+async fn retain_outgoing_agent_attempt(
+    db_path: &str,
+    daemon: &mut DaemonClient,
+    task_id: &str,
+    session_id: &str,
+    outgoing_run_id: Option<&str>,
+) {
+    let frame =
+        match crate::terminal_watcher::archived_terminal_frame_over(daemon, session_id).await {
+            Ok(frame) => frame,
+            Err(error) => {
+                log::warn!(
+                    "could not read the outgoing agent frame for {task_id} session {session_id}: \
+                 {error}"
+                );
+                None
+            }
+        };
+    let Ok(db) = Db::open(db_path) else {
+        return;
+    };
+    let Ok(Some(item)) = db.get_pipeline_item(task_id) else {
+        return;
+    };
+    let outgoing_run = outgoing_run_id.and_then(|run_id| db.stage_run(run_id).ok().flatten());
+    let stage = outgoing_run
+        .as_ref()
+        .map(|run| run.stage.clone())
+        .or_else(|| item.stage.clone())
+        .unwrap_or_else(|| "in progress".to_string());
+    let attempt = db.next_task_terminal_attempt(task_id).unwrap_or(1);
+    let record_id = format!("agent-{task_id}-{attempt}");
+    let title = format!("Agent · {stage} · attempt {attempt}");
+    if let Err(error) = db.upsert_task_terminal_session(crate::db::NewTaskTerminalSession {
+        id: &record_id,
+        repo_id: &item.repo_id,
+        task_id: Some(task_id),
+        daemon_session_id: Some(session_id),
+        role: crate::db::ROLE_AGENT,
+        stage: Some(&stage),
+        attempt,
+        stage_run_id: outgoing_run.as_ref().map(|run| run.id.as_str()),
+        title: Some(&title),
+        cwd: outgoing_run.as_ref().and_then(|run| run.cwd.as_deref()),
+    }) {
+        log::warn!("failed to record the outgoing agent attempt {record_id}: {error}");
+        return;
+    }
+    if let Some((cols, rows, vt)) = frame {
+        if let Err(error) =
+            db.record_terminal_session_archive(&record_id, cols as i64, rows as i64, &vt)
+        {
+            log::warn!("failed to archive the outgoing agent attempt {record_id}: {error}");
+        }
+    }
+    // No exit status: this attempt was replaced rather than ending on one.
+    if let Err(error) = db.retire_task_terminal_session_record(&record_id, None) {
+        log::warn!("failed to retire the outgoing agent attempt {record_id}: {error}");
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn run_launch_setup_terminal(
     db_path: &str,
@@ -725,8 +796,21 @@ pub(crate) async fn spawn_prepared_stage_run_for_api(
     // agent with the last one's screen would show the same bytes twice and
     // blur the boundary the owner asked to be able to see.
     //
-    // The frame itself is not lost — the terminal watcher retains the
-    // finished attempt against its own record on the Exit this kill causes.
+    // It is retained *here*, before the kill, because this is the last moment
+    // the outgoing attempt is unambiguous. A transition kills and respawns the
+    // same session id back to back and inserts the incoming run in between, so
+    // anything asking the daemon or the database afterwards gets the incoming
+    // agent's opening frame under the incoming stage's name. The run being
+    // killed is already resolved above, and that is the identity the record
+    // carries.
+    retain_outgoing_agent_attempt(
+        db_path,
+        daemon,
+        &task_id,
+        &session_id,
+        outgoing_run_id.as_deref(),
+    )
+    .await;
 
     // Only a freshly forked workspace is rolled back on failure; a resumed
     // workspace pre-exists this spawn and must survive it.

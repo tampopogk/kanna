@@ -2392,9 +2392,12 @@ Three invariants hold this together:
   last successful step is the bundled `kanna-cli setup-receipt`, which writes
   that shell's environment and working directory to a private, launch-scoped
   file under the daemon directory. The server merges it into the agent's spawn
-  environment — dropping only the shell's own bookkeeping — resolves the
-  provider executable against the PATH setup left behind, and deletes the
-  receipt. It is a *readiness* receipt: it says setup finished and what it left
+  environment — dropping only the shell's own bookkeeping — and resolves the
+  provider executable against the PATH setup left behind. The receipt is
+  deleted when the launch reaches a durable outcome, not when it is read: it is
+  the only copy of what setup exported, so an interruption between reading it
+  and spawning the agent would otherwise leave nothing to finish the launch
+  from. It is a *readiness* receipt: it says setup finished and what it left
   behind, and nothing about the task's outcome passes through it. Setup that
   fails, times out, or leaves no receipt starts no agent and records the failure
   against the task; the terminal holding the output that explains it stays.
@@ -2402,10 +2405,14 @@ Three invariants hold this together:
 Rows written before the split carry `role = 'legacy_agent'`: one mixed session,
 deliberately not divided or restarted, still serving as that task's agent
 terminal until its next launch. The intra-terminal alternate/normal-buffer
-history that task 05ffa8d1 landed is unchanged, and a stage transition still
-carries the outgoing *agent* terminal's history into its replacement — with
-startup noise no longer in it, that chained scrollback is now clean agent
-history rather than a mixture of two things.
+history that task 05ffa8d1 landed is unchanged, but a stage transition no
+longer carries the outgoing *agent* terminal's history into its replacement.
+Each stage and retry keeps its own: the transition retains the outgoing
+attempt — its final frame, its stage and its run — at the kill, while that
+session is still alive and still the only run its id has served, and the next
+agent starts on a fresh screen. A retained attempt is read-only, addressed by
+its own `terminal_session` record rather than by the daemon session id every
+attempt shares, and reopened from the task's Workspace log.
 
 A launch whose setup runs in a terminal finishes in the background: `POST
 /v1/tasks` answers as soon as the task, its workspace and its branch exist,

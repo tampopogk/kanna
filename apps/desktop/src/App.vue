@@ -271,7 +271,7 @@ const mainTabPersistence = useMainTabPersistence({
  * something only the server knows. Re-reading whenever the snapshot changes is
  * what makes a new stage's startup terminal appear without polling for it.
  */
-useTaskTerminalTabs({
+const { agentLaunchPending } = useTaskTerminalTabs({
   tabs: mainTabs,
   taskId: computed(() => mainPanelItem.value?.id ?? null),
   revision: computed(() => mainPanelItem.value?.updated_at ?? null),
@@ -660,6 +660,7 @@ const modalLayerController = {
         :has-repos="sidebarRepos.length > 0"
         :cloud-task="mainPanelIsCloudTask"
         :cloud-terminal-ref="mainPanelCloudTerminalRef"
+        :agent-launch-pending="agentLaunchPending"
         :request-revision="store.requestRevision"
         @close-task="closeSelectedWorkspaceTask"
         @back="store.selectedItemId = null"

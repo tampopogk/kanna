@@ -984,6 +984,76 @@ describe("useTerminal", () => {
    * that is not running — forever, on a backoff — describes something that is
    * not happening.
    */
+  /**
+   * The failed-launch record, driven end to end rather than by the getter's
+   * two literal values: a setup that exited non-zero writes a failed run and
+   * no runtime state, so the desktop's own view of the task says nothing, and
+   * the server's answer is what stops the wait.
+   */
+  it("stops waiting when the server says no launch can produce the agent", async () => {
+    const { useTerminal } = await import("./useTerminal");
+    const client = installKspStreamClient({
+      onAttach: (_taskId, handlers) => {
+        handlers.onError?.("session_not_found", "session not found: session-1");
+      },
+    });
+    invokeMock.mockImplementation(async () => null);
+
+    // What MainPanel computes for a task whose launch failed: open, no
+    // runtime state at all, and a server that says no launch is pending.
+    const item = { closed_at: null, runtime_state: null } as {
+      closed_at: string | null;
+      runtime_state: string | null;
+    };
+    const agentLaunchPending: boolean | undefined = false;
+    const canStart = () =>
+      item.closed_at == null && item.runtime_state !== "exited" && agentLaunchPending !== false;
+    expect(canStart()).toBe(false);
+
+    const TestHarness = defineComponent({
+      setup() {
+        const { init, startListening } = useTerminal(
+          "session-1",
+          { cwd: "/tmp/task", prompt: "hello", spawnFn: async () => {} },
+          {
+            agentProvider: "codex",
+            worktreePath: "/tmp/task",
+            agentSessionCanStart: canStart,
+          },
+        );
+        return { init, startListening };
+      },
+      render() {
+        return h("div");
+      },
+    });
+
+    const wrapper = mount(TestHarness);
+    const terminalElement = document.createElement("div");
+    Object.defineProperty(terminalElement, "offsetWidth", { configurable: true, value: 800 });
+    Object.defineProperty(terminalElement, "offsetHeight", { configurable: true, value: 600 });
+    terminalElement.querySelector = vi.fn(() => null) as typeof terminalElement.querySelector;
+    terminalElement.closest = vi.fn(() => null) as typeof terminalElement.closest;
+    wrapper.vm.init(terminalElement);
+    await wrapper.vm.startListening();
+    await flushAsyncWork();
+
+    const terminal = terminals[0];
+    const attachesAfterNotice = client.attachTerminal.mock.calls.length;
+    const written = terminal.write.mock.calls
+      .map(([data]) => (typeof data === "string" ? data : ""))
+      .join("");
+    expect(written).toContain("Knock, knock, Neo.");
+    expect(written).not.toContain("startup terminal runs first");
+
+    // Nothing further is scheduled: the notice is said once and the view
+    // settles rather than retrying a launch that is over.
+    await flushAsyncWork();
+    expect(client.attachTerminal.mock.calls.length).toBe(attachesAfterNotice);
+
+    wrapper.unmount();
+  });
+
   it("says so once when no launch can start this task's agent session", async () => {
     const { useTerminal } = await import("./useTerminal");
     installKspStreamClient({

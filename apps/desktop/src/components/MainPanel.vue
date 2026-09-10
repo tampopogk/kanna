@@ -26,6 +26,7 @@ import FilePreviewModal from "./FilePreviewModal.vue";
 import ShellModal from "./ShellModal.vue";
 import TaskTerminalPanel from "./TaskTerminalPanel.vue";
 import WorkspaceLogPanel from "./WorkspaceLogPanel.vue";
+import type { DesktopTaskActivityEntry } from "../services/desktopServerClient";
 import TreeExplorerModal from "./TreeExplorerModal.vue";
 import CommitGraphModal from "./CommitGraphModal.vue";
 import AnalyticsModal from "./AnalyticsModal.vue";
@@ -57,6 +58,11 @@ const props = defineProps<{
   } | null;
   requestRevision?: (taskId: string, options: RequestRevisionOptions) => Promise<boolean>;
   /**
+   * The server's answer to whether a launch could still start this task's
+   * agent session. Undefined until the task's terminals have been read.
+   */
+  agentLaunchPending?: boolean;
+  /**
    * Present in the app; absent in isolated tests, where the panel is just the
    * agent session it has always been.
    */
@@ -87,23 +93,34 @@ const agentTabActive = computed(() => activeTabId.value === AGENT_TAB_ID);
  * Reopen one of the task's retained terminals from the Workspace log.
  *
  * Closing such a tab hides the view and leaves the record alone, so the log is
- * where it is found again.
+ * where it is found again — and it comes back labelled and with its status,
+ * because the log already knows both and the tab would otherwise reopen as an
+ * anonymous "Terminal" that had finished for no stated reason.
  */
-function openRetainedTerminal(terminalSessionId: string): void {
+function openRetainedTerminal(entry: DesktopTaskActivityEntry): void {
   const taskId = props.item?.id;
-  if (!taskId) return;
+  if (!taskId || !entry.terminalSessionId) return;
   props.views?.tabs.openTab({
     kind: "terminal",
-    terminalSessionId,
+    terminalSessionId: entry.terminalSessionId,
+    terminalTitle: entry.title,
     terminalTaskId: taskId,
     terminalLive: false,
+    terminalArchived: entry.archived,
+    terminalExitCode: entry.exitCode,
   });
 }
 
 const agentSessionCanStart = computed(() => {
   const item = props.item;
   if (!item) return false;
-  return item.closed_at == null && item.runtime_state !== "exited";
+  if (item.closed_at != null || item.runtime_state === "exited") return false;
+  // A launch that failed leaves no runtime state at all — it never had a
+  // session to report one — so the item alone cannot tell a failed launch from
+  // one whose startup terminal is still running. The server's answer does.
+  // Undefined means not yet read, and the view waits, which is the state a
+  // launch genuinely is in for its first moments.
+  return props.agentLaunchPending !== false;
 });
 const openViewTabs = computed(() => tabs.value.filter((tab) => tab.kind !== "agent"));
 /**

@@ -658,7 +658,10 @@ describe("main content area tabs", () => {
        db.execute("INSERT INTO terminal_session (id, repo_id, pipeline_item_id, label, cwd, daemon_session_id, role, stage, attempt, state, title, exit_code, retired_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))",
          ["${retiredSessionId}", "${repoId}", "${taskId}", "setup", "${testRepoPath}", "${retiredSessionId}", "setup", "in progress", 3, "retired", "Startup · in progress", 23])
          .then(function() {
-           return db.execute("INSERT INTO terminal_session_archive (session_id, cols, rows, vt) VALUES (?, ?, ?, ?)",
+           // Keyed by the terminal *record*, not the daemon session id: a
+           // task's agent reuses one session id across every attempt, so
+           // migration 075 moved the archive onto the record that names one.
+           return db.execute("INSERT INTO terminal_session_archive (terminal_session_id, cols, rows, vt) VALUES (?, ?, ?, ?)",
              ["${retiredSessionId}", 80, 24, "ARCHIVED_FRAME_SENTINEL\\r\\n"]);
          })
          .then(function() { cb("ok"); })
@@ -700,11 +703,43 @@ describe("main content area tabs", () => {
     expect(banner).not.toContain("was not kept");
     expect(banner).toContain("status 23");
 
+    // Closing a retained terminal hides the view and leaves the record alone,
+    // so the Workspace log is where it is found again. Reconciliation
+    // deliberately never reopens a tab the reader closed, which is exactly why
+    // the log has to be able to.
+    await client.executeSync(
+      `const close = document.querySelector('[data-testid="main-tab-close-terminal:${retiredSessionId}"]');
+       if (!close) throw new Error("the retained terminal tab has no close button");
+       close.click();
+       return true;`
+    );
+    await sleep(300);
+    expect(await openTabIds(client)).not.toContain(`terminal:${retiredSessionId}`);
+
+    await client.executeSync(
+      `document.querySelector('[data-testid="main-tab-workspace"]').click();`
+    );
+    const reopenDeadline = Date.now() + 15_000;
+    let reopened = false;
+    while (Date.now() < reopenDeadline) {
+      reopened = await client.executeSync<boolean>(
+        `const open = document.querySelector('[data-testid="workspace-log-open-${retiredSessionId}"]');
+         if (!open) return false;
+         open.click();
+         return true;`
+      );
+      if (reopened) break;
+      await sleep(250);
+    }
+    expect(reopened).toBe(true);
+    await sleep(300);
+    expect(await openTabIds(client)).toContain(`terminal:${retiredSessionId}`);
+
     await client.executeAsync<string>(
       `const cb = arguments[arguments.length - 1];
        const ctx = window.__KANNA_E2E__.setupState;
        const db = ctx.db.value || ctx.db;
-       db.execute("DELETE FROM terminal_session_archive WHERE session_id = ?", ["${retiredSessionId}"])
+       db.execute("DELETE FROM terminal_session_archive WHERE terminal_session_id = ?", ["${retiredSessionId}"])
          .then(function() {
            return db.execute("DELETE FROM terminal_session WHERE id = ?", ["${retiredSessionId}"]);
          })

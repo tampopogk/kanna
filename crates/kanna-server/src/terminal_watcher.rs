@@ -456,11 +456,24 @@ pub(crate) async fn archived_terminal_frame(
     daemon_dir: &str,
     session_id: &str,
 ) -> Result<Option<(u16, u16, String)>, String> {
-    use kanna_daemon::protocol::{Command as DaemonCommand, Event as DaemonEvent};
-
     let mut daemon = daemon_client::DaemonClient::connect(daemon_dir)
         .await
         .map_err(|error| format!("daemon error: {error}"))?;
+    archived_terminal_frame_over(&mut daemon, session_id).await
+}
+
+/// The same read, over a connection the caller already holds.
+///
+/// The stage transition captures the outgoing attempt's frame in the middle of
+/// its own daemon conversation. Opening a second connection there would be a
+/// second conversation with the daemon inside one transition, so it asks on the
+/// connection it is already using.
+pub(crate) async fn archived_terminal_frame_over(
+    daemon: &mut daemon_client::DaemonClient,
+    session_id: &str,
+) -> Result<Option<(u16, u16, String)>, String> {
+    use kanna_daemon::protocol::{Command as DaemonCommand, Event as DaemonEvent};
+
     match daemon
         .send_command(&DaemonCommand::Snapshot {
             session_id: session_id.to_string(),
@@ -803,20 +816,26 @@ pub(crate) async fn terminal_state_watcher_once(
                     replacements.consume(&session_id);
                     continue;
                 }
-                // An agent attempt that has ended becomes history, and history
-                // is per attempt: a stage advance or a retry respawns the same
-                // daemon session id, so without a record of its own each
-                // attempt's output was overwritten by the next one's. The row
-                // is written here rather than at spawn because this is the
-                // moment the output stops being live and starts being
-                // readable, and because a session that never ended has nothing
-                // to retain — the live agent is still addressed by the task id
-                // exactly as before.
-                retain_finished_agent_attempt(state, &session_id, code).await;
                 // Consume the replacement entry even when the event is
                 // self-describing — a leftover entry would swallow a future
                 // legitimate Exit for the same session id.
                 let replacement = replacements.consume(&session_id);
+                // An agent attempt that has ended becomes history, and history
+                // is per attempt: a stage advance or a retry respawns the same
+                // daemon session id, so without a record of its own each
+                // attempt's output was overwritten by the next one's.
+                //
+                // An *orchestrated* replacement already retained it, at the
+                // kill site, while the outgoing session was still alive and
+                // still the only run this id had served. Doing it again from
+                // here would read the incoming agent's opening frame under the
+                // incoming stage's name and store that as the outgoing
+                // attempt's history. Everything else — a natural exit, a close
+                // — ends with no successor, so this is the moment its output
+                // stops being live and starts being readable.
+                if !replacement.replaced {
+                    retain_finished_agent_attempt(state, &session_id, code).await;
+                }
                 if replacement.replaced || killed {
                     // Orchestrated kill (stage swap, rerun, close) — not the
                     // agent finishing, so there is no terminal-state
@@ -1446,6 +1465,95 @@ mod tests {
             state_changes.try_recv(),
             Err(tokio::sync::broadcast::error::TryRecvError::Empty)
         ));
+        let _ = std::fs::remove_file(socket_path);
+        let _ = std::fs::remove_dir_all(daemon_dir);
+    }
+
+    /// A replaced agent exit leaves retention to the kill site.
+    ///
+    /// A transition kills and respawns the same session id back to back and
+    /// inserts the incoming run in between, so retaining from here would ask
+    /// the daemon for a frame the incoming agent has already started drawing
+    /// and label it with the incoming stage's run. The kill site does it
+    /// instead, while the outgoing session is still alive; this asserts the
+    /// watcher does not overwrite that with the successor's.
+    #[tokio::test]
+    async fn watcher_leaves_a_replaced_attempt_to_the_kill_site() {
+        let unique = unique_name("terminal-watcher-replaced-retention");
+        let daemon_dir = std::env::temp_dir().join(format!("{unique}-daemon"));
+        let config = test_config(&unique, &daemon_dir);
+        seed_notifying_task(&config);
+        let db = Db::open(&config.db_path).unwrap();
+        // What the kill site wrote before sending Kill: the outgoing attempt,
+        // its frame, its stage.
+        db.upsert_task_terminal_session(crate::db::NewTaskTerminalSession {
+            id: "agent-task-child-1",
+            repo_id: "repo-1",
+            task_id: Some("task-child"),
+            daemon_session_id: Some("task-child"),
+            role: crate::db::ROLE_AGENT,
+            stage: Some("in progress"),
+            attempt: 1,
+            stage_run_id: None,
+            title: Some("Agent · in progress · attempt 1"),
+            cwd: Some("/tmp/wt"),
+        })
+        .unwrap();
+        db.record_terminal_session_archive("agent-task-child-1", 80, 24, "OUTGOING_FRAME")
+            .unwrap();
+        db.retire_task_terminal_session_record("agent-task-child-1", None)
+            .unwrap();
+        drop(db);
+
+        let replacements = session_replacements::SessionReplacements::default();
+        replacements.begin_for_run("task-child", Some("run-outgoing"));
+        let (listener, socket_path) = bind_daemon_listener(&daemon_dir);
+        let server = tokio::spawn(async move {
+            let mut subscriber = expect_subscribe(&listener).await;
+            write_event(
+                &mut subscriber,
+                &DaemonEvent::Exit {
+                    session_id: "task-child".to_string(),
+                    code: -1,
+                    resume_session_id: None,
+                    killed: true,
+                },
+            )
+            .await;
+            expect_no_notification_connection(&listener).await;
+            write_event(&mut subscriber, &DaemonEvent::ShuttingDown).await;
+        });
+
+        timeout(
+            Duration::from_secs(2),
+            terminal_state_watcher_once(&http_api::AppState::new(config.clone()), &replacements),
+        )
+        .await
+        .expect("watcher did not finish")
+        .unwrap();
+        server.await.unwrap();
+
+        let db = Db::open(&config.db_path).unwrap();
+        let terminals = db.list_task_terminal_sessions("task-child").unwrap();
+        let agents: Vec<_> = terminals
+            .iter()
+            .filter(|terminal| terminal.role == crate::db::ROLE_AGENT)
+            .collect();
+        assert_eq!(
+            agents.len(),
+            1,
+            "the replaced exit must not add a second attempt record: {agents:?}"
+        );
+        assert_eq!(agents[0].id, "agent-task-child-1");
+        assert_eq!(
+            db.read_terminal_session_archive("agent-task-child-1")
+                .unwrap()
+                .expect("the kill site's frame survives the exit that follows it")
+                .vt,
+            "OUTGOING_FRAME",
+        );
+
+        drop(db);
         let _ = std::fs::remove_file(socket_path);
         let _ = std::fs::remove_dir_all(daemon_dir);
     }

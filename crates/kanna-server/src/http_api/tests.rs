@@ -309,5 +309,6 @@ mod repo_commands;
 mod repo_definitions;
 mod revision_status;
 mod task_events;
+mod task_terminals_routes;
 mod transfers;
 mod workflow_switch;

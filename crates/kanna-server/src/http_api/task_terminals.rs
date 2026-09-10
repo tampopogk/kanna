@@ -29,6 +29,15 @@ pub(super) struct TaskTerminalsResponse {
     /// agent-facing surface still addresses by task id.
     agent_session_id: Option<String>,
     terminals: Vec<TaskTerminalSession>,
+    /// Whether a launch could still produce this task's agent session.
+    ///
+    /// A client watching an empty agent view cannot tell "the startup terminal
+    /// is still running" from "this launch failed and nothing will start" —
+    /// the daemon refuses the attach identically for both — and a missing PTY
+    /// alone says neither. The server holds the facts that do: a closed task
+    /// has no launch left, and a launch that ended without an agent recorded a
+    /// failed run when it did.
+    agent_launch_pending: bool,
 }
 
 pub(super) async fn list_task_terminals(
@@ -66,10 +75,31 @@ pub(super) async fn list_task_terminals(
                     format!("db error: {error}"),
                 )
             })?;
+        let item = db.get_pipeline_item(&resolved).map_err(|error| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("db error: {error}"),
+            )
+        })?;
+        let latest_main = db
+            .list_stage_runs_for_task(&resolved)
+            .map_err(|error| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("db error: {error}"),
+                )
+            })?
+            .into_iter()
+            .rfind(|run| run.kind == "main");
+        let agent_launch_pending = item.is_some_and(|item| item.closed_at.is_none())
+            && !latest_main
+                .is_some_and(|run| matches!(run.status.as_str(), "failed" | "cancelled"));
+
         Ok(Json(TaskTerminalsResponse {
             task_id: resolved,
             agent_session_id,
             terminals,
+            agent_launch_pending,
         }))
     })
     .await
@@ -221,11 +251,25 @@ pub(super) async fn read_task_activity(
             )
         })?;
 
+        // A retained agent attempt is reopened from here, so its run entry
+        // carries the record that holds it. Keyed by the run the attempt
+        // served, which is what the transition records when it retains one.
+        let retained_agents: std::collections::HashMap<&str, &TaskTerminalSession> = terminals
+            .iter()
+            .filter(|terminal| terminal.role == crate::db::ROLE_AGENT)
+            .filter_map(|terminal| {
+                terminal
+                    .stage_run_id
+                    .as_deref()
+                    .map(|run_id| (run_id, terminal))
+            })
+            .collect();
+
         let mut entries: Vec<TaskActivityEntry> = Vec::new();
         for terminal in &terminals {
-            // A finished agent attempt is its own tab, not a log line: the log
-            // is about the workspace around the agent, and repeating the
-            // agent's own output here would be the chaining this replaces.
+            // An agent attempt is not a log line of its own: the log is the
+            // workspace around the agent, and the attempt is reported on the
+            // run it served, below.
             if terminal.role != crate::db::ROLE_SETUP && terminal.role != crate::db::ROLE_TEARDOWN {
                 continue;
             }
@@ -249,18 +293,22 @@ pub(super) async fn read_task_activity(
             if run.kind != "main" {
                 continue;
             }
+            let retained = retained_agents.get(run.id.as_str()).copied();
             entries.push(TaskActivityEntry {
                 kind: "agent",
                 at: run.started_at.clone(),
-                title: match run.agent.as_deref() {
-                    Some(agent) => format!("{agent} · {}", run.stage),
-                    None => format!("Agent · {}", run.stage),
-                },
+                title: retained
+                    .and_then(|terminal| terminal.title.clone())
+                    .unwrap_or_else(|| match run.agent.as_deref() {
+                        Some(agent) => format!("{agent} · {}", run.stage),
+                        None => format!("Agent · {}", run.stage),
+                    }),
                 stage: Some(run.stage.clone()),
-                attempt: None,
-                exit_code: None,
-                terminal_session_id: None,
-                archived: false,
+                attempt: retained.map(|terminal| terminal.attempt),
+                exit_code: retained.and_then(|terminal| terminal.exit_code),
+                // The handle a reader reopens this attempt's output with.
+                terminal_session_id: retained.map(|terminal| terminal.id.clone()),
+                archived: retained.is_some_and(|terminal| terminal.archived),
                 status: Some(run.status.clone()),
                 result: run.result.clone(),
             });

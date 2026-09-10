@@ -1,4 +1,4 @@
-import { onScopeDispose, watch, type ComputedRef } from "vue";
+import { onScopeDispose, ref, watch, type ComputedRef } from "vue";
 
 import {
   fetchDesktopTaskTerminals,
@@ -91,13 +91,25 @@ export function useTaskTerminalTabs({
   fetchTerminals = fetchDesktopTaskTerminals,
 }: UseTaskTerminalTabsOptions) {
   const openedByReconciliation = new Set<string>();
+  /**
+   * The server's answer to "could a launch still start this task's agent?".
+   *
+   * Undefined until the first read, and left alone when a read fails: the
+   * agent view waits on this rather than on a missing PTY, which says nothing.
+   */
+  const agentLaunchPending = ref<boolean | undefined>(undefined);
 
   async function reconcile(): Promise<void> {
     const id = taskId.value;
-    if (!id) return;
+    if (!id) {
+      agentLaunchPending.value = undefined;
+      return;
+    }
     let terminals: DesktopTaskTerminal[];
     try {
-      terminals = (await fetchTerminals(id)).terminals;
+      const listed = await fetchTerminals(id);
+      terminals = listed.terminals;
+      if (taskId.value === id) agentLaunchPending.value = listed.agentLaunchPending;
     } catch (error: unknown) {
       // A task whose terminals cannot be read keeps whatever tabs it has. The
       // alternative — dropping them — would make a momentary server hiccup
@@ -168,5 +180,5 @@ export function useTaskTerminalTabs({
     void listening.then((unlisten) => unlisten?.());
   });
 
-  return { reconcile };
+  return { reconcile, agentLaunchPending };
 }
