@@ -12,7 +12,8 @@ const devicesSchema = z.object({
   devices: z.array(z.object({ deviceId: z.string(), deviceName: z.string(), build: buildSchema.nullable() }))
 });
 const pointerSchema = z.object({
-  currentUpdateId: z.string().min(1), runtimeVersion: z.string().optional(), createdAt: z.string().optional()
+  currentUpdateId: z.string().min(1), runtimeVersion: z.string().optional(),
+  releaseVersion: z.string().optional(), createdAt: z.string().optional()
 });
 export interface OtaObservation {
   status: "PASS" | "WARN";
@@ -100,7 +101,12 @@ export async function observeRuntimePointers(
     const result = await context.runner.run("gcloud", ["storage", "ls", `${prefix}*/channels/${channel}.json`], { cwd: context.repoRoot, env: context.env });
     if (result.exitCode !== 0 || !result.stdout.trim()) throw new Error("channel pointer listing unavailable or empty");
     const paths = [...new Set(result.stdout.trim().split(/\s+/))].sort();
-    const pointers: Array<{ runtime: string; updateId: string; createdAt?: string }> = [];
+    const pointers: Array<{
+      runtime: string;
+      updateId: string;
+      releaseVersion?: string;
+      createdAt?: string;
+    }> = [];
     const lines: string[] = [];
     let warnings = false;
     for (const path of paths) {
@@ -112,7 +118,12 @@ export async function observeRuntimePointers(
       if (!parsed?.success || (parsed.data.runtimeVersion && parsed.data.runtimeVersion !== parts[0])) {
         warnings = true;
         lines.push(`runtime ${parts[0]}: pointer unreadable/invalid`);
-      } else pointers.push({ runtime: parts[0]!, updateId: parsed.data.currentUpdateId, createdAt: parsed.data.createdAt });
+      } else pointers.push({
+        runtime: parts[0]!,
+        updateId: parsed.data.currentUpdateId,
+        releaseVersion: parsed.data.releaseVersion,
+        createdAt: parsed.data.createdAt
+      });
     }
     const current = pointers.find(pointer => pointer.runtime === runtime);
     const dates = pointers.map(pointer => Date.parse(pointer.createdAt ?? "")).filter(Number.isFinite);
@@ -122,7 +133,7 @@ export async function observeRuntimePointers(
       const dated = Number.isFinite(date) && Number.isFinite(newestDate);
       const behind = dated && date < newestDate;
       if (!dated) warnings = true;
-      lines.push(`runtime ${pointer.runtime}: ${pointer.updateId}; pointer published ${pointer.createdAt ?? "unknown"}${behind ? " [STALE: predates newest channel pointer]" : dated ? "" : " [staleness UNKNOWN: pointer timestamp unavailable/invalid]"}${pointer.runtime === runtime ? " [configured]" : ""}`);
+      lines.push(`runtime ${pointer.runtime}: ${pointer.updateId}; release ${pointer.releaseVersion ?? "unknown (legacy)"}; pointer published ${pointer.createdAt ?? "unknown"}${behind ? " [STALE: predates newest channel pointer]" : dated ? "" : " [staleness UNKNOWN: pointer timestamp unavailable/invalid]"}${pointer.runtime === runtime ? " [configured]" : ""}`);
     }
     return { status: warnings || !current ? "WARN" : "PASS", detail: lines.join("\n") };
   } catch {

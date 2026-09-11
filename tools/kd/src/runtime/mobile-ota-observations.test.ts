@@ -83,10 +83,14 @@ describe("OTA device observations", () => {
     const ctx = context([]);
     ctx.runner.run = vi.fn().mockImplementation(async (_command, args: string[]) => ({ exitCode: 0, stderr: "", stdout: args.includes("ls")
       ? `${prefix}2.2.2/channels/staging.json\n${prefix}2.2.3/channels/staging.json`
-      : JSON.stringify({ currentUpdateId: args.at(-1)?.includes("2.2.2") ? "old" : "new", createdAt: args.at(-1)?.includes("2.2.2") ? "2026-09-02" : "2026-09-08" }) }));
+      : JSON.stringify({
+          currentUpdateId: args.at(-1)?.includes("2.2.2") ? "old" : "new",
+          releaseVersion: args.at(-1)?.includes("2.2.2") ? undefined : "1.0.1",
+          createdAt: args.at(-1)?.includes("2.2.2") ? "2026-09-02" : "2026-09-08"
+        }) }));
     const result = await observeRuntimePointers(ctx, "bucket", "staging", "2.2.3");
-    expect(result.detail).toContain("runtime 2.2.2: old; pointer published 2026-09-02 [STALE");
-    expect(result.detail).toContain("runtime 2.2.3: new; pointer published 2026-09-08 [configured]");
+    expect(result.detail).toContain("runtime 2.2.2: old; release unknown (legacy); pointer published 2026-09-02 [STALE");
+    expect(result.detail).toContain("runtime 2.2.3: new; release 1.0.1; pointer published 2026-09-08 [configured]");
     const olderCheckout = await observeRuntimePointers(ctx, "bucket", "staging", "2.2.2");
     expect(olderCheckout.detail).toContain("2026-09-02 [STALE: predates newest channel pointer] [configured]");
   });

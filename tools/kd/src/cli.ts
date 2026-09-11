@@ -417,6 +417,26 @@ function parseMobilePublishInput(rest: string[]): ParsedCliCommand {
   return { taskId: "mobile.publish", input };
 }
 
+function parseMobileVersionBumpInput(rest: string[]): ParsedCliCommand {
+  const [subcommand, ...flags] = rest;
+  if (subcommand !== "bump") {
+    throw new Error("mobile version requires the bump subcommand");
+  }
+  const input = parseFlagInput(flags, {
+    major: false,
+    minor: false,
+    patch: false,
+    dryRun: false
+  });
+  const allowedKeys = new Set(["major", "minor", "patch", "dryRun"]);
+  if (Object.keys(input).some((key) => !allowedKeys.has(key))) {
+    throw new Error(
+      "mobile version bump only accepts --major, --minor, --patch, or --dry-run"
+    );
+  }
+  return { taskId: "mobile.version.bump", input };
+}
+
 function parseMobileVerifyInput(rest: string[]): ParsedCliCommand {
   const input = parseFlagInput(rest, {});
   const allowedKeys = new Set(["ipa", "version", "buildNumber"]);
@@ -923,6 +943,9 @@ export function parseCliArgs(args: string[]): ParsedCliCommand {
   if (group === "mobile" && command === "publish") {
     return parseMobilePublishInput(rest);
   }
+  if (group === "mobile" && command === "version") {
+    return parseMobileVersionBumpInput(rest);
+  }
   if (group === "mobile" && command === "verify") {
     return parseMobileVerifyInput(rest);
   }
@@ -1173,6 +1196,7 @@ const helpTopics: Record<string, string[]> = {
     "  mobile uninstall --device --staging|--production --confirm-bundle <bundle-id> [--confirm-production]",
     "  mobile archive --production --ref <branch|tag|sha> --build-number <number> [--version <version>] [--out-dir <dir>] [--upload] [--dry-run]",
     "  mobile publish --production --ref release/X.Y [--build-number <number>|auto] [--release-type <type>] [--dry-run]",
+    "  mobile version bump --major|--minor|--patch [--dry-run]",
     "  mobile verify --ipa <path> [--version <version>] [--build-number <number>]",
     "  mobile doctor (--device | --android-emulator [<avd>] | --android-device <serial>)",
     "  mobile qa --production [--ota]",
@@ -1319,6 +1343,7 @@ const helpTopics: Record<string, string[]> = {
     "  mobile run (--simulator [<udid|name>] | --device | --android-emulator [<avd>] | --android-device <serial>) [--build dev|staging] [--owner worktree|staging] [--cloud emulators|staging] [--production|--staging] [--install]",
     "  mobile uninstall --device --staging|--production --confirm-bundle <bundle-id> [--confirm-production]",
     "  mobile archive --production --ref <branch|tag|sha> --build-number <number> [--version <version>] [--out-dir <dir>] [--upload] [--dry-run]",
+    "  mobile version bump --major|--minor|--patch [--dry-run]",
     "  mobile doctor (--device | --android-emulator [<avd>] | --android-device <serial>)",
     "  mobile qa --production [--ota]",
     "  mobile ota <command>",
@@ -1354,7 +1379,7 @@ const helpTopics: Record<string, string[]> = {
     "  --cloud <target>    Cloud target: emulators or staging.",
     "  --install            Physical iPhone only: build and install a bundled Release app; skips Metro and dev-client hot loading.",
     "",
-    "Marketing version defaults to apps/mobile/VERSION in every environment.",
+    "Mobile release/marketing version defaults to apps/mobile/VERSION in every environment.",
     "KANNA_APP_VERSION is an explicit diagnostic/build override; it does not select identity, cloud, OTA, runtime, or signing settings."
   ],
   "mobile uninstall": [
@@ -1379,7 +1404,7 @@ const helpTopics: Record<string, string[]> = {
     "  --production              Required. Use the production Kanna mobile identity.",
     "  --ref <branch|tag|sha>    Required. Source ref to archive; must be the checked-out commit.",
     "  --build-number <number>   Required. App Store Connect build number (CFBundleVersion).",
-    "  --version <version>       Marketing version (defaults to apps/mobile/VERSION).",
+    "  --version <version>       Release/marketing version (defaults to apps/mobile/VERSION).",
     "  --out-dir <dir>           Archive output directory (defaults to .build/mobile/ios-production).",
     "  --force-rebuild           Rebuild even when the artifacts already match the version and build number.",
     "  --upload                  Upload the exported IPA with xcrun altool.",
@@ -1399,12 +1424,24 @@ const helpTopics: Record<string, string[]> = {
     "  --ref <release/X.Y>         Required. Must be a release branch and the checked-out commit.",
     "  --build-number <number>     Required (or auto). Refused when App Store Connect already has it.",
     "  --build-number auto         Take the next number after the highest already uploaded.",
-    "  --version <version>         Marketing version (defaults to apps/mobile/VERSION).",
+    "  --version <version>         Release/marketing version (defaults to apps/mobile/VERSION).",
     "  --out-dir <dir>             Archive output directory (defaults to .build/mobile/ios-production).",
     "  --release-type <type>       MANUAL, AFTER_APPROVAL, or SCHEDULED. Unset means untouched.",
     "  --allow-non-release-ref     Publish from a ref that is not release/X.Y. Deliberate override.",
     "  --force-rebuild             Rebuild the archive even when it already matches.",
     "  --dry-run                   Resolve everything and print the plan without building or uploading."
+  ],
+  "mobile version bump": [
+    "Usage: kd mobile version bump --major|--minor|--patch [--dry-run]",
+    "",
+    "Advance the independent Kanna mobile release version in apps/mobile/VERSION.",
+    "Use this before committing a native or OTA mobile release; it never changes runtimeVersion.",
+    "",
+    "Options:",
+    "  --major      Advance X.0.0.",
+    "  --minor      Advance X.Y.0.",
+    "  --patch      Advance X.Y.Z.",
+    "  --dry-run    Print the next version without changing the file."
   ],
   "mobile verify": [
     "Usage: kd mobile verify --ipa <path> [--version <version>] [--build-number <number>]",
@@ -1454,6 +1491,7 @@ const helpTopics: Record<string, string[]> = {
     "Usage: kd mobile ota publish --staging|--production [--ref <branch|tag|sha>] [--dry-run] [--rollback-to <updateId>]",
     "",
     "Publish or roll back a Kanna mobile OTA update.",
+    "A publish uses apps/mobile/VERSION as its signed release version and requires it to advance on that channel.",
     "",
     "Options:",
     "  --ref <branch|tag|sha>    Source ref the update is exported from. Required with",

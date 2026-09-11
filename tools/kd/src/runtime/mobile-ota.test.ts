@@ -63,6 +63,7 @@ async function makeRepoFixture(
   await mkdir(join(repoRoot, "apps/mobile/src"), { recursive: true });
   await mkdir(join(repoRoot, "apps/mobile/certs"), { recursive: true });
   await mkdir(join(repoRoot, "apps/mobile/dist"), { recursive: true });
+  await writeFile(join(repoRoot, "apps/mobile/VERSION"), "1.0.0\n");
   await writeFile(
     join(repoRoot, "apps/mobile/certs/ota-codesign.pem"),
     options.certificatePem ?? (await readFile(repositoryCertificatePath, "utf8"))
@@ -231,6 +232,7 @@ describe("kd mobile OTA", () => {
           assets: [{ path: `assets/${assetKey}`, ext: "png" }],
         },
       },
+      kanna: { releaseVersion: "1.0.0" },
     })));
     const plan = await buildMobileOtaPublishPlan({
       repoRoot,
@@ -243,6 +245,7 @@ describe("kd mobile OTA", () => {
       bucket: "kanna-staging.firebasestorage.app",
       channel: "staging",
       runtimeVersion: "1.0.0",
+      releaseVersion: "1.0.0",
       updateId: expectedUpdateId,
       pointerObject: "ota/ios/1.0.0/channels/staging.json",
     });
@@ -326,7 +329,7 @@ describe("kd mobile OTA", () => {
       command: "pnpm",
       args: ["exec", "expo", "config", "--type", "public", "--json"],
       cwd: join(repoRoot, "apps/mobile"),
-      env: { KANNA_APP_ENV: "staging" },
+      env: { KANNA_APP_ENV: "staging", KANNA_APP_VERSION: "1.0.0" },
     });
     expect(calls.some((call) => call.command === "gcloud")).toBe(false);
     expect(result.message).toContain("Dry run: mobile OTA update");
@@ -427,6 +430,7 @@ describe("kd mobile OTA", () => {
           ],
         },
       },
+      kanna: { releaseVersion: "1.0.0" },
     });
     const expectedUpdateId = computeExpoUpdateId(Buffer.from(expectedStagedMetadata));
     const runner: CommandRunner = {
@@ -475,6 +479,7 @@ describe("kd mobile OTA", () => {
     expect(result.data).toMatchObject({
       updateId: expectedUpdateId,
       runtimeVersion: "1.0.0",
+      releaseVersion: "1.0.0",
       channel: "staging",
       source: { ref: "HEAD", commit: HEAD_COMMIT, shortCommit: SHORT_HEAD_COMMIT },
     });
@@ -678,6 +683,7 @@ describe("kd mobile OTA", () => {
       ref: "release/0.2",
       commit: HEAD_COMMIT,
       shortCommit: SHORT_HEAD_COMMIT,
+      releaseVersion: "1.0.0",
     });
 
     expect(uploads.some((call) => call.args[1] === "cp")).toBe(true);
@@ -685,9 +691,61 @@ describe("kd mobile OTA", () => {
     expect(pointer).toMatchObject({
       currentUpdateId: (result.data as { updateId: string }).updateId,
       runtimeVersion: "1.0.0",
+      releaseVersion: "1.0.0",
       sourceRef: "release/0.2",
       sourceCommit: HEAD_COMMIT,
     });
+  });
+
+  it("refuses to republish a non-advancing mobile release to a version-aware channel", async () => {
+    const repoRoot = await makeRepoFixture();
+    const runner = publishRunner(repoRoot, {
+      onGcloud: (args) => {
+        if (args[1] === "cat") {
+          return {
+            exitCode: 0,
+            stdout: JSON.stringify({
+              currentUpdateId: "old-update",
+              runtimeVersion: "1.0.0",
+              releaseVersion: "1.0.0"
+            }),
+            stderr: ""
+          };
+        }
+        return { exitCode: 0, stdout: "", stderr: "" };
+      }
+    });
+
+    await expect(
+      executeMobileOtaPublishWithContext(
+        { staging: true, production: false },
+        { repoRoot, env: {}, runner, validateOtaCertificate: acceptOtaCertificate }
+      )
+    ).rejects.toThrow("kd mobile version bump --patch");
+  });
+
+  it("accepts a legacy channel pointer without release metadata", async () => {
+    const repoRoot = await makeRepoFixture();
+    const runner = publishRunner(repoRoot, {
+      onGcloud: (args) => {
+        if (args[1] === "cat") {
+          return {
+            exitCode: 0,
+            stdout: JSON.stringify({ currentUpdateId: "legacy-update", runtimeVersion: "1.0.0" }),
+            stderr: ""
+          };
+        }
+        if (args[1] === "ls") return { exitCode: 1, stdout: "", stderr: "not found" };
+        return { exitCode: 0, stdout: "", stderr: "" };
+      }
+    });
+
+    await expect(
+      executeMobileOtaPublishWithContext(
+        { staging: true, production: false },
+        { repoRoot, env: {}, runner, validateOtaCertificate: acceptOtaCertificate }
+      )
+    ).resolves.toMatchObject({ ok: true });
   });
 
   it("publishes successfully but prominently reports a paired iPhone stranded on an older runtime", async () => {
@@ -738,7 +796,8 @@ describe("kd mobile OTA", () => {
         if (path.includes("*/channels/")) return { exitCode: 0, stderr: "", stdout: `${prefix}0.9.0/channels/staging.json\n${prefix}1.0.0/channels/staging.json` };
         if (args.includes("cat")) return { exitCode: 0, stderr: "", stdout: JSON.stringify({
           currentUpdateId: path.includes("0.9.0") ? "old" : "new",
-          createdAt: path.includes("0.9.0") ? "2026-09-02" : "2026-09-08"
+          createdAt: path.includes("0.9.0") ? "2026-09-02" : "2026-09-08",
+          ...(path.includes("1.0.0") ? { releaseVersion: "1.0.1" } : {})
         }) };
         return { exitCode: 0, stderr: "", stdout: "recent update listing" };
       }
@@ -746,10 +805,51 @@ describe("kd mobile OTA", () => {
     const result = await mobileOtaRuntime.executeMobileOtaStatusWithContext(
       { staging: true, production: false }, { repoRoot, env: {}, runner }
     );
-    expect(result.message).toContain("runtime 0.9.0: old; pointer published 2026-09-02 [STALE");
-    expect(result.message).toContain("runtime 1.0.0: new");
+    expect(result.message).toContain("runtime 0.9.0: old; release unknown (legacy); pointer published 2026-09-02 [STALE");
+    expect(result.message).toContain("runtime 1.0.0: new; release 1.0.1");
+    expect(result.message).toContain("releaseVersion: 1.0.1");
     expect(result.message).toContain("WARNING OTA DRIFT");
-    expect(result.data).toMatchObject({ devices: { status: "WARN" }, pointers: { status: "PASS" } });
+    expect(result.data).toMatchObject({
+      releaseVersion: "1.0.1",
+      devices: { status: "WARN" },
+      pointers: { status: "PASS" }
+    });
+  });
+
+  it("preserves a target update's release version when rolling the channel back", async () => {
+    const repoRoot = await makeRepoFixture();
+    let uploadedPointer = "";
+    const runner = publishRunner(repoRoot, {
+      onGcloud: (args) => {
+        if (args[1] === "cat") {
+          return {
+            exitCode: 0,
+            stdout: JSON.stringify({ kanna: { releaseVersion: "1.0.1" } }),
+            stderr: ""
+          };
+        }
+        if (args[1] === "cp") {
+          uploadedPointer = readFileSync(args[2], "utf8");
+        }
+        return { exitCode: 0, stdout: "", stderr: "" };
+      }
+    });
+
+    const result = await executeMobileOtaPublishWithContext(
+      {
+        staging: true,
+        production: false,
+        rollbackTo: "11111111-2222-3333-4444-555555555555"
+      },
+      { repoRoot, env: {}, runner, validateOtaCertificate: acceptOtaCertificate }
+    );
+
+    expect(result.data).toMatchObject({ releaseVersion: "1.0.1" });
+    expect(JSON.parse(uploadedPointer)).toMatchObject({
+      currentUpdateId: "11111111-2222-3333-4444-555555555555",
+      runtimeVersion: "1.0.0",
+      releaseVersion: "1.0.1"
+    });
   });
 
   it("provisions a missing staging OTA bucket and relay storage access", async () => {

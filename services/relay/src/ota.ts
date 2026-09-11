@@ -12,6 +12,10 @@ const POINTER_CACHE_TTL_MS = 15_000;
 export interface ExpoExportMetadata {
   version?: number;
   bundler?: string;
+  /** Kanna-owned signed manifest metadata; absent on pre-version-ledger updates. */
+  kanna?: {
+    releaseVersion?: string;
+  };
   fileMetadata: Record<
     string,
     {
@@ -33,7 +37,11 @@ export interface ExpoManifest {
   runtimeVersion: string;
   launchAsset: ExpoManifestAsset;
   assets: ExpoManifestAsset[];
-  metadata: Record<string, never>;
+  metadata: {
+    kanna?: {
+      releaseVersion: string;
+    };
+  };
   extra: {
     expoClient: unknown;
   };
@@ -196,7 +204,9 @@ export async function buildExpoManifest(input: BuildManifestInput): Promise<Expo
     runtimeVersion: input.runtimeVersion,
     launchAsset,
     assets,
-    metadata: {},
+    metadata: input.metadata.kanna?.releaseVersion
+      ? { kanna: { releaseVersion: input.metadata.kanna.releaseVersion } }
+      : {},
     extra: {
       expoClient: input.expoConfig,
     },

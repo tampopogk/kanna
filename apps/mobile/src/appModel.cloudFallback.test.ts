@@ -493,6 +493,7 @@ describe("createAppModel cloud routing", () => {
 
   it("reports the installed build and refreshes pairing material when a trusted LAN route appears", async () => {
     const readIdentity = vi.spyOn(buildIdentity, "getCurrentBuildIdentity").mockReturnValue({
+      releaseVersion: "2.2.2", releaseSummary: "2.2.2 (OTA)",
       nativeVersion: "2.2.2", nativeBuild: "42", nativeSummary: "2.2.2 (42)",
       runtimeVersion: "2.2.2", environment: "staging", channel: "staging",
       source: { kind: "ota", label: "old-update", updateId: "old-update" }

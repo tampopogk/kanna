@@ -18,11 +18,16 @@ release. `VERSION` governs the packaged desktop app only — workspace
 `0.0.0`; a few services version independently, e.g. `services/relay` at
 `0.1.0`). The desktop app reads `VERSION` at compile time via `build.rs`.
 
-The mobile App Store marketing version is independent and lives in
-`apps/mobile/VERSION`. Native mobile builds resolve it in this order: an
+The human-readable mobile release version is independent and lives in
+`apps/mobile/VERSION`. Advance it explicitly with
+`./kd mobile version bump --patch|--minor|--major` before committing a mobile
+release. The same value labels native and OTA releases; it becomes the App
+Store marketing version when a native binary is built, while a running OTA
+reports it separately from the installed binary's unchanged native version and
+build number. Native mobile builds resolve it in this order: an
 explicit `KANNA_APP_VERSION`, `apps/mobile/VERSION`, then the root `VERSION` as
 a compatibility fallback. An empty or malformed mobile version fails the build
-instead of silently using the desktop version. This marketing version is
+instead of silently using the desktop version. This release version is
 separate from desktop release candidates, the OTA `runtimeVersion`, and the iOS
 build number. Staging physical-device builds do not query desktop release
 status to choose it. `KANNA_APP_VERSION` is an intentional diagnostic/build
@@ -385,6 +390,21 @@ provisioning that token is in the same runbook.
 
 ## Mobile
 
+Plan and commit the independent mobile release version before publishing either
+a native build or an OTA:
+
+```sh
+./kd mobile version bump --patch --dry-run
+./kd mobile version bump --patch
+```
+
+Exactly one of `--patch`, `--minor`, or `--major` is required. The command
+changes only `apps/mobile/VERSION`; it never changes the desktop version,
+native build number, or Expo `runtimeVersion`. A staging and production
+delivery of the same release may share the number. A second, changed OTA on
+the same channel must advance it again; `kd mobile ota publish` refuses a
+non-advancing version once that channel has version-aware metadata.
+
 ### App Store builds
 
 ```sh
@@ -400,7 +420,8 @@ ids: `build.kanna.app` (prod), `build.kanna.app.staging`, `build.kanna.app.dev`.
 The archive and export steps allow automatic provisioning updates, so Xcode can
 mint or refresh the required App Store provisioning profile. An Apple ID for
 team `EA4J68749Z` must be configured in Xcode → Settings → Accounts.
-The default `CFBundleShortVersionString` comes from `apps/mobile/VERSION`.
+The default `CFBundleShortVersionString` comes from `apps/mobile/VERSION`, so a
+native binary's marketing version matches the mobile release it embeds.
 `--version <version>` is an explicit one-build override; if the mobile file is
 absent, the root desktop `VERSION` remains a compatibility fallback. Always
 pass a monotonically increasing `--build-number`; it controls
@@ -554,6 +575,14 @@ compatibility: bump it for any native code/config/SDK/dependency change
 (including the identity config plugin and the embedded OTA certificate);
 JS-only changes keep the runtime and are OTA-deliverable.
 
+Every new OTA release also advances and commits `apps/mobile/VERSION`. The OTA
+publisher pins that value into the exported config and signed manifest
+metadata, includes it in the immutable source record and channel pointer, and
+includes it in the update-id hash. The installed native binary's marketing
+version and build number do not change. “About this build” therefore reports,
+for example, release `1.0.1 (OTA)` and native `1.0.0 (3)` as separate facts.
+Pre-version-ledger manifests remain valid and fall back to their native version.
+
 Every OTA command requires an explicit `--staging` or `--production` flag;
 the examples below use staging except where the production gate is the point:
 
@@ -574,7 +603,9 @@ checked-out commit. Without `--ref`, staging resolves and reports `HEAD`. The
 resolved commit is printed, returned as `source`, and recorded in both the
 channel pointer and the update's own `kanna-source.json`, so a live OTA update
 traces back to the commit it shipped from. `--rollback-to` exports nothing and
-so needs no `--ref`; it still refuses a dirty worktree.
+so needs no `--ref`; it still refuses a dirty worktree and recovers the target
+update's release version when that metadata exists. `status` reports the
+release version, or clearly marks a legacy update whose release is unknown.
 
 **Approval policy:** staging publish/rollback is self-serve (including for
 agents). Production publish/rollback requires explicit human approval per

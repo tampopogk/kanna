@@ -26,6 +26,8 @@ let BuildInfoPanel:
 let rendered: ReactTestRenderer | null = null;
 
 const otaIdentity: BuildIdentity = {
+  releaseVersion: "2.5.1",
+  releaseSummary: "2.5.1 (OTA)",
   nativeVersion: "2.4.0",
   nativeBuild: "108",
   nativeSummary: "2.4.0 (108)",
@@ -70,7 +72,7 @@ describe("BuildInfoPanel", () => {
     });
 
     expect(copy()).toContain("About this build");
-    expect(copy()).toContain("2.4.0 (108)");
+    expect(copy()).toContain("2.5.1 (OTA)");
     expect(copy()).not.toContain("Runtime");
 
     await act(async () => {
@@ -78,11 +80,15 @@ describe("BuildInfoPanel", () => {
     });
 
     expect(copy()).toContain("Native");
+    expect(copy()).toContain("Release");
     expect(copy()).toContain("Runtime");
     expect(copy()).toContain("Environment");
     expect(copy()).toContain("Channel");
     expect(copy()).toContain("Running source");
     expect(copy()).toContain("84667f93-5c7b-45fb-9f78-7045160cb842");
+    expect(
+      rendered.root.findByProps({ testID: "mobile.build-info.release" }).children
+    ).toContain("2.5.1 (OTA)");
     expect(
       rendered.root.findByProps({ testID: "mobile.build-info.native" }).children
     ).toContain("2.4.0 (108)");
