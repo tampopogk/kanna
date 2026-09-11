@@ -1033,6 +1033,17 @@ fn wait_events_is_scoped_cursored_and_bounded_by_the_client_budget() {
         json!({ "type": "string" }),
         "task_ids must be declared as an array of strings"
     );
+    assert!(
+        schema["properties"].get("short_cursor").is_none(),
+        "short cursors are automatic client policy, not an agent option"
+    );
+    assert!(resolve_request(
+        &catalog,
+        "kanna_wait_events",
+        &json!({ "task_ids": ["task-a"], "short_cursor": false }),
+    )
+    .expect_err("the removed cursor-shape option must not be accepted")
+    .contains("unknown argument: short_cursor"));
 
     let repo_scoped = resolve_request(
         &catalog,

@@ -299,6 +299,11 @@ async fn mcp_resolved_omitted_knobs_resume_a_legacy_paused_subscription_without_
     // resume. The durable cursor here (empty for a fresh subscription) is
     // exactly what a real fault would retain and must survive untouched.
     let mut row = db.event_subscription(&id).unwrap().unwrap();
+    assert_eq!(
+        row.query["shortCursor"],
+        json!(false),
+        "the persistent worker must keep a durable full checkpoint"
+    );
     let checkpoint = row.cursor.clone();
     row.active = false;
     row.error = Some("event watch stopped: simulated fault".into());

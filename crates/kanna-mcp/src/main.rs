@@ -1977,6 +1977,9 @@ mod tests {
             .find(|tool| tool["name"] == "kanna_wait_events")
             .expect("wait events tool");
         let description = wait_events["description"].as_str().expect("description");
+        assert!(wait_events["inputSchema"]["properties"]
+            .get("short_cursor")
+            .is_none());
 
         assert!(description.contains("different currently reachable machines"));
         assert!(description.contains("short client-held aggregate cursor"));

@@ -1062,7 +1062,7 @@ fn parses_wait_events_and_rejects_removed_set_notify_command() {
                     include_self,
                     exclude_own,
                     local_only,
-                    short_cursor,
+                    legacy_short_cursor,
                     cursor,
                     timeout_secs,
                     limit,
@@ -1084,13 +1084,23 @@ fn parses_wait_events_and_rejects_removed_set_notify_command() {
             assert_eq!(repo_id, None);
             assert_eq!(repo_remote_url_hash, None);
             assert!(!local_only);
-            assert!(!short_cursor);
+            assert_eq!(legacy_short_cursor, Some(false));
             assert_eq!(cursor.as_deref(), Some("42"));
             assert_eq!(timeout_secs, 30);
             assert_eq!(limit, Some(10));
         }
         _ => panic!("expected task wait-events command"),
     }
+
+    let mut command = crate::Cli::command();
+    let wait_events = command
+        .find_subcommand_mut("task")
+        .and_then(|task| task.find_subcommand_mut("wait-events"))
+        .expect("task wait-events help");
+    let mut help = Vec::new();
+    wait_events.write_long_help(&mut help).unwrap();
+    let help = String::from_utf8(help).unwrap();
+    assert!(!help.contains("--short-cursor"));
 
     assert!(crate::Cli::try_parse_from([
         "kanna-cli",
@@ -1202,7 +1212,6 @@ fn typed_wait_events_path_matches_the_catalog_tool_path() {
         exclude_own: false,
         local_only: false,
         include_current_activity: true,
-        short_cursor: true,
         from: None,
         cursor: Some("42"),
         timeout_secs: 30,
@@ -1257,7 +1266,6 @@ fn typed_wait_events_path_matches_the_catalog_tool_path() {
         exclude_own: true,
         local_only: false,
         include_current_activity: true,
-        short_cursor: true,
         from: None,
         cursor: None,
         timeout_secs: 30,
@@ -1291,7 +1299,6 @@ fn typed_wait_events_path_matches_the_catalog_tool_path() {
         exclude_own: false,
         local_only: false,
         include_current_activity: true,
-        short_cursor: true,
         from: None,
         cursor: None,
         timeout_secs: 30,
@@ -1326,7 +1333,6 @@ fn typed_wait_events_path_matches_the_catalog_tool_path() {
         exclude_own: false,
         local_only: false,
         include_current_activity: true,
-        short_cursor: true,
         from: None,
         cursor: None,
         timeout_secs: 30,
