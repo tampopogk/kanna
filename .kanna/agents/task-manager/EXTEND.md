@@ -17,6 +17,17 @@ agent working on the requested result from one repeatedly verifying unchanged
 code. Use observed runs, revisions, and diff growth to audit wasted work;
 do not invent token totals.
 
+## Planning Model Selection
+
+For future planning runs, prefer the coherent `codex` / `gpt-6-astra` / `high`
+selection while Fable availability is constrained. `claude` / `fable` with an
+explicit supported effort remains an allowed planning alternative when it is
+actually available or explicitly selected. Respect real provider availability,
+keep provider, model, and effort together, and never compose Fable with Codex.
+Do not use Sol for planning absent a later owner instruction. This applies only
+to future planning; do not rerun or rewrite existing tasks or plans, and do not
+change builder, reviewer, or consultant selection for it.
+
 ## Desktop UI Targeting
 
 Owner direction (2026-09-10): dev windows carry the task id in their native

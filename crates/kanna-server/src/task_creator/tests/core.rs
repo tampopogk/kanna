@@ -3433,7 +3433,12 @@ fn builtin_plan_build_review_workflow_and_plan_agent_resolve_from_compiled_resou
     // own coherent model.
     assert_eq!(
         plan_stage.agent_provider.as_deref(),
-        Some(&["claude-fable".to_string(), "codex-gpt-6-astra".to_string(),][..]),
+        Some(
+            &[
+                "codex-gpt-6-astra-hi".to_string(),
+                "claude-fable-hi".to_string(),
+            ][..]
+        ),
     );
 
     let build_stage = &workflow.stages[1];
