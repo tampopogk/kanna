@@ -12,7 +12,7 @@ describe("mobile app config", () => {
   it("produces the production identity from KANNA_APP_ENV", () => {
     const config = createExpoConfig({ KANNA_APP_ENV: "prod" });
 
-    expect(config.version).toBe("1.0.0");
+    expect(config.version).toBe("1.0.1");
     expect(config.name).toBe("Kanna");
     expect(config.scheme).toBe("kanna");
     expect(config.ios?.bundleIdentifier).toBe("build.kanna.app");
@@ -37,6 +37,7 @@ describe("mobile app config", () => {
       },
       runtimeVersion: "2.2.4"
     });
+    expect(config.extra.kanna.releaseVersion).toBe("1.0.1");
     expect(config.runtimeVersion).toBe("2.2.4");
     expect(config.icon).toBe("./assets/icon.png");
     expect(config.android.adaptiveIcon).toEqual({
@@ -63,6 +64,7 @@ describe("mobile app config", () => {
     });
 
     expect(config.version).toBe("1.2.3");
+    expect(config.extra.kanna.releaseVersion).toBe("1.2.3");
     expect(config.ios?.buildNumber).toBe("45");
     expect(config.ios?.bundleIdentifier).toBe("build.kanna.app");
     expect(config.ios?.appleTeamId).toBe("EA4J68749Z");
@@ -155,7 +157,7 @@ describe("mobile app config", () => {
       KANNA_APP_ENV: "staging"
     });
 
-    expect(config.version).toBe("1.0.0");
+    expect(config.version).toBe("1.0.1");
     expect(config.name).toBe("Kanna Staging");
     expect(config.scheme).toBe("kanna-staging");
     expect(config.ios?.bundleIdentifier).toBe("build.kanna.app.staging");
@@ -275,7 +277,7 @@ describe("mobile app config", () => {
   it("embeds the checked-in mobile VERSION for canonical builds", () => {
     const mobileVersion = readRepoVersion();
 
-    expect(mobileVersion).toBe("1.0.0");
+    expect(mobileVersion).toBe("1.0.1");
     expect(createExpoConfig({ KANNA_APP_ENV: "prod" }).version).toBe(mobileVersion);
   });
 

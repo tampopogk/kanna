@@ -13,6 +13,8 @@ export type BuildSource =
   | { kind: "unknown"; label: "Unknown" };
 
 export interface BuildIdentity {
+  releaseVersion: string;
+  releaseSummary: string;
   nativeVersion: string;
   nativeBuild: string;
   nativeSummary: string;
@@ -29,10 +31,12 @@ export interface BuildIdentityInput {
   updatesEnabled: boolean;
   isEmbeddedLaunch: boolean;
   updateId: string | null;
+  otaReleaseVersion?: string | null;
   runtimeVersion: string | null;
   channel: string | null;
   appEnvironment: KannaAppEnvironmentName;
   configuredRuntimeVersion: string;
+  configuredReleaseVersion?: string | null;
   configuredChannel: OtaChannel | null;
 }
 
@@ -47,6 +51,13 @@ interface ExpoUpdatesIdentityApi {
   updateId: string | null;
   runtimeVersion: string | null;
   channel: string | null;
+  manifest?: {
+    metadata?: {
+      kanna?: {
+        releaseVersion?: unknown;
+      };
+    };
+  };
 }
 
 export function buildIdentity(input: BuildIdentityInput): BuildIdentity {
@@ -56,15 +67,23 @@ export function buildIdentity(input: BuildIdentityInput): BuildIdentity {
   const runtimeVersion = normalizeValue(
     input.runtimeVersion ?? input.configuredRuntimeVersion
   );
+  const source = buildSource(input);
+  const releaseVersion = normalizeValue(
+    input.otaReleaseVersion ??
+      input.configuredReleaseVersion ??
+      input.nativeApplicationVersion
+  );
 
   return {
+    releaseVersion,
+    releaseSummary: buildReleaseSummary(releaseVersion, source.kind),
     nativeVersion,
     nativeBuild,
     nativeSummary,
     runtimeVersion,
     environment: input.appEnvironment,
     channel: normalizeValue(input.channel ?? input.configuredChannel, "None"),
-    source: buildSource(input)
+    source
   };
 }
 
@@ -81,13 +100,31 @@ export function getCurrentBuildIdentity(): BuildIdentity {
     updatesEnabled: updates.isEnabled,
     isEmbeddedLaunch: updates.isEmbeddedLaunch,
     updateId: updates.updateId,
+    otaReleaseVersion: readOtaReleaseVersion(updates.manifest),
     runtimeVersion: updates.runtimeVersion,
     channel: updates.channel,
     appEnvironment: extra?.appEnv ?? environment.name,
     configuredRuntimeVersion:
       extra?.runtimeVersion ?? environment.runtimeVersion,
+    configuredReleaseVersion: extra?.releaseVersion,
     configuredChannel: extra?.ota?.channel ?? environment.otaChannel
   });
+}
+
+function readOtaReleaseVersion(
+  manifest: ExpoUpdatesIdentityApi["manifest"]
+): string | null {
+  const value = manifest?.metadata?.kanna?.releaseVersion;
+  return typeof value === "string" ? normalizeOptionalValue(value) : null;
+}
+
+function buildReleaseSummary(
+  releaseVersion: string,
+  source: BuildSource["kind"]
+): string {
+  if (source === "ota") return `${releaseVersion} (OTA)`;
+  if (source === "development") return `${releaseVersion} (development)`;
+  return releaseVersion;
 }
 
 function buildSource(input: BuildIdentityInput): BuildSource {

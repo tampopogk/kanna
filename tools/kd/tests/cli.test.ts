@@ -584,6 +584,10 @@ describe("kd CLI", () => {
     expect(log).toHaveBeenLastCalledWith(expect.stringContaining("Usage: kd mobile archive --production"));
     expect(log).toHaveBeenLastCalledWith(expect.stringContaining("defaults to apps/mobile/VERSION"));
 
+    await expect(runCli(["mobile", "version", "bump", "--help"])).resolves.toBe(0);
+    expect(log).toHaveBeenLastCalledWith(expect.stringContaining("Usage: kd mobile version bump"));
+    expect(log).toHaveBeenLastCalledWith(expect.stringContaining("never changes runtimeVersion"));
+
     await expect(runCli(["mobile", "ota", "publish", "--staging", "--help"])).resolves.toBe(0);
     expect(log).toHaveBeenLastCalledWith(expect.stringContaining("Usage: kd mobile ota publish"));
 

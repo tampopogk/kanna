@@ -41,6 +41,7 @@ export interface KannaExpoExtra {
     firebase?: Partial<MobileFirebaseExtraConfig>;
     relayUrl?: string;
     runtimeVersion?: string;
+    releaseVersion?: string;
     ota?: MobileOtaExtraConfig;
   };
 }
@@ -93,9 +94,11 @@ export function readKannaExpoExtra(
   const relayUrl = typeof kanna.relayUrl === "string" ? kanna.relayUrl : undefined;
   const runtimeVersion =
     typeof kanna.runtimeVersion === "string" ? kanna.runtimeVersion : undefined;
+  const releaseVersion =
+    typeof kanna.releaseVersion === "string" ? kanna.releaseVersion : undefined;
   const ota = parseOtaExtra(kanna.ota);
 
-  return { appEnv, firebase, relayUrl, runtimeVersion, ota };
+  return { appEnv, firebase, relayUrl, runtimeVersion, releaseVersion, ota };
 }
 
 function parseFirebaseExtra(

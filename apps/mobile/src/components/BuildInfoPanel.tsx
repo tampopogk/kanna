@@ -120,7 +120,7 @@ export function BuildInfoPanel({
         <Text style={styles.toggleLabel}>About this build</Text>
         <View style={styles.summaryGroup}>
           <Text numberOfLines={1} style={styles.summaryValue}>
-            {identity.nativeSummary}
+            {identity.releaseSummary}
           </Text>
           <Text style={styles.chevron}>{expanded ? "⌄" : "›"}</Text>
         </View>
@@ -128,6 +128,11 @@ export function BuildInfoPanel({
 
       {expanded ? (
         <View style={styles.details} testID={MOBILE_E2E_IDS.buildInfoDetails}>
+          <InfoRow
+            label="Release"
+            valueTestID={MOBILE_E2E_IDS.buildInfoRelease}
+            value={identity.releaseSummary}
+          />
           <InfoRow
             label="Native"
             valueTestID={MOBILE_E2E_IDS.buildInfoNative}
