@@ -275,7 +275,13 @@ fn codex_session_files(db: &Db, runs: &[RunWindow]) -> Result<DiscoveryResult, S
             .usage_discovery_state(&discovery_key)
             .map_err(|error| format!("db error: {error}"))?;
         let candidate_paths = if let Some(cached) = cached.filter(|cached| {
-            cached.directory_path == directory_path && cached.directory_modified_ns == modified_ns
+            cached.directory_path == directory_path
+                && cached.directory_modified_ns == modified_ns
+                // An empty result may have been recorded while a newly
+                // created rollout had no complete header yet. Its later
+                // growth does not change the directory generation, so retry
+                // empty discoveries instead of letting that miss stick.
+                && !cached.candidate_paths.is_empty()
         }) {
             cached.candidate_paths
         } else {
@@ -284,6 +290,7 @@ fn codex_session_files(db: &Db, runs: &[RunWindow]) -> Result<DiscoveryResult, S
                 continue;
             };
             let mut candidates = Vec::new();
+            let mut discovery_complete = true;
             for entry in entries {
                 let entry = match entry {
                     Ok(entry) => entry,
@@ -300,9 +307,15 @@ fn codex_session_files(db: &Db, runs: &[RunWindow]) -> Result<DiscoveryResult, S
                 CODEX_DISCOVERY_INSPECTIONS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 let Some(header) = read_first_line(&path) else {
                     failed_run_ids.insert(run.run_id.clone());
+                    discovery_complete = false;
                     continue;
                 };
                 let (_, context) = codex::parse_line(&header);
+                if context.session_id.is_none() && context.cwd.is_none() {
+                    failed_run_ids.insert(run.run_id.clone());
+                    discovery_complete = false;
+                    continue;
+                }
                 let matches = match run.provider_session_id.as_deref() {
                     Some(session_id) => context.session_id.as_deref() == Some(session_id),
                     None => context
@@ -314,14 +327,16 @@ fn codex_session_files(db: &Db, runs: &[RunWindow]) -> Result<DiscoveryResult, S
                     candidates.push(path.to_string_lossy().to_string());
                 }
             }
-            db.record_usage_discovery(
-                &discovery_key,
-                "codex",
-                &directory_path,
-                modified_ns,
-                &candidates,
-            )
-            .map_err(|error| format!("db error: {error}"))?;
+            if discovery_complete && !candidates.is_empty() {
+                db.record_usage_discovery(
+                    &discovery_key,
+                    "codex",
+                    &directory_path,
+                    modified_ns,
+                    &candidates,
+                )
+                .map_err(|error| format!("db error: {error}"))?;
+            }
             candidates
         };
         if candidate_paths.is_empty() {
@@ -805,6 +820,20 @@ mod collection_tests {
                 writeln!(file, "{line}").expect("write");
             }
         }
+
+        fn append_codex_rollout(&self, name: &str, lines: &[String]) {
+            let path = self
+                .root
+                .join("codex/sessions/2026/04/17")
+                .join(format!("{name}.jsonl"));
+            let mut file = std::fs::OpenOptions::new()
+                .append(true)
+                .open(path)
+                .expect("append");
+            for line in lines {
+                writeln!(file, "{line}").expect("write");
+            }
+        }
     }
 
     impl Drop for ProviderHomes {
@@ -1073,6 +1102,43 @@ mod collection_tests {
             "an unchanged candidate directory must reuse its discovery checkpoint"
         );
         assert_eq!(db.count_test_token_usage_rows().expect("rows"), 1);
+    }
+
+    #[test]
+    fn codex_discovery_retries_an_empty_rollout_after_the_file_grows() {
+        let homes = ProviderHomes::new("codex-growing-header");
+        let cwd = homes.root.join("worktree").to_string_lossy().to_string();
+        std::fs::create_dir_all(&cwd).expect("worktree");
+        let db = seeded_db("usage-codex-growing-header", &cwd);
+        db.insert_test_provider_stage_run(
+            "run-codex",
+            "task-1",
+            "review",
+            "codex",
+            &cwd,
+            "2026-04-17 12:00:00",
+            Some("2026-04-17 13:00:00"),
+        )
+        .expect("codex run");
+        db.set_test_stage_run_provider_session_id("run-codex", "s-growing")
+            .expect("provider session");
+        homes.write_codex_rollout("growing", &[]);
+
+        let first = super::collect_repo_token_usage(&db, "repo-1", &selected_range())
+            .expect("collect empty rollout");
+        assert!(first.providers_without_usage.contains(&"codex".to_string()));
+
+        let meta =
+            format!(r#"{{"type":"session_meta","payload":{{"id":"s-growing","cwd":"{cwd}"}}}}"#);
+        let usage = r#"{"timestamp":"2026-04-17T12:30:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":10,"cached_input_tokens":0,"output_tokens":5,"reasoning_output_tokens":1,"total_tokens":15}}}}"#.to_string();
+        homes.append_codex_rollout("growing", &[meta, usage]);
+
+        let second = super::collect_repo_token_usage(&db, "repo-1", &selected_range())
+            .expect("collect completed rollout");
+        assert_eq!(db.count_test_token_usage_rows().expect("rows"), 1);
+        assert!(!second
+            .providers_without_usage
+            .contains(&"codex".to_string()));
     }
 
     #[test]
