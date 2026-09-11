@@ -97,6 +97,326 @@ async fn acknowledge_cloud_refresh(
     .unwrap()
 }
 
+fn loopback_post(path: &str, body: serde_json::Value) -> Request<Body> {
+    let mut request = Request::post(path)
+        .header("content-type", "application/json")
+        .body(Body::from(body.to_string()))
+        .unwrap();
+    request
+        .extensions_mut()
+        .insert(axum::extract::ConnectInfo(std::net::SocketAddr::from((
+            [127, 0, 0, 1],
+            49152,
+        ))));
+    request
+}
+
+async fn wait_for_cloud_refresh_command(app: axum::Router) -> serde_json::Value {
+    let mut request = Request::get("/v1/transfers/cloud-credential-commands?limit=1&timeoutSecs=5")
+        .body(Body::empty())
+        .unwrap();
+    request
+        .extensions_mut()
+        .insert(axum::extract::ConnectInfo(std::net::SocketAddr::from((
+            [127, 0, 0, 1],
+            49152,
+        ))));
+    let response = app.oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = from_slice::<serde_json::Value>(
+        &axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(body["waitOutcome"], "events", "{body}");
+    body["events"][0]["event"].clone()
+}
+
+async fn refresh_cloud_route(app: axum::Router, relay_url: &str) {
+    let response = app
+        .oneshot(loopback_post(
+            "/v1/transfers/cloud-proxies",
+            serde_json::json!({
+                "peerId": "peer-studio",
+                "desktopId": "desktop-studio",
+                "relayUrl": relay_url,
+                "idToken": test_id_token(4_000_000_000),
+            }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+}
+
+struct TransferSidecarEnvGuard {
+    saved: Vec<(&'static str, Option<String>)>,
+}
+
+impl TransferSidecarEnvGuard {
+    const NAMES: [&'static str; 3] = [
+        "KANNA_TRANSFER_ROOT",
+        "KANNA_TRANSFER_PEER_ID",
+        "KANNA_TRANSFER_DISPLAY_NAME",
+    ];
+
+    fn set(root: &std::path::Path) -> Self {
+        let saved = Self::NAMES
+            .iter()
+            .map(|&name| (name, std::env::var(name).ok()))
+            .collect();
+        std::env::set_var("KANNA_TRANSFER_ROOT", root);
+        std::env::set_var("KANNA_TRANSFER_PEER_ID", "peer-local");
+        std::env::set_var("KANNA_TRANSFER_DISPLAY_NAME", "Test Mac");
+        Self { saved }
+    }
+}
+
+impl Drop for TransferSidecarEnvGuard {
+    fn drop(&mut self) {
+        for (name, value) in &self.saved {
+            match value {
+                Some(value) => std::env::set_var(name, value),
+                None => std::env::remove_var(name),
+            }
+        }
+    }
+}
+
+fn write_cloud_route_sidecar(root: &std::path::Path, endpoint: &str) -> std::path::PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+
+    std::fs::create_dir_all(root).expect("sidecar fixture root");
+    let stub = root.join("cloud-route-sidecar.sh");
+    std::fs::write(
+        &stub,
+        format!(
+            r#"#!/bin/sh
+while IFS= read -r line; do
+  id=$(printf '%s' "$line" | sed -n 's/.*"request_id":"\([^"]*\)".*/\1/p')
+  case "$line" in
+    *'"type":"list_peers"'*)
+      printf '{{"request_id":"%s","peers":[{{"peer_id":"peer-studio","display_name":"Studio Mac","endpoint":"{endpoint}","trusted":true,"accepting_transfers":true}}]}}\n' "$id"
+      ;;
+    *'"type":"request_task_pull"'*)
+      printf '%s\n' "$line" >> "$KANNA_TRANSFER_ROOT/pull-requests"
+      printf '{{"request_id":"%s","pull_request_id":"pull-request-1"}}\n' "$id"
+      ;;
+    *)
+      printf '{{"request_id":"%s","type":"error","message":"unexpected fixture request"}}\n' "$id"
+      ;;
+  esac
+done
+"#
+        ),
+    )
+    .expect("write sidecar fixture");
+    std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755))
+        .expect("make sidecar fixture executable");
+    stub
+}
+
+async fn cloud_route_http_test_state(
+    label: &str,
+    root: &std::path::Path,
+) -> (Arc<AppState>, String) {
+    let base = super::test_state_with_seed(label, "Test Mac", |db| {
+        db.insert_test_repo("repo-transfer", "Transfer Repo")
+            .expect("repo");
+        db.insert_test_pipeline_item(
+            "task-source",
+            "repo-transfer",
+            "transfer fixture task",
+            Some("Transfer Fixture"),
+            "in progress",
+            "2026-09-06 00:00:00",
+        )
+        .expect("task");
+    });
+    let config = base.config().clone();
+    let work = base.transfer_work();
+    let stub = root.join("cloud-route-sidecar.sh");
+    let supervisor = crate::transfer_sidecar::TransferSidecarSupervisor::with_binary_for_test(
+        config.clone(),
+        work,
+        stub,
+    );
+    let state = Arc::new(AppState::with_transfer_sidecar_for_test(config, supervisor));
+    let relay_url = "ws://127.0.0.1:9".to_string();
+    let endpoint = crate::cloud_transfer_proxy::ensure_cloud_transfer_proxy_in_state(
+        state.cloud_transfer_proxies(),
+        "peer-studio".to_string(),
+        "desktop-studio".to_string(),
+        relay_url.clone(),
+        test_id_token(1),
+    )
+    .await
+    .expect("stale cloud route");
+    write_cloud_route_sidecar(root, &endpoint.endpoint);
+    (state, relay_url)
+}
+
+#[tokio::test]
+async fn push_entrypoint_refreshes_an_expired_cloud_route_before_queueing() {
+    let _sidecar_guard = crate::test_sidecar_guard().await;
+    let root = crate::test_paths::unique_test_path("http-cloud-push-env");
+    let _env_guard = TransferSidecarEnvGuard::set(&root);
+    let (state, relay_url) = cloud_route_http_test_state("push-refresh", &root).await;
+    let app = super::router(Arc::clone(&state));
+
+    let request_app = app.clone();
+    let request = tokio::spawn(async move {
+        request_app
+            .oneshot(loopback_post(
+                "/v1/tasks/task-source/actions/push-to-peer",
+                serde_json::json!({ "peerId": "peer-studio", "transport": "cloud" }),
+            ))
+            .await
+            .unwrap()
+    });
+    let command = wait_for_cloud_refresh_command(app.clone()).await;
+    assert_eq!(command["peerId"], "peer-studio");
+    assert!(
+        command.get("idToken").is_none(),
+        "credential leaked into {command}"
+    );
+    assert!(
+        !request.is_finished(),
+        "push passed the stale route preflight"
+    );
+    assert!(
+        state
+            .transfer_work()
+            .open_db()
+            .unwrap()
+            .claim_next_transfer_work(&Vec::<String>::new())
+            .unwrap()
+            .is_none(),
+        "push work was queued before the refreshed route was observed"
+    );
+
+    refresh_cloud_route(app.clone(), &relay_url).await;
+    acknowledge_cloud_refresh(app, command["requestId"].as_str().unwrap(), "refreshed").await;
+
+    let response = tokio::time::timeout(std::time::Duration::from_secs(5), request)
+        .await
+        .expect("push did not finish after refresh")
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = from_slice::<serde_json::Value>(
+        &axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(body["scheduled"], true);
+    assert_eq!(body["target"]["transport"], "cloud");
+    assert_eq!(body["target"]["peerId"], "peer-studio");
+}
+
+#[tokio::test]
+async fn pull_entrypoint_refreshes_an_expired_cloud_route_before_forwarding() {
+    let _sidecar_guard = crate::test_sidecar_guard().await;
+    let root = crate::test_paths::unique_test_path("http-cloud-pull-env");
+    let _env_guard = TransferSidecarEnvGuard::set(&root);
+    let (state, relay_url) = cloud_route_http_test_state("pull-refresh", &root).await;
+    let app = super::router(Arc::clone(&state));
+
+    let request_app = app.clone();
+    let request = tokio::spawn(async move {
+        request_app
+            .oneshot(loopback_post(
+                "/v1/transfers/actions/pull-task",
+                serde_json::json!({
+                    "sourceTaskId": "task-remote",
+                    "sourceMachine": "peer-studio",
+                    "transport": "cloud",
+                }),
+            ))
+            .await
+            .unwrap()
+    });
+    let command = wait_for_cloud_refresh_command(app.clone()).await;
+    assert!(
+        !request.is_finished(),
+        "pull passed the stale route preflight"
+    );
+    assert!(
+        !root.join("pull-requests").exists(),
+        "pull was forwarded before the refreshed route was observed"
+    );
+
+    refresh_cloud_route(app.clone(), &relay_url).await;
+    acknowledge_cloud_refresh(app, command["requestId"].as_str().unwrap(), "refreshed").await;
+
+    let response = tokio::time::timeout(std::time::Duration::from_secs(5), request)
+        .await
+        .expect("pull did not finish after refresh")
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = from_slice::<serde_json::Value>(
+        &axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(body["accepted"], true);
+    assert_eq!(body["source"]["transport"], "cloud");
+    let forwarded =
+        std::fs::read_to_string(root.join("pull-requests")).expect("forwarded pull request");
+    assert!(forwarded.contains("request_task_pull"), "{forwarded}");
+    assert!(forwarded.contains("task-remote"), "{forwarded}");
+}
+
+#[tokio::test]
+async fn push_entrypoint_reports_sign_in_required_without_queueing() {
+    let _sidecar_guard = crate::test_sidecar_guard().await;
+    let root = crate::test_paths::unique_test_path("http-cloud-sign-in-env");
+    let _env_guard = TransferSidecarEnvGuard::set(&root);
+    let (state, _) = cloud_route_http_test_state("push-sign-in-required", &root).await;
+    let app = super::router(Arc::clone(&state));
+
+    let request_app = app.clone();
+    let request = tokio::spawn(async move {
+        request_app
+            .oneshot(loopback_post(
+                "/v1/tasks/task-source/actions/push-to-peer",
+                serde_json::json!({ "peerId": "peer-studio", "transport": "cloud" }),
+            ))
+            .await
+            .unwrap()
+    });
+    let command = wait_for_cloud_refresh_command(app.clone()).await;
+    acknowledge_cloud_refresh(
+        app,
+        command["requestId"].as_str().unwrap(),
+        "sign_in_required",
+    )
+    .await;
+
+    let response = tokio::time::timeout(std::time::Duration::from_secs(5), request)
+        .await
+        .expect("sign-in-required response was not bounded")
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let body = String::from_utf8_lossy(&body);
+    assert!(body.contains("not signed in"), "{body}");
+    assert!(body.contains("retry the transfer"), "{body}");
+    assert!(
+        state
+            .transfer_work()
+            .open_db()
+            .unwrap()
+            .claim_next_transfer_work(&Vec::<String>::new())
+            .unwrap()
+            .is_none(),
+        "a sign-in-required push must not queue work"
+    );
+}
+
 /// The moving-day regression: an agent-facing transfer encounters a stale
 /// outbound route, the renderer rotates it through the existing proxy owner,
 /// and route admission observes the new credential rather than trusting the
