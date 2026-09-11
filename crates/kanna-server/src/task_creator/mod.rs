@@ -9,6 +9,7 @@ mod merge;
 mod prompt;
 mod provider;
 mod resume;
+pub(crate) use resume::{claude_project_slug, claude_projects_dir, home_child, same_cwd};
 mod stages;
 mod terminal_marker;
 mod types;

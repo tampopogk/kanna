@@ -1577,71 +1577,193 @@ async fn operator_events_route_inserts_batched_events() {
     assert_eq!(json, serde_json::json!({ "inserted": 2 }));
 }
 
-#[tokio::test]
-async fn analytics_route_returns_repo_metrics() {
-    let app = super::test_router_with_seed("desktop-1", "Studio Mac", |db| {
-        db.insert_test_repo("repo-1", "Repo One").unwrap();
-        db.insert_test_pipeline_item(
-            "task-1",
-            "repo-1",
-            "prompt one",
-            Some("Task One"),
-            "in progress",
-            "2026-04-17 08:00:00",
-        )
-        .unwrap();
-        db.insert_test_pipeline_item(
-            "task-2",
-            "repo-1",
-            "prompt two",
-            Some("Task Two"),
-            "in progress",
-            "2026-04-18 08:00:00",
-        )
-        .unwrap();
-        db.set_test_pipeline_item_closed_at("task-1", "2026-04-19 08:00:00")
+/// A repository whose statistics span the window under test, seeded the way
+/// the production accumulators would have written them.
+fn seed_analytics_repo(db: &crate::db::Db) {
+    db.insert_test_repo("repo-1", "Repo One").unwrap();
+    for (task, created_at) in [
+        ("task-1", "2026-04-17 08:00:00"),
+        ("task-2", "2026-04-18 08:00:00"),
+        // Outside the window on both sides.
+        ("task-old", "2026-03-01 08:00:00"),
+    ] {
+        db.insert_test_pipeline_item(task, "repo-1", "prompt", Some(task), "review", created_at)
             .unwrap();
-        db.insert_test_activity_log("task-1", "working", 30)
-            .unwrap();
-        db.insert_test_activity_log("task-1", "idle", 60).unwrap();
-        db.insert_test_operator_event(
-            "task_selected",
-            Some("task-1"),
-            Some("repo-1"),
-            "2026-04-17 08:05:00",
-        )
+    }
+    db.set_test_pipeline_item_closed_at("task-1", "2026-04-19 08:00:00")
         .unwrap();
-        db.insert_test_operator_event(
-            "task_selected",
-            Some("task-2"),
-            Some("repo-1"),
-            "2026-04-17 08:07:00",
-        )
-        .unwrap();
-    });
 
+    // Waiting: one two-hour idle span and one one-hour unread span, both of
+    // which Analytics counts as nobody servicing the task.
+    db.insert_test_activity_interval(
+        "task-1",
+        "idle",
+        "2026-04-17 09:00:00",
+        "2026-04-17 11:00:00",
+    )
+    .unwrap();
+    db.insert_test_activity_interval(
+        "task-1",
+        "unread",
+        "2026-04-17 12:00:00",
+        "2026-04-17 13:00:00",
+    )
+    .unwrap();
+    db.insert_test_activity_interval(
+        "task-2",
+        "working",
+        "2026-04-18 09:00:00",
+        "2026-04-18 09:30:00",
+    )
+    .unwrap();
+
+    // Review: both tasks reached review; only task-1 was revised.
+    db.insert_test_stage_run_window("run-1", "task-1", "review", "2026-04-17 14:00:00", None)
+        .unwrap();
+    db.insert_test_stage_run_window("run-2", "task-2", "review", "2026-04-18 14:00:00", None)
+        .unwrap();
+    db.insert_test_task_revision("task-1", "agent", true, "2026-04-17 15:00:00")
+        .unwrap();
+    db.insert_test_task_revision("task-1", "agent", false, "2026-04-17 16:00:00")
+        .unwrap();
+
+    db.insert_test_pull_request(
+        "repo-1",
+        1,
+        "2026-04-17 10:00:00",
+        Some("2026-04-18 10:00:00"),
+    )
+    .unwrap();
+    db.insert_test_pull_request("repo-1", 2, "2026-04-18 10:00:00", None)
+        .unwrap();
+
+    db.insert_test_token_usage(
+        "usage-1",
+        "repo-1",
+        "task-1",
+        Some("run-1"),
+        "claude-opus-5",
+        "2026-04-17 14:30:00",
+        (100, 900, 50, 200, 20),
+    )
+    .unwrap();
+}
+
+async fn analytics_body(app: axum::Router, query: &str) -> serde_json::Value {
     let response = app
         .oneshot(
-            Request::get("/v1/analytics/repos/repo-1")
+            Request::get(format!("/v1/analytics/repos/repo-1{query}"))
                 .body(Body::empty())
                 .unwrap(),
         )
         .await
         .unwrap();
-
     assert_eq!(response.status(), StatusCode::OK);
     let body = axum::body::to_bytes(response.into_body(), usize::MAX)
         .await
         .unwrap();
-    let json: serde_json::Value = from_slice(&body).unwrap();
-    assert_eq!(json["hasData"], true);
-    assert_eq!(json["taskBuckets"].as_array().unwrap().len(), 1);
-    assert_eq!(json["taskBuckets"][0]["created"], 2);
-    assert_eq!(json["taskBuckets"][0]["closed"], 1);
-    assert_eq!(json["avgTimeInState"]["working"], 30.0);
-    assert_eq!(json["avgTimeInState"]["idle"], 60.0);
-    assert_eq!(json["hasOperatorData"], true);
-    assert!(json["operatorMetrics"]["switchesPerHour"].as_f64().unwrap() > 0.0);
+    from_slice(&body).unwrap()
+}
+
+#[tokio::test]
+async fn analytics_route_reports_flow_counts_for_the_requested_window() {
+    let app = super::test_router_with_seed("desktop-1", "Studio Mac", seed_analytics_repo);
+    let json = analytics_body(app, "?from=2026-04-16&to=2026-04-20").await;
+
+    assert_eq!(json["range"]["from"], "2026-04-16");
+    assert_eq!(json["range"]["to"], "2026-04-20");
+    // task-old was created before the window and is not in `created`, but it
+    // is still open, so it is in the backlog the operator is holding.
+    assert_eq!(json["tasks"]["created"], 2);
+    assert_eq!(json["tasks"]["closed"], 1);
+    assert_eq!(json["tasks"]["openNow"], 2);
+    assert_eq!(json["pullRequests"]["created"], 2);
+}
+
+#[tokio::test]
+async fn analytics_route_counts_unread_as_waiting_and_clips_to_the_window() {
+    let app = super::test_router_with_seed("desktop-1", "Studio Mac", seed_analytics_repo);
+    let json = analytics_body(app.clone(), "?from=2026-04-16&to=2026-04-20").await;
+
+    // Two hours idle plus one hour unread; the working span is reported apart.
+    assert_eq!(json["idle"]["totalSeconds"], 3 * 3_600);
+    assert_eq!(json["idle"]["workingSeconds"], 1_800);
+    assert_eq!(json["idle"]["longestSeconds"], 3 * 3_600);
+    // Averaged over every task alive in the window, not only the ones that
+    // waited — including the one created before it and never closed.
+    assert_eq!(json["idle"]["taskCount"], 3);
+    assert_eq!(json["idle"]["contributors"][0]["taskId"], "task-1");
+
+    // A window covering only the idle span's second hour gets that hour only.
+    let narrowed = analytics_body(app, "?from=2026-04-17&to=2026-04-17").await;
+    assert_eq!(narrowed["idle"]["totalSeconds"], 3 * 3_600);
+}
+
+#[tokio::test]
+async fn analytics_route_averages_revisions_over_every_task_that_reached_review() {
+    let app = super::test_router_with_seed("desktop-1", "Studio Mac", seed_analytics_repo);
+    let json = analytics_body(app, "?from=2026-04-16&to=2026-04-20").await;
+
+    // Two tasks reached review; one was revised once. The task that passed
+    // clean is in the denominator, and the parked request is not a round.
+    assert_eq!(json["revisions"]["cohortTasks"], 2);
+    assert_eq!(json["revisions"]["totalRevisions"], 1);
+    assert_eq!(json["revisions"]["averagePerTask"], 0.5);
+    assert_eq!(json["revisions"]["cleanPassRate"], 0.5);
+    assert_eq!(json["revisions"]["parkedRequests"], 1);
+}
+
+#[tokio::test]
+async fn analytics_route_reports_token_totals_as_a_breakdown_that_does_not_double_count() {
+    let app = super::test_router_with_seed("desktop-1", "Studio Mac", seed_analytics_repo);
+    let json = analytics_body(app, "?from=2026-04-16&to=2026-04-20").await;
+
+    let total = &json["tokens"]["total"];
+    assert_eq!(total["input"], 100);
+    assert_eq!(total["cachedInput"], 900);
+    assert_eq!(total["cacheCreation"], 50);
+    assert_eq!(total["output"], 200);
+    // Reasoning is inside output, so the total is the four parts only.
+    assert_eq!(total["reasoning"], 20);
+    assert_eq!(total["total"], 100 + 900 + 50 + 200);
+    assert_eq!(json["tokens"]["byModel"][0]["key"], "claude-opus-5");
+    assert_eq!(json["tokens"]["byTask"][0]["key"], "task-1");
+}
+
+#[tokio::test]
+async fn analytics_route_reports_a_window_outside_the_data_as_empty_not_as_an_error() {
+    let app = super::test_router_with_seed("desktop-1", "Studio Mac", seed_analytics_repo);
+    let json = analytics_body(app, "?from=2026-01-01&to=2026-01-07").await;
+
+    assert_eq!(json["tasks"]["created"], 0);
+    assert_eq!(json["idle"]["totalSeconds"], 0);
+    assert_eq!(json["revisions"]["cohortTasks"], 0);
+    assert_eq!(json["tokens"]["total"]["total"], 0);
+}
+
+#[tokio::test]
+async fn analytics_route_refuses_a_window_it_will_not_read() {
+    let app = super::test_router_with_seed("desktop-1", "Studio Mac", seed_analytics_repo);
+    for query in [
+        "?from=2026-04-20&to=2026-04-16",
+        "?from=20-04-2026&to=2026-04-16",
+        "?from=2020-01-01&to=2026-04-16",
+    ] {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::get(format!("/v1/analytics/repos/repo-1{query}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            response.status(),
+            StatusCode::BAD_REQUEST,
+            "{query} should be refused rather than silently served as another window"
+        );
+    }
 }
 
 #[tokio::test]

@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::str::FromStr;
 
-fn home_child(env_override: &str, child: &str) -> Option<PathBuf> {
+pub(crate) fn home_child(env_override: &str, child: &str) -> Option<PathBuf> {
     if let Ok(config_dir) = std::env::var(env_override) {
         if !config_dir.trim().is_empty() {
             return Some(PathBuf::from(config_dir));
@@ -22,11 +22,11 @@ fn home_child(env_override: &str, child: &str) -> Option<PathBuf> {
     (!home.trim().is_empty()).then(|| PathBuf::from(home).join(child))
 }
 
-fn claude_projects_dir() -> Option<PathBuf> {
+pub(crate) fn claude_projects_dir() -> Option<PathBuf> {
     home_child("CLAUDE_CONFIG_DIR", ".claude").map(|dir| dir.join("projects"))
 }
 
-fn claude_project_slug(cwd: &str) -> String {
+pub(crate) fn claude_project_slug(cwd: &str) -> String {
     cwd.chars()
         .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
         .collect()
@@ -60,7 +60,7 @@ fn copilot_transcript_exists(session_id: &str) -> bool {
     .unwrap_or(false)
 }
 
-pub(super) fn same_cwd(left: &str, right: &str) -> bool {
+pub(crate) fn same_cwd(left: &str, right: &str) -> bool {
     if left == right {
         return true;
     }

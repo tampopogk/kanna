@@ -1,99 +1,185 @@
-import { ref, computed, watch, type Ref } from "vue";
-import { fetchDesktopRepoAnalytics, type DesktopAnalyticsBucketSize } from "../services/desktopServerClient";
+import { computed, ref, watch, type Ref } from "vue";
+import {
+  fetchDesktopRepoAnalytics,
+  type DesktopAnalyticsContribution,
+  type DesktopAnalyticsRange,
+  type DesktopRepoAnalytics,
+} from "../services/desktopServerClient";
 
-interface TaskBucket {
-  label: string;
-  created: number;
-  closed: number;
+/** Selectable windows, plus the custom one the date inputs drive. */
+export type AnalyticsRangePreset = "7d" | "30d" | "90d" | "custom";
+
+export const ANALYTICS_RANGE_PRESET_DAYS: Record<Exclude<AnalyticsRangePreset, "custom">, number> = {
+  "7d": 7,
+  "30d": 30,
+  "90d": 90,
+};
+
+/** A statistic a reader can open into the rows that produced it. */
+export type AnalyticsDrilldown = "idle" | "revisions" | "tokensByTask" | "tokensByModel";
+
+export function isoDate(date: Date): string {
+  return date.toISOString().slice(0, 10);
 }
 
-interface OperatorMetrics {
-  avgResponseTime: number | null;  // seconds
-  avgDwellTime: number | null;     // seconds
-  switchesPerHour: number | null;
-  focusScore: number | null;       // 0.0–1.0
+export function rangeForPreset(preset: Exclude<AnalyticsRangePreset, "custom">): DesktopAnalyticsRange {
+  const to = new Date();
+  const from = new Date(to);
+  // Inclusive of both ends: a "7 days" window is today plus the six before it,
+  // not today plus seven.
+  from.setUTCDate(from.getUTCDate() - (ANALYTICS_RANGE_PRESET_DAYS[preset] - 1));
+  return { from: isoDate(from), to: isoDate(to) };
 }
 
-type BucketSize = DesktopAnalyticsBucketSize;
+function emptyAnalytics(range: DesktopAnalyticsRange): DesktopRepoAnalytics {
+  return {
+    range,
+    coverage: {
+      idleSince: null,
+      revisionsSince: null,
+      tokensSince: null,
+      pullRequestStateConfirmed: false,
+      providersWithoutTokenUsage: [],
+      runsWithTokenUsage: 0,
+      runsInRange: 0,
+    },
+    tasks: { created: 0, closed: 0, openNow: 0, childTasksCreated: 0 },
+    pullRequests: { created: 0, merged: null, openNow: null },
+    idle: {
+      totalSeconds: 0,
+      workingSeconds: 0,
+      taskCount: 0,
+      averageSecondsPerTask: 0,
+      longestSeconds: 0,
+      contributors: [],
+    },
+    revisions: {
+      cohortTasks: 0,
+      totalRevisions: 0,
+      averagePerTask: 0,
+      cleanPassRate: null,
+      parkedRequests: 0,
+      contributors: [],
+    },
+    tokens: {
+      total: { input: 0, cachedInput: 0, cacheCreation: 0, reasoning: 0, output: 0, total: 0 },
+      byModel: [],
+      byTask: [],
+    },
+  };
+}
 
 export function useAnalytics(repoId: Ref<string | null>) {
-  const taskBuckets = ref<TaskBucket[]>([]);
-  const bucketSize = ref<BucketSize>("daily");
-  const hasData = ref(false);
+  const preset = ref<AnalyticsRangePreset>("30d");
+  const customRange = ref<DesktopAnalyticsRange>(rangeForPreset("30d"));
   const loading = ref(false);
-  const operatorMetrics = ref<OperatorMetrics>({ avgResponseTime: null, avgDwellTime: null, switchesPerHour: null, focusScore: null });
-  const hasOperatorData = ref(false);
+  const error = ref<string | null>(null);
 
-  const headlineStats = computed(() => {
-    const totalCreated = taskBuckets.value.reduce((sum, b) => sum + b.created, 0);
-    const totalClosed = taskBuckets.value.reduce((sum, b) => sum + b.closed, 0);
+  const range = computed<DesktopAnalyticsRange>(() =>
+    preset.value === "custom" ? customRange.value : rangeForPreset(preset.value),
+  );
+  const analytics = ref<DesktopRepoAnalytics>(emptyAnalytics(range.value));
+
+  /**
+   * Whether the selected window reaches back before a statistic started being
+   * recorded. The view says so rather than presenting the unrecorded part as
+   * a stretch in which nothing happened.
+   */
+  const coverageGaps = computed(() => {
+    const { coverage } = analytics.value;
+    const from = range.value.from;
+    const startsAfter = (since: string | null) => since != null && since.slice(0, 10) > from;
     return {
-      totalCreated,
-      totalClosed,
-      open: totalCreated - totalClosed,
+      idle: startsAfter(coverage.idleSince),
+      revisions: startsAfter(coverage.revisionsSince),
+      tokens: startsAfter(coverage.tokensSince),
     };
   });
 
-  const avgTimeInState = ref({ working: 0, idle: 0, unread: 0 });
+  /** Share of the window's runs the token figures actually account for. */
+  const tokenCoverageRatio = computed(() => {
+    const { runsInRange, runsWithTokenUsage } = analytics.value.coverage;
+    return runsInRange > 0 ? runsWithTokenUsage / runsInRange : null;
+  });
 
-  function bucketLabel(key: string, size: BucketSize): string {
-    if (size === "daily") {
-      const d = new Date(key + "T00:00:00Z");
-      return d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+  const hasAnyData = computed(() => {
+    const { tasks, pullRequests, idle, revisions, tokens } = analytics.value;
+    return (
+      tasks.created > 0 ||
+      tasks.closed > 0 ||
+      tasks.openNow > 0 ||
+      pullRequests.created > 0 ||
+      idle.totalSeconds > 0 ||
+      revisions.cohortTasks > 0 ||
+      tokens.total.total > 0
+    );
+  });
+
+  function contributionsFor(drilldown: AnalyticsDrilldown): DesktopAnalyticsContribution[] {
+    switch (drilldown) {
+      case "idle":
+        return analytics.value.idle.contributors;
+      case "revisions":
+        return analytics.value.revisions.contributors;
+      case "tokensByTask":
+        return analytics.value.tokens.byTask.map((group) => ({
+          taskId: group.key,
+          title: group.label,
+          value: group.totals.total,
+        }));
+      case "tokensByModel":
+        // Grouped by model, so there is no task to open — the key is the
+        // model name and the row is not navigable.
+        return analytics.value.tokens.byModel.map((group) => ({
+          taskId: "",
+          title: group.label,
+          value: group.totals.total,
+        }));
     }
-    if (size === "weekly") {
-      const d = new Date(key + "T00:00:00Z");
-      return "W/" + d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
-    }
-    const d = new Date(key + "-01T00:00:00Z");
-    return d.toLocaleDateString(undefined, { month: "short", year: "2-digit" });
   }
 
   async function refresh() {
     if (!repoId.value) {
-      hasData.value = false;
-      taskBuckets.value = [];
-      avgTimeInState.value = { working: 0, idle: 0, unread: 0 };
-      operatorMetrics.value = { avgResponseTime: null, avgDwellTime: null, switchesPerHour: null, focusScore: null };
-      hasOperatorData.value = false;
+      analytics.value = emptyAnalytics(range.value);
+      error.value = null;
       return;
     }
     loading.value = true;
+    error.value = null;
     try {
-      const analytics = await fetchDesktopRepoAnalytics(repoId.value);
-      hasData.value = analytics.hasData;
-      bucketSize.value = analytics.bucketSize;
-      taskBuckets.value = analytics.taskBuckets.map((bucket) => ({
-        label: bucketLabel(bucket.key, analytics.bucketSize),
-        created: bucket.created,
-        closed: bucket.closed,
-      }));
-      avgTimeInState.value = analytics.avgTimeInState;
-      operatorMetrics.value = analytics.operatorMetrics;
-      hasOperatorData.value = analytics.hasOperatorData;
-
-      if (!analytics.hasData) {
-        avgTimeInState.value = { working: 0, idle: 0, unread: 0 };
-        operatorMetrics.value = { avgResponseTime: null, avgDwellTime: null, switchesPerHour: null, focusScore: null };
-      }
+      analytics.value = await fetchDesktopRepoAnalytics(repoId.value, range.value);
     } catch (e) {
+      error.value = e instanceof Error ? e.message : String(e);
       console.error("[analytics] refresh failed:", e);
+      analytics.value = emptyAnalytics(range.value);
     } finally {
       loading.value = false;
     }
   }
 
-  watch(repoId, refresh, { immediate: true });
+  function selectPreset(next: AnalyticsRangePreset) {
+    if (next === "custom" && preset.value !== "custom") {
+      // Carry the window currently on screen into the custom inputs so the
+      // first thing a reader sees is the range they were already looking at.
+      customRange.value = { ...range.value };
+    }
+    preset.value = next;
+  }
+
+  watch([repoId, range], refresh, { immediate: true, deep: true });
 
   return {
-    taskBuckets,
-    bucketSize,
-    headlineStats,
-    avgTimeInState,
-    hasData,
+    analytics,
+    range,
+    preset,
+    customRange,
     loading,
+    error,
+    coverageGaps,
+    tokenCoverageRatio,
+    hasAnyData,
+    contributionsFor,
+    selectPreset,
     refresh,
-    operatorMetrics,
-    hasOperatorData,
   };
 }

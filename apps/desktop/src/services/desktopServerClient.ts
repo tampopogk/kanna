@@ -39,7 +39,10 @@ export interface DesktopServerClientHandlersForTests {
   deleteSetting?: (key: string) => MaybePromise<void>;
   postOperatorEvents?: (events: DesktopOperatorEventInput[]) => MaybePromise<void>;
   createBackup?: () => MaybePromise<DesktopBackupResponse>;
-  fetchRepoAnalytics?: (repoId: string) => MaybePromise<DesktopRepoAnalytics>;
+  fetchRepoAnalytics?: (
+    repoId: string,
+    range?: DesktopAnalyticsRange,
+  ) => MaybePromise<DesktopRepoAnalytics>;
   patchRepo?: (repoId: string, input: PatchDesktopRepoInput) => MaybePromise<void>;
   applyTaskRuntimeStatus?: (taskId: string, input: DesktopTaskRuntimeStatusInput) => MaybePromise<DesktopTaskActivityResponse>;
   markTaskRead?: (taskId: string) => MaybePromise<DesktopTaskActivityResponse>;
@@ -776,37 +779,109 @@ export async function createDesktopBackup(): Promise<DesktopBackupResponse> {
   });
 }
 
-export type DesktopAnalyticsBucketSize = "daily" | "weekly" | "monthly";
-
-export interface DesktopAnalyticsBucket {
-  key: string;
-  created: number;
-  closed: number;
+/// Inclusive `YYYY-MM-DD` window the statistics cover.
+export interface DesktopAnalyticsRange {
+  from: string;
+  to: string;
 }
 
-export interface DesktopOperatorMetrics {
-  avgResponseTime: number | null;
-  avgDwellTime: number | null;
-  switchesPerHour: number | null;
-  focusScore: number | null;
+/**
+ * Where each statistic's record begins and how much of the work the token
+ * figures speak for. The view reads this before presenting any zero: an
+ * unrecorded stretch is not a quiet one.
+ */
+export interface DesktopAnalyticsCoverage {
+  idleSince: string | null;
+  revisionsSince: string | null;
+  tokensSince: string | null;
+  pullRequestStateConfirmed: boolean;
+  providersWithoutTokenUsage: string[];
+  runsWithTokenUsage: number;
+  runsInRange: number;
+}
+
+export interface DesktopAnalyticsTaskStats {
+  created: number;
+  closed: number;
+  openNow: number;
+  childTasksCreated: number;
+}
+
+export interface DesktopAnalyticsPullRequestStats {
+  created: number;
+  /** `null` when the forge could not confirm merge state — not zero merges. */
+  merged: number | null;
+  openNow: number | null;
+}
+
+/** One task's share of a statistic, for opening a number into its rows. */
+export interface DesktopAnalyticsContribution {
+  taskId: string;
+  title: string;
+  value: number;
+}
+
+export interface DesktopAnalyticsIdleStats {
+  totalSeconds: number;
+  workingSeconds: number;
+  taskCount: number;
+  averageSecondsPerTask: number;
+  longestSeconds: number;
+  contributors: DesktopAnalyticsContribution[];
+}
+
+export interface DesktopAnalyticsRevisionStats {
+  cohortTasks: number;
+  totalRevisions: number;
+  averagePerTask: number;
+  cleanPassRate: number | null;
+  parkedRequests: number;
+  contributors: DesktopAnalyticsContribution[];
+}
+
+export interface DesktopAnalyticsTokenTotals {
+  input: number;
+  cachedInput: number;
+  cacheCreation: number;
+  /** The thinking share of `output`, not an addition to it. */
+  reasoning: number;
+  output: number;
+  total: number;
+}
+
+export interface DesktopAnalyticsTokenGroup {
+  key: string;
+  label: string;
+  totals: DesktopAnalyticsTokenTotals;
+}
+
+export interface DesktopAnalyticsTokenStats {
+  total: DesktopAnalyticsTokenTotals;
+  byModel: DesktopAnalyticsTokenGroup[];
+  byTask: DesktopAnalyticsTokenGroup[];
 }
 
 export interface DesktopRepoAnalytics {
-  taskBuckets: DesktopAnalyticsBucket[];
-  bucketSize: DesktopAnalyticsBucketSize;
-  hasData: boolean;
-  avgTimeInState: {
-    working: number;
-    idle: number;
-    unread: number;
-  };
-  operatorMetrics: DesktopOperatorMetrics;
-  hasOperatorData: boolean;
+  range: DesktopAnalyticsRange;
+  coverage: DesktopAnalyticsCoverage;
+  tasks: DesktopAnalyticsTaskStats;
+  pullRequests: DesktopAnalyticsPullRequestStats;
+  idle: DesktopAnalyticsIdleStats;
+  revisions: DesktopAnalyticsRevisionStats;
+  tokens: DesktopAnalyticsTokenStats;
 }
 
-export async function fetchDesktopRepoAnalytics(repoId: string): Promise<DesktopRepoAnalytics> {
-  if (clientHandlersForTests?.fetchRepoAnalytics) return await clientHandlersForTests.fetchRepoAnalytics(repoId);
-  return await requestJson<DesktopRepoAnalytics>(`/v1/analytics/repos/${encodeURIComponent(repoId)}`);
+export async function fetchDesktopRepoAnalytics(
+  repoId: string,
+  range?: DesktopAnalyticsRange,
+): Promise<DesktopRepoAnalytics> {
+  if (clientHandlersForTests?.fetchRepoAnalytics) {
+    return await clientHandlersForTests.fetchRepoAnalytics(repoId, range);
+  }
+  const query = range ? `?from=${encodeURIComponent(range.from)}&to=${encodeURIComponent(range.to)}` : "";
+  return await requestJson<DesktopRepoAnalytics>(
+    `/v1/analytics/repos/${encodeURIComponent(repoId)}${query}`,
+  );
 }
 
 export interface PatchDesktopRepoInput {

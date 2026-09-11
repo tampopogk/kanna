@@ -2178,6 +2178,67 @@ contract allows it, walks the stage's ordered candidate list once:
 
 Full contract: [`docs/specs/provider-quota-recovery.md`](specs/provider-quota-recovery.md).
 
+## Analytics Statistics
+
+`GET /v1/analytics/repos/{repo_id}?from=YYYY-MM-DD&to=YYYY-MM-DD` returns one
+repository's statistics over an inclusive date window (default: the last 30
+days, maximum 400). A malformed, backwards, or oversized window is refused
+rather than silently served as a different one.
+
+The route is a read, but its numbers come from **durable accumulators written
+where the state they describe changes**, not from replaying history. That is
+deliberate: `activity_log` never gained a production writer, `task_event` rows
+are pruned after 14 days, and `pipeline_item.revision_rounds` is a budget
+counter a human-requested revision resets to zero. None of the three can answer
+a question about last month.
+
+- **`task_activity_interval`** — one row per *ended* activity span, appended by
+  `update_open_pipeline_item_activity` and by the close path. The span still
+  running is derived from `pipeline_item.activity` + `activity_changed_at`,
+  which is what keeps a read from counting the same seconds twice. Reopening a
+  task restarts the live span; the seconds it spent closed are not waiting.
+- **`task_pull_request`** — the canonical identity of each pull request this
+  desktop's tasks reported, so two tasks naming one PR stay one PR. Creation
+  and merge are **forge** facts: `forge_merged_at` is written only from a `gh`
+  answer, at most once every five minutes per repository, and **closing a task
+  is never read as a merge**. Without `gh` the response reports `merged: null`
+  and `coverage.pullRequestStateConfirmed: false` — unknown, not zero.
+- **`task_revision`** — one append-only row per revision request, written in
+  the same transaction as `task.revision_requested`. A request the budget
+  parked is recorded with `applied = 0` and reported separately: it is a review
+  verdict, not a round the task spent.
+- **`provider_token_usage`** — usage read from the agent CLIs' *own* local
+  session files (`~/.claude/projects/<slug>/*.jsonl`,
+  `~/.codex/sessions/**/rollout-*.jsonl`), never scraped from a terminal and
+  never inferred. Every record is keyed by an identity derived from its own
+  content, so a streamed turn, a resumed session replaying its history, a fork
+  copying a transcript, two stages sharing one session, and a rescan all
+  resolve to the same row. Codex's cumulative counter is never summed — its
+  per-turn `last_token_usage` is used — and Codex's cache share is subtracted
+  out of input so every provider's rows mean the same thing. `reasoning_tokens`
+  is a breakdown of `output_tokens`, never an addend. Scanning is scoped to the
+  worktrees this repository's runs recorded and resumes from a stored byte
+  offset. **No dollar figure is derived**: a subscription does not produce a
+  per-task bill.
+
+Two definitions the view owns and nothing else does:
+
+- **Analytics "waiting" is `idle` + `unread`.** A finished task whose output
+  nobody has read is as unserviced as one sitting at a prompt, and this view
+  deliberately does not distinguish whether a person or an agent owed the
+  servicing. This changes nothing about `runtimeState`, the read/unread
+  dimension, or how tasks are supervised — see
+  [Task State: Runtime and Read Are Two Dimensions](#task-state-runtime-and-read-are-two-dimensions).
+- **Every average names its denominator.** Waiting is averaged over every task
+  alive in the window, and revisions over every task that *reached review* in
+  it — including the ones that passed clean. Task counts report top-level tasks
+  and dispatched review children separately rather than folding the two.
+
+`coverage` carries where each accumulator's record begins and how many of the
+window's runs the token figures speak for. A window reaching back before a
+record started is reported with that boundary; a provider whose session files
+Kanna cannot read is named. **A missing record is never presented as a zero.**
+
 ## Activity Confirmation in `kanna-mcp`
 
 `pipeline_item.activity` is written from the daemon's rendered-terminal

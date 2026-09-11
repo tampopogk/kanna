@@ -229,10 +229,7 @@ fn open_creates_and_migrates_fresh_profile_database() {
             |row| row.get(0),
         )
         .expect("latest migration");
-    assert_eq!(
-        latest_migration,
-        "076_transferred_task_manifest_content_commitment"
-    );
+    assert_eq!(latest_migration, "080_provider_token_usage");
     assert_eq!(
         index_columns(&db.conn, "idx_pipeline_item_parent_created_id"),
         vec!["parent_task_id", "created_at", "id"],
@@ -1893,8 +1890,17 @@ fn server_connection_opens_with_desktop_like_wal_client_active() {
                 CREATE TABLE pipeline_item (
                   id TEXT PRIMARY KEY,
                   stage TEXT NOT NULL,
+                  activity TEXT,
+                  activity_changed_at TEXT,
                   closed_at TEXT,
                   updated_at TEXT
+                );
+                CREATE TABLE task_activity_interval (
+                  id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  task_id TEXT NOT NULL,
+                  activity TEXT NOT NULL,
+                  started_at TEXT NOT NULL,
+                  ended_at TEXT NOT NULL
                 );
                 CREATE TABLE task_port (
                   port INTEGER PRIMARY KEY,
@@ -1963,8 +1969,17 @@ fn close_pipeline_item_sets_closed_at_without_changing_stage() {
             CREATE TABLE pipeline_item (
               id TEXT PRIMARY KEY,
               stage TEXT NOT NULL,
+              activity TEXT,
+              activity_changed_at TEXT,
               closed_at TEXT,
               updated_at TEXT
+            );
+            CREATE TABLE task_activity_interval (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              task_id TEXT NOT NULL,
+              activity TEXT NOT NULL,
+              started_at TEXT NOT NULL,
+              ended_at TEXT NOT NULL
             );
             CREATE TABLE task_port (
               port INTEGER PRIMARY KEY,
@@ -4754,4 +4769,360 @@ fn transferred_manifest_acquisition_and_task_bindings_are_immutable() {
             .as_deref(),
         Some("atomic-proof")
     );
+}
+
+// ---------------------------------------------------------------------------
+// Analytics accumulators
+//
+// Every statistic the Analytics view reports is accumulated where the state it
+// describes is written, because the alternative records — `activity_log`, the
+// 14-day task event feed, and the resettable revision-round counter — either
+// have no writer or cannot answer a question about the past. These tests pin
+// the writes, not the read: the read has nothing to go on if these are wrong.
+// ---------------------------------------------------------------------------
+
+fn analytics_db() -> Db {
+    let db = Db::open_for_tests(&Db::test_db_path("analytics-accumulators")).expect("open db");
+    db.insert_test_repo("repo-1", "Repo One").expect("repo");
+    db.insert_test_pipeline_item(
+        "task-1",
+        "repo-1",
+        "prompt",
+        Some("Task One"),
+        "in progress",
+        "2026-04-17 08:00:00",
+    )
+    .expect("task");
+    db
+}
+
+#[test]
+fn each_activity_change_closes_the_span_it_ended_and_never_the_live_one() {
+    let db = analytics_db();
+    db.set_test_pipeline_item_activity_at("task-1", "working", "2026-04-17 08:00:00")
+        .expect("seed live span");
+
+    db.update_pipeline_item_activity("task-1", "unread")
+        .expect("first change");
+    assert_eq!(
+        db.count_test_activity_intervals("task-1").expect("count"),
+        1,
+        "the working span ended and should have been recorded"
+    );
+
+    db.update_pipeline_item_activity("task-1", "idle")
+        .expect("second change");
+    assert_eq!(
+        db.count_test_activity_intervals("task-1").expect("count"),
+        2
+    );
+
+    // Setting the same value again is not a transition and must not invent a
+    // zero-length span.
+    db.update_pipeline_item_activity("task-1", "idle")
+        .expect("no-op change");
+    assert_eq!(
+        db.count_test_activity_intervals("task-1").expect("count"),
+        2
+    );
+}
+
+#[test]
+fn the_recorded_span_carries_the_activity_that_ended_not_the_one_starting() {
+    let db = analytics_db();
+    db.set_test_pipeline_item_activity_at("task-1", "working", "2026-04-17 08:00:00")
+        .expect("seed live span");
+    db.update_pipeline_item_activity("task-1", "unread")
+        .expect("change");
+
+    let (activity, started_at): (String, String) = db
+        .conn
+        .query_row(
+            "SELECT activity, started_at FROM task_activity_interval WHERE task_id = 'task-1'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .expect("recorded span");
+    assert_eq!(activity, "working");
+    assert_eq!(started_at, "2026-04-17 08:00:00");
+}
+
+#[test]
+fn closing_a_task_records_its_last_span_and_reopening_starts_a_new_one() {
+    let db = analytics_db();
+    db.set_test_pipeline_item_activity_at("task-1", "idle", "2026-04-17 08:00:00")
+        .expect("seed live span");
+
+    db.close_pipeline_item("task-1").expect("close");
+    assert_eq!(
+        db.count_test_activity_intervals("task-1").expect("count"),
+        1,
+        "a closed task stops accruing, so its live span had to be recorded"
+    );
+    let changed_at: Option<String> = db
+        .conn
+        .query_row(
+            "SELECT activity_changed_at FROM pipeline_item WHERE id = 'task-1'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("read task");
+    assert_eq!(
+        changed_at, None,
+        "a closed task has no live span, so nothing may derive one"
+    );
+
+    db.reopen_pipeline_item("task-1").expect("reopen");
+    let reopened: Option<String> = db
+        .conn
+        .query_row(
+            "SELECT activity_changed_at FROM pipeline_item WHERE id = 'task-1'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("read task");
+    assert!(
+        reopened.is_some(),
+        "the seconds a task spent closed are not waiting; the span restarts at the reopen"
+    );
+    assert_eq!(
+        db.count_test_activity_intervals("task-1").expect("count"),
+        1,
+        "reopening records nothing — the pre-close span was already recorded"
+    );
+}
+
+#[test]
+fn a_revision_is_recorded_even_though_the_budget_counter_resets() {
+    let db = analytics_db();
+    db.record_revision_request_in_transaction(
+        "task-1",
+        super::RecordedRevisionOrigin::Agent,
+        Some("in progress"),
+        true,
+    )
+    .expect("agent revision");
+    // A human revision hands the budget back, which is exactly why the counter
+    // cannot be read as history.
+    db.reset_task_revision_rounds("task-1").expect("reset");
+    db.record_revision_request_in_transaction(
+        "task-1",
+        super::RecordedRevisionOrigin::Human,
+        Some("in progress"),
+        true,
+    )
+    .expect("human revision");
+
+    assert_eq!(db.task_revision_rounds("task-1").expect("rounds"), 0);
+    assert_eq!(
+        db.count_test_task_revisions("task-1").expect("recorded"),
+        2,
+        "both rounds happened, whatever the budget counter now says"
+    );
+}
+
+#[test]
+fn a_parked_revision_request_is_recorded_but_not_counted_as_a_round() {
+    let db = analytics_db();
+    db.record_revision_request_in_transaction(
+        "task-1",
+        super::RecordedRevisionOrigin::Agent,
+        Some("in progress"),
+        false,
+    )
+    .expect("parked request");
+    assert_eq!(db.count_test_task_revisions("task-1").expect("applied"), 0);
+    let parked: i64 = db
+        .conn
+        .query_row(
+            "SELECT COUNT(*) FROM task_revision WHERE applied = 0",
+            [],
+            |row| row.get(0),
+        )
+        .expect("count");
+    assert_eq!(parked, 1);
+}
+
+#[test]
+fn one_pull_request_reported_by_two_tasks_stays_one_pull_request() {
+    let db = analytics_db();
+    db.insert_test_pipeline_item(
+        "task-2",
+        "repo-1",
+        "prompt",
+        Some("Task Two"),
+        "in progress",
+        "2026-04-17 08:00:00",
+    )
+    .expect("second task");
+
+    db.update_pipeline_item_pr("task-1", Some(42), "https://github.com/owner/repo/pull/42")
+        .expect("first report");
+    db.update_pipeline_item_pr(
+        "task-2",
+        Some(42),
+        "https://github.com/owner/repo/pull/42/files",
+    )
+    .expect("second report of the same pull request");
+
+    assert_eq!(
+        db.count_test_repo_pull_requests("repo-1").expect("facts"),
+        1,
+        "two tasks naming one pull request are still one pull request"
+    );
+}
+
+#[test]
+fn a_pull_request_is_only_merged_when_the_forge_says_so() {
+    let db = analytics_db();
+    db.update_pipeline_item_pr("task-1", Some(42), "https://github.com/owner/repo/pull/42")
+        .expect("report");
+
+    // Closing the task is the wrong event: work leaves the workflow for many
+    // reasons that are not a merge.
+    db.close_pipeline_item("task-1").expect("close");
+    assert_eq!(
+        db.test_pull_request_merged_at("repo-1", 42).expect("facts"),
+        None
+    );
+
+    db.record_forge_pull_requests(
+        "repo-1",
+        &[super::ForgePullRequestObservation {
+            pr_number: 42,
+            url: Some("https://github.com/owner/repo/pull/42".into()),
+            created_at: Some("2026-04-17T08:00:00Z".into()),
+            merged_at: Some("2026-04-18T08:00:00Z".into()),
+            state: Some("MERGED".into()),
+        }],
+    )
+    .expect("record forge facts");
+    assert_eq!(
+        db.test_pull_request_merged_at("repo-1", 42)
+            .expect("facts")
+            .as_deref(),
+        Some("2026-04-18T08:00:00Z")
+    );
+    assert!(
+        db.unresolved_repo_pull_request_numbers("repo-1")
+            .expect("unresolved")
+            .is_empty(),
+        "a merged pull request is terminal and must not be asked about again"
+    );
+}
+
+#[test]
+fn a_pull_request_this_desktop_never_opened_is_not_adopted_from_a_forge_listing() {
+    let db = analytics_db();
+    db.record_forge_pull_requests(
+        "repo-1",
+        &[super::ForgePullRequestObservation {
+            pr_number: 99,
+            url: Some("https://github.com/owner/repo/pull/99".into()),
+            created_at: None,
+            merged_at: Some("2026-04-18T08:00:00Z".into()),
+            state: Some("MERGED".into()),
+        }],
+    )
+    .expect("record forge facts");
+    assert_eq!(
+        db.count_test_repo_pull_requests("repo-1").expect("facts"),
+        0,
+        "somebody else's pull request is not this repository's statistic"
+    );
+}
+
+#[test]
+fn seeing_one_usage_record_again_writes_the_same_row() {
+    let db = analytics_db();
+    let record = super::TokenUsageRecord {
+        usage_key: "claude:message:msg_1".into(),
+        provider: "claude".into(),
+        repo_id: Some("repo-1".into()),
+        task_id: Some("task-1".into()),
+        occurred_at: "2026-04-17 09:00:00".into(),
+        input_tokens: 10,
+        output_tokens: 20,
+        total_tokens: 30,
+        ..Default::default()
+    };
+    db.record_token_usage(std::slice::from_ref(&record), None)
+        .expect("first write");
+    db.record_token_usage(&[record.clone(), record], None)
+        .expect("the same record twice more");
+
+    assert_eq!(db.count_test_token_usage_rows().expect("rows"), 1);
+    let total: i64 = db
+        .conn
+        .query_row(
+            "SELECT SUM(total_tokens) FROM provider_token_usage",
+            [],
+            |row| row.get(0),
+        )
+        .expect("sum");
+    assert_eq!(total, 30, "a record seen four times is still one record");
+}
+
+#[test]
+fn a_streamed_turn_keeps_its_most_complete_usage_report() {
+    let db = analytics_db();
+    let partial = super::TokenUsageRecord {
+        usage_key: "claude:message:msg_1".into(),
+        provider: "claude".into(),
+        repo_id: Some("repo-1".into()),
+        task_id: Some("task-1".into()),
+        occurred_at: "2026-04-17 09:00:00".into(),
+        input_tokens: 10,
+        output_tokens: 5,
+        total_tokens: 15,
+        ..Default::default()
+    };
+    let complete = super::TokenUsageRecord {
+        output_tokens: 40,
+        total_tokens: 50,
+        ..partial.clone()
+    };
+    db.record_token_usage(&[partial], None).expect("partial");
+    db.record_token_usage(&[complete], None).expect("complete");
+
+    let (output, total): (i64, i64) = db
+        .conn
+        .query_row(
+            "SELECT output_tokens, total_tokens FROM provider_token_usage",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .expect("row");
+    assert_eq!(output, 40);
+    assert_eq!(total, 50, "the two writes describe one turn, not two");
+}
+
+#[test]
+fn a_scan_checkpoint_only_advances_with_the_records_it_produced() {
+    let db = analytics_db();
+    db.record_token_usage(
+        &[],
+        Some(super::UsageScanCheckpoint {
+            file_path: "/sessions/a.jsonl",
+            provider: "codex",
+            file_size: 4_096,
+            byte_offset: 4_096,
+            session_id: Some("session-1"),
+            cwd: Some("/w"),
+            model: Some("gpt-5.4"),
+        }),
+    )
+    .expect("checkpoint");
+
+    let state = db
+        .usage_scan_state("/sessions/a.jsonl")
+        .expect("read state")
+        .expect("state exists");
+    assert_eq!(state.byte_offset, 4_096);
+    assert_eq!(state.file_size, 4_096);
+    // Carried because a session file declares them once, at the top: an
+    // incremental scan resuming mid-file would otherwise attribute nothing.
+    assert_eq!(state.session_id.as_deref(), Some("session-1"));
+    assert_eq!(state.cwd.as_deref(), Some("/w"));
+    assert_eq!(state.model.as_deref(), Some("gpt-5.4"));
 }

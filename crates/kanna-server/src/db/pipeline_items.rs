@@ -46,6 +46,12 @@ pub(super) fn update_open_pipeline_item_activity(
         return Ok(Some(false));
     }
 
+    // The span that just ended is the only chance to record it: the next
+    // update overwrites `activity_changed_at`, and the event feed that would
+    // otherwise carry the history is pruned. Recorded before the update so the
+    // start it reads is still the previous span's.
+    close_open_activity_interval(conn, id)?;
+
     conn.execute(
         "UPDATE pipeline_item
          SET activity_event_baseline = COALESCE(activity_event_baseline, activity),
@@ -58,6 +64,29 @@ pub(super) fn update_open_pipeline_item_activity(
         (activity, activity, id),
     )?;
     Ok(Some(true))
+}
+
+/// Append the currently-live activity span to the durable interval record.
+///
+/// Only spans that have genuinely ended are stored; the live one stays
+/// derivable from `pipeline_item.activity` + `activity_changed_at`, which is
+/// what keeps a read from counting the same seconds twice. A task with no
+/// activity or no recorded change instant has no span to close.
+pub(super) fn close_open_activity_interval(
+    conn: &Connection,
+    id: &str,
+) -> Result<(), rusqlite::Error> {
+    conn.execute(
+        "INSERT INTO task_activity_interval (task_id, activity, started_at, ended_at)
+         SELECT id, activity, activity_changed_at, datetime('now')
+         FROM pipeline_item
+         WHERE id = ?
+           AND activity IS NOT NULL
+           AND activity_changed_at IS NOT NULL
+           AND activity_changed_at <= datetime('now')",
+        [id],
+    )?;
+    Ok(())
 }
 
 impl Db {
@@ -111,6 +140,16 @@ impl Db {
             .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
             .collect::<Result<Vec<_>, _>>()?;
         Ok(runs)
+    }
+
+    fn pipeline_item_repo_id(&self, id: &str) -> Result<Option<String>, rusqlite::Error> {
+        self.conn
+            .query_row(
+                "SELECT repo_id FROM pipeline_item WHERE id = ?",
+                [id],
+                |row| row.get(0),
+            )
+            .optional()
     }
 
     fn pipeline_item_stage(&self, id: &str) -> Result<Option<String>, rusqlite::Error> {
@@ -1234,9 +1273,14 @@ impl Db {
             let Some(pipeline_item_id) = db.resolve_pipeline_item_id(id)? else {
                 return Err(rusqlite::Error::QueryReturnedNoRows);
             };
+            // A closed task stops accruing activity, so the span that was live
+            // at the close is the last one it has. Recorded before `closed_at`
+            // is written, while the row still reads as open.
+            close_open_activity_interval(&db.conn, &pipeline_item_id)?;
             let rows_affected = db.conn.execute(
                 "UPDATE pipeline_item
                  SET closed_at = datetime('now'),
+                     activity_changed_at = NULL,
                      updated_at = datetime('now')
                  WHERE id = ?",
                 [&pipeline_item_id],
@@ -1265,9 +1309,13 @@ impl Db {
             ));
         };
         let rows_affected = match self.conn.execute(
+            // The seconds a task spent closed are not idle: the live span
+            // restarts at the reopen, and the span before the close was
+            // already recorded by `close_pipeline_item`.
             "UPDATE pipeline_item
              SET teardown_started_at = NULL,
                  closed_at = NULL,
+                 activity_changed_at = datetime('now'),
                  updated_at = datetime('now')
              WHERE id = ?",
             [&pipeline_item_id],
@@ -1499,6 +1547,17 @@ impl Db {
                     TaskEventKind::PrCreated,
                     json!({ "prNumber": pr_number, "prUrl": pr_url }),
                 )?;
+            }
+            // The pull request gets its own durable identity regardless of
+            // whether this particular task had reported it before: two tasks
+            // naming one PR are still one pull request, and the row is what
+            // survives the task being closed and its events being pruned.
+            if rows_affected > 0 {
+                if let Some(repo_id) = db.pipeline_item_repo_id(id)? {
+                    super::pull_requests::observe_pull_request(
+                        &db.conn, &repo_id, pr_number, pr_url,
+                    )?;
+                }
             }
             // A task parked at `pr` with a PR recorded counts as resolved, so
             // this write can release its dependents.
