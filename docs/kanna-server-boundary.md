@@ -802,8 +802,9 @@ as aggregation becomes available initializes the local watermark and starts
 new peers from retained history. A server that has no relay route keeps the
 native cursor shape and, for an account-wide-authorized caller, adds a
 relay-unavailable `machineErrors` warning.
-Agent-facing catalog calls set `shortCursor=true`. The server then retains the
-full native or `ks1.` checkpoint behind a durable
+Agent-facing MCP and CLI calls always set `shortCursor=true`; cursor shape is
+not an advertised caller choice. The server then retains the full native or
+`ks1.` checkpoint behind a durable
 `kh1.<issuer>.<nonce>` handle, where both fields are eight hex digits and the
 issuer identifies the server that minted it. Each successful resume advances
 that same handle, so a busy watcher does not accumulate abandoned entries or
@@ -831,8 +832,8 @@ fail to resolve are answered differently, because they are different faults:
   an expiry, and it must never be reported as one.
 
 A handle-resolution failure remains distinct from a native cursor whose event
-position predates retained history. Callers
-that omit `shortCursor` keep receiving the deployed stateless
+position predates retained history. Direct HTTP callers that omit
+`shortCursor` keep receiving the deployed stateless
 cursor shapes, and numeric, `p1.`, `p3.`, `kc1.`, and `ks1.` inputs remain
 accepted; resuming one with short cursors enabled upgrades the response.
 `localOnly=true` is the explicit compatibility escape hatch used by adapters

@@ -967,9 +967,9 @@ pub(crate) enum TaskCommands {
         #[arg(long, default_value_t = true, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true")]
         include_current_activity: bool,
 
-        /// Return a short process-local cursor handle for agent use
-        #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
-        short_cursor: bool,
+        /// Deprecated compatibility spelling; agent waits always use short cursors
+        #[arg(long = "short-cursor", hide = true, action = clap::ArgAction::Set)]
+        legacy_short_cursor: Option<bool>,
 
         /// Start a cursorless watch at the current event tail (`now`)
         #[arg(long, value_parser = ["now"])]

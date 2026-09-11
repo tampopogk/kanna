@@ -138,7 +138,6 @@ pub(crate) struct TaskEventsParams<'a> {
     pub(crate) exclude_own: bool,
     pub(crate) local_only: bool,
     pub(crate) include_current_activity: bool,
-    pub(crate) short_cursor: bool,
     pub(crate) from: Option<&'a str>,
     pub(crate) cursor: Option<&'a str>,
     pub(crate) timeout_secs: u64,
@@ -205,7 +204,9 @@ pub(crate) fn task_events_path(params: &TaskEventsParams<'_>) -> String {
         "includeCurrentActivity={}",
         params.include_current_activity
     ));
-    query.push(format!("shortCursor={}", params.short_cursor));
+    // Agent-facing CLI waits always use a short handle. Direct HTTP and the
+    // server-owned subscription worker retain the full-cursor path.
+    query.push("shortCursor=true".to_string());
     if let Some(from) = params.from {
         query.push(format!("from={}", encode_path_segment(from)));
     }
