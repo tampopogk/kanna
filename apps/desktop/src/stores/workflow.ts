@@ -12,21 +12,12 @@ export interface WorkflowApi {
   loadWorkflow: (repoId: string, workflowName: string) => Promise<WorkflowDefinition>;
   loadAgent: (repoId: string, agentName: string) => Promise<AgentDefinition>;
   advanceStage: (taskId: string, options?: AdvanceStageOptions) => Promise<AdvanceStageResult>;
-  requestRevision: (taskId: string, options: RequestRevisionOptions) => Promise<boolean>;
   rerunStage: (taskId: string) => Promise<void>;
 }
 
 export type AdvanceStageResult = "advanced" | "ignored" | "failed";
 
-export interface RequestRevisionOptions {
-  targetStage: string;
-  summary: string;
-  prompt: string;
-  metadata?: Record<string, unknown>;
-}
-
 export function createWorkflowApi(context: StoreContext): WorkflowApi {
-  const revisionRequestsInFlight = new Set<string>();
   interface TaskActionResponse {
     taskId: string;
     followTask?: boolean;
@@ -362,45 +353,10 @@ export function createWorkflowApi(context: StoreContext): WorkflowApi {
     }
   }
 
-  async function requestRevision(taskId: string, options: RequestRevisionOptions): Promise<boolean> {
-    const item = context.state.items.value.find((candidate) => candidate.id === taskId);
-    if (!item) return false;
-    if (item.closed_at != null) return false;
-    if (revisionRequestsInFlight.has(taskId)) {
-      context.toast.warning(context.tt("toasts.revisionAlreadyStarting"));
-      return false;
-    }
-
-    revisionRequestsInFlight.add(taskId);
-    try {
-      const response = await postDesktopTaskAction(taskId, "request-revision", {
-        targetStage: options.targetStage,
-        summary: options.summary,
-        prompt: options.prompt,
-        metadata: options.metadata,
-        // A revision the user asked for is never refused by the agent
-        // revision-round budget, and it hands the budget back.
-        origin: "human",
-      });
-      if (!response.ok) {
-        throw new Error(await response.text());
-      }
-      await requireService(context.services.reloadSnapshot, "reloadSnapshot")();
-      return true;
-    } catch (error) {
-      console.error("[store] requestRevision: server action failed:", error);
-      context.toast.error(`${context.tt("toasts.agentStartFailed")}: ${error instanceof Error ? error.message : error}`);
-      return false;
-    } finally {
-      revisionRequestsInFlight.delete(taskId);
-    }
-  }
-
   return {
     loadWorkflow,
     loadAgent,
     advanceStage,
-    requestRevision,
     rerunStage,
   };
 }

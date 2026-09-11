@@ -68,6 +68,7 @@ fn builds_request_revision_payload() {
         "missing e2e coverage".to_string(),
         "Add e2e coverage for task creation.".to_string(),
         None,
+        None,
     );
 
     assert_eq!(
@@ -76,6 +77,27 @@ fn builds_request_revision_payload() {
             "targetStage": "in progress",
             "summary": "missing e2e coverage",
             "prompt": "Add e2e coverage for task creation.",
+        })
+    );
+}
+
+#[test]
+fn builds_human_authorized_request_revision_payload() {
+    let request = build_request_revision_request(
+        "in progress".to_string(),
+        "continue review".to_string(),
+        "Fix the remaining finding.".to_string(),
+        Some("human".to_string()),
+        None,
+    );
+
+    assert_eq!(
+        serde_json::to_value(request).unwrap(),
+        json!({
+            "targetStage": "in progress",
+            "summary": "continue review",
+            "prompt": "Fix the remaining finding.",
+            "origin": "human",
         })
     );
 }

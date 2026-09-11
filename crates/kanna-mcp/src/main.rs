@@ -1518,6 +1518,12 @@ async fn handle_mcp_tool_call(
 }
 
 fn bind_revision_request_to_spawned_run(request: &mut ResolvedRequest) -> Result<(), String> {
+    // Human origin is a caller-declared relay of an explicit instruction, not
+    // an agent verdict. Keep it unbound like the former desktop action so a
+    // manager can relay authorization for the task it is supervising.
+    if request.body.get("origin").and_then(Value::as_str) == Some("human") {
+        return Ok(());
+    }
     let run_id = match env::var_os(kanna_tool_catalog::KANNA_COMPLETION_CONTEXT_ENV) {
         Some(path) => {
             Some(kanna_tool_catalog::read_completion_context(std::path::Path::new(&path))?.run_id)

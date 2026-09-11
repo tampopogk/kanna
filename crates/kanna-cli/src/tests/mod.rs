@@ -522,6 +522,7 @@ fn typed_tool_surfaces() -> BTreeMap<&'static str, TypedToolSurface> {
                     ("target_stage", "target_stage"),
                     ("summary", "summary"),
                     ("prompt", "prompt"),
+                    ("origin", "origin"),
                     ("metadata", "metadata"),
                 ],
             },

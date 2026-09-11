@@ -245,8 +245,10 @@ describe("QA workflow assets", () => {
       "Never claim the human was notified when the response says otherwise"
     );
     expect(agent.prompt).toContain("an absent or zero `lanDeliveredCount` is expected");
-    expect(agent.prompt).toContain("ask the human to use the desktop revision action");
+    expect(agent.prompt).toContain("ask the human in the agent terminal");
     expect(agent.prompt).toContain('origin: "human"');
+    expect(agent.prompt).toContain("does not authenticate a human identity");
+    expect(agent.prompt).toContain("Never infer authorization");
     expect(agent.prompt).toContain("coordinate another set of reviews");
     expect(agent.prompt).toContain("the event loop is idle by design while awaiting human action");
     expect(agent.prompt).toContain("Observe completion through structured mailbox or MCP wait results");
@@ -476,10 +478,11 @@ describe("QA workflow assets", () => {
       expect(agent, name).toContain("revisionRounds");
       expect(agent, name).toContain("revisionLimit");
       expect(agent, name).toContain("parks the task for its human");
-      expect(agent, name).toMatch(/do not retry the request/i);
-      expect(agent, name).toContain("ask the human to use the desktop revision action");
+      expect(agent, name).toContain("Ask the human to explicitly authorize another revision in the agent terminal");
       expect(agent, name).toContain('origin: "human"');
-      expect(agent, name).toContain("stop until the human acts");
+      expect(agent, name).toContain("does not authenticate a human identity");
+      expect(agent, name).toContain("Never infer authorization");
+      expect(agent, name).toContain("retry without a new explicit human instruction");
 
       // The blocking bar must not move with the budget. Relaxing it on the
       // last round would approve a branch that still has blocking findings —

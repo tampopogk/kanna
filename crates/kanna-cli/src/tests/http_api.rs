@@ -937,6 +937,7 @@ async fn request_revision_surfaces_server_error_body() {
             "QA failed".to_string(),
             "Add the missing coverage.".to_string(),
             None,
+            None,
         ),
     )
     .await

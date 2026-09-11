@@ -493,6 +493,10 @@ pub(crate) enum TaskCommands {
         #[arg(long)]
         prompt: String,
 
+        /// Caller-declared, unauthenticated origin. Use "human" only to relay an explicit human instruction to continue revisions; never self-authorize. Omission preserves the agent budget.
+        #[arg(long, value_parser = ["agent", "human"])]
+        origin: Option<String>,
+
         /// Optional JSON string with extra metadata
         #[arg(long)]
         metadata: Option<String>,

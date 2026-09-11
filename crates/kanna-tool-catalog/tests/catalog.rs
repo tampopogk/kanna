@@ -896,6 +896,73 @@ fn resolves_expected_requests_for_every_bundled_tool() {
     assert_eq!(wait_spec.until, WaitUntil::Closed);
 }
 
+#[test]
+fn revision_origin_is_optional_declared_provenance_with_a_closed_vocabulary() {
+    let catalog = bundled_catalog();
+    let origin = catalog
+        .find_param("kanna_request_revision", "origin")
+        .expect("revision origin parameter");
+    assert_eq!(origin.param_type, ParamType::String);
+    assert_eq!(origin.location, ParamLoc::Body);
+    assert!(!origin.required);
+    assert_eq!(
+        origin.enum_values.as_deref(),
+        Some(&["agent".to_string(), "human".to_string()][..])
+    );
+    let description = origin.description.as_deref().expect("origin description");
+    assert!(description.contains("explicit human instruction"));
+    assert!(description.contains("not authenticated human identity"));
+
+    let request = resolve_request(
+        &catalog,
+        "kanna_request_revision",
+        &json!({
+            "task_id": "task-1",
+            "summary": "continue review",
+            "prompt": "Fix the remaining finding.",
+            "origin": "human",
+        }),
+    )
+    .expect("human-authorized revision request");
+    assert_eq!(
+        request.body,
+        json!({
+            "targetStage": "in progress",
+            "summary": "continue review",
+            "prompt": "Fix the remaining finding.",
+            "origin": "human",
+        })
+    );
+
+    let schema = catalog.tools_list_value();
+    let revision = schema
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|tool| tool["name"] == "kanna_request_revision")
+        .expect("request revision schema");
+    assert_eq!(
+        revision["inputSchema"]["properties"]["origin"]["enum"],
+        json!(["agent", "human"])
+    );
+
+    let error = resolve_request(
+        &catalog,
+        "kanna_request_revision",
+        &json!({
+            "task_id": "task-1",
+            "summary": "continue review",
+            "prompt": "Fix the remaining finding.",
+            "origin": "owner",
+        }),
+    )
+    .expect_err("unknown provenance must fail before HTTP");
+    assert!(
+        error.contains("origin must be one of agent, human"),
+        "{error}"
+    );
+}
+
 /// The transfer surface's whole hazard is that its calls succeed long before
 /// anything moves. A manager once read a `scheduled: true` from the raw server
 /// API as a completed move while the transfer was dying on a relay socket, so

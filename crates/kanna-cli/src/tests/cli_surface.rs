@@ -112,6 +112,42 @@ fn advance_stage_accepts_only_declared_operator_or_manager_sources() {
     assert_eq!(invalid.kind(), clap::error::ErrorKind::InvalidValue);
 }
 
+#[test]
+fn request_revision_accepts_only_declared_agent_or_human_origins() {
+    let human = crate::Cli::try_parse_from([
+        "kanna-cli",
+        "task",
+        "request-revision",
+        "--task-id",
+        "task-1",
+        "--summary",
+        "continue review",
+        "--prompt",
+        "Fix the remaining finding.",
+        "--origin",
+        "human",
+    ]);
+    assert!(human.is_ok());
+
+    let invalid = match crate::Cli::try_parse_from([
+        "kanna-cli",
+        "task",
+        "request-revision",
+        "--task-id",
+        "task-1",
+        "--summary",
+        "continue review",
+        "--prompt",
+        "Fix the remaining finding.",
+        "--origin",
+        "owner",
+    ]) {
+        Ok(_) => panic!("origin is a closed vocabulary"),
+        Err(error) => error,
+    };
+    assert_eq!(invalid.kind(), clap::error::ErrorKind::InvalidValue);
+}
+
 /// The per-advance provider override: a model or effort is only meaningful
 /// beside the provider it was written for, so clap refuses one without it
 /// rather than sending a value the server has to reject.

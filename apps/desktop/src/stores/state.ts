@@ -25,7 +25,7 @@ import {
   DEFAULT_MARKDOWN_PREVIEW_MODE,
   type MarkdownPreviewMode,
 } from "./markdownPreviewMode";
-import type { AdvanceStageResult, RequestRevisionOptions } from "./workflow";
+import type { AdvanceStageResult } from "./workflow";
 import type { AuthoritativeSnapshotWaitOptions, ReloadSnapshotOptions } from "./queries";
 import type { TaskUiSlot } from "../types/taskUi";
 import type { TaskStateChange } from "@kanna/agent-protocol";
@@ -227,7 +227,6 @@ export interface StoreServices {
   loadWorkflow?: (repoId: string, workflowName: string) => Promise<WorkflowDefinition>;
   loadAgent?: (repoId: string, agentName: string) => Promise<AgentDefinition>;
   advanceStage?: (taskId: string, options?: AdvanceStageOptions) => Promise<AdvanceStageResult>;
-  requestRevision?: (taskId: string, options: RequestRevisionOptions) => Promise<boolean>;
   rerunStage?: (taskId: string) => Promise<void>;
   spawnShellSession?: (
     sessionId: string,

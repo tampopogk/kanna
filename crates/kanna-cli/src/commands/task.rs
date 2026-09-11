@@ -262,6 +262,7 @@ pub(crate) fn build_request_revision_request(
     target_stage: String,
     summary: String,
     prompt: String,
+    origin: Option<String>,
     metadata: Option<Value>,
 ) -> RequestRevisionRequest {
     RequestRevisionRequest {
@@ -269,6 +270,7 @@ pub(crate) fn build_request_revision_request(
         target_stage,
         summary,
         prompt,
+        origin,
         metadata,
     }
 }
@@ -769,6 +771,7 @@ pub(crate) async fn run(command: TaskCommands) {
             target_stage,
             summary,
             prompt,
+            origin,
             metadata,
             server_url,
         } => {
@@ -777,8 +780,13 @@ pub(crate) async fn run(command: TaskCommands) {
                 process::exit(1);
             });
             let base_url = resolve_server_base_url_from_env(server_url.as_deref());
-            let mut request =
-                build_request_revision_request(target_stage, summary, prompt, metadata_value);
+            let mut request = build_request_revision_request(
+                target_stage,
+                summary,
+                prompt,
+                origin,
+                metadata_value,
+            );
             bind_revision_request(&mut request).unwrap_or_else(|error| {
                 eprintln!("Error: {error}");
                 process::exit(1);
@@ -1308,6 +1316,13 @@ pub(crate) async fn run(command: TaskCommands) {
 }
 
 fn bind_revision_request(request: &mut RequestRevisionRequest) -> Result<(), String> {
+    // A human-authorized relay is the same unbound operation as the former
+    // desktop action. Binding the caller's agent run would reject a manager
+    // relaying authorization for another task, and human origin does not
+    // conclude an agent-authored verdict.
+    if request.origin.as_deref() == Some("human") {
+        return Ok(());
+    }
     if let Some(path) = std::env::var_os(kanna_tool_catalog::KANNA_COMPLETION_CONTEXT_ENV) {
         let context = kanna_tool_catalog::read_completion_context(std::path::Path::new(&path))?;
         request.run_id = Some(context.run_id);

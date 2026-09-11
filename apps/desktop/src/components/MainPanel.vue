@@ -10,9 +10,6 @@ import {
 import { AGENT_PROVIDERS, getAgentProviderSpec } from "@kanna/agent-protocol";
 import type { AgentProvider, BlockerDisplayItem } from "../types/kanna";
 import type { TaskUiSlot } from "../types/taskUi";
-import type {
-  RequestRevisionOptions,
-} from "../stores/workflow";
 import {
   fetchDesktopTaskDetail,
   listDesktopTaskDirectory,
@@ -63,7 +60,6 @@ const props = defineProps<{
     ownerLocalTaskId: string;
     transport?: "cloud" | "lan";
   } | null;
-  requestRevision?: (taskId: string, options: RequestRevisionOptions) => Promise<boolean>;
   /**
    * Present in the app; absent in isolated tests, where the panel is just the
    * agent session it has always been.
@@ -392,16 +388,11 @@ const discardedCloudTerminalKey = computed(() => {
 const commandHintDismissed = ref(readCommandHintDismissed());
 const showCommandHint = computed(() => !commandHintDismissed.value);
 const taskDetail = ref<DesktopTaskDetail | null>(null);
-const revisionComposerOpen = ref(false);
-const revisionSummary = ref("");
-const revisionPrompt = ref("");
-const revisionStarting = ref(false);
-const revisionSummaryRef = ref<HTMLTextAreaElement | null>(null);
 
-const parkedRevisionAvailable = computed(() => {
+const revisionBudgetExhausted = computed(() => {
   const task = item.value;
   const detail = taskDetail.value;
-  if (!props.requestRevision || !task || !detail || task.closed_at != null || detail.closedAt != null) return false;
+  if (!task || !detail || task.closed_at != null || detail.closedAt != null) return false;
   if (detail.id !== task.id || detail.revisionLimit <= 0) return false;
   if (detail.revisionRounds < detail.revisionLimit) return false;
   const latestRun = detail.latestRun;
@@ -418,9 +409,9 @@ const parkedRevisionAvailable = computed(() => {
  * remote task. Every miss also fans out over the relay to each reachable
  * peer, so the noise lands in the other machine's log too.
  *
- * Nothing is lost by not asking: every detail-derived affordance here (the
- * parked revision recovery) is an owner-side operation, and `taskDetail` was
- * never populated for a remote task anyway — the fetch always failed.
+ * Nothing is lost by not asking: the detail-derived exhausted-budget status
+ * and review context were never populated for a remote task anyway — the
+ * fetch always failed.
  */
 const taskDetailIsLocal = computed(() => {
   const taskId = item.value?.id;
@@ -494,9 +485,6 @@ watch(
     if (taskId !== previous?.[0]) {
       taskDetailRequest += 1;
       taskDetail.value = null;
-      revisionComposerOpen.value = false;
-      revisionSummary.value = "";
-      revisionPrompt.value = "";
     }
     if (taskId && taskDetailIsLocal.value) {
       void loadTaskDetail(taskId);
@@ -506,36 +494,6 @@ watch(
   },
   { immediate: true },
 );
-
-function openRevisionComposer() {
-  if (!parkedRevisionAvailable.value || revisionStarting.value) return;
-  revisionComposerOpen.value = true;
-  nextTick(() => revisionSummaryRef.value?.focus());
-}
-
-async function submitRevision() {
-  const taskId = item.value?.id;
-  const summary = revisionSummary.value.trim();
-  const prompt = revisionPrompt.value.trim();
-  if (!taskId || !props.requestRevision || !summary || !prompt || revisionStarting.value) return;
-
-  revisionStarting.value = true;
-  try {
-    const started = await props.requestRevision(taskId, {
-      targetStage: "in progress",
-      summary,
-      prompt,
-      metadata: { source: "kanna-parked-revision-recovery" },
-    });
-    if (!started) return;
-    await loadTaskDetail(taskId);
-    revisionComposerOpen.value = false;
-    revisionSummary.value = "";
-    revisionPrompt.value = "";
-  } finally {
-    revisionStarting.value = false;
-  }
-}
 
 // --- Agent CLI detection ---
 
@@ -724,24 +682,16 @@ function dismissCommandHint() {
         <span>Tasks</span>
       </div>
       <TaskHeader v-if="!maximized && headerItem" :item="headerItem" />
-      <section v-if="parkedRevisionAvailable" class="revision-recovery" data-testid="revision-recovery">
+      <section v-if="revisionBudgetExhausted" class="revision-exhausted" data-testid="revision-exhausted-status">
         <div>
-          <p class="revision-recovery-title">{{ $t('mainPanel.revisionExhaustedTitle') }}</p>
-          <p class="revision-recovery-hint">
+          <p class="revision-exhausted-title">{{ $t('mainPanel.revisionExhaustedTitle') }}</p>
+          <p class="revision-exhausted-hint">
             {{ $t('mainPanel.revisionExhaustedHint', {
               rounds: taskDetail?.revisionRounds,
               limit: taskDetail?.revisionLimit,
             }) }}
           </p>
         </div>
-        <button
-          type="button"
-          data-testid="open-revision-composer"
-          :disabled="revisionStarting"
-          @click="openRevisionComposer"
-        >
-          {{ $t('mainPanel.revise') }}
-        </button>
       </section>
     </template>
     <!--
@@ -1003,42 +953,6 @@ function dismissCommandHint() {
         ×
       </button>
     </div>
-    <div v-if="revisionComposerOpen" class="revision-composer" data-testid="revision-composer">
-      <form class="revision-panel" @submit.prevent="submitRevision">
-        <h2>{{ $t('mainPanel.requestRevision') }}</h2>
-        <p>{{ $t('mainPanel.requestRevisionHint') }}</p>
-        <label>
-          <span>{{ $t('mainPanel.revisionSummaryLabel') }}</span>
-          <textarea
-            ref="revisionSummaryRef"
-            v-model="revisionSummary"
-            data-testid="revision-summary"
-            :placeholder="$t('mainPanel.revisionSummaryPlaceholder')"
-          />
-        </label>
-        <label>
-          <span>{{ $t('mainPanel.revisionPromptLabel') }}</span>
-          <textarea
-            v-model="revisionPrompt"
-            data-testid="revision-prompt"
-            :placeholder="$t('mainPanel.revisionPromptPlaceholder')"
-          />
-        </label>
-        <div class="revision-actions">
-          <button type="button" :disabled="revisionStarting" @click="revisionComposerOpen = false">
-            {{ $t('actions.cancel') }}
-          </button>
-          <button
-            type="submit"
-            class="primary"
-            data-testid="submit-revision"
-            :disabled="revisionStarting || !revisionSummary.trim() || !revisionPrompt.trim()"
-          >
-            {{ revisionStarting ? $t('mainPanel.startingRevision') : $t('mainPanel.startRevision') }}
-          </button>
-        </div>
-      </form>
-    </div>
   </main>
 </template>
 
@@ -1094,113 +1008,25 @@ function dismissCommandHint() {
   overflow-wrap: anywhere;
 }
 
-.revision-recovery {
+.revision-exhausted {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 16px;
   padding: 10px 16px;
   border-bottom: 1px solid var(--kn-warning);
   background: var(--kn-warning-bg);
 }
 
-.revision-recovery-title {
+.revision-exhausted-title {
   margin: 0;
   color: var(--kn-text-primary);
   font-size: 13px;
   font-weight: 600;
 }
 
-.revision-recovery-hint {
+.revision-exhausted-hint {
   margin: 2px 0 0;
   color: var(--kn-text-muted);
   font-size: 11px;
-}
-
-.revision-recovery button,
-.revision-actions button {
-  padding: 5px 11px;
-  border: 1px solid var(--kn-border-strong);
-  border-radius: 4px;
-  background: var(--kn-bg-panel-raised);
-  color: var(--kn-text-primary);
-  cursor: pointer;
-  white-space: nowrap;
-}
-
-.revision-recovery button:disabled,
-.revision-actions button:disabled {
-  cursor: not-allowed;
-  opacity: 0.55;
-}
-
-.revision-composer {
-  position: fixed;
-  inset: 0;
-  z-index: 900;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 24px;
-  background: var(--kn-overlay-scrim);
-}
-
-.revision-panel {
-  width: min(560px, 100%);
-  padding: 20px;
-  border: 1px solid var(--kn-border-strong);
-  border-radius: 8px;
-  background: var(--kn-bg-panel);
-  box-shadow: var(--kn-shadow-modal);
-}
-
-.revision-panel h2 {
-  margin: 0 0 6px;
-  color: var(--kn-text-primary);
-  font-size: 16px;
-}
-
-.revision-panel > p {
-  margin: 0 0 16px;
-  color: var(--kn-text-muted);
-  font-size: 12px;
-}
-
-.revision-panel label {
-  display: block;
-  margin-top: 12px;
-  color: var(--kn-text-secondary);
-  font-size: 12px;
-}
-
-.revision-panel textarea {
-  width: 100%;
-  min-height: 72px;
-  margin-top: 5px;
-  padding: 8px;
-  resize: vertical;
-  border: 1px solid var(--kn-border-strong);
-  border-radius: 4px;
-  background: var(--kn-bg-app);
-  color: var(--kn-text-primary);
-  font: inherit;
-}
-
-.revision-panel label:nth-of-type(2) textarea {
-  min-height: 140px;
-}
-
-.revision-actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: 8px;
-  margin-top: 16px;
-}
-
-.revision-actions .primary {
-  border-color: var(--kn-accent);
-  background: var(--kn-accent);
-  color: var(--kn-text-inverse);
 }
 
 .empty-state {

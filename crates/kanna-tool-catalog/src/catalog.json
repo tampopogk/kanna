@@ -908,7 +908,7 @@
     },
     {
       "name": "kanna_request_revision",
-      "description": "Request and schedule a revision on a Kanna task: preparation errors are returned before the review run is closed, while a successful non-exhausted response means the serialized revision transition was accepted and later run/stage events report its durable outcome. Kanna resumes the target stage's previous provider conversation in its worktree when supported, otherwise starts fresh and records why resume was unavailable. Kanna delivers the original task prompt alongside the revision prompt, so focus on required changes. Agent-requested revisions are budgeted per task: revisionBudget reports rounds/limit, and once spent the request starts nothing and parks for its human (revisionBudget.exhausted) — report findings and stop instead of retrying.",
+      "description": "Request and schedule a revision on a Kanna task: preparation errors are returned before the review run is closed, while a successful non-exhausted response means the serialized revision transition was accepted and later run/stage events report its durable outcome. Kanna resumes the target stage's previous provider conversation in its worktree when supported, otherwise starts fresh and records why resume was unavailable. Kanna delivers the original task prompt alongside the revision prompt, so focus on required changes. Agent-requested revisions are budgeted per task: revisionBudget reports rounds/limit, and once spent the request starts nothing and parks for its human (revisionBudget.exhausted). After an explicit human instruction to continue, relay it with origin 'human' to use the existing human recovery path and reset the budget; this is caller-declared provenance, not authenticated human identity. Never choose human origin yourself.",
       "method": "POST",
       "path": "/v1/tasks/{task_id}/actions/request-revision",
       "response": "json",
@@ -918,6 +918,7 @@
         { "name": "target_stage", "description": "Workflow stage whose agent should make the changes.", "type": "string", "required": false, "location": "body", "key": "targetStage", "default": "in progress" },
         { "name": "summary", "description": "Short summary of why the revision is needed, shown to the user.", "type": "string", "required": true, "location": "body" },
         { "name": "prompt", "description": "Instructions for the revising agent. Kanna delivers the original task prompt alongside this, so describe only the required changes.", "type": "string", "required": true, "location": "body" },
+        { "name": "origin", "description": "Caller-declared revision origin. Omit for the normal agent-budgeted path. Pass 'human' only to relay an explicit human instruction in the conversation to continue revisions; it resets the exhausted budget through the existing human recovery path. This declaration is not authenticated human identity and must never be self-authorized by an agent.", "type": "string", "required": false, "location": "body", "enum": ["agent", "human"] },
         { "name": "metadata", "description": "Optional structured data (e.g. review findings) stored on the revision request.", "type": "object", "required": false, "location": "body" }
       ]
     }

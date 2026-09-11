@@ -2042,6 +2042,55 @@ fn serve_reports_server_error_bodies_for_failed_actions() {
 }
 
 #[test]
+fn serve_forwards_human_authorized_revision_without_agent_run_binding() {
+    let response_body = json!({
+        "taskId": "task-1",
+        "revisionBudget": {
+            "rounds": 0,
+            "limit": 5,
+            "exhausted": false,
+            "message": "Revision started; the automatic revision budget was reset to 0 of 5 round(s)."
+        }
+    });
+    let (base_url, server) = start_http_fixture(vec![ExpectedRequest {
+        method: "POST",
+        path: "/v1/tasks/task-1/actions/request-revision",
+        body: Some(json!({
+            "targetStage": "in progress",
+            "summary": "Human authorized another pass",
+            "prompt": "Fix the remaining finding.",
+            "origin": "human"
+        })),
+        response_status: "200 OK",
+        response_body: response_body.clone(),
+    }]);
+
+    let responses = run_kanna_mcp_with_env(
+        &base_url,
+        &[json!({
+            "jsonrpc": "2.0",
+            "id": 12,
+            "method": "tools/call",
+            "params": {
+                "name": "kanna_request_revision",
+                "arguments": {
+                    "task_id": "task-1",
+                    "summary": "Human authorized another pass",
+                    "prompt": "Fix the remaining finding.",
+                    "origin": "human"
+                }
+            }
+        })],
+        // A manager relaying authorization has its own run id. Human origin
+        // must not bind that unrelated agent verdict onto the target task.
+        &[("KANNA_STAGE_RUN_ID", "manager-run-1")],
+    );
+
+    assert_eq!(tool_text(&responses[0]), response_body);
+    assert_eq!(server.join().expect("fixture server").len(), 1);
+}
+
+#[test]
 fn serve_reports_tool_argument_errors_as_tool_error_results() {
     let (base_url_tx, base_url_rx) = mpsc::channel();
     let server = thread::spawn(move || {

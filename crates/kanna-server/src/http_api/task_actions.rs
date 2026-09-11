@@ -2287,8 +2287,10 @@ pub(super) async fn request_revision(
                     message: format!(
                         "No revision was started: this task has already used its \
                          {limit} automatic revision round(s). The task is parked at its current \
-                         stage for its human, who decides whether to revise again. Do not retry \
-                         this request — report your findings and stop.",
+                         stage for its human, who decides whether to revise again. Ask the human \
+                         to explicitly authorize continuation in the agent terminal, then stop. \
+                         Do not retry unless that instruction is given; relay it once with \
+                         origin 'human'.",
                         limit = budget.limit,
                     ),
                 }),

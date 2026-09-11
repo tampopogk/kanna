@@ -1477,6 +1477,13 @@ async fn human_revision_request_ignores_the_budget_and_hands_it_back() {
     let task = super::actions::wait_for_running_task_stage(&db, "budget-1", "in progress").await;
     assert_eq!(task.stage.as_deref(), Some("in progress"));
     assert_eq!(db.task_revision_rounds("budget-1").unwrap(), 0);
+    let revision_runs = db
+        .list_stage_runs_for_task("budget-1")
+        .unwrap()
+        .into_iter()
+        .filter(|run| run.stage == "in progress" && run.kind == "main")
+        .count();
+    assert_eq!(revision_runs, 1, "the authorized request starts exactly once");
 
     // The announced budget is the one the revision leaves behind. Reporting
     // the pre-reset count made a human revision claim a spent budget
@@ -1562,6 +1569,52 @@ async fn agent_revision_request_without_feedback_is_refused_without_spending_a_r
     // it is about to send, rather than closing it on an empty one.
     assert_eq!(runs[0].status, "running");
     assert_eq!(runs[0].result, None);
+
+    drop(db);
+    cleanup_revision_budget_fixture(&fixture);
+}
+
+#[tokio::test]
+async fn malformed_revision_origin_is_refused_without_mutation() {
+    let fixture = setup_revision_budget_fixture_with_spent_rounds("invalid-origin", 5, 2);
+    let app = super::router(Arc::new(super::AppState::new(fixture.config.clone())));
+    let response = app
+        .oneshot(
+            Request::post("/v1/tasks/budget-1/actions/request-revision")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "targetStage": "in progress",
+                        "summary": "continue review",
+                        "prompt": "Fix the remaining finding.",
+                        "origin": "owner"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let db = Db::open(&fixture.config.db_path).unwrap();
+    assert_eq!(db.task_revision_rounds("budget-1").unwrap(), 2);
+    let task = db.get_task_stage_source("budget-1").unwrap().unwrap();
+    assert_eq!(task.stage.as_deref(), Some("review"));
+    assert_eq!(task.branch.as_deref(), Some("task-budget-1"));
+    let runs = db.list_stage_runs_for_task("budget-1").unwrap();
+    assert_eq!(runs.len(), 1);
+    assert_eq!(runs[0].status, "running");
+    assert!(db
+        .list_task_events(
+            &crate::db::TaskEventScope::Tasks(vec!["budget-1".to_string()]),
+            0,
+            db.latest_task_event_seq().unwrap(),
+            100,
+        )
+        .unwrap()
+        .into_iter()
+        .all(|event| event.event_type != "task.revision_requested"));
 
     drop(db);
     cleanup_revision_budget_fixture(&fixture);
