@@ -515,6 +515,13 @@ class TerminalEventCollectorImpl implements TerminalEventCollector {
     private readonly taskId: string,
   ) {
     this.subscription = observe((event) => this.onEvent(event));
+    // The relay fixture represents an on-screen, measured mobile viewer. The
+    // production controller supplies these values from layout before its first
+    // attachment; do the same here so the stream does not attach at stale
+    // daemon dimensions.
+    this.subscription.resize?.(80, 24);
+    this.subscription.setViewerVisible?.(true);
+    this.subscription.activate?.();
   }
 
   close(): void {

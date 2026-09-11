@@ -289,7 +289,10 @@ describe("LAN task loop E2E", () => {
     // one `term_snapshot` on every attach.
     const task = await createScriptedTask(harness, {
       displayName: "LAN bounded terminal window",
-      snapshotHistory: { sentinel: "MOBILE_PTY_SNAPSHOT_SENTINEL" }
+      snapshotHistory: {
+        sentinel: "MOBILE_PTY_SNAPSHOT_SENTINEL",
+        lineCount: 10_050
+      }
     });
     const transport = createLanClient(harness);
     const seeding = collectLanTerminalEvents(transport, task.taskId);
@@ -312,8 +315,8 @@ describe("LAN task loop E2E", () => {
       const snapshotText = events.outputText();
       expect(snapshotText).toContain("MOBILE_PTY_HISTORY_10050");
       expect(snapshotText).not.toContain("MOBILE_PTY_HISTORY_05000");
-      // The full history is ~800 KB. The attach is the 24-row screen plus two
-      // pagefuls of recent scrollback, not the old fixed 400-row tail or the
+      // The full history is ~800 KB. The attach is the 24-row screen plus one
+      // pageful of recent scrollback, not the old fixed 400-row tail or the
       // tap's accumulated replay ring.
       expect(Buffer.byteLength(snapshotText, "utf8")).toBeLessThan(40_000);
 
@@ -361,6 +364,8 @@ describe("LAN task loop E2E", () => {
       });
       try {
         await controller.bootstrap();
+        controller.resizeTaskTerminal(task.taskId, 80, 24);
+        controller.setTaskDetailVisible(true);
         controller.openTask(task.taskId);
         await waitForStoreTerminalOutput(
           store,
@@ -453,6 +458,9 @@ describe("LAN task loop E2E", () => {
         }
       }
     );
+    referenceSubscription.resize?.(80, 24);
+    referenceSubscription.setViewerVisible?.(true);
+    referenceSubscription.activate?.();
     const sockets = new ReconnectSocketController();
     const controlledTransport = createLanTransport(
       harness.lanBaseUrl,
@@ -467,6 +475,8 @@ describe("LAN task loop E2E", () => {
 
     try {
       await controller.bootstrap();
+      controller.resizeTaskTerminal(task.taskId, 80, 24);
+      controller.setTaskDetailVisible(true);
       controller.openTask(task.taskId);
       await waitForStoreTerminalOutput(store, "SCRIPT_INPUT_READY", 30_000);
       await waitForReferenceOutput(referenceFrames, "SCRIPT_INPUT_READY", 30_000);
@@ -642,6 +652,8 @@ describe("LAN task loop E2E", () => {
 
     try {
       await controller.bootstrap();
+      controller.resizeTaskTerminal(task.taskId, 80, 24);
+      controller.setTaskDetailVisible(true);
       controller.openTask(task.taskId);
       await waitForStoreTerminalOutput(store, "SCRIPT_INPUT_READY", 30_000);
 
@@ -671,6 +683,7 @@ describe("LAN task loop E2E", () => {
           store.taskTerminalOutputSource.getSnapshot().output
         )
       ).toBe("");
+      controller.setTaskDetailVisible(true);
       controller.openTask(task.taskId);
 
       const remountedOutput = await waitForStoreTerminalOutput(
@@ -681,7 +694,8 @@ describe("LAN task loop E2E", () => {
       expect(remountedOutput).not.toContain(submittedInput);
       expect(remountedOutput).not.toContain("composed password");
       expect(remountedOutput).not.toContain("SCRIPT_BURST_0001_");
-      expect(remountedOutput).toContain("SCRIPT_BURST_1950_");
+      expect(remountedOutput).not.toContain("SCRIPT_BURST_1950_");
+      expect(remountedOutput).toContain("SCRIPT_BURST_1975_");
       expect(remountedOutput).toContain("SCRIPT_BURST_2000_");
       expect(
         store.taskTerminalOutputSource.getSnapshot().outputEpoch
@@ -1128,6 +1142,10 @@ class LanTerminalCollectorImpl implements LanTerminalCollector {
 
   constructor(transport: LanTransport, private readonly taskId: string) {
     this.subscription = transport.observeTaskTerminal(taskId, (event) => this.onEvent(event));
+    // Match a visible mobile terminal whose renderer has completed layout.
+    this.subscription.resize?.(80, 24);
+    this.subscription.setViewerVisible?.(true);
+    this.subscription.activate?.();
   }
 
   close(): void {

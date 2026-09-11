@@ -4,11 +4,21 @@ use crate::db::Db;
 use crate::transfer_targets::{
     plan_route, resolve_transfer_target, transfer_targets, TransferTarget,
 };
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
+use axum::http::StatusCode;
 use axum::Json;
 use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
+use std::time::Duration;
+use tokio::sync::oneshot;
+
+const DEFAULT_DESKTOP_COMMAND_LIMIT: usize = 100;
+const MAX_DESKTOP_COMMAND_LIMIT: usize = 500;
+const DEFAULT_DESKTOP_COMMAND_WAIT_SECS: u64 = 25;
+const MAX_DESKTOP_COMMAND_WAIT_SECS: u64 = 120;
+pub(crate) const DEFAULT_CLOUD_TRANSFER_REFRESH_TIMEOUT_MS: u64 = 10_000;
 
 /// Discriminator clients match on to tell "this push is already in flight" from
 /// any other write failure. Kept stable: `stores/transfer.ts` keys its
@@ -334,6 +344,241 @@ fn pull_request_memo() -> &'static Mutex<HashMap<(String, String), String>> {
     MEMO.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum CloudTransferRefreshOutcome {
+    Refreshed,
+    SignInRequired,
+    RefreshFailed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CloudTransferRefreshFailure {
+    SignInRequired,
+    RefreshFailed,
+    DesktopUnavailable,
+}
+
+impl std::fmt::Display for CloudTransferRefreshFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::SignInRequired => {
+                "the desktop cannot refresh this cloud transfer route because it is not signed \
+                 in; sign in to Kanna on this machine, then retry the transfer"
+            }
+            Self::RefreshFailed => {
+                "the signed-in desktop could not refresh this cloud transfer route; check its \
+                 cloud connection, then retry the transfer"
+            }
+            Self::DesktopUnavailable => {
+                "no Kanna desktop window acknowledged the cloud credential refresh; open Kanna \
+                 on this machine while signed in, then retry the transfer"
+            }
+        })
+    }
+}
+
+/// The in-flight requests for the renderer-owned Firebase session to rotate a
+/// cloud-transfer credential. The map carries only a fixed verdict; neither
+/// the ID token nor a renderer/Firebase error ever crosses this acknowledgement
+/// path or reaches an agent-facing response.
+#[derive(Default)]
+pub(crate) struct CloudTransferRefreshAcks {
+    pending: Mutex<HashMap<String, oneshot::Sender<CloudTransferRefreshOutcome>>>,
+}
+
+struct PendingCloudTransferRefresh {
+    request_id: String,
+    receiver: oneshot::Receiver<CloudTransferRefreshOutcome>,
+    acks: Arc<CloudTransferRefreshAcks>,
+}
+
+impl PendingCloudTransferRefresh {
+    fn request_id(&self) -> &str {
+        &self.request_id
+    }
+
+    async fn wait(self, timeout: Duration) -> Option<CloudTransferRefreshOutcome> {
+        let Self {
+            request_id,
+            receiver,
+            acks,
+        } = self;
+        let result = tokio::time::timeout(timeout, receiver).await;
+        acks.forget(&request_id);
+        match result {
+            Ok(Ok(outcome)) => Some(outcome),
+            _ => None,
+        }
+    }
+}
+
+impl CloudTransferRefreshAcks {
+    fn register(self: &Arc<Self>) -> PendingCloudTransferRefresh {
+        let request_id = format!(
+            "cloud-transfer-refresh-{}",
+            crate::transfer_engine::queue::unique_work_nonce()
+        );
+        let (sender, receiver) = oneshot::channel();
+        self.lock().insert(request_id.clone(), sender);
+        PendingCloudTransferRefresh {
+            request_id,
+            receiver,
+            acks: Arc::clone(self),
+        }
+    }
+
+    fn resolve(&self, request_id: &str, outcome: CloudTransferRefreshOutcome) -> bool {
+        let Some(sender) = self.lock().remove(request_id) else {
+            return false;
+        };
+        sender.send(outcome).is_ok()
+    }
+
+    fn forget(&self, request_id: &str) {
+        self.lock().remove(request_id);
+    }
+
+    fn lock(
+        &self,
+    ) -> std::sync::MutexGuard<'_, HashMap<String, oneshot::Sender<CloudTransferRefreshOutcome>>>
+    {
+        self.pending
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(super) struct CloudTransferRefreshAckRequest {
+    request_id: String,
+    outcome: CloudTransferRefreshOutcome,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct CloudTransferRefreshAckResponse {
+    acknowledged: bool,
+}
+
+/// Accept the renderer's bounded, non-secret verdict. Browser-originated
+/// requests still pass the ordinary local-control credential guard before this
+/// extractor runs; a relay or paired-device request is not this renderer.
+pub(super) async fn acknowledge_cloud_transfer_refresh(
+    _access: DesktopLocalAccess,
+    State(state): State<Arc<AppState>>,
+    Json(request): Json<CloudTransferRefreshAckRequest>,
+) -> Json<CloudTransferRefreshAckResponse> {
+    let acknowledged = state
+        .cloud_transfer_refresh_acks()
+        .resolve(&request.request_id, request.outcome);
+    Json(CloudTransferRefreshAckResponse { acknowledged })
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct CloudTransferRefreshCommandsQuery {
+    cursor: Option<u64>,
+    stream_id: Option<String>,
+    limit: Option<usize>,
+    timeout_secs: Option<u64>,
+}
+
+/// The native desktop process drains this loopback-only lane and hands each
+/// request to one renderer window. It deliberately contains no credential.
+pub(super) async fn wait_cloud_transfer_refresh_commands(
+    _access: DesktopLocalAccess,
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<CloudTransferRefreshCommandsQuery>,
+) -> Result<Json<Value>, (StatusCode, String)> {
+    let limit = query
+        .limit
+        .unwrap_or(DEFAULT_DESKTOP_COMMAND_LIMIT)
+        .clamp(1, MAX_DESKTOP_COMMAND_LIMIT);
+    let timeout_secs = query
+        .timeout_secs
+        .unwrap_or(DEFAULT_DESKTOP_COMMAND_WAIT_SECS)
+        .clamp(1, MAX_DESKTOP_COMMAND_WAIT_SECS);
+    let batch = state
+        .cloud_transfer_refresh_commands()
+        .wait_for_events(
+            query.cursor,
+            query.stream_id.as_deref(),
+            limit,
+            Duration::from_secs(timeout_secs),
+        )
+        .await;
+    Ok(Json(json!({
+        "waitOutcome": if batch.events.is_empty() { "timeout" } else { "events" },
+        "cursor": batch.cursor,
+        "streamId": batch.stream_id,
+        "events": batch.events,
+        "hasMore": batch.has_more,
+        "missedEvents": batch.missed_events,
+    })))
+}
+
+pub(super) async fn request_cloud_transfer_refresh(
+    state: &Arc<AppState>,
+    peer_id: &str,
+) -> Result<(), CloudTransferRefreshFailure> {
+    let acknowledgement = state.cloud_transfer_refresh_acks().register();
+    state.cloud_transfer_refresh_commands().append(json!({
+        "type": "cloud_transfer_credential_refresh",
+        "requestId": acknowledgement.request_id(),
+        "peerId": peer_id,
+    }));
+    let timeout = Duration::from_millis(state.cloud_transfer_refresh_timeout_ms());
+    match acknowledgement.wait(timeout).await {
+        Some(CloudTransferRefreshOutcome::Refreshed) => Ok(()),
+        Some(CloudTransferRefreshOutcome::SignInRequired) => {
+            Err(CloudTransferRefreshFailure::SignInRequired)
+        }
+        Some(CloudTransferRefreshOutcome::RefreshFailed) => {
+            Err(CloudTransferRefreshFailure::RefreshFailed)
+        }
+        None => Err(CloudTransferRefreshFailure::DesktopUnavailable),
+    }
+}
+
+/// The source half of a cloud pull runs later in the transfer engine rather
+/// than through `push_task_to_peer`. Give it the same credential-renewal gate,
+/// then verify the proxy's own state before allowing the sidecar to dial.
+pub(crate) async fn ensure_engine_cloud_transfer_credential(
+    state: &Arc<AppState>,
+    peer_id: &str,
+    transport: Option<&str>,
+) -> Result<(), CloudTransferRefreshFailure> {
+    if transport != Some("cloud") {
+        return Ok(());
+    }
+    let route = crate::cloud_transfer_proxy::cloud_transfer_routes(state.cloud_transfer_proxies())
+        .await
+        .into_iter()
+        .find(|route| route.peer_id == peer_id);
+    let Some(route) = route else {
+        // A LAN-only route or an older caller can still legitimately name
+        // cloud at the sidecar boundary. This gate owns provisioned proxy
+        // credentials only; the sidecar remains authoritative for absence.
+        return Ok(());
+    };
+    if route.ready() {
+        return Ok(());
+    }
+    request_cloud_transfer_refresh(state, peer_id).await?;
+    let ready = crate::cloud_transfer_proxy::cloud_transfer_routes(state.cloud_transfer_proxies())
+        .await
+        .into_iter()
+        .find(|route| route.peer_id == peer_id)
+        .is_some_and(|route| route.ready());
+    if ready {
+        Ok(())
+    } else {
+        Err(CloudTransferRefreshFailure::RefreshFailed)
+    }
+}
+
 /// Push a task to a paired machine.
 ///
 /// The push itself is server work: the caller states the intent and the engine
@@ -343,9 +588,9 @@ fn pull_request_memo() -> &'static Mutex<HashMap<(String, String), String>> {
 /// Two things happen before the intent is queued, and both exist because a
 /// queued intent is invisible until it fails. The destination is resolved
 /// centrally, so a caller names a machine rather than scraping a peer id; and
-/// the route it resolves to is checked, so a transfer over a cloud credential
-/// the renderer last refreshed an hour ago is refused here instead of dying
-/// later on a relay socket.
+/// the route it resolves to is checked, so a stale cloud credential is renewed
+/// by its renderer owner (or refused explicitly) instead of dying later on a
+/// relay socket.
 pub(super) async fn push_task_to_peer(
     State(state): State<Arc<AppState>>,
     Path(task_or_branch_id): Path<String>,
@@ -460,10 +705,9 @@ struct ResolvedPush {
 /// and passes it with the routing it chose; an unreadable peer registry here
 /// must not refuse a push the renderer already knows is valid. It is
 /// deliberately narrow: it covers only *not being able to resolve* the
-/// destination. A destination this machine did resolve and found unusable —
-/// the stale cloud credential — is refused, whichever spelling named it, because
-/// falling back there would reinstate the exact silent failure this check
-/// exists to end.
+/// destination. A destination this machine did resolve and found unusable is
+/// never replaced by caller-supplied routing; a stale selected cloud credential
+/// goes through the correlated renderer renewal path instead.
 async fn resolve_push_target(
     state: &Arc<AppState>,
     selector: &str,
@@ -491,8 +735,8 @@ async fn resolve_push_target(
     };
     // Past this point the destination is this machine's own answer, so its
     // verdict on the route stands for every caller.
-    let plan = plan_route(&target, payload.transport.as_deref())
-        .map_err(|error| (axum::http::StatusCode::CONFLICT, error))?;
+    let (target, plan) =
+        plan_route_with_refresh(state, target, payload.transport.as_deref()).await?;
     Ok(ResolvedPush {
         peer: ResolvedTransferPeer {
             peer_id: target.peer_id,
@@ -503,6 +747,74 @@ async fn resolve_push_target(
         },
         note: plan.note,
     })
+}
+
+/// Plan once from the server's current route and, only when the selected route
+/// is a provisioned-but-stale cloud tunnel, ask the authenticated renderer to
+/// rotate its credential and plan again from fresh server state.
+///
+/// Trust, acceptance, destination identity and transport validation all remain
+/// in `plan_route`; renewal cannot turn an untrusted or non-accepting peer into
+/// a destination. The second lookup is equally important: an acknowledgement
+/// says the renderer completed its call, not that this process should trust the
+/// claim without observing the newly pushed proxy credential itself.
+async fn plan_route_with_refresh(
+    state: &Arc<AppState>,
+    target: TransferTarget,
+    requested: Option<&str>,
+) -> Result<(TransferTarget, crate::transfer_targets::RoutePlan), (StatusCode, String)> {
+    match plan_route(&target, requested) {
+        Ok(plan) => return Ok((target, plan)),
+        Err(error) if !cloud_refresh_is_applicable(&target, requested) => {
+            return Err((StatusCode::CONFLICT, error));
+        }
+        Err(_) => {}
+    }
+
+    request_cloud_transfer_refresh(state, &target.peer_id)
+        .await
+        .map_err(|error| (StatusCode::CONFLICT, error.to_string()))?;
+
+    let targets = list_targets(state).await?;
+    let refreshed = targets
+        .into_iter()
+        .find(|candidate| candidate.peer_id == target.peer_id)
+        .ok_or_else(|| {
+            (
+                StatusCode::CONFLICT,
+                format!(
+                    "machine {} changed while its cloud transfer route was being refreshed; \
+                     list transfer peers and retry",
+                    target.name
+                ),
+            )
+        })?;
+    let plan = plan_route(&refreshed, requested).map_err(|error| {
+        (
+            StatusCode::CONFLICT,
+            format!(
+                "the desktop acknowledged the cloud credential refresh, but the route is still \
+                 unusable: {error}"
+            ),
+        )
+    })?;
+    Ok((refreshed, plan))
+}
+
+fn cloud_refresh_is_applicable(target: &TransferTarget, requested: Option<&str>) -> bool {
+    if !target.trusted || !target.accepting_transfers {
+        return false;
+    }
+    let selects_cloud = match requested.map(str::trim).filter(|value| !value.is_empty()) {
+        None | Some("auto") => target.preferred_transport == "cloud",
+        Some("cloud") => true,
+        _ => false,
+    };
+    selects_cloud
+        && target
+            .cloud_route
+            .as_ref()
+            .is_some_and(|route| !route.ready())
 }
 
 /// Fall back to the peer and routing the caller resolved for itself, or report
@@ -617,8 +929,8 @@ pub(super) async fn pull_task_from_peer(
     let target = resolve_transfer_target(&targets, &selector)
         .map_err(|error| (axum::http::StatusCode::NOT_FOUND, error))?
         .clone();
-    let plan = plan_route(&target, payload.transport.as_deref())
-        .map_err(|error| (axum::http::StatusCode::CONFLICT, error))?;
+    let (target, plan) =
+        plan_route_with_refresh(&state, target, payload.transport.as_deref()).await?;
     let response = state
         .transfer_sidecar()
         .control(

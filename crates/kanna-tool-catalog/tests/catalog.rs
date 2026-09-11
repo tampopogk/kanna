@@ -106,6 +106,35 @@ fn bundled_guides_are_topic_addressable_and_drive_schema_descriptions() {
 }
 
 #[test]
+fn task_creation_and_workflow_guidance_distinguish_consultation_from_planning() {
+    let catalog = bundled_catalog();
+    let workflow_guide = catalog.render_guide("workflows").expect("workflow guide");
+    assert!(workflow_guide.contains("public `consultation` workflow"));
+    assert!(workflow_guide.contains("standalone manual product discussion"));
+    assert!(workflow_guide.contains("never authorizes implementation"));
+    assert!(workflow_guide.contains("technical approach consultation"));
+
+    let create_task = catalog
+        .tools
+        .iter()
+        .find(|tool| tool.name == "kanna_create_task")
+        .expect("create task tool");
+    let workflow_name = create_task
+        .params
+        .iter()
+        .find(|param| param.name == "workflow_name")
+        .expect("workflow_name parameter");
+    let description = workflow_name
+        .description
+        .as_deref()
+        .expect("workflow_name description");
+    assert!(description.contains("'consultation' is a standalone manual product discussion"));
+    assert!(description.contains("recommendation never authorizes implementation"));
+    assert!(description.contains("For an already chosen objective"));
+    assert!(description.contains("'plan-build-review' adds a manual implementation-planning gate"));
+}
+
+#[test]
 fn checked_in_config_schema_descriptions_match_catalog_guides() {
     let schema_path =
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.kanna/config.schema.json");
@@ -1051,11 +1080,15 @@ fn transfer_tools_refuse_to_read_as_a_completed_move() {
         }
     }
 
-    // The credential that fails a cloud transfer belongs to the desktop app,
-    // so the tools that can hit it say where it comes from.
-    assert!(describe("kanna_list_transfer_peers").contains("signed-in desktop app"));
-    assert!(describe("kanna_push_task").contains("credential"));
-    assert!(describe("kanna_pull_task").contains("credential"));
+    // The credential that fails a cloud transfer belongs to the signed-in
+    // desktop, so the tools say renewal is bounded and keeps it out of the
+    // agent surface.
+    assert!(describe("kanna_list_transfer_peers").contains("signed-in desktop"));
+    for name in ["kanna_push_task", "kanna_pull_task"] {
+        let description = describe(name);
+        assert!(description.contains("bounded"), "{name}");
+        assert!(description.contains("no credential enters"), "{name}");
+    }
 
     let transfers = describe("kanna_task_transfers");
     for state in ["pending", "completed", "failed", "rejected"] {

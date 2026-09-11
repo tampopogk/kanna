@@ -147,6 +147,8 @@ interface ExpoConfig {
       firebase: MobileAppEnvironment["firebase"];
       relayUrl: string;
       runtimeVersion: string;
+      /** Customer-facing mobile release, shared by native and OTA deliveries. */
+      releaseVersion: string;
       ota: {
         channel: OtaChannel | null;
         manifestUrl: string | null;
@@ -349,6 +351,7 @@ export function createExpoConfig(
         firebase: cloudEnvironment.firebase,
         relayUrl: cloudEnvironment.relayUrl,
         runtimeVersion: appEnvironment.runtimeVersion,
+        releaseVersion: version,
         ota: {
           channel: cloudEnvironment.otaChannel,
           manifestUrl: resolveOtaManifestUrl(cloudEnvironment)

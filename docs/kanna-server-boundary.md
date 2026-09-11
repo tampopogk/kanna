@@ -324,8 +324,11 @@ A client that advertises `term_scrollback_window` in its `auth` frame gets three
 things instead; a client that does not is served exactly as before, including
 its own daemon connection per attachment.
 
-- **`term_snapshot` is a bounded window** — the visible screen plus a bounded
-  slice of recent scrollback, capped by both a line count and a byte ceiling
+- **`term_snapshot` is a bounded window** — the visible screen plus one
+  viewport of recent scrollback, roughly two screens total. The page budget is
+  derived from the daemon snapshot's actual `rows`; the cut is then made only
+  at the Ghostty serializer's safe logical-line boundaries, never at an
+  arbitrary suffix of raw bytes. A byte ceiling is only the secondary bound
   (`crates/kanna-server/src/terminal_window.rs`). The frame names the retained
   remainder: `history_id`, `scrollback_lines`, and where the live byte stream
   continues (`stream_id`, `stream_offset`).
@@ -381,6 +384,27 @@ signals. Hidden, backgrounded, and zero-size viewers are ineligible. Commands
 are serialized, so active-view notifications are ordered by the daemon. A
 reconnect re-registers and rehydrates without an active-view notification and
 does not steal control.
+
+On a geometry-aware remote viewer's first render, the stream client holds its
+`attach` until it has a measured, visible registration and the genuine active
+view edge. It sends `register -> active -> attach`; before starting or joining
+the terminal tap, the server inserts a response-bearing command on that same
+daemon control connection and waits for it. Because the daemon processes that
+connection serially, the active resize and its headless snapshot publication
+are complete before the initial attachment captures a base. The first visible
+grid therefore arrives once at the active viewer's dimensions rather than as
+an old-owner snapshot followed by a resize snapshot. Socket reconnects skip
+the active edge and retain their passive resume behavior.
+
+A local desktop can remain continuously focused while a remote viewer takes
+geometry, so focus alone is not a complete handback producer. Receipt of an
+authoritative terminal snapshot arms one local ownership confirmation: before
+the next DOM-classified human input is sent, the desktop reasserts its visible
+viewer and active edge on the shared KSP connection. The active command is
+therefore ordered before the input command and restores the registered desktop
+grid before the PTY consumes the key. Parser-generated terminal replies remain
+passive, and the confirmation is cleared after it is sent rather than repeated
+for every key.
 
 Only the elected viewer's measured proposal changes the PTY and headless
 terminal. Registration and election are serialized with resize and snapshot
@@ -1283,14 +1307,21 @@ These things are contract rather than convenience:
 - **A route that cannot carry the transfer is refused before anything is
   queued.** The relay authenticates every tunnel dial, and the Firebase
   credential it dials with is minted by the signed-in renderer and pushed to
-  `POST /v1/transfers/cloud-proxies`; nothing in the server can refresh it. A
+  `POST /v1/transfers/cloud-proxies`; the server cannot mint, extract, or bypass
+  it. A
   cloud route whose credential has expired therefore produced `scheduled: true`
   followed by `expected auth_ok text frame` on a socket nobody was watching. The
-  server now reads that credential's own `exp` (`cloud_transfer_proxy.rs`), and
-  a cloud route inside the expiry margin is reported unusable — with the fix,
-  which is starting a transfer from the signed-in desktop app on that machine
-  (it refreshes the route as it goes), or using the LAN while both machines
-  share a network. What that check reads is strictly *this* machine's outbound
+  server now reads that credential's own `exp` (`cloud_transfer_proxy.rs`).
+  When push or pull selects a provisioned cloud route inside the expiry margin,
+  it appends a correlated request containing only the peer id to a loopback-only
+  desktop command lane. One renderer uses its existing signed-in Firebase
+  session to force renewal, pushes the new ID token through the existing proxy
+  route, and acknowledges only `refreshed`, `sign_in_required`, or
+  `refresh_failed`. The transfer entrypoint waits at most ten seconds and then
+  re-reads the proxy credential before queueing; an acknowledgement is never
+  itself admission. The source engine performs the same gate when fulfilling a
+  cloud pull, so both machines' independent outbound credentials are covered.
+  What that check reads is strictly *this* machine's outbound
   credential: a transfer that just arrived here was dialled with the other
   machine's, so an incoming move proves nothing about the route reported here.
   A stale cloud route behind a healthy LAN route costs only the fallback, and

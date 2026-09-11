@@ -3,6 +3,8 @@ import { reportMobileBuild } from "./reportMobileBuild";
 import type { BuildIdentity } from "./buildIdentity";
 
 const identity: BuildIdentity = {
+  releaseVersion: "2.3.0",
+  releaseSummary: "2.3.0 (OTA)",
   nativeVersion: "2.2.2", nativeBuild: "42", nativeSummary: "2.2.2 (42)",
   runtimeVersion: "2.2.2", environment: "staging", channel: "staging",
   source: { kind: "ota", label: "old-update", updateId: "old-update" }

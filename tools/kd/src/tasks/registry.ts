@@ -66,6 +66,7 @@ import {
 import { buildDesktopMockE2eCommand, buildDesktopRealE2eCommand } from "../runtime/desktop-e2e";
 import { buildMobileDeviceSmokeCommand, buildMobileTestCommand } from "../runtime/mobile-commands";
 import { executeMobileIosArchiveWithContext } from "../runtime/mobile-archive";
+import { executeMobileVersionBumpWithContext } from "../runtime/mobile-version";
 import {
   executeMobilePublishWithContext,
   executeMobileVerifyWithContext
@@ -331,6 +332,13 @@ const mobilePublishInputSchema = z.object({
   version: z.string().optional(),
   outDir: z.string().optional(),
   releaseType: z.string().optional()
+});
+
+const mobileVersionBumpInputSchema = z.object({
+  major: z.boolean().default(false),
+  minor: z.boolean().default(false),
+  patch: z.boolean().default(false),
+  dryRun: z.boolean().default(false)
 });
 
 const mobileVerifyInputSchema = z.object({
@@ -2675,6 +2683,18 @@ export const taskDefinitions = [
         env: context.env,
         runner: nodeCommandRunner
       });
+    }
+  },
+  {
+    id: "mobile.version.bump",
+    description: "Advance the independent Kanna mobile release version ledger.",
+    inputSchema: mobileVersionBumpInputSchema,
+    execute: async (_context, input) => {
+      const context = await resolveDefaultContext(process.env);
+      return executeMobileVersionBumpWithContext(
+        mobileVersionBumpInputSchema.parse(input),
+        { repoRoot: context.repoRoot }
+      );
     }
   },
   {

@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, extname, join } from "node:path";
+import { readCurrentVersion } from "./mobile-archive";
 import { cloudEnvironmentToKdEnvironment, resolveKdEnvironment, type CloudEnvironmentName } from "./environment";
 import {
   OTA_CERTIFICATE_RELATIVE_PATH,
@@ -10,6 +11,7 @@ import {
 } from "./mobile-ota-certificate";
 import type { CommandRunner } from "./process";
 import { formatSourceRef, resolveSourceRef, type ResolvedSourceRef } from "./source-ref";
+import { compareVersions } from "./release";
 
 export interface MobileOtaInput {
   staging: boolean;
@@ -72,6 +74,7 @@ export interface MobileOtaPublishPlan {
   bucket: string;
   channel: string;
   runtimeVersion: string;
+  releaseVersion: string;
   updateId: string;
   distDir: string;
   updateObjectPrefix: string;
@@ -88,6 +91,9 @@ interface ExpoMetadataAsset {
 }
 
 interface ExpoMetadata {
+  kanna?: {
+    releaseVersion?: string;
+  };
   fileMetadata?: Record<
     string,
     {
@@ -117,11 +123,18 @@ interface OtaChannelPointer {
   currentUpdateId?: string;
   createdAt?: string;
   runtimeVersion?: string;
+  /** Human-readable mobile release. Independent of the native runtime compatibility key. */
+  releaseVersion?: string;
   /** Source ref the update the channel points at was published from. */
   sourceRef?: string;
   /** Full source commit, so `kd mobile ota status` traces the live update back to a commit. */
   sourceCommit?: string;
 }
+
+type OtaReleaseVersionLookup =
+  | { status: "known"; releaseVersion: string }
+  | { status: "legacy" }
+  | { status: "unreadable"; detail: string };
 
 /**
  * Per-update source record, written alongside the update's Expo artifacts as
@@ -134,6 +147,7 @@ interface OtaSourceRecord {
   ref: string;
   commit: string;
   shortCommit: string;
+  releaseVersion: string;
 }
 
 interface OtaDoctorCheck {
@@ -186,6 +200,7 @@ export async function buildMobileOtaPublishPlan(input: {
   dryRun?: boolean;
   updateId?: string;
   source?: ResolvedSourceRef;
+  releaseVersion?: string;
 }): Promise<MobileOtaPublishPlan> {
   const identity = resolveKdEnvironment(cloudEnvironmentToKdEnvironment(input.environment));
   if (!identity.otaBucket || !identity.otaChannel) {
@@ -198,7 +213,8 @@ export async function buildMobileOtaPublishPlan(input: {
 
   const distDir = input.distDir ?? join(input.repoRoot, "apps/mobile/dist");
   const runtimeVersion = await resolveMobileRuntimeVersion(input.repoRoot, kdEnvironmentName);
-  const updateId = input.updateId ?? (await buildStagedExpoMetadata(distDir)).updateId;
+  const releaseVersion = input.releaseVersion ?? await readCurrentVersion(input.repoRoot);
+  const updateId = input.updateId ?? (await buildStagedExpoMetadata(distDir, releaseVersion)).updateId;
   const updateObjectPrefix = `ota/ios/${runtimeVersion}/updates/${updateId}`;
   const pointerObject = `ota/ios/${runtimeVersion}/channels/${identity.otaChannel}.json`;
   const relayManifestUrl = `${identity.relayUrl.replace(/^ws/, "http")}/ota/manifest`;
@@ -209,6 +225,7 @@ export async function buildMobileOtaPublishPlan(input: {
     bucket: identity.otaBucket,
     channel: identity.otaChannel,
     runtimeVersion,
+    releaseVersion,
     updateId,
     distDir,
     updateObjectPrefix,
@@ -216,8 +233,8 @@ export async function buildMobileOtaPublishPlan(input: {
     relayManifestUrl,
     dryRun: input.dryRun === true,
     commands: [
-      buildExpoExportCommand(input.repoRoot, input.environment, distDir),
-      buildExpoPublicConfigCommand(input.repoRoot, input.environment),
+      buildExpoExportCommand(input.repoRoot, input.environment, distDir, releaseVersion),
+      buildExpoPublicConfigCommand(input.repoRoot, input.environment, releaseVersion),
       {
         command: "gcloud",
         args: [
@@ -277,6 +294,7 @@ export async function executeMobileOtaPublishWithContext(
     throw new Error("Mobile OTA applies only to staging and production.");
   }
   const runtimeVersion = await resolveMobileRuntimeVersion(context.repoRoot, kdEnvironmentName);
+  const releaseVersion = await readCurrentVersion(context.repoRoot);
 
   // Everything the command stages for upload sits under one root that this
   // call owns, so the root is gone when the call returns, however it returns.
@@ -286,7 +304,23 @@ export async function executeMobileOtaPublishWithContext(
   const scratch = await mkdtemp(join(context.scratchDir ?? tmpdir(), "kanna-ota-"));
   try {
     if (input.rollbackTo) {
-      const pointer = await writePointerFile({ scratch, updateId: input.rollbackTo, runtimeVersion });
+      const rollbackReleaseVersionLookup = input.dryRun === true
+        ? { status: "legacy" as const }
+        : await readUpdateReleaseVersion(
+            context,
+            identity.otaBucket,
+            runtimeVersion,
+            input.rollbackTo
+          );
+      const rollbackReleaseVersion = rollbackReleaseVersionLookup.status === "known"
+        ? rollbackReleaseVersionLookup.releaseVersion
+        : null;
+      const pointer = await writePointerFile({
+        scratch,
+        updateId: input.rollbackTo,
+        runtimeVersion,
+        ...(rollbackReleaseVersion ? { releaseVersion: rollbackReleaseVersion } : {})
+      });
       const pointerObject = `ota/ios/${runtimeVersion}/channels/${identity.otaChannel}.json`;
       if (input.dryRun !== true) {
         await mustRun(context.runner, "gcloud", [
@@ -303,17 +337,29 @@ export async function executeMobileOtaPublishWithContext(
           bucket: identity.otaBucket,
           channel: identity.otaChannel,
           runtimeVersion,
+          releaseVersion: rollbackReleaseVersion,
           updateId: input.rollbackTo,
           pointerObject,
           relayManifestUrl: identity.relayUrl.replace(/^ws/, "http") + "/ota/manifest",
         }),
-        data: { updateId: input.rollbackTo, runtimeVersion, channel: identity.otaChannel, pointerObject },
+        data: {
+          updateId: input.rollbackTo,
+          runtimeVersion,
+          releaseVersion: rollbackReleaseVersion,
+          channel: identity.otaChannel,
+          pointerObject
+        },
       };
     }
 
     const distDir = join(context.repoRoot, "apps/mobile/dist");
     await rm(distDir, { recursive: true, force: true });
-    const exportCommand = buildExpoExportCommand(context.repoRoot, environment, distDir);
+    const exportCommand = buildExpoExportCommand(
+      context.repoRoot,
+      environment,
+      distDir,
+      releaseVersion
+    );
     await mustRun(
       context.runner,
       exportCommand.command,
@@ -326,9 +372,16 @@ export async function executeMobileOtaPublishWithContext(
       context.repoRoot,
       environment,
       context.runner,
-      context.env
+      context.env,
+      releaseVersion
     );
-    const staged = await stageOtaUpdate({ scratch, distDir, expoConfigBytes, source });
+    const staged = await stageOtaUpdate({
+      scratch,
+      distDir,
+      expoConfigBytes,
+      source,
+      releaseVersion
+    });
     const plan = await buildMobileOtaPublishPlan({
       repoRoot: context.repoRoot,
       environment,
@@ -336,15 +389,61 @@ export async function executeMobileOtaPublishWithContext(
       updateId: staged.updateId,
       dryRun: input.dryRun === true,
       source,
+      releaseVersion,
     });
     const pointer = await writePointerFile({
       scratch,
       updateId: plan.updateId,
       runtimeVersion: plan.runtimeVersion,
+      releaseVersion: plan.releaseVersion,
       source,
     });
 
     if (input.dryRun !== true) {
+      const livePointer = await context.runner.run("gcloud", [
+        "storage",
+        "cat",
+        `gs://${plan.bucket}/${plan.pointerObject}`,
+      ], { cwd: context.repoRoot, env: context.env });
+      if (livePointer.exitCode !== 0 && !isNotFoundFailure(livePointer)) {
+        throw new Error(
+          `Refusing to publish mobile release ${plan.releaseVersion}: could not read the current ` +
+            `channel pointer gs://${plan.bucket}/${plan.pointerObject}: ${summarizeCommandFailure(livePointer)}`
+        );
+      }
+      const currentPointer = livePointer.exitCode === 0
+        ? parsePointer(livePointer.stdout)
+        : null;
+      if (livePointer.exitCode === 0 && !currentPointer) {
+        throw new Error(
+          `Refusing to publish mobile release ${plan.releaseVersion}: the current channel pointer ` +
+            `gs://${plan.bucket}/${plan.pointerObject} is malformed.`
+        );
+      }
+      const currentRelease = currentPointer
+        ? await resolvePointerReleaseVersion(
+            context,
+            plan.bucket,
+            plan.runtimeVersion,
+            currentPointer
+          )
+        : { status: "legacy" as const };
+      if (currentRelease.status === "unreadable") {
+        throw new Error(
+          `Refusing to publish mobile release ${plan.releaseVersion}: could not establish the ` +
+            `release currently served by ${plan.channel}: ${currentRelease.detail}`
+        );
+      }
+      if (
+        currentRelease.status === "known" &&
+        compareVersions(plan.releaseVersion, currentRelease.releaseVersion) <= 0
+      ) {
+        throw new Error(
+          `Refusing to publish mobile release ${plan.releaseVersion} to ${plan.channel}: ` +
+            `the channel already serves ${currentRelease.releaseVersion}. Run ` +
+            "`kd mobile version bump --patch` (or --minor/--major), commit it, and retry."
+        );
+      }
       const exists = await context.runner.run("gcloud", [
         "storage",
         "ls",
@@ -374,6 +473,7 @@ export async function executeMobileOtaPublishWithContext(
       data: {
         updateId: plan.updateId,
         runtimeVersion: plan.runtimeVersion,
+        releaseVersion: plan.releaseVersion,
         channel: plan.channel,
         bucket: plan.bucket,
         dryRun: plan.dryRun,
@@ -413,7 +513,25 @@ export async function executeMobileOtaStatusWithContext(
   ], { cwd: context.repoRoot, env: context.env });
 
   const pointers = await observeRuntimePointers(context, identity.otaBucket, identity.otaChannel, runtimeVersion);
-  const devices = await observeMobileDevices(context, environment, identity.otaChannel, runtimeVersion, parsePointer(pointer.stdout)?.currentUpdateId);
+  const parsedPointer = parsePointer(pointer.stdout);
+  const releaseVersionLookup = parsedPointer
+    ? await resolvePointerReleaseVersion(
+        context,
+        identity.otaBucket,
+        runtimeVersion,
+        parsedPointer
+      )
+    : { status: "legacy" as const };
+  const releaseVersion = releaseVersionLookup.status === "known"
+    ? releaseVersionLookup.releaseVersion
+    : null;
+  const devices = await observeMobileDevices(
+    context,
+    environment,
+    identity.otaChannel,
+    runtimeVersion,
+    parsedPointer?.currentUpdateId
+  );
   return {
     ok: pointer.exitCode === 0,
     message: [
@@ -421,6 +539,7 @@ export async function executeMobileOtaStatusWithContext(
       `bucket: ${identity.otaBucket}`,
       `channel: ${identity.otaChannel}`,
       `runtimeVersion: ${runtimeVersion}`,
+      `releaseVersion: ${releaseVersion ?? "unknown (legacy update)"}`,
       pointer.exitCode === 0 ? `pointer: ${pointer.stdout.trim()}` : `pointer: ${pointer.stderr.trim() || "missing"}`,
       updates.exitCode === 0 ? `recent updates:\n${updates.stdout.trim()}` : "recent updates: unavailable",
       pointers.detail,
@@ -430,6 +549,7 @@ export async function executeMobileOtaStatusWithContext(
       bucket: identity.otaBucket,
       channel: identity.otaChannel,
       runtimeVersion,
+      releaseVersion,
       pointerObject,
       pointers,
       devices,
@@ -933,10 +1053,69 @@ function parseIamPolicy(stdout: string): IamPolicy | null {
 function parsePointer(stdout: string): OtaChannelPointer | null {
   try {
     const parsed = JSON.parse(stdout) as OtaChannelPointer;
-    return parsed && typeof parsed === "object" ? parsed : null;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+    if (typeof parsed.currentUpdateId !== "string" || !parsed.currentUpdateId.trim()) return null;
+    const optionalStrings: Array<keyof OtaChannelPointer> = [
+      "createdAt",
+      "runtimeVersion",
+      "releaseVersion",
+      "sourceRef",
+      "sourceCommit",
+    ];
+    return optionalStrings.some((key) => parsed[key] !== undefined && typeof parsed[key] !== "string")
+      ? null
+      : parsed;
   } catch {
     return null;
   }
+}
+
+async function readUpdateReleaseVersion(
+  context: MobileOtaContext,
+  bucket: string,
+  runtimeVersion: string,
+  updateId: string
+): Promise<OtaReleaseVersionLookup> {
+  const object = `gs://${bucket}/ota/ios/${runtimeVersion}/updates/${updateId}/metadata.json`;
+  const result = await context.runner.run("gcloud", [
+    "storage",
+    "cat",
+    object,
+  ], { cwd: context.repoRoot, env: context.env });
+  if (result.exitCode !== 0) {
+    return { status: "unreadable", detail: `${object} is not readable: ${summarizeCommandFailure(result)}` };
+  }
+  try {
+    const metadata = JSON.parse(result.stdout) as ExpoMetadata;
+    if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) {
+      return { status: "unreadable", detail: `${object} is malformed.` };
+    }
+    if (metadata.kanna === undefined) return { status: "legacy" };
+    if (!metadata.kanna || typeof metadata.kanna !== "object" || Array.isArray(metadata.kanna)) {
+      return { status: "unreadable", detail: `${object} is malformed.` };
+    }
+    if (metadata.kanna.releaseVersion === undefined) return { status: "legacy" };
+    if (typeof metadata.kanna.releaseVersion !== "string" || !metadata.kanna.releaseVersion.trim()) {
+      return { status: "unreadable", detail: `${object} is malformed.` };
+    }
+    return { status: "known", releaseVersion: metadata.kanna.releaseVersion.trim() };
+  } catch {
+    return { status: "unreadable", detail: `${object} is malformed.` };
+  }
+}
+
+async function resolvePointerReleaseVersion(
+  context: MobileOtaContext,
+  bucket: string,
+  runtimeVersion: string,
+  pointer: OtaChannelPointer
+): Promise<OtaReleaseVersionLookup> {
+  const pointerVersion = pointer.releaseVersion?.trim();
+  if (pointerVersion) return { status: "known", releaseVersion: pointerVersion };
+  const updateId = pointer.currentUpdateId?.trim();
+  return updateId
+    ? readUpdateReleaseVersion(context, bucket, runtimeVersion, updateId)
+    : { status: "legacy" };
 }
 
 function summarizeCommandFailure(result: { stdout: string; stderr: string }): string {
@@ -963,13 +1142,19 @@ async function executeMobileOtaHttpRequest(
   };
 }
 
-function buildExpoExportCommand(repoRoot: string, environment: CloudEnvironmentName, distDir: string): MobileOtaCommandPlan {
+function buildExpoExportCommand(
+  repoRoot: string,
+  environment: CloudEnvironmentName,
+  distDir: string,
+  releaseVersion: string
+): MobileOtaCommandPlan {
   return {
     command: "pnpm",
     args: ["exec", "expo", "export", "--platform", "ios", "--output-dir", distDir],
     cwd: join(repoRoot, "apps/mobile"),
     env: {
       KANNA_APP_ENV: environment === "staging" ? "staging" : "prod",
+      KANNA_APP_VERSION: releaseVersion,
     },
     streamOutput: true,
   };
@@ -977,7 +1162,8 @@ function buildExpoExportCommand(repoRoot: string, environment: CloudEnvironmentN
 
 function buildExpoPublicConfigCommand(
   repoRoot: string,
-  environment: CloudEnvironmentName
+  environment: CloudEnvironmentName,
+  releaseVersion: string
 ): MobileOtaCommandPlan {
   return {
     command: "pnpm",
@@ -985,6 +1171,7 @@ function buildExpoPublicConfigCommand(
     cwd: join(repoRoot, "apps/mobile"),
     env: {
       KANNA_APP_ENV: environment === "staging" ? "staging" : "prod",
+      KANNA_APP_VERSION: releaseVersion,
     },
   };
 }
@@ -993,9 +1180,10 @@ async function readExpoPublicConfig(
   repoRoot: string,
   environment: CloudEnvironmentName,
   runner: CommandRunner,
-  env: NodeJS.ProcessEnv
+  env: NodeJS.ProcessEnv,
+  releaseVersion: string
 ): Promise<Buffer> {
-  const command = buildExpoPublicConfigCommand(repoRoot, environment);
+  const command = buildExpoPublicConfigCommand(repoRoot, environment, releaseVersion);
   const result = await runner.run(command.command, command.args, {
     cwd: command.cwd,
     env: { ...env, ...command.env },
@@ -1019,8 +1207,9 @@ async function stageOtaUpdate(input: {
   distDir: string;
   expoConfigBytes: Buffer;
   source: ResolvedSourceRef;
+  releaseVersion: string;
 }): Promise<{ path: string; updateId: string }> {
-  const stagedMetadata = await buildStagedExpoMetadata(input.distDir);
+  const stagedMetadata = await buildStagedExpoMetadata(input.distDir, input.releaseVersion);
   const output = join(input.scratch, stagedMetadata.updateId);
   await mkdir(join(output, "bundles"), { recursive: true });
   await mkdir(join(output, "assets"), { recursive: true });
@@ -1038,12 +1227,16 @@ async function stageOtaUpdate(input: {
     ref: input.source.ref,
     commit: input.source.commit,
     shortCommit: input.source.shortCommit,
+    releaseVersion: input.releaseVersion,
   };
   await writeFile(join(output, OTA_SOURCE_OBJECT), JSON.stringify(sourceRecord));
   return { path: output, updateId: stagedMetadata.updateId };
 }
 
-async function buildStagedExpoMetadata(distDir: string): Promise<StagedExpoMetadata> {
+async function buildStagedExpoMetadata(
+  distDir: string,
+  releaseVersion: string
+): Promise<StagedExpoMetadata> {
   const metadata = JSON.parse(await readFile(join(distDir, "metadata.json"), "utf8")) as ExpoMetadata;
   const ios = metadata.fileMetadata?.ios;
   if (!ios?.bundle) {
@@ -1074,6 +1267,7 @@ async function buildStagedExpoMetadata(distDir: string): Promise<StagedExpoMetad
 
   const rewrittenMetadata: ExpoMetadata = {
     ...metadata,
+    kanna: { releaseVersion },
     fileMetadata: {
       ...metadata.fileMetadata,
       ios: {
@@ -1100,6 +1294,7 @@ async function writePointerFile(input: {
   scratch: string;
   updateId: string;
   runtimeVersion: string;
+  releaseVersion?: string;
   source?: ResolvedSourceRef;
 }): Promise<{ path: string }> {
   const path = join(input.scratch, "channel.json");
@@ -1107,6 +1302,7 @@ async function writePointerFile(input: {
     currentUpdateId: input.updateId,
     createdAt: new Date().toISOString(),
     runtimeVersion: input.runtimeVersion,
+    ...(input.releaseVersion ? { releaseVersion: input.releaseVersion } : {}),
     ...(input.source
       ? { sourceRef: input.source.ref, sourceCommit: input.source.commit }
       : {}),
@@ -1153,6 +1349,7 @@ function formatPublishMessage(plan: MobileOtaPublishPlan): string {
     `${plan.dryRun ? "Dry run: mobile OTA update" : "Published mobile OTA update"} ${plan.updateId}`,
     ...(plan.source ? [formatSourceRef(plan.source)] : []),
     `runtimeVersion: ${plan.runtimeVersion}`,
+    `releaseVersion: ${plan.releaseVersion}`,
     `channel: ${plan.channel}`,
     `bucket: gs://${plan.bucket}/${plan.updateObjectPrefix}`,
     `verify: ${manifestCurl(plan.relayManifestUrl, plan.runtimeVersion, plan.channel)}`,
@@ -1164,6 +1361,7 @@ function formatRollbackMessage(input: {
   bucket: string;
   channel: string;
   runtimeVersion: string;
+  releaseVersion: string | null;
   updateId: string;
   pointerObject: string;
   relayManifestUrl: string;
@@ -1172,6 +1370,7 @@ function formatRollbackMessage(input: {
     `${input.dryRun ? "Dry run: mobile OTA rollback" : "Rolled back mobile OTA channel"} ${input.channel}`,
     `updateId: ${input.updateId}`,
     `runtimeVersion: ${input.runtimeVersion}`,
+    `releaseVersion: ${input.releaseVersion ?? "unknown (legacy update or dry run)"}`,
     `pointer: gs://${input.bucket}/${input.pointerObject}`,
     `verify: ${manifestCurl(input.relayManifestUrl, input.runtimeVersion, input.channel)}`,
   ].join("\n");

@@ -7124,6 +7124,34 @@ describe("createMobileController", () => {
     expect(resize).toHaveBeenLastCalledWith(128, 72);
   });
 
+  it("restates visibility when the first measured grid arrives after the task becomes visible", async () => {
+    const store = createSessionStore();
+    const client = createClientMock();
+    const controller = createMobileController(client, store);
+    const resize = client.__terminalStream.subscription.resize;
+    const activate = client.__terminalStream.subscription.activate;
+    const setViewerVisible = client.__terminalStream.subscription.setViewerVisible;
+
+    await controller.bootstrap();
+    controller.openTask("task-1");
+    controller.setTaskDetailVisible(true);
+
+    expect(setViewerVisible).toHaveBeenCalledWith(true);
+    expect(activate).not.toHaveBeenCalled();
+
+    controller.resizeTaskTerminal("task-1", 42, 18);
+
+    expect(resize).toHaveBeenLastCalledWith(42, 18);
+    expect(setViewerVisible).toHaveBeenLastCalledWith(true);
+    expect(activate).toHaveBeenCalledOnce();
+    expect(resize.mock.invocationCallOrder[0]).toBeLessThan(
+      setViewerVisible.mock.invocationCallOrder.at(-1) ?? 0
+    );
+    expect(setViewerVisible.mock.invocationCallOrder.at(-1) ?? 0).toBeLessThan(
+      activate.mock.invocationCallOrder[0] ?? 0
+    );
+  });
+
   it("replaces stale replay output with an authoritative reconnect snapshot", async () => {
     const store = createSessionStore();
     const client = createClientMock();

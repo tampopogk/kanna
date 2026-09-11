@@ -2085,6 +2085,88 @@ fn stage_run_lifecycle_inserts_lists_and_finishes_runs() {
     assert!(runs[0].finished_at.is_some());
 }
 
+/// Transfer export reads finished runs through the same full-row decoder as
+/// task lifecycle code. Keep that projection in lockstep with recovery
+/// lineage columns added to the decoder: a short projection here used to make
+/// every task with a finished run fail export with `Invalid column index: 21`.
+#[test]
+fn transfer_export_finished_runs_keep_history_and_recovery_provenance() {
+    let path = Db::test_db_path("transfer-export-finished-stage-runs");
+    let db = Db::open_for_tests(&path).expect("open test db");
+    db.insert_test_repo("repo-1", "Repo One").unwrap();
+    db.insert_test_pipeline_item(
+        "task-1",
+        "repo-1",
+        "Move this task",
+        Some("Move this task"),
+        "review",
+        "2026-09-11 08:00:00",
+    )
+    .unwrap();
+
+    for (id, result) in [
+        (
+            "run-implemented",
+            r#"{"status":"success","summary":"built"}"#,
+        ),
+        (
+            "run-recovery",
+            r#"{"status":"failure","summary":"no new work"}"#,
+        ),
+    ] {
+        db.insert_stage_run(NewStageRun {
+            id,
+            task_id: "task-1",
+            stage: "in progress",
+            kind: "main",
+            agent: Some("implement"),
+            agent_provider: Some("codex"),
+            model: Some("gpt-5"),
+            effort: Some("high"),
+            status: "running",
+            result: None,
+            feedback: None,
+            session_id: Some(id),
+            provider_session_id: Some(id),
+            cwd: Some("/repo/.kanna-worktrees/task-1"),
+            resumed_from_run_id: None,
+        })
+        .unwrap();
+        if id == "run-implemented" {
+            db.finish_stage_run(id, "succeeded", Some(result), Some("built"))
+                .unwrap();
+        } else {
+            db.set_test_stage_run_replaces_run_id(id, "run-implemented")
+                .unwrap();
+            db.finish_stage_run_without_work(
+                id,
+                "failed",
+                Some(result),
+                Some("retryable launch failure"),
+                crate::db::no_work_termination::STAGE_SPAWN_FAILED,
+            )
+            .unwrap();
+        }
+    }
+
+    let runs = db
+        .finished_stage_runs("task-1")
+        .expect("transfer export must decode every finished run");
+    assert_eq!(runs.len(), 2);
+    assert_eq!(runs[0].id, "run-implemented");
+    assert_eq!(runs[0].status, "succeeded");
+    assert_eq!(
+        runs[0].result.as_deref(),
+        Some(r#"{"status":"success","summary":"built"}"#)
+    );
+    assert_eq!(runs[1].id, "run-recovery");
+    assert_eq!(runs[1].replaces_run_id.as_deref(), Some("run-implemented"));
+    assert_eq!(
+        runs[1].no_work_termination.as_deref(),
+        Some(crate::db::no_work_termination::STAGE_SPAWN_FAILED)
+    );
+}
+
 #[test]
 fn contextless_completion_binding_commits_atomically_with_verdict() {
     let path = Db::test_db_path("contextless-completion-atomic");

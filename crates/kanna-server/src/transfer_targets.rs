@@ -14,12 +14,10 @@
 //! transfer peer id and gets back the route, so peer ids and relay credentials
 //! stay inside the server.
 //!
-//! What this module deliberately does *not* do is repair a route. The Firebase
-//! credential a cloud tunnel dials with belongs to the renderer
-//! (`cloud_transfer_proxy`), so a stale one is reported, never refreshed —
-//! reporting it before any work is queued is the difference between an
-//! actionable error and a transfer that reports `scheduled` and then dies on a
-//! relay socket nobody is watching.
+//! The Firebase credential a cloud tunnel dials with still belongs to the
+//! renderer (`cloud_transfer_proxy`). Route planning reports a stale one rather
+//! than bypassing expiry; the transfer entrypoints can then ask that
+//! authenticated owner to rotate it and plan again from observed server state.
 
 use crate::cloud_transfer_proxy::CloudTransferRoute;
 use serde::Serialize;
@@ -169,9 +167,9 @@ fn cloud_route_problem(name: &str, cloud_route: Option<&CloudTransferRoute>) -> 
         .unwrap_or_else(|| "no cloud route is provisioned for it".to_string());
     format!(
         "machine {name} can only be reached through the cloud right now, and this machine's \
-         outbound route to it is not usable: {detail}. Start a transfer from the signed-in Kanna \
-         desktop app on this machine, which refreshes the route as it goes, or move the task \
-         while both machines are on the same network."
+         outbound route to it is not usable: {detail}. Starting a transfer requests a bounded \
+         refresh from the signed-in Kanna desktop on this machine; sign in there if renewal is \
+         unavailable, or move the task while both machines are on the same network."
     )
 }
 

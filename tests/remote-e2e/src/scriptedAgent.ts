@@ -12,6 +12,7 @@ export interface ScriptedAgentOptions {
   traceTerminalKeys?: boolean;
   snapshotHistory?: {
     sentinel: string;
+    lineCount?: number;
   };
 }
 
@@ -192,10 +193,11 @@ esac`;
   const terminalModePrelude = options.terminalPasteSemantics
     ? "printf '\\033[?2004h'"
     : ":";
+  const snapshotHistoryLineCount = options.snapshotHistory?.lineCount ?? 200;
   const snapshotHistory = `${snapshotHistoryTrigger}
 if [ "$snapshot_history_enabled" -eq 1 ]; then
   history_line=1
-  while [ $history_line -le 200 ]; do
+  while [ $history_line -le ${snapshotHistoryLineCount} ]; do
     # 125 columns: one row in the relay fixture's authoritative 132-column
     # grid, but two rows (including an orphan X fragment) if mobile parses the
     # snapshot at its 80-column proposal width.

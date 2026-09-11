@@ -55,19 +55,23 @@ archive time rather than deferred until publication.
 
 ### Policy
 
-The mobile App Store version series is independent of the desktop release
+The mobile release series is independent of the desktop release
 series. A mobile `1.0`, `1.1`, or `1.0.1` release may accompany any desktop
 `0.3.x` release; neither number is derived from the other. The checked-in
-mobile marketing version uses Apple's three-component form in
+mobile release version uses Apple's three-component form in
 `apps/mobile/VERSION` (for example `1.0.0`, which the App Store may display as
-`1.0`).
+`1.0`). It is advanced with `kd mobile version bump --patch|--minor|--major`
+and is shared by native and OTA deliveries of the same mobile release.
 
-The three version values answer different questions:
+The four identity values answer different questions:
 
-- **Marketing version (`CFBundleShortVersionString`)** identifies a customer-
-  facing App Store release. Bump it when submitting a new binary after the
-  current version has been released, or when product release semantics call
-  for a new patch/minor version. A JS-only OTA does not bump it.
+- **Mobile release version** identifies the running customer-facing mobile
+  release, whether it arrived in a binary or by OTA. Advance it for changed
+  release content. Staging and production delivery of the same release may
+  share it, but another changed OTA on either channel advances it again.
+- **Marketing version (`CFBundleShortVersionString`)** is the release version
+  embedded in a native App Store binary. An OTA never changes the installed
+  value; the client reports the running release and native version separately.
 - **Build number (`CFBundleVersion`)** identifies one App Store binary. Use a
   numeric value higher than every prior production archive/upload, including
   across marketing versions. Any rebuilt binary from changed source takes a
@@ -113,6 +117,7 @@ The channel pointer is the commit point:
   "currentUpdateId": "<updateId>",
   "createdAt": "...",
   "runtimeVersion": "2.1.1",
+  "releaseVersion": "1.0.1",
   "sourceRef": "release/0.2",
   "sourceCommit": "<40-hex sha>"
 }
@@ -121,20 +126,22 @@ The channel pointer is the commit point:
 `updateId` is deterministic: SHA-256 of `metadata.json`, converted to the Expo
 UUID shape using the first 32 hex characters.
 
-`kanna-source.json` records the git source the update was exported from:
+`kanna-source.json` records the git source and mobile release the update was exported from:
 
 ```json
-{ "updateId": "<updateId>", "ref": "release/0.2", "commit": "<40-hex sha>", "shortCommit": "<12-hex sha>" }
+{ "updateId": "<updateId>", "ref": "release/0.2", "commit": "<40-hex sha>", "shortCommit": "<12-hex sha>", "releaseVersion": "1.0.1" }
 ```
 
 The pointer's `sourceRef`/`sourceCommit` answer "what is this channel serving
 right now"; `kanna-source.json` stays with the update, so an update a later
 rollback re-points to is still traceable after the pointer has been rewritten.
-Neither is part of `metadata.json` — `updateId` is that file's hash and Expo
-clients parse it — and the relay reads only `metadata.json`, `expoConfig.json`,
-and the content-addressed artifacts, so both records are inert to the client.
-A rollback pointer carries no source fields: it publishes no new source, and
-the update it names carries its own.
+The release version is also written to `metadata.json`; because `updateId` is
+that file's hash, two otherwise identical releases with different release
+numbers remain distinct immutable updates. The relay copies it into signed Expo
+manifest metadata, which lets the running client display the release without
+confusing it with the installed native binary. Older metadata without the field
+continues to serve. A rollback pointer carries no source fields, but preserves
+the target's release version when its metadata provides one.
 
 ## Relay
 

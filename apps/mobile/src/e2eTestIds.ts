@@ -198,6 +198,7 @@ export const MOBILE_E2E_IDS = {
   quickReplyEditorSaveError: "mobile.quick-replies.save-error",
   quickReplyLoadNotice: "mobile.quick-replies.load-notice",
   buildInfoToggle: "mobile.build-info.toggle",
+  buildInfoRelease: "mobile.build-info.release",
   buildInfoDetails: "mobile.build-info.details",
   buildInfoNative: "mobile.build-info.native",
   buildInfoRuntime: "mobile.build-info.runtime",

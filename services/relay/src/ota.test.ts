@@ -19,6 +19,7 @@ const privateKey = generateKeyPairSync("rsa", {
 const metadata: ExpoExportMetadata = {
   version: 0,
   bundler: "metro",
+  kanna: { releaseVersion: "1.0.1" },
   fileMetadata: {
     ios: {
       bundle: "_expo/static/js/ios/main.hbc",
@@ -72,7 +73,7 @@ describe("OTA manifest helpers", () => {
       id: "12b4a6d5-7dd6-5bf2-973e-c141ef211ca8",
       createdAt: "2026-06-24T12:00:00.000Z",
       runtimeVersion: "1.0.0",
-      metadata: {},
+      metadata: { kanna: { releaseVersion: "1.0.1" } },
       extra: { expoClient: { name: "Kanna Staging" } },
       launchAsset: {
         key: bundleHash,
@@ -94,6 +95,22 @@ describe("OTA manifest helpers", () => {
         },
       ],
     });
+  });
+
+  it("keeps pre-version-ledger manifests valid", async () => {
+    const manifest = await buildExpoManifest({
+      origin: "https://relay-staging.kanna.build",
+      runtimeVersion: "2.2.3",
+      platform: "ios",
+      updateId: "43d4e1d7-b5e0-4f2e-6d47-96b71048692b",
+      createdAt: "2026-09-10T00:00:00.000Z",
+      metadata: { fileMetadata: metadata.fileMetadata },
+      expoConfig: { name: "Kanna Staging", version: "1.0.0" },
+      readFile,
+    });
+
+    expect(manifest.metadata).toEqual({});
+    expect(manifest.extra.expoClient).toMatchObject({ version: "1.0.0" });
   });
 
   it("creates signatures that verify against the matching public certificate and reject tampering", () => {
