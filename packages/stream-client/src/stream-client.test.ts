@@ -2872,7 +2872,7 @@ describe("StreamClient", () => {
     client.close();
   });
 
-  it("registers a remote viewport passively, then announces active viewing without a legacy resize", () => {
+  it("registers and activates a remote viewport before its first attach without a legacy resize", () => {
     const client = new StreamClient({
       url: "ws://test/v1/stream",
       webSocketFactory: factory,
@@ -2899,7 +2899,7 @@ describe("StreamClient", () => {
     );
     client.sendTermResize("task-pty", 42, 18);
 
-    expect(socket.sent.slice(-2)).toEqual([{
+    expect(socket.sent.at(-1)).toEqual({
       type: "term_viewer_register",
       task_id: "task-pty",
       viewer_id: "terminal-viewer-1",
@@ -2908,29 +2908,33 @@ describe("StreamClient", () => {
       cols: 42,
       rows: 18,
       visible: false,
-    }, {
-      type: "attach",
-      task_id: "task-pty",
-      kind: "terminal",
-      from_seq: 0,
-    }]);
+    });
+    expect(socket.sent).not.toContainEqual(
+      expect.objectContaining({ type: "attach", task_id: "task-pty" }),
+    );
     expect(socket.sent).not.toContainEqual(
       expect.objectContaining({ type: "term_resize" }),
     );
     client.setTerminalViewerVisibility("task-pty", true);
     client.activateTerminalViewer("task-pty");
-    expect(socket.sent.slice(-2)).toEqual([
+    expect(socket.sent.slice(-3)).toEqual([
       expect.objectContaining({
         type: "term_viewer_register",
         task_id: "task-pty",
         visible: true,
       }),
       { type: "term_viewer_active", task_id: "task-pty" },
+      {
+        type: "attach",
+        task_id: "task-pty",
+        kind: "terminal",
+        from_seq: 0,
+      },
     ]);
     client.close();
   });
 
-  it("holds auth replay until a geometry-aware remote viewer registers", () => {
+  it("holds auth replay until a geometry-aware remote viewer becomes active", () => {
     const client = new StreamClient({
       url: "ws://test/v1/stream",
       webSocketFactory: factory,
@@ -2939,26 +2943,30 @@ describe("StreamClient", () => {
     const socket = sockets[0];
     client.attachTerminal("task-pty", { onOutput() {} });
     socket.open();
-    socket.receive({ type: "auth_ok", capabilities: ["terminal_geometry"] });
+    socket.receive({
+      type: "auth_ok",
+      capabilities: ["terminal_geometry", "terminal_active_view"],
+    });
 
     expect(socket.sent).not.toContainEqual(
       expect.objectContaining({ type: "attach", task_id: "task-pty" }),
     );
 
     client.sendTermResize("task-pty", 42, 18);
-    expect(socket.sent.slice(-2)).toEqual([
-      expect.objectContaining({
-        type: "term_viewer_register",
-        task_id: "task-pty",
-        cols: 42,
-        rows: 18,
-      }),
-      {
-        type: "attach",
-        task_id: "task-pty",
-        kind: "terminal",
-        from_seq: 0,
-      },
+    expect(socket.sent.at(-1)).toEqual(expect.objectContaining({
+      type: "term_viewer_register",
+      task_id: "task-pty",
+      cols: 42,
+      rows: 18,
+    }));
+    expect(socket.sent).not.toContainEqual(expect.objectContaining({ type: "attach" }));
+
+    client.setTerminalViewerVisibility("task-pty", true);
+    client.activateTerminalViewer("task-pty");
+    expect(socket.sent.slice(-3)).toEqual([
+      expect.objectContaining({ type: "term_viewer_register", visible: true }),
+      { type: "term_viewer_active", task_id: "task-pty" },
+      { type: "attach", task_id: "task-pty", kind: "terminal", from_seq: 0 },
     ]);
     client.close();
   });
@@ -3073,11 +3081,16 @@ describe("StreamClient", () => {
     client.sendTermResize("task-pty", 42, 18);
     client.sendTermResize("task-pty", 43, 18);
     client.sendTermResize("task-pty", 44, 19);
+    client.setTerminalViewerVisibility("task-pty", true);
+    client.activateTerminalViewer("task-pty");
     client.sendTermInput("task-pty", "YQ==");
     client.sendTermInput("task-pty", "Yg==", true);
 
     socket.open();
-    socket.receive({ type: "auth_ok", capabilities: ["term_input_boundary", "terminal_geometry"] });
+    socket.receive({
+      type: "auth_ok",
+      capabilities: ["term_input_boundary", "terminal_geometry", "terminal_active_view"],
+    });
 
     expect(socket.sent).toEqual([
       {
@@ -3094,7 +3107,9 @@ describe("StreamClient", () => {
         task_id: "task-pty",
         cols: 44,
         rows: 19,
+        visible: true,
       }),
+      { type: "term_viewer_active", task_id: "task-pty" },
       { type: "attach", task_id: "task-pty", kind: "terminal", from_seq: 0 },
       { type: "term_input", task_id: "task-pty", data_b64: "YQ==" },
       { type: "term_input_boundary", task_id: "task-pty", data_b64: "Yg==" },
@@ -3115,6 +3130,8 @@ describe("StreamClient", () => {
       socket.receive({ type: "auth_ok", capabilities: ["terminal_geometry"] });
       client.attachTerminal("task-pty", { onOutput() {} });
       client.sendTermResize("task-pty", 42, 18);
+      client.setTerminalViewerVisibility("task-pty", true);
+      client.activateTerminalViewer("task-pty");
       return { client, socket };
     })();
 
@@ -3149,8 +3166,11 @@ describe("StreamClient", () => {
     socket.receive({ type: "auth_ok", capabilities: ["terminal_geometry"] });
     client.attachTerminal("task-pty", { onOutput() {} });
     client.sendTermResize("task-pty", 42, 18);
+    client.setTerminalViewerVisibility("task-pty", true);
+    client.activateTerminalViewer("task-pty");
     client.detach("task-pty", "terminal");
     client.attachTerminal("task-pty", { onOutput() {} });
+    client.activateTerminalViewer("task-pty");
 
     expect(socket.sent.slice(-3)).toEqual([
       { type: "detach", task_id: "task-pty", kind: "terminal" },

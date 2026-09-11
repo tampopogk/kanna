@@ -135,6 +135,10 @@ class FakeTerminal {
   element: HTMLElement | null = null;
   pendingStringWrites: PendingWrite[] = [];
   reset = vi.fn();
+  resize = vi.fn((cols: number, rows: number) => {
+    this.cols = cols;
+    this.rows = rows;
+  });
   loadAddon = vi.fn();
   open = vi.fn((element: HTMLElement) => {
     this.element = element;
@@ -685,6 +689,99 @@ describe("useTerminal", () => {
     terminalElement.dispatchEvent(new FocusEvent("focusin", { bubbles: true }));
     await flushAsyncWork();
     expect(activateTerminalViewer).toHaveBeenCalledTimes(2);
+
+    terminalElement.remove();
+    wrapper.unmount();
+  });
+
+  it("reclaims a continuously focused local viewer before its next human input", async () => {
+    const attachTerminal = vi.fn((taskId: string, handlers: TerminalStreamHandlers) => {
+      terminalStreamHandlers.set(taskId, handlers);
+      handlers.onSnapshot?.(132, 48, btoa("desktop-sized terminal"));
+    });
+    const sendTermInput = vi.fn();
+    const registerTerminalViewer = vi.fn();
+    const setTerminalViewerVisibility = vi.fn();
+    const activateTerminalViewer = vi.fn();
+    streamClientMock.getSharedStreamClient.mockResolvedValue({
+      attachTerminal,
+      sendTermInput,
+      sendTermResize: vi.fn(),
+      detach: vi.fn(),
+      registerTerminalViewer,
+      setTerminalViewerVisibility,
+      activateTerminalViewer,
+    });
+    vi.spyOn(document, "hasFocus").mockReturnValue(true);
+
+    const { useTerminal } = await import("./useTerminal");
+    const TestHarness = defineComponent({
+      setup() {
+        return useTerminal("session-1");
+      },
+      render() { return h("div"); },
+    });
+    const wrapper = mount(TestHarness);
+    const terminalElement = document.createElement("div");
+    Object.defineProperty(terminalElement, "offsetWidth", { configurable: true, value: 1200 });
+    Object.defineProperty(terminalElement, "offsetHeight", { configurable: true, value: 800 });
+    terminalElement.querySelector = vi.fn(() => null) as typeof terminalElement.querySelector;
+    terminalElement.closest = vi.fn(() => null) as typeof terminalElement.closest;
+    document.body.appendChild(terminalElement);
+    wrapper.vm.init(terminalElement);
+    await wrapper.vm.startListening();
+    await flushAsyncWork();
+
+    activateTerminalViewer.mockClear();
+    setTerminalViewerVisibility.mockClear();
+    sendTermInput.mockClear();
+
+    // A remote active viewer changes the daemon grid while this local xterm
+    // and native window remain focused, so no second focus event is available.
+    terminalStreamHandlers.get("session-1")?.onSnapshot?.(
+      42,
+      18,
+      btoa("mobile-sized terminal"),
+    );
+    expect(terminals[0]?.cols).toBe(42);
+    expect(terminals[0]?.rows).toBe(18);
+    expect(activateTerminalViewer).not.toHaveBeenCalled();
+
+    const terminal = terminals[0];
+    const keyHandler = terminal.attachCustomKeyEventHandler.mock.calls[0]?.[0] as
+      | ((event: KeyboardEvent) => boolean)
+      | undefined;
+    const onData = terminal.onData.mock.calls[0]?.[0] as
+      | ((data: string) => void)
+      | undefined;
+    keyHandler?.(new KeyboardEvent("keydown", { key: "x" }));
+    onData?.("x");
+    await waitForQueuedInputFlush();
+
+    expect(setTerminalViewerVisibility).toHaveBeenCalledWith("session-1", true);
+    expect(activateTerminalViewer).toHaveBeenCalledOnce();
+    expect(sendTermInput).toHaveBeenCalledWith("session-1", btoa("x"), false, false);
+    expect(activateTerminalViewer.mock.invocationCallOrder[0]).toBeLessThan(
+      sendTermInput.mock.invocationCallOrder[0] ?? 0,
+    );
+
+    // Parser-generated replies are not owner activity and cannot take sizing.
+    activateTerminalViewer.mockClear();
+    terminalStreamHandlers.get("session-1")?.onSnapshot?.(
+      43,
+      19,
+      btoa("another remote-sized terminal"),
+    );
+    await Promise.resolve();
+    onData?.("\x1b[?1;2c");
+    await waitForQueuedInputFlush();
+    expect(activateTerminalViewer).not.toHaveBeenCalled();
+    expect(sendTermInput).toHaveBeenLastCalledWith(
+      "session-1",
+      btoa("\x1b[?1;2c"),
+      false,
+      true,
+    );
 
     terminalElement.remove();
     wrapper.unmount();

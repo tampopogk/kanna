@@ -324,8 +324,11 @@ A client that advertises `term_scrollback_window` in its `auth` frame gets three
 things instead; a client that does not is served exactly as before, including
 its own daemon connection per attachment.
 
-- **`term_snapshot` is a bounded window** — the visible screen plus a bounded
-  slice of recent scrollback, capped by both a line count and a byte ceiling
+- **`term_snapshot` is a bounded window** — the visible screen plus one
+  viewport of recent scrollback, roughly two screens total. The page budget is
+  derived from the daemon snapshot's actual `rows`; the cut is then made only
+  at the Ghostty serializer's safe logical-line boundaries, never at an
+  arbitrary suffix of raw bytes. A byte ceiling is only the secondary bound
   (`crates/kanna-server/src/terminal_window.rs`). The frame names the retained
   remainder: `history_id`, `scrollback_lines`, and where the live byte stream
   continues (`stream_id`, `stream_offset`).
@@ -381,6 +384,27 @@ signals. Hidden, backgrounded, and zero-size viewers are ineligible. Commands
 are serialized, so active-view notifications are ordered by the daemon. A
 reconnect re-registers and rehydrates without an active-view notification and
 does not steal control.
+
+On a geometry-aware remote viewer's first render, the stream client holds its
+`attach` until it has a measured, visible registration and the genuine active
+view edge. It sends `register -> active -> attach`; before starting or joining
+the terminal tap, the server inserts a response-bearing command on that same
+daemon control connection and waits for it. Because the daemon processes that
+connection serially, the active resize and its headless snapshot publication
+are complete before the initial attachment captures a base. The first visible
+grid therefore arrives once at the active viewer's dimensions rather than as
+an old-owner snapshot followed by a resize snapshot. Socket reconnects skip
+the active edge and retain their passive resume behavior.
+
+A local desktop can remain continuously focused while a remote viewer takes
+geometry, so focus alone is not a complete handback producer. Receipt of an
+authoritative terminal snapshot arms one local ownership confirmation: before
+the next DOM-classified human input is sent, the desktop reasserts its visible
+viewer and active edge on the shared KSP connection. The active command is
+therefore ordered before the input command and restores the registered desktop
+grid before the PTY consumes the key. Parser-generated terminal replies remain
+passive, and the confirmation is cleared after it is sent rather than repeated
+for every key.
 
 Only the elected viewer's measured proposal changes the PTY and headless
 terminal. Registration and election are serialized with resize and snapshot

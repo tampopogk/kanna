@@ -65,6 +65,12 @@ export function useTerminal(sessionId: string, spawnOptions?: SpawnOptions, opti
     submissionBoundary = false,
     controlInput = false,
   ) => {
+    // A phone can take geometry while this desktop terminal remains focused,
+    // so no focus edge is available to reclaim it. A classified human input
+    // is itself a real active-view edge; parser replies remain passive.
+    if (!controlInput) {
+      await lifecycle.activateViewerForHumanInput()
+    }
     const client = await getTerminalStreamClient()
     client.sendTermInput(nativeSessionId, dataB64, submissionBoundary, controlInput)
   }

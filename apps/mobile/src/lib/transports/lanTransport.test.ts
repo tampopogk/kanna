@@ -1038,13 +1038,15 @@ describe("createLanTransport", () => {
     socket.onmessage?.({
       data: JSON.stringify({
         type: "auth_ok",
-        capabilities: ["term_input_boundary", "terminal_geometry"],
+        capabilities: ["term_input_boundary", "terminal_geometry", "terminal_active_view"],
       } satisfies ServerFrame),
     });
     subscription.sendInput?.("G1s8NjU7MTsxTQ==", false, true);
     subscription.sendInput?.("aHVtYW4gZHJhZnQ=", false);
     subscription.sendInput?.("DQ==", true);
     subscription.resize?.(80, 48);
+    subscription.setViewerVisible?.(true);
+    subscription.activate?.();
 
     expect(sent).toEqual([
       { type: "auth", capabilities: [
@@ -1067,6 +1069,17 @@ describe("createLanTransport", () => {
         rows: 48,
         visible: false
       },
+      {
+        type: "term_viewer_register",
+        task_id: "task-1",
+        viewer_id: "terminal-viewer-1",
+        role: "remote",
+        generation: 1,
+        cols: 80,
+        rows: 48,
+        visible: true
+      },
+      { type: "term_viewer_active", task_id: "task-1" },
       { type: "attach", task_id: "task-1", kind: "terminal", from_seq: 0 }
     ]);
   });

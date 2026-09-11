@@ -482,11 +482,13 @@ describe("createRelayDesktopClient", () => {
     socket.onmessage?.({
       data: JSON.stringify({
         type: "auth_ok",
-        capabilities: ["term_input_boundary", "terminal_geometry"],
+        capabilities: ["term_input_boundary", "terminal_geometry", "terminal_active_view"],
       }),
     });
     await flushPromises();
     subscription.resize?.(80, 48);
+    subscription.setViewerVisible?.(true);
+    subscription.activate?.();
     expect(socket.send).toHaveBeenNthCalledWith(
       4,
       JSON.stringify({
@@ -502,6 +504,26 @@ describe("createRelayDesktopClient", () => {
     );
     expect(socket.send).toHaveBeenNthCalledWith(
       5,
+      JSON.stringify({
+        type: "term_viewer_register",
+        task_id: "task-1",
+        viewer_id: "terminal-viewer-1",
+        role: "remote",
+        generation: 1,
+        cols: 80,
+        rows: 48,
+        visible: true
+      })
+    );
+    expect(socket.send).toHaveBeenNthCalledWith(
+      6,
+      JSON.stringify({
+        type: "term_viewer_active",
+        task_id: "task-1"
+      })
+    );
+    expect(socket.send).toHaveBeenNthCalledWith(
+      7,
       JSON.stringify({
         type: "attach",
         task_id: "task-1",
