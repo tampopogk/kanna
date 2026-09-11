@@ -1,0 +1,14 @@
+{
+  "$schema": "./schema.json",
+  "name": "consultation",
+  "description": "Product consultation: explore what outcome to pursue and why, then pause for owner discussion without implementation",
+  "stages": [
+    {
+      "name": "consultation",
+      "description": "Consultant evaluates alternatives, evidence, tradeoffs, assumptions, and unknowns, records a recommendation, and remains at the manual owner discussion gate",
+      "agent": "consultant",
+      "prompt": "$TASK_PROMPT",
+      "policy": { "transition": "manual" }
+    }
+  ]
+}

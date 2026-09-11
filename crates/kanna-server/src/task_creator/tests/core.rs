@@ -2118,6 +2118,7 @@ fn legacy_builtin_workflow_names_still_resolve_for_committed_repo_config() {
         assert_eq!(
             names,
             vec![
+                "consultation",
                 "no-review",
                 "plan-build-review",
                 "pr-review",
@@ -3005,6 +3006,7 @@ fn workflow_names_are_sorted_deduped_remote_and_compiled_union() {
         definitions.workflow_names().unwrap(),
         vec![
             "alpha",
+            "consultation",
             "no-review",
             "plan-build-review",
             "pr-review",

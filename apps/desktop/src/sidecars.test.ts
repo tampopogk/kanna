@@ -6,7 +6,7 @@ import desktopPkg from "../package.json";
 import tauriConf from "../src-tauri/tauri.conf.json";
 
 describe("desktop sidecar packaging", () => {
-  it("bundles the canonical architect definitions as desktop resources", () => {
+  it("bundles the canonical product and architect consultation definitions as desktop resources", () => {
     const repoRoot = resolve(import.meta.dirname, "../../..");
     const resources = tauriConf.bundle.resources;
     const architectAgent = readFileSync(
@@ -17,6 +17,14 @@ describe("desktop sidecar packaging", () => {
       resolve(repoRoot, ".kanna/workflows/architect-consultation.json"),
       "utf8",
     );
+    const consultantAgent = readFileSync(
+      resolve(repoRoot, ".kanna/agents/consultant/AGENT.md"),
+      "utf8",
+    );
+    const consultationWorkflow = readFileSync(
+      resolve(repoRoot, ".kanna/workflows/consultation.json"),
+      "utf8",
+    );
 
     expect(resources["../../../.kanna/agents/"]).toBe(".kanna/agents/");
     expect(resources["../../../.kanna/workflows/"]).toBe(".kanna/workflows/");
@@ -24,6 +32,11 @@ describe("desktop sidecar packaging", () => {
     expect(architectAgent).toContain("visibility: internal");
     expect(architectWorkflow).toContain('"name": "architect-consultation"');
     expect(architectWorkflow).toContain('"agent": "architect"');
+    expect(consultantAgent).toContain("name: consultant");
+    expect(consultantAgent).not.toContain("visibility: internal");
+    expect(consultationWorkflow).toContain('"name": "consultation"');
+    expect(consultationWorkflow).toContain('"agent": "consultant"');
+    expect(consultationWorkflow).not.toContain('"visibility": "internal"');
   });
 
   it("keeps release builds free of dev-only version and sidecar staging hooks", () => {
