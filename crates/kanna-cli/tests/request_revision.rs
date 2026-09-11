@@ -84,3 +84,73 @@ fn request_revision_does_not_warn_when_workflow_socket_is_unavailable() {
     assert_eq!(stdout, serde_json::json!({ "taskId": "task-2" }));
     assert_eq!(String::from_utf8_lossy(&output.stderr), "");
 }
+
+#[test]
+fn human_authorized_revision_omits_the_calling_agents_run_binding() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut buffer = [0_u8; 4096];
+        let bytes_read = stream.read(&mut buffer).unwrap();
+        let request = String::from_utf8_lossy(&buffer[..bytes_read]).to_string();
+        assert!(request.starts_with("POST /v1/tasks/task-1/actions/request-revision HTTP/1.1"));
+        let body: serde_json::Value =
+            serde_json::from_str(request.split("\r\n\r\n").nth(1).unwrap()).unwrap();
+        assert_eq!(
+            body,
+            serde_json::json!({
+                "targetStage": "in progress",
+                "summary": "Human authorized another pass",
+                "prompt": "Fix the remaining finding.",
+                "origin": "human",
+            })
+        );
+
+        let body =
+            r#"{"taskId":"task-1","revisionBudget":{"rounds":0,"limit":5,"exhausted":false}}"#;
+        stream
+            .write_all(
+                format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{}",
+                    body.len(),
+                    body
+                )
+                .as_bytes(),
+            )
+            .unwrap();
+    });
+
+    let output = Command::new(env!("CARGO_BIN_EXE_kanna-cli"))
+        .args([
+            "task",
+            "request-revision",
+            "--task-id",
+            "task-1",
+            "--summary",
+            "Human authorized another pass",
+            "--prompt",
+            "Fix the remaining finding.",
+            "--origin",
+            "human",
+            "--server-url",
+            &format!("http://{address}"),
+        ])
+        .env_remove(kanna_tool_catalog::KANNA_COMPLETION_CONTEXT_ENV)
+        // A task manager relaying the instruction has its own run id; it is
+        // not the review verdict being revised.
+        .env(kanna_tool_catalog::KANNA_STAGE_RUN_ID_ENV, "manager-run-1")
+        .output()
+        .unwrap();
+
+    server.join().unwrap();
+    assert!(
+        output.status.success(),
+        "expected command to succeed, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(stdout["revisionBudget"]["rounds"], 0);
+    assert_eq!(stdout["revisionBudget"]["limit"], 5);
+    assert_eq!(stdout["revisionBudget"]["exhausted"], false);
+}

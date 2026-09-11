@@ -197,12 +197,14 @@ that when either guard is removed.
 
 Origin is what separates a bounded agent loop from human judgment.
 `RequestRevisionRequest.origin` (`agent`, the default, or `human`) is
-deliberately **not** exposed in the tool catalog — an agent cannot claim human
-origin. The parked-revision recovery composer in
-`apps/desktop/src/components/MainPanel.vue` (section `revision-recovery`,
-gated on `detail.revisionRounds >= detail.revisionLimit`) sends
-`origin: "human"`: it is never refused, and it resets `revision_rounds` to 0,
-handing the agents a fresh budget to satisfy what the human asked for.
+exposed as an optional MCP/CLI argument so an agent can relay an explicit human
+instruction given in its terminal. Omission preserves the budgeted agent path.
+`origin: "human"` is caller-declared, unauthenticated provenance and agents are
+forbidden to choose it themselves; when explicitly authorized, it is never
+refused by the budget and resets `revision_rounds` to 0, handing the agents a
+fresh budget to satisfy what the human asked for. The desktop shows the
+exhausted state and directs the owner to the agent terminal; it has no separate
+reset control or revision composer.
 
 Every revision run also tells the revising agent where it stands: the composed
 revision prompt (and the resume message, since a resumed session never re-reads
@@ -453,10 +455,13 @@ parent review stage (qa-dispatcher, auto)
   `review`, marks it `unread`, records the parked verdict with the findings as
   feedback, and reports `exhausted: true`; a `human`-origin revision at the same
   spent budget proceeds and resets the count to 0.
-- `apps/desktop` `workflow.requestRevision.test.ts` and the diff-modal E2E
-  (`tests/e2e/mock/diff-view.test.ts`) — the desktop revision action posts
-  `origin: "human"`, which is what exempts a user-requested revision from the
-  agent budget.
+- `crates/kanna-tool-catalog`, `crates/kanna-mcp`, and `crates/kanna-cli`
+  mapping tests — omission preserves agent origin, explicit human authorization
+  reaches the existing route without an agent-run binding, and invalid origin
+  values are rejected before a request is sent.
+- `apps/desktop` `MainPanel.test.ts` — the exhausted-budget status remains,
+  points the owner to the agent terminal, and exposes no reset control or
+  revision composer.
 - `packages/core` `qa-assets.test.ts` — the new agents satisfy the built-in
   agent completion-protocol contract, and the dispatcher asset is pinned to
   MCP-first durable child-history reduction with fail-closed carry-forward.

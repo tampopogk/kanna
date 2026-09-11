@@ -730,7 +730,7 @@ describe("MainPanel", () => {
     expect(wrapper.find('[data-testid="cloud-terminal"]').exists()).toBe(false);
   });
 
-  it("shows standalone revision recovery from exhausted task detail even when specialty children are closed", async () => {
+  it("shows exhausted revision status without desktop reset controls even when specialty children are closed", async () => {
     fetchTaskDetailMock.mockResolvedValue({
       id: "task-pending",
       stage: "review",
@@ -759,10 +759,9 @@ describe("MainPanel", () => {
           closed_at: "2026-08-02T00:00:00Z",
           agent_session_id: null,
         })],
-        requestRevision: vi.fn(async () => true),
       },
       global: {
-        mocks: { $t: (key: string) => key },
+        plugins: [createI18n({ legacy: false, locale: "en", messages: { en } })],
         stubs: {
           TaskHeader: { template: '<div data-testid="task-header" />' },
           TerminalTabs: { template: '<div data-testid="terminal-tabs" />' },
@@ -772,7 +771,11 @@ describe("MainPanel", () => {
 
     await flushPromises();
 
-    expect(wrapper.find('[data-testid="revision-recovery"]').exists()).toBe(true);
+    const status = wrapper.get('[data-testid="revision-exhausted-status"]');
+    expect(status.text()).toContain("3 of 3 automatic revision rounds");
+    expect(status.text()).toContain("authorize another revision in the agent terminal");
+    expect(wrapper.find('[data-testid="open-revision-composer"]').exists()).toBe(false);
+    expect(wrapper.find('[data-testid="revision-composer"]').exists()).toBe(false);
     expect(wrapper.find(".blocked-placeholder").exists()).toBe(false);
   });
 
@@ -993,7 +996,7 @@ describe("MainPanel", () => {
     ["budget remains", 2, 3, "Parked for human review: waiting"],
     ["unlimited budget", 3, 0, "Parked for human review: waiting"],
     ["latest result is not parked", 3, 3, "Review failed for another reason"],
-  ])("hides standalone revision recovery when %s", async (_case, rounds, limit, summary) => {
+  ])("hides exhausted revision status when %s", async (_case, rounds, limit, summary) => {
     fetchTaskDetailMock.mockResolvedValue({
       id: "task-pending",
       stage: "review",
@@ -1016,7 +1019,6 @@ describe("MainPanel", () => {
       props: {
         uiSlot: readySlot(durableTask({ stage: "review" })),
         hasRepos: true,
-        requestRevision: vi.fn(async () => true),
       },
       global: {
         mocks: { $t: (key: string) => key },
@@ -1029,70 +1031,7 @@ describe("MainPanel", () => {
 
     await flushPromises();
 
-    expect(wrapper.find('[data-testid="revision-recovery"]').exists()).toBe(false);
-  });
-
-  it("requires both human fields and disables duplicate submission while revision recovery is in flight", async () => {
-    fetchTaskDetailMock.mockResolvedValue({
-      id: "task-pending",
-      stage: "review",
-      closedAt: null,
-      latestRun: {
-        stage: "review",
-        kind: "main",
-        status: "failed",
-        summary: "Parked for human review: automatic revision budget spent.",
-        resumedFromRunId: null,
-        resumeFallbackReason: null,
-        finishedAt: "2026-08-03T00:00:00Z",
-      },
-      revisionRounds: 3,
-      revisionLimit: 3,
-      childTaskIds: [],
-    });
-    let resolveRequest: ((value: boolean) => void) | undefined;
-    const requestRevision = vi.fn(() => new Promise<boolean>((resolve) => {
-      resolveRequest = resolve;
-    }));
-    const { default: MainPanel } = await import("../MainPanel.vue");
-    const wrapper = mount(MainPanel, {
-      props: {
-        uiSlot: readySlot(durableTask({ stage: "review" })),
-        hasRepos: true,
-        requestRevision,
-      },
-      global: {
-        mocks: { $t: (key: string) => key },
-        stubs: {
-          TaskHeader: { template: '<div data-testid="task-header" />' },
-          TerminalTabs: { template: '<div data-testid="terminal-tabs" />' },
-        },
-      },
-    });
-    await flushPromises();
-    await wrapper.get('[data-testid="open-revision-composer"]').trigger("click");
-
-    const submit = wrapper.get<HTMLButtonElement>('[data-testid="submit-revision"]');
-    expect(submit.element.disabled).toBe(true);
-    await wrapper.get('[data-testid="revision-summary"]').setValue("One more implementation pass");
-    expect(submit.element.disabled).toBe(true);
-    await wrapper.get('[data-testid="revision-prompt"]').setValue("Fix the deterministic lookup and add coverage.");
-    expect(submit.element.disabled).toBe(false);
-
-    await submit.trigger("submit");
-    await submit.trigger("submit");
-    expect(requestRevision).toHaveBeenCalledTimes(1);
-    expect(submit.element.disabled).toBe(true);
-    expect(requestRevision).toHaveBeenCalledWith("task-pending", {
-      targetStage: "in progress",
-      summary: "One more implementation pass",
-      prompt: "Fix the deterministic lookup and add coverage.",
-      metadata: { source: "kanna-parked-revision-recovery" },
-    });
-
-    resolveRequest?.(false);
-    await flushPromises();
-    expect(wrapper.find('[data-testid="revision-composer"]').exists()).toBe(true);
+    expect(wrapper.find('[data-testid="revision-exhausted-status"]').exists()).toBe(false);
   });
 
   it.each([

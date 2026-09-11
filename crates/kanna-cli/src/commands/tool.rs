@@ -401,6 +401,9 @@ async fn wait_catalog_task_routed(
 }
 
 fn bind_revision_request_to_spawned_run(request: &mut ResolvedRequest) -> Result<(), String> {
+    if request.body.get("origin").and_then(Value::as_str) == Some("human") {
+        return Ok(());
+    }
     let run_id = match env::var_os(kanna_tool_catalog::KANNA_COMPLETION_CONTEXT_ENV) {
         Some(path) => {
             Some(kanna_tool_catalog::read_completion_context(std::path::Path::new(&path))?.run_id)

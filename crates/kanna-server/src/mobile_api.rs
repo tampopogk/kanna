@@ -742,8 +742,8 @@ pub struct RequestRevisionRequest {
     /// Who asked for this revision. Agent-requested revisions spend the
     /// task's revision-round budget and are refused once it is gone; a
     /// human-requested revision is never refused and hands the budget back.
-    /// Deliberately absent from the agent tool catalog: an agent must not be
-    /// able to claim human origin.
+    /// Agent adapters may relay `human` only after an explicit human instruction;
+    /// the value is caller-declared provenance, not authenticated identity.
     #[serde(default)]
     pub origin: Option<RevisionOrigin>,
 }

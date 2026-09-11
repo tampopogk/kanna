@@ -66,7 +66,6 @@ export const useKannaStore = defineStore("kanna", () => {
   services.loadWorkflow = workflow.loadWorkflow;
   services.loadAgent = workflow.loadAgent;
   services.advanceStage = workflow.advanceStage;
-  services.requestRevision = workflow.requestRevision;
   services.rerunStage = workflow.rerunStage;
 
   services.createItem = tasks.createItem;
@@ -188,7 +187,6 @@ Use this branch as the default when the user does not specify a target branch. B
     undoClose: tasks.undoClose,
 
     advanceStage: workflow.advanceStage,
-    requestRevision: workflow.requestRevision,
     rerunStage: workflow.rerunStage,
     loadWorkflow: workflow.loadWorkflow,
     loadAgent: workflow.loadAgent,

@@ -40,7 +40,8 @@ semantics, and the MCP task-management rule — stay in the repo-root
   The server refuses a task/run mismatch, a stale or already-finished review
   run, or a missing id on a newly bound run before it closes a review or
   spends a revision round. Pre-binding legacy runs keep their compatibility
-  path; the desktop's human revision action remains usable for recovery.
+  path; an explicit human instruction can still be relayed through the agent
+  tool path for recovery.
 - *Revisions resume by default, provider-neutrally.* `request_revision`
   reopens the target stage's previous PTY agent session in that run's **own
   worktree** — Claude, Copilot, Codex, and OpenCode all resume when their
@@ -58,6 +59,9 @@ semantics, and the MCP task-management rule — stay in the repo-root
   carries `revisionBudget.exhausted: true`. A *human* revision bypasses the
   budget and **resets** the count — but only the budget: it is still subject
   to feedback resolution and every other preparation precondition.
+  The human origin is a caller declaration, not authenticated identity, and an
+  agent may use it only to relay an explicit human instruction from its
+  terminal. The desktop shows the exhausted state but has no reset action.
   This is also the documented recovery when a human decides a task should get
   another pass after an automatic round was consumed incorrectly; no separate
   counter-repair operation exists.

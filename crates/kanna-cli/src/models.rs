@@ -385,6 +385,11 @@ pub(crate) struct RequestRevisionRequest {
     pub(crate) target_stage: String,
     pub(crate) summary: String,
     pub(crate) prompt: String,
+    /// Caller-declared origin. Omission preserves the server's agent default;
+    /// `human` relays an explicit human instruction rather than authenticating
+    /// the caller as a person.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) origin: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) metadata: Option<Value>,
 }
