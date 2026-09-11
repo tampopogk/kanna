@@ -227,6 +227,7 @@ async fn a_launch_runs_setup_in_its_own_terminal_and_the_agent_inherits_what_it_
             recovery_snapshot: None,
             transfer_import: None,
             notify_task_id: None,
+            review_context: None,
             parent_task_id: None,
             blocker_task_ids: None,
         },
@@ -418,6 +419,7 @@ fn initial_pty_task_binds_first_provider_before_setup() {
             recovery_snapshot: None,
             transfer_import: None,
             notify_task_id: None,
+            review_context: None,
             parent_task_id: None,
             blocker_task_ids: None,
         },
@@ -494,6 +496,7 @@ async fn initial_headless_task_runs_setup_before_resolving_workspace_provider() 
             recovery_snapshot: None,
             transfer_import: None,
             notify_task_id: None,
+            review_context: None,
             parent_task_id: None,
             blocker_task_ids: None,
         },
@@ -1153,6 +1156,7 @@ async fn begin_and_abandon_launch(
             notify_task_id: None,
             parent_task_id: None,
             blocker_task_ids: None,
+            review_context: None,
         },
     )
     .unwrap();
@@ -1356,6 +1360,7 @@ fn prepare_launch(db: &Db, config: &Config, agent_provider: &str) -> PreparedTas
             notify_task_id: None,
             parent_task_id: None,
             blocker_task_ids: None,
+            review_context: None,
         },
     )
     .unwrap()

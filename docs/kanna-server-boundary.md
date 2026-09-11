@@ -1688,6 +1688,22 @@ cursor-based, not snapshot-diffed:
   shutting the task's agent down (`payload.phase`: `wrap-up-sent`, `idle`,
   `quit-sent`, `exited`, `already-exited`, `degraded`). See
   [Source finalization](#source-finalization).
+- `task.review_context_changed` announces that a review task's pull-request
+  identity was published or refreshed (`payload.version`, `prUrl`, `headSha`,
+  `baseRef`). It is candidate information an agent supplied about the forge,
+  never an approval, and a refresh deliberately strands any decision taken
+  against the older version. See
+  [Human-reviewed merge authorization](#human-reviewed-merge-authorization).
+- `task.human_review_decision` announces that a human authorized merging one
+  reviewed head (`payload.decisionId`, `prUrl`, `headSha`, `baseRef`, `origin`,
+  `reviewContextVersion`). The conversation tool records `operator-relayed`;
+  the retained direct API records `operator`. Both origins are declared and unverified.
+- `task.human_review_decision_delivery` reports how far that decision's
+  delivery to the merge singleton got (`payload.decisionId`, `status`:
+  `pending` | `delivered` | `failed` | `uncertain`, plus `detail`, `prUrl`,
+  `headSha`, `mergeTaskId`, `ownerDesktopId`). `uncertain`, and a `pending`
+  that outlived its request, both mean the outcome is unknown and the merge
+  master may already hold the request. Same section.
 
 Every delivered event keeps event-time fields in the payload. In particular,
 `payload.stage` is the stage in effect when the event was appended (older rows
@@ -2339,6 +2355,80 @@ must read that as a failed approval, never as a finished workflow.
 A workflow whose final stage declares no `approve` post promised no merge side
 effect, and nothing is enforced on its behalf.
 
+### Human-reviewed merge authorization
+
+The human-assisted review path records an explicit operator instruction through
+`kanna_queue_reviewed_pr` / `POST /v1/tasks/{task_id}/actions/queue-reviewed-pr`.
+Its body is `{reviewContextVersion, headSha, instruction, summary?}`. The reviewer
+quotes the instruction verbatim, never infers it from agreement or a completed
+review, and reports the PR, head and outcome without another confirmation.
+The tool catalog serves both MCP and `kanna-cli tool call kanna_queue_reviewed_pr`.
+The existing `signal-merge-handoff` branch with `humanReviewDecision` remains
+for compatibility, but desktop/mobile no longer expose authorization controls.
+Plain `kanna_signal_merge_handoff` still carries no decision parameters and its
+ordinary policy request behavior is unchanged.
+
+Two durable records back it, and they are separate because they are different
+kinds of claim:
+
+- **`task_review_context`** — which pull request a review task is about: URL,
+  head repo/ref, head SHA, base ref and SHA, the producing task when one is
+  known, and triage's rank and overlap set. Supplied by an agent, at
+  `kanna_create_task` or in `kanna_complete_stage` metadata, so it is candidate
+  information about the forge and authorizes nothing. It exists because nothing
+  about a review child names its PR: the child forks from `pull/<n>/head` into
+  a local `pr/<n>` ref, so its branch and fork point are unmergeable local
+  names and a fork PR has no `origin/<headRefName>` at all. A refresh bumps
+  `version`. Announced as `task.review_context_changed`.
+- **`human_review_decision`** — the authority. Recorded before delivering the explicit instruction,
+  immutable, unique per `(task_id, head_sha)` so a duplicate call or retried
+  request resolves to the same decision rather than a second authorization. It
+  records the PR, head and base it was taken against, the verbatim
+  instruction, the machine, and the time; delivery outcome is stored beside it,
+  never inside it, so a redelivery never rewrites what was decided. Announced
+  as `task.human_review_decision` and `task.human_review_decision_delivery`.
+
+Unlike the agent path, the server binds this request. The head and base come
+from the stored context, not from the caller, so a request cannot name one PR
+in the instruction and another on the wire; the context version and head SHA
+the operator saw must still be current, and where the review worktree exists
+its checked-out commit must be that head. A pull request that moved under its
+reviewer is refused — it needs a fresh read, not a decision inherited onto a
+commit nobody saw. A decision already `delivered` is not re-sent, and an
+`uncertain` delivery is refused rather than retried: the merge master may
+already hold the request, and a duplicate reads as a second authorization.
+
+The wire line keeps the compact `MERGE` form and adds `HUMAN-REVIEW-DECISION`,
+`HUMAN-AUTHORIZATION`, and optional `PRODUCING-TASK`, `TRIAGE-RANK` and
+`RELATED-PR` lines, so a merge master on another machine — the singleton is
+account-wide — resolves everything without a living review or triage session.
+`pipeline_item.merge_signaled_at` is deliberately untouched: that stamp answers
+the approve post's "does this task still owe one handoff?", which is a
+different question on a different workflow, and reusing it as per-head decision
+history would answer neither.
+
+**The authority boundary, stated.** Only the explicit operator action creates a
+decision — a stage completion, a Close, a label, a generic `MERGE` message, or
+an agent reporting that its human seemed happy is not one, and the merge agent
+reads the durable record rather than inferring one. The conversation route
+records `operator-relayed`, with the verbatim instruction in `actionText` and
+`deviceProvenance: {channel: "agent-session", observedStageRunId}`. The run id
+comes from this review task's latest run (null if absent); it corroborates state,
+not caller identity or human presence. The retained direct API records
+`operator`. Both origins are declared, unverified, using the same local-process
+trust class as the input ledger. Never fabricate a `task_input` row for direct
+TUI speech. No new schema or authentication root is involved.
+
+The conversation route returns 409 for an already delivered, pending, or
+uncertain decision. The retained direct API keeps its idempotent success for
+already delivered decisions. Neither sends again. A strict ledger write failure
+after daemon acknowledgment records `uncertain`, because the MERGE already
+reached the PTY. Refusals are reported and reconciled, never blindly retried.
+Queueing requires a live or resumed review conversation (`kanna_resume_task`),
+not a living triage parent. The decision authorizes *queueing only*: it
+submits no GitHub review, changes no labels, and does not close the review task.
+See [pr-review-dispatch.md](./specs/pr-review-dispatch.md#the-humans-route-to-the-merge-queue).
+
 New merge sessions accept ordinary terminal input. On startup and after daemon
 replacement, kanna-server clears the retired native-terminal-only
 classification from inherited PTYs so older merge singletons also use the
@@ -2863,16 +2953,74 @@ the pending page. Corresponding typed CLI commands are `task subscribe-events`,
 All three endpoints (and their `kanna_subscribe_events` /
 `kanna_read_event_subscription` / `kanna_unsubscribe_events` MCP tools) return
 a **compact** response by default: `id`, `active`, `error`, `wakeState`,
-`batchId`, `pending` (`events`, `hasMore`, `waitOutcome`, `machineErrors`,
-`watchError`), and the watched `query` with any cursor-shaped key stripped.
-Acknowledgement is by `batchId` alone, so the durable observation cursor
-(top-level `cursor` and `pending.cursor`) is internal replay/reconnect state an
-agent never needs to read or round-trip. Pass `diagnostic: true` (a query
-parameter on unsubscribe, a body field on subscribe/read) for the full
-internal row — adds `stage`, `branch`, `runId`, `revision`, `delivery`,
-`wakeAdmitted` and the raw cursor — for troubleshooting. The durable mailbox
-itself, its cursor, and restart/reconnect semantics are unchanged; this is a
-response-shape default only.
+`batchId`, `staleMachines`, `pending` (`events`, `hasMore`, `waitOutcome`,
+`machineErrors`, `watchError`), and the watched `query` with any cursor-shaped
+key stripped. Acknowledgement is by `batchId` alone, so the durable
+observation cursor (top-level `cursor` and `pending.cursor`) is internal
+replay/reconnect state an agent never needs to read or round-trip. Pass
+`diagnostic: true` (a query parameter on unsubscribe, a body field on
+subscribe/read) for the full internal row — adds `stage`, `branch`, `runId`,
+`revision`, `delivery`, `wakeAdmitted` and the raw cursor — for
+troubleshooting. The durable mailbox itself, its cursor, and restart/reconnect
+semantics are unchanged; this is a response-shape default only.
+
+`staleMachines` is top-level, not nested under `pending`: an unreachable
+remote peer's degraded coverage is durable, deduped row state (see the
+repo-scoped subscription's outage isolation below), not a batch-scoped fact,
+so it stays visible on a quiet subscription (`pending: null`) between wakes —
+a compact-mode caller does not need `diagnostic: true` just to see a
+known-down peer. It is the same small `{machineId: reason}` map the mailbox
+already uses for de-duplication, never the durable cursor or anything
+cursor-shaped; a delivered batch's own `pending.machineErrors` is unchanged
+and still carries the per-batch diagnostic array.
+
+A repo/parent-scoped subscription fans observation out across every machine
+in scope. One remote peer being unreachable degrades only that peer's own
+leg: `wait_aggregate_task_events` never spawns a wait to a machine currently
+absent from discovery (a fault attributed to that machine, not this one),
+and treats a fault reported for any other machine as informational rather
+than as cause to cut the wait short — the remaining active machines,
+including this one, keep running their normal collection cycle. `accept_page`
+mirrors that split: only a fault attributed to *this* machine's own leg
+(`wait_local_task_events` itself failing, or an already-explicit
+`watchError` such as an invalid/expired cursor) still fails the whole
+subscription (`active` becomes `false`) — that is a local DB/delivery fault
+or a lost checkpoint, and stays fully actionable, never silently reset or
+retried. A remote peer's fault is tracked on the row (`stale_machines`,
+surfaced as `staleMachines` above) and de-duplicated by machine id, not by
+its error text, which can otherwise churn call to call for one continuous
+fault (`AppState::desktop_routing_unreachable_error` mints a fresh
+since-`now` timestamp whenever this machine's own relay routing stays
+healthy) — comparing text would manufacture a fresh wake every collection
+cycle for an unreachable peer that never actually changed. An unchanged,
+already-reported peer fault therefore produces no new page; a new fault, a
+recovery, or real events (with the fault riding along as an annotation) do.
+`accept_page` reconciles rather than replaces this set: one page's
+`machineErrors` is never the complete current truth about every peer, since
+`wait_aggregate_task_events` can seal a batch on this machine's own
+urgent/full/quiet criteria while a listed peer's own leg is still pending in
+the registry, in which case that peer appears in neither `machineErrors` nor
+`confirmedMachines` — that silence is left untouched, never read as
+recovery. Only `confirmedMachines` (a positive, successful completion of
+that machine's own leg this call — including an empty response whose
+checkpoint does not move) may clear an entry. A machine never appears in
+both lists on one response: `wait_aggregate_task_events` can re-arm and
+re-dispatch a machine's leg more than once within a single native call
+while its batch is still filling, so a machine can complete twice in one
+call — and the most recent completion is authoritative there exactly as it
+is across calls, a later same-call failure revoking an earlier same-call
+confirmation rather than the two coexisting. `step`'s own native-call chain
+accumulates `confirmedMachines` the same way it already accumulates events
+across chained calls, so a peer's recovery observed mid-chain is never
+silently dropped by the chain continuing past it; a peer already recorded
+stale being confirmed is also what ends that chain early, the same way a
+fresh failure already does, rather than sitting unreported until the chain
+otherwise runs out of things to say. The unreachable peer's own native
+checkpoint is left exactly as `apply_aggregate_completion` last recorded it
+— never advanced, never dropped from the aggregate's machine roster — so
+its return replays every event since that checkpoint through the same
+subscription, with no unsubscribe/
+resubscribe needed.
 
 `kanna_subscribe_events` also accepts optional, validated, per-subscription
 knobs that reuse existing ownership rather than adding a policy engine:
