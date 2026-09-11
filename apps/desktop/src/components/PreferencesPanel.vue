@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { openUrl } from '@tauri-apps/plugin-opener'
 import {
@@ -65,7 +65,12 @@ const emit = defineEmits<{
   close: []
 }>()
 
-const { overlayClass, overlayStyle, dismissOnScrimClick } = useEmbeddableView(props)
+const {
+  overlayClass,
+  overlayStyle,
+  dismissOnScrimClick,
+  bringToFront: raiseToFront,
+} = useEmbeddableView(props)
 
 const activeTab = ref<'general' | 'account' | 'mobile' | 'developer'>('general')
 
@@ -113,6 +118,11 @@ function handleKeydown(e: KeyboardEvent) {
 }
 
 const overlayRef = ref<HTMLDivElement | null>(null)
+
+function bringToFront() {
+  raiseToFront()
+  void nextTick(() => overlayRef.value?.focus())
+}
 
 function normalizeMobileServerStatus(status?: string): MobileServerStatus {
   if (status === "running" || status === "stopped" || status === "error") {
@@ -265,7 +275,7 @@ onBeforeUnmount(() => {
   unsubscribeAuth?.()
 })
 
-defineExpose({ cycleTab })
+defineExpose({ bringToFront, cycleTab })
 </script>
 
 <template>
@@ -274,6 +284,9 @@ defineExpose({ cycleTab })
     :class="overlayClass"
     :style="overlayStyle"
     tabindex="-1"
+    role="dialog"
+    aria-modal="true"
+    :aria-label="$t('preferences.title')"
     @click.self="dismissOnScrimClick(() => emit('close'))"
     @keydown="handleKeydown"
   >

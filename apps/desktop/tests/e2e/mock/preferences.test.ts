@@ -10,11 +10,11 @@ async function activeTabLabel(client: WebDriverClient): Promise<string> {
   );
 }
 
-async function preferencesTabCount(client: WebDriverClient): Promise<number> {
-  return client.executeSync<number>(
+async function mainTabKinds(client: WebDriverClient): Promise<string[]> {
+  return client.executeSync<string[]>(
     `const tabs = window.__KANNA_E2E__?.setupState?.mainTabs;
      if (!tabs) throw new Error("main tabs are unavailable on setupState");
-     return (tabs.tabs?.value ?? []).filter((tab) => tab.kind === "preferences").length;`
+     return (tabs.tabs?.value ?? []).map((tab) => tab.kind);`
   );
 }
 
@@ -60,10 +60,7 @@ describe("preferences", () => {
     await client.waitForNoElement(".prefs-panel", 2_000);
   });
 
-  // Preferences is a tab now, so its shortcut opens rather than toggles: a
-  // second press brings the same tab forward instead of closing the one the
-  // owner just asked for. Escape is what closes it.
-  it("keeps one preferences tab open when the shortcut is pressed again", async () => {
+  it("keeps one app-level Preferences dialog open without creating a main tab", async () => {
     await client.executeSync(buildGlobalKeydownScript({ key: ",", meta: true }));
     const panel = await client.waitForElement(".prefs-panel", 2_000);
     expect(panel).toBeTruthy();
@@ -71,11 +68,11 @@ describe("preferences", () => {
     await client.executeSync(buildGlobalKeydownScript({ key: ",", meta: true }));
     await client.waitForElement(".prefs-panel", 2_000);
     expect(await client.findElements(".prefs-panel")).toHaveLength(1);
-    expect(await preferencesTabCount(client)).toBe(1);
+    expect(await mainTabKinds(client)).not.toContain("preferences");
 
     await client.executeSync(buildGlobalKeydownScript({ key: "Escape" }));
     await client.waitForNoElement(".prefs-panel", 2_000);
-    expect(await preferencesTabCount(client)).toBe(0);
+    expect(await mainTabKinds(client)).not.toContain("preferences");
   });
 
   it("shows default settings in the UI", async () => {
@@ -183,9 +180,9 @@ describe("preferences", () => {
     expect(persisted).toEqual({ appTheme: "light", codeTheme: "dark" });
   });
 
-  // The palette stacks on top of Preferences rather than replacing it, so its tab
-  // commands dispatch through AppModalLayer into the panel underneath.
-  it("cycles preferences tabs from the command palette", async () => {
+  // The palette stacks on top of Preferences rather than replacing it, so its
+  // tab commands dispatch through AppModalLayer into the dialog underneath.
+  it("cycles Preferences sections from the command palette", async () => {
     await client.executeSync(buildGlobalKeydownScript({ key: ",", meta: true }));
     await client.waitForElement(".prefs-panel", 2_000);
     expect(await activeTabLabel(client)).toBe("Preferences");

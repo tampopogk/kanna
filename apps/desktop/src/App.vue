@@ -306,6 +306,7 @@ const {
   showAddRepoModal,
   addRepoInitialTab,
   showShortcutsModal,
+  showPreferencesPanel,
   shortcutsStartFull,
   shortcutsContext,
   showFilePickerModal,
@@ -319,6 +320,7 @@ const {
   maximized,
   sidebarRef,
   mainPanelRef,
+  preferencesPanelRef,
   sidebarShellStyle,
   canResizeSidebar,
   stopSidebarResize,
@@ -328,6 +330,7 @@ const {
   currentShortcutContext,
   closeFilePicker,
   showFilePickerOnTop,
+  showPreferencesOnTop,
   openFilePreview,
   openImageUrlPreview,
   getCurrentPreviewRecall,
@@ -513,7 +516,6 @@ const mainPanelTaskIsBlocked = computed(() =>
 const mainTabViews: MainTabViewsController = {
   tabs: mainTabs,
   modals: appModals,
-  preferences: appPreferences,
   store,
 };
 
@@ -566,6 +568,8 @@ const appKeyboardActions = useAppKeyboardActions({
   showAddRepoModal,
   addRepoInitialTab,
   showShortcutsModal,
+  showPreferencesPanel,
+  preferencesPanelRef,
   shortcutsStartFull,
   shortcutsContext,
   showFilePickerModal,
@@ -577,6 +581,7 @@ const appKeyboardActions = useAppKeyboardActions({
   openNewTaskModal,
   requestCloseCurrentWindow,
   showFilePickerOnTop,
+  showPreferencesOnTop,
   getCurrentPreviewRecall,
   openFilePreview,
   advanceSelectedRemoteWorkspaceTask,

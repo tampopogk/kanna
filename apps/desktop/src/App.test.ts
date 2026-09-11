@@ -1019,11 +1019,7 @@ const TabHostMainPanelStub = defineComponent({
       controller.closeTab(tab.id);
       return true;
     }
-    function cyclePreferencesSection(direction: -1 | 1) {
-      const tab = props.views?.tabs.activeTab.value;
-      if (tab?.kind === "preferences") viewRefs.get(tab.id)?.cycleTab?.(direction);
-    }
-    expose({ recheckClis: vi.fn(), dismissActiveTab, cyclePreferencesSection });
+    expose({ recheckClis: vi.fn(), dismissActiveTab });
     return { setViewRef };
   },
   template: `
@@ -1081,16 +1077,6 @@ const TabHostMainPanelStub = defineComponent({
           :repo-path="views.modals.activeRepoPath.value || ''"
           embedded
           :active="views.tabs.activeTabId.value === tab.id"
-          @close="views.tabs.closeTab(tab.id)"
-        />
-        <PreferencesPanel
-          v-else-if="tab.kind === 'preferences'"
-          :ref="(c) => setViewRef(tab.id, c)"
-          v-show="views.tabs.activeTabId.value === tab.id"
-          :preferences="views.preferences.preferences"
-          embedded
-          :active="views.tabs.activeTabId.value === tab.id"
-          @update="views.preferences.handlePreferenceUpdate"
           @close="views.tabs.closeTab(tab.id)"
         />
       </template>
@@ -1814,7 +1800,11 @@ describe("App", () => {
     wrapper.unmount();
   });
 
-  it("opens preferences as a tab and closes it with the close-tab shortcut", async () => {
+  it("opens one app-level Preferences dialog without a selected task", async () => {
+    store.selectedItemId = null;
+    store.selectedTaskId = null;
+    store.currentItem = null;
+    store.currentTaskSlot = null;
     const wrapper = await mountAppWithOverrides(SidebarWithRepoStub, {
       MainPanel: TabHostMainPanelStub,
     });
@@ -1826,14 +1816,15 @@ describe("App", () => {
     await flushPromises();
 
     expect(wrapper.findComponent({ name: "PreferencesPanel" }).exists()).toBe(true);
+    expect(wrapper.find('[data-testid="main-tab-preferences"]').exists()).toBe(false);
 
-    // The shortcut that opened it raises it rather than toggling it shut...
+    // Reopening focuses the same app-owned surface rather than creating one
+    // per current tab scope.
     capturedKeyboardActions?.openPreferences();
     await flushPromises();
-    expect(wrapper.findComponent({ name: "PreferencesPanel" }).exists()).toBe(true);
+    expect(wrapper.findAllComponents({ name: "PreferencesPanel" })).toHaveLength(1);
 
-    // ...⌘W is what closes a tab.
-    await capturedKeyboardActions?.closeTabOrWindow();
+    capturedKeyboardActions?.dismiss();
     await flushPromises();
     expect(wrapper.findComponent({ name: "PreferencesPanel" }).exists()).toBe(false);
 

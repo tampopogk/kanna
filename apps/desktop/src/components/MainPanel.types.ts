@@ -1,5 +1,4 @@
 import type { useAppModals } from "../composables/useAppModals";
-import type { useAppPreferences } from "../composables/useAppPreferences";
 import type { MainTabsController } from "../composables/useMainTabs";
 import type { useKannaStore } from "../stores/kanna";
 
@@ -15,6 +14,5 @@ import type { useKannaStore } from "../stores/kanna";
 export interface MainTabViewsController {
   tabs: MainTabsController;
   modals: ReturnType<typeof useAppModals>;
-  preferences: ReturnType<typeof useAppPreferences>;
   store: ReturnType<typeof useKannaStore>;
 }

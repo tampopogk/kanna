@@ -84,6 +84,17 @@ function createHarness(options: {
   if (options.activeTabKind === "diff") mainTabs.openTab({ kind: "diff" });
   const overlayContext = ref<ShortcutContext>("main");
   const showShortcutsModal = ref(false);
+  const showPreferencesPanel = ref(false);
+  const cyclePreferencesTab = vi.fn();
+  const bringPreferencesToFront = vi.fn();
+  const preferencesPanelRef = ref({
+    cycleTab: cyclePreferencesTab,
+    bringToFront: bringPreferencesToFront,
+  });
+  const showPreferencesOnTop = vi.fn(() => {
+    showPreferencesPanel.value = true;
+    bringPreferencesToFront();
+  });
   const shortcutsContext = ref<ShortcutContext>("main");
   const shortcutsStartFull = ref(false);
   const requestCloseCurrentWindow = vi.fn(async () => {});
@@ -100,11 +111,14 @@ function createHarness(options: {
     requestCloseCurrentWindow,
     currentShortcutContext: computed(() => showShortcutsModal.value ? "main" : overlayContext.value),
     showShortcutsModal,
+    showPreferencesPanel,
+    preferencesPanelRef,
     shortcutsContext,
     shortcutsStartFull,
     showCommandPalette: ref(false),
     showFilePickerModal,
     showFilePickerOnTop,
+    showPreferencesOnTop,
     closeFilePicker: vi.fn(),
     getCurrentPreviewRecall: () => undefined,
     openFilePreview: vi.fn(),
@@ -115,6 +129,9 @@ function createHarness(options: {
     keyboardActions,
     overlayContext,
     showShortcutsModal,
+    showPreferencesPanel,
+    cyclePreferencesTab,
+    bringPreferencesToFront,
     shortcutsContext,
     shortcutsStartFull,
     mainTabs,
@@ -126,6 +143,7 @@ function createHarness(options: {
     navigateForward,
     toast,
     showFilePickerOnTop,
+    showPreferencesOnTop,
   };
 }
 
@@ -253,6 +271,40 @@ describe("useAppKeyboardActions durable selection", () => {
     await keyboardActions.closeTabOrWindow();
 
     expect(requestCloseCurrentWindow).toHaveBeenCalledOnce();
+  });
+
+  it("opens and focuses one app-level Preferences surface without changing tab state", () => {
+    const h = createHarness({
+      currentItem: item("task-durable"),
+      activeTabKind: "diff",
+    });
+    const before = h.mainTabs.snapshotScopes();
+
+    h.keyboardActions.openPreferences();
+    h.keyboardActions.openPreferences();
+
+    expect(h.showPreferencesPanel.value).toBe(true);
+    expect(h.showPreferencesOnTop).toHaveBeenCalledTimes(2);
+    expect(h.bringPreferencesToFront).toHaveBeenCalledTimes(2);
+    expect(h.mainTabs.activeTabId.value).toBe("diff");
+    expect(h.mainTabs.snapshotScopes()).toEqual(before);
+
+    h.keyboardActions.dismiss();
+    expect(h.showPreferencesPanel.value).toBe(false);
+    expect(h.mainTabs.activeTabId.value).toBe("diff");
+    expect(h.mainTabs.snapshotScopes()).toEqual(before);
+  });
+
+  it("cycles Preferences sections while its app-level surface is open", () => {
+    const h = createHarness({ activeTabKind: "diff" });
+    h.keyboardActions.openPreferences();
+
+    h.keyboardActions.nextTab();
+    h.keyboardActions.prevTab();
+
+    expect(h.cyclePreferencesTab).toHaveBeenNthCalledWith(1, 1);
+    expect(h.cyclePreferencesTab).toHaveBeenNthCalledWith(2, -1);
+    expect(h.mainTabs.activeTabId.value).toBe("diff");
   });
 
   it("advances a selected task while its diff tab is in front", () => {

@@ -3,6 +3,7 @@ import { computed, nextTick, onUnmounted, reactive, ref, watch, type ComputedRef
 import Sidebar from "../components/Sidebar.vue";
 import MainPanel from "../components/MainPanel.vue";
 import FilePickerModal from "../components/FilePickerModal.vue";
+import PreferencesPanel from "../components/PreferencesPanel.vue";
 import { type ShortcutContext } from "./useShortcutContext";
 import { useRestoreFocus } from "./useRestoreFocus";
 import {
@@ -83,6 +84,7 @@ export function useAppModals({
   const showAddRepoModal = ref(false);
   const addRepoInitialTab = ref<"create" | "import">("create");
   const showShortcutsModal = ref(false);
+  const showPreferencesPanel = ref(false);
   const shortcutsStartFull = ref(false);
   const shortcutsContext = ref<ShortcutContext>("main");
   const showFilePickerModal = ref(false);
@@ -183,6 +185,7 @@ export function useAppModals({
   const sidebarRef = ref<InstanceType<typeof Sidebar> | null>(null);
   const mainPanelRef = ref<InstanceType<typeof MainPanel> | null>(null);
   const filePickerRef = ref<InstanceType<typeof FilePickerModal> | null>(null);
+  const preferencesPanelRef = ref<InstanceType<typeof PreferencesPanel> | null>(null);
   const sidebarShellStyle = computed(() => ({
     width: `${sidebarWidth.value}px`,
     minWidth: `${sidebarWidth.value}px`,
@@ -478,6 +481,11 @@ export function useAppModals({
     nextTick(() => filePickerRef.value?.bringToFront?.());
   }
 
+  function showPreferencesOnTop() {
+    showPreferencesPanel.value = true;
+    nextTick(() => preferencesPanelRef.value?.bringToFront?.());
+  }
+
   /**
    * Show a file in the main content area. Every caller — the picker, the tree
    * explorer, a terminal file link, a `kanna_open_view` request — lands here,
@@ -517,7 +525,8 @@ export function useAppModals({
   // tabs, and a tab never took focus away from anything to begin with.
   const anyModalOpen = computed(() =>
     showNewTaskModal.value || showAddRepoModal.value || showShortcutsModal.value ||
-    showFilePickerModal.value || showBlockerSelect.value || showPeerPicker.value
+    showFilePickerModal.value || showBlockerSelect.value || showPeerPicker.value ||
+    showPreferencesPanel.value
   );
   useRestoreFocus(anyModalOpen);
 
@@ -531,6 +540,7 @@ export function useAppModals({
     showAddRepoModal,
     addRepoInitialTab,
     showShortcutsModal,
+    showPreferencesPanel,
     shortcutsStartFull,
     shortcutsContext,
     showFilePickerModal,
@@ -561,6 +571,7 @@ export function useAppModals({
     sidebarRef,
     mainPanelRef,
     filePickerRef,
+    preferencesPanelRef,
     sidebarShellStyle,
     canResizeSidebar,
     currentDiffViewKey,
@@ -581,6 +592,7 @@ export function useAppModals({
     currentShortcutContext,
     closeFilePicker,
     showFilePickerOnTop,
+    showPreferencesOnTop,
     openFilePreview,
     selectFileFromPicker,
     openImageUrlPreview,

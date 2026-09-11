@@ -6,6 +6,7 @@ import AddRepoModal from "./AddRepoModal.vue";
 import KeyboardShortcutsModal from "./KeyboardShortcutsModal.vue";
 import FilePickerModal from "./FilePickerModal.vue";
 import CommandPaletteModal from "./CommandPaletteModal.vue";
+import PreferencesPanel from "./PreferencesPanel.vue";
 import BlockerSelectModal from "./BlockerSelectModal.vue";
 import PeerPickerModal from "./PeerPickerModal.vue";
 import AppUpdatePrompt from "./AppUpdatePrompt.vue";
@@ -23,6 +24,10 @@ const preferences = c.appPreferences.preferences;
 
 function setFilePickerRef(component: Element | ComponentPublicInstance | null) {
   m.filePickerRef.value = component as InstanceType<typeof FilePickerModal> | null;
+}
+
+function setPreferencesPanelRef(component: Element | ComponentPublicInstance | null) {
+  m.preferencesPanelRef.value = component as InstanceType<typeof PreferencesPanel> | null;
 }
 </script>
 
@@ -69,6 +74,13 @@ function setFilePickerRef(component: Element | ComponentPublicInstance | null) {
     @close="m.showShortcutsModal.value = false"
     @update:hide-on-startup="(val: boolean) => c.store.savePreference('hideShortcutsOnStartup', String(val))"
     @update:full-mode="m.shortcutsStartFull.value = $event"
+  />
+  <PreferencesPanel
+    v-if="m.showPreferencesPanel.value"
+    :ref="setPreferencesPanelRef"
+    :preferences="preferences"
+    @update="c.appPreferences.handlePreferenceUpdate"
+    @close="m.showPreferencesPanel.value = false"
   />
   <div
     v-if="(m.showFilePickerModal.value || m.filePickerHidden.value) && !c.isMobile && !m.activeTaskViewIsRemote.value && c.store.selectedRepo?.path"

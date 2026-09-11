@@ -110,11 +110,7 @@ export async function tauriInvoke(
 }
 
 /**
- * Open or close the Preferences view.
- *
- * Preferences is a tab in the main content area, not an overlay, so a test
- * that needs the account or mobile panel asks the tab set for it rather than
- * flipping a `showPreferencesPanel` flag that no longer exists.
+ * Open or close the app-level Preferences dialog.
  */
 export async function setPreferencesOpen(
   client: WebDriverClient,
@@ -122,15 +118,10 @@ export async function setPreferencesOpen(
 ): Promise<void> {
   await client.executeSync(`
     const ctx = window.__KANNA_E2E__?.setupState;
-    const tabs = ctx?.mainTabs;
-    if (!tabs) throw new Error("main tabs are unavailable on setupState");
-    const existing = (tabs.tabs?.value ?? []).find((tab) => tab.kind === "preferences");
-    if (${open ? "true" : "false"}) {
-      if (existing) tabs.activateTab(existing.id);
-      else tabs.openTab({ kind: "preferences" });
-    } else if (existing) {
-      tabs.closeTab(existing.id);
-    }
+    const modals = ctx?.appModals;
+    if (!modals) throw new Error("app modals are unavailable on setupState");
+    if (${open ? "true" : "false"}) modals.showPreferencesOnTop();
+    else modals.showPreferencesPanel.value = false;
     return true;
   `);
 }
