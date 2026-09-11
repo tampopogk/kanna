@@ -106,6 +106,35 @@ fn bundled_guides_are_topic_addressable_and_drive_schema_descriptions() {
 }
 
 #[test]
+fn task_creation_and_workflow_guidance_distinguish_consultation_from_planning() {
+    let catalog = bundled_catalog();
+    let workflow_guide = catalog.render_guide("workflows").expect("workflow guide");
+    assert!(workflow_guide.contains("public `consultation` workflow"));
+    assert!(workflow_guide.contains("standalone manual product discussion"));
+    assert!(workflow_guide.contains("never authorizes implementation"));
+    assert!(workflow_guide.contains("technical approach consultation"));
+
+    let create_task = catalog
+        .tools
+        .iter()
+        .find(|tool| tool.name == "kanna_create_task")
+        .expect("create task tool");
+    let workflow_name = create_task
+        .params
+        .iter()
+        .find(|param| param.name == "workflow_name")
+        .expect("workflow_name parameter");
+    let description = workflow_name
+        .description
+        .as_deref()
+        .expect("workflow_name description");
+    assert!(description.contains("'consultation' is a standalone manual product discussion"));
+    assert!(description.contains("recommendation never authorizes implementation"));
+    assert!(description.contains("For an already chosen objective"));
+    assert!(description.contains("'plan-build-review' adds a manual implementation-planning gate"));
+}
+
+#[test]
 fn checked_in_config_schema_descriptions_match_catalog_guides() {
     let schema_path =
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.kanna/config.schema.json");

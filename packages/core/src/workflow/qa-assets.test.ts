@@ -324,6 +324,48 @@ describe("QA workflow assets", () => {
     expect(dispatcher.prompt).toContain("Create all children before waiting");
   });
 
+  it("keeps product consultation public, standalone, and distinct from planning", () => {
+    const consultantFile = readRepoFile(".kanna/agents/consultant/AGENT.md");
+    const consultant = parseAgentDefinition(consultantFile);
+    const consultantPhrases = readRepoPhrases(".kanna/agents/consultant/AGENT.md");
+    const consultationFile = readRepoFile(".kanna/workflows/consultation.json");
+    const consultation = parseWorkflowJson(consultationFile);
+    const plan = readRepoPhrases(".kanna/agents/plan/AGENT.md");
+    const manager = readRepoPhrases(".kanna/agents/task-manager/AGENT.md");
+
+    expect(consultant.name).toBe("consultant");
+    expect(consultantFile).not.toContain("visibility: internal");
+    expect(consultantPhrases).toContain("decide **what** outcome to pursue and **why**");
+    expect(consultantPhrases).toContain("When `docs/dev/product-context.md` exists, read it first");
+    expect(consultantPhrases).toContain("especially while still a draft, does not by itself create a new owner decision");
+    expect(consultantPhrases).toContain("verified facts");
+    expect(consultantPhrases).toContain("explicit owner decisions");
+    expect(consultantPhrases).toContain("**assumptions**, **unknowns**, and **proposals**");
+    expect(consultantPhrases).toContain("A recommendation is never authorization to implement it");
+    expect(consultantPhrases).toContain("Do not create development tasks, fan work out");
+    expect(consultantPhrases).toContain("remain available in the same session for discussion");
+
+    expect(consultation.name).toBe("consultation");
+    expect(consultationFile).not.toContain('"visibility": "internal"');
+    expect(consultation.stages).toHaveLength(1);
+    expect(consultation.stages[0]).toMatchObject({
+      name: "consultation",
+      agent: "consultant",
+      prompt: "$TASK_PROMPT",
+      policy: { transition: "manual" },
+    });
+    expect(consultation.stages[0]?.post).toBeUndefined();
+
+    expect(plan).toContain("Planning answers **how** to deliver an objective the owner has already chosen");
+    expect(plan).toContain("recommendation from an earlier consultation is context, not implementation authorization");
+    expect(manager).toContain("Separate Product Consultation From Planning");
+    expect(manager).toContain("Do not automatically convert a consultation");
+    expect(manager).toContain("read the consultation's full task and durable input ledger to verify that instruction");
+    expect(manager).toContain("use the existing `kanna_create_task` surface to create a separate top-level development task");
+    expect(manager).toContain("internal `architect-consultation` workflow remains a different tool");
+    expect(manager).toContain("do not inject manager terminal input to manufacture a decision");
+  });
+
   it("keeps the architect a generic software architect rather than a Kanna-specific one", () => {
     const file = readRepoFile(".kanna/agents/architect/AGENT.md");
     const architect = parseAgentDefinition(file);

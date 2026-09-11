@@ -1182,6 +1182,10 @@ const BUILTIN_AGENT_RESOURCES: &[(&str, &str)] = &[
         include_str!("../../../../.kanna/agents/commit/AGENT.md"),
     ),
     (
+        ".kanna/agents/consultant/AGENT.md",
+        include_str!("../../../../.kanna/agents/consultant/AGENT.md"),
+    ),
+    (
         ".kanna/agents/config-factory/AGENT.md",
         include_str!("../../../../.kanna/agents/config-factory/AGENT.md"),
     ),
@@ -1350,11 +1354,16 @@ pub(super) fn canonical_builtin_workflow_name(name: &str) -> &str {
 /// the definition itself, through its `visibility` field. Purpose-built child
 /// workflows such as `specialty-review` and `architect-consultation` declare
 /// `"visibility": "internal"`: their invoking agents bind them explicitly,
-/// while an operator chooses only complete product-work workflows.
+/// while public consultation and complete product-work workflows remain
+/// operator choices.
 const BUILTIN_WORKFLOWS: &[(&str, &str)] = &[
     (
         "architect-consultation",
         include_str!("../../../../.kanna/workflows/architect-consultation.json"),
+    ),
+    (
+        "consultation",
+        include_str!("../../../../.kanna/workflows/consultation.json"),
     ),
     (
         "no-review",

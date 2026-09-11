@@ -559,6 +559,13 @@ async fn list_agents_reports_the_resolved_repo_override_that_task_creation_uses(
     assert_eq!(architect["definition"]["name"], "architect");
     assert_eq!(architect["definition"]["visibility"], "internal");
 
+    let consultant = agents
+        .iter()
+        .find(|agent| agent["name"] == "consultant")
+        .expect("public built-in consultant agent");
+    assert_eq!(consultant["source"], "built_in");
+    assert_eq!(consultant["defaultProvider"], "codex");
+
     let ship = agents
         .iter()
         .find(|agent| agent["name"] == "ship")
@@ -777,6 +784,7 @@ async fn repo_definition_routes_return_one_remote_revision_and_normalized_snake_
         manifest["workflows"],
         json!([
             "broken",
+            "consultation",
             "no-review",
             "plan-build-review",
             "pr-review",
@@ -946,12 +954,14 @@ async fn repo_definition_routes_use_bundled_only_values_without_a_remote_ref() {
     assert_eq!(manifest["refName"], "origin/main");
     assert_eq!(manifest["config"], json!({}));
     assert_eq!(manifest["defaultWorkflow"], "no-review");
-    // Purpose-built child workflows stay out of the public lineup: the QA
-    // dispatcher binds `specialty-review`, while the task manager binds
-    // `architect-consultation` for a bounded advisory child.
+    // Product consultation is an ordinary public choice. Purpose-built child
+    // workflows stay out of the lineup: the QA dispatcher binds
+    // `specialty-review`, while the task manager binds `architect-consultation`
+    // for a bounded technical advisory child.
     assert_eq!(
         manifest["workflows"],
         json!([
+            "consultation",
             "no-review",
             "plan-build-review",
             "pr-review",
@@ -969,6 +979,19 @@ async fn repo_definition_routes_use_bundled_only_values_without_a_remote_ref() {
     assert_eq!(workflow["revision"], Value::Null);
     assert_eq!(workflow["definition"]["name"], "no-review");
 
+    let (status, product_consultation) = json_response(
+        &app,
+        "/v1/repos/repo-1/kanna-definitions/workflows/consultation",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(product_consultation["definition"]["name"], "consultation");
+    assert_eq!(
+        product_consultation["definition"]["stages"][0]["agent"],
+        "consultant"
+    );
+    assert!(product_consultation["definition"]["visibility"].is_null());
+
     // Unlisted is not unresolvable: the dispatcher still names it on create,
     // so the definition must serve exactly as before.
     let (status, workflow) = json_response(
@@ -979,18 +1002,24 @@ async fn repo_definition_routes_use_bundled_only_values_without_a_remote_ref() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(workflow["definition"]["name"], "specialty-review");
 
-    let (status, consultation) = json_response(
+    let (status, architect_consultation) = json_response(
         &app,
         "/v1/repos/repo-1/kanna-definitions/workflows/architect-consultation",
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(consultation["definition"]["name"], "architect-consultation");
     assert_eq!(
-        consultation["definition"]["stages"][0]["agent"],
+        architect_consultation["definition"]["name"],
+        "architect-consultation"
+    );
+    assert_eq!(
+        architect_consultation["definition"]["stages"][0]["agent"],
         "architect"
     );
-    assert_eq!(consultation["definition"]["visibility"], "internal");
+    assert_eq!(
+        architect_consultation["definition"]["visibility"],
+        "internal"
+    );
 
     let (status, ship) =
         json_response(&app, "/v1/repos/repo-1/kanna-definitions/agents/ship").await;
