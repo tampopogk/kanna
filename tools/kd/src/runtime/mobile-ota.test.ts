@@ -141,6 +141,9 @@ function publishRunner(
         };
       }
       if (command === "gcloud" && options.onGcloud) return options.onGcloud(args);
+      if (command === "gcloud" && args[1] === "cat") {
+        return { exitCode: 1, stdout: "", stderr: "not found: 404" };
+      }
       return { exitCode: 0, stdout: "", stderr: "" };
     },
   };
@@ -551,10 +554,12 @@ describe("kd mobile OTA", () => {
       return scratchDir;
     }
 
-    const failingUpload = (args: string[]) =>
-      args[1] === "cp"
+    const failingUpload = (args: string[]) => {
+      if (args[1] === "cat") return { exitCode: 1, stdout: "", stderr: "not found: 404" };
+      return args[1] === "cp"
         ? { exitCode: 1, stdout: "", stderr: "AccessDeniedException: 403" }
         : { exitCode: 0, stdout: "", stderr: "" };
+    };
 
     it("after a publish", async () => {
       const repoRoot = await makeRepoFixture();
@@ -658,6 +663,7 @@ describe("kd mobile OTA", () => {
       commits: { HEAD: HEAD_COMMIT, "release/0.2": HEAD_COMMIT },
       onGcloud: (args) => {
         uploads.push({ args });
+        if (args[1] === "cat") return { exitCode: 1, stdout: "", stderr: "not found: 404" };
         // A missing metadata.json is what makes the publish upload the update.
         if (args[1] === "ls") return { exitCode: 1, stdout: "", stderr: "not found" };
         if (args[1] === "rsync") uploaded.set("source", readFileSync(join(args[3], "kanna-source.json"), "utf8"));
@@ -724,17 +730,117 @@ describe("kd mobile OTA", () => {
     ).rejects.toThrow("kd mobile version bump --patch");
   });
 
-  it("accepts a legacy channel pointer without release metadata", async () => {
+  it("refuses to publish when the current channel pointer read fails", async () => {
     const repoRoot = await makeRepoFixture();
+    const calls: string[][] = [];
+    const pointerPath = `gs://${resolveKdEnvironment("staging").otaBucket}/ota/ios/1.0.0/channels/staging.json`;
     const runner = publishRunner(repoRoot, {
       onGcloud: (args) => {
-        if (args[1] === "cat") {
-          return {
-            exitCode: 0,
-            stdout: JSON.stringify({ currentUpdateId: "legacy-update", runtimeVersion: "1.0.0" }),
-            stderr: ""
-          };
+        calls.push(args);
+        if (args[1] === "cat" && args[2] === pointerPath) {
+          return { exitCode: 1, stdout: "", stderr: "ServiceUnavailable: try again" };
         }
+        return { exitCode: 0, stdout: "", stderr: "" };
+      }
+    });
+
+    await expect(
+      executeMobileOtaPublishWithContext(
+        { staging: true, production: false },
+        { repoRoot, env: {}, runner, validateOtaCertificate: acceptOtaCertificate }
+      )
+    ).rejects.toThrow(`could not read the current channel pointer ${pointerPath}`);
+    expect(calls.some((args) => args[1] === "rsync" || args[1] === "cp")).toBe(false);
+  });
+
+  it("refuses to publish when the current channel pointer is malformed", async () => {
+    const repoRoot = await makeRepoFixture();
+    const calls: string[][] = [];
+    const pointerPath = `gs://${resolveKdEnvironment("staging").otaBucket}/ota/ios/1.0.0/channels/staging.json`;
+    const runner = publishRunner(repoRoot, {
+      onGcloud: (args) => {
+        calls.push(args);
+        if (args[1] === "cat" && args[2] === pointerPath) {
+          return { exitCode: 0, stdout: "{not-json", stderr: "" };
+        }
+        return { exitCode: 0, stdout: "", stderr: "" };
+      }
+    });
+
+    await expect(
+      executeMobileOtaPublishWithContext(
+        { staging: true, production: false },
+        { repoRoot, env: {}, runner, validateOtaCertificate: acceptOtaCertificate }
+      )
+    ).rejects.toThrow(`current channel pointer ${pointerPath} is malformed`);
+    expect(calls.some((args) => args[1] === "rsync" || args[1] === "cp")).toBe(false);
+  });
+
+  it("refuses to publish when fallback legacy update metadata cannot be read", async () => {
+    const repoRoot = await makeRepoFixture();
+    const calls: string[][] = [];
+    const pointerPath = `gs://${resolveKdEnvironment("staging").otaBucket}/ota/ios/1.0.0/channels/staging.json`;
+    const metadataPath = `gs://${resolveKdEnvironment("staging").otaBucket}/ota/ios/1.0.0/updates/legacy-update/metadata.json`;
+    const runner = publishRunner(repoRoot, {
+      onGcloud: (args) => {
+        calls.push(args);
+        if (args[1] === "cat" && args[2] === pointerPath) return {
+          exitCode: 0,
+          stdout: JSON.stringify({ currentUpdateId: "legacy-update", runtimeVersion: "1.0.0" }),
+          stderr: ""
+        };
+        if (args[1] === "cat" && args[2] === metadataPath) {
+          return { exitCode: 1, stdout: "", stderr: "ServiceUnavailable: try again" };
+        }
+        return { exitCode: 0, stdout: "", stderr: "" };
+      }
+    });
+
+    await expect(
+      executeMobileOtaPublishWithContext(
+        { staging: true, production: false },
+        { repoRoot, env: {}, runner, validateOtaCertificate: acceptOtaCertificate }
+      )
+    ).rejects.toThrow(`could not establish the release currently served by staging: ${metadataPath} is not readable`);
+    expect(calls.some((args) => args[1] === "rsync" || args[1] === "cp")).toBe(false);
+  });
+
+  it("refuses to publish when fallback legacy update metadata is malformed", async () => {
+    const repoRoot = await makeRepoFixture();
+    const calls: string[][] = [];
+    const pointerPath = `gs://${resolveKdEnvironment("staging").otaBucket}/ota/ios/1.0.0/channels/staging.json`;
+    const metadataPath = `gs://${resolveKdEnvironment("staging").otaBucket}/ota/ios/1.0.0/updates/legacy-update/metadata.json`;
+    const runner = publishRunner(repoRoot, {
+      onGcloud: (args) => {
+        calls.push(args);
+        if (args[1] === "cat" && args[2] === pointerPath) return {
+          exitCode: 0,
+          stdout: JSON.stringify({ currentUpdateId: "legacy-update", runtimeVersion: "1.0.0" }),
+          stderr: ""
+        };
+        if (args[1] === "cat" && args[2] === metadataPath) {
+          return { exitCode: 0, stdout: "{not-json", stderr: "" };
+        }
+        return { exitCode: 0, stdout: "", stderr: "" };
+      }
+    });
+
+    await expect(
+      executeMobileOtaPublishWithContext(
+        { staging: true, production: false },
+        { repoRoot, env: {}, runner, validateOtaCertificate: acceptOtaCertificate }
+      )
+    ).rejects.toThrow(`could not establish the release currently served by staging: ${metadataPath} is malformed`);
+    expect(calls.some((args) => args[1] === "rsync" || args[1] === "cp")).toBe(false);
+  });
+
+  it("accepts a confirmed missing channel as its first publication", async () => {
+    const repoRoot = await makeRepoFixture();
+    const calls: string[][] = [];
+    const runner = publishRunner(repoRoot, {
+      onGcloud: (args) => {
+        calls.push(args);
+        if (args[1] === "cat") return { exitCode: 1, stdout: "", stderr: "No URLs matched: 404 not found" };
         if (args[1] === "ls") return { exitCode: 1, stdout: "", stderr: "not found" };
         return { exitCode: 0, stdout: "", stderr: "" };
       }
@@ -746,6 +852,71 @@ describe("kd mobile OTA", () => {
         { repoRoot, env: {}, runner, validateOtaCertificate: acceptOtaCertificate }
       )
     ).resolves.toMatchObject({ ok: true });
+    expect(calls.some((args) => args[1] === "rsync")).toBe(true);
+    expect(calls.some((args) => args[1] === "cp")).toBe(true);
+  });
+
+  it("accepts successfully read legacy update metadata without a release version", async () => {
+    const repoRoot = await makeRepoFixture();
+    const calls: string[][] = [];
+    const pointerPath = `gs://${resolveKdEnvironment("staging").otaBucket}/ota/ios/1.0.0/channels/staging.json`;
+    const metadataPath = `gs://${resolveKdEnvironment("staging").otaBucket}/ota/ios/1.0.0/updates/legacy-update/metadata.json`;
+    const runner = publishRunner(repoRoot, {
+      onGcloud: (args) => {
+        calls.push(args);
+        if (args[1] === "cat" && args[2] === pointerPath) return {
+          exitCode: 0,
+          stdout: JSON.stringify({ currentUpdateId: "legacy-update", runtimeVersion: "1.0.0" }),
+          stderr: ""
+        };
+        if (args[1] === "cat" && args[2] === metadataPath) return {
+          exitCode: 0,
+          stdout: JSON.stringify({ fileMetadata: { ios: { bundle: "bundles/main.hbc", assets: [] } } }),
+          stderr: ""
+        };
+        if (args[1] === "ls") return { exitCode: 1, stdout: "", stderr: "not found" };
+        return { exitCode: 0, stdout: "", stderr: "" };
+      }
+    });
+
+    await expect(
+      executeMobileOtaPublishWithContext(
+        { staging: true, production: false },
+        { repoRoot, env: {}, runner, validateOtaCertificate: acceptOtaCertificate }
+      )
+    ).resolves.toMatchObject({ ok: true });
+    expect(calls.some((args) => args[1] === "rsync")).toBe(true);
+    expect(calls.some((args) => args[1] === "cp")).toBe(true);
+  });
+
+  it("publishes an advancing release version", async () => {
+    const repoRoot = await makeRepoFixture();
+    const calls: string[][] = [];
+    const runner = publishRunner(repoRoot, {
+      onGcloud: (args) => {
+        calls.push(args);
+        if (args[1] === "cat") return {
+          exitCode: 0,
+          stdout: JSON.stringify({
+            currentUpdateId: "old-update",
+            runtimeVersion: "1.0.0",
+            releaseVersion: "0.9.9"
+          }),
+          stderr: ""
+        };
+        if (args[1] === "ls") return { exitCode: 1, stdout: "", stderr: "not found" };
+        return { exitCode: 0, stdout: "", stderr: "" };
+      }
+    });
+
+    await expect(
+      executeMobileOtaPublishWithContext(
+        { staging: true, production: false },
+        { repoRoot, env: {}, runner, validateOtaCertificate: acceptOtaCertificate }
+      )
+    ).resolves.toMatchObject({ ok: true });
+    expect(calls.some((args) => args[1] === "rsync")).toBe(true);
+    expect(calls.some((args) => args[1] === "cp")).toBe(true);
   });
 
   it("publishes successfully but prominently reports a paired iPhone stranded on an older runtime", async () => {

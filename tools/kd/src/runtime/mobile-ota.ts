@@ -131,6 +131,11 @@ interface OtaChannelPointer {
   sourceCommit?: string;
 }
 
+type OtaReleaseVersionLookup =
+  | { status: "known"; releaseVersion: string }
+  | { status: "legacy" }
+  | { status: "unreadable"; detail: string };
+
 /**
  * Per-update source record, written alongside the update's Expo artifacts as
  * `kanna-source.json`. The channel pointer is overwritten by every publish and
@@ -299,14 +304,17 @@ export async function executeMobileOtaPublishWithContext(
   const scratch = await mkdtemp(join(context.scratchDir ?? tmpdir(), "kanna-ota-"));
   try {
     if (input.rollbackTo) {
-      const rollbackReleaseVersion = input.dryRun === true
-        ? null
+      const rollbackReleaseVersionLookup = input.dryRun === true
+        ? { status: "legacy" as const }
         : await readUpdateReleaseVersion(
             context,
             identity.otaBucket,
             runtimeVersion,
             input.rollbackTo
           );
+      const rollbackReleaseVersion = rollbackReleaseVersionLookup.status === "known"
+        ? rollbackReleaseVersionLookup.releaseVersion
+        : null;
       const pointer = await writePointerFile({
         scratch,
         updateId: input.rollbackTo,
@@ -397,23 +405,42 @@ export async function executeMobileOtaPublishWithContext(
         "cat",
         `gs://${plan.bucket}/${plan.pointerObject}`,
       ], { cwd: context.repoRoot, env: context.env });
-      const currentPointer = parsePointer(livePointer.stdout);
-      const currentReleaseVersion = currentPointer
+      if (livePointer.exitCode !== 0 && !isNotFoundFailure(livePointer)) {
+        throw new Error(
+          `Refusing to publish mobile release ${plan.releaseVersion}: could not read the current ` +
+            `channel pointer gs://${plan.bucket}/${plan.pointerObject}: ${summarizeCommandFailure(livePointer)}`
+        );
+      }
+      const currentPointer = livePointer.exitCode === 0
+        ? parsePointer(livePointer.stdout)
+        : null;
+      if (livePointer.exitCode === 0 && !currentPointer) {
+        throw new Error(
+          `Refusing to publish mobile release ${plan.releaseVersion}: the current channel pointer ` +
+            `gs://${plan.bucket}/${plan.pointerObject} is malformed.`
+        );
+      }
+      const currentRelease = currentPointer
         ? await resolvePointerReleaseVersion(
             context,
             plan.bucket,
             plan.runtimeVersion,
             currentPointer
           )
-        : null;
+        : { status: "legacy" as const };
+      if (currentRelease.status === "unreadable") {
+        throw new Error(
+          `Refusing to publish mobile release ${plan.releaseVersion}: could not establish the ` +
+            `release currently served by ${plan.channel}: ${currentRelease.detail}`
+        );
+      }
       if (
-        livePointer.exitCode === 0 &&
-        currentReleaseVersion &&
-        compareVersions(plan.releaseVersion, currentReleaseVersion) <= 0
+        currentRelease.status === "known" &&
+        compareVersions(plan.releaseVersion, currentRelease.releaseVersion) <= 0
       ) {
         throw new Error(
           `Refusing to publish mobile release ${plan.releaseVersion} to ${plan.channel}: ` +
-            `the channel already serves ${currentReleaseVersion}. Run ` +
+            `the channel already serves ${currentRelease.releaseVersion}. Run ` +
             "`kd mobile version bump --patch` (or --minor/--major), commit it, and retry."
         );
       }
@@ -487,13 +514,16 @@ export async function executeMobileOtaStatusWithContext(
 
   const pointers = await observeRuntimePointers(context, identity.otaBucket, identity.otaChannel, runtimeVersion);
   const parsedPointer = parsePointer(pointer.stdout);
-  const releaseVersion = parsedPointer
+  const releaseVersionLookup = parsedPointer
     ? await resolvePointerReleaseVersion(
         context,
         identity.otaBucket,
         runtimeVersion,
         parsedPointer
       )
+    : { status: "legacy" as const };
+  const releaseVersion = releaseVersionLookup.status === "known"
+    ? releaseVersionLookup.releaseVersion
     : null;
   const devices = await observeMobileDevices(
     context,
@@ -1023,7 +1053,18 @@ function parseIamPolicy(stdout: string): IamPolicy | null {
 function parsePointer(stdout: string): OtaChannelPointer | null {
   try {
     const parsed = JSON.parse(stdout) as OtaChannelPointer;
-    return parsed && typeof parsed === "object" ? parsed : null;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+    if (typeof parsed.currentUpdateId !== "string" || !parsed.currentUpdateId.trim()) return null;
+    const optionalStrings: Array<keyof OtaChannelPointer> = [
+      "createdAt",
+      "runtimeVersion",
+      "releaseVersion",
+      "sourceRef",
+      "sourceCommit",
+    ];
+    return optionalStrings.some((key) => parsed[key] !== undefined && typeof parsed[key] !== "string")
+      ? null
+      : parsed;
   } catch {
     return null;
   }
@@ -1034,18 +1075,32 @@ async function readUpdateReleaseVersion(
   bucket: string,
   runtimeVersion: string,
   updateId: string
-): Promise<string | null> {
+): Promise<OtaReleaseVersionLookup> {
+  const object = `gs://${bucket}/ota/ios/${runtimeVersion}/updates/${updateId}/metadata.json`;
   const result = await context.runner.run("gcloud", [
     "storage",
     "cat",
-    `gs://${bucket}/ota/ios/${runtimeVersion}/updates/${updateId}/metadata.json`,
+    object,
   ], { cwd: context.repoRoot, env: context.env });
-  if (result.exitCode !== 0) return null;
+  if (result.exitCode !== 0) {
+    return { status: "unreadable", detail: `${object} is not readable: ${summarizeCommandFailure(result)}` };
+  }
   try {
     const metadata = JSON.parse(result.stdout) as ExpoMetadata;
-    return metadata.kanna?.releaseVersion?.trim() || null;
+    if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) {
+      return { status: "unreadable", detail: `${object} is malformed.` };
+    }
+    if (metadata.kanna === undefined) return { status: "legacy" };
+    if (!metadata.kanna || typeof metadata.kanna !== "object" || Array.isArray(metadata.kanna)) {
+      return { status: "unreadable", detail: `${object} is malformed.` };
+    }
+    if (metadata.kanna.releaseVersion === undefined) return { status: "legacy" };
+    if (typeof metadata.kanna.releaseVersion !== "string" || !metadata.kanna.releaseVersion.trim()) {
+      return { status: "unreadable", detail: `${object} is malformed.` };
+    }
+    return { status: "known", releaseVersion: metadata.kanna.releaseVersion.trim() };
   } catch {
-    return null;
+    return { status: "unreadable", detail: `${object} is malformed.` };
   }
 }
 
@@ -1054,13 +1109,13 @@ async function resolvePointerReleaseVersion(
   bucket: string,
   runtimeVersion: string,
   pointer: OtaChannelPointer
-): Promise<string | null> {
+): Promise<OtaReleaseVersionLookup> {
   const pointerVersion = pointer.releaseVersion?.trim();
-  if (pointerVersion) return pointerVersion;
+  if (pointerVersion) return { status: "known", releaseVersion: pointerVersion };
   const updateId = pointer.currentUpdateId?.trim();
   return updateId
     ? readUpdateReleaseVersion(context, bucket, runtimeVersion, updateId)
-    : null;
+    : { status: "legacy" };
 }
 
 function summarizeCommandFailure(result: { stdout: string; stderr: string }): string {
