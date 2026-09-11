@@ -54,7 +54,7 @@ pub(super) async fn get_repo_analytics(
         // Usage collection is what makes the token figures current. A failure
         // here costs coverage, never the rest of the response.
         let providers_without_usage =
-            match crate::usage_collection::collect_repo_token_usage(&db, &repo_id) {
+            match crate::usage_collection::collect_repo_token_usage(&db, &repo_id, &range) {
                 Ok(report) => report.providers_without_usage,
                 Err(error) => {
                     log::warn!("analytics: token usage collection failed: {error}");

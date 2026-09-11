@@ -375,7 +375,7 @@ function shareOf(value: number, rows: { totals: { total: number } }[]): number {
           </p>
           <p v-if="analytics.coverage.providersWithoutTokenUsage.length > 0" class="note warning">
             {{
-              t('analytics.tokensUnsupported', {
+              t('analytics.tokensIncomplete', {
                 providers: analytics.coverage.providersWithoutTokenUsage.join(', '),
               })
             }}

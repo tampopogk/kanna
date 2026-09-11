@@ -1851,20 +1851,34 @@ async fn analytics_route_aligns_token_coverage_with_usage_in_the_window() {
             "2026-04-16 08:00:00",
         )
         .unwrap();
-        db.insert_test_stage_run_window(
+        db.insert_test_provider_stage_run(
             "run-overlap",
             "task-1",
             "in progress",
+            "claude",
+            "/worktrees/covered",
             "2026-04-16 20:00:00",
             Some("2026-04-17 02:00:00"),
         )
         .unwrap();
-        db.insert_test_stage_run_window(
+        db.insert_test_provider_stage_run(
             "run-inside",
             "task-1",
             "review",
+            "claude",
+            "/worktrees/uncovered",
             "2026-04-17 10:00:00",
             Some("2026-04-17 11:00:00"),
+        )
+        .unwrap();
+        db.insert_test_provider_stage_run(
+            "run-old-unsupported",
+            "task-1",
+            "in progress",
+            "opencode",
+            "/worktrees/old",
+            "2026-04-10 10:00:00",
+            Some("2026-04-10 11:00:00"),
         )
         .unwrap();
         db.insert_test_token_usage(
@@ -1888,11 +1902,23 @@ async fn analytics_route_aligns_token_coverage_with_usage_in_the_window() {
         )
         .unwrap();
     });
-    let json = analytics_body(app, "?from=2026-04-17&to=2026-04-17").await;
+    let json = analytics_body(app.clone(), "?from=2026-04-17&to=2026-04-17").await;
 
     assert_eq!(json["coverage"]["runsInRange"], 2);
     assert_eq!(json["coverage"]["runsWithTokenUsage"], 1);
+    assert_eq!(
+        json["coverage"]["providersWithoutTokenUsage"],
+        serde_json::json!(["claude"]),
+        "the partially covered in-window provider is named, but the old provider is not"
+    );
     assert_eq!(json["tokens"]["total"]["total"], 15);
+
+    let old = analytics_body(app, "?from=2026-04-10&to=2026-04-10").await;
+    assert_eq!(
+        old["coverage"]["providersWithoutTokenUsage"],
+        serde_json::json!(["opencode"]),
+        "an uncovered provider is reported when its run overlaps the selected window"
+    );
 }
 
 #[tokio::test]

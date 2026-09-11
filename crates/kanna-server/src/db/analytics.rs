@@ -75,7 +75,8 @@ pub struct CoverageReport {
     pub tokens_since: Option<String>,
     /// False when the forge could not confirm merge outcomes this time.
     pub pull_request_state_confirmed: bool,
-    /// Providers this repository's runs used whose usage Kanna cannot read.
+    /// Providers used by runs in this window with incomplete or unsupported
+    /// token-usage coverage.
     pub providers_without_token_usage: Vec<String>,
     /// Runs in the window that have at least one usage record, over all runs
     /// in the window — how much of the work the token figures speak for.

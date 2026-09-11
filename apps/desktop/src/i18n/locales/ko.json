@@ -258,7 +258,7 @@
     "tokensOutput": "Output",
     "tokensReasoning": "of which reasoning",
     "tokensTotal": "Total tokens",
-    "tokensUnsupported": "No usage available for: {providers}."
+    "tokensIncomplete": "{providers}의 사용량 데이터가 일부 누락되었거나 지원되지 않습니다."
   },
   "agentView": {
     "thinking": "생각 중...",

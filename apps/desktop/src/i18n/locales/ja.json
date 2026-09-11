@@ -258,7 +258,7 @@
     "tokensOutput": "Output",
     "tokensReasoning": "of which reasoning",
     "tokensTotal": "Total tokens",
-    "tokensUnsupported": "No usage available for: {providers}."
+    "tokensIncomplete": "{providers} の使用量データは一部不足しているか、未対応です。"
   },
   "agentView": {
     "thinking": "思考中...",

@@ -6,7 +6,9 @@
 //! long-running session's file is read once rather than on every request.
 
 use super::{claude, codex, ParsedUsage, SessionContext};
-use crate::db::{Db, RepoRunWindow as RunWindow, TokenUsageRecord, UsageScanCheckpoint};
+use crate::db::{
+    AnalyticsRange, Db, RepoRunWindow as RunWindow, TokenUsageRecord, UsageScanCheckpoint,
+};
 use crate::task_creator::{claude_project_slug, claude_projects_dir, home_child, same_cwd};
 use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, BufReader, Seek, SeekFrom};
@@ -25,14 +27,19 @@ static CODEX_DISCOVERY_INSPECTIONS: std::sync::atomic::AtomicUsize =
 pub struct CollectionReport {
     pub files_scanned: usize,
     pub records_written: usize,
-    /// Providers this repository's runs used for which no usage record could
-    /// be read — an unsupported CLI, or one whose session files are gone.
+    /// Providers used by runs overlapping the requested range for which at
+    /// least one such run has no usage record in that range — an unsupported
+    /// CLI, missing session files, or partial collection.
     pub providers_without_usage: Vec<String>,
 }
 
 /// Read every provider session file belonging to this repository's task
 /// worktrees and store any usage record not already held.
-pub fn collect_repo_token_usage(db: &Db, repo_id: &str) -> Result<CollectionReport, String> {
+pub fn collect_repo_token_usage(
+    db: &Db,
+    repo_id: &str,
+    range: &AnalyticsRange,
+) -> Result<CollectionReport, String> {
     let runs = db
         .list_repo_run_windows(repo_id)
         .map_err(|error| format!("db error: {error}"))?;
@@ -45,12 +52,8 @@ pub fn collect_repo_token_usage(db: &Db, repo_id: &str) -> Result<CollectionRepo
     // ran that CLI. Codex discovery below is further bounded to the dated
     // directory and recorded session context of each run.
     let providers: HashSet<String> = runs.iter().filter_map(|run| run.provider.clone()).collect();
-    let mut uncovered = HashSet::new();
     if providers.contains(SUPPORTED_PROVIDERS[0]) {
         let discovery = claude_session_files(&runs);
-        if !discovery.complete {
-            uncovered.insert("claude".to_string());
-        }
         for (path, context) in discovery.files {
             let outcome = scan_file(
                 db,
@@ -65,17 +68,12 @@ pub fn collect_repo_token_usage(db: &Db, repo_id: &str) -> Result<CollectionRepo
             match outcome {
                 ScanFileOutcome::Read(written) => report.records_written += written,
                 ScanFileOutcome::Unchanged => {}
-                ScanFileOutcome::Unreadable => {
-                    uncovered.insert("claude".to_string());
-                }
+                ScanFileOutcome::Unreadable => {}
             }
         }
     }
     if providers.contains(SUPPORTED_PROVIDERS[1]) {
         let discovery = codex_session_files(db, &runs)?;
-        if !discovery.complete {
-            uncovered.insert("codex".to_string());
-        }
         for (path, context) in discovery.files {
             let outcome = scan_file(
                 db,
@@ -90,22 +88,33 @@ pub fn collect_repo_token_usage(db: &Db, repo_id: &str) -> Result<CollectionRepo
             match outcome {
                 ScanFileOutcome::Read(written) => report.records_written += written,
                 ScanFileOutcome::Unchanged => {}
-                ScanFileOutcome::Unreadable => {
-                    uncovered.insert("codex".to_string());
-                }
+                ScanFileOutcome::Unreadable => {}
             }
         }
     }
 
-    for provider in &providers {
+    // Discovery and attribution deliberately use every repository run above:
+    // a provider file can contain records for several stages, including the
+    // selected one. Coverage reporting is narrower. Only runs overlapping
+    // the requested window may put their provider in this window's warning.
+    let runs_in_range: Vec<&RunWindow> = runs
+        .iter()
+        .filter(|run| run_overlaps_range(run, range))
+        .collect();
+    let providers_in_range: HashSet<String> = runs_in_range
+        .iter()
+        .filter_map(|run| run.provider.clone())
+        .collect();
+    let mut uncovered = HashSet::new();
+    for provider in &providers_in_range {
         if !SUPPORTED_PROVIDERS.contains(&provider.as_str()) {
             uncovered.insert(provider.clone());
             continue;
         }
         let covered = db
-            .repo_provider_run_ids_with_usage(repo_id, provider)
+            .repo_provider_run_ids_with_usage(repo_id, provider, range)
             .map_err(|error| format!("db error: {error}"))?;
-        if runs.iter().any(|run| {
+        if runs_in_range.iter().any(|run| {
             run.provider.as_deref() == Some(provider.as_str()) && !covered.contains(&run.run_id)
         }) {
             uncovered.insert(provider.clone());
@@ -117,6 +126,16 @@ pub fn collect_repo_token_usage(db: &Db, repo_id: &str) -> Result<CollectionRepo
     Ok(report)
 }
 
+fn run_overlaps_range(run: &RunWindow, range: &AnalyticsRange) -> bool {
+    let start = format!("{} 00:00:00", range.from);
+    let end = format!("{} 23:59:59", range.to);
+    run.started_at <= end
+        && run
+            .finished_at
+            .as_deref()
+            .is_none_or(|finished| finished >= start.as_str())
+}
+
 /// The agent CLIs whose local session files record usage Kanna can read.
 /// Anything else a repository runs is reported as uncovered.
 const SUPPORTED_PROVIDERS: [&str; 2] = ["claude", "codex"];
@@ -126,22 +145,16 @@ const SUPPORTED_PROVIDERS: [&str; 2] = ["claude", "codex"];
 /// directories worth reading.
 struct DiscoveryResult {
     files: Vec<(PathBuf, SessionContext)>,
-    complete: bool,
 }
 
 fn claude_session_files(runs: &[RunWindow]) -> DiscoveryResult {
     let Some(projects_dir) = claude_projects_dir() else {
-        return DiscoveryResult {
-            files: Vec::new(),
-            complete: false,
-        };
+        return DiscoveryResult { files: Vec::new() };
     };
     let mut seen: HashMap<PathBuf, SessionContext> = HashMap::new();
-    let mut complete = true;
     for cwd in distinct_cwds(runs) {
         let directory = projects_dir.join(claude_project_slug(&cwd));
         let Ok(entries) = std::fs::read_dir(&directory) else {
-            complete = false;
             continue;
         };
         for entry in entries.flatten() {
@@ -178,13 +191,12 @@ fn claude_session_files(runs: &[RunWindow]) -> DiscoveryResult {
                     }
                 }
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                Err(_) => complete = false,
+                Err(_) => {}
             }
         }
     }
     DiscoveryResult {
         files: seen.into_iter().collect(),
-        complete,
     }
 }
 
@@ -193,31 +205,24 @@ fn claude_session_files(runs: &[RunWindow]) -> DiscoveryResult {
 /// matching candidates until that directory's generation changes.
 fn codex_session_files(db: &Db, runs: &[RunWindow]) -> Result<DiscoveryResult, String> {
     let Some(config_dir) = home_child("CODEX_HOME", ".codex") else {
-        return Ok(DiscoveryResult {
-            files: Vec::new(),
-            complete: false,
-        });
+        return Ok(DiscoveryResult { files: Vec::new() });
     };
     let mut files: HashMap<PathBuf, SessionContext> = HashMap::new();
-    let mut complete = true;
     for run in runs
         .iter()
         .filter(|run| run.provider.as_deref() == Some("codex"))
     {
         let Some(date) = run.started_at.get(..10) else {
-            complete = false;
             continue;
         };
         let mut date_parts = date.split('-');
         let (Some(year), Some(month), Some(day)) =
             (date_parts.next(), date_parts.next(), date_parts.next())
         else {
-            complete = false;
             continue;
         };
         let directory = config_dir.join("sessions").join(year).join(month).join(day);
         let Ok(metadata) = std::fs::metadata(&directory) else {
-            complete = false;
             continue;
         };
         let modified_ns = modified_ns(&metadata);
@@ -236,7 +241,6 @@ fn codex_session_files(db: &Db, runs: &[RunWindow]) -> Result<DiscoveryResult, S
             cached.candidate_paths
         } else {
             let Ok(entries) = std::fs::read_dir(&directory) else {
-                complete = false;
                 continue;
             };
             let mut candidates = Vec::new();
@@ -272,9 +276,6 @@ fn codex_session_files(db: &Db, runs: &[RunWindow]) -> Result<DiscoveryResult, S
             .map_err(|error| format!("db error: {error}"))?;
             candidates
         };
-        if candidate_paths.is_empty() {
-            complete = false;
-        }
         for path in candidate_paths {
             files.insert(
                 PathBuf::from(path),
@@ -288,7 +289,6 @@ fn codex_session_files(db: &Db, runs: &[RunWindow]) -> Result<DiscoveryResult, S
     }
     Ok(DiscoveryResult {
         files: files.into_iter().collect(),
-        complete,
     })
 }
 
@@ -629,13 +629,20 @@ mod tests {
 /// run, read incrementally as it grows, and never counted twice.
 #[cfg(test)]
 mod collection_tests {
-    use crate::db::Db;
+    use crate::db::{AnalyticsRange, Db};
     use std::io::Write;
     use std::sync::{Mutex, MutexGuard};
 
     /// `CLAUDE_CONFIG_DIR` and `CODEX_HOME` are process-global, so the tests
     /// that redirect them take turns.
     static PROVIDER_HOME: Mutex<()> = Mutex::new(());
+
+    fn selected_range() -> AnalyticsRange {
+        AnalyticsRange {
+            from: "2026-04-17".into(),
+            to: "2026-04-17".into(),
+        }
+    }
 
     struct ProviderHomes {
         _guard: MutexGuard<'static, ()>,
@@ -779,7 +786,8 @@ mod collection_tests {
             ],
         );
 
-        let report = super::collect_repo_token_usage(&db, "repo-1").expect("collect");
+        let report =
+            super::collect_repo_token_usage(&db, "repo-1", &selected_range()).expect("collect");
         assert_eq!(report.files_scanned, 1);
         assert_eq!(report.records_written, 2);
 
@@ -797,7 +805,8 @@ mod collection_tests {
         );
 
         // Collecting again reads nothing new and changes no total.
-        let again = super::collect_repo_token_usage(&db, "repo-1").expect("second collect");
+        let again = super::collect_repo_token_usage(&db, "repo-1", &selected_range())
+            .expect("second collect");
         assert_eq!(again.records_written, 0);
         assert_eq!(db.count_test_token_usage_rows().expect("rows"), 2);
     }
@@ -813,14 +822,15 @@ mod collection_tests {
             "sess-1",
             &[claude_turn("msg_1", "2026-04-17T09:30:00.000Z", &cwd, 40)],
         );
-        super::collect_repo_token_usage(&db, "repo-1").expect("first collect");
+        super::collect_repo_token_usage(&db, "repo-1", &selected_range()).expect("first collect");
 
         homes.append_claude_transcript(
             &cwd,
             "sess-1",
             &claude_turn("msg_2", "2026-04-17T09:31:00.000Z", &cwd, 60),
         );
-        let report = super::collect_repo_token_usage(&db, "repo-1").expect("second collect");
+        let report = super::collect_repo_token_usage(&db, "repo-1", &selected_range())
+            .expect("second collect");
         assert_eq!(
             report.records_written, 1,
             "only the appended turn should have been parsed"
@@ -839,7 +849,7 @@ mod collection_tests {
         // A resumed session writes a new file carrying the same history.
         homes.write_claude_transcript(&cwd, "sess-2", &[turn]);
 
-        super::collect_repo_token_usage(&db, "repo-1").expect("collect");
+        super::collect_repo_token_usage(&db, "repo-1", &selected_range()).expect("collect");
         assert_eq!(
             db.count_test_token_usage_rows().expect("rows"),
             1,
@@ -859,12 +869,14 @@ mod collection_tests {
         homes.write_claude_subagent(&cwd, "sess-1", "agent-a", &[parent, delegated.clone()]);
         homes.write_claude_subagent(&cwd, "sess-1", "agent-b", &[delegated]);
 
-        let report = super::collect_repo_token_usage(&db, "repo-1").expect("collect");
+        let report =
+            super::collect_repo_token_usage(&db, "repo-1", &selected_range()).expect("collect");
         assert_eq!(report.files_scanned, 3);
         assert_eq!(db.count_test_token_usage_rows().expect("rows"), 2);
         assert!(report.providers_without_usage.is_empty());
 
-        let again = super::collect_repo_token_usage(&db, "repo-1").expect("repeat collect");
+        let again = super::collect_repo_token_usage(&db, "repo-1", &selected_range())
+            .expect("repeat collect");
         assert_eq!(again.records_written, 0);
         assert_eq!(db.count_test_token_usage_rows().expect("rows"), 2);
     }
@@ -887,7 +899,8 @@ mod collection_tests {
             )],
         );
 
-        let report = super::collect_repo_token_usage(&db, "repo-1").expect("collect");
+        let report =
+            super::collect_repo_token_usage(&db, "repo-1", &selected_range()).expect("collect");
         assert_eq!(report.files_scanned, 0);
         assert_eq!(db.count_test_token_usage_rows().expect("rows"), 0);
     }
@@ -922,7 +935,7 @@ mod collection_tests {
             &[meta, turn_context, first, second],
         );
 
-        super::collect_repo_token_usage(&db, "repo-1").expect("collect");
+        super::collect_repo_token_usage(&db, "repo-1", &selected_range()).expect("collect");
         let summary = db.test_token_usage_summary().expect("summary");
         assert_eq!(summary.rows, 2);
         // Codex counts cache reads inside input, so the fresh input is
@@ -969,10 +982,10 @@ mod collection_tests {
         homes.write_codex_rollout("target", &[meta, usage]);
 
         super::CODEX_DISCOVERY_INSPECTIONS.store(0, std::sync::atomic::Ordering::Relaxed);
-        super::collect_repo_token_usage(&db, "repo-1").expect("first collect");
+        super::collect_repo_token_usage(&db, "repo-1", &selected_range()).expect("first collect");
         let first = super::CODEX_DISCOVERY_INSPECTIONS.load(std::sync::atomic::Ordering::Relaxed);
         assert_eq!(first, 251);
-        super::collect_repo_token_usage(&db, "repo-1").expect("second collect");
+        super::collect_repo_token_usage(&db, "repo-1", &selected_range()).expect("second collect");
         assert_eq!(
             super::CODEX_DISCOVERY_INSPECTIONS.load(std::sync::atomic::Ordering::Relaxed),
             first,
@@ -988,7 +1001,8 @@ mod collection_tests {
         std::fs::create_dir_all(&cwd).expect("worktree");
         let db = seeded_db("usage-supported-missing", &cwd);
 
-        let missing = super::collect_repo_token_usage(&db, "repo-1").expect("missing collect");
+        let missing = super::collect_repo_token_usage(&db, "repo-1", &selected_range())
+            .expect("missing collect");
         assert_eq!(missing.providers_without_usage, vec!["claude".to_string()]);
 
         let project = homes
@@ -996,11 +1010,46 @@ mod collection_tests {
             .join("claude/projects")
             .join(crate::task_creator::claude_project_slug(&cwd));
         std::fs::create_dir_all(project.join("unreadable.jsonl")).expect("directory fixture");
-        let unreadable =
-            super::collect_repo_token_usage(&db, "repo-1").expect("unreadable collect");
+        let unreadable = super::collect_repo_token_usage(&db, "repo-1", &selected_range())
+            .expect("unreadable collect");
         assert_eq!(
             unreadable.providers_without_usage,
             vec!["claude".to_string()]
+        );
+    }
+
+    #[test]
+    fn a_provider_used_only_outside_the_selected_range_is_not_reported() {
+        let homes = ProviderHomes::new("outside-range-provider");
+        let cwd = homes.root.join("worktree").to_string_lossy().to_string();
+        std::fs::create_dir_all(&cwd).expect("worktree");
+        let db = seeded_db("usage-outside-range-provider", &cwd);
+        db.insert_test_token_usage(
+            "covered-current-run",
+            "repo-1",
+            "task-1",
+            Some("run-1"),
+            "claude-opus-5",
+            "2026-04-17 09:30:00",
+            (10, 0, 0, 5, 0),
+        )
+        .expect("covered usage");
+        db.insert_test_provider_stage_run(
+            "run-old",
+            "task-1",
+            "review",
+            "opencode",
+            &cwd,
+            "2026-04-10 09:00:00",
+            Some("2026-04-10 10:00:00"),
+        )
+        .expect("old stage run");
+
+        let report =
+            super::collect_repo_token_usage(&db, "repo-1", &selected_range()).expect("collect");
+        assert!(
+            report.providers_without_usage.is_empty(),
+            "a lifetime gap outside the requested window must not warn in this window"
         );
     }
 
@@ -1021,7 +1070,8 @@ mod collection_tests {
         )
         .expect("stage run");
 
-        let report = super::collect_repo_token_usage(&db, "repo-1").expect("collect");
+        let report =
+            super::collect_repo_token_usage(&db, "repo-1", &selected_range()).expect("collect");
         assert_eq!(
             report.providers_without_usage,
             vec!["claude".to_string(), "opencode".to_string()],

@@ -14,7 +14,7 @@
 //! by the collector from the non-overlapping parts, so summing a column here
 //! never double counts.
 
-use super::Db;
+use super::{AnalyticsRange, Db};
 
 /// One task run's worktree and time window — what attribution needs to decide
 /// which task a provider's usage record belongs to.
@@ -199,13 +199,17 @@ impl Db {
         &self,
         repo_id: &str,
         provider: &str,
+        range: &AnalyticsRange,
     ) -> Result<std::collections::HashSet<String>, rusqlite::Error> {
+        let start = format!("{} 00:00:00", range.from);
+        let end = format!("{} 23:59:59", range.to);
         let mut statement = self.conn.prepare(
             "SELECT DISTINCT run_id FROM provider_token_usage
-             WHERE repo_id = ? AND provider = ? AND run_id IS NOT NULL",
+             WHERE repo_id = ? AND provider = ? AND run_id IS NOT NULL
+               AND occurred_at >= ? AND occurred_at <= ?",
         )?;
         let run_ids = statement
-            .query_map((repo_id, provider), |row| row.get(0))?
+            .query_map((repo_id, provider, start, end), |row| row.get(0))?
             .collect::<Result<_, _>>()?;
         Ok(run_ids)
     }

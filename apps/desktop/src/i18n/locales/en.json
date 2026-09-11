@@ -258,7 +258,7 @@
     "tokensOutput": "Output",
     "tokensReasoning": "of which reasoning",
     "tokensTotal": "Total tokens",
-    "tokensUnsupported": "No usage available for: {providers}."
+    "tokensIncomplete": "Incomplete or unsupported usage coverage for: {providers}."
   },
   "agentView": {
     "thinking": "Thinking...",

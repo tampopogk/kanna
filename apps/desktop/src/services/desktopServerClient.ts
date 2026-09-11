@@ -795,6 +795,7 @@ export interface DesktopAnalyticsCoverage {
   revisionsSince: string | null;
   tokensSince: string | null;
   pullRequestStateConfirmed: boolean;
+  /** Providers with at least one in-window run lacking in-window usage. */
   providersWithoutTokenUsage: string[];
   runsWithTokenUsage: number;
   runsInRange: number;

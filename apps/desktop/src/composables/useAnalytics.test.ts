@@ -5,6 +5,9 @@ import {
   type DesktopAnalyticsRange,
   type DesktopRepoAnalytics,
 } from "../services/desktopServerClient";
+import en from "../i18n/locales/en.json";
+import ja from "../i18n/locales/ja.json";
+import ko from "../i18n/locales/ko.json";
 import { rangeForPreset, useAnalytics } from "./useAnalytics";
 
 async function flushWatchers(): Promise<void> {
@@ -164,6 +167,34 @@ describe("useAnalytics", () => {
     // An unknown start is not a gap to advertise; it is simply unknown.
     expect(analytics.coverageGaps.value.tokens).toBe(false);
     expect(analytics.tokenCoverageRatio.value).toBeNull();
+  });
+
+  it("preserves partial provider coverage without describing it as zero availability", async () => {
+    setDesktopServerClientHandlersForTests({
+      fetchRepoAnalytics: async (_repoId, range) =>
+        analyticsFixture(range ?? { from: "2026-09-01", to: "2026-09-30" }, {
+          coverage: {
+            idleSince: "2026-08-01 00:00:00",
+            revisionsSince: "2026-08-01 00:00:00",
+            tokensSince: "2026-08-01 00:00:00",
+            pullRequestStateConfirmed: true,
+            providersWithoutTokenUsage: ["claude"],
+            runsWithTokenUsage: 1,
+            runsInRange: 2,
+          },
+        }),
+    });
+
+    const analytics = useAnalytics(ref<string | null>("repo-1"));
+    await flushWatchers();
+
+    expect(analytics.tokenCoverageRatio.value).toBe(0.5);
+    expect(analytics.analytics.value.coverage.providersWithoutTokenUsage).toEqual(["claude"]);
+    expect(en.analytics.tokensIncomplete).toBe(
+      "Incomplete or unsupported usage coverage for: {providers}.",
+    );
+    expect(ja.analytics.tokensIncomplete).toContain("一部不足");
+    expect(ko.analytics.tokensIncomplete).toContain("일부 누락");
   });
 
   it("reports a failed load instead of presenting stale or invented numbers", async () => {
