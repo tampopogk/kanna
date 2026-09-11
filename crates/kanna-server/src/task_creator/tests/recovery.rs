@@ -952,6 +952,50 @@ async fn resume_round(
     (response.status(), commands)
 }
 
+/// Recovery is a new spawn after the server's once-per-daemon compatibility
+/// sweep. A merge run must therefore carry the ordinary policy on its own;
+/// otherwise every resumed Merge Master recreates the retired protected-input
+/// fence after startup has already cleared the daemon's inherited sessions.
+#[tokio::test]
+#[allow(clippy::await_holding_lock)] // Process-global provider store stays fixed through spawn.
+async fn merge_recovery_spawns_with_ordinary_input_policy() {
+    let (repo_root, config, _db) = init_recovery_fixture("merge-recovery-ordinary-input");
+    std::fs::create_dir_all(repo_root.join(".kanna/workflows")).unwrap();
+    std::fs::write(
+        repo_root.join(".kanna/workflows/no-review.json"),
+        serde_json::json!({
+            "name": "no-review",
+            "stages": [{
+                "name": "in progress",
+                "agent": "merge",
+                "prompt": "$TASK_PROMPT",
+                "policy": { "transition": "manual" }
+            }]
+        })
+        .to_string(),
+    )
+    .unwrap();
+    publish_origin_main(&repo_root, "make recovery stage a merge stage");
+
+    let empty_config_dir = repo_root.join("empty-claude-config");
+    std::fs::create_dir_all(empty_config_dir.join("projects")).unwrap();
+    let _env_guard = super::CLAUDE_CONFIG_DIR_LOCK.lock().unwrap();
+    std::env::set_var("CLAUDE_CONFIG_DIR", &empty_config_dir);
+    let (status, commands) = resume_round(&config).await;
+    std::env::remove_var("CLAUDE_CONFIG_DIR");
+
+    assert_eq!(status, axum::http::StatusCode::OK);
+    assert!(commands.iter().any(|command| matches!(
+        command,
+        kanna_daemon::protocol::Command::Spawn {
+            operator_input_only: false,
+            ..
+        }
+    )));
+
+    let _ = std::fs::remove_dir_all(&repo_root);
+}
+
 fn spawned_command_line(commands: &[kanna_daemon::protocol::Command]) -> String {
     commands
         .iter()

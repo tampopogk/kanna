@@ -110,7 +110,6 @@ async fn spawn_prepared_task_classified(
         prepared.env,
         None,
         prepared.session,
-        false,
     );
 
     let event =
@@ -505,7 +504,6 @@ pub(crate) async fn spawn_prepared_stage_run_for_api(
         prepared.env.clone(),
         prepared.terminal_prelude.clone(),
         prepared.session.clone(),
-        prepared.stage_agent.as_deref() == Some("merge"),
     );
     // The submitted phase starts at the socket, not at the run record above.
     // Between the two the operation is still a known pre-submission failure,
@@ -732,7 +730,6 @@ pub(crate) async fn spawn_prepared_workspace_teardown_best_effort(
         prepared.env,
         None,
         prepared.session,
-        false,
     );
     match daemon.send_command_retrying_successor(&command).await {
         Ok(DaemonEvent::SessionCreated { .. }) => {
@@ -1840,7 +1837,6 @@ pub(crate) async fn rerun_prepared_stage_for_api(
         prepared.env,
         None,
         prepared.session,
-        stage_agent.as_deref() == Some("merge"),
     );
 
     let event = match send_session_spawn_command(daemon, &command).await {
@@ -1968,7 +1964,6 @@ fn spawn_session_command(
     env: std::collections::HashMap<String, String>,
     terminal_prelude: Option<Vec<u8>>,
     session: PreparedSessionSpawn,
-    operator_input_only: bool,
 ) -> DaemonCommand {
     match session {
         PreparedSessionSpawn::Pty {
@@ -1989,7 +1984,10 @@ fn spawn_session_command(
             agent_provider: Some(agent_provider),
             agent_executable,
             terminal_prelude,
-            operator_input_only,
+            // Native-terminal-only merge input is retired. Every new task
+            // PTY must use the same ordinary desktop, KSP, and API input path;
+            // inherited protected sessions are cleared by runtime startup.
+            operator_input_only: false,
         },
         PreparedSessionSpawn::Agent {
             agent_provider,
