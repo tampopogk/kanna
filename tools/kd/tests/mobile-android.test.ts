@@ -3,6 +3,7 @@ import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import {
   buildAndroidPhysicalRunPlan,
+  buildAndroidPhysicalStandaloneInstallPlan,
   buildAndroidPrebuildCommand,
   buildAndroidReverseCommands,
   buildAndroidRunCommand,
@@ -165,6 +166,52 @@ describe("Android emulator mobile runtime", () => {
         RCT_METRO_PORT: "8082"
       }
     });
+  });
+
+  it("builds a serial-fenced standalone staging Release install without Metro", () => {
+    const tools = {
+      root: "/sdk",
+      adb: "/sdk/platform-tools/adb",
+      emulator: "/sdk/emulator/emulator"
+    };
+    const plan = buildAndroidPhysicalStandaloneInstallPlan({
+      repoRoot: "/repo",
+      serial: "R5CX42N3NLK",
+      packageId: "build.kanna.app.staging",
+      appEnv: "staging",
+      tools
+    });
+
+    expect(plan.build).toMatchObject({
+      command: "/repo/apps/mobile/android/gradlew",
+      args: [
+        "app:assembleRelease",
+        "-x", "lint",
+        "-x", "test",
+        "--configure-on-demand",
+        "--build-cache"
+      ],
+      env: {
+        KANNA_APP_ENV: "staging",
+        ANDROID_HOME: "/sdk",
+        ANDROID_SDK_ROOT: "/sdk"
+      }
+    });
+    expect(plan.apkPath).toBe(
+      "/repo/apps/mobile/android/app/build/outputs/apk/release/app-release.apk"
+    );
+    expect([plan.install, plan.stop, plan.launch].every((command) =>
+      command.args[0] === "-s" && command.args[1] === "R5CX42N3NLK"
+    )).toBe(true);
+    expect(plan.install.args).toEqual([
+      "-s", "R5CX42N3NLK", "install", "-r", plan.apkPath
+    ]);
+    expect(plan.launch.args).toEqual([
+      "-s", "R5CX42N3NLK", "shell", "monkey",
+      "-p", "build.kanna.app.staging",
+      "-c", "android.intent.category.LAUNCHER", "1"
+    ]);
+    expect(JSON.stringify(plan)).not.toContain("expo-development-client");
   });
 
   it("owns only new serial-scoped reverse routes and cleans them safely", async () => {

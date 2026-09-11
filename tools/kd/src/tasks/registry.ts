@@ -45,6 +45,7 @@ import { resolveMobileServerUrl } from "../runtime/mobile";
 import {
   buildAndroidEmulatorLaunchCommand,
   buildAndroidPhysicalRunPlan,
+  buildAndroidPhysicalStandaloneInstallPlan,
   buildAndroidPrebuildCommand,
   buildAndroidRunCommand,
   cleanupOwnedAndroidReverseRoutes,
@@ -1336,19 +1337,27 @@ export async function executeMobileDeviceRunWithContext(
   const hasAndroidEmulator =
     input.androidEmulator === true || typeof input.androidEmulator === "string";
   const hasAndroidDevice = typeof input.androidDevice === "string";
+  const isAndroidStandaloneInstall = hasAndroidDevice && input.install === true;
   if (Number(input.device) + Number(hasSimulator) + Number(hasAndroidEmulator) + Number(hasAndroidDevice) !== 1) {
     throw new Error(
       "mobile.run requires exactly one target: --simulator [<udid|name>], --device, --android-emulator [<avd>], or --android-device <serial>."
     );
   }
-  if ((hasSimulator || hasAndroidEmulator || hasAndroidDevice) && input.install) {
-    throw new Error("mobile.run --install is only supported with the physical-iPhone --device target.");
+  if ((hasSimulator || hasAndroidEmulator) && input.install) {
+    throw new Error(
+      "mobile.run --install is supported only with the physical-iPhone --device or physical-Android --android-device target."
+    );
   }
   if (input.production && input.staging) {
     throw new Error("mobile.run accepts only one of --production or --staging.");
   }
+  if (isAndroidStandaloneInstall && input.staging !== true) {
+    throw new Error(
+      "Android standalone install supports only --android-device <serial> --staging --install."
+    );
+  }
   if (
-    (hasAndroidEmulator || hasAndroidDevice) &&
+    (hasAndroidEmulator || hasAndroidDevice) && !isAndroidStandaloneInstall &&
     (profile.clientBuild !== "dev" ||
       profile.desktopOwner !== "worktree" ||
       profile.cloud !== "emulators")
@@ -1359,7 +1368,7 @@ export async function executeMobileDeviceRunWithContext(
   }
 
   let stagingOwnerStatus: ProductionDesktopStatus | null = null;
-  if (profile.desktopOwner === "staging") {
+  if (profile.desktopOwner === "staging" && !isAndroidStandaloneInstall) {
     stagingOwnerStatus = requireInstalledStagingDesktopStatus(
       await (options.readInstalledStagingDesktopStatus ?? readInstalledStagingDesktopStatus)(
         executor.runner
@@ -1383,6 +1392,9 @@ export async function executeMobileDeviceRunWithContext(
     options
   );
   const buildEnv = mobileRunTargetEnv(profile, executor, target);
+  if (target.kind === "android-device" && isAndroidStandaloneInstall) {
+    return executeAndroidPhysicalStandaloneInstall(profile, executor, target, buildEnv);
+  }
   if (target.kind === "android-emulator" || target.kind === "android-device") {
     return executeAndroidRun(input, profile, executor, target, buildEnv, options);
   }
@@ -1646,6 +1658,84 @@ export async function executeMobileDeviceRunWithContext(
         afterLaunch: postLaunchMetroReadiness
       },
       windows: launch.plan.windows.map((window) => window.name)
+    }
+  };
+}
+
+async function executeAndroidPhysicalStandaloneInstall(
+  profile: KdEnvironmentProfile,
+  executor: ExecutorInput,
+  target: Extract<MobileRunTarget, { kind: "android-device" }>,
+  env: NodeJS.ProcessEnv
+): Promise<TaskResult> {
+  const identity = resolveMobileAndroidIdentity(env);
+  if (identity.appEnv !== "staging") {
+    throw new Error("Android standalone install is restricted to the staging mobile identity.");
+  }
+
+  const prebuild = buildAndroidPrebuildCommand({
+    repoRoot: executor.context.repoRoot,
+    appEnv: identity.appEnv
+  });
+  const prebuildResult = await executor.runner.run(prebuild.command, prebuild.args, {
+    cwd: prebuild.cwd,
+    env: { ...env, ...prebuild.env },
+    streamOutput: true
+  });
+  if (prebuildResult.exitCode !== 0) {
+    return {
+      ok: false,
+      message:
+        prebuildResult.stderr || prebuildResult.stdout ||
+        `Failed to prebuild ${identity.packageId} for Android.`,
+      data: { profile, packageId: identity.packageId, device: target.device }
+    };
+  }
+
+  const plan = buildAndroidPhysicalStandaloneInstallPlan({
+    repoRoot: executor.context.repoRoot,
+    serial: target.device.serial,
+    packageId: identity.packageId,
+    appEnv: identity.appEnv,
+    tools: target.tools
+  });
+  const install = await executeAndroidPhysicalRunPlan({
+    runner: executor.runner,
+    plan,
+    env
+  });
+  if (!install.ok) {
+    return {
+      ok: false,
+      message:
+        install.result.stderr || install.result.stdout ||
+        `Failed to ${install.step} ${identity.packageId} on ${target.device.model ?? target.device.serial}.`,
+      data: {
+        profile,
+        packageId: identity.packageId,
+        device: target.device,
+        apkPath: plan.apkPath,
+        failedStep: install.step
+      }
+    };
+  }
+
+  return {
+    ok: true,
+    message: [
+      `Installed and launched standalone ${identity.displayName} on Android device ${target.device.model ?? target.device.serial} (${target.device.serial}).`,
+      `Package: ${identity.packageId}`,
+      `APK: ${plan.apkPath}`,
+      "Embedded JS: Release bundle (Metro not required).",
+      `Profile: ${formatEnvironmentProfile(profile)}.`
+    ].join("\n"),
+    data: {
+      profile,
+      packageId: identity.packageId,
+      device: target.device,
+      apkPath: plan.apkPath,
+      metroRequired: false,
+      reversePorts: []
     }
   };
 }
@@ -2647,7 +2737,7 @@ export const taskDefinitions = [
   },
   {
     id: "mobile.run",
-    description: "Build, install, and launch Kanna mobile on an iOS Simulator, physical iPhone, or Android emulator.",
+    description: "Build, install, and launch Kanna mobile on an iOS Simulator, physical iPhone, Android emulator, or authorized physical Android device.",
     inputSchema: mobileRunInputSchema,
     execute: async (_context, input) => executeMobileDeviceRun(mobileRunInputSchema.parse(input))
   },

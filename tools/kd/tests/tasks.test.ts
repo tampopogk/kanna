@@ -243,6 +243,76 @@ describe("task executors", () => {
     ]);
   });
 
+  it("installs standalone Android staging without desktop, Metro, or reverse routes", async () => {
+    const repoRoot = await kdTestScratchDir("kanna-kd-android-staging-install-");
+    const sdkRoot = join(repoRoot, "sdk");
+    const adb = join(sdkRoot, "platform-tools", "adb");
+    await mkdir(join(sdkRoot, "platform-tools"), { recursive: true });
+    await writeFile(adb, "");
+    const calls: Array<{ command: string; args: string[] }> = [];
+    const runner: CommandRunner = {
+      async run(command, args) {
+        calls.push({ command, args });
+        if (command === adb && args[0] === "devices") {
+          return {
+            exitCode: 0,
+            stdout:
+              "List of devices attached\n" +
+              "UNRELATED device model:Pixel device:pixel\n" +
+              "R5CX42N3NLK device model:SM_A156W device:a15x\n",
+            stderr: ""
+          };
+        }
+        return { exitCode: 0, stdout: "", stderr: "" };
+      }
+    };
+    const executor = {
+      runner,
+      context: {
+        repoRoot,
+        tmux: { server: "kanna-task-abc", session: "kanna-task-abc" },
+        ports: {},
+        env: { ANDROID_HOME: sdkRoot }
+      }
+    };
+
+    await expect(executeMobileDeviceRunWithContext({
+      device: false,
+      androidDevice: "R5CX42N3NLK",
+      install: true
+    }, executor)).rejects.toThrow(
+      "Android standalone install supports only --android-device <serial> --staging --install."
+    );
+    expect(calls).toEqual([]);
+
+    const result = await executeMobileDeviceRunWithContext({
+      device: false,
+      androidDevice: "R5CX42N3NLK",
+      staging: true,
+      install: true
+    }, executor);
+
+    expect(result).toMatchObject({
+      ok: true,
+      data: {
+        packageId: "build.kanna.app.staging",
+        metroRequired: false,
+        reversePorts: []
+      }
+    });
+    expect(calls.some(({ command }) => command === "tmux" || command === "curl")).toBe(false);
+    expect(calls.some(({ args }) => args.includes("reverse"))).toBe(false);
+    const adbMutations = calls.filter(({ command, args }) =>
+      command === adb && args[0] !== "devices"
+    );
+    expect(adbMutations).toHaveLength(3);
+    expect(adbMutations.every(({ args }) =>
+      args[0] === "-s" && args[1] === "R5CX42N3NLK"
+    )).toBe(true);
+    expect(adbMutations.flatMap(({ args }) => args)).not.toContain("UNRELATED");
+    expect(calls.some(({ args }) => args.includes("app:assembleRelease"))).toBe(true);
+  });
+
   it("verifies the production desktop server before starting the mobile window", async () => {
     const calls: string[] = [];
     const runner: CommandRunner = {
