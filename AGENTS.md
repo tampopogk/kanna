@@ -36,6 +36,7 @@ a reference below.
 
 | Need | Read |
 |---|---|
+| Product purpose, users, journeys, decision rights, current vs proposed | `docs/dev/product-context.md` |
 | How the system fits together, components, data flow | `docs/dev/architecture.md` |
 | Running the app, `kd` commands, worktree isolation, debugging | `docs/dev/dev-workflow.md` |
 | First-time setup and prerequisites | `docs/dev/getting-started.md` |

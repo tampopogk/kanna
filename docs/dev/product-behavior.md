@@ -4,6 +4,10 @@ The user-facing surface of Kanna: task workflows, close semantics, sidebar
 state, the diff viewer, keyboard shortcuts, and preferences. Read this when
 changing UI flows or task lifecycle behavior.
 
+For Kanna's purpose, current audience, product principles, decision rights,
+and the boundary between current and proposed behavior, start with
+[Product Context](product-context.md).
+
 The *contracts* an agent must not break — core concepts, workflow and stage
 semantics, and the MCP task-management rule — stay in the repo-root
 [`AGENTS.md`](../../AGENTS.md).
@@ -69,7 +73,7 @@ semantics, and the MCP task-management rule — stay in the repo-root
 1. Cmd+J → shell modal opens in the task's worktree
 2. Run tests, inspect files, debug
 3. Close shell → focus returns to agent terminal
-4. Type in agent terminal to send input to Claude
+4. Type in the agent terminal to send input to the running provider CLI
 
 ### Viewing a terminal from more than one device
 
