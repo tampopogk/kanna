@@ -109,6 +109,7 @@ export function useAnalytics(repoId: Ref<string | null>) {
       tasks.created > 0 ||
       tasks.closed > 0 ||
       tasks.openNow > 0 ||
+      pullRequests.created === null ||
       pullRequests.created > 0 ||
       idle.totalSeconds > 0 ||
       revisions.cohortTasks > 0 ||

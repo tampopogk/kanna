@@ -227,7 +227,7 @@
     "prCreated": "PRs created",
     "prMerged": "PRs merged",
     "prOpen": "PRs open",
-    "prUnavailable": "Merge state could not be confirmed with the forge.",
+    "prUnavailable": "Some pull request creation or current-state facts could not be confirmed with the forge.",
     "rangeCustom": "Custom",
     "rangeFrom": "From",
     "rangeLast30": "30 days",

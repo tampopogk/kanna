@@ -179,6 +179,7 @@ pub(crate) const CURRENT_SCHEMA_MIGRATIONS: &[&str] = &[
     "079_task_revision_log",
     "080_provider_token_usage",
     "081_provider_usage_discovery",
+    "082_pull_request_forge_attempts",
 ];
 
 #[derive(Debug, Serialize)]
@@ -2412,6 +2413,10 @@ fn run_schema_migrations(conn: &Connection) -> Result<(), rusqlite::Error> {
             "#,
         )?;
         Ok(())
+    })?;
+
+    run_migration(conn, "082_pull_request_forge_attempts", |conn| {
+        conn.execute_batch("ALTER TABLE task_pull_request ADD COLUMN forge_attempted_at TEXT;")
     })?;
 
     Ok(())

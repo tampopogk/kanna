@@ -23,6 +23,7 @@ pub struct UnresolvedPullRequest {
     pub pr_number: Option<i64>,
     pub pr_url: String,
     pub forge_checked_at: Option<i64>,
+    pub forge_attempted_at: Option<i64>,
 }
 
 /// A forge-confirmed observation of one pull request.
@@ -179,7 +180,8 @@ impl Db {
     ) -> Result<Vec<UnresolvedPullRequest>, rusqlite::Error> {
         let mut statement = self.conn.prepare(
             "SELECT pr_key, pr_number, pr_url,
-                    CAST(strftime('%s', forge_checked_at) AS INTEGER)
+                    CAST(strftime('%s', forge_checked_at) AS INTEGER),
+                    CAST(strftime('%s', forge_attempted_at) AS INTEGER)
              FROM task_pull_request
              WHERE repo_id = ?
                AND forge_merged_at IS NULL
@@ -193,6 +195,7 @@ impl Db {
                     pr_number: row.get(1)?,
                     pr_url: row.get(2)?,
                     forge_checked_at: row.get(3)?,
+                    forge_attempted_at: row.get(4)?,
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?;
@@ -234,7 +237,8 @@ impl Db {
                          forge_created_at = ?,
                          forge_merged_at = ?,
                          forge_state = ?,
-                         forge_checked_at = datetime('now')
+                         forge_checked_at = datetime('now'),
+                         forge_attempted_at = datetime('now')
                      WHERE repo_id = ? AND pr_key = ?",
                     rusqlite::params![
                         observation.pr_number,
@@ -246,6 +250,28 @@ impl Db {
                     ],
                 )?;
                 recorded += 1;
+            }
+            Ok(recorded)
+        })
+    }
+
+    /// Stamp every identity for which a forge request was attempted, including
+    /// failures. This is deliberately separate from `forge_checked_at`: a
+    /// failed request needs backoff but is not a confirmation.
+    pub fn record_forge_pull_request_attempts(
+        &self,
+        repo_id: &str,
+        pr_keys: &[String],
+    ) -> Result<usize, rusqlite::Error> {
+        self.with_immediate_transaction(|db| {
+            let mut recorded = 0;
+            for pr_key in pr_keys {
+                recorded += db.conn.execute(
+                    "UPDATE task_pull_request
+                     SET forge_attempted_at = datetime('now')
+                     WHERE repo_id = ? AND pr_key = ?",
+                    (repo_id, pr_key),
+                )?;
             }
             Ok(recorded)
         })

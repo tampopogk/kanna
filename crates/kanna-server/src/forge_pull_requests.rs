@@ -13,6 +13,8 @@ use std::time::Duration;
 const RECHECK_AFTER: Duration = Duration::from_secs(300);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
+const PASS_TIMEOUT: Duration = Duration::from_secs(6);
+const MAX_REQUESTS_PER_PASS: usize = 3;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ForgeAvailability {
@@ -28,6 +30,8 @@ pub struct ForgeClient {
     api_base_override: Option<String>,
     connect_timeout: Duration,
     request_timeout: Duration,
+    pass_timeout: Duration,
+    max_requests_per_pass: usize,
 }
 
 impl ForgeClient {
@@ -39,6 +43,8 @@ impl ForgeClient {
             None,
             CONNECT_TIMEOUT,
             REQUEST_TIMEOUT,
+            PASS_TIMEOUT,
+            MAX_REQUESTS_PER_PASS,
         )
     }
 
@@ -47,24 +53,54 @@ impl ForgeClient {
         api_base_override: Option<String>,
         connect_timeout: Duration,
         request_timeout: Duration,
+        pass_timeout: Duration,
+        max_requests_per_pass: usize,
     ) -> Self {
         Self {
             token,
             api_base_override,
             connect_timeout,
             request_timeout,
+            pass_timeout,
+            max_requests_per_pass,
         }
     }
 
     #[cfg(test)]
     pub(crate) fn for_tests(base_url: String, token: Option<&str>, timeout: Duration) -> Self {
-        Self::new(token.map(str::to_string), Some(base_url), timeout, timeout)
+        Self::new(
+            token.map(str::to_string),
+            Some(base_url),
+            timeout,
+            timeout,
+            timeout.saturating_mul(16),
+            16,
+        )
+    }
+
+    #[cfg(test)]
+    pub(crate) fn for_tests_with_limits(
+        base_url: String,
+        token: Option<&str>,
+        request_timeout: Duration,
+        pass_timeout: Duration,
+        max_requests_per_pass: usize,
+    ) -> Self {
+        Self::new(
+            token.map(str::to_string),
+            Some(base_url),
+            request_timeout,
+            request_timeout,
+            pass_timeout,
+            max_requests_per_pass,
+        )
     }
 
     fn query_pull_request(
         &self,
         http: &reqwest::blocking::Client,
         identity: &UnresolvedPullRequest,
+        timeout: Duration,
     ) -> Result<ForgePullRequestObservation, String> {
         let token = self
             .token
@@ -75,7 +111,7 @@ impl ForgeClient {
         let base = self
             .api_base_override
             .clone()
-            .unwrap_or_else(|| parsed.api_base());
+            .unwrap_or_else(|| "https://api.github.com".to_string());
         let response = http
             .get(format!(
                 "{}/repos/{}/{}/pulls/{}",
@@ -87,6 +123,7 @@ impl ForgeClient {
             .header(reqwest::header::USER_AGENT, "Kanna")
             .header(reqwest::header::ACCEPT, "application/vnd.github+json")
             .bearer_auth(token)
+            .timeout(timeout)
             .send()
             .map_err(|error| format!("request failed: {error}"))?;
         if !response.status().is_success() {
@@ -133,7 +170,6 @@ impl ForgeClient {
 
 #[derive(Debug)]
 struct GithubPullRequestIdentity {
-    host: String,
     owner: String,
     repo: String,
     number: i64,
@@ -141,15 +177,11 @@ struct GithubPullRequestIdentity {
 
 impl GithubPullRequestIdentity {
     fn parse(url: &str, recorded_number: Option<i64>) -> Option<Self> {
-        let trimmed = url.trim();
-        let without_scheme = trimmed
-            .strip_prefix("https://")
-            .or_else(|| trimmed.strip_prefix("http://"))?;
-        let without_www = without_scheme
-            .strip_prefix("www.")
-            .unwrap_or(without_scheme);
-        let mut parts = without_www.split('/');
-        let host = parts.next()?.to_string();
+        let parsed = reqwest::Url::parse(url.trim()).ok()?;
+        if !parsed.host_str()?.eq_ignore_ascii_case("github.com") {
+            return None;
+        }
+        let mut parts = parsed.path_segments()?;
         let owner = parts.next()?.to_string();
         let repo = parts.next()?.to_string();
         if parts.next()? != "pull" {
@@ -160,19 +192,10 @@ impl GithubPullRequestIdentity {
             return None;
         }
         Some(Self {
-            host,
             owner,
             repo,
             number,
         })
-    }
-
-    fn api_base(&self) -> String {
-        if self.host.eq_ignore_ascii_case("github.com") {
-            "https://api.github.com".to_string()
-        } else {
-            format!("https://{}/api/v3", self.host)
-        }
     }
 }
 
@@ -184,9 +207,11 @@ struct GithubPullRequest {
     state: Option<String>,
 }
 
-/// Refresh every unresolved identity that is not already fresh. A partial
-/// answer may preserve the facts it did confirm, but availability stays false
-/// until every nonterminal known PR has a fresh individual confirmation.
+/// Refresh a bounded, fair slice of unresolved identities. A partial answer
+/// preserves the facts it confirmed, but availability stays false until every
+/// nonterminal known PR has a fresh individual confirmation. Failed attempts
+/// receive the same backoff as successful ones without becoming confirmations,
+/// so the next pass advances past them instead of hammering a bad prefix.
 pub fn reconcile_repo_pull_requests(
     db: &Db,
     repo_id: &str,
@@ -203,13 +228,24 @@ pub fn reconcile_repo_pull_requests(
         return ForgeAvailability::Confirmed;
     }
 
+    let total = unresolved.len();
     let now = now_epoch_seconds();
-    let stale: Vec<_> = unresolved
-        .into_iter()
-        .filter(|pull_request| !recently_reconciled(pull_request.forge_checked_at, now))
-        .collect();
-    if stale.is_empty() {
+    let confirmed = unresolved
+        .iter()
+        .filter(|pull_request| recently_reconciled(pull_request.forge_checked_at, now))
+        .count();
+    if confirmed == total {
         return ForgeAvailability::Confirmed;
+    }
+    let eligible = unresolved
+        .iter()
+        .filter(|pull_request| {
+            !recently_reconciled(pull_request.forge_checked_at, now)
+                && !recently_reconciled(pull_request.forge_attempted_at, now)
+        })
+        .collect::<Vec<_>>();
+    if eligible.is_empty() || client.max_requests_per_pass == 0 {
+        return ForgeAvailability::Unavailable;
     }
 
     let http = match client.http_client() {
@@ -220,19 +256,34 @@ pub fn reconcile_repo_pull_requests(
         }
     };
 
-    let mut observations = Vec::with_capacity(stale.len());
-    let mut complete = true;
-    for identity in &stale {
-        match client.query_pull_request(&http, identity) {
+    let started = std::time::Instant::now();
+    let deadline = started + client.pass_timeout;
+    let fair_request_budget = client.pass_timeout / client.max_requests_per_pass as u32;
+    let mut observations = Vec::with_capacity(eligible.len().min(client.max_requests_per_pass));
+    let mut attempted = Vec::with_capacity(observations.capacity());
+    for identity in eligible.into_iter().take(client.max_requests_per_pass) {
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        if remaining.is_zero() {
+            break;
+        }
+        attempted.push(identity.pr_key.clone());
+        let timeout = client
+            .request_timeout
+            .min(fair_request_budget)
+            .min(remaining);
+        match client.query_pull_request(&http, identity, timeout) {
             Ok(observation) => observations.push(observation),
             Err(error) => {
-                complete = false;
                 log::info!(
                     "analytics: could not confirm pull request {}: {error}",
                     identity.pr_key
                 );
             }
         }
+    }
+    if let Err(error) = db.record_forge_pull_request_attempts(repo_id, &attempted) {
+        log::warn!("analytics: recording pull request attempts failed: {error}");
+        return ForgeAvailability::Unavailable;
     }
     let recorded = match db.record_forge_pull_requests(repo_id, &observations) {
         Ok(recorded) => recorded,
@@ -241,7 +292,7 @@ pub fn reconcile_repo_pull_requests(
             return ForgeAvailability::Unavailable;
         }
     };
-    if complete && recorded == stale.len() {
+    if confirmed + recorded == total {
         ForgeAvailability::Confirmed
     } else {
         ForgeAvailability::Unavailable
@@ -272,6 +323,7 @@ mod tests {
     use std::collections::HashMap;
     use std::io::{Read, Write};
     use std::net::TcpListener;
+    use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
     struct MockResponse {
@@ -283,10 +335,21 @@ mod tests {
     fn spawn_forge(
         responses: HashMap<String, MockResponse>,
     ) -> (String, std::thread::JoinHandle<()>) {
+        let expected_requests = responses.len();
+        let (base, _requests, handle) = spawn_recording_forge(responses, expected_requests);
+        (base, handle)
+    }
+
+    fn spawn_recording_forge(
+        responses: HashMap<String, MockResponse>,
+        expected_requests: usize,
+    ) -> (String, Arc<Mutex<Vec<String>>>, std::thread::JoinHandle<()>) {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind forge fixture");
         let address = listener.local_addr().expect("fixture address");
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let recorded_requests = Arc::clone(&requests);
         let handle = std::thread::spawn(move || {
-            for _ in 0..responses.len() {
+            for _ in 0..expected_requests {
                 let (mut socket, _) = listener.accept().expect("accept forge request");
                 let mut request = [0_u8; 4096];
                 let bytes = socket.read(&mut request).expect("read request");
@@ -296,6 +359,10 @@ mod tests {
                     .next()
                     .and_then(|line| line.split_whitespace().nth(1))
                     .expect("request path");
+                recorded_requests
+                    .lock()
+                    .expect("request record")
+                    .push(path.to_string());
                 assert!(request
                     .to_ascii_lowercase()
                     .contains("authorization: bearer test-token"));
@@ -316,7 +383,7 @@ mod tests {
                 let _ = socket.write_all(encoded.as_bytes());
             }
         });
-        (format!("http://{address}"), handle)
+        (format!("http://{address}"), requests, handle)
     }
 
     fn response(number: i64, state: &str, merged_at: Option<&str>) -> String {
@@ -345,12 +412,53 @@ mod tests {
     #[test]
     fn url_only_pull_request_identity_supplies_its_number() {
         let parsed = GithubPullRequestIdentity::parse(
-            "https://github.example/acme/widgets/pull/314/files",
+            "https://github.com/acme/widgets/pull/314/files",
             None,
         )
         .expect("identity");
         assert_eq!(parsed.number, 314);
-        assert_eq!(parsed.api_base(), "https://github.example/api/v3");
+    }
+
+    #[test]
+    fn non_github_host_is_rejected_before_any_authenticated_request() {
+        assert!(GithubPullRequestIdentity::parse(
+            "https://attacker.example/acme/widgets/pull/314",
+            Some(314),
+        )
+        .is_none());
+
+        let db = db("forge-host-confinement");
+        db.insert_test_unresolved_pull_request(
+            "repo-1",
+            Some(314),
+            "https://attacker.example/acme/widgets/pull/314",
+            None,
+        )
+        .expect("attacker-host pr");
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind request detector");
+        listener
+            .set_nonblocking(true)
+            .expect("nonblocking detector");
+        let client = ForgeClient::for_tests(
+            format!(
+                "http://{}",
+                listener.local_addr().expect("detector address")
+            ),
+            Some("test-token"),
+            Duration::from_millis(50),
+        );
+
+        assert_eq!(
+            reconcile_repo_pull_requests(&db, "repo-1", &client),
+            ForgeAvailability::Unavailable
+        );
+        assert_eq!(
+            listener
+                .accept()
+                .expect_err("no request may carry the token")
+                .kind(),
+            std::io::ErrorKind::WouldBlock
+        );
     }
 
     #[test]
@@ -617,5 +725,82 @@ mod tests {
             ForgeAvailability::Unavailable
         );
         server.join().expect("forge server");
+    }
+
+    #[test]
+    fn a_pass_is_bounded_and_repeated_reads_advance_past_throttled_failures() {
+        let db = db("forge-bounded-fair-pass");
+        let mut responses = HashMap::new();
+        for number in 1..=5 {
+            db.insert_test_unresolved_pull_request(
+                "repo-1",
+                Some(number),
+                &format!("https://github.com/acme/widgets/pull/{number}"),
+                None,
+            )
+            .expect("pr");
+            responses.insert(
+                format!("/repos/acme/widgets/pulls/{number}"),
+                MockResponse {
+                    status: if number == 1 { 503 } else { 200 },
+                    body: if number == 1 {
+                        "{}".to_string()
+                    } else {
+                        response(number, "open", None)
+                    },
+                    delay: Duration::from_millis(15),
+                },
+            );
+        }
+        let (base, requests, server) = spawn_recording_forge(responses, 5);
+        let client = ForgeClient::for_tests_with_limits(
+            base,
+            Some("test-token"),
+            Duration::from_millis(100),
+            Duration::from_millis(60),
+            2,
+        );
+
+        let started = std::time::Instant::now();
+        assert_eq!(
+            reconcile_repo_pull_requests(&db, "repo-1", &client),
+            ForgeAvailability::Unavailable
+        );
+        assert!(
+            started.elapsed() < Duration::from_millis(150),
+            "the first bounded pass took {:?}",
+            started.elapsed()
+        );
+        assert_eq!(requests.lock().expect("requests").len(), 2);
+
+        // The failed first identity has an attempt stamp, so later reads make
+        // fair progress through the remaining rows instead of retrying it.
+        assert_eq!(
+            reconcile_repo_pull_requests(&db, "repo-1", &client),
+            ForgeAvailability::Unavailable
+        );
+        assert_eq!(
+            reconcile_repo_pull_requests(&db, "repo-1", &client),
+            ForgeAvailability::Unavailable
+        );
+        server.join().expect("forge server");
+        assert_eq!(
+            requests.lock().expect("requests").as_slice(),
+            [
+                "/repos/acme/widgets/pulls/1",
+                "/repos/acme/widgets/pulls/2",
+                "/repos/acme/widgets/pulls/3",
+                "/repos/acme/widgets/pulls/4",
+                "/repos/acme/widgets/pulls/5",
+            ]
+        );
+
+        // All successful rows are confirmed and the failure remains in
+        // backoff, so another Analytics read makes no request and stays honest.
+        assert_eq!(
+            reconcile_repo_pull_requests(&db, "repo-1", &client),
+            ForgeAvailability::Unavailable
+        );
+        assert_eq!(requests.lock().expect("requests").len(), 5);
     }
 }

@@ -99,7 +99,9 @@ pub struct TaskStats {
 #[derive(Debug, Serialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct PullRequestStats {
-    pub created: i64,
+    /// `None` when any known pull request lacks its forge creation instant.
+    /// `first_seen_at` is observation time and must never stand in for this.
+    pub created: Option<i64>,
     /// `None` when merge state could not be confirmed with the forge — which
     /// is not the same as no pull request having merged.
     pub merged: Option<i64>,
@@ -282,17 +284,24 @@ impl Db {
         confirmed: bool,
     ) -> Result<PullRequestStats, rusqlite::Error> {
         let (start, end) = (range.start(), range.end());
-        // The forge's creation instant when it is known, and the moment this
-        // desktop first saw the pull request otherwise. Both are ISO or
-        // SQLite-form timestamps, so the window is compared on the date part.
-        let created = self.conn.query_row(
+        let missing_creation_instants = self.conn.query_row(
             "SELECT COUNT(*) FROM task_pull_request
-             WHERE repo_id = ?
-               AND substr(COALESCE(forge_created_at, first_seen_at), 1, 10) >= substr(?, 1, 10)
-               AND substr(COALESCE(forge_created_at, first_seen_at), 1, 10) <= substr(?, 1, 10)",
-            (repo_id, &start, &end),
-            |row| row.get(0),
+             WHERE repo_id = ? AND forge_created_at IS NULL",
+            [repo_id],
+            |row| row.get::<_, i64>(0),
         )?;
+        let created = if missing_creation_instants == 0 {
+            Some(self.conn.query_row(
+                "SELECT COUNT(*) FROM task_pull_request
+                 WHERE repo_id = ?
+                   AND substr(forge_created_at, 1, 10) >= substr(?, 1, 10)
+                   AND substr(forge_created_at, 1, 10) <= substr(?, 1, 10)",
+                (repo_id, &start, &end),
+                |row| row.get(0),
+            )?)
+        } else {
+            None
+        };
         if !confirmed {
             return Ok(PullRequestStats {
                 created,
@@ -456,20 +465,49 @@ impl Db {
                  AND stage_run.stage = 'review'
                GROUP BY stage_run.task_id
              )
-             SELECT first_review.task_id
+             SELECT first_review.task_id,
+                    CASE WHEN EXISTS (
+                      SELECT 1 FROM stage_run AS succeeded
+                      WHERE succeeded.task_id = first_review.task_id
+                        AND succeeded.kind = 'main' AND succeeded.stage = 'review'
+                        AND succeeded.finished_at IS NOT NULL
+                        AND succeeded.status = 'succeeded'
+                        AND succeeded.no_work_termination IS NULL
+                    ) AND NOT EXISTS (
+                      SELECT 1 FROM task_revision
+                      WHERE task_revision.task_id = first_review.task_id
+                    ) THEN 1 ELSE 0 END AS clean
              FROM first_review
              WHERE first_review.started_at >= ? AND first_review.started_at <= ?
-               AND EXISTS (
-                 SELECT 1 FROM stage_run AS outcome
-                 WHERE outcome.task_id = first_review.task_id
-                   AND outcome.kind = 'main' AND outcome.stage = 'review'
-                   AND outcome.finished_at IS NOT NULL
-                   AND outcome.status IN ('succeeded', 'failed')
-                   AND outcome.no_work_termination IS NULL
+               AND (
+                 EXISTS (
+                   SELECT 1 FROM stage_run AS succeeded
+                   WHERE succeeded.task_id = first_review.task_id
+                     AND succeeded.kind = 'main' AND succeeded.stage = 'review'
+                     AND succeeded.finished_at IS NOT NULL
+                     AND succeeded.status = 'succeeded'
+                     AND succeeded.no_work_termination IS NULL
+                 )
+                 OR (
+                   EXISTS (
+                     SELECT 1 FROM stage_run AS failed
+                     WHERE failed.task_id = first_review.task_id
+                       AND failed.kind = 'main' AND failed.stage = 'review'
+                       AND failed.finished_at IS NOT NULL
+                       AND failed.status = 'failed'
+                       AND failed.no_work_termination IS NULL
+                   )
+                   AND EXISTS (
+                     SELECT 1 FROM task_revision
+                     WHERE task_revision.task_id = first_review.task_id
+                   )
+                 )
                )",
         )?;
         let cohort = cohort_statement
-            .query_map((repo_id, &start, &end), |row| row.get::<_, String>(0))?
+            .query_map((repo_id, &start, &end), |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)? == 1))
+            })?
             .collect::<Result<Vec<_>, _>>()?;
         drop(cohort_statement);
 
@@ -495,7 +533,10 @@ impl Db {
             .collect::<Result<Vec<_>, _>>()?;
         drop(statement);
         for (task_id, applied) in rows {
-            if !cohort.contains(&task_id) {
+            if !cohort
+                .iter()
+                .any(|(cohort_task_id, _)| cohort_task_id == &task_id)
+            {
                 continue;
             }
             if applied == 1 {
@@ -507,10 +548,7 @@ impl Db {
 
         let cohort_tasks = cohort.len() as i64;
         let total_revisions: i64 = revisions_by_task.values().sum();
-        let clean = cohort
-            .iter()
-            .filter(|task_id| !revisions_by_task.contains_key(*task_id))
-            .count() as i64;
+        let clean = cohort.iter().filter(|(_, clean)| *clean).count() as i64;
         Ok(RevisionStats {
             cohort_tasks,
             total_revisions,

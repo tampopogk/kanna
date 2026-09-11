@@ -809,7 +809,8 @@ export interface DesktopAnalyticsTaskStats {
 }
 
 export interface DesktopAnalyticsPullRequestStats {
-  created: number;
+  /** `null` when a known PR lacks a forge-confirmed creation instant. */
+  created: number | null;
   /** `null` when the forge could not confirm merge state — not zero merges. */
   merged: number | null;
   openNow: number | null;

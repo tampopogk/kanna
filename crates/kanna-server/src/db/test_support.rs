@@ -315,6 +315,7 @@ impl Db {
                 forge_merged_at TEXT,
                 forge_state TEXT,
                 forge_checked_at TEXT,
+                forge_attempted_at TEXT,
                 PRIMARY KEY (repo_id, pr_key)
             );
 
@@ -819,14 +820,15 @@ impl Db {
         let pr_key = super::pull_requests::canonical_pr_key(&url, Some(pr_number));
         self.conn.execute(
             "INSERT INTO task_pull_request
-               (repo_id, pr_key, pr_number, pr_url, first_seen_at, forge_merged_at,
-                forge_state, forge_checked_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))",
+               (repo_id, pr_key, pr_number, pr_url, first_seen_at, forge_created_at,
+                forge_merged_at, forge_state, forge_checked_at, forge_attempted_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))",
             rusqlite::params![
                 repo_id,
                 pr_key,
                 pr_number,
                 url,
+                first_seen_at,
                 first_seen_at,
                 merged_at,
                 if merged_at.is_some() {
@@ -835,6 +837,33 @@ impl Db {
                     "OPEN"
                 },
             ],
+        )?;
+        Ok(())
+    }
+
+    #[cfg(test)]
+    pub fn set_test_pipeline_item_pr_without_observation(
+        &self,
+        task_id: &str,
+        pr_number: i64,
+        pr_url: &str,
+    ) -> Result<(), rusqlite::Error> {
+        self.conn.execute(
+            "UPDATE pipeline_item SET pr_number = ?, pr_url = ? WHERE id = ?",
+            (pr_number, pr_url, task_id),
+        )?;
+        Ok(())
+    }
+
+    #[cfg(test)]
+    pub fn set_test_stage_run_status(
+        &self,
+        run_id: &str,
+        status: &str,
+    ) -> Result<(), rusqlite::Error> {
+        self.conn.execute(
+            "UPDATE stage_run SET status = ? WHERE id = ?",
+            (status, run_id),
         )?;
         Ok(())
     }

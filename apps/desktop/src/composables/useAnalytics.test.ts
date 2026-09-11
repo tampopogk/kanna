@@ -214,6 +214,50 @@ describe("useAnalytics", () => {
     consoleError.mockRestore();
   });
 
+  it("keeps an unknown PR creation count visible instead of calling the window empty", async () => {
+    setDesktopServerClientHandlersForTests({
+      fetchRepoAnalytics: async (_repoId, range) =>
+        analyticsFixture(range ?? { from: "2026-09-01", to: "2026-09-30" }, {
+          tasks: { created: 0, closed: 0, openNow: 0, childTasksCreated: 0 },
+          pullRequests: { created: null, merged: null, openNow: null },
+          idle: {
+            totalSeconds: 0,
+            workingSeconds: 0,
+            taskCount: 0,
+            averageSecondsPerTask: 0,
+            longestSeconds: 0,
+            contributors: [],
+          },
+          revisions: {
+            cohortTasks: 0,
+            totalRevisions: 0,
+            averagePerTask: 0,
+            cleanPassRate: null,
+            parkedRequests: 0,
+            contributors: [],
+          },
+          tokens: {
+            total: {
+              input: 0,
+              cachedInput: 0,
+              cacheCreation: 0,
+              reasoning: 0,
+              output: 0,
+              total: 0,
+            },
+            byModel: [],
+            byTask: [],
+          },
+        }),
+    });
+
+    const analytics = useAnalytics(ref<string | null>("repo-1"));
+    await flushWatchers();
+
+    expect(analytics.analytics.value.pullRequests.created).toBeNull();
+    expect(analytics.hasAnyData.value).toBe(true);
+  });
+
   it("opens each statistic into the rows that produced it", async () => {
     setDesktopServerClientHandlersForTests({
       fetchRepoAnalytics: async (_repoId, range) =>

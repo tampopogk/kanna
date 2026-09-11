@@ -229,7 +229,7 @@ fn open_creates_and_migrates_fresh_profile_database() {
             |row| row.get(0),
         )
         .expect("latest migration");
-    assert_eq!(latest_migration, "081_provider_usage_discovery");
+    assert_eq!(latest_migration, "082_pull_request_forge_attempts");
     assert_eq!(
         index_columns(&db.conn, "idx_pipeline_item_parent_created_id"),
         vec!["parent_task_id", "created_at", "id"],
@@ -5033,6 +5033,41 @@ fn a_pull_request_this_desktop_never_opened_is_not_adopted_from_a_forge_listing(
 }
 
 #[test]
+fn analytics_never_uses_legacy_backfill_observation_time_as_pr_creation_time() {
+    let db = analytics_db();
+    db.conn
+        .execute(
+            "UPDATE pipeline_item
+             SET pr_number = 42, pr_url = 'https://github.com/owner/repo/pull/42'
+             WHERE id = 'task-1'",
+            [],
+        )
+        .expect("legacy task PR");
+    db.backfill_repo_pull_requests("repo-1")
+        .expect("backfill legacy PR");
+    let today: String = db
+        .conn
+        .query_row("SELECT date('now')", [], |row| row.get(0))
+        .expect("today");
+
+    let analytics = db
+        .repo_analytics(
+            "repo-1",
+            &super::AnalyticsRange {
+                from: today.clone(),
+                to: today,
+            },
+            false,
+            Vec::new(),
+        )
+        .expect("analytics");
+    assert_eq!(
+        analytics.pull_requests.created, None,
+        "migration observation time is not a pull request creation instant"
+    );
+}
+
+#[test]
 fn seeing_one_usage_record_again_writes_the_same_row() {
     let db = analytics_db();
     let record = super::TokenUsageRecord {
@@ -5184,9 +5219,16 @@ fn analytics_token_coverage_uses_run_overlap_and_usage_inside_the_selected_windo
 }
 
 #[test]
-fn analytics_revision_statistics_use_a_completed_first_review_cohort_and_lifetime_history() {
+fn analytics_revision_statistics_use_real_review_verdicts_and_lifetime_history() {
     let db = analytics_db();
-    for task in ["next-day", "clean", "human-reset", "specialty-child"] {
+    for task in [
+        "next-day",
+        "clean",
+        "human-reset",
+        "specialty-child",
+        "failed-unrelated",
+        "parked-only",
+    ] {
         db.insert_test_pipeline_item(
             task,
             "repo-1",
@@ -5225,6 +5267,28 @@ fn analytics_revision_statistics_use_a_completed_first_review_cohort_and_lifetim
         .expect("next-day revision");
     db.insert_test_task_revision("next-day", "agent", false, "2026-04-18 00:07:00")
         .expect("parked request");
+    db.insert_test_stage_run_window(
+        "failed-unrelated-review",
+        "failed-unrelated",
+        "review",
+        "2026-04-17 09:30:00",
+        Some("2026-04-17 09:35:00"),
+    )
+    .expect("unrelated failed review");
+    db.set_test_stage_run_status("failed-unrelated-review", "failed")
+        .expect("failed status");
+    db.insert_test_stage_run_window(
+        "parked-only-review",
+        "parked-only",
+        "review",
+        "2026-04-17 09:40:00",
+        Some("2026-04-17 09:45:00"),
+    )
+    .expect("parked review verdict");
+    db.set_test_stage_run_status("parked-only-review", "failed")
+        .expect("failed revision verdict status");
+    db.insert_test_task_revision("parked-only", "agent", false, "2026-04-17 09:45:00")
+        .expect("parked-only revision verdict");
     db.insert_test_stage_run_window(
         "clean-review",
         "clean",
@@ -5267,9 +5331,9 @@ fn analytics_revision_statistics_use_a_completed_first_review_cohort_and_lifetim
             Vec::new(),
         )
         .expect("analytics");
-    assert_eq!(analytics.revisions.cohort_tasks, 3);
+    assert_eq!(analytics.revisions.cohort_tasks, 4);
     assert_eq!(analytics.revisions.total_revisions, 3);
-    assert_eq!(analytics.revisions.average_per_task, 1.0);
-    assert_eq!(analytics.revisions.clean_pass_rate, Some(1.0 / 3.0));
-    assert_eq!(analytics.revisions.parked_requests, 1);
+    assert_eq!(analytics.revisions.average_per_task, 0.75);
+    assert_eq!(analytics.revisions.clean_pass_rate, Some(0.25));
+    assert_eq!(analytics.revisions.parked_requests, 2);
 }

@@ -227,7 +227,7 @@ function shareOf(value: number, rows: { totals: { total: number } }[]): number {
               <span class="stat-label">{{ t('analytics.tasksOpen') }}</span>
             </div>
             <div class="stat">
-              <span class="stat-value" data-testid="analytics-pr-created">{{ analytics.pullRequests.created }}</span>
+              <span class="stat-value" data-testid="analytics-pr-created">{{ analytics.pullRequests.created ?? '—' }}</span>
               <span class="stat-label">{{ t('analytics.prCreated') }}</span>
             </div>
             <div class="stat">
@@ -244,7 +244,10 @@ function shareOf(value: number, rows: { totals: { total: number } }[]): number {
           <p v-if="analytics.tasks.childTasksCreated > 0" class="note">
             {{ t('analytics.childTasks', { count: analytics.tasks.childTasksCreated }) }}
           </p>
-          <p v-if="!analytics.coverage.pullRequestStateConfirmed" class="note warning">
+          <p
+            v-if="analytics.pullRequests.created === null || !analytics.coverage.pullRequestStateConfirmed"
+            class="note warning"
+          >
             {{ t('analytics.prUnavailable') }}
           </p>
         </section>

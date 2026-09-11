@@ -1738,6 +1738,84 @@ async fn analytics_route_confirms_a_url_only_pr_through_http_and_durable_storage
 }
 
 #[tokio::test]
+async fn analytics_route_never_sends_github_credentials_to_a_task_supplied_host() {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind request detector");
+    listener
+        .set_nonblocking(true)
+        .expect("nonblocking detector");
+    let forge = crate::forge_pull_requests::ForgeClient::for_tests(
+        format!(
+            "http://{}",
+            listener.local_addr().expect("detector address")
+        ),
+        Some("test-token"),
+        Duration::from_millis(50),
+    );
+    let app = super::test_router_with_seed_and_forge(
+        "analytics-forge-attacker-host",
+        "Studio Mac",
+        |db| {
+            db.insert_test_repo("repo-1", "Repo One").unwrap();
+            db.insert_test_unresolved_pull_request(
+                "repo-1",
+                Some(314),
+                "https://attacker.example/acme/widgets/pull/314",
+                None,
+            )
+            .unwrap();
+        },
+        forge,
+    );
+
+    let json = analytics_body(app, "").await;
+    assert_eq!(json["coverage"]["pullRequestStateConfirmed"], false);
+    assert_eq!(json["pullRequests"]["created"], serde_json::Value::Null);
+    assert_eq!(
+        listener
+            .accept()
+            .expect_err("no authenticated request")
+            .kind(),
+        std::io::ErrorKind::WouldBlock
+    );
+}
+
+#[tokio::test]
+async fn analytics_route_does_not_count_a_legacy_pr_backfilled_in_the_current_window() {
+    let forge = crate::forge_pull_requests::ForgeClient::for_tests(
+        "http://127.0.0.1:1".to_string(),
+        None,
+        Duration::from_millis(20),
+    );
+    let app = super::test_router_with_seed_and_forge(
+        "analytics-legacy-pr-created-at",
+        "Studio Mac",
+        |db| {
+            db.insert_test_repo("repo-1", "Repo One").unwrap();
+            db.insert_test_pipeline_item(
+                "legacy-pr-task",
+                "repo-1",
+                "prompt",
+                Some("Legacy PR"),
+                "pr",
+                "2025-01-01 08:00:00",
+            )
+            .unwrap();
+            db.set_test_pipeline_item_pr_without_observation(
+                "legacy-pr-task",
+                42,
+                "https://github.com/owner/repo/pull/42",
+            )
+            .unwrap();
+        },
+        forge,
+    );
+
+    let json = analytics_body(app, "").await;
+    assert_eq!(json["coverage"]["pullRequestStateConfirmed"], false);
+    assert_eq!(json["pullRequests"]["created"], serde_json::Value::Null);
+}
+
+#[tokio::test]
 async fn analytics_route_reports_flow_counts_for_the_requested_window() {
     let app = super::test_router_with_seed("desktop-1", "Studio Mac", seed_analytics_repo);
     let json = analytics_body(app, "?from=2026-04-16&to=2026-04-20").await;
@@ -1978,7 +2056,13 @@ async fn analytics_route_keeps_source_failures_scoped_to_the_run_window() {
 async fn analytics_route_waits_for_review_outcomes_and_keeps_next_day_revisions() {
     let app = super::test_router_with_seed("analytics-review-cohort", "Studio Mac", |db| {
         db.insert_test_repo("repo-1", "Repo One").unwrap();
-        for task in ["ongoing", "next-day", "clean"] {
+        for task in [
+            "ongoing",
+            "next-day",
+            "clean",
+            "failed-unrelated",
+            "parked-only",
+        ] {
             db.insert_test_pipeline_item(
                 task,
                 "repo-1",
@@ -2008,6 +2092,28 @@ async fn analytics_route_waits_for_review_outcomes_and_keeps_next_day_revisions(
         db.insert_test_task_revision("next-day", "agent", true, "2026-04-18 00:06:00")
             .unwrap();
         db.insert_test_stage_run_window(
+            "failed-unrelated-review",
+            "failed-unrelated",
+            "review",
+            "2026-04-17 09:30:00",
+            Some("2026-04-17 09:35:00"),
+        )
+        .unwrap();
+        db.set_test_stage_run_status("failed-unrelated-review", "failed")
+            .unwrap();
+        db.insert_test_stage_run_window(
+            "parked-only-review",
+            "parked-only",
+            "review",
+            "2026-04-17 09:40:00",
+            Some("2026-04-17 09:45:00"),
+        )
+        .unwrap();
+        db.set_test_stage_run_status("parked-only-review", "failed")
+            .unwrap();
+        db.insert_test_task_revision("parked-only", "agent", false, "2026-04-17 09:45:00")
+            .unwrap();
+        db.insert_test_stage_run_window(
             "clean-review",
             "clean",
             "review",
@@ -2018,9 +2124,10 @@ async fn analytics_route_waits_for_review_outcomes_and_keeps_next_day_revisions(
     });
     let json = analytics_body(app, "?from=2026-04-17&to=2026-04-17").await;
 
-    assert_eq!(json["revisions"]["cohortTasks"], 2);
+    assert_eq!(json["revisions"]["cohortTasks"], 3);
     assert_eq!(json["revisions"]["totalRevisions"], 1);
-    assert_eq!(json["revisions"]["cleanPassRate"], 0.5);
+    assert_eq!(json["revisions"]["cleanPassRate"], 1.0 / 3.0);
+    assert_eq!(json["revisions"]["parkedRequests"], 1);
 }
 
 #[tokio::test]
