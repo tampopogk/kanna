@@ -19,7 +19,14 @@ import {
   performDesktopViewOpen,
   type DesktopViewOpenCommand,
 } from "./composables/desktopViewOpen";
-import { acknowledgeDesktopViewOpen } from "./services/desktopServerClient";
+import {
+  performCloudTransferCredentialRefresh,
+  type CloudTransferCredentialRefreshCommand,
+} from "./composables/cloudTransferCredentialRefresh";
+import {
+  acknowledgeCloudTransferCredentialRefresh,
+  acknowledgeDesktopViewOpen,
+} from "./services/desktopServerClient";
 import { useAppModals } from "./composables/useAppModals";
 import {
   mainTabScopeKeyForApp,
@@ -225,6 +232,17 @@ async function openTaskView(command: DesktopViewOpenCommand): Promise<void> {
     console.error("[App] acknowledging a desktop view open failed:", error);
   }
 }
+
+async function refreshCloudTransferCredential(
+  command: CloudTransferCredentialRefreshCommand,
+): Promise<void> {
+  const outcome = await performCloudTransferCredentialRefresh(
+    command,
+    refreshCloudTransferRoute,
+  );
+  await acknowledgeCloudTransferCredentialRefresh(command.requestId, outcome);
+}
+
 const mainTabs = useMainTabs({
   scopeKey: mainTabScopeKey,
   onTabClosed: (tab) => {
@@ -517,6 +535,7 @@ const {
   openFilePreview,
   openImageUrlPreview,
   openTaskView,
+  refreshCloudTransferCredential,
   preferences,
   remoteTaskDiagnostics,
   restoreMainTabs: mainTabPersistence.hydrate,

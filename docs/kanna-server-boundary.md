@@ -1307,14 +1307,21 @@ These things are contract rather than convenience:
 - **A route that cannot carry the transfer is refused before anything is
   queued.** The relay authenticates every tunnel dial, and the Firebase
   credential it dials with is minted by the signed-in renderer and pushed to
-  `POST /v1/transfers/cloud-proxies`; nothing in the server can refresh it. A
+  `POST /v1/transfers/cloud-proxies`; the server cannot mint, extract, or bypass
+  it. A
   cloud route whose credential has expired therefore produced `scheduled: true`
   followed by `expected auth_ok text frame` on a socket nobody was watching. The
-  server now reads that credential's own `exp` (`cloud_transfer_proxy.rs`), and
-  a cloud route inside the expiry margin is reported unusable — with the fix,
-  which is starting a transfer from the signed-in desktop app on that machine
-  (it refreshes the route as it goes), or using the LAN while both machines
-  share a network. What that check reads is strictly *this* machine's outbound
+  server now reads that credential's own `exp` (`cloud_transfer_proxy.rs`).
+  When push or pull selects a provisioned cloud route inside the expiry margin,
+  it appends a correlated request containing only the peer id to a loopback-only
+  desktop command lane. One renderer uses its existing signed-in Firebase
+  session to force renewal, pushes the new ID token through the existing proxy
+  route, and acknowledges only `refreshed`, `sign_in_required`, or
+  `refresh_failed`. The transfer entrypoint waits at most ten seconds and then
+  re-reads the proxy credential before queueing; an acknowledgement is never
+  itself admission. The source engine performs the same gate when fulfilling a
+  cloud pull, so both machines' independent outbound credentials are covered.
+  What that check reads is strictly *this* machine's outbound
   credential: a transfer that just arrived here was dialled with the other
   machine's, so an incoming move proves nothing about the route reported here.
   A stale cloud route behind a healthy LAN route costs only the fallback, and

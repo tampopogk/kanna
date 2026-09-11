@@ -1,4 +1,5 @@
 use super::*;
+use base64::Engine as _;
 
 /// A router whose database actually contains the tasks a test names.
 ///
@@ -42,6 +43,189 @@ fn outgoing_transfer_body(transfer_id: &str, source_task_id: &str) -> String {
         }
     })
     .to_string()
+}
+
+fn test_id_token(expires_at: i64) -> String {
+    let claims = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .encode(serde_json::json!({ "exp": expires_at }).to_string());
+    format!("header.{claims}.signature")
+}
+
+fn cloud_only_target(
+    route: crate::cloud_transfer_proxy::CloudTransferRoute,
+) -> crate::transfer_targets::TransferTarget {
+    crate::transfer_targets::TransferTarget {
+        peer_id: route.peer_id.clone(),
+        name: "MacBook Pro".to_string(),
+        machine_id: Some(route.machine_id.clone()),
+        trusted: true,
+        accepting_transfers: true,
+        lan_available: false,
+        cloud_available: true,
+        preferred_transport: "cloud".to_string(),
+        cloud_fallback: false,
+        transferable: route.ready(),
+        unavailable_reason: None,
+        cloud_route: Some(route),
+    }
+}
+
+async fn acknowledge_cloud_refresh(
+    app: axum::Router,
+    request_id: &str,
+    outcome: &str,
+) -> serde_json::Value {
+    let mut request = Request::post("/v1/transfers/cloud-credential-refreshes/ack")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            serde_json::json!({ "requestId": request_id, "outcome": outcome }).to_string(),
+        ))
+        .unwrap();
+    request
+        .extensions_mut()
+        .insert(axum::extract::ConnectInfo(std::net::SocketAddr::from((
+            [127, 0, 0, 1],
+            49152,
+        ))));
+    let response = app.oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    from_slice(
+        &axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap(),
+    )
+    .unwrap()
+}
+
+/// The moving-day regression: an agent-facing transfer encounters a stale
+/// outbound route, the renderer rotates it through the existing proxy owner,
+/// and route admission observes the new credential rather than trusting the
+/// acknowledgement alone.
+#[tokio::test]
+async fn expired_cloud_credential_can_be_refreshed_and_then_admitted() {
+    let state = super::test_state_with_seed("desktop-refreshable", "MacBook Pro", |_| {});
+    let relay_url = "ws://127.0.0.1:9";
+    crate::cloud_transfer_proxy::ensure_cloud_transfer_proxy_in_state(
+        state.cloud_transfer_proxies(),
+        "peer-studio".to_string(),
+        "desktop-studio".to_string(),
+        relay_url.to_string(),
+        test_id_token(1),
+    )
+    .await
+    .unwrap();
+    let stale = crate::cloud_transfer_proxy::cloud_transfer_routes(state.cloud_transfer_proxies())
+        .await
+        .remove(0);
+    assert_eq!(stale.status, "credential_expired");
+    assert!(crate::transfer_targets::plan_route(&cloud_only_target(stale), Some("cloud")).is_err());
+
+    let waiting_state = Arc::clone(&state);
+    let waiting = tokio::spawn(async move {
+        crate::http_api::ensure_engine_cloud_transfer_credential(
+            &waiting_state,
+            "peer-studio",
+            Some("cloud"),
+        )
+        .await
+    });
+    let command = loop {
+        let batch = state.cloud_transfer_refresh_commands().read(None, None, 10);
+        if let Some(command) = batch.events.first() {
+            break command["event"].clone();
+        }
+        tokio::task::yield_now().await;
+    };
+    assert_eq!(command["type"], "cloud_transfer_credential_refresh");
+    assert_eq!(command["peerId"], "peer-studio");
+    assert!(
+        command.get("idToken").is_none(),
+        "credential leaked into {command}"
+    );
+
+    crate::cloud_transfer_proxy::ensure_cloud_transfer_proxy_in_state(
+        state.cloud_transfer_proxies(),
+        "peer-studio".to_string(),
+        "desktop-studio".to_string(),
+        relay_url.to_string(),
+        test_id_token(4_000_000_000),
+    )
+    .await
+    .unwrap();
+    let ack = acknowledge_cloud_refresh(
+        super::router(Arc::clone(&state)),
+        command["requestId"].as_str().unwrap(),
+        "refreshed",
+    )
+    .await;
+    assert_eq!(ack["acknowledged"], true);
+    waiting.await.unwrap().unwrap();
+
+    let fresh = crate::cloud_transfer_proxy::cloud_transfer_routes(state.cloud_transfer_proxies())
+        .await
+        .remove(0);
+    assert_eq!(fresh.status, "ready");
+    let admitted = crate::transfer_targets::plan_route(&cloud_only_target(fresh), Some("cloud"))
+        .expect("the refreshed route is admitted");
+    assert_eq!(admitted.transport, "cloud");
+}
+
+#[tokio::test]
+async fn signed_out_renderer_returns_an_explicit_bounded_refresh_failure() {
+    let state = super::test_state_with_seed("desktop-signed-out", "MacBook Pro", |_| {});
+    crate::cloud_transfer_proxy::ensure_cloud_transfer_proxy_in_state(
+        state.cloud_transfer_proxies(),
+        "peer-studio".to_string(),
+        "desktop-studio".to_string(),
+        "ws://127.0.0.1:9".to_string(),
+        test_id_token(1),
+    )
+    .await
+    .unwrap();
+    let waiting_state = Arc::clone(&state);
+    let waiting = tokio::spawn(async move {
+        crate::http_api::ensure_engine_cloud_transfer_credential(
+            &waiting_state,
+            "peer-studio",
+            Some("cloud"),
+        )
+        .await
+    });
+    let command = loop {
+        let batch = state.cloud_transfer_refresh_commands().read(None, None, 10);
+        if let Some(command) = batch.events.first() {
+            break command["event"].clone();
+        }
+        tokio::task::yield_now().await;
+    };
+    acknowledge_cloud_refresh(
+        super::router(Arc::clone(&state)),
+        command["requestId"].as_str().unwrap(),
+        "sign_in_required",
+    )
+    .await;
+    let failure = waiting.await.unwrap().expect_err("sign-in is required");
+    assert_eq!(
+        failure,
+        crate::http_api::CloudTransferRefreshFailure::SignInRequired
+    );
+    let error = failure.to_string();
+    assert!(error.contains("not signed in"), "{error}");
+    assert!(error.contains("retry the transfer"), "{error}");
+}
+
+#[tokio::test]
+async fn unavailable_desktop_bounds_cloud_credential_refresh() {
+    let state = super::test_state_with_seed("desktop-closed", "MacBook Pro", |_| {});
+    state.set_cloud_transfer_refresh_timeout_ms(20);
+    let error = crate::http_api::transfers::request_cloud_transfer_refresh(&state, "peer-studio")
+        .await
+        .expect_err("an absent renderer cannot refresh")
+        .to_string();
+    assert!(
+        error.contains("no Kanna desktop window acknowledged"),
+        "{error}"
+    );
 }
 
 async fn post_transfer(
