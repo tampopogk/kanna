@@ -122,6 +122,22 @@ fn validated_date(value: &str) -> Result<String, (axum::http::StatusCode, String
             format!("dates must be YYYY-MM-DD, got `{value}`"),
         ));
     }
+    let year = value[0..4].parse::<u32>().unwrap_or_default();
+    let month = value[5..7].parse::<u32>().unwrap_or_default();
+    let day = value[8..10].parse::<u32>().unwrap_or_default();
+    let days_in_month = match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 if year % 400 == 0 || (year % 4 == 0 && year % 100 != 0) => 29,
+        2 => 28,
+        _ => 0,
+    };
+    if day == 0 || day > days_in_month {
+        return Err((
+            axum::http::StatusCode::BAD_REQUEST,
+            format!("dates must be real Gregorian calendar dates, got `{value}`"),
+        ));
+    }
     Ok(value.to_string())
 }
 
@@ -202,6 +218,16 @@ mod tests {
         assert!(resolve_range(Some("2026-09-07"), Some("2026-09-01")).is_err());
         assert!(resolve_range(Some("07/09/2026"), None).is_err());
         assert!(resolve_range(Some("2020-01-01"), Some("2026-09-01")).is_err());
+    }
+
+    #[test]
+    fn impossible_calendar_dates_are_refused_and_leap_day_is_accepted() {
+        for date in ["2026-13-01", "2026-04-31", "2026-02-29"] {
+            assert!(resolve_range(Some(date), Some(date)).is_err(), "{date}");
+        }
+        let leap = resolve_range(Some("2024-02-29"), Some("2024-02-29")).expect("leap day");
+        assert_eq!(leap.from, "2024-02-29");
+        assert_eq!(leap.to, "2024-02-29");
     }
 
     #[test]

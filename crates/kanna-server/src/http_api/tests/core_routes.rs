@@ -1594,8 +1594,8 @@ fn seed_analytics_repo(db: &crate::db::Db) {
     db.set_test_pipeline_item_closed_at("task-1", "2026-04-19 08:00:00")
         .unwrap();
 
-    // Waiting: one two-hour idle span and one one-hour unread span, both of
-    // which Analytics counts as nobody servicing the task.
+    // Waiting: one two-hour idle span and one disjoint one-hour unread span,
+    // both of which Analytics counts toward the total for this task.
     db.insert_test_activity_interval(
         "task-1",
         "idle",
@@ -1757,10 +1757,11 @@ async fn analytics_route_counts_unread_as_waiting_and_clips_to_the_window() {
     let app = super::test_router_with_seed("desktop-1", "Studio Mac", seed_analytics_repo);
     let json = analytics_body(app.clone(), "?from=2026-04-16&to=2026-04-20").await;
 
-    // Two hours idle plus one hour unread; the working span is reported apart.
+    // Two hours idle plus one disjoint hour unread; the working span is
+    // reported apart, and the gap keeps the longest individual wait at two.
     assert_eq!(json["idle"]["totalSeconds"], 3 * 3_600);
     assert_eq!(json["idle"]["workingSeconds"], 1_800);
-    assert_eq!(json["idle"]["longestSeconds"], 3 * 3_600);
+    assert_eq!(json["idle"]["longestSeconds"], 2 * 3_600);
     // Averaged over every task alive in the window, not only the ones that
     // waited — including the one created before it and never closed.
     assert_eq!(json["idle"]["taskCount"], 3);
@@ -1769,6 +1770,41 @@ async fn analytics_route_counts_unread_as_waiting_and_clips_to_the_window() {
     // A window covering only the idle span's second hour gets that hour only.
     let narrowed = analytics_body(app, "?from=2026-04-17&to=2026-04-17").await;
     assert_eq!(narrowed["idle"]["totalSeconds"], 3 * 3_600);
+}
+
+#[tokio::test]
+async fn analytics_route_keeps_adjacent_idle_and_unread_as_one_wait() {
+    let app = super::test_router_with_seed("desktop-1", "Studio Mac", |db| {
+        db.insert_test_repo("repo-1", "Repo One").unwrap();
+        db.insert_test_pipeline_item(
+            "task-1",
+            "repo-1",
+            "prompt",
+            Some("Task One"),
+            "review",
+            "2026-04-17 08:00:00",
+        )
+        .unwrap();
+        db.insert_test_activity_interval(
+            "task-1",
+            "idle",
+            "2026-04-17 09:00:00",
+            "2026-04-17 11:00:00",
+        )
+        .unwrap();
+        db.insert_test_activity_interval(
+            "task-1",
+            "unread",
+            "2026-04-17 11:00:00",
+            "2026-04-17 12:00:00",
+        )
+        .unwrap();
+    });
+
+    let json = analytics_body(app, "?from=2026-04-17&to=2026-04-17").await;
+    assert_eq!(json["idle"]["totalSeconds"], 3 * 3_600);
+    assert_eq!(json["idle"]["longestSeconds"], 3 * 3_600);
+    assert_eq!(json["idle"]["contributors"][0]["value"], 3 * 3_600);
 }
 
 #[tokio::test]
@@ -1925,6 +1961,9 @@ async fn analytics_route_refuses_a_window_it_will_not_read() {
     for query in [
         "?from=2026-04-20&to=2026-04-16",
         "?from=20-04-2026&to=2026-04-16",
+        "?from=2026-13-01&to=2026-04-16",
+        "?from=2026-04-31&to=2026-04-16",
+        "?from=2026-02-29&to=2026-04-16",
         "?from=2020-01-01&to=2026-04-16",
     ] {
         let response = app
@@ -1942,6 +1981,10 @@ async fn analytics_route_refuses_a_window_it_will_not_read() {
             "{query} should be refused rather than silently served as another window"
         );
     }
+
+    let leap_day = analytics_body(app, "?from=2024-02-29&to=2024-02-29").await;
+    assert_eq!(leap_day["range"]["from"], "2024-02-29");
+    assert_eq!(leap_day["range"]["to"], "2024-02-29");
 }
 
 #[tokio::test]

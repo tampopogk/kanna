@@ -150,8 +150,27 @@ impl Db {
         Ok(())
     }
 
-    /// PR identities this repo knows about whose forge state is still open or
-    /// never checked. URL-only legacy rows remain queryable: the forge adapter
+    #[cfg(test)]
+    pub fn set_test_pull_request_forge_timestamps(
+        &self,
+        repo_id: &str,
+        pr_url: &str,
+        checked_at: &str,
+        attempted_at: &str,
+    ) -> Result<(), rusqlite::Error> {
+        let key = canonical_pr_key(pr_url, None);
+        self.conn.execute(
+            "UPDATE task_pull_request
+             SET forge_checked_at = ?, forge_attempted_at = ?
+             WHERE repo_id = ? AND pr_key = ?",
+            (checked_at, attempted_at, repo_id, key),
+        )?;
+        Ok(())
+    }
+
+    /// PR identities this repo knows about whose forge state may still change.
+    /// MERGED is terminal, while CLOSED remains refreshable because GitHub can
+    /// reopen it. URL-only legacy rows remain queryable: the forge adapter
     /// extracts their number from the canonical URL rather than silently
     /// dropping them.
     pub fn unresolved_repo_pull_requests(
@@ -164,7 +183,7 @@ impl Db {
              FROM task_pull_request
              WHERE repo_id = ?
                AND forge_merged_at IS NULL
-               AND (forge_state IS NULL OR forge_state NOT IN ('CLOSED', 'MERGED'))
+               AND (forge_state IS NULL OR forge_state <> 'MERGED')
              ORDER BY pr_key",
         )?;
         let pull_requests = statement

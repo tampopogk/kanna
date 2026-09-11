@@ -1,8 +1,10 @@
 import { setTimeout as sleep } from "node:timers/promises";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { localProcessFetch } from "@kanna/local-process-fetch";
 import { buildGlobalKeydownScript } from "../helpers/keyboard";
 import { WebDriverClient } from "../helpers/webdriver";
 import { cleanupFixtureRepos, createSeedFixtureRepo } from "../helpers/fixture-repo";
+import { resolveAppKannaServer } from "../helpers/kannaServer";
 import { cleanupWorktrees, importTestRepo, resetDatabase } from "../helpers/reset";
 import { getVueState } from "../helpers/vue";
 
@@ -109,12 +111,18 @@ describe("analytics statistics", () => {
           ["task-a", repoId, "Analytics task A", "review", "task-a", "agent", "idle", "${timestampDaysAgo(20, "08:00:00")}", "${timestampDaysAgo(20, "08:00:00")}"]],
          ["INSERT INTO pipeline_item (id, repo_id, prompt, stage, branch, agent_type, activity, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
           ["task-b", repoId, "Analytics task B", "review", "task-b", "agent", "idle", "${timestampDaysAgo(18, "08:00:00")}", "${timestampDaysAgo(18, "08:00:00")}"]],
+         ["INSERT INTO pipeline_item (id, repo_id, prompt, stage, branch, agent_type, activity, created_at, updated_at, closed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+          ["task-closed", repoId, "Closed analytics task", "review", "task-closed", "agent", "idle", "${timestampDaysAgo(40, "08:00:00")}", "${timestampDaysAgo(19, "14:00:00")}", "${timestampDaysAgo(19, "14:00:00")}"]],
          // Two hours idle and one hour unread: Analytics counts both as
          // nobody servicing the task.
          ["INSERT INTO task_activity_interval (task_id, activity, started_at, ended_at) VALUES (?, ?, ?, ?)",
           ["task-a", "idle", "${timestampDaysAgo(20, "09:00:00")}", "${timestampDaysAgo(20, "11:00:00")}"]],
          ["INSERT INTO task_activity_interval (task_id, activity, started_at, ended_at) VALUES (?, ?, ?, ?)",
           ["task-a", "unread", "${timestampDaysAgo(20, "12:00:00")}", "${timestampDaysAgo(20, "13:00:00")}"]],
+         // Historical contributors stay in Analytics after they leave the
+         // open-task snapshot, but cannot be selected in the main task UI.
+         ["INSERT INTO task_activity_interval (task_id, activity, started_at, ended_at) VALUES (?, ?, ?, ?)",
+          ["task-closed", "idle", "${timestampDaysAgo(20, "13:00:00")}", "${timestampDaysAgo(20, "13:10:00")}"]],
          // Both tasks reached review; only one was revised.
          ["INSERT INTO stage_run (id, task_id, stage, kind, status, agent_provider, started_at) VALUES (?, ?, ?, 'main', 'succeeded', 'claude', ?)",
           ["run-a", "task-a", "review", "${timestampDaysAgo(20, "14:00:00")}"]],
@@ -122,8 +130,8 @@ describe("analytics statistics", () => {
           ["run-b", "task-b", "review", "${timestampDaysAgo(18, "14:00:00")}"]],
          ["INSERT INTO task_revision (task_id, origin, target_stage, applied, created_at) VALUES (?, 'agent', 'in progress', 1, ?)",
           ["task-a", "${timestampDaysAgo(20, "15:00:00")}"]],
-         ["INSERT INTO task_pull_request (repo_id, pr_key, pr_number, pr_url, first_seen_at) VALUES (?, ?, ?, ?, ?)",
-          [repoId, "github.com/owner/repo/pull/1", 1, "https://github.com/owner/repo/pull/1", "${timestampDaysAgo(18, "16:00:00")}"]],
+         ["INSERT INTO task_pull_request (repo_id, pr_key, pr_number, pr_url, first_seen_at, forge_created_at) VALUES (?, ?, ?, ?, ?, ?)",
+          [repoId, "github.com/owner/repo/pull/1", 1, "https://github.com/owner/repo/pull/1", "${timestampDaysAgo(18, "16:00:00")}", "${timestampDaysAgo(18, "16:00:00")}"]],
          ["INSERT INTO provider_token_usage (usage_key, provider, repo_id, task_id, run_id, model, occurred_at, input_tokens, cached_input_tokens, cache_creation_tokens, output_tokens, reasoning_tokens, total_tokens) VALUES (?, 'claude', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
           ["claude:message:msg_e2e", repoId, "task-a", "run-a", "claude-opus-5", "${timestampDaysAgo(20, "14:30:00")}", 1000, 9000, 500, 2000, 100, 12500]],
        ];
@@ -252,6 +260,122 @@ describe("analytics statistics", () => {
         .map(function (row) { return row.textContent.trim(); });`,
     );
     expect(rows).toContain("Analytics task A");
+  });
+
+  it("keeps Analytics open when a historical contributor has no selectable task", async () => {
+    const drilldownOpen = await client.executeSync<boolean>(
+      `return !!document.querySelector('[data-testid="analytics-drilldown"]');`,
+    );
+    if (!drilldownOpen) {
+      await client.executeSync(
+        `document.querySelector('[data-testid="analytics-idle-total"]').click(); return true;`,
+      );
+    }
+    await client.waitForElement('[data-testid="analytics-drilldown"]');
+    const before = await getVueState(client, "selectedItemId");
+    const rowState = await client.executeSync<{ disabled: boolean; navigable: boolean } | null>(
+      `const rows = Array.from(document.querySelectorAll('[data-testid="analytics-drilldown"] .drilldown-row'));
+       const row = rows.find(function (candidate) {
+         const title = candidate.querySelector('.drilldown-title');
+         return title && title.textContent.trim() === 'Closed analytics task';
+       });
+       if (!row) return null;
+       const state = { disabled: row.disabled, navigable: row.classList.contains('navigable') };
+       row.click();
+       return state;`,
+    );
+    expect(rowState).toEqual({ disabled: true, navigable: false });
+    await sleep(100);
+    expect(await getVueState(client, "selectedItemId")).toBe(before);
+    expect(await client.executeSync<boolean>(
+      `return !!document.querySelector('[data-testid="analytics-view"]')
+        && !!document.querySelector('[data-testid="analytics-drilldown"]');`,
+    )).toBe(true);
+  });
+
+  it("acknowledges an Analytics open only after the current refresh settles", async () => {
+    // Keep the command in the task scope this fixture owns. Changing scope
+    // would remount Analytics and turn this into a test of a different load.
+    const selected = await client.executeAsync<string>(
+      `const cb = arguments[arguments.length - 1];
+       const ctx = window.__KANNA_E2E__.setupState;
+       Promise.resolve(ctx.store.selectItem("task-a"))
+         .then(function () { setTimeout(function () { cb("ok"); }, 100); })
+         .catch(function (error) { cb("err:" + String(error)); });`,
+    );
+    expect(selected).toBe("ok");
+    await ensureAnalyticsOpen();
+
+    // Hold two consecutive responses. Resolving the older one must neither
+    // clear loading nor let the open-view acknowledgement escape; only the
+    // current range request may do that.
+    await client.executeSync(
+      `window.__analyticsFetchBeforeHold = window.fetch;
+       window.__analyticsRelease = [];
+       window.__analyticsHoldsRemaining = 2;
+       window.fetch = function (input, init) {
+         const url = String(input && input.url ? input.url : input);
+         const original = window.__analyticsFetchBeforeHold;
+         if (url.indexOf("/v1/analytics/") === -1 || window.__analyticsHoldsRemaining <= 0) {
+           return original.call(this, input, init);
+         }
+         window.__analyticsHoldsRemaining -= 1;
+         return original.call(this, input, init).then(function (response) {
+           return new Promise(function (resolve) {
+             window.__analyticsRelease.push(function () { resolve(response); });
+           });
+         });
+       };
+       return true;`,
+    );
+
+    const waitForHeldResponses = async (count: number) => {
+      const deadline = Date.now() + 8_000;
+      while (Date.now() < deadline) {
+        const held = await client.executeSync<number>(
+          `return (window.__analyticsRelease || []).length;`,
+        );
+        if (held >= count) return;
+        await sleep(100);
+      }
+      throw new Error(`only ${count - 1} Analytics response(s) were held`);
+    };
+
+    await client.executeSync(
+      `document.querySelector('[data-testid="analytics-range-90d"]').click(); return true;`,
+    );
+    await waitForHeldResponses(1);
+    await client.executeSync(
+      `document.querySelector('[data-testid="analytics-range-7d"]').click(); return true;`,
+    );
+    await waitForHeldResponses(2);
+
+    const server = await resolveAppKannaServer(client);
+    let acknowledgementSettled = false;
+    const acknowledgement = localProcessFetch(`${server.baseUrl}/v1/desktop/views/open`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ taskId: "task-a", view: "analytics" }),
+    }).then(async (response) => {
+      acknowledgementSettled = true;
+      expect(response.ok).toBe(true);
+      return await response.json() as { opened: boolean; code?: string };
+    });
+
+    await client.executeSync(`window.__analyticsRelease[0](); return true;`);
+    await sleep(250);
+    expect(acknowledgementSettled).toBe(false);
+
+    await client.executeSync(`window.__analyticsRelease[1](); return true;`);
+    expect(await acknowledgement).toMatchObject({ opened: true });
+    await waitForStatistics(client);
+    await client.executeSync(
+      `window.fetch = window.__analyticsFetchBeforeHold;
+       delete window.__analyticsFetchBeforeHold;
+       delete window.__analyticsRelease;
+       delete window.__analyticsHoldsRemaining;
+       return true;`,
+    );
   });
 
 });

@@ -111,9 +111,13 @@ function toggleDrilldown(drilldown: AnalyticsDrilldown) {
 }
 
 async function openTask(taskId: string) {
-  if (!taskId) return;
+  if (!isTaskNavigable(taskId)) return;
   await store.selectItem(taskId);
   emit("close");
+}
+
+function isTaskNavigable(taskId: string): boolean {
+  return !!taskId && store.taskUiSlots.some((slot) => slot.task_id === taskId);
 }
 
 function formatDuration(seconds: number): string {
@@ -399,8 +403,8 @@ function shareOf(value: number, rows: { totals: { total: number } }[]): number {
               <button
                 type="button"
                 class="drilldown-row"
-                :class="{ navigable: !!row.taskId }"
-                :disabled="!row.taskId"
+                :class="{ navigable: isTaskNavigable(row.taskId) }"
+                :disabled="!isTaskNavigable(row.taskId)"
                 @click="openTask(row.taskId)"
               >
                 <span class="drilldown-title">{{ row.title }}</span>

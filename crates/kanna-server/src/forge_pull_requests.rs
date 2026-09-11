@@ -268,7 +268,7 @@ mod tests {
         recently_reconciled, reconcile_repo_pull_requests, ForgeAvailability, ForgeClient,
         GithubPullRequestIdentity,
     };
-    use crate::db::Db;
+    use crate::db::{AnalyticsRange, Db, ForgePullRequestObservation};
     use std::collections::HashMap;
     use std::io::{Read, Write};
     use std::net::TcpListener;
@@ -502,6 +502,67 @@ mod tests {
                 .as_deref(),
             Some("CLOSED")
         );
+    }
+
+    #[test]
+    fn a_stale_closed_pull_request_can_reopen_and_change_analytics() {
+        let db = db("forge-closed-reopened");
+        let url = "https://github.com/acme/widgets/pull/8";
+        db.insert_test_unresolved_pull_request("repo-1", Some(8), url, None)
+            .expect("pr");
+        db.record_forge_pull_requests(
+            "repo-1",
+            &[ForgePullRequestObservation {
+                pr_number: 8,
+                url: Some(url.to_string()),
+                created_at: Some("2026-04-17T08:00:00Z".to_string()),
+                merged_at: None,
+                state: Some("CLOSED".to_string()),
+            }],
+        )
+        .expect("record closed state");
+
+        let range = AnalyticsRange {
+            from: "2026-04-16".to_string(),
+            to: "2026-04-20".to_string(),
+        };
+        let before = db
+            .repo_analytics("repo-1", &range, true, Vec::new())
+            .expect("closed analytics");
+        assert_eq!(before.pull_requests.open_now, Some(0));
+
+        db.set_test_pull_request_forge_timestamps(
+            "repo-1",
+            url,
+            "2000-01-01 00:00:00",
+            "2000-01-01 00:00:00",
+        )
+        .expect("age closed confirmation past freshness");
+        let (base, server) = spawn_forge(HashMap::from([(
+            "/repos/acme/widgets/pulls/8".to_string(),
+            MockResponse {
+                status: 200,
+                body: response(8, "open", None),
+                delay: Duration::ZERO,
+            },
+        )]));
+        let client = ForgeClient::for_tests(base, Some("test-token"), Duration::from_secs(1));
+        assert_eq!(
+            reconcile_repo_pull_requests(&db, "repo-1", &client),
+            ForgeAvailability::Confirmed
+        );
+        server.join().expect("forge server");
+
+        assert_eq!(
+            db.test_pull_request_state("repo-1", url)
+                .expect("reopened state")
+                .as_deref(),
+            Some("OPEN")
+        );
+        let after = db
+            .repo_analytics("repo-1", &range, true, Vec::new())
+            .expect("reopened analytics");
+        assert_eq!(after.pull_requests.open_now, Some(1));
     }
 
     #[test]

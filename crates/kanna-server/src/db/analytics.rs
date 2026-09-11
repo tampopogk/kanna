@@ -367,11 +367,11 @@ impl Db {
     ) -> Result<IdleStats, rusqlite::Error> {
         let window_start = epoch_seconds(&range.start()).unwrap_or_default();
         let window_end = epoch_seconds(&range.end()).unwrap_or_default();
-        let mut idle_by_task: HashMap<String, i64> = HashMap::new();
+        let mut idle_intervals_by_task: HashMap<String, Vec<(i64, i64)>> = HashMap::new();
         let mut working_seconds = 0_i64;
 
         for interval in self.activity_intervals(repo_id, range)? {
-            let Some(seconds) = clipped_seconds(
+            let Some((start, end)) = clipped_interval(
                 &interval.started_at,
                 &interval.ended_at,
                 window_start,
@@ -382,11 +382,22 @@ impl Db {
             match interval.activity.as_str() {
                 // The Analytics definition: nobody is servicing this task.
                 "idle" | "unread" => {
-                    *idle_by_task.entry(interval.task_id).or_insert(0) += seconds;
+                    idle_intervals_by_task
+                        .entry(interval.task_id)
+                        .or_default()
+                        .push((start, end));
                 }
-                "working" => working_seconds += seconds,
+                "working" => working_seconds += end - start,
                 _ => {}
             }
+        }
+
+        let mut idle_by_task = HashMap::new();
+        let mut longest_seconds = 0_i64;
+        for (task_id, intervals) in idle_intervals_by_task {
+            let (total, longest) = merged_interval_stats(intervals);
+            idle_by_task.insert(task_id, total);
+            longest_seconds = longest_seconds.max(longest);
         }
 
         // Every task alive in the window is in the denominator, including the
@@ -394,7 +405,6 @@ impl Db {
         // report a worse number the better the fleet is doing.
         let task_count = self.tasks_alive_in_range(repo_id, range)?;
         let total_seconds: i64 = idle_by_task.values().sum();
-        let longest_seconds = idle_by_task.values().copied().max().unwrap_or(0);
         Ok(IdleStats {
             total_seconds,
             working_seconds,
@@ -664,15 +674,49 @@ fn ranked_groups(
 /// Clipping is what lets a span that started weeks ago and is still running
 /// contribute exactly the window's worth of itself, and what keeps a task
 /// counted once when a window boundary falls in the middle of a wait.
+#[cfg(test)]
 fn clipped_seconds(
     started_at: &str,
     ended_at: &str,
     window_start: i64,
     window_end: i64,
 ) -> Option<i64> {
+    clipped_interval(started_at, ended_at, window_start, window_end).map(|(start, end)| end - start)
+}
+
+fn clipped_interval(
+    started_at: &str,
+    ended_at: &str,
+    window_start: i64,
+    window_end: i64,
+) -> Option<(i64, i64)> {
     let start = epoch_seconds(started_at)?.max(window_start);
     let end = epoch_seconds(ended_at)?.min(window_end);
-    (end > start).then_some(end - start)
+    (end > start).then_some((start, end))
+}
+
+/// Sum a task's waiting time without double-counting overlapping spans and
+/// retain the longest single stretch. An idle → unread edge is still one
+/// unserviced wait, while a gap between spans starts a new wait.
+fn merged_interval_stats(mut intervals: Vec<(i64, i64)>) -> (i64, i64) {
+    intervals.sort_unstable_by_key(|&(start, end)| (start, end));
+    let Some((mut merged_start, mut merged_end)) = intervals.first().copied() else {
+        return (0, 0);
+    };
+    let mut total = 0_i64;
+    let mut longest = 0_i64;
+    for (start, end) in intervals.into_iter().skip(1) {
+        if start <= merged_end {
+            merged_end = merged_end.max(end);
+            continue;
+        }
+        let seconds = merged_end - merged_start;
+        total += seconds;
+        longest = longest.max(seconds);
+        (merged_start, merged_end) = (start, end);
+    }
+    let seconds = merged_end - merged_start;
+    (total + seconds, longest.max(seconds))
 }
 
 fn epoch_seconds(value: &str) -> Option<i64> {
@@ -733,7 +777,7 @@ fn days_from_civil(year: i32, month: u32, day: u32) -> i64 {
 
 #[cfg(test)]
 mod tests {
-    use super::{clipped_seconds, epoch_seconds, parse_datetime};
+    use super::{clipped_seconds, epoch_seconds, merged_interval_stats, parse_datetime};
 
     fn window() -> (i64, i64) {
         (
@@ -778,6 +822,18 @@ mod tests {
         assert_eq!(
             clipped_seconds("2026-09-01 00:00:00", "2026-09-01 12:00:00", start, end),
             None
+        );
+    }
+
+    #[test]
+    fn adjacent_wait_states_form_one_stretch_but_disjoint_waits_do_not() {
+        assert_eq!(
+            merged_interval_stats(vec![(0, 7_200), (10_800, 14_400)]),
+            (10_800, 7_200)
+        );
+        assert_eq!(
+            merged_interval_stats(vec![(0, 3_600), (3_600, 10_800)]),
+            (10_800, 10_800)
         );
     }
 

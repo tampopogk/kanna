@@ -2199,10 +2199,15 @@ a question about last month.
   task restarts the live span; the seconds it spent closed are not waiting.
 - **`task_pull_request`** — the canonical identity of each pull request this
   desktop's tasks reported, so two tasks naming one PR stay one PR. Creation
-  and merge are **forge** facts: `forge_merged_at` is written only from a `gh`
-  answer, at most once every five minutes per repository, and **closing a task
-  is never read as a merge**. Without `gh` the response reports `merged: null`
-  and `coverage.pullRequestStateConfirmed: false` — unknown, not zero.
+  and merge are **forge** facts: Kanna's bundled direct GitHub REST client
+  refreshes each known non-merged identity after its five-minute freshness
+  interval, including a closed PR that GitHub may later reopen or merge. One
+  Analytics read attempts at most three identities and spends at most six
+  seconds on the pass; successful checks and failed attempts each receive
+  per-identity backoff so repeated reads make fair progress. **Closing a task
+  is never read as a merge**. Without a usable GitHub credential or reachable
+  forge, the response reports `merged: null` and
+  `coverage.pullRequestStateConfirmed: false` — unknown, not zero.
 - **`task_revision`** — one append-only row per revision request, written in
   the same transaction as `task.revision_requested`. A request the budget
   parked is recorded with `applied = 0` and reported separately: it is a review
