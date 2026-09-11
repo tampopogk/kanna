@@ -26,8 +26,10 @@ mod operator_events;
 mod pipeline_items;
 mod ports;
 mod provider_rejections;
+mod pull_requests;
 mod repos;
 mod review_context;
+mod revisions;
 mod settings;
 mod snapshot;
 mod stage_runs;
@@ -37,11 +39,12 @@ mod task_inputs;
 mod test_support;
 #[cfg(test)]
 mod tests;
+mod token_usage;
 mod transfer_work;
 mod transfers;
 mod worktrees;
 
-pub use analytics::RepoAnalytics;
+pub use analytics::{AnalyticsRange, RepoAnalytics};
 pub use blockers::ReplaceTaskBlockersError;
 pub use lifecycle_operations::LifecycleOperationIntent;
 #[allow(unused_imports)]
@@ -54,11 +57,15 @@ pub use pipeline_items::WorkflowReplacement;
 pub use provider_rejections::{
     NewProviderRejection, ProviderRejection, QuotaRecovery, QuotaRejectionSource,
 };
+#[allow(unused_imports)]
+pub use pull_requests::{canonical_pr_key, ForgePullRequestObservation, UnresolvedPullRequest};
 pub(crate) use repos::RepoOrderInput;
 pub use review_context::{
     HumanReviewDecision, NewHumanReviewDecision, ReviewContextInput, ReviewDecisionDelivery,
     TaskReviewContext,
 };
+#[allow(unused_imports)]
+pub use revisions::RecordedRevisionOrigin;
 #[allow(unused_imports)]
 pub use stage_runs::{
     FinishedStageRun, ProviderOverrideSource, StageProviderOverride, StageTrigger,
@@ -70,6 +77,10 @@ pub use task_events::{
 #[allow(unused_imports)]
 pub use task_inputs::{
     ImportedTaskInput, RawInputWriteRecord, TaskInputOrigin, TaskInputRecord, TaskInputSource,
+};
+#[allow(unused_imports)]
+pub use token_usage::{
+    RepoRunWindow, TokenUsageRecord, UsageDiscoveryState, UsageScanCheckpoint, UsageScanState,
 };
 #[allow(unused_imports)]
 pub use transfer_work::{TransferWorkItem, MAX_TRANSFER_WORK_ATTEMPTS};
@@ -163,6 +174,12 @@ pub(crate) const CURRENT_SCHEMA_MIGRATIONS: &[&str] = &[
     "074_transferred_task_manifest",
     "075_transferred_task_history",
     "076_transferred_task_manifest_content_commitment",
+    "077_task_activity_interval",
+    "078_task_pull_request",
+    "079_task_revision_log",
+    "080_provider_token_usage",
+    "081_provider_usage_discovery",
+    "082_pull_request_forge_attempts",
 ];
 
 #[derive(Debug, Serialize)]
@@ -2281,6 +2298,146 @@ fn run_schema_migrations(conn: &Connection) -> Result<(), rusqlite::Error> {
         },
     )?;
 
+    // Analytics statistics need durable facts, not a replay of state that has
+    // already been pruned. `task_event` rows are dropped after 14 days and
+    // `activity_log` never gained a production writer, so every number the
+    // Analytics view reports is accumulated where the state it describes is
+    // written. Each of the four migrations below adds one such record.
+    run_migration(conn, "077_task_activity_interval", |conn| {
+        conn.execute_batch(
+            r#"
+            CREATE TABLE IF NOT EXISTS task_activity_interval (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              task_id TEXT NOT NULL REFERENCES pipeline_item(id) ON DELETE CASCADE,
+              activity TEXT NOT NULL,
+              started_at TEXT NOT NULL,
+              ended_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_task_activity_interval_task
+              ON task_activity_interval(task_id, started_at);
+            CREATE INDEX IF NOT EXISTS idx_task_activity_interval_window
+              ON task_activity_interval(ended_at);
+            "#,
+        )?;
+        record_analytics_coverage_start(conn, ANALYTICS_ACTIVITY_COVERAGE_KEY)
+    })?;
+
+    run_migration(conn, "078_task_pull_request", |conn| {
+        conn.execute_batch(
+            r#"
+            CREATE TABLE IF NOT EXISTS task_pull_request (
+              repo_id TEXT NOT NULL REFERENCES repo(id) ON DELETE CASCADE,
+              pr_key TEXT NOT NULL,
+              pr_number INTEGER,
+              pr_url TEXT,
+              first_seen_at TEXT NOT NULL,
+              forge_created_at TEXT,
+              forge_merged_at TEXT,
+              forge_state TEXT,
+              forge_checked_at TEXT,
+              PRIMARY KEY (repo_id, pr_key)
+            );
+            CREATE INDEX IF NOT EXISTS idx_task_pull_request_repo
+              ON task_pull_request(repo_id, first_seen_at);
+            "#,
+        )
+    })?;
+
+    run_migration(conn, "079_task_revision_log", |conn| {
+        conn.execute_batch(
+            r#"
+            CREATE TABLE IF NOT EXISTS task_revision (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              task_id TEXT NOT NULL REFERENCES pipeline_item(id) ON DELETE CASCADE,
+              origin TEXT NOT NULL CHECK (origin IN ('agent', 'human')),
+              target_stage TEXT,
+              applied INTEGER NOT NULL DEFAULT 1,
+              created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            CREATE INDEX IF NOT EXISTS idx_task_revision_task
+              ON task_revision(task_id, created_at);
+            "#,
+        )?;
+        record_analytics_coverage_start(conn, ANALYTICS_REVISION_COVERAGE_KEY)
+    })?;
+
+    run_migration(conn, "080_provider_token_usage", |conn| {
+        conn.execute_batch(
+            r#"
+            CREATE TABLE IF NOT EXISTS provider_token_usage (
+              usage_key TEXT PRIMARY KEY,
+              provider TEXT NOT NULL,
+              provider_session_id TEXT,
+              repo_id TEXT,
+              task_id TEXT,
+              run_id TEXT,
+              model TEXT,
+              occurred_at TEXT NOT NULL,
+              input_tokens INTEGER NOT NULL DEFAULT 0,
+              cached_input_tokens INTEGER NOT NULL DEFAULT 0,
+              cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
+              output_tokens INTEGER NOT NULL DEFAULT 0,
+              reasoning_tokens INTEGER NOT NULL DEFAULT 0,
+              total_tokens INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE INDEX IF NOT EXISTS idx_provider_token_usage_repo_time
+              ON provider_token_usage(repo_id, occurred_at);
+            CREATE INDEX IF NOT EXISTS idx_provider_token_usage_task
+              ON provider_token_usage(task_id);
+            CREATE TABLE IF NOT EXISTS provider_usage_scan (
+              file_path TEXT PRIMARY KEY,
+              provider TEXT NOT NULL,
+              file_size INTEGER NOT NULL,
+              byte_offset INTEGER NOT NULL,
+              session_id TEXT,
+              cwd TEXT,
+              model TEXT,
+              scanned_at TEXT NOT NULL
+            );
+            "#,
+        )?;
+        record_analytics_coverage_start(conn, ANALYTICS_TOKEN_COVERAGE_KEY)
+    })?;
+
+    run_migration(conn, "081_provider_usage_discovery", |conn| {
+        conn.execute_batch(
+            r#"
+            CREATE TABLE IF NOT EXISTS provider_usage_discovery (
+              discovery_key TEXT PRIMARY KEY,
+              provider TEXT NOT NULL,
+              directory_path TEXT NOT NULL,
+              directory_modified_ns INTEGER NOT NULL,
+              candidate_paths TEXT NOT NULL,
+              checked_at TEXT NOT NULL
+            );
+            "#,
+        )?;
+        Ok(())
+    })?;
+
+    run_migration(conn, "082_pull_request_forge_attempts", |conn| {
+        conn.execute_batch("ALTER TABLE task_pull_request ADD COLUMN forge_attempted_at TEXT;")
+    })?;
+
+    Ok(())
+}
+
+/// The instant a statistic started being accumulated.
+///
+/// Analytics must never present a window that predates its own record as a
+/// window with no idle, no revisions, or no tokens in it. Each accumulator
+/// stamps the moment it began so the view can draw the boundary instead of
+/// reporting an honest-looking zero.
+pub(crate) const ANALYTICS_ACTIVITY_COVERAGE_KEY: &str = "analytics.activityCoverageStartedAt";
+pub(crate) const ANALYTICS_REVISION_COVERAGE_KEY: &str = "analytics.revisionCoverageStartedAt";
+pub(crate) const ANALYTICS_TOKEN_COVERAGE_KEY: &str = "analytics.tokenCoverageStartedAt";
+
+fn record_analytics_coverage_start(conn: &Connection, key: &str) -> Result<(), rusqlite::Error> {
+    conn.execute(
+        "INSERT INTO settings (key, value) VALUES (?, datetime('now'))
+         ON CONFLICT(key) DO NOTHING",
+        [key],
+    )?;
     Ok(())
 }
 

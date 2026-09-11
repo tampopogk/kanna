@@ -1,12 +1,95 @@
 import { nextTick, ref } from "vue";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { setDesktopServerClientHandlersForTests } from "../services/desktopServerClient";
-import { useAnalytics } from "./useAnalytics";
+import {
+  setDesktopServerClientHandlersForTests,
+  type DesktopAnalyticsRange,
+  type DesktopRepoAnalytics,
+} from "../services/desktopServerClient";
+import en from "../i18n/locales/en.json";
+import ja from "../i18n/locales/ja.json";
+import ko from "../i18n/locales/ko.json";
+import { rangeForPreset, useAnalytics } from "./useAnalytics";
 
 async function flushWatchers(): Promise<void> {
   await nextTick();
   await Promise.resolve();
   await Promise.resolve();
+  await nextTick();
+}
+
+function analyticsFixture(
+  range: DesktopAnalyticsRange,
+  overrides: Partial<DesktopRepoAnalytics> = {},
+): DesktopRepoAnalytics {
+  return {
+    range,
+    coverage: {
+      idleSince: "2026-08-01 00:00:00",
+      revisionsSince: "2026-08-01 00:00:00",
+      tokensSince: "2026-08-01 00:00:00",
+      pullRequestStateConfirmed: true,
+      providersWithoutTokenUsage: [],
+      runsWithTokenUsage: 8,
+      runsInRange: 10,
+    },
+    tasks: { created: 12, closed: 9, openNow: 4, childTasksCreated: 3 },
+    pullRequests: { created: 7, merged: 5, openNow: 2 },
+    idle: {
+      totalSeconds: 7_200,
+      workingSeconds: 3_600,
+      taskCount: 6,
+      averageSecondsPerTask: 1_200,
+      longestSeconds: 5_400,
+      contributors: [{ taskId: "task-a", title: "Task A", value: 5_400 }],
+    },
+    revisions: {
+      cohortTasks: 4,
+      totalRevisions: 3,
+      averagePerTask: 0.75,
+      cleanPassRate: 0.5,
+      parkedRequests: 1,
+      contributors: [{ taskId: "task-b", title: "Task B", value: 2 }],
+    },
+    tokens: {
+      total: {
+        input: 100,
+        cachedInput: 900,
+        cacheCreation: 50,
+        reasoning: 20,
+        output: 200,
+        total: 1_250,
+      },
+      byModel: [
+        {
+          key: "claude-opus-5",
+          label: "claude-opus-5",
+          totals: {
+            input: 100,
+            cachedInput: 900,
+            cacheCreation: 50,
+            reasoning: 20,
+            output: 200,
+            total: 1_250,
+          },
+        },
+      ],
+      byTask: [
+        {
+          key: "task-a",
+          label: "Task A",
+          totals: {
+            input: 100,
+            cachedInput: 900,
+            cacheCreation: 50,
+            reasoning: 20,
+            output: 200,
+            total: 1_250,
+          },
+        },
+      ],
+    },
+    ...overrides,
+  };
 }
 
 describe("useAnalytics", () => {
@@ -14,43 +97,247 @@ describe("useAnalytics", () => {
     setDesktopServerClientHandlersForTests({});
   });
 
-  it("fetches repo analytics from the desktop server without a frontend database handle", async () => {
-    const fetchRepoAnalytics = vi.fn(async (repoId: string) => ({
-      taskBuckets: [{ key: "2026-07-01", created: 2, closed: 1 }],
-      bucketSize: "daily" as const,
-      hasData: true,
-      avgTimeInState: {
-        working: 12,
-        idle: 34,
-        unread: 5,
+  it("asks the desktop server for the selected window", async () => {
+    const fetchRepoAnalytics = vi.fn(async (_repoId: string, range?: DesktopAnalyticsRange) =>
+      analyticsFixture(range ?? { from: "2026-09-01", to: "2026-09-30" }),
+    );
+    setDesktopServerClientHandlersForTests({ fetchRepoAnalytics });
+
+    const analytics = useAnalytics(ref<string | null>("repo-1"));
+    await flushWatchers();
+
+    expect(fetchRepoAnalytics).toHaveBeenCalledWith("repo-1", rangeForPreset("30d"));
+    expect(analytics.analytics.value.tasks.created).toBe(12);
+    expect(analytics.analytics.value.pullRequests.merged).toBe(5);
+    expect(analytics.hasAnyData.value).toBe(true);
+  });
+
+  it("refetches when the window changes", async () => {
+    const fetchRepoAnalytics = vi.fn(async (_repoId: string, range?: DesktopAnalyticsRange) =>
+      analyticsFixture(range ?? { from: "2026-09-01", to: "2026-09-30" }),
+    );
+    setDesktopServerClientHandlersForTests({ fetchRepoAnalytics });
+
+    const analytics = useAnalytics(ref<string | null>("repo-1"));
+    await flushWatchers();
+    analytics.selectPreset("7d");
+    await flushWatchers();
+
+    expect(fetchRepoAnalytics).toHaveBeenLastCalledWith("repo-1", rangeForPreset("7d"));
+  });
+
+  it("carries the window on screen into the custom inputs rather than resetting it", async () => {
+    setDesktopServerClientHandlersForTests({
+      fetchRepoAnalytics: async (_repoId, range) =>
+        analyticsFixture(range ?? { from: "2026-09-01", to: "2026-09-30" }),
+    });
+
+    const analytics = useAnalytics(ref<string | null>("repo-1"));
+    await flushWatchers();
+    analytics.selectPreset("7d");
+    await flushWatchers();
+    const shown = { ...analytics.range.value };
+    analytics.selectPreset("custom");
+    await flushWatchers();
+
+    expect(analytics.customRange.value).toEqual(shown);
+  });
+
+  it("flags a window that reaches back before a statistic was being recorded", async () => {
+    setDesktopServerClientHandlersForTests({
+      fetchRepoAnalytics: async (_repoId, range) =>
+        analyticsFixture(range ?? { from: "2026-09-01", to: "2026-09-30" }, {
+          coverage: {
+            idleSince: "2999-01-01 00:00:00",
+            revisionsSince: "1970-01-01 00:00:00",
+            tokensSince: null,
+            pullRequestStateConfirmed: true,
+            providersWithoutTokenUsage: [],
+            runsWithTokenUsage: 0,
+            runsInRange: 0,
+          },
+        }),
+    });
+
+    const analytics = useAnalytics(ref<string | null>("repo-1"));
+    await flushWatchers();
+
+    expect(analytics.coverageGaps.value.idle).toBe(true);
+    expect(analytics.coverageGaps.value.revisions).toBe(false);
+    // An unknown start is not a gap to advertise; it is simply unknown.
+    expect(analytics.coverageGaps.value.tokens).toBe(false);
+    expect(analytics.tokenCoverageRatio.value).toBeNull();
+  });
+
+  it("preserves partial provider coverage without describing it as zero availability", async () => {
+    setDesktopServerClientHandlersForTests({
+      fetchRepoAnalytics: async (_repoId, range) =>
+        analyticsFixture(range ?? { from: "2026-09-01", to: "2026-09-30" }, {
+          coverage: {
+            idleSince: "2026-08-01 00:00:00",
+            revisionsSince: "2026-08-01 00:00:00",
+            tokensSince: "2026-08-01 00:00:00",
+            pullRequestStateConfirmed: true,
+            providersWithoutTokenUsage: ["claude"],
+            runsWithTokenUsage: 1,
+            runsInRange: 2,
+          },
+        }),
+    });
+
+    const analytics = useAnalytics(ref<string | null>("repo-1"));
+    await flushWatchers();
+
+    expect(analytics.tokenCoverageRatio.value).toBe(0.5);
+    expect(analytics.analytics.value.coverage.providersWithoutTokenUsage).toEqual(["claude"]);
+    expect(en.analytics.tokensIncomplete).toBe(
+      "Incomplete or unsupported usage coverage for: {providers}.",
+    );
+    expect(ja.analytics.tokensIncomplete).toContain("一部不足");
+    expect(ko.analytics.tokensIncomplete).toContain("일부 누락");
+  });
+
+  it("reports a failed load instead of presenting stale or invented numbers", async () => {
+    setDesktopServerClientHandlersForTests({
+      fetchRepoAnalytics: async () => {
+        throw new Error("server down");
       },
-      operatorMetrics: {
-        avgResponseTime: 7,
-        avgDwellTime: 8,
-        switchesPerHour: 9,
-        focusScore: 0.75,
-      },
-      hasOperatorData: true,
-    }));
+    });
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const analytics = useAnalytics(ref<string | null>("repo-1"));
+    await flushWatchers();
+
+    expect(analytics.error.value).toBe("server down");
+    expect(analytics.analytics.value.tasks.created).toBe(0);
+    expect(analytics.hasAnyData.value).toBe(false);
+    consoleError.mockRestore();
+  });
+
+  it("keeps an unknown PR creation count visible instead of calling the window empty", async () => {
+    setDesktopServerClientHandlersForTests({
+      fetchRepoAnalytics: async (_repoId, range) =>
+        analyticsFixture(range ?? { from: "2026-09-01", to: "2026-09-30" }, {
+          tasks: { created: 0, closed: 0, openNow: 0, childTasksCreated: 0 },
+          pullRequests: { created: null, merged: null, openNow: null },
+          idle: {
+            totalSeconds: 0,
+            workingSeconds: 0,
+            taskCount: 0,
+            averageSecondsPerTask: 0,
+            longestSeconds: 0,
+            contributors: [],
+          },
+          revisions: {
+            cohortTasks: 0,
+            totalRevisions: 0,
+            averagePerTask: 0,
+            cleanPassRate: null,
+            parkedRequests: 0,
+            contributors: [],
+          },
+          tokens: {
+            total: {
+              input: 0,
+              cachedInput: 0,
+              cacheCreation: 0,
+              reasoning: 0,
+              output: 0,
+              total: 0,
+            },
+            byModel: [],
+            byTask: [],
+          },
+        }),
+    });
+
+    const analytics = useAnalytics(ref<string | null>("repo-1"));
+    await flushWatchers();
+
+    expect(analytics.analytics.value.pullRequests.created).toBeNull();
+    expect(analytics.hasAnyData.value).toBe(true);
+  });
+
+  it("opens each statistic into the rows that produced it", async () => {
+    setDesktopServerClientHandlersForTests({
+      fetchRepoAnalytics: async (_repoId, range) =>
+        analyticsFixture(range ?? { from: "2026-09-01", to: "2026-09-30" }),
+    });
+
+    const analytics = useAnalytics(ref<string | null>("repo-1"));
+    await flushWatchers();
+
+    expect(analytics.contributionsFor("idle")).toEqual([
+      { taskId: "task-a", title: "Task A", value: 5_400 },
+    ]);
+    expect(analytics.contributionsFor("revisions")).toEqual([
+      { taskId: "task-b", title: "Task B", value: 2 },
+    ]);
+    expect(analytics.contributionsFor("tokensByTask")).toEqual([
+      { taskId: "task-a", title: "Task A", value: 1_250 },
+    ]);
+    // A model is not a task, so its row carries no navigation target.
+    expect(analytics.contributionsFor("tokensByModel")[0]?.taskId).toBe("");
+  });
+
+  it("clears everything when no repository is selected", async () => {
+    const fetchRepoAnalytics = vi.fn(async (_repoId: string, range?: DesktopAnalyticsRange) =>
+      analyticsFixture(range ?? { from: "2026-09-01", to: "2026-09-30" }),
+    );
     setDesktopServerClientHandlersForTests({ fetchRepoAnalytics });
 
     const repoId = ref<string | null>("repo-1");
     const analytics = useAnalytics(repoId);
-
+    await flushWatchers();
+    repoId.value = null;
     await flushWatchers();
 
-    expect(fetchRepoAnalytics).toHaveBeenCalledWith("repo-1");
-    expect(analytics.hasData.value).toBe(true);
-    expect(analytics.headlineStats.value).toEqual({
-      totalCreated: 2,
-      totalClosed: 1,
-      open: 1,
+    expect(analytics.hasAnyData.value).toBe(false);
+    expect(analytics.analytics.value.tokens.total.total).toBe(0);
+  });
+
+  it("ignores an older response that resolves after the current selection", async () => {
+    let resolveOld!: (value: DesktopRepoAnalytics) => void;
+    let resolveCurrent!: (value: DesktopRepoAnalytics) => void;
+    const oldResponse = new Promise<DesktopRepoAnalytics>((resolve) => {
+      resolveOld = resolve;
     });
-    expect(analytics.avgTimeInState.value).toEqual({
-      working: 12,
-      idle: 34,
-      unread: 5,
+    const currentResponse = new Promise<DesktopRepoAnalytics>((resolve) => {
+      resolveCurrent = resolve;
     });
-    expect(analytics.hasOperatorData.value).toBe(true);
+    const fetchRepoAnalytics = vi.fn((repoId: string) =>
+      repoId === "repo-old" ? oldResponse : currentResponse,
+    );
+    setDesktopServerClientHandlersForTests({ fetchRepoAnalytics });
+
+    const repoId = ref<string | null>("repo-old");
+    const state = useAnalytics(repoId);
+    await flushWatchers();
+    repoId.value = "repo-current";
+    await flushWatchers();
+
+    resolveOld(analyticsFixture(state.range.value, {
+      tasks: { created: 99, closed: 0, openNow: 0, childTasksCreated: 0 },
+    }));
+    await flushWatchers();
+    expect(state.loading.value).toBe(true);
+    expect(state.analytics.value.tasks.created).not.toBe(99);
+
+    resolveCurrent(analyticsFixture(state.range.value, {
+      tasks: { created: 7, closed: 0, openNow: 0, childTasksCreated: 0 },
+    }));
+    await flushWatchers();
+    expect(state.loading.value).toBe(false);
+    expect(state.error.value).toBeNull();
+    expect(state.analytics.value.tasks.created).toBe(7);
+  });
+});
+
+describe("rangeForPreset", () => {
+  it("counts both ends of the window", () => {
+    const range = rangeForPreset("7d");
+    const days =
+      (Date.parse(`${range.to}T00:00:00Z`) - Date.parse(`${range.from}T00:00:00Z`)) / 86_400_000;
+    expect(days).toBe(6);
   });
 });

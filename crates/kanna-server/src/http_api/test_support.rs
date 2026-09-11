@@ -126,6 +126,40 @@ pub(super) fn test_router_with_seed(
     router(Arc::new(AppState::new(config)))
 }
 
+pub(super) fn test_router_with_seed_and_forge(
+    desktop_id: &str,
+    desktop_name: &str,
+    seed: impl FnOnce(&Db),
+    forge_client: crate::forge_pull_requests::ForgeClient,
+) -> Router {
+    let config = Config {
+        relay_url: "wss://relay.example".to_string(),
+        device_token: "device-token".to_string(),
+        firebase_project_id: "kanna-local".to_string(),
+        firebase_auth_emulator_url: None,
+        firebase_firestore_emulator_host: None,
+        daemon_dir: crate::test_paths::unique_test_path_string("kanna-daemon"),
+        db_path: Db::test_db_path(&format!("http-api-{desktop_id}")),
+        kanna_cli_path: None,
+        desktop_id: desktop_id.to_string(),
+        desktop_secret: Some("desktop-secret".to_string()),
+        desktop_name: desktop_name.to_string(),
+        version: "test-version".to_string(),
+        environment: "development".to_string(),
+        lan_host: "0.0.0.0".to_string(),
+        lan_port: 48120,
+        transfer_port: 4455,
+        lan_routing_port: 4460,
+        activity_event_debounce_seconds: 300,
+        pairing_store_path: crate::test_paths::unique_test_file("kanna-pairings", "json"),
+    };
+    let db = Db::open_for_tests(&config.db_path).expect("open test db");
+    seed(&db);
+    let mut state = AppState::new(config);
+    state.forge_client = forge_client;
+    router(Arc::new(state))
+}
+
 pub(crate) fn test_state_with_seed(
     desktop_id: &str,
     desktop_name: &str,

@@ -8,6 +8,21 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
+/// Stored usage, summed, for collection tests to assert against.
+#[cfg(test)]
+#[derive(Debug)]
+pub struct TestTokenUsageSummary {
+    pub rows: i64,
+    pub input: i64,
+    pub cached_input: i64,
+    pub cache_creation: i64,
+    pub output: i64,
+    pub total: i64,
+    pub task_id: Option<String>,
+    pub run_id: Option<String>,
+    pub model: Option<String>,
+}
+
 impl Db {
     /// A database path this run alone owns.
     ///
@@ -278,6 +293,79 @@ impl Db {
                 activity TEXT NOT NULL,
                 seconds INTEGER NOT NULL,
                 PRIMARY KEY (pipeline_item_id, activity)
+            );
+
+            CREATE TABLE task_activity_interval (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                task_id TEXT NOT NULL REFERENCES pipeline_item(id) ON DELETE CASCADE,
+                activity TEXT NOT NULL,
+                started_at TEXT NOT NULL,
+                ended_at TEXT NOT NULL
+            );
+            CREATE INDEX idx_task_activity_interval_task
+              ON task_activity_interval(task_id, started_at);
+
+            CREATE TABLE task_pull_request (
+                repo_id TEXT NOT NULL REFERENCES repo(id) ON DELETE CASCADE,
+                pr_key TEXT NOT NULL,
+                pr_number INTEGER,
+                pr_url TEXT,
+                first_seen_at TEXT NOT NULL,
+                forge_created_at TEXT,
+                forge_merged_at TEXT,
+                forge_state TEXT,
+                forge_checked_at TEXT,
+                forge_attempted_at TEXT,
+                PRIMARY KEY (repo_id, pr_key)
+            );
+
+            CREATE TABLE task_revision (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                task_id TEXT NOT NULL REFERENCES pipeline_item(id) ON DELETE CASCADE,
+                origin TEXT NOT NULL CHECK (origin IN ('agent', 'human')),
+                target_stage TEXT,
+                applied INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            CREATE INDEX idx_task_revision_task ON task_revision(task_id, created_at);
+
+            CREATE TABLE provider_token_usage (
+                usage_key TEXT PRIMARY KEY,
+                provider TEXT NOT NULL,
+                provider_session_id TEXT,
+                repo_id TEXT,
+                task_id TEXT,
+                run_id TEXT,
+                model TEXT,
+                occurred_at TEXT NOT NULL,
+                input_tokens INTEGER NOT NULL DEFAULT 0,
+                cached_input_tokens INTEGER NOT NULL DEFAULT 0,
+                cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
+                output_tokens INTEGER NOT NULL DEFAULT 0,
+                reasoning_tokens INTEGER NOT NULL DEFAULT 0,
+                total_tokens INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE INDEX idx_provider_token_usage_repo_time
+              ON provider_token_usage(repo_id, occurred_at);
+
+            CREATE TABLE provider_usage_scan (
+                file_path TEXT PRIMARY KEY,
+                provider TEXT NOT NULL,
+                file_size INTEGER NOT NULL,
+                byte_offset INTEGER NOT NULL,
+                session_id TEXT,
+                cwd TEXT,
+                model TEXT,
+                scanned_at TEXT NOT NULL
+            );
+
+            CREATE TABLE provider_usage_discovery (
+                discovery_key TEXT PRIMARY KEY,
+                provider TEXT NOT NULL,
+                directory_path TEXT NOT NULL,
+                directory_modified_ns INTEGER NOT NULL,
+                candidate_paths TEXT NOT NULL,
+                checked_at TEXT NOT NULL
             );
 
             CREATE TABLE event_subscription (
@@ -571,33 +659,248 @@ impl Db {
         Ok(())
     }
 
+    /// A completed activity span, as the accumulator would have written it.
     #[cfg(test)]
-    pub fn insert_test_activity_log(
+    pub fn insert_test_activity_interval(
         &self,
-        pipeline_item_id: &str,
+        task_id: &str,
         activity: &str,
-        seconds: i64,
+        started_at: &str,
+        ended_at: &str,
     ) -> Result<(), rusqlite::Error> {
         self.conn.execute(
-            "INSERT INTO activity_log (pipeline_item_id, activity, seconds)
-             VALUES (?, ?, ?)",
-            (pipeline_item_id, activity, seconds),
+            "INSERT INTO task_activity_interval (task_id, activity, started_at, ended_at)
+             VALUES (?, ?, ?, ?)",
+            (task_id, activity, started_at, ended_at),
+        )?;
+        Ok(())
+    }
+
+    /// Put a task's live activity span where a test needs it, the way the
+    /// production write does: the value plus the instant it started.
+    #[cfg(test)]
+    pub fn set_test_pipeline_item_activity_at(
+        &self,
+        id: &str,
+        activity: &str,
+        changed_at: &str,
+    ) -> Result<(), rusqlite::Error> {
+        self.conn.execute(
+            "UPDATE pipeline_item SET activity = ?, activity_changed_at = ? WHERE id = ?",
+            (activity, changed_at, id),
         )?;
         Ok(())
     }
 
     #[cfg(test)]
-    pub fn insert_test_operator_event(
+    pub fn count_test_activity_intervals(&self, task_id: &str) -> Result<i64, rusqlite::Error> {
+        self.conn.query_row(
+            "SELECT COUNT(*) FROM task_activity_interval WHERE task_id = ?",
+            [task_id],
+            |row| row.get(0),
+        )
+    }
+
+    #[cfg(test)]
+    pub fn insert_test_stage_run_window(
         &self,
-        event_type: &str,
-        pipeline_item_id: Option<&str>,
-        repo_id: Option<&str>,
+        run_id: &str,
+        task_id: &str,
+        stage: &str,
+        started_at: &str,
+        finished_at: Option<&str>,
+    ) -> Result<(), rusqlite::Error> {
+        self.conn.execute(
+            "INSERT INTO stage_run (id, task_id, stage, kind, status, started_at, finished_at)
+             VALUES (?, ?, ?, 'main', 'succeeded', ?, ?)",
+            (run_id, task_id, stage, started_at, finished_at),
+        )?;
+        Ok(())
+    }
+
+    /// A run with the provider and worktree usage attribution reads.
+    #[cfg(test)]
+    #[allow(clippy::too_many_arguments)]
+    pub fn insert_test_provider_stage_run(
+        &self,
+        run_id: &str,
+        task_id: &str,
+        stage: &str,
+        provider: &str,
+        cwd: &str,
+        started_at: &str,
+        finished_at: Option<&str>,
+    ) -> Result<(), rusqlite::Error> {
+        self.conn.execute(
+            "INSERT INTO stage_run
+               (id, task_id, stage, kind, status, agent_provider, cwd, started_at, finished_at)
+             VALUES (?, ?, ?, 'main', 'succeeded', ?, ?, ?, ?)",
+            rusqlite::params![
+                run_id,
+                task_id,
+                stage,
+                provider,
+                cwd,
+                started_at,
+                finished_at
+            ],
+        )?;
+        Ok(())
+    }
+
+    #[cfg(test)]
+    pub fn set_test_stage_run_provider_session_id(
+        &self,
+        run_id: &str,
+        provider_session_id: &str,
+    ) -> Result<(), rusqlite::Error> {
+        self.conn.execute(
+            "UPDATE stage_run SET provider_session_id = ? WHERE id = ?",
+            (provider_session_id, run_id),
+        )?;
+        Ok(())
+    }
+
+    /// Everything a collection test needs to assert at once: how many usage
+    /// records were stored, what they add up to field by field, and what they
+    /// were attributed to.
+    #[cfg(test)]
+    pub fn test_token_usage_summary(&self) -> Result<TestTokenUsageSummary, rusqlite::Error> {
+        self.conn.query_row(
+            "SELECT COUNT(*), COALESCE(SUM(input_tokens), 0),
+                    COALESCE(SUM(cached_input_tokens), 0),
+                    COALESCE(SUM(cache_creation_tokens), 0),
+                    COALESCE(SUM(output_tokens), 0),
+                    COALESCE(SUM(total_tokens), 0),
+                    MIN(task_id), MIN(run_id), MIN(model)
+             FROM provider_token_usage",
+            [],
+            |row| {
+                Ok(TestTokenUsageSummary {
+                    rows: row.get(0)?,
+                    input: row.get(1)?,
+                    cached_input: row.get(2)?,
+                    cache_creation: row.get(3)?,
+                    output: row.get(4)?,
+                    total: row.get(5)?,
+                    task_id: row.get(6)?,
+                    run_id: row.get(7)?,
+                    model: row.get(8)?,
+                })
+            },
+        )
+    }
+
+    #[cfg(test)]
+    pub fn insert_test_task_revision(
+        &self,
+        task_id: &str,
+        origin: &str,
+        applied: bool,
         created_at: &str,
     ) -> Result<(), rusqlite::Error> {
         self.conn.execute(
-            "INSERT INTO operator_event (event_type, pipeline_item_id, repo_id, created_at)
-             VALUES (?, ?, ?, ?)",
-            (event_type, pipeline_item_id, repo_id, created_at),
+            "INSERT INTO task_revision (task_id, origin, target_stage, applied, created_at)
+             VALUES (?, ?, 'in progress', ?, ?)",
+            (task_id, origin, applied as i64, created_at),
+        )?;
+        Ok(())
+    }
+
+    /// A pull-request fact with whatever the forge has confirmed so far.
+    #[cfg(test)]
+    pub fn insert_test_pull_request(
+        &self,
+        repo_id: &str,
+        pr_number: i64,
+        first_seen_at: &str,
+        merged_at: Option<&str>,
+    ) -> Result<(), rusqlite::Error> {
+        let url = format!("https://github.com/owner/repo/pull/{pr_number}");
+        let pr_key = super::pull_requests::canonical_pr_key(&url, Some(pr_number));
+        self.conn.execute(
+            "INSERT INTO task_pull_request
+               (repo_id, pr_key, pr_number, pr_url, first_seen_at, forge_created_at,
+                forge_merged_at, forge_state, forge_checked_at, forge_attempted_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))",
+            rusqlite::params![
+                repo_id,
+                pr_key,
+                pr_number,
+                url,
+                first_seen_at,
+                first_seen_at,
+                merged_at,
+                if merged_at.is_some() {
+                    "MERGED"
+                } else {
+                    "OPEN"
+                },
+            ],
+        )?;
+        Ok(())
+    }
+
+    #[cfg(test)]
+    pub fn set_test_pipeline_item_pr_without_observation(
+        &self,
+        task_id: &str,
+        pr_number: i64,
+        pr_url: &str,
+    ) -> Result<(), rusqlite::Error> {
+        self.conn.execute(
+            "UPDATE pipeline_item SET pr_number = ?, pr_url = ? WHERE id = ?",
+            (pr_number, pr_url, task_id),
+        )?;
+        Ok(())
+    }
+
+    #[cfg(test)]
+    pub fn set_test_stage_run_status(
+        &self,
+        run_id: &str,
+        status: &str,
+    ) -> Result<(), rusqlite::Error> {
+        self.conn.execute(
+            "UPDATE stage_run SET status = ? WHERE id = ?",
+            (status, run_id),
+        )?;
+        Ok(())
+    }
+
+    #[cfg(test)]
+    #[allow(clippy::too_many_arguments)]
+    pub fn insert_test_token_usage(
+        &self,
+        usage_key: &str,
+        repo_id: &str,
+        task_id: &str,
+        run_id: Option<&str>,
+        model: &str,
+        occurred_at: &str,
+        tokens: (i64, i64, i64, i64, i64),
+    ) -> Result<(), rusqlite::Error> {
+        let (input, cached_input, cache_creation, output, reasoning) = tokens;
+        self.conn.execute(
+            "INSERT INTO provider_token_usage
+               (usage_key, provider, repo_id, task_id, run_id, model, occurred_at,
+                input_tokens, cached_input_tokens, cache_creation_tokens,
+                output_tokens, reasoning_tokens, total_tokens)
+             VALUES (?, 'claude', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            rusqlite::params![
+                usage_key,
+                repo_id,
+                task_id,
+                run_id,
+                model,
+                occurred_at,
+                input,
+                cached_input,
+                cache_creation,
+                output,
+                reasoning,
+                input + cached_input + cache_creation + output,
+            ],
         )?;
         Ok(())
     }

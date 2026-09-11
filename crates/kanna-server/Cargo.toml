@@ -13,7 +13,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 jsonschema = { version = "0.48.2", default-features = false }
 toml = "0.8"
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
 jsonwebtoken = "9"
 tokio-tungstenite = { version = "0.26", features = ["native-tls"] }
 # Same major version reqwest's rustls-tls feature and hyper-rustls already

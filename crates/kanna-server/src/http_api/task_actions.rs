@@ -2236,6 +2236,16 @@ pub(super) async fn request_revision(
                     crate::db::TaskEventKind::RevisionRequested,
                     revision_event_payload,
                 )?;
+                // The budget counter above is not a history — a human request
+                // resets it — and the event is pruned after 14 days. Analytics
+                // reads this row instead, written in the same transaction so
+                // the record and the revision cannot disagree.
+                db.record_revision_request_in_transaction(
+                    &source_task_id,
+                    recorded_revision_origin(origin),
+                    Some(payload.target_stage.as_str()),
+                    true,
+                )?;
                 Ok(rounds)
             });
             let rounds = match finalized {
@@ -2347,6 +2357,16 @@ enum RevisionOutcome {
 
 /// Record the review verdict, park the task at its current stage for its
 /// human, and start nothing. Used when the revision-round budget is spent.
+fn recorded_revision_origin(
+    origin: crate::mobile_api::RevisionOrigin,
+) -> crate::db::RecordedRevisionOrigin {
+    if origin.is_agent() {
+        crate::db::RecordedRevisionOrigin::Agent
+    } else {
+        crate::db::RecordedRevisionOrigin::Human
+    }
+}
+
 fn park_exhausted_revision(
     db: &Db,
     source_task_id: String,
@@ -2380,6 +2400,16 @@ fn park_exhausted_revision(
             )
         })?;
     append_revision_requested_event(db, &source_task_id, payload, &budget, true)?;
+    // Recorded as a review verdict that started nothing (`applied = false`):
+    // a parked request is churn the reviewer asked for but the task never
+    // spent, and averaging it in with real rounds would overstate revisions.
+    db.record_revision_request_in_transaction(
+        &source_task_id,
+        recorded_revision_origin(payload.origin.unwrap_or_default()),
+        Some(payload.target_stage.as_str()),
+        false,
+    )
+    .map_err(|error| db_write_error("db error", error))?;
     Ok(RevisionOutcome::Parked {
         source_task_id,
         budget,
