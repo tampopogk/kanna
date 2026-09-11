@@ -13,12 +13,13 @@ services (relay + Firebase).
 
 New to the codebase? Read in this order:
 
-1. [Getting Started](getting-started.md) — prerequisites, first build, running the app
-2. [Architecture](architecture.md) — components, data flow, and the code map
-3. [Development Workflow](dev-workflow.md) — the `kd` CLI, worktree isolation, debugging
-4. [Testing](testing.md) — the test taxonomy and what to run when
-5. [Release](release.md) — versioning, Bazel packaging, staging/production ships, mobile OTA
-6. [Product Behavior](product-behavior.md) — task workflows, close semantics, shortcuts, preferences
+1. [Product Context](product-context.md) — purpose, users, journeys, decision rights, and status boundaries
+2. [Getting Started](getting-started.md) — prerequisites, first build, running the app
+3. [Architecture](architecture.md) — components, data flow, and the code map
+4. [Development Workflow](dev-workflow.md) — the `kd` CLI, worktree isolation, debugging
+5. [Testing](testing.md) — the test taxonomy and what to run when
+6. [Release](release.md) — versioning, Bazel packaging, staging/production ships, mobile OTA
+7. [Product Behavior](product-behavior.md) — task workflows, close semantics, shortcuts, preferences
 
 ## Other sources of truth
 

@@ -7,8 +7,10 @@ advance tasks through Kanna's MCP tools or CLI, then notify your iPhone when a
 decision really needs you. Kanna Mobile puts the agents' terminal UIs on your
 phone, and task transfer lets you push or pull work between machines.
 
-Kanna is open source and built for small teams and solo founders. It probably
-isn't the right fit for a big-corp development process.
+Kanna is open source and currently useful for solo developers. Team workflows
+and integrations are being explored; they are not an approved roadmap. See the
+[product context](docs/dev/product-context.md) for the current product boundary
+and open questions.
 
 ## Bring your own model
 
