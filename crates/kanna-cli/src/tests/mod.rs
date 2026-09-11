@@ -264,7 +264,6 @@ fn typed_tool_surfaces() -> BTreeMap<&'static str, TypedToolSurface> {
                     ("exclude_own", "exclude_own"),
                     ("local_only", "local_only"),
                     ("include_current_activity", "include_current_activity"),
-                    ("short_cursor", "short_cursor"),
                     ("from", "from"),
                     ("cursor", "cursor"),
                     ("timeout_secs", "timeout_secs"),

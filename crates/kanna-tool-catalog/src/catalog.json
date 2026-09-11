@@ -500,15 +500,6 @@
           "default": true
         },
         {
-          "name": "short_cursor",
-          "description": "Return a short durable cursor handle instead of the legacy encoded checkpoint. Keep this enabled for agent use. Active watchers reuse one handle, and the handle survives server and relay reconnects for the task-event retention window.",
-          "type": "boolean",
-          "required": false,
-          "location": "query",
-          "key": "shortCursor",
-          "default": true
-        },
-        {
           "name": "from",
           "description": "On a cursorless first call, set this to 'now' to establish the durable event checkpoint at the current tail. With include_current_activity true, already-settled scoped tasks are still returned as synthetic current-state rows. Omit it to preserve the retained-history replay contract. Once a cursor exists, the cursor is authoritative.",
           "type": "string",

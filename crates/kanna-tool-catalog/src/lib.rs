@@ -1019,6 +1019,8 @@ pub fn resolve_request(
     let mut body = Map::new();
     let mut query = Vec::new();
     let mut machine_id = None;
+    let force_short_event_cursor = tool.name == "kanna_wait_events";
+    let mut short_event_cursor_added = false;
 
     for param in &tool.params {
         let Some(value) = value_for_param(tool, param, args)? else {
@@ -1060,6 +1062,18 @@ pub fn resolve_request(
                 machine_id = Some(value);
             }
         }
+        // Cursor representation is client policy, not an agent choice. Keep
+        // the fixed query beside includeCurrentActivity so existing request
+        // ordering remains stable for HTTP fixtures and logs.
+        if force_short_event_cursor && param.name == "include_current_activity" {
+            query.push("shortCursor=true".to_string());
+            short_event_cursor_added = true;
+        }
+    }
+    // An override catalog may omit the ordinary activity option; it still
+    // cannot make an agent-facing wait return a full checkpoint.
+    if force_short_event_cursor && !short_event_cursor_added {
+        query.push("shortCursor=true".to_string());
     }
 
     if !query.is_empty() {

@@ -7,7 +7,7 @@ use crate::models::MobileNotificationRequest;
 mod old_relay_mobile_notification;
 
 #[tokio::test]
-async fn typed_cli_round_trips_the_server_ks1_aggregate_cursor() {
+async fn typed_cli_accepts_a_full_aggregate_cursor_through_the_automatic_short_surface() {
     let aggregate_cursor = "ks1.fixture-with-ke1-machine-cursors";
     let responses = vec![
         http_json_response(
@@ -44,7 +44,6 @@ async fn typed_cli_round_trips_the_server_ks1_aggregate_cursor() {
         exclude_own: false,
         local_only: false,
         include_current_activity: true,
-        short_cursor: false,
         from: None,
         cursor,
         timeout_secs: 0,
@@ -65,7 +64,7 @@ async fn typed_cli_round_trips_the_server_ks1_aggregate_cursor() {
 
     let requests = server.await.expect("fixture server");
     assert!(requests[1].starts_with(&format!(
-        "GET /v1/task-events?timeoutSecs=0&taskIds=task-a&includeCurrentActivity=true&shortCursor=false&cursor={aggregate_cursor}&limit=100 HTTP/1.1"
+        "GET /v1/task-events?timeoutSecs=0&taskIds=task-a&includeCurrentActivity=true&shortCursor=true&cursor={aggregate_cursor}&limit=100 HTTP/1.1"
     )), "{}", requests[1]);
 }
 
