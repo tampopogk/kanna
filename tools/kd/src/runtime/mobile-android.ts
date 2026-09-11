@@ -581,6 +581,14 @@ export interface AndroidPhysicalRunPlan {
   payloadUrl: string;
 }
 
+export interface AndroidPhysicalStandaloneInstallPlan {
+  build: AndroidCommand;
+  install: AndroidCommand;
+  stop: AndroidCommand;
+  launch: AndroidCommand;
+  apkPath: string;
+}
+
 export interface AndroidPhysicalRunResult {
   ok: boolean;
   step: "build" | "install" | "stop" | "launch";
@@ -653,9 +661,64 @@ export function buildAndroidPhysicalRunPlan(input: {
   };
 }
 
+export function buildAndroidPhysicalStandaloneInstallPlan(input: {
+  repoRoot: string;
+  serial: string;
+  packageId: string;
+  appEnv: "staging";
+  tools: AndroidSdkTools;
+}): AndroidPhysicalStandaloneInstallPlan {
+  const androidRoot = join(input.repoRoot, "apps", "mobile", "android");
+  const apkPath = join(androidRoot, "app", "build", "outputs", "apk", "release", "app-release.apk");
+  const env = {
+    KANNA_APP_ENV: input.appEnv,
+    ANDROID_HOME: input.tools.root,
+    ANDROID_SDK_ROOT: input.tools.root
+  };
+  return {
+    build: {
+      command: join(androidRoot, "gradlew"),
+      args: [
+        "app:assembleRelease",
+        "-x",
+        "lint",
+        "-x",
+        "test",
+        "--configure-on-demand",
+        "--build-cache"
+      ],
+      cwd: androidRoot,
+      env
+    },
+    install: {
+      command: input.tools.adb,
+      args: ["-s", input.serial, "install", "-r", apkPath]
+    },
+    stop: {
+      command: input.tools.adb,
+      args: ["-s", input.serial, "shell", "am", "force-stop", input.packageId]
+    },
+    launch: {
+      command: input.tools.adb,
+      args: [
+        "-s",
+        input.serial,
+        "shell",
+        "monkey",
+        "-p",
+        input.packageId,
+        "-c",
+        "android.intent.category.LAUNCHER",
+        "1"
+      ]
+    },
+    apkPath
+  };
+}
+
 export async function executeAndroidPhysicalRunPlan(input: {
   runner: CommandRunner;
-  plan: AndroidPhysicalRunPlan;
+  plan: AndroidPhysicalRunPlan | AndroidPhysicalStandaloneInstallPlan;
   env?: NodeJS.ProcessEnv;
 }): Promise<AndroidPhysicalRunResult> {
   let last: AndroidPhysicalRunResult | undefined;

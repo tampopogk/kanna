@@ -1229,7 +1229,7 @@ describe("kd CLI", () => {
     ).toThrow("mobile run accepts exactly one target");
     expect(() =>
       parseCliArgs(["mobile", "run", "--simulator", "--install"])
-    ).toThrow("mobile run --install is only supported with the physical-iPhone --device target");
+    ).toThrow("mobile run --install is supported only with the physical-iPhone --device or physical-Android --android-device target");
   });
 
   it("parses Android emulator run and doctor targets", () => {
@@ -1301,6 +1301,23 @@ describe("kd CLI", () => {
         androidDevice: "R5CX42N3NLK",
         production: false,
         staging: false
+      }
+    });
+    expect(parseCliArgs([
+      "mobile",
+      "run",
+      "--android-device",
+      "R5CX42N3NLK",
+      "--staging",
+      "--install"
+    ])).toEqual({
+      taskId: "mobile.run",
+      input: {
+        device: false,
+        androidDevice: "R5CX42N3NLK",
+        production: false,
+        staging: true,
+        install: true
       }
     });
     expect(() => parseCliArgs(["mobile", "run", "--android-device"]))

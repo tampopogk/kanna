@@ -210,8 +210,10 @@ function parseMobileRunInput(rest: string[]): ParsedCliCommand {
       "mobile run requires a target: use --simulator [<udid|name>], --device, --android-emulator [<avd>], or --android-device <serial>"
     );
   }
-  if ((input.simulator !== undefined || input.androidEmulator !== undefined || input.androidDevice !== undefined) && input.install === true) {
-    throw new Error("mobile run --install is only supported with the physical-iPhone --device target");
+  if ((input.simulator !== undefined || input.androidEmulator !== undefined) && input.install === true) {
+    throw new Error(
+      "mobile run --install is supported only with the physical-iPhone --device or physical-Android --android-device target"
+    );
   }
   if (input.withCredentials === true && (input.production === true || input.staging === true)) {
     throw new Error(CREDENTIALS_FLAG_ERROR);
@@ -1371,13 +1373,13 @@ const helpTopics: Record<string, string[]> = {
     "  --simulator [target] Target a simulator by optional UDID or name; defaults to a booted or newest available iPhone.",
     "  --device             Target a physical iPhone selected from KANNA_IOS_DEVICE_UDID or KANNA_IOS_PHYSICAL_DEVICE_NAME.",
     "  --android-emulator [avd] Target an Android AVD by optional exact name; defaults to the sole running or installed AVD.",
-    "  --android-device <serial> Target exactly one authorized physical Android device by adb serial; uses task-scoped adb reverse routes.",
+    "  --android-device <serial> Target exactly one authorized physical Android device by adb serial; development uses task-scoped adb reverse routes.",
     "  --production        Guarded compatibility profile for the production build, owner, and cloud.",
     "  --staging           Compatibility profile: staging build + installed staging owner + staging cloud.",
     "  --build <identity>  Client build identity (dev or staging for development).",
     "  --owner <owner>     Desktop owner: worktree or installed staging.",
     "  --cloud <target>    Cloud target: emulators or staging.",
-    "  --install            Physical iPhone only: build and install a bundled Release app; skips Metro and dev-client hot loading.",
+    "  --install            Physical iPhone, or physical Android with --staging: build and install a bundled Release app; skips Metro.",
     "",
     "Mobile release/marketing version defaults to apps/mobile/VERSION in every environment.",
     "KANNA_APP_VERSION is an explicit diagnostic/build override; it does not select identity, cloud, OTA, runtime, or signing settings."

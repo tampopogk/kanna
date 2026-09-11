@@ -787,6 +787,17 @@ installed dev client requires the kd-managed task services and those reverse
 routes to remain available; this path does not publish to Play, Firebase,
 production, or OTA.
 
+When the operator needs the full staging identity on a physical Android phone
+without Metro, use
+`./kd mobile run --android-device <serial> --staging --install`. This is the
+only Android standalone-install profile: kd prebuilds `Kanna Staging`
+(`build.kanna.app.staging`), assembles a Release APK with embedded JS, and uses
+only serial-scoped adb commands to update that package in place and launch it.
+It does not start the worktree dev stack, create reverse routes, require Metro,
+or publish to Play, Firebase, production, or OTA. The staging client uses the
+staging Firebase and relay configuration baked into the app. Production Android
+installation remains unsupported and guarded.
+
 ## iOS development targets
 
 For iOS Simulator development, run `./kd mobile run --simulator` from a
