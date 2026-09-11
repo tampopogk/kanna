@@ -49,6 +49,18 @@ function mountPreferences(defaultAgentType: "pty" | "agent" = "pty") {
 }
 
 describe("PreferencesPanel theme controls", () => {
+  it("is an accessible dialog that dismisses with Escape", async () => {
+    const wrapper = mountPreferences();
+
+    expect(wrapper.attributes("role")).toBe("dialog");
+    expect(wrapper.attributes("aria-modal")).toBe("true");
+    expect(wrapper.attributes("aria-label")).toBe("preferences.title");
+
+    await wrapper.trigger("keydown", { key: "Escape" });
+
+    expect(wrapper.emitted("close")).toHaveLength(1);
+  });
+
   it("renders app, code, and agent message appearance selectors", () => {
     const wrapper = mountPreferences();
 

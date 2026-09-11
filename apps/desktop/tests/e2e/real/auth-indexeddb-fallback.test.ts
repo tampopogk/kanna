@@ -6,9 +6,9 @@ const client = new WebDriverClient();
 async function openAccountPreferences(): Promise<void> {
   await client.executeSync(`
     const ctx = window.__KANNA_E2E__.setupState;
-    const tabs = ctx.mainTabs;
-    if (!tabs) throw new Error("main tabs are unavailable on setupState");
-    tabs.openTab({ kind: "preferences" });
+    const modals = ctx.appModals;
+    if (!modals) throw new Error("app modals are unavailable on setupState");
+    modals.showPreferencesOnTop();
   `);
   await client.click(await client.waitForElement('[data-testid="preferences-account-tab"]'));
 }

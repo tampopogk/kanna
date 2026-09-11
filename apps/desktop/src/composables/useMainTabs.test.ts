@@ -104,7 +104,7 @@ describe("useMainTabs", () => {
   it("gives every other view exactly one tab per scope", () => {
     const { tabs } = setup();
 
-    for (const kind of ["diff", "tree", "graph", "analytics", "preferences"] as const) {
+    for (const kind of ["diff", "tree", "graph", "analytics"] as const) {
       tabs.openTab({ kind });
       tabs.openTab({ kind });
     }
@@ -115,7 +115,6 @@ describe("useMainTabs", () => {
       "tree",
       "graph",
       "analytics",
-      "preferences",
     ]);
   });
 
@@ -330,5 +329,26 @@ describe("useMainTabs", () => {
 
     expect(parsed?.scopes["item:a"].tabs).toEqual([{ kind: "diff" }]);
     expect(parsed?.scopes["item:b"]).toBeUndefined();
+  });
+
+  it("drops legacy Preferences tabs while preserving unrelated stored tabs", () => {
+    const parsed = parsePersistedMainTabs(JSON.stringify({
+      version: PERSISTED_MAIN_TABS_VERSION,
+      scopes: {
+        "item:a": {
+          tabs: [
+            { kind: "diff" },
+            { kind: "preferences" },
+            { kind: "file", filePath: "src/a.ts" },
+          ],
+          activeId: "preferences",
+        },
+      },
+    }));
+
+    expect(parsed?.scopes["item:a"]).toEqual({
+      tabs: [{ kind: "diff" }, { kind: "file", filePath: "src/a.ts" }],
+      activeId: "preferences",
+    });
   });
 });

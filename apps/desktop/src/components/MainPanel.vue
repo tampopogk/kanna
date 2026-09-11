@@ -29,7 +29,6 @@ import TreeExplorerModal from "./TreeExplorerModal.vue";
 import CommitGraphModal from "./CommitGraphModal.vue";
 import AnalyticsModal from "./AnalyticsModal.vue";
 import ImageUrlPreviewModal from "./ImageUrlPreviewModal.vue";
-import PreferencesPanel from "./PreferencesPanel.vue";
 import { AGENT_TAB_ID, type MainTab } from "../composables/useMainTabs";
 import type { RemoteDirectoryEntry } from "../composables/useTreeExplorer";
 import {
@@ -638,19 +637,10 @@ watch(() => props.hasRepos, (has) => {
   if (!has) checkAllClis();
 }, { immediate: true });
 
-/** ⇧⌘[ / ⇧⌘] reach the Preferences tab's own sections while it is in front. */
-function cyclePreferencesSection(direction: -1 | 1) {
-  const tab = props.views?.tabs.activeTab.value;
-  if (tab?.kind !== "preferences") return;
-  (viewRefs.get(tab.id) as { cycleTab?: (direction: -1 | 1) => void } | undefined)
-    ?.cycleTab?.(direction);
-}
-
 defineExpose({
   recheckClis: checkAllClis,
   dismissActiveTab,
   revealTabTarget,
-  cyclePreferencesSection,
   onTabClosed,
 });
 
@@ -871,16 +861,6 @@ function dismissCommandHint() {
           :image-url="tab.imageUrl ?? ''"
           embedded
           :active="activeTabId === tab.id"
-          @close="closeTab(tab.id)"
-        />
-        <PreferencesPanel
-          v-else-if="tab.kind === 'preferences' && views"
-          :ref="(component) => setViewRef(tab.id, component)"
-          v-show="activeTabId === tab.id"
-          :preferences="views.preferences.preferences"
-          embedded
-          :active="activeTabId === tab.id"
-          @update="views.preferences.handlePreferenceUpdate"
           @close="closeTab(tab.id)"
         />
       </template>

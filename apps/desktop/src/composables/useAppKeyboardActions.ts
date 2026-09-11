@@ -7,6 +7,7 @@ import type { ShortcutContext } from "./useShortcutContext";
 import type { WorkspaceTask } from "../workspace/types";
 import type { MainTabsController } from "./useMainTabs";
 import MainPanel from "../components/MainPanel.vue";
+import PreferencesPanel from "../components/PreferencesPanel.vue";
 import type { useKannaStore } from "../stores/kanna";
 import type { useToast } from "./useToast";
 import { openLatestTerminalFileLink } from "./terminalFileLinkRegistry";
@@ -35,6 +36,8 @@ interface UseAppKeyboardActionsOptions {
   showAddRepoModal: Ref<boolean>;
   addRepoInitialTab: Ref<"create" | "import">;
   showShortcutsModal: Ref<boolean>;
+  showPreferencesPanel: Ref<boolean>;
+  preferencesPanelRef: Ref<InstanceType<typeof PreferencesPanel> | null>;
   shortcutsStartFull: Ref<boolean>;
   shortcutsContext: Ref<ShortcutContext>;
   showFilePickerModal: Ref<boolean>;
@@ -46,6 +49,7 @@ interface UseAppKeyboardActionsOptions {
   openNewTaskModal: () => Promise<void>;
   requestCloseCurrentWindow: () => Promise<void>;
   showFilePickerOnTop: () => void;
+  showPreferencesOnTop: () => void;
   getCurrentPreviewRecall: () => { filePath: string; initialLine?: number } | undefined;
   openFilePreview: (filePath: string, initialLine?: number) => void;
   advanceSelectedRemoteWorkspaceTask: (workspaceTask: WorkspaceTask) => Promise<void>;
@@ -79,6 +83,8 @@ export function useAppKeyboardActions(options: UseAppKeyboardActionsOptions) {
     showAddRepoModal,
     addRepoInitialTab,
     showShortcutsModal,
+    showPreferencesPanel,
+    preferencesPanelRef,
     shortcutsStartFull,
     shortcutsContext,
     showFilePickerModal,
@@ -90,6 +96,7 @@ export function useAppKeyboardActions(options: UseAppKeyboardActionsOptions) {
     openNewTaskModal,
     requestCloseCurrentWindow,
     showFilePickerOnTop,
+    showPreferencesOnTop,
     getCurrentPreviewRecall,
     openFilePreview,
     advanceSelectedRemoteWorkspaceTask,
@@ -107,11 +114,11 @@ export function useAppKeyboardActions(options: UseAppKeyboardActionsOptions) {
     handleEditBlockedTask,
   } = options;
 
-  // The Preferences tab owns section cycling while it is the tab in front;
-  // otherwise the keys move between the main content area's tabs.
+  // The Preferences dialog owns section cycling while it is open; otherwise
+  // the keys move between the main content area's tabs.
   function cycleTabs(direction: -1 | 1) {
-    if (mainTabs.activeTab.value?.kind === "preferences") {
-      mainPanelRef.value?.cyclePreferencesSection?.(direction);
+    if (showPreferencesPanel.value) {
+      preferencesPanelRef.value?.cycleTab?.(direction);
       return;
     }
     mainTabs.cycleTab(direction);
@@ -178,6 +185,10 @@ export function useAppKeyboardActions(options: UseAppKeyboardActionsOptions) {
     closeTabOrWindow: async () => {
       // ⌘W closes the tab in front. The native File menu item routes here too,
       // so the menu and the keyboard agree.
+      if (showPreferencesPanel.value) {
+        showPreferencesPanel.value = false;
+        return;
+      }
       if (mainTabs.closeActiveTab()) return;
       // Nothing closable is in front — the agent session, which is the task
       // rather than a view of it. Only then does ⌘W mean the window, and only
@@ -279,6 +290,14 @@ export function useAppKeyboardActions(options: UseAppKeyboardActionsOptions) {
       // of them and get Escape only once none of them wanted it.
       if (showCommandPalette.value) { showCommandPalette.value = false; return true; }
       if (showShortcutsModal.value) { showShortcutsModal.value = false; return true; }
+      // A just-opened dialog can be visible one tick before its component ref
+      // is assigned. Treat that brief state as foreground; once mounted, the
+      // shared modal stack decides whether Escape belongs to Preferences.
+      const preferencesOnTop = preferencesPanelRef.value?.isOnTop?.() ?? true;
+      if (showPreferencesPanel.value && preferencesOnTop) {
+        showPreferencesPanel.value = false;
+        return true;
+      }
       if (showPeerPicker.value) { closePeerPicker(); return true; }
       if (showFilePickerModal.value) { closeFilePicker(); return true; }
       if (showNewTaskModal.value) { showNewTaskModal.value = false; return true; }
@@ -362,7 +381,7 @@ export function useAppKeyboardActions(options: UseAppKeyboardActionsOptions) {
     blockTask: () => { handleBlockTask(); },
     editBlockedTask: () => { handleEditBlockedTask(); },
     openPreferences: () => {
-      mainTabs.openTab({ kind: "preferences" });
+      showPreferencesOnTop();
     },
     prevTab: () => { cycleTabs(-1); },
     nextTab: () => { cycleTabs(1); },

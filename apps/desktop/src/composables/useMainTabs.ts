@@ -18,8 +18,7 @@ export type MainTabKind =
   | "tree"
   | "graph"
   | "analytics"
-  | "image"
-  | "preferences";
+  | "image";
 
 /**
  * Which shell a `shell` tab runs: the task's worktree (⌘J) or the repository
@@ -170,7 +169,6 @@ const TAB_SHORTCUT_CONTEXTS: Record<MainTabKind, ShortcutContext> = {
   graph: "graph",
   analytics: "main",
   image: "file",
-  preferences: "main",
 };
 
 /**
@@ -189,7 +187,7 @@ export function mainTabId(descriptor: MainTabDescriptor): string {
     case "image":
       return `image:${descriptor.imageUrl ?? ""}`;
     default:
-      // One per scope: the diff, the tree, the graph, analytics, preferences.
+      // One per scope: the diff, the tree, the graph, and analytics.
       return descriptor.kind;
   }
 }
@@ -217,7 +215,7 @@ export function mainTabScopeKeyForRepo(repoId: string): string {
  * The tab set for a window with no repository selected at all — the first-run
  * state. It exists so the main content area always has exactly one place views
  * open into: with no app scope, the handful of surfaces reachable before a
- * repository is added (a home shell, the tree explorer, Preferences) would
+ * repository is added (a home shell and the tree explorer) would
  * need a second, parallel rendering path that nothing else exercises.
  */
 export function mainTabScopeKeyForApp(): string {
