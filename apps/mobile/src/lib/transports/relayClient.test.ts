@@ -473,7 +473,8 @@ describe("createRelayDesktopClient", () => {
           "companion_event_epoch",
           "term_input_boundary",
           "term_scrollback_window",
-          "terminal_geometry"
+          "terminal_geometry",
+          "terminal_active_view"
         ],
         credential: "id-token-1"
       })
