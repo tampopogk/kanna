@@ -1944,7 +1944,6 @@ pub(crate) fn request_concurrency() -> usize {
         .unwrap_or(1)
 }
 
-#[derive(Clone)]
 enum TerminalControlCommand {
     Input {
         data: Vec<u8>,
@@ -1963,6 +1962,12 @@ enum TerminalControlCommand {
         visible: bool,
     },
     Active,
+    /// Complete only after every earlier command on this control connection
+    /// has been processed by the daemon. Terminal attach uses this to capture
+    /// its first snapshot after an initial active-view resize, not before it.
+    Synchronize {
+        done: oneshot::Sender<Result<(), String>>,
+    },
     Takeover,
     Release,
 }
@@ -2015,6 +2020,9 @@ impl TerminalControlCommand {
                 visible,
             },
             Self::Active => DaemonCommand::ActiveViewer { session_id },
+            Self::Synchronize { .. } => {
+                unreachable!("synchronization is handled inside the control worker")
+            }
             Self::Takeover => DaemonCommand::TakeoverViewer { session_id },
             Self::Release => DaemonCommand::ReleaseViewer { session_id },
         }
@@ -2269,8 +2277,9 @@ async fn run_terminal_control(
                 }
                 command = command_rx.recv() => {
                     let Some(command) = command else { return; };
-                    pending_command = Some(command.clone());
-                    if matches!(command, TerminalControlCommand::Register { .. }) {
+                    let is_registration = matches!(command, TerminalControlCommand::Register { .. });
+                    pending_command = Some(command);
+                    if is_registration {
                         tokio::select! {
                             biased;
                             _ = terminal_control_cancelled(&mut cancel_rx) => return,
@@ -2354,6 +2363,7 @@ async fn run_terminal_control(
             geometry_supported = None;
         }
         let (mut daemon_reader, mut daemon_writer) = client.into_split();
+        let mut synchronization_waiter: Option<oneshot::Sender<Result<(), String>>> = None;
         retry_attempt = 0;
 
         if geometry_supported.is_none() {
@@ -2400,41 +2410,54 @@ async fn run_terminal_control(
             }
         }
         if let Some(command) = pending_command.take() {
-            if let TerminalControlCommand::Resize { cols, rows } = &command {
-                log::info!(
+            if let TerminalControlCommand::Synchronize { done } = command {
+                let result = daemon_writer
+                    .send_one_way(&DaemonCommand::List)
+                    .await
+                    .map_err(|error| error.to_string());
+                if let Err(message) = result {
+                    let _ = done.send(Err(message));
+                    continue;
+                }
+                synchronization_waiter = Some(done);
+            } else {
+                if let TerminalControlCommand::Resize { cols, rows } = &command {
+                    log::info!(
                     "[ksp] writing terminal resize (task={task_id}, session={session_id}, cols={cols}, rows={rows}, source=pending)"
                 );
-            }
-            let daemon_command = command.into_daemon_command(session_id.clone());
-            let is_registration = matches!(&daemon_command, DaemonCommand::RegisterViewer { .. });
-            if is_registration {
-                registration = Some(daemon_command.clone());
-            }
-            let write_result = tokio::select! {
-                biased;
-                _ = terminal_control_cancelled(&mut cancel_rx) => return,
-                result = async {
-                    daemon_writer
-                        .send_one_way(&daemon_command)
-                        .await
-                        .map_err(|error| error.to_string())
-                } => result,
-            };
-            if let Err(error) = write_result {
-                let message = format!(
-                    "terminal command write was ambiguous and will not be retried: {error}"
-                );
-                log::warn!("[ksp] {message} (session={session_id})");
-                tokio::select! {
+                }
+                let daemon_command = command.into_daemon_command(session_id.clone());
+                let is_registration =
+                    matches!(&daemon_command, DaemonCommand::RegisterViewer { .. });
+                if is_registration {
+                    registration = Some(daemon_command.clone());
+                }
+                let write_result = tokio::select! {
                     biased;
                     _ = terminal_control_cancelled(&mut cancel_rx) => return,
-                    _ = send_task_error(&frame_tx, &task_id, "daemon", message) => {}
+                    result = async {
+                        daemon_writer
+                            .send_one_way(&daemon_command)
+                            .await
+                            .map_err(|error| error.to_string())
+                    } => result,
+                };
+                if let Err(error) = write_result {
+                    let message = format!(
+                        "terminal command write was ambiguous and will not be retried: {error}"
+                    );
+                    log::warn!("[ksp] {message} (session={session_id})");
+                    tokio::select! {
+                        biased;
+                        _ = terminal_control_cancelled(&mut cancel_rx) => return,
+                        _ = send_task_error(&frame_tx, &task_id, "daemon", message) => {}
+                    }
+                    if !terminal_control_retry_delay(retry_attempt, &mut cancel_rx).await {
+                        return;
+                    }
+                    retry_attempt += 1;
+                    continue;
                 }
-                if !terminal_control_retry_delay(retry_attempt, &mut cancel_rx).await {
-                    return;
-                }
-                retry_attempt += 1;
-                continue;
             }
         }
 
@@ -2450,17 +2473,36 @@ async fn run_terminal_control(
                 } => {
                     match event {
                         Ok(DaemonEvent::Error { message, .. }) => {
+                            if let Some(done) = synchronization_waiter.take() {
+                                let _ = done.send(Err(message.clone()));
+                            }
                             tokio::select! {
                                 biased;
                                 _ = terminal_control_cancelled(&mut cancel_rx) => return,
                                 _ = send_task_error(&frame_tx, &task_id, "daemon", message) => {}
                             }
                         }
-                        Ok(DaemonEvent::ShuttingDown) | Err(_) => break,
+                        Ok(DaemonEvent::SessionList { .. }) if synchronization_waiter.is_some() => {
+                            if let Some(done) = synchronization_waiter.take() {
+                                let _ = done.send(Ok(()));
+                            }
+                        }
+                        Ok(DaemonEvent::ShuttingDown) => {
+                            if let Some(done) = synchronization_waiter.take() {
+                                let _ = done.send(Err("daemon began handoff before terminal attachment".into()));
+                            }
+                            break;
+                        }
+                        Err(error) => {
+                            if let Some(done) = synchronization_waiter.take() {
+                                let _ = done.send(Err(error));
+                            }
+                            break;
+                        }
                         Ok(_) => {}
                     }
                 }
-                command = command_rx.recv() => {
+                command = command_rx.recv(), if synchronization_waiter.is_none() => {
                     let Some(command) = command else {
                         return;
                     };
@@ -2477,6 +2519,23 @@ async fn run_terminal_control(
                             "the daemon does not support terminal viewer geometry control".into(),
                         )
                         .await;
+                        continue;
+                    }
+                    if let TerminalControlCommand::Synchronize { done } = command {
+                        let write_result = tokio::select! {
+                            biased;
+                            _ = terminal_control_cancelled(&mut cancel_rx) => return,
+                            result = daemon_writer.send_one_way(&DaemonCommand::List) => {
+                                result.map_err(|error| error.to_string())
+                            },
+                        };
+                        match write_result {
+                            Ok(()) => synchronization_waiter = Some(done),
+                            Err(message) => {
+                                let _ = done.send(Err(message));
+                                break;
+                            }
+                        }
                         continue;
                     }
                     let daemon_command = command.into_daemon_command(session_id.clone());
@@ -2928,6 +2987,7 @@ impl StreamConn {
             let kind = match &command {
                 TerminalControlCommand::Register { .. } => "register",
                 TerminalControlCommand::Active => "active",
+                TerminalControlCommand::Synchronize { .. } => "synchronize",
                 TerminalControlCommand::Resize { .. } => "resize",
                 TerminalControlCommand::Takeover => "takeover",
                 TerminalControlCommand::Release => "release",
@@ -2979,6 +3039,27 @@ impl StreamConn {
                 });
             }
         }
+    }
+
+    async fn synchronize_terminal_control(&mut self, task_id: &str) -> Result<(), String> {
+        let Some(control) = self.terminal_controls.get(task_id) else {
+            return Ok(());
+        };
+        let (done, completed) = oneshot::channel();
+        control
+            .queue
+            .try_send(TerminalControlCommand::Synchronize { done })
+            .map_err(|error| match error {
+                TerminalControlSendError::Full => {
+                    "terminal control queue is full before attachment".to_string()
+                }
+                TerminalControlSendError::Closed => {
+                    "terminal control channel closed before attachment".to_string()
+                }
+            })?;
+        completed
+            .await
+            .map_err(|_| "terminal control synchronization stopped before attachment".to_string())?
     }
 
     fn enqueue_agent_command(&mut self, task_id: String, command: AgentControlCommand) {
@@ -3876,6 +3957,18 @@ impl StreamConn {
         if kind == StreamKind::Terminal {
             self.replace_terminal_control_route(&task_id, session_id.clone())
                 .await;
+            if self.supports_terminal_active_view {
+                // Active-view clients can place ownership control before an
+                // attach; a first visible remote view does exactly that. Wait
+                // until the daemon has processed every preceding control
+                // frame before the tap captures a snapshot, otherwise the
+                // reader sees the previous owner's grid followed immediately
+                // by a resize snapshot.
+                if let Err(message) = self.synchronize_terminal_control(&task_id).await {
+                    self.error(Some(task_id), "daemon", message).await;
+                    return;
+                }
+            }
         }
 
         // Replace any existing attachment for this (task, kind).
@@ -12425,7 +12518,10 @@ mod tests {
         let mut socket = ws_connect(&url).await;
 
         send_frame(&mut socket, &client_auth_frame()).await;
-        assert_eq!(recv_frame(&mut socket).await, auth_ok_frame_for(false));
+        assert_eq!(
+            recv_frame(&mut socket).await,
+            auth_ok_frame_with_terminal_capabilities(false, true, false)
+        );
         send_frame(
             &mut socket,
             &ClientFrame::Attach {
@@ -14253,6 +14349,10 @@ mod tests {
         }
     }
 
+    fn windowed_auth_ok_frame() -> ServerFrame {
+        auth_ok_frame_with_terminal_capabilities(false, true, false)
+    }
+
     fn scrollback_vt(lines: usize) -> String {
         (0..lines)
             .map(|index| format!("row-{index}"))
@@ -14474,13 +14574,233 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn active_view_is_synchronized_before_initial_window_and_live_output() {
+        let unique = format!(
+            "ksp-active-view-attach-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        let daemon_dir = std::env::temp_dir().join(format!("{unique}-daemon"));
+        std::fs::create_dir_all(&daemon_dir).expect("create daemon dir");
+        let socket_path = daemon_socket_path_for_dir(&daemon_dir.to_string_lossy());
+        let _ = std::fs::remove_file(&socket_path);
+        let listener = UnixListener::bind(&socket_path).expect("bind fake daemon socket");
+        let vt = scrollback_vt(500);
+        let (command_tx, mut command_rx) = mpsc::channel(4);
+
+        let daemon = tokio::spawn(async move {
+            let (control, _) = listener.accept().await.expect("accept control connection");
+            let (control_read, mut control_write) = control.into_split();
+            let mut control_reader = BufReader::new(control_read);
+
+            let mut line = String::new();
+            control_reader
+                .read_line(&mut line)
+                .await
+                .expect("read geometry negotiation");
+            assert!(matches!(
+                serde_json::from_str::<DaemonCommand>(line.trim()).unwrap(),
+                DaemonCommand::NegotiateTerminalGeometry { .. }
+            ));
+            write_geometry_ready(&mut control_write).await;
+
+            for _ in 0..3 {
+                line.clear();
+                control_reader
+                    .read_line(&mut line)
+                    .await
+                    .expect("read ordered terminal control");
+                let command: DaemonCommand =
+                    serde_json::from_str(line.trim()).expect("parse terminal control");
+                let is_barrier = matches!(&command, DaemonCommand::List);
+                command_tx
+                    .send(command)
+                    .await
+                    .expect("publish terminal control");
+                if is_barrier {
+                    control_write
+                        .write_all(
+                            format!(
+                                "{}\n",
+                                serde_json::to_string(&DaemonEvent::SessionList {
+                                    sessions: Vec::new(),
+                                })
+                                .unwrap()
+                            )
+                            .as_bytes(),
+                        )
+                        .await
+                        .expect("complete terminal control barrier");
+                }
+            }
+
+            let (terminal, _) = listener.accept().await.expect("accept terminal attachment");
+            let (terminal_read, mut terminal_write) = terminal.into_split();
+            let mut terminal_reader = BufReader::new(terminal_read);
+            line.clear();
+            terminal_reader
+                .read_line(&mut line)
+                .await
+                .expect("read terminal attachment");
+            assert!(matches!(
+                serde_json::from_str::<DaemonCommand>(line.trim()).unwrap(),
+                DaemonCommand::AttachSnapshot { ref session_id, .. }
+                    if session_id == "shell-active-view-attach"
+            ));
+
+            for event in [
+                DaemonEvent::Snapshot {
+                    session_id: "shell-active-view-attach".into(),
+                    snapshot: kanna_daemon::protocol::TerminalSnapshot {
+                        version: 1,
+                        rows: 18,
+                        cols: 42,
+                        cursor_row: 17,
+                        cursor_col: 0,
+                        cursor_visible: true,
+                        saved_at: 0,
+                        sequence: 0,
+                        vt,
+                    },
+                    agent_provider: Some(kanna_daemon::protocol::AgentProvider::Claude),
+                },
+                DaemonEvent::Output {
+                    session_id: "shell-active-view-attach".into(),
+                    data: b"live-during-attach\r\n".to_vec(),
+                },
+            ] {
+                terminal_write
+                    .write_all(format!("{}\n", serde_json::to_string(&event).unwrap()).as_bytes())
+                    .await
+                    .expect("write terminal event");
+            }
+            std::future::pending::<()>().await;
+        });
+
+        let mut config = test_config(&unique, "KSP Active View Attach");
+        config.daemon_dir = daemon_dir.to_string_lossy().to_string();
+        config.db_path = Db::test_db_path(&unique);
+        config.pairing_store_path = crate::test_paths::unique_test_file("kanna-pairings", "json");
+        let state = Arc::new(AppState::new(config));
+        state.set_terminal_geometry_capability(std::process::id(), true);
+        let url = serve_router(crate::http_api::router(state)).await;
+        let mut socket = ws_connect(&url).await;
+        send_frame(
+            &mut socket,
+            &ClientFrame::Auth {
+                credential: None,
+                capabilities: vec![
+                    KspCapability::TermInputBoundary,
+                    KspCapability::TermScrollbackWindow,
+                    KspCapability::TerminalGeometry,
+                    KspCapability::TerminalActiveView,
+                ],
+            },
+        )
+        .await;
+        assert_eq!(recv_frame(&mut socket).await, auth_ok_frame_for(false));
+
+        send_frame(
+            &mut socket,
+            &ClientFrame::TermViewerRegister {
+                task_id: "shell-active-view-attach".into(),
+                viewer_id: "remote-active-view".into(),
+                role: TerminalViewerRole::Remote,
+                generation: 1,
+                cols: 42,
+                rows: 18,
+                visible: true,
+            },
+        )
+        .await;
+        send_frame(
+            &mut socket,
+            &ClientFrame::TermViewerActive {
+                task_id: "shell-active-view-attach".into(),
+            },
+        )
+        .await;
+        send_frame(
+            &mut socket,
+            &ClientFrame::Attach {
+                task_id: "shell-active-view-attach".into(),
+                kind: StreamKind::Terminal,
+                from_seq: 0,
+                include_assets: None,
+                accept_snapshot_chunks: None,
+                attachment_epoch: None,
+                term_resume: None,
+            },
+        )
+        .await;
+
+        assert!(matches!(
+            command_rx.recv().await,
+            Some(DaemonCommand::RegisterViewer {
+                cols: 42,
+                rows: 18,
+                visible: true,
+                ..
+            })
+        ));
+        assert!(matches!(
+            command_rx.recv().await,
+            Some(DaemonCommand::ActiveViewer { .. })
+        ));
+        assert!(matches!(command_rx.recv().await, Some(DaemonCommand::List)));
+
+        match recv_frame(&mut socket).await {
+            ServerFrame::TermSnapshot {
+                cols,
+                rows,
+                data_b64,
+                scrollback_lines,
+                ..
+            } => {
+                let window = String::from_utf8(decode_frame_bytes(&data_b64)).unwrap();
+                assert_eq!((cols, rows), (42, 18));
+                assert_eq!(
+                    window.trim_start_matches("\x1b[0m").split("\r\n").count(),
+                    36,
+                    "initial replay is counted as two actual terminal viewports"
+                );
+                assert!(
+                    window.ends_with("row-499"),
+                    "current screen was not retained"
+                );
+                assert_eq!(scrollback_lines, Some(500 - 36));
+            }
+            other => panic!("expected one active-sized terminal snapshot, got {other:?}"),
+        }
+        match recv_frame(&mut socket).await {
+            ServerFrame::TermOutput { data_b64, .. } => {
+                assert_eq!(decode_frame_bytes(&data_b64), b"live-during-attach\r\n");
+            }
+            other => panic!("expected live output immediately after snapshot, got {other:?}"),
+        }
+        assert!(
+            recv_frame_with_timeout(&mut socket, Duration::from_millis(200))
+                .await
+                .is_none(),
+            "initial attachment emitted a duplicate snapshot or output frame"
+        );
+        daemon.abort();
+        drop(socket);
+        let _ = std::fs::remove_file(&socket_path);
+        let _ = std::fs::remove_dir_all(&daemon_dir);
+    }
+
+    #[tokio::test]
     async fn windowed_attach_bounds_the_snapshot_and_serves_the_rest_as_scrollback() {
         let vt = scrollback_vt(2_000);
         let fixture =
             WindowedTerminalFixture::new("windowed-snapshot", vt.clone(), Vec::new()).await;
         let mut socket = ws_connect(&fixture.url).await;
         send_frame(&mut socket, &windowed_client_auth_frame()).await;
-        assert_eq!(recv_frame(&mut socket).await, auth_ok_frame_for(false));
+        assert_eq!(recv_frame(&mut socket).await, windowed_auth_ok_frame());
         send_frame(&mut socket, &attach_terminal_frame(None)).await;
 
         let (window, history_id, scrollback_lines) = match recv_frame(&mut socket).await {
@@ -14515,7 +14835,11 @@ mod tests {
             window.len(),
             vt.len()
         );
-        assert_eq!(scrollback_lines, 2_000 - (24 * 3));
+        assert_eq!(
+            scrollback_lines,
+            2_000 - (24 * 2),
+            "the viewport plus one viewport of recent history is replayed"
+        );
         assert!(window.ends_with("row-1999"));
 
         // Walking the history downward reproduces exactly what was withheld.
@@ -14646,7 +14970,7 @@ mod tests {
 
         let mut socket = ws_connect(&fixture.url).await;
         send_frame(&mut socket, &windowed_client_auth_frame()).await;
-        assert_eq!(recv_frame(&mut socket).await, auth_ok_frame_for(false));
+        assert_eq!(recv_frame(&mut socket).await, windowed_auth_ok_frame());
         send_frame(&mut socket, &attach_terminal_frame(None)).await;
 
         let (stream_id, mut offset, window_bytes) = match recv_frame(&mut socket).await {
@@ -14679,7 +15003,7 @@ mod tests {
 
         let mut resumed = ws_connect(&fixture.url).await;
         send_frame(&mut resumed, &windowed_client_auth_frame()).await;
-        assert_eq!(recv_frame(&mut resumed).await, auth_ok_frame_for(false));
+        assert_eq!(recv_frame(&mut resumed).await, windowed_auth_ok_frame());
         send_frame(
             &mut resumed,
             &attach_terminal_frame(Some(TermResumePosition { stream_id, offset })),
@@ -14743,7 +15067,7 @@ mod tests {
 
         let mut first = ws_connect(&fixture.url).await;
         send_frame(&mut first, &windowed_client_auth_frame()).await;
-        assert_eq!(recv_frame(&mut first).await, auth_ok_frame_for(false));
+        assert_eq!(recv_frame(&mut first).await, windowed_auth_ok_frame());
         send_frame(&mut first, &attach_terminal_frame(None)).await;
         let (stream_id, base_offset) = match recv_frame(&mut first).await {
             ServerFrame::TermSnapshot {
@@ -14771,7 +15095,7 @@ mod tests {
         for hostile in hostile_offsets {
             let mut socket = ws_connect(&fixture.url).await;
             send_frame(&mut socket, &windowed_client_auth_frame()).await;
-            assert_eq!(recv_frame(&mut socket).await, auth_ok_frame_for(false));
+            assert_eq!(recv_frame(&mut socket).await, windowed_auth_ok_frame());
             send_frame(
                 &mut socket,
                 &attach_terminal_frame(Some(TermResumePosition {
@@ -14802,7 +15126,7 @@ mod tests {
         let fixture = WindowedTerminalFixture::new("reconnect-stale", vt.clone(), Vec::new()).await;
         let mut socket = ws_connect(&fixture.url).await;
         send_frame(&mut socket, &windowed_client_auth_frame()).await;
-        assert_eq!(recv_frame(&mut socket).await, auth_ok_frame_for(false));
+        assert_eq!(recv_frame(&mut socket).await, windowed_auth_ok_frame());
         send_frame(&mut socket, &attach_terminal_frame(None)).await;
         let stream_id = match recv_frame(&mut socket).await {
             ServerFrame::TermSnapshot { stream_id, .. } => stream_id.expect("stream id"),
@@ -14812,7 +15136,7 @@ mod tests {
 
         let mut resumed = ws_connect(&fixture.url).await;
         send_frame(&mut resumed, &windowed_client_auth_frame()).await;
-        assert_eq!(recv_frame(&mut resumed).await, auth_ok_frame_for(false));
+        assert_eq!(recv_frame(&mut resumed).await, windowed_auth_ok_frame());
         send_frame(
             &mut resumed,
             &attach_terminal_frame(Some(TermResumePosition {
@@ -14834,7 +15158,7 @@ mod tests {
                     window.len() * 4 < vt.len(),
                     "the fallback must still be a bounded tail, not the whole buffer"
                 );
-                assert_eq!(scrollback_lines, Some(2_000 - (24 * 3)));
+                assert_eq!(scrollback_lines, Some(2_000 - (24 * 2)));
             }
             other => panic!("an unreplayable resume must fall back to a snapshot: {other:?}"),
         }
@@ -14858,7 +15182,7 @@ mod tests {
         // Warm the tap so its ring holds a range a stale offset could land in.
         let mut warming = ws_connect(&fixture.url).await;
         send_frame(&mut warming, &windowed_client_auth_frame()).await;
-        assert_eq!(recv_frame(&mut warming).await, auth_ok_frame_for(false));
+        assert_eq!(recv_frame(&mut warming).await, windowed_auth_ok_frame());
         send_frame(&mut warming, &attach_terminal_frame(None)).await;
         let (stream_id, base_offset) = match recv_frame(&mut warming).await {
             ServerFrame::TermSnapshot {
@@ -14891,7 +15215,7 @@ mod tests {
         for stale_stream_id in [1u64, 2, 3] {
             let mut stale = ws_connect(&fixture.url).await;
             send_frame(&mut stale, &windowed_client_auth_frame()).await;
-            assert_eq!(recv_frame(&mut stale).await, auth_ok_frame_for(false));
+            assert_eq!(recv_frame(&mut stale).await, windowed_auth_ok_frame());
             send_frame(
                 &mut stale,
                 &attach_terminal_frame(Some(TermResumePosition {
@@ -14926,7 +15250,7 @@ mod tests {
 
         let mut first = ws_connect(&fixture.url).await;
         send_frame(&mut first, &windowed_client_auth_frame()).await;
-        assert_eq!(recv_frame(&mut first).await, auth_ok_frame_for(false));
+        assert_eq!(recv_frame(&mut first).await, windowed_auth_ok_frame());
         send_frame(&mut first, &attach_terminal_frame(None)).await;
         assert!(matches!(
             recv_frame(&mut first).await,
@@ -14947,7 +15271,7 @@ mod tests {
         // replayed from what the tap already recorded.
         let mut second = ws_connect(&fixture.url).await;
         send_frame(&mut second, &windowed_client_auth_frame()).await;
-        assert_eq!(recv_frame(&mut second).await, auth_ok_frame_for(false));
+        assert_eq!(recv_frame(&mut second).await, windowed_auth_ok_frame());
         send_frame(&mut second, &attach_terminal_frame(None)).await;
         assert!(matches!(
             recv_frame(&mut second).await,
@@ -14986,7 +15310,7 @@ mod tests {
 
         let mut first = ws_connect(&fixture.url).await;
         send_frame(&mut first, &windowed_client_auth_frame()).await;
-        assert_eq!(recv_frame(&mut first).await, auth_ok_frame_for(false));
+        assert_eq!(recv_frame(&mut first).await, windowed_auth_ok_frame());
         send_frame(&mut first, &attach_terminal_frame(None)).await;
         assert!(matches!(
             recv_frame(&mut first).await,
@@ -15005,7 +15329,7 @@ mod tests {
 
         let mut fresh = ws_connect(&fixture.url).await;
         send_frame(&mut fresh, &windowed_client_auth_frame()).await;
-        assert_eq!(recv_frame(&mut fresh).await, auth_ok_frame_for(false));
+        assert_eq!(recv_frame(&mut fresh).await, windowed_auth_ok_frame());
         send_frame(&mut fresh, &attach_terminal_frame(None)).await;
 
         match recv_frame(&mut fresh).await {
@@ -15040,7 +15364,7 @@ mod tests {
 
         let mut first = ws_connect(&fixture.url).await;
         send_frame(&mut first, &windowed_client_auth_frame()).await;
-        assert_eq!(recv_frame(&mut first).await, auth_ok_frame_for(false));
+        assert_eq!(recv_frame(&mut first).await, windowed_auth_ok_frame());
         send_frame(&mut first, &attach_terminal_frame(None)).await;
         assert!(matches!(
             recv_frame(&mut first).await,
@@ -15059,7 +15383,7 @@ mod tests {
 
         let mut second = ws_connect(&fixture.url).await;
         send_frame(&mut second, &windowed_client_auth_frame()).await;
-        assert_eq!(recv_frame(&mut second).await, auth_ok_frame_for(false));
+        assert_eq!(recv_frame(&mut second).await, windowed_auth_ok_frame());
         send_frame(&mut second, &attach_terminal_frame(None)).await;
 
         match recv_frame(&mut second).await {
@@ -15071,8 +15395,8 @@ mod tests {
                     .expect("a truncated snapshot resets inherited ANSI style")
                     .split("\r\n")
                     .collect();
-                assert_eq!(rows.len(), 72, "the snapshot keeps only three screenfuls");
-                assert_eq!(rows.first(), Some(&"row-28"));
+                assert_eq!(rows.len(), 48, "the snapshot keeps only two screenfuls");
+                assert_eq!(rows.first(), Some(&"row-52"));
                 assert_eq!(rows.last(), Some(&"row-99"));
             }
             other => panic!("expected a fresh bounded snapshot, got {other:?}"),

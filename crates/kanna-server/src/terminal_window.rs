@@ -29,13 +29,15 @@
 use std::collections::VecDeque;
 use std::sync::Arc;
 
-/// Pagefuls of scrollback kept above the visible screen in the initial
-/// snapshot. Everything older is one scroll gesture away.
+/// Additional pagefuls of scrollback kept above the visible screen in the
+/// initial snapshot. The viewport itself is the first page, so one additional
+/// page keeps the whole initial replay to roughly two screens. Everything
+/// older is one scroll gesture away.
 ///
 /// This is deliberately relative to the rendered grid. The old fixed 400-row
 /// tail was bounded in bytes, but it was still sixteen pagefuls at the daemon's
 /// common 24-row attach geometry and visibly poured history into a phone.
-pub(crate) const TERMINAL_WINDOW_SCROLLBACK_PAGES: usize = 2;
+pub(crate) const TERMINAL_WINDOW_SCROLLBACK_PAGES: usize = 1;
 
 /// Hard ceiling on the window, whatever its line count.
 ///
@@ -476,7 +478,7 @@ mod tests {
     }
 
     #[test]
-    fn default_window_is_two_scrollback_pages_plus_the_screen() {
+    fn default_window_is_one_scrollback_page_plus_the_screen() {
         let vt = lines(5_000, "row-");
         let windowed = window_snapshot(&vt, 24);
         let kept: Vec<&str> = windowed
@@ -485,10 +487,10 @@ mod tests {
             .split("\r\n")
             .collect();
 
-        assert_eq!(kept.len(), 24 * (TERMINAL_WINDOW_SCROLLBACK_PAGES + 1));
-        assert_eq!(kept.first(), Some(&"row-4928"));
+        assert_eq!(kept.len(), 48, "initial replay is two 24-row screens total");
+        assert_eq!(kept.first(), Some(&"row-4952"));
         assert_eq!(kept.last(), Some(&"row-4999"));
-        assert_eq!(windowed.history.len(), 4_928);
+        assert_eq!(windowed.history.len(), 4_952);
     }
 
     #[test]

@@ -1624,8 +1624,8 @@ export function createMobileController(
       };
       taskTerminalActivationPending = taskId;
       // The task-detail layout can be known before route resolution or stream
-      // authentication completes. The transport queues this control frame
-      // behind attach, so the initial daemon snapshot cannot strand the PTY at
+      // authentication completes. The transport orders this control frame
+      // before attach, so the initial daemon snapshot cannot strand the PTY at
       // its never-rendered 80x24 default.
       resizeToRequestedGeometry();
       setActiveTaskTerminalViewing(appForeground && taskDetailVisible);
@@ -3795,6 +3795,10 @@ export function createMobileController(
       if (activeTaskTerminal?.taskId === taskId) {
         activeTaskTerminal.subscription.resize?.(cols, rows);
         if (taskTerminalActivationPending === taskId && appForeground && taskDetailVisible) {
+          // Visibility may have become true before the first measurement, when
+          // the transport did not yet have a viewer registration to update.
+          // Restate it with the measured grid before transferring ownership.
+          activeTaskTerminal.subscription.setViewerVisible?.(true);
           activeTaskTerminal.subscription.activate?.();
           taskTerminalActivationPending = null;
         }

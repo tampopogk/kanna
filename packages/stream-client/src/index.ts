@@ -263,6 +263,15 @@ interface TerminalAttachment {
    * snapshot names the starting offset and every output frame's own decoded
    * length advances it, so resuming costs nothing on the wire. */
   resume: TermResumePosition | null;
+  /** Whether this logical attachment has ever reached a socket. The first
+   * geometry-aware remote attach waits for its real active-view edge; later
+   * socket reconnects remain passive and rehydrate without stealing control. */
+  hasAttached: boolean;
+  /** Whether the attachment frame has reached the current socket. */
+  attachedOnSocket: boolean;
+  /** The first active-view edge happened before the first attach could be
+   * sent. It is consumed exactly once, immediately before that attach. */
+  initialActivationPending: boolean;
 }
 
 interface TerminalViewerRegistration {
@@ -459,6 +468,9 @@ export class StreamClient {
       kind: "terminal",
       handlers,
       resume: null,
+      hasAttached: false,
+      attachedOnSocket: false,
+      initialActivationPending: false,
     });
     if (this.authed) {
       handlers.onInputAvailabilityChange?.(
@@ -475,18 +487,7 @@ export class StreamClient {
     ) {
       this.sendTerminalViewerRegistration(registration, taskId);
     }
-    // A geometry-aware remote attach is admitted only after the viewer has
-    // declared its measured viewport. The desktop creates the subscription
-    // before layout can return that measurement, so hold the attach here and
-    // let the first registration send the ordered register → attach pair.
-    if (
-      this.options.terminalViewerRole === "remote"
-      && !registration
-      && (!this.authed || this.supportsCapability("terminal_geometry"))
-    ) {
-      return;
-    }
-    this.sendFrame({ type: "attach", task_id: taskId, kind: "terminal", from_seq: 0 });
+    this.sendTerminalAttachIfReady(taskId);
   }
 
   attachTaskSummaries(handlers: TaskSummaryStreamHandlers): void {
@@ -695,12 +696,7 @@ export class StreamClient {
     const send = () => this.sendTerminalViewerRegistration(registration, taskId);
     if (!current || !this.authed) {
       send();
-      if (
-        !current
-        && this.attachments.has(attachmentKey(taskId, "terminal"))
-      ) {
-        this.sendFrame({ type: "attach", task_id: taskId, kind: "terminal", from_seq: 0 });
-      }
+      this.sendTerminalAttachIfReady(taskId);
       return;
     }
     if (registration.flushTimer !== undefined) return;
@@ -722,13 +718,15 @@ export class StreamClient {
   /** Declare that this already-measured viewer became the actively viewed task
    * terminal. Reconnect replay deliberately does not call this. */
   activateTerminalViewer(taskId: string): void {
-    if (
-      this.options.terminalViewerRole &&
-      // Geometry v1 recognizes registrations but has no active-view command.
-      // Keep an activation queued until AuthOk, then discard it unless the
-      // peer explicitly negotiated the v2 active-view authority.
-      (!this.authed || this.supportsCapability("terminal_active_view"))
-    ) {
+    if (!this.options.terminalViewerRole) return;
+    const attachment = this.terminalAttachment(taskId);
+    if (!attachment) return;
+    if (!attachment.hasAttached) {
+      attachment.initialActivationPending = true;
+      this.sendTerminalAttachIfReady(taskId);
+      return;
+    }
+    if (!this.authed || this.supportsCapability("terminal_active_view")) {
       this.sendFrame({ type: "term_viewer_active", task_id: taskId });
     }
   }
@@ -738,6 +736,7 @@ export class StreamClient {
     if (!registration || registration.visible === visible) return;
     registration.visible = visible;
     this.sendTerminalViewerRegistration(registration, taskId);
+    this.sendTerminalAttachIfReady(taskId);
   }
 
   private sendTerminalViewerRegistration(
@@ -759,6 +758,72 @@ export class StreamClient {
       registration.sentRows = registration.rows;
       registration.sentVisible = registration.visible;
     }
+  }
+
+  /** Send a terminal's first hydrate only after a geometry-aware remote view
+   * has both measured and become active. The server serializes the preceding
+   * registration/activation with snapshot capture, so the first visible grid
+   * is already at the active viewer's dimensions. Reconnects deliberately do
+   * not repeat the activation edge. */
+  private sendTerminalAttachIfReady(taskId: string): void {
+    const attachment = this.terminalAttachment(taskId);
+    if (!attachment || attachment.attachedOnSocket) return;
+    const registration = this.terminalViewerRegistrations.get(taskId);
+    const geometryAwareRemote =
+      this.options.terminalViewerRole === "remote"
+      && (!this.authed || this.supportsCapability("terminal_geometry"));
+    if (
+      geometryAwareRemote
+      && (
+        !registration
+        || (
+          !attachment.hasAttached
+          && (
+            !attachment.initialActivationPending
+            || (
+              (!this.authed || this.supportsCapability("terminal_active_view"))
+              && !registration.visible
+            )
+          )
+        )
+      )
+    ) {
+      return;
+    }
+    if (
+      attachment.initialActivationPending
+      && this.authed
+      && this.supportsCapability("terminal_active_view")
+    ) {
+      // Registration is a latest-value slot. Flush it synchronously before
+      // activation even if a coalesced update was waiting, so this ordered
+      // edge cannot activate stale dimensions.
+      if (registration) {
+        if (registration.flushTimer !== undefined) {
+          clearTimeout(registration.flushTimer);
+          registration.flushTimer = undefined;
+        }
+        if (
+          registration.sentCols !== registration.cols
+          || registration.sentRows !== registration.rows
+          || registration.sentVisible !== registration.visible
+        ) {
+          this.sendTerminalViewerRegistration(registration, taskId);
+        }
+      }
+      if (!this.rawSend({ type: "term_viewer_active", task_id: taskId })) return;
+    }
+    const sent = this.sendFrame({
+      type: "attach",
+      task_id: taskId,
+      kind: "terminal",
+      from_seq: 0,
+      ...(attachment.resume ? { term_resume: attachment.resume } : {}),
+    });
+    if (!sent) return;
+    attachment.initialActivationPending = false;
+    attachment.attachedOnSocket = true;
+    attachment.hasAttached = true;
   }
 
   sendCompanionEvent(
@@ -891,6 +956,7 @@ export class StreamClient {
     this.companionChunkAssemblies.clear();
     for (const attachment of this.attachments.values()) {
       if (attachment.kind === "terminal") {
+        attachment.attachedOnSocket = false;
         attachment.handlers.onInputAvailabilityChange?.("disconnected");
       } else if (attachment.kind === "companion" || attachment.kind === "task_summary") {
         attachment.handlers.onConnectionChange?.(false);
@@ -1022,17 +1088,8 @@ export class StreamClient {
             attachment.handlers.onUnavailable();
             continue;
           }
-          // Authentication can complete before a remote view's first layout
-          // measurement. Keep the same register-before-attach gate used by
-          // attachTerminal; registerTerminalViewer will send the held attach
-          // as soon as that measurement arrives. Legacy peers negotiate no
-          // geometry capability and retain their original attach behavior.
-          if (
-            attachment.kind === "terminal" &&
-            this.options.terminalViewerRole === "remote" &&
-            this.supportsCapability("terminal_geometry") &&
-            !this.terminalViewerRegistrations.has(taskId)
-          ) {
+          if (attachment.kind === "terminal") {
+            this.sendTerminalAttachIfReady(taskId);
             continue;
           }
           const sent = this.rawSend({
@@ -1040,11 +1097,6 @@ export class StreamClient {
             task_id: taskId,
             kind,
             from_seq: attachment.kind === "agent" ? attachment.fromSeq : 0,
-            // A terminal re-attach presents where its buffer stopped, so the
-            // server replays the gap instead of re-shipping the terminal.
-            ...(attachment.kind === "terminal" && attachment.resume
-              ? { term_resume: attachment.resume }
-              : {}),
             ...(attachment.kind === "companion"
               ? {
                   accept_snapshot_chunks: true,

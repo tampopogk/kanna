@@ -52,6 +52,7 @@ export interface TerminalSessionLifecycleController {
   redraw(): Promise<void>
   ensureConnected(): Promise<void>
   activateVisibleViewer(): Promise<void>
+  activateViewerForHumanInput(): Promise<void>
   setViewerVisibility(visible: boolean): Promise<void>
 }
 
@@ -71,6 +72,12 @@ export function createTerminalSessionLifecycle(params: {
   function getLiveTerminal(): Terminal | null {
     return getLiveTerminalFromState(params.state, params.terminal)
   }
+
+  // A resize snapshot can mean another viewer took geometry ownership while
+  // this terminal remained continuously focused. No DOM/native focus event
+  // follows in that case, so the next genuine human input must confirm local
+  // ownership once before its bytes reach the PTY.
+  let viewerOwnershipNeedsInputConfirmation = false
 
   /**
    * Geometry ownership is elected by the daemon, but a local terminal must
@@ -140,7 +147,13 @@ export function createTerminalSessionLifecycle(params: {
     }
     client.setTerminalViewerVisibility?.(params.sessionId, true)
     client.activateTerminalViewer?.(params.sessionId)
+    viewerOwnershipNeedsInputConfirmation = false
     trace("sent")
+  }
+
+  async function activateViewerForHumanInput(): Promise<void> {
+    if (!viewerOwnershipNeedsInputConfirmation) return
+    await activateVisibleViewer()
   }
 
   async function setViewerVisibility(visible: boolean): Promise<void> {
@@ -281,6 +294,7 @@ export function createTerminalSessionLifecycle(params: {
           onSnapshot: (cols, rows, dataB64, agentProvider) => {
             const liveTerminal = getLiveTerminal()
             if (!liveTerminal) return
+            viewerOwnershipNeedsInputConfirmation = true
             const vt = new TextDecoder().decode(base64ToBytes(dataB64))
             traceStream("snapshot", vt, cols, rows)
             const replaceBuffer = shouldResetTerminalForSnapshot({
@@ -840,6 +854,7 @@ export function createTerminalSessionLifecycle(params: {
     redraw,
     ensureConnected,
     activateVisibleViewer,
+    activateViewerForHumanInput,
     setViewerVisibility,
   }
 }
