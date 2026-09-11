@@ -835,7 +835,8 @@ impl Db {
             "SELECT id, task_id, stage, kind, agent, agent_provider, model, effort, status, result,
                     feedback, session_id, provider_session_id, cwd, resumed_from_run_id,
                     resume_fallback_reason, completion_transition,
-                    COALESCE(trigger, 'unspecified'), provider_override, started_at, finished_at
+                    COALESCE(trigger, 'unspecified'), provider_override, started_at, finished_at,
+                    replaces_run_id, no_work_termination
              FROM stage_run
              WHERE task_id = ? AND status IN ('succeeded', 'failed')
              ORDER BY rowid ASC",
