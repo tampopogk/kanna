@@ -13,6 +13,7 @@ import {
   useEmbeddableView,
   type EmbeddableViewProps,
 } from '../composables/useEmbeddableView'
+import { isTopModal } from '../composables/useModalZIndex'
 import MobileAccessPanel from './MobileAccessPanel.vue'
 import { macOsTextInputAttrs } from '../utils/textInput'
 import {
@@ -66,6 +67,7 @@ const emit = defineEmits<{
 }>()
 
 const {
+  zIndex,
   overlayClass,
   overlayStyle,
   dismissOnScrimClick,
@@ -122,6 +124,10 @@ const overlayRef = ref<HTMLDivElement | null>(null)
 function bringToFront() {
   raiseToFront()
   void nextTick(() => overlayRef.value?.focus())
+}
+
+function isOnTop() {
+  return isTopModal(zIndex.value)
 }
 
 function normalizeMobileServerStatus(status?: string): MobileServerStatus {
@@ -275,7 +281,7 @@ onBeforeUnmount(() => {
   unsubscribeAuth?.()
 })
 
-defineExpose({ bringToFront, cycleTab })
+defineExpose({ bringToFront, cycleTab, isOnTop })
 </script>
 
 <template>

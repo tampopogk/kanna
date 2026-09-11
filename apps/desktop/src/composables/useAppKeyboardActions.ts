@@ -290,7 +290,14 @@ export function useAppKeyboardActions(options: UseAppKeyboardActionsOptions) {
       // of them and get Escape only once none of them wanted it.
       if (showCommandPalette.value) { showCommandPalette.value = false; return true; }
       if (showShortcutsModal.value) { showShortcutsModal.value = false; return true; }
-      if (showPreferencesPanel.value) { showPreferencesPanel.value = false; return true; }
+      // A just-opened dialog can be visible one tick before its component ref
+      // is assigned. Treat that brief state as foreground; once mounted, the
+      // shared modal stack decides whether Escape belongs to Preferences.
+      const preferencesOnTop = preferencesPanelRef.value?.isOnTop?.() ?? true;
+      if (showPreferencesPanel.value && preferencesOnTop) {
+        showPreferencesPanel.value = false;
+        return true;
+      }
       if (showPeerPicker.value) { closePeerPicker(); return true; }
       if (showFilePickerModal.value) { closeFilePicker(); return true; }
       if (showNewTaskModal.value) { showNewTaskModal.value = false; return true; }

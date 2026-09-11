@@ -1,8 +1,9 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { buildGlobalKeydownScript } from "../helpers/keyboard";
 import { WebDriverClient } from "../helpers/webdriver";
-import { resetDatabase } from "../helpers/reset";
-import { tauriInvoke } from "../helpers/vue";
+import { cleanupFixtureRepos, createSeedFixtureRepo } from "../helpers/fixture-repo";
+import { importTestRepo, resetDatabase } from "../helpers/reset";
+import { callVueMethod, tauriInvoke } from "../helpers/vue";
 
 async function activeTabLabel(client: WebDriverClient): Promise<string> {
   return client.executeSync<string>(
@@ -20,10 +21,13 @@ async function mainTabKinds(client: WebDriverClient): Promise<string[]> {
 
 describe("preferences", () => {
   const client = new WebDriverClient();
+  let fixtureRepoRoot = "";
 
   beforeAll(async () => {
     await client.createSession();
     await resetDatabase(client);
+    fixtureRepoRoot = await createSeedFixtureRepo("task-switch-minimal");
+    await importTestRepo(client, fixtureRepoRoot, "preferences-stacking");
     await client.executeSync(`
       if (window.__KANNA_E2E__) {
         window.__KANNA_E2E__.mobileInstallUrl = "https://kanna.build/mobile";
@@ -38,6 +42,7 @@ describe("preferences", () => {
 
   afterAll(async () => {
     await client.deleteSession();
+    await cleanupFixtureRepos(fixtureRepoRoot ? [fixtureRepoRoot] : []);
   });
 
   it("opens preferences panel when settings button clicked", async () => {
@@ -73,6 +78,59 @@ describe("preferences", () => {
     await client.executeSync(buildGlobalKeydownScript({ key: "Escape" }));
     await client.waitForNoElement(".prefs-panel", 2_000);
     expect(await mainTabKinds(client)).not.toContain("preferences");
+  });
+
+  it("dismisses whichever of New Task and Preferences is visibly on top without changing tabs", async () => {
+    await client.executeSync(`
+      const tabs = window.__KANNA_E2E__?.setupState?.mainTabs;
+      if (!tabs) throw new Error("main tabs are unavailable on setupState");
+      tabs.openTab({ kind: "analytics" });
+      return true;
+    `);
+    const tabState = `
+      const tabs = window.__KANNA_E2E__.setupState.mainTabs;
+      return {
+        activeTabId: tabs.activeTabId.value,
+        kinds: tabs.tabs.value.map((tab) => tab.kind),
+      };
+    `;
+    const before = await client.executeSync<{ activeTabId: string | null; kinds: string[] }>(tabState);
+
+    await client.executeSync(buildGlobalKeydownScript({ key: ",", meta: true }));
+    await client.waitForElement(".prefs-panel", 2_000);
+    await client.executeSync(buildGlobalKeydownScript({ key: "N", meta: true, shift: true }));
+    await client.waitForText(".modal h3", "New Task", 5_000);
+    expect(await client.executeSync<boolean>(`
+      const preferences = document.querySelector(".prefs-panel")?.closest(".modal-overlay");
+      const newTask = document.querySelector(".modal h3")?.closest(".modal-overlay");
+      return Number(getComputedStyle(newTask).zIndex) > Number(getComputedStyle(preferences).zIndex);
+    `)).toBe(true);
+
+    await client.executeSync(buildGlobalKeydownScript({ key: "Escape" }));
+    await client.waitForNoElement(".modal h3", 2_000);
+    expect(await client.findElements(".prefs-panel")).toHaveLength(1);
+    expect(await client.executeSync(tabState)).toEqual(before);
+
+    await client.executeSync(buildGlobalKeydownScript({ key: "N", meta: true, shift: true }));
+    await client.waitForText(".modal h3", "New Task", 5_000);
+    const raised = await callVueMethod(client, "keyboardActions.openPreferences");
+    if (raised && typeof raised === "object" && "__error" in raised) {
+      throw new Error(String((raised as { __error: string }).__error));
+    }
+    await expect.poll(() => client.executeSync<boolean>(`
+        const preferences = document.querySelector(".prefs-panel")?.closest(".modal-overlay");
+        const newTask = document.querySelector(".modal h3")?.closest(".modal-overlay");
+        return Number(getComputedStyle(preferences).zIndex) > Number(getComputedStyle(newTask).zIndex);
+      `), { timeout: 2_000 })
+      .toBe(true);
+
+    await client.executeSync(buildGlobalKeydownScript({ key: "Escape" }));
+    await client.waitForNoElement(".prefs-panel", 2_000);
+    expect(await client.findElements(".modal h3")).toHaveLength(1);
+    expect(await client.executeSync(tabState)).toEqual(before);
+
+    await client.executeSync(buildGlobalKeydownScript({ key: "Escape" }));
+    await client.waitForNoElement(".modal h3", 2_000);
   });
 
   it("shows default settings in the UI", async () => {
