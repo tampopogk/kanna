@@ -121,8 +121,8 @@ pub struct IdleStats {
 #[derive(Debug, Serialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct RevisionStats {
-    /// Tasks that reached a review stage in the window — including those that
-    /// were never revised.
+    /// Tasks whose first review began in the window and produced a verdict —
+    /// including those that were never revised.
     pub cohort_tasks: i64,
     pub total_revisions: i64,
     pub average_per_task: f64,
@@ -431,18 +431,31 @@ impl Db {
         titles: &HashMap<String, String>,
     ) -> Result<RevisionStats, rusqlite::Error> {
         let (start, end) = (range.start(), range.end());
-        // The cohort is tasks that actually reached review in the window. A
-        // task still being built has not had the chance to be revised, and
-        // counting it would dilute the average toward zero.
+        // Cohort membership is anchored to the first review, then waits for a
+        // genuine review verdict. An in-progress or interrupted run has not
+        // passed cleanly merely because no revision row exists yet.
         let mut cohort_statement = self.conn.prepare(
-            "SELECT DISTINCT stage_run.task_id
-             FROM stage_run
-             JOIN pipeline_item ON pipeline_item.id = stage_run.task_id
-             WHERE pipeline_item.repo_id = ?
-               AND pipeline_item.parent_task_id IS NULL
-               AND stage_run.kind = 'main'
-               AND stage_run.stage = 'review'
-               AND stage_run.started_at >= ? AND stage_run.started_at <= ?",
+            "WITH first_review AS (
+               SELECT stage_run.task_id, MIN(stage_run.started_at) AS started_at
+               FROM stage_run
+               JOIN pipeline_item ON pipeline_item.id = stage_run.task_id
+               WHERE pipeline_item.repo_id = ?
+                 AND pipeline_item.parent_task_id IS NULL
+                 AND stage_run.kind = 'main'
+                 AND stage_run.stage = 'review'
+               GROUP BY stage_run.task_id
+             )
+             SELECT first_review.task_id
+             FROM first_review
+             WHERE first_review.started_at >= ? AND first_review.started_at <= ?
+               AND EXISTS (
+                 SELECT 1 FROM stage_run AS outcome
+                 WHERE outcome.task_id = first_review.task_id
+                   AND outcome.kind = 'main' AND outcome.stage = 'review'
+                   AND outcome.finished_at IS NOT NULL
+                   AND outcome.status IN ('succeeded', 'failed')
+                   AND outcome.no_work_termination IS NULL
+               )",
         )?;
         let cohort = cohort_statement
             .query_map((repo_id, &start, &end), |row| row.get::<_, String>(0))?
@@ -462,11 +475,10 @@ impl Db {
             "SELECT task_revision.task_id, task_revision.applied
              FROM task_revision
              JOIN pipeline_item ON pipeline_item.id = task_revision.task_id
-             WHERE pipeline_item.repo_id = ?
-               AND task_revision.created_at >= ? AND task_revision.created_at <= ?",
+             WHERE pipeline_item.repo_id = ?",
         )?;
         let rows = statement
-            .query_map((repo_id, &start, &end), |row| {
+            .query_map([repo_id], |row| {
                 Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
             })?
             .collect::<Result<Vec<_>, _>>()?;
@@ -509,8 +521,9 @@ impl Db {
             "SELECT COUNT(*) FROM stage_run
              JOIN pipeline_item ON pipeline_item.id = stage_run.task_id
              WHERE pipeline_item.repo_id = ?
-               AND stage_run.started_at >= ? AND stage_run.started_at <= ?",
-            (repo_id, &start, &end),
+               AND stage_run.started_at <= ?
+               AND (stage_run.finished_at IS NULL OR stage_run.finished_at >= ?)",
+            (repo_id, &end, &start),
             |row| row.get(0),
         )?;
         let runs_with_usage = self.conn.query_row(
@@ -518,8 +531,11 @@ impl Db {
              JOIN pipeline_item ON pipeline_item.id = stage_run.task_id
              JOIN provider_token_usage ON provider_token_usage.run_id = stage_run.id
              WHERE pipeline_item.repo_id = ?
-               AND stage_run.started_at >= ? AND stage_run.started_at <= ?",
-            (repo_id, &start, &end),
+               AND stage_run.started_at <= ?
+               AND (stage_run.finished_at IS NULL OR stage_run.finished_at >= ?)
+               AND provider_token_usage.occurred_at >= ?
+               AND provider_token_usage.occurred_at <= ?",
+            (repo_id, &end, &start, &start, &end),
             |row| row.get(0),
         )?;
         Ok((runs_with_usage, runs_in_range))

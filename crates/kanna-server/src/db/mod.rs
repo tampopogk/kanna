@@ -58,7 +58,7 @@ pub use provider_rejections::{
     NewProviderRejection, ProviderRejection, QuotaRecovery, QuotaRejectionSource,
 };
 #[allow(unused_imports)]
-pub use pull_requests::{canonical_pr_key, ForgePullRequestObservation};
+pub use pull_requests::{canonical_pr_key, ForgePullRequestObservation, UnresolvedPullRequest};
 pub(crate) use repos::RepoOrderInput;
 pub use review_context::{
     HumanReviewDecision, NewHumanReviewDecision, ReviewContextInput, ReviewDecisionDelivery,
@@ -79,7 +79,9 @@ pub use task_inputs::{
     ImportedTaskInput, RawInputWriteRecord, TaskInputOrigin, TaskInputRecord, TaskInputSource,
 };
 #[allow(unused_imports)]
-pub use token_usage::{RepoRunWindow, TokenUsageRecord, UsageScanCheckpoint, UsageScanState};
+pub use token_usage::{
+    RepoRunWindow, TokenUsageRecord, UsageDiscoveryState, UsageScanCheckpoint, UsageScanState,
+};
 #[allow(unused_imports)]
 pub use transfer_work::{TransferWorkItem, MAX_TRANSFER_WORK_ATTEMPTS};
 pub use transfers::{
@@ -176,6 +178,7 @@ pub(crate) const CURRENT_SCHEMA_MIGRATIONS: &[&str] = &[
     "078_task_pull_request",
     "079_task_revision_log",
     "080_provider_token_usage",
+    "081_provider_usage_discovery",
 ];
 
 #[derive(Debug, Serialize)]
@@ -2393,6 +2396,22 @@ fn run_schema_migrations(conn: &Connection) -> Result<(), rusqlite::Error> {
             "#,
         )?;
         record_analytics_coverage_start(conn, ANALYTICS_TOKEN_COVERAGE_KEY)
+    })?;
+
+    run_migration(conn, "081_provider_usage_discovery", |conn| {
+        conn.execute_batch(
+            r#"
+            CREATE TABLE IF NOT EXISTS provider_usage_discovery (
+              discovery_key TEXT PRIMARY KEY,
+              provider TEXT NOT NULL,
+              directory_path TEXT NOT NULL,
+              directory_modified_ns INTEGER NOT NULL,
+              candidate_paths TEXT NOT NULL,
+              checked_at TEXT NOT NULL
+            );
+            "#,
+        )?;
+        Ok(())
     })?;
 
     Ok(())

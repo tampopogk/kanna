@@ -38,8 +38,7 @@ pub(super) async fn get_repo_analytics(
     let range = resolve_range(query.from.as_deref(), query.to.as_deref())?;
     super::blocking::run_handler_blocking("repo analytics", move || {
         let db = Db::open(&state.config.db_path).map_err(db_error)?;
-        let repo = db
-            .get_repo(&repo_id)
+        db.get_repo(&repo_id)
             .map_err(db_error)?
             .ok_or((axum::http::StatusCode::NOT_FOUND, "repo not found".into()))?;
 
@@ -48,7 +47,7 @@ pub(super) async fn get_repo_analytics(
         db.backfill_repo_pull_requests(&repo_id).map_err(db_error)?;
 
         let confirmed = matches!(
-            reconcile_repo_pull_requests(&db, &repo_id, &repo.path),
+            reconcile_repo_pull_requests(&db, &repo_id, &state.forge_client),
             ForgeAvailability::Confirmed
         );
 

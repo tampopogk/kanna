@@ -8,9 +8,13 @@
 use super::{claude, codex, ParsedUsage, SessionContext};
 use crate::db::{Db, RepoRunWindow as RunWindow, TokenUsageRecord, UsageScanCheckpoint};
 use crate::task_creator::{claude_project_slug, claude_projects_dir, home_child, same_cwd};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, BufReader, Seek, SeekFrom};
 use std::path::PathBuf;
+
+#[cfg(test)]
+static CODEX_DISCOVERY_INSPECTIONS: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
 
 /// What a collection pass actually managed to observe.
 ///
@@ -32,22 +36,23 @@ pub fn collect_repo_token_usage(db: &Db, repo_id: &str) -> Result<CollectionRepo
     let runs = db
         .list_repo_run_windows(repo_id)
         .map_err(|error| format!("db error: {error}"))?;
-    let providers = db
-        .list_repo_run_providers(repo_id)
-        .map_err(|error| format!("db error: {error}"))?;
     let mut report = CollectionReport::default();
     if runs.is_empty() {
         return Ok(report);
     }
 
-    // Only walk a provider's session store when this repository actually ran
-    // that CLI. Codex's store in particular is a recursive walk of every
-    // session on the machine, and a repository that has never run Codex must
-    // not pay for it on every request.
-    let used = |provider: &str| providers.iter().any(|candidate| candidate == provider);
-    if used(SUPPORTED_PROVIDERS[0]) {
-        for (path, context) in claude_session_files(&runs) {
-            let written = scan_file(
+    // Only inspect a provider's session store when this repository actually
+    // ran that CLI. Codex discovery below is further bounded to the dated
+    // directory and recorded session context of each run.
+    let providers: HashSet<String> = runs.iter().filter_map(|run| run.provider.clone()).collect();
+    let mut uncovered = HashSet::new();
+    if providers.contains(SUPPORTED_PROVIDERS[0]) {
+        let discovery = claude_session_files(&runs);
+        if !discovery.complete {
+            uncovered.insert("claude".to_string());
+        }
+        for (path, context) in discovery.files {
+            let outcome = scan_file(
                 db,
                 repo_id,
                 &path,
@@ -57,12 +62,22 @@ pub fn collect_repo_token_usage(db: &Db, repo_id: &str) -> Result<CollectionRepo
                 claude::parse_line,
             )?;
             report.files_scanned += 1;
-            report.records_written += written;
+            match outcome {
+                ScanFileOutcome::Read(written) => report.records_written += written,
+                ScanFileOutcome::Unchanged => {}
+                ScanFileOutcome::Unreadable => {
+                    uncovered.insert("claude".to_string());
+                }
+            }
         }
     }
-    if used(SUPPORTED_PROVIDERS[1]) {
-        for (path, context) in codex_session_files(&runs) {
-            let written = scan_file(
+    if providers.contains(SUPPORTED_PROVIDERS[1]) {
+        let discovery = codex_session_files(db, &runs)?;
+        if !discovery.complete {
+            uncovered.insert("codex".to_string());
+        }
+        for (path, context) in discovery.files {
+            let outcome = scan_file(
                 db,
                 repo_id,
                 &path,
@@ -72,14 +87,31 @@ pub fn collect_repo_token_usage(db: &Db, repo_id: &str) -> Result<CollectionRepo
                 codex::parse_line,
             )?;
             report.files_scanned += 1;
-            report.records_written += written;
+            match outcome {
+                ScanFileOutcome::Read(written) => report.records_written += written,
+                ScanFileOutcome::Unchanged => {}
+                ScanFileOutcome::Unreadable => {
+                    uncovered.insert("codex".to_string());
+                }
+            }
         }
     }
 
-    report.providers_without_usage = providers
-        .into_iter()
-        .filter(|provider| !SUPPORTED_PROVIDERS.contains(&provider.as_str()))
-        .collect();
+    for provider in &providers {
+        if !SUPPORTED_PROVIDERS.contains(&provider.as_str()) {
+            uncovered.insert(provider.clone());
+            continue;
+        }
+        let covered = db
+            .repo_provider_run_ids_with_usage(repo_id, provider)
+            .map_err(|error| format!("db error: {error}"))?;
+        if runs.iter().any(|run| {
+            run.provider.as_deref() == Some(provider.as_str()) && !covered.contains(&run.run_id)
+        }) {
+            uncovered.insert(provider.clone());
+        }
+    }
+    report.providers_without_usage = uncovered.into_iter().collect();
     report.providers_without_usage.sort();
     report.providers_without_usage.dedup();
     Ok(report)
@@ -92,14 +124,24 @@ const SUPPORTED_PROVIDERS: [&str; 2] = ["claude", "codex"];
 /// Claude stores a project's transcripts in one directory derived from the
 /// working directory, so the repository's own run cwds name exactly the
 /// directories worth reading.
-fn claude_session_files(runs: &[RunWindow]) -> Vec<(PathBuf, SessionContext)> {
+struct DiscoveryResult {
+    files: Vec<(PathBuf, SessionContext)>,
+    complete: bool,
+}
+
+fn claude_session_files(runs: &[RunWindow]) -> DiscoveryResult {
     let Some(projects_dir) = claude_projects_dir() else {
-        return Vec::new();
+        return DiscoveryResult {
+            files: Vec::new(),
+            complete: false,
+        };
     };
     let mut seen: HashMap<PathBuf, SessionContext> = HashMap::new();
+    let mut complete = true;
     for cwd in distinct_cwds(runs) {
         let directory = projects_dir.join(claude_project_slug(&cwd));
         let Ok(entries) = std::fs::read_dir(&directory) else {
+            complete = false;
             continue;
         };
         for entry in entries.flatten() {
@@ -112,48 +154,151 @@ fn claude_session_files(runs: &[RunWindow]) -> Vec<(PathBuf, SessionContext)> {
                         ..Default::default()
                     },
                 );
+                continue;
+            }
+            if !path.is_dir() {
+                continue;
+            }
+            let subagents = path.join("subagents");
+            match std::fs::read_dir(&subagents) {
+                Ok(entries) => {
+                    for entry in entries.flatten() {
+                        let path = entry.path();
+                        if path.extension().and_then(|extension| extension.to_str())
+                            == Some("jsonl")
+                        {
+                            seen.insert(
+                                path,
+                                SessionContext {
+                                    cwd: Some(cwd.clone()),
+                                    ..Default::default()
+                                },
+                            );
+                        }
+                    }
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(_) => complete = false,
             }
         }
     }
-    seen.into_iter().collect()
+    DiscoveryResult {
+        files: seen.into_iter().collect(),
+        complete,
+    }
 }
 
-/// Codex files are not laid out by working directory, so the session header
-/// has to be read to decide whether a file belongs to this repository. Only
-/// the first line of each candidate is parsed.
-fn codex_session_files(runs: &[RunWindow]) -> Vec<(PathBuf, SessionContext)> {
+/// Codex files are date-partitioned rather than laid out by working directory.
+/// Inspect only the start-date directory recorded by each run, then retain its
+/// matching candidates until that directory's generation changes.
+fn codex_session_files(db: &Db, runs: &[RunWindow]) -> Result<DiscoveryResult, String> {
     let Some(config_dir) = home_child("CODEX_HOME", ".codex") else {
-        return Vec::new();
+        return Ok(DiscoveryResult {
+            files: Vec::new(),
+            complete: false,
+        });
     };
-    let cwds = distinct_cwds(runs);
-    let mut pending = vec![config_dir.join("sessions")];
-    let mut files = Vec::new();
-    while let Some(directory) = pending.pop() {
-        let Ok(entries) = std::fs::read_dir(directory) else {
+    let mut files: HashMap<PathBuf, SessionContext> = HashMap::new();
+    let mut complete = true;
+    for run in runs
+        .iter()
+        .filter(|run| run.provider.as_deref() == Some("codex"))
+    {
+        let Some(date) = run.started_at.get(..10) else {
+            complete = false;
             continue;
         };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_dir() {
-                pending.push(path);
-                continue;
-            }
-            if path.extension().and_then(|extension| extension.to_str()) != Some("jsonl") {
-                continue;
-            }
-            let Some(header) = read_first_line(&path) else {
+        let mut date_parts = date.split('-');
+        let (Some(year), Some(month), Some(day)) =
+            (date_parts.next(), date_parts.next(), date_parts.next())
+        else {
+            complete = false;
+            continue;
+        };
+        let directory = config_dir.join("sessions").join(year).join(month).join(day);
+        let Ok(metadata) = std::fs::metadata(&directory) else {
+            complete = false;
+            continue;
+        };
+        let modified_ns = modified_ns(&metadata);
+        let discovery_key = format!(
+            "codex:{}:{}",
+            run.run_id,
+            run.provider_session_id.as_deref().unwrap_or("unknown")
+        );
+        let directory_path = directory.to_string_lossy().to_string();
+        let cached = db
+            .usage_discovery_state(&discovery_key)
+            .map_err(|error| format!("db error: {error}"))?;
+        let candidate_paths = if let Some(cached) = cached.filter(|cached| {
+            cached.directory_path == directory_path && cached.directory_modified_ns == modified_ns
+        }) {
+            cached.candidate_paths
+        } else {
+            let Ok(entries) = std::fs::read_dir(&directory) else {
+                complete = false;
                 continue;
             };
-            let (_, context) = codex::parse_line(&header);
-            let Some(session_cwd) = context.cwd.as_deref() else {
-                continue;
-            };
-            if cwds.iter().any(|cwd| same_cwd(cwd, session_cwd)) {
-                files.push((path, context));
+            let mut candidates = Vec::new();
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.extension().and_then(|extension| extension.to_str()) != Some("jsonl") {
+                    continue;
+                }
+                #[cfg(test)]
+                CODEX_DISCOVERY_INSPECTIONS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                let Some(header) = read_first_line(&path) else {
+                    continue;
+                };
+                let (_, context) = codex::parse_line(&header);
+                let matches = match run.provider_session_id.as_deref() {
+                    Some(session_id) => context.session_id.as_deref() == Some(session_id),
+                    None => context
+                        .cwd
+                        .as_deref()
+                        .is_some_and(|cwd| same_cwd(&run.cwd, cwd)),
+                };
+                if matches {
+                    candidates.push(path.to_string_lossy().to_string());
+                }
             }
+            db.record_usage_discovery(
+                &discovery_key,
+                "codex",
+                &directory_path,
+                modified_ns,
+                &candidates,
+            )
+            .map_err(|error| format!("db error: {error}"))?;
+            candidates
+        };
+        if candidate_paths.is_empty() {
+            complete = false;
+        }
+        for path in candidate_paths {
+            files.insert(
+                PathBuf::from(path),
+                SessionContext {
+                    session_id: run.provider_session_id.clone(),
+                    cwd: Some(run.cwd.clone()),
+                    ..Default::default()
+                },
+            );
         }
     }
-    files
+    Ok(DiscoveryResult {
+        files: files.into_iter().collect(),
+        complete,
+    })
+}
+
+fn modified_ns(metadata: &std::fs::Metadata) -> i64 {
+    metadata
+        .modified()
+        .ok()
+        .and_then(|modified| modified.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|duration| duration.as_nanos().min(i64::MAX as u128) as i64)
+        .unwrap_or(0)
 }
 
 fn distinct_cwds(runs: &[RunWindow]) -> Vec<String> {
@@ -168,6 +313,12 @@ fn read_first_line(path: &std::path::Path) -> Option<String> {
     BufReader::new(file).lines().next()?.ok()
 }
 
+enum ScanFileOutcome {
+    Read(usize),
+    Unchanged,
+    Unreadable,
+}
+
 fn scan_file(
     db: &Db,
     repo_id: &str,
@@ -176,10 +327,10 @@ fn scan_file(
     discovered: SessionContext,
     runs: &[RunWindow],
     parse_line: fn(&str) -> (Option<ParsedUsage>, SessionContext),
-) -> Result<usize, String> {
+) -> Result<ScanFileOutcome, String> {
     let file_path = path.to_string_lossy().to_string();
     let Ok(metadata) = std::fs::metadata(path) else {
-        return Ok(0);
+        return Ok(ScanFileOutcome::Unreadable);
     };
     let file_size = metadata.len() as i64;
     let state = db
@@ -191,7 +342,7 @@ fn scan_file(
     // from the start again — the content-derived keys make that harmless.
     let mut context = SessionContext::default();
     let start_offset = match &state {
-        Some(state) if file_size == state.file_size => return Ok(0),
+        Some(state) if file_size == state.file_size => return Ok(ScanFileOutcome::Unchanged),
         Some(state) if file_size > state.file_size => {
             context.absorb(SessionContext {
                 session_id: state.session_id.clone(),
@@ -209,11 +360,11 @@ fn scan_file(
     });
 
     let Ok(file) = std::fs::File::open(path) else {
-        return Ok(0);
+        return Ok(ScanFileOutcome::Unreadable);
     };
     let mut reader = BufReader::new(file);
     if start_offset > 0 && reader.seek(SeekFrom::Start(start_offset as u64)).is_err() {
-        return Ok(0);
+        return Ok(ScanFileOutcome::Unreadable);
     }
 
     let mut consumed = start_offset;
@@ -224,7 +375,7 @@ fn scan_file(
         let read = match reader.read_line(&mut line) {
             Ok(0) => break,
             Ok(read) => read,
-            Err(_) => break,
+            Err(_) => return Ok(ScanFileOutcome::Unreadable),
         };
         // A line still being written has no terminator yet. Stopping before
         // it keeps the offset on a record boundary, so the complete line is
@@ -254,7 +405,7 @@ fn scan_file(
             }),
         )
         .map_err(|error| format!("db error: {error}"))?;
-    Ok(written)
+    Ok(ScanFileOutcome::Read(written))
 }
 
 fn to_record(
@@ -354,6 +505,8 @@ mod tests {
         RunWindow {
             task_id: task.into(),
             run_id: id.into(),
+            provider: None,
+            provider_session_id: None,
             cwd: cwd.into(),
             started_at: started.into(),
             finished_at: finished.map(str::to_string),
@@ -540,6 +693,21 @@ mod collection_tests {
             writeln!(file, "{line}").expect("write");
         }
 
+        fn write_claude_subagent(&self, cwd: &str, session: &str, name: &str, lines: &[String]) {
+            let directory = self
+                .root
+                .join("claude/projects")
+                .join(crate::task_creator::claude_project_slug(cwd))
+                .join(session)
+                .join("subagents");
+            std::fs::create_dir_all(&directory).expect("subagents dir");
+            let mut file = std::fs::File::create(directory.join(format!("{name}.jsonl")))
+                .expect("create subagent transcript");
+            for line in lines {
+                writeln!(file, "{line}").expect("write");
+            }
+        }
+
         fn write_codex_rollout(&self, name: &str, lines: &[String]) {
             let directory = self.root.join("codex/sessions/2026/04/17");
             std::fs::create_dir_all(&directory).expect("rollout dir");
@@ -680,6 +848,28 @@ mod collection_tests {
     }
 
     #[test]
+    fn nested_claude_subagents_are_collected_and_copied_history_is_deduplicated() {
+        let homes = ProviderHomes::new("claude-subagents");
+        let cwd = homes.root.join("worktree").to_string_lossy().to_string();
+        std::fs::create_dir_all(&cwd).expect("worktree");
+        let db = seeded_db("usage-claude-subagents", &cwd);
+        let parent = claude_turn("msg_parent", "2026-04-17T09:30:00.000Z", &cwd, 40);
+        let delegated = claude_turn("msg_delegated", "2026-04-17T09:31:00.000Z", &cwd, 60);
+        homes.write_claude_transcript(&cwd, "sess-1", std::slice::from_ref(&parent));
+        homes.write_claude_subagent(&cwd, "sess-1", "agent-a", &[parent, delegated.clone()]);
+        homes.write_claude_subagent(&cwd, "sess-1", "agent-b", &[delegated]);
+
+        let report = super::collect_repo_token_usage(&db, "repo-1").expect("collect");
+        assert_eq!(report.files_scanned, 3);
+        assert_eq!(db.count_test_token_usage_rows().expect("rows"), 2);
+        assert!(report.providers_without_usage.is_empty());
+
+        let again = super::collect_repo_token_usage(&db, "repo-1").expect("repeat collect");
+        assert_eq!(again.records_written, 0);
+        assert_eq!(db.count_test_token_usage_rows().expect("rows"), 2);
+    }
+
+    #[test]
     fn a_transcript_from_another_project_is_never_read() {
         let homes = ProviderHomes::new("claude-foreign");
         let cwd = homes.root.join("worktree").to_string_lossy().to_string();
@@ -718,6 +908,8 @@ mod collection_tests {
             Some("2026-04-17 11:00:00"),
         )
         .expect("codex run");
+        db.set_test_stage_run_provider_session_id("run-codex", "s-1")
+            .expect("provider session");
         let meta = format!(
             r#"{{"type":"session_meta","payload":{{"session_id":"s-1","id":"s-1","cwd":"{cwd}"}}}}"#
         );
@@ -746,6 +938,73 @@ mod collection_tests {
     }
 
     #[test]
+    fn codex_discovery_is_bounded_to_run_context_and_cached_between_reads() {
+        let homes = ProviderHomes::new("codex-bounded");
+        let cwd = homes.root.join("worktree").to_string_lossy().to_string();
+        std::fs::create_dir_all(&cwd).expect("worktree");
+        let db = seeded_db("usage-codex-bounded", &cwd);
+        db.insert_test_provider_stage_run(
+            "run-codex",
+            "task-1",
+            "review",
+            "codex",
+            &cwd,
+            "2026-04-17 09:00:00",
+            Some("2026-04-17 11:00:00"),
+        )
+        .expect("codex run");
+        db.set_test_stage_run_provider_session_id("run-codex", "s-target")
+            .expect("provider session");
+        for index in 0..250 {
+            homes.write_codex_rollout(
+                &format!("unrelated-{index}"),
+                &[format!(
+                    r#"{{"type":"session_meta","payload":{{"id":"other-{index}","cwd":"/unrelated/{index}"}}}}"#
+                )],
+            );
+        }
+        let meta =
+            format!(r#"{{"type":"session_meta","payload":{{"id":"s-target","cwd":"{cwd}"}}}}"#);
+        let usage = r#"{"timestamp":"2026-04-17T09:30:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":10,"cached_input_tokens":0,"output_tokens":5,"reasoning_output_tokens":1,"total_tokens":15}}}}"#.to_string();
+        homes.write_codex_rollout("target", &[meta, usage]);
+
+        super::CODEX_DISCOVERY_INSPECTIONS.store(0, std::sync::atomic::Ordering::Relaxed);
+        super::collect_repo_token_usage(&db, "repo-1").expect("first collect");
+        let first = super::CODEX_DISCOVERY_INSPECTIONS.load(std::sync::atomic::Ordering::Relaxed);
+        assert_eq!(first, 251);
+        super::collect_repo_token_usage(&db, "repo-1").expect("second collect");
+        assert_eq!(
+            super::CODEX_DISCOVERY_INSPECTIONS.load(std::sync::atomic::Ordering::Relaxed),
+            first,
+            "an unchanged candidate directory must reuse its discovery checkpoint"
+        );
+        assert_eq!(db.count_test_token_usage_rows().expect("rows"), 1);
+    }
+
+    #[test]
+    fn missing_and_unreadable_supported_provider_files_are_reported() {
+        let homes = ProviderHomes::new("supported-missing");
+        let cwd = homes.root.join("worktree").to_string_lossy().to_string();
+        std::fs::create_dir_all(&cwd).expect("worktree");
+        let db = seeded_db("usage-supported-missing", &cwd);
+
+        let missing = super::collect_repo_token_usage(&db, "repo-1").expect("missing collect");
+        assert_eq!(missing.providers_without_usage, vec!["claude".to_string()]);
+
+        let project = homes
+            .root
+            .join("claude/projects")
+            .join(crate::task_creator::claude_project_slug(&cwd));
+        std::fs::create_dir_all(project.join("unreadable.jsonl")).expect("directory fixture");
+        let unreadable =
+            super::collect_repo_token_usage(&db, "repo-1").expect("unreadable collect");
+        assert_eq!(
+            unreadable.providers_without_usage,
+            vec!["claude".to_string()]
+        );
+    }
+
+    #[test]
     fn a_provider_whose_usage_cannot_be_read_is_reported_rather_than_shown_as_zero() {
         let homes = ProviderHomes::new("unsupported");
         let cwd = homes.root.join("worktree").to_string_lossy().to_string();
@@ -765,7 +1024,7 @@ mod collection_tests {
         let report = super::collect_repo_token_usage(&db, "repo-1").expect("collect");
         assert_eq!(
             report.providers_without_usage,
-            vec!["opencode".to_string()],
+            vec!["claude".to_string(), "opencode".to_string()],
             "a CLI Kanna cannot read usage for is a hole, not a zero"
         );
     }

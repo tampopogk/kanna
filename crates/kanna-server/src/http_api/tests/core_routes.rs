@@ -1,5 +1,6 @@
 use super::*;
 use rusqlite::Connection;
+use std::io::{Read, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex as StdMutex};
 use std::time::{Duration, Instant};
@@ -1618,10 +1619,22 @@ fn seed_analytics_repo(db: &crate::db::Db) {
     .unwrap();
 
     // Review: both tasks reached review; only task-1 was revised.
-    db.insert_test_stage_run_window("run-1", "task-1", "review", "2026-04-17 14:00:00", None)
-        .unwrap();
-    db.insert_test_stage_run_window("run-2", "task-2", "review", "2026-04-18 14:00:00", None)
-        .unwrap();
+    db.insert_test_stage_run_window(
+        "run-1",
+        "task-1",
+        "review",
+        "2026-04-17 14:00:00",
+        Some("2026-04-17 15:00:00"),
+    )
+    .unwrap();
+    db.insert_test_stage_run_window(
+        "run-2",
+        "task-2",
+        "review",
+        "2026-04-18 14:00:00",
+        Some("2026-04-18 15:00:00"),
+    )
+    .unwrap();
     db.insert_test_task_revision("task-1", "agent", true, "2026-04-17 15:00:00")
         .unwrap();
     db.insert_test_task_revision("task-1", "agent", false, "2026-04-17 16:00:00")
@@ -1663,6 +1676,65 @@ async fn analytics_body(app: axum::Router, query: &str) -> serde_json::Value {
         .await
         .unwrap();
     from_slice(&body).unwrap()
+}
+
+fn analytics_forge_fixture(body: serde_json::Value) -> (String, std::thread::JoinHandle<()>) {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind forge fixture");
+    let address = listener.local_addr().expect("fixture address");
+    let server = std::thread::spawn(move || {
+        let (mut socket, _) = listener.accept().expect("accept forge request");
+        let mut request = [0_u8; 4096];
+        let bytes = socket.read(&mut request).expect("read forge request");
+        let request = String::from_utf8_lossy(&request[..bytes]);
+        assert!(request.starts_with("GET /repos/acme/widgets/pulls/314 "));
+        let body = body.to_string();
+        write!(
+            socket,
+            "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+            body.len(),
+            body
+        )
+        .expect("write forge response");
+    });
+    (format!("http://{address}"), server)
+}
+
+#[tokio::test]
+async fn analytics_route_confirms_a_url_only_pr_through_http_and_durable_storage() {
+    let (base, server) = analytics_forge_fixture(serde_json::json!({
+        "number": 314,
+        "created_at": "2026-04-17T08:00:00Z",
+        "merged_at": "2026-04-18T08:00:00Z",
+        "state": "closed"
+    }));
+    let forge = crate::forge_pull_requests::ForgeClient::for_tests(
+        base,
+        Some("test-token"),
+        Duration::from_secs(1),
+    );
+    let app = super::test_router_with_seed_and_forge(
+        "analytics-forge-boundary",
+        "Studio Mac",
+        |db| {
+            db.insert_test_repo("repo-1", "Repo One").unwrap();
+            db.insert_test_unresolved_pull_request(
+                "repo-1",
+                None,
+                "https://github.com/acme/widgets/pull/314",
+                None,
+            )
+            .unwrap();
+        },
+        forge,
+    );
+    let json = analytics_body(app.clone(), "?from=2026-04-16&to=2026-04-20").await;
+    server.join().expect("forge server");
+
+    assert_eq!(json["coverage"]["pullRequestStateConfirmed"], true);
+    assert_eq!(json["pullRequests"]["merged"], 1);
+    let persisted = analytics_body(app, "?from=2026-04-16&to=2026-04-20").await;
+    assert_eq!(persisted["coverage"]["pullRequestStateConfirmed"], true);
+    assert_eq!(persisted["pullRequests"]["merged"], 1);
 }
 
 #[tokio::test]
@@ -1728,6 +1800,112 @@ async fn analytics_route_reports_token_totals_as_a_breakdown_that_does_not_doubl
     assert_eq!(total["total"], 100 + 900 + 50 + 200);
     assert_eq!(json["tokens"]["byModel"][0]["key"], "claude-opus-5");
     assert_eq!(json["tokens"]["byTask"][0]["key"], "task-1");
+}
+
+#[tokio::test]
+async fn analytics_route_aligns_token_coverage_with_usage_in_the_window() {
+    let app = super::test_router_with_seed("analytics-token-window", "Studio Mac", |db| {
+        db.insert_test_repo("repo-1", "Repo One").unwrap();
+        db.insert_test_pipeline_item(
+            "task-1",
+            "repo-1",
+            "prompt",
+            Some("Task One"),
+            "in progress",
+            "2026-04-16 08:00:00",
+        )
+        .unwrap();
+        db.insert_test_stage_run_window(
+            "run-overlap",
+            "task-1",
+            "in progress",
+            "2026-04-16 20:00:00",
+            Some("2026-04-17 02:00:00"),
+        )
+        .unwrap();
+        db.insert_test_stage_run_window(
+            "run-inside",
+            "task-1",
+            "review",
+            "2026-04-17 10:00:00",
+            Some("2026-04-17 11:00:00"),
+        )
+        .unwrap();
+        db.insert_test_token_usage(
+            "usage-inside",
+            "repo-1",
+            "task-1",
+            Some("run-overlap"),
+            "claude-opus-5",
+            "2026-04-17 01:00:00",
+            (10, 0, 0, 5, 0),
+        )
+        .unwrap();
+        db.insert_test_token_usage(
+            "usage-outside",
+            "repo-1",
+            "task-1",
+            Some("run-inside"),
+            "claude-opus-5",
+            "2026-04-18 01:00:00",
+            (20, 0, 0, 5, 0),
+        )
+        .unwrap();
+    });
+    let json = analytics_body(app, "?from=2026-04-17&to=2026-04-17").await;
+
+    assert_eq!(json["coverage"]["runsInRange"], 2);
+    assert_eq!(json["coverage"]["runsWithTokenUsage"], 1);
+    assert_eq!(json["tokens"]["total"]["total"], 15);
+}
+
+#[tokio::test]
+async fn analytics_route_waits_for_review_outcomes_and_keeps_next_day_revisions() {
+    let app = super::test_router_with_seed("analytics-review-cohort", "Studio Mac", |db| {
+        db.insert_test_repo("repo-1", "Repo One").unwrap();
+        for task in ["ongoing", "next-day", "clean"] {
+            db.insert_test_pipeline_item(
+                task,
+                "repo-1",
+                "prompt",
+                Some(task),
+                "review",
+                "2026-04-17 08:00:00",
+            )
+            .unwrap();
+        }
+        db.insert_test_stage_run_window(
+            "ongoing-review",
+            "ongoing",
+            "review",
+            "2026-04-17 09:00:00",
+            None,
+        )
+        .unwrap();
+        db.insert_test_stage_run_window(
+            "next-day-review",
+            "next-day",
+            "review",
+            "2026-04-17 23:59:00",
+            Some("2026-04-18 00:05:00"),
+        )
+        .unwrap();
+        db.insert_test_task_revision("next-day", "agent", true, "2026-04-18 00:06:00")
+            .unwrap();
+        db.insert_test_stage_run_window(
+            "clean-review",
+            "clean",
+            "review",
+            "2026-04-17 10:00:00",
+            Some("2026-04-17 10:30:00"),
+        )
+        .unwrap();
+    });
+    let json = analytics_body(app, "?from=2026-04-17&to=2026-04-17").await;
+
+    assert_eq!(json["revisions"]["cohortTasks"], 2);
+    assert_eq!(json["revisions"]["totalRevisions"], 1);
+    assert_eq!(json["revisions"]["cleanPassRate"], 0.5);
 }
 
 #[tokio::test]

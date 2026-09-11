@@ -1,52 +1,198 @@
 //! Confirming pull-request outcomes with the forge.
 //!
-//! Kanna creates pull requests through an agent running `gh` and records the
-//! URL it reports; nothing in the desktop observes what happens to one
-//! afterwards. Closing a task is not a merge — a task closes when its work
-//! leaves the workflow, which routinely happens before, after, or instead of
-//! the PR being merged — so "how many merged" cannot be answered from local
-//! state at all. It is asked of the forge here, once per repository per
-//! staleness window, and the answer is persisted.
-//!
-//! Unavailability is a first-class result. Without `gh`, without credentials,
-//! or without a recognizable remote, merged counts are reported as unknown
-//! rather than as zero.
+//! Kanna owns this path. A signed desktop cannot depend on a developer's
+//! separately installed `gh`, and a repository-wide listing cannot prove the
+//! state of an old known PR that fell off a page. The adapter therefore asks
+//! GitHub's REST API for each unresolved canonical identity and persists only
+//! responses that name that exact PR.
 
-use crate::db::{Db, ForgePullRequestObservation};
+use crate::db::{Db, ForgePullRequestObservation, UnresolvedPullRequest};
 use serde::Deserialize;
-use std::process::{Command, Stdio};
 use std::time::Duration;
 
-/// How long a confirmed answer stays good enough to reuse. Analytics is a
-/// review surface, not a live monitor, and a `gh` call per repaint would make
-/// opening the view cost a network round trip every time.
 const RECHECK_AFTER: Duration = Duration::from_secs(300);
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// The forge's most recent word on this repository's pull requests.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ForgeAvailability {
-    /// Confirmed facts are stored and current.
     Confirmed,
-    /// Stored facts are whatever was confirmed before; nothing new could be
-    /// learned this time.
     Unavailable,
 }
 
-#[derive(Debug, Deserialize)]
-struct GhPullRequest {
+/// Server-owned, bundled GitHub transport. The optional base URL exists so
+/// route tests can exercise the real HTTP adapter deterministically.
+#[derive(Clone)]
+pub struct ForgeClient {
+    token: Option<String>,
+    api_base_override: Option<String>,
+    connect_timeout: Duration,
+    request_timeout: Duration,
+}
+
+impl ForgeClient {
+    pub fn from_environment() -> Self {
+        Self::new(
+            std::env::var("KANNA_GITHUB_TOKEN")
+                .ok()
+                .filter(|token| !token.trim().is_empty()),
+            None,
+            CONNECT_TIMEOUT,
+            REQUEST_TIMEOUT,
+        )
+    }
+
+    fn new(
+        token: Option<String>,
+        api_base_override: Option<String>,
+        connect_timeout: Duration,
+        request_timeout: Duration,
+    ) -> Self {
+        Self {
+            token,
+            api_base_override,
+            connect_timeout,
+            request_timeout,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn for_tests(base_url: String, token: Option<&str>, timeout: Duration) -> Self {
+        Self::new(token.map(str::to_string), Some(base_url), timeout, timeout)
+    }
+
+    fn query_pull_request(
+        &self,
+        http: &reqwest::blocking::Client,
+        identity: &UnresolvedPullRequest,
+    ) -> Result<ForgePullRequestObservation, String> {
+        let token = self
+            .token
+            .as_deref()
+            .ok_or_else(|| "KANNA_GITHUB_TOKEN is not configured".to_string())?;
+        let parsed = GithubPullRequestIdentity::parse(&identity.pr_url, identity.pr_number)
+            .ok_or_else(|| format!("unrecognized pull request URL: {}", identity.pr_url))?;
+        let base = self
+            .api_base_override
+            .clone()
+            .unwrap_or_else(|| parsed.api_base());
+        let response = http
+            .get(format!(
+                "{}/repos/{}/{}/pulls/{}",
+                base.trim_end_matches('/'),
+                parsed.owner,
+                parsed.repo,
+                parsed.number
+            ))
+            .header(reqwest::header::USER_AGENT, "Kanna")
+            .header(reqwest::header::ACCEPT, "application/vnd.github+json")
+            .bearer_auth(token)
+            .send()
+            .map_err(|error| format!("request failed: {error}"))?;
+        if !response.status().is_success() {
+            return Err(format!("forge returned HTTP {}", response.status()));
+        }
+        let answer: GithubPullRequest = response
+            .json()
+            .map_err(|error| format!("invalid forge response: {error}"))?;
+        if answer.number != Some(parsed.number) {
+            return Err("forge response did not identify the requested pull request".to_string());
+        }
+        let state = answer
+            .state
+            .ok_or_else(|| "forge response omitted pull request state".to_string())?;
+        let state = if answer.merged_at.is_some() {
+            "MERGED".to_string()
+        } else {
+            state.to_ascii_uppercase()
+        };
+        if !matches!(state.as_str(), "OPEN" | "CLOSED" | "MERGED") {
+            return Err(format!(
+                "forge returned unknown pull request state `{state}`"
+            ));
+        }
+        Ok(ForgePullRequestObservation {
+            pr_number: parsed.number,
+            // Use the identity Kanna already trusts, not an optional response
+            // URL, so URL-only legacy rows are updated by their existing key.
+            url: Some(identity.pr_url.clone()),
+            created_at: answer.created_at,
+            merged_at: answer.merged_at,
+            state: Some(state),
+        })
+    }
+
+    fn http_client(&self) -> Result<reqwest::blocking::Client, String> {
+        reqwest::blocking::Client::builder()
+            .connect_timeout(self.connect_timeout)
+            .timeout(self.request_timeout)
+            .build()
+            .map_err(|error| format!("could not build forge HTTP client: {error}"))
+    }
+}
+
+#[derive(Debug)]
+struct GithubPullRequestIdentity {
+    host: String,
+    owner: String,
+    repo: String,
     number: i64,
-    url: Option<String>,
-    #[serde(rename = "createdAt")]
+}
+
+impl GithubPullRequestIdentity {
+    fn parse(url: &str, recorded_number: Option<i64>) -> Option<Self> {
+        let trimmed = url.trim();
+        let without_scheme = trimmed
+            .strip_prefix("https://")
+            .or_else(|| trimmed.strip_prefix("http://"))?;
+        let without_www = without_scheme
+            .strip_prefix("www.")
+            .unwrap_or(without_scheme);
+        let mut parts = without_www.split('/');
+        let host = parts.next()?.to_string();
+        let owner = parts.next()?.to_string();
+        let repo = parts.next()?.to_string();
+        if parts.next()? != "pull" {
+            return None;
+        }
+        let number = parts.next()?.parse().ok()?;
+        if recorded_number.is_some_and(|recorded| recorded != number) {
+            return None;
+        }
+        Some(Self {
+            host,
+            owner,
+            repo,
+            number,
+        })
+    }
+
+    fn api_base(&self) -> String {
+        if self.host.eq_ignore_ascii_case("github.com") {
+            "https://api.github.com".to_string()
+        } else {
+            format!("https://{}/api/v3", self.host)
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct GithubPullRequest {
+    number: Option<i64>,
     created_at: Option<String>,
-    #[serde(rename = "mergedAt")]
     merged_at: Option<String>,
     state: Option<String>,
 }
 
-/// Bring this repository's pull-request facts up to date, if it is worth
-/// asking and the forge can answer.
-pub fn reconcile_repo_pull_requests(db: &Db, repo_id: &str, repo_path: &str) -> ForgeAvailability {
-    let unresolved = match db.unresolved_repo_pull_request_numbers(repo_id) {
+/// Refresh every unresolved identity that is not already fresh. A partial
+/// answer may preserve the facts it did confirm, but availability stays false
+/// until every nonterminal known PR has a fresh individual confirmation.
+pub fn reconcile_repo_pull_requests(
+    db: &Db,
+    repo_id: &str,
+    client: &ForgeClient,
+) -> ForgeAvailability {
+    let unresolved = match db.unresolved_repo_pull_requests(repo_id) {
         Ok(unresolved) => unresolved,
         Err(error) => {
             log::warn!("analytics: reading unresolved pull requests failed: {error}");
@@ -54,26 +200,52 @@ pub fn reconcile_repo_pull_requests(db: &Db, repo_id: &str, repo_path: &str) -> 
         }
     };
     if unresolved.is_empty() {
-        // Every pull request this repository produced already has a terminal
-        // answer stored. Nothing to ask.
-        return ForgeAvailability::Confirmed;
-    }
-    // Analytics is a review surface, not a live monitor. Without this gate
-    // every repaint of the view would cost a `gh` round trip.
-    let last_check = db.last_pull_request_forge_check(repo_id).unwrap_or(None);
-    if recently_reconciled(last_check, now_epoch_seconds()) {
         return ForgeAvailability::Confirmed;
     }
 
-    let observations = match query_pull_requests(repo_path) {
-        Some(observations) => observations,
-        None => return ForgeAvailability::Unavailable,
-    };
-    if let Err(error) = db.record_forge_pull_requests(repo_id, &observations) {
-        log::warn!("analytics: recording pull request facts failed: {error}");
-        return ForgeAvailability::Unavailable;
+    let now = now_epoch_seconds();
+    let stale: Vec<_> = unresolved
+        .into_iter()
+        .filter(|pull_request| !recently_reconciled(pull_request.forge_checked_at, now))
+        .collect();
+    if stale.is_empty() {
+        return ForgeAvailability::Confirmed;
     }
-    ForgeAvailability::Confirmed
+
+    let http = match client.http_client() {
+        Ok(http) => http,
+        Err(error) => {
+            log::info!("analytics: {error}");
+            return ForgeAvailability::Unavailable;
+        }
+    };
+
+    let mut observations = Vec::with_capacity(stale.len());
+    let mut complete = true;
+    for identity in &stale {
+        match client.query_pull_request(&http, identity) {
+            Ok(observation) => observations.push(observation),
+            Err(error) => {
+                complete = false;
+                log::info!(
+                    "analytics: could not confirm pull request {}: {error}",
+                    identity.pr_key
+                );
+            }
+        }
+    }
+    let recorded = match db.record_forge_pull_requests(repo_id, &observations) {
+        Ok(recorded) => recorded,
+        Err(error) => {
+            log::warn!("analytics: recording pull request facts failed: {error}");
+            return ForgeAvailability::Unavailable;
+        }
+    };
+    if complete && recorded == stale.len() {
+        ForgeAvailability::Confirmed
+    } else {
+        ForgeAvailability::Unavailable
+    }
 }
 
 fn now_epoch_seconds() -> i64 {
@@ -83,7 +255,6 @@ fn now_epoch_seconds() -> i64 {
         .unwrap_or(0)
 }
 
-/// Whether the stored facts are fresh enough to skip asking again.
 fn recently_reconciled(last_checked_epoch_seconds: Option<i64>, now_epoch_seconds: i64) -> bool {
     let Some(last) = last_checked_epoch_seconds else {
         return false;
@@ -91,57 +262,78 @@ fn recently_reconciled(last_checked_epoch_seconds: Option<i64>, now_epoch_second
     now_epoch_seconds.saturating_sub(last) < RECHECK_AFTER.as_secs() as i64
 }
 
-/// One `gh` call for the repository's recent pull requests.
-///
-/// A page rather than a request per pull request: a repository with a hundred
-/// open PRs would otherwise cost a hundred subprocesses, and Analytics is
-/// looking at a window, not at all history. Pull requests older than the page
-/// keep whatever was previously confirmed.
-fn query_pull_requests(repo_path: &str) -> Option<Vec<ForgePullRequestObservation>> {
-    let output = Command::new("gh")
-        .args([
-            "pr",
-            "list",
-            "--state",
-            "all",
-            "--limit",
-            "200",
-            "--json",
-            "number,url,createdAt,mergedAt,state",
-        ])
-        .current_dir(repo_path)
-        .stdin(Stdio::null())
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        log::info!(
-            "analytics: gh could not list pull requests ({}); merged counts stay unconfirmed",
-            String::from_utf8_lossy(&output.stderr).trim()
-        );
-        return None;
-    }
-    let parsed: Vec<GhPullRequest> = serde_json::from_slice(&output.stdout).ok()?;
-    Some(
-        parsed
-            .into_iter()
-            .map(|pull_request| ForgePullRequestObservation {
-                pr_number: pull_request.number,
-                url: pull_request.url,
-                created_at: pull_request.created_at,
-                // `gh` reports `mergedAt` as null for anything not merged;
-                // an empty string from an older `gh` means the same thing.
-                merged_at: pull_request
-                    .merged_at
-                    .filter(|merged_at| !merged_at.is_empty()),
-                state: pull_request.state,
-            })
-            .collect(),
-    )
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{recently_reconciled, GhPullRequest};
+    use super::{
+        recently_reconciled, reconcile_repo_pull_requests, ForgeAvailability, ForgeClient,
+        GithubPullRequestIdentity,
+    };
+    use crate::db::Db;
+    use std::collections::HashMap;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::time::Duration;
+
+    struct MockResponse {
+        status: u16,
+        body: String,
+        delay: Duration,
+    }
+
+    fn spawn_forge(
+        responses: HashMap<String, MockResponse>,
+    ) -> (String, std::thread::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind forge fixture");
+        let address = listener.local_addr().expect("fixture address");
+        let handle = std::thread::spawn(move || {
+            for _ in 0..responses.len() {
+                let (mut socket, _) = listener.accept().expect("accept forge request");
+                let mut request = [0_u8; 4096];
+                let bytes = socket.read(&mut request).expect("read request");
+                let request = String::from_utf8_lossy(&request[..bytes]);
+                let path = request
+                    .lines()
+                    .next()
+                    .and_then(|line| line.split_whitespace().nth(1))
+                    .expect("request path");
+                assert!(request
+                    .to_ascii_lowercase()
+                    .contains("authorization: bearer test-token"));
+                let response = responses.get(path).expect("expected request path");
+                std::thread::sleep(response.delay);
+                let reason = if response.status == 200 {
+                    "OK"
+                } else {
+                    "Error"
+                };
+                let encoded = format!(
+                    "HTTP/1.1 {} {}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                    response.status,
+                    reason,
+                    response.body.len(),
+                    response.body
+                );
+                let _ = socket.write_all(encoded.as_bytes());
+            }
+        });
+        (format!("http://{address}"), handle)
+    }
+
+    fn response(number: i64, state: &str, merged_at: Option<&str>) -> String {
+        serde_json::json!({
+            "number": number,
+            "created_at": "2026-04-17T08:00:00Z",
+            "merged_at": merged_at,
+            "state": state,
+        })
+        .to_string()
+    }
+
+    fn db(label: &str) -> Db {
+        let db = Db::open_for_tests(&Db::test_db_path(label)).expect("open db");
+        db.insert_test_repo("repo-1", "Repo One").expect("repo");
+        db
+    }
 
     #[test]
     fn a_recent_confirmation_is_reused_and_an_old_one_is_not() {
@@ -151,14 +343,218 @@ mod tests {
     }
 
     #[test]
-    fn gh_output_parses_merged_and_unmerged_pull_requests() {
-        let parsed: Vec<GhPullRequest> = serde_json::from_str(
-            r#"[{"number":1,"url":"https://github.com/o/r/pull/1","createdAt":"2026-09-01T00:00:00Z","mergedAt":"2026-09-02T00:00:00Z","state":"MERGED"},
-                {"number":2,"url":"https://github.com/o/r/pull/2","createdAt":"2026-09-03T00:00:00Z","mergedAt":null,"state":"OPEN"}]"#,
+    fn url_only_pull_request_identity_supplies_its_number() {
+        let parsed = GithubPullRequestIdentity::parse(
+            "https://github.example/acme/widgets/pull/314/files",
+            None,
         )
-        .expect("gh json");
-        assert_eq!(parsed[0].merged_at.as_deref(), Some("2026-09-02T00:00:00Z"));
-        assert_eq!(parsed[1].merged_at, None);
-        assert_eq!(parsed[1].state.as_deref(), Some("OPEN"));
+        .expect("identity");
+        assert_eq!(parsed.number, 314);
+        assert_eq!(parsed.api_base(), "https://github.example/api/v3");
+    }
+
+    #[test]
+    fn missing_credentials_and_network_leave_state_unconfirmed() {
+        let db = db("forge-unavailable");
+        let url = "https://github.com/acme/widgets/pull/1";
+        db.insert_test_unresolved_pull_request("repo-1", Some(1), url, None)
+            .expect("pr");
+        let no_credentials = ForgeClient::for_tests(
+            "http://127.0.0.1:1".to_string(),
+            None,
+            Duration::from_millis(20),
+        );
+        assert_eq!(
+            reconcile_repo_pull_requests(&db, "repo-1", &no_credentials),
+            ForgeAvailability::Unavailable
+        );
+        let no_network = ForgeClient::for_tests(
+            "http://127.0.0.1:1".to_string(),
+            Some("test-token"),
+            Duration::from_millis(20),
+        );
+        assert_eq!(
+            reconcile_repo_pull_requests(&db, "repo-1", &no_network),
+            ForgeAvailability::Unavailable
+        );
+    }
+
+    #[test]
+    fn partial_response_does_not_claim_the_repository_is_confirmed() {
+        let db = db("forge-partial");
+        for number in [1, 2] {
+            db.insert_test_unresolved_pull_request(
+                "repo-1",
+                Some(number),
+                &format!("https://github.com/acme/widgets/pull/{number}"),
+                None,
+            )
+            .expect("pr");
+        }
+        let (base, server) = spawn_forge(HashMap::from([
+            (
+                "/repos/acme/widgets/pulls/1".to_string(),
+                MockResponse {
+                    status: 200,
+                    body: response(1, "open", None),
+                    delay: Duration::ZERO,
+                },
+            ),
+            (
+                "/repos/acme/widgets/pulls/2".to_string(),
+                MockResponse {
+                    status: 503,
+                    body: "{}".to_string(),
+                    delay: Duration::ZERO,
+                },
+            ),
+        ]));
+        let client = ForgeClient::for_tests(base, Some("test-token"), Duration::from_secs(1));
+        assert_eq!(
+            reconcile_repo_pull_requests(&db, "repo-1", &client),
+            ForgeAvailability::Unavailable
+        );
+        server.join().expect("forge server");
+        let unresolved = db
+            .unresolved_repo_pull_requests("repo-1")
+            .expect("unresolved");
+        assert!(unresolved
+            .iter()
+            .any(|pr| pr.pr_number == Some(1) && pr.forge_checked_at.is_some()));
+        assert!(unresolved
+            .iter()
+            .any(|pr| pr.pr_number == Some(2) && pr.forge_checked_at.is_none()));
+    }
+
+    #[test]
+    fn url_only_and_old_known_pull_requests_are_queried_directly() {
+        let db = db("forge-url-only-old");
+        let url = "https://github.com/acme/widgets/pull/1";
+        db.insert_test_unresolved_pull_request("repo-1", None, url, None)
+            .expect("url-only pr");
+        let (base, server) = spawn_forge(HashMap::from([(
+            "/repos/acme/widgets/pulls/1".to_string(),
+            MockResponse {
+                status: 200,
+                body: response(1, "open", None),
+                delay: Duration::ZERO,
+            },
+        )]));
+        let client = ForgeClient::for_tests(base, Some("test-token"), Duration::from_secs(1));
+        assert_eq!(
+            reconcile_repo_pull_requests(&db, "repo-1", &client),
+            ForgeAvailability::Confirmed,
+            "a known old PR is fetched by identity even if more than 200 unrelated PRs are newer"
+        );
+        server.join().expect("forge server");
+        let unresolved = db
+            .unresolved_repo_pull_requests("repo-1")
+            .expect("unresolved");
+        assert_eq!(unresolved[0].pr_number, Some(1));
+        assert!(unresolved[0].forge_checked_at.is_some());
+    }
+
+    #[test]
+    fn merged_and_closed_are_distinct_terminal_outcomes() {
+        let db = db("forge-terminal-states");
+        for number in [7, 8] {
+            db.insert_test_unresolved_pull_request(
+                "repo-1",
+                Some(number),
+                &format!("https://github.com/acme/widgets/pull/{number}"),
+                None,
+            )
+            .expect("pr");
+        }
+        let (base, server) = spawn_forge(HashMap::from([
+            (
+                "/repos/acme/widgets/pulls/7".to_string(),
+                MockResponse {
+                    status: 200,
+                    body: response(7, "closed", Some("2026-04-18T08:00:00Z")),
+                    delay: Duration::ZERO,
+                },
+            ),
+            (
+                "/repos/acme/widgets/pulls/8".to_string(),
+                MockResponse {
+                    status: 200,
+                    body: response(8, "closed", None),
+                    delay: Duration::ZERO,
+                },
+            ),
+        ]));
+        let client = ForgeClient::for_tests(base, Some("test-token"), Duration::from_secs(1));
+        assert_eq!(
+            reconcile_repo_pull_requests(&db, "repo-1", &client),
+            ForgeAvailability::Confirmed
+        );
+        server.join().expect("forge server");
+        assert_eq!(
+            db.test_pull_request_state("repo-1", "https://github.com/acme/widgets/pull/7")
+                .expect("merged state")
+                .as_deref(),
+            Some("MERGED")
+        );
+        assert_eq!(
+            db.test_pull_request_state("repo-1", "https://github.com/acme/widgets/pull/8")
+                .expect("closed state")
+                .as_deref(),
+            Some("CLOSED")
+        );
+    }
+
+    #[test]
+    fn one_fresh_row_does_not_mask_an_unchecked_row() {
+        let db = db("forge-per-row-freshness");
+        db.insert_test_unresolved_pull_request(
+            "repo-1",
+            Some(1),
+            "https://github.com/acme/widgets/pull/1",
+            Some("2099-01-01 00:00:00"),
+        )
+        .expect("fresh pr");
+        db.insert_test_unresolved_pull_request(
+            "repo-1",
+            Some(2),
+            "https://github.com/acme/widgets/pull/2",
+            None,
+        )
+        .expect("unchecked pr");
+        let client = ForgeClient::for_tests(
+            "http://127.0.0.1:1".to_string(),
+            None,
+            Duration::from_millis(20),
+        );
+        assert_eq!(
+            reconcile_repo_pull_requests(&db, "repo-1", &client),
+            ForgeAvailability::Unavailable
+        );
+    }
+
+    #[test]
+    fn forge_requests_have_a_bounded_timeout() {
+        let db = db("forge-timeout");
+        db.insert_test_unresolved_pull_request(
+            "repo-1",
+            Some(9),
+            "https://github.com/acme/widgets/pull/9",
+            None,
+        )
+        .expect("pr");
+        let (base, server) = spawn_forge(HashMap::from([(
+            "/repos/acme/widgets/pulls/9".to_string(),
+            MockResponse {
+                status: 200,
+                body: response(9, "open", None),
+                delay: Duration::from_millis(100),
+            },
+        )]));
+        let client = ForgeClient::for_tests(base, Some("test-token"), Duration::from_millis(20));
+        assert_eq!(
+            reconcile_repo_pull_requests(&db, "repo-1", &client),
+            ForgeAvailability::Unavailable
+        );
+        server.join().expect("forge server");
     }
 }

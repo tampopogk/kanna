@@ -16,6 +16,15 @@
 use super::Db;
 use rusqlite::{Connection, OptionalExtension};
 
+/// One PR whose terminal forge state is not known yet.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnresolvedPullRequest {
+    pub pr_key: String,
+    pub pr_number: Option<i64>,
+    pub pr_url: String,
+    pub forge_checked_at: Option<i64>,
+}
+
 /// A forge-confirmed observation of one pull request.
 #[derive(Debug, Clone)]
 pub struct ForgePullRequestObservation {
@@ -106,40 +115,69 @@ impl Db {
             .map(Option::flatten)
     }
 
-    /// When the forge was last asked about this repository, as epoch seconds.
-    /// `None` means it never was.
-    pub fn last_pull_request_forge_check(
+    #[cfg(test)]
+    pub fn test_pull_request_state(
         &self,
         repo_id: &str,
-    ) -> Result<Option<i64>, rusqlite::Error> {
-        self.conn.query_row(
-            "SELECT MAX(strftime('%s', forge_checked_at))
-             FROM task_pull_request WHERE repo_id = ?",
-            [repo_id],
-            |row| row.get(0),
-        )
+        pr_url: &str,
+    ) -> Result<Option<String>, rusqlite::Error> {
+        let key = canonical_pr_key(pr_url, None);
+        self.conn
+            .query_row(
+                "SELECT forge_state FROM task_pull_request WHERE repo_id = ? AND pr_key = ?",
+                (repo_id, key),
+                |row| row.get(0),
+            )
+            .optional()
+            .map(Option::flatten)
     }
 
-    /// PR numbers this repo knows about whose forge state is still open or
-    /// never checked. A merged or closed pull request is terminal, so it is
-    /// never asked about again.
-    pub fn unresolved_repo_pull_request_numbers(
+    #[cfg(test)]
+    pub fn insert_test_unresolved_pull_request(
         &self,
         repo_id: &str,
-    ) -> Result<Vec<i64>, rusqlite::Error> {
+        pr_number: Option<i64>,
+        pr_url: &str,
+        forge_checked_at: Option<&str>,
+    ) -> Result<(), rusqlite::Error> {
+        let key = canonical_pr_key(pr_url, pr_number);
+        self.conn.execute(
+            "INSERT INTO task_pull_request
+               (repo_id, pr_key, pr_number, pr_url, first_seen_at, forge_state, forge_checked_at)
+             VALUES (?, ?, ?, ?, '2026-01-01 00:00:00', 'OPEN', ?)",
+            rusqlite::params![repo_id, key, pr_number, pr_url, forge_checked_at],
+        )?;
+        Ok(())
+    }
+
+    /// PR identities this repo knows about whose forge state is still open or
+    /// never checked. URL-only legacy rows remain queryable: the forge adapter
+    /// extracts their number from the canonical URL rather than silently
+    /// dropping them.
+    pub fn unresolved_repo_pull_requests(
+        &self,
+        repo_id: &str,
+    ) -> Result<Vec<UnresolvedPullRequest>, rusqlite::Error> {
         let mut statement = self.conn.prepare(
-            "SELECT pr_number
+            "SELECT pr_key, pr_number, pr_url,
+                    CAST(strftime('%s', forge_checked_at) AS INTEGER)
              FROM task_pull_request
              WHERE repo_id = ?
-               AND pr_number IS NOT NULL
                AND forge_merged_at IS NULL
                AND (forge_state IS NULL OR forge_state NOT IN ('CLOSED', 'MERGED'))
-             ORDER BY pr_number DESC",
+             ORDER BY pr_key",
         )?;
-        let numbers = statement
-            .query_map([repo_id], |row| row.get(0))?
+        let pull_requests = statement
+            .query_map([repo_id], |row| {
+                Ok(UnresolvedPullRequest {
+                    pr_key: row.get(0)?,
+                    pr_number: row.get(1)?,
+                    pr_url: row.get(2)?,
+                    forge_checked_at: row.get(3)?,
+                })
+            })?
             .collect::<Result<Vec<_>, _>>()?;
-        Ok(numbers)
+        Ok(pull_requests)
     }
 
     /// Persist what the forge actually said. Facts only: a pull request the
@@ -157,7 +195,7 @@ impl Db {
                     continue;
                 };
                 let pr_key = canonical_pr_key(url, Some(observation.pr_number));
-                let existing: Option<String> = db
+                let existing_key: Option<String> = db
                     .conn
                     .query_row(
                         "SELECT pr_key FROM task_pull_request WHERE repo_id = ? AND pr_key = ?",
@@ -165,12 +203,12 @@ impl Db {
                         |row| row.get(0),
                     )
                     .optional()?;
-                if existing.is_none() {
+                let Some(existing_key) = existing_key else {
                     // Only pull requests this desktop's tasks produced are
                     // this repository's Analytics subject; a PR somebody else
-                    // opened is not counted just because `gh` listed it.
+                    // opened is not counted just because the forge returned it.
                     continue;
-                }
+                };
                 db.conn.execute(
                     "UPDATE task_pull_request
                      SET pr_number = ?,
@@ -185,7 +223,7 @@ impl Db {
                         observation.merged_at,
                         observation.state,
                         repo_id,
-                        pr_key,
+                        existing_key,
                     ],
                 )?;
                 recorded += 1;

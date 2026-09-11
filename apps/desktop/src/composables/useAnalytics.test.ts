@@ -220,6 +220,42 @@ describe("useAnalytics", () => {
     expect(analytics.hasAnyData.value).toBe(false);
     expect(analytics.analytics.value.tokens.total.total).toBe(0);
   });
+
+  it("ignores an older response that resolves after the current selection", async () => {
+    let resolveOld!: (value: DesktopRepoAnalytics) => void;
+    let resolveCurrent!: (value: DesktopRepoAnalytics) => void;
+    const oldResponse = new Promise<DesktopRepoAnalytics>((resolve) => {
+      resolveOld = resolve;
+    });
+    const currentResponse = new Promise<DesktopRepoAnalytics>((resolve) => {
+      resolveCurrent = resolve;
+    });
+    const fetchRepoAnalytics = vi.fn((repoId: string) =>
+      repoId === "repo-old" ? oldResponse : currentResponse,
+    );
+    setDesktopServerClientHandlersForTests({ fetchRepoAnalytics });
+
+    const repoId = ref<string | null>("repo-old");
+    const state = useAnalytics(repoId);
+    await flushWatchers();
+    repoId.value = "repo-current";
+    await flushWatchers();
+
+    resolveOld(analyticsFixture(state.range.value, {
+      tasks: { created: 99, closed: 0, openNow: 0, childTasksCreated: 0 },
+    }));
+    await flushWatchers();
+    expect(state.loading.value).toBe(true);
+    expect(state.analytics.value.tasks.created).not.toBe(99);
+
+    resolveCurrent(analyticsFixture(state.range.value, {
+      tasks: { created: 7, closed: 0, openNow: 0, childTasksCreated: 0 },
+    }));
+    await flushWatchers();
+    expect(state.loading.value).toBe(false);
+    expect(state.error.value).toBeNull();
+    expect(state.analytics.value.tasks.created).toBe(7);
+  });
 });
 
 describe("rangeForPreset", () => {

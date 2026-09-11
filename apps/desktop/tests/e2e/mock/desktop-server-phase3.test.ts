@@ -11,6 +11,11 @@ async function serverBaseUrl(client: WebDriverClient): Promise<string> {
 }
 
 async function seedAnalyticsRepo(client: WebDriverClient): Promise<void> {
+  const now = new Date().toISOString().replace("T", " ").slice(0, 19);
+  const yesterday = new Date(Date.now() - 86_400_000)
+    .toISOString()
+    .replace("T", " ")
+    .slice(0, 19);
   await execDb(
     client,
     `INSERT INTO repo (id, path, name, default_branch, hidden, sort_order, created_at, last_opened_at)
@@ -29,9 +34,9 @@ async function seedAnalyticsRepo(client: WebDriverClient): Promise<void> {
       "closed prompt",
       "task-phase3-closed",
       "Closed analytics task",
-      "2026-04-17 08:00:00",
-      "2026-04-19 08:00:00",
-      "2026-04-19 08:00:00",
+      yesterday,
+      now,
+      now,
     ],
   );
   await execDb(
@@ -46,8 +51,8 @@ async function seedAnalyticsRepo(client: WebDriverClient): Promise<void> {
       "open prompt",
       "task-phase3-open",
       "Open analytics task",
-      "2026-04-18 08:00:00",
-      "2026-04-18 08:00:00",
+      now,
+      now,
     ],
   );
   await execDb(
@@ -64,13 +69,13 @@ async function seedAnalyticsRepo(client: WebDriverClient): Promise<void> {
     client,
     `INSERT INTO operator_event (event_type, pipeline_item_id, repo_id, created_at)
      VALUES (?, ?, ?, ?)`,
-    ["task_selected", "task-phase3-closed", "repo-phase3", "2026-04-17 08:05:00"],
+    ["task_selected", "task-phase3-closed", "repo-phase3", yesterday],
   );
   await execDb(
     client,
     `INSERT INTO operator_event (event_type, pipeline_item_id, repo_id, created_at)
      VALUES (?, ?, ?, ?)`,
-    ["task_selected", "task-phase3-open", "repo-phase3", "2026-04-17 08:07:00"],
+    ["task_selected", "task-phase3-open", "repo-phase3", now],
   );
   await callVueMethod(client, "store.reloadSnapshot");
 }
@@ -101,14 +106,26 @@ describe("desktop server phase 3 paths", () => {
   it("renders analytics from the server-backed endpoint", async () => {
     await callVueMethod(client, "store.selectRepo", "repo-phase3");
     await callVueMethod(client, "keyboardActions.showAnalytics");
-    await client.waitForText(".analytics-modal", "Tasks");
-    await client.waitForText(".analytics-modal", "Created");
-    await client.waitForText(".analytics-modal", "Closed");
+    await client.waitForElement('[data-testid="analytics-view"]');
+    await client.waitForElement('[data-testid="analytics-tasks-created"]');
+    await client.waitForElement('[data-testid="analytics-tasks-closed"]');
+    await client.waitForElement('[data-testid="analytics-tasks-open"]');
 
-    const cardValues = await client.executeSync<string[]>(
-      `return Array.from(document.querySelectorAll(".analytics-modal .card-value"))
-        .map((element) => element.textContent?.trim() || "");`,
+    const statistics = await client.executeSync<Record<string, string>>(
+      `return Object.fromEntries([
+        "analytics-tasks-created",
+        "analytics-tasks-closed",
+        "analytics-tasks-open",
+        "analytics-pr-created"
+      ].map(function (testId) {
+        return [testId, document.querySelector('[data-testid="' + testId + '"]').textContent.trim()];
+      }));`,
     );
-    expect(cardValues).toEqual(["2", "1", "1"]);
+    expect(statistics).toEqual({
+      "analytics-tasks-created": "2",
+      "analytics-tasks-closed": "1",
+      "analytics-tasks-open": "1",
+      "analytics-pr-created": "0",
+    });
   });
 });

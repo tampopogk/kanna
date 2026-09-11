@@ -229,7 +229,7 @@ fn open_creates_and_migrates_fresh_profile_database() {
             |row| row.get(0),
         )
         .expect("latest migration");
-    assert_eq!(latest_migration, "080_provider_token_usage");
+    assert_eq!(latest_migration, "081_provider_usage_discovery");
     assert_eq!(
         index_columns(&db.conn, "idx_pipeline_item_parent_created_id"),
         vec!["parent_task_id", "created_at", "id"],
@@ -5004,7 +5004,7 @@ fn a_pull_request_is_only_merged_when_the_forge_says_so() {
         Some("2026-04-18T08:00:00Z")
     );
     assert!(
-        db.unresolved_repo_pull_request_numbers("repo-1")
+        db.unresolved_repo_pull_requests("repo-1")
             .expect("unresolved")
             .is_empty(),
         "a merged pull request is terminal and must not be asked about again"
@@ -5125,4 +5125,151 @@ fn a_scan_checkpoint_only_advances_with_the_records_it_produced() {
     assert_eq!(state.session_id.as_deref(), Some("session-1"));
     assert_eq!(state.cwd.as_deref(), Some("/w"));
     assert_eq!(state.model.as_deref(), Some("gpt-5.4"));
+}
+
+#[test]
+fn analytics_token_coverage_uses_run_overlap_and_usage_inside_the_selected_window() {
+    let db = analytics_db();
+    db.insert_test_stage_run_window(
+        "run-before",
+        "task-1",
+        "in progress",
+        "2026-04-16 20:00:00",
+        Some("2026-04-17 02:00:00"),
+    )
+    .expect("overlapping run");
+    db.insert_test_stage_run_window(
+        "run-inside",
+        "task-1",
+        "review",
+        "2026-04-17 10:00:00",
+        Some("2026-04-17 11:00:00"),
+    )
+    .expect("inside run");
+    db.insert_test_token_usage(
+        "inside-usage",
+        "repo-1",
+        "task-1",
+        Some("run-before"),
+        "claude-opus-5",
+        "2026-04-17 01:00:00",
+        (10, 0, 0, 5, 0),
+    )
+    .expect("inside usage");
+    db.insert_test_token_usage(
+        "outside-usage",
+        "repo-1",
+        "task-1",
+        Some("run-inside"),
+        "claude-opus-5",
+        "2026-04-18 01:00:00",
+        (20, 0, 0, 5, 0),
+    )
+    .expect("outside usage");
+
+    let analytics = db
+        .repo_analytics(
+            "repo-1",
+            &super::AnalyticsRange {
+                from: "2026-04-17".into(),
+                to: "2026-04-17".into(),
+            },
+            false,
+            Vec::new(),
+        )
+        .expect("analytics");
+    assert_eq!(analytics.coverage.runs_in_range, 2);
+    assert_eq!(analytics.coverage.runs_with_token_usage, 1);
+    assert_eq!(analytics.tokens.total.total, 15);
+}
+
+#[test]
+fn analytics_revision_statistics_use_a_completed_first_review_cohort_and_lifetime_history() {
+    let db = analytics_db();
+    for task in ["next-day", "clean", "human-reset", "specialty-child"] {
+        db.insert_test_pipeline_item(
+            task,
+            "repo-1",
+            "prompt",
+            Some(task),
+            "review",
+            "2026-04-17 08:00:00",
+        )
+        .expect("task");
+    }
+    db.conn
+        .execute(
+            "UPDATE pipeline_item SET parent_task_id = 'next-day' WHERE id = 'specialty-child'",
+            [],
+        )
+        .expect("specialty parent");
+
+    // task-1 is still in its first review and cannot be called a clean pass.
+    db.insert_test_stage_run_window(
+        "ongoing-review",
+        "task-1",
+        "review",
+        "2026-04-17 09:00:00",
+        None,
+    )
+    .expect("ongoing review");
+    db.insert_test_stage_run_window(
+        "next-day-review",
+        "next-day",
+        "review",
+        "2026-04-17 23:59:00",
+        Some("2026-04-18 00:05:00"),
+    )
+    .expect("next-day review");
+    db.insert_test_task_revision("next-day", "agent", true, "2026-04-18 00:06:00")
+        .expect("next-day revision");
+    db.insert_test_task_revision("next-day", "agent", false, "2026-04-18 00:07:00")
+        .expect("parked request");
+    db.insert_test_stage_run_window(
+        "clean-review",
+        "clean",
+        "review",
+        "2026-04-17 10:00:00",
+        Some("2026-04-17 10:30:00"),
+    )
+    .expect("clean review");
+    db.insert_test_stage_run_window(
+        "human-review",
+        "human-reset",
+        "review",
+        "2026-04-17 11:00:00",
+        Some("2026-04-17 11:30:00"),
+    )
+    .expect("human review");
+    db.insert_test_task_revision("human-reset", "agent", true, "2026-04-17 11:31:00")
+        .expect("agent revision");
+    db.insert_test_task_revision("human-reset", "human", true, "2026-04-19 11:31:00")
+        .expect("human revision after budget reset");
+    db.insert_test_stage_run_window(
+        "specialty-review",
+        "specialty-child",
+        "review",
+        "2026-04-17 12:00:00",
+        Some("2026-04-17 12:30:00"),
+    )
+    .expect("specialty review");
+    db.insert_test_task_revision("specialty-child", "agent", true, "2026-04-17 12:31:00")
+        .expect("child revision");
+
+    let analytics = db
+        .repo_analytics(
+            "repo-1",
+            &super::AnalyticsRange {
+                from: "2026-04-17".into(),
+                to: "2026-04-17".into(),
+            },
+            false,
+            Vec::new(),
+        )
+        .expect("analytics");
+    assert_eq!(analytics.revisions.cohort_tasks, 3);
+    assert_eq!(analytics.revisions.total_revisions, 3);
+    assert_eq!(analytics.revisions.average_per_task, 1.0);
+    assert_eq!(analytics.revisions.clean_pass_rate, Some(1.0 / 3.0));
+    assert_eq!(analytics.revisions.parked_requests, 1);
 }

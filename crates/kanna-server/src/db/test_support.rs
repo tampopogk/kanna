@@ -358,6 +358,15 @@ impl Db {
                 scanned_at TEXT NOT NULL
             );
 
+            CREATE TABLE provider_usage_discovery (
+                discovery_key TEXT PRIMARY KEY,
+                provider TEXT NOT NULL,
+                directory_path TEXT NOT NULL,
+                directory_modified_ns INTEGER NOT NULL,
+                candidate_paths TEXT NOT NULL,
+                checked_at TEXT NOT NULL
+            );
+
             CREATE TABLE event_subscription (
                 id TEXT PRIMARY KEY,
                 task_id TEXT NOT NULL REFERENCES pipeline_item(id) ON DELETE CASCADE,
@@ -734,6 +743,19 @@ impl Db {
                 started_at,
                 finished_at
             ],
+        )?;
+        Ok(())
+    }
+
+    #[cfg(test)]
+    pub fn set_test_stage_run_provider_session_id(
+        &self,
+        run_id: &str,
+        provider_session_id: &str,
+    ) -> Result<(), rusqlite::Error> {
+        self.conn.execute(
+            "UPDATE stage_run SET provider_session_id = ? WHERE id = ?",
+            (provider_session_id, run_id),
         )?;
         Ok(())
     }

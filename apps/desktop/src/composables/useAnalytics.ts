@@ -79,6 +79,7 @@ export function useAnalytics(repoId: Ref<string | null>) {
     preset.value === "custom" ? customRange.value : rangeForPreset(preset.value),
   );
   const analytics = ref<DesktopRepoAnalytics>(emptyAnalytics(range.value));
+  let refreshGeneration = 0;
 
   /**
    * Whether the selected window reaches back before a statistic started being
@@ -139,21 +140,32 @@ export function useAnalytics(repoId: Ref<string | null>) {
   }
 
   async function refresh() {
-    if (!repoId.value) {
-      analytics.value = emptyAnalytics(range.value);
+    const generation = ++refreshGeneration;
+    const selectedRepoId = repoId.value;
+    const selectedRange = { ...range.value };
+    if (!selectedRepoId) {
+      analytics.value = emptyAnalytics(selectedRange);
       error.value = null;
+      loading.value = false;
       return;
     }
     loading.value = true;
     error.value = null;
     try {
-      analytics.value = await fetchDesktopRepoAnalytics(repoId.value, range.value);
+      const response = await fetchDesktopRepoAnalytics(selectedRepoId, selectedRange);
+      if (generation === refreshGeneration) {
+        analytics.value = response;
+      }
     } catch (e) {
-      error.value = e instanceof Error ? e.message : String(e);
-      console.error("[analytics] refresh failed:", e);
-      analytics.value = emptyAnalytics(range.value);
+      if (generation === refreshGeneration) {
+        error.value = e instanceof Error ? e.message : String(e);
+        console.error("[analytics] refresh failed:", e);
+        analytics.value = emptyAnalytics(selectedRange);
+      }
     } finally {
-      loading.value = false;
+      if (generation === refreshGeneration) {
+        loading.value = false;
+      }
     }
   }
 

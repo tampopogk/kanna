@@ -22,9 +22,20 @@ use super::Db;
 pub struct RepoRunWindow {
     pub task_id: String,
     pub run_id: String,
+    pub provider: Option<String>,
+    pub provider_session_id: Option<String>,
     pub cwd: String,
     pub started_at: String,
     pub finished_at: Option<String>,
+}
+
+/// Cached result of looking for one recorded run's provider files in its
+/// bounded candidate directory.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct UsageDiscoveryState {
+    pub directory_path: String,
+    pub directory_modified_ns: i64,
+    pub candidate_paths: Vec<String>,
 }
 
 /// One provider-reported usage record, normalized across providers.
@@ -84,7 +95,8 @@ impl Db {
         repo_id: &str,
     ) -> Result<Vec<RepoRunWindow>, rusqlite::Error> {
         let mut statement = self.conn.prepare(
-            "SELECT stage_run.task_id, stage_run.id, stage_run.cwd,
+            "SELECT stage_run.task_id, stage_run.id, stage_run.agent_provider,
+                    stage_run.provider_session_id, stage_run.cwd,
                     stage_run.started_at, stage_run.finished_at
              FROM stage_run
              JOIN pipeline_item ON pipeline_item.id = stage_run.task_id
@@ -96,29 +108,15 @@ impl Db {
                 Ok(RepoRunWindow {
                     task_id: row.get(0)?,
                     run_id: row.get(1)?,
-                    cwd: row.get(2)?,
-                    started_at: row.get(3)?,
-                    finished_at: row.get(4)?,
+                    provider: row.get(2)?,
+                    provider_session_id: row.get(3)?,
+                    cwd: row.get(4)?,
+                    started_at: row.get(5)?,
+                    finished_at: row.get(6)?,
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?;
         Ok(runs)
-    }
-
-    /// The agent providers this repository's runs actually used. Collection
-    /// compares this against the providers it can read so a CLI whose usage
-    /// Kanna cannot see is reported as uncovered rather than as zero.
-    pub fn list_repo_run_providers(&self, repo_id: &str) -> Result<Vec<String>, rusqlite::Error> {
-        let mut statement = self.conn.prepare(
-            "SELECT DISTINCT stage_run.agent_provider
-             FROM stage_run
-             JOIN pipeline_item ON pipeline_item.id = stage_run.task_id
-             WHERE pipeline_item.repo_id = ? AND stage_run.agent_provider IS NOT NULL",
-        )?;
-        let providers = statement
-            .query_map([repo_id], |row| row.get::<_, String>(0))?
-            .collect::<Result<Vec<_>, _>>()?;
-        Ok(providers)
     }
 
     pub fn usage_scan_state(
@@ -142,6 +140,74 @@ impl Db {
                 },
             )
             .optional()
+    }
+
+    pub fn usage_discovery_state(
+        &self,
+        discovery_key: &str,
+    ) -> Result<Option<UsageDiscoveryState>, rusqlite::Error> {
+        use rusqlite::OptionalExtension;
+        self.conn
+            .query_row(
+                "SELECT directory_path, directory_modified_ns, candidate_paths
+                 FROM provider_usage_discovery WHERE discovery_key = ?",
+                [discovery_key],
+                |row| {
+                    let encoded: String = row.get(2)?;
+                    Ok(UsageDiscoveryState {
+                        directory_path: row.get(0)?,
+                        directory_modified_ns: row.get(1)?,
+                        candidate_paths: serde_json::from_str(&encoded).unwrap_or_default(),
+                    })
+                },
+            )
+            .optional()
+    }
+
+    pub fn record_usage_discovery(
+        &self,
+        discovery_key: &str,
+        provider: &str,
+        directory_path: &str,
+        directory_modified_ns: i64,
+        candidate_paths: &[String],
+    ) -> Result<(), rusqlite::Error> {
+        let encoded = serde_json::to_string(candidate_paths).unwrap_or_else(|_| "[]".to_string());
+        self.conn.execute(
+            "INSERT INTO provider_usage_discovery
+               (discovery_key, provider, directory_path, directory_modified_ns,
+                candidate_paths, checked_at)
+             VALUES (?, ?, ?, ?, ?, datetime('now'))
+             ON CONFLICT(discovery_key) DO UPDATE SET
+               provider = excluded.provider,
+               directory_path = excluded.directory_path,
+               directory_modified_ns = excluded.directory_modified_ns,
+               candidate_paths = excluded.candidate_paths,
+               checked_at = excluded.checked_at",
+            (
+                discovery_key,
+                provider,
+                directory_path,
+                directory_modified_ns,
+                encoded,
+            ),
+        )?;
+        Ok(())
+    }
+
+    pub fn repo_provider_run_ids_with_usage(
+        &self,
+        repo_id: &str,
+        provider: &str,
+    ) -> Result<std::collections::HashSet<String>, rusqlite::Error> {
+        let mut statement = self.conn.prepare(
+            "SELECT DISTINCT run_id FROM provider_token_usage
+             WHERE repo_id = ? AND provider = ? AND run_id IS NOT NULL",
+        )?;
+        let run_ids = statement
+            .query_map((repo_id, provider), |row| row.get(0))?
+            .collect::<Result<_, _>>()?;
+        Ok(run_ids)
     }
 
     /// Store a batch of usage records and the scan position that produced
