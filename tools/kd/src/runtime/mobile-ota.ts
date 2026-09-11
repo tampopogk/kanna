@@ -1124,7 +1124,10 @@ function summarizeCommandFailure(result: { stdout: string; stderr: string }): st
 
 function isNotFoundFailure(result: { stdout: string; stderr: string }): boolean {
   const message = `${result.stderr}\n${result.stdout}`.toLowerCase();
-  return message.includes("not found") || message.includes("not_found") || message.includes("404");
+  return message.includes("not found") ||
+    message.includes("not_found") ||
+    message.includes("404") ||
+    message.includes("the following urls matched no objects or files:");
 }
 
 async function executeMobileOtaHttpRequest(

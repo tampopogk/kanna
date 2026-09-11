@@ -730,28 +730,35 @@ describe("kd mobile OTA", () => {
     ).rejects.toThrow("kd mobile version bump --patch");
   });
 
-  it("refuses to publish when the current channel pointer read fails", async () => {
-    const repoRoot = await makeRepoFixture();
-    const calls: string[][] = [];
-    const pointerPath = `gs://${resolveKdEnvironment("staging").otaBucket}/ota/ios/1.0.0/channels/staging.json`;
-    const runner = publishRunner(repoRoot, {
-      onGcloud: (args) => {
-        calls.push(args);
-        if (args[1] === "cat" && args[2] === pointerPath) {
-          return { exitCode: 1, stdout: "", stderr: "ServiceUnavailable: try again" };
+  it.each([
+    ["network", "ServiceUnavailable: try again"],
+    ["permission", "PERMISSION_DENIED: storage.objects.get denied"],
+    ["unknown", "gcloud storage cat failed"],
+  ])(
+    "refuses to publish when the current channel pointer read has a %s failure",
+    async (_kind, failure) => {
+      const repoRoot = await makeRepoFixture();
+      const calls: string[][] = [];
+      const pointerPath = `gs://${resolveKdEnvironment("staging").otaBucket}/ota/ios/1.0.0/channels/staging.json`;
+      const runner = publishRunner(repoRoot, {
+        onGcloud: (args) => {
+          calls.push(args);
+          if (args[1] === "cat" && args[2] === pointerPath) {
+            return { exitCode: 1, stdout: "", stderr: failure };
+          }
+          return { exitCode: 0, stdout: "", stderr: "" };
         }
-        return { exitCode: 0, stdout: "", stderr: "" };
-      }
-    });
+      });
 
-    await expect(
-      executeMobileOtaPublishWithContext(
-        { staging: true, production: false },
-        { repoRoot, env: {}, runner, validateOtaCertificate: acceptOtaCertificate }
-      )
-    ).rejects.toThrow(`could not read the current channel pointer ${pointerPath}`);
-    expect(calls.some((args) => args[1] === "rsync" || args[1] === "cp")).toBe(false);
-  });
+      await expect(
+        executeMobileOtaPublishWithContext(
+          { staging: true, production: false },
+          { repoRoot, env: {}, runner, validateOtaCertificate: acceptOtaCertificate }
+        )
+      ).rejects.toThrow(`could not read the current channel pointer ${pointerPath}`);
+      expect(calls.some((args) => args[1] === "rsync" || args[1] === "cp")).toBe(false);
+    }
+  );
 
   it("refuses to publish when the current channel pointer is malformed", async () => {
     const repoRoot = await makeRepoFixture();
@@ -837,10 +844,17 @@ describe("kd mobile OTA", () => {
   it("accepts a confirmed missing channel as its first publication", async () => {
     const repoRoot = await makeRepoFixture();
     const calls: string[][] = [];
+    const pointerPath = `gs://${resolveKdEnvironment("staging").otaBucket}/ota/ios/1.0.0/channels/staging.json`;
     const runner = publishRunner(repoRoot, {
       onGcloud: (args) => {
         calls.push(args);
-        if (args[1] === "cat") return { exitCode: 1, stdout: "", stderr: "No URLs matched: 404 not found" };
+        if (args[1] === "cat" && args[2] === pointerPath) return {
+          exitCode: 1,
+          stdout: "",
+          stderr:
+            "ERROR: (gcloud.storage.cat) The following URLs matched no objects or files: " +
+            pointerPath,
+        };
         if (args[1] === "ls") return { exitCode: 1, stdout: "", stderr: "not found" };
         return { exitCode: 0, stdout: "", stderr: "" };
       }
