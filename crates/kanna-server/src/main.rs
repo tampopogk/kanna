@@ -22,6 +22,8 @@ mod repo_browser;
 mod repo_commands;
 mod runtime;
 mod session_replacements;
+#[cfg(test)]
+mod setup_terminal_fixture;
 mod task_creator;
 mod task_diff;
 mod task_files;

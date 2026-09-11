@@ -1,6 +1,7 @@
 pub(crate) mod guide;
 pub(crate) mod info;
 pub(crate) mod repo;
+pub(crate) mod setup_receipt;
 pub(crate) mod stage_complete;
 pub(crate) mod task;
 pub(crate) mod tool;

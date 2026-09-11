@@ -52,13 +52,15 @@ async fn merge_pty_spawns_with_ordinary_input_policy() {
         completion_transition: WorkflowStageTransition::Manual,
         provider_session_id: None,
         recovery_snapshot: None,
+        setup_terminal: None,
+        deferred_launch: None,
         session: PreparedSessionSpawn::Pty {
             agent_executable: None,
             executable: "/bin/cat".to_string(),
             args: Vec::new(),
             cols: 80,
             rows: 24,
-            agent_provider: DaemonAgentProvider::Codex,
+            agent_provider: Some(DaemonAgentProvider::Codex),
         },
     };
     let mut client = DaemonClient::connect(&config.daemon_dir).await.unwrap();
@@ -128,13 +130,15 @@ async fn protected_pty_negotiation_disconnect_is_recorded_before_acknowledgement
         completion_transition: WorkflowStageTransition::Manual,
         provider_session_id: None,
         recovery_snapshot: None,
+        setup_terminal: None,
+        deferred_launch: None,
         session: PreparedSessionSpawn::Pty {
             agent_executable: None,
             executable: "/bin/cat".to_string(),
             args: Vec::new(),
             cols: 80,
             rows: 24,
-            agent_provider: DaemonAgentProvider::Codex,
+            agent_provider: Some(DaemonAgentProvider::Codex),
         },
     };
     let mut client = DaemonClient::connect(&config.daemon_dir).await.unwrap();
@@ -207,6 +211,8 @@ async fn spawn_prepared_task_sends_spawn_agent_for_agent_sessions() {
         completion_transition: WorkflowStageTransition::Manual,
         provider_session_id: None,
         recovery_snapshot: None,
+        setup_terminal: None,
+        deferred_launch: None,
         session: PreparedSessionSpawn::Agent {
             agent_provider: DaemonAgentProvider::Claude,
             prompt: "Do work".to_string(),
@@ -285,6 +291,8 @@ async fn spawn_prepared_task_records_running_stage_run_after_session_created() {
         completion_transition: WorkflowStageTransition::Manual,
         provider_session_id: None,
         recovery_snapshot: None,
+        setup_terminal: None,
+        deferred_launch: None,
         session: PreparedSessionSpawn::Agent {
             agent_provider: DaemonAgentProvider::Claude,
             prompt: "Do work".to_string(),
@@ -375,6 +383,8 @@ async fn lost_spawn_response_is_classified_after_ack_and_never_rolled_back_as_re
         completion_transition: WorkflowStageTransition::Manual,
         provider_session_id: None,
         recovery_snapshot: None,
+        setup_terminal: None,
+        deferred_launch: None,
         session: PreparedSessionSpawn::Agent {
             agent_provider: DaemonAgentProvider::Claude,
             prompt: "Do work".to_string(),
@@ -491,6 +501,8 @@ async fn rejected_spawn_rolls_back_run_scoped_completion_artifacts_immediately()
         completion_transition: WorkflowStageTransition::Manual,
         provider_session_id: None,
         recovery_snapshot: None,
+        setup_terminal: None,
+        deferred_launch: None,
         session: PreparedSessionSpawn::Agent {
             agent_provider: DaemonAgentProvider::Claude,
             prompt: "Merge work".to_string(),

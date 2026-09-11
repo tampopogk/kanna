@@ -1878,6 +1878,8 @@ mod tests {
                 "kanna_set_task_workflow",
                 "kanna_replace_task_workflow",
                 "kanna_open_file",
+                "kanna_list_task_terminals",
+                "kanna_open_terminal",
                 "kanna_task_logs",
                 "kanna_task_inputs",
                 "kanna_task_transfers",

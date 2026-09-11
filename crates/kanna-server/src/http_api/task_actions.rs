@@ -722,18 +722,26 @@ pub(super) async fn close_task(
         }
     }
 
-    for session_id in [
-        pipeline_item_id.to_string(),
-        format!("shell-wt-{pipeline_item_id}"),
-    ] {
-        crate::task_creator::kill_session_replacing(
-            &mut daemon,
-            &state.session_replacements,
-            session_id.as_str(),
-        )
-        .await
-        .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e))?;
-    }
+    // The agent session goes first, and keeps what it was running: a closed
+    // task's last screen is the record of how it ended, and closing is exactly
+    // when nothing will ever print it again.
+    crate::task_creator::kill_task_agent_session_retaining(
+        &state.config.db_path,
+        &mut daemon,
+        &state.session_replacements,
+        &pipeline_item_id,
+        &pipeline_item_id,
+        None,
+    )
+    .await
+    .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    crate::task_creator::kill_session_replacing(
+        &mut daemon,
+        &state.session_replacements,
+        &format!("shell-wt-{pipeline_item_id}"),
+    )
+    .await
+    .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e))?;
     let teardown_session_id = workspace_teardown
         .as_ref()
         .map(|teardown| teardown.session_id.clone())
@@ -922,15 +930,23 @@ async fn close_task_after_final_stage(
             );
         }
     }
-    for session_id in [task_id.to_string(), format!("shell-wt-{task_id}")] {
-        crate::task_creator::kill_session_replacing(
-            daemon,
-            &state.session_replacements,
-            session_id.as_str(),
-        )
-        .await
-        .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e))?;
-    }
+    crate::task_creator::kill_task_agent_session_retaining(
+        &state.config.db_path,
+        daemon,
+        &state.session_replacements,
+        &task_id,
+        &task_id,
+        None,
+    )
+    .await
+    .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    crate::task_creator::kill_session_replacing(
+        daemon,
+        &state.session_replacements,
+        &format!("shell-wt-{task_id}"),
+    )
+    .await
+    .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e))?;
     let teardown_session_id = workspace_teardown
         .as_ref()
         .map(|teardown| teardown.session_id.clone())

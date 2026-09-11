@@ -125,13 +125,23 @@ pub async fn handle_invoke(
                 task_creator::prepare_workspace_teardown_for_close(db, config, &pipeline_item_id);
             let has_workspace_teardown = workspace_teardown.is_some();
 
-            for session_id in [
-                pipeline_item_id.to_string(),
-                format!("shell-wt-{pipeline_item_id}"),
-            ] {
-                task_creator::kill_session_replacing(daemon, replacements, session_id.as_str())
-                    .await?;
-            }
+            // The agent session goes first, and keeps what it was running: a
+            // closed task's last screen is the record of how it ended.
+            task_creator::kill_task_agent_session_retaining(
+                &config.db_path,
+                daemon,
+                replacements,
+                &pipeline_item_id,
+                &pipeline_item_id,
+                None,
+            )
+            .await?;
+            task_creator::kill_session_replacing(
+                daemon,
+                replacements,
+                &format!("shell-wt-{pipeline_item_id}"),
+            )
+            .await?;
             let teardown_session_id = workspace_teardown
                 .as_ref()
                 .map(|teardown| teardown.session_id.clone())
@@ -213,10 +223,21 @@ pub async fn handle_invoke(
                     task_id,
                     workspace_teardown,
                 } => {
-                    for session_id in [task_id.to_string(), format!("shell-wt-{task_id}")] {
-                        task_creator::kill_session_replacing(daemon, replacements, &session_id)
-                            .await?;
-                    }
+                    task_creator::kill_task_agent_session_retaining(
+                        &config.db_path,
+                        daemon,
+                        replacements,
+                        &task_id,
+                        &task_id,
+                        None,
+                    )
+                    .await?;
+                    task_creator::kill_session_replacing(
+                        daemon,
+                        replacements,
+                        &format!("shell-wt-{task_id}"),
+                    )
+                    .await?;
                     let teardown_session_id = workspace_teardown
                         .as_ref()
                         .map(|teardown| teardown.session_id.clone())
@@ -421,9 +442,28 @@ mod tests {
                     "close_task set closed_at before killing {expected_session_id}"
                 );
 
-                let mut line = String::new();
-                reader.read_line(&mut line).await.unwrap();
-                let command: DaemonCommand = serde_json::from_str(line.trim()).unwrap();
+                // The agent session's kill is preceded by the read that keeps
+                // its final frame. This daemon has no session to snapshot, so
+                // it answers the way one with nothing to hand over does; the
+                // sequence this test is about is the kills.
+                let command = loop {
+                    let mut line = String::new();
+                    reader.read_line(&mut line).await.unwrap();
+                    let command: DaemonCommand = serde_json::from_str(line.trim()).unwrap();
+                    let DaemonCommand::Snapshot { session_id } = &command else {
+                        break command;
+                    };
+                    let response = DaemonEvent::Error {
+                        code: Some(kanna_daemon::protocol::ErrorCode::SessionNotFound),
+                        message: format!("session not found: {session_id}"),
+                    };
+                    write_half
+                        .write_all(
+                            format!("{}\n", serde_json::to_string(&response).unwrap()).as_bytes(),
+                        )
+                        .await
+                        .unwrap();
+                };
                 match command {
                     DaemonCommand::Kill { session_id } => {
                         assert_eq!(session_id, expected_session_id)
@@ -509,9 +549,26 @@ mod tests {
             let expected = ["task-1", "shell-wt-task-1", "td-task-1"];
 
             for expected_session_id in expected {
-                let mut line = String::new();
-                reader.read_line(&mut line).await.unwrap();
-                let command: DaemonCommand = serde_json::from_str(line.trim()).unwrap();
+                // The agent session's kill is preceded by the read that keeps
+                // its final frame; this daemon has no session to snapshot.
+                let command = loop {
+                    let mut line = String::new();
+                    reader.read_line(&mut line).await.unwrap();
+                    let command: DaemonCommand = serde_json::from_str(line.trim()).unwrap();
+                    let DaemonCommand::Snapshot { session_id } = &command else {
+                        break command;
+                    };
+                    let response = DaemonEvent::Error {
+                        code: Some(kanna_daemon::protocol::ErrorCode::SessionNotFound),
+                        message: format!("session not found: {session_id}"),
+                    };
+                    write_half
+                        .write_all(
+                            format!("{}\n", serde_json::to_string(&response).unwrap()).as_bytes(),
+                        )
+                        .await
+                        .unwrap();
+                };
                 match command {
                     DaemonCommand::Kill { session_id } => {
                         assert_eq!(session_id, expected_session_id)

@@ -173,6 +173,12 @@ fn retain_history(history: &mut Vec<String>, retention_bytes: usize) -> bool {
 /// mode suffix (`ghostty-xterm-compat-serialize::serialize_terminal`); this
 /// resets every mode that suffix can set, so the replacement agent starts from
 /// the same terminal state it would have had without the seed.
+// Retained rather than deleted. Seeding one stage's terminal into the next is
+// gone — each stage and retry now keeps its own output — but this is the
+// alt-screen flattening from task 05ffa8d1, which is the intra-terminal
+// scrollback story that survives it, and the Workspace activity log is the
+// next thing that will want a primary-screen rendering of a frame.
+#[allow(dead_code)]
 const CARRYOVER_MODE_RESET: &str = concat!(
     "\x1b[0m",     // SGR reset — the serializer emits style diffs
     "\x1b[?6l",    // origin mode off
@@ -203,6 +209,7 @@ const CARRYOVER_MODE_RESET: &str = concat!(
 /// appended either way.
 ///
 /// Returns `None` when the primary screen holds nothing worth carrying.
+#[allow(dead_code)]
 pub(crate) fn carryover_history_vt(vt: &str) -> Option<String> {
     let primary = match vt.rfind(ALT_SCREEN_ENTER) {
         Some(boundary) => &vt[..boundary],
@@ -225,6 +232,7 @@ pub(crate) fn carryover_history_vt(vt: &str) -> Option<String> {
 ///   row, whose worst case is a blank gap, never clobbered history;
 /// - otherwise the snapshot's cursor is the real primary-screen cursor, and
 ///   keeping it continues output exactly where the previous session stopped.
+#[allow(dead_code)]
 pub(crate) fn carryover_seed_snapshot(
     snapshot: &kanna_daemon::protocol::TerminalSnapshot,
 ) -> Option<kanna_daemon::protocol::TerminalSnapshot> {

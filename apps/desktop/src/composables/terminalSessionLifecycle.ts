@@ -18,6 +18,7 @@ import { createTerminalDisposalController } from "./terminalDisposal"
 import {
   formatAttachFailureMessage,
   formatMissingInitialTaskSessionMessage,
+  formatPendingTaskSessionMessage,
   getRespawnToastKey,
   getReconnectKeyboardPush,
   getTerminalRecoveryMode,
@@ -88,6 +89,34 @@ export function createTerminalSessionLifecycle(params: {
       params.state.attachRetryAttempt = 0
       params.state.attachFailureMessage = null
     }
+  }
+
+  /** Marks the last written notice as the pending-session one, so a repeat rewrites it. */
+  const PENDING_TASK_SESSION_NOTICE = "pending task session"
+
+  /**
+   * Wait for a task session that has not started yet, on the same backoff a
+   * refused attach uses. The first look says why the terminal is empty; later
+   * ones rewrite that line rather than stacking notices.
+   */
+  function reportPendingTaskSession(): void {
+    if (params.state.attachRetryTimer || params.state.paused || params.state.disposed) return
+    const delayMs = Math.min(1_000 * 2 ** params.state.attachRetryAttempt, 30_000)
+    params.state.attachRetryAttempt += 1
+    const formattedMessage = formatPendingTaskSessionMessage(delayMs / 1_000)
+    params.terminal.value?.write(
+      params.state.attachFailureMessage === null
+        ? formattedMessage
+        : `\x1b[1A\r\x1b[2K${formattedMessage.slice(2)}`,
+    )
+    params.state.attachFailureMessage = PENDING_TASK_SESSION_NOTICE
+    params.state.attachRetryTimer = setTimeout(() => {
+      params.state.attachRetryTimer = null
+      if (params.state.paused || params.state.disposed) return
+      void connectSession().catch((error) =>
+        console.error("[terminal] pending task session re-attach failed:", error)
+      )
+    }, delayMs)
   }
 
   function reportAttachFailure(message: string): void {
@@ -374,7 +403,23 @@ export function createTerminalSessionLifecycle(params: {
     const hasRecoveryState = Boolean(recoveryState?.serialized)
     if (!shouldRespawnAfterAttachFailure(normalizedError, params.state.hasAttachedOnce, hasRecoveryState, params.spawnOptions, params.options)) {
       if (isMissingDaemonSessionFailure(normalizedError) && getTerminalRecoveryMode(params.spawnOptions, params.options) === "attach-only") {
-        params.terminal.value?.write(formatMissingInitialTaskSessionMessage())
+        // A task's agent session is created *after* its launch's startup
+        // terminal exits, so a missing session on a view that has never
+        // attached is "not yet" — while a launch could still produce one.
+        // Keep the backoff looking rather than settling on an empty terminal
+        // that will never fill: giving up here left the agent tab blank for
+        // the whole life of a task whose setup took longer than the first
+        // attach.
+        //
+        // For a closed task, or one whose agent has exited, nothing will
+        // start: a missing PTY is the end of the story, not the beginning,
+        // and polling it would promise a startup terminal that is not
+        // running. The caller holds the task's record and answers.
+        if (params.options?.agentSessionCanStart?.() ?? true) {
+          reportPendingTaskSession()
+        } else {
+          params.terminal.value?.write(formatMissingInitialTaskSessionMessage())
+        }
       } else {
         reportAttachFailure(normalizedError.message)
       }

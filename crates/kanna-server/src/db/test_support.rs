@@ -183,7 +183,7 @@ impl Db {
             CREATE TABLE lifecycle_operation_intent (
                 id TEXT PRIMARY KEY,
                 task_id TEXT NOT NULL REFERENCES pipeline_item(id) ON DELETE CASCADE,
-                kind TEXT NOT NULL CHECK (kind IN ('post', 'stage_spawn')),
+                kind TEXT NOT NULL CHECK (kind IN ('post', 'stage_spawn', 'task_launch')),
                 phase TEXT NOT NULL CHECK (phase IN ('prepared', 'spawn_ready', 'submitted', 'committed')),
                 payload_json TEXT NOT NULL,
                 created_at TEXT NOT NULL DEFAULT (datetime('now'))
@@ -256,7 +256,24 @@ impl Db {
                 pipeline_item_id TEXT,
                 label TEXT,
                 cwd TEXT,
-                daemon_session_id TEXT
+                daemon_session_id TEXT,
+                role TEXT NOT NULL DEFAULT 'agent',
+                stage TEXT,
+                attempt INTEGER NOT NULL DEFAULT 1,
+                state TEXT NOT NULL DEFAULT 'live',
+                stage_run_id TEXT,
+                title TEXT,
+                exit_code INTEGER,
+                retired_at TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+
+            CREATE TABLE terminal_session_archive (
+                terminal_session_id TEXT PRIMARY KEY,
+                cols INTEGER NOT NULL,
+                rows INTEGER NOT NULL,
+                vt TEXT NOT NULL,
+                archived_at TEXT NOT NULL DEFAULT (datetime('now'))
             );
 
             CREATE TABLE task_blocker (
@@ -442,6 +459,20 @@ impl Db {
     }
 
     #[cfg(test)]
+    /// How many events of one type this task has, for tests that assert a
+    /// retirement was *not* announced.
+    pub fn count_test_task_events_of_type(
+        &self,
+        task_id: &str,
+        event_type: &str,
+    ) -> Result<i64, rusqlite::Error> {
+        self.conn.query_row(
+            "SELECT COUNT(*) FROM task_event WHERE task_id = ?1 AND type = ?2",
+            (task_id, event_type),
+            |row| row.get(0),
+        )
+    }
+
     pub fn count_test_worktrees_for_task(
         &self,
         pipeline_item_id: &str,

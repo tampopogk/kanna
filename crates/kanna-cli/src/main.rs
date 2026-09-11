@@ -77,6 +77,15 @@ pub(crate) enum Commands {
         #[command(subcommand)]
         command: MachineCommands,
     },
+    /// Write the startup shell's environment and cwd for the server that
+    /// launches the agent after it. Invoked by Kanna's own setup terminal;
+    /// hidden because it is not an operator command.
+    #[command(hide = true)]
+    SetupReceipt {
+        /// Where to write the receipt
+        #[arg(long)]
+        output: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -366,6 +375,49 @@ pub(crate) enum TaskCommands {
         line: Option<i64>,
 
         /// Machine whose desktop should open the file. Omit for this machine.
+        #[arg(long)]
+        machine_id: Option<String>,
+
+        /// Override the local Kanna server base URL
+        #[arg(long)]
+        server_url: Option<String>,
+    },
+    /// List the terminals a task owns
+    ///
+    /// A task no longer has exactly one: every launch runs the repository's
+    /// startup commands in a plain `setup` terminal of its own and the agent
+    /// CLI in an `agent` one, and a departing workspace's cleanup runs in a
+    /// `teardown` terminal. Only the agent terminal answers to the task id on
+    /// every other surface — logs, input, completion.
+    Terminals {
+        /// The task ID, or one of the task's branch names
+        #[arg(long)]
+        task_id: String,
+
+        /// Machine whose terminals to list. Omit for this machine.
+        #[arg(long)]
+        machine_id: Option<String>,
+
+        /// Override the local Kanna server base URL
+        #[arg(long)]
+        server_url: Option<String>,
+    },
+    /// Ask the Kanna desktop to open one of a task's terminals as a tab beside
+    /// that task's agent session
+    ///
+    /// Delivery is advisory, like `open-file`: the answer says the terminal
+    /// was requested, never that it was shown. Opening a terminal is a view —
+    /// it never starts, restarts, or writes to one.
+    OpenTerminal {
+        /// The task ID, or one of the task's branch names
+        #[arg(long)]
+        task_id: String,
+
+        /// The terminal's daemon session id, from `task terminals`
+        #[arg(long)]
+        session_id: String,
+
+        /// Machine whose desktop should open the terminal. Omit for this one.
         #[arg(long)]
         machine_id: Option<String>,
 
@@ -1172,6 +1224,9 @@ async fn main() {
         }
         Commands::Machine { command } => {
             commands::tool::run_machine(command).await;
+        }
+        Commands::SetupReceipt { output } => {
+            commands::setup_receipt::run(&output);
         }
     }
 }

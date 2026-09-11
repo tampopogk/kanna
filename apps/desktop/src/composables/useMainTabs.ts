@@ -15,6 +15,8 @@ export type MainTabKind =
   | "diff"
   | "file"
   | "shell"
+  | "terminal"
+  | "workspace"
   | "tree"
   | "graph"
   | "analytics"
@@ -43,6 +45,31 @@ export interface MainTabDescriptor {
   shellScope?: ShellTabScope;
   /** `image` tabs: the URL of the image to show. */
   imageUrl?: string;
+  /**
+   * `terminal` tabs: the daemon session this view shows.
+   *
+   * These are the task's *other* terminals — the startup shell a launch ran
+   * its setup in, and the teardown of a workspace it has left. The agent's own
+   * session is the `agent` tab and is never one of these, so a task can have
+   * several terminals open without any of them competing to be "the session".
+   */
+  terminalSessionId?: string;
+  /** `terminal` tabs: what to call it, e.g. "Startup · in progress". */
+  terminalTitle?: string;
+  /** `terminal` tabs: false once the process behind it has exited. */
+  terminalLive?: boolean;
+  /** `terminal` tabs: whether the server kept the terminal's final frame. */
+  terminalArchived?: boolean;
+  /**
+   * `terminal` tabs: the status the process exited with, once it has.
+   *
+   * A startup shell that failed is the whole reason its output is kept, so
+   * the tab has to be able to say so; without this a setup that exited 23
+   * read as "Startup · review finished."
+   */
+  terminalExitCode?: number | null;
+  /** `terminal` tabs: the task that owns the terminal, which addresses it. */
+  terminalTaskId?: string;
 }
 
 export interface MainTab extends MainTabDescriptor {
@@ -88,6 +115,15 @@ export function isRestorableTab(tab: MainTabDescriptor): boolean {
       return false;
     case "file":
       return Boolean(tab.filePath) && !tab.remoteContent;
+    case "workspace":
+      // The log is a read of durable server records, so it rebuilds honestly
+      // from nothing but the task it belongs to.
+      return true;
+    case "terminal":
+      // Restorable for the same reason a shell tab is: the session id is the
+      // launch's, recorded on the server, so the tab reattaches to whatever
+      // that session still has rather than to a remembered buffer.
+      return Boolean(tab.terminalSessionId);
     default:
       return true;
   }
@@ -98,6 +134,9 @@ function persistedDescriptor(tab: MainTabDescriptor): MainTabDescriptor {
   if (tab.filePath !== undefined) descriptor.filePath = tab.filePath;
   if (tab.initialLine !== undefined) descriptor.initialLine = tab.initialLine;
   if (tab.shellScope !== undefined) descriptor.shellScope = tab.shellScope;
+  if (tab.terminalSessionId !== undefined) descriptor.terminalSessionId = tab.terminalSessionId;
+  if (tab.terminalTitle !== undefined) descriptor.terminalTitle = tab.terminalTitle;
+  if (tab.terminalTaskId !== undefined) descriptor.terminalTaskId = tab.terminalTaskId;
   return descriptor;
 }
 
@@ -150,6 +189,8 @@ const TAB_SHORTCUT_CONTEXTS: Record<MainTabKind, ShortcutContext> = {
   diff: "diff",
   file: "file",
   shell: "shell",
+  terminal: "shell",
+  workspace: "main",
   tree: "tree",
   graph: "graph",
   analytics: "main",
@@ -168,6 +209,10 @@ export function mainTabId(descriptor: MainTabDescriptor): string {
       return AGENT_TAB_ID;
     case "shell":
       return descriptor.shellScope === "repo" ? "shell:repo" : "shell";
+    case "workspace":
+      return "workspace";
+    case "terminal":
+      return `terminal:${descriptor.terminalSessionId ?? ""}`;
     case "file":
       return `file:${descriptor.filePath ?? ""}`;
     case "image":

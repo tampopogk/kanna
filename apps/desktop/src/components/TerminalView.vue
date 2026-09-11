@@ -17,6 +17,8 @@ const props = defineProps<{
   agentProvider?: string
   worktreePath?: string
   agentTerminal?: boolean
+  /** False when no launch could still create this task's agent session. */
+  agentSessionCanStart?: boolean
   recoverSession?: (sessionId: string, options?: { cols?: number; rows?: number }) => Promise<void>
 }>()
 
@@ -36,6 +38,9 @@ const {
   agentProvider: props.agentProvider,
   worktreePath: props.worktreePath,
   agentTerminal: props.agentTerminal,
+  // A getter, not the value: a task that finishes while this tab is open must
+  // stop the view waiting for a session that will never arrive.
+  agentSessionCanStart: () => props.agentSessionCanStart !== false,
   recoverSession: props.recoverSession,
 })
 

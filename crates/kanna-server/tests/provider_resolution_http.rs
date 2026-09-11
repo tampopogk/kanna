@@ -426,7 +426,12 @@ async fn serve_fake_daemon_connection(
             | DaemonCommand::SpawnAgent { session_id, .. } => DaemonEvent::SessionCreated {
                 session_id: session_id.clone(),
             },
-            DaemonCommand::Kill { .. } | DaemonCommand::SubmitInput { .. } => DaemonEvent::Error {
+            // A stage transition asks for the outgoing agent's final frame
+            // before it kills the session. This daemon has no sessions, so it
+            // answers the way one with nothing to hand over does.
+            DaemonCommand::Snapshot { .. }
+            | DaemonCommand::Kill { .. }
+            | DaemonCommand::SubmitInput { .. } => DaemonEvent::Error {
                 code: Some(kanna_daemon::protocol::ErrorCode::SessionNotFound),
                 message: "session not found".to_string(),
             },
@@ -442,6 +447,7 @@ async fn serve_fake_daemon_connection(
                 | DaemonCommand::NegotiateTerminalGeometry { .. }
                 | DaemonCommand::Subscribe
                 | DaemonCommand::List
+                | DaemonCommand::Snapshot { .. }
         ) {
             let _ = commands.send(command);
         }

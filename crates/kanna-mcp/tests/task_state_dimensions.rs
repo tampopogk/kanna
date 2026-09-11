@@ -105,6 +105,7 @@ async fn a_wait_for_finished_resolves_when_the_agent_session_exits() {
     // so the session ending is the only thing that can resolve this wait.
     tokio::time::sleep(Duration::from_millis(500)).await;
     daemon.exit(TASK_ID, 0);
+    daemon.await_snapshot(TASK_ID);
 
     let waited = mcp.recv_task_within(Duration::from_secs(90));
     assert_eq!(
@@ -124,10 +125,8 @@ async fn a_wait_for_finished_resolves_when_the_agent_session_exits() {
 /// finished.
 ///
 /// This drives the daemon side of that invariant through the whole chain. The
-/// HTTP restore path cannot be driven from this fixture: its fake daemon stops
-/// accepting connections after the handshake, and the routes that reach the
-/// restore need a real worktree. That path is covered route-driven, against a
-/// fake daemon reporting the session `Present`, by
+/// HTTP restore path still needs a real worktree, so it is covered route-driven,
+/// against a fake daemon reporting the session `Present`, by
 /// `resuming_into_a_live_session_clears_the_exited_runtime_verdict` in
 /// `crates/kanna-server/src/task_creator/tests/recovery.rs`.
 #[tokio::test]
@@ -140,6 +139,7 @@ async fn a_withdrawn_exit_stops_resolving_a_wait_for_finished() {
     // The session is reported gone, and while that holds the wait is right to
     // resolve on it.
     daemon.exit(TASK_ID, 0);
+    daemon.await_snapshot(TASK_ID);
     await_stored_runtime_state(&server, TASK_ID, "exited").await;
 
     // It was not gone. Once the session is live again the terminal verdict no

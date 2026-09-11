@@ -31,6 +31,7 @@ export const unattendedRealE2eFiles = [
   "shell-modal-prewarmed-session.test.ts",
   "stage-continue-agent-submit.test.ts",
   "stage-workflow.test.ts",
+  "startup-terminal-archive.test.ts",
   "startup-window-size.test.ts",
   "task-base-branch.test.ts",
   "terminal-soft-newline.test.ts",

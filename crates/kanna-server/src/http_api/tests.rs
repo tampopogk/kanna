@@ -31,7 +31,46 @@ async fn read_test_daemon_command(
         .expect("fake daemon connection closed before the expected command")
 }
 
+/// The same read for a fixture whose script includes the snapshot itself — a
+/// test about what a kill *keeps* must see that read rather than have it
+/// answered away.
+async fn read_scripted_test_daemon_command(
+    reader: &mut tokio::io::BufReader<tokio::net::unix::OwnedReadHalf>,
+    writer: &mut tokio::net::unix::OwnedWriteHalf,
+) -> kanna_daemon::protocol::Command {
+    read_negotiated_test_daemon_command(reader, writer)
+        .await
+        .expect("fake daemon connection closed before the expected command")
+}
+
 async fn read_test_daemon_command_optional(
+    reader: &mut tokio::io::BufReader<tokio::net::unix::OwnedReadHalf>,
+    writer: &mut tokio::net::unix::OwnedWriteHalf,
+) -> Option<kanna_daemon::protocol::Command> {
+    use tokio::io::AsyncWriteExt;
+
+    loop {
+        let command = read_negotiated_test_daemon_command(reader, writer).await?;
+        // The kill that ends a task's agent session is preceded by the read
+        // that keeps its final frame. A fixture scripting a kill/spawn
+        // sequence is not about that read, and a daemon holding no such
+        // session answers it this way.
+        let kanna_daemon::protocol::Command::Snapshot { session_id } = &command else {
+            return Some(command);
+        };
+        let response = kanna_daemon::protocol::Event::Error {
+            code: Some(kanna_daemon::protocol::ErrorCode::SessionNotFound),
+            message: format!("session not found: {session_id}"),
+        };
+        writer
+            .write_all(format!("{}\n", serde_json::to_string(&response).unwrap()).as_bytes())
+            .await
+            .unwrap();
+    }
+}
+
+/// One command, with only the transport handshakes answered.
+async fn read_negotiated_test_daemon_command(
     reader: &mut tokio::io::BufReader<tokio::net::unix::OwnedReadHalf>,
     writer: &mut tokio::net::unix::OwnedWriteHalf,
 ) -> Option<kanna_daemon::protocol::Command> {
@@ -135,22 +174,12 @@ fn ensure_test_kanna_cli_sidecar() -> (PathBuf, bool) {
 }
 
 fn ensure_test_sidecar(name: &str) -> (PathBuf, bool) {
-    use std::os::unix::fs::PermissionsExt;
-
-    let sidecar_path = std::env::current_exe()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .join(name);
-    if sidecar_path.exists() {
-        return (sidecar_path, false);
-    }
-
-    std::fs::write(&sidecar_path, "#!/bin/sh\nexit 0\n").unwrap();
-    let mut permissions = std::fs::metadata(&sidecar_path).unwrap().permissions();
-    permissions.set_mode(0o755);
-    std::fs::set_permissions(&sidecar_path, permissions).unwrap();
-    (sidecar_path, true)
+    // The stub outlives the test that staged it; see
+    // `setup_terminal_fixture::ensure_test_sidecar_stub` for why.
+    (
+        crate::setup_terminal_fixture::ensure_test_sidecar_stub(name),
+        false,
+    )
 }
 
 const TEST_PROVIDER_NEUTRAL_WORKFLOW: &str = "test-provider-neutral";
@@ -320,5 +349,6 @@ mod repo_commands;
 mod repo_definitions;
 mod revision_status;
 mod task_events;
+mod task_terminals_routes;
 mod transfers;
 mod workflow_switch;

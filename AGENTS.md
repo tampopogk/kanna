@@ -383,6 +383,39 @@ the separate positive question-detection signal. See
 `docs/kanna-server-boundary.md` and
 `docs/2026-07-29-awaiting-input-detection-e2e-gap.md`.
 
+**A task owns several terminals, and only one of them is its agent.** A launch
+runs the repo's setup in a plain `setup` PTY of its own — visibly, where a
+person can read it — and the server starts the agent in the `agent` session only
+after that shell exits cleanly. Every launch (creation, stage advance, rerun)
+opens its own pair, so a stage boundary is a terminal boundary and a stage's
+startup output survives the stage; teardown is a `teardown` terminal by the same
+rule. `terminal_session.role` (`setup` / `agent` / `teardown` /
+`legacy_agent`, the pre-split mixed session) is what every agent-facing surface
+— logs, delivered input, raw keys, completion, composer, waiting prompts —
+checks before treating a session id as the task's, and a session with no
+recorded role is treated as the agent so a lookup failure never swallows a real
+completion. A plain terminal spawns with `agent_provider: None`, which resolves
+no detection rules, so a setup script printing something shaped like CLI chrome
+cannot be read as an agent waiting for an answer. What setup exports still
+reaches the agent, but deliberately now: the setup shell's last step is the
+bundled `kanna-cli setup-receipt`, whose private launch-scoped file the server
+merges into the agent's spawn environment before resolving the provider
+executable. Setup that fails, times out, or leaves no receipt starts no agent.
+`GET /v1/tasks/{id}/terminals` (`kanna_list_task_terminals`) says which
+terminals a task has, and whether each one's final frame was archived;
+`kanna_open_terminal` opens one as a tab, as a view and never a spawn. A retired
+terminal has no PTY to attach to, so its tab renders that **archive** — the
+bounded final frame the daemon captures before it drops a session, kept with the
+task's durable record and served by
+`GET /v1/tasks/{id}/terminals/{session_id}/archive` — read-only, and a terminal
+that kept none says so instead of looping on an attach that cannot succeed. A
+background launch is itself durable: a `task_launch` lifecycle intent is written
+before the startup terminal starts, so a server restart in that window finishes
+the launch exactly once (setup exited cleanly and left a receipt) or records a
+failed stage run naming the startup terminal, and never re-runs setup that
+succeeded. Headless (SDK) launches have no terminal to watch and keep their
+previous setup path. See `docs/kanna-server-boundary.md`.
+
 **A loopback address is not authority.** `kanna-server` listens on a port any
 web page the user opens can reach, so "the peer is `127.0.0.1`" describes the
 desktop app, the CLI, an MCP server and a sidecar — and equally a hostile page,

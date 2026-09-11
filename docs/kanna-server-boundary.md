@@ -2516,6 +2516,109 @@ clients must use this route rather than running a local git command with the
 owner's `worktreePath`; that path is machine-local. Mobile has no commit-graph
 surface today.
 
+## A Task Owns Several Terminals
+
+A task used to have exactly one PTY, and its id *was* that session's id, so
+"the task", "the task's session" and "the task's terminal" were one noun. The
+repo's startup commands ran inside the agent's own login shell — `pnpm install`
+and the agent's first turn sharing one scrollback — and a stage transition
+respawned the same session id over the top of it, which is why reading a stage
+boundary needed the outgoing terminal's history copied into its replacement.
+
+A launch now owns a **pair**. The repo's setup runs first, visibly, in a plain
+`setup` terminal of its own; when that shell exits cleanly the server starts the
+agent in the `agent` session. Every launch — task creation, a stage advance, a
+rerun — opens its own setup terminal, so a stage boundary is a terminal
+boundary and a stage's startup output is still there to read after the stage has
+moved on. Teardown of a departing workspace is a `teardown` terminal by the same
+rule; it used to run detached with nowhere to print at all.
+
+`terminal_session` carries what each one is: `role` (`setup` / `agent` /
+`teardown` / `legacy_agent`), the `stage` and launch `attempt` it belongs to,
+whether it is still `live`, and the status a finished one exited with.
+`GET /v1/tasks/{task_id}/terminals` (`kanna_list_task_terminals`) is how a
+client asks which terminals a task has — and whether each one's final frame was
+archived — rather than deriving one from its id, and
+`POST /v1/desktop/views/open-terminal` (`kanna_open_terminal`) opens one as a
+tab — a view, never a spawn.
+
+Three invariants hold this together:
+
+- **Only the agent terminal answers to the task id.** Task logs, delivered
+  input, raw keys, completion, the composer and waiting-prompt surfaces all
+  resolve a task to its agent session, and `terminal_session.role` is what makes
+  that resolution exact rather than a guess at a label. A `setup` session's
+  `Exit` is that shell finishing its own job, never an agent completing:
+  the watcher checks the role before running the agent-facing completion path,
+  and a session id with no record at all is treated as the agent, so a lookup
+  failure can never silently stop a real completion from being observed.
+- **A plain terminal is spawned without a provider.** `agent_provider: None`
+  resolves no detection rules, so a setup script that prints something shaped
+  like CLI chrome cannot be read as an agent waiting for an answer. Teardown was
+  previously spawned as Claude and is now plain for the same reason.
+- **What setup exports still reaches the agent.** The single shell gave that
+  away for free; splitting it means carrying it deliberately. The setup shell's
+  last successful step is the bundled `kanna-cli setup-receipt`, which writes
+  that shell's environment and working directory to a private, launch-scoped
+  file under the daemon directory. The server merges it into the agent's spawn
+  environment — dropping only the shell's own bookkeeping — and resolves the
+  provider executable against the PATH setup left behind. The receipt is
+  deleted when the launch reaches a durable outcome, not when it is read: it is
+  the only copy of what setup exported, so an interruption between reading it
+  and spawning the agent would otherwise leave nothing to finish the launch
+  from. It is a *readiness* receipt: it says setup finished and what it left
+  behind, and nothing about the task's outcome passes through it. Setup that
+  fails, times out, or leaves no receipt starts no agent and records the failure
+  against the task; the terminal holding the output that explains it stays.
+
+Rows written before the split carry `role = 'legacy_agent'`: one mixed session,
+deliberately not divided or restarted, still serving as that task's agent
+terminal until its next launch. The intra-terminal alternate/normal-buffer
+history that task 05ffa8d1 landed is unchanged, but a stage transition no
+longer carries the outgoing *agent* terminal's history into its replacement.
+Each stage and retry keeps its own: the transition retains the outgoing
+attempt — its final frame, its stage and its run — at the kill, while that
+session is still alive and still the only run its id has served, and the next
+agent starts on a fresh screen. A retained attempt is read-only, addressed by
+its own `terminal_session` record rather than by the daemon session id every
+attempt shares, and reopened from the task's Workspace log.
+
+A launch whose setup runs in a terminal finishes in the background: `POST
+/v1/tasks` answers as soon as the task, its workspace and its branch exist,
+because startup is repo work of unbounded length and a request held open for it
+would time out while the terminal it is waiting for is still printing. A
+headless (SDK) launch has no terminal to watch, so its setup still runs where it
+did.
+
+That background finish is a **durable lifecycle operation**, not a promise held
+in one process. The startup terminal is a daemon session and outlives the server
+that started it; the code waiting for it does not. A `task_launch` intent is
+therefore written to `lifecycle_operation_intent` *before* the terminal starts,
+and the next server generation resolves it from evidence rather than from a held
+future: the daemon says whether that shell is still running, and the receipt
+says whether setup finished — the startup shell writes it as its last step and
+only gets there when everything before it succeeded. A launch whose setup
+finished is completed exactly once, rebuilding the agent session from the task's
+own record and never re-running setup that already succeeded; anything else
+records a failed stage run that names the startup terminal. The same intent
+covers the inline path a dormant-task start and the merge agent use.
+
+**A retired terminal is still readable.** Its PTY is gone seconds after the
+process exits — the daemon removes the session and the recovery sidecar deletes
+its live snapshot — so a client that attached to a retired id would sit in a
+retry loop where a failed stage advance's diagnostics should be. Before dropping
+a session the daemon writes the headless terminal's **final frame** to a bounded
+archive (a rendered frame, not a raw ANSI transcript), at a natural exit and at
+an explicit kill alike, and serves it to a snapshot request for the dead id. The
+server copies that frame into the task's own record when it retires the
+terminal, so it outlives the daemon's snapshot directory;
+`GET /v1/tasks/{task_id}/terminals` reports `archived` for each terminal and
+`GET /v1/tasks/{task_id}/terminals/{session_id}/archive` serves the frame. A
+retired tab renders that archive read-only — input and resize are refused
+because there is nothing to receive them — and survives a desktop restart. A
+terminal that finished without an archive says so rather than being presented as
+readable.
+
 ## Desktop View Commands
 
 `POST /v1/desktop/views/open` (`kanna_open_file`) asks whichever desktop windows

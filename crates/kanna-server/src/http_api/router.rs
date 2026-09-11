@@ -3,7 +3,9 @@ use super::backup::create_backup;
 use super::cloud_desktops::{invoke_cloud_desktop, list_cloud_desktops};
 use super::cloud_relay::reconnect_cloud_relay;
 use super::desktop::list_desktops;
-use super::desktop_views::{open_desktop_view, wait_desktop_view_commands};
+use super::desktop_views::{
+    open_desktop_terminal_view, open_desktop_view, wait_desktop_view_commands,
+};
 #[cfg(debug_assertions)]
 use super::e2e_mobile_controls::{gate_direct_lan_http, update_e2e_mobile_machine_controls};
 #[cfg(debug_assertions)]
@@ -52,6 +54,7 @@ use super::task_input::send_task_input;
 use super::task_logs::task_logs;
 use super::task_ports::{claim_task_ports, release_task_ports};
 use super::task_raw_input::send_task_raw_input;
+use super::task_terminals::{list_task_terminals, read_task_activity, read_task_terminal_archive};
 use super::tasks::{
     create_task, get_task, get_task_children, get_task_inputs, get_tasks,
     list_closed_task_identities, list_recent_tasks, put_task, search_tasks, update_task,
@@ -120,6 +123,10 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/v2/stream", get(ksp_stream))
         .route("/v1/desktops", get(list_desktops))
         .route("/v1/desktop/views/open", post(open_desktop_view))
+        .route(
+            "/v1/desktop/views/open-terminal",
+            post(open_desktop_terminal_view),
+        )
         .route("/v1/desktop/view-commands", get(wait_desktop_view_commands))
         .route("/v1/repos", get(list_repos).post(add_repo))
         .route("/v1/repo-checkouts", post(start_repo_checkout))
@@ -225,6 +232,12 @@ pub fn router(state: Arc<AppState>) -> Router {
             get(dependent_tasks_exist),
         )
         .route("/v1/tasks/{task_id}/logs", get(task_logs))
+        .route("/v1/tasks/{task_id}/terminals", get(list_task_terminals))
+        .route(
+            "/v1/tasks/{task_id}/terminals/{session_id}/archive",
+            get(read_task_terminal_archive),
+        )
+        .route("/v1/tasks/{task_id}/activity", get(read_task_activity))
         // Photo attachments ride in this route's JSON body, so it alone opts
         // out of axum's default 2 MiB limit. See
         // `task_input_attachments::MAX_TASK_INPUT_BODY_BYTES` for the budget.

@@ -26,6 +26,9 @@ import MainTabBar from "./MainTabBar.vue";
 import DiffModal from "./DiffModal.vue";
 import FilePreviewModal from "./FilePreviewModal.vue";
 import ShellModal from "./ShellModal.vue";
+import TaskTerminalPanel from "./TaskTerminalPanel.vue";
+import WorkspaceLogPanel from "./WorkspaceLogPanel.vue";
+import type { DesktopTaskActivityEntry } from "../services/desktopServerClient";
 import TreeExplorerModal from "./TreeExplorerModal.vue";
 import CommitGraphModal from "./CommitGraphModal.vue";
 import AnalyticsModal from "./AnalyticsModal.vue";
@@ -40,7 +43,8 @@ import CloudTerminalCache, {
   type CloudTerminalCacheEntry,
 } from "./CloudTerminalCache.vue";
 
-const props = defineProps<{
+const props = withDefaults(
+  defineProps<{
   uiSlot: TaskUiSlot | null;
   repoPath?: string;
   spawnPtySession?: (sessionId: string, cwd: string, prompt: string, cols: number, rows: number) => Promise<void>;
@@ -57,11 +61,23 @@ const props = defineProps<{
   } | null;
   requestRevision?: (taskId: string, options: RequestRevisionOptions) => Promise<boolean>;
   /**
+   * The server's answer to whether a launch could still start this task's
+   * agent session. Undefined until the task's terminals have been read.
+   */
+  agentLaunchPending?: boolean;
+  /**
    * Present in the app; absent in isolated tests, where the panel is just the
    * agent session it has always been.
    */
   views?: MainTabViewsController;
-}>();
+  }>(),
+  {
+    // Vue casts an absent Boolean prop to `false`, which would make "not read
+    // yet" indistinguishable from "no launch can start" — and the view would
+    // give up on an agent whose setup is still running. Keep it undefined.
+    agentLaunchPending: undefined,
+  },
+);
 
 const emit = defineEmits<{
   (e: "back"): void;
@@ -74,6 +90,54 @@ const item = computed(() => props.uiSlot?.task ?? null);
 const tabs = computed<MainTab[]>(() => props.views?.tabs.tabs.value ?? []);
 const activeTabId = computed(() => props.views?.tabs.activeTabId.value ?? AGENT_TAB_ID);
 const agentTabActive = computed(() => activeTabId.value === AGENT_TAB_ID);
+/**
+ * Whether a launch could still create this task's agent session.
+ *
+ * The agent view cannot tell "the startup terminal is still running" from
+ * "this agent is gone for good" — the daemon refuses the attach identically —
+ * so the panel answers from the task's own record. A closed task has no launch
+ * left, and an `exited` runtime state is the server's verdict that the session
+ * ended unreplaced.
+ */
+/**
+ * Reopen one of the task's retained terminals from the Workspace log.
+ *
+ * Closing such a tab hides the view and leaves the record alone, so the log is
+ * where it is found again — and it comes back labelled and with its status,
+ * because the log already knows both and the tab would otherwise reopen as an
+ * anonymous "Terminal" that had finished for no stated reason.
+ */
+function openRetainedTerminal(payload: {
+  entry: DesktopTaskActivityEntry;
+  taskId: string;
+}): void {
+  const { entry, taskId } = payload;
+  if (!taskId || !entry.terminalSessionId) return;
+  props.views?.tabs.openTab({
+    kind: "terminal",
+    terminalSessionId: entry.terminalSessionId,
+    terminalTitle: entry.title,
+    terminalTaskId: taskId,
+    terminalLive: false,
+    terminalArchived: entry.archived,
+    terminalExitCode: entry.exitCode,
+  });
+}
+
+const agentSessionCanStart = computed(() => {
+  // The panel's own selected task, not a prop: MainPanel has no `item` prop,
+  // and reading one made this predicate permanently false at runtime as well
+  // as breaking the build.
+  const task = item.value;
+  if (!task) return false;
+  if (task.closed_at != null || task.runtime_state === "exited") return false;
+  // A launch that failed leaves no runtime state at all — it never had a
+  // session to report one — so the item alone cannot tell a failed launch from
+  // one whose startup terminal is still running. The server's answer does.
+  // Undefined means not yet read, and the view waits, which is the state a
+  // launch genuinely is in for its first moments.
+  return props.agentLaunchPending !== false;
+});
 const openViewTabs = computed(() => tabs.value.filter((tab) => tab.kind !== "agent"));
 /**
  * The panel's own empty state — "no task selected", or the agent-install help
@@ -225,7 +289,8 @@ function dismissActiveTab(): boolean {
   const tab = controller?.activeTab.value;
   if (!controller || !tab || tab.kind === "agent") return false;
   // A shell tab is a live terminal; Escape belongs to whatever runs in it.
-  if (tab.kind === "shell") return false;
+  // A task terminal is one too — its startup script may still be running.
+  if (tab.kind === "shell" || tab.kind === "terminal") return false;
   // A view with its own layered dismiss — a file's search, the tree's filter,
   // the graph's detail pane — gets to close that first.
   if (viewRefs.get(tab.id)?.dismiss?.() === false) return true;
@@ -731,6 +796,7 @@ function dismissCommandHint() {
             :session-id="item.id"
             :active="agentTabActive"
             :agent-type="item.agent_type || 'pty'"
+            :agent-session-can-start="agentSessionCanStart"
             :agent-provider="item.agent_provider"
             :repo-path="repoPath"
             :worktree-path="taskWorktreePath"
@@ -774,6 +840,25 @@ function dismissCommandHint() {
           embedded
           :active="activeTabId === tab.id"
           @close="closeTab(tab.id)"
+        />
+        <TaskTerminalPanel
+          v-else-if="tab.kind === 'terminal' && tab.terminalSessionId && (tab.terminalTaskId || item?.id)"
+          v-show="activeTabId === tab.id"
+          :task-id="tab.terminalTaskId || item?.id || ''"
+          :session-id="tab.terminalSessionId"
+          :title="tab.terminalTitle || $t('mainTabs.terminal')"
+          :live="tab.terminalLive"
+          :archived="tab.terminalArchived"
+          :exit-code="tab.terminalExitCode"
+          :active="activeTabId === tab.id"
+        />
+        <WorkspaceLogPanel
+          v-else-if="tab.kind === 'workspace' && item?.id"
+          v-show="activeTabId === tab.id"
+          :task-id="item.id"
+          :revision="item.updated_at"
+          :active="activeTabId === tab.id"
+          @open-terminal="openRetainedTerminal"
         />
         <TreeExplorerModal
           v-else-if="tab.kind === 'tree'"

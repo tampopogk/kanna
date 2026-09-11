@@ -1,5 +1,6 @@
 import { setTimeout as sleep } from "node:timers/promises";
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { installFakeAgent } from "../helpers/fakeAgent";
 import { WebDriverClient } from "../helpers/webdriver";
 import { cleanupWorktrees, importTestRepoDirect, resetDatabase } from "../helpers/reset";
 import { cleanupFixtureRepos, createSeedFixtureRepo } from "../helpers/fixture-repo";
@@ -39,15 +40,22 @@ interface PerfTask {
   prompt: string;
 }
 
-function buildStreamingSetupCommand(label: string): string {
-  return [
+/**
+ * Setup that installs the agent whose stream these measurements are of.
+ *
+ * Setup runs in its own terminal now, and the launch starts the agent only
+ * once that shell exits — so a streaming loop in setup would both measure the
+ * wrong session and leave the task with no agent session at all.
+ */
+function buildStreamingSetupCommands(label: string): string[] {
+  return installFakeAgent("claude", [
     "i=1",
     "while true; do",
-    `  printf '${label} live output %05d\\n' \"$i\"`,
+    `  printf '${label} live output %05d\\n' "$i"`,
     "  i=$((i+1))",
     "  sleep 0.05",
     "done",
-  ].join("; ");
+  ]);
 }
 
 function requireCreatedTaskId(value: string, label: string): string {
@@ -65,7 +73,7 @@ async function createStreamingTask(
     prompt: string;
   },
 ): Promise<PerfTask> {
-  const setupCmd = buildStreamingSetupCommand(options.prompt);
+  const setupCmds = buildStreamingSetupCommands(options.prompt);
   const taskId = await client.executeAsync<string>(
     `const cb = arguments[arguments.length - 1];
      const ctx = window.__KANNA_E2E__.setupState;
@@ -76,7 +84,7 @@ async function createStreamingTask(
          customTask: {
            executionMode: "pty",
            agentProvider: "claude",
-           setup: [${JSON.stringify(setupCmd)}],
+           setup: ${JSON.stringify(setupCmds)},
          },
        })
      ).then((id) => cb(id)).catch((error) => cb(String(error)));`,

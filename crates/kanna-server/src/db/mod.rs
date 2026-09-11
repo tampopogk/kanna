@@ -33,6 +33,7 @@ mod snapshot;
 mod stage_runs;
 mod task_events;
 mod task_inputs;
+mod terminal_sessions;
 #[cfg(test)]
 mod test_support;
 #[cfg(test)]
@@ -69,6 +70,10 @@ pub use task_events::{
 };
 #[allow(unused_imports)]
 pub use task_inputs::{RawInputWriteRecord, TaskInputRecord, TaskInputSource};
+pub use terminal_sessions::{
+    NewTaskTerminalSession, TaskTerminalSession, TerminalSessionArchive, ROLE_AGENT, ROLE_SETUP,
+    ROLE_TEARDOWN,
+};
 #[allow(unused_imports)]
 pub use transfer_work::{TransferWorkItem, MAX_TRANSFER_WORK_ATTEMPTS};
 pub use transfers::{
@@ -155,6 +160,10 @@ pub(crate) const CURRENT_SCHEMA_MIGRATIONS: &[&str] = &[
     "069_retire_pre_existing_transfer_alerts",
     "070_provider_quota_rejection_log",
     "071_event_subscriptions",
+    "072_terminal_session_roles",
+    "073_terminal_session_archive",
+    "074_task_launch_lifecycle_operation",
+    "075_terminal_archive_per_attempt",
     "072_human_review_decision",
 ];
 
@@ -2181,12 +2190,118 @@ fn run_schema_migrations(conn: &Connection) -> Result<(), rusqlite::Error> {
         create_event_subscription_schema,
     )?;
 
+    run_migration(conn, "072_terminal_session_roles", |conn| {
+        // A task's PTY history stops being one anonymous stream here. Setup
+        // and the agent run in separate sessions, and each stage launches its
+        // own, so every row has to say which one it is and which launch it
+        // belongs to. Existing rows are the pre-split mixed session: they are
+        // the task's agent terminal, and they keep serving as it.
+        add_column(
+            conn,
+            "terminal_session",
+            "role",
+            "TEXT NOT NULL DEFAULT 'agent'",
+        )?;
+        add_column(conn, "terminal_session", "stage", "TEXT")?;
+        add_column(
+            conn,
+            "terminal_session",
+            "attempt",
+            "INTEGER NOT NULL DEFAULT 1",
+        )?;
+        add_column(
+            conn,
+            "terminal_session",
+            "state",
+            "TEXT NOT NULL DEFAULT 'live'",
+        )?;
+        add_column(conn, "terminal_session", "stage_run_id", "TEXT")?;
+        add_column(conn, "terminal_session", "title", "TEXT")?;
+        add_column(conn, "terminal_session", "exit_code", "INTEGER")?;
+        add_column(conn, "terminal_session", "retired_at", "TEXT")?;
+        conn.execute_batch(
+            "UPDATE terminal_session SET role = 'legacy_agent' WHERE role = 'agent';
+             CREATE INDEX IF NOT EXISTS idx_terminal_session_task_role
+               ON terminal_session(pipeline_item_id, role, state);",
+        )
+    })?;
+
+    run_migration(conn, "073_terminal_session_archive", |conn| {
+        // A retired terminal is still readable. The daemon keeps the final
+        // frame only as long as its own snapshot directory survives, so the
+        // durable copy lives here: the frame a person reads after a failed
+        // stage advance must outlive the daemon, the app, and the machine's
+        // next reboot.
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS terminal_session_archive (
+               session_id TEXT PRIMARY KEY,
+               cols INTEGER NOT NULL,
+               rows INTEGER NOT NULL,
+               vt TEXT NOT NULL,
+               archived_at TEXT NOT NULL DEFAULT (datetime('now'))
+             );",
+        )
+    })?;
+
+    run_migration(conn, "074_task_launch_lifecycle_operation", |conn| {
+        // A launch that finishes in the background is a lifecycle operation
+        // like the others: the startup terminal runs, and the agent it
+        // precedes is started by a task in this process. Without a durable
+        // intent a restart in that window leaves a task with no agent, no
+        // stage run, and nothing that ever tries again.
+        //
+        // The kind is part of a CHECK, so widening it means rebuilding the
+        // table; the rows are in-flight operations and are carried across.
+        conn.execute_batch(
+            "ALTER TABLE lifecycle_operation_intent RENAME TO lifecycle_operation_intent_old;
+             CREATE TABLE lifecycle_operation_intent (
+                id TEXT PRIMARY KEY,
+                task_id TEXT NOT NULL REFERENCES pipeline_item(id) ON DELETE CASCADE,
+                kind TEXT NOT NULL CHECK (kind IN ('post', 'stage_spawn', 'task_launch')),
+                phase TEXT NOT NULL CHECK (phase IN ('prepared', 'spawn_ready', 'submitted', 'committed')),
+                payload_json TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+             );
+             INSERT INTO lifecycle_operation_intent
+               (id, task_id, kind, phase, payload_json, created_at)
+               SELECT id, task_id, kind, phase, payload_json, created_at
+               FROM lifecycle_operation_intent_old;
+             DROP TABLE lifecycle_operation_intent_old;
+             CREATE UNIQUE INDEX idx_lifecycle_operation_intent_task
+               ON lifecycle_operation_intent(task_id);",
+        )
+    })?;
+
+    run_migration(conn, "075_terminal_archive_per_attempt", |conn| {
+        // The archive was keyed by daemon session id. A task's agent keeps one
+        // session id across every stage and retry, so each attempt's final
+        // frame overwrote the last and the stage history the plan promises was
+        // one row deep. Key it by the terminal *record* instead — one row per
+        // attempt, which is what `terminal_session` already counts.
+        conn.execute_batch(
+            "ALTER TABLE terminal_session_archive RENAME TO terminal_session_archive_old;
+             CREATE TABLE terminal_session_archive (
+               terminal_session_id TEXT PRIMARY KEY
+                 REFERENCES terminal_session(id) ON DELETE CASCADE,
+               cols INTEGER NOT NULL,
+               rows INTEGER NOT NULL,
+               vt TEXT NOT NULL,
+               archived_at TEXT NOT NULL DEFAULT (datetime('now'))
+             );
+             INSERT OR IGNORE INTO terminal_session_archive
+               (terminal_session_id, cols, rows, vt, archived_at)
+               SELECT t.id, a.cols, a.rows, a.vt, a.archived_at
+               FROM terminal_session_archive_old a
+               JOIN terminal_session t ON t.daemon_session_id = a.session_id;
+             DROP TABLE terminal_session_archive_old;",
+        )
+    })?;
+
     run_migration(
         conn,
         "072_human_review_decision",
         create_human_review_schema,
     )?;
-
     Ok(())
 }
 

@@ -607,6 +607,27 @@ pub(crate) async fn stream_output(
         }
     }
 
+    // The live snapshot dies with the session, so copy the final frame into
+    // the archive first: a retired terminal is still readable, and a failed
+    // stage advance points a person straight at it. The frame comes from this
+    // session's own headless terminal — the source a live `Snapshot` serves —
+    // rather than from the recovery mirror, which drops writes under pressure
+    // and answers nothing while its worker restarts.
+    let final_frame = match session.snapshot(&session_id).await {
+        Ok(frame) => Some(frame),
+        Err(error) => {
+            log::warn!(
+                "[stream] could not read session={session_id} final frame from its own terminal;                  falling back to the recovery mirror: {error}"
+            );
+            None
+        }
+    };
+    if let Err(error) = recovery_manager
+        .archive_session(&session_id, final_frame)
+        .await
+    {
+        log::warn!("[stream] failed to archive session={session_id} final frame: {error}");
+    }
     let evt = Event::Exit {
         session_id: session_id.clone(),
         code: exit_code,

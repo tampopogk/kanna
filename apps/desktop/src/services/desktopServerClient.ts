@@ -336,6 +336,102 @@ export async function fetchDesktopTaskDetail(taskId: string): Promise<DesktopTas
   return await requestJson<DesktopTaskDetail>(`/v1/tasks/${encodeURIComponent(taskId)}`);
 }
 
+/**
+ * One terminal a task owns.
+ *
+ * A task used to have exactly one, derived from its id. A launch now runs its
+ * setup in a `setup` terminal of its own and the agent in an `agent` one, and
+ * every launch — a stage advance, a rerun — opens a new pair, so the terminals
+ * a task has are read from the server rather than derived. `legacyAgent` is a
+ * session from before the split: one mixed terminal, still serving as that
+ * task's agent, deliberately not restarted or divided.
+ */
+export interface DesktopTaskTerminal {
+  id: string;
+  taskId: string | null;
+  repoId: string;
+  daemonSessionId: string | null;
+  role: "setup" | "agent" | "teardown" | "legacy_agent";
+  stage: string | null;
+  attempt: number;
+  state: "live" | "retired";
+  stageRunId: string | null;
+  title: string | null;
+  cwd: string | null;
+  exitCode: number | null;
+  createdAt: string;
+  retiredAt: string | null;
+  /**
+   * Whether this terminal's final frame was kept when it finished.
+   *
+   * A retired terminal with an archive is readable; one without it is not,
+   * and must not be offered as though it were.
+   */
+  archived: boolean;
+}
+
+export interface DesktopTerminalArchive {
+  sessionId: string;
+  cols: number;
+  rows: number;
+  vt: string;
+  archivedAt: string;
+}
+
+export interface DesktopTaskTerminals {
+  taskId: string;
+  agentSessionId: string | null;
+  terminals: DesktopTaskTerminal[];
+  /**
+   * Whether a launch could still produce this task's agent session.
+   *
+   * The daemon refuses an attach identically whether the startup terminal is
+   * still running or the launch failed, so this is the server's answer to the
+   * difference. Optional so an older server simply leaves the question open.
+   */
+  agentLaunchPending?: boolean;
+}
+
+export async function fetchDesktopTaskTerminals(taskId: string): Promise<DesktopTaskTerminals> {
+  return await requestJson<DesktopTaskTerminals>(
+    `/v1/tasks/${encodeURIComponent(taskId)}/terminals`,
+  );
+}
+
+/** One thing that happened to a task's workspace, in the order it happened. */
+export interface DesktopTaskActivityEntry {
+  kind: "terminal" | "agent";
+  at: string;
+  title: string;
+  stage: string | null;
+  attempt: number | null;
+  exitCode: number | null;
+  terminalSessionId: string | null;
+  archived: boolean;
+  status: string | null;
+  result: string | null;
+}
+
+export interface DesktopTaskActivity {
+  taskId: string;
+  entries: DesktopTaskActivityEntry[];
+}
+
+export async function fetchDesktopTaskActivity(taskId: string): Promise<DesktopTaskActivity> {
+  return await requestJson<DesktopTaskActivity>(
+    `/v1/tasks/${encodeURIComponent(taskId)}/activity`,
+  );
+}
+
+export async function fetchDesktopTerminalArchive(
+  taskId: string,
+  sessionId: string,
+): Promise<DesktopTerminalArchive> {
+  return await requestJson<DesktopTerminalArchive>(
+    `/v1/tasks/${encodeURIComponent(taskId)}/terminals/${encodeURIComponent(sessionId)}/archive`,
+  );
+}
+
 export interface CreateDesktopTaskRequest {
   requestedTaskId?: string;
   repoId: string;

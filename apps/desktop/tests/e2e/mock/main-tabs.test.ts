@@ -6,6 +6,7 @@ import { WebDriverClient } from "../helpers/webdriver";
 import { cleanupFixtureRepos, createSeedFixtureRepo } from "../helpers/fixture-repo";
 import { resolveAppKannaServer } from "../helpers/kannaServer";
 import { cleanupWorktrees, importTestRepo, resetDatabase } from "../helpers/reset";
+import { appendE2ePerfSummaryLine } from "../helpers/perfOutput";
 import { callVueMethod, getVueState, tauriInvoke } from "../helpers/vue";
 
 /**
@@ -438,10 +439,19 @@ describe("main content area tabs", () => {
        else store.selectedItemId = null;
        setTimeout(function() { cb("ok"); }, 200);`
     );
-    await sleep(400);
 
-    // A repository has no agent session, so its tab set starts empty.
-    expect(await openTabIds(client)).toEqual([]);
+    // A repository has no agent session, so its tab set starts empty. The
+    // deselect is reactive, so this waits for it to land rather than for a
+    // fixed interval — on a loaded machine the old sleep expired first and
+    // read the task's tabs.
+    let repoTabs: string[] = ["agent"];
+    const deselected = Date.now() + 10_000;
+    while (Date.now() < deselected) {
+      repoTabs = await openTabIds(client);
+      if (repoTabs.length === 0) break;
+      await sleep(100);
+    }
+    expect(repoTabs).toEqual([]);
 
     await pressShortcut(client, { key: "g", meta: true });
     await waitForActiveTab(client, "graph");
@@ -519,6 +529,433 @@ describe("main content area tabs", () => {
     await pressShortcut(client, { key: "Escape" });
     await waitForActiveTab(client, "agent");
     expect(await openTabIds(client)).toEqual(["agent"]);
+  });
+
+  it("shows a launch's startup terminal as its own tab, beside the agent session", async () => {
+    await selectTask(taskId);
+    await closeViewTabs(client);
+    await waitForActiveTab(client, "agent");
+
+    const server = await resolveAppKannaServer(client);
+    const setupSessionId = `setup-${taskId}-1`;
+    // A launch records its startup terminal when the daemon acknowledges it;
+    // the desktop reads that record rather than being told about it, which is
+    // what makes a tab appear after a missed event or a restart too.
+    const recorded = await client.executeAsync<string>(
+      `const cb = arguments[arguments.length - 1];
+       const ctx = window.__KANNA_E2E__.setupState;
+       const db = ctx.db.value || ctx.db;
+       db.execute("INSERT INTO terminal_session (id, repo_id, pipeline_item_id, label, cwd, daemon_session_id, role, stage, attempt, state, title) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+         ["${setupSessionId}", "${await getVueState(client, "selectedRepoId")}", "${taskId}", "setup", "${testRepoPath}", "${setupSessionId}", "setup", "in progress", 1, "live", "Startup · in progress"])
+         .then(function() { cb("ok"); })
+         .catch(function(e) { cb("err:" + (e && e.message ? e.message : String(e))); });`
+    );
+    if (typeof recorded === "string" && recorded.startsWith("err:")) {
+      throw new Error(`recording the startup terminal failed: ${recorded.slice(4)}`);
+    }
+    // The server is the source of truth for which terminals a task has, and a
+    // task now has more than one — only the agent one answers to the task id.
+    const terminals = await localProcessFetch(
+      `${server.baseUrl}/v1/tasks/${taskId}/terminals`,
+    );
+    expect(terminals.ok).toBe(true);
+    const listed = await terminals.json() as {
+      agentSessionId: string | null;
+      terminals: { role: string; daemonSessionId: string | null }[];
+    };
+    expect(listed.agentSessionId).toBe(taskId);
+    expect(listed.terminals.some((terminal) =>
+      terminal.role === "setup" && terminal.daemonSessionId === setupSessionId
+    )).toBe(true);
+
+    // Re-selecting is what re-reads the task's terminals.
+    await selectTask(secondTaskId);
+    await selectTask(taskId);
+
+    const deadline = Date.now() + 10_000;
+    let tabs: string[] = [];
+    while (Date.now() < deadline) {
+      tabs = await openTabIds(client);
+      if (tabs.includes(`terminal:${setupSessionId}`)) break;
+      await sleep(200);
+    }
+    // The workspace log arrives with the task's own terminals: it is the
+    // chronological view of what this launch did, and the startup terminal is
+    // one entry in it.
+    expect(tabs).toEqual(["agent", "workspace", `terminal:${setupSessionId}`]);
+    // A startup terminal appearing must not pull the reader off the agent.
+    expect(await activeTabId(client)).toBe("agent");
+
+    const label = await client.executeSync<string | null>(
+      `const tab = document.querySelector('[data-testid="main-tab-terminal:${setupSessionId}"] .main-tab-label');
+       return tab ? tab.textContent.trim() : null;`
+    );
+    expect(label).toBe("Startup · in progress");
+
+    // And the log is named for what it is. Without a label key of its own it
+    // fell back to the agent's, so the bar showed two tabs called "Agent".
+    const workspaceLabel = await client.executeSync<string | null>(
+      `const tab = document.querySelector('[data-testid="main-tab-workspace"] .main-tab-label');
+       return tab ? tab.textContent.trim() : null;`
+    );
+    expect(workspaceLabel).toBe("Workspace");
+
+    // It is a view of a session the launch owns, so closing it hides the view
+    // and leaves the record alone: reopening shows the same terminal.
+    await client.executeSync(
+      `const close = document.querySelector('[data-testid="main-tab-close-terminal:${setupSessionId}"]');
+       if (!close) throw new Error("the startup terminal tab has no close button");
+       close.click();
+       return true;`
+    );
+    await sleep(300);
+    expect(await openTabIds(client)).toEqual(["agent", "workspace"]);
+
+    const still = await localProcessFetch(`${server.baseUrl}/v1/tasks/${taskId}/terminals`);
+    const stillListed = await still.json() as { terminals: { role: string }[] };
+    expect(stillListed.terminals.some((terminal) => terminal.role === "setup")).toBe(true);
+
+    await client.executeAsync<string>(
+      `const cb = arguments[arguments.length - 1];
+       const ctx = window.__KANNA_E2E__.setupState;
+       const db = ctx.db.value || ctx.db;
+       db.execute("DELETE FROM terminal_session WHERE id = ?", ["${setupSessionId}"])
+         .then(function() { cb("ok"); })
+         .catch(function(e) { cb("err:" + (e && e.message ? e.message : String(e))); });`
+    );
+    await sleep(1_200);
+  });
+
+  /**
+   * A stage advance records its startup terminal before that setup runs, and
+   * writes nothing to the task row until the transition lands — so the tab
+   * cannot wait on the snapshot revision the reader's task otherwise changes
+   * on. The edge it waits on instead is the terminal's own session being
+   * created, which is what this drives: the record, then the daemon session,
+   * with the reader sitting on the task the whole time.
+   *
+   * The advance itself is a server concern and is covered there; what has to
+   * be proven here is that the desktop reacts to a terminal appearing without
+   * the reader reselecting and without a poll.
+   */
+  it("shows a stage's startup terminal while its setup is still running", async () => {
+    await selectTask(taskId);
+    await closeViewTabs(client);
+    await waitForActiveTab(client, "agent");
+
+    const stageSetupSessionId = `setup-${taskId}-2`;
+    const repoId = await getVueState(client, "selectedRepoId") as string;
+    const recorded = await client.executeAsync<string>(
+      `const cb = arguments[arguments.length - 1];
+       const ctx = window.__KANNA_E2E__.setupState;
+       const db = ctx.db.value || ctx.db;
+       db.execute("INSERT INTO terminal_session (id, repo_id, pipeline_item_id, label, cwd, daemon_session_id, role, stage, attempt, state, title) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+         ["${stageSetupSessionId}", "${repoId}", "${taskId}", "setup", "${testRepoPath}", "${stageSetupSessionId}", "setup", "review", 2, "live", "Startup · review"])
+         .then(function() { cb("ok"); })
+         .catch(function(e) { cb("err:" + (e && e.message ? e.message : String(e))); });`
+    );
+    if (typeof recorded === "string" && recorded.startsWith("err:")) {
+      throw new Error(`recording the stage startup terminal failed: ${recorded.slice(4)}`);
+    }
+
+    // The daemon session the launch starts next. Nothing selects, reselects,
+    // or touches the task row from here on.
+    const spawned = await tauriInvoke(client, "spawn_session", {
+      sessionId: stageSetupSessionId,
+      cwd: testRepoPath,
+      executable: "/bin/zsh",
+      args: ["-c", "printf 'STAGE_SETUP_RUNNING\\n'; while true; do sleep 60; done"],
+      env: {},
+      cols: 80,
+      rows: 24,
+    });
+    if (spawned && typeof spawned === "object" && "__error" in spawned) {
+      throw new Error(`spawning the stage startup terminal failed: ${String((spawned as { __error: unknown }).__error)}`);
+    }
+
+    const deadline = Date.now() + 15_000;
+    let tabs: string[] = [];
+    while (Date.now() < deadline) {
+      tabs = await openTabIds(client);
+      if (tabs.includes(`terminal:${stageSetupSessionId}`)) break;
+      await sleep(200);
+    }
+    expect(tabs).toContain(`terminal:${stageSetupSessionId}`);
+    // A startup terminal appearing must not pull the reader off the agent.
+    expect(await activeTabId(client)).toBe("agent");
+
+    // And it shows the setup that is running: a live startup terminal is a
+    // session in its own right, so the tab attaches to it directly rather
+    // than resolving the task's agent session and finding nothing.
+    await client.executeSync(
+      `document.querySelector('[data-testid="main-tab-terminal:${stageSetupSessionId}"]').click();`
+    );
+    const liveDeadline = Date.now() + 20_000;
+    let liveLines: string[] = [];
+    while (Date.now() < liveDeadline) {
+      liveLines = await client.executeSync<string[]>(
+        `const buffers = window.__KANNA_E2E__.terminalBuffers;
+         if (!buffers || !buffers.sessionIds().includes("${stageSetupSessionId}")) return [];
+         return buffers.lines("${stageSetupSessionId}");`
+      );
+      if (liveLines.some((line) => line.includes("STAGE_SETUP_RUNNING"))) break;
+      await sleep(200);
+    }
+    expect(liveLines.some((line) => line.includes("STAGE_SETUP_RUNNING"))).toBe(true);
+
+    await tauriInvoke(client, "kill_session", { sessionId: stageSetupSessionId }).catch(() => null);
+    await client.executeAsync<string>(
+      `const cb = arguments[arguments.length - 1];
+       const ctx = window.__KANNA_E2E__.setupState;
+       const db = ctx.db.value || ctx.db;
+       db.execute("DELETE FROM terminal_session WHERE id = ?", ["${stageSetupSessionId}"])
+         .then(function() { cb("ok"); })
+         .catch(function(e) { cb("err:" + (e && e.message ? e.message : String(e))); });`
+    );
+    await closeViewTabs(client);
+    await sleep(1_200);
+  });
+
+  /**
+   * `kanna_open_terminal` on a terminal that has already finished has to show
+   * what it printed. The command carries what the server knows about that
+   * terminal — including whether its final frame was kept — because a tab that
+   * assumed the worst told the reader the output was gone while the archive
+   * sat beside it.
+   */
+  it("renders the archived frame of a retired terminal opened through the tab surface", async () => {
+    await selectTask(taskId);
+    await closeViewTabs(client);
+    await waitForActiveTab(client, "agent");
+
+    const server = await resolveAppKannaServer(client);
+    const retiredSessionId = `setup-${taskId}-3`;
+    const repoId = await getVueState(client, "selectedRepoId") as string;
+    const archived = await client.executeAsync<string>(
+      `const cb = arguments[arguments.length - 1];
+       const ctx = window.__KANNA_E2E__.setupState;
+       const db = ctx.db.value || ctx.db;
+       db.execute("INSERT INTO terminal_session (id, repo_id, pipeline_item_id, label, cwd, daemon_session_id, role, stage, attempt, state, title, exit_code, retired_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))",
+         ["${retiredSessionId}", "${repoId}", "${taskId}", "setup", "${testRepoPath}", "${retiredSessionId}", "setup", "in progress", 3, "retired", "Startup · in progress", 23])
+         .then(function() {
+           // Keyed by the terminal *record*, not the daemon session id: a
+           // task's agent reuses one session id across every attempt, so
+           // migration 075 moved the archive onto the record that names one.
+           return db.execute("INSERT INTO terminal_session_archive (terminal_session_id, cols, rows, vt) VALUES (?, ?, ?, ?)",
+             ["${retiredSessionId}", 80, 24, "ARCHIVED_FRAME_SENTINEL\\r\\n"]);
+         })
+         .then(function() { cb("ok"); })
+         .catch(function(e) { cb("err:" + (e && e.message ? e.message : String(e))); });`
+    );
+    if (typeof archived === "string" && archived.startsWith("err:")) {
+      throw new Error(`recording the retired terminal failed: ${archived.slice(4)}`);
+    }
+
+    try {
+    // First the way reconciliation opens one: behind the tab on screen. xterm
+    // measures its character cell when the terminal is opened, so a terminal
+    // opened into a box with no size painted empty rows over a full buffer —
+    // the archive was in memory and invisible on screen. Assert what is
+    // painted, not what was written.
+    await selectTask(secondTaskId);
+    await selectTask(taskId);
+    const hiddenDeadline = Date.now() + 15_000;
+    let hiddenTabs: string[] = [];
+    while (Date.now() < hiddenDeadline) {
+      hiddenTabs = await openTabIds(client);
+      if (hiddenTabs.includes(`terminal:${retiredSessionId}`)) break;
+      await sleep(250);
+    }
+    expect(hiddenTabs).toContain(`terminal:${retiredSessionId}`);
+    expect(await activeTabId(client)).toBe("agent");
+
+    await client.executeSync(
+      `document.querySelector('[data-testid="main-tab-terminal:${retiredSessionId}"]').click();`
+    );
+    await waitForActiveTab(client, `terminal:${retiredSessionId}`);
+
+    // xterm paints on an animation frame, and an unactivated WKWebView
+    // delivers none — which is how this harness launches every mock-lane app
+    // (`KANNA_E2E_NO_ACTIVATE=1`, see docs/dev/testing.md). Probe once, up
+    // front: a blank archive and a suspended compositor are otherwise the same
+    // observation, so asserting paint unconditionally fails the committed lane
+    // for a reason that has nothing to do with the archive.
+    const compositor = await client.executeAsync<string>(
+      `const cb = arguments[arguments.length - 1];
+       var fired = false;
+       requestAnimationFrame(function () { fired = true; });
+       setTimeout(function () {
+         cb(JSON.stringify({
+           visibilityState: document.visibilityState,
+           hasFocus: document.hasFocus(),
+           rafFiredWithin250ms: fired,
+         }));
+       }, 250);`
+    );
+    const paintObservable = compositor.includes('"rafFiredWithin250ms":true');
+    if (!paintObservable) {
+      // Through the runner's own notice channel, not `console.log` or a test
+      // annotation: the reporter prints neither for a passing test, so either
+      // would be the silent pass this exists to prevent. The runner writes
+      // this file to stdout when the target finishes.
+      await appendE2ePerfSummaryLine(
+        `[e2e][main-tabs] painted-archive assertions SKIPPED — no animation frame delivered ` +
+          `(${compositor}). The archive's data and tab lifecycle are still asserted. ` +
+          "To execute the paint proof: KANNA_E2E_NO_ACTIVATE=0 pnpm --dir apps/desktop " +
+          "test:e2e mock/main-tabs.test.ts",
+      );
+    }
+
+    async function archiveRowsText(): Promise<string> {
+      return client.executeSync<string>(
+        `const rows = document.querySelector('[data-testid="task-terminal-archive"][data-session-id="${retiredSessionId}"] .xterm-rows');
+         return rows ? rows.textContent : "";`
+      );
+    }
+    async function archiveBufferLines(): Promise<string[]> {
+      return client.executeSync<string[]>(
+        `const buffers = window.__KANNA_E2E__.terminalBuffers;
+         if (!buffers || !buffers.sessionIds().includes("${retiredSessionId}")) return [];
+         return buffers.lines("${retiredSessionId}");`
+      );
+    }
+    async function expectArchivePresent(): Promise<void> {
+      const deadline = Date.now() + 15_000;
+      if (paintObservable) {
+        let rows = "";
+        while (Date.now() < deadline) {
+          rows = await archiveRowsText();
+          if (rows.includes("ARCHIVED_FRAME_SENTINEL")) break;
+          await sleep(250);
+        }
+        expect(rows).toContain("ARCHIVED_FRAME_SENTINEL");
+        return;
+      }
+      // No frames: the renderer cannot paint, so prove the archive reached the
+      // terminal it would paint from.
+      let lines: string[] = [];
+      while (Date.now() < deadline) {
+        lines = await archiveBufferLines();
+        if (lines.some((line) => line.includes("ARCHIVED_FRAME_SENTINEL"))) break;
+        await sleep(250);
+      }
+      expect(lines.some((line) => line.includes("ARCHIVED_FRAME_SENTINEL"))).toBe(true);
+    }
+
+    await expectArchivePresent();
+    await client.executeSync(
+      `const close = document.querySelector('[data-testid="main-tab-close-terminal:${retiredSessionId}"]');
+       if (close) close.click();
+       return true;`
+    );
+    await sleep(300);
+
+    const opened = await localProcessFetch(`${server.baseUrl}/v1/desktop/views/open-terminal`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ taskId, sessionId: retiredSessionId }),
+    });
+    expect(opened.ok).toBe(true);
+
+    await waitForActiveTab(client, `terminal:${retiredSessionId}`);
+
+    const deadline = Date.now() + 15_000;
+    let lines: string[] = [];
+    while (Date.now() < deadline) {
+      lines = await client.executeSync<string[]>(
+        `const buffers = window.__KANNA_E2E__.terminalBuffers;
+         if (!buffers || !buffers.sessionIds().includes("${retiredSessionId}")) return [];
+         return buffers.lines("${retiredSessionId}");`
+      );
+      if (lines.some((line) => line.includes("ARCHIVED_FRAME_SENTINEL"))) break;
+      await sleep(200);
+    }
+    expect(lines.some((line) => line.includes("ARCHIVED_FRAME_SENTINEL"))).toBe(true);
+
+    // Painted, not merely buffered — the same proof for a tab that was active
+    // from the moment it mounted, under the same compositor condition.
+    await expectArchivePresent();
+
+    // And it says what the startup actually exited with — the reason its
+    // output is worth keeping — rather than reading as an ordinary finish, and
+    // never claims the output was not kept.
+    const banner = await client.executeSync<string>(
+      `const status = document.querySelector('[data-testid="task-terminal-finished"][data-session-id="${retiredSessionId}"]');
+       return status ? status.textContent.trim() : "";`
+    );
+    expect(banner).not.toContain("was not kept");
+    expect(banner).toContain("status 23");
+
+    // Closing a retained terminal hides the view and leaves the record alone,
+    // so the Workspace log is where it is found again. Reconciliation
+    // deliberately never reopens a tab the reader closed, which is exactly why
+    // the log has to be able to.
+    await client.executeSync(
+      `const close = document.querySelector('[data-testid="main-tab-close-terminal:${retiredSessionId}"]');
+       if (!close) throw new Error("the retained terminal tab has no close button");
+       close.click();
+       return true;`
+    );
+    await sleep(300);
+    expect(await openTabIds(client)).not.toContain(`terminal:${retiredSessionId}`);
+
+    // The log is already open: reconciliation gives every task one, and this
+    // task's terminals were read when the tab above appeared. Leaving and
+    // returning to the task here only re-created the panel under the click.
+    const workspaceDeadline = Date.now() + 15_000;
+    let workspaceTab = false;
+    while (Date.now() < workspaceDeadline) {
+      workspaceTab = await client.executeSync<boolean>(
+        `const tab = document.querySelector('[data-testid="main-tab-workspace"]');
+         if (!tab) return false;
+         tab.click();
+         return true;`
+      );
+      if (workspaceTab) break;
+      await sleep(250);
+    }
+    expect(workspaceTab).toBe(true);
+    const reopenDeadline = Date.now() + 15_000;
+    let reopened = false;
+    while (Date.now() < reopenDeadline) {
+      reopened = await client.executeSync<boolean>(
+        `const open = document.querySelector('[data-testid="workspace-log-open-${retiredSessionId}"]');
+         if (!open) return false;
+         open.click();
+         return true;`
+      );
+      if (reopened) break;
+      await sleep(250);
+    }
+    expect(reopened).toBe(true);
+    // Wait for the tab the click is about, not for a clock: the log re-reads
+    // the task's activity around this, so a fixed pause is a race.
+    const reopenedDeadline = Date.now() + 15_000;
+    let reopenedTabs: string[] = [];
+    while (Date.now() < reopenedDeadline) {
+      reopenedTabs = await openTabIds(client);
+      if (reopenedTabs.includes(`terminal:${retiredSessionId}`)) break;
+      await sleep(250);
+    }
+    expect(reopenedTabs).toContain(`terminal:${retiredSessionId}`);
+
+    } finally {
+      // Always: a seeded record left behind is a terminal the next test's task
+      // still has, and the restart test counts what comes back.
+      await client.executeAsync<string>(
+        `const cb = arguments[arguments.length - 1];
+         const ctx = window.__KANNA_E2E__.setupState;
+         const db = ctx.db.value || ctx.db;
+         db.execute("DELETE FROM terminal_session_archive WHERE terminal_session_id = ?", ["${retiredSessionId}"])
+           .then(function() {
+             return db.execute("DELETE FROM terminal_session WHERE id = ?", ["${retiredSessionId}"]);
+           })
+           .then(function() { cb("ok"); })
+           .catch(function(e) { cb("err:" + (e && e.message ? e.message : String(e))); });`
+      );
+      await closeViewTabs(client);
+      await sleep(1_200);
+    }
   });
 
   it("brings a task's tabs back after the app restarts, and forgets a closed task's", async () => {
@@ -620,17 +1057,36 @@ describe("main content area tabs", () => {
     await waitForActiveTab(client, "file:README.md");
 
     await pressShortcut(client, { key: "o", meta: true });
-    await sleep(1200);
 
-    const recorded = await tauriInvoke(client, "run_script", {
+    // macOS resolves the temp fixture path through /private; compare the real
+    // paths rather than the spelling each side happened to use.
+    const realPath = (path: string) => path.replace(/^\/private/, "");
+    // The recorder is a separate process, so this waits for it to have written
+    // rather than for a fixed interval, then asserts what it wrote. A second,
+    // wrong invocation would still be there to see.
+    let lines: string[] = [];
+    const recordedBy = Date.now() + 10_000;
+    while (Date.now() < recordedBy) {
+      const recorded = await tauriInvoke(client, "run_script", {
+        script: `cat "${ideLog}" 2>/dev/null || true`,
+        cwd: worktreePath,
+        env: {},
+      }) as string;
+      lines = String(recorded)
+        .split("\n")
+        .map((line) => realPath(line.trim()))
+        .filter(Boolean);
+      if (lines.length > 0) break;
+      await sleep(100);
+    }
+    // Give a second invocation, if the binding fired twice, time to land.
+    await sleep(500);
+    const settled = await tauriInvoke(client, "run_script", {
       script: `cat "${ideLog}" 2>/dev/null || true`,
       cwd: worktreePath,
       env: {},
     }) as string;
-    // macOS resolves the temp fixture path through /private; compare the real
-    // paths rather than the spelling each side happened to use.
-    const realPath = (path: string) => path.replace(/^\/private/, "");
-    const lines = String(recorded)
+    lines = String(settled)
       .split("\n")
       .map((line) => realPath(line.trim()))
       .filter(Boolean);

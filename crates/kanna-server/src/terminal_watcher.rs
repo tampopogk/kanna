@@ -1,3 +1,4 @@
+use crate::db::Db;
 use crate::{daemon_client, http_api, session_replacements};
 use std::sync::Arc;
 use tokio::sync::mpsc;
@@ -274,6 +275,296 @@ pub(crate) async fn terminal_state_watcher_loop(
         // replacement entries; stale entries must not swallow future Exits.
         replacements.clear();
         tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+    }
+}
+
+/// Whether this daemon session is a task's agent terminal.
+///
+/// An id with no recorded terminal at all answers yes: that is a session from
+/// before a task owned more than one, or one the daemon knows and the database
+/// does not, and both behave exactly as they always did. Only a row that
+/// positively says `setup` or `teardown` is excluded, so a lookup failure can
+/// never silently stop an agent's completion from being observed.
+fn is_agent_terminal_session(state: &http_api::AppState, session_id: &str) -> bool {
+    let db = match Db::open(&state.config().db_path) {
+        Ok(db) => db,
+        Err(error) => {
+            log::warn!(
+                "could not open the database to read the terminal role for {session_id}; \
+                 treating it as the task's agent: {error}"
+            );
+            return true;
+        }
+    };
+    match db.is_agent_terminal_session(session_id) {
+        Ok(is_agent) => is_agent,
+        Err(error) => {
+            log::warn!("failed to read the terminal role for {session_id}: {error}");
+            true
+        }
+    }
+}
+
+/// Mark a non-agent terminal finished. The row stays: its scrollback is the
+/// durable record of what that launch's startup or teardown did, and a stage
+/// that has moved on is exactly when someone wants to read it.
+/// The largest final frame the durable archive keeps for one terminal.
+const MAX_ARCHIVED_TERMINAL_FRAME_BYTES: usize = 256 * 1024;
+
+async fn retire_finished_terminal_session(state: &http_api::AppState, session_id: &str, code: i32) {
+    let config = state.config();
+    archive_finished_terminal_frame(&config.db_path, &config.daemon_dir, session_id).await;
+    let db = match Db::open(&config.db_path) {
+        Ok(db) => db,
+        Err(error) => {
+            // The row stays `live` for a terminal whose process is gone; say
+            // so, because nothing else will notice.
+            log::warn!(
+                "could not open the database to retire the finished terminal {session_id}: {error}"
+            );
+            return;
+        }
+    };
+    if let Err(error) = db.retire_task_terminal_session(session_id, Some(code as i64)) {
+        log::warn!("failed to retire the finished terminal {session_id}: {error}");
+    }
+}
+
+/// Copy a finished terminal's final frame into the task's durable record.
+///
+/// Called before the retirement is recorded: a tab that is told the terminal
+/// is retired must find something to render, and the daemon archived this
+/// frame on its way out precisely so it can be read now.
+pub(crate) async fn archive_finished_terminal_frame(
+    db_path: &str,
+    daemon_dir: &str,
+    session_id: &str,
+) {
+    // The frame is read before the database is opened: a `Db` handle is not
+    // `Send`, and holding one across the daemon round trip would make every
+    // caller's future unspawnable.
+    let frame = match archived_terminal_frame(daemon_dir, session_id).await {
+        Ok(Some(frame)) => frame,
+        Ok(None) => return,
+        Err(error) => {
+            log::warn!("could not read the final frame of terminal {session_id}: {error}");
+            return;
+        }
+    };
+    let db = match Db::open(db_path) {
+        Ok(db) => db,
+        Err(error) => {
+            log::warn!(
+                "could not open the database to archive the final frame of terminal \
+                 {session_id}: {error}"
+            );
+            return;
+        }
+    };
+    // The frame belongs to the attempt that just ended, not to the id: a
+    // task's agent keeps one daemon session id across every stage and retry,
+    // and keying the archive by that id collapsed every attempt into one row.
+    let record_id = match db.live_terminal_session_record_id(session_id) {
+        Ok(Some(record_id)) => record_id,
+        Ok(None) => {
+            log::warn!(
+                "no live terminal record for {session_id}; its final frame has nowhere to go"
+            );
+            return;
+        }
+        Err(error) => {
+            log::warn!("could not resolve the terminal record for {session_id}: {error}");
+            return;
+        }
+    };
+    let (cols, rows, vt) = frame;
+    if let Err(error) =
+        db.record_terminal_session_archive(&record_id, cols as i64, rows as i64, &vt)
+    {
+        log::warn!("failed to archive the finished terminal {session_id}: {error}");
+    }
+}
+
+/// Keep a finished agent attempt's output where it can be reopened.
+///
+/// The attempt is named by the task's latest agent run, which is what a stage
+/// or retry advances; the frame is the daemon's own final one, captured before
+/// it drops the session. Nothing here touches the live-agent surfaces: no
+/// existing row is rewritten, and the task id still resolves to the task's
+/// agent session.
+/// What a finished attempt was, read while it is still the only thing this
+/// session id has been.
+pub(crate) struct FinishedAgentAttempt {
+    task_id: String,
+    repo_id: String,
+    session_id: String,
+    record_id: String,
+    stage: String,
+    stage_run_id: Option<String>,
+    cwd: Option<String>,
+    title: String,
+    attempt: i64,
+    frame: Option<(u16, u16, String)>,
+}
+
+/// Read the attempt that just ended — its screen and its identity — before
+/// anything can take its place.
+///
+/// This half is order-sensitive and cannot be deferred: completing the run can
+/// advance the stage, which respawns the *same* daemon session id, and a frame
+/// or a stage run resolved after that describes the agent that replaced this
+/// one. Writing it down is a different matter, and waits (see
+/// `persist_finished_agent_attempt`).
+async fn capture_finished_agent_attempt(
+    state: &http_api::AppState,
+    session_id: &str,
+) -> Option<FinishedAgentAttempt> {
+    let config = state.config();
+    let frame = match archived_terminal_frame(&config.daemon_dir, session_id).await {
+        Ok(frame) => frame,
+        Err(error) => {
+            log::warn!("could not read the final frame of agent {session_id}: {error}");
+            None
+        }
+    };
+    let db = match Db::open(&config.db_path) {
+        Ok(db) => db,
+        Err(error) => {
+            log::warn!("could not open the database to retain agent {session_id}: {error}");
+            return None;
+        }
+    };
+    // Not a task's agent session (a repository shell, say): nothing owns its
+    // output, so there is nothing to retain.
+    let Ok(Some(task_id)) = db.resolve_pipeline_item_id(session_id) else {
+        return None;
+    };
+    let Ok(Some(item)) = db.get_pipeline_item(&task_id) else {
+        return None;
+    };
+    let latest = db.latest_stage_run(&task_id).ok().flatten();
+    let attempt = db.next_task_terminal_attempt(&task_id).unwrap_or(1);
+    let stage = latest
+        .as_ref()
+        .map(|run| run.stage.clone())
+        .or_else(|| item.stage.clone())
+        .unwrap_or_else(|| "in progress".to_string());
+    Some(FinishedAgentAttempt {
+        record_id: format!("agent-{task_id}-{attempt}"),
+        title: format!("Agent · {stage} · attempt {attempt}"),
+        stage_run_id: latest.as_ref().map(|run| run.id.clone()),
+        cwd: latest.as_ref().and_then(|run| run.cwd.clone()),
+        repo_id: item.repo_id,
+        session_id: session_id.to_string(),
+        task_id,
+        stage,
+        attempt,
+        frame,
+    })
+}
+
+/// Write the captured attempt down.
+///
+/// Deliberately after the exit has been recorded. These are three write
+/// transactions against the database the server is also finishing the run in,
+/// and keeping history is not what the rest of the system is waiting for: a
+/// manager, a `kanna_wait_task`, and the desktop all wait on the durable
+/// `exited` verdict, which used to queue behind this.
+fn persist_finished_agent_attempt(
+    state: &http_api::AppState,
+    attempt: FinishedAgentAttempt,
+    code: i32,
+) {
+    let db = match Db::open(&state.config().db_path) {
+        Ok(db) => db,
+        Err(error) => {
+            log::warn!(
+                "could not open the database to retain agent {}: {error}",
+                attempt.session_id
+            );
+            return;
+        }
+    };
+    let record_id = attempt.record_id.as_str();
+    if let Err(error) = db.upsert_task_terminal_session(crate::db::NewTaskTerminalSession {
+        id: record_id,
+        repo_id: &attempt.repo_id,
+        task_id: Some(&attempt.task_id),
+        daemon_session_id: Some(&attempt.session_id),
+        role: crate::db::ROLE_AGENT,
+        stage: Some(&attempt.stage),
+        attempt: attempt.attempt,
+        stage_run_id: attempt.stage_run_id.as_deref(),
+        title: Some(&attempt.title),
+        cwd: attempt.cwd.as_deref(),
+    }) {
+        log::warn!("failed to record the finished agent attempt {record_id}: {error}");
+        return;
+    }
+    if let Some((cols, rows, vt)) = attempt.frame.as_ref() {
+        if let Err(error) =
+            db.record_terminal_session_archive(record_id, *cols as i64, *rows as i64, vt)
+        {
+            log::warn!("failed to archive the finished agent attempt {record_id}: {error}");
+        }
+    }
+    if let Err(error) = db.retire_task_terminal_session_record(record_id, Some(code as i64)) {
+        log::warn!("failed to retire the finished agent attempt {record_id}: {error}");
+    }
+}
+
+pub(crate) async fn archived_terminal_frame(
+    daemon_dir: &str,
+    session_id: &str,
+) -> Result<Option<(u16, u16, String)>, String> {
+    let mut daemon = daemon_client::DaemonClient::connect(daemon_dir)
+        .await
+        .map_err(|error| format!("daemon error: {error}"))?;
+    archived_terminal_frame_over(&mut daemon, session_id).await
+}
+
+/// The same read, over a connection the caller already holds.
+///
+/// The stage transition captures the outgoing attempt's frame in the middle of
+/// its own daemon conversation. Opening a second connection there would be a
+/// second conversation with the daemon inside one transition, so it asks on the
+/// connection it is already using.
+pub(crate) async fn archived_terminal_frame_over(
+    daemon: &mut daemon_client::DaemonClient,
+    session_id: &str,
+) -> Result<Option<(u16, u16, String)>, String> {
+    use kanna_daemon::protocol::{Command as DaemonCommand, Event as DaemonEvent};
+
+    match daemon
+        .send_command(&DaemonCommand::Snapshot {
+            session_id: session_id.to_string(),
+        })
+        .await
+        .map_err(|error| format!("daemon error: {error}"))?
+    {
+        DaemonEvent::Snapshot { snapshot, .. } => {
+            let mut vt = snapshot.vt;
+            if vt.len() > MAX_ARCHIVED_TERMINAL_FRAME_BYTES {
+                let mut start = vt.len() - MAX_ARCHIVED_TERMINAL_FRAME_BYTES;
+                while start < vt.len() && !vt.is_char_boundary(start) {
+                    start += 1;
+                }
+                vt = format!("[earlier output truncated]\r\n{}", &vt[start..]);
+            }
+            Ok(Some((snapshot.cols, snapshot.rows, vt)))
+        }
+        // A terminal the daemon no longer knows anything about simply has no
+        // archive; the row says so and the tab must not offer to render one.
+        // It is logged because "the daemon dropped the frame" and "there was
+        // never a frame" reach the reader as the same empty tab.
+        DaemonEvent::Error { code, message } => {
+            log::warn!(
+                "the daemon has no final frame for terminal {session_id}: {message} \
+                 (code {code:?})"
+            );
+            Ok(None)
+        }
+        other => Err(format!("unexpected daemon snapshot response: {other:?}")),
     }
 }
 
@@ -576,11 +867,48 @@ pub(crate) async fn terminal_state_watcher_once(
                 resume_session_id,
             } => {
                 live_session_pids.remove(&session_id);
+                // A task now owns more than one terminal, and only one of
+                // them is its agent. A startup or teardown shell ending is
+                // that shell finishing its own job; running the agent-facing
+                // completion path over it would resolve the wrong session and
+                // could finish a run whose agent is still working.
+                if !is_agent_terminal_session(state, &session_id) {
+                    retire_finished_terminal_session(state, &session_id, code).await;
+                    replacements.consume(&session_id);
+                    continue;
+                }
                 // Consume the replacement entry even when the event is
                 // self-describing — a leftover entry would swallow a future
                 // legitimate Exit for the same session id.
                 let replacement = replacements.consume(&session_id);
+                // An agent attempt that has ended becomes history, and history
+                // is per attempt: a stage advance or a retry respawns the same
+                // daemon session id, so without a record of its own each
+                // attempt's output was overwritten by the next one's.
+                //
+                // An *orchestrated* replacement already retained it, at the
+                // kill site, while the outgoing session was still alive and
+                // still the only run this id had served. Doing it again from
+                // here would read the incoming agent's opening frame under the
+                // incoming stage's name and store that as the outgoing
+                // attempt's history. Everything else — a natural exit, a close
+                // — ends with no successor, so this is the moment its output
+                // stops being live and starts being readable.
+                //
+                // Read now, write later: the screen and the identity have to be
+                // read before anything can take this session id, but recording
+                // them must not stand in front of the exit itself.
+                let finished_attempt = if replacement.replaced {
+                    None
+                } else {
+                    capture_finished_agent_attempt(state, &session_id).await
+                };
                 if replacement.replaced || killed {
+                    // A kill with no replacement registered still ended an
+                    // attempt, and nothing will respawn to overwrite it.
+                    if let Some(attempt) = finished_attempt {
+                        persist_finished_agent_attempt(state, attempt, code);
+                    }
                     // Orchestrated kill (stage swap, rerun, close) — not the
                     // agent finishing, so there is no terminal-state
                     // finalization. The provider resume id the
@@ -626,6 +954,10 @@ pub(crate) async fn terminal_state_watcher_once(
                         code,
                         error
                     );
+                }
+                // The exit is durable now; the history it left behind follows.
+                if let Some(attempt) = finished_attempt {
+                    persist_finished_agent_attempt(state, attempt, code);
                 }
             }
             DaemonEvent::ShuttingDown => return Ok(()),
@@ -763,12 +1095,64 @@ mod tests {
         writer.write_all(b"\n").await.unwrap();
     }
 
+    /// Assert nothing *notified*, while answering the frame probes the watcher
+    /// now makes.
+    ///
+    /// Every agent Exit asks the daemon for that attempt's final frame, so the
+    /// harness sees a connection whether or not a notification happened. A
+    /// probe is answered session-not-found — the same "nothing to retain" the
+    /// real daemon gives for a session it has already dropped — and is not
+    /// counted; anything else is the notification these tests refuse.
     async fn expect_no_notification_connection(listener: &UnixListener) {
-        match timeout(Duration::from_millis(150), listener.accept()).await {
-            Err(_) => {}
-            Ok(Ok(_)) => panic!("killed exit unexpectedly opened a notification connection"),
-            Ok(Err(error)) => panic!("failed while checking for notification connection: {error}"),
+        let deadline = tokio::time::Instant::now() + Duration::from_millis(300);
+        loop {
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            if remaining.is_zero() {
+                return;
+            }
+            match timeout(remaining, listener.accept()).await {
+                Err(_) => return,
+                Ok(Ok((stream, _))) => {
+                    if !answer_frame_probe(stream).await {
+                        panic!("killed exit unexpectedly opened a notification connection");
+                    }
+                }
+                Ok(Err(error)) => {
+                    panic!("failed while checking for notification connection: {error}")
+                }
+            }
         }
+    }
+
+    /// Answer one `Snapshot` probe with session-not-found. Returns false when
+    /// the connection carried anything else.
+    async fn answer_frame_probe(stream: tokio::net::UnixStream) -> bool {
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+
+        let (read_half, mut write_half) = stream.into_split();
+        let mut reader = BufReader::new(read_half);
+        let mut line = String::new();
+        if timeout(Duration::from_millis(200), reader.read_line(&mut line))
+            .await
+            .map(|result| result.unwrap_or(0))
+            .unwrap_or(0)
+            == 0
+        {
+            return true;
+        }
+        let Ok(DaemonCommand::Snapshot { session_id }) =
+            serde_json::from_str::<DaemonCommand>(line.trim())
+        else {
+            return false;
+        };
+        let response = DaemonEvent::Error {
+            code: Some(kanna_daemon::protocol::ErrorCode::SessionNotFound),
+            message: format!("session not found: {session_id}"),
+        };
+        let _ = write_half
+            .write_all(format!("{}\n", serde_json::to_string(&response).unwrap()).as_bytes())
+            .await;
+        true
     }
 
     fn assert_task_not_completed(config: &Config) {
@@ -1157,6 +1541,95 @@ mod tests {
             state_changes.try_recv(),
             Err(tokio::sync::broadcast::error::TryRecvError::Empty)
         ));
+        let _ = std::fs::remove_file(socket_path);
+        let _ = std::fs::remove_dir_all(daemon_dir);
+    }
+
+    /// A replaced agent exit leaves retention to the kill site.
+    ///
+    /// A transition kills and respawns the same session id back to back and
+    /// inserts the incoming run in between, so retaining from here would ask
+    /// the daemon for a frame the incoming agent has already started drawing
+    /// and label it with the incoming stage's run. The kill site does it
+    /// instead, while the outgoing session is still alive; this asserts the
+    /// watcher does not overwrite that with the successor's.
+    #[tokio::test]
+    async fn watcher_leaves_a_replaced_attempt_to_the_kill_site() {
+        let unique = unique_name("terminal-watcher-replaced-retention");
+        let daemon_dir = std::env::temp_dir().join(format!("{unique}-daemon"));
+        let config = test_config(&unique, &daemon_dir);
+        seed_notifying_task(&config);
+        let db = Db::open(&config.db_path).unwrap();
+        // What the kill site wrote before sending Kill: the outgoing attempt,
+        // its frame, its stage.
+        db.upsert_task_terminal_session(crate::db::NewTaskTerminalSession {
+            id: "agent-task-child-1",
+            repo_id: "repo-1",
+            task_id: Some("task-child"),
+            daemon_session_id: Some("task-child"),
+            role: crate::db::ROLE_AGENT,
+            stage: Some("in progress"),
+            attempt: 1,
+            stage_run_id: None,
+            title: Some("Agent · in progress · attempt 1"),
+            cwd: Some("/tmp/wt"),
+        })
+        .unwrap();
+        db.record_terminal_session_archive("agent-task-child-1", 80, 24, "OUTGOING_FRAME")
+            .unwrap();
+        db.retire_task_terminal_session_record("agent-task-child-1", None)
+            .unwrap();
+        drop(db);
+
+        let replacements = session_replacements::SessionReplacements::default();
+        replacements.begin_for_run("task-child", Some("run-outgoing"));
+        let (listener, socket_path) = bind_daemon_listener(&daemon_dir);
+        let server = tokio::spawn(async move {
+            let mut subscriber = expect_subscribe(&listener).await;
+            write_event(
+                &mut subscriber,
+                &DaemonEvent::Exit {
+                    session_id: "task-child".to_string(),
+                    code: -1,
+                    resume_session_id: None,
+                    killed: true,
+                },
+            )
+            .await;
+            expect_no_notification_connection(&listener).await;
+            write_event(&mut subscriber, &DaemonEvent::ShuttingDown).await;
+        });
+
+        timeout(
+            Duration::from_secs(2),
+            terminal_state_watcher_once(&http_api::AppState::new(config.clone()), &replacements),
+        )
+        .await
+        .expect("watcher did not finish")
+        .unwrap();
+        server.await.unwrap();
+
+        let db = Db::open(&config.db_path).unwrap();
+        let terminals = db.list_task_terminal_sessions("task-child").unwrap();
+        let agents: Vec<_> = terminals
+            .iter()
+            .filter(|terminal| terminal.role == crate::db::ROLE_AGENT)
+            .collect();
+        assert_eq!(
+            agents.len(),
+            1,
+            "the replaced exit must not add a second attempt record: {agents:?}"
+        );
+        assert_eq!(agents[0].id, "agent-task-child-1");
+        assert_eq!(
+            db.read_terminal_session_archive("agent-task-child-1")
+                .unwrap()
+                .expect("the kill site's frame survives the exit that follows it")
+                .vt,
+            "OUTGOING_FRAME",
+        );
+
+        drop(db);
         let _ = std::fs::remove_file(socket_path);
         let _ = std::fs::remove_dir_all(daemon_dir);
     }

@@ -51,6 +51,128 @@ fn test_daemon_socket_path(daemon_dir: &str) -> std::path::PathBuf {
     kanna_runtime_defaults::socket_path(std::path::Path::new(daemon_dir))
 }
 
+/// A daemon whose `Snapshot` answer changes the moment a session is killed.
+///
+/// Retention has to read the outgoing agent's frame *before* the Kill, because
+/// a stage advance and a rerun both respawn on the same session id: anything
+/// read afterwards is the successor's screen. A daemon that always answers the
+/// same frame cannot tell those two apart, so this one answers
+/// `OUTGOING_AGENT_FRAME` until it sees a Kill and `INCOMING_AGENT_FRAME`
+/// after. Whichever sentinel ends up in the archive says which side of the
+/// kill the frame was taken from.
+///
+/// It serves connections concurrently and resolves `spawned` when the
+/// replacement is spawned, so a test can wait for the sequence to finish
+/// rather than for a clock.
+struct SentinelFrameDaemon {
+    handle: tokio::task::JoinHandle<()>,
+    spawned: tokio::sync::oneshot::Receiver<()>,
+}
+
+impl SentinelFrameDaemon {
+    /// Wait for the replacement spawn, then stop serving.
+    async fn wait_for_spawn(self) {
+        self.spawned.await.expect("the sequence reached its spawn");
+        self.handle.abort();
+    }
+}
+
+async fn spawn_sentinel_frame_daemon(daemon_dir: &str) -> SentinelFrameDaemon {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Mutex};
+
+    std::fs::create_dir_all(daemon_dir).unwrap();
+    let socket_path = test_daemon_socket_path(daemon_dir);
+    let _ = std::fs::remove_file(&socket_path);
+    let listener = UnixListener::bind(&socket_path).unwrap();
+    let killed = Arc::new(AtomicBool::new(false));
+    let (spawned_tx, spawned) = tokio::sync::oneshot::channel::<()>();
+    let spawned_tx = Arc::new(Mutex::new(Some(spawned_tx)));
+    let handle = tokio::spawn(async move {
+        loop {
+            let (stream, _) = listener.accept().await.unwrap();
+            let killed = Arc::clone(&killed);
+            let spawned_tx = Arc::clone(&spawned_tx);
+            tokio::spawn(async move {
+                let (read_half, mut write_half) = stream.into_split();
+                let mut reader = BufReader::new(read_half);
+                loop {
+                    let mut line = String::new();
+                    if reader.read_line(&mut line).await.unwrap_or(0) == 0 {
+                        return;
+                    }
+                    let command =
+                        serde_json::from_str::<kanna_daemon::protocol::Command>(line.trim())
+                            .unwrap();
+                    let response = match &command {
+                        kanna_daemon::protocol::Command::Snapshot { session_id } => {
+                            let vt = if killed.load(Ordering::SeqCst) {
+                                "INCOMING_AGENT_FRAME"
+                            } else {
+                                "OUTGOING_AGENT_FRAME"
+                            };
+                            kanna_daemon::protocol::Event::Snapshot {
+                                session_id: session_id.clone(),
+                                snapshot: kanna_daemon::protocol::TerminalSnapshot {
+                                    version: 1,
+                                    rows: 24,
+                                    cols: 80,
+                                    cursor_row: 0,
+                                    cursor_col: 0,
+                                    cursor_visible: true,
+                                    vt: vt.to_string(),
+                                    saved_at: 0,
+                                    sequence: 1,
+                                },
+                                agent_provider: None,
+                            }
+                        }
+                        kanna_daemon::protocol::Command::Kill { .. } => {
+                            killed.store(true, Ordering::SeqCst);
+                            kanna_daemon::protocol::Event::Ok
+                        }
+                        kanna_daemon::protocol::Command::NegotiateProtectedInput { .. } => {
+                            kanna_daemon::protocol::Event::ProtectedInputReady {
+                                version: kanna_daemon::protocol::PROTECTED_INPUT_PROTOCOL_VERSION,
+                            }
+                        }
+                        kanna_daemon::protocol::Command::NegotiateRawInput { .. } => {
+                            kanna_daemon::protocol::Event::RawInputReady {
+                                version: kanna_daemon::protocol::RAW_INPUT_PROTOCOL_VERSION,
+                            }
+                        }
+                        kanna_daemon::protocol::Command::NegotiateTerminalGeometry { .. } => {
+                            kanna_daemon::protocol::Event::TerminalGeometryReady {
+                                version: kanna_daemon::protocol::TERMINAL_GEOMETRY_PROTOCOL_VERSION,
+                            }
+                        }
+                        kanna_daemon::protocol::Command::Spawn { session_id, .. }
+                        | kanna_daemon::protocol::Command::SpawnAgent { session_id, .. } => {
+                            if let Some(tx) = spawned_tx.lock().unwrap().take() {
+                                let _ = tx.send(());
+                            }
+                            kanna_daemon::protocol::Event::SessionCreated {
+                                session_id: session_id.clone(),
+                            }
+                        }
+                        _ => kanna_daemon::protocol::Event::Ok,
+                    };
+                    if write_half
+                        .write_all(
+                            format!("{}\n", serde_json::to_string(&response).unwrap()).as_bytes(),
+                        )
+                        .await
+                        .is_err()
+                    {
+                        return;
+                    }
+                }
+            });
+        }
+    });
+    SentinelFrameDaemon { handle, spawned }
+}
+
 async fn read_fake_daemon_command(
     reader: &mut BufReader<tokio::net::unix::OwnedReadHalf>,
     writer: &mut tokio::net::unix::OwnedWriteHalf,
@@ -60,9 +182,48 @@ async fn read_fake_daemon_command(
         .expect("fake daemon connection closed before the expected command")
 }
 
+/// The same read for a fixture whose script includes the snapshot itself.
+///
+/// Recovery reads a live session's terminal deliberately, and answering that
+/// read as "no such session" would erase the very thing such a test is about.
+async fn read_scripted_fake_daemon_command(
+    reader: &mut BufReader<tokio::net::unix::OwnedReadHalf>,
+    writer: &mut tokio::net::unix::OwnedWriteHalf,
+) -> kanna_daemon::protocol::Command {
+    read_negotiated_fake_daemon_command(reader, writer)
+        .await
+        .expect("fake daemon connection closed before the expected command")
+}
+
 /// The same read, for a fake daemon that serves a connection until the client
 /// closes it rather than until a fixed command count.
 async fn read_fake_daemon_command_optional(
+    reader: &mut BufReader<tokio::net::unix::OwnedReadHalf>,
+    writer: &mut tokio::net::unix::OwnedWriteHalf,
+) -> Option<kanna_daemon::protocol::Command> {
+    loop {
+        let command = read_negotiated_fake_daemon_command(reader, writer).await?;
+        // The kill that ends a task's agent session is preceded by the read
+        // that keeps its final frame. A fixture scripting a kill/spawn
+        // sequence is not about that read, and a daemon holding no such
+        // session answers it this way; a test about retention itself reads
+        // the snapshot directly instead.
+        let kanna_daemon::protocol::Command::Snapshot { session_id } = &command else {
+            return Some(command);
+        };
+        let response = kanna_daemon::protocol::Event::Error {
+            code: Some(kanna_daemon::protocol::ErrorCode::SessionNotFound),
+            message: format!("session not found: {session_id}"),
+        };
+        writer
+            .write_all(format!("{}\n", serde_json::to_string(&response).unwrap()).as_bytes())
+            .await
+            .unwrap();
+    }
+}
+
+/// One command, with only the transport handshakes answered.
+async fn read_negotiated_fake_daemon_command(
     reader: &mut BufReader<tokio::net::unix::OwnedReadHalf>,
     writer: &mut tokio::net::unix::OwnedWriteHalf,
 ) -> Option<kanna_daemon::protocol::Command> {
@@ -219,6 +380,14 @@ async fn spawn_fake_daemon_session_created_once(
         write_half.write_all(b"\n").await.unwrap();
         command
     })
+}
+
+/// See [`crate::setup_terminal_fixture`]: a daemon that really runs the
+/// startup terminals a launch asks it to spawn.
+async fn spawn_fake_daemon_running_setup_terminals(
+    daemon_dir: String,
+) -> crate::setup_terminal_fixture::SetupTerminalDaemon {
+    crate::setup_terminal_fixture::spawn_setup_terminal_daemon(&daemon_dir).await
 }
 
 /// Fake daemon that accepts one connection, reads the first command, and
@@ -594,27 +763,11 @@ impl Drop for ScopedTestSidecar {
 }
 
 fn ensure_test_sidecar(name: &str) -> ScopedTestSidecar {
-    use std::os::unix::fs::PermissionsExt;
-
-    let sidecar_path = std::env::current_exe()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .join(name);
-    if sidecar_path.exists() {
-        return ScopedTestSidecar {
-            path: sidecar_path,
-            remove_on_drop: false,
-        };
-    }
-
-    std::fs::write(&sidecar_path, "#!/bin/sh\nexit 0\n").unwrap();
-    let mut permissions = std::fs::metadata(&sidecar_path).unwrap().permissions();
-    permissions.set_mode(0o755);
-    std::fs::set_permissions(&sidecar_path, permissions).unwrap();
     ScopedTestSidecar {
-        path: sidecar_path,
-        remove_on_drop: true,
+        // The stub outlives the test that staged it; see
+        // `setup_terminal_fixture::ensure_test_sidecar_stub` for why.
+        path: crate::setup_terminal_fixture::ensure_test_sidecar_stub(name),
+        remove_on_drop: false,
     }
 }
 

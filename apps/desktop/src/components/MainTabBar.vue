@@ -31,6 +31,7 @@ const FIXED_LABEL_KEYS: Partial<Record<MainTab["kind"], string>> = {
   graph: "mainTabs.graph",
   analytics: "mainTabs.analytics",
   preferences: "mainTabs.preferences",
+  workspace: "mainTabs.workspace",
 };
 
 function lastPathSegment(value: string): string {
@@ -55,6 +56,12 @@ function present(tab: MainTab): MainTabPresentation {
   }
   if (tab.kind === "shell") {
     const label = t(tab.shellScope === "repo" ? "mainTabs.repoShell" : "mainTabs.shell");
+    return { id: tab.id, label, title: label, closable };
+  }
+  if (tab.kind === "terminal") {
+    // A launch names its own terminal — "Startup · review" — because a task
+    // can have several and the stage is what tells them apart.
+    const label = tab.terminalTitle || t("mainTabs.terminal");
     return { id: tab.id, label, title: label, closable };
   }
   const label = t(FIXED_LABEL_KEYS[tab.kind] ?? "mainTabs.agent");

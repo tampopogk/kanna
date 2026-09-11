@@ -273,6 +273,220 @@ fn input_if_session_rejects_a_different_observed_pid() {
     }
 }
 
+/// A retired startup terminal is still something a person has to be able to
+/// read: a failed stage advance says "see the startup terminal for this
+/// stage", and the live session is gone seconds later. The daemon therefore
+/// archives the final frame before it drops the session, and serves that
+/// archive to a snapshot request for the dead id.
+///
+/// The wait is on the *archive*, not on the id leaving `List`: the registry
+/// removal happens before the archive is written and well before
+/// `end_session`, so a snapshot taken in that window is still served from the
+/// recovery mirror's live copy and would pass with the archive never written
+/// at all.
+#[test]
+fn a_naturally_exited_session_keeps_a_readable_final_frame() {
+    let daemon = DaemonHandle::start();
+    let mut conn = daemon.connect();
+    let mut events = daemon.connect();
+    events.send(&Cmd::Subscribe);
+    expect_ok(&mut events);
+    let session_id = "archived-startup";
+
+    conn.send(&Cmd::Spawn {
+        session_id: session_id.to_string(),
+        executable: "/bin/sh".to_string(),
+        args: vec!["-c".to_string(), "printf 'STARTUP_SENTINEL\\n'".to_string()],
+        cwd: "/tmp".to_string(),
+        env: HashMap::new(),
+        cols: 80,
+        rows: 24,
+        terminal_prelude: None,
+    });
+    expect_session_created(&mut conn, session_id);
+
+    wait_for_session_exit(&mut events, session_id);
+    wait_for_archived_frame(&daemon, session_id);
+
+    let snapshot = recv_snapshot_for(&mut conn, session_id);
+    assert!(
+        snapshot.vt.contains("STARTUP_SENTINEL"),
+        "a retired terminal must still render its final frame: {:?}",
+        snapshot.vt
+    );
+}
+
+/// An explicitly killed terminal is retired the same way, and keeps the same
+/// readable frame — a stage swap or a rerun ends a startup shell with `Kill`,
+/// and the output explaining what it did must survive that too.
+#[test]
+fn an_explicitly_killed_session_keeps_a_readable_final_frame() {
+    let daemon = DaemonHandle::start();
+    let mut conn = daemon.connect();
+    let mut events = daemon.connect();
+    events.send(&Cmd::Subscribe);
+    expect_ok(&mut events);
+    let session_id = "archived-killed-startup";
+
+    conn.send(&Cmd::Spawn {
+        session_id: session_id.to_string(),
+        executable: "/bin/sh".to_string(),
+        args: vec![
+            "-c".to_string(),
+            "printf 'KILLED_SENTINEL\\n'; while true; do sleep 60; done".to_string(),
+        ],
+        cwd: "/tmp".to_string(),
+        env: HashMap::new(),
+        cols: 80,
+        rows: 24,
+        terminal_prelude: None,
+    });
+    expect_session_created(&mut conn, session_id);
+
+    // Kill only once the sentinel is on the session's own terminal, or the
+    // frame this archives is legitimately empty.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        if recv_snapshot_for(&mut conn, session_id)
+            .vt
+            .contains("KILLED_SENTINEL")
+        {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the killed session never printed its sentinel"
+        );
+        thread::sleep(Duration::from_millis(50));
+    }
+
+    conn.send(&Cmd::Kill {
+        session_id: session_id.to_string(),
+    });
+    expect_ok(&mut conn);
+
+    wait_for_session_exit(&mut events, session_id);
+    wait_for_archived_frame(&daemon, session_id);
+
+    let snapshot = recv_snapshot_for(&mut conn, session_id);
+    assert!(
+        snapshot.vt.contains("KILLED_SENTINEL"),
+        "a killed terminal must still render its final frame: {:?}",
+        snapshot.vt
+    );
+}
+
+/// The archive is the session's own final frame; the recovery mirror is a
+/// lossy fallback fed by fire-and-forget writes on a persist debounce. A
+/// startup shell that outlived that debounce leaves the mirror holding an
+/// older screen, and serving the mirror first handed that stale frame to the
+/// server to store as the terminal's permanent record.
+#[test]
+fn a_retired_session_is_served_its_own_frame_over_a_stale_mirror() {
+    let session_id = "archive-beats-stale-mirror";
+    let stale = format!(
+        r#"{{"type":"Snapshot","sessionId":"{session_id}","serialized":"STALE_MIRROR_FRAME","cols":80,"rows":24,"cursorRow":0,"cursorCol":0,"cursorVisible":true,"savedAt":0,"sequence":1}}"#
+    );
+    let snapshot = retired_session_snapshot(&stale, session_id, "OWN_FINAL_FRAME");
+    assert!(
+        snapshot.vt.contains("OWN_FINAL_FRAME"),
+        "the archive is the session's own frame: {:?}",
+        snapshot.vt
+    );
+    assert!(
+        !snapshot.vt.contains("STALE_MIRROR_FRAME"),
+        "the mirror's older copy must not win over the archive: {:?}",
+        snapshot.vt
+    );
+}
+
+/// A mirror that cannot answer says nothing about the archive. Reading it
+/// first meant one sidecar error hid a frame that was sitting on disk, and
+/// nothing retried.
+#[test]
+fn a_retired_session_is_served_its_archive_when_the_mirror_errors() {
+    let session_id = "archive-survives-mirror-error";
+    let snapshot = retired_session_snapshot(
+        r#"{"type":"Error","message":"mirror unavailable"}"#,
+        session_id,
+        "OWN_FINAL_FRAME_AFTER_MIRROR_ERROR",
+    );
+    assert!(
+        snapshot.vt.contains("OWN_FINAL_FRAME_AFTER_MIRROR_ERROR"),
+        "a mirror error must not hide the archive: {:?}",
+        snapshot.vt
+    );
+}
+
+/// Run a session that prints `sentinel` and exits, against a recovery sidecar
+/// that answers `GetSnapshot` with `mirror_reply`, then snapshot the retired
+/// id once the archive exists.
+fn retired_session_snapshot(
+    mirror_reply: &str,
+    session_id: &str,
+    sentinel: &str,
+) -> SnapshotPayload {
+    let daemon = DaemonHandle::start_with_recovery_answering(mirror_reply);
+    let mut conn = daemon.connect();
+    let mut events = daemon.connect();
+    events.send(&Cmd::Subscribe);
+    expect_ok(&mut events);
+
+    conn.send(&Cmd::Spawn {
+        session_id: session_id.to_string(),
+        executable: "/bin/sh".to_string(),
+        args: vec!["-c".to_string(), format!("printf '{sentinel}\\n'")],
+        cwd: "/tmp".to_string(),
+        env: HashMap::new(),
+        cols: 80,
+        rows: 24,
+        terminal_prelude: None,
+    });
+    expect_session_created(&mut conn, session_id);
+
+    wait_for_session_exit(&mut events, session_id);
+    wait_for_archived_frame(&daemon, session_id);
+    recv_snapshot_for(&mut conn, session_id)
+}
+
+fn wait_for_session_exit(events: &mut ClientConn, session_id: &str) {
+    let deadline = Instant::now() + Duration::from_secs(15);
+    loop {
+        match events.recv() {
+            Evt::Exit {
+                session_id: sid, ..
+            } if sid == session_id => return,
+            _ => assert!(
+                Instant::now() < deadline,
+                "no Exit was broadcast for {session_id}"
+            ),
+        }
+    }
+}
+
+/// Wait until the archive this session's death should have written exists.
+///
+/// Its absence is what the earlier version of these tests could not tell from
+/// a snapshot the recovery mirror was still able to answer.
+fn wait_for_archived_frame(daemon: &DaemonHandle, session_id: &str) {
+    let path = daemon
+        .dir
+        .join("terminal-recovery")
+        .join("archive")
+        .join(format!("{session_id}.json"));
+    let deadline = Instant::now() + Duration::from_secs(15);
+    loop {
+        if path.exists() {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "no archived final frame was written at {path:?}"
+        );
+        thread::sleep(Duration::from_millis(50));
+    }
+}
+
 /// The owner directive of 2026-09-08, over the real wire.
 ///
 /// A human with an unsent line at that terminal used to park every delivered
@@ -670,7 +884,7 @@ fn spawn_fake_composer(
     session_id: &str,
     clear_delay_seconds: f64,
 ) -> PathBuf {
-    let log_path = daemon._dir.join(format!("{session_id}-submitted.txt"));
+    let log_path = daemon.dir.join(format!("{session_id}-submitted.txt"));
     let _ = std::fs::remove_file(&log_path);
     conn.send_json(&serde_json::json!({
         "type": "Spawn",
@@ -874,7 +1088,7 @@ fn a_faint_suggestion_with_the_cursor_at_the_start_clears_the_ledger() {
     let daemon = DaemonHandle::start();
     let mut conn = daemon.connect();
     let session_id = "faint-suggestion-composer";
-    let submitted_lines = daemon._dir.join("faint-suggestion-submitted.txt");
+    let submitted_lines = daemon.dir.join("faint-suggestion-submitted.txt");
     let _ = std::fs::remove_file(&submitted_lines);
     conn.send_json(&serde_json::json!({
         "type": "Spawn",
@@ -1158,7 +1372,7 @@ fn compute_socket_path(dir: &Path) -> PathBuf {
 struct DaemonHandle {
     child: Child,
     socket_path: PathBuf,
-    _dir: PathBuf,
+    dir: PathBuf,
 }
 
 impl DaemonHandle {
@@ -1174,7 +1388,22 @@ impl DaemonHandle {
         Self::start_with_options(envs, true)
     }
 
+    /// Start with a recovery sidecar that answers `GetSnapshot` with exactly
+    /// `get_snapshot_reply`, so a test can put the mirror and the archive into
+    /// deliberate disagreement.
+    fn start_with_recovery_answering(get_snapshot_reply: &str) -> Self {
+        Self::start_with_options_and_recovery_reply([], true, Some(get_snapshot_reply))
+    }
+
     fn start_with_options<const N: usize>(envs: [(&str, &str); N], fake_recovery: bool) -> Self {
+        Self::start_with_options_and_recovery_reply(envs, fake_recovery, None)
+    }
+
+    fn start_with_options_and_recovery_reply<const N: usize>(
+        envs: [(&str, &str); N],
+        fake_recovery: bool,
+        get_snapshot_reply: Option<&str>,
+    ) -> Self {
         let instance = TEST_INSTANCE_COUNTER.fetch_add(1, Ordering::Relaxed);
         let dir = std::env::temp_dir().join(format!(
             "kanna-daemon-test-{}-{}",
@@ -1196,7 +1425,10 @@ impl DaemonHandle {
         if fake_recovery {
             command.env(
                 "KANNA_TERMINAL_RECOVERY_BIN",
-                write_fake_recovery_sidecar(&dir),
+                match get_snapshot_reply {
+                    Some(reply) => write_fake_recovery_sidecar_answering(&dir, reply),
+                    None => write_fake_recovery_sidecar(&dir),
+                },
             );
         }
         for (key, value) in envs {
@@ -1229,7 +1461,7 @@ impl DaemonHandle {
         DaemonHandle {
             child,
             socket_path,
-            _dir: dir,
+            dir,
         }
     }
 
@@ -1342,6 +1574,10 @@ fn wait_for_daemon_fd_count_at_most(pid: u32, limit: usize, timeout: Duration) -
 }
 
 fn write_fake_recovery_sidecar(dir: &Path) -> PathBuf {
+    write_fake_recovery_sidecar_answering(dir, r#"{"type":"NotFound"}"#)
+}
+
+fn write_fake_recovery_sidecar_answering(dir: &Path, get_snapshot_reply: &str) -> PathBuf {
     let path = dir.join("fake-terminal-recovery");
     let log_path = dir.join("fake-terminal-recovery.log");
     std::fs::write(
@@ -1352,14 +1588,15 @@ while IFS= read -r line; do
   printf '%s\n' "$line" >> '{}'
   case "$line" in
     *'"type":"StartSession"'*|*'"type":"ResizeSession"'*) printf '{{"type":"Ok"}}\n' ;;
-    *'"type":"GetSnapshot"'*) printf '{{"type":"NotFound"}}\n' ;;
+    *'"type":"GetSnapshot"'*) printf '%s\n' '{}' ;;
     *'"type":"FlushAndShutdown"'*) printf '{{"type":"Ok"}}\n'; exit 0 ;;
     *'"type":"WriteOutput"'*|*'"type":"EndSession"'*) : ;;
     *) printf '{{"type":"Error","message":"unexpected fake recovery command"}}\n' ;;
   esac
 done
 "#,
-            log_path.display()
+            log_path.display(),
+            get_snapshot_reply
         ),
     )
     .expect("should write fake recovery sidecar");
@@ -1376,7 +1613,7 @@ fn wait_for_recovery_log(
     predicate: impl Fn(&[Value]) -> bool,
     timeout: Duration,
 ) -> Vec<Value> {
-    let path = daemon._dir.join("fake-terminal-recovery.log");
+    let path = daemon.dir.join("fake-terminal-recovery.log");
     let deadline = Instant::now() + timeout;
     loop {
         let commands = std::fs::read_to_string(&path)
@@ -1428,7 +1665,7 @@ impl Drop for DaemonHandle {
         let _ = self.child.kill();
         let _ = self.child.wait();
         // Clean up temp dir
-        let _ = std::fs::remove_dir_all(&self._dir);
+        let _ = std::fs::remove_dir_all(&self.dir);
     }
 }
 
@@ -1439,7 +1676,7 @@ impl Drop for DaemonHandle {
 fn wait_for_daemon_log(daemon: &DaemonHandle, needle: &str, timeout: Duration) {
     let deadline = Instant::now() + timeout;
     loop {
-        let found = std::fs::read_dir(&daemon._dir)
+        let found = std::fs::read_dir(&daemon.dir)
             .into_iter()
             .flatten()
             .flatten()
@@ -1465,7 +1702,7 @@ fn wait_for_daemon_log(daemon: &DaemonHandle, needle: &str, timeout: Duration) {
 }
 
 fn daemon_log_contents(daemon: &DaemonHandle) -> String {
-    std::fs::read_dir(&daemon._dir)
+    std::fs::read_dir(&daemon.dir)
         .expect("should read daemon data directory")
         .flatten()
         .filter(|entry| {
@@ -2071,7 +2308,7 @@ fn privileged_input_rejects_a_separate_process_impersonator() {
         pid: std::process::id(),
     });
     assert!(matches!(conn.recv(), Evt::Ok));
-    let audit = std::fs::read_to_string(daemon._dir.join("kanna-daemon-lifecycle.log"))
+    let audit = std::fs::read_to_string(daemon.dir.join("kanna-daemon-lifecycle.log"))
         .expect("server authorization should be durably audited");
     assert!(
         audit.contains(&format!(
@@ -3332,7 +3569,7 @@ fn same_id_reuse_waits_for_old_reader_exit_and_recovery_teardown() {
     )]);
     let session_id = "sess-linearized-reuse";
     let old_marker = b"OLD_INCARNATION";
-    let release_path = daemon._dir.join("release-old-output");
+    let release_path = daemon.dir.join("release-old-output");
 
     let mut subscriber = daemon.connect();
     subscriber.send(&Cmd::Subscribe);
@@ -5449,8 +5686,8 @@ fn spawn_stdin_recorder_reading(
     repaint_seconds: f64,
     read_size: usize,
 ) -> StdinRecorder {
-    let bytes_path = daemon._dir.join(format!("{session_id}-stdin.bin"));
-    let reads_path = daemon._dir.join(format!("{session_id}-reads.txt"));
+    let bytes_path = daemon.dir.join(format!("{session_id}-stdin.bin"));
+    let reads_path = daemon.dir.join(format!("{session_id}-reads.txt"));
     let _ = std::fs::remove_file(&bytes_path);
     let _ = std::fs::remove_file(&reads_path);
 

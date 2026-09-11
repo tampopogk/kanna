@@ -117,7 +117,9 @@ async function createTransferredTask(
 ): Promise<string> {
   // Mirrors what approveIncomingTransfer passes on the receiving machine: the
   // import summary rides the same createItem options as the resumed session.
-  // The hanging setup command holds the PTY open past the banner so the
+  // The banner explains the workspace the *setup* commands run in, so it is
+  // printed in the launch's startup terminal, which is where this reads it.
+  // The hanging setup command holds that terminal open past the banner so its
   // buffer can be read; the agent itself never has to start.
   const taskId = await client.executeAsync<string>(
     `const cb = arguments[arguments.length - 1];
@@ -170,6 +172,28 @@ async function waitForTerminalLines(
   throw new Error(
     `timed out waiting for ${sessionId} terminal to contain ${requiredText}; latest=${JSON.stringify(latest.slice(-20))}`,
   );
+}
+
+async function waitForTerminalTab(sessionId: string, timeoutMs = 20_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const present = await client.executeSync<boolean>(
+      `return Boolean(document.querySelector('[data-testid="main-tab-terminal:${sessionId}"]'));`,
+    );
+    if (present) return;
+    await sleep(200);
+  }
+  throw new Error(`no tab appeared for the startup terminal ${sessionId}`);
+}
+
+async function activateTerminalTab(sessionId: string): Promise<void> {
+  await client.executeSync(
+    `const tab = document.querySelector('[data-testid="main-tab-terminal:${sessionId}"]');
+     if (!tab) throw new Error("no tab for ${sessionId}");
+     tab.click();
+     return true;`,
+  );
+  await sleep(300);
 }
 
 describe("cross-machine transfer visibility", () => {
@@ -275,7 +299,13 @@ describe("cross-machine transfer visibility", () => {
 
     await selectTask(taskId);
     await client.waitForElement(".main-panel .terminal-container", 15_000);
-    const lines = await waitForTerminalLines(taskId, "TRANSFER_IMPORT_SETUP_READY");
+    // The banner belongs to the terminal the setup commands run in, which is
+    // the launch's own startup terminal — not the agent session the task id
+    // names. Its tab appears on the task without reselecting it.
+    const startupSessionId = `setup-${taskId}-1`;
+    await waitForTerminalTab(startupSessionId);
+    await activateTerminalTab(startupSessionId);
+    const lines = await waitForTerminalLines(startupSessionId, "TRANSFER_IMPORT_SETUP_READY");
     // xterm reflows a long banner line into two buffer rows, so the rows are
     // rejoined without a separator before matching.
     const text = lines.join("");

@@ -597,6 +597,29 @@
       ]
     },
     {
+      "name": "kanna_list_task_terminals",
+      "description": "List the terminals a Kanna task owns. A task no longer has exactly one: each launch runs the repo's startup commands in a plain \"setup\" terminal of its own and the agent CLI in an \"agent\" one, a stage advance or rerun opens a new pair, and a departing workspace's cleanup runs in a \"teardown\" terminal. Use this to find the startup terminal whose output explains why a stage failed to provision, or to name a terminal for kanna_open_terminal. Each record carries the daemon session id, role, stage, launch attempt, whether it is still live, the status a finished one exited with, and whether its final frame was archived when it finished — a retired terminal with an archive can still be read, one without it cannot. \"legacyAgent\" is a session from before the split: one mixed terminal that is still that task's agent. Only the agent terminal answers to the task id on every other surface \u2014 logs, input, completion \u2014 so a setup terminal is never what kanna_task_logs or kanna_send_task_input address.",
+      "method": "GET",
+      "path": "/v1/tasks/{task_id}/terminals",
+      "response": "json",
+      "params": [
+        { "name": "machine_id", "description": "Machine id from kanna_list_machines. Omit it, or pass the current machine id, to use the local machine connected to this client.", "type": "string", "required": false, "location": "routing" },
+        { "name": "task_id", "description": "Task id (stable across stages) or one of the task's branch names (task-{id} or task-{id}-{n}).", "type": "string", "required": true, "location": "path" }
+      ]
+    },
+    {
+      "name": "kanna_open_terminal",
+      "description": "Ask the Kanna desktop to open one of a task's terminals in that task's main content area, as a tab beside its agent session. Use it to put a launch's startup output in front of the person watching the task \u2014 the setup that failed, the install that is still running \u2014 instead of pasting it into the agent's own terminal. Name the session with kanna_list_task_terminals; a session that is not one of that task's terminals is refused here with the reason. Delivery is advisory and the response says requested, never shown: the tab is recorded against that task in every desktop window that is listening, and a window that is closed or not running loses the request rather than queuing it. It never changes which task the operator has selected, and opening a terminal never starts, restarts, or writes to one: a terminal that has finished is shown read-only, from the final frame archived when it exited, so a retired startup terminal still reads as what it printed rather than as an error.",
+      "method": "POST",
+      "path": "/v1/desktop/views/open-terminal",
+      "response": "json",
+      "params": [
+        { "name": "machine_id", "description": "Machine id from kanna_list_machines. Omit it, or pass the current machine id, to use the local machine connected to this client.", "type": "string", "required": false, "location": "routing" },
+        { "name": "task_id", "description": "Task id (stable across stages) or one of the task's branch names (task-{id} or task-{id}-{n}). The tab opens against this task.", "type": "string", "required": true, "location": "body", "key": "taskId" },
+        { "name": "session_id", "description": "The terminal's daemon session id, from kanna_list_task_terminals.", "type": "string", "required": true, "location": "body", "key": "sessionId" }
+      ]
+    },
+    {
       "name": "kanna_task_logs",
       "description": "Fetch recent agent-session log lines for a Kanna task, oldest first.",
       "method": "GET",

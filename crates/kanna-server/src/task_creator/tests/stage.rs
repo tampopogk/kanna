@@ -45,8 +45,8 @@ fn builtin_single_reviewer_workflow_ships_approve_as_pr_stage_post() {
     let _ = std::fs::remove_dir_all(&repo_root);
 }
 
-#[test]
-fn one_stage_operation_keeps_prompt_spawn_and_teardown_on_pinned_revision() {
+#[tokio::test]
+async fn one_stage_operation_keeps_prompt_spawn_and_teardown_on_pinned_revision() {
     let repo_root = init_git_repo("stage-operation-pinned-revision");
     let config = test_config("stage-operation-pinned-revision");
     let db = Db::open_for_tests(&config.db_path).unwrap();
@@ -194,7 +194,12 @@ fn one_stage_operation_keeps_prompt_spawn_and_teardown_on_pinned_revision() {
     assert_eq!(run.agent_provider, "opencode");
     assert_eq!(run.model.as_deref(), Some("v1-repo-model"));
     assert!(!worktree.join("v1-stage.marker").exists());
-    super::super::finish_deferred_stage_setup(&mut run).unwrap();
+    // The stage's setup now runs in a startup terminal of its own, so the
+    // daemon is what runs it and the server waits for that session to exit.
+    let _daemon = spawn_fake_daemon_running_setup_terminals(config.daemon_dir.clone()).await;
+    super::super::finish_deferred_stage_setup(&config.db_path, &config.daemon_dir, &mut run)
+        .await
+        .unwrap();
     assert!(worktree.join("v1-stage.marker").is_file());
     assert!(!worktree.join("v2-stage.marker").exists());
 
@@ -385,10 +390,15 @@ async fn rerun_stage_uses_compiled_post_action_stage_prompt_and_stage_setup() {
     let prepared = prepare_rerun_stage_for_api(&db, &config, "task-1").unwrap();
     assert_eq!(prepared.task_id, "task-1");
     assert_eq!(prepared.cwd, worktree.to_string_lossy());
+    let startup = prepared
+        .setup_terminal_command()
+        .expect("a rerun with stage setup opens a startup terminal of its own")
+        .to_string();
+    assert!(startup.contains("setup-rerun.marker"));
     match &prepared.session {
         PreparedSessionSpawn::Pty { args, .. } => {
             let command = args.join(" ");
-            assert!(command.contains("setup-rerun.marker"));
+            assert!(!command.contains("setup-rerun.marker"));
             assert!(command.contains("Commit agent."));
             assert!(command.contains(
                 "Commit Fix rerun after {\"status\":\"success\",\"summary\":\"implemented\"}"
@@ -397,7 +407,10 @@ async fn rerun_stage_uses_compiled_post_action_stage_prompt_and_stage_setup() {
         }
         PreparedSessionSpawn::Agent { .. } => panic!("expected pty rerun"),
     }
-    let fake_daemon = spawn_fake_daemon_fork_transition(config.daemon_dir.clone(), 1).await;
+    // A rerun's stage setup runs in a startup terminal of its own, so the
+    // daemon has to be one that really runs it before the rerun's own
+    // kill-and-respawn sequence begins.
+    let fake_daemon = spawn_fake_daemon_running_setup_terminals(config.daemon_dir.clone()).await;
     let mut daemon = DaemonClient::connect(&config.daemon_dir).await.unwrap();
     rerun_prepared_stage_for_api(
         &config.db_path,
@@ -407,7 +420,10 @@ async fn rerun_stage_uses_compiled_post_action_stage_prompt_and_stage_setup() {
     )
     .await
     .unwrap();
-    let commands = fake_daemon.await.unwrap();
+    // The startup terminal is a separate session and is not in this log; what
+    // the rerun does to the task's own session is still kill, then respawn.
+    let commands = fake_daemon.commands();
+    fake_daemon.abort();
     assert!(matches!(
         commands.first(),
         Some(kanna_daemon::protocol::Command::Kill { session_id }) if session_id == "task-1"
@@ -416,6 +432,7 @@ async fn rerun_stage_uses_compiled_post_action_stage_prompt_and_stage_setup() {
         commands.get(1),
         Some(kanna_daemon::protocol::Command::Spawn { session_id, .. }) if session_id == "task-1"
     ));
+    assert!(worktree.join("setup-rerun.marker").is_file());
     assert_eq!(
         db.get_pipeline_item("task-1")
             .unwrap()
@@ -497,7 +514,7 @@ async fn acknowledged_stage_survives_db_failure_restart_and_can_complete() {
             args: Vec::new(),
             cols: 80,
             rows: 24,
-            agent_provider: kanna_daemon::protocol::AgentProvider::Codex,
+            agent_provider: Some(kanna_daemon::protocol::AgentProvider::Codex),
         },
         deferred_setup: None,
         setup_timeout_signal: None,
@@ -3508,7 +3525,7 @@ fn current_stage_spawn_fixture(
             args: Vec::new(),
             cols: 80,
             rows: 24,
-            agent_provider: DaemonAgentProvider::Codex,
+            agent_provider: Some(DaemonAgentProvider::Codex),
         },
         deferred_setup: None,
         setup_timeout_signal: None,
@@ -3689,6 +3706,291 @@ async fn stage_spawn_rolls_back_its_fork_when_the_guard_cannot_be_read() {
         "",
         "the fork's branch outlived the operation nobody started"
     );
+    let _ = std::fs::remove_dir_all(&repo_root);
+}
+
+/// A transition retains the agent it replaces, not the one it starts.
+///
+/// The kill and the respawn share a session id and the incoming run is
+/// inserted between them, so anything that reads a frame or a label after the
+/// kill describes the successor. This drives a real transition against a
+/// daemon that answers Snapshot differently before and after the kill, and
+/// asserts the retained record holds the frame, stage and run of the attempt
+/// that was killed.
+#[tokio::test]
+async fn a_stage_transition_retains_the_outgoing_agent_not_its_replacement() {
+    let repo_root = init_git_repo("stage-retains-outgoing-agent");
+    write_post_workflow_fixtures(&repo_root);
+    let config = test_config("stage-retains-outgoing-agent");
+    let db = Db::open_for_tests(&config.db_path).unwrap();
+    seed_post_workflow_task(&config, &db, &repo_root);
+    // The outgoing stage's own main run: the identity the retained attempt has
+    // to carry.
+    db.insert_stage_run(NewStageRun {
+        id: "run-outgoing-main",
+        task_id: "task-1",
+        stage: "in progress",
+        kind: "main",
+        agent: Some("build"),
+        agent_provider: Some("claude"),
+        model: None,
+        effort: None,
+        status: "running",
+        result: None,
+        feedback: None,
+        session_id: Some("task-1"),
+        provider_session_id: None,
+        cwd: Some("/tmp/outgoing"),
+        resumed_from_run_id: None,
+    })
+    .unwrap();
+    db.insert_stage_run(NewStageRun {
+        id: "run-post",
+        task_id: "task-1",
+        stage: "commit",
+        kind: "post",
+        agent: Some("commit"),
+        agent_provider: Some("claude"),
+        model: None,
+        effort: None,
+        status: "succeeded",
+        result: None,
+        feedback: None,
+        session_id: Some("task-1"),
+        provider_session_id: None,
+        cwd: None,
+        resumed_from_run_id: None,
+    })
+    .unwrap();
+    let run = match prepare_advance_stage_for_api(&db, &config, "task-1").unwrap() {
+        PreparedStageTransition::Run(run) => run,
+        other => panic!(
+            "expected a forked stage transition, got {:?}",
+            std::mem::discriminant(&other)
+        ),
+    };
+
+    let fake_daemon = spawn_sentinel_frame_daemon(&config.daemon_dir).await;
+    let mut daemon = DaemonClient::connect(&config.daemon_dir).await.unwrap();
+    spawn_prepared_stage_run_for_api(
+        &config.db_path,
+        &mut daemon,
+        &crate::session_replacements::SessionReplacements::default(),
+        *run,
+    )
+    .await
+    .unwrap();
+    fake_daemon.wait_for_spawn().await;
+
+    let terminals = db.list_task_terminal_sessions("task-1").unwrap();
+    let retained: Vec<_> = terminals
+        .iter()
+        .filter(|terminal| terminal.role == crate::db::ROLE_AGENT)
+        .collect();
+    assert_eq!(
+        retained.len(),
+        1,
+        "the transition retains exactly the attempt it replaced: {retained:?}"
+    );
+    let attempt = retained[0];
+    assert_eq!(
+        attempt.stage_run_id.as_deref(),
+        Some("run-outgoing-main"),
+        "the retained attempt names the run that was killed, not the one starting"
+    );
+    assert_eq!(attempt.stage.as_deref(), Some("in progress"));
+    assert_eq!(attempt.state, "retired");
+    assert_eq!(
+        db.read_terminal_session_archive(&attempt.id)
+            .unwrap()
+            .expect("the replaced attempt keeps its own frame")
+            .vt,
+        "OUTGOING_AGENT_FRAME",
+        "the frame must be the one the killed agent had, not its successor's"
+    );
+
+    let _ = std::fs::remove_dir_all(&repo_root);
+}
+
+/// A retry keeps the attempt it replaces, for the same reason an advance does.
+///
+/// A rerun kills the agent and respawns on the same session id, so by the time
+/// the daemon's `Exit` reaches the watcher the id already belongs to the retry.
+/// Only the kill site can name what was there before it, and the run it was
+/// serving is still the task's latest at that moment.
+#[tokio::test]
+async fn a_rerun_retains_the_attempt_it_replaces() {
+    let repo_root = init_git_repo("rerun-retains-outgoing-agent");
+    write_post_workflow_fixtures(&repo_root);
+    let config = test_config("rerun-retains-outgoing-agent");
+    let db = Db::open_for_tests(&config.db_path).unwrap();
+    seed_post_workflow_task(&config, &db, &repo_root);
+    db.insert_stage_run(NewStageRun {
+        id: "run-outgoing-main",
+        task_id: "task-1",
+        stage: "in progress",
+        kind: "main",
+        agent: Some("implement"),
+        agent_provider: Some("claude"),
+        model: None,
+        effort: None,
+        status: "running",
+        result: None,
+        feedback: None,
+        session_id: Some("task-1"),
+        provider_session_id: None,
+        cwd: Some(
+            repo_root
+                .join(".kanna-worktrees/task-source")
+                .to_string_lossy()
+                .to_string()
+                .as_str(),
+        ),
+        resumed_from_run_id: None,
+    })
+    .unwrap();
+
+    let prepared = prepare_rerun_stage_for_api(&db, &config, "task-1").unwrap();
+    let fake_daemon = spawn_sentinel_frame_daemon(&config.daemon_dir).await;
+    let mut daemon = DaemonClient::connect(&config.daemon_dir).await.unwrap();
+    rerun_prepared_stage_for_api(
+        &config.db_path,
+        &mut daemon,
+        &crate::session_replacements::SessionReplacements::default(),
+        prepared,
+    )
+    .await
+    .unwrap();
+    fake_daemon.wait_for_spawn().await;
+
+    let terminals = db.list_task_terminal_sessions("task-1").unwrap();
+    let retained: Vec<_> = terminals
+        .iter()
+        .filter(|terminal| terminal.role == crate::db::ROLE_AGENT)
+        .collect();
+    assert_eq!(
+        retained.len(),
+        1,
+        "the retry retains exactly the attempt it replaced: {retained:?}"
+    );
+    let attempt = retained[0];
+    assert_eq!(
+        attempt.stage_run_id.as_deref(),
+        Some("run-outgoing-main"),
+        "the retained attempt names the run that was retried, not the retry"
+    );
+    assert_eq!(attempt.stage.as_deref(), Some("in progress"));
+    assert_eq!(attempt.state, "retired");
+    assert_eq!(
+        db.read_terminal_session_archive(&attempt.id)
+            .unwrap()
+            .expect("the retried attempt keeps its own frame")
+            .vt,
+        "OUTGOING_AGENT_FRAME",
+        "the frame must be the one the retried agent had, not the retry's"
+    );
+
+    let _ = std::fs::remove_dir_all(&repo_root);
+}
+
+/// An attempt that ended on its own is retained once, by the watcher.
+///
+/// The daemon keeps answering `Snapshot` for a session it has already dropped,
+/// out of its own archive (SPEC invariant 12), so a kill site that probes
+/// afterwards reads the same screen the watcher already filed and records it
+/// again — a byte-identical archive under a second record, which then takes
+/// over the run in the workspace log and puts two tabs in the bar for one
+/// agent. This drives the resume that follows a natural exit against exactly
+/// that daemon.
+#[tokio::test]
+async fn a_rerun_after_a_natural_exit_does_not_retain_the_attempt_twice() {
+    let repo_root = init_git_repo("rerun-after-natural-exit");
+    write_post_workflow_fixtures(&repo_root);
+    let config = test_config("rerun-after-natural-exit");
+    let db = Db::open_for_tests(&config.db_path).unwrap();
+    seed_post_workflow_task(&config, &db, &repo_root);
+    db.insert_stage_run(NewStageRun {
+        id: "run-exited-main",
+        task_id: "task-1",
+        stage: "in progress",
+        kind: "main",
+        agent: Some("implement"),
+        agent_provider: Some("claude"),
+        model: None,
+        effort: None,
+        status: "running",
+        result: None,
+        feedback: None,
+        session_id: Some("task-1"),
+        provider_session_id: None,
+        cwd: Some(
+            repo_root
+                .join(".kanna-worktrees/task-source")
+                .to_string_lossy()
+                .to_string()
+                .as_str(),
+        ),
+        resumed_from_run_id: None,
+    })
+    .unwrap();
+    // What the terminal watcher already wrote when the agent exited.
+    db.upsert_task_terminal_session(crate::db::NewTaskTerminalSession {
+        id: "agent-task-1-1",
+        repo_id: "repo-1",
+        task_id: Some("task-1"),
+        daemon_session_id: Some("task-1"),
+        role: crate::db::ROLE_AGENT,
+        stage: Some("in progress"),
+        attempt: 1,
+        stage_run_id: Some("run-exited-main"),
+        title: Some("Agent · in progress · attempt 1"),
+        cwd: None,
+    })
+    .unwrap();
+    db.record_terminal_session_archive("agent-task-1-1", 80, 24, "EXITED_AGENT_FRAME")
+        .unwrap();
+    db.retire_task_terminal_session_record("agent-task-1-1", Some(0))
+        .unwrap();
+
+    let prepared = prepare_rerun_stage_for_api(&db, &config, "task-1").unwrap();
+    // This daemon has no live session; it answers Snapshot out of its archive,
+    // which is what makes the second read look like fresh output.
+    let fake_daemon = spawn_sentinel_frame_daemon(&config.daemon_dir).await;
+    let mut daemon = DaemonClient::connect(&config.daemon_dir).await.unwrap();
+    rerun_prepared_stage_for_api(
+        &config.db_path,
+        &mut daemon,
+        &crate::session_replacements::SessionReplacements::default(),
+        prepared,
+    )
+    .await
+    .unwrap();
+    fake_daemon.wait_for_spawn().await;
+
+    let retained: Vec<_> = db
+        .list_task_terminal_sessions("task-1")
+        .unwrap()
+        .into_iter()
+        .filter(|terminal| {
+            terminal.role == crate::db::ROLE_AGENT
+                && terminal.stage_run_id.as_deref() == Some("run-exited-main")
+        })
+        .collect();
+    assert_eq!(
+        retained.len(),
+        1,
+        "the run keeps the one attempt that ran it: {retained:?}"
+    );
+    assert_eq!(retained[0].id, "agent-task-1-1");
+    assert_eq!(
+        db.read_terminal_session_archive("agent-task-1-1")
+            .unwrap()
+            .expect("the watcher's archive is untouched")
+            .vt,
+        "EXITED_AGENT_FRAME",
+        "the kill site must not overwrite what the exit already kept"
+    );
+
     let _ = std::fs::remove_dir_all(&repo_root);
 }
 

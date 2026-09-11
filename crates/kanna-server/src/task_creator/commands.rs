@@ -336,7 +336,7 @@ fn transfer_repo_mode_label(mode: &str) -> String {
 /// It is printed before the agent command in the destination PTY, using the
 /// same pre-agent `printf` pattern as the setup banner, because nothing else
 /// tells the operator that this workspace came from another machine.
-fn build_transfer_import_banner(summary: &TransferImportSummary) -> String {
+pub(super) fn build_transfer_import_banner(summary: &TransferImportSummary) -> String {
     let mut lines = vec!["printf '\\033[33mImported transferred task\\033[0m\\n'".to_string()];
     let mut detail = |text: String| {
         lines.push(format!(
@@ -379,7 +379,9 @@ fn build_transfer_import_banner(summary: &TransferImportSummary) -> String {
 /// spawn ran with. Printed for every spawn the local layer touched, not only
 /// the first: "works on my machine" drift is only diagnosable if the terminal
 /// the operator is looking at says which file is in force.
-fn build_local_config_override_banner(local_config_override: &LocalConfigOverride) -> String {
+pub(super) fn build_local_config_override_banner(
+    local_config_override: &LocalConfigOverride,
+) -> String {
     let mut lines =
         vec!["printf '\\033[33mMachine-local repo config in effect\\033[0m\\n'".to_string()];
     let mut detail = |text: String| {

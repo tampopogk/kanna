@@ -597,12 +597,17 @@ impl Db {
         let terminal_session_id = self
             .conn
             .query_row(
+                // Only an agent terminal answers "the task's session". A
+                // launch's setup shell is a task terminal too, and resolving
+                // to it would point every agent-facing surface — input,
+                // completion, logs — at the startup script instead.
                 "SELECT daemon_session_id
                  FROM terminal_session
                  WHERE pipeline_item_id = ?
                    AND daemon_session_id IS NOT NULL
                    AND daemon_session_id != ''
-                 ORDER BY CASE WHEN label = 'agent' THEN 0 ELSE 1 END, id
+                   AND role IN ('agent', 'legacy_agent')
+                 ORDER BY CASE WHEN state = 'live' THEN 0 ELSE 1 END, attempt DESC, id
                  LIMIT 1",
                 [&pipeline_item_id],
                 |row| row.get(0),

@@ -1,5 +1,51 @@
 use super::*;
 
+/// A launch that finishes in the background records its startup terminal once
+/// the daemon acknowledges it; this is the only edge a caller can observe.
+async fn wait_for_recorded_setup_terminal(
+    db_path: &str,
+    task_id: &str,
+) -> crate::db::TaskTerminalSession {
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
+    loop {
+        if let Ok(db) = Db::open(db_path) {
+            if let Ok(terminals) = db.list_task_terminal_sessions(task_id) {
+                if let Some(terminal) = terminals.iter().find(|terminal| terminal.role == "setup") {
+                    return terminal.clone();
+                }
+            }
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the launch never recorded a startup terminal"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+}
+
+async fn wait_for_agent_spawn(
+    daemon: &crate::setup_terminal_fixture::SetupTerminalDaemon,
+) -> Vec<kanna_daemon::protocol::Command> {
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
+    loop {
+        let commands = daemon.commands();
+        if commands.iter().any(|command| {
+            matches!(
+                command,
+                kanna_daemon::protocol::Command::Spawn { .. }
+                    | kanna_daemon::protocol::Command::SpawnAgent { .. }
+            )
+        }) {
+            return commands;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the launch never reached its agent spawn"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+}
+
 #[tokio::test]
 async fn create_task_route_uses_task_creator() {
     let app = super::test_router_with_task_creator(
@@ -705,9 +751,7 @@ async fn create_task_route_round_trips_and_replays_eight_hex_requested_id() {
 
 #[tokio::test]
 async fn requested_task_retry_repairs_prepare_before_daemon_spawn() {
-    use kanna_daemon::protocol::{Command as DaemonCommand, ErrorCode, Event as DaemonEvent};
-    use tokio::io::{AsyncWriteExt, BufReader};
-    use tokio::net::UnixListener;
+    use kanna_daemon::protocol::Command as DaemonCommand;
 
     let unique = super::unique_test_suffix();
     let task_id = "d1e2f3a4b5c60718";
@@ -763,7 +807,7 @@ async fn requested_task_retry_repairs_prepare_before_daemon_spawn() {
         "disallowedTools": ["WebFetch"],
         "maxTurns": 17,
         "maxBudgetUsd": 4.25,
-        "setupCmds": ["printf 'prepared-intent-setup\\n'"],
+        "setupCmds": ["printf 'prepared-intent-setup\\n' > prepared-intent-setup.marker"],
         "resumeSessionId": resume_session_id,
         "recoverySnapshot": {
             "serialized": "REPAIRED-RECOVERY\u{001b}[2J",
@@ -808,7 +852,7 @@ async fn requested_task_retry_repairs_prepare_before_daemon_spawn() {
     );
     assert_eq!(
         stored_intent["setupCmds"],
-        serde_json::json!(["printf 'prepared-intent-setup\\n'"])
+        serde_json::json!(["printf 'prepared-intent-setup\\n' > prepared-intent-setup.marker"])
     );
     assert_eq!(
         stored_intent["allowedTools"],
@@ -863,7 +907,7 @@ async fn requested_task_retry_repairs_prepare_before_daemon_spawn() {
             "stages": [{
                 "name": "in progress",
                 "prompt": "MUTATED-DEFINITION-$TASK_PROMPT",
-                "setup": ["printf 'mutated-definition-setup\\n'"],
+                "setup": ["printf 'mutated-definition-setup\\n' > mutated-definition-setup.marker"],
                 "policy": { "transition": "auto" }
             }]
         })
@@ -872,103 +916,10 @@ async fn requested_task_retry_repairs_prepare_before_daemon_spawn() {
     .expect("mutate definitions after interrupted preparation");
     drop(db);
 
-    let daemon_listener = UnixListener::bind(&socket_path).unwrap();
-    let daemon_server = tokio::spawn(async move {
-        let (stream, _) = daemon_listener.accept().await.unwrap();
-        let (read_half, mut write_half) = stream.into_split();
-        let mut reader = BufReader::new(read_half);
-        let mut command_count = 0usize;
-        loop {
-            let command = read_test_daemon_command(&mut reader, &mut write_half).await;
-            command_count += 1;
-            match command {
-                DaemonCommand::Kill { .. } => {
-                    write_half
-                        .write_all(
-                            format!(
-                                "{}\n",
-                                serde_json::to_string(&DaemonEvent::Error {
-                                    code: Some(ErrorCode::SessionNotFound),
-                                    message: "session not found".to_string(),
-                                })
-                                .unwrap()
-                            )
-                            .as_bytes(),
-                        )
-                        .await
-                        .unwrap();
-                }
-                DaemonCommand::SeedSnapshot {
-                    session_id,
-                    snapshot,
-                } => {
-                    assert_eq!(session_id, task_id);
-                    assert_eq!(snapshot.version, 1);
-                    assert_eq!(snapshot.vt, "REPAIRED-RECOVERY\u{1b}[2J");
-                    assert_eq!((snapshot.cols, snapshot.rows), (132, 43));
-                    assert_eq!((snapshot.cursor_row, snapshot.cursor_col), (21, 42));
-                    assert!(snapshot.cursor_visible);
-                    assert_eq!(snapshot.saved_at, 1_785_000_000_123);
-                    assert_eq!(snapshot.sequence, 87);
-                    write_half
-                        .write_all(
-                            format!("{}\n", serde_json::to_string(&DaemonEvent::Ok).unwrap())
-                                .as_bytes(),
-                        )
-                        .await
-                        .unwrap();
-                }
-                DaemonCommand::Spawn {
-                    session_id,
-                    args,
-                    cols,
-                    rows,
-                    ..
-                } => {
-                    assert_eq!(session_id, task_id);
-                    assert_eq!((cols, rows), (132, 43));
-                    let command = args.join(" ");
-                    for expected in [
-                        "prepared-intent-setup",
-                        "--resume '364643cc-5e6d-48fc-86ca-ca7764380900'",
-                        "--model 'claude-repair-model'",
-                        "--allowedTools Read,Bash",
-                        "--disallowedTools WebFetch",
-                        "--max-turns 17",
-                        "--max-budget-usd 4.25",
-                        "Repair the interrupted spawn",
-                    ] {
-                        assert!(
-                            command.contains(expected),
-                            "repaired spawn did not preserve `{expected}`: {command}"
-                        );
-                    }
-                    assert!(
-                        !command.contains("MUTATED-DEFINITION")
-                            && !command.contains("mutated-definition-setup"),
-                        "repaired spawn re-read mutated repo definitions: {command}"
-                    );
-                    write_half
-                        .write_all(
-                            format!(
-                                "{}\n",
-                                serde_json::to_string(&DaemonEvent::SessionCreated { session_id })
-                                    .unwrap()
-                            )
-                            .as_bytes(),
-                        )
-                        .await
-                        .unwrap();
-                    break;
-                }
-                DaemonCommand::SpawnAgent { .. } => {
-                    panic!("prepared intent requested a PTY spawn")
-                }
-                other => panic!("unexpected repair command: {other:?}"),
-            }
-        }
-        command_count
-    });
+    // The retry's launch runs its setup in a startup terminal, so the daemon
+    // has to be one that really runs it before the agent spawn it precedes.
+    let daemon_server =
+        crate::setup_terminal_fixture::spawn_setup_terminal_daemon(&config.daemon_dir).await;
 
     let retry = app
         .oneshot(
@@ -980,15 +931,100 @@ async fn requested_task_retry_repairs_prepare_before_daemon_spawn() {
         .await
         .unwrap();
     assert_eq!(retry.status(), StatusCode::OK);
-    let command_count = daemon_server.await.unwrap();
-    assert_eq!(command_count, 3);
+    // The repaired launch runs its recorded setup in a startup terminal and
+    // then spawns the agent it was prepared for, in that order.
+    let startup = wait_for_recorded_setup_terminal(&config.db_path, task_id).await;
+    assert_ne!(
+        startup.daemon_session_id.as_deref(),
+        Some(task_id),
+        "a startup terminal is a different session from the task's agent"
+    );
+    let worktree = repo_root.join(".kanna-worktrees").join(&branch);
+    assert!(
+        worktree.join("prepared-intent-setup.marker").is_file(),
+        "the repaired launch should run its recorded setup in its startup terminal"
+    );
+    assert!(
+        !worktree.join("mutated-definition-setup.marker").exists(),
+        "the repaired launch re-read mutated repo definitions"
+    );
+    let commands = wait_for_agent_spawn(&daemon_server).await;
+    daemon_server.abort();
+    // Kill the interrupted session, seed the recovery snapshot it left, then
+    // spawn: the repair's order, unchanged by the startup terminal that ran
+    // before all of it.
+    let seed_index = commands
+        .iter()
+        .position(|command| matches!(command, DaemonCommand::SeedSnapshot { .. }))
+        .expect("the repaired launch should seed its recovery snapshot");
+    let spawn_index = commands
+        .iter()
+        .position(|command| matches!(command, DaemonCommand::Spawn { .. }))
+        .expect("the repaired agent spawn");
+    assert!(seed_index < spawn_index, "{commands:?}");
+    assert!(
+        matches!(&commands[seed_index], DaemonCommand::SeedSnapshot { snapshot, .. }
+            if snapshot.vt == "REPAIRED-RECOVERY\u{1b}[2J"
+                && (snapshot.cols, snapshot.rows) == (132, 43)
+                && snapshot.sequence == 87),
+        "{commands:?}"
+    );
+    match &commands[spawn_index] {
+        DaemonCommand::Spawn {
+            session_id,
+            args,
+            cols,
+            rows,
+            ..
+        } => {
+            assert_eq!(session_id, task_id);
+            assert_eq!((*cols, *rows), (132, 43));
+            let command = args.join(" ");
+            for expected in [
+                "--resume '364643cc-5e6d-48fc-86ca-ca7764380900'",
+                "--model 'claude-repair-model'",
+                "--allowedTools Read,Bash",
+                "--disallowedTools WebFetch",
+                "--max-turns 17",
+                "--max-budget-usd 4.25",
+                "Repair the interrupted spawn",
+            ] {
+                assert!(
+                    command.contains(expected),
+                    "repaired spawn did not preserve `{expected}`: {command}"
+                );
+            }
+            assert!(
+                !command.contains("MUTATED-DEFINITION"),
+                "repaired spawn re-read mutated repo definitions: {command}"
+            );
+        }
+        other => panic!("expected the repaired PTY spawn, got {other:?}"),
+    }
 
     let db = Db::open(&config.db_path).unwrap();
     assert_eq!(db.count_test_pipeline_items_for_repo("repo-1").unwrap(), 1);
     assert_eq!(db.count_test_worktrees_for_repo("repo-1").unwrap(), 1);
+    // The task's own agent terminal, plus the startup terminal this launch ran
+    // its setup in. The repair did not create a second of either.
+    // The task's own agent terminal, plus the startup terminal this launch ran
+    // its setup in. The repair did not create a second of either: the attempt
+    // it replaced is kept as retired history, which is not a duplicate of
+    // anything and has no live session behind it.
+    let terminals = db.list_task_terminal_sessions(task_id).unwrap();
+    let live: Vec<_> = terminals
+        .iter()
+        .filter(|terminal| terminal.state == "live")
+        .collect();
+    assert_eq!(live.len(), 1, "{terminals:?}");
+    assert_eq!(live[0].role, crate::db::ROLE_AGENT, "{terminals:?}");
     assert_eq!(
-        db.count_test_terminal_sessions_for_repo("repo-1").unwrap(),
-        1
+        terminals
+            .iter()
+            .filter(|terminal| terminal.role == crate::db::ROLE_SETUP)
+            .count(),
+        1,
+        "{terminals:?}"
     );
     let runs = db.list_stage_runs_for_task(task_id).unwrap();
     assert_eq!(runs.len(), 1);

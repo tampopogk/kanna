@@ -241,7 +241,7 @@ pub(crate) async fn run_server_services(
     http_state.set_terminal_geometry_capability(daemon_pid, geometry_supported);
     crate::task_creator::reconcile_lifecycle_operations_on_startup(
         &mut protected_input_daemon,
-        &config.db_path,
+        &config,
         &db,
     )
     .await;

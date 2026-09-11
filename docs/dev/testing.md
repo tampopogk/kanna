@@ -115,6 +115,22 @@ active app. To watch a run in the foreground the old way:
 KANNA_E2E_NO_ACTIVATE=0 pnpm --dir apps/desktop test:e2e mock/app-launch.test.ts
 ```
 
+An unactivated WKWebView is not composited, so it delivers no
+`requestAnimationFrame` callbacks — and xterm paints on one. Nothing a terminal
+renders can be observed in the default lane, live or archived. One test depends
+on that: `mock/main-tabs.test.ts`, "renders the archived frame of a retired
+terminal opened through the tab surface", proves a retired terminal's stored
+frame reaches the screen. It probes frame delivery once and branches: with
+frames, it asserts the painted `.xterm-rows` text for both the tab
+reconciliation opens behind the one on screen and the tab that is active from
+mount; without them, it asserts the same frame arrived in the terminal's buffer
+and that the tab lifecycle holds, and logs that the paint proof was skipped.
+The skip is printed, never silent. To execute the painted assertions:
+
+```sh
+KANNA_E2E_NO_ACTIVATE=0 pnpm --dir apps/desktop test:e2e mock/main-tabs.test.ts
+```
+
 `./kd test remote-e2e` is unaffected: its two-instance harness runs
 `kanna-server`, `kanna-daemon` and the relay as headless binaries and never
 launches the desktop app.

@@ -17,11 +17,6 @@ const POLL_INTERVAL: Duration = Duration::from_millis(20);
 const BACKGROUND_REAP_GIVE_UP_AFTER: Duration = Duration::from_secs(60);
 const BACKGROUND_REAP_MAX_INTERVAL: Duration = Duration::from_secs(1);
 const MAX_OUTPUT_BYTES: usize = 1024 * 1024;
-/// Hang containment for a test that arms the hard timeout explicitly. Nothing
-/// asserts against it; it only stops a wedged fixture from running forever.
-#[cfg(test)]
-const TEST_ARMED_TIMEOUT_GUARD: Duration = Duration::from_secs(30);
-
 #[derive(Clone, Copy)]
 struct WorkspaceCommandPolicy {
     soft_timeout: Duration,
@@ -181,34 +176,6 @@ pub(crate) fn run_workspace_command(
 
 pub(crate) fn write_path_health() -> WritePathHealth {
     global_supervisor().snapshot()
-}
-
-/// Fire the hard timeout on an explicit signal instead of the wall clock.
-///
-/// A test that proves timeout handling must first get the supervised process
-/// into the state under test — output produced, descendants spawned. A fixed
-/// budget cannot express that ordering: on a loaded machine it can expire
-/// while the login shell is still sourcing profiles, so the test asserts
-/// against machine speed rather than against the timeout path. The caller
-/// therefore observes that state itself and arms this flag; the accompanying
-/// duration is only hang containment for a fixture that never arms it.
-#[cfg(test)]
-pub(crate) fn run_workspace_command_with_armed_timeout_for_test(
-    label: &str,
-    command: &str,
-    cwd: &Path,
-    env: &HashMap<String, String>,
-    armed_timeout: &AtomicBool,
-) -> Result<(), String> {
-    let supervisor = Arc::new(WorkspaceCommandSupervisor::new(WorkspaceCommandPolicy {
-        soft_timeout: TEST_ARMED_TIMEOUT_GUARD,
-        hard_timeout: TEST_ARMED_TIMEOUT_GUARD,
-        final_drain_timeout: FINAL_DRAIN_TIMEOUT,
-        poll_interval: Duration::from_millis(10),
-        max_concurrent: MAX_WORKSPACE_COMMANDS,
-        max_output_bytes: MAX_OUTPUT_BYTES,
-    }));
-    supervisor.run(label, command, cwd, env, Some(armed_timeout))
 }
 
 struct SupervisedChild {

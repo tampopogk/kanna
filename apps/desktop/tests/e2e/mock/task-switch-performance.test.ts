@@ -1,6 +1,7 @@
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { installParkingFakeAgent } from "../helpers/fakeAgent";
 import { WebDriverClient } from "../helpers/webdriver";
 import { cleanupWorktrees, importTestRepo, resetDatabase } from "../helpers/reset";
 import { cleanupFixtureRepos, createSeedFixtureRepo } from "../helpers/fixture-repo";
@@ -29,8 +30,18 @@ function getPerfLineCount(): number {
   return parsed;
 }
 
-function buildSetupCommand(label: string, fill: string, lineCount: number): string {
-  return `for i in $(seq 1 ${lineCount}); do printf '${label} line %05d | %s\\n' "$i" '${fill}'; done; while true; do sleep 60; done`;
+/**
+ * Setup that installs the agent this task's output comes from.
+ *
+ * The lines belong to the agent's terminal, which is the one these markers
+ * measure a switch into; setup runs in a terminal of its own now, so printing
+ * them there would measure the wrong session — and setup that parked would
+ * mean no agent session at all.
+ */
+function buildSetupCommand(label: string, fill: string, lineCount: number): string[] {
+  return installParkingFakeAgent("claude", [
+    `for i in $(seq 1 ${lineCount}); do printf '${label} line %05d | %s\\n' "$i" '${fill}'; done`,
+  ]);
 }
 
 function requireCreatedTaskId(value: string, label: string): string {
@@ -99,7 +110,7 @@ describe("task switch performance", () => {
     const createTaskAResult = await client.executeAsync<string>(
       `const cb = arguments[arguments.length - 1];
        const ctx = window.__KANNA_E2E__.setupState;
-       const setupCmd = ${JSON.stringify(buildSetupCommand("Perf Task A", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", lineCount))};
+       const setupCmds = ${JSON.stringify(buildSetupCommand("Perf Task A", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", lineCount))};
        Promise.resolve(
          ctx.createItem(${JSON.stringify(repoId)}, ${JSON.stringify(testRepoPath)}, "Perf Task A", "pty", {
            selectOnCreate: false,
@@ -107,7 +118,7 @@ describe("task switch performance", () => {
            customTask: {
              executionMode: "pty",
              agentProvider: "claude",
-             setup: [setupCmd],
+             setup: setupCmds,
            },
          })
        ).then((id) => cb(id)).catch((error) => cb(String(error)));`,
@@ -121,7 +132,7 @@ describe("task switch performance", () => {
     const createTaskBResult = await client.executeAsync<string>(
       `const cb = arguments[arguments.length - 1];
        const ctx = window.__KANNA_E2E__.setupState;
-       const setupCmd = ${JSON.stringify(buildSetupCommand("Perf Task B", "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB", lineCount))};
+       const setupCmds = ${JSON.stringify(buildSetupCommand("Perf Task B", "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB", lineCount))};
        Promise.resolve(
          ctx.createItem(${JSON.stringify(repoId)}, ${JSON.stringify(testRepoPath)}, "Perf Task B", "pty", {
            selectOnCreate: false,
@@ -129,7 +140,7 @@ describe("task switch performance", () => {
            customTask: {
              executionMode: "pty",
              agentProvider: "claude",
-             setup: [setupCmd],
+             setup: setupCmds,
            },
          })
        ).then((id) => cb(id)).catch((error) => cb(String(error)));`,

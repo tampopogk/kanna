@@ -395,6 +395,8 @@
     "diff": "변경 사항",
     "shell": "셸",
     "repoShell": "저장소 셸",
+    "terminal": "터미널",
+    "workspace": "작업 공간",
     "files": "파일",
     "graph": "커밋",
     "analytics": "분석",
@@ -463,5 +465,15 @@
   },
   "common": {
     "loading": "로딩 중..."
+  },
+  "taskTerminal": {
+    "finished": "{title}이(가) 완료되었습니다.",
+    "finishedWithStatus": "{title}이(가) 상태 {status}(으)로 종료되었습니다.",
+    "noArchive": "{title}이(가) 완료되었습니다. 출력은 보관되지 않았습니다.",
+    "archiveFailed": "{title}의 출력을 읽을 수 없습니다."
+  },
+  "workspaceLog": {
+    "empty": "이 워크스페이스에서는 아직 아무 일도 일어나지 않았습니다.",
+    "openOutput": "출력 열기"
   }
 }

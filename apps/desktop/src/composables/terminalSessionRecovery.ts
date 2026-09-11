@@ -179,6 +179,28 @@ export function formatAttachFailureMessage(message: string, retrySeconds?: numbe
   return `\r\n\x1b[31mFailed to reconnect to existing session: ${message}${retry}\x1b[0m\r\n`;
 }
 
+/**
+ * What the agent tab says before its session exists.
+ *
+ * A launch runs the repository's startup commands in a terminal of its own and
+ * starts the agent only when that shell exits cleanly, so "no agent session
+ * yet" is an ordinary state for as long as setup takes — not a session that
+ * has gone missing. The view keeps looking; this says why it is empty
+ * meanwhile, and names the terminal that *is* showing something.
+ */
+export function formatPendingTaskSessionMessage(retrySeconds: number): string {
+  return `\r\n\x1b[33mNo agent session yet — this task's startup terminal runs first. Checking again in ${retrySeconds}s.\x1b[0m\r\n`;
+}
+
+
+/**
+ * The attach-only view found no session and nothing will start one.
+ *
+ * Said once, not on a loop: a task that is closed, or whose agent has exited
+ * with no recovery snapshot, has no launch left to wait for, and a "startup
+ * terminal runs first" notice repeating forever would be describing something
+ * that is not happening.
+ */
 export function formatMissingInitialTaskSessionMessage(): string {
   return "\r\n\x1b[33mKnock, knock, Neo. Kanna couldn't find a live agent session for this task.\x1b[0m\r\n";
 }
