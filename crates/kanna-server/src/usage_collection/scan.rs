@@ -52,9 +52,12 @@ pub fn collect_repo_token_usage(
     // ran that CLI. Codex discovery below is further bounded to the dated
     // directory and recorded session context of each run.
     let providers: HashSet<String> = runs.iter().filter_map(|run| run.provider.clone()).collect();
+    let mut failed_run_ids = HashSet::new();
     if providers.contains(SUPPORTED_PROVIDERS[0]) {
         let discovery = claude_session_files(&runs);
+        failed_run_ids.extend(discovery.failed_run_ids);
         for (path, context) in discovery.files {
+            let file_run_ids = run_ids_for_context(&runs, "claude", &context);
             let outcome = scan_file(
                 db,
                 repo_id,
@@ -68,13 +71,15 @@ pub fn collect_repo_token_usage(
             match outcome {
                 ScanFileOutcome::Read(written) => report.records_written += written,
                 ScanFileOutcome::Unchanged => {}
-                ScanFileOutcome::Unreadable => {}
+                ScanFileOutcome::Unreadable => failed_run_ids.extend(file_run_ids),
             }
         }
     }
     if providers.contains(SUPPORTED_PROVIDERS[1]) {
         let discovery = codex_session_files(db, &runs)?;
+        failed_run_ids.extend(discovery.failed_run_ids);
         for (path, context) in discovery.files {
+            let file_run_ids = run_ids_for_context(&runs, "codex", &context);
             let outcome = scan_file(
                 db,
                 repo_id,
@@ -88,7 +93,7 @@ pub fn collect_repo_token_usage(
             match outcome {
                 ScanFileOutcome::Read(written) => report.records_written += written,
                 ScanFileOutcome::Unchanged => {}
-                ScanFileOutcome::Unreadable => {}
+                ScanFileOutcome::Unreadable => failed_run_ids.extend(file_run_ids),
             }
         }
     }
@@ -115,7 +120,8 @@ pub fn collect_repo_token_usage(
             .repo_provider_run_ids_with_usage(repo_id, provider, range)
             .map_err(|error| format!("db error: {error}"))?;
         if runs_in_range.iter().any(|run| {
-            run.provider.as_deref() == Some(provider.as_str()) && !covered.contains(&run.run_id)
+            run.provider.as_deref() == Some(provider.as_str())
+                && (!covered.contains(&run.run_id) || failed_run_ids.contains(&run.run_id))
         }) {
             uncovered.insert(provider.clone());
         }
@@ -145,19 +151,40 @@ const SUPPORTED_PROVIDERS: [&str; 2] = ["claude", "codex"];
 /// directories worth reading.
 struct DiscoveryResult {
     files: Vec<(PathBuf, SessionContext)>,
+    /// Runs whose provider source could not be completely discovered. Keeping
+    /// the affected run, rather than only the provider, lets coverage exclude
+    /// failures that belong wholly outside the requested analytics range.
+    failed_run_ids: HashSet<String>,
 }
 
 fn claude_session_files(runs: &[RunWindow]) -> DiscoveryResult {
     let Some(projects_dir) = claude_projects_dir() else {
-        return DiscoveryResult { files: Vec::new() };
+        return DiscoveryResult {
+            files: Vec::new(),
+            failed_run_ids: runs
+                .iter()
+                .filter(|run| run.provider.as_deref() == Some("claude"))
+                .map(|run| run.run_id.clone())
+                .collect(),
+        };
     };
     let mut seen: HashMap<PathBuf, SessionContext> = HashMap::new();
+    let mut failed_run_ids = HashSet::new();
     for cwd in distinct_cwds(runs) {
+        let cwd_run_ids = run_ids_for_cwd(runs, "claude", &cwd);
         let directory = projects_dir.join(claude_project_slug(&cwd));
         let Ok(entries) = std::fs::read_dir(&directory) else {
+            failed_run_ids.extend(cwd_run_ids);
             continue;
         };
-        for entry in entries.flatten() {
+        for entry in entries {
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(_) => {
+                    failed_run_ids.extend(cwd_run_ids.iter().cloned());
+                    continue;
+                }
+            };
             let path = entry.path();
             if path.extension().and_then(|extension| extension.to_str()) == Some("jsonl") {
                 seen.insert(
@@ -191,12 +218,13 @@ fn claude_session_files(runs: &[RunWindow]) -> DiscoveryResult {
                     }
                 }
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                Err(_) => {}
+                Err(_) => failed_run_ids.extend(cwd_run_ids.iter().cloned()),
             }
         }
     }
     DiscoveryResult {
         files: seen.into_iter().collect(),
+        failed_run_ids,
     }
 }
 
@@ -205,24 +233,35 @@ fn claude_session_files(runs: &[RunWindow]) -> DiscoveryResult {
 /// matching candidates until that directory's generation changes.
 fn codex_session_files(db: &Db, runs: &[RunWindow]) -> Result<DiscoveryResult, String> {
     let Some(config_dir) = home_child("CODEX_HOME", ".codex") else {
-        return Ok(DiscoveryResult { files: Vec::new() });
+        return Ok(DiscoveryResult {
+            files: Vec::new(),
+            failed_run_ids: runs
+                .iter()
+                .filter(|run| run.provider.as_deref() == Some("codex"))
+                .map(|run| run.run_id.clone())
+                .collect(),
+        });
     };
     let mut files: HashMap<PathBuf, SessionContext> = HashMap::new();
+    let mut failed_run_ids = HashSet::new();
     for run in runs
         .iter()
         .filter(|run| run.provider.as_deref() == Some("codex"))
     {
         let Some(date) = run.started_at.get(..10) else {
+            failed_run_ids.insert(run.run_id.clone());
             continue;
         };
         let mut date_parts = date.split('-');
         let (Some(year), Some(month), Some(day)) =
             (date_parts.next(), date_parts.next(), date_parts.next())
         else {
+            failed_run_ids.insert(run.run_id.clone());
             continue;
         };
         let directory = config_dir.join("sessions").join(year).join(month).join(day);
         let Ok(metadata) = std::fs::metadata(&directory) else {
+            failed_run_ids.insert(run.run_id.clone());
             continue;
         };
         let modified_ns = modified_ns(&metadata);
@@ -241,10 +280,18 @@ fn codex_session_files(db: &Db, runs: &[RunWindow]) -> Result<DiscoveryResult, S
             cached.candidate_paths
         } else {
             let Ok(entries) = std::fs::read_dir(&directory) else {
+                failed_run_ids.insert(run.run_id.clone());
                 continue;
             };
             let mut candidates = Vec::new();
-            for entry in entries.flatten() {
+            for entry in entries {
+                let entry = match entry {
+                    Ok(entry) => entry,
+                    Err(_) => {
+                        failed_run_ids.insert(run.run_id.clone());
+                        continue;
+                    }
+                };
                 let path = entry.path();
                 if path.extension().and_then(|extension| extension.to_str()) != Some("jsonl") {
                     continue;
@@ -252,6 +299,7 @@ fn codex_session_files(db: &Db, runs: &[RunWindow]) -> Result<DiscoveryResult, S
                 #[cfg(test)]
                 CODEX_DISCOVERY_INSPECTIONS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 let Some(header) = read_first_line(&path) else {
+                    failed_run_ids.insert(run.run_id.clone());
                     continue;
                 };
                 let (_, context) = codex::parse_line(&header);
@@ -276,6 +324,9 @@ fn codex_session_files(db: &Db, runs: &[RunWindow]) -> Result<DiscoveryResult, S
             .map_err(|error| format!("db error: {error}"))?;
             candidates
         };
+        if candidate_paths.is_empty() {
+            failed_run_ids.insert(run.run_id.clone());
+        }
         for path in candidate_paths {
             files.insert(
                 PathBuf::from(path),
@@ -289,7 +340,37 @@ fn codex_session_files(db: &Db, runs: &[RunWindow]) -> Result<DiscoveryResult, S
     }
     Ok(DiscoveryResult {
         files: files.into_iter().collect(),
+        failed_run_ids,
     })
+}
+
+fn run_ids_for_cwd(runs: &[RunWindow], provider: &str, cwd: &str) -> HashSet<String> {
+    runs.iter()
+        .filter(|run| run.provider.as_deref() == Some(provider) && same_cwd(&run.cwd, cwd))
+        .map(|run| run.run_id.clone())
+        .collect()
+}
+
+fn run_ids_for_context(
+    runs: &[RunWindow],
+    provider: &str,
+    context: &SessionContext,
+) -> HashSet<String> {
+    if let Some(session_id) = context.session_id.as_deref() {
+        return runs
+            .iter()
+            .filter(|run| {
+                run.provider.as_deref() == Some(provider)
+                    && run.provider_session_id.as_deref() == Some(session_id)
+            })
+            .map(|run| run.run_id.clone())
+            .collect();
+    }
+    context
+        .cwd
+        .as_deref()
+        .map(|cwd| run_ids_for_cwd(runs, provider, cwd))
+        .unwrap_or_default()
 }
 
 fn modified_ns(metadata: &std::fs::Metadata) -> i64 {
@@ -1000,6 +1081,16 @@ mod collection_tests {
         let cwd = homes.root.join("worktree").to_string_lossy().to_string();
         std::fs::create_dir_all(&cwd).expect("worktree");
         let db = seeded_db("usage-supported-missing", &cwd);
+        db.insert_test_token_usage(
+            "already-collected",
+            "repo-1",
+            "task-1",
+            Some("run-1"),
+            "claude-opus-5",
+            "2026-04-17 09:30:00",
+            (10, 0, 0, 5, 0),
+        )
+        .expect("covered usage");
 
         let missing = super::collect_repo_token_usage(&db, "repo-1", &selected_range())
             .expect("missing collect");
@@ -1022,7 +1113,19 @@ mod collection_tests {
     fn a_provider_used_only_outside_the_selected_range_is_not_reported() {
         let homes = ProviderHomes::new("outside-range-provider");
         let cwd = homes.root.join("worktree").to_string_lossy().to_string();
+        let old_cwd = homes
+            .root
+            .join("old-worktree")
+            .to_string_lossy()
+            .to_string();
         std::fs::create_dir_all(&cwd).expect("worktree");
+        std::fs::create_dir_all(
+            homes
+                .root
+                .join("claude/projects")
+                .join(crate::task_creator::claude_project_slug(&cwd)),
+        )
+        .expect("current provider directory");
         let db = seeded_db("usage-outside-range-provider", &cwd);
         db.insert_test_token_usage(
             "covered-current-run",
@@ -1038,8 +1141,8 @@ mod collection_tests {
             "run-old",
             "task-1",
             "review",
-            "opencode",
-            &cwd,
+            "claude",
+            &old_cwd,
             "2026-04-10 09:00:00",
             Some("2026-04-10 10:00:00"),
         )
@@ -1049,7 +1152,7 @@ mod collection_tests {
             super::collect_repo_token_usage(&db, "repo-1", &selected_range()).expect("collect");
         assert!(
             report.providers_without_usage.is_empty(),
-            "a lifetime gap outside the requested window must not warn in this window"
+            "a discovery failure outside the requested window must not warn in this window"
         );
     }
 

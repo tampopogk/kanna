@@ -1922,6 +1922,59 @@ async fn analytics_route_aligns_token_coverage_with_usage_in_the_window() {
 }
 
 #[tokio::test]
+async fn analytics_route_keeps_source_failures_scoped_to_the_run_window() {
+    let app = super::test_router_with_seed("analytics-token-source-failure", "Studio Mac", |db| {
+        db.insert_test_repo("repo-1", "Repo One").unwrap();
+        db.insert_test_pipeline_item(
+            "task-1",
+            "repo-1",
+            "prompt",
+            Some("Task One"),
+            "in progress",
+            "2026-04-17 08:00:00",
+        )
+        .unwrap();
+        db.insert_test_provider_stage_run(
+            "run-covered",
+            "task-1",
+            "in progress",
+            "claude",
+            "/worktrees/missing-analytics-token-source-failure",
+            "2026-04-17 09:00:00",
+            Some("2026-04-17 11:00:00"),
+        )
+        .unwrap();
+        db.insert_test_token_usage(
+            "usage-covered",
+            "repo-1",
+            "task-1",
+            Some("run-covered"),
+            "claude-opus-5",
+            "2026-04-17 09:30:00",
+            (10, 0, 0, 5, 0),
+        )
+        .unwrap();
+    });
+
+    let in_window = analytics_body(app.clone(), "?from=2026-04-17&to=2026-04-17").await;
+    assert_eq!(in_window["coverage"]["runsInRange"], 1);
+    assert_eq!(in_window["coverage"]["runsWithTokenUsage"], 1);
+    assert_eq!(
+        in_window["coverage"]["providersWithoutTokenUsage"],
+        serde_json::json!(["claude"]),
+        "a persisted row must not hide an incomplete provider source"
+    );
+
+    let outside = analytics_body(app, "?from=2026-04-18&to=2026-04-18").await;
+    assert_eq!(outside["coverage"]["runsInRange"], 0);
+    assert_eq!(
+        outside["coverage"]["providersWithoutTokenUsage"],
+        serde_json::json!([]),
+        "a source failure belonging only to an outside-window run must not warn"
+    );
+}
+
+#[tokio::test]
 async fn analytics_route_waits_for_review_outcomes_and_keeps_next_day_revisions() {
     let app = super::test_router_with_seed("analytics-review-cohort", "Studio Mac", |db| {
         db.insert_test_repo("repo-1", "Repo One").unwrap();
