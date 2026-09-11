@@ -310,6 +310,22 @@ async fn run_push(state: &Arc<AppState>, work: &Value) -> Result<(), Result<Stri
         log::info!("skipping transfer push for closed task {source_task_id}");
         return Ok(());
     }
+
+    if let Err(error) = crate::http_api::ensure_engine_cloud_transfer_credential(
+        state,
+        &peer_id,
+        transport.as_deref(),
+    )
+    .await
+    {
+        return match error {
+            crate::http_api::CloudTransferRefreshFailure::SignInRequired => {
+                Err(Err(TerminalPush(error.to_string())))
+            }
+            _ => Err(retriable(error.to_string())),
+        };
+    }
+
     // The authoritative eligibility read. In the renderer this was a snapshot
     // that lagged the DB, which is how two pull deliveries both passed it and
     // collided on `idx_task_transfer_active_outgoing_source`.

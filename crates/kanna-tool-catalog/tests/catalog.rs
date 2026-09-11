@@ -1080,11 +1080,15 @@ fn transfer_tools_refuse_to_read_as_a_completed_move() {
         }
     }
 
-    // The credential that fails a cloud transfer belongs to the desktop app,
-    // so the tools that can hit it say where it comes from.
-    assert!(describe("kanna_list_transfer_peers").contains("signed-in desktop app"));
-    assert!(describe("kanna_push_task").contains("credential"));
-    assert!(describe("kanna_pull_task").contains("credential"));
+    // The credential that fails a cloud transfer belongs to the signed-in
+    // desktop, so the tools say renewal is bounded and keeps it out of the
+    // agent surface.
+    assert!(describe("kanna_list_transfer_peers").contains("signed-in desktop"));
+    for name in ["kanna_push_task", "kanna_pull_task"] {
+        let description = describe(name);
+        assert!(description.contains("bounded"), "{name}");
+        assert!(description.contains("no credential enters"), "{name}");
+    }
 
     let transfers = describe("kanna_task_transfers");
     for state in ["pending", "completed", "failed", "rejected"] {

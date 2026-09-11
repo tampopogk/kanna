@@ -31,6 +31,7 @@ fn forwarded_event_name(value: &Value) -> Option<&'static str> {
         Some("sidecar_exited") => Some("transfer-sidecar-exited"),
         Some("companion_event") => Some("transfer-companion-event"),
         Some("desktop_view_open") => Some("desktop-view-open"),
+        Some("cloud_transfer_credential_refresh") => Some("cloud-transfer-credential-refresh"),
         _ => None,
     }
 }
@@ -183,6 +184,64 @@ pub fn spawn_desktop_view_command_poller(app: AppHandle) {
             }
         }
     });
+}
+
+/// Long-poll credential-renewal requests and hand each one to exactly one
+/// renderer. Unlike a view command this does not focus or reveal a window: the
+/// signed-in session is the capability being asked to act, and no human click
+/// is part of a successful refresh.
+pub fn spawn_cloud_transfer_refresh_command_poller(app: AppHandle) {
+    tauri::async_runtime::spawn(async move {
+        crate::commands::mobile::wait_for_server_started(&app).await;
+        let client = reqwest::Client::new();
+        let mut position: Option<TransferEventPosition> = None;
+        loop {
+            match poll_transfer_event_route(
+                &app,
+                &client,
+                "/v1/transfers/cloud-credential-commands",
+                position.as_ref(),
+            )
+            .await
+            {
+                Ok(batch) => {
+                    for event in batch.events {
+                        if forwarded_event_name(&event) == Some("cloud-transfer-credential-refresh")
+                        {
+                            dispatch_cloud_transfer_refresh(&app, &event);
+                        } else {
+                            eprintln!("[cloud-transfer-refresh] unhandled command: {event}");
+                        }
+                    }
+                    position = Some(TransferEventPosition {
+                        cursor: batch.cursor,
+                        stream_id: batch.stream_id,
+                    });
+                }
+                Err(error) => {
+                    eprintln!("[cloud-transfer-refresh] poll failed: {error}");
+                    tokio::time::sleep(Duration::from_secs(1)).await;
+                }
+            }
+        }
+    });
+}
+
+fn dispatch_cloud_transfer_refresh(app: &AppHandle, event: &Value) {
+    let Some(window) = choose_desktop_view_window(app) else {
+        eprintln!("[cloud-transfer-refresh] no window is available; the request will time out");
+        return;
+    };
+    if let Err(error) = app.emit_to(
+        tauri::EventTarget::webview_window(window.label()),
+        "cloud-transfer-credential-refresh",
+        event,
+    ) {
+        eprintln!(
+            "[cloud-transfer-refresh] failed to hand the command to {}: {error}",
+            window.label()
+        );
+    }
 }
 
 /// Bring the chosen window to the operator and give it the command.
@@ -352,6 +411,18 @@ mod tests {
         assert_eq!(
             forwarded_event_name(&batch.events[0]),
             Some("pairing-requested")
+        );
+    }
+
+    #[test]
+    fn cloud_credential_refresh_commands_map_to_their_private_renderer_topic() {
+        assert_eq!(
+            forwarded_event_name(&json!({
+                "type": "cloud_transfer_credential_refresh",
+                "requestId": "refresh-1",
+                "peerId": "peer-studio",
+            })),
+            Some("cloud-transfer-credential-refresh")
         );
     }
 

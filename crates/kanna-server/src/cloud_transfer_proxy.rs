@@ -266,10 +266,9 @@ const CLOUD_CREDENTIAL_EXPIRY_MARGIN_SECS: i64 = 120;
 ///
 /// The renderer owns the Firebase session, so it — and only it — can mint the
 /// credential this proxy dials the relay with (see this module's header). The
-/// server can therefore never *repair* a stale route, which makes reporting one
-/// accurately the whole job: a transfer scheduled over an expired credential
-/// fails later, inside the engine, as `expected auth_ok text frame` on a socket
-/// nobody asked about.
+/// server can therefore never mint or bypass one. It reports expiry accurately
+/// and the transfer entrypoints may ask the authenticated renderer to rotate
+/// the token through the existing proxy route before any tunnel is dialled.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CloudTransferRoute {

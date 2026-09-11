@@ -1,11 +1,13 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import {
+  createDesktopTransferMachineSync,
   filterPairableTransferPeerPayload,
   mergeTransferMachines,
   type LanTransferPeer,
 } from "./desktopTransferMachines";
 import type { DesktopCloudTransferMachine } from "./desktopCloudTaskIndex";
+import type { DesktopAuthSession } from "./desktopAuth";
 
 const lanPeer = (overrides: Partial<LanTransferPeer> = {}): LanTransferPeer => ({
   id: "peer-b",
@@ -111,5 +113,47 @@ describe("mergeTransferMachines", () => {
       { peer_id: "peer-lan", pid: 42 },
       { peer_id: "peer-legacy" },
     ]);
+  });
+});
+
+describe("cloud credential renewal", () => {
+  it("forces Firebase renewal for an explicit route refresh", async () => {
+    const getIdToken = vi.fn(async (_forceRefresh?: boolean) => "fresh-id-token");
+    const session: DesktopAuthSession = {
+      initialize: async () => {},
+      getState: () => ({
+        status: "signedIn",
+        user: { uid: "owner", email: null, displayName: null },
+      }),
+      subscribe: () => () => undefined,
+      signInWithEmailPassword: async () => {},
+      signOut: async () => ({ desktopCredentialError: null }),
+      getIdToken,
+    };
+    const sync = createDesktopTransferMachineSync({
+      getTransferIdentity: async () => ({
+        peerId: "peer-local",
+        displayName: "Local",
+        publicKey: "public-local",
+        protocolVersion: 1,
+        acceptingTransfers: true,
+      }),
+      putLocalIdentity: async () => {},
+      resolveRelayUrl: async () => "wss://relay.kanna.build",
+      ensureProxy: async () => ({ endpoint: "127.0.0.1:4455" }),
+      removeProxy: async () => {},
+      clearProxies: async () => {},
+      upsertExternalPeer: async () => ({}),
+      removeExternalPeer: async () => ({}),
+      clearExternalPeers: async () => ({}),
+    });
+
+    await sync.setSignedInSession(session, "desktop-local");
+    await sync.setCloudMachines([cloudMachine()]);
+    await sync.markSidecarReady();
+    getIdToken.mockClear();
+
+    await sync.refreshCloudRoute("peer-b");
+    expect(getIdToken).toHaveBeenCalledExactlyOnceWith(true);
   });
 });

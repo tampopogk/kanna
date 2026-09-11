@@ -62,6 +62,8 @@ pub(crate) use state::{
     RemoteSingletonOwner,
 };
 
+pub(crate) use transfers::{ensure_engine_cloud_transfer_credential, CloudTransferRefreshFailure};
+
 #[allow(dead_code)]
 pub fn router(state: std::sync::Arc<AppState>) -> axum::Router {
     routes::router(state)

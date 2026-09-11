@@ -73,6 +73,13 @@ export interface DesktopTransferMachineSync {
   dispose(): Promise<void>;
 }
 
+export class CloudTransferSignInRequiredError extends Error {
+  constructor() {
+    super("Sign in before transferring through the cloud.");
+    this.name = "CloudTransferSignInRequiredError";
+  }
+}
+
 export function createDesktopTransferMachineSync(
   deps: DesktopTransferMachineSyncDeps,
 ): DesktopTransferMachineSync {
@@ -105,10 +112,11 @@ export function createDesktopTransferMachineSync(
     relayUrl: string,
     captured: number,
     capturedSession: number,
+    forceCredentialRefresh = false,
   ): Promise<void> => {
-    const idToken = await session.getIdToken();
+    const idToken = await session.getIdToken(forceCredentialRefresh);
     if (!isCurrent(captured, capturedSession) || !idToken) {
-      throw new Error("Sign in before transferring through the cloud.");
+      throw new CloudTransferSignInRequiredError();
     }
     const proxy = await deps.ensureProxy({
       peerId: machine.peerId,
@@ -265,7 +273,7 @@ export function createDesktopTransferMachineSync(
       const session = authSession;
       const result = reconciliationTail.then(async () => {
         if (!session || !isCurrent(captured, capturedSession)) {
-          throw new Error("Sign in before transferring through the cloud.");
+          throw new CloudTransferSignInRequiredError();
         }
         const machine = mergeTransferMachines({
           currentDesktopId,
@@ -288,6 +296,7 @@ export function createDesktopTransferMachineSync(
           relayUrl,
           captured,
           capturedSession,
+          true,
         );
       });
       reconciliationTail = result.catch(() => undefined);

@@ -34,6 +34,11 @@ import {
   parseDesktopViewOpenCommand,
   type DesktopViewOpenCommand,
 } from "./desktopViewOpen";
+import {
+  CLOUD_TRANSFER_CREDENTIAL_REFRESH_EVENT,
+  parseCloudTransferCredentialRefreshCommand,
+  type CloudTransferCredentialRefreshCommand,
+} from "./cloudTransferCredentialRefresh";
 import type { KeyboardActions } from "./useKeyboardShortcuts";
 import type { useAppPreferences } from "./useAppPreferences";
 import { parseRecentAgentChoices } from "../utils/agentChoiceUsage";
@@ -72,6 +77,9 @@ interface UseAppLifecycleOptions {
    * it reached the screen.
    */
   openTaskView: (command: DesktopViewOpenCommand) => Promise<void>;
+  refreshCloudTransferCredential: (
+    command: CloudTransferCredentialRefreshCommand,
+  ) => Promise<void>;
   preferences: AppPreferences;
   remoteTaskDiagnostics: Ref<unknown>;
   restoreMainTabs: () => Promise<void>;
@@ -112,6 +120,7 @@ export function useAppLifecycle({
   openFilePreview,
   openImageUrlPreview,
   openTaskView,
+  refreshCloudTransferCredential,
   preferences,
   remoteTaskDiagnostics,
   restoreMainTabs,
@@ -405,6 +414,27 @@ export function useAppLifecycle({
       appUnlisteners.push(unlistenDesktopViewOpen);
     } catch (e: unknown) {
       console.error("[App] desktop-view-open listener registration failed:", e);
+    }
+
+    try {
+      const unlistenCloudTransferCredentialRefresh = await listenCurrentWebviewWindow(
+        CLOUD_TRANSFER_CREDENTIAL_REFRESH_EVENT,
+        (event: unknown) => {
+          let command: CloudTransferCredentialRefreshCommand;
+          try {
+            command = parseCloudTransferCredentialRefreshCommand(eventPayload(event));
+          } catch (e: unknown) {
+            console.error("[App] failed to read a cloud transfer credential refresh command:", e);
+            return;
+          }
+          void refreshCloudTransferCredential(command).catch((e: unknown) => {
+            console.error("[App] failed to handle a cloud transfer credential refresh:", e);
+          });
+        },
+      );
+      appUnlisteners.push(unlistenCloudTransferCredentialRefresh);
+    } catch (e: unknown) {
+      console.error("[App] cloud transfer credential refresh listener registration failed:", e);
     }
 
     try {

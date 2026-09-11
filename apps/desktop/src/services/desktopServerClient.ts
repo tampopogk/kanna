@@ -753,6 +753,23 @@ export async function acknowledgeDesktopViewOpen(
   });
 }
 
+/**
+ * Return the fixed result of a renderer-owned cloud credential refresh.
+ * Credentials and provider error text deliberately never enter this payload.
+ */
+export async function acknowledgeCloudTransferCredentialRefresh(
+  requestId: string,
+  outcome: "refreshed" | "sign_in_required" | "refresh_failed",
+): Promise<void> {
+  await requestJson<{ acknowledged: boolean }>(
+    "/v1/transfers/cloud-credential-refreshes/ack",
+    {
+      method: "POST",
+      body: { requestId, outcome },
+    },
+  );
+}
+
 export async function postDesktopOperatorEvents(events: DesktopOperatorEventInput[]): Promise<void> {
   if (clientHandlersForTests?.postOperatorEvents) {
     await clientHandlersForTests.postOperatorEvents(events);

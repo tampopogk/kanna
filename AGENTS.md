@@ -609,8 +609,10 @@ declares none. Both only queue an intent for the transfer engine: they answer
 `moved: false`, and **a task is moved when `kanna_task_transfers` says
 `completed`, never because a push or pull succeeded.** A route is checked before
 anything is queued — including the cloud tunnel's Firebase credential, which
-only the signed-in renderer can mint, so a stale one is refused with the fix
-instead of scheduled and failed later on a relay socket. See
+only the signed-in renderer can mint. A stale selected cloud route asks that
+renderer to rotate it, waits for a bounded fixed verdict, and rechecks the
+server-observed credential before queueing. Sign-in-required and unavailable
+desktop outcomes are explicit; no credential enters an agent surface. See
 `docs/kanna-server-boundary.md`.
 
 ## E2E coverage expectation
