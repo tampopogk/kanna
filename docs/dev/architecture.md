@@ -4,6 +4,10 @@ Kanna is a set of cooperating processes centered on the desktop app. This page
 describes each component, the boundaries between them, and where the code
 lives.
 
+For the product purpose these components serve, the current audience and
+journeys, and the distinction between implemented surfaces and proposals, read
+[Product Context](product-context.md) first.
+
 ## System overview
 
 ```
