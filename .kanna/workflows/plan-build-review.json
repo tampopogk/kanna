@@ -9,7 +9,7 @@
       "description": "Planning agent studies the task and records the implementation plan as its run result; the human reviews the plan before advancing to build",
       "agent": "plan",
       "prompt": "$TASK_PROMPT",
-      "agent_provider": ["claude-fable", "codex-gpt-6-astra"],
+      "agent_provider": ["codex-gpt-6-astra-hi", "claude-fable-hi"],
       "policy": { "transition": "manual" }
     },
     {
