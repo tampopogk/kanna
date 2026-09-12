@@ -1242,8 +1242,11 @@ fn prepare_stage_restart(
         }
     };
     let (workspace_spec, final_prompt, resume_fallback_reason) = match resume {
-        Ok((_provider, workspace)) => (
-            RunWorkspaceSpec::Resume(workspace),
+        Ok((_provider, mut workspace)) => (
+            {
+                workspace.repository_setup_pending = setup_pending;
+                RunWorkspaceSpec::Resume(workspace)
+            },
             // What the agent is told must match what actually happened to it.
             // A run that recorded success and then lost its PTY has no
             // interrupted work to finish, and telling it otherwise is how a

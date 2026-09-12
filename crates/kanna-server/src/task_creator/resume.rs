@@ -256,6 +256,7 @@ pub(super) fn prepare_resume_workspace(
             branch,
             provider_session_id,
             resumed_from_run_id: resumed_from_run_id.to_string(),
+            repository_setup_pending: false,
         },
     ))
 }

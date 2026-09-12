@@ -746,6 +746,166 @@ async fn reopen_recovery_retries_failed_repository_setup_in_the_retained_checkou
     let _ = std::fs::remove_dir_all(&repo_root);
 }
 
+/// A server can stop after recovery recreates and records a checkout but
+/// before its deferred repository setup runs. If the provider transcript is
+/// then available, preserving that conversation must not turn the durable
+/// pending checkout into an allegedly initialized resumed workspace.
+#[tokio::test]
+#[allow(clippy::await_holding_lock)] // Provider transcript lookup uses process-global config.
+async fn reopen_recovery_finishes_pending_setup_before_resuming_provider_session() {
+    let (repo_root, config, db) = init_recovery_fixture("undo-close-pending-resume");
+    std::fs::write(
+        repo_root.join(".kanna/config.json"),
+        serde_json::json!({
+            "workspace": { "path": { "prepend": [".kanna/test-provider-bin"] } },
+            "setup": ["printf initialized > repository-setup-proof.txt"]
+        })
+        .to_string(),
+    )
+    .unwrap();
+    publish_origin_main(&repo_root, "publish pending resumed checkout setup");
+    db.close_pipeline_item("recovery-task").unwrap();
+    crate::worktree_cleanup::cleanup_closed_task_worktrees_by_id(&db, "recovery-task").unwrap();
+    let worktree = repo_root.join(".kanna-worktrees/task-recovery");
+
+    let reopened = tower::ServiceExt::oneshot(
+        crate::http_api::router(std::sync::Arc::new(crate::http_api::AppState::new(
+            config.clone(),
+        ))),
+        axum::http::Request::post("/v1/tasks/recovery-task/actions/reopen")
+            .body(axum::body::Body::empty())
+            .unwrap(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(reopened.status(), axum::http::StatusCode::OK);
+
+    let config_dir = repo_root.join("claude-config");
+    std::fs::create_dir_all(&config_dir).unwrap();
+    let _env_guard = super::CLAUDE_CONFIG_DIR_LOCK.lock().unwrap();
+    let previous_config = std::env::var_os("CLAUDE_CONFIG_DIR");
+    std::env::set_var("CLAUDE_CONFIG_DIR", &config_dir);
+
+    // This is the real resume preparation producer. With no surviving
+    // checkout or transcript it recreates the branch and persists pending,
+    // but dropping the prepared value simulates a server stop before the
+    // lifecycle worker can execute setup or record a failure.
+    let abandoned = prepare_resume_task_for_api(&db, &config, "recovery-task").unwrap();
+    assert!(matches!(
+        &abandoned.workspace,
+        super::super::types::PreparedRunWorkspace::Recreated(_)
+    ));
+    assert!(abandoned.has_deferred_setup());
+    assert!(db.task_worktree_setup_pending("recovery-task").unwrap());
+    assert!(!worktree.join("repository-setup-proof.txt").exists());
+    drop(abandoned);
+
+    std::fs::write(worktree.join("retained-before-restart.txt"), "keep me").unwrap();
+    write_recovery_transcript(&config_dir, &worktree);
+    let fake_claude = worktree.join(".kanna/test-provider-bin/claude");
+    std::fs::write(
+        &fake_claude,
+        r#"#!/bin/sh
+test -f repository-setup-proof.txt || exit 41
+session_id=""
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = "--resume" ]; then
+    session_id="$2"
+    shift 2
+  else
+    shift
+  fi
+done
+slug=$(printf '%s' "$PWD" | sed 's/[^[:alnum:]]/-/g')
+transcript="$CLAUDE_CONFIG_DIR/projects/$slug/$session_id.jsonl"
+grep -q prior-context-retained "$transcript" || exit 42
+printf resumed > pending-resume-proof.txt
+"#,
+    )
+    .unwrap();
+    std::fs::set_permissions(&fake_claude, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    let db_path = config.db_path.clone();
+    drop(db);
+    let recovered_db = Db::open(&db_path).unwrap();
+    assert!(recovered_db
+        .task_worktree_setup_pending("recovery-task")
+        .unwrap());
+
+    let fake_daemon = spawn_recovery_fake_daemon(config.daemon_dir.clone()).await;
+    let state = std::sync::Arc::new(crate::http_api::AppState::new(config.clone()));
+    let response = tower::ServiceExt::oneshot(
+        crate::http_api::router(std::sync::Arc::clone(&state)),
+        axum::http::Request::post("/v1/tasks/recovery-task/actions/resume")
+            .body(axum::body::Body::empty())
+            .unwrap(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(response.status(), axum::http::StatusCode::OK);
+    let commands = fake_daemon.await.unwrap();
+    crate::http_api::wait_for_task_mutation_to_finish(&state, "recovery-task").await;
+
+    let command_line = commands
+        .iter()
+        .find_map(|command| match command {
+            kanna_daemon::protocol::Command::Spawn { args, .. } => args.last(),
+            _ => None,
+        })
+        .expect("resumed provider Spawn command");
+    assert!(command_line.contains("--resume"));
+    assert!(command_line.contains(RECOVERY_SESSION_ID));
+    assert_eq!(
+        std::fs::read_to_string(worktree.join("repository-setup-proof.txt")).unwrap(),
+        "initialized",
+        "repository setup must complete before the provider can pass its Spawn-time check"
+    );
+    assert_eq!(
+        std::fs::read_to_string(worktree.join("pending-resume-proof.txt")).unwrap(),
+        "resumed"
+    );
+    assert_eq!(
+        std::fs::read_to_string(worktree.join("retained-before-restart.txt")).unwrap(),
+        "keep me"
+    );
+    assert!(!recovered_db
+        .task_worktree_setup_pending("recovery-task")
+        .unwrap());
+    let replacement = recovered_db
+        .latest_stage_run("recovery-task")
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        replacement.resumed_from_run_id.as_deref(),
+        Some("run-killed-mid-turn")
+    );
+    assert_eq!(
+        replacement.provider_session_id.as_deref(),
+        Some(RECOVERY_SESSION_ID)
+    );
+    assert_eq!(replacement.model.as_deref(), Some(RECOVERY_MODEL));
+    assert_eq!(
+        run_git_fixture(&worktree, &["branch", "--show-current"]),
+        "task-recovery"
+    );
+    recovered_db
+        .finish_stage_run(&replacement.id, "failed", Some("server restarted"), None)
+        .unwrap();
+    let initialized_resume =
+        prepare_resume_task_for_api(&recovered_db, &config, "recovery-task").unwrap();
+    assert!(initialized_resume.resumed_workspace().is_some());
+    assert!(
+        !initialized_resume.has_deferred_setup(),
+        "an initialized resumed workspace must not rerun repository setup"
+    );
+
+    match previous_config {
+        Some(previous) => std::env::set_var("CLAUDE_CONFIG_DIR", previous),
+        None => std::env::remove_var("CLAUDE_CONFIG_DIR"),
+    }
+    let _ = std::fs::remove_dir_all(&repo_root);
+}
+
 /// A recorded verdict does not keep a PTY alive. A manual stage's agent
 /// finishes its turn, records success, and parks at its composer; a reboot
 /// then takes the session with a `succeeded` run behind it. That is the state

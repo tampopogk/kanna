@@ -237,6 +237,10 @@ pub(super) struct ResumeWorkspaceSpec {
     pub(super) provider_session_id: String,
     /// The stage run whose session is being resumed.
     pub(super) resumed_from_run_id: String,
+    /// The adopted checkout was recreated but has not completed repository
+    /// setup yet. Resume may preserve the provider conversation, but setup
+    /// must still finish before that provider is spawned.
+    pub(super) repository_setup_pending: bool,
 }
 
 /// Where a prepared stage run executes, and what the spawn must do about it.
@@ -272,6 +276,9 @@ pub(crate) struct PreparedStageRunSpawn {
     /// `stage_run.kind`: "main" or "post".
     pub(super) run_kind: &'static str,
     pub(super) workspace: PreparedRunWorkspace,
+    /// Durable initialization state for the selected checkout. This is
+    /// independent of whether the provider conversation can be resumed.
+    pub(super) repository_setup_pending: bool,
     /// Teardown for the workspace this run leaves behind (forked swaps only);
     /// spawned after the transition succeeds, never on rollback.
     pub(super) workspace_teardown: Option<PreparedWorkspaceTeardown>,
