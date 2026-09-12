@@ -82,6 +82,12 @@ const tabs: Array<'general' | 'account' | 'mobile' | 'developer'> = isDev
 const mobileDesktopName = ref("This desktop")
 const mobileEnvironment = ref("development")
 const mobileDesktopId = ref("")
+const mobileStatusLoading = ref(false)
+const mobileStatusError = ref<string | null>(null)
+const pairingPending = ref(false)
+const pairingError = ref<string | null>(null)
+let statusGeneration = 0
+let pushGeneration = 0
 const mobileServerStatus = ref<MobileServerStatus>("stopped")
 const pairingCode = ref<string | null>(null)
 const pairingPayload = ref<string | null>(null)
@@ -138,20 +144,27 @@ function normalizeMobileServerStatus(status?: string): MobileServerStatus {
 }
 
 async function refreshMobileAccess() {
+  const generation = ++statusGeneration
+  mobileStatusLoading.value = true
+  mobileStatusError.value = null
   try {
     const status = await invoke<MobileServerStatusResponse>("mobile_server_status")
+    if (generation !== statusGeneration) return
     mobileDesktopId.value = status.desktopId?.trim() ?? ""
     mobileEnvironment.value = status.environment?.trim() || "development"
     if (status.desktopName) {
       mobileDesktopName.value = status.desktopName
     }
     mobileServerStatus.value = normalizeMobileServerStatus(status.state)
-    pairingCode.value = status.pairingCode ?? null
-    pairingPayload.value = null
-    pairingExpiresAtUnixMs.value = null
+    // Status has no QR payload or expiry. Only a locally created session owns credentials.
   } catch (error) {
     console.error("[PreferencesPanel] failed to load mobile access status:", error)
-    mobileServerStatus.value = "error"
+    if (generation === statusGeneration) {
+      mobileServerStatus.value = "error"
+      mobileStatusError.value = error instanceof Error ? error.message : String(error)
+    }
+  } finally {
+    if (generation === statusGeneration) mobileStatusLoading.value = false
   }
 }
 
@@ -161,54 +174,78 @@ async function refreshMobileAccess() {
  * `kanna_notify_mobile` would use, without sending anything.
  */
 async function refreshPushRegistration() {
+  const generation = ++pushGeneration
   if (authState.value.status !== "signedIn") {
     pushRegistration.value = null
+    pushRegistrationLoading.value = false
     return
   }
   pushRegistrationLoading.value = true
   try {
-    pushRegistration.value = await invoke<MobilePushRegistrationStatus>(
-      "mobile_push_registration_status"
-    )
+    const result = await invoke<MobilePushRegistrationStatus>("mobile_push_registration_status")
+    if (generation === pushGeneration) pushRegistration.value = result
   } catch (error) {
     console.error("[PreferencesPanel] failed to load push registration status:", error)
-    pushRegistration.value = {
+    if (generation === pushGeneration) pushRegistration.value = {
       status: "unavailable",
       registeredDeviceCount: 0,
       error: error instanceof Error ? error.message : String(error)
     }
   } finally {
-    pushRegistrationLoading.value = false
+    if (generation === pushGeneration) pushRegistrationLoading.value = false
   }
 }
 
 const isSignedIn = computed(() => authState.value.status === "signedIn")
 watch(
-  () => [activeTab.value, isSignedIn.value] as const,
-  ([tab, signedIn]) => {
-    if (tab === "mobile" && signedIn) void refreshPushRegistration()
-    else if (!signedIn) pushRegistration.value = null
+  () => authState.value.status === "signedIn" ? authState.value.user.uid : null,
+  () => {
+    ++pushGeneration
+    pushRegistration.value = null
+    pushRegistrationLoading.value = false
+    if (activeTab.value === "mobile") void refreshPushRegistration()
   },
-  { immediate: true }
+  { flush: "sync" }
 )
+watch(activeTab, (tab) => {
+  if (tab === "mobile") {
+    void refreshMobileAccess()
+    void refreshPushRegistration()
+  }
+})
+
+async function openAccountSettings() {
+  activeTab.value = "account"
+  await nextTick()
+  overlayRef.value?.querySelector<HTMLButtonElement>('[data-testid="preferences-account-tab"]')?.focus()
+}
 
 async function startPairing() {
+  if (pairingPending.value) return
+  pairingPending.value = true
+  pairingError.value = null
+  // A new request may replace the server session even if its response is lost.
+  pairingCode.value = null
+  pairingPayload.value = null
+  pairingExpiresAtUnixMs.value = null
   try {
     const session = await invoke<PairingSessionResponse>("create_mobile_pairing_session")
     mobileDesktopId.value = session.desktopId?.trim() ?? mobileDesktopId.value
     if (session.desktopName) {
       mobileDesktopName.value = session.desktopName
     }
+    ++statusGeneration
+    mobileStatusLoading.value = false
+    mobileStatusError.value = null
     mobileServerStatus.value = "running"
     pairingCode.value = session.code ?? null
     pairingPayload.value = session.pairingPayload ?? null
     pairingExpiresAtUnixMs.value = session.expiresAtUnixMs ?? null
   } catch (error) {
     console.error("[PreferencesPanel] failed to create pairing session:", error)
-    mobileServerStatus.value = "error"
-    pairingCode.value = null
-    pairingPayload.value = null
-    pairingExpiresAtUnixMs.value = null
+    pairingError.value = error instanceof Error ? error.message : String(error)
+  } finally {
+    pairingPending.value = false
   }
 }
 
@@ -279,6 +316,8 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   unsubscribeAuth?.()
+  ++pushGeneration
+  ++statusGeneration
 })
 
 defineExpose({ bringToFront, cycleTab, isOnTop })
@@ -504,11 +543,15 @@ defineExpose({ bringToFront, cycleTab, isOnTop })
         </section>
       </div>
 
-      <div v-if="activeTab === 'mobile'" class="prefs-body">
+      <div v-if="activeTab === 'mobile'" class="prefs-body mobile-body">
         <MobileAccessPanel
           :desktop-name="mobileDesktopName"
           :environment="mobileEnvironment"
           :server-status="mobileServerStatus"
+          :status-loading="mobileStatusLoading"
+          :status-error="mobileStatusError"
+          :pairing-pending="pairingPending"
+          :pairing-error="pairingError"
           :pairing-code="pairingCode"
           :pairing-payload="pairingPayload"
           :expires-at-unix-ms="pairingExpiresAtUnixMs"
@@ -516,6 +559,8 @@ defineExpose({ bringToFront, cycleTab, isOnTop })
           :push-registration="pushRegistration"
           :push-registration-loading="pushRegistrationLoading"
           @start-pairing="startPairing"
+          @refresh-status="refreshMobileAccess"
+          @open-account="openAccountSettings"
           @refresh-push-registration="refreshPushRegistration"
         />
       </div>
@@ -606,6 +651,11 @@ defineExpose({ bringToFront, cycleTab, isOnTop })
   display: flex;
   flex-direction: column;
   gap: 10px;
+}
+
+.mobile-body {
+  max-height: calc(90vh - 110px);
+  overflow-y: auto;
 }
 
 .pref-row {

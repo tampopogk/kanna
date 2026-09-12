@@ -320,7 +320,7 @@ describe("mobile pairing UI", () => {
     await client.click(await client.waitForElement('[data-testid="preferences-mobile-tab"]'));
 
     const panel = await client.waitForElement('[data-testid="mobile-access-panel"]');
-    expect(await client.getText(panel)).toContain("Mobile Access");
+    expect(await client.getText(panel)).toContain("Use Kanna on your phone");
     await client.click(await client.waitForElement('[data-testid="mobile-access-start-pairing"]'));
 
     const codeElement = await client.waitForElement('[data-testid="mobile-access-pairing-code"]', 10_000);
@@ -328,7 +328,7 @@ describe("mobile pairing UI", () => {
     expect(pairingCode).toMatch(/^[A-Z0-9]{6}$/);
 
     const statusElement = await client.waitForElement('[data-testid="mobile-access-status"]');
-    expect(await client.getText(statusElement)).toBe("Online");
+    expect(await client.getText(statusElement)).toBe("Ready for pairing");
 
     const status = await tauriInvoke(client, "mobile_server_status") as MobileServerStatus;
     expect(status.state).toBe("running");
@@ -350,9 +350,10 @@ describe("mobile pairing UI", () => {
     await client.click(await client.waitForElement('[data-testid="preferences-mobile-tab"]'));
 
     const rowSelector = '[data-testid="mobile-access-push-registration"]';
-    await client.waitForText(rowSelector, "No phone is registered for push notifications", 15_000);
-    await client.waitForText(rowSelector, "has ever registered", 15_000);
-    await client.waitForText(rowSelector, "Open Kanna on the phone", 15_000);
+    await client.waitForText(rowSelector, "No devices registered for account notifications", 15_000);
+    await client.click(await client.waitForElement('[data-testid="mobile-access-troubleshooting-toggle"]'));
+    await client.waitForText('[data-testid="mobile-access-push-reason"]', "has ever registered", 15_000);
+    await client.waitForText(rowSelector, "Open Kanna on your phone", 15_000);
 
     const device = {
       deviceId: "desktop-mobile-access-e2e-phone",
@@ -364,12 +365,12 @@ describe("mobile pairing UI", () => {
     }`;
     await updatePushRegistration("register", authSession, device);
     await client.click(await client.waitForElement('[data-testid="mobile-access-push-refresh"]'));
-    await client.waitForText(rowSelector, "reach 1 registered phone", 15_000);
+    await client.waitForText(rowSelector, "1 device registered for account notifications", 15_000);
 
     await updatePushRegistration("unregister", authSession, device);
     await client.click(await client.waitForElement('[data-testid="mobile-access-push-refresh"]'));
-    await client.waitForText(rowSelector, "unregistered the last push device", 15_000);
-    await client.waitForText(rowSelector, "Open Kanna on the phone", 15_000);
+    await client.waitForText('[data-testid="mobile-access-push-reason"]', "unregistered the last push device", 15_000);
+    await client.waitForText(rowSelector, "Open Kanna on your phone", 15_000);
 
     const screenshotPath = process.env.KANNA_MOBILE_ACCESS_SCREENSHOT_PATH?.trim();
     if (screenshotPath) await client.screenshot(screenshotPath);
