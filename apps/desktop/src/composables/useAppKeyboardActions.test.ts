@@ -146,6 +146,7 @@ function createHarness(options: {
     overlayContext,
     showShortcutsModal,
     showNewTaskModal,
+    showAddRepoModal,
     showPreferencesPanel,
     preferencesIsOnTop,
     cyclePreferencesTab,
@@ -322,6 +323,16 @@ describe("useAppKeyboardActions durable selection", () => {
 
     expect(h.cyclePreferencesTab).toHaveBeenNthCalledWith(1, 1);
     expect(h.cyclePreferencesTab).toHaveBeenNthCalledWith(2, -1);
+    expect(h.mainTabs.activeTabId.value).toBe("diff");
+  });
+
+  it("leaves tab cycling to Add Repository without moving the retained main tab", () => {
+    const h = createHarness({ activeTabKind: "diff" });
+    h.showAddRepoModal.value = true;
+
+    h.keyboardActions.nextTab();
+    h.keyboardActions.prevTab();
+
     expect(h.mainTabs.activeTabId.value).toBe("diff");
   });
 

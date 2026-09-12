@@ -38,8 +38,8 @@ registerContextShortcuts("diff", [
   { label: t('diffView.shortcutPageUpDown'), display: "f / b", groupKey: "shortcuts.groupNavigation" },
   { label: t('diffView.shortcutHalfUpDown'), display: "d / u", groupKey: "shortcuts.groupNavigation" },
   { label: t('diffView.shortcutTopBottom'), display: "g / G", groupKey: "shortcuts.groupNavigation" },
-  { label: t('diffView.shortcutScopeNext'), display: "⇧⌘]", groupKey: "shortcuts.groupViews" },
-  { label: t('diffView.shortcutScopePrev'), display: "⇧⌘[", groupKey: "shortcuts.groupViews" },
+  { label: t('diffView.shortcutScopeNext'), display: "]", groupKey: "shortcuts.groupViews" },
+  { label: t('diffView.shortcutScopePrev'), display: "[", groupKey: "shortcuts.groupViews" },
   { label: t('diffView.shortcutCycleFilter'), display: "s", groupKey: "shortcuts.groupViews" },
   { label: t('diffView.shortcutToggleContext'), display: "a", groupKey: "shortcuts.groupViews" },
   { label: t('diffView.shortcutClose'), display: "q", groupKey: "shortcuts.groupActions" },
@@ -745,14 +745,14 @@ useLessScroll(containerRef, {
       toggleContextLines();
       return true;
     }
-    // Cmd+Shift+] — next scope
-    if (e.key === "]" && e.metaKey && e.shiftKey && !e.ctrlKey && !e.altKey) {
+    // ] / [ cycle the Diff tab's own scopes. The modified variants belong to
+    // the main tab bar, and must stay available for global tab navigation.
+    if (e.key === "]" && noMods) {
       e.preventDefault();
       cycleScopeForward();
       return true;
     }
-    // Cmd+Shift+[ — previous scope
-    if (e.key === "[" && e.metaKey && e.shiftKey && !e.ctrlKey && !e.altKey) {
+    if (e.key === "[" && noMods) {
       e.preventDefault();
       cycleScopeBack();
       return true;

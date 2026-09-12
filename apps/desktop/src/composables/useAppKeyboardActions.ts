@@ -114,9 +114,17 @@ export function useAppKeyboardActions(options: UseAppKeyboardActionsOptions) {
     handleEditBlockedTask,
   } = options;
 
-  // The Preferences dialog owns section cycling while it is open; otherwise
-  // the keys move between the main content area's tabs.
+  // A top Preferences dialog owns section cycling. Add Repository handles the
+  // same chord in its bubble-phase listener, so the capture-phase app action
+  // must leave the retained main tab alone and let that dialog receive it.
   function cycleTabs(direction: -1 | 1) {
+    const preferencesOnTop = preferencesPanelRef.value?.isOnTop?.() ?? !showAddRepoModal.value;
+    if (showPreferencesPanel.value && preferencesOnTop) {
+      preferencesPanelRef.value?.cycleTab?.(direction);
+      return;
+    }
+    if (showAddRepoModal.value) return;
+    // Cover the tick between rendering Preferences and assigning its ref.
     if (showPreferencesPanel.value) {
       preferencesPanelRef.value?.cycleTab?.(direction);
       return;

@@ -180,6 +180,16 @@ describe("isAppShortcut", () => {
       metaKey: true,
     }))).toBe(false);
   });
+
+  it("leaves bare brackets to focused views and terminals while reserving modified brackets for tabs", () => {
+    expect(isAppShortcut(new KeyboardEvent("keydown", { key: "]" }))).toBe(false);
+    expect(isAppShortcut(new KeyboardEvent("keydown", { key: "[" }))).toBe(false);
+    expect(isAppShortcut(new KeyboardEvent("keydown", {
+      key: "]",
+      metaKey: true,
+      shiftKey: true,
+    }))).toBe(true);
+  });
 });
 
 describe("shortcut contexts", () => {

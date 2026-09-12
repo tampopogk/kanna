@@ -6,7 +6,7 @@ import { invoke } from "../invoke";
 import { parseRepoInput } from "../utils/parseRepoInput";
 import type { ParsedInput } from "../utils/parseRepoInput";
 import { defaultReposHome } from "../utils/reposHome";
-import { useModalZIndex } from "../composables/useModalZIndex";
+import { isTopModal, useModalZIndex } from "../composables/useModalZIndex";
 import { macOsTextInputAttrs } from "../utils/textInput";
 
 interface GitRepositoryState {
@@ -390,6 +390,9 @@ function handleSubmit() {
 }
 
 function handleKeydown(e: KeyboardEvent) {
+  // This dialog can remain mounted below another app-level modal. Only the
+  // visible top surface may consume its window-scoped keys.
+  if (!isTopModal(zIndex.value)) return;
   if (e.key === "Enter") {
     e.preventDefault();
     handleSubmit();

@@ -427,6 +427,61 @@ describe("DiffView", () => {
     wrapper.unmount();
   });
 
+  it("cycles scopes with bare brackets only while foreground and outside text input", async () => {
+    invokeMock.mockImplementation(async (command) => {
+      if (command === "git_diff") return "";
+      if (command === "git_branch_upstream") return null;
+      if (command === "git_merge_base") return "merge-base-sha";
+      if (command === "git_diff_branch_range") return "";
+      throw new Error(`unexpected command: ${command}`);
+    });
+    let foreground = true;
+    const wrapper = mount(DiffView, {
+      props: {
+        repoPath: "/repo",
+        initialScope: "working",
+        baseRef: "origin/main",
+        isForeground: () => foreground,
+      },
+      attachTo: document.body,
+      global: { mocks: { $t: (key: string) => key } },
+    });
+    await flushPromises();
+
+    const activeScope = () => wrapper.get(".scope-selector button.active").text();
+    expect(activeScope()).toBe("diffView.scopeWorking");
+
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "]", bubbles: true }));
+    await flushPromises();
+    expect(activeScope()).toBe("diffView.scopeBranch");
+
+    foreground = false;
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "[", bubbles: true }));
+    await flushPromises();
+    expect(activeScope()).toBe("diffView.scopeBranch");
+
+    foreground = true;
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "/", bubbles: true }));
+    await flushPromises();
+    const input = wrapper.get(".search-input");
+    input.element.dispatchEvent(new KeyboardEvent("keydown", { key: "[", bubbles: true }));
+    await flushPromises();
+    expect(activeScope()).toBe("diffView.scopeBranch");
+
+    (wrapper.get(".diff-view").element as HTMLElement).focus();
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "[", bubbles: true }));
+    await flushPromises();
+    expect(activeScope()).toBe("diffView.scopeWorking");
+
+    const viewShortcuts = (await import("../../composables/useShortcutContext"))
+      .contextShortcuts.value.get("diff");
+    expect(viewShortcuts).toEqual(expect.arrayContaining([
+      expect.objectContaining({ label: "Scope →", display: "]" }),
+      expect.objectContaining({ label: "Scope ←", display: "[" }),
+    ]));
+    wrapper.unmount();
+  });
+
   it("can reload the working diff with all unchanged lines", async () => {
     invokeMock.mockImplementation(async (command) => {
       if (command === "git_diff") return "diff --git a/example.txt b/example.txt";

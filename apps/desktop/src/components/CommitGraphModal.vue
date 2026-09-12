@@ -17,7 +17,15 @@ const props = defineProps<EmbeddableViewProps & {
   remoteGraphLoader?: (request: { fromRef?: "HEAD" }) => Promise<RemoteTaskGraphContent>;
 }>();
 
-const { zIndex, bringToFront, overlayClass, overlayStyle, dismissOnScrimClick, isForeground } =
+const {
+  zIndex,
+  bringToFront,
+  overlayClass,
+  overlayStyle,
+  dismissOnScrimClick,
+  focusWhenBrought,
+  isForeground,
+} =
   useEmbeddableView(props, { context: "graph" });
 const graphViewRef = ref<InstanceType<typeof CommitGraphView> | null>(null);
 
@@ -39,6 +47,7 @@ async function revealDesktopViewTarget(
 defineExpose({ zIndex, bringToFront, dismiss, revealDesktopViewTarget });
 
 const modalRef = ref<HTMLElement | null>(null);
+focusWhenBrought(modalRef);
 
 const emit = defineEmits<{
   (e: "close"): void;

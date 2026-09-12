@@ -24,8 +24,8 @@ semantics, and the MCP task-management rule — stay in the repo-root
 
 **Review and merge:**
 1. Agent finishes → task marked as unread (bold in sidebar)
-2. User selects task, presses Cmd+D → the general-purpose diff modal shows all branch changes
-3. Optionally Cmd+P → file picker → preview, Cmd+O → open in IDE, or Cmd+J → shell in worktree
+2. User selects task, presses Cmd+D → the general-purpose Diff tab shows all branch changes
+3. Optionally Cmd+P → file picker → file tab, Cmd+O → open in IDE, or Cmd+J → shell tab in the worktree
 4. Cmd+S → advance the workflow (commit post runs in-session; the pr-stage agent creates the GitHub PR and reports its URL)
 5. Human reviews the PR through its preserved PR link, then uses the ordinary task stage-advance action. When the task's pinned workflow ships the `approve` post, that post hands approved work to the merge queue/master; pinned workflows without the post only advance. The workflow's existing single-flight and completion semantics remain unchanged.
 
@@ -74,7 +74,7 @@ semantics, and the MCP task-management rule — stay in the repo-root
   owner, manager, and reviewer directives recorded by `kanna_task_inputs`.
 
 **Manual intervention:**
-1. Cmd+J → shell modal opens in the task's worktree
+1. Cmd+J → shell tab opens in the task's worktree
 2. Run tests, inspect files, debug
 3. Close shell → focus returns to agent terminal
 4. Type in the agent terminal to send input to the running provider CLI
@@ -185,10 +185,11 @@ why the last two are recorded rather than simply left out.
 
 ### Diff viewer
 
-- Modal (Cmd+D), not a tab
-- Scopes: Branch (all changes since merge-base with default branch), Last Commit, Working (uncommitted)
+- Main-area tab (Cmd+D), retained with the task's other open views
+- Scopes: Branch (all changes since merge-base with the configured base), Working (uncommitted)
 - Staged toggle to filter staged-only changes
 - Scope remembered per task
+- `]` / `[` cycle the Diff scope forward / backward while the Diff tab is active; the platform-mapped modified brackets remain global next / previous tab
 - Rendered by `@pierre/diffs` with shadow DOM, syntax highlighting via worker pool
 
 ### Keyboard shortcuts
@@ -196,9 +197,9 @@ why the last two are recorded rather than simply left out.
 | Shortcut | Action |
 |----------|--------|
 | ⇧⌘N | New task |
-| ⌘N / ⌘W | New window / close window |
-| ⌘D | Diff modal |
-| ⌘J | Shell modal |
+| ⌘N / ⌘W | New window / close active tab (or window when no view tab is open) |
+| ⌘D | Open or focus Diff tab |
+| ⌘J | Open or focus task shell tab |
 | ⇧⌘J | Shell at repo root |
 | ⌘P | File picker |
 | ⌥⌘P | Toggle file preview |
@@ -218,15 +219,19 @@ why the last two are recorded rather than simply left out.
 | ⇧⌘E | Tree explorer |
 | ⇧⌘Enter | Toggle maximize |
 | ⇧⌘A | Analytics |
+| ⇧⌘[ / ⇧⌘] (macOS), Ctrl+Alt+[ / Ctrl+Alt+] (Linux) | Previous / next main-area tab |
+| [ / ] | Previous / next Diff scope (Diff tab only) |
 | ⌘/ | Keyboard shortcuts |
 | ⌘, | Preferences |
 | Ctrl+- / Ctrl+Shift+- | Back / Forward |
-| Escape | Dismiss modal |
+| Escape | Dismiss the top dialog or active non-terminal view tab |
 
 The registry in `apps/desktop/src/composables/useKeyboardShortcuts.ts` is the
-single source of truth. Shortcuts are context-scoped (most to the main view,
-some to the diff or other modals); within its context a shortcut also works
-while the terminal has focus.
+single source of truth for app-level shortcuts. View-local shortcuts are
+listed by their active Diff, file, tree, or graph context in the shortcut help.
+Main-area tabs stay mounted while hidden, so only the active view may consume
+its local keys; registered app shortcuts continue to work while a terminal has
+focus.
 
 ### Preferences
 
