@@ -278,6 +278,7 @@ export function useAppTaskCreation({
     baseBranch?: string,
     agentType: "pty" | "agent" = "pty",
     blockerTaskIds?: string[],
+    model?: string,
   ) {
     if (pendingNewTaskSubmit) return;
 
@@ -322,6 +323,7 @@ export function useAppTaskCreation({
         workflowName,
         baseBranch,
         blockerTaskIds,
+        ...(model ? { model } : {}),
       });
       try {
         await onAgentChoiceUsed?.({ provider: agentProvider, executionType: agentType });
@@ -483,6 +485,7 @@ export function useAppTaskCreation({
   });
 
   return {
+    newTaskRepoId: computed(() => store.selectedRepoId ?? undefined),
     cloningRepo,
     availableAgentProviders,
     newTaskOptionsLoading,

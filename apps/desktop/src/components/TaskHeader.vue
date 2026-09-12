@@ -7,6 +7,8 @@ import { isTauri } from "../tauri-mock";
 const { t } = useI18n();
 
 interface TaskHeaderPresentation {
+  launchProvider?: string | null;
+  launchModel?: string | null;
   display_name: string | null;
   issue_title: string | null;
   prompt: string | null;
@@ -88,6 +90,7 @@ function openLocalhostPort(port: number) {
       <h2 class="task-title" :title="taskPromptTooltip(item)" @mousedown.stop>{{ title(item) }}</h2>
     </div>
     <div class="header-meta">
+      <span v-if="item.launchProvider" class="meta-item" title="Recorded at stage launch. Changes made inside the agent TUI may differ.">Launched with {{ item.launchProvider }}{{ item.launchModel ? ` · ${item.launchModel}` : ' · CLI default' }}</span>
       <span v-if="item.branch" class="meta-item branch" @dblclick="copyBranch">
         <span class="meta-label">{{ $t('taskHeader.branchLabel') }}</span> {{ copied ? $t('taskHeader.copied', 'Copied!') : item.branch }}
       </span>

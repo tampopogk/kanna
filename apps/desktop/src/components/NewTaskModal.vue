@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, ref, watch } from "vue";
 import { AGENT_PROVIDERS } from "@kanna/agent-protocol";
+import OpenCodeModelSelect from "./OpenCodeModelSelect.vue";
 import BlockerSelectModal from "./BlockerSelectModal.vue";
 import type { AgentProvider, PipelineItem } from "../types/kanna";
 import { useModalZIndex } from "../composables/useModalZIndex";
@@ -16,6 +17,7 @@ registerContextShortcuts("newTask", [
 ]);
 
 const props = defineProps<{
+  repoId?: string;
   defaultAgentProvider?: AgentProvider;
   recentAgentChoices?: RecentAgentChoice[];
   availableAgentProviders?: AgentProvider[];
@@ -30,12 +32,14 @@ const props = defineProps<{
 }>();
 
 const emit = defineEmits<{
-  submit: [prompt: string, agentProvider: AgentProvider, workflowName: string, baseBranch: string, agentType: AgentExecutionType, blockerTaskIds: string[]];
+  submit: [prompt: string, agentProvider: AgentProvider, workflowName: string, baseBranch: string, agentType: AgentExecutionType, blockerTaskIds: string[], model?: string];
   cancel: [];
 }>();
 
 const prompt = ref("");
+const model = ref("");
 const agentProvider = ref<AgentProvider>(props.defaultAgentProvider ?? "claude");
+watch(() => agentProvider.value, () => { model.value = ""; });
 const workflowOptions = computed(() => {
   if (props.workflows && props.workflows.length > 0) return props.workflows;
   return ["no-review"];
@@ -208,6 +212,7 @@ function handleSubmit() {
     selectedBaseBranch.value,
     "pty",
     selectedBlockerItems.value.map((item) => item.id),
+    ...(agentProvider.value === "opencode" && model.value ? [model.value] as [string] : [] as []),
   );
   prompt.value = "";
 }
@@ -397,6 +402,7 @@ function handleKeydown(e: KeyboardEvent) {
         </button>
       </div>
       <div class="modal-body">
+        <OpenCodeModelSelect v-if="agentProvider === 'opencode'" v-model="model" :repo-id="repoId" />
         <textarea
           ref="textareaRef"
           v-model="prompt"

@@ -806,6 +806,12 @@ describe("useAppTaskCreation", () => {
     expect(creation.availableAgentProviders.value).toEqual(["opencode"]);
   });
 
+  it("passes the selected OpenCode model through to task creation", async () => {
+    const { creation, store } = createTaskCreationHarness();
+    await creation.handleNewTaskSubmit("Build locally", "opencode", "default", "origin/main", "pty", [], "local/Qwen-Coder");
+    expect(store.createItem).toHaveBeenCalledWith("repo-1", "/repo", "Build locally", "pty", expect.objectContaining({ agentProvider: "opencode", model: "local/Qwen-Coder" }));
+  });
+
   it("passes selected blocker task ids through to task creation", async () => {
     const { creation, store } = createTaskCreationHarness();
 

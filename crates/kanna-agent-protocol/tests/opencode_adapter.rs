@@ -164,7 +164,6 @@ fn spawn_args_pin_the_run_json_contract() {
             "json",
             "--dir",
             "/tmp/kanna-task",
-            "--auto",
             "-m",
             "opencode/big-pickle",
             "--variant",
@@ -184,7 +183,6 @@ fn spawn_args_pin_the_run_json_contract() {
             "ses_123",
             "--dir",
             "/tmp/kanna-task",
-            "--auto",
             "-m",
             "opencode/big-pickle",
             "--variant",
@@ -237,6 +235,12 @@ fn spawn_env_includes_opencode_mcp_config_for_initial_and_resume_spawns() {
     assert!(content.contains("\"mcp\":{\"kanna-mcp\":{\"command\":[\"/tmp/kanna-mcp\",\"serve\"]"));
     assert!(content.contains("\"type\":\"local\""));
     assert!(content.contains("\"enabled\":true"));
+    let config: serde_json::Value = serde_json::from_str(content).unwrap();
+    assert!(config["mcp"]["kanna-mcp"]["env"].is_null());
+    assert_eq!(
+        config["mcp"]["kanna-mcp"]["environment"]["KANNA_SERVER_BASE_URL"],
+        "http://127.0.0.1:48120"
+    );
     assert!(content.contains("\"KANNA_SERVER_BASE_URL\":\"http://127.0.0.1:48120\""));
 
     let resume_env = adapter.resume_spawn(&ctx, "ses_123", "continue").env;
@@ -248,7 +252,7 @@ fn spawn_env_includes_opencode_mcp_config_for_initial_and_resume_spawns() {
 }
 
 #[test]
-fn default_and_dont_ask_modes_skip_permissions() {
+fn default_and_dont_ask_modes_preserve_native_permissions() {
     let adapter = OpencodeAdapter::new();
 
     for permission_mode in [
@@ -262,10 +266,11 @@ fn default_and_dont_ask_modes_skip_permissions() {
             ..Default::default()
         };
 
-        let args = adapter.initial_spawn(&ctx).args.join(" ");
+        let spec = adapter.initial_spawn(&ctx);
+        assert!(!spec.args.contains(&"--auto".to_string()));
         assert!(
-            args.contains("--auto"),
-            "args should skip permissions, got: {args}"
+            spec.env.is_empty(),
+            "an unconfigured spawn must not replace inherited inline config"
         );
     }
 
@@ -275,6 +280,7 @@ fn default_and_dont_ask_modes_skip_permissions() {
         ..Default::default()
     });
     assert!(!sandboxed.args.contains(&"--auto".to_string()));
+    assert!(sandboxed.env.is_empty());
 }
 
 #[test]
@@ -290,4 +296,70 @@ fn adapter_metadata() {
         .encode_permission_response("r", &PermissionDecision::Allow)
         .is_none());
     assert!(adapter.encode_set_model("opencode/big-pickle").is_none());
+}
+
+#[test]
+fn explicit_native_model_pins_auxiliary_inference_without_permission_grants_on_resume() {
+    let adapter = OpencodeAdapter::new();
+    let ctx = SpawnCtx {
+        model: Some("omlx/qwen-coder".into()),
+        disallowed_tools: vec!["WebFetch".into(), "kanna-mcp_kanna_create_task".into()],
+        ..Default::default()
+    };
+    for spec in [
+        adapter.initial_spawn(&ctx),
+        adapter.resume_spawn(&ctx, "ses_local", "continue"),
+    ] {
+        let config: serde_json::Value = serde_json::from_str(&spec.env[0].1).unwrap();
+        assert_eq!(config["model"], "omlx/qwen-coder");
+        assert_eq!(config["small_model"], "omlx/qwen-coder");
+        assert_eq!(config["enabled_providers"], serde_json::json!(["omlx"]));
+        assert!(config["permission"].is_null());
+    }
+}
+
+/// No inference: ask the installed CLI to parse the exact generated spawn
+/// config, rather than testing a second hand-written copy of its schema.
+#[test]
+#[ignore = "requires KANNA_OPENCODE_BINARY; parses config without inference"]
+fn installed_opencode_accepts_generated_spawn_config() {
+    let binary = std::env::var("KANNA_OPENCODE_BINARY").expect("set KANNA_OPENCODE_BINARY");
+    let server = kanna_agent_protocol::mcp::KannaMcpServer {
+        command: "echo".into(),
+        args: vec![],
+        env: [("KANNA_TASK_ID".into(), "config-contract".into())].into(),
+    };
+    let content = kanna_agent_protocol::mcp::opencode_spawn_config(
+        Some(&server),
+        Some("omlx/config-contract"),
+        Some("medium"),
+    )
+    .unwrap();
+    let local_config =
+        std::env::temp_dir().join(format!("kanna-opencode-denies-{}.json", std::process::id()));
+    std::fs::write(&local_config, r#"{"small_model":"anthropic/cloud-helper","enabled_providers":["anthropic"],"permission":{"*":"deny","bash":{"*":"deny","git status":"allow"}}}"#).unwrap();
+    let output = std::process::Command::new(binary)
+        .args(["--pure", "debug", "config"])
+        .env("OPENCODE_CONFIG", &local_config)
+        .env("OPENCODE_CONFIG_CONTENT", content)
+        .env("OPENCODE_DISABLE_AUTOUPDATE", "true")
+        .env("OPENCODE_DISABLE_MODELS_FETCH", "true")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "OpenCode rejected generated config: {}",
+        output.status
+    );
+    let config: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(
+        config["mcp"]["kanna-mcp"]["environment"]["KANNA_TASK_ID"],
+        "config-contract"
+    );
+    assert_eq!(config["small_model"], "omlx/config-contract");
+    assert_eq!(config["enabled_providers"], serde_json::json!(["omlx"]));
+    assert_eq!(config["permission"]["*"], "deny");
+    assert_eq!(config["permission"]["bash"]["*"], "deny");
+    assert_eq!(config["permission"]["bash"]["git status"], "allow");
+    std::fs::remove_file(local_config).unwrap();
 }

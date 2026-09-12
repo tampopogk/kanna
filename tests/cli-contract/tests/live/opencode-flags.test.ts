@@ -22,6 +22,22 @@ function output(result: { stdout: string; stderr: string }): string {
  * without the behaviour it asked for.
  */
 describe("opencode CLI flags", () => {
+  it("accepts process-local MCP environment and permission config", async () => {
+    const result = await runOpenCodeRaw(["--pure", "debug", "config"], {
+      env: {
+        OPENCODE_DISABLE_AUTOUPDATE: "true",
+        OPENCODE_DISABLE_MODELS_FETCH: "true",
+        OPENCODE_CONFIG_CONTENT: JSON.stringify({
+          permission: { "*": "deny" },
+          mcp: { "kanna-mcp": { type: "local", enabled: true, command: ["echo"], environment: { KANNA_TASK_ID: "contract" } } },
+        }),
+      },
+    });
+    expect(result.exitCode).toBe(0);
+    const config = JSON.parse(result.stdout);
+    expect(config.permission["*"]).toBe("deny");
+    expect(config.mcp["kanna-mcp"].environment.KANNA_TASK_ID).toBe("contract");
+  });
   describe("the TUI entrypoint Kanna's PTY tasks spawn", () => {
     it("documents the prompt flag that delivers the opening turn", async () => {
       const result = await runOpenCodeRaw(["--help"]);
@@ -44,12 +60,7 @@ describe("opencode CLI flags", () => {
       expect(output(result)).toContain("--model");
     });
 
-    it("documents the permission bypass flag Kanna uses", async () => {
-      const result = await runOpenCodeRaw(["--help"]);
 
-      expect(result.exitCode).toBe(0);
-      expect(output(result)).toContain("--auto");
-    });
 
     /**
      * This rejection is why reasoning effort travels in `OPENCODE_CONFIG_CONTENT`
@@ -73,7 +84,6 @@ describe("opencode CLI flags", () => {
 
     it("accepts Kanna's PTY flag combination through help parsing", async () => {
       const result = await runOpenCodeRaw([
-        "--auto",
         "-m",
         "opencode/big-pickle",
         "--prompt",
@@ -109,19 +119,13 @@ describe("opencode CLI flags", () => {
       expect(output(result)).toContain("--variant");
     });
 
-    it("documents the permission bypass flag the adapter uses", async () => {
-      const result = await runOpenCodeRaw(["run", "--help"]);
 
-      expect(result.exitCode).toBe(0);
-      expect(output(result)).toContain("--auto");
-    });
 
     it("accepts the adapter's flag combination through help parsing", async () => {
       const result = await runOpenCodeRaw([
         "run",
         "--format",
         "json",
-        "--auto",
         "-m",
         "opencode/big-pickle",
         "--variant",

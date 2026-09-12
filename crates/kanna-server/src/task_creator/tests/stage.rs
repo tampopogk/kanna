@@ -2894,6 +2894,37 @@ fn stage_completion_of_post_run_swaps_past_manual_gate() {
 }
 
 #[test]
+fn opencode_saved_next_stage_model_is_resolved_after_post_completion() {
+    let repo_root = init_git_repo("opencode-saved-post-model");
+    write_post_workflow_fixtures(&repo_root);
+    let config = test_config("opencode-saved-post-model");
+    let db = Db::open_for_tests(&config.db_path).unwrap();
+    seed_post_workflow_task(&config, &db, &repo_root);
+    let snapshot = serde_json::json!({
+        "name": "default",
+        "stages": [
+            { "name": "in progress", "agent": "implement", "prompt": "$TASK_PROMPT",
+              "policy": { "transition": "manual" },
+              "post": { "name": "commit", "agent": "commit", "prompt": "Commit" } },
+            { "name": "pr", "agent": "pr", "prompt": "Review",
+              "agent_provider": "opencode-cloud/coder", "policy": { "transition": "manual" } }
+        ]
+    });
+    db.update_test_pipeline_item_pipeline_def("task-1", &snapshot.to_string())
+        .unwrap();
+    let Some(PreparedStageTransition::Run(run)) =
+        super::prepare_stage_completion_for_api(&db, &config, "task-1", Some("post"), None)
+            .unwrap()
+    else {
+        panic!("post completion must prepare the saved next stage");
+    };
+    assert_eq!(run.next_stage, "pr");
+    assert_eq!(run.agent_provider, "opencode");
+    assert_eq!(run.model.as_deref(), Some("cloud/coder"));
+    let _ = std::fs::remove_dir_all(&repo_root);
+}
+
+#[test]
 fn stage_completion_of_main_run_on_manual_stage_with_post_parks() {
     let repo_root = init_git_repo("main-completion-parks-with-post");
     write_post_workflow_fixtures(&repo_root);

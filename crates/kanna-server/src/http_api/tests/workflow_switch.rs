@@ -503,6 +503,28 @@ fn replacement_fixture(label: &str) -> (tempfile::TempDir, Arc<AppState>, Value)
 }
 
 #[tokio::test]
+async fn opencode_native_model_ids_can_be_saved_in_a_future_stage() {
+    let (_temp, state, before) = replacement_fixture("opencode-workflow-model");
+    let app = router(Arc::clone(&state));
+    let mut previous = before;
+    for selector in ["opencode-local/qwen3-coder:30b", "opencode-cloud/org/coder"] {
+        let mut after = previous.clone();
+        after["stages"][1]["agent_provider"] = serde_json::json!(selector);
+        let (status, body) = replace_workflow(&app, &previous, &after).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["supersededRunIds"], serde_json::json!([]));
+        let db = Db::open(&state.config.db_path).unwrap();
+        let task = db.get_pipeline_item("task-1").unwrap().unwrap();
+        let saved: Value = serde_json::from_str(task.pipeline_def.as_deref().unwrap()).unwrap();
+        assert_eq!(
+            saved["stages"][1]["agent_provider"],
+            serde_json::json!([selector])
+        );
+        previous = body["workflowDefinition"].clone();
+    }
+}
+
+#[tokio::test]
 async fn replacement_supersedes_only_changed_execution_and_is_durable_and_fenced() {
     let (_temp, state, before) = replacement_fixture("workflow-replace-incident");
     let app = router(Arc::clone(&state));

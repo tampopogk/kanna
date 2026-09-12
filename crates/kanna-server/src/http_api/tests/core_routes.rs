@@ -8944,3 +8944,65 @@ async fn mobile_build_report_over_http_is_authenticated_persisted_and_redacted()
     server.abort();
     let _ = server.await;
 }
+
+#[tokio::test]
+async fn opencode_model_route_runs_repo_cli_and_returns_only_display_metadata() {
+    use std::os::unix::fs::PermissionsExt;
+    let repo_root = crate::test_paths::unique_test_path("kanna-opencode-models");
+    init_test_git_repo(&repo_root);
+    let bin = repo_root.join(".kanna/bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    std::fs::write(
+        repo_root.join(".kanna/config.json"),
+        r#"{"workspace":{"path":{"prepend":[".kanna/bin"]},"env":{"KANNA_MODEL_INVENTORY_TEST":"repository-env"}}}"#,
+    )
+    .unwrap();
+    let executable = bin.join("opencode");
+    std::fs::write(&executable, r##"#!/bin/sh
+[ "$KANNA_MODEL_INVENTORY_TEST" = "repository-env" ] || exit 3
+case "$*" in
+  '--pure models --verbose')
+    printf '%s\n' 'local/qwen-coder' '{"name":"Qwen","limit":{"context":32768}}'
+    ;;
+  '--pure debug config')
+    printf '%s\n' '{"provider":{"local":{"options":{"baseURL":"http://user:secret@127.0.0.1:8000/v1?key=secret","apiKey":"secret"}}}}'
+    ;;
+  *) exit 2 ;;
+esac
+"##).unwrap();
+    std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755)).unwrap();
+    for args in [
+        vec!["add", ".kanna"],
+        vec!["commit", "-m", "configure local OpenCode"],
+    ] {
+        assert!(Command::new("git")
+            .args(args)
+            .current_dir(&repo_root)
+            .status()
+            .unwrap()
+            .success());
+    }
+    publish_test_origin_main(&repo_root);
+    let state = super::test_state_with_seed("desktop-models", "Model Machine", |db| {
+        db.insert_test_repo_with_path("repo-models", &repo_root.to_string_lossy(), "Models")
+            .unwrap();
+    });
+    let response = super::router(state)
+        .oneshot(
+            Request::get("/v1/repos/repo-models/opencode-models")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let result: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(result[0]["id"], "local/qwen-coder");
+    assert_eq!(result[0]["local"], true);
+    assert_eq!(result[0]["connection"], "http://127.0.0.1:8000");
+    assert!(!String::from_utf8_lossy(&body).contains("secret"));
+    std::fs::remove_dir_all(repo_root).unwrap();
+}

@@ -191,3 +191,26 @@ describe("advanceStage durable selection", () => {
     expect(persistedSlotIds).toEqual([null]);
   });
 });
+
+describe("stage model request", () => {
+  it("forwards a coherent one-stage selection with operator provenance", async () => {
+    const state = createStoreState();
+    state.items.value = [makeItem("task-model", "in progress")];
+    mockDefaultWorkflow();
+    const context = createStoreContext(state, { warning: vi.fn(), error: vi.fn() } as never, {
+      selectedTaskId: computed(() => null),
+      sortedItemsForCurrentRepo: computed(() => state.items.value),
+      withOptimisticItemOverlay: async ({ run }) => run(),
+    });
+    const fetch = vi.fn(async (_url: RequestInfo | URL, _init?: RequestInit) => new Response("Not advancing in this request contract", { status: 400 }));
+    vi.stubGlobal("fetch", fetch);
+    await createWorkflowApi(context).advanceStage("task-model", {
+      nextStageAgentProvider: "opencode", nextStageModel: "omlx/Qwen-Coder",
+    });
+    expect(fetch).toHaveBeenCalled();
+    expect(JSON.parse(String(fetch.mock.calls[0]?.[1]?.body))).toEqual({
+      source: "operator", nextStageAgentProvider: "opencode", nextStageModel: "omlx/Qwen-Coder", nextStageProviderSource: "operator",
+    });
+    vi.unstubAllGlobals();
+  });
+});

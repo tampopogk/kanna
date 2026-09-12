@@ -26,6 +26,16 @@ vi.mock("../../invoke", () => ({
 }));
 
 describe("NewTaskModal", () => {
+  it("submits an explicit OpenCode native model with the new task", async () => {
+    const wrapper = mount(NewTaskModal, {
+      props: { availableAgentProviders: ["opencode"], defaultAgentProvider: "opencode", baseBranches: ["origin/main"] },
+      global: { mocks: { $t: (key: string) => key } },
+    });
+    await wrapper.get('[aria-label="OpenCode model"]').setValue("local/Qwen-Coder");
+    await wrapper.get("textarea").setValue("Implement the feature");
+    await wrapper.get(".btn-primary").trigger("click");
+    expect(wrapper.emitted("submit")?.[0]).toEqual(["Implement the feature", "opencode", "no-review", "origin/main", "pty", [], "local/Qwen-Coder"]);
+  });
   it("keeps prompt entry available while task options load", async () => {
     const wrapper = mount(NewTaskModal, {
       props: {

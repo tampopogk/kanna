@@ -13,7 +13,7 @@ use crate::adapter::{
     TurnModel,
 };
 use crate::events::{truncate_text, AgentEvent, PermissionDecision, TurnStats, TurnStatus};
-use crate::mcp::{opencode_mcp_config_content, read_kanna_mcp_server};
+use crate::mcp::{opencode_spawn_config, read_kanna_mcp_server};
 
 /// Adapter for the Opencode CLI.
 #[derive(Debug, Default)]
@@ -29,13 +29,6 @@ impl OpencodeAdapter {
         Self::default()
     }
 
-    fn should_skip_permissions(ctx: &SpawnCtx) -> bool {
-        matches!(
-            ctx.permission_mode.as_deref(),
-            None | Some("default") | Some("dontAsk")
-        )
-    }
-
     fn base_args(ctx: &SpawnCtx) -> Vec<String> {
         let mut args = vec![
             "run".to_string(),
@@ -45,12 +38,6 @@ impl OpencodeAdapter {
         if !ctx.cwd.trim().is_empty() {
             args.push("--dir".to_string());
             args.push(ctx.cwd.clone());
-        }
-        if Self::should_skip_permissions(ctx) {
-            // The documented spelling on 1.18.15; `--dangerously-skip-permissions`
-            // is tolerated but has dropped out of `opencode run --help`. Pinned
-            // by `tests/cli-contract/tests/live/opencode-flags.test.ts`.
-            args.push("--auto".to_string());
         }
         if let Some(model) = &ctx.model {
             args.push("-m".to_string());
@@ -64,10 +51,11 @@ impl OpencodeAdapter {
     }
 
     fn mcp_env(ctx: &SpawnCtx) -> Vec<(String, String)> {
-        ctx.mcp_config_path
+        let server = ctx
+            .mcp_config_path
             .as_deref()
-            .and_then(read_kanna_mcp_server)
-            .and_then(|server| opencode_mcp_config_content(&server))
+            .and_then(read_kanna_mcp_server);
+        opencode_spawn_config(server.as_ref(), ctx.model.as_deref(), ctx.effort.as_deref())
             .map(|content| vec![("OPENCODE_CONFIG_CONTENT".to_string(), content)])
             .unwrap_or_default()
     }

@@ -2,7 +2,7 @@ use super::local_config::LocalConfigOverride;
 use super::provider::AgentProvider;
 use crate::mobile_api::TransferImportSummary;
 use kanna_agent_protocol::mcp::{
-    codex_mcp_config_overrides, opencode_config_content, read_kanna_mcp_server,
+    codex_mcp_config_overrides, opencode_spawn_config, read_kanna_mcp_server,
 };
 use kanna_agent_protocol::{prompt_with_system_prompt, EffortOverride};
 use std::path::Path;
@@ -271,7 +271,7 @@ fn opencode_config_env_prefix(
     effort: Option<&str>,
 ) -> Option<String> {
     let server = mcp_config_path.and_then(read_kanna_mcp_server);
-    let content = opencode_config_content(server.as_ref(), model, effort)?;
+    let content = opencode_spawn_config(server.as_ref(), model, effort)?;
     Some(format!(
         "OPENCODE_CONFIG_CONTENT='{}'",
         shell_single_quote(&content)
@@ -303,17 +303,9 @@ fn get_agent_permission_flags(
             // `tests/cli-contract/tests/live/codex-flags.test.ts`.
             Some(_) => vec!["--sandbox workspace-write".to_string()],
         },
-        // `--auto` is what `opencode --help` and `opencode run --help` document
-        // on 1.18.15. `--dangerously-skip-permissions` still works — it is
-        // tolerated rather than removed — but it is undocumented on both
-        // entrypoints, and an undocumented flag is the one that disappears
-        // without notice. Verified equivalent on a live TUI: with either flag
-        // the permission dialog is suppressed and the tool call runs; with
-        // neither, the dialog blocks.
-        AgentProvider::Opencode => match normalized {
-            None | Some("dontAsk") => vec!["--auto".to_string()],
-            Some(_) => Vec::new(),
-        },
+        // Keep OpenCode's configured permissions, including explicit denies.
+        // --auto is unsupported on 1.4.3; a config grant is not equivalent.
+        AgentProvider::Opencode => Vec::new(),
         AgentProvider::Antigravity => match normalized {
             None | Some("dontAsk") => vec!["--dangerously-skip-permissions".to_string()],
             Some(_) => Vec::new(),
