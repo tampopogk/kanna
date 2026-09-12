@@ -1174,9 +1174,19 @@ fn prepare_stage_restart(
         .as_deref()
         .ok_or_else(|| format!("task has no branch: {task_id}"))?;
     let current_worktree = format!("{}/.kanna-worktrees/{branch}", loaded.repo.path);
+    let setup_pending = db
+        .task_worktree_setup_pending(task_id)
+        .map_err(|error| format!("db error: {error}"))?;
     let fallback_workspace = || {
         if std::path::Path::new(&current_worktree).is_dir() {
-            RunWorkspaceSpec::Current
+            if setup_pending {
+                RunWorkspaceSpec::FinishRecreate {
+                    branch: branch.to_string(),
+                    worktree_path: current_worktree.clone(),
+                }
+            } else {
+                RunWorkspaceSpec::Current
+            }
         } else {
             RunWorkspaceSpec::Recreate {
                 branch: branch.to_string(),

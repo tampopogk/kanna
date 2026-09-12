@@ -180,6 +180,7 @@ pub(crate) const CURRENT_SCHEMA_MIGRATIONS: &[&str] = &[
     "080_provider_token_usage",
     "081_provider_usage_discovery",
     "082_pull_request_forge_attempts",
+    "083_worktree_setup_pending",
 ];
 
 #[derive(Debug, Serialize)]
@@ -2417,6 +2418,15 @@ fn run_schema_migrations(conn: &Connection) -> Result<(), rusqlite::Error> {
 
     run_migration(conn, "082_pull_request_forge_attempts", |conn| {
         conn.execute_batch("ALTER TABLE task_pull_request ADD COLUMN forge_attempted_at TEXT;")
+    })?;
+
+    run_migration(conn, "083_worktree_setup_pending", |conn| {
+        add_column(
+            conn,
+            "worktree",
+            "setup_pending",
+            "INTEGER NOT NULL DEFAULT 0",
+        )
     })?;
 
     Ok(())

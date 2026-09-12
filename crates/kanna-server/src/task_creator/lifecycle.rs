@@ -411,6 +411,11 @@ pub(crate) async fn spawn_prepared_stage_run_for_api(
         let error = rollback_prepared_stage_fork(&prepared, error);
         return Err(record_stage_transition_failure(db_path, &prepared, error));
     }
+    if matches!(prepared.workspace, PreparedRunWorkspace::Recreated(_)) {
+        let db = Db::open(db_path).map_err(|error| format!("db error: {error}"))?;
+        db.mark_task_worktree_setup_complete(&task_id)
+            .map_err(|error| format!("db error: {error}"))?;
+    }
 
     // The operation is written before the outgoing run is accepted and its
     // session is killed. If the server disappears at any later boundary, the

@@ -1298,7 +1298,7 @@ pub(in crate::task_creator) fn prepare_stage_run_spawn(
                 &worktree_path,
                 Some(&restored_branch),
             )?;
-            db.upsert_worktree(
+            db.upsert_worktree_with_setup_pending(
                 &format!("wt-{task_id}"),
                 task_id,
                 &worktree_path,
@@ -1323,6 +1323,17 @@ pub(in crate::task_creator) fn prepare_stage_run_spawn(
                 None,
             )
         }
+        RunWorkspaceSpec::FinishRecreate {
+            branch: restored_branch,
+            worktree_path,
+        } => (
+            PreparedRunWorkspace::Recreated(ForkedWorkspace {
+                branch: restored_branch,
+                worktree_path,
+            }),
+            None,
+            None,
+        ),
         RunWorkspaceSpec::Current => (PreparedRunWorkspace::Current, None, None),
     };
     let worktree_path = match &workspace {

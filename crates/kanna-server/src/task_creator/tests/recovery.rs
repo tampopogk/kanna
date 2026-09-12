@@ -647,6 +647,105 @@ async fn reopen_then_resume_launches_opencode_through_the_compatible_server_path
     let _ = std::fs::remove_dir_all(&repo_root);
 }
 
+/// A recreated checkout is not initialized merely because its directory now
+/// exists. If repository setup fails, the next recovery must keep the checkout
+/// (including anything retained there) and finish setup before it asks the
+/// daemon to spawn the agent.
+#[tokio::test]
+async fn reopen_recovery_retries_failed_repository_setup_in_the_retained_checkout() {
+    let (repo_root, config, db) = init_recovery_fixture("undo-close-setup-retry");
+    std::fs::write(
+        repo_root.join(".kanna/config.json"),
+        serde_json::json!({
+            "workspace": { "path": { "prepend": [".kanna/test-provider-bin"] } },
+            "setup": [
+                "printf attempt >> setup-attempts.txt; test -f ../../allow-recovery-setup"
+            ]
+        })
+        .to_string(),
+    )
+    .unwrap();
+    publish_origin_main(&repo_root, "publish retrying Undo Close setup");
+    db.close_pipeline_item("recovery-task").unwrap();
+    crate::worktree_cleanup::cleanup_closed_task_worktrees_by_id(&db, "recovery-task").unwrap();
+    let worktree = repo_root.join(".kanna-worktrees/task-recovery");
+
+    let state = std::sync::Arc::new(crate::http_api::AppState::new(config.clone()));
+    let app = crate::http_api::router(std::sync::Arc::clone(&state));
+    let reopened = tower::ServiceExt::oneshot(
+        app.clone(),
+        axum::http::Request::post("/v1/tasks/recovery-task/actions/reopen")
+            .body(axum::body::Body::empty())
+            .unwrap(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(reopened.status(), axum::http::StatusCode::OK);
+
+    let first_daemon = spawn_recording_fake_daemon(config.daemon_dir.clone(), false).await;
+    let first_resume = tower::ServiceExt::oneshot(
+        app.clone(),
+        axum::http::Request::post("/v1/tasks/recovery-task/actions/resume")
+            .body(axum::body::Body::empty())
+            .unwrap(),
+    )
+    .await
+    .unwrap();
+    // Recovery is detached after the action is accepted; setup failure is
+    // recorded by that lifecycle worker rather than changing this response.
+    assert_eq!(first_resume.status(), axum::http::StatusCode::OK);
+    let first_commands = first_daemon.await.unwrap();
+    assert!(
+        !first_commands.iter().any(|command| matches!(
+            command,
+            kanna_daemon::protocol::Command::Spawn { .. }
+                | kanna_daemon::protocol::Command::SpawnAgent { .. }
+        )),
+        "failed setup must stop before daemon Spawn"
+    );
+    assert_eq!(
+        std::fs::read_to_string(worktree.join("setup-attempts.txt")).unwrap(),
+        "attempt"
+    );
+    assert!(db.task_worktree_setup_pending("recovery-task").unwrap());
+    let retained_branch = run_git_fixture(&worktree, &["branch", "--show-current"]);
+    std::fs::write(worktree.join("retained-after-failure.txt"), "keep me").unwrap();
+
+    std::fs::write(repo_root.join("allow-recovery-setup"), "ready").unwrap();
+    let second_daemon = spawn_recording_fake_daemon(config.daemon_dir.clone(), false).await;
+    let second_resume = tower::ServiceExt::oneshot(
+        app,
+        axum::http::Request::post("/v1/tasks/recovery-task/actions/resume")
+            .body(axum::body::Body::empty())
+            .unwrap(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(second_resume.status(), axum::http::StatusCode::OK);
+    let second_commands = second_daemon.await.unwrap();
+    assert!(second_commands.iter().any(|command| matches!(
+        command,
+        kanna_daemon::protocol::Command::Spawn { .. }
+            | kanna_daemon::protocol::Command::SpawnAgent { .. }
+    )));
+    assert_eq!(
+        std::fs::read_to_string(worktree.join("setup-attempts.txt")).unwrap(),
+        "attemptattempt",
+        "the second recovery must rerun repository setup before Spawn"
+    );
+    assert_eq!(
+        std::fs::read_to_string(worktree.join("retained-after-failure.txt")).unwrap(),
+        "keep me"
+    );
+    assert_eq!(
+        run_git_fixture(&worktree, &["branch", "--show-current"]),
+        retained_branch
+    );
+    assert!(!db.task_worktree_setup_pending("recovery-task").unwrap());
+
+    let _ = std::fs::remove_dir_all(&repo_root);
+}
+
 /// A recorded verdict does not keep a PTY alive. A manual stage's agent
 /// finishes its turn, records success, and parks at its composer; a reboot
 /// then takes the session with a `succeeded` run behind it. That is the state

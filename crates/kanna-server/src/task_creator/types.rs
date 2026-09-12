@@ -219,6 +219,12 @@ pub(super) enum RunWorkspaceSpec {
     /// Recreate the task's current branch after close removed its worktree.
     /// This is restored durable task state, not a disposable stage fork.
     Recreate { branch: String },
+    /// Finish initializing a checkout created by an earlier recovery attempt.
+    /// Its branch and contents are retained; only repository setup is retried.
+    FinishRecreate {
+        branch: String,
+        worktree_path: String,
+    },
 }
 
 pub(super) struct ResumeWorkspaceSpec {
