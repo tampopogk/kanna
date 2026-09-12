@@ -181,7 +181,6 @@ describe("QA workflow assets", () => {
       "merge",
       "setup",
       "agent-factory",
-      "config-factory",
       "workflow-factory",
     ]) {
       const agent = parseAgentDefinition(readRepoFile(`.kanna/agents/${name}/AGENT.md`));

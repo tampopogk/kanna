@@ -253,6 +253,7 @@ genrule(
 filegroup(
     name = "kanna_builtin_resources",
     srcs = glob([
+        ".kanna/config.schema.json",
         ".kanna/agents/**",
         ".kanna/workflows/**",
         ".kanna/tasks/**",

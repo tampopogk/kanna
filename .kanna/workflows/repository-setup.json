@@ -1,0 +1,12 @@
+{
+  "name": "repository-setup",
+  "description": "Initial repository setup or a scoped configuration revision; the operator decides integration.",
+  "visibility": "internal",
+  "stages": [
+    {
+      "name": "in progress",
+      "agent": "setup",
+      "policy": { "transition": "manual" }
+    }
+  ]
+}

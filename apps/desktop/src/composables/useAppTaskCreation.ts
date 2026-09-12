@@ -385,6 +385,7 @@ export function useAppTaskCreation({
         SETUP_TASK_PROMPT,
         "pty",
         {
+          workflowName: "repository-setup",
           customTask: {
             name: "Set Up Repository",
             agent: "setup",

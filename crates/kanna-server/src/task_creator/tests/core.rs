@@ -3681,15 +3681,11 @@ fn read_agent_definition_loads_builtin_setup_agent() {
 
     let definition = resolve_test_agent_definition(&repo_root, "setup").unwrap();
 
-    assert!(definition.prompt.contains("GitHub flow"));
-    assert!(definition
-        .prompt
-        .contains("Do not author new agents from scratch"));
-    assert!(definition.prompt.contains("Machine-Local Config Bootstrap"));
-    assert!(definition.prompt.contains(".kanna/config.local.json"));
-    assert!(definition.prompt.contains(".kanna/sync-local-config.sh"));
-    assert!(definition.prompt.contains("primary checkout → worktree"));
-    assert!(definition.prompt.contains("kanna_complete_stage"));
+    assert!(definition.prompt.contains("kanna_doctor"));
+    assert!(definition.prompt.contains("You may author custom agents"));
+    assert!(definition.prompt.contains("every area to"));
+    let legacy = resolve_test_agent_definition(&repo_root, "config-factory").unwrap();
+    assert_eq!(legacy.prompt, definition.prompt);
 
     let _ = std::fs::remove_dir_all(&repo_root);
 }
@@ -3699,7 +3695,7 @@ fn builtin_authoring_agents_use_catalog_guides_and_scaffold_the_config_schema() 
     let repo_root = init_git_repo_without_provider_fixtures("agent-builtin-authoring-guides");
 
     let config = resolve_test_agent_definition(&repo_root, "config-factory").unwrap();
-    assert!(config.prompt.contains("kanna-cli guide config"));
+    assert!(config.prompt.contains("kanna-cli guide <topic>"));
     assert!(config
         .prompt
         .contains("\"$schema\": \"https://schemas.kanna.build/config.schema.json\""));
@@ -5234,6 +5230,13 @@ fn prepare_task_uses_create_request_agent_selector() {
     .unwrap();
 
     assert_eq!(prepared.stage_agent.as_deref(), Some("setup"));
+    assert_eq!(
+        prepared.completion_transition,
+        WorkflowStageTransition::Manual
+    );
+    let task = db.get_pipeline_item(prepared.task_id()).unwrap().unwrap();
+    assert_eq!(task.pipeline.as_deref(), Some("repository-setup"));
+    assert!(!task.pipeline_def.as_deref().unwrap().contains("\"post\""));
     assert_eq!(prepared.agent_provider, "codex");
     assert_eq!(prepared.model.as_deref(), Some("gpt-5"));
     match prepared.session {
@@ -7875,4 +7878,26 @@ fn an_advance_provider_override_is_validated_against_its_provider() {
         error.contains("unknown provider override source"),
         "unexpected: {error}"
     );
+}
+
+#[test]
+fn setup_legacy_entry_defaults_to_manual_but_explicit_workflow_is_preserved() {
+    let repo_root = init_git_repo("setup-legacy-workflow");
+    let config = test_config("setup-legacy-workflow");
+    let db = Db::open_for_tests(&config.db_path).unwrap();
+    db.insert_test_repo_with_path("repo-1", &repo_root.to_string_lossy(), "Repo One")
+        .unwrap();
+    for (explicit, expected) in [
+        (None, "repository-setup"),
+        (Some("single-reviewer"), "single-reviewer"),
+    ] {
+        let mut request = default_base_task_request();
+        request.agent = Some("config-factory".into());
+        request.agent_type = Some("pty".into());
+        request.workflow_name = explicit.map(str::to_string);
+        let prepared = prepare_task_for_api(&db, &config, request).unwrap();
+        let task = db.get_pipeline_item(prepared.task_id()).unwrap().unwrap();
+        assert_eq!(task.pipeline.as_deref(), Some(expected));
+    }
+    let _ = std::fs::remove_dir_all(repo_root);
 }

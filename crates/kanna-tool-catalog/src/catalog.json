@@ -652,6 +652,17 @@
       ]
     },
     {
+      "name": "kanna_doctor",
+      "description": "Validate candidate setup files under .kanna using the running version's schemas, definition resolver, and explicit compatibility rules. Returns separate actionable errors and warnings. Read-only: executes no setup/test/dev commands, launches no services, modifies no files, and makes no claim that candidate configuration is active or custom agent prose is correct. Intentional deferrals are allowed. Defaults to the registered checkout; pass candidate_path for the setup task's worktree. CLI: kanna-cli tool call kanna_doctor --arg repo_id=<id> --arg candidate_path=<absolute-path>.",
+      "method": "GET",
+      "path": "/v1/repos/{repo_id}/doctor",
+      "response": "json",
+      "params": [
+        { "name": "repo_id", "description": "Registered repository id.", "type": "string", "required": true, "location": "path" },
+        { "name": "candidate_path", "description": "Absolute path to this repository's registered checkout or recorded task worktree. Candidate local overrides are read from this directory, not another checkout. Omit for the registered checkout.", "type": "string", "required": false, "location": "query" }
+      ]
+    },
+    {
       "name": "kanna_list_agents",
       "description": "List every resolved named agent definition available to task creation for a repository. Each result includes the invokable name, resolved frontmatter description, definition default provider, model, and effort, and source (built_in, repo_override, or repo_authored). A null defaultProvider means task creation falls back to the configured user default. Repo AGENT.md files win over built-ins by name, and repo EXTEND.md files are already layered into the reported defaults. Definitions declaring `visibility: internal` (stage posts Kanna binds itself, such as commit and approve) are excluded from this listing but still resolve when named explicitly.",
       "method": "GET",
@@ -929,6 +940,10 @@
       "title": "Kanna Repository Configuration",
       "summary": "Repository configuration lives under `.kanna/`. Put committed, portable behavior in `.kanna/config.json`; put one-machine operational overrides in the gitignored `.kanna/config.local.json`. New config files should declare `\"$schema\": \"https://schemas.kanna.build/config.schema.json\"`.",
       "sections": [
+        {
+          "title": "Repository setup and doctor",
+          "body": "Set Up Repository runs setup for initial configuration or a scoped revision. The retired config-factory agent and factory:create-config command resolve as compatibility aliases; one setup entry is advertised. Setup launches use the internal manual repository-setup workflow, with no publishing or approval post, unless an API caller explicitly selects another workflow. Every setup area can be deferred; preserve existing decisions and distinguish documented commands from commands actually verified. Run kanna_doctor with repo_id and candidate_path (the registered checkout or a recorded task worktree) after edits, or kanna-cli tool call kanna_doctor --arg repo_id=<id> --arg candidate_path=<absolute-path>. Doctor reads candidate .kanna files only, uses bundled schemas and the normal resolver, and returns errors/warnings with locations and guidance. It executes no commands and changes no files. A clean report proves neither custom agent prose nor runtime commands nor activation: shared definitions normally come from origin's recorded default branch, local overrides from the registered checkout, and existing tasks keep their pinned workflows. No origin snapshot leaves shared candidate definitions awaiting integration/activation."
+        },
         {
           "title": "Schema declaration",
           "body": "Set `$schema` to `https://schemas.kanna.build/config.schema.json` in every new `.kanna/config.json` and `.kanna/config.local.json`. Kanna publishes the schema with each merged version so editors and agents can discover supported fields and their semantics.",

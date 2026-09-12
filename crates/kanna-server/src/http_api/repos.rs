@@ -998,6 +998,45 @@ pub(super) async fn list_opencode_models(
         .map_err(|error| (axum::http::StatusCode::SERVICE_UNAVAILABLE, error))
 }
 
+#[derive(serde::Deserialize)]
+pub(super) struct DoctorQuery {
+    candidate_path: Option<String>,
+}
+
+pub(super) async fn doctor_repo(
+    State(state): State<Arc<AppState>>,
+    Path(repo_id): Path<String>,
+    Query(query): Query<DoctorQuery>,
+) -> Result<Json<crate::task_creator::doctor::DoctorReport>, HttpError> {
+    run_blocking_http(move || {
+        use axum::http::StatusCode;
+        let repo = get_definition_repo(&state, &repo_id)?;
+        let candidate = std::path::PathBuf::from(
+            query.candidate_path.unwrap_or_else(|| repo.path.clone()),
+        );
+        let candidate = candidate.canonicalize().map_err(|error| {
+            (StatusCode::BAD_REQUEST, format!("candidate_path: {error}"))
+        })?;
+        let db = Db::open(&state.config.db_path)
+            .map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?;
+        let worktrees = db.list_worktrees_for_repo(&repo_id)
+            .map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?;
+        let mut allowed = vec![repo.path];
+        allowed.extend(worktrees.into_iter().map(|worktree| worktree.path));
+        if !allowed.iter().any(|path| {
+            FsPath::new(path).canonicalize().ok().as_ref() == Some(&candidate)
+        }) {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                "candidate_path must be this repository's registered checkout or a recorded task worktree".into(),
+            ));
+        }
+        Ok(crate::task_creator::doctor::check(&candidate))
+    })
+    .await
+    .map(Json)
+}
+
 #[cfg(test)]
 mod blocking_tests {
     use super::run_blocking_http;

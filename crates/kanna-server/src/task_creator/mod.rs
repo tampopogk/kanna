@@ -2,6 +2,7 @@ mod commands;
 mod definition_cache;
 mod definition_source;
 mod definitions;
+pub(crate) use definitions::doctor;
 mod environment;
 mod lifecycle;
 mod local_config;
@@ -3264,6 +3265,10 @@ fn resolve_task_spawn(
     let workflow_name = request
         .workflow_name
         .clone()
+        .or_else(|| {
+            matches!(request.agent.as_deref(), Some("setup" | "config-factory"))
+                .then(|| "repository-setup".to_string())
+        })
         .or(repo_config.workflow.clone())
         .unwrap_or_else(|| FALLBACK_WORKFLOW_NAME.to_string());
     let (workflow, workflow_def_json) =

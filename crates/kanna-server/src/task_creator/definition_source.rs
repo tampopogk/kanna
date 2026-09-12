@@ -42,6 +42,63 @@ struct DefinitionTree {
 }
 
 impl RepoDefinitionSnapshot {
+    /// Read-only candidate view for doctor. Never used to activate definitions.
+    /// Only definition files are loaded; symlinks are rejected rather than followed.
+    pub(crate) fn candidate(root: &Path) -> Result<Self, String> {
+        fn visit(root: &Path, relative: &str, tree: &mut DefinitionTree) -> Result<(), String> {
+            let path = root.join(relative);
+            let metadata = match std::fs::symlink_metadata(&path) {
+                Ok(metadata) => metadata,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+                Err(error) => return Err(format!("{relative}: {error}")),
+            };
+            if metadata.file_type().is_symlink() {
+                return Err(format!("{relative}: symbolic links are not portable definition files; use a regular file/directory"));
+            }
+            tree.paths.push(relative.to_string());
+            if metadata.is_dir() {
+                tree.kinds.insert(relative.to_string(), "tree".into());
+                let mut entries = std::fs::read_dir(&path)
+                    .map_err(|error| format!("{relative}: {error}"))?
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(|error| error.to_string())?;
+                entries.sort_by_key(|entry| entry.file_name());
+                for entry in entries {
+                    let name = entry.file_name().to_string_lossy().into_owned();
+                    if relative == ".kanna"
+                        && !matches!(
+                            name.as_str(),
+                            "config.json"
+                                | "config.local.json"
+                                | "agents"
+                                | "workflows"
+                                | "pipelines"
+                        )
+                    {
+                        continue;
+                    }
+                    visit(root, &format!("{relative}/{name}"), tree)?;
+                }
+            } else if metadata.is_file() {
+                tree.kinds.insert(relative.to_string(), "blob".into());
+                tree.blobs.insert(
+                    relative.to_string(),
+                    std::fs::read(&path).map_err(|error| format!("{relative}: {error}"))?,
+                );
+            } else {
+                return Err(format!("{relative}: expected a regular definition file"));
+            }
+            Ok(())
+        }
+        let mut tree = DefinitionTree::default();
+        visit(root, ".kanna", &mut tree)?;
+        Ok(Self {
+            ref_name: "candidate working tree (not active configuration)".into(),
+            commit_id: Some("uncommitted candidate".into()),
+            tree,
+        })
+    }
+
     pub(crate) fn resolve(
         repo_path: impl AsRef<Path>,
         default_branch: Option<&str>,

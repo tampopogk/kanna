@@ -26,7 +26,7 @@ use super::preview::{close_task_preview, open_task_preview};
 use super::repo_browser::{list_task_directory, read_task_file_range};
 use super::repo_commands::{list_repo_commands, run_repo_command};
 use super::repos::{
-    add_repo, dependent_tasks_exist, get_repo_agent_definition, get_repo_by_path,
+    add_repo, dependent_tasks_exist, doctor_repo, get_repo_agent_definition, get_repo_by_path,
     get_repo_checkout, get_repo_kanna_definitions, get_repo_workflow_definition,
     list_available_agent_providers, list_opencode_models, list_recent_repo_workflows,
     list_repo_agents, list_repo_tasks, list_repos, patch_repo, reconcile_repo_metadata,
@@ -143,6 +143,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         )
         .route("/v1/repos/{repo_id}/tasks", get(list_repo_tasks))
         .route("/v1/repos/{repo_id}/agents", get(list_repo_agents))
+        .route("/v1/repos/{repo_id}/doctor", get(doctor_repo))
         .route("/v1/repos/{repo_id}/commands", get(list_repo_commands))
         .route(
             "/v1/repos/{repo_id}/commands/{command_id}/run",
