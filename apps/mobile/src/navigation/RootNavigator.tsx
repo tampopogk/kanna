@@ -879,6 +879,10 @@ function TaskDetailRoute({
           controller.sendTaskTerminalInput(durableTaskId, dataB64, kind);
         }
       }}
+      onTerminalViewerInteraction={() => {
+        const durableTaskId = resolveDurableTaskId(state, routeTaskId);
+        if (durableTaskId) controller.activateTaskTerminalViewer(durableTaskId);
+      }}
       onResizeTerminal={(cols, rows) => {
         const durableTaskId = resolveDurableTaskId(state, routeTaskId);
         if (durableTaskId) {

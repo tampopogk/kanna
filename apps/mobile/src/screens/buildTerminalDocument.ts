@@ -1095,6 +1095,17 @@ export function buildTerminalDocument({
         }
       }
 
+      // Claim viewing from gesture producers, never from scroll callbacks:
+      // xterm replay, resize and scroll restoration generate those too.
+      for (const name of ["touchstart", "pointerdown", "wheel", "keydown"]) {
+        viewport.addEventListener(name, (event) => {
+          if (!event.isTrusted) return;
+          window.ReactNativeWebView?.postMessage(JSON.stringify({
+            type: "terminal-viewer-interaction"
+          }));
+        }, { capture: true, passive: true });
+      }
+
       function installPinchZoomFallback() {
         viewport.addEventListener("touchstart", (event) => {
           if (selectionMode) {

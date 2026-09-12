@@ -209,7 +209,7 @@ function createSocketHarness(): {
               socket.onmessage?.({
                 data: JSON.stringify({
                   type: "auth_ok",
-                  capabilities: ["term_input_boundary"],
+                  capabilities: ["term_input_boundary", "terminal_geometry", "terminal_active_view"],
                 }),
               });
             });
@@ -339,6 +339,7 @@ describe("RootNavigator terminal scroll input integration", () => {
 
     const activeController = controller;
     if (!activeController) throw new Error("controller was not created");
+    activeController.resizeTaskTerminal(TASK_ID, 42, 18);
     await act(async () => {
       rendered = create(
         <NavigatorHarness activeController={activeController} store={store} />
@@ -364,6 +365,16 @@ describe("RootNavigator terminal scroll input integration", () => {
     const taskScreen = rendered?.root.findByType("TaskScreen" as never);
     if (!taskScreen) throw new Error("TaskScreen was not rendered");
     expect(taskScreen.props.terminalInputUnavailableReason).toBeNull();
+    const beforeViewing = terminalSocket.sentFrames.length;
+    await act(async () => {
+      taskScreen.props.onTerminalViewerInteraction();
+      await flushMicrotasks();
+    });
+    expect(terminalSocket.sentFrames.slice(beforeViewing)).toContainEqual({
+      type: "term_viewer_active", task_id: TASK_ID
+    });
+    expect(terminalSocket.sentFrames.slice(beforeViewing).some(frame => frame.type.startsWith("term_input"))).toBe(false);
+
     const onSendTerminalInput = taskScreen.props.onSendTerminalInput as
       | ((dataB64: string, kind: "draft" | "submission" | "control") => void)
       | undefined;

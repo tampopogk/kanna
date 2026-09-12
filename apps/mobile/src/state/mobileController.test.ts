@@ -7124,6 +7124,31 @@ describe("createMobileController", () => {
     expect(resize).toHaveBeenLastCalledWith(128, 72);
   });
 
+  it("reclaims geometry on viewing interaction and ignores hidden or stale viewers", async () => {
+    const store = createSessionStore();
+    const client = createClientMock();
+    const controller = createMobileController(client, store);
+    const activate = client.__terminalStream.subscription.activate;
+    await controller.bootstrap();
+    controller.openTask("task-1");
+    controller.setTaskDetailVisible(true);
+    controller.resizeTaskTerminal("task-1", 42, 18);
+    activate.mockClear();
+    client.__terminalStream.emit({ type: "snapshot", taskId: "task-1", cols: 132, rows: 48, dataB64: "" });
+    controller.resizeTaskTerminal("task-1", 42, 18);
+    expect(activate).not.toHaveBeenCalled();
+    controller.activateTaskTerminalViewer("task-1");
+    expect(activate).toHaveBeenCalledOnce();
+    activate.mockClear();
+    controller.activateTaskTerminalViewer("stale-task");
+    controller.setAppForeground(false);
+    controller.activateTaskTerminalViewer("task-1");
+    controller.setTaskDetailVisible(false);
+    controller.setAppForeground(true);
+    controller.activateTaskTerminalViewer("task-1");
+    expect(activate).not.toHaveBeenCalled();
+  });
+
   it("restates visibility when the first measured grid arrives after the task becomes visible", async () => {
     const store = createSessionStore();
     const client = createClientMock();

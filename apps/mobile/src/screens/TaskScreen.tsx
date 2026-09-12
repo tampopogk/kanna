@@ -166,6 +166,7 @@ interface TaskScreenProps {
   onSendTerminalInput?(dataB64: string, kind: TaskTerminalInputKind): void;
   /** The terminal view scrolled near the top of its loaded buffer. */
   onRequestTerminalScrollback?(): void;
+  onTerminalViewerInteraction?(): void;
   onResizeTerminal?(cols: number, rows: number): void;
   onStopAgent(): void;
   onRequestAgentHistory?(): void;
@@ -247,6 +248,7 @@ export function TaskScreen({
   pickAttachment = pickImageAttachment,
   onSendTerminalInput,
   onRequestTerminalScrollback,
+  onTerminalViewerInteraction,
   onResizeTerminal,
   onStopAgent,
   onRequestAgentHistory,
@@ -995,6 +997,7 @@ export function TaskScreen({
               }
               onMentionedFilesChange={handleTerminalMentionedFilesChange}
               onOpenFile={handleTerminalOpenFile}
+              onViewerInteraction={onTerminalViewerInteraction}
               onTerminalInput={sendTerminalInput}
               onCapacityChange={handleTerminalCapacityChange}
               onRequestScrollback={onRequestTerminalScrollback}

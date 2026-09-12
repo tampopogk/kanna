@@ -32,12 +32,13 @@ export function targetNeedsRelayControl(testTarget: string): boolean {
 }
 
 export function targetNeedsIsolatedAgentProviders(testTarget: string): boolean {
-  return /mock\/new-task-modal\.test\.ts$/.test(testTarget) ||
+  return /real\/terminal-viewer-gestures\.test\.ts$/.test(testTarget) ||
+    /mock\/new-task-modal\.test\.ts$/.test(testTarget) ||
     /real\/remote-(?:visual-companion|active-view-restoration|task-graph-refusal)\.test\.ts$/.test(testTarget);
 }
 
 export function targetNeedsPlaywrightChromium(testTarget: string): boolean {
-  return /real\/remote-visual-companion\.test\.ts$/.test(testTarget);
+  return /real\/(?:remote-visual-companion|terminal-viewer-gestures)\.test\.ts$/.test(testTarget);
 }
 
 /**

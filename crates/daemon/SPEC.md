@@ -177,7 +177,12 @@ The selection table is:
 The current eligible controller is retained across registration, resize, input,
 and reconnect hydration. `ActiveViewer` from an eligible registered viewer
 steals sizing for that viewer; command serialization is the tie break.
-Hidden, backgrounded, and zero-size viewers are ineligible. Detaching a
+Clients announce active viewing on foreground/task selection and deliberate
+terminal wheel, touch, pointer/selection press, or keyboard gestures. A trusted
+gesture in a visible non-key desktop window counts without moving keyboard
+focus. Programmatic scrolling, selection notifications, replay and layout are
+passive; they never announce activity. Hidden, passively backgrounded, and
+zero-size viewers are ineligible. Detaching a
 follower does nothing. Detaching, disconnecting, or backgrounding the
 controller elects once; a reconnect re-registers but does not steal control.
 There is no heartbeat or timeout arbitration loop.

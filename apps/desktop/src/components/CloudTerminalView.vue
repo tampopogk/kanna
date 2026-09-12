@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { observeTerminalViewerInteraction } from "../composables/terminalViewerInteraction";
 import { nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
@@ -66,6 +67,7 @@ let resizeObserver: ResizeObserver | null = null;
 let dropBridge: TerminalDropBridge | null = null;
 let cleanupDropEvents: (() => void) | null = null;
 let cleanupNativeDropEvents: (() => void) | null = null;
+let stopViewerInteraction: (() => void) | null = null;
 let inputEventContainer: HTMLElement | null = null;
 let relayClient: DesktopRemoteTaskClient | null = null;
 let subscription: DesktopRemoteTerminalSubscription | null = null;
@@ -248,13 +250,14 @@ function hasVisibleRemoteContainer(): boolean {
 
 /** Keep the daemon's one viewer-election authority informed of this cached
  * component's real eligibility. Registration/fit remains passive; only an
- * active, visible, foreground view can announce an active-view edge. */
-function syncRemoteViewerEligibility(activate: boolean): void {
+ * active, visible view can announce an active-view edge on foregrounding or
+ * a trusted gesture (macOS can scroll a non-key window). */
+function syncRemoteViewerEligibility(activate: boolean, intentionalInteraction = false): void {
   const visible = props.active
     && !unmounted
-    && nativeWindowActive
+    && (intentionalInteraction || nativeWindowActive)
     && !document.hidden
-    && document.hasFocus()
+    && (intentionalInteraction || document.hasFocus())
     && hasVisibleRemoteContainer();
   subscription?.setViewerVisible?.(visible);
   if (visible && activate) subscription?.activate?.();
@@ -641,6 +644,7 @@ function initializeTerminal() {
   if (containerRef.value) {
     terminal.open(containerRef.value);
     inputEventContainer = containerRef.value;
+    stopViewerInteraction = observeTerminalViewerInteraction(inputEventContainer, () => syncRemoteViewerEligibility(true, true));
     for (const eventName of controlInputEvents) {
       inputEventContainer.addEventListener(eventName, inputProducer.declareControlInput, true);
     }
@@ -757,6 +761,8 @@ onUnmounted(() => {
   cleanupNativeDropEvents?.();
   cleanupNativeDropEvents = null;
   dropBridge = null;
+  stopViewerInteraction?.();
+  stopViewerInteraction = null;
   if (inputEventContainer) {
     for (const eventName of controlInputEvents) {
       inputEventContainer.removeEventListener(eventName, inputProducer.declareControlInput, true);

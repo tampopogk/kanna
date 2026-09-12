@@ -137,6 +137,7 @@ export interface MobileController {
     dataB64: string,
     kind: TaskTerminalInputKind
   ): void;
+  activateTaskTerminalViewer(taskId: string): void;
   resizeTaskTerminal(taskId: string, cols: number, rows: number): void;
   /** Pull the next older chunk of terminal scrollback, if the desktop kept any
    * back and no request is already in flight. */
@@ -3773,6 +3774,11 @@ export function createMobileController(
         afterSeq: history.afterSeq,
         maxEvents: 100
       });
+    },
+
+    activateTaskTerminalViewer(taskId) {
+      if (activeTaskTerminal?.taskId !== taskId || !appForeground || !taskDetailVisible) return;
+      setActiveTaskTerminalViewing(true);
     },
 
     resizeTaskTerminal(taskId, cols, rows) {

@@ -747,6 +747,27 @@ describe("useTerminal", () => {
     expect(terminals[0]?.rows).toBe(18);
     expect(activateTerminalViewer).not.toHaveBeenCalled();
 
+    // Replay/API scroll and synthetic gestures must stay passive.
+    terminalElement.dispatchEvent(new Event("scroll"));
+    terminalElement.dispatchEvent(new WheelEvent("wheel", { deltaY: -100 }));
+    await flushAsyncWork();
+    expect(activateTerminalViewer).not.toHaveBeenCalled();
+
+    // happy-dom cannot create native input; mark this producer event trusted
+    // explicitly. Native event delivery is a separate rendered harness check.
+    vi.mocked(document.hasFocus).mockReturnValue(false);
+    const wheel = new WheelEvent("wheel", { deltaY: -100, cancelable: true });
+    Object.defineProperty(wheel, "isTrusted", { value: true });
+    terminalElement.dispatchEvent(wheel);
+    await flushAsyncWork();
+    expect(activateTerminalViewer).toHaveBeenCalledOnce();
+    expect(wheel.defaultPrevented).toBe(false);
+    expect(sendTermInput).not.toHaveBeenCalled();
+
+    vi.mocked(document.hasFocus).mockReturnValue(true);
+    activateTerminalViewer.mockClear();
+    terminalStreamHandlers.get("session-1")?.onSnapshot?.(42, 18, btoa("mobile again"));
+
     const terminal = terminals[0];
     const keyHandler = terminal.attachCustomKeyEventHandler.mock.calls[0]?.[0] as
       | ((event: KeyboardEvent) => boolean)
