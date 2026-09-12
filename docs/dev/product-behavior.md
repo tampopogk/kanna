@@ -81,7 +81,7 @@ semantics, and the MCP task-management rule — stay in the repo-root
 
 ### Editing a local task file
 
-File previews offer **Edit in terminal…**, followed by a visible editor choice.
+File previews offer **Edit**, followed by a visible terminal-editor choice.
 Preferences → **Terminal Editor Command** pins an installed terminal tool (for
 example `nvim` or `emacs -nw`); empty means detect available editors. Commands
 accept quoted arguments, without shell expansion. `VISUAL` and `EDITOR` are
@@ -91,14 +91,14 @@ or downloaded, and missing/invalid choices are explained in the picker.
 
 Each editor is a separate daemon-backed terminal, leaving the agent TUI intact.
 Use the editor's native save/quit commands; Cmd+S does not save or advance while
-an editor tab is active. **Return to agent** restores the primary tab, where
+an editor tab is active. Use the existing tabs to return to the agent, where
 Cmd+S retains its existing stage action. Preview/citation navigation remains
 read-only, including `kanna_open_view`.
 
 Switching tasks, hiding a tab, and restarting the app reattach the same session.
-A stage change leaves the editor in its original workspace, shown above the
-terminal; it never moves into the new stage. Only committed changes cross stage
-boundaries. Closing the task ends all of its editor sessions, including hidden
+A stage change leaves the editor in its original workspace; it never moves into
+the new stage. Only committed changes cross stage boundaries. Closing the task
+ends all of its editor sessions, including hidden
 ones and older workspaces, and loses unsaved buffers. Save and quit first.
 An ended/missing editor is not automatically restarted; open it explicitly from
 a file preview again. The editor owns buffers and saving. Kanna does not inspect

@@ -830,8 +830,6 @@ function dismissCommandHint() {
           v-show="activeTabId === tab.id"
           :session="tab.editorSession"
           :active="activeTabId === tab.id"
-          :current-worktree="item ? views?.store.worktreePaths?.[item.id] : undefined"
-          @agent="selectTab(AGENT_TAB_ID)"
         />
         <div v-else-if="tab.kind === 'editor'" v-show="activeTabId === tab.id" class="cloud-task-placeholder">
           Terminal editing is available only on the desktop holding this workspace. Remote editor sessions are not transported.

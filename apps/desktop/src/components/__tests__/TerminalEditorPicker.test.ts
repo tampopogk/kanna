@@ -11,6 +11,7 @@ describe("explicit terminal editing", () => {
     vi.mocked(fetchTerminalEditorChoices).mockResolvedValue([{ command: "vim", executable: "/usr/bin/vim", args: [] }]);
     const openEditor = vi.fn().mockResolvedValue(undefined);
     const wrapper = mount(TerminalEditorPicker, { props: { openEditor } });
+    expect(wrapper.get('[data-testid="edit-in-terminal"]').text()).toBe("Edit");
     expect(openEditor).not.toHaveBeenCalled();
     await wrapper.get('[data-testid="edit-in-terminal"]').trigger("click");
     await flushPromises();
