@@ -1086,6 +1086,18 @@ describe("createSelectionApi", () => {
         created_at: "2026-04-29T00:02:00.000Z",
       }),
       createItem({
+        id: "task-consultation",
+        prompt: "Consultation task",
+        stage: "consultation",
+        created_at: "2026-04-29T00:05:00.000Z",
+      }),
+      createItem({
+        id: "task-plan",
+        prompt: "Plan task",
+        stage: "plan",
+        created_at: "2026-04-29T00:04:00.000Z",
+      }),
+      createItem({
         id: "task-review",
         prompt: "Review task",
         stage: "review",
@@ -1108,10 +1120,18 @@ describe("createSelectionApi", () => {
 
     const api = createSelectionApi(context);
 
-    expect(api.getStageOrder("repo-1")).toEqual(["pr", "review", "in progress"]);
+    expect(api.getStageOrder("repo-1")).toEqual([
+      "pr",
+      "review",
+      "in progress",
+      "plan",
+      "consultation",
+    ]);
     expect(api.sortedItemsForCurrentRepo.value.map((item) => item.id)).toEqual([
       "task-review",
       "task-progress",
+      "task-plan",
+      "task-consultation",
       "task-commit",
     ]);
   });

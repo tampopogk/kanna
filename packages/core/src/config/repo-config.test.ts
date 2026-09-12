@@ -3,8 +3,14 @@ import { describe, it, expect } from "vitest";
 import { DEFAULT_STAGE_ORDER, parseRepoConfig } from "./repo-config.js";
 
 describe("parseRepoConfig", () => {
-  it("omits commit from the built-in stage display order", () => {
-    expect(DEFAULT_STAGE_ORDER).toEqual(["pr", "review", "in progress"]);
+  it("puts consultations immediately below plans in the built-in stage display order", () => {
+    expect(DEFAULT_STAGE_ORDER).toEqual([
+      "pr",
+      "review",
+      "in progress",
+      "plan",
+      "consultation",
+    ]);
     expect(DEFAULT_STAGE_ORDER).not.toContain("commit");
     expect(DEFAULT_STAGE_ORDER).not.toContain("merge");
   });
