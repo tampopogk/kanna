@@ -51,7 +51,7 @@ export interface TerminalSessionLifecycleController {
   dispose(): void
   redraw(): Promise<void>
   ensureConnected(): Promise<void>
-  activateVisibleViewer(): Promise<void>
+  activateVisibleViewer(intentionalInteraction?: boolean): Promise<void>
   activateViewerForHumanInput(): Promise<void>
   setViewerVisibility(visible: boolean): Promise<void>
 }
@@ -84,10 +84,12 @@ export function createTerminalSessionLifecycle(params: {
    * explicitly report the foreground-focus edge that makes it eligible to
    * take over. Registration and a measured resize are deliberately passive:
    * a hidden tab, reconnect, or layout pass must not move another viewer's
-   * grid. The DOM checks keep synthetic focus from an occluded/zero-sized
+   * grid. A trusted gesture may target a visible non-key macOS window without
+   * moving keyboard focus; only that producer bypasses the focus check.
+   * The DOM checks keep synthetic focus from an occluded/zero-sized
    * terminal from becoming that edge.
    */
-  async function activateVisibleViewer(): Promise<void> {
+  async function activateVisibleViewer(intentionalInteraction = false): Promise<void> {
     const container = params.state.container
     const terminal = getLiveTerminal()
     const documentHidden = (document as Document & { visibilityState: string }).visibilityState === "hidden"
@@ -126,7 +128,7 @@ export function createTerminalSessionLifecycle(params: {
       || terminal.cols <= 0
       || terminal.rows <= 0
       || documentHidden
-      || !document.hasFocus()
+      || (!intentionalInteraction && !document.hasFocus())
     ) {
       trace("ineligible")
       return
@@ -140,7 +142,7 @@ export function createTerminalSessionLifecycle(params: {
       || !params.state.attached
       || !hasVisibleSize(container)
       || (document as Document & { visibilityState: string }).visibilityState === "hidden"
-      || !document.hasFocus()
+      || (!intentionalInteraction && !document.hasFocus())
     ) {
       trace("stale")
       return

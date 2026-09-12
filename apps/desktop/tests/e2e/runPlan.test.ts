@@ -113,3 +113,15 @@ describe("remote active-view restoration runner plan", () => {
     )).toBe(false);
   });
 });
+
+describe("terminal viewer gesture runner plan", () => {
+  const target = "tests/e2e/real/terminal-viewer-gestures.test.ts";
+  it("uses one non-activating isolated desktop and Chromium without cloud services", () => {
+    expect(targetNeedsIsolatedAgentProviders(target)).toBe(true);
+    expect(targetNeedsPlaywrightChromium(target)).toBe(true);
+    expect(targetNeedsSecondaryInstance(target)).toBe(false);
+    expect(targetNeedsEmulators(target)).toBe(false);
+    expect(targetNeedsRelay(target)).toBe(false);
+    expect(targetRequiresForegroundActivation(target)).toBe(false);
+  });
+});

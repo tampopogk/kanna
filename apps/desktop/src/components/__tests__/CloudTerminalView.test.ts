@@ -326,6 +326,40 @@ describe("CloudTerminalView remote visual companion links", () => {
     wrapper.unmount();
   });
 
+  it("claims a visible remote viewer on intentional scrolling but not replay or background gestures", async () => {
+    const client = createClient();
+    const activate = vi.fn();
+    client.observeTerminal.mockReturnValue({ close: client.terminalClose, setViewerVisible: vi.fn(), activate });
+    mocks.relayFactory.mockResolvedValue(client);
+    testState.isTauri = true;
+    vi.spyOn(document, "hasFocus").mockReturnValue(true);
+    const wrapper = mount(CloudTerminalView, {
+      attachTo: document.body,
+      props: { ownerDesktopId: "desktop-1", ownerTaskId: "task-1" },
+    });
+    await flushAsync();
+    const container = wrapper.get(".terminal-container").element;
+    Object.defineProperties(container, {
+      offsetWidth: { value: 900 }, offsetHeight: { value: 600 },
+    });
+    testState.nativeFocusHandler?.({ payload: false });
+    activate.mockClear();
+    container.dispatchEvent(new Event("scroll"));
+    container.dispatchEvent(new WheelEvent("wheel"));
+    expect(activate).not.toHaveBeenCalled();
+    vi.mocked(document.hasFocus).mockReturnValue(false);
+    const wheel = new WheelEvent("wheel", { deltaY: -80 });
+    Object.defineProperty(wheel, "isTrusted", { value: true });
+    container.dispatchEvent(wheel);
+    expect(activate).toHaveBeenCalledOnce();
+    await wrapper.setProps({ active: false });
+    container.dispatchEvent(wheel);
+    expect(activate).toHaveBeenCalledOnce();
+    wrapper.unmount();
+    container.dispatchEvent(wheel);
+    expect(activate).toHaveBeenCalledOnce();
+  });
+
   it("withdraws a cached remote viewer on native blur even while WebKit still reports focus", async () => {
     const client = createClient();
     const setViewerVisible = vi.fn();

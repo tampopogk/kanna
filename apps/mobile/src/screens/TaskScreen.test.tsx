@@ -241,6 +241,7 @@ interface RenderTaskScreenOptions {
     | "capability_required"
     | "terminal_detached"
     | null;
+  onTerminalViewerInteraction?: () => void;
   onResizeTerminal?: (cols: number, rows: number) => void;
   onResolveTaskFileMentions?: (
     mentions: readonly { path: string; line?: number }[]
@@ -320,6 +321,7 @@ function renderTaskScreen(options: RenderTaskScreenOptions = {}): ElementNode {
     agentStatus = "live",
     onSendTerminalInput,
     terminalInputUnavailableReason = "terminal_detached",
+    onTerminalViewerInteraction,
     onResizeTerminal,
     onResolveTaskFileMentions = vi.fn().mockResolvedValue({
       mentions: []
@@ -402,6 +404,7 @@ function renderTaskScreen(options: RenderTaskScreenOptions = {}): ElementNode {
     onCloseTask: componentMocks.onCloseTask,
     onSendInput: componentMocks.onSendInput,
     onSendTerminalInput,
+    onTerminalViewerInteraction,
     onResizeTerminal,
     onStopAgent: vi.fn(),
     onResolveAgentPermission: vi.fn(),
@@ -1440,6 +1443,17 @@ describe("TaskScreen", () => {
     // 390pt / 8pt per cell, and the height less the composer and chrome.
     // An estimate only, and only until the page reports its own measurement.
     expect(onResizeTerminal).toHaveBeenCalledWith(48, 39);
+  });
+
+  it("passes terminal viewing intent independently of input and capacity", () => {
+    const onTerminalViewerInteraction = vi.fn();
+    const onResizeTerminal = vi.fn();
+    const tree = renderTaskScreen({ agentType: "pty", onTerminalViewerInteraction, onResizeTerminal });
+    onResizeTerminal.mockClear();
+    const terminal = findByType(tree, "TerminalWebView");
+    (terminal?.props?.onViewerInteraction as () => void)();
+    expect(onTerminalViewerInteraction).toHaveBeenCalledOnce();
+    expect(onResizeTerminal).not.toHaveBeenCalled();
   });
 
   it("proposes the page's measured capacity over the native estimate", () => {

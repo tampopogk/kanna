@@ -171,6 +171,7 @@ async function renderTerminalWebView(input: {
   directInputEnabled?: boolean;
   directInputFocusRequest?: number;
   selectionToolbarTop?: number;
+  onViewerInteraction?: () => void;
   onConsolePress?: () => void;
   onMentionedFilesChange?: (history: TerminalFileMentionHistory) => void;
   onOpenFile?: (path: string, line?: number) => void;
@@ -199,6 +200,7 @@ async function renderTerminalWebView(input: {
     directInputEnabled: input.directInputEnabled,
     directInputFocusRequest: input.directInputFocusRequest,
     selectionToolbarTop: input.selectionToolbarTop,
+    onViewerInteraction: input.onViewerInteraction,
     onConsolePress: input.onConsolePress,
     onMentionedFilesChange: input.onMentionedFilesChange,
     onOpenFile: input.onOpenFile,
@@ -816,6 +818,17 @@ describe("TerminalWebView", () => {
       "G1s8NjU7MTsxTQ==",
       "control"
     );
+  });
+
+  it("forwards viewing intent separately from terminal input and scrollback", async () => {
+    const onViewerInteraction = vi.fn();
+    const onTerminalInput = vi.fn();
+    const webView = await renderTerminalWebView({ onViewerInteraction, onTerminalInput });
+    (webView.props.onMessage as (event: WebViewMessageEvent) => void)({
+      nativeEvent: { data: JSON.stringify({ type: "terminal-viewer-interaction" }) }
+    } as WebViewMessageEvent);
+    expect(onViewerInteraction).toHaveBeenCalledOnce();
+    expect(onTerminalInput).not.toHaveBeenCalled();
   });
 
   it("forwards the page's measured capacity", async () => {

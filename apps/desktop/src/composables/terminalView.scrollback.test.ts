@@ -70,6 +70,8 @@ function desktopTerminal(agentProvider = "codex", stock = false): Terminal {
     maybeReadClipboardImage: vi.fn(async () => {}),
     sendDroppedPaths: vi.fn(),
     onNativeDropCleanupReady: vi.fn(),
+    onTerminalFocus: vi.fn(),
+    onTerminalInteraction: vi.fn(),
     setTerminal: vi.fn(),
   })
   disabled?.mockRestore()

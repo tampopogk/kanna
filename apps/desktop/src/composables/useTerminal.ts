@@ -212,6 +212,11 @@ export function useTerminal(sessionId: string, spawnOptions?: SpawnOptions, opti
       onNativeDropCleanupReady: (cleanup) => {
         state.cleanupNativeDropEvents = cleanup
       },
+      onTerminalInteraction: () => {
+        void lifecycle.activateVisibleViewer(true).catch((error) => {
+          console.warn("[terminal] failed to activate interacting viewer:", error)
+        })
+      },
       onTerminalFocus: () => {
         void lifecycle.activateVisibleViewer().catch((error) => {
           console.warn("[terminal] failed to activate focused viewer:", error)

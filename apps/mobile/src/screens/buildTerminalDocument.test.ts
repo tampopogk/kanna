@@ -592,6 +592,22 @@ function capacityMessages(messages: string[]): Array<{ cols: number; rows: numbe
 }
 
 describe("buildTerminalDocument", () => {
+  it("reports intentional viewing gestures but not replay, layout or synthetic scrolling", () => {
+    const { messages, viewport, window } = createExecutedTerminalDocument();
+    const interactions = () => messages.filter(message => JSON.parse(message).type === "terminal-viewer-interaction");
+    viewport.dispatchEvent(new window.Event("scroll"));
+    viewport.dispatchEvent(new window.Event("wheel"));
+    window.__replaceTerminalState({ text: "replayed content" });
+    expect(interactions()).toHaveLength(0);
+    for (const name of ["pointerdown", "wheel", "keydown"]) {
+      const event = new window.Event(name, { cancelable: true });
+      Object.defineProperty(event, "isTrusted", { value: true });
+      viewport.dispatchEvent(event);
+      expect(event.defaultPrevented).toBe(false);
+    }
+    expect(interactions()).toHaveLength(3);
+  });
+
   it("provides conservative source-file links with line suffixes", () => {
     const { messages, terminal } = createExecutedTerminalDocument();
     const row = 7;

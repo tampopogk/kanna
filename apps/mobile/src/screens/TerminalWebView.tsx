@@ -68,6 +68,7 @@ interface TerminalWebViewProps {
    * the PTY of a session this viewer controls. Defaults to `bottomInset`. */
   capacityInset?: number;
   selectionToolbarTop?: number;
+  onViewerInteraction?: () => void;
   onConsolePress?: () => void;
   onMentionedFilesChange?: (history: TerminalFileMentionHistory) => void;
   onOpenFile?: (path: string, line?: number) => void;
@@ -135,6 +136,7 @@ export function TerminalWebViewComponent({
   directInputFocusRequest = 0,
   capacityInset,
   selectionToolbarTop,
+  onViewerInteraction,
   onConsolePress,
   onMentionedFilesChange,
   onOpenFile,
@@ -608,6 +610,11 @@ export function TerminalWebViewComponent({
 
     if (payload.type === "terminal-scrollback-request") {
       onRequestScrollback?.();
+      return;
+    }
+
+    if (payload.type === "terminal-viewer-interaction") {
+      onViewerInteraction?.();
       return;
     }
 

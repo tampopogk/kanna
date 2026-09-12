@@ -20,6 +20,8 @@ import { recordTerminalRendererOutcome, requestedTerminalRenderer } from "./term
 import { resolveShortcutPlatform, terminalClipboardAction } from "./shortcutPlatform"
 import { TerminalScrollbackCompatibilityAddon } from "./terminalScrollbackCompatibility"
 
+import { observeTerminalViewerInteraction } from "./terminalViewerInteraction"
+
 const terminalPlatform = resolveShortcutPlatform()
 
 export interface InitializedTerminalView {
@@ -54,6 +56,7 @@ export function initializeTerminalView(params: {
   sendDroppedPaths: (paths: string[]) => void
   onNativeDropCleanupReady: (cleanup: () => void) => void
   onTerminalFocus: () => void
+  onTerminalInteraction: () => void
   setTerminal: (term: Terminal) => void
 }): InitializedTerminalView {
   const term = new Terminal({
@@ -139,8 +142,13 @@ export function initializeTerminalView(params: {
   // bubbling focus edge is the local viewer's active-view signal. It carries
   // no resize proposal, and the lifecycle rejects hidden/background/zero-size
   // containers before sending the daemon's existing activation command.
+  // Wheel/selection presses also count while the same textarea stays focused.
+  // The interaction callback permits a visible non-key window, while the
+  // ordinary focus callback keeps the foreground guard. Neither consumes input.
+  const stopViewerInteraction = observeTerminalViewerInteraction(params.el, params.onTerminalInteraction)
   params.el.addEventListener("focusin", params.onTerminalFocus)
   const cleanupContainerEvents = () => {
+    stopViewerInteraction()
     cleanupDropEvents?.()
     for (const eventName of controlEvents) {
       params.el.removeEventListener(eventName, inputProducer.declareControlInput, true)
