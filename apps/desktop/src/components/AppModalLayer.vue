@@ -34,6 +34,7 @@ function setPreferencesPanelRef(component: Element | ComponentPublicInstance | n
 <template>
   <NewTaskModal
     v-if="m.showNewTaskModal.value"
+    :repo-id="c.appTaskCreation.newTaskRepoId.value"
     :default-agent-provider="preferences.defaultAgentProvider"
     :recent-agent-choices="preferences.recentAgentChoices"
     :available-agent-providers="c.appTaskCreation.availableAgentProviders.value"
@@ -45,7 +46,7 @@ function setPreferencesPanelRef(component: Element | ComponentPublicInstance | n
     :options-loading="c.appTaskCreation.newTaskOptionsLoading.value"
     :submission-pending="c.appTaskCreation.newTaskSubmissionPending.value"
     :blocker-candidates="c.appTaskCreation.newTaskBlockerCandidates.value"
-    @submit="(prompt, agentProvider, workflowName, baseBranch, agentType, blockerTaskIds) => c.appTaskCreation.handleNewTaskSubmit(prompt, agentProvider, workflowName, baseBranch, agentType, blockerTaskIds)"
+    @submit="(prompt, agentProvider, workflowName, baseBranch, agentType, blockerTaskIds, model) => c.appTaskCreation.handleNewTaskSubmit(prompt, agentProvider, workflowName, baseBranch, agentType, blockerTaskIds, model)"
     @cancel="m.showNewTaskModal.value = false"
   />
   <AddRepoModal

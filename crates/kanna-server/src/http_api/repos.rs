@@ -978,6 +978,26 @@ fn normalize_branch_ref(value: &str) -> Option<String> {
     )
 }
 
+/// Inventory belongs to this repo's execution machine, including its executable
+/// search path. It is advisory: listing never starts inference or a model server.
+pub(super) async fn list_opencode_models(
+    State(state): State<Arc<AppState>>,
+    Path(repo_id): Path<String>,
+) -> Result<Json<Vec<crate::opencode_models::OpencodeModel>>, HttpError> {
+    let (executable, cwd, env) = run_blocking_http(move || {
+        let repo = get_definition_repo(&state, &repo_id)?;
+        let (executable, env) =
+            crate::task_creator::opencode_inventory_context(&state.repo_definitions, &repo)
+                .map_err(|error| (axum::http::StatusCode::SERVICE_UNAVAILABLE, error))?;
+        Ok((executable, repo.path, env))
+    })
+    .await?;
+    crate::opencode_models::discover(&executable, &cwd, &env)
+        .await
+        .map(Json)
+        .map_err(|error| (axum::http::StatusCode::SERVICE_UNAVAILABLE, error))
+}
+
 #[cfg(test)]
 mod blocking_tests {
     use super::run_blocking_http;

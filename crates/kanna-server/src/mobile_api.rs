@@ -368,6 +368,10 @@ pub struct TaskLatestRun {
     pub provider_override: Option<crate::db::StageProviderOverride>,
     #[serde(default)]
     pub agent: Option<String>,
+    #[serde(default)]
+    pub agent_provider: Option<String>,
+    #[serde(default)]
+    pub model: Option<String>,
     pub status: String,
     pub summary: Option<String>,
     pub resumed_from_run_id: Option<String>,
@@ -1587,6 +1591,8 @@ fn map_task_latest_run(run: crate::db::StageRun) -> TaskLatestRun {
         trigger: run.trigger,
         provider_override: run.provider_override,
         agent: run.agent,
+        agent_provider: run.agent_provider,
+        model: run.model,
         status: run.status,
         summary,
         resumed_from_run_id: run.resumed_from_run_id,
@@ -1903,6 +1909,38 @@ mod tests {
     use crate::config::Config;
     use crate::db::Db;
     use serde_json::json;
+
+    #[test]
+    fn opencode_latest_run_reports_the_stamped_provider_and_model() {
+        let run = crate::db::StageRun {
+            id: "run-one".into(),
+            task_id: "task-one".into(),
+            stage: "review".into(),
+            kind: "main".into(),
+            agent: None,
+            agent_provider: Some("opencode".into()),
+            model: Some("local/Qwen-Coder".into()),
+            effort: None,
+            status: "running".into(),
+            result: None,
+            feedback: None,
+            session_id: None,
+            provider_session_id: None,
+            cwd: None,
+            no_work_termination: None,
+            replaces_run_id: None,
+            resumed_from_run_id: None,
+            resume_fallback_reason: None,
+            completion_transition: None,
+            trigger: "operator".into(),
+            provider_override: None,
+            started_at: "2026-09-12 00:00:00".into(),
+            finished_at: None,
+        };
+        let result = serde_json::to_value(super::map_task_latest_run(run)).unwrap();
+        assert_eq!(result["agentProvider"], "opencode");
+        assert_eq!(result["model"], "local/Qwen-Coder");
+    }
 
     #[test]
     fn create_task_request_uses_agent_type_camel_case() {

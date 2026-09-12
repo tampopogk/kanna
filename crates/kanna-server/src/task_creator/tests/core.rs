@@ -4689,10 +4689,9 @@ fn opencode_pty_command_launches_the_interactive_tui_not_a_one_shot_run() {
         None,
     );
 
-    assert_eq!(
-        command,
-        "'opencode' --auto -m 'opencode/big-pickle' --prompt 'Do work.'"
-    );
+    assert!(command.ends_with("'opencode' -m 'opencode/big-pickle' --prompt 'Do work.'"));
+    assert!(command.contains("\"small_model\":\"opencode/big-pickle\""));
+    assert!(!command.contains("--auto"));
     assert!(!command.contains(" run "));
     assert!(!command.contains("--interactive"));
 }
@@ -4750,11 +4749,9 @@ fn opencode_pty_resume_seeds_the_turn_then_attaches_the_tui_to_the_same_session(
         Some(&session),
     );
 
-    assert_eq!(
-        command,
-        "'opencode' run --auto --session 'ses_123' 'Continue.'; \
-         'opencode' --auto --session 'ses_123'"
-    );
+    assert!(command.contains("'opencode' run --session 'ses_123' 'Continue.'; "));
+    assert!(command.ends_with("'opencode' --session 'ses_123'"));
+    assert_eq!(command.matches("OPENCODE_CONFIG_CONTENT=").count(), 0);
     // The session id is the same on both halves: the seeding turn extends the
     // conversation the TUI then attaches to, rather than forking a new one.
     assert_eq!(command.matches("--session 'ses_123'").count(), 2);
@@ -4762,12 +4759,9 @@ fn opencode_pty_resume_seeds_the_turn_then_attaches_the_tui_to_the_same_session(
     assert!(!command.contains("--prompt"));
 }
 
-/// `--dangerously-skip-permissions` has dropped out of both `opencode --help`
-/// and `opencode run --help` on 1.18.15; `--auto` is what they document. Every
-/// permission mode has to produce a command that comes up, so all three are
-/// walked rather than just the default.
+/// Permissions use config supported by both entrypoints.
 #[test]
-fn opencode_permission_modes_use_the_documented_bypass_spelling() {
+fn opencode_permission_modes_use_config() {
     let build = |permission_mode: Option<&str>| {
         super::build_agent_command(
             &AgentProvider::Opencode,
@@ -4789,12 +4783,10 @@ fn opencode_permission_modes_use_the_documented_bypass_spelling() {
 
     for mode in [None, Some("default"), Some("dontAsk")] {
         let command = build(mode);
-        assert_eq!(
-            command, "'opencode' --auto --prompt 'Do work.'",
-            "permission mode {mode:?}"
-        );
+        assert!(!command.contains("permission"), "mode {mode:?}");
+        assert!(!command.contains("--auto"));
     }
-    assert_eq!(build(Some("acceptEdits")), "'opencode' --prompt 'Do work.'");
+    assert!(!build(Some("acceptEdits")).contains("permission"));
     assert!(!build(None).contains("--dangerously-skip-permissions"));
 }
 

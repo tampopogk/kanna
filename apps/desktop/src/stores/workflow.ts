@@ -300,6 +300,12 @@ export function createWorkflowApi(context: StoreContext): WorkflowApi {
       return await withOptimisticStageAdvance(taskId, item.stage, nextStageName, pendingPostName, async () => {
         const response = await postDesktopTaskAction(taskId, "advance-stage", {
           source: "operator",
+          ...(options.nextStageAgentProvider ? {
+            nextStageAgentProvider: options.nextStageAgentProvider,
+            nextStageModel: options.nextStageModel,
+            nextStageEffort: options.nextStageEffort,
+            nextStageProviderSource: "operator",
+          } : {}),
         });
         if (!response.ok) {
           const message = await response.text();

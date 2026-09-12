@@ -17,6 +17,8 @@ import {
   putDesktopCloudTransferIdentity,
   setDesktopTaskCloudIdentity,
   setDesktopTaskWorkflow,
+  replaceDesktopTaskWorkflow,
+  fetchDesktopOpenCodeModels,
   approveIncomingTaskTransfer,
   pushTaskToPeer,
   rejectIncomingTaskTransfer,
@@ -49,6 +51,22 @@ vi.mock("../invoke", () => ({
 }));
 
 describe("desktopServerClient", () => {
+  it("discovers models on the selected repo and saves a task-only stage choice with a precondition", async () => {
+    const fetchMock = vi.fn(async () => new Response("[]", { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    await fetchDesktopOpenCodeModels("repo-models");
+    expect(fetchMock).toHaveBeenCalledWith("http://127.0.0.1:48121/v1/repos/repo-models/opencode-models", expect.objectContaining({ method: "GET", headers: LOCAL_CREDENTIAL_HEADERS }));
+    const before = { name: "task-workflow", stages: [{ name: "review", prompt: "Keep this" }] };
+    const after = { ...before, stages: [{ ...before.stages[0], name: "review", agent_provider: "opencode-local/Qwen" }] };
+    const canonical = { ...after, stages: [{ ...after.stages[0], agent_provider: ["opencode-local/Qwen"] }] };
+    fetchMock.mockImplementationOnce(async () => new Response(JSON.stringify({ workflowDefinition: canonical }), { status: 200 }));
+    expect(await replaceDesktopTaskWorkflow("task-models", before, after)).toEqual(canonical);
+    expect(fetchMock).toHaveBeenLastCalledWith("http://127.0.0.1:48121/v1/tasks/task-models/actions/replace-workflow", {
+      method: "POST", headers: JSON_REQUEST_HEADERS,
+      body: JSON.stringify({ expectedDefinition: before, workflowDefinition: after, source: "operator" }),
+    });
+  });
+
   beforeEach(() => {
     setDesktopServerClientHandlersForTests(null);
     setDesktopSnapshotFetcherForTests(null);

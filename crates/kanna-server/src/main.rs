@@ -16,6 +16,7 @@ mod lan_discovery;
 mod lan_tls;
 mod lan_tls_identity;
 mod logging;
+mod opencode_models;
 pub(crate) use kanna_runtime_defaults::login_shell;
 mod machine_trust;
 mod mobile_api;

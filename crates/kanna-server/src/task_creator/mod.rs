@@ -470,6 +470,26 @@ pub(crate) fn resolve_available_agent_providers(
         .map_err(|error| error.to_string())
 }
 
+/// Resolve discovery with the same repository environment and executable rules
+/// as task launch, without creating a task or running its setup commands.
+pub(crate) fn opencode_inventory_context(
+    cache: &RepoDefinitionsCache,
+    repo: &Repo,
+) -> Result<(String, HashMap<String, String>), String> {
+    cache
+        .with_definitions(repo, |definitions| {
+            let mut env = HashMap::new();
+            environment::apply_workspace_config_env(&mut env, &repo.path, definitions.config());
+            let executable = resolve_provider_executable(
+                AgentProvider::Opencode,
+                env.get("PATH").map(String::as_str),
+                &repo.path,
+            )?;
+            Ok((executable, env))
+        })
+        .map_err(|error| error.to_string())
+}
+
 #[derive(Debug)]
 pub(crate) struct DormantMergeConflict {
     pub(crate) base_branch: String,

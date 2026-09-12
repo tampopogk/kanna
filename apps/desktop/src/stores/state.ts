@@ -89,6 +89,9 @@ export interface WorktreeBootstrapResult {
 }
 
 export interface AdvanceStageOptions {
+  nextStageAgentProvider?: AgentProvider;
+  nextStageModel?: string;
+  nextStageEffort?: string;
   initiatedBy?: "manual" | "auto";
   skipPostAction?: boolean;
 }

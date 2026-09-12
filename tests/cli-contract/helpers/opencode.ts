@@ -96,7 +96,6 @@ export async function runOpenCodeJson(opts: {
     "run",
     "--format",
     "json",
-    "--auto",
     "--dir",
     opts.cwd ?? "/tmp",
     ...(opts.flags || []),

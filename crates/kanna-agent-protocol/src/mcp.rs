@@ -32,6 +32,7 @@ struct OpencodeConfig {
 struct OpencodeMcpServer {
     command: Vec<String>,
     enabled: bool,
+    #[serde(rename = "environment")]
     env: BTreeMap<String, String>,
     #[serde(rename = "type")]
     server_type: &'static str,
@@ -147,4 +148,29 @@ fn toml_string(value: &str) -> String {
 
 fn toml_string_array(values: &[String]) -> String {
     serde_json::to_string(values).unwrap_or_else(|_| "[]".to_string())
+}
+
+/// Process-only overrides. An explicit native model also pins auxiliary inference
+/// and restricts provider resolution, so an unavailable local provider cannot
+/// silently send a title, compaction, or coding request to a cloud provider.
+/// OpenCode continues to own connection details and credentials.
+pub fn opencode_spawn_config(
+    server: Option<&KannaMcpServer>,
+    model: Option<&str>,
+    variant: Option<&str>,
+) -> Option<String> {
+    let mut config: serde_json::Value = opencode_config_content(server, model, variant)
+        .and_then(|value| serde_json::from_str(&value).ok())
+        .unwrap_or_else(|| serde_json::json!({}));
+    if let Some(model) = model.filter(|model| !model.is_empty()) {
+        config["model"] = model.into();
+        config["small_model"] = model.into();
+        if let Some((provider, _)) = model.split_once('/') {
+            config["enabled_providers"] = serde_json::json!([provider]);
+        }
+    }
+    // Do not translate default/dontAsk into permission: {"*":"allow"}.
+    // Native config grants can replace explicit user denies. OpenCode owns its
+    // permissions (including prompts); launch compatibility must not broaden them.
+    (!config.as_object().is_some_and(|object| object.is_empty())).then(|| config.to_string())
 }

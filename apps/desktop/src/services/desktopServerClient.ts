@@ -245,6 +245,8 @@ export async function fetchDesktopSnapshot(): Promise<DesktopSnapshot> {
 }
 
 export interface DesktopTaskLatestRun {
+  agentProvider?: string | null;
+  model?: string | null;
   id: string;
   stage: string;
   kind: string;
@@ -310,6 +312,7 @@ export interface DesktopHumanReviewDecision {
 }
 
 export interface DesktopTaskDetail {
+  workflowDefinition?: PinnedTaskWorkflow | null;
   id: string;
   stage: string | null;
   closedAt: string | null;
@@ -1353,4 +1356,30 @@ export function openTerminalEditor(taskId: string, worktreePath: string, path: s
   return requestJson(`/v1/tasks/${encodeURIComponent(taskId)}/editor`, {
     method: "POST", body: { worktreePath, path, command },
   });
+}
+
+export interface OpenCodeModelOption {
+  id: string;
+  name: string;
+  connection: string | null;
+  local: boolean;
+  context: number | null;
+}
+
+export async function fetchDesktopOpenCodeModels(repoId: string): Promise<OpenCodeModelOption[]> {
+  return requestJson(`/v1/repos/${encodeURIComponent(repoId)}/opencode-models`);
+}
+
+export interface PinnedTaskWorkflow {
+  [key: string]: unknown;
+  stages: Array<{ [key: string]: unknown; name: string; post?: unknown }>;
+}
+
+export async function replaceDesktopTaskWorkflow(
+  taskId: string, expectedDefinition: PinnedTaskWorkflow, workflowDefinition: PinnedTaskWorkflow,
+): Promise<PinnedTaskWorkflow> {
+  const response = await requestJson<{ workflowDefinition: PinnedTaskWorkflow }>(`/v1/tasks/${encodeURIComponent(taskId)}/actions/replace-workflow`, {
+    method: "POST", body: { expectedDefinition, workflowDefinition, source: "operator" },
+  });
+  return response.workflowDefinition;
 }

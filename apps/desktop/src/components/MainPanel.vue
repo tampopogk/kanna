@@ -19,6 +19,7 @@ import {
 import { isBlockerResolved } from "../utils/blockerResolution";
 import { isRemotePresentationTaskId } from "../utils/remoteTaskIdentity";
 import { invoke } from "../invoke";
+import StageModelControl from "./StageModelControl.vue";
 import TaskHeader from "./TaskHeader.vue";
 import TerminalTabs from "./TerminalTabs.vue";
 import MainTabBar from "./MainTabBar.vue";
@@ -349,7 +350,11 @@ const headerItem = computed(() => {
   const slot = props.uiSlot;
   if (!slot) return null;
   const task = slot.task;
+  const run = taskDetail.value?.id === task?.id && taskDetail.value?.latestRun?.stage === task?.stage
+    ? taskDetail.value?.latestRun : undefined;
   return {
+    launchModel: run?.model,
+    launchProvider: run?.agentProvider,
     display_name: task?.display_name ?? slot.draft.display_name,
     issue_title: task?.issue_title ?? null,
     prompt: task?.prompt ?? slot.draft.prompt,
@@ -683,6 +688,7 @@ function dismissCommandHint() {
         <span>Tasks</span>
       </div>
       <TaskHeader v-if="!maximized && headerItem" :item="headerItem" />
+      <StageModelControl v-if="!maximized && uiSlot?.task && taskDetailIsLocal && uiSlot.task.closed_at == null" :task="uiSlot.task" />
       <section v-if="revisionBudgetExhausted" class="revision-exhausted" data-testid="revision-exhausted-status">
         <div>
           <p class="revision-exhausted-title">{{ $t('mainPanel.revisionExhaustedTitle') }}</p>

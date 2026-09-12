@@ -96,11 +96,10 @@ async function requireEnvironment(ctx: { skip: (reason?: string) => void }): Pro
  * worktree — but this harness starts the CLI directly, so the directory is
  * given explicitly here.
  */
-const KANNA_PTY_FLAGS = ["--auto", "--model", LIVE_MODEL];
+const KANNA_PTY_FLAGS = ["--model", LIVE_MODEL];
 /**
- * Kanna's spawn for any permission mode other than `dontAsk`/default, which
- * passes no bypass flag at all. It is also the only shape that can reach the
- * permission dialog — `--auto` is precisely the flag that stops it opening.
+ * Asking fixtures use the same argv: Kanna preserves native permissions for
+ * every mode, and this test's project config explicitly asks for tools.
  */
 const KANNA_PTY_FLAGS_ASKING = ["--model", LIVE_MODEL];
 
@@ -212,7 +211,7 @@ describe("TUI status markers the daemon reads (opencode)", () => {
       }),
     );
 
-    // Kanna's asking spawn, not its default one: `--auto` suppresses the very
+    // The fixture asks explicitly so the test can reach the
     // dialog this test exists to find.
     const session = await startOpenCode(cwd, [], KANNA_PTY_FLAGS_ASKING);
     try {
