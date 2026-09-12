@@ -48,7 +48,7 @@ async function start() {
 
 <template>
   <div class="editor-picker">
-    <button type="button" data-testid="edit-in-terminal" @click="choose" :disabled="busy">Edit in terminal…</button>
+    <button type="button" data-testid="edit-in-terminal" @click="choose" :disabled="busy">Edit</button>
     <div v-if="choosing" class="editor-choice" @keydown.esc.stop="choosing = false">
       <p>Use the editor’s own save and quit commands. Closing its tab hides it; closing the task ends it and loses unsaved buffers. Stage changes leave it in its original workspace. The agent can also write these files.</p>
       <p v-if="error" role="alert">{{ error }}</p>
