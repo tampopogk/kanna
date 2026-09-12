@@ -1334,3 +1334,23 @@ export async function rejectIncomingTaskTransfer(transferId: string): Promise<bo
   );
   return response.scheduled;
 }
+
+export interface TerminalEditorChoice {
+  command: string;
+  executable: string;
+  args: string[];
+}
+export interface TerminalEditorSession {
+  sessionId: string;
+  worktreePath: string;
+  filePath: string;
+  command: string;
+}
+export function fetchTerminalEditorChoices(): Promise<TerminalEditorChoice[]> {
+  return requestJson("/v1/terminal-editors");
+}
+export function openTerminalEditor(taskId: string, worktreePath: string, path: string, command: string): Promise<TerminalEditorSession> {
+  return requestJson(`/v1/tasks/${encodeURIComponent(taskId)}/editor`, {
+    method: "POST", body: { worktreePath, path, command },
+  });
+}

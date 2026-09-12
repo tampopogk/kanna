@@ -1,5 +1,6 @@
 import { computed, reactive, type ComputedRef } from "vue";
 
+import type { TerminalEditorSession } from "../services/desktopServerClient";
 import type { ShortcutContext } from "./useShortcutContext";
 
 /**
@@ -15,6 +16,7 @@ export type MainTabKind =
   | "diff"
   | "file"
   | "shell"
+  | "editor"
   | "tree"
   | "graph"
   | "analytics"
@@ -29,6 +31,7 @@ export type ShellTabScope = "worktree" | "repo";
 
 export interface MainTabDescriptor {
   kind: MainTabKind;
+  editorSession?: TerminalEditorSession;
   /** `file` tabs: worktree-relative or absolute path of the file to show. */
   filePath?: string;
   /** `file` tabs: line to scroll to on open. */
@@ -98,6 +101,9 @@ export function isRestorableTab(tab: MainTabDescriptor): boolean {
     case "agent":
     case "image":
       return false;
+    case "editor":
+      return Boolean(tab.editorSession && [tab.editorSession.sessionId, tab.editorSession.worktreePath, tab.editorSession.filePath, tab.editorSession.command]
+        .every(value => typeof value === "string" && value.length > 0));
     case "file":
       return Boolean(tab.filePath) && !tab.remoteContent;
     default:
@@ -110,6 +116,7 @@ function persistedDescriptor(tab: MainTabDescriptor): MainTabDescriptor {
   // A tab an agent opened keeps reading through the server after a restart:
   // dropping this would quietly restore the tab onto the unfenced local read.
   if (tab.containedTaskId) descriptor.containedTaskId = tab.containedTaskId;
+  if (tab.editorSession !== undefined) descriptor.editorSession = { ...tab.editorSession };
   if (tab.filePath !== undefined) descriptor.filePath = tab.filePath;
   if (tab.initialLine !== undefined) descriptor.initialLine = tab.initialLine;
   if (tab.shellScope !== undefined) descriptor.shellScope = tab.shellScope;
@@ -165,6 +172,7 @@ const TAB_SHORTCUT_CONTEXTS: Record<MainTabKind, ShortcutContext> = {
   diff: "diff",
   file: "file",
   shell: "shell",
+  editor: "shell",
   tree: "tree",
   graph: "graph",
   analytics: "main",
@@ -180,6 +188,8 @@ export function mainTabId(descriptor: MainTabDescriptor): string {
   switch (descriptor.kind) {
     case "agent":
       return AGENT_TAB_ID;
+    case "editor":
+      return `editor:${descriptor.editorSession?.sessionId ?? ""}`;
     case "shell":
       return descriptor.shellScope === "repo" ? "shell:repo" : "shell";
     case "file":

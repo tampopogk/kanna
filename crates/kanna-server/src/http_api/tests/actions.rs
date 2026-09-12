@@ -162,7 +162,7 @@ async fn close_task_route_reports_success_when_post_commit_worktree_cleanup_fail
         let (read_half, mut write_half) = stream.into_split();
         let mut reader = BufReader::new(read_half);
         for expected in ["task-1", "shell-wt-task-1", "td-task-1"] {
-            match read_test_daemon_command(&mut reader, &mut write_half).await {
+            match read_close_daemon_command(&mut reader, &mut write_half).await {
                 DaemonCommand::Kill { session_id } => assert_eq!(session_id, expected),
                 other => panic!("expected kill command, got {other:?}"),
             }
@@ -326,7 +326,7 @@ async fn close_task_route_releases_claimed_ports() {
         let (read_half, mut write_half) = stream.into_split();
         let mut reader = BufReader::new(read_half);
         for expected_session_id in ["task-1", "shell-wt-task-1", "td-task-1"] {
-            let command = read_test_daemon_command(&mut reader, &mut write_half).await;
+            let command = read_close_daemon_command(&mut reader, &mut write_half).await;
             if super::answer_terminal_carryover_probe(&command, &mut write_half).await {
                 continue;
             }
@@ -947,7 +947,7 @@ async fn close_pr_task_sends_blocker_close_instruction_with_renamed_branch_to_ru
         let (read_half, mut write_half) = stream.into_split();
         let mut reader = BufReader::new(read_half);
         for index in 0..4 {
-            let command = read_test_daemon_command(&mut reader, &mut write_half).await;
+            let command = read_close_daemon_command(&mut reader, &mut write_half).await;
             if super::answer_terminal_carryover_probe(&command, &mut write_half).await {
                 continue;
             }
@@ -1295,7 +1295,7 @@ async fn close_task_route_resolves_branch_style_task_id() {
         let expected = ["710917fb", "shell-wt-710917fb", "td-710917fb"];
 
         for expected_session_id in expected {
-            let command = read_test_daemon_command(&mut reader, &mut write_half).await;
+            let command = read_close_daemon_command(&mut reader, &mut write_half).await;
             if super::answer_terminal_carryover_probe(&command, &mut write_half).await {
                 continue;
             }
@@ -1481,7 +1481,7 @@ async fn close_task_route_tears_down_current_stage_environment_before_repo_teard
         let expected_kills = ["task-1", "shell-wt-task-1", "td-task-source"];
 
         for expected_session_id in expected_kills {
-            let command = read_test_daemon_command(&mut reader, &mut write_half).await;
+            let command = read_close_daemon_command(&mut reader, &mut write_half).await;
             if super::answer_terminal_carryover_probe(&command, &mut write_half).await {
                 continue;
             }
@@ -1497,7 +1497,7 @@ async fn close_task_route_tears_down_current_stage_environment_before_repo_teard
                 .unwrap();
         }
 
-        let command = read_test_daemon_command(&mut reader, &mut write_half).await;
+        let command = read_close_daemon_command(&mut reader, &mut write_half).await;
         let item = Db::open(&daemon_db_path)
             .expect("open db before teardown spawn assertion")
             .get_pipeline_item("task-1")
@@ -2007,7 +2007,7 @@ async fn pr_completion_starts_dormant_dependent_from_current_branch_optimistical
         let mut recovery_seeded = false;
         loop {
             let Some(command) =
-                read_test_daemon_command_optional(&mut reader, &mut write_half).await
+                read_close_daemon_command_optional(&mut reader, &mut write_half).await
             else {
                 break;
             };
@@ -2431,7 +2431,7 @@ async fn close_last_blocker_starts_dormant_dependent_from_blocker_branch() {
         let mut spawned = Vec::new();
         loop {
             let Some(command) =
-                read_test_daemon_command_optional(&mut reader, &mut write_half).await
+                read_close_daemon_command_optional(&mut reader, &mut write_half).await
             else {
                 break;
             };
@@ -2587,7 +2587,7 @@ fn spawn_dependent_start_daemon(
                 let (read_half, mut write_half) = stream.into_split();
                 let mut reader = BufReader::new(read_half);
                 while let Some(command) =
-                    read_test_daemon_command_optional(&mut reader, &mut write_half).await
+                    read_close_daemon_command_optional(&mut reader, &mut write_half).await
                 {
                     let response = match command {
                         DaemonCommand::Kill { .. } => DaemonEvent::Ok,
@@ -3210,7 +3210,7 @@ async fn conflicting_sibling_blockers_create_integration_task_and_leave_dependen
             let mut reader = BufReader::new(read_half);
             loop {
                 let Some(command) =
-                    read_test_daemon_command_optional(&mut reader, &mut write_half).await
+                    read_close_daemon_command_optional(&mut reader, &mut write_half).await
                 else {
                     break;
                 };
@@ -3452,7 +3452,7 @@ async fn closing_integration_task_starts_dependent_from_integration_branch() {
             let mut reader = BufReader::new(read_half);
             loop {
                 let Some(command) =
-                    read_test_daemon_command_optional(&mut reader, &mut write_half).await
+                    read_close_daemon_command_optional(&mut reader, &mut write_half).await
                 else {
                     break;
                 };
@@ -3747,7 +3747,7 @@ async fn renamed_multi_blocker_pr_branches_survive_earlier_worktree_cleanup() {
             let mut reader = BufReader::new(read_half);
             loop {
                 let Some(command) =
-                    read_test_daemon_command_optional(&mut reader, &mut write_half).await
+                    read_close_daemon_command_optional(&mut reader, &mut write_half).await
                 else {
                     break;
                 };
@@ -3941,7 +3941,7 @@ async fn close_non_final_blocker_leaves_dormant_dependent_unstarted() {
         let mut spawned = 0usize;
         loop {
             let Some(command) =
-                read_test_daemon_command_optional(&mut reader, &mut write_half).await
+                read_close_daemon_command_optional(&mut reader, &mut write_half).await
             else {
                 break;
             };
@@ -5012,7 +5012,7 @@ async fn advance_stage_detached_transition_aborts_when_task_closes_before_stage_
             let mut reader = BufReader::new(read_half);
             loop {
                 let Some(command) =
-                    read_test_daemon_command_optional(&mut reader, &mut write_half).await
+                    read_close_daemon_command_optional(&mut reader, &mut write_half).await
                 else {
                     continue 'connections;
                 };
@@ -5321,7 +5321,7 @@ async fn advance_stage_route_closes_final_stage_and_tears_down_environment_befor
         let expected_kills = ["task-1", "shell-wt-task-1", "td-task-source"];
 
         for expected_session_id in expected_kills {
-            let command = read_test_daemon_command(&mut reader, &mut write_half).await;
+            let command = read_close_daemon_command(&mut reader, &mut write_half).await;
             if super::answer_terminal_carryover_probe(&command, &mut write_half).await {
                 continue;
             }
@@ -5337,7 +5337,7 @@ async fn advance_stage_route_closes_final_stage_and_tears_down_environment_befor
                 .unwrap();
         }
 
-        let command = read_test_daemon_command(&mut reader, &mut write_half).await;
+        let command = read_close_daemon_command(&mut reader, &mut write_half).await;
         let item = Db::open(&daemon_db_path)
             .expect("open db before final-stage teardown spawn assertion")
             .get_pipeline_item("task-1")
@@ -6853,7 +6853,7 @@ async fn advance_stage_route_stays_responsive_while_prepare_blocks_on_git() {
         let (read_half, mut write_half) = stream.into_split();
         let mut reader = BufReader::new(read_half);
         loop {
-            let command = read_test_daemon_command(&mut reader, &mut write_half).await;
+            let command = read_close_daemon_command(&mut reader, &mut write_half).await;
             if super::answer_terminal_carryover_probe(&command, &mut write_half).await {
                 continue;
             }
@@ -7107,7 +7107,7 @@ async fn close_last_blocker_stays_responsive_while_dependent_prepare_blocks() {
         let mut spawned = Vec::new();
         loop {
             let Some(command) =
-                read_test_daemon_command_optional(&mut reader, &mut write_half).await
+                read_close_daemon_command_optional(&mut reader, &mut write_half).await
             else {
                 break;
             };
@@ -7331,7 +7331,7 @@ async fn complete_pr_stage_stays_responsive_while_dependent_prepare_blocks() {
         let mut spawned = Vec::new();
         loop {
             let Some(command) =
-                read_test_daemon_command_optional(&mut reader, &mut write_half).await
+                read_close_daemon_command_optional(&mut reader, &mut write_half).await
             else {
                 break;
             };
@@ -7537,4 +7537,40 @@ async fn complete_final_auto_without_post_remains_open_without_awaiting_advance(
         )
         .unwrap();
     assert_eq!(count, 0);
+}
+
+// These lifecycle fixtures have no editor sessions. Keep the inventory
+// exchange explicit here; input-protocol fixtures still assert their own List.
+async fn read_close_daemon_command_optional(
+    reader: &mut tokio::io::BufReader<tokio::net::unix::OwnedReadHalf>,
+    writer: &mut tokio::net::unix::OwnedWriteHalf,
+) -> Option<kanna_daemon::protocol::Command> {
+    use kanna_daemon::protocol::{Command, Event};
+    use tokio::io::AsyncWriteExt;
+    loop {
+        let command = super::read_test_daemon_command_optional(reader, writer).await?;
+        if matches!(command, Command::List) {
+            writer
+                .write_all(
+                    format!(
+                        "{}\n",
+                        serde_json::to_string(&Event::SessionList { sessions: vec![] }).unwrap()
+                    )
+                    .as_bytes(),
+                )
+                .await
+                .unwrap();
+        } else {
+            return Some(command);
+        }
+    }
+}
+
+async fn read_close_daemon_command(
+    reader: &mut tokio::io::BufReader<tokio::net::unix::OwnedReadHalf>,
+    writer: &mut tokio::net::unix::OwnedWriteHalf,
+) -> kanna_daemon::protocol::Command {
+    read_close_daemon_command_optional(reader, writer)
+        .await
+        .expect("fake daemon disconnected")
 }

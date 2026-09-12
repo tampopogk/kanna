@@ -10,6 +10,7 @@ import { markTaskSwitchMounted, markTaskSwitchReady } from "../perf/taskSwitchPe
 import "@xterm/xterm/css/xterm.css"
 
 const props = defineProps<{
+  attachOnly?: boolean
   sessionId: string
   spawnOptions?: SpawnOptions
   active?: boolean
@@ -32,6 +33,7 @@ const {
   pause,
   dispose,
 } = useTerminal(props.sessionId, props.spawnOptions, {
+  attachOnly: props.attachOnly,
   kittyKeyboard: props.kittyKeyboard,
   agentProvider: props.agentProvider,
   worktreePath: props.worktreePath,

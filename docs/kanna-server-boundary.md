@@ -3185,3 +3185,27 @@ MCP dispatch is concurrent and bounded to 64 in-flight requests: a long wait
 cannot serialize mailbox reads behind itself. Subscriptions need no long MCP
 call at all. No debounce values change. The human sidebar receives KSP
 `ServerFrame::StateChanged` directly, independently of the debounced event feed.
+
+
+### Local desktop terminal editors
+
+`GET /v1/terminal-editors` resolves the local `terminalEditorCommand` setting or
+returns installed terminal-editor choices. `POST /v1/tasks/{task_id}/editor`
+accepts `{path, worktreePath, command}` from an explicit desktop edit gesture.
+Both require a local loopback connection and refuse tunneled invokes; the usual
+browser credential checks still apply. Neither is an MCP navigation action.
+
+The launch holds the requested-task mutation lease, resolves the workspace from
+its DB record, refuses closed tasks and a stale `worktreePath`, and validates the
+file with the contained task-file resolver, without preview size/content limits.
+It passes one absolute file argument
+to the resolved executable, without a shell. An editor is a user-installed tool,
+not a sandbox: subsequent native buffer navigation and writes belong to it.
+
+Sessions use the existing `shell-` auxiliary-terminal stream namespace, with
+`editor`, a length-delimited task id, and a hash of workspace/file/command. An
+explicit repeated open reuses a live session; an exited session is replaced only
+on another explicit open. The desktop persists the returned session descriptor
+and only attaches on restoration. Stage forks preserve editors in the original
+workspace; task-close paths enumerate and kill that task's editor sessions
+before removing worktrees. No editor save changes task stage or commits files.

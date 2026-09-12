@@ -132,6 +132,8 @@ pub async fn handle_invoke(
                 task_creator::kill_session_replacing(daemon, replacements, session_id.as_str())
                     .await?;
             }
+            crate::terminal_editor::close_task_editors(daemon, replacements, &pipeline_item_id)
+                .await?;
             let teardown_session_id = workspace_teardown
                 .as_ref()
                 .map(|teardown| teardown.session_id.clone())
@@ -217,6 +219,8 @@ pub async fn handle_invoke(
                         task_creator::kill_session_replacing(daemon, replacements, &session_id)
                             .await?;
                     }
+                    crate::terminal_editor::close_task_editors(daemon, replacements, &task_id)
+                        .await?;
                     let teardown_session_id = workspace_teardown
                         .as_ref()
                         .map(|teardown| teardown.session_id.clone())
@@ -422,6 +426,27 @@ mod tests {
                     "close_task set closed_at before killing {expected_session_id}"
                 );
 
+                if expected_session_id.starts_with("td-") {
+                    let mut inventory = String::new();
+                    reader.read_line(&mut inventory).await.unwrap();
+                    assert!(matches!(
+                        serde_json::from_str::<DaemonCommand>(inventory.trim()).unwrap(),
+                        DaemonCommand::List
+                    ));
+                    write_half
+                        .write_all(
+                            format!(
+                                "{}\n",
+                                serde_json::to_string(&DaemonEvent::SessionList {
+                                    sessions: vec![]
+                                })
+                                .unwrap()
+                            )
+                            .as_bytes(),
+                        )
+                        .await
+                        .unwrap();
+                }
                 let mut line = String::new();
                 reader.read_line(&mut line).await.unwrap();
                 let command: DaemonCommand = serde_json::from_str(line.trim()).unwrap();
@@ -510,6 +535,27 @@ mod tests {
             let expected = ["task-1", "shell-wt-task-1", "td-task-1"];
 
             for expected_session_id in expected {
+                if expected_session_id.starts_with("td-") {
+                    let mut inventory = String::new();
+                    reader.read_line(&mut inventory).await.unwrap();
+                    assert!(matches!(
+                        serde_json::from_str::<DaemonCommand>(inventory.trim()).unwrap(),
+                        DaemonCommand::List
+                    ));
+                    write_half
+                        .write_all(
+                            format!(
+                                "{}\n",
+                                serde_json::to_string(&DaemonEvent::SessionList {
+                                    sessions: vec![]
+                                })
+                                .unwrap()
+                            )
+                            .as_bytes(),
+                        )
+                        .await
+                        .unwrap();
+                }
                 let mut line = String::new();
                 reader.read_line(&mut line).await.unwrap();
                 let command: DaemonCommand = serde_json::from_str(line.trim()).unwrap();

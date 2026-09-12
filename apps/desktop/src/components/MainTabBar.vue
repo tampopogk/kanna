@@ -39,6 +39,10 @@ function lastPathSegment(value: string): string {
 
 function present(tab: MainTab): MainTabPresentation {
   const closable = tab.kind !== "agent";
+  if (tab.kind === "editor") {
+    const session = tab.editorSession;
+    return { id: tab.id, label: `Edit: ${lastPathSegment(session?.filePath ?? "")}`, title: `${session?.command} — ${session?.worktreePath}/${session?.filePath}`, closable };
+  }
   if (tab.kind === "file") {
     const filePath = tab.filePath ?? "";
     return { id: tab.id, label: lastPathSegment(filePath), title: filePath, closable };

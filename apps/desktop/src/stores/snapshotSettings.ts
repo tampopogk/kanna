@@ -8,6 +8,7 @@ export function applySnapshotSettingsToState(
     | "suspendAfterMinutes"
     | "killAfterMinutes"
     | "ideCommand"
+    | "terminalEditorCommand"
     | "hideShortcutsOnStartup"
     | "devLingerTerminals"
     | "appTheme"
@@ -23,6 +24,7 @@ export function applySnapshotSettingsToState(
   if (settings.killAfterMinutes) {
     state.killAfterMinutes.value = parseInt(settings.killAfterMinutes, 10) || 60;
   }
+  state.terminalEditorCommand.value = settings.terminalEditorCommand ?? "";
   if (settings.ideCommand) state.ideCommand.value = settings.ideCommand;
   state.hideShortcutsOnStartup.value = settings.hideShortcutsOnStartup === "true";
   state.devLingerTerminals.value = settings["dev.lingerTerminals"] === "true";

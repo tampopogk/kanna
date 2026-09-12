@@ -40,6 +40,7 @@ export function useAppPreferences({
     suspendAfterMinutes: 30,
     killAfterMinutes: 60,
     ideCommand: "code",
+    terminalEditorCommand: "",
     locale: "en",
     devLingerTerminals: false,
     defaultAgentProvider: "claude" as AgentProvider,
@@ -137,6 +138,8 @@ export function useAppPreferences({
       preferences.suspendAfterMinutes = parseInt(value, 10) || 30;
     } else if (key === "killAfterMinutes") {
       preferences.killAfterMinutes = parseInt(value, 10) || 60;
+    } else if (key === "terminalEditorCommand") {
+      preferences.terminalEditorCommand = value;
     } else if (key === "ideCommand") {
       preferences.ideCommand = value;
     } else if (key === "dev.lingerTerminals") {
