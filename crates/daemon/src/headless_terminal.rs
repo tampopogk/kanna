@@ -197,7 +197,19 @@ impl HeadlessTerminal {
         }
         let mut used_visible_text_fallback = false;
         let vt = match serialize_terminal(&self.terminal, None) {
-            Ok(snapshot) => snapshot.serialized_candidate,
+            Ok(snapshot) => {
+                let mut vt = snapshot.serialized_candidate;
+                // Temporary compatibility for ghostty-xterm-compat-serialize
+                // 06895c8: it retains mouse tracking but omits its encoding.
+                // After a viewer reset this turns OpenCode's SGR reports into
+                // legacy binary reports. Preserve the daemon's actual SGR mode
+                // for every attach, resize and handoff consumer. Remove when
+                // the serializer itself retains this mode.
+                if self.terminal.mode(Mode::SGR_MOUSE)? {
+                    vt.push_str("\x1b[?1006h");
+                }
+                vt
+            }
             Err(error) => {
                 log::warn!(
                     "[headless-terminal] failed to serialize terminal snapshot, falling back to visible text: {}",
@@ -1130,6 +1142,30 @@ mod tests {
         assert!(restored.vt.contains("hello"));
         assert_eq!(restored.cursor_row, 1);
         assert_eq!(restored.cursor_col, 2);
+    }
+
+    #[test]
+    fn headless_terminal_snapshot_preserves_sgr_mouse_encoding() {
+        use libghostty_vt::terminal::Mode;
+        let mut terminal = HeadlessTerminal::new(100, 35, 10_000).unwrap();
+        terminal.write(b"\x1b[?1049h\x1b[?1003h\x1b[?1006hconversation");
+        assert!(terminal.terminal.mode(Mode::SGR_MOUSE).unwrap());
+        // Both attach and active-view resizing hydrate from this snapshot.
+        terminal.resize(90, 30).unwrap();
+        let snapshot = terminal.snapshot().unwrap();
+        let restored = HeadlessTerminal::from_snapshot(&snapshot, 10_000).unwrap();
+        assert!(restored.terminal.mode(Mode::SGR_MOUSE).unwrap());
+        assert!(restored.terminal.mode(Mode::ANY_MOUSE).unwrap());
+        assert_eq!(
+            restored.terminal.active_screen().unwrap(),
+            terminal.terminal.active_screen().unwrap()
+        );
+        // A program disabling the mode must stay disabled, too.
+        terminal.write(b"\x1b[?1006l");
+        assert!(!terminal.snapshot().unwrap().vt.contains("\x1b[?1006h"));
+        let mut shell = HeadlessTerminal::new(80, 24, 10_000).unwrap();
+        shell.write(b"ordinary shell output");
+        assert!(!shell.snapshot().unwrap().vt.contains("\x1b[?1006h"));
     }
 
     #[test]
