@@ -24,6 +24,7 @@ export const unattendedRealE2eFiles = [
   "mobile-relay-auth-recovery.test.ts",
   "mobile-server-ksp-capabilities.test.ts",
   "native-window-theme.test.ts",
+  "opencode-scroll.test.ts",
   "pty-runtime-status.test.ts",
   "pty-session.test.ts",
   "remote-active-view-restoration.test.ts",
