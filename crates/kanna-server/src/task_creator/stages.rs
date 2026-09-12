@@ -1174,6 +1174,25 @@ fn prepare_stage_restart(
         .as_deref()
         .ok_or_else(|| format!("task has no branch: {task_id}"))?;
     let current_worktree = format!("{}/.kanna-worktrees/{branch}", loaded.repo.path);
+    let setup_pending = db
+        .task_worktree_setup_pending(task_id)
+        .map_err(|error| format!("db error: {error}"))?;
+    let fallback_workspace = || {
+        if std::path::Path::new(&current_worktree).is_dir() {
+            if setup_pending {
+                RunWorkspaceSpec::FinishRecreate {
+                    branch: branch.to_string(),
+                    worktree_path: current_worktree.clone(),
+                }
+            } else {
+                RunWorkspaceSpec::Current
+            }
+        } else {
+            RunWorkspaceSpec::Recreate {
+                branch: branch.to_string(),
+            }
+        }
+    };
     // Reviewer feedback is only readable from a run that is still running: an
     // interrupted run's `feedback` has already been overwritten with the
     // session-interruption marker, which is bookkeeping, not an instruction.
@@ -1223,8 +1242,11 @@ fn prepare_stage_restart(
         }
     };
     let (workspace_spec, final_prompt, resume_fallback_reason) = match resume {
-        Ok((_provider, workspace)) => (
-            RunWorkspaceSpec::Resume(workspace),
+        Ok((_provider, mut workspace)) => (
+            {
+                workspace.repository_setup_pending = setup_pending;
+                RunWorkspaceSpec::Resume(workspace)
+            },
             // What the agent is told must match what actually happened to it.
             // A run that recorded success and then lost its PTY has no
             // interrupted work to finish, and telling it otherwise is how a
@@ -1266,7 +1288,7 @@ fn prepare_stage_restart(
                 completed_stage_result.as_deref(),
                 source_task.prompt.as_deref().unwrap_or(""),
             );
-            (RunWorkspaceSpec::Current, prompt, Some(reason))
+            (fallback_workspace(), prompt, Some(reason))
         }
         Err(reason) => {
             log::info!("task resume unavailable for {task_id}: {reason}; spawning fresh");
@@ -1296,7 +1318,7 @@ fn prepare_stage_restart(
                 source_task.branch.as_deref(),
                 &run.trigger,
             )?;
-            (RunWorkspaceSpec::Current, prompt, Some(reason))
+            (fallback_workspace(), prompt, Some(reason))
         }
     };
     let mut prepared = prepare_stage_run_spawn(

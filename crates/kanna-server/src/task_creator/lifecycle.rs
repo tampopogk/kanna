@@ -411,6 +411,11 @@ pub(crate) async fn spawn_prepared_stage_run_for_api(
         let error = rollback_prepared_stage_fork(&prepared, error);
         return Err(record_stage_transition_failure(db_path, &prepared, error));
     }
+    if prepared.repository_setup_pending {
+        let db = Db::open(db_path).map_err(|error| format!("db error: {error}"))?;
+        db.mark_task_worktree_setup_complete(&task_id)
+            .map_err(|error| format!("db error: {error}"))?;
+    }
 
     // The operation is written before the outgoing run is accepted and its
     // session is killed. If the server disappears at any later boundary, the
@@ -947,7 +952,7 @@ fn persist_stage_operation_intent(
             Some(workspace.worktree_path.clone()),
             true,
         ),
-        PreparedRunWorkspace::Resumed(workspace) => (
+        PreparedRunWorkspace::Resumed(workspace) | PreparedRunWorkspace::Recreated(workspace) => (
             Some(workspace.branch.clone()),
             Some(workspace.worktree_path.clone()),
             false,
@@ -1627,7 +1632,9 @@ fn reconcile_stage_operation_db(
             return Err(rusqlite::Error::QueryReturnedNoRows);
         }
         match &prepared.workspace {
-            PreparedRunWorkspace::Forked(workspace) | PreparedRunWorkspace::Resumed(workspace) => {
+            PreparedRunWorkspace::Forked(workspace)
+            | PreparedRunWorkspace::Resumed(workspace)
+            | PreparedRunWorkspace::Recreated(workspace) => {
                 db.update_pipeline_item_stage_and_branch_with_trigger(
                     &prepared.task_id,
                     &prepared.next_stage,

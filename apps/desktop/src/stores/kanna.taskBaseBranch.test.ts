@@ -117,6 +117,7 @@ const mockState = vi.hoisted(() => {
   const insertStageRunMock = vi.fn(async () => {});
   const updateAgentSessionIdMock = vi.fn(async () => {});
   const putTaskAgentSessionMock = vi.fn(async () => {});
+  const recoverTaskSessionMock = vi.fn(async () => {});
 
   function defer(): { promise: Promise<void>; resolve: () => void } {
     let resolve = () => {};
@@ -311,6 +312,7 @@ const mockState = vi.hoisted(() => {
     insertStageRunMock.mockClear();
     updateAgentSessionIdMock.mockClear();
     putTaskAgentSessionMock.mockClear();
+    recoverTaskSessionMock.mockClear();
     listBlockersForItemMock.mockResolvedValue([]);
     listBlockedByItemMock.mockResolvedValue([]);
     fetchMock.mockReset();
@@ -418,6 +420,7 @@ const mockState = vi.hoisted(() => {
     insertStageRunMock,
     updateAgentSessionIdMock,
     putTaskAgentSessionMock,
+    recoverTaskSessionMock,
     get blockCleanupGate() {
       return blockCleanupGate;
     },
@@ -449,6 +452,17 @@ const mockState = vi.hoisted(() => {
 vi.mock("../invoke", () => ({
   invoke: mockState.invokeMock,
 }));
+
+vi.mock("./sessions", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./sessions")>();
+  return {
+    ...actual,
+    createSessionsApi: (context: Parameters<typeof actual.createSessionsApi>[0]) => ({
+      ...actual.createSessionsApi(context),
+      recoverTaskSession: mockState.recoverTaskSessionMock,
+    }),
+  };
+});
 
 vi.stubGlobal("fetch", fetchMock);
 
@@ -2525,7 +2539,7 @@ describe("kanna store task base branch integration", () => {
     );
   });
 
-  it("reuses the saved prompt when respawning a reopened PTY task", async () => {
+  it("routes a reopened OpenCode task through server-owned recovery", async () => {
     mockState.workflowItems = [
       mockState.makeItem({
         id: "item-closed",
@@ -2533,34 +2547,18 @@ describe("kanna store task base branch integration", () => {
         prompt: "continue e3d1fc75",
         closed_at: "2026-04-14T12:00:00.000Z",
         agent_type: "pty",
-        agent_provider: "codex",
+        agent_provider: "opencode",
       }),
     ];
     const store = await createStore();
 
-    vi.useFakeTimers();
-    try {
-      const undoClose = store.undoClose();
-      await vi.advanceTimersByTimeAsync(6_000);
-      await undoClose;
-    } finally {
-      vi.useRealTimers();
-    }
+    await store.undoClose();
 
-    expect(mockState.invokeMock).toHaveBeenCalledWith(
-      "spawn_session",
-      expect.objectContaining({
-        sessionId: "item-closed",
-        cwd: "/tmp/repo/.kanna-worktrees/task-closed",
-        agentProvider: "codex",
-        args: expect.arrayContaining([
-          expect.stringContaining("continue e3d1fc75"),
-        ]),
-      }),
-    );
+    expect(mockState.recoverTaskSessionMock).toHaveBeenCalledWith("item-closed");
+    expect(mockState.invokeMock).not.toHaveBeenCalledWith("spawn_session", expect.anything());
   });
 
-  it("delegates missing worktree recreation to the server before respawning a reopened task", async () => {
+  it("delegates reopened workspace and provider restoration to the server", async () => {
     mockState.workflowItems = [
       mockState.makeItem({
         id: "item-closed",
@@ -2578,13 +2576,8 @@ describe("kanna store task base branch integration", () => {
       path: "/tmp/repo/.kanna-worktrees/task-closed",
     });
     expect(mockState.invokeMock).not.toHaveBeenCalledWith("git_worktree_add", expect.anything());
-    expect(mockState.invokeMock).toHaveBeenCalledWith(
-      "spawn_session",
-      expect.objectContaining({
-        sessionId: "item-closed",
-        cwd: "/tmp/repo/.kanna-worktrees/task-closed",
-      }),
-    );
+    expect(mockState.recoverTaskSessionMock).toHaveBeenCalledWith("item-closed");
+    expect(mockState.invokeMock).not.toHaveBeenCalledWith("spawn_session", expect.anything());
   });
 
   it("advances stages through the local kanna-server action endpoint", async () => {

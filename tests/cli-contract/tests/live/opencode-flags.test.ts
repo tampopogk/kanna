@@ -94,6 +94,17 @@ describe("opencode CLI flags", () => {
       expect(result.exitCode).toBe(0);
       expect(output(result)).not.toContain("Unknown argument");
     });
+
+    it("accepts Kanna's model-free recovery flags without inferring a model", async () => {
+      const result = await runOpenCodeRaw([
+        "--prompt",
+        "noop",
+        "--help",
+      ]);
+
+      expect(result.exitCode).toBe(0);
+      expect(output(result)).not.toContain("Unknown argument");
+    });
   });
 
   describe("the run entrypoint Kanna's SDK tasks spawn", () => {

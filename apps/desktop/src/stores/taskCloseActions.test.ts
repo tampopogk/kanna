@@ -95,6 +95,7 @@ function createHarness(durableItem = item()) {
     persistSelection: vi.fn(async () => {}),
     restoreSelection,
     reconcileSelection: vi.fn(),
+    recoverTaskSession: vi.fn(async () => {}),
     fetchSnapshot: vi.fn(async () => ({
       entries: [{ repo: repo(), items: [durableItem] }],
       taskBlockers: [],
@@ -325,5 +326,19 @@ describe("task close durable selection", () => {
 
     expect(services.selectItem).toHaveBeenCalledWith("task-durable");
     expect(state.selectedItemId.value).toBe("create:restored");
+  });
+
+  it("recovers a reopened task through the server-owned provider launch", async () => {
+    const durableItem = item();
+    durableItem.branch = "task-durable";
+    durableItem.closed_at = "2026-07-11T01:00:00.000Z";
+    durableItem.agent_provider = "opencode";
+    durableItem.agent_session_id = "ses_opencode";
+    const { actions, services } = createHarness(durableItem);
+
+    await actions.undoClose();
+
+    expect(services.recoverTaskSession).toHaveBeenCalledWith("task-durable");
+    expect(invokeMock).not.toHaveBeenCalledWith("spawn_session", expect.anything());
   });
 });

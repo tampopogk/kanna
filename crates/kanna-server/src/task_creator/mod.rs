@@ -1260,6 +1260,11 @@ pub(in crate::task_creator) fn prepare_stage_run_spawn(
         resolve_agent_type(source_agent_type, provider_candidates[0])?;
     }
 
+    let repository_setup_pending = match &workspace_spec {
+        RunWorkspaceSpec::Resume(resume) => resume.repository_setup_pending,
+        RunWorkspaceSpec::Recreate { .. } | RunWorkspaceSpec::FinishRecreate { .. } => true,
+        RunWorkspaceSpec::Current | RunWorkspaceSpec::Fork { .. } => false,
+    };
     let (workspace, resume_session_id, resumed_from_run_id) = match workspace_spec {
         RunWorkspaceSpec::Fork {
             branch: fork_branch,
@@ -1288,12 +1293,58 @@ pub(in crate::task_creator) fn prepare_stage_run_spawn(
             Some(resume.provider_session_id),
             Some(resume.resumed_from_run_id),
         ),
+        RunWorkspaceSpec::Recreate {
+            branch: restored_branch,
+        } => {
+            let worktree_path = format!("{}/.kanna-worktrees/{}", repo.path, restored_branch);
+            create_worktree(
+                &repo.path,
+                &restored_branch,
+                &worktree_path,
+                Some(&restored_branch),
+            )?;
+            db.upsert_worktree_with_setup_pending(
+                &format!("wt-{task_id}"),
+                task_id,
+                &worktree_path,
+                &restored_branch,
+            )
+            .map_err(|error| format!("db error: {error}"))?;
+            db.upsert_terminal_session(
+                &format!("agent-{task_id}"),
+                &repo.id,
+                Some(task_id),
+                Some("agent"),
+                Some(&worktree_path),
+                Some(task_id),
+            )
+            .map_err(|error| format!("db error: {error}"))?;
+            (
+                PreparedRunWorkspace::Recreated(ForkedWorkspace {
+                    branch: restored_branch,
+                    worktree_path,
+                }),
+                None,
+                None,
+            )
+        }
+        RunWorkspaceSpec::FinishRecreate {
+            branch: restored_branch,
+            worktree_path,
+        } => (
+            PreparedRunWorkspace::Recreated(ForkedWorkspace {
+                branch: restored_branch,
+                worktree_path,
+            }),
+            None,
+            None,
+        ),
         RunWorkspaceSpec::Current => (PreparedRunWorkspace::Current, None, None),
     };
     let worktree_path = match &workspace {
-        PreparedRunWorkspace::Forked(workspace) | PreparedRunWorkspace::Resumed(workspace) => {
-            workspace.worktree_path.clone()
-        }
+        PreparedRunWorkspace::Forked(workspace)
+        | PreparedRunWorkspace::Resumed(workspace)
+        | PreparedRunWorkspace::Recreated(workspace) => workspace.worktree_path.clone(),
         PreparedRunWorkspace::Current => format!("{}/.kanna-worktrees/{}", repo.path, branch),
     };
 
@@ -1308,14 +1359,17 @@ pub(in crate::task_creator) fn prepare_stage_run_spawn(
             &kanna_server_base_url(config),
             &mut spawn_env,
         )?;
-        // A forked workspace is fresh disk: run the repo's worktree setup
-        // (the same commands task creation runs) before any stage-specific
-        // setup. Current and resumed workspaces are already set up.
-        let mut setup = if matches!(workspace, PreparedRunWorkspace::Forked(_)) {
-            repo_config.setup.clone().unwrap_or_default()
-        } else {
-            Vec::new()
-        };
+        // A forked workspace is fresh disk, and a recreated checkout remains
+        // fresh until its durable pending bit is cleared: run the repo's
+        // worktree setup (the same commands task creation runs) before any
+        // stage-specific setup. Other current and resumed workspaces are
+        // already initialized.
+        let mut setup =
+            if repository_setup_pending || matches!(workspace, PreparedRunWorkspace::Forked(_)) {
+                repo_config.setup.clone().unwrap_or_default()
+            } else {
+                Vec::new()
+            };
         // A post runs in its owning stage's already-initialized workspace.
         // Its fallback session is prepared before input is sent to the live
         // session, so rerunning stage setup here would cause eager side
@@ -1456,6 +1510,7 @@ pub(in crate::task_creator) fn prepare_stage_run_spawn(
         run_stage: target_stage.name.clone(),
         run_kind,
         workspace,
+        repository_setup_pending,
         workspace_teardown: None,
         stage_agent: target_stage.agent.clone(),
         agent_provider: provider.as_str().to_string(),

@@ -7,7 +7,6 @@ import {
 } from "../services/desktopServerClient";
 import { hasOpenSubtasks } from "../utils/taskParenting";
 import { requireService, type KannaSnapshot, type StoreContext } from "./state";
-import { resolveAgentProvider } from "./agent-provider";
 import { resolveTaskItemForDaemonSession } from "./taskSessionIdentity";
 import type { TasksApi } from "./tasks";
 
@@ -157,23 +156,20 @@ export function createTaskCloseActions(
       await reloadSnapshot();
       const reopenedItem = context.state.items.value.find((candidate) => candidate.id === identity.id);
       if (!reopenedItem) return;
-      const repo = context.state.repos.value.find((candidate) => candidate.id === reopenedItem.repo_id);
-      if (!repo) return;
-      const worktreePath = reopenedItem.branch ? `${repo.path}/.kanna-worktrees/${reopenedItem.branch}` : repo.path;
       await requireService(context.services.selectItem, "selectItem")(reopenedItem.id);
       await invalidateWindowWorkspace("undoClose");
 
       if (reopenedItem.branch) {
         try {
-          const agentProvider = resolveAgentProvider(
-            reopenedItem.agent_provider,
-            await requireService(context.services.getAgentProviderAvailability, "getAgentProviderAvailability")(),
+          // Reopening restores task/port state but deliberately does not own
+          // agent launch. Recovery does: it reproduces the recorded run's
+          // provider/model/effort and provider session through the canonical
+          // server command builder, then records the replacement run. Building
+          // an argv in the webview drifted from that owner (notably OpenCode's
+          // removed --auto flag) and bypassed stage-run history entirely.
+          await requireService(context.services.recoverTaskSession, "recoverTaskSession")(
+            reopenedItem.id,
           );
-          await requireService(context.services.spawnPtySession, "spawnPtySession")(reopenedItem.id, worktreePath, reopenedItem.prompt || "", 80, 24, {
-            agentProvider,
-            ...(reopenedItem.agent_session_id ? { resumeSessionId: reopenedItem.agent_session_id } : {}),
-          });
-          await reloadSnapshot();
         } catch (spawnError) {
           console.error("[store] session re-spawn after undo failed:", spawnError);
           context.toast.error(`${context.tt("toasts.agentStartFailed")}: ${spawnError instanceof Error ? spawnError.message : spawnError}`);

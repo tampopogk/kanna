@@ -120,6 +120,54 @@ impl Db {
         Ok(())
     }
 
+    /// Record a recreated checkout whose repository setup has not completed.
+    /// Ordinary worktree upserts deliberately do not change this bit: only the
+    /// recovery lifecycle that created the checkout may settle it.
+    pub fn upsert_worktree_with_setup_pending(
+        &self,
+        id: &str,
+        pipeline_item_id: &str,
+        path: &str,
+        branch: &str,
+    ) -> Result<(), rusqlite::Error> {
+        self.conn.execute(
+            "INSERT INTO worktree (id, pipeline_item_id, path, branch, setup_pending)
+             VALUES (?, ?, ?, ?, 1)
+             ON CONFLICT(id) DO UPDATE SET
+               pipeline_item_id = excluded.pipeline_item_id,
+               path = excluded.path,
+               branch = excluded.branch,
+               setup_pending = 1",
+            (id, pipeline_item_id, path, branch),
+        )?;
+        Ok(())
+    }
+
+    pub fn task_worktree_setup_pending(
+        &self,
+        pipeline_item_id: &str,
+    ) -> Result<bool, rusqlite::Error> {
+        self.conn.query_row(
+            "SELECT EXISTS(
+                SELECT 1 FROM worktree
+                WHERE pipeline_item_id = ? AND setup_pending = 1
+             )",
+            [pipeline_item_id],
+            |row| row.get(0),
+        )
+    }
+
+    pub fn mark_task_worktree_setup_complete(
+        &self,
+        pipeline_item_id: &str,
+    ) -> Result<(), rusqlite::Error> {
+        self.conn.execute(
+            "UPDATE worktree SET setup_pending = 0 WHERE pipeline_item_id = ?",
+            [pipeline_item_id],
+        )?;
+        Ok(())
+    }
+
     pub fn upsert_terminal_session(
         &self,
         id: &str,
