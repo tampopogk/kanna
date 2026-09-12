@@ -333,6 +333,138 @@ describe("main content area tabs", () => {
     expect(await openTabIds(client)).toEqual(["agent"]);
   });
 
+  it("separates Diff scope cycling from main tabs and ignores hidden or input-focused views", async () => {
+    await selectTask(taskId);
+    await closeViewTabs(client);
+
+    const diffScope = () => client.executeSync<string>(
+      `const active = Array.from(document.querySelectorAll('.scope-selector button'))
+         .find((button) => button.classList.contains('active'));
+       return (active?.textContent || '').trim();`,
+    );
+
+    await pressShortcut(client, { key: "d", meta: true });
+    await waitForActiveTab(client, "diff");
+    await client.waitForElement(".diff-view", 8_000);
+
+    await pressShortcut(client, { key: "]" });
+    await expect.poll(diffScope).toBe("Branch");
+    expect(await activeTabId(client)).toBe("diff");
+
+    await pressShortcut(client, { key: "[" });
+    await expect.poll(diffScope).toBe("Working");
+    expect(await activeTabId(client)).toBe("diff");
+
+    // Keep another real view mounted beside Diff. A bare bracket while it is
+    // in front must neither move the main tab nor wake the hidden Diff listener.
+    await pressShortcut(client, { key: "g", meta: true });
+    await waitForActiveTab(client, "graph");
+    await pressShortcut(client, { key: "]" });
+    await sleep(250);
+    expect(await activeTabId(client)).toBe("graph");
+    expect(await diffScope()).toBe("Working");
+
+    await client.executeSync(
+      `document.querySelector('[data-testid="main-tab-diff"]')?.click(); return true;`,
+    );
+    await waitForActiveTab(client, "diff");
+    await pressShortcut(client, { key: "f", meta: true });
+    await client.waitForElement(".diff-view .search-input", 3_000);
+
+    // View-local navigation does not steal typing focus.
+    await client.executeSync(buildSelectorKeydownScript(".diff-view .search-input", { key: "]" }));
+    await sleep(250);
+    expect(await diffScope()).toBe("Working");
+    expect(await activeTabId(client)).toBe("diff");
+
+    // The established modified chord still belongs to the global tab bar,
+    // including when a Diff input has focus, and it does not change Diff scope.
+    await client.executeSync(buildSelectorKeydownScript(".diff-view .search-input", {
+      key: "]",
+      meta: true,
+      shift: true,
+    }));
+    await waitForActiveTab(client, "graph");
+    expect(await diffScope()).toBe("Working");
+
+    await closeViewTabs(client);
+  });
+
+  it("lets the top Add Repository dialog cycle its sections without moving the main tab", async () => {
+    await selectTask(taskId);
+    await closeViewTabs(client);
+    await pressShortcut(client, { key: "d", meta: true });
+    await waitForActiveTab(client, "diff");
+    await pressShortcut(client, { key: "g", meta: true });
+    await waitForActiveTab(client, "graph");
+
+    const activeAddRepoSection = () => client.executeSync<number>(
+      `return Array.from(document.querySelectorAll('.modal-overlay > .modal > .tabs > .tab'))
+        .findIndex((tab) => tab.classList.contains('active'));`,
+    );
+
+    await pressShortcut(client, { key: "i", meta: true });
+    await client.waitForElement(".modal-overlay > .modal > .tabs", 3_000);
+    expect(await activeAddRepoSection()).toBe(0);
+
+    await pressShortcut(client, { key: "]", meta: true, shift: true });
+    await expect.poll(activeAddRepoSection).toBe(1);
+    expect(await activeTabId(client)).toBe("graph");
+
+    await pressShortcut(client, { key: "[", meta: true, shift: true });
+    await expect.poll(activeAddRepoSection).toBe(0);
+    expect(await activeTabId(client)).toBe("graph");
+
+    await pressShortcut(client, { key: "Escape" });
+    await client.waitForNoElement(".modal-overlay > .modal > .tabs", 3_000);
+    await closeViewTabs(client);
+  });
+
+  it("restores graph focus after a retained input tab and keeps Analytics layered Escape", async () => {
+    await selectTask(taskId);
+    await closeViewTabs(client);
+
+    await pressShortcut(client, { key: "g", meta: true });
+    await waitForActiveTab(client, "graph");
+    await client.waitForText(".graph-modal .mode-indicator", "AUTO", 8_000);
+
+    await callVueMethod(client, "openFilePreview", "src/index.txt");
+    await waitForActiveTab(client, "file:src/index.txt");
+    await pressShortcut(client, { key: "f", meta: true });
+    await client.waitForElement(".preview-modal .search-input", 3_000);
+
+    await client.executeSync(
+      `document.querySelector('[data-testid="main-tab-graph"]')?.click(); return true;`,
+    );
+    await waitForActiveTab(client, "graph");
+    await expect.poll(() => client.executeSync<boolean>(
+      `return document.activeElement?.classList.contains('graph-modal') === true;`,
+    )).toBe(true);
+    await client.executeSync(
+      `document.activeElement?.dispatchEvent(new KeyboardEvent('keydown', { key: ' ', bubbles: true, cancelable: true })); return true;`,
+    );
+    await client.waitForText(".graph-modal .mode-indicator", "ALL", 8_000);
+
+    await pressShortcut(client, { key: "A", meta: true, shift: true });
+    await waitForActiveTab(client, "analytics");
+    await client.waitForElement('[data-testid="analytics-idle-total"]', 8_000);
+    await client.executeSync(
+      `document.querySelector('[data-testid="analytics-idle-total"]')?.click(); return true;`,
+    );
+    await client.waitForElement('[data-testid="analytics-drilldown"]', 3_000);
+
+    await pressShortcut(client, { key: "Escape" });
+    await client.waitForNoElement('[data-testid="analytics-drilldown"]', 3_000);
+    expect(await activeTabId(client)).toBe("analytics");
+    expect(await openTabIds(client)).toContain("analytics");
+
+    await pressShortcut(client, { key: "Escape" });
+    await waitForActiveTab(client, "file:src/index.txt");
+    expect(await openTabIds(client)).not.toContain("analytics");
+
+    await closeViewTabs(client);
+  });
+
   it("keeps each tab's view alive while another tab is in front", async () => {
     await selectTask(taskId);
     await closeViewTabs(client);
@@ -462,7 +594,7 @@ describe("main content area tabs", () => {
     expect(await openTabIds(client)).toEqual(["agent"]);
   });
 
-  it("opens the remaining views as tabs of the selected task", async () => {
+  it("opens the remaining task views as tabs and keeps Preferences app-scoped", async () => {
     await selectTask(taskId);
     await closeViewTabs(client);
     await waitForActiveTab(client, "agent");
@@ -470,7 +602,11 @@ describe("main content area tabs", () => {
     await pressShortcut(client, { key: "E", meta: true, shift: true });
     await waitForActiveTab(client, "tree");
     await pressShortcut(client, { key: ",", meta: true });
-    await waitForActiveTab(client, "preferences");
+    await client.waitForElement(".prefs-panel");
+    expect(await activeTabId(client)).toBe("tree");
+    expect(await openTabIds(client)).toEqual(["agent", "tree"]);
+    await pressShortcut(client, { key: "Escape" });
+    await client.waitForNoElement(".prefs-panel");
     await pressShortcut(client, { key: "J", meta: true, shift: true });
     await waitForActiveTab(client, "shell:repo");
 
@@ -480,7 +616,6 @@ describe("main content area tabs", () => {
     expect(await openTabIds(client)).toEqual([
       "agent",
       "tree",
-      "preferences",
       "shell:repo",
       "shell",
     ]);

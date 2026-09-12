@@ -29,7 +29,14 @@ const props = defineProps<EmbeddableViewProps & {
   repoId: string | null;
 }>();
 
-const { zIndex, bringToFront, overlayClass, overlayStyle, dismissOnScrimClick } =
+const {
+  zIndex,
+  bringToFront,
+  overlayClass,
+  overlayStyle,
+  dismissOnScrimClick,
+  focusWhenBrought,
+} =
   useEmbeddableView(props);
 /**
  * Analytics takes no target, so being open is the whole of being ready — but
@@ -43,7 +50,6 @@ async function revealDesktopViewTarget(): Promise<DesktopViewOpenOutcome> {
     : { opened: false, code: "renderer_failed", message: "analytics is still loading" };
 }
 
-defineExpose({ zIndex, bringToFront, revealDesktopViewTarget });
 const emit = defineEmits<{ (e: "close"): void }>();
 
 const { t } = useI18n();
@@ -64,6 +70,7 @@ const {
 } = useAnalytics(toRef(props, "repoId"));
 
 const overlayRef = ref<HTMLDivElement | null>(null);
+focusWhenBrought(overlayRef);
 const drilldownRef = ref<HTMLElement | null>(null);
 const openDrilldown = ref<AnalyticsDrilldown | null>(null);
 
@@ -97,14 +104,20 @@ onMounted(() => {
   nextTick(() => overlayRef.value?.focus());
 });
 
-function handleKeydown(event: KeyboardEvent) {
-  if (event.key !== "Escape") return;
+function dismiss(): boolean {
   if (openDrilldown.value) {
     openDrilldown.value = null;
-    return;
+    return false;
   }
-  emit("close");
+  return true;
 }
+
+function handleKeydown(event: KeyboardEvent) {
+  if (event.key !== "Escape") return;
+  if (dismiss()) emit("close");
+}
+
+defineExpose({ zIndex, bringToFront, dismiss, revealDesktopViewTarget });
 
 function toggleDrilldown(drilldown: AnalyticsDrilldown) {
   openDrilldown.value = openDrilldown.value === drilldown ? null : drilldown;
