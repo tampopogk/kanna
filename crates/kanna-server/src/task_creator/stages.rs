@@ -1174,6 +1174,15 @@ fn prepare_stage_restart(
         .as_deref()
         .ok_or_else(|| format!("task has no branch: {task_id}"))?;
     let current_worktree = format!("{}/.kanna-worktrees/{branch}", loaded.repo.path);
+    let fallback_workspace = || {
+        if std::path::Path::new(&current_worktree).is_dir() {
+            RunWorkspaceSpec::Current
+        } else {
+            RunWorkspaceSpec::Recreate {
+                branch: branch.to_string(),
+            }
+        }
+    };
     // Reviewer feedback is only readable from a run that is still running: an
     // interrupted run's `feedback` has already been overwritten with the
     // session-interruption marker, which is bookkeeping, not an instruction.
@@ -1266,7 +1275,7 @@ fn prepare_stage_restart(
                 completed_stage_result.as_deref(),
                 source_task.prompt.as_deref().unwrap_or(""),
             );
-            (RunWorkspaceSpec::Current, prompt, Some(reason))
+            (fallback_workspace(), prompt, Some(reason))
         }
         Err(reason) => {
             log::info!("task resume unavailable for {task_id}: {reason}; spawning fresh");
@@ -1296,7 +1305,7 @@ fn prepare_stage_restart(
                 source_task.branch.as_deref(),
                 &run.trigger,
             )?;
-            (RunWorkspaceSpec::Current, prompt, Some(reason))
+            (fallback_workspace(), prompt, Some(reason))
         }
     };
     let mut prepared = prepare_stage_run_spawn(

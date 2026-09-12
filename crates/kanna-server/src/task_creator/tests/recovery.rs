@@ -540,6 +540,113 @@ printf 'retained' > resume-proof.txt
     let _ = std::fs::remove_dir_all(&repo_root);
 }
 
+/// Desktop Undo Close first reopens the durable task, then asks the same
+/// recovery endpoint used after a desktop restart to restore its agent. Keep
+/// that real two-route sequence pinned to the server-owned OpenCode command
+/// builder: the removed desktop `--auto` launch must not creep back in, and a
+/// task with no model stamp must continue to let OpenCode choose its default.
+#[tokio::test]
+async fn reopen_then_resume_launches_opencode_through_the_compatible_server_path() {
+    let (repo_root, config, db) = init_recovery_fixture("undo-close-opencode-recovery");
+    std::fs::write(
+        repo_root.join(".kanna/config.json"),
+        serde_json::json!({
+            "workspace": { "path": { "prepend": [".kanna/test-provider-bin"] } },
+            "setup": ["printf restored > undo-close-setup-proof.txt"]
+        })
+        .to_string(),
+    )
+    .unwrap();
+    publish_origin_main(&repo_root, "publish Undo Close setup");
+    Connection::open(&config.db_path)
+        .unwrap()
+        .execute_batch(
+            "UPDATE pipeline_item SET agent_provider = 'opencode' WHERE id = 'recovery-task';
+             UPDATE stage_run
+                SET agent_provider = 'opencode', model = NULL, effort = NULL,
+                    provider_session_id = 'ses_undo_close'
+              WHERE id = 'run-killed-mid-turn';",
+        )
+        .unwrap();
+    db.close_pipeline_item("recovery-task").unwrap();
+    crate::worktree_cleanup::cleanup_closed_task_worktrees_by_id(&db, "recovery-task").unwrap();
+    let worktree = repo_root.join(".kanna-worktrees/task-recovery");
+    assert!(
+        !worktree.exists(),
+        "close removes the workspace before Undo Close"
+    );
+
+    let state = std::sync::Arc::new(crate::http_api::AppState::new(config.clone()));
+    let app = crate::http_api::router(std::sync::Arc::clone(&state));
+    let reopened = tower::ServiceExt::oneshot(
+        app.clone(),
+        axum::http::Request::post("/v1/tasks/recovery-task/actions/reopen")
+            .body(axum::body::Body::empty())
+            .unwrap(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(reopened.status(), axum::http::StatusCode::OK);
+    assert!(db
+        .get_pipeline_item("recovery-task")
+        .unwrap()
+        .unwrap()
+        .closed_at
+        .is_none());
+
+    let fake_daemon = spawn_recovery_fake_daemon(config.daemon_dir.clone()).await;
+    let resumed = tower::ServiceExt::oneshot(
+        app,
+        axum::http::Request::post("/v1/tasks/recovery-task/actions/resume")
+            .body(axum::body::Body::empty())
+            .unwrap(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(resumed.status(), axum::http::StatusCode::OK);
+
+    let commands = fake_daemon.await.unwrap();
+    assert!(
+        worktree.is_dir(),
+        "server recovery restores the preserved task branch"
+    );
+    assert_eq!(
+        std::fs::read_to_string(worktree.join("undo-close-setup-proof.txt")).unwrap(),
+        "restored"
+    );
+    let command_line = commands
+        .iter()
+        .find_map(|command| match command {
+            kanna_daemon::protocol::Command::Spawn { args, .. } => args.last(),
+            _ => None,
+        })
+        .expect("Undo Close recovery spawn command");
+    assert!(command_line.contains("OPENCODE_CONFIG_CONTENT='"));
+    assert!(command_line.contains("\"mcp\":{\"kanna-mcp\""));
+    assert!(command_line.contains(" --prompt '"));
+    assert!(!command_line.contains("--auto"));
+    assert!(!command_line.contains(" -m "));
+    assert!(!command_line.contains("--model"));
+
+    let replacement = loop {
+        let run = db.latest_stage_run("recovery-task").unwrap().unwrap();
+        if run.id != "run-killed-mid-turn" {
+            break run;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    };
+    assert_eq!(replacement.agent_provider.as_deref(), Some("opencode"));
+    assert_eq!(replacement.model, None);
+    assert_eq!(replacement.effort, None);
+    assert_eq!(replacement.resumed_from_run_id, None);
+    assert_eq!(
+        replacement.resume_fallback_reason.as_deref(),
+        Some("previous run's worktree is gone")
+    );
+
+    let _ = std::fs::remove_dir_all(&repo_root);
+}
+
 /// A recorded verdict does not keep a PTY alive. A manual stage's agent
 /// finishes its turn, records success, and parks at its composer; a reboot
 /// then takes the session with a `succeeded` run behind it. That is the state

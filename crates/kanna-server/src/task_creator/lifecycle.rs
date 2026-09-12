@@ -947,7 +947,7 @@ fn persist_stage_operation_intent(
             Some(workspace.worktree_path.clone()),
             true,
         ),
-        PreparedRunWorkspace::Resumed(workspace) => (
+        PreparedRunWorkspace::Resumed(workspace) | PreparedRunWorkspace::Recreated(workspace) => (
             Some(workspace.branch.clone()),
             Some(workspace.worktree_path.clone()),
             false,
@@ -1627,7 +1627,9 @@ fn reconcile_stage_operation_db(
             return Err(rusqlite::Error::QueryReturnedNoRows);
         }
         match &prepared.workspace {
-            PreparedRunWorkspace::Forked(workspace) | PreparedRunWorkspace::Resumed(workspace) => {
+            PreparedRunWorkspace::Forked(workspace)
+            | PreparedRunWorkspace::Resumed(workspace)
+            | PreparedRunWorkspace::Recreated(workspace) => {
                 db.update_pipeline_item_stage_and_branch_with_trigger(
                     &prepared.task_id,
                     &prepared.next_stage,

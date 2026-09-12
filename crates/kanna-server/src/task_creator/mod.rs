@@ -1288,12 +1288,47 @@ pub(in crate::task_creator) fn prepare_stage_run_spawn(
             Some(resume.provider_session_id),
             Some(resume.resumed_from_run_id),
         ),
+        RunWorkspaceSpec::Recreate {
+            branch: restored_branch,
+        } => {
+            let worktree_path = format!("{}/.kanna-worktrees/{}", repo.path, restored_branch);
+            create_worktree(
+                &repo.path,
+                &restored_branch,
+                &worktree_path,
+                Some(&restored_branch),
+            )?;
+            db.upsert_worktree(
+                &format!("wt-{task_id}"),
+                task_id,
+                &worktree_path,
+                &restored_branch,
+            )
+            .map_err(|error| format!("db error: {error}"))?;
+            db.upsert_terminal_session(
+                &format!("agent-{task_id}"),
+                &repo.id,
+                Some(task_id),
+                Some("agent"),
+                Some(&worktree_path),
+                Some(task_id),
+            )
+            .map_err(|error| format!("db error: {error}"))?;
+            (
+                PreparedRunWorkspace::Recreated(ForkedWorkspace {
+                    branch: restored_branch,
+                    worktree_path,
+                }),
+                None,
+                None,
+            )
+        }
         RunWorkspaceSpec::Current => (PreparedRunWorkspace::Current, None, None),
     };
     let worktree_path = match &workspace {
-        PreparedRunWorkspace::Forked(workspace) | PreparedRunWorkspace::Resumed(workspace) => {
-            workspace.worktree_path.clone()
-        }
+        PreparedRunWorkspace::Forked(workspace)
+        | PreparedRunWorkspace::Resumed(workspace)
+        | PreparedRunWorkspace::Recreated(workspace) => workspace.worktree_path.clone(),
         PreparedRunWorkspace::Current => format!("{}/.kanna-worktrees/{}", repo.path, branch),
     };
 
@@ -1311,7 +1346,10 @@ pub(in crate::task_creator) fn prepare_stage_run_spawn(
         // A forked workspace is fresh disk: run the repo's worktree setup
         // (the same commands task creation runs) before any stage-specific
         // setup. Current and resumed workspaces are already set up.
-        let mut setup = if matches!(workspace, PreparedRunWorkspace::Forked(_)) {
+        let mut setup = if matches!(
+            workspace,
+            PreparedRunWorkspace::Forked(_) | PreparedRunWorkspace::Recreated(_)
+        ) {
             repo_config.setup.clone().unwrap_or_default()
         } else {
             Vec::new()

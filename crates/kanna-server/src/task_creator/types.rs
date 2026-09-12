@@ -216,6 +216,9 @@ pub(super) enum RunWorkspaceSpec {
     Fork { branch: String },
     /// Adopt a previous run's workspace and resume its agent-CLI session.
     Resume(ResumeWorkspaceSpec),
+    /// Recreate the task's current branch after close removed its worktree.
+    /// This is restored durable task state, not a disposable stage fork.
+    Recreate { branch: String },
 }
 
 pub(super) struct ResumeWorkspaceSpec {
@@ -242,6 +245,10 @@ pub(crate) enum PreparedRunWorkspace {
     /// revision: moves the task's branch and worktree record like a fork,
     /// but was never created here and is never rolled back.
     Resumed(ForkedWorkspace),
+    /// The task's current branch restored after its worktree was removed on
+    /// close. Repository setup runs for the new checkout, and a failed spawn
+    /// keeps it available for another recovery attempt.
+    Recreated(ForkedWorkspace),
 }
 
 /// A new stage run spawned on an existing task: same task id, but a swap runs
