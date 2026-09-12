@@ -1,3 +1,5 @@
+import { mkdir } from "node:fs/promises";
+import { resolve } from "node:path";
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { buildGlobalKeydownScript } from "../helpers/keyboard";
 import { WebDriverClient } from "../helpers/webdriver";
@@ -175,21 +177,67 @@ describe("preferences", () => {
     await client.click(mobileTab);
 
     await client.waitForElement('[data-testid="mobile-access-panel"]', 2_000);
-    await client.waitForText(".prefs-panel", "Mobile Access", 2_000);
+    await client.waitForText(".prefs-panel", "Use Kanna on your phone", 2_000);
+    const artifacts = resolve(process.cwd(), "../../.tmp/mobile-preferences");
+    await mkdir(artifacts, { recursive: true });
+    await client.screenshot(resolve(artifacts, "first-use.png"));
+    expect(await client.findElements('[data-testid="mobile-access-install-qr"]')).toHaveLength(0);
+    await client.click(await client.findElement('[data-testid="mobile-access-install-toggle"]'));
     await client.waitForElement('[data-testid="mobile-access-install-qr"]', 2_000);
-    await client.waitForElement('[data-testid="mobile-access-install-label"]', 2_000);
+    await client.waitForText(".prefs-panel", "phone camera to open the App Store", 2_000);
+    expect(await client.findElements('[data-testid="mobile-access-install-link"]')).toHaveLength(0);
+    expect(await client.findElements('[data-testid="mobile-access-install-copy"]')).toHaveLength(0);
 
     await client.click(await client.findElement('[data-testid="mobile-access-start-pairing"]'));
     await client.waitForElement('[data-testid="mobile-access-pairing-qr"]', 2_000);
-    await client.waitForElement('[data-testid="mobile-access-pairing-qr-label"]', 2_000);
-
-    const labels = await client.executeSync<string[]>(`
-      return Array.from(document.querySelectorAll(
-        '[data-testid="mobile-access-install-label"], [data-testid="mobile-access-pairing-qr-label"]',
-      ))
-        .map((element) => element.textContent?.trim() || "");
+    expect(await client.findElements('[data-testid="mobile-access-install-qr"]')).toHaveLength(0);
+    const code = await client.getText(await client.findElement('[data-testid="mobile-access-pairing-code"]'));
+    await client.click(await client.findElement('[data-testid="mobile-access-install-toggle"]'));
+    await client.waitForElement('[data-testid="mobile-access-install-qr"]', 2_000);
+    expect(await client.findElements('[data-testid="mobile-access-pairing-qr"]')).toHaveLength(0);
+    await client.click(await client.findElement('[data-testid="mobile-access-pairing-toggle"]'));
+    expect(await client.getText(await client.findElement('[data-testid="mobile-access-pairing-code"]'))).toBe(code);
+    await client.click(await client.findElement('[data-testid="mobile-access-troubleshooting-toggle"]'));
+    await client.click(await client.findElement('[data-testid="mobile-access-status-refresh"]'));
+    expect(await client.getText(await client.findElement('[data-testid="mobile-access-pairing-code"]'))).toBe(code);
+    const originalTheme = await client.executeSync<string>("return document.documentElement.dataset.theme || 'dark';");
+    for (const theme of ["dark", "light"]) {
+      await client.executeSync(`document.documentElement.dataset.theme = ${JSON.stringify(theme)}; return true;`);
+      await client.executeSync(`document.querySelector('[data-testid="mobile-access-pairing-qr"]').scrollIntoView({ block: 'center' }); return true;`);
+      await client.screenshot(resolve(artifacts, `active-${theme}.png`));
+    }
+    // The driver dispatches synthetic KeyboardEvents without native button
+    // activation. Check focus and semantic button activation directly.
+    await client.executeSync(`document.querySelector('[data-testid="mobile-access-install-toggle"]').focus(); return true;`);
+    expect(await client.executeSync("return document.activeElement?.tagName;")).toBe("BUTTON");
+    await client.executeSync("document.activeElement.click(); return true;");
+    await client.waitForElement('[data-testid="mobile-access-install-qr"]');
+    expect(await client.executeSync("return document.activeElement?.getAttribute('data-testid');")).toBe("mobile-access-install-toggle");
+    await client.executeSync(`
+      document.querySelector('.prefs-panel').style.width = '320px';
+      document.querySelector('.mobile-body').style.maxHeight = '350px';
+      return true;
     `);
-    expect(labels).toEqual(["Get the Kanna mobile app", "Pairing QR code"]);
+    const layout = await client.executeSync<{ overflow: boolean; scrollable: boolean }>(`
+      const body = document.querySelector('.mobile-body');
+      return { overflow: body.scrollWidth > body.clientWidth, scrollable: body.scrollHeight > body.clientHeight };
+    `);
+    expect(layout).toEqual({ overflow: false, scrollable: true });
+    await client.executeSync(`document.querySelector('[data-testid="mobile-access-install-qr"]').scrollIntoView({ block: 'center' }); return true;`);
+    await client.screenshot(resolve(artifacts, "narrow.png"));
+    await client.executeSync(`
+      document.documentElement.dataset.theme = ${JSON.stringify(originalTheme)};
+      document.querySelector('.prefs-panel').style.width = '';
+      document.querySelector('.mobile-body').style.maxHeight = '';
+      window.__KANNA_E2E__.failNextInvoke = 'create_mobile_pairing_session';
+      return true;
+    `);
+    await client.click(await client.findElement('[data-testid="mobile-access-start-pairing"]'));
+    await client.waitForText('.mobile-body', 'Could not create a pairing code');
+    await client.screenshot(resolve(artifacts, "pairing-error.png"));
+    await client.click(await client.findElement('[data-testid="mobile-access-start-pairing"]'));
+    await client.waitForElement('[data-testid="mobile-access-pairing-code"]');
+
   });
 
   it("persists app and terminal code theme preferences", async () => {
