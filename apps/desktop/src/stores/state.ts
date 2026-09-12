@@ -166,6 +166,7 @@ export interface StoreState {
   suspendAfterMinutes: Ref<number>;
   killAfterMinutes: Ref<number>;
   ideCommand: Ref<string>;
+  terminalEditorCommand: Ref<string>;
   hideShortcutsOnStartup: Ref<boolean>;
   devLingerTerminals: Ref<boolean>;
   appTheme: Ref<AppThemePreference>;
@@ -320,6 +321,7 @@ export function createStoreState(): StoreState {
   const suspendAfterMinutes = ref(30);
   const killAfterMinutes = ref(60);
   const ideCommand = ref("code");
+  const terminalEditorCommand = ref("");
   const hideShortcutsOnStartup = ref(false);
   const devLingerTerminals = ref(false);
   const appTheme = ref<AppThemePreference>(DEFAULT_APP_THEME);
@@ -351,6 +353,7 @@ export function createStoreState(): StoreState {
     suspendAfterMinutes,
     killAfterMinutes,
     ideCommand,
+    terminalEditorCommand,
     hideShortcutsOnStartup,
     devLingerTerminals,
     appTheme,

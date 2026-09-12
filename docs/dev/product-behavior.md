@@ -79,6 +79,35 @@ semantics, and the MCP task-management rule — stay in the repo-root
 3. Close shell → focus returns to agent terminal
 4. Type in the agent terminal to send input to the running provider CLI
 
+### Editing a local task file
+
+File previews offer **Edit in terminal…**, followed by a visible editor choice.
+Preferences → **Terminal Editor Command** pins an installed terminal tool (for
+example `nvim` or `emacs -nw`); empty means detect available editors. Commands
+accept quoted arguments, without shell expansion. `VISUAL` and `EDITOR` are
+hints only when they name a recognized terminal editor. Graphical editors keep
+using the separate **IDE Command** / **Open in IDE** action. No editor is bundled
+or downloaded, and missing/invalid choices are explained in the picker.
+
+Each editor is a separate daemon-backed terminal, leaving the agent TUI intact.
+Use the editor's native save/quit commands; Cmd+S does not save or advance while
+an editor tab is active. **Return to agent** restores the primary tab, where
+Cmd+S retains its existing stage action. Preview/citation navigation remains
+read-only, including `kanna_open_view`.
+
+Switching tasks, hiding a tab, and restarting the app reattach the same session.
+A stage change leaves the editor in its original workspace, shown above the
+terminal; it never moves into the new stage. Only committed changes cross stage
+boundaries. Closing the task ends all of its editor sessions, including hidden
+ones and older workspaces, and loses unsaved buffers. Save and quit first.
+An ended/missing editor is not automatically restarted; open it explicitly from
+a file preview again. The editor owns buffers and saving. Kanna does not inspect
+unsaved buffers or prevent simultaneous agent/human writes.
+
+Editing is local desktop only. Remote previews are labelled read-only and do
+not open against matching local paths. Editors in a task transferred away are
+not remotely transported or resumed by this integration.
+
 ### Viewing a terminal from more than one device
 
 The PTY has one authoritative grid. The terminal viewer that most recently
@@ -97,7 +126,7 @@ control.
 Close is refused (409) while the task has open subtasks — close or detach them
 first. Otherwise:
 
-1. Kills the agent PTY session and shell session in the daemon
+1. Kills the agent PTY, shell, and all task editor sessions in the daemon
 2. Runs workspace teardown commands best-effort when configured
 3. Sets `closed_at` in the DB
 4. Snapshots dirty state in each of the task's worktrees with a local `WIP at task close` commit, then removes those worktrees with `git worktree remove --force --force` and prunes worktree registrations
@@ -206,6 +235,7 @@ while the terminal has focus.
 | Suspend After (minutes) | 5 |
 | Kill After (minutes) | 30 |
 | IDE Command | code |
+| Terminal Editor Command | empty (detect installed terminal editors) |
 | Locale | en |
 | Default Agent Provider | claude |
 

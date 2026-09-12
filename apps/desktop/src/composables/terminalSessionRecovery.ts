@@ -44,15 +44,16 @@ export function getTerminalRecoveryMode(
   spawnOptions?: SpawnOptions,
   options?: TerminalOptions,
 ): TerminalRecoveryMode {
+  if (options?.attachOnly) return "attach-only";
   const isTaskTerminal = !!spawnOptions && !!options?.worktreePath && !!options?.agentProvider;
   return isTaskTerminal ? "attach-only" : "spawn-on-missing";
 }
 
 export function shouldReattachOnDaemonReady(
   spawnOptions?: SpawnOptions,
-  _options?: TerminalOptions,
+  options?: TerminalOptions,
 ): boolean {
-  return !!spawnOptions;
+  return !!spawnOptions || options?.attachOnly === true;
 }
 
 export function shouldDelayConnectUntilAfterInitialLayout(
@@ -184,6 +185,7 @@ export function shouldRespawnAfterAttachFailure(
   spawnOptions?: SpawnOptions,
   options?: TerminalOptions,
 ): boolean {
+  if (options?.attachOnly) return false;
   if (
     isMissingDaemonSessionFailure(error) &&
     !hasAttachedOnce &&

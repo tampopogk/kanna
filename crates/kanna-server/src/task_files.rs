@@ -75,11 +75,11 @@ impl fmt::Display for TaskFileError {
 
 impl std::error::Error for TaskFileError {}
 
-pub fn read_task_file(
+fn open_validated_task_file(
     db: &Db,
     task_or_branch_id: &str,
     requested_path: &str,
-) -> Result<TaskFileContent, TaskFileError> {
+) -> Result<(String, std::fs::File), TaskFileError> {
     let requested = Path::new(requested_path);
     if requested_path.trim().is_empty()
         || requested_path.contains('\0')
@@ -104,7 +104,7 @@ pub fn read_task_file(
     }
     let relative = normalize_requested_path(root, requested)?;
     let root_directory = open_task_workspace_root(root)?;
-    let mut file = open_task_file_from_root(&root_directory, &relative)?;
+    let file = open_task_file_from_root(&root_directory, &relative)?;
     let metadata = file.metadata().map_err(|error| {
         TaskFileError::Internal(format!("failed to inspect task file: {error}"))
     })?;
@@ -113,6 +113,28 @@ pub fn read_task_file(
             "file path must identify a regular file".to_string(),
         ));
     }
+    Ok((display_path(&relative), file))
+}
+
+/// Validate an editor target without applying the preview's content/size limits.
+/// The launched editor owns subsequent reads, buffers and writes.
+pub(crate) fn task_editor_file_path(
+    db: &Db,
+    task_or_branch_id: &str,
+    requested_path: &str,
+) -> Result<String, TaskFileError> {
+    open_validated_task_file(db, task_or_branch_id, requested_path).map(|(path, _)| path)
+}
+
+pub fn read_task_file(
+    db: &Db,
+    task_or_branch_id: &str,
+    requested_path: &str,
+) -> Result<TaskFileContent, TaskFileError> {
+    let (path, mut file) = open_validated_task_file(db, task_or_branch_id, requested_path)?;
+    let metadata = file.metadata().map_err(|error| {
+        TaskFileError::Internal(format!("failed to inspect task file: {error}"))
+    })?;
     if metadata.len() > MAX_TASK_FILE_BYTES {
         return Err(TaskFileError::TooLarge);
     }
@@ -128,10 +150,7 @@ pub fn read_task_file(
 
     let content = String::from_utf8(bytes).map_err(|_| TaskFileError::UnsupportedContent)?;
 
-    Ok(TaskFileContent {
-        path: display_path(&relative),
-        content,
-    })
+    Ok(TaskFileContent { path, content })
 }
 
 pub fn resolve_task_file_mentions(

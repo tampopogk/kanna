@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import TerminalEditorPicker from "./TerminalEditorPicker.vue";
 import type MarkdownIt from "markdown-it";
 import type { BundledLanguage, DecorationItem, ShikiTransformer } from "shiki";
 import { ref, computed, onMounted, nextTick, watch } from "vue";
@@ -55,6 +56,7 @@ const props = withDefaults(
      */
     contentLoader?: (path: string) => Promise<string>;
     ideCommand?: string;
+    editInTerminal?: (command: string) => Promise<void>;
     maximized?: boolean;
     initialLine?: number;
     initialMarkdownMode?: MarkdownPreviewMode;
@@ -366,6 +368,8 @@ watch(() => props.filePath, () => {
   closeSearch();
 });
 
+watch(() => props.worktreePath, () => { void loadFile(); });
+
 watch(() => props.remoteContent, () => {
   loadFile();
 });
@@ -581,6 +585,7 @@ watch(
   () => props.active,
   (active) => {
     if (!props.embedded || !active) return;
+    void loadFile();
     nextTick(() => modalRef.value?.focus());
   },
 );
@@ -599,6 +604,8 @@ watch(
           <span v-if="isMarkdownFile" class="mode-badge" @click="toggleMarkdownMode" title="m">
             {{ renderMarkdown ? $t('filePreview.rendered') : $t('filePreview.raw') }}
           </span>
+          <TerminalEditorPicker v-if="editInTerminal && !isRemoteFile && !loading && !error" :open-editor="editInTerminal" />
+          <span v-if="isRemoteFile" title="Terminal editing is available only on the desktop holding the local workspace">Remote · read-only</span>
           <button v-if="!isRemoteFile" class="btn-open" @click="openInIDE" :title="$t('filePreview.openInIDETooltip')">{{ $t('filePreview.openInIDE') }}</button>
         </div>
       </div>

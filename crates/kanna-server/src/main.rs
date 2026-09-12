@@ -35,6 +35,7 @@ mod task_graph;
 mod task_input_attachments;
 mod task_transfer_tunnel;
 mod terminal_attachments;
+mod terminal_editor;
 mod terminal_watcher;
 mod terminal_window;
 #[cfg(test)]

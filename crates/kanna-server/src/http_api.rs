@@ -47,6 +47,7 @@ mod task_logs;
 mod task_ports;
 mod task_raw_input;
 mod tasks;
+mod terminal_editor;
 mod transfer_sidecar;
 mod transfers;
 mod window_workspace;

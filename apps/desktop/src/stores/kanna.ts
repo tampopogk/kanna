@@ -146,6 +146,8 @@ Use this branch as the default when the user does not specify a target branch. B
     suspendAfterMinutes: state.suspendAfterMinutes,
     killAfterMinutes: state.killAfterMinutes,
     ideCommand: state.ideCommand,
+    terminalEditorCommand: state.terminalEditorCommand,
+    worktreePaths: state.worktreePaths,
     hideShortcutsOnStartup: state.hideShortcutsOnStartup,
     devLingerTerminals: state.devLingerTerminals,
     appTheme: state.appTheme,

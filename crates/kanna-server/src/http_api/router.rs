@@ -222,6 +222,11 @@ pub fn router(state: Arc<AppState>) -> Router {
             "/v1/tasks/{task_id}/transfer-history",
             get(get_task_transfer_history),
         )
+        .route("/v1/terminal-editors", get(super::terminal_editor::choices))
+        .route(
+            "/v1/tasks/{task_id}/editor",
+            post(super::terminal_editor::open),
+        )
         .route("/v1/tasks/{task_id}/files/content", get(get_task_file))
         .route("/v1/tasks/{task_id}/browse", get(list_task_directory))
         .route(

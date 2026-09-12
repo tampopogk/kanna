@@ -535,6 +535,7 @@ export function useAppLifecycle({
     preferences.suspendAfterMinutes = store.suspendAfterMinutes;
     preferences.killAfterMinutes = store.killAfterMinutes;
     preferences.ideCommand = store.ideCommand;
+    preferences.terminalEditorCommand = store.terminalEditorCommand;
     preferences.devLingerTerminals = store.devLingerTerminals;
     preferences.agentMessageAppearance = store.agentMessageAppearance;
 

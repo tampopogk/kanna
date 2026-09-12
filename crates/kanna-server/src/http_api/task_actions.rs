@@ -748,6 +748,13 @@ pub(super) async fn close_task(
         .await
         .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e))?;
     }
+    crate::terminal_editor::close_task_editors(
+        &mut daemon,
+        &state.session_replacements,
+        &pipeline_item_id,
+    )
+    .await
+    .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e))?;
     let teardown_session_id = workspace_teardown
         .as_ref()
         .map(|teardown| teardown.session_id.clone())
@@ -945,6 +952,9 @@ async fn close_task_after_final_stage(
         .await
         .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e))?;
     }
+    crate::terminal_editor::close_task_editors(daemon, &state.session_replacements, &task_id)
+        .await
+        .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e))?;
     let teardown_session_id = workspace_teardown
         .as_ref()
         .map(|teardown| teardown.session_id.clone())

@@ -498,7 +498,9 @@ export function createTerminalSessionLifecycle(params: {
     const hasRecoveryState = Boolean(recoveryState?.serialized)
     if (!shouldRespawnAfterAttachFailure(normalizedError, params.state.hasAttachedOnce, hasRecoveryState, params.spawnOptions, params.options)) {
       if (isMissingDaemonSessionFailure(normalizedError) && getTerminalRecoveryMode(params.spawnOptions, params.options) === "attach-only") {
-        params.terminal.value?.write(formatMissingInitialTaskSessionMessage())
+        params.terminal.value?.write(params.options?.attachOnly
+          ? "\r\nThis editor session has ended. Use Edit in terminal from the file preview to start again.\r\n"
+          : formatMissingInitialTaskSessionMessage())
       } else {
         reportAttachFailure(normalizedError.message)
       }

@@ -25,11 +25,13 @@ import MainTabBar from "./MainTabBar.vue";
 import DiffModal from "./DiffModal.vue";
 import FilePreviewModal from "./FilePreviewModal.vue";
 import ShellModal from "./ShellModal.vue";
+import TerminalEditorView from "./TerminalEditorView.vue";
+import { openTerminalEditor } from "../services/desktopServerClient";
 import TreeExplorerModal from "./TreeExplorerModal.vue";
 import CommitGraphModal from "./CommitGraphModal.vue";
 import AnalyticsModal from "./AnalyticsModal.vue";
 import ImageUrlPreviewModal from "./ImageUrlPreviewModal.vue";
-import { AGENT_TAB_ID, type MainTab } from "../composables/useMainTabs";
+import { AGENT_TAB_ID, mainTabScopeKeyForTask, type MainTab } from "../composables/useMainTabs";
 import type { RemoteDirectoryEntry } from "../composables/useTreeExplorer";
 import {
   waitForViewReady,
@@ -181,9 +183,18 @@ function containedDirectoryLoader(taskId: string | undefined) {
 
 function fileViewProps(tab: MainTab) {
   const modals = props.views?.modals;
+  const taskId = item.value?.id;
+  const local = !isMobile && !props.cloudTask && !modals?.activeTaskViewIsRemote.value && taskId && !isRemotePresentationTaskId(taskId);
+  const worktreePath = local ? props.views?.store.worktreePaths?.[taskId] : undefined;
+  const editInTerminal = local && worktreePath && tab.remoteContent == null && item.value?.closed_at == null
+    ? async (command: string) => {
+      const session = await openTerminalEditor(taskId, worktreePath, tab.filePath ?? "", command);
+      props.views?.tabs.openTabInScope(mainTabScopeKeyForTask(taskId), { kind: "editor", editorSession: session });
+    } : undefined;
   return {
     filePath: tab.filePath ?? "",
-    worktreePath: modals?.activeWorktreePath.value ?? taskWorktreePath.value ?? "",
+    editInTerminal,
+    worktreePath: worktreePath ?? modals?.activeWorktreePath.value ?? taskWorktreePath.value ?? "",
     remoteContent: tab.remoteContent ?? null,
     remoteContentLoader: modals?.activeTaskViewIsRemote.value
       ? modals.readRemoteTaskFile
@@ -327,7 +338,7 @@ function dismissActiveTab(): boolean {
   const tab = controller?.activeTab.value;
   if (!controller || !tab || tab.kind === "agent") return false;
   // A shell tab is a live terminal; Escape belongs to whatever runs in it.
-  if (tab.kind === "shell") return false;
+  if (tab.kind === "shell" || tab.kind === "editor") return false;
   // A view with its own layered dismiss — a file's search, the tree's filter,
   // the graph's detail pane — gets to close that first.
   if (viewRefs.get(tab.id)?.dismiss?.() === false) return true;
@@ -814,6 +825,17 @@ function dismissCommandHint() {
           @update-markdown-mode="onMarkdownModeChange"
           @close="closeTab(tab.id)"
         />
+        <TerminalEditorView
+          v-else-if="tab.kind === 'editor' && tab.editorSession && taskDetailIsLocal && !views?.modals.activeTaskViewIsRemote.value"
+          v-show="activeTabId === tab.id"
+          :session="tab.editorSession"
+          :active="activeTabId === tab.id"
+          :current-worktree="item ? views?.store.worktreePaths?.[item.id] : undefined"
+          @agent="selectTab(AGENT_TAB_ID)"
+        />
+        <div v-else-if="tab.kind === 'editor'" v-show="activeTabId === tab.id" class="cloud-task-placeholder">
+          Terminal editing is available only on the desktop holding this workspace. Remote editor sessions are not transported.
+        </div>
         <ShellModal
           v-else-if="tab.kind === 'shell' && shellSessionId(tab)"
           v-show="activeTabId === tab.id"

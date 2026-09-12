@@ -9,12 +9,13 @@ import ja from "../../i18n/locales/ja.json";
 import ko from "../../i18n/locales/ko.json";
 import type { PipelineItem } from "../../types/kanna";
 import type { TaskUiSlot } from "../../types/taskUi";
-import { computed } from "vue";
+import { computed, ref } from "vue";
 import { AGENT_TAB_ID, useMainTabs } from "../../composables/useMainTabs";
 import type { MainTabViewsController } from "../MainPanel.types";
 
 const invokeMock = vi.fn();
 const fetchTaskDetailMock = vi.fn();
+const openTerminalEditorMock = vi.fn();
 const readTaskFileMock = vi.fn();
 const listTaskDirectoryMock = vi.fn();
 
@@ -93,6 +94,7 @@ vi.mock("../../invoke", () => ({
 
 vi.mock("../../services/desktopServerClient", () => ({
   fetchDesktopTaskDetail: fetchTaskDetailMock,
+  openTerminalEditor: openTerminalEditorMock,
   readDesktopTaskFile: readTaskFileMock,
   listDesktopTaskDirectory: listTaskDirectoryMock,
 }));
@@ -102,6 +104,7 @@ describe("MainPanel", () => {
     vi.resetModules();
     invokeMock.mockReset();
     fetchTaskDetailMock.mockReset();
+    openTerminalEditorMock.mockReset();
     readTaskFileMock.mockReset();
     listTaskDirectoryMock.mockReset();
     fetchTaskDetailMock.mockImplementation(async (taskId: string) => ({
@@ -121,6 +124,43 @@ describe("MainPanel", () => {
     localStorage.clear();
   });
 
+
+  it("only explicitly edits a local recorded workspace and keeps an asynchronous open in its originating task", async () => {
+    const selected = ref("task-a");
+    const tabs = useMainTabs({ scopeKey: computed(() => `item:${selected.value}`) });
+    tabs.openTab({ kind: "file", filePath: "README.md" });
+    const { default: MainPanel } = await import("../MainPanel.vue");
+    const wrapper = mount(MainPanel, {
+      props: {
+        uiSlot: readySlot(durableTask({ id: "task-a" })), repoPath: "/repo", hasRepos: true,
+        views: {
+          tabs,
+          modals: { activeTaskViewIsRemote: computed(() => false), activeWorktreePath: computed(() => "/incorrect-derived-path"), currentPreviewMarkdownMode: computed(() => "raw") },
+          store: { worktreePaths: { "task-a": "/recorded/workspace" } },
+        } as unknown as MainTabViewsController,
+      },
+      global: { mocks: { $t: (key: string) => key }, stubs: { TaskHeader: true, TerminalTabs: true, MainTabBar: true, FilePreviewModal: true, TerminalEditorView: true } },
+    });
+    await flushPromises();
+    const preview = wrapper.findComponent({ name: "FilePreviewModal" });
+    expect(preview.props("worktreePath")).toBe("/recorded/workspace");
+    expect(openTerminalEditorMock).not.toHaveBeenCalled();
+    let resolveOpen!: (session: unknown) => void;
+    openTerminalEditorMock.mockImplementation(() => new Promise(resolve => { resolveOpen = resolve; }));
+    const pending = preview.props("editInTerminal")("vim");
+    expect(openTerminalEditorMock).toHaveBeenCalledWith("task-a", "/recorded/workspace", "README.md", "vim");
+    selected.value = "task-b";
+    resolveOpen({ sessionId: "shell-editor-6-task-a-hash", worktreePath: "/recorded/workspace", filePath: "README.md", command: "vim" });
+    await pending;
+    expect(tabs.activeTab.value?.kind).toBe("agent");
+    selected.value = "task-a";
+    expect(tabs.activeTab.value?.kind).toBe("editor");
+    tabs.activateTab("file:README.md");
+    await wrapper.setProps({ cloudTask: true });
+    expect(wrapper.findComponent({ name: "FilePreviewModal" }).props("editInTerminal")).toBeUndefined();
+    expect(wrapper.findComponent({ name: "TerminalEditorView" }).exists()).toBe(false);
+    wrapper.unmount();
+  });
 
   it("puts the tab bar above every panel, the agent session included", async () => {
     const scopeKey = computed<string | null>(() => "item:task-a");

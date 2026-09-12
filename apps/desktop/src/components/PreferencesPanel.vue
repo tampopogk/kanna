@@ -51,6 +51,7 @@ const props = defineProps<EmbeddableViewProps & {
     suspendAfterMinutes: number
     killAfterMinutes: number
     ideCommand: string
+    terminalEditorCommand?: string
     locale: string
     devLingerTerminals: boolean
     defaultAgentProvider: AgentProvider
@@ -448,6 +449,14 @@ defineExpose({ bringToFront, cycleTab, isOnTop })
         </div>
 
         <div class="pref-row">
+          <label for="terminal-editor-command">Terminal Editor Command</label>
+          <input id="terminal-editor-command" type="text" v-bind="macOsTextInputAttrs"
+            :value="preferences.terminalEditorCommand ?? ''" placeholder="Auto-detect (nvim, vim, nano…)"
+            @change="emit('update', 'terminalEditorCommand', ($event.target as HTMLInputElement).value)" />
+        </div>
+        <p class="pref-hint">Optional installed terminal editor, e.g. nvim or emacs -nw. Quotes and arguments are supported; shell expressions are not. Leave empty to choose from detected editors. Graphical editors belong in IDE Command.</p>
+
+        <div class="pref-row">
           <label>{{ $t('preferences.defaultAgent') }}</label>
           <select
             data-testid="default-agent-select"
@@ -656,6 +665,13 @@ defineExpose({ bringToFront, cycleTab, isOnTop })
 .mobile-body {
   max-height: calc(90vh - 110px);
   overflow-y: auto;
+}
+
+.pref-hint {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--kn-text-muted);
 }
 
 .pref-row {

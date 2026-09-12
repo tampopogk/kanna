@@ -5,6 +5,7 @@ export interface SpawnOptions {
 }
 
 export interface TerminalOptions {
+  attachOnly?: boolean
   kittyKeyboard?: boolean
   agentProvider?: string
   worktreePath?: string
