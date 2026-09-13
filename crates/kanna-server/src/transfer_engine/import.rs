@@ -660,6 +660,11 @@ fn stored_workflow_matches_source(stored: Option<&str>, expected: Option<&str>) 
 /// then fails — so the same comparison is made here, against the payload as it
 /// arrived, while refusing still costs the source nothing.
 ///
+/// This protects *this* machine from importing something it would silently
+/// trim. It is not what protects a source handing work to an older peer —
+/// that refusal is the source's, in `push::refuse_unprovable_plan_preservation`,
+/// because the machine that would run this check is the one too old to have it.
+///
 /// This compares the whole definition rather than looking for one field name:
 /// the loss it guards against is "this build does not know about X", and X is
 /// by definition something this build cannot enumerate. It cannot help a

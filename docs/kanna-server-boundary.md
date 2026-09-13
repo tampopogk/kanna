@@ -616,18 +616,29 @@ in `docs/task-specs/c9f5721b.md` and enforced by the router authorization tests.
   carries `workflowExtended: true`; a server that predates this ignores both
   arguments and returns no such field, so a plain success must never be read as
   a successful extension.
-  **Transfer compatibility:** `plan_context` rides inside the pinned definition
-  that transfer already carries, and the destination re-serializes it, so a
-  build that does not know a field drops it. The destination therefore checks
-  the incoming definition for fields it does not define — by name, against its
-  own bundled workflow schema, because normalization deliberately rewrites
-  legacy spellings and a shape comparison would flag every old pin as a loss —
-  **before** it asks the source to finalize. A definition written for a newer
-  Kanna is refused as terminal while the source still owns its task and its
-  session. The final read-back equality check after persistence is retained,
-  but it is a corruption check: it runs after finalization and cannot protect
-  the source. Neither check can help a destination older than the check itself;
-  from this version on, an unpreservable definition costs the source nothing.
+  **Transfer compatibility: a stamped task does not transfer yet.** `plan_context`
+  rides inside the pinned definition transfer already carries, and every
+  destination re-serializes that definition through its own `WorkflowDefinition`
+  — so a machine that predates the field imports the executable suffix and drops
+  the immutable plan those stages were chosen under, which nothing can
+  reconstruct. A destination-side check cannot answer this, because the machine
+  that would run it is the one too old to have it, and the protocol has no way
+  to prove what a peer preserves.
+  So the **source** refuses. A task whose pinned workflow carries `plan_context`
+  is refused at push, and again in the shared source finalization path before
+  `finalize_source_session` asks its agent to quit — the last point at which the
+  task is still recoverable there. Asking again at finalization is what stops a
+  transfer queued while the task was still ordinary from walking past the guard
+  once its plan lands. No peer is contacted and no capability is negotiated:
+  "unproved" is every peer, and the refusal is deliberately blunt rather than a
+  compatibility platform built for one field. Ordinary tasks transfer unchanged.
+  Two destination-side checks remain and are unrelated to protecting the source.
+  Before asking the source to finalize, a destination refuses a definition
+  carrying fields *it* does not define — asked by name against its own bundled
+  schema, because normalization deliberately rewrites legacy spellings and a
+  shape comparison would flag every old pin as a loss. After persistence, the
+  read-back equality check remains a corruption check; it runs after
+  finalization and protects nothing on the source.
 - `POST /v1/tasks/{task_id}/actions/request-revision`
 - `POST /v1/tasks/{task_id}/actions/close`
 - `POST /v1/tasks/{task_id}/actions/advance-stage`

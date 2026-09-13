@@ -14,6 +14,14 @@ export interface WorkflowApi {
   loadAgent: (repoId: string, agentName: string) => Promise<AgentDefinition>;
   advanceStage: (taskId: string, options?: AdvanceStageOptions) => Promise<AdvanceStageResult>;
   rerunStage: (taskId: string) => Promise<void>;
+  /**
+   * Record the pinned workflow a deliberate detail read saw for a task, so a
+   * later advance fences on the document the operator was shown rather than one
+   * fetched inside the action.
+   */
+  recordObservedWorkflow: (taskId: string, pinned: PinnedTaskWorkflow | null | undefined) => void;
+  /** Read a task's pinned workflow and record it as a deliberate observation. */
+  observeTaskWorkflow: (taskId: string) => Promise<void>;
 }
 
 export type AdvanceStageResult = "advanced" | "ignored" | "failed";
@@ -108,46 +116,68 @@ export function createWorkflowApi(context: StoreContext): WorkflowApi {
   }
 
   /**
-   * Is this a task whose stages can be published or repointed while an earlier
-   * stage runs? Such a task must never be advanced on an unobserved workflow:
-   * the tail the caller saw may no longer be the tail the server would run.
+   * The pinned workflow this store last actually read for a task.
    *
-   * A plain repo-workflow task has no such hazard, so it keeps advancing
-   * exactly as it always did rather than becoming conditional on a second
-   * request succeeding.
+   * An entry means a deliberate read happened; its `definition` may be `null`,
+   * which is the positive answer "this task has no pinned workflow to fence
+   * on". A *missing* entry means nothing has been observed, which is a
+   * different thing and never advances.
+   *
+   * Populated by the task's owning detail read (`recordObservedWorkflow`, which
+   * MainPanel calls whenever it loads detail — on selection, on a stage move,
+   * on an update), by the controls that display a stage sequence, and by the
+   * deliberate refresh below. It is never refreshed inside an advance and then
+   * used by that same advance.
    */
-  function canGrowItsOwnWorkflow(pinned: PinnedTaskWorkflow | null): boolean {
-    return Boolean(pinned && pinned["plan_context"]);
+  const observedWorkflows = new Map<string, { definition: PinnedTaskWorkflow | null }>();
+
+  function usablePinnedWorkflow(
+    pinned: PinnedTaskWorkflow | null | undefined,
+  ): PinnedTaskWorkflow | null {
+    return pinned?.stages?.length ? pinned : null;
   }
 
   /**
-   * The pinned workflow this store last actually read for a task.
-   *
-   * Populated by the controls that display a stage sequence, and by the
-   * deliberate refresh below. It is what an advance fences on when its caller
-   * did not hand one over; it is never refreshed inside the advance itself.
+   * Record what a deliberate detail read saw, so the next advance fences on the
+   * document the operator was actually shown.
    */
-  const observedWorkflows = new Map<string, PinnedTaskWorkflow>();
+  function recordObservedWorkflow(
+    taskId: string,
+    pinned: PinnedTaskWorkflow | null | undefined,
+  ): void {
+    observedWorkflows.set(taskId, { definition: usablePinnedWorkflow(pinned) });
+  }
 
-  function lastObservedWorkflow(taskId: string): PinnedTaskWorkflow | null {
-    return observedWorkflows.get(taskId) ?? null;
+  /**
+   * Drop what was observed for a task, so the next action re-reads it.
+   *
+   * Called when the server has told us our view is stale (a refused fence) and
+   * after a successful advance. The refresh is deliberately *not* folded into
+   * the action that discovered the staleness: re-reading and dispatching the
+   * new document on the same click is the very thing the fence exists to stop.
+   */
+  function forgetObservedWorkflow(taskId: string): void {
+    observedWorkflows.delete(taskId);
+  }
+
+  async function observeTaskWorkflow(taskId: string): Promise<void> {
+    await refreshObservedWorkflow(taskId);
   }
 
   /**
    * Read this task's pinned workflow once, deliberately.
    *
-   * `null` means the read *failed* — this store cannot tell a task that can
-   * grow its own stages from one that cannot — which is different from a read
-   * that succeeded and reported no pinned workflow at all.
+   * `null` means the read *failed* — this store knows nothing about the task's
+   * stages — which is different from a read that succeeded and reported no
+   * pinned workflow at all.
    */
   async function refreshObservedWorkflow(
     taskId: string,
   ): Promise<{ definition: PinnedTaskWorkflow | null } | null> {
     try {
-      const pinned = (await fetchDesktopTaskDetail(taskId)).workflowDefinition ?? null;
-      const definition = pinned?.stages?.length ? pinned : null;
-      if (definition) observedWorkflows.set(taskId, definition);
-      return { definition };
+      const pinned = usablePinnedWorkflow((await fetchDesktopTaskDetail(taskId)).workflowDefinition);
+      observedWorkflows.set(taskId, { definition: pinned });
+      return { definition: pinned };
     } catch (error) {
       console.debug("[workflow:advanceStage] could not read the task's pinned workflow:", error);
       return null;
@@ -156,8 +186,9 @@ export function createWorkflowApi(context: StoreContext): WorkflowApi {
 
   /**
    * The repo file this task's workflow *name* resolves to. Used only for the
-   * cosmetic projection of a task that cannot grow its own stages; a grown
-   * task reads as one stage long here, which is why it never reaches this.
+   * cosmetic projection of a task with no pinned workflow of its own; a task
+   * that has one reads as the wrong length here, which is why it never reaches
+   * this.
    */
   async function resolveStageAdvanceProjection(item: {
     repo_id: string;
@@ -366,23 +397,31 @@ export function createWorkflowApi(context: StoreContext): WorkflowApi {
     // The definition this action is taken against is the one its caller
     // observed. Refetching here and accepting the answer would fence on a tail
     // nobody looked at, which is the race the fence exists for.
-    const observedDefinition = options.expectedDefinition ?? lastObservedWorkflow(item.id);
-    if (!observedDefinition) {
+    const provided = options.expectedDefinition ?? null;
+    const cached = observedWorkflows.get(item.id);
+    let observedDefinition = provided ?? cached?.definition ?? null;
+    if (!provided && !cached) {
       const refreshed = await refreshObservedWorkflow(item.id);
       if (!refreshed) {
-        // The read failed, so this store cannot tell whether this task's
-        // stages can move underneath the operator. That is not permission to
-        // advance on nothing.
+        // The read failed, so this store knows nothing about this task's
+        // stages. That is not permission to advance on nothing.
         context.toast.error(context.tt("mainPanel.stageSequenceUnavailable"));
         return "failed";
       }
-      if (canGrowItsOwnWorkflow(refreshed.definition)) {
-        // Its stages can move underneath the operator, and nothing on screen
-        // was read from this document. Show what it is now and let them decide
-        // again, rather than advancing into a tail they never saw.
+      if (refreshed.definition) {
+        // A pinned workflow exists and nothing on screen was read from it.
+        // Any pinned tail can move — a consultation can have a plan stage
+        // appended to it, and a plan can publish the stages after it, neither
+        // of which leaves a mark before it happens — so the presence of the
+        // document, not what is in it, is what makes this fenceable. Show what
+        // it is now and let the operator decide again; the newly read document
+        // must not be dispatched on this same click.
         context.toast.warning(context.tt("mainPanel.stageSequenceChanged"));
         return "ignored";
       }
+      // Read succeeded and reported no pinned workflow: there is nothing to
+      // fence on, so this advances exactly as it always did.
+      observedDefinition = null;
     }
     const projection = observedDefinition
       ? projectPinnedWorkflow(observedDefinition, item.stage)
@@ -417,6 +456,11 @@ export function createWorkflowApi(context: StoreContext): WorkflowApi {
         if (!response.ok) {
           const message = await response.text();
           if (response.status === 409) {
+            // What this store believed about the task's stages is now known to
+            // be wrong, so it is dropped. The next deliberate action — the
+            // operator reopening the task, or pressing again — re-reads it and
+            // carries the current document; this one does not.
+            forgetObservedWorkflow(taskId);
             // A refused fence is a different fact from a blocked task: the
             // stages moved under the person who pressed the key, and saying
             // "blocked" would send them looking for a blocker that is not there.
@@ -447,6 +491,11 @@ export function createWorkflowApi(context: StoreContext): WorkflowApi {
         if (taskClosed && sourceTaskIsSelected) {
           await restoreStageAdvanceSelection(fallbackSelectionId);
         }
+        // The task has moved on, and its stages may have too — a plan stage
+        // that just ran can have published the rest of them. Re-read rather
+        // than keep believing the document that authorized this advance.
+        forgetObservedWorkflow(taskId);
+        void observeTaskWorkflow(taskId);
         return "advanced" as const;
       });
     } catch (error) {
@@ -478,5 +527,7 @@ export function createWorkflowApi(context: StoreContext): WorkflowApi {
     loadAgent,
     advanceStage,
     rerunStage,
+    recordObservedWorkflow,
+    observeTaskWorkflow,
   };
 }

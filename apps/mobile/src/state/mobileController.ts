@@ -3596,6 +3596,11 @@ export function createMobileController(
         if (response.taskId !== taskId && responseRoute) {
           pendingTaskIdentities.set(response.taskId, responseRoute);
         }
+        // The task has moved on, and its stages may have too — a plan stage
+        // that just ran can have published the rest of them. Drop what was
+        // observed rather than keep believing the document that authorized
+        // this advance; the next screen read records the current one.
+        observedTaskWorkflow = null;
         taskCollectionsRevision += 1;
         await refreshTaskCollections();
         setUnownedErrorMessage(null);
@@ -3672,7 +3677,14 @@ export function createMobileController(
             routeIdentity: routeIdentity ?? taskId,
             definition: refreshed.definition
           };
-          if (refreshed.definition?.["plan_context"]) {
+          if (refreshed.definition) {
+            // A pinned workflow exists and nothing on this screen was read from
+            // it. Any pinned tail can move — a consultation can have a plan
+            // stage appended to it, and a plan can publish the stages after it,
+            // neither of which leaves a mark before it happens — so the
+            // presence of the document, not what is in it, is what makes this
+            // fenceable. The version just read is recorded for the next
+            // deliberate action and deliberately not dispatched by this one.
             fail(
               new Error(
                 "This task's stages changed while you were looking. Nothing was advanced — open the task again and retry."
@@ -3714,6 +3726,10 @@ export function createMobileController(
         this.openTask(taskIdToOpen);
         return store.getState().selectedTaskId;
       } catch (error) {
+        // A refused fence means what this client believed about the task's
+        // stages is known to be wrong. Drop it so the next screen read records
+        // the current one; this action does not re-read and re-dispatch.
+        observedTaskWorkflow = null;
         fail(error);
         return null;
       } finally {

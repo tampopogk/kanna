@@ -9371,7 +9371,14 @@ describe("createMobileController", () => {
     expect(store.getState().recentTasks[0]?.id).toBe("task-pr");
   });
 
-  const grownPinnedWorkflow = {
+  /// A consultation with a plan stage appended and no plan published yet: no
+  /// stamp, and precisely the shape whose tail is about to change.
+  const unstampedWorkflow = {
+    name: "consultation",
+    stages: [{ name: "consultation" }, { name: "plan" }]
+  };
+
+  const publishedWorkflow = {
     name: "consultation",
     plan_context: { source_run_id: "run-plan", stage: "plan", result: "{}" },
     stages: [
@@ -9397,48 +9404,49 @@ describe("createMobileController", () => {
     return client;
   }
 
-  it("advances a grown task on the definition the screen was populated from", async () => {
+  it("advances on the definition the screen was populated from, published or not", async () => {
     const store = createSessionStore();
-    const client = grownTaskClient(grownPinnedWorkflow);
+    const client = grownTaskClient(unstampedWorkflow);
     const controller = createMobileController(client, store);
     await controller.bootstrap();
     // Opening the task is the read the operator actually saw.
     controller.openTask("task-grown");
     await vi.waitFor(() => expect(client.getTask).toHaveBeenCalledWith("task-grown"));
 
-    // The owning desktop moves on afterwards. The action must still send what
-    // was observed, and the fence must not be re-read inside it.
+    // The plan publishes its stages afterwards. The action must still send what
+    // was observed, and must not re-read the fence inside itself.
     client.getTask = vi.fn(async (taskId: string) => ({
       id: taskId,
       repoId: "repo-1",
       title: "Grown task",
       stage: "plan",
-      workflowDefinition: { ...grownPinnedWorkflow, stages: [{ name: "consultation" }] }
+      workflowDefinition: publishedWorkflow
     })) as typeof client.getTask;
 
     await controller.advanceDesktopTaskStage("task-grown");
 
-    expect(client.advanceTaskStage).toHaveBeenCalledWith("task-grown", grownPinnedWorkflow);
+    expect(client.advanceTaskStage).toHaveBeenCalledWith("task-grown", unstampedWorkflow);
     expect(client.getTask).not.toHaveBeenCalled();
   });
 
-  it("will not advance a grown task on a workflow nobody observed", async () => {
+  it("will not advance on a stage sequence nobody observed, stamped or not", async () => {
     const store = createSessionStore();
-    const client = grownTaskClient(grownPinnedWorkflow);
+    const client = grownTaskClient(unstampedWorkflow);
     const controller = createMobileController(client, store);
     await controller.bootstrap();
 
-    // No detail read has populated this task's screen, so there is nothing the
-    // operator can be said to have looked at.
+    // No detail read has populated this task's screen. Its tail can still
+    // change — that is what the plan stage is for — so the presence of a pinned
+    // definition is what makes it fenceable, not a stamp it does not have yet.
     await controller.advanceDesktopTaskStage("task-grown");
 
     expect(client.advanceTaskStage).not.toHaveBeenCalled();
     expect(store.getState().errorMessage).toContain("stages changed while you were looking");
   });
 
-  it("does not dispatch an unfenced grown-task advance when detail cannot be read", async () => {
+  it("does not dispatch an unfenced advance when detail cannot be read", async () => {
     const store = createSessionStore();
-    const client = grownTaskClient(grownPinnedWorkflow);
+    const client = grownTaskClient(unstampedWorkflow);
     client.getTask = vi.fn(async () => {
       throw new Error("owner unreachable");
     }) as typeof client.getTask;
@@ -9447,24 +9455,60 @@ describe("createMobileController", () => {
 
     await controller.advanceDesktopTaskStage("task-grown");
 
-    // A failed read leaves this client unable to tell a task that can grow its
-    // own stages from one that cannot, and that is not permission to advance
-    // on nothing.
     expect(client.advanceTaskStage).not.toHaveBeenCalled();
     expect(store.getState().errorMessage).toContain("Could not read this task's stages");
   });
 
-  it("leaves an ordinary task advancing exactly as it did", async () => {
+  it("leaves a task with no pinned workflow advancing exactly as it did", async () => {
     const store = createSessionStore();
-    const client = grownTaskClient({ name: "single-reviewer", stages: [{ name: "plan" }] });
+    const client = grownTaskClient(null);
     const controller = createMobileController(client, store);
     await controller.bootstrap();
 
     await controller.advanceDesktopTaskStage("task-grown");
 
-    // Its stages cannot be published underneath the operator, so nothing about
-    // this action became conditional on a second request succeeding.
+    // A read that succeeds and reports no pinned workflow is a positive answer:
+    // there is nothing to fence on, so nothing became conditional.
     expect(client.advanceTaskStage).toHaveBeenCalledWith("task-grown", null);
+  });
+
+  it("recovers from a refused fence without restarting", async () => {
+    const store = createSessionStore();
+    const client = grownTaskClient(unstampedWorkflow);
+    const controller = createMobileController(client, store);
+    await controller.bootstrap();
+    controller.openTask("task-grown");
+    await vi.waitFor(() => expect(client.getTask).toHaveBeenCalledWith("task-grown"));
+
+    // The owning desktop refuses what was observed.
+    vi.mocked(client.advanceTaskStage).mockRejectedValueOnce(
+      new Error("this task's pinned workflow changed; read it again before advancing")
+    );
+    client.getTask = vi.fn(async (taskId: string) => ({
+      id: taskId,
+      repoId: "repo-1",
+      title: "Grown task",
+      stage: "plan",
+      workflowDefinition: publishedWorkflow
+    })) as typeof client.getTask;
+    await controller.advanceDesktopTaskStage("task-grown");
+    expect(client.advanceTaskStage).toHaveBeenCalledWith("task-grown", unstampedWorkflow);
+
+    // Trying again without reopening: the refused belief was dropped, so this
+    // re-reads and asks for one more deliberate action rather than dispatching
+    // the version it just fetched.
+    vi.mocked(client.advanceTaskStage).mockClear();
+    await controller.advanceDesktopTaskStage("task-grown");
+    expect(client.advanceTaskStage).not.toHaveBeenCalled();
+
+    // Reopening is the deliberate second look; the same controller must now
+    // carry the current version rather than the refused one forever.
+    vi.mocked(client.advanceTaskStage).mockClear();
+    controller.openTask("task-grown");
+    await vi.waitFor(() => expect(client.getTask).toHaveBeenCalledWith("task-grown"));
+    await controller.advanceDesktopTaskStage("task-grown");
+
+    expect(client.advanceTaskStage).toHaveBeenCalledWith("task-grown", publishedWorkflow);
   });
 
   it("keeps display identities after routed merge and advance responses", async () => {

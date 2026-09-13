@@ -242,6 +242,14 @@ export interface StoreServices {
   loadAgent?: (repoId: string, agentName: string) => Promise<AgentDefinition>;
   advanceStage?: (taskId: string, options?: AdvanceStageOptions) => Promise<AdvanceStageResult>;
   rerunStage?: (taskId: string) => Promise<void>;
+  /**
+   * Read and record a task's pinned workflow as a deliberate observation.
+   *
+   * Selecting a task is the moment the operator starts looking at it, so it is
+   * also the moment its stage sequence becomes something they have seen — and
+   * the recovery path after a refused fence dropped a stale one.
+   */
+  observeTaskWorkflow?: (taskId: string) => Promise<void>;
   spawnShellSession?: (
     sessionId: string,
     cwd: string,

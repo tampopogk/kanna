@@ -2619,6 +2619,9 @@ describe("kanna store task base branch integration", () => {
       expect(store.items).toHaveLength(1);
     });
 
+    // Opening the task is what makes its stage sequence something the operator
+    // has seen; selection does this for real.
+    await store.observeTaskWorkflow("item-existing");
     await store.advanceStage("item-existing");
 
     expect(fetchMock).toHaveBeenCalledWith(
@@ -2626,11 +2629,12 @@ describe("kanna store task base branch integration", () => {
       {
         method: "POST",
         headers: { ...LOCAL_CREDENTIAL_HEADERS, "Content-Type": "application/json" },
-        // An ordinary task whose stages cannot change underneath it advances
-        // exactly as it always did. The fence is for tasks that can grow their
-        // own workflow, and it carries what the caller observed rather than
-        // anything read inside the action.
-        body: JSON.stringify({ source: "operator" }),
+        // The advance carries the definition that was observed, not one read
+        // inside the action.
+        body: JSON.stringify({
+          source: "operator",
+          expectedDefinition: mockState.workflowDefinition,
+        }),
       },
     );
     expect(mockState.invokeMock).not.toHaveBeenCalledWith("git_worktree_add", expect.anything());
@@ -2736,6 +2740,8 @@ describe("kanna store task base branch integration", () => {
 
     const store = await createStore();
     await store.selectItem("item-source");
+    // Selection starts this read; awaiting it makes the test deterministic.
+    await store.observeTaskWorkflow("item-source");
     await flushStore();
 
     const advancePromise = store.advanceStage("item-source");
@@ -2749,11 +2755,12 @@ describe("kanna store task base branch integration", () => {
       {
         method: "POST",
         headers: { ...LOCAL_CREDENTIAL_HEADERS, "Content-Type": "application/json" },
-        // An ordinary task whose stages cannot change underneath it advances
-        // exactly as it always did. The fence is for tasks that can grow their
-        // own workflow, and it carries what the caller observed rather than
-        // anything read inside the action.
-        body: JSON.stringify({ source: "operator" }),
+        // The advance carries the definition that was observed, not one read
+        // inside the action.
+        body: JSON.stringify({
+          source: "operator",
+          expectedDefinition: mockState.workflowDefinition,
+        }),
       },
     );
     expect(store.currentItem?.stage).toBe("review");
@@ -2835,6 +2842,7 @@ describe("kanna store task base branch integration", () => {
     });
 
     const store = await createStore();
+    await store.observeTaskWorkflow("item-source");
     let snapshotAttempts = 0;
     setDesktopSnapshotFetcherForTests(async () => {
       snapshotAttempts += 1;
@@ -3104,8 +3112,16 @@ describe("kanna store task base branch integration", () => {
     expect(store.items[0]?.stage_advance_pending).toBeUndefined();
   });
 
-  const grownWorkflow = {
+  /// A consultation with a plan stage appended and no plan published yet. It
+  /// carries no `plan_context`, and it is exactly the shape whose tail is about
+  /// to change: the plan stage is where the remaining stages get chosen.
+  const unstampedWorkflow = {
     name: "consultation",
+    stages: [{ name: "consultation" }, { name: "plan" }],
+  };
+
+  const publishedWorkflow = {
+    ...unstampedWorkflow,
     plan_context: { source_run_id: "run-plan", stage: "plan", result: "{}" },
     stages: [
       { name: "consultation" },
@@ -3116,10 +3132,23 @@ describe("kanna store task base branch integration", () => {
     ],
   };
 
+  function taskDetailServing(definition: unknown) {
+    return async () => ({
+      id: "item-grown",
+      stage: "consultation",
+      closedAt: null,
+      latestRun: null,
+      revisionRounds: 0,
+      revisionLimit: 3,
+      childTaskIds: [],
+      workflowDefinition: definition,
+    });
+  }
+
   function grownTaskState() {
     // The repo file this task's workflow *name* resolves to is the one-stage
-    // consultation; the task's plan has since published its delivery stages
-    // onto the task itself.
+    // consultation; the task's own pinned definition already differs, and is
+    // about to differ more.
     mockState.workflowDefinition = {
       name: "consultation",
       stages: [{ name: "consultation", transition: "manual" }],
@@ -3134,31 +3163,24 @@ describe("kanna store task base branch integration", () => {
     ];
   }
 
-  it("will not advance a grown task on a workflow nobody observed", async () => {
+  it("will not advance on a stage sequence nobody observed, stamped or not", async () => {
     grownTaskState();
+    // No plan has been published, so there is no stamp to notice. The tail can
+    // still change — that is what the plan stage is for — so the presence of a
+    // pinned definition is what makes this fenceable.
     updateDesktopServerClientHandlersForTests({
-      fetchTaskDetail: async () => ({
-        id: "item-grown",
-        stage: "consultation",
-        closedAt: null,
-        latestRun: null,
-        revisionRounds: 0,
-        revisionLimit: 3,
-        childTaskIds: [],
-        workflowDefinition: grownWorkflow,
-      }),
+      fetchTaskDetail: taskDetailServing(unstampedWorkflow),
     });
 
     const store = await createStore();
-    await store.selectItem("item-grown");
-    await flushStore();
+    await vi.waitFor(() => {
+      expect(store.items).toHaveLength(1);
+    });
     const result = await store.advanceStage("item-grown");
 
-    // Its stages can move underneath the operator and nothing on screen came
-    // from this document, so it is refreshed for a deliberate second action
-    // rather than dispatched unfenced.
     expect(result).toBe("ignored");
     expect(toastWarningMock).toHaveBeenCalledWith("mainPanel.stageSequenceChanged");
+    // The definition just read must not be dispatched on this same click.
     expect(fetchMock).not.toHaveBeenCalledWith(
       expect.stringContaining("/actions/advance-stage"),
       expect.anything(),
@@ -3175,12 +3197,13 @@ describe("kanna store task base branch integration", () => {
     });
 
     const store = await createStore();
-    await store.selectItem("item-grown");
-    await flushStore();
+    await vi.waitFor(() => {
+      expect(store.items).toHaveLength(1);
+    });
     const result = await store.advanceStage("item-grown");
 
-    // A failed read leaves the store unable to tell a task that can grow its
-    // own stages from one that cannot, which is not permission to dispatch.
+    // A failed read leaves the store knowing nothing about this task's stages,
+    // which is not permission to dispatch.
     expect(result).toBe("failed");
     expect(toastErrorMock).toHaveBeenCalledWith("mainPanel.stageSequenceUnavailable");
     expect(fetchMock).not.toHaveBeenCalledWith(
@@ -3189,24 +3212,20 @@ describe("kanna store task base branch integration", () => {
     );
   });
 
-  it("advances a grown task on the definition its caller observed", async () => {
+  it("carries the observed version when the tail is published between reading and acting", async () => {
     grownTaskState();
-    // The server has moved on to a different tail; the caller must still send
-    // what it read, and must be told the two disagree.
+    // Observed while unstamped...
     updateDesktopServerClientHandlersForTests({
-      fetchTaskDetail: async () => ({
-        id: "item-grown",
-        stage: "consultation",
-        closedAt: null,
-        latestRun: null,
-        revisionRounds: 0,
-        revisionLimit: 3,
-        childTaskIds: [],
-        workflowDefinition: {
-          ...grownWorkflow,
-          stages: [{ name: "consultation" }, { name: "plan" }],
-        },
-      }),
+      fetchTaskDetail: taskDetailServing(unstampedWorkflow),
+    });
+    const store = await createStore();
+    await store.selectItem("item-grown");
+    await store.observeTaskWorkflow("item-grown");
+    await flushStore();
+
+    // ...and the plan publishes its stages before the operator acts.
+    updateDesktopServerClientHandlersForTests({
+      fetchTaskDetail: taskDetailServing(publishedWorkflow),
     });
     fetchMock.mockResolvedValueOnce({
       ok: false,
@@ -3216,12 +3235,7 @@ describe("kanna store task base branch integration", () => {
         "stale stage advance for item-grown: this task's pinned workflow changed; read it again before advancing",
     });
 
-    const store = await createStore();
-    await store.selectItem("item-grown");
-    await flushStore();
-    const result = await store.advanceStage("item-grown", {
-      expectedDefinition: grownWorkflow,
-    });
+    const result = await store.advanceStage("item-grown");
 
     expect(result).toBe("ignored");
     expect(fetchMock).toHaveBeenCalledWith(
@@ -3229,12 +3243,80 @@ describe("kanna store task base branch integration", () => {
       {
         method: "POST",
         headers: { ...LOCAL_CREDENTIAL_HEADERS, "Content-Type": "application/json" },
-        // The observed definition, not the one the server holds now.
-        body: JSON.stringify({ source: "operator", expectedDefinition: grownWorkflow }),
+        // The version the operator saw, so the server can refuse it.
+        body: JSON.stringify({ source: "operator", expectedDefinition: unstampedWorkflow }),
       },
     );
     expect(toastWarningMock).toHaveBeenCalledWith("mainPanel.stageSequenceChanged");
     expect(mockState.workflowItems[0]?.stage).toBe("consultation");
+  });
+
+  it("recovers from a refused fence without restarting the app", async () => {
+    grownTaskState();
+    updateDesktopServerClientHandlersForTests({
+      fetchTaskDetail: taskDetailServing(unstampedWorkflow),
+    });
+    const store = await createStore();
+    await store.selectItem("item-grown");
+    await store.observeTaskWorkflow("item-grown");
+    await flushStore();
+
+    // The server moves on, and the first action is refused against what was
+    // observed.
+    updateDesktopServerClientHandlersForTests({
+      fetchTaskDetail: taskDetailServing(publishedWorkflow),
+    });
+    fetchMock.mockResolvedValueOnce({
+      ok: false,
+      status: 409,
+      json: async () => ({}),
+      text: async () => "this task's pinned workflow changed; read it again before advancing",
+    });
+    expect(await store.advanceStage("item-grown")).toBe("ignored");
+
+    // Pressing again without reopening is the toast's own instruction. The
+    // refused belief was dropped, so this re-reads and asks for one more
+    // deliberate action — it must not dispatch the newly read version here.
+    expect(await store.advanceStage("item-grown")).toBe("ignored");
+    expect(fetchMock).not.toHaveBeenCalledWith(
+      "http://127.0.0.1:48120/v1/tasks/item-grown/actions/advance-stage",
+      expect.objectContaining({
+        body: JSON.stringify({ source: "operator", expectedDefinition: publishedWorkflow }),
+      }),
+    );
+
+    // Reopening the task is the deliberate second look. The same store
+    // instance must now carry the current version rather than the refused one
+    // forever.
+    await store.selectItem("item-grown");
+    await store.observeTaskWorkflow("item-grown");
+    await flushStore();
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      json: async () => {
+        mockState.workflowItems = [
+          mockState.makeItem({
+            id: "item-grown",
+            branch: "task-grown-2",
+            stage: "plan",
+            pipeline: "consultation",
+          }),
+        ];
+        return { taskId: "item-grown" };
+      },
+      text: async () => "",
+    });
+
+    await store.advanceStage("item-grown");
+
+    expect(fetchMock).toHaveBeenLastCalledWith(
+      "http://127.0.0.1:48120/v1/tasks/item-grown/actions/advance-stage",
+      {
+        method: "POST",
+        headers: { ...LOCAL_CREDENTIAL_HEADERS, "Content-Type": "application/json" },
+        body: JSON.stringify({ source: "operator", expectedDefinition: publishedWorkflow }),
+      },
+    );
   });
 
   it("reports a refused stale-workflow fence distinctly from a blocked task", async () => {
