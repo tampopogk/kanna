@@ -374,6 +374,7 @@
   },
   "mainPanel": {
     "stageSequenceChanged": "表示中にこのタスクのステージが変更されました。進行は行われていません。一覧を更新しました。",
+    "stageSequenceUnavailable": "このタスクのステージを読み取れなかったため、進行しませんでした。しばらくしてからもう一度お試しください。",
     "taskBlocked": "タスクがブロック中",
     "taskBlockedHint": "すべてのブロッカーが完了すると、このタスクは自動的に開始されます。",
     "taskSettingUp": "タスクをセットアップ中...",

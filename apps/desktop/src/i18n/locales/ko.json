@@ -377,6 +377,7 @@
   },
   "mainPanel": {
     "stageSequenceChanged": "보는 동안 이 작업의 스테이지가 변경되었습니다. 아무것도 진행되지 않았으며 목록을 새로 고쳤습니다.",
+    "stageSequenceUnavailable": "이 작업의 스테이지를 읽을 수 없어 진행하지 않았습니다. 잠시 후 다시 시도하세요.",
     "taskBlocked": "작업 차단됨",
     "taskBlockedHint": "모든 차단 요소가 완료되면 이 작업이 자동으로 시작됩니다.",
     "taskSettingUp": "작업 설정 중...",

@@ -1716,6 +1716,49 @@ fn pr_number_from_url(pr_url: &str) -> Option<i64> {
         .and_then(|(_, number)| number.parse::<i64>().ok())
 }
 
+/// Fingerprint of one exact combined plan completion.
+///
+/// The recorded stage result cannot identify the operation on its own: the
+/// same plan summary can be submitted with a different suffix — another review
+/// depth, another provider, another revision budget — and each is a different
+/// publication. Both definitions are canonicalized through `serde_json::Value`
+/// first, so a retry that only reorders keys or changes whitespace is still
+/// recognized as the same request.
+fn plan_publication_digest(
+    stage_result: &str,
+    expected: &serde_json::Value,
+    definition: &serde_json::Value,
+) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    for part in [stage_result, &expected.to_string(), &definition.to_string()] {
+        hasher.update((part.len() as u64).to_le_bytes());
+        hasher.update(part.as_bytes());
+    }
+    format!("{:x}", hasher.finalize())
+}
+
+/// What the task's pinned workflow records about a plan publication, if any.
+struct RecordedPlanPublication {
+    source_run_id: String,
+    request_digest: Option<String>,
+}
+
+fn recorded_plan_publication(db: &Db, task_id: &str) -> Option<RecordedPlanPublication> {
+    let definition = db.get_pipeline_item(task_id).ok().flatten()?.pipeline_def?;
+    let plan_context = serde_json::from_str::<serde_json::Value>(&definition)
+        .ok()?
+        .get("plan_context")?
+        .clone();
+    Some(RecordedPlanPublication {
+        source_run_id: plan_context.get("source_run_id")?.as_str()?.to_string(),
+        request_digest: plan_context
+            .get("request_digest")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string),
+    })
+}
+
 /// Stage whose completion may publish the rest of its own task's workflow.
 ///
 /// A single reserved name, not a policy flag: the journey this serves is
@@ -1836,6 +1879,7 @@ fn prepare_plan_workflow_extension(
         source_run_id: current_run.id.clone(),
         stage: stage.clone(),
         result: stage_result.to_string(),
+        request_digest: Some(plan_publication_digest(stage_result, expected, definition)),
     };
     let validated = crate::task_creator::validate_task_workflow_replacement_with_plan_context(
         &repo,
@@ -1856,17 +1900,6 @@ fn prepare_plan_workflow_extension(
         revision_rounds: item.revision_rounds,
         validated,
     })
-}
-
-/// The run whose plan the task's pinned workflow was extended under, if any.
-fn published_plan_run(db: &Db, task_id: &str) -> Option<String> {
-    let definition = db.get_pipeline_item(task_id).ok().flatten()?.pipeline_def?;
-    serde_json::from_str::<serde_json::Value>(&definition)
-        .ok()?
-        .get("plan_context")?
-        .get("source_run_id")?
-        .as_str()
-        .map(str::to_string)
 }
 
 fn plan_stage_transition(definition: &serde_json::Value, stage: &str) -> Option<String> {
@@ -1953,6 +1986,12 @@ pub(super) async fn complete_stage(
         )
     })?;
 
+    // The identity of a combined completion is its result *and* the stages it
+    // asked to publish. Computed once, before anything is compared, so every
+    // replay decision below asks the same question.
+    let requested_digest = workflow_extension
+        .as_ref()
+        .map(|(definition, expected)| plan_publication_digest(&stage_result, expected, definition));
     let completion_attempt_key = payload.completion_attempt_key.clone();
     let completion_attempt_key_for_record = completion_attempt_key.clone();
     let completion_run_id = payload.run_id.clone();
@@ -1963,7 +2002,31 @@ pub(super) async fn complete_stage(
         let payload_metadata = payload.metadata;
         let payload_run_id = payload.run_id;
         let workflow_extension = workflow_extension.clone();
+        let requested_digest = requested_digest.clone();
         super::blocking::run_handler_blocking("stage completion record", move || {
+            /// Is a recorded completion of `run_id` the same operation as this
+            /// request?
+            ///
+            /// For an ordinary completion the recorded result answers it, as
+            /// it always has. For a combined one it cannot: the same plan
+            /// summary can be submitted with a different suffix, and each is a
+            /// different publication. So a combined request is a replay only
+            /// when this task's pinned workflow records a publication by that
+            /// run carrying exactly this request's fingerprint.
+            fn same_operation(
+                db: &Db,
+                task_id: &str,
+                run_id: &str,
+                requested_digest: Option<&str>,
+            ) -> bool {
+                let Some(digest) = requested_digest else {
+                    return true;
+                };
+                recorded_plan_publication(db, task_id).is_some_and(|record| {
+                    record.source_run_id == run_id
+                        && record.request_digest.as_deref() == Some(digest)
+                })
+            }
             let db = Db::open(&state.config.db_path).map_err(|e| {
                 (
                     axum::http::StatusCode::INTERNAL_SERVER_ERROR,
@@ -1994,6 +2057,18 @@ pub(super) async fn complete_stage(
                     if original_result != stage_result {
                         return Err((axum::http::StatusCode::CONFLICT, format!(
                             "completionAttemptKey already recorded a different verdict for run {original_run_id}"
+                        )));
+                    }
+                    if !same_operation(
+                        &db,
+                        &task_id,
+                        &original_run_id,
+                        requested_digest.as_deref(),
+                    ) {
+                        return Err((axum::http::StatusCode::CONFLICT, format!(
+                            "completionAttemptKey already recorded a completion for run \
+                             {original_run_id} that did not publish these stages; read the task's \
+                             workflow again before retrying"
                         )));
                     }
                     return Ok((task_id, None, false, true, false));
@@ -2040,7 +2115,8 @@ pub(super) async fn complete_stage(
                     run.task_id == task_id
                         && run.status == run_status
                         && run.result.as_deref() == Some(stage_result.as_str())
-                }) {
+                }) && same_operation(&db, &task_id, &payload_run_id, requested_digest.as_deref())
+                {
                     if let Some(key) = contextless_key {
                         db.record_contextless_completion_attempt(key, &payload_run_id, &stage_result)
                             .map_err(|e| db_write_error("db error", e))?;
@@ -2057,6 +2133,7 @@ pub(super) async fn complete_stage(
             }
             if current_run.status == run_status
                 && current_run.result.as_deref() == Some(stage_result.as_str())
+                && same_operation(&db, &task_id, &payload_run_id, requested_digest.as_deref())
             {
                 if let Some(key) = contextless_key {
                     db.record_contextless_completion_attempt(key, &payload_run_id, &stage_result)
@@ -2068,7 +2145,9 @@ pub(super) async fn complete_stage(
             // draft: once stamped, a differing retry of that same run would
             // leave the recorded plan and the executing stages describing
             // different work.
-            if published_plan_run(&db, &task_id).as_deref() == Some(payload_run_id.as_str()) {
+            if recorded_plan_publication(&db, &task_id)
+                .is_some_and(|record| record.source_run_id == payload_run_id)
+            {
                 return Err((
                     axum::http::StatusCode::CONFLICT,
                     format!(
@@ -2196,7 +2275,11 @@ pub(super) async fn complete_stage(
                 move || {
                     let db = Db::open(&state.config.db_path)
                         .map_err(|error| db_write_error("db error", error))?;
-                    Ok(published_plan_run(&db, &task_id).is_some().then_some(true))
+                    // Confirm the publication this request asked for, not
+                    // merely that some plan was once published here.
+                    Ok(recorded_plan_publication(&db, &task_id)
+                        .is_some_and(|record| record.request_digest == requested_digest)
+                        .then_some(true))
                 },
             )
             .await?;

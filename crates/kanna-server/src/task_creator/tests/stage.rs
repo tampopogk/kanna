@@ -4305,6 +4305,9 @@ fn publish_grown_workflow(repo: &crate::db::Repo, plan_run_id: &str, plan_result
         source_run_id: plan_run_id.to_string(),
         stage: "plan".to_string(),
         result: plan_result.to_string(),
+        // This fixture stands in for a publication the API already made; the
+        // digest is that operation's identity and nothing here replays it.
+        request_digest: None,
     };
     super::super::validate_task_workflow_replacement_with_plan_context(
         repo,

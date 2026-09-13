@@ -19,6 +19,9 @@ pub(crate) use work_tip::task_work_tip_for_transfer;
 mod workflow_edit;
 mod worktree;
 pub(crate) use definitions::WorkflowPlanContext;
+
+pub(crate) use workflow_edit::unknown_workflow_fields;
+
 pub(crate) use workflow_edit::{
     validate_plan_workflow_extension, validate_task_workflow_replacement,
     validate_task_workflow_replacement_with_plan_context, PlanContextPolicy,

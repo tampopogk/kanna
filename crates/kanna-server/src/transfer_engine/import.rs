@@ -285,6 +285,11 @@ async fn run_import(
         .transferred_task_manifest(transfer_id)
         .map_err(|error| format!("db error: {error}"))?;
     let has_manifest = persisted_manifest.is_some();
+    // Before anything asks the source to wrap up: a payload this build would
+    // silently strip is refused now, while refusing is free. Checked on every
+    // attempt, so a queued transfer whose payload changed since it was
+    // reserved is re-checked rather than trusted.
+    assert_destination_preserves_workflow(stored.task.workflow_definition.as_deref())?;
     let payload = if local_task_id.is_some() || has_manifest {
         stored
     } else {
@@ -297,6 +302,10 @@ async fn run_import(
             ));
         }
         assert_payload_matches_reservation(&transfer, &payload)?;
+        // The finalization rewrites the payload, so the definition that
+        // actually crosses is re-checked rather than assumed identical to the
+        // reserved one.
+        assert_destination_preserves_workflow(payload.task.workflow_definition.as_deref())?;
         if !finalized.finalized_cleanly {
             // The source could not shut its agent down cleanly. The
             // conversation still crosses, but this machine's operator has to
@@ -624,12 +633,11 @@ async fn run_import(
 /// Does the workflow this destination actually stored read back equal to the
 /// source's pinned snapshot?
 ///
-/// This is a read-back commitment, not a formatting check: the destination
-/// re-serializes the definition through its own `WorkflowDefinition`, so a
-/// destination too old to know a field drops it here and the import is refused
-/// as terminal *before* the source is finalized. That is what keeps an
-/// optional field like `plan_context` — the plan a task's published stages
-/// were chosen under — from being silently lost in transfer.
+/// The final integrity check, run after the task row exists. It is a semantic
+/// comparison rather than a formatting one, and it is deliberately *not* the
+/// thing that protects the source: by the time it runs the source has already
+/// been finalized. `assert_destination_preserves_workflow` is what refuses a
+/// definition this destination cannot carry, and it runs first.
 fn stored_workflow_matches_source(stored: Option<&str>, expected: Option<&str>) -> bool {
     match (stored, expected) {
         (Some(stored), Some(expected)) if stored == expected => true,
@@ -640,6 +648,41 @@ fn stored_workflow_matches_source(stored: Option<&str>, expected: Option<&str>) 
         (None, None) => true,
         _ => false,
     }
+}
+
+/// Refuse a payload this destination cannot carry, before anything asks the
+/// source to finalize.
+///
+/// The destination re-serializes a transferred workflow through its own
+/// `WorkflowDefinition`, so any field this build does not know is dropped on
+/// the way in. Discovering that after `finalize_from_source` means the source
+/// has already been told to wrap up and quit its agent for a transfer that
+/// then fails — so the same comparison is made here, against the payload as it
+/// arrived, while refusing still costs the source nothing.
+///
+/// This compares the whole definition rather than looking for one field name:
+/// the loss it guards against is "this build does not know about X", and X is
+/// by definition something this build cannot enumerate. It cannot help a
+/// destination older than this check — no code here can — but from this
+/// version on, a definition that would not survive the trip is refused instead
+/// of costing the source its session.
+pub(crate) fn assert_destination_preserves_workflow(
+    workflow_definition: Option<&str>,
+) -> Result<(), ImportFailure> {
+    let Some(definition) = workflow_definition else {
+        return Ok(());
+    };
+    let unknown = crate::task_creator::unknown_workflow_fields(definition);
+    if unknown.is_empty() {
+        return Ok(());
+    }
+    Err(ImportFailure::Terminal(format!(
+        "this machine cannot carry the transferred task's pinned workflow without losing part of \
+         it: its definition uses {}, which this version does not know about. The transfer is \
+         refused before the source is finalized, so the source task is untouched. Update this \
+         machine and retry.",
+        unknown.join(", ")
+    )))
 }
 
 pub(crate) async fn verify_persisted_task_bundle(
@@ -1713,6 +1756,125 @@ mod tests {
             .expect("transfer");
         assert_eq!(transfer.local_task_id, None);
         assert_eq!(transfer.status, "claimed");
+    }
+
+    /// A task-bundle payload whose only variable is the pinned workflow this
+    /// destination is asked to carry.
+    fn preservation_payload_json(workflow_definition: &str) -> String {
+        let mut payload = item4_task_bundle_payload_json("task-source", "in progress");
+        payload["task"]["workflow_definition"] = serde_json::json!(workflow_definition);
+        payload.to_string()
+    }
+
+    fn preservation_transfer(
+        transfer_id: &str,
+        workflow_definition: &str,
+    ) -> crate::db::NewTaskTransfer {
+        crate::db::NewTaskTransfer {
+            id: transfer_id.to_string(),
+            direction: "incoming".into(),
+            status: "pending".into(),
+            source_peer_id: Some("peer-source".into()),
+            target_peer_id: None,
+            source_desktop_id: None,
+            target_desktop_id: None,
+            source_task_id: Some("task-source".into()),
+            // No local task and no manifest, so this import would go on to ask
+            // the source to finalize — which is the call the check must beat.
+            local_task_id: None,
+            error: None,
+            payload_json: Some(preservation_payload_json(workflow_definition)),
+        }
+    }
+
+    /// A pinned workflow this build cannot carry is refused while refusing is
+    /// still free.
+    ///
+    /// The ordering is the whole point: `finalize_from_source` asks the source
+    /// to shut its agent down, and the read-back integrity check runs long
+    /// after that. This state has no usable transfer sidecar, so *any* control
+    /// call fails with a spawn error — which is exactly what makes the
+    /// assertion an ordering proof rather than a message check. The paired
+    /// test below takes the same fixture past the check and does get that
+    /// spawn error.
+    #[tokio::test]
+    async fn an_unpreservable_workflow_is_refused_before_source_finalization() {
+        let work = work_item("import:unpreservable-transfer");
+        let state = crate::http_api::test_state_with_seed(
+            "desktop-unpreservable-workflow",
+            "Unpreservable",
+            |db| {
+                db.insert_task_transfer(&preservation_transfer(
+                    "transfer-1",
+                    // A definition from a newer peer: this build's
+                    // `WorkflowDefinition` drops `future_contract`, so importing
+                    // it would silently lose part of the task.
+                    r#"{"name":"grown","stages":[{"name":"in progress","policy":{"transition":"manual"}}],"future_contract":{"budget":7}}"#,
+                ))
+                .expect("incoming transfer");
+            },
+        );
+
+        let failure = run_import(&state, &work, "transfer-1")
+            .await
+            .expect_err("an unpreservable workflow must not be imported");
+        let ImportFailure::Terminal(reason) = failure else {
+            panic!("an unpreservable workflow must be a terminal refusal, not a retry");
+        };
+        assert!(
+            reason.contains("cannot carry the transferred task's pinned workflow"),
+            "the refusal must be the preservation one, not a downstream failure: {reason}"
+        );
+        // Any control call on this state fails with a sidecar/spawn error, so
+        // its absence is the evidence that nothing reached the source.
+        assert!(
+            !reason.contains("sidecar") && !reason.contains("transfer sidecar"),
+            "the source must not have been asked to finalize: {reason}"
+        );
+        let transfer = state
+            .transfer_work()
+            .open_db()
+            .expect("db")
+            .get_task_transfer("transfer-1")
+            .expect("read transfer")
+            .expect("transfer");
+        // Nothing was imported and no destination task exists, so the source
+        // still owns the task and can keep working.
+        assert_eq!(transfer.local_task_id, None);
+    }
+
+    /// The same fixture with a definition this build round-trips intact gets
+    /// past the preservation check and fails at the finalize call instead.
+    /// Without this, the test above would also pass if the check simply
+    /// refused everything.
+    #[tokio::test]
+    async fn a_preservable_workflow_proceeds_to_source_finalization() {
+        let work = work_item("import:preservable-transfer");
+        let state = crate::http_api::test_state_with_seed(
+            "desktop-preservable-workflow",
+            "Preservable",
+            |db| {
+                db.insert_task_transfer(&preservation_transfer(
+                    "transfer-1",
+                    // Includes the plan a grown task's stages were published
+                    // under: this build knows `plan_context`, so it survives.
+                    r#"{"name":"grown","revision_limit":3,"stages":[{"name":"plan","policy":{"transition":"manual"}}],"plan_context":{"source_run_id":"run-plan","stage":"plan","result":"{}"}}"#,
+                ))
+                .expect("incoming transfer");
+            },
+        );
+
+        let failure = run_import(&state, &work, "transfer-1")
+            .await
+            .expect_err("this fixture has no sidecar to finalize against");
+        let reason = match failure {
+            ImportFailure::Terminal(reason) => reason,
+            ImportFailure::Retry(reason) => reason,
+        };
+        assert!(
+            !reason.contains("cannot carry the transferred task's pinned workflow"),
+            "a definition this build preserves must not be refused: {reason}"
+        );
     }
 
     /// The retry seam migration 050 exists for.
@@ -3359,7 +3521,60 @@ mod tests {
 
 #[cfg(test)]
 mod stored_workflow_tests {
-    use super::stored_workflow_matches_source;
+    use super::{assert_destination_preserves_workflow, stored_workflow_matches_source};
+
+    /// The false positive a shape comparison would produce.
+    ///
+    /// Normalization deliberately rewrites older spellings — a stage-level
+    /// `transition`, a `post_action` — so a definition that round-trips into a
+    /// *different* document is the normal case for an old pin, not a loss.
+    /// Refusing those would break every transfer of a long-lived task.
+    #[test]
+    fn a_legacy_definition_is_carried_rather_than_refused() {
+        for definition in [
+            r#"{"name":"old","stages":[{"name":"in progress","transition":"manual"}]}"#,
+            r#"{"name":"old","stages":[{"name":"in progress","policy":{"transition":"manual"},"post_action":{"name":"commit","prompt":"Commit."}}]}"#,
+            r#"{"name":"old","stages":[{"name":"in progress","transition":"auto","mode":"continue"}]}"#,
+        ] {
+            assert!(
+                assert_destination_preserves_workflow(Some(definition)).is_ok(),
+                "legacy definition must transfer: {definition}"
+            );
+        }
+    }
+
+    /// A document that is not a workflow at all is somebody else's error.
+    /// Answering it here would turn an existing downstream failure into a
+    /// transfer refusal.
+    #[test]
+    fn an_unparseable_definition_is_not_this_checks_answer() {
+        assert!(assert_destination_preserves_workflow(Some("not json")).is_ok());
+        assert!(assert_destination_preserves_workflow(None).is_ok());
+    }
+
+    /// A field from a newer Kanna is refused by name.
+    #[test]
+    fn a_field_this_version_does_not_know_is_refused() {
+        let failure = assert_destination_preserves_workflow(Some(
+            r#"{"name":"new","stages":[{"name":"plan","policy":{"transition":"manual"},"budget":{"tokens":1}}],"future_contract":{}}"#,
+        ))
+        .expect_err("a newer document must not be silently trimmed");
+        let super::ImportFailure::Terminal(reason) = failure else {
+            panic!("an unknown field is a terminal refusal, not a retry");
+        };
+        assert!(reason.contains("future_contract"), "{reason}");
+        assert!(reason.contains("stages[0].budget"), "{reason}");
+    }
+
+    /// `plan_context` is the field this build added, so it must not be the
+    /// thing that makes a document unrecognizable to itself.
+    #[test]
+    fn this_versions_own_plan_context_is_carried() {
+        assert!(assert_destination_preserves_workflow(Some(
+            r#"{"name":"grown","stages":[{"name":"plan","policy":{"transition":"manual"}}],"plan_context":{"source_run_id":"run-plan","stage":"plan","result":"{}"}}"#
+        ))
+        .is_ok());
+    }
 
     fn pinned(with_plan_context: bool) -> String {
         let mut definition = serde_json::json!({
@@ -3395,12 +3610,12 @@ mod stored_workflow_tests {
         ));
     }
 
-    /// A destination old enough not to know `plan_context` drops it when it
-    /// re-serializes. The read-back then fails, which is what refuses the
-    /// import before the source is finalized instead of losing the plan the
-    /// task's published stages were chosen under.
+    /// The final integrity check still catches a definition that changed
+    /// between the source snapshot and what this destination stored. It runs
+    /// after finalization, so it is a corruption check rather than the thing
+    /// that protects the source — `assert_destination_preserves_workflow` is.
     #[test]
-    fn an_old_destination_that_dropped_the_plan_context_is_refused() {
+    fn a_stored_definition_that_lost_the_plan_context_fails_the_final_read_back() {
         assert!(!stored_workflow_matches_source(
             Some(&pinned(false)),
             Some(&pinned(true))

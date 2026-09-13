@@ -65,6 +65,10 @@
         "result": {
           "description": "The full recorded stage result of that run, in the same shape $PREV_MAIN_RESULT carries.",
           "type": "string"
+        },
+        "request_digest": {
+          "description": "Fingerprint of the exact combined completion that published these stages: the recorded result together with the expected and requested definitions. A retry that matches it is the same operation replayed; one that differs is a different publication and is refused rather than silently ignored or applied over the stored one.",
+          "type": "string"
         }
       }
     },

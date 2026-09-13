@@ -9,6 +9,7 @@ import type {
   TaskBlocker,
 } from "../types/kanna";
 import type { WorkflowDefinition, AgentDefinition } from "../../../../packages/core/src/workflow/workflow-types";
+import type { PinnedTaskWorkflow } from "../services/desktopServerClient";
 import type { SessionRecoveryState } from "../composables/sessionRecoveryState";
 import i18n from "../i18n";
 import { useToast } from "../composables/useToast";
@@ -89,6 +90,15 @@ export interface WorktreeBootstrapResult {
 }
 
 export interface AdvanceStageOptions {
+  /**
+   * The pinned workflow the caller actually had in front of it when it decided
+   * to advance. Sent as the advance's `expectedDefinition`, so a tail
+   * published or edited since then is a refused conflict rather than a stage
+   * the caller never saw — or a close past a final stage that is no longer
+   * final. A caller that holds no observed definition omits it; the store then
+   * refuses to guess one for a task whose stages can change underneath it.
+   */
+  expectedDefinition?: PinnedTaskWorkflow | null;
   nextStageAgentProvider?: AgentProvider;
   nextStageModel?: string;
   nextStageEffort?: string;

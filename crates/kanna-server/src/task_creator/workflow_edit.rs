@@ -11,6 +11,93 @@ pub(super) static SCHEMA: LazyLock<jsonschema::Validator> = LazyLock::new(|| {
     jsonschema::validator_for(&schema).expect("bundled workflow schema compiles")
 });
 
+/// Keys the bundled schema defines at one position in a workflow document.
+fn schema_keys(path: &[&str]) -> std::collections::BTreeSet<String> {
+    static SCHEMA_JSON: LazyLock<Value> = LazyLock::new(|| {
+        serde_json::from_str(include_str!("../../../../.kanna/workflows/schema.json"))
+            .expect("bundled workflow schema is JSON")
+    });
+    let mut node = &*SCHEMA_JSON;
+    for segment in path {
+        let Some(next) = node.get(segment) else {
+            return Default::default();
+        };
+        node = next;
+    }
+    node.get("properties")
+        .and_then(Value::as_object)
+        .map(|properties| properties.keys().cloned().collect())
+        .unwrap_or_default()
+}
+
+/// Input spellings the loader accepts and deliberately rewrites, so a document
+/// written for an older Kanna is not mistaken for one written for a newer one.
+const LEGACY_STAGE_KEYS: &[&str] = &["transition", "mode", "post_action"];
+
+/// Fields in `definition` that this build's workflow document does not define.
+///
+/// This is the question "was this written for a Kanna newer than mine?", asked
+/// by name rather than by round-tripping the document: normalization
+/// deliberately rewrites legacy spellings, so a shape comparison would flag
+/// every old definition as a loss. The known names come from the bundled
+/// schema itself, so they cannot drift from what the loader actually reads.
+///
+/// Returns the unknown paths, empty when this build carries the document whole.
+pub(crate) fn unknown_workflow_fields(definition: &str) -> Vec<String> {
+    let Ok(value) = serde_json::from_str::<Value>(definition) else {
+        // Not a workflow document at all. Whatever is wrong with it, it is not
+        // this question, and the existing paths already answer it.
+        return Vec::new();
+    };
+    let root_keys = schema_keys(&[]);
+    let stage_keys = schema_keys(&["properties", "stages", "items"]);
+    let post_keys = schema_keys(&["properties", "stages", "items", "properties", "post"]);
+    let mut unknown = Vec::new();
+    let check = |object: Option<&serde_json::Map<String, Value>>,
+                 known: &std::collections::BTreeSet<String>,
+                 legacy: &[&str],
+                 where_: &str,
+                 into: &mut Vec<String>| {
+        let Some(object) = object else { return };
+        // An empty known set means the schema moved and this lookup found
+        // nothing; refusing everything on that basis would be worse than
+        // carrying the document.
+        if known.is_empty() {
+            return;
+        }
+        for key in object.keys() {
+            if !known.contains(key) && !legacy.contains(&key.as_str()) {
+                into.push(format!("{where_}{key}"));
+            }
+        }
+    };
+    check(value.as_object(), &root_keys, &[], "", &mut unknown);
+    for (index, stage) in value
+        .get("stages")
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or_default()
+        .iter()
+        .enumerate()
+    {
+        check(
+            stage.as_object(),
+            &stage_keys,
+            LEGACY_STAGE_KEYS,
+            &format!("stages[{index}]."),
+            &mut unknown,
+        );
+        check(
+            stage.get("post").and_then(Value::as_object),
+            &post_keys,
+            &[],
+            &format!("stages[{index}].post."),
+            &mut unknown,
+        );
+    }
+    unknown
+}
+
 pub(crate) struct ValidatedWorkflowReplacement {
     pub snapshot: TaskWorkflowSnapshot,
     pub superseded_run_ids: Vec<String>,

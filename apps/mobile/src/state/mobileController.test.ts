@@ -227,7 +227,15 @@ function createClientMock(): ClientMock {
         stage: "in progress"
       }
     ]),
-    getTask: vi.fn().mockRejectedValue(new Error("task not found")),
+    // Detail is readable and reports no pinned workflow — the ordinary task
+    // shape. A test that needs an unreadable detail, or a task that can grow
+    // its own stages, overrides this.
+    getTask: vi.fn(async (taskId: string) => ({
+      id: taskId,
+      repoId: "repo-1",
+      title: "Refactor mobile shell",
+      stage: "in progress"
+    })),
     searchTasks: vi.fn().mockResolvedValue([
       {
         id: "task-2",
@@ -1243,6 +1251,8 @@ describe("createMobileController", () => {
   it("retains and retries a created command task when canonical loading fails", async () => {
     const store = createSessionStore();
     const client = createClientMock();
+    // This case is specifically about detail that cannot be loaded.
+    client.getTask = vi.fn().mockRejectedValue(new Error("task not found")) as typeof client.getTask;
     const controller = createMobileController(client, store);
     const openedTaskIds: string[] = [];
     controller.subscribeRepoCommandTaskOpen((taskId) => {
@@ -9361,42 +9371,100 @@ describe("createMobileController", () => {
     expect(store.getState().recentTasks[0]?.id).toBe("task-pr");
   });
 
-  it("fences an advance on the pinned workflow it read from the owning desktop", async () => {
-    const store = createSessionStore();
+  const grownPinnedWorkflow = {
+    name: "consultation",
+    plan_context: { source_run_id: "run-plan", stage: "plan", result: "{}" },
+    stages: [
+      { name: "consultation" },
+      { name: "plan" },
+      { name: "in progress" },
+      { name: "pr" }
+    ]
+  };
+
+  function grownTaskClient(definition: unknown) {
     const client = createClientMock();
-    const pinned = {
-      name: "consultation",
-      stages: [
-        { name: "consultation" },
-        { name: "plan" },
-        { name: "in progress" },
-        { name: "pr" }
-      ]
-    };
     vi.mocked(client.listRecentTasks).mockResolvedValue([
-      {
-        id: "task-grown",
-        repoId: "repo-1",
-        title: "Grown task",
-        stage: "plan"
-      }
+      { id: "task-grown", repoId: "repo-1", title: "Grown task", stage: "plan" }
     ]);
     client.getTask = vi.fn(async (taskId: string) => ({
       id: taskId,
       repoId: "repo-1",
       title: "Grown task",
       stage: "plan",
-      workflowDefinition: pinned
+      workflowDefinition: definition
     })) as typeof client.getTask;
-    const controller = createMobileController(client, store);
+    return client;
+  }
 
+  it("advances a grown task on the definition the screen was populated from", async () => {
+    const store = createSessionStore();
+    const client = grownTaskClient(grownPinnedWorkflow);
+    const controller = createMobileController(client, store);
     await controller.bootstrap();
+    // Opening the task is the read the operator actually saw.
+    controller.openTask("task-grown");
+    await vi.waitFor(() => expect(client.getTask).toHaveBeenCalledWith("task-grown"));
+
+    // The owning desktop moves on afterwards. The action must still send what
+    // was observed, and the fence must not be re-read inside it.
+    client.getTask = vi.fn(async (taskId: string) => ({
+      id: taskId,
+      repoId: "repo-1",
+      title: "Grown task",
+      stage: "plan",
+      workflowDefinition: { ...grownPinnedWorkflow, stages: [{ name: "consultation" }] }
+    })) as typeof client.getTask;
+
     await controller.advanceDesktopTaskStage("task-grown");
 
-    // The fence is read through the same client the action uses, so both
-    // reach the same owning desktop.
-    expect(client.getTask).toHaveBeenCalledWith("task-grown");
-    expect(client.advanceTaskStage).toHaveBeenCalledWith("task-grown", pinned);
+    expect(client.advanceTaskStage).toHaveBeenCalledWith("task-grown", grownPinnedWorkflow);
+    expect(client.getTask).not.toHaveBeenCalled();
+  });
+
+  it("will not advance a grown task on a workflow nobody observed", async () => {
+    const store = createSessionStore();
+    const client = grownTaskClient(grownPinnedWorkflow);
+    const controller = createMobileController(client, store);
+    await controller.bootstrap();
+
+    // No detail read has populated this task's screen, so there is nothing the
+    // operator can be said to have looked at.
+    await controller.advanceDesktopTaskStage("task-grown");
+
+    expect(client.advanceTaskStage).not.toHaveBeenCalled();
+    expect(store.getState().errorMessage).toContain("stages changed while you were looking");
+  });
+
+  it("does not dispatch an unfenced grown-task advance when detail cannot be read", async () => {
+    const store = createSessionStore();
+    const client = grownTaskClient(grownPinnedWorkflow);
+    client.getTask = vi.fn(async () => {
+      throw new Error("owner unreachable");
+    }) as typeof client.getTask;
+    const controller = createMobileController(client, store);
+    await controller.bootstrap();
+
+    await controller.advanceDesktopTaskStage("task-grown");
+
+    // A failed read leaves this client unable to tell a task that can grow its
+    // own stages from one that cannot, and that is not permission to advance
+    // on nothing.
+    expect(client.advanceTaskStage).not.toHaveBeenCalled();
+    expect(store.getState().errorMessage).toContain("Could not read this task's stages");
+  });
+
+  it("leaves an ordinary task advancing exactly as it did", async () => {
+    const store = createSessionStore();
+    const client = grownTaskClient({ name: "single-reviewer", stages: [{ name: "plan" }] });
+    const controller = createMobileController(client, store);
+    await controller.bootstrap();
+
+    await controller.advanceDesktopTaskStage("task-grown");
+
+    // Its stages cannot be published underneath the operator, so nothing about
+    // this action became conditional on a second request succeeding.
+    expect(client.advanceTaskStage).toHaveBeenCalledWith("task-grown", null);
   });
 
   it("keeps display identities after routed merge and advance responses", async () => {

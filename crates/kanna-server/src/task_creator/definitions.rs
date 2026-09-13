@@ -234,6 +234,15 @@ pub(crate) struct WorkflowPlanContext {
     pub(crate) source_run_id: String,
     pub(crate) stage: String,
     pub(crate) result: String,
+    /// Fingerprint of the exact combined completion that published these
+    /// stages. The recorded result alone cannot identify that operation: two
+    /// completions can carry the same summary and publish different stages, so
+    /// without this a retry with a different suffix reads as a replay of the
+    /// first. Optional because a snapshot stamped before it existed has none;
+    /// such a stamp cannot confirm a replay and is treated as "not this
+    /// request".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) request_digest: Option<String>,
 }
 
 /// Rounds of agent-requested revision a task gets before the engine stops

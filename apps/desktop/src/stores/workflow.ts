@@ -91,63 +91,87 @@ export function createWorkflowApi(context: StoreContext): WorkflowApi {
     };
   }
 
-  /**
-   * What this advance is being taken against: the projected next stage, and the
-   * exact pinned workflow that projection was read from.
-   *
-   * A task's stage sequence is not its workflow name's. A plan can publish this
-   * task's remaining stages while an earlier stage runs, and an edit can
-   * repoint or remove a later one, so the repo file reads a grown task as one
-   * stage long — projecting it as closing on the next advance, which moves
-   * selection as if the task were gone, and equally can hide a real close
-   * behind a stage the repo file still lists.
-   *
-   * `observedDefinition` is sent back as the advance's `expectedDefinition`, so
-   * a tail that moved between reading and advancing is a refused conflict
-   * rather than a silently different next stage. It is absent only when the
-   * pinned definition could not be read at all; the advance then proceeds
-   * unfenced exactly as it always did, rather than becoming unavailable.
-   */
-  interface ObservedStageAdvance extends StageAdvanceProjection {
-    observedDefinition: PinnedTaskWorkflow | null;
+  function projectPinnedWorkflow(
+    pinned: PinnedTaskWorkflow,
+    stage: string,
+  ): StageAdvanceProjection | null {
+    return projectStageAdvance(
+      pinned.stages.map((entry) => ({
+        name: entry.name,
+        post:
+          entry.post && typeof entry.post === "object" && "name" in entry.post
+            ? { name: String((entry.post as { name: unknown }).name) }
+            : null,
+      })),
+      stage,
+    );
   }
 
+  /**
+   * Is this a task whose stages can be published or repointed while an earlier
+   * stage runs? Such a task must never be advanced on an unobserved workflow:
+   * the tail the caller saw may no longer be the tail the server would run.
+   *
+   * A plain repo-workflow task has no such hazard, so it keeps advancing
+   * exactly as it always did rather than becoming conditional on a second
+   * request succeeding.
+   */
+  function canGrowItsOwnWorkflow(pinned: PinnedTaskWorkflow | null): boolean {
+    return Boolean(pinned && pinned["plan_context"]);
+  }
+
+  /**
+   * The pinned workflow this store last actually read for a task.
+   *
+   * Populated by the controls that display a stage sequence, and by the
+   * deliberate refresh below. It is what an advance fences on when its caller
+   * did not hand one over; it is never refreshed inside the advance itself.
+   */
+  const observedWorkflows = new Map<string, PinnedTaskWorkflow>();
+
+  function lastObservedWorkflow(taskId: string): PinnedTaskWorkflow | null {
+    return observedWorkflows.get(taskId) ?? null;
+  }
+
+  /**
+   * Read this task's pinned workflow once, deliberately.
+   *
+   * `null` means the read *failed* — this store cannot tell a task that can
+   * grow its own stages from one that cannot — which is different from a read
+   * that succeeded and reported no pinned workflow at all.
+   */
+  async function refreshObservedWorkflow(
+    taskId: string,
+  ): Promise<{ definition: PinnedTaskWorkflow | null } | null> {
+    try {
+      const pinned = (await fetchDesktopTaskDetail(taskId)).workflowDefinition ?? null;
+      const definition = pinned?.stages?.length ? pinned : null;
+      if (definition) observedWorkflows.set(taskId, definition);
+      return { definition };
+    } catch (error) {
+      console.debug("[workflow:advanceStage] could not read the task's pinned workflow:", error);
+      return null;
+    }
+  }
+
+  /**
+   * The repo file this task's workflow *name* resolves to. Used only for the
+   * cosmetic projection of a task that cannot grow its own stages; a grown
+   * task reads as one stage long here, which is why it never reaches this.
+   */
   async function resolveStageAdvanceProjection(item: {
-    id: string;
     repo_id: string;
     pipeline: string;
     stage: string;
-  }): Promise<ObservedStageAdvance> {
-    const unknown: ObservedStageAdvance = {
+  }): Promise<StageAdvanceProjection> {
+    const unknown: StageAdvanceProjection = {
       nextStageName: null,
       pendingPostName: null,
       closesOnSuccess: false,
-      observedDefinition: null,
     };
     try {
-      const pinned = (await fetchDesktopTaskDetail(item.id)).workflowDefinition;
-      if (pinned?.stages?.length) {
-        const projection = projectStageAdvance(
-          pinned.stages.map((stage) => ({
-            name: stage.name,
-            post:
-              stage.post && typeof stage.post === "object" && "name" in stage.post
-                ? { name: String((stage.post as { name: unknown }).name) }
-                : null,
-          })),
-          item.stage,
-        );
-        return { ...(projection ?? unknown), observedDefinition: pinned };
-      }
-    } catch (error) {
-      console.debug("[workflow:advanceStage] pinned workflow unavailable for optimistic update:", error);
-    }
-    // No pinned definition to read: fall back to the repo file for the
-    // cosmetic projection only, and send no fence, because nothing was
-    // observed to fence on.
-    try {
       const workflow = await loadWorkflow(item.repo_id, item.pipeline || "no-review");
-      return { ...(projectStageAdvance(workflow.stages, item.stage) ?? unknown), observedDefinition: null };
+      return projectStageAdvance(workflow.stages, item.stage) ?? unknown;
     } catch (error) {
       console.debug("[workflow:advanceStage] could not resolve stage projection for optimistic update:", error);
       return unknown;
@@ -339,8 +363,32 @@ export function createWorkflowApi(context: StoreContext): WorkflowApi {
     const sourceTaskIsSelected = requireService(context.services.selectedTaskId, "selectedTaskId").value === item.id;
     const fallbackSelectionId = computeNextVisibleItemId(item.id);
     const initialTransitionRevision = item.transition_revision ?? null;
-    const { nextStageName, pendingPostName, closesOnSuccess, observedDefinition } =
-      await resolveStageAdvanceProjection(item);
+    // The definition this action is taken against is the one its caller
+    // observed. Refetching here and accepting the answer would fence on a tail
+    // nobody looked at, which is the race the fence exists for.
+    const observedDefinition = options.expectedDefinition ?? lastObservedWorkflow(item.id);
+    if (!observedDefinition) {
+      const refreshed = await refreshObservedWorkflow(item.id);
+      if (!refreshed) {
+        // The read failed, so this store cannot tell whether this task's
+        // stages can move underneath the operator. That is not permission to
+        // advance on nothing.
+        context.toast.error(context.tt("mainPanel.stageSequenceUnavailable"));
+        return "failed";
+      }
+      if (canGrowItsOwnWorkflow(refreshed.definition)) {
+        // Its stages can move underneath the operator, and nothing on screen
+        // was read from this document. Show what it is now and let them decide
+        // again, rather than advancing into a tail they never saw.
+        context.toast.warning(context.tt("mainPanel.stageSequenceChanged"));
+        return "ignored";
+      }
+    }
+    const projection = observedDefinition
+      ? projectPinnedWorkflow(observedDefinition, item.stage)
+      : null;
+    const { nextStageName, pendingPostName, closesOnSuccess } =
+      projection ?? (await resolveStageAdvanceProjection(item));
     debugLog("[workflow:advanceStage] selection policy", {
       taskId,
       currentStage: item.stage,

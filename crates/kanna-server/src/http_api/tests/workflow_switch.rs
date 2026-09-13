@@ -1046,3 +1046,193 @@ async fn an_advance_fenced_on_a_stale_workflow_is_refused_before_anything_is_sch
         "plan"
     );
 }
+
+/// A suffix differing from the published one, under the *same* plan summary.
+fn no_review_suffix(before: &Value) -> Value {
+    let mut after = before.clone();
+    after["revision_limit"] = serde_json::json!(2);
+    let stages = after["stages"].as_array_mut().unwrap();
+    stages.push(serde_json::json!({
+        "name": "in progress", "agent": "implement", "prompt": "Build it.",
+        "policy": {"transition": "manual"},
+        "post": {"name": "commit", "agent": "commit", "prompt": "Commit."}
+    }));
+    stages.push(serde_json::json!({
+        "name": "pr", "agent": "pr", "prompt": "Open a PR for $BRANCH.",
+        "policy": {"transition": "manual"},
+        "post": {"name": "approve", "agent": "approve", "prompt": "Approve $BRANCH."}
+    }));
+    after
+}
+
+/// The replay identity of a combined completion is the plan *and* the stages
+/// it published. A summary alone cannot identify it: the same plan text with a
+/// different review depth, provider or revision budget is a different
+/// publication, and answering it as a successful replay would report stages
+/// that were never stored.
+#[tokio::test]
+async fn a_same_summary_retry_with_different_stages_is_refused() {
+    let (_temp, state, before) = plan_publication_fixture("plan-retry-different-suffix");
+    let app = router(Arc::clone(&state));
+    let published_suffix = single_reviewer_suffix(&before);
+    let (status, _) =
+        complete_plan(&app, "the full plan", Some((&before, &published_suffix))).await;
+    assert_eq!(status, StatusCode::OK);
+    let published = pinned(&state);
+    assert_eq!(published["stages"].as_array().unwrap().len(), 5);
+
+    let (status, body) = complete_plan(
+        &app,
+        "the full plan",
+        Some((&before, &no_review_suffix(&before))),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(
+        pinned(&state),
+        published,
+        "the stored suffix must be intact"
+    );
+}
+
+/// Same request, different expected definition: the caller read a different
+/// starting point, so it is a different operation even where the plan matches.
+#[tokio::test]
+async fn a_retry_against_a_different_expected_definition_is_refused() {
+    let (_temp, state, before) = plan_publication_fixture("plan-retry-different-expected");
+    let app = router(Arc::clone(&state));
+    let after = single_reviewer_suffix(&before);
+    let (status, _) = complete_plan(&app, "the full plan", Some((&before, &after))).await;
+    assert_eq!(status, StatusCode::OK);
+    let published = pinned(&state);
+
+    // The published document itself, offered as the thing that was read.
+    let (status, body) = complete_plan(&app, "the full plan", Some((&published, &after))).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(pinned(&state), published);
+}
+
+/// An ordinary completion followed by a combined one carrying the same summary
+/// must still publish. Comparing results alone reads the recorded verdict as a
+/// replay and returns success having stored nothing.
+#[tokio::test]
+async fn an_ordinary_completion_does_not_answer_for_a_later_publication() {
+    let (_temp, state, before) = plan_publication_fixture("plan-ordinary-then-combined");
+    let app = router(Arc::clone(&state));
+    let (status, body) = complete_plan(&app, "the full plan", None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(body["workflowExtended"].is_null());
+    assert_eq!(
+        pinned(&state),
+        before,
+        "an ordinary completion publishes nothing"
+    );
+
+    let after = single_reviewer_suffix(&before);
+    let (status, body) = complete_plan(&app, "the full plan", Some((&before, &after))).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["workflowExtended"], serde_json::json!(true));
+    assert_eq!(
+        pinned(&state)["stages"].as_array().unwrap().len(),
+        5,
+        "the stages must actually be stored"
+    );
+}
+
+/// The exact replay still answers truthfully after the workflow has moved on.
+/// The confirmation reads durable provenance stamped on the publication, not a
+/// comparison with whatever is pinned at the moment.
+#[tokio::test]
+async fn an_exact_replay_is_still_confirmed_after_a_later_edit() {
+    let (_temp, state, before) = plan_publication_fixture("plan-replay-after-edit");
+    let app = router(Arc::clone(&state));
+    let after = single_reviewer_suffix(&before);
+    let (status, _) = complete_plan(&app, "the full plan", Some((&before, &after))).await;
+    assert_eq!(status, StatusCode::OK);
+
+    // An ordinary edit retargets the review stage; the stamp rides along.
+    let published = pinned(&state);
+    let mut edited = published.clone();
+    edited["stages"][3]["agent"] = serde_json::json!("qa-dispatcher");
+    let (status, body) = replace_workflow(&app, &published, &edited).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_ne!(pinned(&state), published);
+
+    let (status, body) = complete_plan(&app, "the full plan", Some((&before, &after))).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["workflowExtended"], serde_json::json!(true));
+    assert_eq!(pinned(&state)["stages"][3]["agent"], "qa-dispatcher");
+}
+
+/// Post the completion body directly, so a test can set the run binding and
+/// attempt key the MCP/CLI adapters normally add.
+async fn complete_plan_bound(app: &axum::Router, body: serde_json::Value) -> (StatusCode, Value) {
+    let response = app
+        .clone()
+        .oneshot(
+            Request::post("/v1/tasks/task-1/actions/complete-stage")
+                .header("content-type", "application/json")
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = response.status();
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    (
+        status,
+        serde_json::from_slice(&body)
+            .unwrap_or_else(|_| Value::String(String::from_utf8_lossy(&body).into())),
+    )
+}
+
+/// The adapters bind a completion to the exact run that spawned, and retry
+/// under a stable attempt key. Neither binding may turn a different
+/// publication into a replay.
+#[tokio::test]
+async fn bound_and_keyed_retries_carry_the_same_publication_identity() {
+    let (_temp, state, before) = plan_publication_fixture("plan-bound-retries");
+    let app = router(Arc::clone(&state));
+    let published_suffix = single_reviewer_suffix(&before);
+    let publish = |suffix: &Value, key: Option<&str>| {
+        let mut body = serde_json::json!({
+            "runId": "run-plan",
+            "status": "success",
+            "summary": "the full plan",
+            "expectedDefinition": before,
+            "workflowDefinition": suffix,
+        });
+        if let Some(key) = key {
+            body["completionAttemptKey"] = serde_json::json!(key);
+        }
+        body
+    };
+
+    let (status, body) = complete_plan_bound(&app, publish(&published_suffix, None)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["workflowExtended"], serde_json::json!(true));
+    let published = pinned(&state);
+
+    // Explicit run binding, exact request: a replay, still confirmed.
+    let (status, body) = complete_plan_bound(&app, publish(&published_suffix, None)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["workflowExtended"], serde_json::json!(true));
+
+    // Explicit run binding, different stages under the same summary.
+    let (status, body) = complete_plan_bound(&app, publish(&no_review_suffix(&before), None)).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(pinned(&state), published);
+
+    // An attempt key does not launder it either.
+    let (status, body) =
+        complete_plan_bound(&app, publish(&no_review_suffix(&before), Some("attempt-1"))).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(pinned(&state), published);
+
+    // The same key replaying the exact published request stays a replay.
+    let (status, body) =
+        complete_plan_bound(&app, publish(&published_suffix, Some("attempt-2"))).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["workflowExtended"], serde_json::json!(true));
+    assert_eq!(pinned(&state), published);
+}

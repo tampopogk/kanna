@@ -617,11 +617,17 @@ in `docs/task-specs/c9f5721b.md` and enforced by the router authorization tests.
   arguments and returns no such field, so a plain success must never be read as
   a successful extension.
   **Transfer compatibility:** `plan_context` rides inside the pinned definition
-  that transfer already carries, and the destination re-serializes it. A
-  destination old enough to drop the field fails the import's existing read-back
-  equality check against the source snapshot, so the transfer is rejected as
-  terminal before the source is finalized rather than silently losing the plan
-  its stages were chosen under.
+  that transfer already carries, and the destination re-serializes it, so a
+  build that does not know a field drops it. The destination therefore checks
+  the incoming definition for fields it does not define — by name, against its
+  own bundled workflow schema, because normalization deliberately rewrites
+  legacy spellings and a shape comparison would flag every old pin as a loss —
+  **before** it asks the source to finalize. A definition written for a newer
+  Kanna is refused as terminal while the source still owns its task and its
+  session. The final read-back equality check after persistence is retained,
+  but it is a corruption check: it runs after finalization and cannot protect
+  the source. Neither check can help a destination older than the check itself;
+  from this version on, an unpreservable definition costs the source nothing.
 - `POST /v1/tasks/{task_id}/actions/request-revision`
 - `POST /v1/tasks/{task_id}/actions/close`
 - `POST /v1/tasks/{task_id}/actions/advance-stage`

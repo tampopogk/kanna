@@ -10,14 +10,34 @@ vi.mock("../../services/desktopServerClient", () => ({ replaceDesktopTaskWorkflo
 const task = { id: "task-one", repo_id: "repo-one", stage: "plan", pipeline: "test" } as PipelineItem;
 describe("one-time OpenCode stage selection", () => {
   it("passes the native model ID only to the next stage override", async () => {
-    vi.mocked(fetchDesktopTaskDetail).mockResolvedValue({ id: "task-one", stage: "plan", workflowDefinition: { stages: [{ name: "plan" }, { name: "implement" }] } } as never);
+    const observed = { stages: [{ name: "plan" }, { name: "implement" }] };
+    vi.mocked(fetchDesktopTaskDetail).mockResolvedValue({ id: "task-one", stage: "plan", workflowDefinition: observed } as never);
     store.advanceStage.mockResolvedValue("advanced");
     const wrapper = mount(StageModelControl, { props: { task } });
     await wrapper.get("button").trigger("click");
     await vi.waitFor(() => expect(wrapper.find("input").exists()).toBe(true));
     await wrapper.get("input").setValue("omlx/Qwen-Coder");
     await wrapper.get(".stage-model-panel > button").trigger("click");
-    expect(store.advanceStage).toHaveBeenCalledWith("task-one", { nextStageAgentProvider: "opencode", nextStageModel: "omlx/Qwen-Coder" });
+    // The stage sequence this panel displayed rides along as the advance's
+    // fence: "implement" was named from this document, so a tail published or
+    // edited since must be a conflict rather than a stage nobody chose.
+    expect(store.advanceStage).toHaveBeenCalledWith("task-one", { expectedDefinition: observed, nextStageAgentProvider: "opencode", nextStageModel: "omlx/Qwen-Coder" });
+  });
+
+  it("fences the advance on the displayed definition, not on a fresh read", async () => {
+    store.advanceStage.mockClear();
+    const displayed = { stages: [{ name: "plan" }, { name: "implement" }] };
+    vi.mocked(fetchDesktopTaskDetail).mockResolvedValue({ id: "task-one", stage: "plan", workflowDefinition: displayed } as never);
+    store.advanceStage.mockResolvedValue("ignored");
+    const wrapper = mount(StageModelControl, { props: { task } });
+    await wrapper.get("button").trigger("click");
+    await vi.waitFor(() => expect(wrapper.find("input").exists()).toBe(true));
+    // The server moves on after the panel read it. The action must still send
+    // what the operator saw.
+    vi.mocked(fetchDesktopTaskDetail).mockResolvedValue({ id: "task-one", stage: "plan", workflowDefinition: { stages: [{ name: "plan" }] } } as never);
+    await wrapper.get("input").setValue("omlx/Qwen-Coder");
+    await wrapper.get(".stage-model-panel > button").trigger("click");
+    expect(store.advanceStage).toHaveBeenCalledWith("task-one", expect.objectContaining({ expectedDefinition: displayed }));
   });
   it("saves only the future stage binding across a post, without advancing", async () => {
     store.advanceStage.mockClear();

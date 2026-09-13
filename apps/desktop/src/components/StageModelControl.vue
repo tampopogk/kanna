@@ -88,6 +88,9 @@ async function apply() {
       return;
     }
     const result = await useKannaStore().advanceStage(props.task.id, {
+      // The stage sequence this control showed, not whatever is pinned now:
+      // the next stage named above was read from it.
+      expectedDefinition: pinnedWorkflow.value,
       nextStageAgentProvider: "opencode",
       nextStageModel: model.value,
     });
