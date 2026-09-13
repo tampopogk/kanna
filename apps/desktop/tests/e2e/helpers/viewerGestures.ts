@@ -18,6 +18,9 @@ export async function verifyViewerGestures(
   readPtyOutput: () => Promise<string>,
   artifactDir: string,
   verifyNativeRendering: (grid: { cols: number; rows: number }) => Promise<void>,
+  /** Every `stty size` the fixture has reported, oldest first. Asserting the
+   * final dimensions cannot detect oscillation; the sequence can. */
+  readPtyHistory: () => Promise<string[]>,
 ): Promise<void> {
   const browser = await chromium.launch({ headless: true });
   const clients: StreamClient[] = [];
@@ -77,14 +80,81 @@ export async function verifyViewerGestures(
       // Fixture reports `stty size` on SIGWINCH: not just the daemon registry.
       await expect.poll(readPtyOutput, { timeout: 30_000 }).toBe(`ACTIVE_VIEW:${grid.cols}x${grid.rows}`);
     };
+    const stability: Array<{ phase: string; reports: string[] }> = [];
+    /** Assert how the PTY actually got to `grid` since `mark`: one direct
+     * transition, with no obsolete intermediate dimensions on the way.
+     *
+     * The kernel coalesces rapid SIGWINCHes, so a missing report never fails
+     * this; a *present* obsolete report is the real signal, and it is exactly
+     * what a stale claim or a replayed size history produces. */
+    const assertDirectTransition = (
+      phase: string,
+      mark: number,
+      history: string[],
+      grid: { cols: number; rows: number },
+    ) => {
+      const since = history.slice(mark);
+      stability.push({ phase, reports: since });
+      const distinct = [...new Set(since)];
+      expect(
+        distinct,
+        `${phase}: PTY walked through obsolete dimensions on its way to ${grid.cols}x${grid.rows}`,
+      ).toEqual([`ACTIVE_VIEW:${grid.cols}x${grid.rows}`]);
+    };
+    /** No further dimension change once control and paint work has drained.
+     * This is a stability observation, not a setup-performance deadline. */
+    const assertNoFurtherResize = async (phase: string) => {
+      const settled = await readPtyHistory();
+      await new Promise(resolve => setTimeout(resolve, 5_000));
+      const after = await readPtyHistory();
+      stability.push({ phase, reports: after.slice(settled.length) });
+      expect(after, `${phase}: PTY kept resizing after the viewer settled`).toEqual(settled);
+    };
+    let mark = (await readPtyHistory()).length;
     await mobile.page.touchscreen.tap(100, 250);
     await expect.poll(mobile.activations).toBeGreaterThan(0);
     await assertGrid(mobile.capacity);
+    assertDirectTransition("mobile-claim", mark, await readPtyHistory(), mobile.capacity);
+    await assertNoFurtherResize("mobile-quiet-reading");
+
     await desktop.page.evaluate('document.getElementById("viewport").dispatchEvent(new Event("scroll")); document.getElementById("viewport").dispatchEvent(new WheelEvent("wheel", { deltaY: -80 }));');
     expect(desktop.activations()).toBe(0);
+    mark = (await readPtyHistory()).length;
     await desktop.page.mouse.move(100, 250);
     await desktop.page.mouse.wheel(0, -80);
     await assertGrid(desktop.capacity);
+    assertDirectTransition("desktop-claim", mark, await readPtyHistory(), desktop.capacity);
+
+    // Repeated claims by the viewer that already owns the geometry must cost
+    // the PTY nothing. (Driving the mouse over WebDriver is far slower than a
+    // real trackpad, so this exercises repetition rather than the producer's
+    // sub-100ms burst coalescing, which is unit-tested against a fake clock.)
+    mark = (await readPtyHistory()).length;
+    const beforeBurst = desktop.activations();
+    for (let tick = 0; tick < 40; tick += 1) {
+      await desktop.page.mouse.wheel(0, -20);
+    }
+    await assertGrid(desktop.capacity);
+    expect(desktop.activations()).toBeGreaterThan(beforeBurst);
+    expect(
+      (await readPtyHistory()).slice(mark),
+      "a sustained scroll by the existing owner resized the PTY",
+    ).toEqual([]);
+    await assertNoFurtherResize("desktop-scroll-burst");
+
+    // Two viewers actually contending: each handoff is worth exactly one
+    // direct transition. Anything more is the reported oscillation.
+    for (let round = 0; round < 3; round += 1) {
+      mark = (await readPtyHistory()).length;
+      await mobile.page.touchscreen.tap(100, 250);
+      await assertGrid(mobile.capacity);
+      assertDirectTransition(`alternation-${round}-mobile`, mark, await readPtyHistory(), mobile.capacity);
+      mark = (await readPtyHistory()).length;
+      await desktop.page.mouse.wheel(0, -20);
+      await assertGrid(desktop.capacity);
+      assertDirectTransition(`alternation-${round}-desktop`, mark, await readPtyHistory(), desktop.capacity);
+    }
+    await assertNoFurtherResize("alternation-settled");
     const mobileActivations = mobile.activations();
     const initialMobileCols = mobile.capacity.cols;
     await mobile.page.setViewportSize({ width: 410, height: 720 });
@@ -92,14 +162,17 @@ export async function verifyViewerGestures(
     await mobile.page.evaluate('document.getElementById("viewport").dispatchEvent(new Event("scroll"));');
     expect(mobile.activations()).toBe(mobileActivations);
     await assertGrid(desktop.capacity);
+    mark = (await readPtyHistory()).length;
     await mobile.page.touchscreen.tap(100, 250);
     await assertGrid(mobile.capacity);
+    assertDirectTransition("mobile-reclaim", mark, await readPtyHistory(), mobile.capacity);
+    await assertNoFurtherResize("mobile-reclaim-quiet");
     await mobile.flush();
     await expect.poll(() => mobile.page.locator(".xterm-rows").innerText()).toContain(`ACTIVE_VIEW:${mobile.capacity.cols}x${mobile.capacity.rows}`);
     await verifyNativeRendering(mobile.capacity);
     if (artifactDir) {
       await mobile.page.screenshot({ path: join(artifactDir, "mobile-gesture-real-pty.png") });
-      await writeFile(join(artifactDir, "viewer-gestures.json"), JSON.stringify({ desktop: desktop.capacity, mobile: mobile.capacity, desktopGestures: desktop.activations(), mobileGestures: mobile.activations(), ptyReport: await readPtyOutput() }, null, 2));
+      await writeFile(join(artifactDir, "viewer-gestures.json"), JSON.stringify({ desktop: desktop.capacity, mobile: mobile.capacity, desktopGestures: desktop.activations(), mobileGestures: mobile.activations(), ptyReport: await readPtyOutput(), ptyHistory: await readPtyHistory(), stability }, null, 2));
     }
   } finally {
     for (const client of clients) client.close();

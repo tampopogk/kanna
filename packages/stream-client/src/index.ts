@@ -570,6 +570,7 @@ export class StreamClient {
     const attachment = this.attachments.get(attachmentKey(taskId, kind));
     this.attachments.delete(attachmentKey(taskId, kind));
     if (kind === "terminal") {
+      this.dropQueuedTerminalGeometry(taskId);
       const registration = this.terminalViewerRegistrations.get(taskId);
       if (registration) {
         // A terminal attachment is a viewer lifetime. The next attachment
@@ -727,6 +728,12 @@ export class StreamClient {
       return;
     }
     if (!this.authed || this.supportsCapability("terminal_active_view")) {
+      // Registration is a latest-value slot whose flush spans event-loop
+      // turns. An activation that overtook it would hand the daemon this
+      // viewer's *previous* dimensions and then correct them milliseconds
+      // later — one visible resize per claim. Flush first, exactly as the
+      // initial attach edge already does.
+      this.flushTerminalViewerRegistration(taskId);
       this.sendFrame({ type: "term_viewer_active", task_id: taskId });
     }
   }
@@ -737,6 +744,25 @@ export class StreamClient {
     registration.visible = visible;
     this.sendTerminalViewerRegistration(registration, taskId);
     this.sendTerminalAttachIfReady(taskId);
+  }
+
+  /** Send the pending measurement now, cancelling its coalescing timer, so an
+   * ordered edge that follows cannot carry stale dimensions. */
+  private flushTerminalViewerRegistration(taskId: string): void {
+    const registration = this.terminalViewerRegistrations.get(taskId);
+    if (!registration) return;
+    if (registration.flushTimer !== undefined) {
+      clearTimeout(registration.flushTimer);
+      registration.flushTimer = undefined;
+    }
+    if (
+      registration.sentCols === registration.cols
+      && registration.sentRows === registration.rows
+      && registration.sentVisible === registration.visible
+    ) {
+      return;
+    }
+    this.sendTerminalViewerRegistration(registration, taskId);
   }
 
   private sendTerminalViewerRegistration(
@@ -798,19 +824,7 @@ export class StreamClient {
       // Registration is a latest-value slot. Flush it synchronously before
       // activation even if a coalesced update was waiting, so this ordered
       // edge cannot activate stale dimensions.
-      if (registration) {
-        if (registration.flushTimer !== undefined) {
-          clearTimeout(registration.flushTimer);
-          registration.flushTimer = undefined;
-        }
-        if (
-          registration.sentCols !== registration.cols
-          || registration.sentRows !== registration.rows
-          || registration.sentVisible !== registration.visible
-        ) {
-          this.sendTerminalViewerRegistration(registration, taskId);
-        }
-      }
+      this.flushTerminalViewerRegistration(taskId);
       if (!this.rawSend({ type: "term_viewer_active", task_id: taskId })) return;
     }
     const sent = this.sendFrame({
@@ -1135,6 +1149,19 @@ export class StreamClient {
               frame.type === "term_viewer_release")))
           ) {
             continue;
+          }
+          if (frame.type === "term_resize") {
+            // The registration re-sent just above is this viewer's current
+            // measurement. A queued legacy resize must never contradict it.
+            const registration = this.terminalViewerRegistrations.get(frame.task_id);
+            if (registration) {
+              this.rawSend({
+                ...frame,
+                cols: registration.cols,
+                rows: registration.rows,
+              });
+              continue;
+            }
           }
           this.rawSend(frame);
         }
@@ -1780,11 +1807,44 @@ export class StreamClient {
       // Attachment state is re-sent from the registry on auth. Neither edge
       // of that state transition belongs in the reconnect replay queue.
       if (frame.type !== "attach" && frame.type !== "detach" && frame.type !== "term_viewer_register") {
-        this.sendQueue.push(frame);
+        this.enqueueFrame(frame);
       }
       return false;
     }
     return this.rawSend(frame);
+  }
+
+  /** Queue a frame for the next authenticated socket.
+   *
+   * Geometry is state, not history: a viewer that is measured repeatedly while
+   * the socket is down has one current size and one current claim, and
+   * replaying every intermediate one at reconnect walks the PTY through a
+   * series of obsolete dimensions — visible as several seconds of resizing.
+   * Terminal input keeps strict append order; a resize or an activity claim
+   * occupies one latest-value slot per task, held at its latest position so it
+   * still lands after the input it followed. */
+  private enqueueFrame(frame: ClientFrame): void {
+    if (frame.type === "term_resize" || frame.type === "term_viewer_active") {
+      const { type, task_id: taskId } = frame;
+      const existing = this.sendQueue.findIndex(
+        (queued) => queued.type === type && queued.task_id === taskId,
+      );
+      if (existing !== -1) this.sendQueue.splice(existing, 1);
+    }
+    this.sendQueue.push(frame);
+  }
+
+  /** Drop a retired terminal attachment's queued geometry. Its viewer lifetime
+   * ended while the socket was down, so neither its last measurement nor its
+   * last activity claim may speak for the attachment that replaces it. */
+  private dropQueuedTerminalGeometry(taskId: string): void {
+    this.sendQueue = this.sendQueue.filter(
+      (queued) =>
+        !(
+          (queued.type === "term_resize" || queued.type === "term_viewer_active") &&
+          queued.task_id === taskId
+        ),
+    );
   }
 
   private rawSend(frame: ClientFrame, socket = this.socket): boolean {

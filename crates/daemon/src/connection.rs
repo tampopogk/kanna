@@ -11,8 +11,8 @@ use tokio::sync::{broadcast, Mutex};
 
 use crate::client::{
     cleanup_client_writer_registries, register_terminal_emulator_client,
-    unregister_terminal_emulator_client, LostHandoffSessions, SessionSizeState, SessionSizes,
-    TerminalEmulatorClients,
+    unregister_terminal_emulator_client, GeometrySnapshot, LostHandoffSessions, SessionSizeState,
+    SessionSizes, TerminalEmulatorClients,
 };
 use crate::daemon_lifecycle::{DaemonLifecycle, DaemonLifecycleState};
 use crate::fanout::{
@@ -66,6 +66,94 @@ async fn logical_input_event(
             ),
         ),
     }
+}
+
+/// What happened to a geometry proposal once the daemon tried to apply it.
+#[derive(Debug)]
+pub(crate) enum GeometryOutcome {
+    /// The transition changed no dimensions; only ownership state may have moved.
+    NoChange,
+    /// The PTY (or headless emulator) accepted the new winsize.
+    Applied((u16, u16)),
+    /// The resize was proposed but the PTY rejected it or the session was gone.
+    Failed(String),
+}
+
+/// Runtime visibility for terminal geometry: one line per ownership change and
+/// per actual applied resize, on every path that can move a PTY's winsize.
+///
+/// Ownership can change with equal dimensions, so this is driven by before/after
+/// state rather than by the returned pending resize. Production-relevant edges
+/// (ownership moves, applied resizes) log at info, failures at warn, and
+/// repeated unchanged claims and passive proposals at debug, so a live daemon
+/// log stays readable while still explaining an oscillation after the fact.
+#[allow(clippy::too_many_arguments)]
+fn log_terminal_geometry(
+    cause: &str,
+    session_id: &str,
+    writer_id: usize,
+    viewer: Option<(&str, Option<u64>)>,
+    before: &GeometrySnapshot,
+    after: &GeometrySnapshot,
+    proposed: Option<(u16, u16)>,
+    outcome: &GeometryOutcome,
+) {
+    let (level, line) = format_terminal_geometry(
+        cause, session_id, writer_id, viewer, before, after, proposed, outcome,
+    );
+    log::log!(level, "{line}");
+}
+
+/// Compose the geometry log line and the level it belongs at. Split out so the
+/// three outcomes a reader has to be able to tell apart — an equal-size
+/// ownership change, an applied resize, and a failure — are testable without a
+/// live daemon.
+#[allow(clippy::too_many_arguments)]
+fn format_terminal_geometry(
+    cause: &str,
+    session_id: &str,
+    writer_id: usize,
+    viewer: Option<(&str, Option<u64>)>,
+    before: &GeometrySnapshot,
+    after: &GeometrySnapshot,
+    proposed: Option<(u16, u16)>,
+    outcome: &GeometryOutcome,
+) -> (log::Level, String) {
+    let owner_changed = before.owner_changed(after);
+    let (outcome_label, applied) = match outcome {
+        GeometryOutcome::NoChange => ("no_change", None),
+        GeometryOutcome::Applied(size) => ("applied", Some(*size)),
+        GeometryOutcome::Failed(_) => ("failed", None),
+    };
+    let error = match outcome {
+        GeometryOutcome::Failed(error) => format!(" error={error:?}"),
+        _ => String::new(),
+    };
+    let line = format!(
+        "event=terminal_geometry cause={cause} pid={pid} session={session_id} \
+writer={writer_id} viewer={viewer_id:?} generation={generation:?} \
+active_sequence={before_seq}->{after_seq} \
+controller={before_controller:?}->{after_controller:?} owner_changed={owner_changed} \
+viewers={after_viewers} legacy_viewers={after_legacy} \
+previous={before_applied:?} proposed={proposed:?} applied={applied:?} \
+outcome={outcome_label}{error}",
+        pid = std::process::id(),
+        viewer_id = viewer.map(|(id, _)| id),
+        generation = viewer.and_then(|(_, generation)| generation),
+        before_seq = before.active_sequence,
+        after_seq = after.active_sequence,
+        before_controller = before.controller_viewer,
+        after_controller = after.controller_viewer,
+        after_viewers = after.viewers,
+        after_legacy = after.legacy_viewers,
+        before_applied = before.last_applied,
+    );
+    let level = match outcome {
+        GeometryOutcome::Failed(_) => log::Level::Warn,
+        _ if owner_changed || applied.is_some() => log::Level::Info,
+        _ => log::Level::Debug,
+    };
+    (level, line)
 }
 
 async fn session_handle(
@@ -401,20 +489,38 @@ pub(crate) async fn handle_connection(
         &session_sizes,
     )
     .await;
-    for (session_id, cols, rows) in remaining_sizes {
+    let cleanup_writer_id = Arc::as_ptr(&writer) as usize;
+    for remaining in remaining_sizes {
+        let (cols, rows) = remaining.size;
+        let session_id = remaining.session_id;
         let lifecycle = sessions.lock().await.lifecycle_lock(&session_id);
         let _lifecycle_guard = lifecycle.lock().await;
+        let mut outcome = GeometryOutcome::Failed(format!("session not found: {session_id}"));
         if let Some(session) = session_handle(&sessions, &session_id).await {
-            if session.resize(cols, rows).await.is_ok() {
-                if let Some(state) = session_sizes.lock().await.get_mut(&session_id) {
-                    state.mark_applied((cols, rows));
+            match session.resize(cols, rows).await {
+                Ok(()) => {
+                    if let Some(state) = session_sizes.lock().await.get_mut(&session_id) {
+                        state.mark_applied((cols, rows));
+                    }
+                    recovery_manager
+                        .resize_session(&session_id, cols, rows)
+                        .await;
+                    publish_resize_snapshot(&session_id, &session, &fanouts).await;
+                    outcome = GeometryOutcome::Applied((cols, rows));
                 }
-                recovery_manager
-                    .resize_session(&session_id, cols, rows)
-                    .await;
-                publish_resize_snapshot(&session_id, &session, &fanouts).await;
+                Err(error) => outcome = GeometryOutcome::Failed(error.to_string()),
             }
         }
+        log_terminal_geometry(
+            "connection_cleanup",
+            &session_id,
+            cleanup_writer_id,
+            remaining.viewer_id.as_deref().map(|id| (id, None)),
+            &remaining.before,
+            &remaining.after,
+            Some((cols, rows)),
+            &outcome,
+        );
     }
     agent_runtime::cleanup_agent_writer(&agent_sessions, &writer).await;
 }
@@ -788,25 +894,51 @@ pub(crate) async fn handle_command(
                 // elects exactly once and retains the last size if no viewer
                 // remains.
                 let writer_id = Arc::as_ptr(&writer) as usize;
-                let resize = session_sizes
-                    .lock()
-                    .await
-                    .get_mut(&session_id)
-                    .and_then(|state| state.remove(writer_id));
-                if let Some((cols, rows)) = resize {
-                    let lifecycle = sessions.lock().await.lifecycle_lock(&session_id);
-                    let _lifecycle_guard = lifecycle.lock().await;
-                    if let Some(session) = session_handle(&sessions, &session_id).await {
-                        if session.resize(cols, rows).await.is_ok() {
-                            if let Some(state) = session_sizes.lock().await.get_mut(&session_id) {
-                                state.mark_applied((cols, rows));
+                let detach_geometry = {
+                    let mut sizes = session_sizes.lock().await;
+                    sizes.get_mut(&session_id).map(|state| {
+                        let before = state.snapshot();
+                        let viewer_id = state.viewer_id(writer_id).map(str::to_string);
+                        let generation = state.viewer_generation(writer_id);
+                        let resize = state.remove(writer_id);
+                        (before, state.snapshot(), viewer_id, generation, resize)
+                    })
+                };
+                if let Some((before, after, viewer_id, generation, resize)) = detach_geometry {
+                    let mut outcome = GeometryOutcome::NoChange;
+                    if let Some((cols, rows)) = resize {
+                        let lifecycle = sessions.lock().await.lifecycle_lock(&session_id);
+                        let _lifecycle_guard = lifecycle.lock().await;
+                        outcome =
+                            GeometryOutcome::Failed(format!("session not found: {session_id}"));
+                        if let Some(session) = session_handle(&sessions, &session_id).await {
+                            match session.resize(cols, rows).await {
+                                Ok(()) => {
+                                    if let Some(state) =
+                                        session_sizes.lock().await.get_mut(&session_id)
+                                    {
+                                        state.mark_applied((cols, rows));
+                                    }
+                                    recovery_manager
+                                        .resize_session(&session_id, cols, rows)
+                                        .await;
+                                    publish_resize_snapshot(&session_id, &session, &fanouts).await;
+                                    outcome = GeometryOutcome::Applied((cols, rows));
+                                }
+                                Err(error) => outcome = GeometryOutcome::Failed(error.to_string()),
                             }
-                            recovery_manager
-                                .resize_session(&session_id, cols, rows)
-                                .await;
-                            publish_resize_snapshot(&session_id, &session, &fanouts).await;
                         }
                     }
+                    log_terminal_geometry(
+                        "detach",
+                        &session_id,
+                        writer_id,
+                        viewer_id.as_deref().map(|id| (id, generation)),
+                        &before,
+                        &after,
+                        resize,
+                        &outcome,
+                    );
                 }
                 unregister_terminal_emulator_client(
                     &terminal_emulator_clients,
@@ -1369,12 +1501,17 @@ pub(crate) async fn handle_command(
             let writer_id = Arc::as_ptr(&writer) as usize;
             let lifecycle = sessions.lock().await.lifecycle_lock(&session_id);
             let _lifecycle_guard = lifecycle.lock().await;
-            let resize = session_sizes
-                .lock()
-                .await
-                .entry(session_id.clone())
-                .or_insert_with(|| SessionSizeState::new((cols, rows)))
-                .resize(writer_id, cols, rows);
+            let (before, after, viewer_id, generation, resize) = {
+                let mut sizes = session_sizes.lock().await;
+                let state = sizes
+                    .entry(session_id.clone())
+                    .or_insert_with(|| SessionSizeState::new((cols, rows)));
+                let before = state.snapshot();
+                let viewer_id = state.viewer_id(writer_id).map(str::to_string);
+                let generation = state.viewer_generation(writer_id);
+                let resize = state.resize(writer_id, cols, rows);
+                (before, state.snapshot(), viewer_id, generation, resize)
+            };
             let result = match resize {
                 Some((eff_cols, eff_rows)) => match session_handle(&sessions, &session_id).await {
                     Some(session) => session.resize(eff_cols, eff_rows).await,
@@ -1383,9 +1520,13 @@ pub(crate) async fn handle_command(
                 None => Ok(()),
             };
             let success = result.is_ok();
+            let mut outcome = GeometryOutcome::NoChange;
             let evt = match result {
                 Ok(_) => Event::Ok,
-                Err(e) => error_event(None, e.to_string()),
+                Err(e) => {
+                    outcome = GeometryOutcome::Failed(e.to_string());
+                    error_event(None, e.to_string())
+                }
             };
             if success {
                 if let Some((eff_cols, eff_rows)) = resize {
@@ -1398,8 +1539,19 @@ pub(crate) async fn handle_command(
                     if let Some(session) = session_handle(&sessions, &session_id).await {
                         publish_resize_snapshot(&session_id, &session, &fanouts).await;
                     }
+                    outcome = GeometryOutcome::Applied((eff_cols, eff_rows));
                 }
             }
+            log_terminal_geometry(
+                "resize",
+                &session_id,
+                writer_id,
+                viewer_id.as_deref().map(|id| (id, generation)),
+                &before,
+                &after,
+                resize.or(Some((cols, rows))),
+                &outcome,
+            );
             let _ = write_event(&mut *writer.lock().await, &evt).await;
         }
 
@@ -1411,12 +1563,18 @@ pub(crate) async fn handle_command(
             let writer_id = Arc::as_ptr(&writer) as usize;
             let lifecycle = sessions.lock().await.lifecycle_lock(&session_id);
             let _lifecycle_guard = lifecycle.lock().await;
-            let resize = session_sizes
-                .lock()
-                .await
-                .entry(session_id.clone())
-                .or_insert_with(|| SessionSizeState::new((cols, rows)))
-                .resize(writer_id, cols, rows);
+            let (before, after, viewer_id, generation, resize) = {
+                let mut sizes = session_sizes.lock().await;
+                let state = sizes
+                    .entry(session_id.clone())
+                    .or_insert_with(|| SessionSizeState::new((cols, rows)));
+                let before = state.snapshot();
+                let viewer_id = state.viewer_id(writer_id).map(str::to_string);
+                let generation = state.viewer_generation(writer_id);
+                let resize = state.resize(writer_id, cols, rows);
+                (before, state.snapshot(), viewer_id, generation, resize)
+            };
+            let mut outcome = GeometryOutcome::NoChange;
             if let Some((eff_cols, eff_rows)) = resize {
                 match session_handle(&sessions, &session_id).await {
                     Some(session) => match session.resize(eff_cols, eff_rows).await {
@@ -1428,13 +1586,17 @@ pub(crate) async fn handle_command(
                                 .resize_session(&session_id, eff_cols, eff_rows)
                                 .await;
                             publish_resize_snapshot(&session_id, &session, &fanouts).await;
+                            outcome = GeometryOutcome::Applied((eff_cols, eff_rows));
                         }
                         Err(error) => {
+                            outcome = GeometryOutcome::Failed(error.to_string());
                             let evt = error_event(None, error.to_string());
                             let _ = write_event(&mut *writer.lock().await, &evt).await;
                         }
                     },
                     None => {
+                        outcome =
+                            GeometryOutcome::Failed(format!("session not found: {}", session_id));
                         let evt = error_event(
                             Some(protocol::ErrorCode::SessionNotFound),
                             format!("session not found: {}", session_id),
@@ -1443,6 +1605,16 @@ pub(crate) async fn handle_command(
                     }
                 }
             }
+            log_terminal_geometry(
+                "resize_no_reply",
+                &session_id,
+                writer_id,
+                viewer_id.as_deref().map(|id| (id, generation)),
+                &before,
+                &after,
+                resize.or(Some((cols, rows))),
+                &outcome,
+            );
         }
 
         Command::RegisterViewer {
@@ -1468,13 +1640,20 @@ pub(crate) async fn handle_command(
                     return;
                 }
             };
-            let resize = session_sizes
-                .lock()
-                .await
-                .entry(session_id.clone())
-                .or_insert_with(|| SessionSizeState::new(fallback))
-                .register(writer_id, viewer_id, role, cols, rows, visible, generation);
+            let logged_viewer_id = viewer_id.clone();
+            let (before, after, resize) = {
+                let mut sizes = session_sizes.lock().await;
+                let state = sizes
+                    .entry(session_id.clone())
+                    .or_insert_with(|| SessionSizeState::new(fallback));
+                let before = state.snapshot();
+                let resize =
+                    state.register(writer_id, viewer_id, role, cols, rows, visible, generation);
+                (before, state.snapshot(), resize)
+            };
+            let mut outcome = GeometryOutcome::NoChange;
             if let Some((eff_cols, eff_rows)) = resize {
+                outcome = GeometryOutcome::Failed(format!("session not found: {}", session_id));
                 if let Some(session) = session_handle(&sessions, &session_id).await {
                     match session.resize(eff_cols, eff_rows).await {
                         Ok(()) => {
@@ -1485,14 +1664,30 @@ pub(crate) async fn handle_command(
                                 .resize_session(&session_id, eff_cols, eff_rows)
                                 .await;
                             publish_resize_snapshot(&session_id, &session, &fanouts).await;
+                            outcome = GeometryOutcome::Applied((eff_cols, eff_rows));
                         }
                         Err(error) => {
+                            outcome = GeometryOutcome::Failed(error.to_string());
                             let evt = error_event(None, error.to_string());
                             let _ = write_event(&mut *writer.lock().await, &evt).await;
                         }
                     }
                 }
             }
+            log_terminal_geometry(
+                if visible {
+                    "register_viewer"
+                } else {
+                    "register_viewer_hidden"
+                },
+                &session_id,
+                writer_id,
+                Some((logged_viewer_id.as_str(), Some(generation))),
+                &before,
+                &after,
+                resize.or(Some((cols, rows))),
+                &outcome,
+            );
         }
 
         Command::ActiveViewer { session_id } => {
@@ -1500,15 +1695,25 @@ pub(crate) async fn handle_command(
             let lifecycle = sessions.lock().await.lifecycle_lock(&session_id);
             let _lifecycle_guard = lifecycle.lock().await;
             let trace_geometry = std::env::var_os("KANNA_E2E_TRACE_TERMINAL_GEOMETRY").is_some();
-            let (resize, trace) = {
+            let (resize, before, after, viewer_id, generation, trace) = {
                 let mut sizes = session_sizes.lock().await;
                 let Some(state) = sizes.get_mut(&session_id) else {
+                    log_terminal_geometry(
+                        "activate_viewer",
+                        &session_id,
+                        writer_id,
+                        None,
+                        &GeometrySnapshot::absent((0, 0)),
+                        &GeometrySnapshot::absent((0, 0)),
+                        None,
+                        &GeometryOutcome::Failed("no geometry state for session".to_string()),
+                    );
                     if trace_geometry {
                         log::warn!("[e2e-terminal-geometry] daemon active session={session_id} writer={writer_id} state=missing");
                     }
                     return;
                 };
-                let before = state.viewers.get(&writer_id).map(|viewer| {
+                let trace = state.viewers.get(&writer_id).map(|viewer| {
                     (
                         viewer.viewer_id.clone(),
                         viewer.cols,
@@ -1517,8 +1722,18 @@ pub(crate) async fn handle_command(
                         viewer.active,
                     )
                 });
+                let before = state.snapshot();
+                let viewer_id = state.viewer_id(writer_id).map(str::to_string);
+                let generation = state.viewer_generation(writer_id);
                 let resize = state.activate(writer_id);
-                (resize, (before, state.controller, state.last_applied))
+                (
+                    resize,
+                    before,
+                    state.snapshot(),
+                    viewer_id,
+                    generation,
+                    (trace, state.controller, state.last_applied),
+                )
             };
             if trace_geometry {
                 log::warn!(
@@ -1526,19 +1741,35 @@ pub(crate) async fn handle_command(
                     trace.0, trace.1, trace.2, resize
                 );
             }
+            let mut outcome = GeometryOutcome::NoChange;
             if let Some((cols, rows)) = resize {
+                outcome = GeometryOutcome::Failed(format!("session not found: {}", session_id));
                 if let Some(session) = session_handle(&sessions, &session_id).await {
-                    if session.resize(cols, rows).await.is_ok() {
-                        if let Some(state) = session_sizes.lock().await.get_mut(&session_id) {
-                            state.mark_applied((cols, rows));
+                    match session.resize(cols, rows).await {
+                        Ok(()) => {
+                            if let Some(state) = session_sizes.lock().await.get_mut(&session_id) {
+                                state.mark_applied((cols, rows));
+                            }
+                            recovery_manager
+                                .resize_session(&session_id, cols, rows)
+                                .await;
+                            publish_resize_snapshot(&session_id, &session, &fanouts).await;
+                            outcome = GeometryOutcome::Applied((cols, rows));
                         }
-                        recovery_manager
-                            .resize_session(&session_id, cols, rows)
-                            .await;
-                        publish_resize_snapshot(&session_id, &session, &fanouts).await;
+                        Err(error) => outcome = GeometryOutcome::Failed(error.to_string()),
                     }
                 }
             }
+            log_terminal_geometry(
+                "activate_viewer",
+                &session_id,
+                writer_id,
+                viewer_id.as_deref().map(|id| (id, generation)),
+                &before,
+                &after,
+                resize,
+                &outcome,
+            );
         }
 
         Command::TakeoverViewer { session_id } => {
@@ -1969,5 +2200,100 @@ pub(crate) async fn handle_command(
             let event = error_event(None, "unexpected nested authority command");
             let _ = write_event(&mut *writer.lock().await, &event).await;
         }
+    }
+}
+
+#[cfg(test)]
+mod geometry_log_tests {
+    use super::*;
+
+    fn snapshot(
+        controller: Option<(&str, u16, u16)>,
+        applied: (u16, u16),
+        seq: u64,
+    ) -> GeometrySnapshot {
+        GeometrySnapshot {
+            controller_writer: controller.map(|_| 7),
+            controller_viewer: controller.map(|(id, _, _)| id.to_string()),
+            controller_size: controller.map(|(_, cols, rows)| (cols, rows)),
+            last_applied: applied,
+            active_sequence: seq,
+            viewers: 2,
+            legacy_viewers: 0,
+        }
+    }
+
+    fn line(
+        before: &GeometrySnapshot,
+        after: &GeometrySnapshot,
+        proposed: Option<(u16, u16)>,
+        outcome: &GeometryOutcome,
+    ) -> (log::Level, String) {
+        format_terminal_geometry(
+            "activate_viewer",
+            "session-1",
+            7,
+            Some(("phone", Some(3))),
+            before,
+            after,
+            proposed,
+            outcome,
+        )
+    }
+
+    #[test]
+    fn an_equal_size_ownership_change_is_reported_even_without_a_resize() {
+        let before = snapshot(Some(("mac", 100, 30)), (100, 30), 4);
+        let after = snapshot(Some(("phone", 100, 30)), (100, 30), 5);
+        let (level, text) = line(&before, &after, None, &GeometryOutcome::NoChange);
+        assert_eq!(level, log::Level::Info);
+        assert!(text.contains("owner_changed=true"), "{text}");
+        assert!(
+            text.contains("controller=Some(\"mac\")->Some(\"phone\")"),
+            "{text}"
+        );
+        assert!(text.contains("active_sequence=4->5"), "{text}");
+        assert!(text.contains("outcome=no_change"), "{text}");
+    }
+
+    #[test]
+    fn an_applied_resize_reports_the_previous_and_applied_dimensions() {
+        let before = snapshot(Some(("mac", 100, 30)), (100, 30), 4);
+        let after = snapshot(Some(("phone", 40, 20)), (100, 30), 5);
+        let (level, text) = line(
+            &before,
+            &after,
+            Some((40, 20)),
+            &GeometryOutcome::Applied((40, 20)),
+        );
+        assert_eq!(level, log::Level::Info);
+        assert!(text.contains("previous=(100, 30)"), "{text}");
+        assert!(text.contains("applied=Some((40, 20))"), "{text}");
+        assert!(text.contains("outcome=applied"), "{text}");
+    }
+
+    #[test]
+    fn a_failed_resize_warns_and_never_claims_it_was_applied() {
+        let before = snapshot(Some(("mac", 100, 30)), (100, 30), 4);
+        let after = snapshot(Some(("phone", 40, 20)), (100, 30), 5);
+        let (level, text) = line(
+            &before,
+            &after,
+            Some((40, 20)),
+            &GeometryOutcome::Failed("ioctl failed".to_string()),
+        );
+        assert_eq!(level, log::Level::Warn);
+        assert!(text.contains("outcome=failed"), "{text}");
+        assert!(text.contains("applied=None"), "{text}");
+        assert!(text.contains("ioctl failed"), "{text}");
+    }
+
+    #[test]
+    fn a_passive_proposal_that_changes_nothing_stays_at_debug() {
+        let before = snapshot(Some(("mac", 100, 30)), (100, 30), 4);
+        let after = snapshot(Some(("mac", 100, 30)), (100, 30), 4);
+        let (level, text) = line(&before, &after, None, &GeometryOutcome::NoChange);
+        assert_eq!(level, log::Level::Debug);
+        assert!(text.contains("owner_changed=false"), "{text}");
     }
 }
