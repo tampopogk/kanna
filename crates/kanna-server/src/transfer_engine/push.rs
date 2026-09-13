@@ -1186,7 +1186,12 @@ async fn run_finalization(
     // two committed orderings.
     #[cfg(test)]
     if let Some(barrier) = state.transfer_source_barrier.clone() {
-        let _permit = barrier.acquire().await;
+        let _ = barrier.arrived.send(format!("{transfer_id}/{}", work.id));
+        if let Ok(permit) = barrier.release.acquire().await {
+            // Consumed for good: one added permit releases one attempt, so a
+            // later attempt cannot be let through by an earlier one's exit.
+            permit.forget();
+        }
     }
 
     // Locate the session state this payload will promise *before* the agent is

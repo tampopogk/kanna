@@ -696,15 +696,35 @@ async fn replacement_preserves_history_and_compiles_legacy_post_snapshots() {
 
 /// The consultation-grown shape: a manual `plan` stage appended to the task
 /// that carried the consultation, with the planning run live.
-/// `plan_publication_fixture` with a barrier a finalization attempt holds
-/// between acquiring the source and doing anything to it, so a test can drive a
-/// real completion while the attempt is genuinely mid-flight. Permits are added
-/// by the test to release it.
-fn plan_publication_fixture_with_barrier(label: &str) -> (tempfile::TempDir, Arc<AppState>, Value) {
+/// `plan_publication_fixture` with a stop between a finalization attempt
+/// acquiring the source and doing anything to it.
+///
+/// `arrivals` yields one message per attempt that got past acquisition, and
+/// `release` hands through exactly one attempt per added permit.
+struct BarrieredFixture {
+    _temp: tempfile::TempDir,
+    state: Arc<AppState>,
+    before: Value,
+    arrivals: tokio::sync::mpsc::UnboundedReceiver<String>,
+    release: Arc<tokio::sync::Semaphore>,
+}
+
+fn plan_publication_fixture_with_barrier(label: &str) -> BarrieredFixture {
     let (temp, state, before) = plan_publication_fixture(label);
     let mut state = Arc::try_unwrap(state).unwrap_or_else(|_| panic!("sole owner of the fixture"));
-    state.transfer_source_barrier = Some(Arc::new(tokio::sync::Semaphore::new(0)));
-    (temp, Arc::new(state), before)
+    let (arrived, arrivals) = tokio::sync::mpsc::unbounded_channel();
+    let release = Arc::new(tokio::sync::Semaphore::new(0));
+    state.transfer_source_barrier = Some(Arc::new(crate::http_api::TransferSourceBarrier {
+        arrived,
+        release: Arc::clone(&release),
+    }));
+    BarrieredFixture {
+        _temp: temp,
+        state: Arc::new(state),
+        before,
+        arrivals,
+        release,
+    }
 }
 
 fn plan_publication_fixture(label: &str) -> (tempfile::TempDir, Arc<AppState>, Value) {
@@ -1512,13 +1532,40 @@ async fn a_settled_transfer_releases_the_task_and_a_later_plan_still_refuses_the
 
 // --- Ownership across the real failure / retry / settlement lifecycle -------
 
-fn barrier_state(state: &Arc<AppState>) -> Arc<tokio::sync::Semaphore> {
-    Arc::clone(
-        state
-            .transfer_source_barrier
-            .as_ref()
-            .expect("the fixture installs a barrier"),
-    )
+/// Wait for the next attempt to reach the barrier, failing rather than hanging.
+///
+/// Arrival is published by the attempt itself, after it has acquired the source
+/// and before it can touch it. That is what makes it a per-attempt signal: the
+/// durable claim row would read as "arrived" for an attempt that has not even
+/// started, because an earlier one already wrote it.
+async fn next_arrival(arrivals: &mut tokio::sync::mpsc::UnboundedReceiver<String>) -> String {
+    tokio::time::timeout(std::time::Duration::from_secs(20), arrivals.recv())
+        .await
+        .expect("an attempt must reach the source barrier")
+        .expect("the barrier channel must stay open")
+}
+
+/// Wait for a running attempt to reach the barrier, failing with what it
+/// actually did if it finishes first.
+///
+/// An attempt refused at acquisition never arrives, and waiting for it would
+/// otherwise time out. Racing its completion turns that into an assertion that
+/// names the refusal.
+async fn arrival_of(
+    arrivals: &mut tokio::sync::mpsc::UnboundedReceiver<String>,
+    attempt: &mut tokio::task::JoinHandle<Result<(), String>>,
+) -> String {
+    tokio::select! {
+        arrived = arrivals.recv() => arrived.expect("the barrier channel must stay open"),
+        // Its outcome text may be a downstream reporting failure rather than
+        // the refusal itself — the wrapper replaces the reason when it cannot
+        // reach the destination — so what this asserts is the *shape*: the
+        // attempt ended without ever acquiring the source.
+        finished = attempt => panic!(
+            "the attempt ended without reaching the source barrier, so it never acquired the \
+             source it was supposed to own. Its outcome was {finished:?}"
+        ),
+    }
 }
 
 fn work_status(state: &Arc<AppState>, work_id: &str) -> Option<String> {
@@ -1542,17 +1589,26 @@ fn transfer_status(state: &Arc<AppState>, transfer_id: &str) -> String {
 ///
 /// This is the lifecycle the display status gets wrong. The real wrapper marks
 /// the transfer `failed` when finalization errors, and the real queue requeues
-/// the same work item while attempts remain — so attempt two shuts down a
-/// source for a transfer whose row says it is over. Reading ownership from the
-/// row alone would make that attempt invisible to publication.
+/// the same work item while attempts remain — so attempt two shuts a source down
+/// for a transfer whose row says it is over. Reading ownership from the row
+/// alone would make that attempt invisible to publication.
 ///
-/// The attempt is held at a barrier between acquiring the source and touching
-/// it, and a real combined completion is driven against the same database while
-/// it waits.
+/// Both attempts are claimed from the real queue, so each carries the queue's
+/// own running state and attempt count rather than a fabricated one, and the
+/// retry's backoff is stepped over by claiming as of a later instant rather than
+/// slept through. Attempt two publishes its own arrival after acquiring the
+/// source and before touching it; that arrival — not the durable claim row,
+/// which attempt one already wrote — is what proves this attempt got past
+/// acquisition.
 #[tokio::test]
 async fn a_retry_of_a_failed_transfer_still_excludes_publication() {
-    let (_temp, state, before) =
-        plan_publication_fixture_with_barrier("plan-vs-transfer-retry-own");
+    let BarrieredFixture {
+        _temp,
+        state,
+        before,
+        mut arrivals,
+        release,
+    } = plan_publication_fixture_with_barrier("plan-vs-transfer-retry-own");
     let app = router(Arc::clone(&state));
     {
         let db = Db::open(&state.config.db_path).expect("db");
@@ -1560,17 +1616,31 @@ async fn a_retry_of_a_failed_transfer_still_excludes_publication() {
     }
     let work_id = "finalize:transfer-retry";
 
-    // Attempt one, through the real dispatch and the real settlement
-    // bookkeeping. It fails downstream, which fails the transfer row and
-    // requeues the same work.
-    let barrier = barrier_state(&state);
-    barrier.add_permits(1);
-    let first = crate::transfer_engine::run_one_work_item_for_test(
-        &state,
-        &finalize_work("transfer-retry"),
-    )
-    .await;
-    assert!(first.is_err(), "this fixture cannot finalize: {first:?}");
+    // Attempt one, claimed from the real queue and run through the real
+    // dispatch and settlement. It is released immediately; what matters here is
+    // that the wrapper fails the transfer and the queue requeues the same work.
+    let first_item = {
+        let db = Db::open(&state.config.db_path).expect("db");
+        db.claim_next_transfer_work(&[])
+            .expect("claim")
+            .expect("the queued finalization")
+    };
+    assert_eq!(first_item.id, work_id);
+    assert_eq!(first_item.attempts, 1);
+    let first = {
+        let state = Arc::clone(&state);
+        let item = first_item.clone();
+        tokio::spawn(async move {
+            crate::transfer_engine::run_one_work_item_for_test(&state, &item).await
+        })
+    };
+    assert_eq!(
+        next_arrival(&mut arrivals).await,
+        "transfer-retry/finalize:transfer-retry"
+    );
+    release.add_permits(1);
+    let first = first.await.expect("attempt one must not panic");
+    let first_error = first.expect_err("this fixture cannot finalize");
     assert_eq!(transfer_status(&state, "transfer-retry"), "failed");
     assert_eq!(
         work_status(&state, work_id).as_deref(),
@@ -1578,33 +1648,54 @@ async fn a_retry_of_a_failed_transfer_still_excludes_publication() {
         "the same work must still be retriable"
     );
 
-    // Attempt two claims the source and then holds, mid-flight, before any
-    // shutdown.
-    let mut attempt_two = finalize_work("transfer-retry");
-    attempt_two.attempts = 2;
-    let running = {
+    // Attempt two, also claimed from the real queue — stepping over the retry's
+    // backoff rather than waiting it out, so the item this runs is the one the
+    // queue would actually hand the engine.
+    let second_item = {
+        let db = Db::open(&state.config.db_path).expect("db");
+        // A fixed instant far past any retry backoff: the schedule is stepped
+        // over deterministically rather than slept through.
+        db.claim_next_transfer_work_as_of(&[], "2099-01-01 00:00:00")
+            .expect("claim")
+            .expect("the requeued finalization")
+    };
+    assert_eq!(second_item.id, work_id, "the retry must be the same work");
+    assert_eq!(second_item.attempts, 2, "the queue must count this attempt");
+    assert_eq!(work_status(&state, work_id).as_deref(), Some("running"));
+    let second = {
         let state = Arc::clone(&state);
+        let item = second_item.clone();
         tokio::spawn(async move {
-            crate::transfer_engine::run_one_work_item_for_test(&state, &attempt_two).await
+            crate::transfer_engine::run_one_work_item_for_test(&state, &item).await
         })
     };
-    let db = Db::open(&state.config.db_path).expect("db");
-    let owner = tokio::time::timeout(std::time::Duration::from_secs(10), async {
-        loop {
-            if let Some(owner) = db
-                .task_workflow_is_claimed_by_transfer("task-1")
-                .expect("read ownership")
-            {
-                return owner;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .expect("the retry must acquire the source");
-    assert_eq!(owner, "transfer-retry");
 
-    // The real completion handler, while the attempt is genuinely in flight.
+    // The retry got past acquisition — which a status-only ownership rule would
+    // never have allowed — and is now held before any source effect.
+    let mut second = second;
+    assert_eq!(
+        arrival_of(&mut arrivals, &mut second).await,
+        "transfer-retry/finalize:transfer-retry"
+    );
+    // Held: it has acquired the source and cannot finish until released.
+    // (The finalization phase record is not a per-attempt marker — attempt one
+    // already wrote it, and a retry short-circuits on that verdict.)
+    assert!(
+        !second.is_finished(),
+        "the attempt must not pass the boundary before it is released"
+    );
+
+    // The real completion handler, against a genuinely in-flight retry.
+    let db = Db::open(&state.config.db_path).expect("db");
+    let events_before = db
+        .list_task_events(
+            &TaskEventScope::Tasks(vec!["task-1".to_string()]),
+            0,
+            i64::MAX,
+            500,
+        )
+        .expect("read events")
+        .len();
     let after = single_reviewer_suffix(&before);
     let (status, body) = complete_plan(&app, "the full plan", Some((&before, &after))).await;
     assert_eq!(status, StatusCode::CONFLICT, "{body}");
@@ -1612,11 +1703,41 @@ async fn a_retry_of_a_failed_transfer_still_excludes_publication() {
     let run = db.stage_run("run-plan").expect("read run").expect("run");
     assert_eq!(run.status, "running", "no plan result may be recorded");
     assert_eq!(run.result, None);
+    assert_eq!(
+        db.list_task_events(
+            &TaskEventScope::Tasks(vec!["task-1".to_string()]),
+            0,
+            i64::MAX,
+            500,
+        )
+        .expect("read events")
+        .len(),
+        events_before,
+        "a refused publication must append no event"
+    );
+    assert!(!second.is_finished(), "the retry must still be held");
 
-    // Let the held attempt finish; it still must not have been able to publish.
-    barrier.add_permits(1);
-    let _ = running.await.expect("the attempt task must not panic");
-    assert_eq!(pinned(&state), before);
+    // Release it and prove where it actually got to. Attempt two reaches the
+    // same downstream failure attempt one did, which it could only do by
+    // passing acquisition — an implementation that refused failed-transfer
+    // retries would end here with an ownership refusal instead, and one that
+    // never acquired at all would not have reached the barrier above.
+    release.add_permits(1);
+    let second = second.await.expect("attempt two must not panic");
+    let second_error = second.expect_err("this fixture still cannot finalize");
+    assert_eq!(
+        second_error, first_error,
+        "the retry must reach the same downstream failure, not an ownership refusal"
+    );
+    assert!(
+        !second_error.contains("ownership") && !second_error.contains("carries a published plan"),
+        "the retry must not have been refused at acquisition: {second_error}"
+    );
+    assert_eq!(
+        pinned(&state),
+        before,
+        "the plan still must not be recorded"
+    );
 }
 
 /// Reverse ordering, through the real queue: a plan that published first
@@ -1626,7 +1747,12 @@ async fn a_retry_of_a_failed_transfer_still_excludes_publication() {
 /// reached it — the source is untouched rather than merely un-shipped.
 #[tokio::test]
 async fn a_queued_finalization_after_a_publication_is_refused_before_wrap_up() {
-    let (_temp, state, before) = plan_publication_fixture_with_barrier("plan-then-queued-finalize");
+    let BarrieredFixture {
+        _temp,
+        state,
+        before,
+        ..
+    } = plan_publication_fixture_with_barrier("plan-then-queued-finalize");
     let app = router(Arc::clone(&state));
     {
         let db = Db::open(&state.config.db_path).expect("db");
@@ -1681,7 +1807,12 @@ async fn a_queued_finalization_after_a_publication_is_refused_before_wrap_up() {
 /// work is still retriable.
 #[tokio::test]
 async fn a_second_transfer_cannot_take_a_source_that_is_still_owned() {
-    let (_temp, state, before) = plan_publication_fixture_with_barrier("plan-vs-transfer-second");
+    let BarrieredFixture {
+        _temp,
+        state,
+        before,
+        ..
+    } = plan_publication_fixture_with_barrier("plan-vs-transfer-second");
     let app = router(Arc::clone(&state));
     let db = Db::open(&state.config.db_path).expect("db");
     seed_outgoing_transfer(&db, "transfer-one");
@@ -1723,7 +1854,12 @@ async fn a_second_transfer_cannot_take_a_source_that_is_still_owned() {
 /// genuinely finished with the source.
 #[tokio::test]
 async fn restart_recovery_keeps_ownership_until_the_work_is_genuinely_done() {
-    let (_temp, state, before) = plan_publication_fixture_with_barrier("plan-vs-transfer-restart");
+    let BarrieredFixture {
+        _temp,
+        state,
+        before,
+        ..
+    } = plan_publication_fixture_with_barrier("plan-vs-transfer-restart");
     let app = router(Arc::clone(&state));
     let db = Db::open(&state.config.db_path).expect("db");
     seed_outgoing_transfer(&db, "transfer-restart");
@@ -1789,7 +1925,12 @@ async fn restart_recovery_keeps_ownership_until_the_work_is_genuinely_done() {
 /// the task would destroy it.
 #[tokio::test]
 async fn a_late_receipt_cannot_close_the_source_of_a_published_plan() {
-    let (_temp, state, before) = plan_publication_fixture_with_barrier("plan-vs-late-receipt");
+    let BarrieredFixture {
+        _temp,
+        state,
+        before,
+        ..
+    } = plan_publication_fixture_with_barrier("plan-vs-late-receipt");
     let app = router(Arc::clone(&state));
     {
         let db = Db::open(&state.config.db_path).expect("db");
@@ -1844,7 +1985,8 @@ async fn a_late_receipt_cannot_close_the_source_of_a_published_plan() {
 /// Without this, refusing every receipt would look like a fix.
 #[tokio::test]
 async fn an_ordinary_receipt_still_reaches_the_source_close() {
-    let (_temp, state, _before) = plan_publication_fixture_with_barrier("plan-vs-ordinary-receipt");
+    let BarrieredFixture { _temp, state, .. } =
+        plan_publication_fixture_with_barrier("plan-vs-ordinary-receipt");
     {
         let db = Db::open(&state.config.db_path).expect("db");
         seed_outgoing_transfer(&db, "transfer-ordinary");

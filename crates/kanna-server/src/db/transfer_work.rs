@@ -95,6 +95,17 @@ impl Db {
         self.claim_next_transfer_work_at(busy_transfer_ids, "now")
     }
 
+    /// Claim as if it were `now`, so a test can step past a retry's backoff
+    /// without sleeping through it.
+    #[cfg(test)]
+    pub(crate) fn claim_next_transfer_work_as_of(
+        &self,
+        busy_transfer_ids: &[String],
+        now: &str,
+    ) -> Result<Option<TransferWorkItem>, rusqlite::Error> {
+        self.claim_next_transfer_work_at(busy_transfer_ids, now)
+    }
+
     fn claim_next_transfer_work_at(
         &self,
         busy_transfer_ids: &[String],
