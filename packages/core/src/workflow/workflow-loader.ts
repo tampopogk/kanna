@@ -1,5 +1,6 @@
 import type {
   WorkflowDefinition,
+  WorkflowPlanContext,
   WorkflowPost,
   WorkflowStage,
   WorkflowStagePolicy,
@@ -230,6 +231,25 @@ export function parseWorkflowJson(raw: string): WorkflowDefinition {
       );
     }
     def.revision_limit = limit;
+  }
+
+  // Preserved rather than parsed from a file: only the server stamps it, but
+  // a pinned definition round-tripped through this loader must not silently
+  // drop the plan the task's later stages were published under.
+  const planContext = obj["plan_context"];
+  if (planContext !== undefined && planContext !== null) {
+    if (
+      typeof planContext !== "object" ||
+      Array.isArray(planContext) ||
+      typeof (planContext as Record<string, unknown>)["source_run_id"] !== "string" ||
+      typeof (planContext as Record<string, unknown>)["stage"] !== "string" ||
+      typeof (planContext as Record<string, unknown>)["result"] !== "string"
+    ) {
+      throw validationError(
+        `Workflow "${def.name}" has an invalid plan_context; Kanna stamps it when a plan stage publishes its remaining stages and it is not authored by hand`
+      );
+    }
+    def.plan_context = planContext as WorkflowPlanContext;
   }
 
   if (obj["environments"] !== undefined && obj["environments"] !== null) {

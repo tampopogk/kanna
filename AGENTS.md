@@ -74,6 +74,19 @@ reconnect, `tests/cli-contract/` for agent CLI compatibility.
   resume until the task closes.
 - **Post** — tail work injected into the stage's *running* agent session before
   the transition. Stages fork workspaces and swap sessions; posts continue them.
+- **A grown workflow** — a task's stages need not all be chosen before it
+  starts. A consultation task that the owner authorizes gets a manual `plan`
+  stage appended to it by the task manager, and that plan publishes the delivery
+  stages it chose in the same `kanna_complete_stage` call that records it (one
+  transaction; `workflowDefinition` + `expectedDefinition`). The recorded stages
+  survive byte-for-byte and the suffix must follow an existing recipe — this is
+  still the linear engine, not a workflow language. Kanna stamps `plan_context`
+  onto the pinned definition and binds it to `$PLAN_RESULT` for the whole
+  extended workflow; an ordinary edit carries the stamp forward and may not
+  author it. Callers that act on a stage sequence pass `expectedDefinition` to
+  `kanna_advance_stage`, and anything projecting a task's next stage must read
+  the *task's* pinned definition, not the repo file its workflow name resolves
+  to. See `docs/kanna-server-boundary.md`.
 - **Daemon** — standalone process managing PTY sessions. Survives app restarts.
 
 Advancing past the final stage closes the task. Close snapshots dirty state

@@ -594,11 +594,46 @@ in `docs/task-specs/c9f5721b.md` and enforced by the router authorization tests.
 - `POST /v1/tasks`
 - `POST /v1/tasks/{task_id}/input` (optionally with one base64 image `attachment`; see [Image attachments](#image-attachments))
 - `POST /v1/tasks/{task_id}/actions/complete-stage`
+  also accepts an optional `workflowDefinition` with `expectedDefinition`, by
+  which a planning stage publishes the stages its plan chose for its **own**
+  task. Both are recorded in one transaction, so a plan is never durably
+  successful without the stages it selected and a rejected extension leaves no
+  verdict for the planner to discover later. It is accepted only on
+  `status: "success"`, on the task's current `main` run, when that stage is
+  named `plan`, declares `policy.transition: "manual"`, has no post, and is the
+  final stage of the pinned workflow; the recorded stages must survive
+  byte-for-byte as a prefix, the appended suffix must follow a supported recipe
+  (`in progress` (+`commit`) → `pr` (+`approve`), or the same with `review`
+  between) with each stage's agent and provider free, and a finite positive
+  `revision_limit` is required. The server stamps `plan_context`
+  (`{source_run_id, stage, result}`) onto the stored definition and binds its
+  `result` to the reserved `$PLAN_RESULT` prompt variable for every stage and
+  post of the extended workflow — separate from `$PREV_MAIN_RESULT`, which each
+  later main stage overwrites. A stale `expectedDefinition` is a `409`. An
+  exact replay of the same completion is a no-op; a *differing* retry of the
+  run that published a plan is refused, because the recorded plan and the
+  executing stages would otherwise describe different work. The response
+  carries `workflowExtended: true`; a server that predates this ignores both
+  arguments and returns no such field, so a plain success must never be read as
+  a successful extension.
+  **Transfer compatibility:** `plan_context` rides inside the pinned definition
+  that transfer already carries, and the destination re-serializes it. A
+  destination old enough to drop the field fails the import's existing read-back
+  equality check against the source snapshot, so the transfer is rejected as
+  terminal before the source is finalized rather than silently losing the plan
+  its stages were chosen under.
 - `POST /v1/tasks/{task_id}/actions/request-revision`
 - `POST /v1/tasks/{task_id}/actions/close`
 - `POST /v1/tasks/{task_id}/actions/advance-stage`
   accepts optional `source: "operator" | "manager"`. The server records this
   caller declaration without authentication; omission means `unspecified`.
+  It also accepts an optional `expectedDefinition` — the pinned workflow the
+  caller inspected before deciding to advance — checked under the same mutation
+  guard as preparation. A task's remaining stages can be published while an
+  earlier stage runs, so a caller that acted on a displayed stage sequence
+  fences on it; a moved tail is a `409` with nothing scheduled, never a silently
+  different next stage or an accidental close past a final stage that is no
+  longer final.
   Engine policy transitions use `auto`. The trigger is stored on the spawned
   main `stage_run`, carried through any pending post run, emitted on
   `stage.changed`, and returned as `latestRun.trigger`.

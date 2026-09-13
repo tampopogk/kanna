@@ -360,9 +360,49 @@ describe("QA workflow assets", () => {
     expect(manager).toContain("Separate Product Consultation From Planning");
     expect(manager).toContain("Do not automatically convert a consultation");
     expect(manager).toContain("read the consultation's full task and durable input ledger to verify that instruction");
-    expect(manager).toContain("use the existing `kanna_create_task` surface to create a separate top-level development task");
+    // The owner's authorization grows the consultation task itself: the
+    // manager appends a planning stage to it, and a replacement task is the
+    // exception for genuinely separate work rather than the default.
+    expect(manager).toContain("**grow that same task** rather than replacing it");
+    expect(manager).toContain("`kanna_replace_task_workflow` with that document unchanged as");
+    expect(manager).toContain("Leave every existing stage and post byte-for-byte intact");
+    expect(manager).toContain("Create a separate top-level development task with `kanna_create_task` instead");
+    expect(consultantPhrases).toContain("appends a manual `plan` stage to **this same task**");
+    expect(consultantPhrases).toContain("You neither append stages nor advance them");
     expect(manager).toContain("internal `architect-consultation` workflow remains a different tool");
     expect(manager).toContain("do not inject manager terminal input to manufacture a decision");
+  });
+
+  it("lets one task grow its own delivery stages from its plan", () => {
+    const plan = readRepoPhrases(".kanna/agents/plan/AGENT.md");
+    const consultation = JSON.parse(
+      readRepoFile(".kanna/workflows/consultation.json")
+    ) as { description?: string };
+
+    // Publishing is conditional on this plan stage actually being the tail of
+    // the task: `plan-build-review` already has its stages and must publish
+    // nothing.
+    expect(plan).toContain("When this `plan` stage is the **final** stage of the task's `workflowDefinition`");
+    expect(plan).toContain("there is nothing to publish: record the plan and stop");
+
+    // Proportionality is the point: the recipe is chosen from the work, and a
+    // trivial change does not earn a panel.
+    expect(plan).toContain("A label-only change does not earn a specialist panel");
+    expect(plan).toContain("`in progress` (+`commit` post) → `pr` (+`approve` post) — no review stage");
+    expect(plan).toContain("Bind `review` to the `review` agent for an ordinary review, or to `qa-dispatcher`");
+    expect(plan).toContain("Declare a finite positive top-level `revision_limit`");
+    expect(plan).toContain("Copy the existing stages byte-for-byte");
+
+    // One call, one transaction — and an older server that ignores the
+    // arguments must never read as a successful publication.
+    expect(plan).toContain('"expected_definition": <the workflowDefinition you read>');
+    expect(plan).toContain("Confirm `workflowExtended: true` in the response");
+    expect(plan).toContain("a plain success then means the stages were **not** published");
+    expect(plan).toContain("Your recorded result becomes `$PLAN_RESULT`");
+
+    expect(consultation.description).toContain(
+      "the task manager appends a manual plan stage to this same task"
+    );
   });
 
   it("keeps the architect a generic software architect rather than a Kanna-specific one", () => {
