@@ -9,7 +9,7 @@ import { computed, ref, nextTick, onBeforeUnmount, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import draggable from "vuedraggable";
 import { taskSearchMatch } from "../utils/taskSearch";
-import { isTaskWorking, taskSidebarFontWeight } from "../utils/taskActivityDisplay";
+import { isTaskWorking, isTaskUnread, taskSidebarFontWeight } from "../utils/taskActivityDisplay";
 import {
   groupedSidebarTaskItemsByStage,
   sidebarTaskSubtreeRows,
@@ -70,13 +70,22 @@ interface DraggableChange<T> {
 
 const collapsedRepos = ref<Set<string>>(new Set());
 const searchQuery = ref("");
+const attentionFilter = ref<"all" | "unread" | "questions">("all");
+function matchesAttention(item: SidebarTaskItem): boolean {
+  if (attentionFilter.value === "unread") return isTaskUnread(item);
+  if (attentionFilter.value === "questions") return item.runtime_state === "waiting";
+  return true;
+}
+const attentionItems = computed(() => props.taskSlots.filter(matchesAttention));
+const unreadCount = computed(() => props.taskSlots.filter(item => item.closed_at == null && isTaskUnread(item)).length);
+const questionCount = computed(() => props.taskSlots.filter(item => item.closed_at == null && item.runtime_state === "waiting").length);
 const searchInputRef = ref<HTMLInputElement | null>(null);
 const sidebarContentRef = ref<HTMLElement | null>(null);
 const preSearchCollapsed = ref<Set<string> | null>(null);
 const repoDrag = ref<{ repoId: string; startY: number; active: boolean; overRepoId: string | null } | null>(null);
 const suppressNextRepoClick = ref(false);
 const trimmedSearchQuery = computed(() => searchQuery.value.trim());
-const hasActiveSearch = computed(() => trimmedSearchQuery.value.length > 0);
+const hasActiveSearch = computed(() => trimmedSearchQuery.value.length > 0 || attentionFilter.value !== "all");
 const selectedVisibleSlotId = computed(() => {
   const item = props.selectedSlotId
     ? props.taskSlots.find((candidate) => candidate.slot_id === props.selectedSlotId)
@@ -90,7 +99,7 @@ const selectedTaskRepoId = computed(() => {
   return item && item.closed_at == null ? item.repo_id : null;
 });
 function isSearchActive(): boolean {
-  return searchQuery.value.trim().length > 0;
+  return hasActiveSearch.value;
 }
 
 function clearSearch(): void {
@@ -107,7 +116,7 @@ function matchesSearch(item: SidebarTaskItem): boolean {
 function sidebarOrderingOptions(repoId: string) {
   return {
     repoId,
-    items: props.taskSlots,
+    items: attentionItems.value,
     blockers: props.taskBlockers ?? store.taskBlockers,
     blockerTaskStates: props.blockerTaskStates ?? store.blockerTaskStates,
     getStageOrder: store.getStageOrder,
@@ -220,7 +229,8 @@ function itemTitle(item: SidebarTaskItem): string {
 
 function itemTooltip(item: SidebarTaskItem): string | undefined {
   const marker = transferMarker(item);
-  if (!marker) return itemTitle(item);
+  const reasons = [item.runtime_state === "waiting" ? "Detected question / input prompt" : "", isTaskUnread(item) ? "Unread output" : ""].filter(Boolean);
+  if (!marker) return [itemTitle(item), ...reasons].join(" — ");
   // The reason belongs in the row's own tooltip, not only the glyph's: an
   // operator hovering a task that will not move is asking why, and "Transfer
   // failed" on its own is what left one unreadable for a day.
@@ -663,8 +673,8 @@ function detachSubtask(item: SidebarTaskItem) {
   emit("set-parent", readyItem.task_id, null);
 }
 
-watch(searchQuery, (q) => {
-  if (q.trim()) {
+watch(hasActiveSearch, (filtering) => {
+  if (filtering) {
     if (!preSearchCollapsed.value) {
       preSearchCollapsed.value = new Set(collapsedRepos.value);
     }
@@ -711,6 +721,14 @@ defineExpose({ renameSelectedItem, focusSearch, searchQuery, matchesSearch, emit
 
 <template>
   <aside class="sidebar" :class="{ 'is-filtering': hasActiveSearch }" @mousedown="preventFocusSteal">
+    <div class="sidebar-actions">
+      <button v-if="selectedRepoId" class="new-task-action" @click="emit('new-task', selectedRepoId)">+ New task</button>
+      <div class="attention-filters" aria-label="Filter tasks">
+        <button :aria-pressed="attentionFilter === 'all'" @click="attentionFilter = 'all'">All</button>
+        <button :aria-pressed="attentionFilter === 'unread'" @click="attentionFilter = 'unread'" title="Tasks with unread output">Unread {{ unreadCount }}</button>
+        <button :aria-pressed="attentionFilter === 'questions'" @click="attentionFilter = 'questions'" title="Positively detected questions or input prompts; not inferred from idle">Questions {{ questionCount }}</button>
+      </div>
+    </div>
     <div ref="sidebarContentRef" class="sidebar-content">
       <div v-if="repos.length === 0" class="empty-state">
         {{ $t('sidebar.noReposYet') }}<br>
@@ -835,7 +853,7 @@ defineExpose({ renameSelectedItem, focusSearch, searchQuery, matchesSearch, emit
                     }"
                     :title="itemTooltip(row.item)"
                   >
-                    <span v-if="transferMarker(row.item)" class="transfer-task-marker" :class="`transfer-task-marker-${transferMarker(row.item)?.state}`" :aria-label="transferMarker(row.item)?.label" :title="transferMarkerTitle(row.item)" @click="onTransferMarkerClick($event, row.item)">{{ transferMarker(row.item)?.glyph }} </span><span v-if="isRemoteTask(row.item)" class="remote-task-marker" :aria-label="t('sidebar.remoteTaskTooltip')">&lt; </span>{{ itemTitle(row.item) }}</span>
+                    <span v-if="transferMarker(row.item)" class="transfer-task-marker" :class="`transfer-task-marker-${transferMarker(row.item)?.state}`" :aria-label="transferMarker(row.item)?.label" :title="transferMarkerTitle(row.item)" @click="onTransferMarkerClick($event, row.item)">{{ transferMarker(row.item)?.glyph }} </span><span v-if="isRemoteTask(row.item)" class="remote-task-marker" :aria-label="t('sidebar.remoteTaskTooltip')">&lt; </span><span v-if="row.item.runtime_state === 'waiting'" class="question-marker" title="Detected question / input prompt" aria-label="Detected question / input prompt">? </span>{{ itemTitle(row.item) }}</span>
                   <button
                     v-if="canDetachSubtask(row)"
                     type="button"
@@ -944,7 +962,7 @@ defineExpose({ renameSelectedItem, focusSearch, searchQuery, matchesSearch, emit
                       }"
                       :title="itemTooltip(row.item)"
                     >
-                      <span v-if="transferMarker(row.item)" class="transfer-task-marker" :class="`transfer-task-marker-${transferMarker(row.item)?.state}`" :aria-label="transferMarker(row.item)?.label" :title="transferMarkerTitle(row.item)" @click="onTransferMarkerClick($event, row.item)">{{ transferMarker(row.item)?.glyph }} </span><span v-if="isRemoteTask(row.item)" class="remote-task-marker" :aria-label="t('sidebar.remoteTaskTooltip')">&lt; </span>{{ itemTitle(row.item) }}</span>
+                      <span v-if="transferMarker(row.item)" class="transfer-task-marker" :class="`transfer-task-marker-${transferMarker(row.item)?.state}`" :aria-label="transferMarker(row.item)?.label" :title="transferMarkerTitle(row.item)" @click="onTransferMarkerClick($event, row.item)">{{ transferMarker(row.item)?.glyph }} </span><span v-if="isRemoteTask(row.item)" class="remote-task-marker" :aria-label="t('sidebar.remoteTaskTooltip')">&lt; </span><span v-if="row.item.runtime_state === 'waiting'" class="question-marker" title="Detected question / input prompt" aria-label="Detected question / input prompt">? </span>{{ itemTitle(row.item) }}</span>
                     <button
                       v-if="canDetachSubtask(row)"
                       type="button"
@@ -1009,7 +1027,7 @@ defineExpose({ renameSelectedItem, focusSearch, searchQuery, matchesSearch, emit
                     }"
                     :title="itemTooltip(row.item)"
                   >
-                    <span v-if="transferMarker(row.item)" class="transfer-task-marker" :class="`transfer-task-marker-${transferMarker(row.item)?.state}`" :aria-label="transferMarker(row.item)?.label" :title="transferMarkerTitle(row.item)" @click="onTransferMarkerClick($event, row.item)">{{ transferMarker(row.item)?.glyph }} </span><span v-if="isRemoteTask(row.item)" class="remote-task-marker" :aria-label="t('sidebar.remoteTaskTooltip')">&lt; </span>{{ itemTitle(row.item) }}</span>
+                    <span v-if="transferMarker(row.item)" class="transfer-task-marker" :class="`transfer-task-marker-${transferMarker(row.item)?.state}`" :aria-label="transferMarker(row.item)?.label" :title="transferMarkerTitle(row.item)" @click="onTransferMarkerClick($event, row.item)">{{ transferMarker(row.item)?.glyph }} </span><span v-if="isRemoteTask(row.item)" class="remote-task-marker" :aria-label="t('sidebar.remoteTaskTooltip')">&lt; </span><span v-if="row.item.runtime_state === 'waiting'" class="question-marker" title="Detected question / input prompt" aria-label="Detected question / input prompt">? </span>{{ itemTitle(row.item) }}</span>
                   <span
                     v-if="row.item.task_id && blockerNames?.[row.item.task_id]"
                     class="blocked-by-text"
@@ -1070,14 +1088,14 @@ defineExpose({ renameSelectedItem, focusSearch, searchQuery, matchesSearch, emit
                   }"
                   :title="itemTooltip(item)"
                 >
-                  <span v-if="transferMarker(item)" class="transfer-task-marker" :class="`transfer-task-marker-${transferMarker(item)?.state}`" :aria-label="transferMarker(item)?.label" :title="transferMarkerTitle(item)" @click="onTransferMarkerClick($event, item)">{{ transferMarker(item)?.glyph }} </span><span v-if="isRemoteTask(item)" class="remote-task-marker" :aria-label="t('sidebar.remoteTaskTooltip')">&lt; </span>{{ itemTitle(item) }}</span>
+                  <span v-if="transferMarker(item)" class="transfer-task-marker" :class="`transfer-task-marker-${transferMarker(item)?.state}`" :aria-label="transferMarker(item)?.label" :title="transferMarkerTitle(item)" @click="onTransferMarkerClick($event, item)">{{ transferMarker(item)?.glyph }} </span><span v-if="isRemoteTask(item)" class="remote-task-marker" :aria-label="t('sidebar.remoteTaskTooltip')">&lt; </span><span v-if="item.runtime_state === 'waiting'" class="question-marker" title="Detected question / input prompt" aria-label="Detected question / input prompt">? </span>{{ itemTitle(item) }}</span>
               </div>
             </div>
           </template>
 
           <div v-if="itemsForRepo(repo.id).length === 0" class="no-items">
             {{ hasActiveSearch
-              ? $t('sidebar.noTasksMatching', { query: trimmedSearchQuery })
+              ? (trimmedSearchQuery ? $t('sidebar.noTasksMatching', { query: trimmedSearchQuery }) : `No ${attentionFilter === 'questions' ? 'detected questions' : 'unread tasks'}`)
               : $t('sidebar.noTasks')
             }}
           </div>
@@ -1115,6 +1133,13 @@ defineExpose({ renameSelectedItem, focusSearch, searchQuery, matchesSearch, emit
 </template>
 
 <style scoped>
+.question-marker { color: var(--kn-accent); font-weight: 600; font-style: normal; }
+.sidebar-actions { padding: 8px; border-bottom: 1px solid var(--kn-border-default); }
+.sidebar-actions button { font: inherit; font-size: 11px; border: 1px solid var(--kn-border-default); border-radius: 4px; color: var(--kn-text-secondary); background: transparent; padding: 4px 6px; cursor: pointer; }
+.new-task-action { width: 100%; margin-bottom: 6px; text-align: left; }
+.attention-filters { display: flex; gap: 4px; flex-wrap: wrap; }
+.attention-filters button[aria-pressed="true"] { color: var(--kn-accent); background: var(--kn-bg-accent-subtle); }
+
 .sidebar {
   width: 260px;
   min-width: 260px;

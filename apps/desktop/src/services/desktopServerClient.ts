@@ -312,6 +312,8 @@ export interface DesktopHumanReviewDecision {
 }
 
 export interface DesktopTaskDetail {
+  ports?: Array<{ name: string; port: number }> | null;
+  worktreePath?: string | null;
   workflowDefinition?: PinnedTaskWorkflow | null;
   id: string;
   stage: string | null;
@@ -335,11 +337,11 @@ export interface DesktopTaskDetail {
   humanReviewDecision?: DesktopHumanReviewDecision | null;
 }
 
-export async function fetchDesktopTaskDetail(taskId: string): Promise<DesktopTaskDetail> {
+export async function fetchDesktopTaskDetail(taskId: string, options?: { localOnly?: boolean }): Promise<DesktopTaskDetail> {
   if (clientHandlersForTests?.fetchTaskDetail) {
     return await clientHandlersForTests.fetchTaskDetail(taskId);
   }
-  return await requestJson<DesktopTaskDetail>(`/v1/tasks/${encodeURIComponent(taskId)}`);
+  return await requestJson<DesktopTaskDetail>(`/v1/tasks/${encodeURIComponent(taskId)}${options?.localOnly ? "?localOnly=true" : ""}`);
 }
 
 export interface CreateDesktopTaskRequest {

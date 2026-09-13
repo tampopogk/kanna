@@ -5,6 +5,7 @@ import type { WorkspaceTask } from "../workspace/types";
 import { useAppKeyboardActions } from "./useAppKeyboardActions";
 import type { ShortcutContext } from "./useShortcutContext";
 import { useMainTabs } from "./useMainTabs";
+import { useKeyboardShortcuts } from "./useKeyboardShortcuts";
 
 const invokeMock = vi.hoisted(() => vi.fn());
 
@@ -167,6 +168,20 @@ function createHarness(options: {
 }
 
 describe("useAppKeyboardActions durable selection", () => {
+  it("leaves save with the focused editor or preview while retaining modal priority", () => {
+    const { mainTabs, overlayContext } = createHarness();
+    const context = vi.mocked(useKeyboardShortcuts).mock.calls.at(-1)?.[1]?.context;
+    mainTabs.openTab({ kind: "editor", editorSession: { sessionId: "edit-test" } as never });
+    expect(context?.()).toBe("shell");
+    mainTabs.openTab({ kind: "preview", portName: "PORT" });
+    expect(context?.()).toBe("preview");
+    overlayContext.value = "newTask";
+    expect(context?.()).toBe("newTask");
+    overlayContext.value = "main";
+    mainTabs.activateTab("agent");
+    expect(context?.()).toBe("main");
+  });
+
   it("opens a local task window with the durable task id, not its UI slot", async () => {
     const { keyboardActions, openWindow } = createHarness({
       selectedSlotId: "create:stable",

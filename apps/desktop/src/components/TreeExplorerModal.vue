@@ -58,6 +58,7 @@ const {
   overlayStyle,
   dismissOnScrimClick,
   focusWhenBrought,
+  isForeground,
 } = useEmbeddableView(props, { context: "tree" });
 /**
  * Put the reader's cursor on the path an agent named, and say whether it is
@@ -217,7 +218,9 @@ function onWheel(e: WheelEvent) {
 }
 
 onMounted(() => {
-  nextTick(() => modalRef.value?.focus());
+  nextTick(() => {
+    if (isForeground()) modalRef.value?.focus();
+  });
 });
 
 onUnmounted(() => {

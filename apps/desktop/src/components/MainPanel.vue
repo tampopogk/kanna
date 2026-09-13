@@ -2,6 +2,8 @@
 import {
   computed,
   nextTick,
+  onMounted,
+  onBeforeUnmount,
   ref,
   watch,
   type ComponentPublicInstance,
@@ -20,6 +22,7 @@ import { isBlockerResolved } from "../utils/blockerResolution";
 import { isRemotePresentationTaskId } from "../utils/remoteTaskIdentity";
 import { invoke } from "../invoke";
 import StageModelControl from "./StageModelControl.vue";
+import TaskPreviewCache from "./TaskPreviewCache.vue";
 import TaskHeader from "./TaskHeader.vue";
 import TerminalTabs from "./TerminalTabs.vue";
 import MainTabBar from "./MainTabBar.vue";
@@ -80,6 +83,33 @@ const item = computed(() => props.uiSlot?.task ?? null);
 const tabs = computed<MainTab[]>(() => props.views?.tabs.tabs.value ?? []);
 const activeTabId = computed(() => props.views?.tabs.activeTabId.value ?? AGENT_TAB_ID);
 const agentTabActive = computed(() => activeTabId.value === AGENT_TAB_ID);
+const workArea = ref<HTMLElement | null>(null);
+const workAreaWidth = ref(0);
+let workAreaObserver: ResizeObserver | undefined;
+onMounted(() => {
+  workAreaObserver = new ResizeObserver(([entry]) => { workAreaWidth.value = entry.contentRect.width; });
+  if (workArea.value) workAreaObserver.observe(workArea.value);
+});
+onBeforeUnmount(() => workAreaObserver?.disconnect());
+const referenceId = computed(() => props.views?.tabs.referenceTabId.value ?? "");
+const splitVisible = computed(() => !isMobile && !!props.uiSlot && !!referenceId.value
+  && props.views?.tabs.split.value && workAreaWidth.value >= 1000);
+const agentVisible = computed(() => agentTabActive.value || splitVisible.value);
+function viewVisible(id: string) {
+  return activeTabId.value === id || (!!splitVisible.value && referenceId.value === id);
+}
+function returnToAgent() {
+  selectTab(AGENT_TAB_ID);
+  void nextTick(() => workArea.value?.querySelector<HTMLElement>('[data-testid="main-tab-panel-agent"] .xterm-helper-textarea')?.focus());
+}
+const ownerLabel = computed(() => props.cloudTerminalRef?.ownerDesktopId
+  ?? (props.cloudTask ? "Owner unavailable" : "This machine"));
+const previewCache = ref<InstanceType<typeof TaskPreviewCache> | null>(null);
+const previewWorkspaces = computed(() => Object.fromEntries(
+  (props.views?.store.items ?? []).filter(task => task.closed_at == null)
+    .map(task => [task.id, props.views?.store.worktreePaths?.[task.id] ?? ""]),
+));
+const selectedPreview = computed(() => tabs.value.find(tab => tab.kind === "preview" && viewVisible(tab.id)));
 const openViewTabs = computed(() => tabs.value.filter((tab) => tab.kind !== "agent"));
 /**
  * The panel's own empty state — "no task selected", or the agent-install help
@@ -94,7 +124,8 @@ const scopeRepoPath = computed(() =>
   props.repoPath ?? props.views?.store.selectedRepo?.path ?? ""
 );
 const taskWorktreePath = computed(() =>
-  item.value?.branch ? `${props.repoPath}/.kanna-worktrees/${item.value.branch}` : undefined
+  item.value ? (props.views?.store.worktreePaths?.[item.value.id]
+    ?? (item.value.branch ? `${props.repoPath}/.kanna-worktrees/${item.value.branch}` : undefined)) : undefined
 );
 
 function selectTab(id: string) {
@@ -112,6 +143,7 @@ function closeTab(id: string) {
 function onTabClosed(tab: MainTab) {
   // The shell is how an operator installs an agent CLI before they have any
   // repositories, so closing it is the moment to look again.
+  if (tab.kind === "preview") previewCache.value?.discard(tabKey(tab));
   if (tab.kind === "shell" && !props.hasRepos) void checkAllClis();
 }
 
@@ -122,7 +154,7 @@ function onTabClosed(tab: MainTab) {
  * previous task's content in a reused node.
  */
 function tabKey(tab: MainTab): string {
-  return `${props.views?.tabs.scopeKey.value ?? ""}:${tab.id}`;
+  return `${props.views?.tabs.scopeKey.value ?? ""}:${tab.id}:${tab.kind === "editor" ? tab.editorSession?.worktreePath : props.views?.modals.readingWorkspace?.value ?? props.views?.modals.activeWorktreePath?.value}`;
 }
 
 const diffViewProps = computed(() => {
@@ -206,6 +238,7 @@ function fileViewProps(tab: MainTab) {
     contentLoader: containedFileLoader(tab.containedTaskId),
     ideCommand: props.views?.store.ideCommand,
     initialLine: tab.initialLine,
+    initialScrollTop: tab.reading?.workspace === modals?.readingWorkspace?.value ? tab.reading?.top : undefined,
     initialMarkdownMode: modals?.currentPreviewMarkdownMode.value,
   };
 }
@@ -687,7 +720,7 @@ function dismissCommandHint() {
         <span class="mobile-back-arrow">&larr;</span>
         <span>Tasks</span>
       </div>
-      <TaskHeader v-if="!maximized && headerItem" :item="headerItem" />
+      <TaskHeader v-if="!maximized && headerItem" :item="headerItem" :owner-label="ownerLabel" :task-id="item?.id" :preview-supported="taskDetailIsLocal && !isMobile && !views?.modals.activeTaskViewIsRemote?.value && !!views" @preview="(portName) => views?.tabs.openTab({ kind: 'preview', portName })" />
       <StageModelControl v-if="!maximized && uiSlot?.task && taskDetailIsLocal && uiSlot.task.closed_at == null" :task="uiSlot.task" />
       <section v-if="revisionBudgetExhausted" class="revision-exhausted" data-testid="revision-exhausted-status">
         <div>
@@ -709,15 +742,28 @@ function dismissCommandHint() {
       task-slot block is split around it rather than the bar being repeated,
       because a repository scope has no header to sit under but still has tabs.
     -->
+    <div v-if="views && uiSlot && !isMobile" class="workspace-actions" data-testid="workspace-actions">
+      <button @click="views.tabs.openTab({ kind: 'diff' })" :title="shortcutHint('showDiff')">Diff</button>
+      <button @click="views.modals.showFilePickerOnTop()" :title="shortcutHint('openFile')">Files…</button>
+      <button @click="views.tabs.openTab({ kind: 'shell' })">Shell</button>
+      <template v-if="openViewTabs.length">
+        <span class="action-spacer"></span>
+        <button @click="returnToAgent" :aria-pressed="agentTabActive">Return to agent</button>
+        <button v-if="referenceId" @click="views.tabs.setSplit(!views.tabs.split.value)" :aria-pressed="splitVisible" :disabled="workAreaWidth < 1000" :title="workAreaWidth < 1000 ? 'Widen the work area to show both views' : 'Show the agent beside the selected reference'">Side by side</button>
+        <button @click="views.tabs.setSplit(false)" :aria-pressed="!splitVisible">Full width</button>
+      </template>
+    </div>
     <MainTabBar
       v-if="views && tabs.length > 0"
       :tabs="tabs"
       :active-tab-id="activeTabId"
+      :worktree-path="taskWorktreePath"
       @select="selectTab"
       @close="closeTab"
     />
+    <div ref="workArea" class="work-area" v-show="!showEmptyState" :class="{ split: splitVisible }" data-testid="task-work-area">
     <template v-if="uiSlot">
-      <div v-show="agentTabActive" class="main-tab-panel" data-testid="main-tab-panel-agent">
+      <div v-show="agentVisible" @pointerdown.capture="selectTab(AGENT_TAB_ID)" @focusin="selectTab(AGENT_TAB_ID)" :class="{ 'pane-focused': agentTabActive }" class="main-tab-panel" data-testid="main-tab-panel-agent">
         <section
           v-if="reviewContext"
           class="review-merge"
@@ -756,6 +802,8 @@ function dismissCommandHint() {
         </section>
         <CloudTerminalCache
           :active-terminal="activeCloudTerminal"
+          :focused="agentTabActive"
+          :visible="agentVisible"
           :discard-key="discardedCloudTerminalKey"
         />
         <template v-if="uiSlot.state !== 'ready' || !item">
@@ -796,6 +844,7 @@ function dismissCommandHint() {
           <TerminalTabs
             :session-id="item.id"
             :active="agentTabActive"
+            :visible="agentVisible"
             :agent-type="item.agent_type || 'pty'"
             :agent-provider="item.agent_provider"
             :repo-path="repoPath"
@@ -807,13 +856,14 @@ function dismissCommandHint() {
         </template>
       </div>
     </template>
-    <template v-if="views">
-      <template v-for="tab in openViewTabs" :key="tabKey(tab)">
+    <div v-if="views" v-show="!agentTabActive || splitVisible" class="reference-area" :class="{ 'pane-focused': !agentTabActive }" data-testid="reference-area">
+      <div v-for="tab in openViewTabs.filter(tab => tab.kind !== 'preview')" :key="tabKey(tab)" v-show="viewVisible(tab.id)" class="reference-view" @pointerdown.capture="selectTab(tab.id)" @focusin="selectTab(tab.id)">
         <DiffModal
           v-if="tab.kind === 'diff' && diffViewProps"
           :ref="(component) => setViewRef(tab.id, component)"
-          v-show="activeTabId === tab.id"
+          v-show="viewVisible(tab.id)"
           v-bind="diffViewProps"
+          :is-visible="() => viewVisible(tab.id)"
           embedded
           :active="activeTabId === tab.id"
           @scope-change="onDiffScopeChange"
@@ -824,26 +874,29 @@ function dismissCommandHint() {
         <FilePreviewModal
           v-else-if="tab.kind === 'file'"
           :ref="(component) => setViewRef(tab.id, component)"
-          v-show="activeTabId === tab.id"
+          v-show="viewVisible(tab.id)"
           v-bind="fileViewProps(tab)"
           embedded
           :active="activeTabId === tab.id"
           @update-markdown-mode="onMarkdownModeChange"
+          @scroll-position="(top: number) => views?.tabs.updateReading(tab.id, { workspace: views.modals.readingWorkspace.value, top })"
           @close="closeTab(tab.id)"
         />
         <TerminalEditorView
           v-else-if="tab.kind === 'editor' && tab.editorSession && taskDetailIsLocal && !views?.modals.activeTaskViewIsRemote.value"
-          v-show="activeTabId === tab.id"
+          v-show="viewVisible(tab.id)"
           :session="tab.editorSession"
+          :visible="viewVisible(tab.id)"
           :active="activeTabId === tab.id"
         />
-        <div v-else-if="tab.kind === 'editor'" v-show="activeTabId === tab.id" class="cloud-task-placeholder">
+        <div v-else-if="tab.kind === 'editor'" v-show="viewVisible(tab.id)" class="cloud-task-placeholder">
           Terminal editing is available only on the desktop holding this workspace. Remote editor sessions are not transported.
         </div>
         <ShellModal
           v-else-if="tab.kind === 'shell' && shellSessionId(tab)"
-          v-show="activeTabId === tab.id"
+          v-show="viewVisible(tab.id)"
           :session-id="shellSessionId(tab)"
+          :visible="viewVisible(tab.id)"
           :cwd="shellCwd(tab)"
           :fallback-cwd="tab.shellScope === 'repo' ? undefined : scopeRepoPath"
           :port-env="tab.shellScope === 'repo' ? undefined : item?.port_env"
@@ -854,7 +907,7 @@ function dismissCommandHint() {
         <TreeExplorerModal
           v-else-if="tab.kind === 'tree'"
           :ref="(component) => setViewRef(tab.id, component)"
-          v-show="activeTabId === tab.id"
+          v-show="viewVisible(tab.id)"
           v-bind="treeViewProps(tab)"
           embedded
           :active="activeTabId === tab.id"
@@ -864,7 +917,7 @@ function dismissCommandHint() {
         <CommitGraphModal
           v-else-if="tab.kind === 'graph' && scopeRepoPath"
           :ref="(component) => setViewRef(tab.id, component)"
-          v-show="activeTabId === tab.id"
+          v-show="viewVisible(tab.id)"
           :repo-path="scopeRepoPath"
           :worktree-path="taskWorktreePath"
           :remote-graph-loader="views?.modals.activeTaskViewIsRemote.value ? views.modals.readRemoteTaskGraph : undefined"
@@ -875,7 +928,7 @@ function dismissCommandHint() {
         <AnalyticsModal
           v-else-if="tab.kind === 'analytics'"
           :ref="(component) => setViewRef(tab.id, component)"
-          v-show="activeTabId === tab.id"
+          v-show="viewVisible(tab.id)"
           :repo-id="scopeRepoId"
           embedded
           :active="activeTabId === tab.id"
@@ -883,14 +936,27 @@ function dismissCommandHint() {
         />
         <ImageUrlPreviewModal
           v-else-if="tab.kind === 'image'"
-          v-show="activeTabId === tab.id"
+          v-show="viewVisible(tab.id)"
           :image-url="tab.imageUrl ?? ''"
           embedded
           :active="activeTabId === tab.id"
           @close="closeTab(tab.id)"
         />
-      </template>
-    </template>
+      </div>
+      <TaskPreviewCache
+        ref="previewCache"
+        :workspaces="previewWorkspaces"
+        @activate="selectedPreview && selectTab(selectedPreview.id)"
+        :entry="selectedPreview?.portName ? {
+          key: tabKey(selectedPreview), taskId: item?.id ?? '', portName: selectedPreview.portName,
+          workspace: views.modals.activeWorktreePath.value,
+          supported: taskDetailIsLocal && !isMobile && !views.modals.activeTaskViewIsRemote.value,
+        } : null"
+        @pointerdown.capture="selectedPreview && selectTab(selectedPreview.id)"
+        @focusin="selectedPreview && selectTab(selectedPreview.id)"
+      />
+    </div>
+    </div>
     <div v-if="showEmptyState" class="empty-state">
       <template v-if="!hasRepos">
         <div class="agent-setup">
@@ -963,6 +1029,20 @@ function dismissCommandHint() {
 </template>
 
 <style scoped>
+.workspace-actions { display: flex; align-items: center; gap: 6px; padding: 5px 12px; flex-wrap: wrap; border-bottom: 1px solid var(--kn-border-default); }
+.workspace-actions button { font: inherit; font-size: 11px; color: var(--kn-text-secondary); background: transparent; border: 1px solid var(--kn-border-default); border-radius: 4px; padding: 3px 7px; cursor: pointer; }
+.workspace-actions button[aria-pressed="true"] { color: var(--kn-accent); background: var(--kn-bg-accent-subtle); }
+.workspace-actions button:disabled { opacity: .5; cursor: default; }
+.action-spacer { flex: 1; }
+.work-area { display: flex; flex: 1; min-height: 0; min-width: 0; overflow: hidden; }
+.reference-area, .reference-view { display: flex; flex-direction: column; flex: 1; min-width: 0; min-height: 0; overflow: hidden; }
+.work-area > .main-tab-panel { min-width: 0; }
+.work-area.split > .main-tab-panel, .work-area.split > .reference-area { flex: 1 1 50%; width: 50%; }
+.work-area.split > .reference-area { border-left: 1px solid var(--kn-border-strong); }
+.work-area.split > .pane-focused { box-shadow: inset 0 2px var(--kn-accent); }
+.work-area.split > .main-tab-panel { padding-top: 2px; }
+.work-area.split > .reference-area { padding-top: 2px; }
+
 .main-panel {
   flex: 1;
   display: flex;

@@ -35,6 +35,7 @@ export const unattendedRealE2eFiles = [
   "stage-workflow.test.ts",
   "startup-window-size.test.ts",
   "task-base-branch.test.ts",
+  "task-reference.test.ts",
   "terminal-soft-newline.test.ts",
   "terminal-editor.test.ts",
   "terminal-viewer-gestures.test.ts",

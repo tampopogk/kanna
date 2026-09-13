@@ -197,7 +197,7 @@ describe("TaskHeader", () => {
     expect(wrapper.get(".task-title").attributes("title")).toBe(prompt);
   });
 
-  it("opens localhost for a port badge on double click", async () => {
+  it("opens localhost for a port badge on click", async () => {
     const { default: TaskHeader } = await import("../TaskHeader.vue");
     const wrapper = mount(TaskHeader, {
       props: {
@@ -210,7 +210,7 @@ describe("TaskHeader", () => {
       },
     });
 
-    await wrapper.find(".meta-item.port").trigger("dblclick");
+    await wrapper.find(".meta-item.port").trigger("click");
 
     expect(openUrl).toHaveBeenCalledWith("http://localhost:1421");
   });
