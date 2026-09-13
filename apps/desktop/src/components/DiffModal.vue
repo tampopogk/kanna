@@ -94,7 +94,9 @@ defineExpose({ zIndex, bringToFront, revealDesktopViewTarget });
 // Escape is handled by the centralized dismiss handler in useKeyboardShortcuts
 // (capture phase), which respects modal priority (e.g. closes shortcuts menu first).
 onMounted(() => {
-  nextTick(() => modalRef.value?.focus());
+  nextTick(() => {
+    if (isForeground()) modalRef.value?.focus();
+  });
 });
 </script>
 

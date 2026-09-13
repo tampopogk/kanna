@@ -74,6 +74,31 @@ export async function taskReferenceScenario(client: WebDriverClient, repoRoot: s
     await select(ids[1]);
     await select(ids[0]);
     await waitFor(async () => client.executeSync<boolean>(`return document.querySelector('.diff-container')?.scrollTop === 500`), "restore diff position");
+    assert.equal(await active(), "diff");
+    await client.executeSync(`Array.from(document.querySelectorAll('.workspace-actions button')).find(el => el.textContent === 'Return to agent').click()`);
+    async function assertAgentBesideDiff(label: string) {
+      await waitFor(async () => client.executeSync<boolean>(`
+        return window.__KANNA_E2E__.setupState.mainTabs.activeTabId.value === 'agent'
+          && document.activeElement === document.querySelector('[data-testid="main-tab-panel-agent"] .xterm-helper-textarea')
+          && document.querySelector('.work-area').classList.contains('split')
+          && document.querySelector('.diff-container')?.getBoundingClientRect().width > 0
+          && document.querySelector('.diff-container')?.scrollTop === 500;
+      `), label);
+      assert.equal(await active(), "agent");
+    }
+    await assertAgentBesideDiff("agent focused beside diff before task switch");
+    await select(ids[1]);
+    await select(ids[0]);
+    await assertAgentBesideDiff("agent selection, terminal focus and diff reading position on task return");
+    await callVueMethod(client, "mainTabPersistence.flush");
+    await client.reload({ dismissStartupShortcuts: false });
+    await assertNativeWindowIdentity(client, expected, "agent beside diff after reload");
+    await dismissStartupShortcutsModal(client);
+    await select(ids[0]);
+    await assertAgentBesideDiff("persisted agent selection, terminal focus and visible diff position after reload");
+    assert.equal((await sessions()).find(session => session.session_id === ids[0])?.pid, agentPid);
+    await client.screenshot(join(output, "wide-agent-diff-return.png"));
+    await click('[data-testid="main-tab-diff"]');
     await client.screenshot(join(output, "wide-diff.png"));
     await client.executeSync(`Array.from(document.querySelectorAll('.workspace-actions button')).find(el => el.textContent === 'Full width').click()`);
     await waitFor(async () => client.executeSync<boolean>(`return !document.querySelector('.work-area').classList.contains('split')`), "reference full width");
@@ -166,7 +191,7 @@ export async function taskReferenceScenario(client: WebDriverClient, repoRoot: s
     await sleep(500);
     assert.equal(frameRequests, requestsBeforeSwitch, "warm preview must not reload on task switch");
     assert.equal(await active(), "preview:PREVIEW_PORT");
-    await writeFile(join(output, "evidence.json"), JSON.stringify({ title: await client.getNativeWindowTitle(), build: await client.getAppBuildInfo(), endpoint: client.getBaseUrl(), agentPid, editorPid, frameRequests, checks: ["file and diff switch/restart scroll", "split, full width and narrow layout", "native editor save and Cmd+S ownership", "agent and iframe focus", "surviving agent/editor PID", "task-owned preview route", "warm iframe continuity"] }, null, 2));
+    await writeFile(join(output, "evidence.json"), JSON.stringify({ title: await client.getNativeWindowTitle(), build: await client.getAppBuildInfo(), endpoint: client.getBaseUrl(), agentPid, editorPid, frameRequests, checks: ["agent-selected visible diff task return and reload: active tab, focused terminal, scroll position", "file and diff switch/restart scroll", "split, full width and narrow layout", "native editor save and Cmd+S ownership", "agent and iframe focus", "surviving agent/editor PID", "task-owned preview route", "warm iframe continuity"] }, null, 2));
   } catch (error) {
     await client.screenshot(join(output, "failure.png"));
     await writeFile(join(output, "failure.txt"), String(error) + "\n" + await client.executeSync<string>(`return document.body.innerText + '\\n' + JSON.stringify({ activeElement: document.activeElement?.outerHTML.slice(0, 500), worktree: window.__KANNA_E2E__.setupState.appModals.activeWorktreePath.value, terminalNodes: Array.from(document.querySelectorAll('.terminal-container')).map(el => ({width: el.clientWidth, height: el.clientHeight, text: el.innerText})) })`));

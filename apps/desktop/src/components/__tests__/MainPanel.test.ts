@@ -125,6 +125,84 @@ describe("MainPanel", () => {
   });
 
 
+  it.each(["diff", "tree", "graph"] as const)("preserves agent selection when an adjacent %s remounts on task return", async (kind) => {
+    const selected = ref("task-a");
+    const tabs = useMainTabs({ scopeKey: computed(() => `item:${selected.value}`) });
+    listTaskDirectoryMock.mockResolvedValue({ entries: [] });
+    // Model a wide work area so the inactive reference remains visible.
+    const resizeObserver = globalThis.ResizeObserver;
+    vi.stubGlobal("ResizeObserver", class {
+      constructor(private callback: ResizeObserverCallback) {}
+      observe() { this.callback([{ contentRect: { width: 1200 } }] as ResizeObserverEntry[], this as unknown as ResizeObserver); }
+      disconnect() {}
+      unobserve() {}
+    });
+    tabs.openTab({ kind, ...(kind === "tree" ? { containedTaskId: "task-a" } : {}) });
+    const { default: MainPanel } = await import("../MainPanel.vue");
+    const wrapper = mount(MainPanel, {
+      props: {
+        uiSlot: readySlot(durableTask({ id: "task-a" })), repoPath: "/repo", hasRepos: true,
+        views: {
+          tabs,
+          modals: {
+            activeTaskViewIsRemote: computed(() => false),
+            activeRemoteTaskRoute: computed(() => null),
+            activeRepoPath: computed(() => "/repo"),
+            activeWorktreePath: computed(() => `/repo/${selected.value}`),
+            activeDiffWorktreePath: computed(() => `/repo/${selected.value}`),
+            currentDiffViewState: computed(() => ({ scope: "working" })),
+            currentDiffViewKey: computed(() => selected.value),
+            treeExplorerRoot: computed(() => `/repo/${selected.value}`),
+            homePath: computed(() => "/home/tester"),
+          },
+          store: {},
+        } as unknown as MainTabViewsController,
+      },
+      attachTo: document.body,
+      global: {
+        mocks: { $t: (key: string) => key },
+        // Keep the real modal mount/focus paths and MainPanel event wiring.
+        stubs: {
+          TaskHeader: true, MainTabBar: true, DiffView: true, CommitGraphView: true,
+          TerminalTabs: { template: '<textarea class="xterm-helper-textarea" />' },
+        },
+      },
+    });
+    try {
+      await flushPromises();
+      expect(document.activeElement).toBe(wrapper.get(`.${kind}-modal`).element);
+      const returnButton = () => wrapper.findAll(".workspace-actions button").find(button => button.text() === "Return to agent")!;
+      await returnButton().trigger("click");
+      const terminal = wrapper.get(".xterm-helper-textarea").element;
+      expect(tabs.activeTabId.value).toBe("agent");
+      expect(document.activeElement).toBe(terminal);
+      selected.value = "task-b";
+      await wrapper.setProps({ uiSlot: readySlot(durableTask({ id: "task-b" })) });
+      await flushPromises();
+      selected.value = "task-a";
+      await wrapper.setProps({ uiSlot: readySlot(durableTask({ id: "task-a" })) });
+      await flushPromises();
+      expect(wrapper.get(".work-area").classes()).toContain("split");
+      expect(wrapper.get(".reference-area").isVisible()).toBe(true);
+      expect(tabs.activeTabId.value).toBe("agent");
+      expect(document.activeElement).toBe(terminal);
+
+      // Deliberate keyboard focus and pointer selection still transfer ownership.
+      const reference = wrapper.get<HTMLElement>(`.${kind}-modal`);
+      reference.element.focus();
+      await flushPromises();
+      expect(tabs.activeTabId.value).toBe(kind);
+      await returnButton().trigger("click");
+      await reference.trigger("pointerdown");
+      await flushPromises();
+      expect(tabs.activeTabId.value).toBe(kind);
+      expect(document.activeElement).toBe(reference.element);
+    } finally {
+      wrapper.unmount();
+      vi.stubGlobal("ResizeObserver", resizeObserver);
+    }
+  });
+
   it("only explicitly edits a local recorded workspace and keeps an asynchronous open in its originating task", async () => {
     const selected = ref("task-a");
     const tabs = useMainTabs({ scopeKey: computed(() => `item:${selected.value}`) });

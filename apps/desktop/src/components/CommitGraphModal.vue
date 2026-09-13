@@ -54,7 +54,9 @@ const emit = defineEmits<{
 }>();
 
 onMounted(() => {
-  nextTick(() => modalRef.value?.focus());
+  nextTick(() => {
+    if (isForeground()) modalRef.value?.focus();
+  });
 });
 </script>
 

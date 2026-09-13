@@ -775,7 +775,9 @@ onMounted(() => {
   syncViewStateFromProps();
   void openView();
   window.addEventListener("focus", refreshBranchDiffOnWindowFocus);
-  nextTick(() => diffViewRef.value?.focus());
+  nextTick(() => {
+    if (props.isForeground?.() ?? true) diffViewRef.value?.focus();
+  });
 });
 
 onUnmounted(() => {
