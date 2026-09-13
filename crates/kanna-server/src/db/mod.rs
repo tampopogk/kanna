@@ -2946,5 +2946,3 @@ fn civil_from_days(days_since_unix_epoch: i64) -> (i64, i64, i64) {
     let year = y + if month <= 2 { 1 } else { 0 };
     (year, month, day)
 }
-
-pub(crate) use transfers::structured_selection_transfer_error;

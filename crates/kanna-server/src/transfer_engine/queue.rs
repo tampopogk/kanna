@@ -188,7 +188,7 @@ pub fn durable_event_work(event: &Value, incarnation: &str) -> Option<DurableEve
                 transfer_id: Some(transfer_id),
             })
         }
-        "outgoing_transfer_finalization_requested" => {
+        "outgoing_transfer_finalization_requested_v2" => {
             let transfer_id = string_field(event, "transfer_id")?;
             Some(DurableEventWork {
                 id: format!("finalize:{transfer_id}"),
@@ -209,7 +209,7 @@ pub fn is_durable_transfer_event(event_type: &str) -> bool {
             | "task_pull_requested"
             | "task_pull_refused"
             | "outgoing_transfer_committed"
-            | "outgoing_transfer_finalization_requested"
+            | "outgoing_transfer_finalization_requested_v2"
     )
 }
 
@@ -217,6 +217,12 @@ pub fn is_durable_transfer_event(event_type: &str) -> bool {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn legacy_finalization_events_cannot_schedule_source_work() {
+        let legacy = serde_json::json!({"type":"outgoing_transfer_finalization_requested", "transfer_id":"old"});
+        assert!(durable_event_work(&legacy, "server").is_none());
+    }
 
     #[test]
     fn every_durable_event_maps_to_work_keyed_for_redelivery() {
@@ -246,7 +252,7 @@ mod tests {
                 KIND_OUTGOING_COMMITTED,
             ),
             (
-                json!({ "type": "outgoing_transfer_finalization_requested", "transfer_id": "t-3" }),
+                json!({ "type": "outgoing_transfer_finalization_requested_v2", "transfer_id": "t-3" }),
                 "finalize:t-3",
                 KIND_FINALIZE,
             ),
@@ -285,7 +291,7 @@ mod tests {
         // that already applied it rather than apply twice.
         for event in [
             json!({ "type": "outgoing_transfer_committed", "transfer_id": "t-1" }),
-            json!({ "type": "outgoing_transfer_finalization_requested", "transfer_id": "t-1" }),
+            json!({ "type": "outgoing_transfer_finalization_requested_v2", "transfer_id": "t-1" }),
             json!({ "type": "incoming_transfer_request", "transfer_id": "t-1" }),
         ] {
             assert_eq!(

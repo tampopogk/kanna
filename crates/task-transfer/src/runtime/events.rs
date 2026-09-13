@@ -53,6 +53,7 @@ pub struct OutgoingTransferCommittedEvent {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OutgoingTransferFinalizationRequestedEvent {
     pub transfer_id: String,
+    pub selection_commitment: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

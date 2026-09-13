@@ -44,6 +44,9 @@ use std::sync::Arc;
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct SourceSession {
     provider: Option<String>,
+    model: Option<String>,
+    effort: Option<String>,
+    run_id: Option<String>,
     session_id: Option<String>,
 }
 
@@ -61,6 +64,9 @@ impl SourceSession {
             // the composition this exists to stop.
             Some(run) if run.agent_provider.is_some() => Self {
                 provider: run.agent_provider.clone(),
+                model: run.model.clone(),
+                effort: run.effort.clone(),
+                run_id: Some(run.id.clone()),
                 session_id: run.provider_session_id.clone(),
             },
             // No run yet, or one too old to have recorded a provider: the task
@@ -68,6 +74,9 @@ impl SourceSession {
             // least written by the same spawn.
             _ => Self {
                 provider: item_provider.map(str::to_string),
+                model: None,
+                effort: None,
+                run_id: None,
                 session_id: item_session_id.map(str::to_string),
             },
         }
@@ -849,6 +858,9 @@ async fn build_payload(
                 workflow_definition: workflow_definition.as_deref(),
                 input_ledger_sha256: input_ledger.as_ref().map(|ledger| ledger.sha256.as_str()),
                 history: &history,
+                launch_harness: source.session.provider.as_deref().unwrap_or("claude"),
+                launch_model: source.session.model.as_deref(),
+                launch_effort: source.session.effort.as_deref(),
             },
         )?),
         _ => None,
@@ -896,6 +908,9 @@ async fn build_payload(
                 .map(|repository| repository.base_label.clone())
                 .or_else(|| source.item.base_ref.clone()),
             agent_type: source.item.agent_type.clone(),
+            model: source.session.model.clone(),
+            effort: source.session.effort.clone(),
+            source_run_id: source.session.run_id.clone(),
             // The provider the session shipped above belongs to, not the one
             // the task was created under: the destination spawns this CLI, and
             // a payload that names a different one hands a Claude transcript to
@@ -1090,11 +1105,6 @@ const SESSION_BEFORE_FINALIZATION_PHASE: &str = "session-before-signal";
 /// takes ownership of the task's workflow in one transaction, so nothing can
 /// publish between the question and the answer.
 fn refuse_unprovable_plan_preservation(item: &crate::db::PipelineItem) -> Result<(), String> {
-    if let Some(error) =
-        crate::db::structured_selection_transfer_error(item.pipeline_def.as_deref())
-    {
-        return Err(error.to_string());
-    }
     let carries_plan = item
         .pipeline_def
         .as_deref()
@@ -1187,19 +1197,42 @@ async fn run_finalization(
     db.claim_task_workflow_for_transfer(transfer_id, &source.item.id)
         .map_err(|error| format!("db error: {error}"))??;
 
-    let recorded_agent = db
-        .latest_stage_run(&source.item.id)
-        .map_err(|error| format!("db error: {error}"))?
-        .and_then(|run| run.agent);
-    let claimed_task = db
-        .get_pipeline_item(&source.item.id)
-        .map_err(|error| format!("db error: {error}"))?
+    // Re-read after claiming ownership: a workflow edit may have won before
+    // the claim. Acceptance of the reserved selection cannot authorize it.
+    let source = SourceTask::load(&db, &local_task_id)?
         .ok_or_else(|| "source task disappeared after workflow claim".to_string())?;
-    crate::task_creator::assert_transfer_default_selection_compatibility(
-        &repo,
-        &claimed_task,
-        recorded_agent.as_deref(),
-    )?;
+    let request: Value = serde_json::from_str(&work.payload_json).map_err(|e| e.to_string())?;
+    let accepted = request.get("selection_commitment").and_then(Value::as_str)
+        .ok_or_else(|| "transfer finalization requires V2 destination acceptance; update both machines and retry".to_string())?;
+    let mut current = existing.task.clone();
+    current.workflow = source
+        .item
+        .pipeline
+        .clone()
+        .unwrap_or_else(|| "no-review".into());
+    current.workflow_definition = source.item.pipeline_def.clone().or_else(|| {
+        crate::task_creator::resolve_task_workflow_snapshot(&repo, &current.workflow)
+            .ok()
+            .map(|snapshot| snapshot.definition_json)
+    });
+    current.stage = source
+        .item
+        .stage
+        .clone()
+        .unwrap_or_else(|| "in progress".into());
+    current.agent_provider = source
+        .session
+        .provider
+        .clone()
+        .unwrap_or_else(|| "claude".into());
+    current.model = source.session.model.clone();
+    current.effort = source.session.effort.clone();
+    current.source_run_id = source.session.run_id.clone();
+    if accepted != existing.task.selection_commitment()?
+        || accepted != current.selection_commitment()?
+    {
+        return Err("task workflow or launch selection changed after destination acceptance; retry the transfer with a fresh reservation. Source session was not stopped".into());
+    }
 
     // Everything below this line can touch the source. A test holds here to
     // prove the exclusion is real across the awaits, rather than only at the
@@ -1327,6 +1360,11 @@ async fn run_finalization(
         finalization_outcome.recovery_snapshot,
     )
     .await?;
+    if payload.task.selection_commitment()? != accepted {
+        return Err(
+            "task selection changed during finalization; source remains recoverable".into(),
+        );
+    }
     let encoded = payload::encode_outgoing_transfer_payload(&payload)?;
     let payload_json =
         serde_json::to_string(&encoded).map_err(|error| format!("db error: {error}"))?;
@@ -1834,7 +1872,9 @@ mod tests {
             id: id.to_string(),
             kind: super::super::queue::KIND_FINALIZE.to_string(),
             transfer_id: Some("transfer-finalize".to_string()),
-            payload_json: "{}".to_string(),
+            payload_json: serde_json::json!({
+                "selection_commitment": payload::parse_outgoing_transfer_payload(&serde_json::from_str(&finalize_payload_json()).unwrap()).unwrap().task.selection_commitment().unwrap()
+            }).to_string(),
             attempts: 2,
         }
     }
@@ -1847,7 +1887,8 @@ mod tests {
                 "source_task_id": "task-source",
                 "resume_session_id": null,
                 "stage": "in progress",
-                "pipeline": "single-reviewer",
+                "pipeline": "no-review",
+                "workflow_definition": r#"{"name":"no-review","stages":[{"name":"in progress","policy":{"transition":"manual"}}]}"#,
                 "agent_type": "pty",
                 "agent_provider": "claude",
             },
@@ -1882,6 +1923,15 @@ mod tests {
             "2026-08-07 00:00:00",
         )
         .expect("task");
+        db.update_test_pipeline_item_stage_context(
+            "task-finalize",
+            "task-finalize",
+            "no-review",
+            None,
+            "claude",
+        )
+        .unwrap();
+        db.update_test_pipeline_item_pipeline_def("task-finalize", r#"{"name":"no-review","stages":[{"name":"in progress","policy":{"transition":"manual"}}]}"#).unwrap();
         db.insert_task_transfer(&crate::db::NewTaskTransfer {
             id: "transfer-finalize".into(),
             direction: "outgoing".into(),
@@ -2039,8 +2089,8 @@ mod tests {
     /// this covers `run_finalization` being wired to them.
     #[tokio::test]
     async fn finalization_compares_against_the_session_the_first_attempt_saw() {
-        // Default-selection compatibility reads the source definitions before
-        // finalizing, so this fixture supplies a real repository snapshot.
+        // Finalization resolves the pinned source workflow, so this fixture
+        // supplies a real repository snapshot.
         let temp = tempfile::tempdir().unwrap();
         let repo = git2::Repository::init(temp.path()).unwrap();
         let tree_id = repo.treebuilder(None).unwrap().write().unwrap();
@@ -2353,6 +2403,9 @@ mod tests {
             workflow_definition,
             input_ledger_sha256,
             history,
+            launch_harness: "claude",
+            launch_model: None,
+            launch_effort: None,
         })
         .expect("digest")
     }
@@ -2371,7 +2424,9 @@ mod tests {
             "head-a",
             "base-a",
             "in progress",
-            Some("{}"),
+            Some(
+                r#"{"name":"a","stages":[{"name":"in progress","policy":{"transition":"manual"}}]}"#,
+            ),
             Some("ledger-sha-a"),
             &history,
         );
@@ -2384,7 +2439,9 @@ mod tests {
                 "head-DIFFERENT",
                 "base-a",
                 "in progress",
-                Some("{}"),
+                Some(
+                    r#"{"name":"a","stages":[{"name":"in progress","policy":{"transition":"manual"}}]}"#,
+                ),
                 Some("ledger-sha-a"),
                 &history,
             ),
@@ -2392,7 +2449,9 @@ mod tests {
                 "head-a",
                 "base-DIFFERENT",
                 "in progress",
-                Some("{}"),
+                Some(
+                    r#"{"name":"a","stages":[{"name":"in progress","policy":{"transition":"manual"}}]}"#,
+                ),
                 Some("ledger-sha-a"),
                 &history,
             ),
@@ -2400,7 +2459,9 @@ mod tests {
                 "head-a",
                 "base-a",
                 "review",
-                Some("{}"),
+                Some(
+                    r#"{"name":"a","stages":[{"name":"in progress","policy":{"transition":"manual"}}]}"#,
+                ),
                 Some("ledger-sha-a"),
                 &history,
             ),
@@ -2408,7 +2469,9 @@ mod tests {
                 "head-a",
                 "base-a",
                 "in progress",
-                Some("{\"different\":true}"),
+                Some(
+                    r#"{"name":"b","stages":[{"name":"in progress","policy":{"transition":"manual"}}]}"#,
+                ),
                 Some("ledger-sha-a"),
                 &history,
             ),
@@ -2416,7 +2479,9 @@ mod tests {
                 "head-a",
                 "base-a",
                 "in progress",
-                Some("{}"),
+                Some(
+                    r#"{"name":"a","stages":[{"name":"in progress","policy":{"transition":"manual"}}]}"#,
+                ),
                 Some("ledger-sha-DIFFERENT"),
                 &history,
             ),
@@ -2424,7 +2489,9 @@ mod tests {
                 "head-a",
                 "base-a",
                 "in progress",
-                Some("{}"),
+                Some(
+                    r#"{"name":"a","stages":[{"name":"in progress","policy":{"transition":"manual"}}]}"#,
+                ),
                 Some("ledger-sha-a"),
                 &different_history,
             ),
@@ -2444,7 +2511,9 @@ mod tests {
             "head-a",
             "base-a",
             "in progress",
-            Some("{}"),
+            Some(
+                r#"{"name":"a","stages":[{"name":"in progress","policy":{"transition":"manual"}}]}"#,
+            ),
             Some("ledger-sha-a"),
             &history,
         );
@@ -2452,7 +2521,9 @@ mod tests {
             "head-a",
             "base-a",
             "in progress",
-            Some("{}"),
+            Some(
+                r#"{"name":"a","stages":[{"name":"in progress","policy":{"transition":"manual"}}]}"#,
+            ),
             Some("ledger-sha-a"),
             &history,
         );

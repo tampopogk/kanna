@@ -970,12 +970,25 @@ before spawn. Dynamic model-specific efforts and OpenCode variants pass to the
 native control verbatim. Acceptance of a config value does not prove a model
 uses it; native errors are not automatic model/backend fallback triggers.
 
-Transfer compatibility is deliberately conservative: the current protocol
-cannot establish peer support for structured selections. Tasks whose pinned
-workflow contains them are refused before source finalization, including at the
-atomic workflow claim. The source also checks the repo and agent defaults used
-by that workflow and the recorded agent before finalizing. No lossy compact downgrade is attempted. Existing
-string-only tasks retain their transfer behavior.
+Transfers carry the complete pinned workflow, including structured selections,
+and the current run's recorded harness, model and effort. The receiver validates
+the workflow and launch choices before requesting V2 finalization. The request
+is bound to that workflow and run selection; a changed selection requires a
+fresh transfer reservation. Import checks the persisted launch choices before
+spawning and acknowledging the move.
+
+Both machines must run updated servers and transfer sidecars. V1 finalization
+operations are intentionally unsupported, even for string-only workflows; an
+old component cannot silently accept the new fields and stop the source. Update
+both machines and retry a refused transfer. This versions the finalization
+operation, not the whole transfer transport, and performs no compact-string
+downgrade. The separate existing restriction on workflows carrying published
+plan context is unchanged.
+
+An omitted model or effort may resolve from eligible destination defaults or
+the native CLI's resume state. Kanna does not infer these choices from a
+transcript, and a recorded launch request does not prove the model or effort
+ultimately used inside the CLI. Explicit recorded choices remain intact.
 
 Pi is not a supported Kanna harness. Its separate provider/model/thinking CLI
 illustrates why these dimensions matter, but execution needs its own adapter

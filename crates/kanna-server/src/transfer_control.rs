@@ -49,7 +49,7 @@ const OPERATIONS: &[&str] = &[
     "mark-incoming-event-recorded",
     "mark-incoming-transfer-refused",
     "mark-import-ack-completed",
-    "finalize-outgoing-transfer",
+    "finalize-outgoing-transfer-v2",
     "complete-outgoing-transfer-finalization",
 ];
 
@@ -492,11 +492,12 @@ pub async fn dispatch(
             )
             .await
         }
-        "finalize-outgoing-transfer" => {
+        "finalize-outgoing-transfer-v2" => {
             let response = client
                 .request(
-                    "finalize_outgoing_transfer",
-                    json!({ "transfer_id": required_string(&params, &["transferId"])? }),
+                    "finalize_outgoing_transfer_v2",
+                    json!({ "transfer_id": required_string(&params, &["transferId"])?,
+                        "selection_commitment": required_string(&params, &["selectionCommitment"])? }),
                 )
                 .await?;
             Ok(json!({

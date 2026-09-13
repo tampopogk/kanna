@@ -270,9 +270,11 @@ acknowledging transferred descriptors.
   selectors `provider[-model[-effort]]` keep their existing suffix parsing, and
   legacy repo list siblings still belong only to their leading candidate.
   Omitted fields inherit lower coherent layers, then CLI defaults; they do not
-  reset a choice. Live sessions are unchanged. Structured pinned workflows
-  cannot currently transfer because peer support is unprovable; the existing
-  workflow claim refuses before source finalization. See `docs/dev/dev-workflow.md`.
+  reset a choice. Live sessions are unchanged. Transfers carry the complete
+  workflow and recorded launch model/effort through V2 finalization: both
+  machines need updated servers and transfer sidecars. The receiver validates
+  selection values before asking the source to stop; omissions remain eligible
+  for destination/native defaults. See `docs/dev/dev-workflow.md`.
   One stage advance may fill the explicit-override slot for the stage it
   *enters*: `kanna_advance_stage` (and `kanna-cli task advance-stage`) accept
   `next_stage_harness` (alias `next_stage_agent_provider`) with `next_stage_model` and `next_stage_effort`,

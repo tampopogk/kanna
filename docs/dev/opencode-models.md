@@ -115,6 +115,8 @@ OpenCode's native `build` agent is distinct from Kanna's instruction role.
 See the [native model/variant documentation](https://opencode.ai/docs/models/)
 and [Kanna selection contract](dev-workflow.md#harness-model-and-effort).
 
-The new structured selection format currently prevents cross-machine transfer
-of that pinned workflow: peer format support cannot yet be established. The
-source is refused before its session is finalized.
+Structured workflows and recorded OpenCode model/variant choices transfer
+intact through V2 finalization. Both machines need updated servers and transfer
+sidecars; older finalization operations are refused before source shutdown.
+Unspecified choices may use destination or native resume defaults. See the
+[Kanna selection contract](dev-workflow.md#harness-model-and-effort).

@@ -8146,39 +8146,3 @@ fn structured_candidates_keep_fallback_tuning_and_omission_coherent() {
         Some("gpt-6-astra")
     );
 }
-
-#[test]
-fn transfer_refuses_structured_repo_defaults_even_with_legacy_workflow_stages() {
-    let repo_root = init_git_repo("transfer-structured-defaults");
-    std::fs::create_dir_all(repo_root.join(".kanna/agents/review")).unwrap();
-    std::fs::write(
-        repo_root.join(".kanna/agents/review/AGENT.md"),
-        "---\nname: review\ndescription: Review\nagent_provider: codex\n---\nReview",
-    )
-    .unwrap();
-    std::fs::write(
-        repo_root.join(".kanna/config.json"),
-        r#"{"agentProviders":{"review":{"harness":"opencode","model":"local/model-high"}}}"#,
-    )
-    .unwrap();
-    publish_origin_main(&repo_root, "structured defaults");
-    let db = Db::open_for_tests(&Db::test_db_path("transfer-structured-defaults")).unwrap();
-    db.insert_test_repo_with_path("repo-1", &repo_root.to_string_lossy(), "Repo")
-        .unwrap();
-    db.insert_test_pipeline_item(
-        "task-1",
-        "repo-1",
-        "Review",
-        None,
-        "review",
-        "2026-09-13 12:00:00",
-    )
-    .unwrap();
-    db.update_test_pipeline_item_pipeline_def("task-1", r#"{"name":"review","stages":[{"name":"review","agent":"review","policy":{"transition":"manual"}}]}"#).unwrap();
-    let task = db.get_pipeline_item("task-1").unwrap().unwrap();
-    let repo = db.get_repo("repo-1").unwrap().unwrap();
-    let error = super::super::assert_transfer_default_selection_compatibility(&repo, &task, None)
-        .unwrap_err();
-    assert!(error.contains("structured harness defaults"), "{error}");
-    let _ = std::fs::remove_dir_all(repo_root);
-}

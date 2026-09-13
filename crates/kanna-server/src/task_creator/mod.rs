@@ -3857,51 +3857,7 @@ fn new_task_setup_cmds(
     setup
 }
 
-#[cfg(test)]
 pub(crate) fn normalize_task_workflow_for_transfer(definition: &str) -> Result<String, String> {
     serde_json::to_string(&definitions::parse_stored_workflow_definition(definition)?)
         .map_err(|e| e.to_string())
-}
-
-/// An older destination also reloads repo/agent defaults while recreating a
-/// stamped run. Protect those selections even when the pinned stages use only
-/// legacy strings. This is a local definition read, never a fetch or a launch.
-pub(crate) fn assert_transfer_default_selection_compatibility(
-    repo: &Repo,
-    task: &crate::db::PipelineItem,
-    recorded_agent: Option<&str>,
-) -> Result<(), String> {
-    let definitions = RepoDefinitions::resolve_local(repo)?;
-    let workflow = definitions.task_workflow(
-        task.pipeline.as_deref().unwrap_or(FALLBACK_WORKFLOW_NAME),
-        task.pipeline_def.as_deref(),
-    )?;
-    let structured = |entries: &[kanna_agent_protocol::AgentSelectionEntry]| {
-        entries.iter().any(|entry| {
-            matches!(
-                entry,
-                kanna_agent_protocol::AgentSelectionEntry::Candidate(_)
-            )
-        })
-    };
-    let agents = workflow
-        .stages
-        .iter()
-        .flat_map(|stage| {
-            std::iter::once(stage.agent.as_deref())
-                .chain(stage.post.iter().map(|post| post.agent.as_deref()))
-        })
-        .flatten()
-        .chain(recorded_agent);
-    for name in agents {
-        let repo_uses_objects = definitions
-            .config()
-            .agent_provider_preference(Some(name))
-            .is_some_and(|p| structured(&p.providers));
-        let agent_uses_objects = structured(&definitions.agent(name)?.agent_providers);
-        if repo_uses_objects || agent_uses_objects {
-            return Err(format!("agent '{name}' uses structured harness defaults; this transfer cannot prove the destination supports them. Transfer is refused before source finalization; finish this task here."));
-        }
-    }
-    Ok(())
 }

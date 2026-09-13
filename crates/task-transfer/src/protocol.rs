@@ -206,9 +206,11 @@ pub enum ControlRequest {
         request_id: String,
         transfer_id: String,
     },
+    #[serde(rename = "finalize_outgoing_transfer_v2")]
     FinalizeOutgoingTransfer {
         request_id: String,
         transfer_id: String,
+        selection_commitment: String,
     },
     CompleteOutgoingTransferFinalization {
         request_id: String,
@@ -390,6 +392,7 @@ pub enum ControlResponse {
         request_id: String,
         transfer_id: String,
     },
+    #[serde(rename = "finalize_outgoing_transfer_v2")]
     FinalizeOutgoingTransfer {
         request_id: String,
         transfer_id: String,
@@ -483,6 +486,7 @@ pub enum PeerRequest {
         source_peer_id: String,
         sealed_payload: String,
     },
+    #[serde(rename = "finalize_transfer_v2")]
     FinalizeTransfer {
         request_id: String,
         transfer_id: String,
@@ -650,6 +654,7 @@ pub enum PeerResponse {
         request_id: String,
         transfer_id: String,
     },
+    #[serde(rename = "finalize_transfer_v2")]
     FinalizeTransfer {
         request_id: String,
         transfer_id: String,
@@ -875,8 +880,10 @@ pub enum SidecarEvent {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         destination_repo_id: Option<String>,
     },
+    #[serde(rename = "outgoing_transfer_finalization_requested_v2")]
     OutgoingTransferFinalizationRequested {
         transfer_id: String,
+        selection_commitment: String,
     },
     TerminalEvent {
         peer_id: String,
