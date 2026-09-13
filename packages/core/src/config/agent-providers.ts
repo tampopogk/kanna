@@ -5,6 +5,8 @@ import {
   AGENT_PROVIDERS,
   isAgentProvider,
   type AgentProvider,
+  type AgentCandidate,
+  type AgentSelectionEntry,
 } from "@kanna/agent-protocol";
 
 export { AGENT_PROVIDERS, isAgentProvider };
@@ -80,6 +82,7 @@ const EFFORT_ALIASES: Record<string, string> = {
 export function parseAgentProviderSelector(
   value: string,
 ): AgentProviderSelector | null {
+  if (typeof value !== "string") return null;
   const trimmed = value.trim();
   if (trimmed.length === 0) return null;
   const dash = trimmed.indexOf("-");
@@ -96,4 +99,48 @@ export function parseAgentProviderSelector(
   if (modelSegments.length > 0) selector.model = modelSegments.join("-");
   if (effort !== undefined) selector.effort = effort;
   return selector;
+}
+
+export type { AgentCandidate, AgentSelectionEntry };
+export type AgentSelection = AgentSelectionEntry | AgentSelectionEntry[];
+
+export function parseAgentCandidate(value: unknown): AgentCandidate | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const raw = value as Record<string, unknown>;
+  if (!isAgentProvider(raw.harness) || Object.keys(raw).some(k => !["harness", "model", "effort"].includes(k))) return null;
+  for (const key of ["model", "effort"]) {
+    if (key in raw && (typeof raw[key] !== "string" || !raw[key] || raw[key].trim() !== raw[key] || /[\x00-\x1f\x7f-\x9f]/.test(raw[key]))) return null;
+  }
+  return value as AgentCandidate;
+}
+
+export function resolveAgentSelectionEntry(value: AgentSelectionEntry, compact = true): AgentProviderSelector | null {
+  if (typeof value === "string") return compact ? parseAgentProviderSelector(value) : isAgentProvider(value) ? { provider: value } : null;
+  const candidate = parseAgentCandidate(value);
+  return candidate ? { provider: candidate.harness, model: candidate.model, effort: candidate.effort } : null;
+}
+
+export function parseAgentSelection(value: unknown, compact = true): AgentSelectionEntry[] {
+  const entries = (Array.isArray(value) ? value : [value]).map(entry =>
+    !compact && typeof entry === "string" ? entry.trim() : entry);
+  if (!entries.length) throw new Error("agent_provider must include at least one non-empty provider");
+  const structured = entries.some(entry => typeof entry === "object" && entry !== null);
+  const seen = new Set<string>();
+  for (const entry of entries) {
+    const candidate = resolveAgentSelectionEntry(entry, compact);
+    if (!candidate) throw new Error(`agent_provider must be a string or an array of strings or valid structured harness candidates (got ${JSON.stringify(entry)})`);
+    if (structured && seen.has(candidate.provider)) throw new Error(`repeated harness '${candidate.provider}' in structured candidate list`);
+    seen.add(candidate.provider);
+  }
+  return entries as AgentSelectionEntry[];
+}
+
+export function validateSelectionSiblings(entries: AgentSelectionEntry[], model?: string, effort?: string): void {
+  for (const entry of entries) {
+    if (typeof entry === "string") continue;
+    if ((entry.model !== undefined && model !== undefined && entry.model !== model) ||
+        (entry.effort !== undefined && effort !== undefined && entry.effort !== effort)) {
+      throw new Error("conflicting nested and sibling model/effort in agent_provider");
+    }
+  }
 }

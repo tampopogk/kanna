@@ -609,6 +609,9 @@ impl Db {
                 )
                 .optional()?
                 .flatten();
+            if let Some(error) = structured_selection_transfer_error(pinned.as_deref()) {
+                return Ok(Err(error.to_string()));
+            }
             let carries_plan = pinned
                 .as_deref()
                 .and_then(|definition| serde_json::from_str::<serde_json::Value>(definition).ok())
@@ -996,4 +999,23 @@ impl Db {
         )?;
         Ok(rows_affected == 1)
     }
+}
+
+/// The existing transfer protocol cannot establish support for structured
+/// selections on its peer. Refuse before touching the source session.
+pub(crate) fn structured_selection_transfer_error(
+    definition: Option<&str>,
+) -> Option<&'static str> {
+    let value: serde_json::Value = serde_json::from_str(definition?).ok()?;
+    let structured = |selection: Option<&serde_json::Value>| {
+        selection.is_some_and(|value| {
+            value.is_object()
+                || value
+                    .as_array()
+                    .is_some_and(|entries| entries.iter().any(serde_json::Value::is_object))
+        })
+    };
+    value.get("stages")?.as_array()?.iter().any(|stage| {
+        structured(stage.get("agent_provider")) || ["post", "post_action"].iter().any(|key| structured(stage.get(key).and_then(|post| post.get("agent_provider"))))
+    }).then_some("this task uses structured harness selections; the transfer protocol cannot prove the destination supports them. Transfer is refused before source finalization. Finish this task here; no selection was downgraded.")
 }

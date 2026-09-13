@@ -2018,3 +2018,44 @@ async fn an_ordinary_receipt_still_reaches_the_source_close() {
         );
     }
 }
+
+#[tokio::test]
+async fn equivalent_structured_workflow_edit_keeps_the_recorded_run_resumable() {
+    let (_temp, state, before) = replacement_fixture("equivalent-harness-selection");
+    let app = router(Arc::clone(&state));
+    let mut after = before.clone();
+    after["stages"][0]["agent_provider"] = serde_json::json!([
+        {"harness":"claude", "model":"fable"}, {"harness":"codex", "model":"gpt-6-astra"}
+    ]);
+    let (status, body) = replace_workflow(&app, &before, &after).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["supersededRunIds"], serde_json::json!([]));
+    assert!(!Db::open(&state.config.db_path)
+        .unwrap()
+        .stage_run_workflow_superseded("task-1", "run-old")
+        .unwrap());
+}
+
+#[tokio::test]
+async fn structured_selection_transfer_refuses_before_source_finalization() {
+    let (_temp, state, before) = replacement_fixture("structured-transfer-refusal");
+    let app = router(Arc::clone(&state));
+    let mut after = before.clone();
+    after["stages"][1]["agent_provider"] =
+        serde_json::json!({"harness":"opencode", "model":"local/model-high"});
+    let (status, body) = replace_workflow(&app, &before, &after).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    seed_outgoing_transfer(
+        &Db::open(&state.config.db_path).unwrap(),
+        "transfer-structured",
+    );
+    let error = crate::transfer_engine::push::run_finalization_for_test(
+        &state,
+        &finalize_work("transfer-structured"),
+        "transfer-structured",
+    )
+    .await
+    .unwrap_err();
+    assert!(error.contains("structured harness selections"), "{error}");
+    assert!(!finalization_ran(&state, "transfer-structured"));
+}

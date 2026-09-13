@@ -251,23 +251,31 @@ acknowledging transferred descriptors.
   the Codex CLI, and no two CLIs share an effort vocabulary — so resolution
   never composes them across layers: it walks the same chain and takes the
   first layer that both names a value *and* would itself have selected the
-  resolved provider. A layer that names an ordered candidate list wrote its
+  resolved provider. A legacy layer with a sibling model beside an ordered candidate list wrote its
   model beside the *leading* candidate, so the value applies to that one only
   and the outage fallbacks behind it run on their own defaults. A layer
   written for another provider is skipped, and the spawn falls back to the
   resolved provider's own stamped or default model.
-  Workflow stage/post `agent_provider` entries are the one shape that pins a
-  pair per candidate: each entry is a compact selector,
-  `provider[-model[-effort]]` (`claude`, `codex-gpt-5.6-sol`, `claude-fable-hi`,
-  `codex-gpt-6-astra-lo` — effort tokens `lo`/`low`, `med`/`medium`, `hi`/`high`,
-  `xhi`/`xhigh`, `max`). A selector names exactly one provider, so an ordered
-  list like `["claude-fable-hi", "codex-gpt-6-astra-lo"]` gives every fallback
-  candidate its own coherent model/effort; anything under-specified inherits
-  the provider CLI's own defaults, and the model text is passed to the CLI
-  verbatim.
+  Prefer structured candidates in the existing `agent_provider` slot:
+  `{ "harness": "codex", "model": "gpt-6-astra", "effort": "high" }`, or an
+  ordered list, each candidate carrying its own native values. The same shape
+  works in agent/EXTEND frontmatter, task-template defaults and repo
+  `agentProviders` entries. The role (`agent`), executable harness, native model
+  and optional effort are distinct. OpenCode models include the native backend
+  namespace (`local/my-model-high`); Kanna keeps the whole identifier literal,
+  and structured effort aliases are not expanded. Unknown fields, missing
+  harnesses, empty lists and conflicting nested/sibling tuning are rejected.
+  Structured lists cannot repeat a harness: same-harness backend/model failover
+  and Pi execution require separate adapters/contracts. Legacy workflow compact
+  selectors `provider[-model[-effort]]` keep their existing suffix parsing, and
+  legacy repo list siblings still belong only to their leading candidate.
+  Omitted fields inherit lower coherent layers, then CLI defaults; they do not
+  reset a choice. Live sessions are unchanged. Structured pinned workflows
+  cannot currently transfer because peer support is unprovable; the existing
+  workflow claim refuses before source finalization. See `docs/dev/dev-workflow.md`.
   One stage advance may fill the explicit-override slot for the stage it
   *enters*: `kanna_advance_stage` (and `kanna-cli task advance-stage`) accept
-  `next_stage_agent_provider` with `next_stage_model` and `next_stage_effort`,
+  `next_stage_harness` (alias `next_stage_agent_provider`) with `next_stage_model` and `next_stage_effort`,
   which outrank that stage's own selectors, the repo config, frontmatter, and
   the default. It is a per-advance override — it changes no workflow
   definition, no pin, and no default, and the stage after it resolves normally.

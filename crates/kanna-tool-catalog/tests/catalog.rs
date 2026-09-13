@@ -2834,3 +2834,34 @@ fn attention_tools_use_existing_action_transport_and_machine_routing() {
         assert_eq!(request.body, body);
     }
 }
+
+#[test]
+fn harness_aliases_use_legacy_wire_keys_and_refuse_duplicate_spellings() {
+    let catalog = bundled_catalog();
+    for (tool, old, new, wire, base) in [
+        (
+            "kanna_create_task",
+            "agent_provider",
+            "harness",
+            "agentProvider",
+            json!({"repo_id":"r", "prompt":"p"}),
+        ),
+        (
+            "kanna_advance_stage",
+            "next_stage_agent_provider",
+            "next_stage_harness",
+            "nextStageAgentProvider",
+            json!({"task_id":"t"}),
+        ),
+    ] {
+        let mut args = base;
+        args[new] = "opencode".into();
+        let request = resolve_request(&catalog, tool, &args).unwrap();
+        assert_eq!(request.body[wire], "opencode");
+        assert!(request.body.get(new).is_none());
+        args[old] = "opencode".into();
+        assert!(resolve_request(&catalog, tool, &args)
+            .unwrap_err()
+            .contains("conflicting"));
+    }
+}

@@ -66,7 +66,9 @@ fn review_agent() -> AgentDefinition {
         name: "review".to_string(),
         description: "Review".to_string(),
         prompt: String::new(),
-        agent_providers: vec!["antigravity".to_string()],
+        agent_providers: vec![kanna_agent_protocol::AgentSelectionEntry::from(
+            "antigravity",
+        )],
         model: Some("agent-model".to_string()),
         effort: None,
         permission_mode: None,
@@ -116,14 +118,20 @@ fn a_local_config_layers_over_the_committed_one_without_any_commit() {
         config
             .agent_provider_preference(Some("implement"))
             .map(|preference| preference.providers.clone()),
-        Some(vec!["claude".to_string(), "codex".to_string()]),
+        Some(vec![
+            kanna_agent_protocol::AgentSelectionEntry::from("claude"),
+            kanna_agent_protocol::AgentSelectionEntry::from("codex")
+        ]),
     );
     // An `agentProviders` entry the local file never names keeps its
     // committed value, wildcard reordering notwithstanding.
     let review = config
         .agent_provider_preference(Some("review"))
         .expect("committed review preference survives");
-    assert_eq!(review.providers, vec!["codex".to_string()]);
+    assert_eq!(
+        review.providers,
+        vec![kanna_agent_protocol::AgentSelectionEntry::from("codex")]
+    );
     assert_eq!(review.model.as_deref(), Some("committed-model"));
     // Keys outside the local layer are untouched.
     assert_eq!(
@@ -168,7 +176,7 @@ fn local_provider_preference_beats_the_repo_and_agent_but_loses_to_a_task_overri
         .expect("local preference resolves for the review agent")
         .clone();
     let agent = review_agent();
-    let stage_provider = ["copilot".to_string()];
+    let stage_provider = ["copilot".into()];
     let available = |_| true;
 
     // Local config beats the committed config (codex) and the agent's own

@@ -56,3 +56,12 @@ describe("parseAgentProviderSelector", () => {
     expect(parseAgentProviderSelector("claude,codex")).toBeNull();
   });
 });
+
+import selectionCases from "../../../../crates/kanna-agent-protocol/src/selection_cases.json";
+import { parseAgentSelection, resolveAgentSelectionEntry } from "./agent-providers";
+it("shares literal candidate and compatibility fixtures with Rust", () => {
+  for (const test of selectionCases) {
+    if (test.error) expect(() => parseAgentSelection(test.value)).toThrow();
+    else expect(parseAgentSelection(test.value).map(e => resolveAgentSelectionEntry(e))).toEqual(test.expected);
+  }
+});

@@ -5,10 +5,19 @@
   "description": "Schema for .kanna/workflows/*.json workflow definitions.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["name", "stages"],
+  "required": [
+    "name",
+    "stages"
+  ],
   "$defs": {
     "agentProvider": {
-      "enum": ["claude", "copilot", "codex", "opencode", "antigravity"]
+      "enum": [
+        "claude",
+        "copilot",
+        "codex",
+        "opencode",
+        "antigravity"
+      ]
     },
     "agentProviderSpec": {
       "description": "A compact provider selector: provider[-model[-effort]]. A plain provider id (see agentProvider) inherits the CLI's own model and effort; an optional model rides after the provider (passed to the CLI verbatim, so multi-segment ids like gpt-5.6-sol work); a trailing effort token (lo/low, med/medium, hi/high, xhi/xhigh, max) sets the reasoning effort. Examples: claude, codex-gpt-5.6-sol, claude-fable-hi, codex-gpt-6-astra-lo, opencode-local/qwen3-coder:30b. OpenCode native provider/model ids may include slashes and model tags. A model is rejected for providers without a model flag, and effort is checked against the provider's published vocabulary when one exists.",
@@ -18,14 +27,46 @@
     "agentProviderSelection": {
       "oneOf": [
         {
-          "$ref": "#/$defs/agentProviderSpec"
+          "$ref": "#/$defs/agentSelectionEntry"
         },
         {
           "type": "array",
           "items": {
-            "$ref": "#/$defs/agentProviderSpec"
+            "$ref": "#/$defs/agentSelectionEntry"
           },
           "minItems": 1
+        }
+      ]
+    },
+    "agentCandidate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "harness"
+      ],
+      "properties": {
+        "harness": {
+          "$ref": "#/$defs/agentProvider"
+        },
+        "model": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Opaque native model ID. OpenCode uses backend/model; suffixes are literal."
+        },
+        "effort": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Exact native effort or variant; no compact aliases are expanded."
+        }
+      }
+    },
+    "agentSelectionEntry": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/agentProviderSpec"
+        },
+        {
+          "$ref": "#/$defs/agentCandidate"
         }
       ]
     }
@@ -43,14 +84,21 @@
       "type": "string"
     },
     "visibility": {
-      "description": "Whether this workflow is offered as a choice. \"internal\" keeps the name out of every listing (the repo manifest, the desktop's new-task picker, the tool catalog's advertised lineup) while it still resolves when named explicitly on task creation — visibility governs listing, not access. Defaults to \"public\" when absent.",
-      "enum": ["public", "internal"]
+      "description": "Whether this workflow is offered as a choice. \"internal\" keeps the name out of every listing (the repo manifest, the desktop's new-task picker, the tool catalog's advertised lineup) while it still resolves when named explicitly on task creation \u2014 visibility governs listing, not access. Defaults to \"public\" when absent.",
+      "enum": [
+        "public",
+        "internal"
+      ]
     },
     "plan_context": {
       "description": "Planning context Kanna stamps onto a task's pinned workflow when a plan stage publishes the remaining stages through kanna_complete_stage. It is written by the server, never authored by hand: an edit that changes it is refused, and an edit that omits it carries the stamped value forward. Its `result` is bound to the reserved $PLAN_RESULT prompt variable for every stage and post of the extended workflow, so the approved plan stays reachable after later stages, revisions, resume, and recovery.",
       "type": "object",
       "additionalProperties": false,
-      "required": ["source_run_id", "stage", "result"],
+      "required": [
+        "source_run_id",
+        "stage",
+        "result"
+      ],
       "properties": {
         "source_run_id": {
           "description": "Stage run whose successful completion published this plan.",
@@ -104,7 +152,10 @@
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["name", "policy"],
+        "required": [
+          "name",
+          "policy"
+        ],
         "properties": {
           "name": {
             "type": "string",
@@ -128,14 +179,22 @@
           "policy": {
             "type": "object",
             "additionalProperties": false,
-            "required": ["transition"],
+            "required": [
+              "transition"
+            ],
             "properties": {
               "transition": {
-                "enum": ["manual", "auto"]
+                "enum": [
+                  "manual",
+                  "auto"
+                ]
               },
               "revision_transition": {
                 "description": "Completion policy for main runs entered through a revision request. Defaults to transition when omitted.",
-                "enum": ["manual", "auto"]
+                "enum": [
+                  "manual",
+                  "auto"
+                ]
               }
             }
           },
@@ -143,7 +202,10 @@
             "type": "object",
             "description": "Tail work injected into the stage's running agent session when the stage transitions forward. `agent` is the fallback spawned when the session is dead.",
             "additionalProperties": false,
-            "required": ["name", "prompt"],
+            "required": [
+              "name",
+              "prompt"
+            ],
             "properties": {
               "name": {
                 "type": "string",
@@ -177,7 +239,10 @@
           "name": "in progress",
           "agent": "implement",
           "prompt": "$TASK_PROMPT",
-          "policy": { "transition": "manual", "revision_transition": "auto" },
+          "policy": {
+            "transition": "manual",
+            "revision_transition": "auto"
+          },
           "post": {
             "name": "commit",
             "agent": "commit",
@@ -188,7 +253,9 @@
           "name": "pr",
           "agent": "pr",
           "prompt": "Create a PR for the work on branch $BRANCH. Previous result: $PREV_RESULT",
-          "policy": { "transition": "manual" }
+          "policy": {
+            "transition": "manual"
+          }
         }
       ]
     },
@@ -201,7 +268,9 @@
         {
           "name": "review",
           "prompt": "$TASK_PROMPT",
-          "policy": { "transition": "manual" }
+          "policy": {
+            "transition": "manual"
+          }
         }
       ]
     }

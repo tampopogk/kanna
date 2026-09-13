@@ -1090,6 +1090,11 @@ const SESSION_BEFORE_FINALIZATION_PHASE: &str = "session-before-signal";
 /// takes ownership of the task's workflow in one transaction, so nothing can
 /// publish between the question and the answer.
 fn refuse_unprovable_plan_preservation(item: &crate::db::PipelineItem) -> Result<(), String> {
+    if let Some(error) =
+        crate::db::structured_selection_transfer_error(item.pipeline_def.as_deref())
+    {
+        return Err(error.to_string());
+    }
     let carries_plan = item
         .pipeline_def
         .as_deref()
@@ -1181,6 +1186,20 @@ async fn run_finalization(
     // at `build_payload`, after the source had already quit.
     db.claim_task_workflow_for_transfer(transfer_id, &source.item.id)
         .map_err(|error| format!("db error: {error}"))??;
+
+    let recorded_agent = db
+        .latest_stage_run(&source.item.id)
+        .map_err(|error| format!("db error: {error}"))?
+        .and_then(|run| run.agent);
+    let claimed_task = db
+        .get_pipeline_item(&source.item.id)
+        .map_err(|error| format!("db error: {error}"))?
+        .ok_or_else(|| "source task disappeared after workflow claim".to_string())?;
+    crate::task_creator::assert_transfer_default_selection_compatibility(
+        &repo,
+        &claimed_task,
+        recorded_agent.as_deref(),
+    )?;
 
     // Everything below this line can touch the source. A test holds here to
     // prove the exclusion is real across the awaits, rather than only at the
@@ -1850,8 +1869,10 @@ mod tests {
         work_id: &str,
         observed_before_finalization: Option<&str>,
     ) {
-        db.insert_test_repo("repo-finalize", "Finalize Repo")
-            .expect("repo");
+        if db.get_repo("repo-finalize").unwrap().is_none() {
+            db.insert_test_repo("repo-finalize", "Finalize Repo")
+                .expect("repo");
+        }
         db.insert_test_pipeline_item(
             "task-finalize",
             "repo-finalize",
@@ -2018,9 +2039,34 @@ mod tests {
     /// this covers `run_finalization` being wired to them.
     #[tokio::test]
     async fn finalization_compares_against_the_session_the_first_attempt_saw() {
+        // Default-selection compatibility reads the source definitions before
+        // finalizing, so this fixture supplies a real repository snapshot.
+        let temp = tempfile::tempdir().unwrap();
+        let repo = git2::Repository::init(temp.path()).unwrap();
+        let tree_id = repo.treebuilder(None).unwrap().write().unwrap();
+        let tree = repo.find_tree(tree_id).unwrap();
+        let signature = git2::Signature::now("Test", "test@example.com").unwrap();
+        let commit = repo
+            .commit(
+                Some("refs/heads/main"),
+                &signature,
+                &signature,
+                "fixture",
+                &tree,
+                &[],
+            )
+            .unwrap();
+        repo.reference("refs/remotes/origin/main", commit, true, "fixture")
+            .unwrap();
         let seen_before_finalization = "ses_02645d9aaffeeOgwt2rbXIcTdp";
         let state =
             crate::http_api::test_state_with_seed("desktop-finalize-memo", "Finalize Memo", |db| {
+                db.insert_test_repo_with_path(
+                    "repo-finalize",
+                    &temp.path().to_string_lossy(),
+                    "Finalize Repo",
+                )
+                .unwrap();
                 seed_finalization(
                     db,
                     "finalize:transfer-finalize",

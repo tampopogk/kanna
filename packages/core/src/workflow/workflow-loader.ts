@@ -5,7 +5,7 @@ import type {
   WorkflowStage,
   WorkflowStagePolicy,
 } from "./workflow-types";
-import { parseAgentProviderSelector } from "../config/agent-providers";
+import { parseAgentSelection, parseAgentProviderSelector, type AgentSelection } from "../config/agent-providers";
 
 function formatRawValue(value: unknown): string {
   if (value === undefined) {
@@ -24,32 +24,17 @@ function validationError(message: string): Error {
 function parseAgentProviderSelection(
   value: unknown,
   location: string,
-): string | string[] | undefined {
+): AgentSelection | undefined {
   if (value === undefined) return undefined;
-
-  const values = typeof value === "string"
-    ? [value]
-    : Array.isArray(value) && value.every((entry) => typeof entry === "string")
-      ? value
-      : null;
-
-  if (!values || values.length === 0) {
-    throw validationError(`${location} has an invalid agent_provider value`);
+  const values = Array.isArray(value) ? value : [value];
+  const invalidStrings = values.filter(v => typeof v === "string" && parseAgentProviderSelector(v) === null);
+  if (invalidStrings.length) throw validationError(`${location} has unsupported agent_provider values: ${invalidStrings.join(", ")}`);
+  try {
+    const entries = parseAgentSelection(value);
+    return Array.isArray(value) ? entries : entries[0];
+  } catch (error) {
+    throw validationError(`${location} has an invalid agent_provider value: ${String(error)}`);
   }
-
-  // Entries are compact provider selectors (`provider[-model[-effort]]`,
-  // e.g. `claude`, `codex-gpt-5.6-sol`, `claude-fable-hi`); they keep their written
-  // form — the server derives each candidate's model/effort at spawn time.
-  const invalid = values.filter(
-    (provider) => parseAgentProviderSelector(provider) === null,
-  );
-  if (invalid.length > 0) {
-    throw validationError(
-      `${location} has unsupported agent_provider values: ${invalid.join(", ")}`,
-    );
-  }
-
-  return typeof value === "string" ? values[0] : values;
 }
 
 function parseTransition(

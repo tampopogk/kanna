@@ -1,4 +1,4 @@
-import type { AgentProvider } from "@kanna/agent-protocol";
+import type { AgentSelection } from "../config/agent-providers";
 
 export interface WorkflowEnvironment {
   setup?: string[];
@@ -25,7 +25,7 @@ export interface WorkflowPost {
    * `codex-gpt-5.6-sol`, `claude-fable-hi`) — validated by the loader via
    * `parseAgentProviderSelector`; entries keep their written form.
    */
-  agent_provider?: string | string[];
+  agent_provider?: AgentSelection;
 }
 
 export interface WorkflowStage {
@@ -38,7 +38,7 @@ export interface WorkflowStage {
    * `codex-gpt-5.6-sol`, `claude-fable-hi`) — validated by the loader via
    * `parseAgentProviderSelector`; entries keep their written form.
    */
-  agent_provider?: string | string[];
+  agent_provider?: AgentSelection;
   environment?: string;
   policy: WorkflowStagePolicy;
   post?: WorkflowPost;
@@ -76,7 +76,7 @@ export interface WorkflowPlanContext {
 export interface AgentDefinition {
   name: string;
   description: string;
-  agent_provider?: AgentProvider | AgentProvider[];
+  agent_provider?: AgentSelection;
   model?: string;
   effort?: string;
   permission_mode?: "default" | "acceptEdits" | "dontAsk";
@@ -93,7 +93,7 @@ export interface AgentDefinition {
  */
 export interface AgentExtension {
   description?: string;
-  agent_provider?: AgentProvider | AgentProvider[];
+  agent_provider?: AgentSelection;
   model?: string;
   effort?: string;
   permission_mode?: "default" | "acceptEdits" | "dontAsk";

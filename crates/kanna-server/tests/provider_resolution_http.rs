@@ -1592,3 +1592,104 @@ async fn checkout_then_create_task_succeeds_through_running_server() {
     assert!(daemon.await.unwrap_err().is_cancelled());
     std::fs::remove_dir_all(root).expect("test root should be removed");
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn structured_workflow_candidates_reach_daemon_and_durable_stamps() {
+    let _fixture_guard = PROCESS_FIXTURE_LOCK.lock().await;
+    let root = unique_test_root("structured-fallback");
+    std::fs::create_dir_all(&root).expect("test root should be created");
+    let mut cleanup = DurableTestCleanup::new(root.clone());
+    let repo = init_provider_repo(&root);
+    std::fs::remove_file(repo.join(".kanna/provider-bin/claude")).unwrap();
+    write_executable(&repo.join(".kanna/provider-bin/opencode"));
+    // Codex is unavailable; the OpenCode fallback owns its literal values.
+    let workflow_dir = repo.join(".kanna/workflows");
+    std::fs::create_dir_all(&workflow_dir).expect("workflow directory should be created");
+    std::fs::write(
+        workflow_dir.join("selectors.json"),
+        json!({
+            "name": "selectors",
+            "stages": [{
+                "name": "in progress",
+                "agent": "review",
+                "agent_provider": [{"harness":"codex", "model":"gpt-6-astra", "effort":"high"}, {"harness":"opencode", "model":"local/My/Model-high", "effort":"custom-hi"}],
+                "transition": "manual"
+            }]
+        })
+        .to_string(),
+    )
+    .expect("selector workflow should be written");
+    publish_origin_main(&repo, "publish selector workflow");
+
+    let ports = ServerPortReservations::new();
+    let port = ports.lan_port();
+    let (config_path, daemon_dir, _db_path) =
+        write_server_config(&root, port, ports.transfer_port());
+    let ServerPortReservations { lan, transfer } = ports;
+    let (command_tx, mut commands) = mpsc::unbounded_channel();
+    cleanup.track_daemon(tokio::spawn(fake_daemon_persistent(daemon_dir, command_tx)));
+    let mut server = start_server(&config_path, &root, port, lan, transfer).await;
+    let client = Client::new();
+    let repo_id = register_repo(&client, port, &repo).await;
+
+    let created = client
+        .post(format!("http://127.0.0.1:{port}/v1/tasks"))
+        .json(&json!({
+            "repoId": repo_id,
+            "prompt": "Exercise selector fallback",
+            "workflowName": "selectors",
+            "agentType": "agent"
+        }))
+        .send()
+        .await
+        .expect("task creation should reach kanna-server")
+        .error_for_status()
+        .expect("task creation should succeed")
+        .json::<Value>()
+        .await
+        .expect("task response should be JSON");
+    let task_id = created["taskId"]
+        .as_str()
+        .expect("task response should include an id")
+        .to_string();
+
+    match next_daemon_command(&mut commands).await {
+        DaemonCommand::SpawnAgent {
+            session_id, params, ..
+        } => {
+            assert_eq!(session_id, task_id);
+            assert_eq!(params.agent_provider, DaemonAgentProvider::Opencode);
+            assert_eq!(
+                params.model.as_deref(),
+                Some("local/My/Model-high"),
+                "the fallback candidate must spawn with its own selector's model",
+            );
+            assert_eq!(
+                params.effort.as_deref(),
+                Some("custom-hi"),
+                "the fallback candidate must spawn with its own selector's effort",
+            );
+        }
+        other => panic!("expected OpenCode headless spawn, got {other:?}"),
+    }
+
+    let detail: Value = client
+        .get(format!("http://127.0.0.1:{port}/v1/tasks/{task_id}"))
+        .send()
+        .await
+        .unwrap()
+        .error_for_status()
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(detail["agentProvider"], "opencode");
+    assert_eq!(detail["model"], "local/My/Model-high");
+    assert_eq!(detail["effort"], "custom-hi");
+    assert_eq!(
+        detail["workflowDefinition"]["stages"][0]["agent_provider"][1]["model"],
+        "local/My/Model-high"
+    );
+    stop_server(&mut server).await;
+    cleanup.stop_daemon().await;
+}

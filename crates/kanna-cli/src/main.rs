@@ -160,7 +160,7 @@ pub(crate) enum RepoAgentCommands {
 
         /// Agent provider override, applied only when this signal creates the
         /// agent's task
-        #[arg(long)]
+        #[arg(long, visible_alias = "harness")]
         agent_provider: Option<String>,
 
         /// Provider-native reasoning effort override, applied only when this
@@ -457,7 +457,7 @@ pub(crate) enum TaskCommands {
         agent: Option<String>,
 
         /// Optional agent provider override
-        #[arg(long)]
+        #[arg(long, visible_alias = "harness")]
         agent_provider: Option<String>,
 
         /// Optional model override
@@ -618,7 +618,7 @@ pub(crate) enum TaskCommands {
 
         /// Provider the stage this advance enters must spawn with; outranks
         /// that stage's own selectors, the repo config, and the default
-        #[arg(long)]
+        #[arg(long, visible_alias = "next-stage-harness")]
         next_stage_agent_provider: Option<String>,
 
         /// Model for --next-stage-agent-provider, passed to that CLI verbatim

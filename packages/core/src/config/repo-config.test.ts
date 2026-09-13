@@ -138,7 +138,6 @@ describe("parseRepoConfig", () => {
         review: "future-agent",
         "review-*": { provider: ["codex", 42] },
         "": "claude",
-        implement: { model: "missing-provider" },
         commit: "claude",
       },
     }));
@@ -247,4 +246,14 @@ describe("parseRepoConfig", () => {
     const config = parseRepoConfig(JSON.stringify({ stage_order: ["merge", 42] }));
     expect(config.stage_order).toBeUndefined();
   });
+});
+
+it("rejects malformed structured preferences instead of dropping the selection", () => {
+  for (const value of [{ harness: "opencode", provider: "codex" }, { model: "missing-harness" }, { harness: "codex", extra: true }, [], [{ harness: "codex" }, { harness: "codex" }]]) {
+    expect(() => parseRepoConfig(JSON.stringify({ agentProviders: { implement: value } }))).toThrow();
+  }
+});
+it("preserves each repo candidate's native tuning", () => {
+  const entries = [{ harness: "codex", model: "gpt-6-astra" }, { harness: "opencode", model: "local/model-high", effort: "custom-hi" }];
+  expect(parseRepoConfig(JSON.stringify({ agentProviders: { implement: entries } })).agentProviders?.implement).toEqual({ provider: entries });
 });

@@ -204,3 +204,16 @@ permanent wishlist.
 6. **Platform promise:** Linux has a working headless path and partial desktop
    implementation, but the supported end-user platform and distribution promise
    have not been settled here.
+
+
+### Agent role and execution choice
+
+The agent role owns instructions; the harness is the executable CLI. A native
+model identity and optional harness/model-native effort are separate choices.
+For a multi-backend harness such as OpenCode, the model includes its native
+backend namespace (`local/model-high`). That namespace belongs to OpenCode's
+configuration. Kanna accepts structured `{ harness, model?, effort? }`
+candidates alongside legacy selection strings, keeps fallback values coherent,
+and records the launch binding without claiming to observe later TUI changes.
+Pi execution, same-harness model failover and a model catalog service remain
+outside this contract. See [selection defaults and compatibility](dev-workflow.md#harness-model-and-effort).

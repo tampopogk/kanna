@@ -891,3 +891,93 @@ checkout. Without that origin snapshot, shared candidate files await integration
 or another supported activation path. Editing configuration does not replace an
 existing task's pinned workflow. Setup reports this distinction, doctor findings,
 separate command checks actually performed, and preserved/deferred decisions.
+
+
+## Harness, model and effort
+
+An agent names a role and its instructions (`implement`, `review`, etc.). A
+harness is the executable CLI (`codex`, `opencode`, `claude`, `copilot`, or
+`antigravity`/`agy`). PTY versus headless is a separate session choice.
+Model and effort use that harness's native identifiers. Kanna does not own a
+model catalog or backend credential registry.
+
+Prefer a structured candidate in a stage or post:
+
+```json
+"agent_provider": { "harness": "codex", "model": "gpt-6-astra", "effort": "high" }
+```
+
+An ordered list keeps each fallback's own values:
+
+```json
+"agent_provider": [
+  { "harness": "codex", "model": "gpt-6-astra", "effort": "high" },
+  { "harness": "opencode", "model": "local/my-model-high", "effort": "custom-variant-hi" }
+]
+```
+
+For OpenCode, `local` is a backend key in its native configuration, and the
+entire remainder after the first slash is the model ID. Both the model and
+variant must exist there. Kanna preserves case, punctuation, slashes and
+suffixes; structured effort `hi` stays `hi`. The same object or list is accepted
+in agent/EXTEND frontmatter and repo defaults:
+
+```json
+"agentProviders": {
+  "implement": { "harness": "opencode", "model": "local/my-model-high" }
+}
+```
+
+Task templates also accept the object; as before, their defaults choose the
+leading candidate for the task-creation request. Mixed string/object lists are
+accepted, but lists containing objects cannot repeat a harness. Same-harness
+model or backend failover is not implemented. Unknown fields, missing harnesses,
+empty lists, null/empty native values, and conflicting nested/sibling tuning
+are errors. EXTEND merging also rejects conflicting representations.
+
+Precedence remains explicit task/per-advance override, stage/post selection,
+matching repo/local entry, layered agent defaults, then the global/task fallback.
+An omitted model or effort inherits the first lower value eligible for the same
+harness, then the native CLI default. A harness-only override does not reset
+model/effort. There is no reset sentinel. Legacy strings, string lists and
+`{ provider, model, effort }` repo entries keep their original semantics;
+compact workflow strings still interpret recognized trailing effort aliases.
+Old repo list siblings belong only to the leading harness.
+
+```sh
+kanna-cli task create --repo-id REPO --prompt 'Implement the change' \
+  --harness opencode --model local/my-model-high --effort custom-variant-hi
+kanna-cli task advance-stage --task-id TASK \
+  --next-stage-harness codex --next-stage-model gpt-6-astra --next-stage-effort high
+```
+
+CLI `--agent-provider`/`--next-stage-agent-provider` and MCP
+`agent_provider`/`next_stage_agent_provider` remain supported; the new MCP names
+are `harness`/`next_stage_harness`. Specify only one spelling. CLI and MCP map
+aliases to the existing wire keys so old servers still receive an explicit
+choice. HTTP additionally accepts `harness` and `nextStageHarness`. Response,
+DB and daemon fields retain their historical provider names and mean harness.
+
+Recorded launch bindings survive rerun, revision, resume and recovery. Plain
+advances re-resolve; live posts keep the actual running session's binding, and
+dead-session posts resolve their definition. Equivalent string-to-object
+workflow edits keep recorded runs resumable. Nothing rewrites a live session.
+The launch stamp records Kanna's request; an omitted model and changes inside
+the CLI are not evidence of the effective inference model.
+
+Kanna refuses unsupported model controls and fixed-vocabulary effort errors
+before spawn. Dynamic model-specific efforts and OpenCode variants pass to the
+native control verbatim. Acceptance of a config value does not prove a model
+uses it; native errors are not automatic model/backend fallback triggers.
+
+Transfer compatibility is deliberately conservative: the current protocol
+cannot establish peer support for structured selections. Tasks whose pinned
+workflow contains them are refused before source finalization, including at the
+atomic workflow claim. The source also checks the repo and agent defaults used
+by that workflow and the recorded agent before finalizing. No lossy compact downgrade is attempted. Existing
+string-only tasks retain their transfer behavior.
+
+Pi is not a supported Kanna harness. Its separate provider/model/thinking CLI
+illustrates why these dimensions matter, but execution needs its own adapter
+for launch, completion/tool integration, status, resume and transfer. This
+change adds neither Pi nor a general provider platform.

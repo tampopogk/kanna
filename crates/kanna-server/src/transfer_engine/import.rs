@@ -3529,6 +3529,18 @@ mod tests {
 mod stored_workflow_tests {
     use super::{assert_destination_preserves_workflow, stored_workflow_matches_source};
 
+    #[test]
+    fn structured_selection_snapshot_round_trips_without_losing_literals() {
+        let original = r#"{"name":"selection","stages":[{"name":"build","policy":{"transition":"manual"},"agent_provider":[{"harness":"opencode","model":"local/My/Model-high","effort":"custom-hi"}]}]}"#;
+        let normalized =
+            crate::task_creator::normalize_task_workflow_for_transfer(original).unwrap();
+        assert!(stored_workflow_matches_source(
+            Some(&normalized),
+            Some(original)
+        ));
+        assert!(assert_destination_preserves_workflow(Some(original)).is_ok());
+    }
+
     /// The false positive a shape comparison would produce.
     ///
     /// Normalization deliberately rewrites older spellings — a stage-level

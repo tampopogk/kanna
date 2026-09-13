@@ -4,13 +4,12 @@ pub(crate) mod doctor;
 use super::definition_source::{OriginFreshness, RepoDefinitionSnapshot};
 use super::local_config::{apply_local_config_override, LocalConfigOverride};
 use crate::db::Repo;
-use kanna_agent_protocol::AgentProvider;
+use kanna_agent_protocol::{validate_agent_selection, AgentSelectionEntry};
 use serde::{Deserialize, Serialize};
 use serde_yaml::Value as YamlValue;
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::Path;
-use std::str::FromStr;
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub(super) struct RepoConfig {
@@ -59,7 +58,7 @@ pub(super) struct RepoConfig {
 #[derive(Clone, Debug, Serialize)]
 pub(super) struct AgentProviderPreference {
     #[serde(rename = "provider")]
-    pub(super) providers: Vec<String>,
+    pub(super) providers: Vec<AgentSelectionEntry>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) model: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -271,7 +270,7 @@ pub(super) struct WorkflowStage {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) prompt: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(super) agent_provider: Option<Vec<String>>,
+    pub(super) agent_provider: Option<Vec<AgentSelectionEntry>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) environment: Option<String>,
     pub(super) policy: WorkflowStagePolicy,
@@ -293,7 +292,7 @@ pub(super) struct WorkflowPost {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) prompt: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(super) agent_provider: Option<Vec<String>>,
+    pub(super) agent_provider: Option<Vec<AgentSelectionEntry>>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -405,7 +404,7 @@ struct RawWorkflowStage {
     agent: Option<String>,
     prompt: Option<String>,
     #[serde(default, deserialize_with = "deserialize_optional_provider_list")]
-    agent_provider: Option<Vec<String>>,
+    agent_provider: Option<Vec<AgentSelectionEntry>>,
     environment: Option<String>,
     policy: Option<RawWorkflowStagePolicy>,
     transition: Option<WorkflowStageTransition>,
@@ -428,7 +427,7 @@ struct RawWorkflowPost {
     agent: Option<String>,
     prompt: Option<String>,
     #[serde(default, deserialize_with = "deserialize_optional_provider_list")]
-    agent_provider: Option<Vec<String>>,
+    agent_provider: Option<Vec<AgentSelectionEntry>>,
 }
 
 #[derive(Deserialize)]
@@ -438,7 +437,7 @@ struct RawWorkflowPostAction {
     agent: Option<String>,
     prompt: Option<String>,
     #[serde(default, deserialize_with = "deserialize_optional_provider_list")]
-    agent_provider: Option<Vec<String>>,
+    agent_provider: Option<Vec<AgentSelectionEntry>>,
     #[allow(dead_code)]
     transition: Option<WorkflowStageTransition>,
 }
@@ -469,7 +468,7 @@ pub(super) struct AgentDefinition {
     pub(super) description: String,
     pub(super) prompt: String,
     #[serde(rename = "agent_provider", skip_serializing_if = "Vec::is_empty")]
-    pub(super) agent_providers: Vec<String>,
+    pub(super) agent_providers: Vec<AgentSelectionEntry>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) model: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -506,7 +505,7 @@ pub(crate) struct ResolvedAgentDefinition {
 struct AgentExtension {
     prompt: String,
     description: Option<String>,
-    agent_providers: Option<Vec<String>>,
+    agent_providers: Option<Vec<AgentSelectionEntry>>,
     model: Option<String>,
     effort: Option<String>,
     permission_mode: Option<String>,
@@ -569,6 +568,8 @@ impl RepoDefinitions {
                 local.keys().join(", "),
             );
         }
+        validate_structured_preferences(&raw_config)
+            .map_err(|error| definition_error(&snapshot, config_path, error))?;
         let mut config = repo_config_from_object(&raw_config);
         config.local_override = local_override;
         Ok(Self { snapshot, config })
@@ -805,9 +806,23 @@ impl RepoDefinitions {
             resolved.push(ResolvedAgentDefinition {
                 name,
                 description: definition.description,
-                default_provider: definition.agent_providers.into_iter().next(),
-                default_model: definition.model,
-                default_effort: definition.effort,
+                default_provider: definition
+                    .agent_providers
+                    .first()
+                    .and_then(|v| v.resolve(false).ok())
+                    .map(|v| v.provider.to_string()),
+                default_model: definition
+                    .agent_providers
+                    .first()
+                    .and_then(|v| v.resolve(false).ok())
+                    .and_then(|v| v.model)
+                    .or(definition.model),
+                default_effort: definition
+                    .agent_providers
+                    .first()
+                    .and_then(|v| v.resolve(false).ok())
+                    .and_then(|v| v.effort)
+                    .or(definition.effort),
                 source,
             });
         }
@@ -839,6 +854,30 @@ fn parse_config_object(
     let value: serde_json::Value =
         serde_json::from_str(content).map_err(|error| format!("invalid repo config: {error}"))?;
     Ok(value.as_object().cloned().unwrap_or_default())
+}
+
+fn validate_structured_preferences(
+    raw: &serde_json::Map<String, serde_json::Value>,
+) -> Result<(), String> {
+    if let Some(entries) = raw
+        .get("agentProviders")
+        .and_then(serde_json::Value::as_object)
+    {
+        for (name, value) in entries {
+            let structured = value.get("harness").is_some()
+                || value.is_array()
+                || (value.is_object() && value.get("provider").is_none())
+                || value.get("provider").is_some_and(|v| {
+                    v.is_object()
+                        || v.as_array()
+                            .is_some_and(|a| a.iter().any(serde_json::Value::is_object))
+                });
+            if structured && parse_agent_provider_preference(value).is_none() {
+                return Err(format!("invalid structured agentProviders entry '{name}': expected harness, optional model/effort, and unique harness candidates"));
+            }
+        }
+    }
+    Ok(())
 }
 
 fn repo_config_from_object(raw: &serde_json::Map<String, serde_json::Value>) -> RepoConfig {
@@ -965,6 +1004,11 @@ where
     let Some(raw) = value.and_then(|value| value.as_object().cloned()) else {
         return Ok(None);
     };
+    validate_structured_preferences(&serde_json::Map::from_iter([(
+        String::from("agentProviders"),
+        serde_json::Value::Object(raw.clone()),
+    )]))
+    .map_err(serde::de::Error::custom)?;
     let preferences = raw
         .iter()
         .filter_map(|(pattern, value)| {
@@ -980,6 +1024,16 @@ where
 pub(super) fn parse_agent_provider_preference(
     value: &serde_json::Value,
 ) -> Option<AgentProviderPreference> {
+    if value.get("harness").is_some()
+        || (value.is_object() && value.get("provider").is_none())
+        || value.is_array()
+    {
+        return Some(AgentProviderPreference {
+            providers: parse_selection_value(value.clone(), false).ok()?,
+            model: None,
+            effort: None,
+        });
+    }
     let (provider, model, effort) = match value {
         serde_json::Value::String(_) => (value, None, None),
         serde_json::Value::Object(raw) => (
@@ -993,6 +1047,29 @@ pub(super) fn parse_agent_provider_preference(
         ),
         _ => return None,
     };
+    if provider.is_object()
+        || provider
+            .as_array()
+            .is_some_and(|v| v.iter().any(serde_json::Value::is_object))
+    {
+        let raw = value.as_object()?;
+        if raw
+            .keys()
+            .any(|key| !matches!(key.as_str(), "provider" | "model" | "effort"))
+            || ["model", "effort"]
+                .iter()
+                .any(|key| raw.get(*key).is_some_and(|value| !value.is_string()))
+        {
+            return None;
+        }
+        let providers = parse_selection_value(provider.clone(), false).ok()?;
+        validate_selection_siblings(&providers, model.as_deref(), effort.as_deref()).ok()?;
+        return Some(AgentProviderPreference {
+            providers,
+            model,
+            effort,
+        });
+    }
     let providers = match provider {
         serde_json::Value::String(provider) => provider
             .split(',')
@@ -1012,7 +1089,7 @@ pub(super) fn parse_agent_provider_preference(
         _ => return None,
     };
     (!providers.is_empty()).then_some(AgentProviderPreference {
-        providers,
+        providers: providers.into_iter().map(Into::into).collect(),
         model,
         effort,
     })
@@ -1492,6 +1569,30 @@ fn compiled_builtin_resource(relative_path: &str) -> Option<&'static str> {
 fn apply_agent_extension(definition: &mut AgentDefinition, content: &str) -> Result<(), String> {
     let extension = parse_agent_extension(content)?;
 
+    // A selection object replaces the selection field. Inherited sibling
+    // tuning must not acquire a different owner through that replacement.
+    if let Some(replacement) = &extension.agent_providers {
+        let uses_objects = definition
+            .agent_providers
+            .iter()
+            .chain(replacement)
+            .any(|entry| matches!(entry, AgentSelectionEntry::Candidate(_)));
+        let owner = definition
+            .agent_providers
+            .first()
+            .and_then(|entry| entry.resolve(false).ok())
+            .map(|entry| entry.provider);
+        let next_owner = replacement
+            .first()
+            .and_then(|entry| entry.resolve(false).ok())
+            .map(|entry| entry.provider);
+        let inherits_tuning = (definition.model.is_some() && extension.model.is_none())
+            || (definition.effort.is_some() && extension.effort.is_none());
+        if uses_objects && inherits_tuning && owner.is_some() && owner != next_owner {
+            return Err("conflicting selection representations: EXTEND changes harness while inheriting sibling model/effort written for another harness".into());
+        }
+    }
+
     if let Some(description) = extension.description {
         definition.description = description;
     }
@@ -1615,6 +1716,33 @@ fn validate_agent_definition(definition: &AgentDefinition) -> Result<(), String>
     if definition.description.trim().is_empty() {
         return Err("description is required and must be a non-empty string".to_string());
     }
+    validate_selection_siblings(
+        &definition.agent_providers,
+        definition.model.as_deref(),
+        definition.effort.as_deref(),
+    )?;
+    Ok(())
+}
+
+fn validate_selection_siblings(
+    entries: &[AgentSelectionEntry],
+    model: Option<&str>,
+    effort: Option<&str>,
+) -> Result<(), String> {
+    for entry in entries {
+        if let AgentSelectionEntry::Candidate(candidate) = entry {
+            for (name, nested, sibling) in [
+                ("model", candidate.model.as_deref(), model),
+                ("effort", candidate.effort.as_deref(), effort),
+            ] {
+                if nested.zip(sibling).is_some_and(|(a, b)| a != b) {
+                    return Err(format!(
+                        "conflicting nested and sibling {name} in agent_provider"
+                    ));
+                }
+            }
+        }
+    }
     Ok(())
 }
 
@@ -1642,37 +1770,25 @@ fn split_frontmatter(content: &str) -> (Option<&str>, &str) {
     (None, normalized)
 }
 
-fn parse_agent_providers(value: Option<YamlValue>) -> Result<Vec<String>, String> {
-    let providers: Vec<String> = match value {
-        None => return Ok(Vec::new()),
-        Some(YamlValue::Sequence(values)) => {
-            if !values.iter().all(|value| value.as_str().is_some()) {
-                return Err("agent_provider must be a string or an array of strings".to_string());
-            }
-            values
-                .into_iter()
-                .filter_map(|value| value.as_str().map(str::trim).map(str::to_string))
-                .filter(|value| !value.is_empty())
-                .collect()
-        }
-        Some(YamlValue::String(value)) => value
+fn parse_agent_providers(value: Option<YamlValue>) -> Result<Vec<AgentSelectionEntry>, String> {
+    let Some(value) = value else {
+        return Ok(Vec::new());
+    };
+    let mut value = serde_json::to_value(value).map_err(|e| e.to_string())?;
+    if let Some(csv) = value.as_str() {
+        value = serde_json::json!(csv
             .split(',')
             .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(str::to_string)
-            .collect(),
-        Some(_) => {
-            return Err("agent_provider must be a string or an array of strings".to_string());
-        }
-    };
-
-    if providers.is_empty() {
-        return Err("agent_provider must include at least one non-empty provider".to_string());
+            .filter(|v| !v.is_empty())
+            .collect::<Vec<_>>());
     }
-    for provider in &providers {
-        AgentProvider::from_str(provider)?;
+    if let Some(entries) = value
+        .as_array_mut()
+        .filter(|entries| entries.iter().all(serde_json::Value::is_string))
+    {
+        entries.retain(|v| v.as_str().is_some_and(|v| !v.trim().is_empty()));
     }
-    Ok(providers)
+    parse_selection_value(value, false)
 }
 
 fn normalize_workflow_definition(raw: RawWorkflowDefinition) -> Result<WorkflowDefinition, String> {
@@ -1782,50 +1898,51 @@ fn normalize_workflow_definition(raw: RawWorkflowDefinition) -> Result<WorkflowD
 
 fn deserialize_optional_provider_list<'de, D>(
     deserializer: D,
-) -> Result<Option<Vec<String>>, D::Error>
+) -> Result<Option<Vec<AgentSelectionEntry>>, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
     let value = serde_json::Value::deserialize(deserializer)?;
-    let providers = match value {
-        // Workflow snapshots created before provider validation serialized an
-        // unset optional field as null. Continue reading those durable task
-        // snapshots while omitting the field from newly serialized snapshots.
-        serde_json::Value::Null => return Ok(None),
-        serde_json::Value::String(provider) => vec![provider.trim().to_string()],
-        serde_json::Value::Array(values) => {
-            if values.is_empty() || !values.iter().all(serde_json::Value::is_string) {
-                return Err(serde::de::Error::custom(
-                    "agent_provider must be a string or a non-empty array of strings",
-                ));
-            }
-            values
-                .into_iter()
-                .filter_map(|value| value.as_str().map(str::trim).map(str::to_string))
-                .collect()
-        }
-        _ => {
-            return Err(serde::de::Error::custom(
-                "agent_provider must be a string or a non-empty array of strings",
-            ));
-        }
-    };
+    if value.is_null() {
+        return Ok(None);
+    } // Historical stored snapshots.
+    parse_selection_value(value, true)
+        .map(Some)
+        .map_err(serde::de::Error::custom)
+}
 
-    if providers.is_empty() || providers.iter().any(|provider| provider.is_empty()) {
-        return Err(serde::de::Error::custom(
-            "agent_provider must include at least one non-empty provider",
-        ));
+fn parse_selection_value(
+    value: serde_json::Value,
+    compact: bool,
+) -> Result<Vec<AgentSelectionEntry>, String> {
+    let values =
+        match value {
+            serde_json::Value::Array(values) => values,
+            value @ (serde_json::Value::String(_) | serde_json::Value::Object(_)) => vec![value],
+            _ => return Err(
+                "agent_provider must be a string or an array of strings or structured candidates"
+                    .into(),
+            ),
+        };
+    if values.iter().any(|v| !v.is_string() && !v.is_object()) {
+        return Err(
+            "agent_provider must be a string or an array of strings or structured candidates"
+                .into(),
+        );
     }
-    // Workflow stage/post entries are compact provider selectors
-    // (`provider[-model[-effort]]`, e.g. `claude`, `codex-gpt-5.6-sol`,
-    // `claude-fable-hi`), validated here so a bad selector fails definition
-    // resolution naming the field instead of failing at spawn.
-    for provider in &providers {
-        kanna_agent_protocol::parse_provider_selector(provider).map_err(|error| {
-            serde::de::Error::custom(format!("invalid agent_provider: {error}"))
-        })?;
-    }
-    Ok(Some(providers))
+    let entries = values
+        .into_iter()
+        .map(|value| {
+            let value = match value {
+                serde_json::Value::String(value) => serde_json::Value::String(value.trim().into()),
+                value => value,
+            };
+            serde_json::from_value(value).map_err(|e| format!("invalid agent_provider: {e}"))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    validate_agent_selection(&entries, compact)
+        .map_err(|e| format!("invalid agent_provider: {e}"))?;
+    Ok(entries)
 }
 
 fn deserialize_optional_yaml_value<'de, D>(deserializer: D) -> Result<Option<YamlValue>, D::Error>

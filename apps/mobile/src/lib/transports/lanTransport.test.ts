@@ -375,7 +375,7 @@ describe("createLanTransport", () => {
     const transport = createLanTransport("http://127.0.0.1:48120", fetchImpl);
     const pinned = {
       name: "consultation",
-      stages: [{ name: "consultation" }, { name: "plan" }]
+      stages: [{ name: "consultation" }, { name: "plan", agent_provider: { harness: "opencode" as const, model: "local/model-high" } }]
     };
 
     await transport.advanceTaskStage("task-1", pinned);

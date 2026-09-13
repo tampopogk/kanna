@@ -4,7 +4,10 @@ import {
   VALID_AGENT_PROVIDERS,
   isAgentProvider,
   splitAgentProviderValue,
-  type AgentProvider,
+  parseAgentSelection,
+  resolveAgentSelectionEntry,
+  validateSelectionSiblings,
+  type AgentSelectionEntry,
 } from "../config/agent-providers";
 
 const VALID_PERMISSION_MODES = ["default", "acceptEdits", "dontAsk"] as const;
@@ -23,7 +26,8 @@ function parsePermissionMode(value: unknown): PermissionMode | undefined {
   );
 }
 
-function parseAgentProviders(value: unknown): AgentProvider[] {
+function parseAgentProviders(value: unknown): AgentSelectionEntry[] {
+  if (typeof value === "object" && value !== null && (!Array.isArray(value) || value.some(v => typeof v === "object"))) return parseAgentSelection(value, false);
   if (
     typeof value !== "string" &&
     !(Array.isArray(value) && value.every((provider) => typeof provider === "string"))
@@ -130,10 +134,23 @@ export function parseAgentExtension(content: string): AgentExtension {
     ext.agent_provider = agentProviders;
   }
 
+  if (ext.agent_provider) validateSelectionSiblings(parseAgentSelection(ext.agent_provider, false), ext.model, ext.effort);
   return ext;
 }
 
 export function applyAgentExtension(base: AgentDefinition, extension: AgentExtension): AgentDefinition {
+  if (base.agent_provider && extension.agent_provider) {
+    const previous = parseAgentSelection(base.agent_provider, false);
+    const replacement = parseAgentSelection(extension.agent_provider, false);
+    const usesObjects = [...previous, ...replacement].some(entry => typeof entry === "object");
+    const owner = resolveAgentSelectionEntry(previous[0]!, false)?.provider;
+    const nextOwner = resolveAgentSelectionEntry(replacement[0]!, false)?.provider;
+    const inheritsTuning = (base.model !== undefined && extension.model === undefined)
+      || (base.effort !== undefined && extension.effort === undefined);
+    if (usesObjects && inheritsTuning && owner !== undefined && owner !== nextOwner) {
+      throw new Error("conflicting selection representations: EXTEND changes harness while inheriting sibling model/effort written for another harness");
+    }
+  }
   const merged: AgentDefinition = {
     ...base,
     ...(extension.description !== undefined && { description: extension.description }),
@@ -181,13 +198,10 @@ export function validateAgentDefinition(def: AgentDefinition): string[] {
   }
 
   if (def.agent_provider !== undefined) {
-    const providers = Array.isArray(def.agent_provider) ? def.agent_provider : [def.agent_provider];
-    const invalid = providers.filter((p) => !isAgentProvider(p));
-    if (invalid.length > 0) {
-      errors.push(
-        `agent_provider must be one of: ${VALID_AGENT_PROVIDERS.join(", ")} (got "${invalid.join(", ")}")`
-      );
-    }
+    try {
+      const entries = parseAgentSelection(def.agent_provider, false);
+      validateSelectionSiblings(entries, def.model, def.effort);
+    } catch (error) { errors.push(String(error)); }
   }
 
   return errors;

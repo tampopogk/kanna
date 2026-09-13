@@ -41,7 +41,7 @@ watch(() => props.repoId, load, { immediate: true });
         :id="`${listId}-input`"
         :list="listId"
         :value="modelValue"
-        placeholder="OpenCode default, or provider/model"
+        placeholder="Native default, or backend/model"
         aria-label="OpenCode model"
         @input="emit('update:modelValue', ($event.target as HTMLInputElement).value.trim())"
       />
@@ -51,12 +51,12 @@ watch(() => props.repoId, load, { immediate: true });
       <option v-for="model in models" :key="model.id" :value="model.id">{{ model.local ? 'Local · ' : '' }}{{ model.name }}</option>
     </datalist>
     <small v-if="loading" role="status">Reading OpenCode models…</small>
-    <small v-if="error" role="alert">{{ error }}. You can enter a provider/model ID directly.</small>
+    <small v-if="error" role="alert">{{ error }}. You can enter a native backend/model ID directly.</small>
     <small v-if="selected">
       {{ selected.local ? 'Local connection' : 'Configured connection' }}{{ selected.connection ? ` · ${selected.connection}` : '' }}{{ selected.context ? ` · ${selected.context.toLocaleString()} context` : '' }}.
       Server readiness has not been checked.
     </small>
-    <small>Connections are configured in OpenCode on the machine running this task. An explicit model also handles auxiliary inference for this stage.</small>
+    <small>The backend namespace and connections are configured in OpenCode on the machine running this task. An explicit model also handles auxiliary inference for this stage.</small>
   </div>
 </template>
 

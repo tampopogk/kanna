@@ -88,3 +88,41 @@ fn provider_strings_round_trip() {
     }
     assert!(AgentProvider::from_str("future-agent").is_err());
 }
+
+#[test]
+fn shared_structured_selection_contract() {
+    let cases: Vec<serde_json::Value> =
+        serde_json::from_str(include_str!("../src/selection_cases.json")).unwrap();
+    for case in cases {
+        let result = serde_json::from_value::<Vec<kanna_agent_protocol::AgentSelectionEntry>>(
+            case["value"].clone(),
+        )
+        .map_err(|e| e.to_string())
+        .and_then(|entries| {
+            kanna_agent_protocol::validate_agent_selection(&entries, true)?;
+            Ok(entries
+                .iter()
+                .map(|entry| {
+                    let e = entry.resolve(true).unwrap();
+                    let mut v = serde_json::json!({"provider":e.provider});
+                    if let Some(model) = e.model {
+                        v["model"] = model.into();
+                    }
+                    if let Some(effort) = e.effort {
+                        v["effort"] = effort.into();
+                    }
+                    v
+                })
+                .collect::<Vec<_>>())
+        });
+        if case["error"] == true {
+            assert!(result.is_err(), "{case}");
+        } else {
+            assert_eq!(
+                serde_json::to_value(result.unwrap()).unwrap(),
+                case["expected"],
+                "{case}"
+            );
+        }
+    }
+}

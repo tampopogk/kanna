@@ -1,4 +1,5 @@
 use super::definitions::AgentDefinition;
+use kanna_agent_protocol::AgentSelectionEntry;
 pub(super) use kanna_agent_protocol::{AgentProvider, AgentSessionType};
 use std::fmt;
 use std::str::FromStr;
@@ -7,6 +8,7 @@ use std::str::FromStr;
 pub(super) enum ResolveProviderCandidatesError {
     NotConfigured,
     Unsupported(String),
+    InvalidSelection(String),
 }
 
 impl fmt::Display for ResolveProviderCandidatesError {
@@ -15,6 +17,7 @@ impl fmt::Display for ResolveProviderCandidatesError {
             Self::NotConfigured => {
                 formatter.write_str("No agent provider configured for this request.")
             }
+            Self::InvalidSelection(error) => formatter.write_str(error),
             Self::Unsupported(candidate) => write!(
                 formatter,
                 "unsupported agent provider '{candidate}' (supported: {})",
@@ -184,8 +187,8 @@ pub(crate) fn parse_stage_provider_override(
 
 pub(super) fn resolve_agent_provider(
     explicit_provider: Option<&str>,
-    stage_provider: Option<&[String]>,
-    repo_provider: Option<&[String]>,
+    stage_provider: Option<&[AgentSelectionEntry]>,
+    repo_provider: Option<&[AgentSelectionEntry]>,
     agent: Option<&AgentDefinition>,
     fallback_provider: Option<&str>,
     search_path: Option<&str>,
@@ -211,16 +214,15 @@ pub(super) fn resolve_agent_provider(
 
 pub(super) fn resolve_agent_provider_candidates(
     explicit_provider: Option<&str>,
-    stage_provider: Option<&[String]>,
-    repo_provider: Option<&[String]>,
+    stage_provider: Option<&[AgentSelectionEntry]>,
+    repo_provider: Option<&[AgentSelectionEntry]>,
     agent: Option<&AgentDefinition>,
     fallback_provider: Option<&str>,
 ) -> Result<Vec<AgentProvider>, ResolveProviderCandidatesError> {
-    // Workflow stage/post entries are compact provider selectors
-    // (`provider[-model[-effort]]`); every other layer names plain provider
-    // ids. Both syntaxes resolve to the provider here — a selector's model
-    // and effort enter through the tuning plan (`stage_tuning_layers`), not
-    // through candidate resolution.
+    // Objects carry native identifiers in every layer. Legacy strings use
+    // compact syntax in stages/posts and plain harness IDs elsewhere. Tuning
+    // remains attached through selection_tuning_layers until discovery picks
+    // the executable.
     let (raw_candidates, selector_syntax) =
         if let Some(source) = explicit_provider.filter(|value| !value.trim().is_empty()) {
             (
@@ -228,7 +230,7 @@ pub(super) fn resolve_agent_provider_candidates(
                     .split(',')
                     .map(str::trim)
                     .filter(|value| !value.is_empty())
-                    .map(str::to_string)
+                    .map(AgentSelectionEntry::from)
                     .collect::<Vec<_>>(),
                 false,
             )
@@ -244,7 +246,7 @@ pub(super) fn resolve_agent_provider_candidates(
                     .split(',')
                     .map(str::trim)
                     .filter(|value| !value.is_empty())
-                    .map(str::to_string)
+                    .map(AgentSelectionEntry::from)
                     .collect::<Vec<_>>(),
                 false,
             )
@@ -259,30 +261,36 @@ pub(super) fn resolve_agent_provider_candidates(
     raw_candidates
         .iter()
         .map(|candidate| {
-            if selector_syntax {
-                kanna_agent_protocol::parse_provider_selector(candidate)
-                    .map(|selector| selector.provider)
-                    .map_err(|_| ResolveProviderCandidatesError::Unsupported(candidate.clone()))
-            } else {
-                AgentProvider::from_str(candidate)
-                    .map_err(|_| ResolveProviderCandidatesError::Unsupported(candidate.clone()))
-            }
+            candidate
+                .resolve(selector_syntax)
+                .map(|selector| selector.provider)
+                .map_err(|error| match candidate {
+                    AgentSelectionEntry::Legacy(value) => {
+                        ResolveProviderCandidatesError::Unsupported(value.clone())
+                    }
+                    AgentSelectionEntry::Candidate(_) => {
+                        ResolveProviderCandidatesError::InvalidSelection(error)
+                    }
+                })
         })
         .collect::<Result<Vec<_>, _>>()
 }
 
-/// The tuning layers a workflow stage's compact provider selectors
+/// The tuning layers structured candidates (or legacy stage selectors)
 /// contribute — one layer per selector that names a model or an effort, each
 /// bound to exactly that selector's provider. This is what lets an ordered
 /// fallback list like `["claude-fable-hi", "codex-gpt-6-astra-lo"]` give every
 /// candidate its own coherent pair: whichever provider availability lands on
 /// draws the values written beside it, and a selector with neither model nor
 /// effort contributes nothing (the CLI's own defaults apply).
-pub(super) fn stage_tuning_layers(stage_provider: Option<&[String]>) -> Vec<AgentTuningLayer> {
+pub(super) fn selection_tuning_layers(
+    stage_provider: Option<&[AgentSelectionEntry]>,
+    compact: bool,
+) -> Vec<AgentTuningLayer> {
     stage_provider
         .unwrap_or_default()
         .iter()
-        .filter_map(|entry| kanna_agent_protocol::parse_provider_selector(entry).ok())
+        .filter_map(|entry| entry.resolve(compact).ok())
         .filter(|selector| selector.model.is_some() || selector.effort.is_some())
         .map(|selector| AgentTuningLayer {
             providers: vec![selector.provider.as_str().to_string()],
@@ -306,8 +314,8 @@ fn unavailable_provider_error(candidates: &[AgentProvider]) -> String {
 #[cfg(test)]
 pub(super) fn resolve_agent_provider_with(
     explicit_provider: Option<&str>,
-    stage_provider: Option<&[String]>,
-    repo_provider: Option<&[String]>,
+    stage_provider: Option<&[AgentSelectionEntry]>,
+    repo_provider: Option<&[AgentSelectionEntry]>,
     agent: Option<&AgentDefinition>,
     fallback_provider: Option<&str>,
     is_available: impl Fn(AgentProvider) -> bool,

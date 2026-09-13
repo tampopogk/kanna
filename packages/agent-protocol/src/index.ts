@@ -32,3 +32,7 @@ export {
   getAgentProviderSpec,
   isAgentProvider,
 } from "./generated/AgentProviderRegistry";
+
+export type { AgentCandidate } from "./generated/AgentCandidate";
+export type { AgentSelectionEntry } from "./generated/AgentSelectionEntry";
+export type { AgentProvider as AgentHarness } from "./generated/AgentProvider";

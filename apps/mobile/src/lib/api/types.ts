@@ -1,3 +1,4 @@
+import type { AgentSelectionEntry } from "@kanna/agent-protocol";
 import type { AgentProvider } from "@kanna/agent-protocol";
 
 export type DesktopMode = "lan" | "remote";
@@ -458,7 +459,7 @@ export interface HumanReviewDecision {
  */
 export interface PinnedTaskWorkflow {
   [key: string]: unknown;
-  stages: Array<{ [key: string]: unknown; name: string }>;
+  stages: Array<{ [key: string]: unknown; name: string; agent_provider?: AgentSelectionEntry | AgentSelectionEntry[] }>;
 }
 
 export interface TaskDetail extends TaskSummary {
