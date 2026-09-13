@@ -876,6 +876,7 @@ pub(crate) async fn run(command: TaskCommands) {
             next_stage_model,
             next_stage_effort,
             next_stage_provider_source,
+            expected_definition,
             server_url,
         } => {
             let base_url = resolve_server_base_url_from_env(server_url.as_deref());
@@ -885,13 +886,24 @@ pub(crate) async fn run(command: TaskCommands) {
                 effort: next_stage_effort.as_deref(),
                 source: next_stage_provider_source.as_deref(),
             };
-            let advanced =
-                advance_stage_via_api(&base_url, &task_id, source.as_deref(), next_stage)
-                    .await
-                    .unwrap_or_else(|e| {
-                        eprintln!("Error: {e}");
-                        process::exit(1);
-                    });
+            let expected_definition = expected_definition.map(|raw| {
+                serde_json::from_str::<serde_json::Value>(&raw).unwrap_or_else(|error| {
+                    eprintln!("Error: --expected-definition must be a JSON object: {error}");
+                    process::exit(1);
+                })
+            });
+            let advanced = advance_stage_via_api(
+                &base_url,
+                &task_id,
+                source.as_deref(),
+                next_stage,
+                expected_definition,
+            )
+            .await
+            .unwrap_or_else(|e| {
+                eprintln!("Error: {e}");
+                process::exit(1);
+            });
             if let Err(e) = print_json(&advanced) {
                 eprintln!("Error: {e}");
                 process::exit(1);

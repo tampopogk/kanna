@@ -805,8 +805,12 @@ pub(crate) async fn advance_stage_via_api(
     task_id: &str,
     source: Option<&str>,
     next_stage: NextStageProviderOverride<'_>,
+    expected_definition: Option<serde_json::Value>,
 ) -> Result<TaskActionResponse, String> {
     let mut body = serde_json::Map::new();
+    if let Some(expected_definition) = expected_definition {
+        body.insert("expectedDefinition".to_string(), expected_definition);
+    }
     for (key, value) in [
         ("source", source),
         ("nextStageAgentProvider", next_stage.provider),
