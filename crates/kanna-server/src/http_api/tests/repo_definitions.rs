@@ -1143,6 +1143,18 @@ async fn doctor_uses_recorded_worktree_local_config_not_registered_checkout_loca
         r#"{"workflow":"repository-setup"}"#,
     )
     .unwrap();
+    // Dirty candidate legacy syntax resolves independently of active definitions.
+    std::fs::create_dir_all(candidate.join(".kanna/workflows")).unwrap();
+    std::fs::write(
+        candidate.join(".kanna/workflows/legacy.json"),
+        r#"{"name":"legacy","stages":[{"name":"work","agent":"implement","transition":"manual","post_action":{"name":"save","agent":"commit","prompt":"Save changes","transition":"auto"}}]}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        candidate.join(".kanna/config.json"),
+        r#"{"workflow":"legacy"}"#,
+    )
+    .unwrap();
     let candidate_path = candidate.to_string_lossy().into_owned();
     let seeded_candidate = candidate_path.clone();
     let app = super::test_router_with_seed("doctor-candidate", "Test", move |db| {

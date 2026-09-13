@@ -10,6 +10,27 @@ static CONFIG_SCHEMA: LazyLock<jsonschema::Validator> = LazyLock::new(|| {
     jsonschema::validator_for(&schema).expect("bundled config schema")
 });
 
+// Candidate files may use the compatibility forms accepted by
+// parse_workflow_definition. Keep the authoring schema's field/type checks,
+// but admit those spellings before checking the parser's normalized workflow.
+// Validating only a serialized WorkflowDefinition would lose unknown fields.
+static WORKFLOW_CANDIDATE_SCHEMA: LazyLock<jsonschema::Validator> = LazyLock::new(|| {
+    let mut schema: Value =
+        serde_json::from_str(include_str!("../../../../.kanna/workflows/schema.json")).unwrap();
+    let stage = &mut schema["properties"]["stages"]["items"];
+    stage["required"] = serde_json::json!(["name"]);
+    let transition = stage["properties"]["policy"]["properties"]["transition"].clone();
+    let execution = serde_json::json!({"enum": ["new_task", "continue"]});
+    stage["properties"]["transition"] = transition.clone();
+    stage["properties"]["mode"] = execution.clone();
+    stage["properties"]["policy"]["properties"]["execution"] = execution;
+    let mut post_action = stage["properties"]["post"].clone();
+    post_action["required"] = serde_json::json!(["name"]);
+    post_action["properties"]["transition"] = transition;
+    stage["properties"]["post_action"] = post_action;
+    jsonschema::validator_for(&schema).expect("compatible workflow candidate schema")
+});
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct Finding {
@@ -204,7 +225,7 @@ pub(crate) fn check(root: &Path) -> DoctorReport {
                     Ok(Some(content)) => match parse_workflow_definition(&content) {
                         Ok(workflow) => {
                             let raw: Value = serde_json::from_str(&content).unwrap();
-                            report.schema(&file, &raw, &super::super::workflow_edit::SCHEMA);
+                            report.schema(&file, &raw, &WORKFLOW_CANDIDATE_SCHEMA);
                             check_workflow(&mut report, &definitions, &file, &workflow);
                         }
                         Err(error) => report.error(&file, "", error, "Correct the workflow structure, transition, or provider selector using kanna_guide workflows."),
@@ -441,6 +462,84 @@ mod tests {
         let report = check(root.path());
         assert!(report.errors.is_empty(), "{}", problems(&report));
         assert!(report.warnings.is_empty(), "{}", problems(&report));
+    }
+
+    #[test]
+    fn doctor_accepts_legacy_workflows_like_normal_resolution() {
+        let canonical = json!({"name":"legacy","stages":[{
+            "name":"work","agent":"implement","policy":{"transition":"manual"}
+        }]});
+        let mut with_post = canonical.clone();
+        with_post["stages"][0]["post"] =
+            json!({"name":"save","agent":"commit","prompt":"Save changes"});
+        let cases = [
+            (
+                json!({"name":"legacy","stages":[{"name":"work","agent":"implement","transition":"manual"}]}),
+                canonical,
+            ),
+            (
+                json!({"name":"legacy","stages":[{"name":"work","agent":"implement","transition":"manual","mode":"new_task","post_action":{"name":"save","agent":"commit","prompt":"Save changes","transition":"auto"}}]}),
+                with_post.clone(),
+            ),
+            (
+                json!({"name":"legacy","stages":[{"name":"work","agent":"implement","transition":"manual"},{"name":"save","agent":"commit","prompt":"Save changes","transition":"auto","mode":"continue"}]}),
+                with_post.clone(),
+            ),
+            (
+                json!({"name":"legacy","stages":[{"name":"work","agent":"implement","policy":{"transition":"manual"}},{"name":"save","agent":"commit","prompt":"Save changes","policy":{"transition":"auto","execution":"continue"}}]}),
+                with_post,
+            ),
+        ];
+        for (legacy, canonical) in cases {
+            let root = fixture();
+            let mut resolved = Vec::new();
+            for candidate in [legacy, canonical] {
+                write(
+                    root.path(),
+                    ".kanna/workflows/legacy.json",
+                    candidate.to_string(),
+                );
+                write(
+                    root.path(),
+                    ".kanna/config.json",
+                    r#"{"workflow":"legacy"}"#,
+                );
+                let definitions = RepoDefinitions {
+                    snapshot: RepoDefinitionSnapshot::candidate(root.path()).unwrap(),
+                    config: RepoConfig::default(),
+                };
+                resolved
+                    .push(serde_json::to_value(definitions.workflow("legacy").unwrap()).unwrap());
+                let report = check(root.path());
+                assert!(report.errors.is_empty(), "{}", problems(&report));
+            }
+            assert_eq!(resolved[0], resolved[1]);
+        }
+    }
+
+    #[test]
+    fn doctor_legacy_compatibility_keeps_schema_and_parser_errors() {
+        for stage in [
+            json!({"name":"work","transition":"sometimes"}),
+            json!({"name":"work","transition":"manual","mode":"sometimes"}),
+            json!({"name":"work","transition":"manual","unknown":true}),
+            json!({"name":"work","policy":{"transition":"manual","unknown":true}}),
+            json!({"name":"work","transition":"manual","agent_provider":"unknown-model"}),
+            json!({"name":"work","transition":"manual","post_action":{"name":"save","transition":"sometimes"}}),
+            json!({"name":"work","transition":"manual","post_action":{"name":"save","unknown":true}}),
+            json!({"name":"work","transition":"manual","post_action":{"name":"save","agent_provider":"antigravity-model"}}),
+            json!({"name":"work"}),
+        ] {
+            let root = fixture();
+            let value = json!({"name":"invalid","stages":[stage]});
+            write(
+                root.path(),
+                ".kanna/workflows/invalid.json",
+                value.to_string(),
+            );
+            let report = check(root.path());
+            assert!(!report.errors.is_empty(), "accepted {value}");
+        }
     }
 
     #[test]
