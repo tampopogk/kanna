@@ -388,3 +388,23 @@ describe("optional task reference", () => {
     expect(restored.activeTabContext.value).not.toBe("main");
   });
 });
+
+it('closes just one nested pane and preserves its tabs and remaining split', () => {
+  const scopeKey = ref('item:a');
+  const tabs = useMainTabs({ scopeKey });
+  tabs.openTab({kind:'file',filePath:'one.md'});
+  tabs.splitPane('pane-1','horizontal');
+  tabs.openTab({kind:'file',filePath:'two.md'});
+  tabs.splitPane('pane-2','vertical');
+  const allTabs = tabs.tabs.value.map(tab => tab.id);
+  expect(tabs.panes.value).toHaveLength(3);
+  tabs.closePane('pane-3');
+  expect(tabs.panes.value).toHaveLength(2);
+  expect(tabs.panes.value.find(rect => rect.pane.id === 'pane-2')?.pane.tabs).toEqual(['file:one.md','file:two.md']);
+  expect(tabs.tabs.value.map(tab => tab.id)).toEqual(allTabs);
+  tabs.closePane('pane-1');
+  expect(tabs.panes.value).toHaveLength(1);
+  expect(tabs.panes.value[0].pane.tabs).toContain('agent');
+  tabs.closePane('pane-2');
+  expect(tabs.panes.value).toHaveLength(1);
+});

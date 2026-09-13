@@ -375,7 +375,7 @@ export function useMainTabs({ scopeKey, onTabClosed }: UseMainTabsOptions) {
     if (tabId && !state.tabs.some(tab => tab.id === tabId)) return;
     let n = 1;
     while (leaves.some(pane => pane.id === `pane-${n}`)) n++;
-    const moving = tabId ?? (pane.tabs.length > 1 ? pane.active : '');
+    const moving = tabId ?? (pane.tabs.length > 1 && pane.active !== AGENT_TAB_ID ? pane.active : '');
     if (moving) for (const source of leaves) {
       source.tabs = source.tabs.filter(tab => tab !== moving);
       if (source.active === moving) source.active = source.tabs[0] ?? '';
@@ -398,6 +398,26 @@ export function useMainTabs({ scopeKey, onTabClosed }: UseMainTabsOptions) {
     target.active = id;
     state.layout = removeEmptyPanes(layout);
     focusPane(paneId);
+  }
+  function closePane(id: string) {
+    if (!scopeKey.value) return;
+    const state = scopeState(scopeKey.value);
+    const layout = ensureLayout(state);
+    function remove(node: TaskPaneLayout): TaskPaneLayout {
+      if (node.kind === 'pane') return node;
+      const closing = node.first.kind === 'pane' && node.first.id === id ? node.first
+        : node.second.kind === 'pane' && node.second.id === id ? node.second : null;
+      if (closing) {
+        const sibling = node.first === closing ? node.second : node.first;
+        const neighbor = paneLeaves(sibling)[0];
+        neighbor.tabs.push(...closing.tabs);
+        if (closing.tabs.includes(state.activeId) || !neighbor.active) neighbor.active = closing.active || neighbor.tabs[0] || '';
+        if (state.focusedPane === id) state.focusedPane = neighbor.id;
+        return sibling;
+      }
+      return { ...node, first: remove(node.first), second: remove(node.second) };
+    }
+    state.layout = remove(layout);
   }
   function joinPanes() {
     if (!scopeKey.value) return;
@@ -602,6 +622,7 @@ export function useMainTabs({ scopeKey, onTabClosed }: UseMainTabsOptions) {
     splitPane,
     moveTab,
     joinPanes,
+    closePane,
     scopeKey,
     referenceTabId,
     split,

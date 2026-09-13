@@ -85,11 +85,15 @@ A task opens with its provider TUI using the full work area. Each pane has its
 own tab bar, directly above its contents. **+** opens a menu for a file, diff,
 terminal, file explorer or commit graph. Right-click a pane’s tab strip (or
 focus it and press Shift+F10) for splitting side by side or top and bottom,
-and joining panes. Splitting a pane with multiple tabs moves its selected tab into the
-new pane; splitting a single-tab pane opens an empty destination. Drag any tab,
+with a pane-specific **×** to close that pane. Splitting a pane with multiple tabs moves its selected reference tab into the
+new pane; splitting the Agent view or a single-tab pane opens an empty destination. Drag any tab,
 including Agent, onto another pane's tab bar or an empty pane. Dropping before a
 tab reorders it. Empty source panes collapse after a tab moves or closes.
-Dividers resize with the pointer or arrow keys; **Join panes** combines the tabs.
+Dividers resize with the pointer or arrow keys. A pane’s **×** removes only
+that pane, moving its tabs to its adjacent sibling while preserving other splits
+and terminal sessions. The last pane cannot be removed. Tabs use pointer dragging
+with insertion markers; stage dropdowns and close buttons do not initiate drags.
+The **+** menu shows each content command’s existing keyboard shortcut.
 
 Narrow work areas (under 800 CSS pixels) show one readable view and a combined
 tab bar without discarding the saved split layout. Select the **Agent** tab

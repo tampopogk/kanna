@@ -27,6 +27,7 @@ import TerminalTabs from "./TerminalTabs.vue";
 import AgentHistoryView from "./AgentHistoryView.vue";
 import { listAgentTerminalAttempts, type AgentTerminalAttempt } from "../services/desktopServerClient";
 import MainTabBar from "./MainTabBar.vue";
+import { usePaneTabDrag } from "../composables/usePaneTabDrag";
 import DiffModal from "./DiffModal.vue";
 import FilePreviewModal from "./FilePreviewModal.vue";
 import ShellModal from "./ShellModal.vue";
@@ -147,17 +148,30 @@ function captureDivider(event: PointerEvent) {
 function openPaneView(paneId: string, id: string) {
   props.views?.tabs.focusPane(paneId);
   if (id === 'split-horizontal' || id === 'split-vertical') props.views?.tabs.splitPane(paneId, id === 'split-horizontal' ? 'horizontal' : 'vertical');
-  else if (id === 'join') props.views?.tabs.joinPanes();
   else openNewView(id);
 }
-function dropOnPane(event: DragEvent, paneId: string) {
-  const raw = event.dataTransfer?.getData('application/x-kanna-tab');
-  if (!raw) return;
-  try {
-    const value = JSON.parse(raw) as { id?: unknown; scope?: unknown };
-    if (typeof value.id === 'string' && value.scope === props.views?.tabs.scopeKey.value) props.views?.tabs.moveTab(value.id, paneId);
-  } catch (error) { console.debug('[main-panel] ignored malformed tab drag', error); }
-}
+const tabDrag = usePaneTabDrag({
+  scope: () => props.views?.tabs.scopeKey.value,
+  target: (x, y) => {
+    const bounds = workArea.value?.getBoundingClientRect();
+    if (!bounds || narrowLayout.value) return null;
+    const rect = visiblePanes.value.find(rect => x >= bounds.left + bounds.width * rect.left / 100
+      && x < bounds.left + bounds.width * (rect.left + rect.width) / 100
+      && y >= bounds.top + bounds.height * rect.top / 100
+      && y < bounds.top + bounds.height * (rect.top + rect.height) / 100);
+    if (!rect) return null;
+    const bar = workArea.value?.querySelector(`[data-pane-id="${rect.pane.id}"]`);
+    const overTab = Array.from(bar?.querySelectorAll<HTMLElement>('[data-tab-id]') ?? [])
+      .find(tab => { const r = tab.getBoundingClientRect(); return y >= r.top && y < r.bottom && x < r.right; });
+    // Midpoint decides before/after, so dragging the last tab right can reorder too.
+    const index = overTab ? rect.pane.tabs.indexOf(overTab.dataset.tabId!) : -1;
+    const box = overTab?.getBoundingClientRect();
+    const beforeId = box && x >= box.left + box.width / 2
+      ? rect.pane.tabs[index + 1] : overTab?.dataset.tabId;
+    return { paneId: rect.pane.id, beforeId };
+  },
+  move: (id, target) => props.views?.tabs.moveTab(id, target.paneId, target.beforeId),
+});
 const ownerLabel = computed(() => props.cloudTerminalRef?.ownerDesktopId
   ?? (props.cloudTask ? "Owner unavailable" : "This machine"));
 const previewCache = ref<InstanceType<typeof TaskPreviewCache> | null>(null);
@@ -174,16 +188,15 @@ const visiblePreviews = computed(() => tabs.value.filter(tab => tab.kind === 'pr
   style: tabStyle(tab.id),
 })));
 const newViews = computed(() => [
-  ...(props.uiSlot ? [{ id: "diff", label: "Diff" }] : []),
-  { id: "file", label: "Open file…" },
-  { id: "shell", label: "Terminal" },
-  { id: "tree", label: "File explorer" },
-  ...(scopeRepoPath.value ? [{ id: "graph", label: "Commit graph" }] : []),
+  ...(props.uiSlot ? [{ id: "diff", label: "Diff", shortcut: shortcutHint("showDiff") }] : []),
+  { id: "file", label: "Open file…", shortcut: shortcutHint("openFile") },
+  { id: "shell", label: "Terminal", shortcut: shortcutHint("openShell") },
+  { id: "tree", label: "File explorer", shortcut: shortcutHint("toggleTreeExplorer") },
+  ...(scopeRepoPath.value ? [{ id: "graph", label: "Commit graph", shortcut: shortcutHint("showCommitGraph") }] : []),
 ]);
 const paneActions = computed(() => narrowLayout.value ? [] : [
   { id: "split-horizontal", label: "Split side by side" },
   { id: "split-vertical", label: "Split top and bottom" },
-  ...(paneRects.value.length > 1 ? [{ id: "join", label: "Join panes" }] : []),
 ]);
 function openNewView(id: string) {
   if (id === "file") props.views?.modals.showFilePickerOnTop();
@@ -812,7 +825,7 @@ function dismissCommandHint() {
       </section>
     </template>
     <div ref="workArea" class="work-area" v-show="!showEmptyState" :class="{ split: splitVisible }" data-testid="task-work-area">
-      <div v-for="rect in visiblePanes" :key="rect.pane.id" class="pane-chrome" :style="paneStyle(rect)" @dragover.prevent @drop.prevent="dropOnPane($event, rect.pane.id)">
+      <div v-for="rect in visiblePanes" :key="rect.pane.id" class="pane-chrome" :style="paneStyle(rect)">
         <MainTabBar
           :tabs="tabs.filter(tab => rect.pane.tabs.includes(tab.id)).sort((a, b) => rect.pane.tabs.indexOf(a.id) - rect.pane.tabs.indexOf(b.id))"
           :active-tab-id="rect.pane.active"
@@ -821,6 +834,8 @@ function dismissCommandHint() {
           :scope-key="views?.tabs.scopeKey.value"
           :new-views="newViews"
           :pane-actions="paneActions"
+          :can-close-pane="!narrowLayout && paneRects.length > 1"
+          @close-pane="views?.tabs.closePane(rect.pane.id)"
           :agent-attempts="taskDetailIsLocal ? agentAttempts : undefined"
           :selected-attempt="selectedAttempt"
           @select-attempt="selectAttempt"
@@ -828,7 +843,10 @@ function dismissCommandHint() {
           @close="closeTab"
           @new="id => openPaneView(rect.pane.id, id)"
           @layout="id => openPaneView(rect.pane.id, id)"
-          @drop-tab="(id, before) => views?.tabs.moveTab(id, rect.pane.id, before)"
+          @drag-tab="tabDrag.start"
+          :dragged-tab="tabDrag.dragging.value"
+          :drop-active="tabDrag.target.value?.paneId === rect.pane.id"
+          :drop-before="tabDrag.target.value?.paneId === rect.pane.id ? tabDrag.target.value?.beforeId : undefined"
         />
         <div v-if="!rect.pane.tabs.length" class="empty-pane" @click="views?.tabs.focusPane(rect.pane.id)">Drop a tab here or use + to open a view.</div>
       </div>

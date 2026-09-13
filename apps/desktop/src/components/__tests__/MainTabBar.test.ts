@@ -17,29 +17,16 @@ it('opens views from the plus menu with keyboard navigation and dismissal', asyn
   expect(document.querySelector('.new-tab-menu')).toBeNull();
   wrapper.unmount();
 });
-describe('tab dragging', () => {
-  it('moves an agent tab only within its own task scope', async () => {
-    const wrapper = mount(MainTabBar, { props: { tabs:[{id:'agent',kind:'agent'}], activeTabId:'agent', paneId:'pane-2', scopeKey:'item:a' } });
-    const dataTransfer = new DataTransfer();
-    dataTransfer.setData('application/x-kanna-tab', JSON.stringify({id:'agent',scope:'item:b'}));
-    await wrapper.get('.main-tab-bar').trigger('drop',{dataTransfer});
-    expect(wrapper.emitted('dropTab')).toBeUndefined();
-    dataTransfer.setData('application/x-kanna-tab', JSON.stringify({id:'agent',scope:'item:a'}));
-    await wrapper.get('.main-tab-bar').trigger('drop',{dataTransfer});
-    expect(wrapper.emitted('dropTab')).toEqual([['agent',undefined]]);
-    wrapper.unmount();
-  });
-});
-
 it('keeps content creation separate from the pane context menu, with keyboard access', async () => {
   const wrapper = mount(MainTabBar, { attachTo: document.body, props: {
     tabs: [{ id: 'agent', kind: 'agent' }], activeTabId: 'agent', paneId: 'pane-1',
-    newViews: [{ id: 'file', label: 'Open file…' }],
-    paneActions: [{ id: 'split-horizontal', label: 'Split side by side' }, { id: 'join', label: 'Join panes' }],
+    newViews: [{ id: 'file', label: 'Open file…', shortcut: '⌘P' }],
+    paneActions: [{ id: 'split-horizontal', label: 'Split side by side' }],
   } });
   await wrapper.get('.new-tab').trigger('click');
   await flushPromises();
-  expect(document.querySelector('.new-tab-menu')?.textContent).toBe('Open file…');
+  expect(document.querySelector('.new-tab-menu')?.textContent).toBe('Open file…⌘P');
+  expect(document.querySelector('.new-tab-menu kbd')?.textContent).toBe('⌘P');
   await wrapper.get('.main-tab-bar').trigger('contextmenu', { clientX: 20, clientY: 30 });
   await flushPromises();
   expect(document.querySelector('.new-tab-menu')).toBeNull();
@@ -53,5 +40,15 @@ it('keeps content creation separate from the pane context menu, with keyboard ac
   await flushPromises();
   expect(document.querySelector('.pane-layout-menu')).toBeNull();
   expect(document.activeElement).toBe(wrapper.get('.main-tab-bar').element);
+  wrapper.unmount();
+});
+
+it('closes only its pane through a separate control', async () => {
+  const wrapper = mount(MainTabBar, { props: { tabs: [{id:'agent',kind:'agent'}], activeTabId:'agent', canClosePane:true } });
+  await wrapper.get('.close-pane').trigger('click');
+  expect(wrapper.emitted('closePane')).toEqual([[]]);
+  expect(wrapper.emitted('close')).toBeUndefined();
+  await wrapper.setProps({canClosePane:false});
+  expect(wrapper.find('.close-pane').exists()).toBe(false);
   wrapper.unmount();
 });

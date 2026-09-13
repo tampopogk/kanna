@@ -366,3 +366,48 @@ archived attempt preserved. No daemon restart, installed-app interaction,
 backend changes, new agents, merge or stage advance. Logs/screenshots are in
 `.tmp/pane-refinement/`. Prior technical approval at6bf5f011e does not approve
 this additional UI delta; it needs fresh bounded review and owner acceptance.
+
+
+### Owner drag, shortcut and pane-close follow-up after 89394d694
+
+The owner reported that physical tab drags did not move or reorder tabs. The
+former path required browser-native HTML drag events, while earlier injected
+DragEvents bypassed gesture recognition. This correction replaces that path
+with scoped pointer gestures: a movement threshold, pointer capture for native
+input, pane hit-testing, before/after insertion markers, and cancellation on
+Escape, pointer cancellation, window blur, task switch or unmount. Dropdowns
+and tab buttons cannot start a drag. Browser trailing clicks cannot reactivate
+the source after a completed move. No Tauri OS file-drop setting is changed;
+no physical OS cause is claimed beyond the reported failure.
+
+Additional owner requests: the + content menu now shows shortcuts from the
+existing registry (Diff, file, terminal, explorer, graph). The global Join panes
+menu action is replaced by each pane’s own ×. Closing one pane moves its tabs
+into the neighboring sibling, preserves other splits and all live sessions,
+and cannot remove the final pane. Splitting an active Agent opens an empty
+neighbor so Agent stays first by default.
+
+Focused checks:61 tests across usePaneTabDrag, useMainTabs, MainTabBar and
+MainPanel pass; Vue typecheck and diffcheck pass. Coverage includes gesture
+threshold/control exclusion/scope cancellation/Escape, nested3→2 pane closure
+without closing tabs, menu shortcuts and close-pane event isolation. The first
+unit fixture omitted PointerEvent.isPrimary; corrected to model a primary
+pointer. No broad Rust or unchanged sidebar coverage was rerun.
+
+The exact isolated native build was reverified as6bf5f011e/task0e269a87 with
+this frontend hot-reloaded. Pointerdown/move/up events exercised the current
+rendered workspace (not direct moveTab or synthetic HTML drops): README moved
+from the first pane into an empty neighbor; Agent reordered to last and back
+to first; the pane-specific × preserved README on closure. Reopened the split
+for the owner's test-drive. Agent PID38183, repo shell30694 and existing worktree
+shell92318 stayed identical before/after. No agent input, daemon restart,
+installed app, workflow advance or merge. Native screenshots include the new
+shortcut menu and pane controls. These are injected pointer-event wiring checks,
+not physical owner acceptance.
+
+Hot reload replaced the layout controller while the E2E global still pointed at
+its old store; initial native assertions therefore read stale layout state.
+The final check reads the rendered MainPanel's actual controller and dismisses
+the hot-reload startup overlay, preserving fixture files/DB/history. Logs and
+screenshots: `.tmp/tab-drag/`. This UI delta requires bounded independent review
+and owner physical acceptance; prior89394d694 approval does not cover it.

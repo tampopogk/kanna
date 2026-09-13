@@ -12,9 +12,13 @@ const props = defineProps<{
   selectedAttempt?: string;
   activeTabId: string;
   worktreePath?: string;
-  newViews?: { id: string; label: string }[];
+  newViews?: { id: string; label: string; shortcut?: string }[];
+  draggedTab?: string | null;
+  dropBefore?: string;
+  dropActive?: boolean;
   paneActions?: { id: string; label: string }[];
   paneId?: string;
+  canClosePane?: boolean;
   scopeKey?: string | null;
 }>();
 
@@ -23,8 +27,9 @@ const emit = defineEmits<{
   (e: "selectAttempt", id: string): void;
   (e: "close", id: string): void;
   (e: "new", id: string): void;
+  (e: "closePane"): void;
   (e: "layout", id: string): void;
-  (e: "dropTab", id: string, beforeId?: string): void;
+  (e: "dragTab", event: PointerEvent, id: string): void;
 }>();
 
 const { t } = useI18n();
@@ -87,7 +92,7 @@ const menuKind = ref<'new' | 'layout' | null>(null);
 const menuOpen = computed(() => menuKind.value !== null);
 const menuItems = computed(() => menuKind.value === 'layout' ? props.paneActions : props.newViews);
 const tabBar = ref<HTMLElement | null>(null);
-const dropTarget = ref(false);
+
 let menuOrigin: HTMLElement | null = null;
 const menuPosition = ref({ left: "0px", top: "0px" });
 function closeMenu(event?: PointerEvent) {
@@ -127,29 +132,6 @@ function openView(id: string) {
   if (kind === 'layout') emit('layout', id);
   else emit('new', id);
 }
-function dragOver(event: DragEvent) {
-  if (event.dataTransfer?.types.includes('application/x-kanna-tab')) {
-    event.preventDefault();
-    dropTarget.value = true;
-    event.dataTransfer.dropEffect = 'move';
-  }
-}
-function dragLeave(event: DragEvent) {
-  if (!(event.relatedTarget instanceof Node) || !tabBar.value?.contains(event.relatedTarget)) dropTarget.value = false;
-}
-function dragTab(event: DragEvent, id: string) {
-  event.dataTransfer?.setData('application/x-kanna-tab', JSON.stringify({ id, scope: props.scopeKey }));
-  if (event.dataTransfer) event.dataTransfer.effectAllowed = 'move';
-}
-function dropTab(event: DragEvent, beforeId?: string) {
-  dropTarget.value = false;
-  const raw = event.dataTransfer?.getData('application/x-kanna-tab');
-  if (!raw) return;
-  try {
-    const value = JSON.parse(raw) as { id?: unknown; scope?: unknown };
-    if (typeof value.id === 'string' && value.scope === props.scopeKey) emit('dropTab', value.id, beforeId);
-  } catch (error) { console.debug('[main-tabs] ignored malformed tab drag', error); }
-}
 function menuKey(event: KeyboardEvent) {
   if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return;
   event.preventDefault();
@@ -162,15 +144,16 @@ onBeforeUnmount(() => closeMenu());
 </script>
 
 <template>
-  <div ref="tabBar" class="main-tab-bar" :class="{ 'drop-target': dropTarget }" role="tablist" tabindex="0" aria-label="Workspace tabs" data-testid="main-tab-bar" @contextmenu="openLayoutMenu" @keydown="tabBarKey" @dragover="dragOver" @dragleave="dragLeave" @drop.prevent="dropTab($event)">
+  <div ref="tabBar" class="main-tab-bar" :class="{ 'drop-target': dropActive }" :data-pane-id="paneId" role="tablist" tabindex="0" aria-label="Workspace tabs" data-testid="main-tab-bar" @contextmenu="openLayoutMenu" @keydown="tabBarKey">
     <div
       v-for="tab in presented"
       :key="tab.id"
       class="main-tab"
-      :draggable="!!paneId"
-      @dragstart="dragTab($event, tab.id)"
-      @drop.stop.prevent="dropTab($event, tab.id)"
-      :class="{ active: tab.id === activeTabId, 'agent-tab': tab.id === 'agent' }"
+      :draggable="false"
+      @dragstart.prevent
+      @pointerdown="paneId && emit('dragTab', $event, tab.id)"
+      :data-tab-id="tab.id"
+      :class="{ active: tab.id === activeTabId, 'agent-tab': tab.id === 'agent', movable: !!paneId, dragging: draggedTab === tab.id, 'drop-before': dropActive && dropBefore === tab.id }"
       role="tab"
       tabindex="0"
       @keydown.enter.prevent="emit('select', tab.id)"
@@ -195,9 +178,10 @@ onBeforeUnmount(() => closeMenu());
       </button>
     </div>
     <button v-if="newViews?.length" ref="menuButton" class="new-tab" aria-label="New tab" title="New tab" :aria-expanded="menuKind === 'new'" aria-haspopup="menu" @click="toggleMenu">+</button>
+    <button v-if="canClosePane" class="close-pane" aria-label="Close pane" title="Close pane — move tabs to adjacent pane" @click="emit('closePane')">×</button>
     <Teleport to="body">
       <div v-if="menuOpen" ref="menu" class="tab-menu" :class="menuKind === 'new' ? 'new-tab-menu' : 'pane-layout-menu'" :style="menuPosition" role="menu" :aria-label="menuKind === 'new' ? 'New tab' : 'Pane layout'" @keydown="menuKey" @keydown.esc.stop="closeMenu(); menuOrigin?.focus()">
-        <button v-for="view in menuItems" :key="view.id" role="menuitem" @click="openView(view.id)">{{ view.label }}</button>
+        <button v-for="view in menuItems" :key="view.id" role="menuitem" @click="openView(view.id)"><span>{{ view.label }}</span><kbd v-if="'shortcut' in view && view.shortcut">{{ view.shortcut }}</kbd></button>
       </div>
     </Teleport>
   </div>
@@ -205,15 +189,20 @@ onBeforeUnmount(() => closeMenu());
 
 <style scoped>
 .new-tab { flex: 0 0 28px; width: 28px; height: 26px; align-self: center; box-sizing: border-box; border: 1px solid transparent; border-radius: 5px; background: transparent; color: var(--kn-text-secondary); font-size: 22px; line-height: 22px; padding: 0; margin: 0 3px; cursor: pointer; }
+.close-pane { flex: 0 0 26px; margin-left: auto; border: 0; background: transparent; color: var(--kn-text-muted); cursor: pointer; font-size: 18px; }
+.close-pane:hover { background: var(--kn-bg-hover); color: var(--kn-text-primary); }
 .new-tab:hover, .new-tab:focus-visible, .new-tab[aria-expanded="true"] { background: var(--kn-bg-hover); border-color: var(--kn-border-default); color: var(--kn-text-primary); }
 .main-tab-bar.drop-target { box-shadow: inset 0 0 0 2px var(--kn-accent); }
-.main-tab[draggable="true"] { cursor: grab; }
-.main-tab[draggable="true"]:active { cursor: grabbing; }
+.main-tab.movable { cursor: grab; touch-action: none; }
+.main-tab.movable:active { cursor: grabbing; }
+.main-tab.dragging { opacity: .55; }
+.main-tab.drop-before { box-shadow: inset 2px 0 var(--kn-accent); }
 .main-tab.agent-tab { max-width: 340px; }
 .agent-tab .main-tab-label { flex: 0 0 auto; }
 .tab-menu { position: fixed; z-index: 1000; display: flex; flex-direction: column; width: 240px; padding: 6px; border: 1px solid var(--kn-border-default); border-radius: 10px; background: var(--kn-bg-sidebar); box-shadow: 0 10px 30px #0004; }
-.tab-menu button { text-align: left; padding: 10px; border: 0; border-radius: 5px; background: transparent; color: var(--kn-text-primary); cursor: pointer; }
+.tab-menu button { display: flex; align-items: center; justify-content: space-between; gap: 16px; text-align: left; padding: 10px; border: 0; border-radius: 5px; background: transparent; color: var(--kn-text-primary); cursor: pointer; }
 .tab-menu button:hover, .tab-menu button:focus-visible { background: var(--kn-bg-hover); }
+.tab-menu kbd { color: var(--kn-text-muted); font: inherit; white-space: nowrap; }
 .main-tab-bar {
   display: flex;
   align-items: stretch;
