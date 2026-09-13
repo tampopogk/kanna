@@ -158,10 +158,6 @@ function dropOnPane(event: DragEvent, paneId: string) {
     if (typeof value.id === 'string' && value.scope === props.views?.tabs.scopeKey.value) props.views?.tabs.moveTab(value.id, paneId);
   } catch (error) { console.debug('[main-panel] ignored malformed tab drag', error); }
 }
-function returnToAgent() {
-  selectTab(AGENT_TAB_ID);
-  void nextTick(() => workArea.value?.querySelector<HTMLElement>('[data-testid="main-tab-panel-agent"] .xterm-helper-textarea')?.focus());
-}
 const ownerLabel = computed(() => props.cloudTerminalRef?.ownerDesktopId
   ?? (props.cloudTask ? "Owner unavailable" : "This machine"));
 const previewCache = ref<InstanceType<typeof TaskPreviewCache> | null>(null);
@@ -183,8 +179,11 @@ const newViews = computed(() => [
   { id: "shell", label: "Terminal" },
   { id: "tree", label: "File explorer" },
   ...(scopeRepoPath.value ? [{ id: "graph", label: "Commit graph" }] : []),
-  ...(!narrowLayout.value ? [{ id: "split-horizontal", label: "Split side by side" }, { id: "split-vertical", label: "Split top and bottom" }] : []),
-  ...(!isMobile && paneRects.value.length > 1 ? [{ id: "join", label: "Join panes" }] : []),
+]);
+const paneActions = computed(() => narrowLayout.value ? [] : [
+  { id: "split-horizontal", label: "Split side by side" },
+  { id: "split-vertical", label: "Split top and bottom" },
+  ...(paneRects.value.length > 1 ? [{ id: "join", label: "Join panes" }] : []),
 ]);
 function openNewView(id: string) {
   if (id === "file") props.views?.modals.showFilePickerOnTop();
@@ -812,9 +811,6 @@ function dismissCommandHint() {
         </div>
       </section>
     </template>
-    <div v-if="views && uiSlot && !isMobile && openViewTabs.length" class="workspace-actions" data-testid="workspace-actions">
-      <button @click="returnToAgent" :aria-pressed="agentTabActive">Return to agent</button>
-    </div>
     <div ref="workArea" class="work-area" v-show="!showEmptyState" :class="{ split: splitVisible }" data-testid="task-work-area">
       <div v-for="rect in visiblePanes" :key="rect.pane.id" class="pane-chrome" :style="paneStyle(rect)" @dragover.prevent @drop.prevent="dropOnPane($event, rect.pane.id)">
         <MainTabBar
@@ -824,12 +820,14 @@ function dismissCommandHint() {
           :pane-id="narrowLayout ? undefined : rect.pane.id"
           :scope-key="views?.tabs.scopeKey.value"
           :new-views="newViews"
+          :pane-actions="paneActions"
           :agent-attempts="taskDetailIsLocal ? agentAttempts : undefined"
           :selected-attempt="selectedAttempt"
           @select-attempt="selectAttempt"
           @select="selectTab"
           @close="closeTab"
           @new="id => openPaneView(rect.pane.id, id)"
+          @layout="id => openPaneView(rect.pane.id, id)"
           @drop-tab="(id, before) => views?.tabs.moveTab(id, rect.pane.id, before)"
         />
         <div v-if="!rect.pane.tabs.length" class="empty-pane" @click="views?.tabs.focusPane(rect.pane.id)">Drop a tab here or use + to open a view.</div>
@@ -1114,10 +1112,6 @@ function dismissCommandHint() {
 
 <style scoped>
 .agent-live-content { display: flex; flex-direction: column; flex: 1; min-height: 0; height: 100%; }
-.workspace-actions { display: flex; align-items: center; gap: 6px; padding: 5px 12px; flex-wrap: wrap; border-bottom: 1px solid var(--kn-border-default); }
-.workspace-actions button { font: inherit; font-size: 11px; color: var(--kn-text-secondary); background: transparent; border: 1px solid var(--kn-border-default); border-radius: 4px; padding: 3px 7px; cursor: pointer; }
-.workspace-actions button[aria-pressed="true"] { color: var(--kn-accent); background: var(--kn-bg-accent-subtle); }
-.workspace-actions button:disabled { opacity: .5; cursor: default; }
 .action-spacer { flex: 1; }
 .work-area { display: flex; flex: 1; min-height: 0; min-width: 0; overflow: hidden; }
 .reference-area, .reference-view { display: flex; flex-direction: column; flex: 1; min-width: 0; min-height: 0; overflow: hidden; }

@@ -722,7 +722,6 @@ defineExpose({ renameSelectedItem, focusSearch, searchQuery, matchesSearch, emit
 <template>
   <aside class="sidebar" :class="{ 'is-filtering': hasActiveSearch }" @mousedown="preventFocusSteal">
     <div class="sidebar-actions">
-      <button v-if="selectedRepoId" class="new-task-action" @click="emit('new-task', selectedRepoId)">+ New task</button>
       <div class="attention-filters" aria-label="Filter tasks">
         <button :aria-pressed="attentionFilter === 'all'" @click="attentionFilter = 'all'">All</button>
         <button :aria-pressed="attentionFilter === 'unread'" @click="attentionFilter = 'unread'" title="Tasks with unread output">Unread {{ unreadCount }}</button>
@@ -1136,7 +1135,6 @@ defineExpose({ renameSelectedItem, focusSearch, searchQuery, matchesSearch, emit
 .question-marker { color: var(--kn-accent); font-weight: 600; font-style: normal; }
 .sidebar-actions { padding: 8px; border-bottom: 1px solid var(--kn-border-default); }
 .sidebar-actions button { font: inherit; font-size: 11px; border: 1px solid var(--kn-border-default); border-radius: 4px; color: var(--kn-text-secondary); background: transparent; padding: 4px 6px; cursor: pointer; }
-.new-task-action { width: 100%; margin-bottom: 6px; text-align: left; }
 .attention-filters { display: flex; gap: 4px; flex-wrap: wrap; }
 .attention-filters button[aria-pressed="true"] { color: var(--kn-accent); background: var(--kn-bg-accent-subtle); }
 

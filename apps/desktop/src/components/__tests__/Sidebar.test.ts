@@ -241,6 +241,14 @@ describe("Sidebar", () => {
     getStageOrder.mockReturnValue(["merge", "pr", "review", "in progress"]);
   });
 
+  it("creates tasks only from the repository header", async () => {
+    const wrapper = mountSidebar([item("task-1")]);
+    expect(wrapper.find('.new-task-action').exists()).toBe(false);
+    await wrapper.get('.repo-header .btn-add-task').trigger('click');
+    expect(wrapper.emitted('new-task')).toEqual([[repo.id]]);
+    wrapper.unmount();
+  });
+
   it("filters unread and positively detected prompts without treating idle as a question", async () => {
     const wrapper = mountSidebar([
       item("unread", { read_state: "unread", runtime_state: "busy" }),

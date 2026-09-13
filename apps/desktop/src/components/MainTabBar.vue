@@ -13,6 +13,7 @@ const props = defineProps<{
   activeTabId: string;
   worktreePath?: string;
   newViews?: { id: string; label: string }[];
+  paneActions?: { id: string; label: string }[];
   paneId?: string;
   scopeKey?: string | null;
 }>();
@@ -22,6 +23,7 @@ const emit = defineEmits<{
   (e: "selectAttempt", id: string): void;
   (e: "close", id: string): void;
   (e: "new", id: string): void;
+  (e: "layout", id: string): void;
   (e: "dropTab", id: string, beforeId?: string): void;
 }>();
 
@@ -81,28 +83,66 @@ function present(tab: MainTab): MainTabPresentation {
 const presented = computed<MainTabPresentation[]>(() => props.tabs.map(present));
 const menu = ref<HTMLElement | null>(null);
 const menuButton = ref<HTMLButtonElement | null>(null);
-const menuOpen = ref(false);
+const menuKind = ref<'new' | 'layout' | null>(null);
+const menuOpen = computed(() => menuKind.value !== null);
+const menuItems = computed(() => menuKind.value === 'layout' ? props.paneActions : props.newViews);
+const tabBar = ref<HTMLElement | null>(null);
+const dropTarget = ref(false);
+let menuOrigin: HTMLElement | null = null;
 const menuPosition = ref({ left: "0px", top: "0px" });
 function closeMenu(event?: PointerEvent) {
   if (event && (menu.value?.contains(event.target as Node) || menuButton.value?.contains(event.target as Node))) return;
-  menuOpen.value = false;
+  menuKind.value = null;
   document.removeEventListener("pointerdown", closeMenu);
 }
-function toggleMenu() {
-  if (menuOpen.value) { closeMenu(); return; }
-  const rect = menuButton.value?.getBoundingClientRect();
-  if (!rect) return;
-  menuPosition.value = { left: `${Math.max(8, Math.min(rect.left, window.innerWidth - 248))}px`, top: `${rect.bottom + 4}px` };
-  menuOpen.value = true;
+function showMenu(kind: 'new' | 'layout', left: number, top: number, origin: HTMLElement | null) {
+  const count = (kind === 'layout' ? props.paneActions : props.newViews)?.length ?? 0;
+  menuPosition.value = {
+    left: `${Math.max(8, Math.min(left, window.innerWidth - 248))}px`,
+    top: `${Math.max(8, Math.min(top, window.innerHeight - count * 40 - 20))}px`,
+  };
+  menuOrigin = origin;
+  menuKind.value = kind;
   document.addEventListener("pointerdown", closeMenu);
   void nextTick(() => menu.value?.querySelector('button')?.focus());
 }
-function openView(id: string) { closeMenu(); emit("new", id); }
+function toggleMenu() {
+  if (menuKind.value === 'new') { closeMenu(); return; }
+  const rect = menuButton.value?.getBoundingClientRect();
+  if (rect) showMenu('new', rect.left, rect.bottom + 4, menuButton.value);
+}
+function openLayoutMenu(event: MouseEvent | KeyboardEvent) {
+  if (!props.paneActions?.length) return;
+  event.preventDefault();
+  const rect = tabBar.value?.getBoundingClientRect();
+  showMenu('layout', event instanceof MouseEvent ? event.clientX : rect?.left ?? 0,
+    event instanceof MouseEvent ? event.clientY : rect?.bottom ?? 0, tabBar.value);
+}
+function tabBarKey(event: KeyboardEvent) {
+  if (event.key === 'ContextMenu' || (event.shiftKey && event.key === 'F10')) openLayoutMenu(event);
+}
+function openView(id: string) {
+  const kind = menuKind.value;
+  closeMenu();
+  if (kind === 'layout') emit('layout', id);
+  else emit('new', id);
+}
+function dragOver(event: DragEvent) {
+  if (event.dataTransfer?.types.includes('application/x-kanna-tab')) {
+    event.preventDefault();
+    dropTarget.value = true;
+    event.dataTransfer.dropEffect = 'move';
+  }
+}
+function dragLeave(event: DragEvent) {
+  if (!(event.relatedTarget instanceof Node) || !tabBar.value?.contains(event.relatedTarget)) dropTarget.value = false;
+}
 function dragTab(event: DragEvent, id: string) {
   event.dataTransfer?.setData('application/x-kanna-tab', JSON.stringify({ id, scope: props.scopeKey }));
   if (event.dataTransfer) event.dataTransfer.effectAllowed = 'move';
 }
 function dropTab(event: DragEvent, beforeId?: string) {
+  dropTarget.value = false;
   const raw = event.dataTransfer?.getData('application/x-kanna-tab');
   if (!raw) return;
   try {
@@ -122,7 +162,7 @@ onBeforeUnmount(() => closeMenu());
 </script>
 
 <template>
-  <div class="main-tab-bar" role="tablist" data-testid="main-tab-bar" @dragover.prevent @drop.prevent="dropTab($event)">
+  <div ref="tabBar" class="main-tab-bar" :class="{ 'drop-target': dropTarget }" role="tablist" tabindex="0" aria-label="Workspace tabs" data-testid="main-tab-bar" @contextmenu="openLayoutMenu" @keydown="tabBarKey" @dragover="dragOver" @dragleave="dragLeave" @drop.prevent="dropTab($event)">
     <div
       v-for="tab in presented"
       :key="tab.id"
@@ -130,13 +170,13 @@ onBeforeUnmount(() => closeMenu());
       :draggable="!!paneId"
       @dragstart="dragTab($event, tab.id)"
       @drop.stop.prevent="dropTab($event, tab.id)"
-      :class="{ active: tab.id === activeTabId }"
+      :class="{ active: tab.id === activeTabId, 'agent-tab': tab.id === 'agent' }"
       role="tab"
       tabindex="0"
       @keydown.enter.prevent="emit('select', tab.id)"
       @keydown.space.prevent="emit('select', tab.id)"
       :aria-selected="tab.id === activeTabId"
-      :title="tab.title"
+      :title="paneId ? `${tab.title} — Drag to move tab` : tab.title"
       :data-testid="`main-tab-${tab.id}`"
       @click="emit('select', tab.id)"
       @auxclick.middle.prevent="tab.closable && emit('close', tab.id)"
@@ -154,20 +194,26 @@ onBeforeUnmount(() => closeMenu());
         ×
       </button>
     </div>
-    <button v-if="newViews?.length" ref="menuButton" class="new-tab" aria-label="New tab" :aria-expanded="menuOpen" aria-haspopup="menu" @click="toggleMenu">+</button>
+    <button v-if="newViews?.length" ref="menuButton" class="new-tab" aria-label="New tab" title="New tab" :aria-expanded="menuKind === 'new'" aria-haspopup="menu" @click="toggleMenu">+</button>
     <Teleport to="body">
-      <div v-if="menuOpen" ref="menu" class="new-tab-menu" :style="menuPosition" role="menu" @keydown="menuKey" @keydown.esc.stop="closeMenu(); menuButton?.focus()">
-        <button v-for="view in newViews" :key="view.id" role="menuitem" @click="openView(view.id)">{{ view.label }}</button>
+      <div v-if="menuOpen" ref="menu" class="tab-menu" :class="menuKind === 'new' ? 'new-tab-menu' : 'pane-layout-menu'" :style="menuPosition" role="menu" :aria-label="menuKind === 'new' ? 'New tab' : 'Pane layout'" @keydown="menuKey" @keydown.esc.stop="closeMenu(); menuOrigin?.focus()">
+        <button v-for="view in menuItems" :key="view.id" role="menuitem" @click="openView(view.id)">{{ view.label }}</button>
       </div>
     </Teleport>
   </div>
 </template>
 
 <style scoped>
-.new-tab { border: 0; background: transparent; color: var(--kn-text-secondary); font-size: 22px; padding: 0 10px; cursor: pointer; }
-.new-tab-menu { position: fixed; z-index: 1000; display: flex; flex-direction: column; width: 240px; padding: 6px; border: 1px solid var(--kn-border-default); border-radius: 10px; background: var(--kn-bg-sidebar); box-shadow: 0 10px 30px #0004; }
-.new-tab-menu button { text-align: left; padding: 10px; border: 0; border-radius: 5px; background: transparent; color: var(--kn-text-primary); cursor: pointer; }
-.new-tab-menu button:hover, .new-tab-menu button:focus-visible { background: var(--kn-bg-hover); }
+.new-tab { flex: 0 0 28px; width: 28px; height: 26px; align-self: center; box-sizing: border-box; border: 1px solid transparent; border-radius: 5px; background: transparent; color: var(--kn-text-secondary); font-size: 22px; line-height: 22px; padding: 0; margin: 0 3px; cursor: pointer; }
+.new-tab:hover, .new-tab:focus-visible, .new-tab[aria-expanded="true"] { background: var(--kn-bg-hover); border-color: var(--kn-border-default); color: var(--kn-text-primary); }
+.main-tab-bar.drop-target { box-shadow: inset 0 0 0 2px var(--kn-accent); }
+.main-tab[draggable="true"] { cursor: grab; }
+.main-tab[draggable="true"]:active { cursor: grabbing; }
+.main-tab.agent-tab { max-width: 340px; }
+.agent-tab .main-tab-label { flex: 0 0 auto; }
+.tab-menu { position: fixed; z-index: 1000; display: flex; flex-direction: column; width: 240px; padding: 6px; border: 1px solid var(--kn-border-default); border-radius: 10px; background: var(--kn-bg-sidebar); box-shadow: 0 10px 30px #0004; }
+.tab-menu button { text-align: left; padding: 10px; border: 0; border-radius: 5px; background: transparent; color: var(--kn-text-primary); cursor: pointer; }
+.tab-menu button:hover, .tab-menu button:focus-visible { background: var(--kn-bg-hover); }
 .main-tab-bar {
   display: flex;
   align-items: stretch;
@@ -189,6 +235,9 @@ onBeforeUnmount(() => closeMenu());
   align-items: center;
   gap: 6px;
   max-width: 220px;
+  min-width: 0;
+  flex: 0 1 auto;
+  box-sizing: border-box;
   padding: 6px 8px 5px;
   border-bottom: 2px solid transparent;
   color: var(--kn-text-muted);

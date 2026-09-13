@@ -83,16 +83,17 @@ semantics, and the MCP task-management rule — stay in the repo-root
 
 A task opens with its provider TUI using the full work area. Each pane has its
 own tab bar, directly above its contents. **+** opens a menu for a file, diff,
-terminal, file explorer or commit graph, and for splitting side by side or top
-and bottom. Splitting a pane with multiple tabs moves its selected tab into the
+terminal, file explorer or commit graph. Right-click a pane’s tab strip (or
+focus it and press Shift+F10) for splitting side by side or top and bottom,
+and joining panes. Splitting a pane with multiple tabs moves its selected tab into the
 new pane; splitting a single-tab pane opens an empty destination. Drag any tab,
 including Agent, onto another pane's tab bar or an empty pane. Dropping before a
 tab reorders it. Empty source panes collapse after a tab moves or closes.
 Dividers resize with the pointer or arrow keys; **Join panes** combines the tabs.
 
 Narrow work areas (under 800 CSS pixels) show one readable view and a combined
-tab bar without discarding the saved split layout. **Return to agent** selects
-and focuses the provider terminal. The focused view owns shortcuts, including
+tab bar without discarding the saved split layout. Select the **Agent** tab
+to return to the provider terminal. The focused view owns shortcuts, including
 the editor's existing save/quit semantics. Task id, owning machine and branch
 remain visible. Launch provider/model metadata and the Next stage model control
 are absent from this header. An older editor tab labels its original workspace

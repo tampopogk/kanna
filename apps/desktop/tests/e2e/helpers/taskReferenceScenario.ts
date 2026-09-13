@@ -76,7 +76,7 @@ export async function taskReferenceScenario(client: WebDriverClient, repoRoot: s
     await select(ids[0]);
     await waitFor(async () => client.executeSync<boolean>(`return document.querySelector('.diff-container')?.scrollTop === 500`), "restore diff position");
     assert.equal(await active(), "diff");
-    await client.executeSync(`Array.from(document.querySelectorAll('.workspace-actions button')).find(el => el.textContent === 'Return to agent').click()`);
+    await click('[data-testid="main-tab-agent"]');
     async function assertAgentBesideDiff(label: string) {
       await waitFor(async () => client.executeSync<boolean>(`
         return window.__KANNA_E2E__.setupState.mainTabs.activeTabId.value === 'agent'
@@ -114,7 +114,7 @@ export async function taskReferenceScenario(client: WebDriverClient, repoRoot: s
     await select(ids[0]);
     await waitFor(async () => client.executeSync<boolean>(`return document.querySelector('.preview-content')?.scrollTop === 600`), "restore reading position");
     await client.screenshot(join(output, "wide-file.png"));
-    await client.executeSync(`Array.from(document.querySelectorAll('.workspace-actions button')).find(el => el.textContent === 'Return to agent').click()`);
+    await click('[data-testid="main-tab-agent"]');
     await waitFor(async () => client.executeSync<boolean>(`return !!document.activeElement?.closest('[data-testid="main-tab-panel-agent"]')`), "return focus to agent");
     assert.equal(await active(), "agent");
     await client.sendKeys(await client.waitForElement('[data-testid="main-tab-panel-agent"] .xterm-helper-textarea'), "AGENT_FOCUS_CHECK");
@@ -179,7 +179,7 @@ export async function taskReferenceScenario(client: WebDriverClient, repoRoot: s
     await callVueMethod(client, "store.refreshAllItems");
     await click('.task-header .port');
     await waitFor(async () => frameRequests > 0, "iframe reaches claimed task port");
-    await client.executeSync(`Array.from(document.querySelectorAll('.workspace-actions button')).find(el => el.textContent === 'Return to agent').click()`);
+    await click('[data-testid="main-tab-agent"]');
     await waitFor(async () => client.executeSync<boolean>(`return !!document.activeElement?.closest('[data-testid="main-tab-panel-agent"]')`), "focus agent beside preview");
     // The plugin's pointer actions dispatch synthetic MouseEvents and do not
     // focus cross-origin frames. Exercise actual WebKit focus explicitly.

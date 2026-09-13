@@ -333,3 +333,36 @@ This correction does not incorporate newer main/attention PR #1482. When that
 separate integration is performed, agent-requested attention `!` and detected
 question `?` must both survive. Fresh re-review of this corrected candidate and
 owner native acceptance remain required; no advance, approval or merge.
+
+
+### Owner pane-control refinement after 6bf5f011e review
+
+Owner physical feedback requested a separate content `+`, tab-strip context
+menu for splitting/joining, clearer draggable tabs and hover treatment, no
+Return-to-agent strip, and repository-scoped task creation. This frontend-only
+revision implements those controls. Agent remains the default first task tab
+and carries the stage selector. Its label no longer shrinks away; the native
+selector is constrained inside its tab, while `+` has a fixed separate hit area.
+The context menu also opens with Shift+F10/ContextMenu and supports existing
+arrow-key/Escape dismissal. Generic pane state, drag ownership, live sessions
+and archive transport are unchanged. All/Unread/Questions filters remain;
+standalone New task is removed, with repository-header `+` retained. Separate
+main-branch agent-requested `!` attention remains to be reconciled alongside `?`.
+
+Focused evidence: MainTabBar (3), MainPanel (31), Sidebar (54): 88 component
+tests pass; Vue type check passes. The first run exposed three test references
+to the deleted Return button; those tests now select the Agent tab, and the
+31-test MainPanel rerun passes. The native scenario helper was updated to use
+Agent selection too; that broader scenario was not rerun.
+
+In the exact isolated task-0e269a87-5 window, native build identity remained
+6bf5f011e while Vite hot-reloaded this frontend revision. Native geometry showed
+Agent label width 33px, selector right edge 576px inside tab edge 584px, and
+`+` starting at 589px: separate controls without overflow. The real context menu
+contains only split/join actions; `+` contains only content choices. Menu opening
+used a DOM contextmenu event; physical owner acceptance is still pending. The
+Agent remained session8ebe0aa7/PID38183 before and after, with fixture DB and
+archived attempt preserved. No daemon restart, installed-app interaction,
+backend changes, new agents, merge or stage advance. Logs/screenshots are in
+`.tmp/pane-refinement/`. Prior technical approval at6bf5f011e does not approve
+this additional UI delta; it needs fresh bounded review and owner acceptance.

@@ -12,5 +12,5 @@ const emit = defineEmits<{ select: [id: string] }>();
   </select>
 </template>
 <style scoped>
-select { max-width: 260px; color: inherit; background: var(--kn-bg-secondary); border: 0; font: inherit; }
+select { flex: 1 1 0; width: 100%; min-width: 0; max-width: 260px; color: inherit; background: var(--kn-bg-secondary); border: 0; font: inherit; }
 </style>

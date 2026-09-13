@@ -173,9 +173,12 @@ describe("MainPanel", () => {
     try {
       await flushPromises();
       expect(document.activeElement).toBe(wrapper.get(`.${kind}-modal`).element);
-      const returnButton = () => wrapper.findAll(".workspace-actions button").find(button => button.text() === "Return to agent")!;
-      await returnButton().trigger("click");
-      const terminal = wrapper.get(".xterm-helper-textarea").element;
+      expect(wrapper.find('.workspace-actions').exists()).toBe(false);
+      wrapper.findComponent({ name: 'MainTabBar' }).vm.$emit('select', 'agent');
+      await flushPromises();
+      const terminal = wrapper.get<HTMLTextAreaElement>(".xterm-helper-textarea").element;
+      // Real TerminalTabs focuses its active terminal; model that in this stub.
+      terminal.focus();
       expect(tabs.activeTabId.value).toBe("agent");
       expect(document.activeElement).toBe(terminal);
       selected.value = "task-b";
@@ -194,7 +197,8 @@ describe("MainPanel", () => {
       reference.element.focus();
       await flushPromises();
       expect(tabs.activeTabId.value).toBe(kind);
-      await returnButton().trigger("click");
+      wrapper.findComponent({ name: 'MainTabBar' }).vm.$emit('select', 'agent');
+      await flushPromises();
       await reference.trigger("pointerdown");
       await flushPromises();
       expect(tabs.activeTabId.value).toBe(kind);
