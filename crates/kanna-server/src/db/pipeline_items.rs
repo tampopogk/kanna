@@ -1397,7 +1397,10 @@ impl Db {
         revision_limit: i64,
         edit: Option<WorkflowReplacement<'_>>,
     ) -> Result<bool, rusqlite::Error> {
-        self.with_immediate_transaction(|db| {
+        // Joins the caller's transaction when there is one: publishing a plan
+        // writes the run verdict and this workflow in the same commit, so a
+        // failure cannot leave a successful plan whose stages never existed.
+        self.in_immediate_transaction_if_needed(|db| {
             let current = db
                 .conn
                 .query_row(

@@ -538,6 +538,7 @@ pub(super) async fn update_task(
         task_id,
         follow_task: None,
         revision_budget: None,
+        workflow_extended: None,
     }))
 }
 

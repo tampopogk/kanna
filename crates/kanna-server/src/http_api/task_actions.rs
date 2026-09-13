@@ -52,6 +52,13 @@ fn reject_unprepared_transfer(db: &crate::db::Db, task_id: &str) -> Result<(), S
 #[serde(rename_all = "camelCase")]
 pub(super) struct AdvanceStageRequest {
     expected_transition_revision: Option<String>,
+    /// The pinned workflow the caller inspected before deciding to advance.
+    /// A task whose stages can be published while an earlier stage runs can
+    /// have a different tail by the time the advance arrives, so a caller that
+    /// acted on a displayed stage sequence fences on it rather than accepting
+    /// whichever one is pinned now — including one whose final stage would
+    /// close the task.
+    expected_definition: Option<serde_json::Value>,
     source: Option<String>,
     /// Provider the stage this advance enters must spawn with. It fills the
     /// explicit-override slot of the provider precedence chain, so it outranks
@@ -135,6 +142,7 @@ pub(super) async fn run_merge_agent(
         task_id: created_task.task_id,
         follow_task: None,
         revision_budget: None,
+        workflow_extended: None,
     }))
 }
 
@@ -224,6 +232,7 @@ pub(super) async fn set_task_parent(
         task_id,
         follow_task: None,
         revision_budget: None,
+        workflow_extended: None,
     }))
 }
 
@@ -492,6 +501,7 @@ pub(super) async fn pin_task(
         task_id,
         follow_task: None,
         revision_budget: None,
+        workflow_extended: None,
     }))
 }
 
@@ -513,6 +523,7 @@ pub(super) async fn unpin_task(
         task_id,
         follow_task: None,
         revision_budget: None,
+        workflow_extended: None,
     }))
 }
 
@@ -908,6 +919,7 @@ pub(super) async fn reopen_task(
         task_id,
         follow_task: None,
         revision_budget: None,
+        workflow_extended: None,
     }))
 }
 
@@ -1005,6 +1017,7 @@ async fn close_task_after_final_stage(
         task_id,
         follow_task: Some(false),
         revision_budget: None,
+        workflow_extended: None,
     }))
 }
 
@@ -1060,14 +1073,48 @@ pub(super) async fn advance_stage(
         task_id: task_id.clone(),
         follow_task: None,
         revision_budget: None,
+        workflow_extended: None,
     };
     let Some(stage_advance) = state.begin_requested_stage_advance(&task_id).await else {
         return Ok(Json(response).into_response());
     };
 
-    if let Some(expected_transition_revision) =
-        payload.and_then(|payload| payload.expected_transition_revision)
-    {
+    let (expected_transition_revision, expected_definition) = match payload {
+        Some(payload) => (
+            payload.expected_transition_revision,
+            payload.expected_definition,
+        ),
+        None => (None, None),
+    };
+    if let Some(expected_definition) = expected_definition {
+        let state = Arc::clone(&state);
+        let task_id = task_id.clone();
+        super::blocking::run_handler_blocking("stage advance workflow check", move || {
+            let db = Db::open(&state.config.db_path).map_err(|e| {
+                (
+                    axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("db error: {e}"),
+                )
+            })?;
+            let pinned = db
+                .get_pipeline_item(&task_id)
+                .map_err(|e| db_write_error("db error", e))?
+                .and_then(|item| item.pipeline_def)
+                .and_then(|definition| serde_json::from_str::<serde_json::Value>(&definition).ok());
+            if pinned.as_ref() != Some(&expected_definition) {
+                return Err((
+                    axum::http::StatusCode::CONFLICT,
+                    format!(
+                        "stale stage advance for {task_id}: this task's pinned workflow changed; \
+                         read it again before advancing"
+                    ),
+                ));
+            }
+            Ok(())
+        })
+        .await?;
+    }
+    if let Some(expected_transition_revision) = expected_transition_revision {
         let current_transition_revision = {
             let state = Arc::clone(&state);
             let task_id = task_id.clone();
@@ -1435,6 +1482,7 @@ pub(super) async fn resume_task(
                     task_id,
                     follow_task: None,
                     revision_budget: None,
+                    workflow_extended: None,
                 }));
             }
             return Err((
@@ -1509,6 +1557,7 @@ pub(super) async fn resume_task(
         task_id,
         follow_task: None,
         revision_budget: None,
+        workflow_extended: None,
     }))
 }
 
@@ -1603,6 +1652,7 @@ pub(super) async fn rerun_stage(
         task_id,
         follow_task: None,
         revision_budget: None,
+        workflow_extended: None,
     }))
 }
 
@@ -1666,6 +1716,170 @@ fn pr_number_from_url(pr_url: &str) -> Option<i64> {
         .and_then(|(_, number)| number.parse::<i64>().ok())
 }
 
+/// Stage whose completion may publish the rest of its own task's workflow.
+///
+/// A single reserved name, not a policy flag: the journey this serves is
+/// consultation -> appended planning -> the stages planning chose, and the
+/// planning agent is the one that has read the objective.
+const PLAN_STAGE_NAME: &str = "plan";
+
+/// Carries an HTTP error out of a DB transaction closure, which must name a
+/// type convertible from `rusqlite::Error`.
+struct PlanExtensionTxError((axum::http::StatusCode, String));
+
+impl From<rusqlite::Error> for PlanExtensionTxError {
+    fn from(error: rusqlite::Error) -> Self {
+        Self(db_write_error("db error", error))
+    }
+}
+
+struct PreparedPlanWorkflowExtension {
+    stage: String,
+    workflow_name: String,
+    previous_definition: String,
+    revision_rounds: i64,
+    validated: crate::task_creator::ValidatedWorkflowReplacement,
+}
+
+/// Validate the stages a planning run publishes for its own task.
+///
+/// Everything here is refused *before* the verdict is recorded, so a planner
+/// that composed an unsupported suffix can correct it and complete again
+/// rather than discovering its plan was recorded without them.
+fn prepare_plan_workflow_extension(
+    db: &Db,
+    task_id: &str,
+    current_run: &crate::db::StageRun,
+    stage_result: &str,
+    definition: &serde_json::Value,
+    expected: &serde_json::Value,
+) -> Result<PreparedPlanWorkflowExtension, (axum::http::StatusCode, String)> {
+    use axum::http::StatusCode;
+    let item = db
+        .get_pipeline_item(task_id)
+        .map_err(|error| db_write_error("db error", error))?
+        .ok_or_else(|| (StatusCode::NOT_FOUND, format!("task not found: {task_id}")))?;
+    let stage = item
+        .stage
+        .clone()
+        .ok_or_else(|| (StatusCode::CONFLICT, "task has no current stage".into()))?;
+    if current_run.kind != "main" || current_run.stage != stage {
+        return Err((
+            StatusCode::CONFLICT,
+            format!(
+                "only the task's current main stage run may publish its remaining stages; \
+                 this run is the {} run of stage '{}'",
+                current_run.kind, current_run.stage
+            ),
+        ));
+    }
+    if stage != PLAN_STAGE_NAME {
+        return Err((
+            StatusCode::CONFLICT,
+            format!(
+                "only a stage named '{PLAN_STAGE_NAME}' may publish a task's remaining stages; \
+                 this task is at '{stage}'"
+            ),
+        ));
+    }
+    let previous = item
+        .pipeline_def
+        .clone()
+        .ok_or_else(|| (StatusCode::CONFLICT, "task has no pinned workflow".into()))?;
+    let before: serde_json::Value = serde_json::from_str(&previous).map_err(|error| {
+        (
+            StatusCode::CONFLICT,
+            format!("invalid pinned workflow: {error}"),
+        )
+    })?;
+    if &before != expected {
+        return Err((
+            StatusCode::CONFLICT,
+            "pinned workflow changed; read it again before publishing the remaining stages".into(),
+        ));
+    }
+    crate::task_creator::validate_plan_workflow_extension(&previous, definition, &stage)
+        .map_err(|error| (StatusCode::BAD_REQUEST, error))?;
+    // A planning stage that advances on its own would start the stages it just
+    // published before anybody read the plan, which is the gate this journey
+    // exists to keep.
+    if plan_stage_transition(&before, &stage).as_deref() != Some("manual") {
+        return Err((
+            StatusCode::CONFLICT,
+            format!(
+                "stage '{stage}' must declare policy.transition \"manual\" to publish the \
+                    remaining stages"
+            ),
+        ));
+    }
+    if before["stages"]
+        .as_array()
+        .and_then(|stages| stages.iter().find(|entry| entry["name"] == stage.as_str()))
+        .is_some_and(|entry| entry.get("post").is_some())
+    {
+        return Err((
+            StatusCode::CONFLICT,
+            format!(
+                "stage '{stage}' declares a post; publish its remaining stages from a \
+                    planning stage that has none"
+            ),
+        ));
+    }
+    let repo = db
+        .get_repo(&item.repo_id)
+        .map_err(|error| db_write_error("db error", error))?
+        .ok_or_else(|| (StatusCode::NOT_FOUND, "task repository not found".into()))?;
+    let runs = db
+        .list_stage_runs_for_task(task_id)
+        .map_err(|error| db_write_error("db error", error))?;
+    let stamp = crate::task_creator::WorkflowPlanContext {
+        source_run_id: current_run.id.clone(),
+        stage: stage.clone(),
+        result: stage_result.to_string(),
+    };
+    let validated = crate::task_creator::validate_task_workflow_replacement_with_plan_context(
+        &repo,
+        definition,
+        &previous,
+        &stage,
+        &runs,
+        crate::task_creator::PlanContextPolicy::Stamp(&stamp),
+    )
+    .map_err(|error| (StatusCode::BAD_REQUEST, error))?;
+    Ok(PreparedPlanWorkflowExtension {
+        stage,
+        workflow_name: item
+            .pipeline
+            .clone()
+            .unwrap_or_else(|| "no-review".to_string()),
+        previous_definition: previous,
+        revision_rounds: item.revision_rounds,
+        validated,
+    })
+}
+
+/// The run whose plan the task's pinned workflow was extended under, if any.
+fn published_plan_run(db: &Db, task_id: &str) -> Option<String> {
+    let definition = db.get_pipeline_item(task_id).ok().flatten()?.pipeline_def?;
+    serde_json::from_str::<serde_json::Value>(&definition)
+        .ok()?
+        .get("plan_context")?
+        .get("source_run_id")?
+        .as_str()
+        .map(str::to_string)
+}
+
+fn plan_stage_transition(definition: &serde_json::Value, stage: &str) -> Option<String> {
+    definition["stages"]
+        .as_array()?
+        .iter()
+        .find(|entry| entry["name"] == stage)?
+        .get("policy")?
+        .get("transition")?
+        .as_str()
+        .map(str::to_string)
+}
+
 pub(super) async fn complete_stage(
     State(state): State<Arc<AppState>>,
     axum::extract::Path(task_id): axum::extract::Path<String>,
@@ -1687,6 +1901,32 @@ pub(super) async fn complete_stage(
             "status must be success or failure".to_string(),
         ));
     }
+    // A plan publishes the stages it chose in the same call that records the
+    // plan itself. The two arguments are one operation: a plan visible without
+    // its stages, or stages published under a plan that failed, are both
+    // states nothing downstream could interpret.
+    let workflow_extension = match (
+        payload.workflow_definition.clone(),
+        payload.expected_definition.clone(),
+    ) {
+        (Some(definition), Some(expected)) => {
+            if payload.status != "success" {
+                return Err((
+                    axum::http::StatusCode::BAD_REQUEST,
+                    "workflowDefinition may only accompany a successful stage completion"
+                        .to_string(),
+                ));
+            }
+            Some((definition, expected))
+        }
+        (None, None) => None,
+        _ => {
+            return Err((
+                axum::http::StatusCode::BAD_REQUEST,
+                "workflowDefinition and expectedDefinition must be provided together".to_string(),
+            ))
+        }
+    };
     // A review agent working without the PR review manager publishes the PR
     // identity here, because there is no `kanna_create_task` call it could
     // have carried it on. Validated before anything is recorded so a
@@ -1716,12 +1956,13 @@ pub(super) async fn complete_stage(
     let completion_attempt_key = payload.completion_attempt_key.clone();
     let completion_attempt_key_for_record = completion_attempt_key.clone();
     let completion_run_id = payload.run_id.clone();
-    let (task_id, finished_run, already_closed, replayed) = {
+    let (task_id, finished_run, already_closed, replayed, workflow_extended) = {
         let state = Arc::clone(&state);
         let payload_status = payload.status;
         let payload_summary = payload.summary;
         let payload_metadata = payload.metadata;
         let payload_run_id = payload.run_id;
+        let workflow_extension = workflow_extension.clone();
         super::blocking::run_handler_blocking("stage completion record", move || {
             let db = Db::open(&state.config.db_path).map_err(|e| {
                 (
@@ -1755,7 +1996,7 @@ pub(super) async fn complete_stage(
                             "completionAttemptKey already recorded a different verdict for run {original_run_id}"
                         )));
                     }
-                    return Ok((task_id, None, false, true));
+                    return Ok((task_id, None, false, true, false));
                 }
             }
             if db
@@ -1763,7 +2004,7 @@ pub(super) async fn complete_stage(
                 .map_err(|e| db_write_error("db error", e))?
                 .is_some_and(|item| item.closed_at.is_some())
             {
-                return Ok((task_id, None, true, false));
+                return Ok((task_id, None, true, false, false));
             }
             let run_status = if payload_status == "success" {
                 "succeeded"
@@ -1804,7 +2045,7 @@ pub(super) async fn complete_stage(
                         db.record_contextless_completion_attempt(key, &payload_run_id, &stage_result)
                             .map_err(|e| db_write_error("db error", e))?;
                     }
-                    return Ok((task_id, None, false, true));
+                    return Ok((task_id, None, false, true, false));
                 }
                 return Err((
                     axum::http::StatusCode::CONFLICT,
@@ -1821,7 +2062,20 @@ pub(super) async fn complete_stage(
                     db.record_contextless_completion_attempt(key, &payload_run_id, &stage_result)
                         .map_err(|e| db_write_error("db error", e))?;
                 }
-                return Ok((task_id, None, false, true));
+                return Ok((task_id, None, false, true, false));
+            }
+            // The plan a task's later stages were published under is not a
+            // draft: once stamped, a differing retry of that same run would
+            // leave the recorded plan and the executing stages describing
+            // different work.
+            if published_plan_run(&db, &task_id).as_deref() == Some(payload_run_id.as_str()) {
+                return Err((
+                    axum::http::StatusCode::CONFLICT,
+                    format!(
+                        "run {payload_run_id} already published this task's remaining stages; \
+                         its recorded plan cannot be replaced"
+                    ),
+                ));
             }
             if !matches!(
                 current_run.status.as_str(),
@@ -1835,21 +2089,63 @@ pub(super) async fn complete_stage(
                     ),
                 ));
             }
+            let extension = match workflow_extension.as_ref() {
+                None => None,
+                Some((definition, expected)) => Some(prepare_plan_workflow_extension(
+                    &db,
+                    &task_id,
+                    &current_run,
+                    &stage_result,
+                    definition,
+                    expected,
+                )?),
+            };
             let finished_run = Some(crate::db::FinishedStageRun {
-                kind: current_run.kind,
-                completion_transition: current_run.completion_transition,
-                trigger: current_run.trigger,
+                kind: current_run.kind.clone(),
+                completion_transition: current_run.completion_transition.clone(),
+                trigger: current_run.trigger.clone(),
             });
-            if let Some(key) = contextless_key {
-                db.finish_contextless_stage_run(
-                    key, &payload_run_id, run_status, &stage_result, &payload_summary,
-                )
+            // One transaction, so a plan is never durably successful without
+            // the stages it published, and a rejected extension leaves no
+            // recorded verdict for the planner to discover later.
+            let record = |db: &Db| -> Result<(), (axum::http::StatusCode, String)> {
+                if let Some(key) = contextless_key {
+                    db.finish_contextless_stage_run(
+                        key, &payload_run_id, run_status, &stage_result, &payload_summary,
+                    )
+                } else {
+                    db.finish_stage_run(
+                        &payload_run_id, run_status, Some(&stage_result), Some(&payload_summary),
+                    )
+                }
+                .map_err(|e| db_write_error("db error", e))?;
+                if let Some(extension) = extension.as_ref() {
+                    db.replace_task_workflow(
+                        &task_id,
+                        &extension.stage,
+                        &extension.workflow_name,
+                        &extension.validated.snapshot.definition_json,
+                        extension.revision_rounds,
+                        extension.validated.snapshot.revision_limit,
+                        Some(crate::db::WorkflowReplacement {
+                            expected_definition: &extension.previous_definition,
+                            source: "agent",
+                            superseded_run_ids: &extension.validated.superseded_run_ids,
+                            changed_execution_stages: &extension
+                                .validated
+                                .changed_execution_stages,
+                        }),
+                    )
+                    .map_err(|e| db_write_error("db error", e))?;
+                }
+                Ok(())
+            };
+            if extension.is_some() {
+                db.with_immediate_transaction(|db| record(db).map_err(PlanExtensionTxError))
+                    .map_err(|error| error.0)?;
             } else {
-                db.finish_stage_run(
-                    &payload_run_id, run_status, Some(&stage_result), Some(&payload_summary),
-                )
+                record(&db)?;
             }
-            .map_err(|e| db_write_error("db error", e))?;
             if payload_status == "success" {
                 if let Some(pr_url) =
                     pr_url_from_verdict(payload_metadata.as_ref(), &payload_summary)
@@ -1873,7 +2169,7 @@ pub(super) async fn complete_stage(
                         )
                     })?;
             }
-            Ok((task_id, finished_run, false, false))
+            Ok((task_id, finished_run, false, false, extension.is_some()))
         })
         .await?
     };
@@ -1885,11 +2181,31 @@ pub(super) async fn complete_stage(
         mark_completion_context_succeeded(&state.config.daemon_dir, &task_id, run_id, attempt_key);
     }
 
+    let mut workflow_extended = workflow_extended.then_some(true);
     if already_closed || replayed {
+        // A replay of the exact completion that published the stages writes
+        // nothing, but it must still answer that they are published: the
+        // caller reads a missing flag as "the stages were NOT published",
+        // which is the honest answer only for a server that ignored the
+        // arguments.
+        if workflow_extension.is_some() && replayed {
+            let state = Arc::clone(&state);
+            let task_id = task_id.clone();
+            workflow_extended = super::blocking::run_handler_blocking(
+                "stage completion extension check",
+                move || {
+                    let db = Db::open(&state.config.db_path)
+                        .map_err(|error| db_write_error("db error", error))?;
+                    Ok(published_plan_run(&db, &task_id).is_some().then_some(true))
+                },
+            )
+            .await?;
+        }
         return Ok(Json(crate::mobile_api::TaskActionResponse {
             task_id,
             follow_task: None,
             revision_budget: None,
+            workflow_extended,
         }));
     }
 
@@ -1899,6 +2215,7 @@ pub(super) async fn complete_stage(
             task_id,
             follow_task: None,
             revision_budget: None,
+            workflow_extended,
         }));
     }
 
@@ -1941,6 +2258,7 @@ pub(super) async fn complete_stage(
             task_id,
             follow_task: None,
             revision_budget: None,
+            workflow_extended,
         }));
     };
 
@@ -1948,6 +2266,7 @@ pub(super) async fn complete_stage(
         task_id: task_id.clone(),
         follow_task: None,
         revision_budget: None,
+        workflow_extended,
     };
     execute_stage_transition_detached_holding(
         Arc::clone(&state),
@@ -2304,6 +2623,7 @@ pub(super) async fn request_revision(
                         limit = budget.limit,
                     ),
                 }),
+                workflow_extended: None,
             }))
         }
         RevisionOutcome::Started {
@@ -2348,6 +2668,7 @@ pub(super) async fn request_revision(
                     exhausted: false,
                     message,
                 }),
+                workflow_extended: None,
             }))
         }
     }

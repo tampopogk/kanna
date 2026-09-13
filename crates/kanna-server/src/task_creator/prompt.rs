@@ -10,6 +10,7 @@ pub(super) fn build_target_stage_prompt(
     task_prompt: &str,
     prev_result: Option<&str>,
     prev_main_result: Option<&str>,
+    plan_result: Option<&str>,
     branch: Option<&str>,
     base_ref: Option<&str>,
     source_worktree_branch: Option<&str>,
@@ -22,6 +23,7 @@ pub(super) fn build_target_stage_prompt(
         task_prompt,
         prev_result,
         prev_main_result,
+        plan_result,
         branch,
         base_ref,
         source_worktree_branch,
@@ -38,6 +40,7 @@ pub(super) fn build_target_stage_prompt_with_instructions(
     task_prompt: &str,
     prev_result: Option<&str>,
     prev_main_result: Option<&str>,
+    plan_result: Option<&str>,
     branch: Option<&str>,
     base_ref: Option<&str>,
     source_worktree_branch: Option<&str>,
@@ -50,6 +53,7 @@ pub(super) fn build_target_stage_prompt_with_instructions(
         task_prompt: Some(task_prompt),
         prev_result,
         prev_main_result,
+        plan_result,
         revision_feedback: None,
         branch,
         base_ref,
@@ -99,6 +103,11 @@ pub(super) struct PromptContext<'a> {
     /// declares a post is the post's result; a stage that needs the previous
     /// stage agent's own report reads this instead.
     pub(super) prev_main_result: Option<&'a str>,
+    /// The plan stamped onto this task's pinned workflow when its plan stage
+    /// published the remaining stages. Bound independently of
+    /// `$PREV_MAIN_RESULT`, which any later stage overwrites, so the approved
+    /// plan stays readable for the whole extended workflow.
+    pub(super) plan_result: Option<&'a str>,
     /// Review findings carried by an imported revision independently of the
     /// previous run result.
     pub(super) revision_feedback: Option<&'a str>,
@@ -119,6 +128,7 @@ const RESERVED_PROMPT_VARS: &[&str] = &[
     "BASE_REF",
     "BRANCH",
     "KANNA_TASK_ID",
+    "PLAN_RESULT",
     "PREV_MAIN_RESULT",
     "PREV_RESULT",
     "REVISION_FEEDBACK",
@@ -135,6 +145,7 @@ fn prompt_var_value<'a>(name: &str, context: &'a PromptContext<'_>) -> Option<&'
         "TASK_PROMPT" => Some(context.task_prompt.unwrap_or("")),
         "PREV_RESULT" => Some(context.prev_result.unwrap_or("")),
         "PREV_MAIN_RESULT" => Some(context.prev_main_result.unwrap_or("")),
+        "PLAN_RESULT" => Some(context.plan_result.unwrap_or("")),
         "REVISION_FEEDBACK" => Some(context.revision_feedback.unwrap_or("")),
         "BRANCH" => Some(context.branch.unwrap_or("")),
         "BASE_REF" => Some(context.base_ref.unwrap_or("")),

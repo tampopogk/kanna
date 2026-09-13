@@ -691,3 +691,358 @@ async fn replacement_preserves_history_and_compiles_legacy_post_snapshots() {
         .get("post_action")
         .is_none());
 }
+
+// --- Publishing a task's remaining stages with its plan -------------------
+
+/// The consultation-grown shape: a manual `plan` stage appended to the task
+/// that carried the consultation, with the planning run live.
+fn plan_publication_fixture(label: &str) -> (tempfile::TempDir, Arc<AppState>, Value) {
+    let (temp, repo_path) = workflow_test_repo(label);
+    let before = serde_json::json!({"name": "consultation", "stages": [
+        {"name": "consultation", "agent": "consultant", "prompt": "$TASK_PROMPT",
+         "policy": {"transition": "manual"}},
+        {"name": "plan", "agent": "plan", "prompt": "Deliver the chosen outcome.",
+         "policy": {"transition": "manual"}}
+    ]});
+    let saved = before.clone();
+    let state = test_state_with_seed(label, "Studio Mac", move |db| {
+        seed_workflow_task(
+            db,
+            &repo_path,
+            "task-1",
+            "consultation",
+            "plan",
+            &saved.to_string(),
+        );
+        db.insert_stage_run(NewStageRun {
+            id: "run-consultation",
+            task_id: "task-1",
+            stage: "consultation",
+            kind: "main",
+            agent: Some("consultant"),
+            agent_provider: Some("claude"),
+            model: None,
+            effort: None,
+            status: "succeeded",
+            result: Some(r#"{"status":"success","summary":"brief"}"#),
+            feedback: None,
+            session_id: Some("session-consultation"),
+            provider_session_id: None,
+            cwd: Some(&repo_path),
+            resumed_from_run_id: None,
+        })
+        .unwrap();
+        db.insert_stage_run(NewStageRun {
+            id: "run-plan",
+            task_id: "task-1",
+            stage: "plan",
+            kind: "main",
+            agent: Some("plan"),
+            agent_provider: Some("claude"),
+            model: None,
+            effort: None,
+            status: "running",
+            result: None,
+            feedback: None,
+            session_id: Some("session-plan"),
+            provider_session_id: None,
+            cwd: Some(&repo_path),
+            resumed_from_run_id: None,
+        })
+        .unwrap();
+    });
+    (temp, state, before)
+}
+
+fn single_reviewer_suffix(before: &Value) -> Value {
+    let mut after = before.clone();
+    after["revision_limit"] = serde_json::json!(3);
+    let stages = after["stages"].as_array_mut().unwrap();
+    stages.push(serde_json::json!({
+        "name": "in progress", "agent": "implement",
+        "prompt": "Deliver the approved plan: $PLAN_RESULT",
+        "policy": {"transition": "manual", "revision_transition": "auto"},
+        "post": {"name": "commit", "agent": "commit", "prompt": "Commit. $PLAN_RESULT"}
+    }));
+    stages.push(serde_json::json!({
+        "name": "review", "agent": "review", "prompt": "Review $BRANCH against $PLAN_RESULT",
+        "policy": {"transition": "auto"}
+    }));
+    stages.push(serde_json::json!({
+        "name": "pr", "agent": "pr", "prompt": "Open a PR for $BRANCH.",
+        "policy": {"transition": "manual"},
+        "post": {"name": "approve", "agent": "approve", "prompt": "Approve $BRANCH."}
+    }));
+    after
+}
+
+async fn complete_plan(
+    app: &axum::Router,
+    summary: &str,
+    extension: Option<(&Value, &Value)>,
+) -> (StatusCode, Value) {
+    let mut args = serde_json::json!({
+        "task_id": "task-1", "status": "success", "summary": summary
+    });
+    if let Some((expected, definition)) = extension {
+        args["expected_definition"] = expected.clone();
+        args["workflow_definition"] = definition.clone();
+    }
+    // Resolve through the public catalog, as MCP and the CLI do, so the tool
+    // surface and the route are proven together.
+    let request = kanna_tool_catalog::resolve_request(
+        &kanna_tool_catalog::bundled_catalog(),
+        "kanna_complete_stage",
+        &args,
+    )
+    .unwrap();
+    let response = app
+        .clone()
+        .oneshot(
+            Request::post(request.path)
+                .header("content-type", "application/json")
+                .body(Body::from(request.body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = response.status();
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    (
+        status,
+        serde_json::from_slice(&body)
+            .unwrap_or_else(|_| Value::String(String::from_utf8_lossy(&body).into())),
+    )
+}
+
+fn pinned(state: &Arc<AppState>) -> Value {
+    let db = Db::open(&state.config.db_path).unwrap();
+    let task = db.get_pipeline_item("task-1").unwrap().unwrap();
+    serde_json::from_str(task.pipeline_def.as_deref().unwrap()).unwrap()
+}
+
+#[tokio::test]
+async fn plan_completion_publishes_its_stages_and_stamps_the_plan() {
+    let (_temp, state, before) = plan_publication_fixture("plan-publish");
+    let app = router(Arc::clone(&state));
+    let after = single_reviewer_suffix(&before);
+
+    let (status, body) = complete_plan(&app, "the full plan", Some((&before, &after))).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    // Explicit confirmation: an older server ignoring the arguments answers
+    // without this field, which is what stops a plain success reading as a
+    // published workflow.
+    assert_eq!(body["workflowExtended"], serde_json::json!(true));
+
+    let saved = pinned(&state);
+    assert_eq!(
+        saved["stages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|stage| stage["name"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        ["consultation", "plan", "in progress", "review", "pr"]
+    );
+    assert_eq!(saved["revision_limit"], serde_json::json!(3));
+    // The plan rides inside the pinned workflow, so it survives every later
+    // stage without a second durable record.
+    assert_eq!(saved["plan_context"]["source_run_id"], "run-plan");
+    assert_eq!(saved["plan_context"]["stage"], "plan");
+    assert!(saved["plan_context"]["result"]
+        .as_str()
+        .unwrap()
+        .contains("the full plan"));
+
+    let db = Db::open(&state.config.db_path).unwrap();
+    let run = db.stage_run("run-plan").unwrap().unwrap();
+    assert_eq!(run.status, "succeeded");
+    // Manual plan gate: the task stays where the human reads both.
+    assert_eq!(
+        db.get_pipeline_item("task-1")
+            .unwrap()
+            .unwrap()
+            .stage
+            .unwrap(),
+        "plan"
+    );
+}
+
+#[tokio::test]
+async fn a_rejected_extension_records_no_plan_at_all() {
+    let (_temp, state, before) = plan_publication_fixture("plan-publish-atomic");
+    let app = router(Arc::clone(&state));
+    // An unsupported suffix: no recipe ends at a bare `ship` stage.
+    let mut after = single_reviewer_suffix(&before);
+    after["stages"]
+        .as_array_mut()
+        .unwrap()
+        .push(serde_json::json!({
+            "name": "ship", "agent": "ship", "prompt": "Ship it.",
+            "policy": {"transition": "manual"}
+        }));
+
+    let (status, body) = complete_plan(&app, "the full plan", Some((&before, &after))).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+
+    let db = Db::open(&state.config.db_path).unwrap();
+    assert_eq!(db.stage_run("run-plan").unwrap().unwrap().status, "running");
+    assert_eq!(pinned(&state), before);
+}
+
+#[tokio::test]
+async fn a_plan_may_not_rewrite_the_stages_that_produced_it() {
+    let (_temp, state, before) = plan_publication_fixture("plan-publish-prefix");
+    let app = router(Arc::clone(&state));
+    let mut after = single_reviewer_suffix(&before);
+    after["stages"][0]["agent"] = serde_json::json!("implement");
+
+    let (status, body) = complete_plan(&app, "the full plan", Some((&before, &after))).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(
+        body.as_str()
+            .unwrap_or_default()
+            .contains("only append stages"),
+        "{body}"
+    );
+    assert_eq!(pinned(&state), before);
+}
+
+#[tokio::test]
+async fn a_published_plan_survives_replays_and_refuses_differing_retries() {
+    let (_temp, state, before) = plan_publication_fixture("plan-publish-retry");
+    let app = router(Arc::clone(&state));
+    let after = single_reviewer_suffix(&before);
+    let (status, _) = complete_plan(&app, "the full plan", Some((&before, &after))).await;
+    assert_eq!(status, StatusCode::OK);
+    let published = pinned(&state);
+
+    // An exact replay is a no-op even though `plan` is no longer the tail —
+    // and it still answers that the stages are published, because a missing
+    // flag means "this server did not publish them".
+    let (status, body) = complete_plan(&app, "the full plan", Some((&before, &after))).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["workflowExtended"], serde_json::json!(true));
+    assert_eq!(pinned(&state), published);
+
+    // A differing retry must not replace the plan the published stages were
+    // chosen under.
+    let (status, body) = complete_plan(&app, "a different plan", None).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(pinned(&state), published);
+    let db = Db::open(&state.config.db_path).unwrap();
+    assert!(db
+        .stage_run("run-plan")
+        .unwrap()
+        .unwrap()
+        .result
+        .unwrap()
+        .contains("the full plan"));
+}
+
+#[tokio::test]
+async fn a_stale_read_cannot_publish_stages_over_a_concurrent_edit() {
+    let (_temp, state, before) = plan_publication_fixture("plan-publish-stale");
+    let app = router(Arc::clone(&state));
+    let mut edited = before.clone();
+    edited["stages"][1]["prompt"] = serde_json::json!("Deliver the chosen outcome, revised.");
+    let (status, body) = replace_workflow(&app, &before, &edited).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    let after = single_reviewer_suffix(&before);
+    let (status, body) = complete_plan(&app, "the full plan", Some((&before, &after))).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    let db = Db::open(&state.config.db_path).unwrap();
+    assert_eq!(db.stage_run("run-plan").unwrap().unwrap().status, "running");
+}
+
+#[tokio::test]
+async fn an_ordinary_edit_carries_the_stamped_plan_and_cannot_author_one() {
+    let (_temp, state, before) = plan_publication_fixture("plan-publish-edit");
+    let app = router(Arc::clone(&state));
+    let after = single_reviewer_suffix(&before);
+    let (status, _) = complete_plan(&app, "the full plan", Some((&before, &after))).await;
+    assert_eq!(status, StatusCode::OK);
+    let published = pinned(&state);
+
+    // An edit that simply does not resend the stamp keeps it.
+    let mut retargeted = published.clone();
+    retargeted["plan_context"].take();
+    retargeted.as_object_mut().unwrap().remove("plan_context");
+    retargeted["stages"][3]["agent"] = serde_json::json!("qa-dispatcher");
+    let (status, body) = replace_workflow(&app, &published, &retargeted).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(pinned(&state)["plan_context"], published["plan_context"]);
+    assert_eq!(pinned(&state)["stages"][3]["agent"], "qa-dispatcher");
+
+    // An edit that rewrites it is refused: the stamp is Kanna's provenance.
+    let current = pinned(&state);
+    let mut forged = current.clone();
+    forged["plan_context"]["result"] = serde_json::json!("a plan nobody recorded");
+    let (status, body) = replace_workflow(&app, &current, &forged).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(pinned(&state), current);
+}
+
+#[tokio::test]
+async fn only_a_final_manual_plan_stage_may_publish_remaining_stages() {
+    let (_temp, state, before) = plan_publication_fixture("plan-publish-position");
+    let app = router(Arc::clone(&state));
+    {
+        // Move the task back to the consultation stage: a consultant must not
+        // be able to publish delivery stages for itself.
+        let db = Db::open(&state.config.db_path).unwrap();
+        db.update_pipeline_item_stage("task-1", "consultation")
+            .unwrap();
+    }
+    let after = single_reviewer_suffix(&before);
+    let (status, body) = complete_plan(&app, "brief", Some((&before, &after))).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(pinned(&state), before);
+}
+
+#[tokio::test]
+async fn an_advance_fenced_on_a_stale_workflow_is_refused_before_anything_is_scheduled() {
+    let (_temp, state, before) = plan_publication_fixture("plan-advance-fence");
+    let app = router(Arc::clone(&state));
+    let after = single_reviewer_suffix(&before);
+    let (status, _) = complete_plan(&app, "the full plan", Some((&before, &after))).await;
+    assert_eq!(status, StatusCode::OK);
+
+    // The caller read the workflow before the plan published its stages, so
+    // the tail it would advance into is not the one it inspected.
+    let request = kanna_tool_catalog::resolve_request(
+        &kanna_tool_catalog::bundled_catalog(),
+        "kanna_advance_stage",
+        &serde_json::json!({
+            "task_id": "task-1", "source": "operator", "expected_definition": before
+        }),
+    )
+    .unwrap();
+    let response = app
+        .clone()
+        .oneshot(
+            Request::post(request.path)
+                .header("content-type", "application/json")
+                .body(Body::from(request.body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    assert!(
+        String::from_utf8_lossy(&body).contains("pinned workflow changed"),
+        "{}",
+        String::from_utf8_lossy(&body)
+    );
+    let db = Db::open(&state.config.db_path).unwrap();
+    assert_eq!(
+        db.get_pipeline_item("task-1")
+            .unwrap()
+            .unwrap()
+            .stage
+            .unwrap(),
+        "plan"
+    );
+}

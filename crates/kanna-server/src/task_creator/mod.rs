@@ -18,7 +18,12 @@ mod work_tip;
 pub(crate) use work_tip::task_work_tip_for_transfer;
 mod workflow_edit;
 mod worktree;
-pub(crate) use workflow_edit::validate_task_workflow_replacement;
+pub(crate) use definitions::WorkflowPlanContext;
+pub(crate) use workflow_edit::{
+    validate_plan_workflow_extension, validate_task_workflow_replacement,
+    validate_task_workflow_replacement_with_plan_context, PlanContextPolicy,
+    ValidatedWorkflowReplacement,
+};
 
 #[cfg(test)]
 mod tests;
@@ -658,6 +663,7 @@ pub(crate) fn prepare_rerun_stage_for_api(
         .map(|base_ref| format!("{}/.kanna-worktrees/{base_ref}", repo.path));
     let prev_result = stages::previous_stage_result(db, task_id, &source_task)?;
     let prev_main_result = stages::previous_main_stage_result(db, task_id)?;
+    let plan_result = stages::stamped_plan_result(db, task_id);
     let prompt = build_stage_prompt(
         agent
             .as_ref()
@@ -668,6 +674,7 @@ pub(crate) fn prepare_rerun_stage_for_api(
             task_prompt: source_task.prompt.as_deref(),
             prev_result: prev_result.as_deref(),
             prev_main_result: prev_main_result.as_deref(),
+            plan_result: plan_result.as_deref(),
             revision_feedback: None,
             branch: Some(branch),
             base_ref: source_task.base_ref.as_deref(),
@@ -2158,6 +2165,7 @@ pub(crate) fn prepare_singleton_agent_task_for_api(
         }],
         environments: None,
         revision_limit: None,
+        plan_context: None,
         // Kanna binds this synthetic workflow itself; it is never a listed
         // choice, and visibility is never consulted on resolution anyway.
         visibility: definitions::DefinitionVisibility::Internal,
@@ -2289,6 +2297,7 @@ completion with status success so Kanna can run the commit post and close this i
         }],
         environments: None,
         revision_limit: None,
+        plan_context: None,
         // Kanna binds this synthetic workflow itself; it is never a listed
         // choice, and visibility is never consulted on resolution anyway.
         visibility: definitions::DefinitionVisibility::Internal,
@@ -2627,6 +2636,7 @@ pub(crate) fn prepare_start_dormant_task_for_api(
             task_prompt: item.prompt.as_deref(),
             prev_result: None,
             prev_main_result: None,
+            plan_result: None,
             revision_feedback: None,
             branch: base_ref.as_deref(),
             base_ref: base_ref.as_deref(),
@@ -3323,6 +3333,10 @@ fn resolve_task_spawn(
                     task_prompt: Some(&request.task_prompt),
                     prev_result: import.previous_stage_result.as_deref(),
                     prev_main_result: import.previous_main_result.as_deref(),
+                    plan_result: workflow
+                        .plan_context
+                        .as_ref()
+                        .map(|context| context.result.as_str()),
                     revision_feedback: import.revision_feedback.as_deref(),
                     branch: destination_branch
                         .as_deref()
@@ -3350,6 +3364,10 @@ fn resolve_task_spawn(
                 task_prompt: Some(&request.task_prompt),
                 prev_result: None,
                 prev_main_result: None,
+                plan_result: workflow
+                    .plan_context
+                    .as_ref()
+                    .map(|context| context.result.as_str()),
                 revision_feedback: None,
                 branch: destination_branch
                     .as_deref()

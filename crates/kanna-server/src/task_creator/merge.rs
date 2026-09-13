@@ -68,6 +68,7 @@ fn build_merge_task_request() -> Result<TaskCreationRequest, String> {
         }],
         environments: None,
         revision_limit: None,
+        plan_context: None,
         // Kanna binds this synthetic workflow itself; it is never a listed
         // choice, and visibility is never consulted on resolution anyway.
         visibility: DefinitionVisibility::Internal,

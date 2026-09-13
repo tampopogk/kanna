@@ -621,6 +621,27 @@ async fn run_import(
     Ok(())
 }
 
+/// Does the workflow this destination actually stored read back equal to the
+/// source's pinned snapshot?
+///
+/// This is a read-back commitment, not a formatting check: the destination
+/// re-serializes the definition through its own `WorkflowDefinition`, so a
+/// destination too old to know a field drops it here and the import is refused
+/// as terminal *before* the source is finalized. That is what keeps an
+/// optional field like `plan_context` — the plan a task's published stages
+/// were chosen under — from being silently lost in transfer.
+fn stored_workflow_matches_source(stored: Option<&str>, expected: Option<&str>) -> bool {
+    match (stored, expected) {
+        (Some(stored), Some(expected)) if stored == expected => true,
+        (Some(stored), Some(expected)) => serde_json::from_str::<serde_json::Value>(stored)
+            .ok()
+            .zip(serde_json::from_str::<serde_json::Value>(expected).ok())
+            .is_some_and(|(a, b)| a == b),
+        (None, None) => true,
+        _ => false,
+    }
+}
+
 pub(crate) async fn verify_persisted_task_bundle(
     state: &Arc<AppState>,
     payload: &OutgoingTransferPayload,
@@ -665,19 +686,10 @@ pub(crate) async fn verify_persisted_task_bundle(
             )));
         }
     }
-    let workflow_matches = match (
+    if !stored_workflow_matches_source(
         item.pipeline_def.as_deref(),
         payload.task.workflow_definition.as_deref(),
     ) {
-        (Some(stored), Some(expected)) if stored == expected => true,
-        (Some(stored), Some(expected)) => serde_json::from_str::<serde_json::Value>(stored)
-            .ok()
-            .zip(serde_json::from_str::<serde_json::Value>(expected).ok())
-            .is_some_and(|(a, b)| a == b),
-        (None, None) => true,
-        _ => false,
-    };
-    if !workflow_matches {
         return Err(ImportFailure::Terminal(format!(
             "transferred task {local_task_id} workflow definition does not match the source snapshot"
         )));
@@ -3342,5 +3354,61 @@ mod tests {
         let _ = std::fs::remove_dir_all(destination_home);
         let _ = std::fs::remove_dir_all(source_repo);
         let _ = std::fs::remove_dir_all(source_remote);
+    }
+}
+
+#[cfg(test)]
+mod stored_workflow_tests {
+    use super::stored_workflow_matches_source;
+
+    fn pinned(with_plan_context: bool) -> String {
+        let mut definition = serde_json::json!({
+            "name": "consultation",
+            "revision_limit": 3,
+            "stages": [
+                {"name": "plan", "agent": "plan", "policy": {"transition": "manual"}},
+                {"name": "in progress", "agent": "implement", "policy": {"transition": "manual"}}
+            ]
+        });
+        if with_plan_context {
+            definition["plan_context"] = serde_json::json!({
+                "source_run_id": "run-plan", "stage": "plan",
+                "result": "{\"status\":\"success\",\"summary\":\"the approved plan\"}"
+            });
+        }
+        definition.to_string()
+    }
+
+    /// A same-version destination re-serializes the definition with different
+    /// key order and whitespace and still matches: the check is semantic.
+    #[test]
+    fn a_same_version_destination_matches_after_reserialization() {
+        let source = pinned(true);
+        let reserialized = serde_json::to_string_pretty(
+            &serde_json::from_str::<serde_json::Value>(&source).unwrap(),
+        )
+        .unwrap();
+        assert_ne!(reserialized, source);
+        assert!(stored_workflow_matches_source(
+            Some(&reserialized),
+            Some(&source)
+        ));
+    }
+
+    /// A destination old enough not to know `plan_context` drops it when it
+    /// re-serializes. The read-back then fails, which is what refuses the
+    /// import before the source is finalized instead of losing the plan the
+    /// task's published stages were chosen under.
+    #[test]
+    fn an_old_destination_that_dropped_the_plan_context_is_refused() {
+        assert!(!stored_workflow_matches_source(
+            Some(&pinned(false)),
+            Some(&pinned(true))
+        ));
+        // And the same peer carrying a workflow that never had one is fine.
+        assert!(stored_workflow_matches_source(
+            Some(&pinned(false)),
+            Some(&pinned(false))
+        ));
     }
 }
