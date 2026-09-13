@@ -207,6 +207,7 @@ impl Db {
             CREATE UNIQUE INDEX idx_lifecycle_operation_intent_task
                 ON lifecycle_operation_intent(task_id);
 
+            CREATE TABLE agent_terminal_attempt (run_id TEXT PRIMARY KEY REFERENCES stage_run(id) ON DELETE CASCADE, archive TEXT);
             CREATE TABLE stage_run (
                 id TEXT PRIMARY KEY,
                 task_id TEXT NOT NULL,

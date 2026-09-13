@@ -1,23 +1,24 @@
 <script setup lang="ts">
-import { ref, watch } from "vue";
+import { ref, watch, type CSSProperties } from "vue";
 import TaskPreviewView from "./TaskPreviewView.vue";
 
-interface PreviewEntry { key: string; taskId: string; portName: string; workspace: string; supported: boolean }
-const props = defineProps<{ entry: PreviewEntry | null; workspaces: Record<string, string> }>();
-const emit = defineEmits<{ (e: "activate"): void }>();
+interface PreviewEntry { key: string; taskId: string; portName: string; workspace: string; supported: boolean; style?: CSSProperties }
+const props = defineProps<{ visibleEntries: PreviewEntry[]; workspaces: Record<string, string> }>();
+const emit = defineEmits<{ (e: "activate", key: string): void }>();
 const entries = ref<PreviewEntry[]>([]);
 const recency = new Map<string, number>();
 let sequence = 0;
-watch(() => props.entry, entry => {
-  if (!entry) return;
-  // Keep frames in the DOM: moving an iframe through KeepAlive's detached
-  // container can reload it and lose its in-page location.
-  recency.set(entry.key, ++sequence);
-  const existing = entries.value.findIndex(candidate => candidate.key === entry.key);
-  if (existing >= 0) entries.value[existing] = entry;
-  else entries.value.push(entry);
-  if (entries.value.length > 5) {
-    const oldest = [...entries.value].sort((a, b) => (recency.get(a.key) ?? 0) - (recency.get(b.key) ?? 0))[0];
+watch(() => props.visibleEntries, visible => {
+  for (const entry of visible) {
+    // Keep frames in the DOM: moving an iframe through KeepAlive's detached
+    // container can reload it and lose its in-page location.
+    recency.set(entry.key, ++sequence);
+    const existing = entries.value.findIndex(candidate => candidate.key === entry.key);
+    if (existing >= 0) entries.value[existing] = entry;
+    else entries.value.push(entry);
+  }
+  if (entries.value.length > Math.max(5, visible.length)) {
+    const oldest = entries.value.filter(entry => !visible.some(current => current.key === entry.key)).sort((a, b) => (recency.get(a.key) ?? 0) - (recency.get(b.key) ?? 0))[0];
     if (oldest) discard(oldest.key);
   }
 }, { immediate: true });
@@ -31,11 +32,21 @@ function discard(key: string) { recency.delete(key); entries.value = entries.val
 defineExpose({ discard });
 </script>
 <template>
-  <div v-show="entry" class="preview-cache">
-    <TaskPreviewView v-for="cached in entries" :key="cached.key" v-show="entry?.key === cached.key" :task-id="cached.taskId" :port-name="cached.portName" :workspace="cached.workspace" :supported="cached.supported" :visible="entry?.key === cached.key" @activate="emit('activate')" />
+  <div class="preview-cache">
+    <TaskPreviewView
+      v-for="cached in entries" :key="cached.key"
+      v-show="visibleEntries.some(entry => entry.key === cached.key)"
+      :style="visibleEntries.find(entry => entry.key === cached.key)?.style"
+      :task-id="cached.taskId" :port-name="cached.portName"
+      :workspace="cached.workspace" :supported="cached.supported"
+      :visible="visibleEntries.some(entry => entry.key === cached.key)"
+      @activate="emit('activate', cached.key)"
+      @pointerdown.capture="emit('activate', cached.key)"
+      @focusin="emit('activate', cached.key)"
+    />
   </div>
 </template>
 
 <style scoped>
-.preview-cache { display: flex; flex: 1; min-height: 0; min-width: 0; }
+.preview-cache { display: contents; }
 </style>

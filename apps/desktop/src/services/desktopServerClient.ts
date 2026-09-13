@@ -1385,3 +1385,27 @@ export async function replaceDesktopTaskWorkflow(
   });
   return response.workflowDefinition;
 }
+
+export interface AgentTerminalAttempt {
+  id: string;
+  stage: string;
+  startedAt: string;
+  cwd: string | null;
+  archived: boolean;
+  recordedLaunch: boolean;
+  observedExitCode: number | null;
+}
+export interface AgentTerminalArchive {
+  binding: { task_id: string; spawned_run_id: string };
+  session_id: string;
+  cwd: string;
+  snapshot: { vt: string; cols: number; rows: number } | null;
+  unavailable_reason: string | null;
+  observed_exit_code: number | null;
+}
+export function listAgentTerminalAttempts(taskId: string): Promise<AgentTerminalAttempt[]> {
+  return requestJson(`/v1/tasks/${encodeURIComponent(taskId)}/terminal-attempts`);
+}
+export function readAgentTerminalArchive(taskId: string, runId: string): Promise<AgentTerminalArchive | null> {
+  return requestJson(`/v1/tasks/${encodeURIComponent(taskId)}/terminal-attempts/${encodeURIComponent(runId)}`);
+}

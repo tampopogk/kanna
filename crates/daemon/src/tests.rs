@@ -52,6 +52,7 @@ fn process_executable_path_is_kernel_derived_for_live_processes() {
 fn parse_handoff_response_accepts_v2_payload() {
     let line = serde_json::to_string(&Event::HandoffReady {
         sessions: vec![protocol::HandoffSession {
+            archive_binding: None,
             session_id: "s1".to_string(),
             pid: 42,
             child_start: None,
@@ -682,6 +683,7 @@ pub(crate) fn temp_daemon_dir(prefix: &str) -> PathBuf {
 
 fn handoff_session(kind: protocol::SessionKind, agent_fd_count: u8) -> protocol::HandoffSession {
     protocol::HandoffSession {
+        archive_binding: None,
         session_id: "s1".to_string(),
         pid: 42,
         child_start: None,
@@ -1484,6 +1486,7 @@ async fn forged_agent_handoff_cannot_target_unrelated_processes() {
     assert_eq!(unsafe { libc::pipe(stderr_pipe.as_mut_ptr()) }, 0);
 
     let info = protocol::HandoffSession {
+        archive_binding: None,
         session_id: "forged".to_string(),
         pid: victim.id(),
         child_start: victim_start,
@@ -1565,6 +1568,7 @@ async fn legacy_handoff_without_identity_keeps_live_agents_killable() {
     let stderr_dup = kanna_daemon::agent::dup_cloexec(spawned.stderr.as_raw_fd()).unwrap();
 
     let info = protocol::HandoffSession {
+        archive_binding: None,
         session_id: "legacy".to_string(),
         pid: spawned.pid,
         child_start: None, // old-v2 senders never transferred identity

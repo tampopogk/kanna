@@ -1124,6 +1124,7 @@ pub(crate) async fn handle_handoff(
                     );
                 }
                 infos.push(protocol::HandoffSession {
+                    archive_binding: parts.archive_binding,
                     session_id: id.clone(),
                     pid,
                     child_start: parts.child_start,
@@ -1228,6 +1229,7 @@ pub(crate) async fn handle_handoff(
             session_fds
         );
         infos.push(protocol::HandoffSession {
+            archive_binding: None,
             session_id: id.clone(),
             pid: record.pid,
             child_start: record.child_start,

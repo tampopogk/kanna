@@ -1315,6 +1315,46 @@ impl SessionHandle {
         Some(current)
     }
 
+    /// Called only by the exact handle's finalization owner, before reuse.
+    pub async fn final_attempt_archive(
+        &self,
+        session_id: &str,
+    ) -> Option<crate::protocol::TerminalAttemptArchive> {
+        let pty = self.pty.lock().await;
+        let binding = pty.archive_binding.clone()?;
+        let observed_exit_code = pty.observed_exit_code();
+        let cwd = pty.cwd.clone();
+        drop(pty);
+        let (snapshot, unavailable_reason) = match self
+            .state
+            .lock()
+            .await
+            .headless_terminal
+            .snapshot_with_metadata()
+        {
+            Ok(frame) if !frame.used_visible_text_fallback => (Some(frame.snapshot), None),
+            Ok(_) => (
+                None,
+                Some(
+                    "Terminal serialization degraded; full retained history unavailable"
+                        .to_string(),
+                ),
+            ),
+            Err(error) => (
+                None,
+                Some(format!("Terminal serialization failed: {error}")),
+            ),
+        };
+        Some(crate::protocol::TerminalAttemptArchive {
+            binding,
+            session_id: session_id.to_string(),
+            cwd,
+            snapshot,
+            unavailable_reason,
+            observed_exit_code,
+        })
+    }
+
     pub async fn handoff_parts(
         &self,
     ) -> Result<Option<SessionHandoffParts>, Box<dyn std::error::Error + Send + Sync>> {
@@ -1325,6 +1365,7 @@ impl SessionHandle {
         let pid = pty.pid();
         let child_start = pty.child_identity();
         let cwd = pty.cwd.clone();
+        let archive_binding = pty.archive_binding.clone();
         let rows = pty.rows();
         let cols = pty.cols();
         let fd = pty.try_clone_handoff_fd()?;
@@ -1349,6 +1390,7 @@ impl SessionHandle {
             .lock()
             .map_err(|_| "terminal input coordination lock was poisoned")?;
         Ok(Some(SessionHandoffParts {
+            archive_binding,
             pid,
             child_start,
             cwd,
@@ -1371,6 +1413,7 @@ impl SessionHandle {
 }
 
 pub struct SessionHandoffParts {
+    pub archive_binding: Option<crate::protocol::TerminalAttemptBinding>,
     pub pid: u32,
     /// Start-time identity of the child, so the adopting daemon can
     /// authenticate the pid against the live process table.

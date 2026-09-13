@@ -81,17 +81,23 @@ semantics, and the MCP task-management rule — stay in the repo-root
 
 ### Task reference views
 
-A task opens with its provider TUI using the full work area. **Diff**, **Files…**,
-and **Shell** open task views; the tabs retain other views within this task.
-On desktop, opening a reference shows it beside the agent when the work area
-is at least 1000 CSS pixels wide. **Full width** expands the focused view;
-**Side by side** restores adjacency. Narrow windows display one view at a time.
-**Return to agent** selects and focuses the provider terminal. The highlighted
-pane owns view shortcuts, including the editor's existing save/quit semantics.
-Task id, owning machine, and branch remain visible; an older editor tab labels
-its original workspace when the current task has moved on.
+A task opens with its provider TUI using the full work area. Each pane has its
+own tab bar, directly above its contents. **+** opens a menu for a file, diff,
+terminal, file explorer or commit graph, and for splitting side by side or top
+and bottom. Splitting a pane with multiple tabs moves its selected tab into the
+new pane; splitting a single-tab pane opens an empty destination. Drag any tab,
+including Agent, onto another pane's tab bar or an empty pane. Dropping before a
+tab reorders it. Empty source panes collapse after a tab moves or closes.
+Dividers resize with the pointer or arrow keys; **Join panes** combines the tabs.
 
-Selection, the chosen reference, and layout preference are stored per task,
+Narrow work areas (under 800 CSS pixels) show one readable view and a combined
+tab bar without discarding the saved split layout. **Return to agent** selects
+and focuses the provider terminal. The focused view owns shortcuts, including
+the editor's existing save/quit semantics. Task id, owning machine and branch
+remain visible. Launch provider/model metadata and the Next stage model control
+are absent from this header. An older editor tab labels its original workspace
+when the task has moved on.
+Selection, pane membership, tab ordering and split proportions are stored per task,
 separately from repository and app tabs. File reading offsets and diff scope,
 branch inclusion, and reading offsets restore on task return and app restart
 for the same workspace. Positions are best effort if content changes. A new
@@ -99,10 +105,19 @@ workspace resets those reading positions. Live terminal continuity comes from
 surviving daemon sessions; unavailable sessions and stale remote file snapshots
 are not restored by tab persistence.
 
+The Agent tab's stage selector offers Latest and dated historical attempts.
+Earlier attempts show read-only terminal-retained scrollback (including the
+final alternate screen) and the observed exit status, or an explicit unknown
+status. Repeated attempts remain separate. Uncaptured legacy history is marked
+unavailable; saved stage summaries do not stand in for terminal output. Selecting
+history never starts or attaches to an ended process. Latest returns to the
+same current terminal. Continued posts share a process's launch identity;
+retries and fallback launches receive distinct identities.
+
 A local task's claimed port opens a reference preview after resolving its
 current workspace and port against the owning server. **Open in browser**
 retains full browser and DevTools access. The task server must be running and
-allow embedding. Up to five previews remain mounted during task/view switches,
+allow embedding. All visible previews and a bounded cache of hidden previews remain mounted during task/view switches,
 retaining their page state; app restart or cache eviction reloads the page.
 Only the port name is persisted, never a page snapshot or credential. Embedded
 previews are local desktop only; mobile and remote preview transport are

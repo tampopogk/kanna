@@ -96,7 +96,6 @@ function openLocalhostPort(port: number) {
     </div>
     <div class="header-meta">
       <span v-if="taskId" class="meta-item">{{ taskId }} · {{ ownerLabel }}</span>
-      <span v-if="item.launchProvider" class="meta-item" title="Recorded at stage launch. Changes made inside the agent TUI may differ.">Launched with {{ item.launchProvider }}{{ item.launchModel ? ` · ${item.launchModel}` : ' · CLI default' }}</span>
       <span v-if="item.branch" class="meta-item branch" @dblclick="copyBranch">
         <span class="meta-label">{{ $t('taskHeader.branchLabel') }}</span> {{ copied ? $t('taskHeader.copied', 'Copied!') : item.branch }}
       </span>

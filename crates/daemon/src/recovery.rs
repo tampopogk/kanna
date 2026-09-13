@@ -253,6 +253,10 @@ struct PersistedRecoverySnapshot {
 }
 
 impl RecoveryManager {
+    pub fn attempt_archive_dir(&self) -> PathBuf {
+        self.snapshot_dir.join("attempt-archives")
+    }
+
     pub async fn start() -> Self {
         let snapshot_dir = default_snapshot_dir();
         let launcher = detect_launcher();

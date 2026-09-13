@@ -69,6 +69,7 @@ export async function taskReferenceScenario(client: WebDriverClient, repoRoot: s
     await client.sendKeys(await client.waitForElement('[data-testid="main-tab-panel-agent"] .xterm-helper-textarea'), "TASK_REFERENCE_AGENT\r");
     await waitFor(async () => client.executeSync<boolean>(`return (window.__KANNA_E2E__.terminalBuffers?.lines?.('${ids[0]}') ?? []).join(' ').includes('TASK_REFERENCE_AGENT')`), "primary terminal bytes");
     await callVueMethod(client, "mainTabs.openTab", { kind: "diff" });
+    await callVueMethod(client, "mainTabs.setSplit", true);
     await waitFor(async () => client.executeSync<boolean>(`return (document.querySelector('.diff-container')?.scrollHeight ?? 0) > 1500`), "render long working diff");
     await client.executeSync(`const el = document.querySelector('.diff-container'); el.scrollTop = 500; el.dispatchEvent(new Event('scroll'));`);
     await select(ids[1]);
@@ -100,9 +101,9 @@ export async function taskReferenceScenario(client: WebDriverClient, repoRoot: s
     await client.screenshot(join(output, "wide-agent-diff-return.png"));
     await click('[data-testid="main-tab-diff"]');
     await client.screenshot(join(output, "wide-diff.png"));
-    await client.executeSync(`Array.from(document.querySelectorAll('.workspace-actions button')).find(el => el.textContent === 'Full width').click()`);
+    await callVueMethod(client, "mainTabs.joinPanes");
     await waitFor(async () => client.executeSync<boolean>(`return !document.querySelector('.work-area').classList.contains('split')`), "reference full width");
-    await client.executeSync(`Array.from(document.querySelectorAll('.workspace-actions button')).find(el => el.textContent === 'Side by side').click()`);
+    await callVueMethod(client, "mainTabs.setSplit", true);
     await callVueMethod(client, "openFilePreview", "reading.txt");
     await client.waitForElement(".preview-content");
     await waitFor(async () => client.executeSync<boolean>(`return document.querySelector('.work-area').classList.contains('split')`), "wide split");

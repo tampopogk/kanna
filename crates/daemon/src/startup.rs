@@ -320,7 +320,7 @@ pub(crate) async fn run_daemon() {
     // recovery sidecar has durable state before any post-restart attach occurs.
     if !handoff_result.adopted.is_empty() {
         let mut mgr = sessions.lock().await;
-        for (session_id, pty_session, handoff) in handoff_result.adopted {
+        for (session_id, mut pty_session, handoff) in handoff_result.adopted {
             let mut headless_terminal = match handoff.snapshot.as_ref() {
                 Some(snapshot) => {
                     log::info!(
@@ -431,6 +431,7 @@ pub(crate) async fn run_daemon() {
             let stream_control = StreamControl::new();
             let notice_terminal = adopted_notice_terminal(&handoff)
                 .expect("failed to create notice projection for adopted session");
+            pty_session.archive_binding = handoff.archive_binding.clone();
             let handle = Arc::new(SessionHandle::new(SessionRecord {
                 pty: pty_session,
                 headless_terminal,

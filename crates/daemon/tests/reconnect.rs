@@ -162,6 +162,9 @@ enum SessionStatus {
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type")]
 enum Evt {
+    AttemptArchive {
+        archive: Option<kanna_daemon::protocol::TerminalAttemptArchive>,
+    },
     Output {
         session_id: String,
         data: Vec<u8>,
@@ -3517,7 +3520,12 @@ fn same_id_reuse_waits_for_old_reader_exit_and_recovery_teardown() {
             }
             Ok(Evt::Exit { .. }) => panic!("old Exit escaped after replacement SessionCreated"),
             Ok(Evt::SessionCreated { .. } | Evt::Snapshot { .. } | Evt::Ok | Evt::Unknown) => {}
-            Ok(Evt::SessionList { .. } | Evt::RawInputReady { .. } | Evt::Error { .. }) => {}
+            Ok(
+                Evt::SessionList { .. }
+                | Evt::RawInputReady { .. }
+                | Evt::Error { .. }
+                | Evt::AttemptArchive { .. },
+            ) => {}
             Err(_) => {}
         }
     }
@@ -6274,5 +6282,119 @@ fn live_codex_submit_input_accepts_the_marker_once_without_manual_enter() {
         candidate.accepted_turns, 1,
         "the candidate must produce exactly one accepted Codex turn; screen: {:?}",
         candidate.final_screen
+    );
+}
+
+#[test]
+fn attempt_archive_survives_same_id_replacement_with_complete_retained_vt() {
+    let daemon = DaemonHandle::start_with_fake_recovery([]);
+    let mut conn = daemon.connect();
+    let session = "archive-reused";
+    let spawn = |run: &str, script: &str| Cmd::Spawn {
+        session_id: session.into(),
+        executable: "/bin/sh".into(),
+        args: vec!["-c".into(), script.into()],
+        cwd: daemon._dir.to_string_lossy().into_owned(),
+        env: HashMap::from([
+            ("KANNA_TASK_ID".into(), "archive-task".into()),
+            ("KANNA_STAGE_RUN_ID".into(), run.into()),
+        ]),
+        cols: 120,
+        rows: 24,
+        terminal_prelude: None,
+    };
+    conn.send(&spawn("run-archive-task-a", "printf 'FIRST_A\\r\\n'; awk 'BEGIN {for(i=0;i<4500;i++) print i \" café abcdefghijklmnopqrstuvwxyz abcdefghijklmnopqrstuvwxyz abcdefghijklmnopqrstuvwxyz\"}'; printf 'LAST_A\\r\\n'; exit 7"));
+    expect_session_created_with_timeout(&mut conn, session, Duration::from_secs(15));
+    // Reading by exact attempt is also the reconnect path; no transient Exit
+    // notification is consumed here. Wait only for the test's final evidence.
+    let read = |conn: &mut ClientConn, id: &str| {
+        conn.send_json(&serde_json::json!({"type":"ReadAttemptArchive","attempt_id":id}));
+        match conn.recv() {
+            Evt::AttemptArchive { archive } => archive,
+            other => panic!("unexpected archive reply: {other:?}"),
+        }
+    };
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        if read(&mut conn, "run-archive-task-a").is_some() {
+            break;
+        }
+        assert!(Instant::now() < deadline);
+        thread::sleep(Duration::from_millis(20));
+    }
+    conn.send(&spawn(
+        "run-archive-task-b",
+        "printf 'ONLY_B\\r\\n'; sleep 30",
+    ));
+    expect_session_created_with_timeout(&mut conn, session, Duration::from_secs(15));
+    let a = read(&mut conn, "run-archive-task-a").unwrap();
+    assert_eq!(a.binding.spawned_run_id, "run-archive-task-a");
+    assert_eq!(a.observed_exit_code, Some(7));
+    let vt = &a.snapshot.as_ref().unwrap().vt;
+    assert!(vt.len() > 256 * 1024, "retained {} bytes", vt.len());
+    assert!(vt.contains("FIRST_A") && vt.contains("LAST_A") && vt.contains("café"));
+    assert!(!vt.contains("ONLY_B"));
+    assert!(read(&mut conn, "run-archive-task-b").is_none());
+    conn.send(&Cmd::Kill {
+        session_id: session.into(),
+    });
+    wait_for_ok_with_timeout(&mut conn, "kill archive B", Duration::from_secs(15));
+    let b = read(&mut conn, "run-archive-task-b").unwrap();
+    assert_eq!(b.binding.spawned_run_id, "run-archive-task-b");
+    assert_eq!(
+        b.observed_exit_code, None,
+        "Kill intent is not observed 137"
+    );
+    assert_eq!(
+        serde_json::to_value(read(&mut conn, "run-archive-task-a")).unwrap(),
+        serde_json::to_value(Some(a)).unwrap()
+    );
+}
+
+#[test]
+fn attempt_archive_write_failure_does_not_change_natural_exit() {
+    let daemon = DaemonHandle::start_with_fake_recovery([]);
+    let parent = daemon._dir.join("terminal-recovery");
+    std::fs::create_dir_all(&parent).unwrap();
+    std::fs::write(parent.join("attempt-archives"), "not a directory").unwrap();
+    let mut subscriber = daemon.connect();
+    subscriber.send(&Cmd::Subscribe);
+    wait_for_ok_with_timeout(
+        &mut subscriber,
+        "archive failure subscription",
+        Duration::from_secs(10),
+    );
+    let mut conn = daemon.connect();
+    conn.send(&Cmd::Spawn {
+        session_id: "failed-archive".into(),
+        executable: "/bin/sh".into(),
+        args: vec!["-c".into(), "printf 'still completes\r\n'; exit 7".into()],
+        cwd: daemon._dir.to_string_lossy().into_owned(),
+        env: HashMap::from([
+            ("KANNA_TASK_ID".into(), "failed-archive".into()),
+            ("KANNA_STAGE_RUN_ID".into(), "run-failed-archive-1".into()),
+        ]),
+        cols: 80,
+        rows: 24,
+        terminal_prelude: None,
+    });
+    expect_session_created_with_timeout(&mut conn, "failed-archive", Duration::from_secs(10));
+    let deadline = Instant::now() + Duration::from_secs(15);
+    loop {
+        assert!(Instant::now() < deadline);
+        if let Ok(Evt::Exit { code, killed, .. }) =
+            subscriber.recv_with_timeout(Duration::from_millis(50))
+        {
+            assert_eq!(code, 7);
+            assert!(!killed);
+            break;
+        }
+    }
+    conn.send_json(
+        &serde_json::json!({"type":"ReadAttemptArchive","attempt_id":"run-failed-archive-1"}),
+    );
+    assert!(
+        matches!(conn.recv(), Evt::Error { .. }),
+        "failed evidence remains explicitly unavailable"
     );
 }

@@ -640,6 +640,15 @@ pub(crate) async fn stream_output(
         }
     }
 
+    if let Some(archive) = session.final_attempt_archive(&session_id).await {
+        if let Err(error) = kanna_daemon::terminal_archive::persist(
+            &recovery_manager.attempt_archive_dir(),
+            &archive,
+        ) {
+            log::warn!("[attempt-archive] final capture failed: {error}");
+        }
+    }
+
     let evt = Event::Exit {
         session_id: session_id.clone(),
         code: exit_code,

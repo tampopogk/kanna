@@ -58,11 +58,11 @@ function makeItem(overrides: Partial<PipelineItem> = {}): PipelineItem {
 }
 
 describe("TaskHeader", () => {
-  it("labels the recorded model as launch information", async () => {
+  it("leaves provider and model presentation to the agent TUI", async () => {
     const { default: TaskHeader } = await import("../TaskHeader.vue");
     const wrapper = mount(TaskHeader, { props: { item: { ...makeItem(), launchProvider: "opencode", launchModel: "local/Qwen-Coder" } }, global: { mocks: { $t: (key: string) => key } } });
-    expect(wrapper.text()).toContain("Launched with opencode · local/Qwen-Coder");
-    expect(wrapper.find('[title*="stage launch"]').attributes("title")).toContain("TUI may differ");
+    expect(wrapper.text()).not.toContain("Launched with");
+    expect(wrapper.text()).not.toContain("local/Qwen-Coder");
   });
   it("renders a draft presentation when durable metadata is unavailable", async () => {
     const { default: TaskHeader } = await import("../TaskHeader.vue");

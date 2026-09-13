@@ -3215,3 +3215,44 @@ fn test_adopter_publishes_only_after_delayed_old_daemon_exits() {
 
     cleanup(&dir);
 }
+
+#[test]
+fn attempt_archive_handoff_keeps_launch_identity_and_unknown_adopted_exit() {
+    let dir = test_dir("attempt-archive-adoption");
+    let daemon_a = DaemonHandle::start_in(&dir);
+    let mut conn = daemon_a.connect();
+    let release = dir.join("release");
+    spawn_provider_frame(&mut conn,"archive-adopt","codex", "printf 'BEFORE_HANDOFF\r\n'; while [ ! -f \"$RELEASE\" ]; do sleep .05; done; printf 'AFTER_HANDOFF\r\n'; exit 9",HashMap::from([("KANNA_TASK_ID".into(),"adopt".into()),("KANNA_STAGE_RUN_ID".into(),"run-adopt-1".into()),("RELEASE".into(),release.to_string_lossy().into_owned())]));
+    let daemon_b = DaemonHandle::start_in(&dir);
+    std::fs::write(release, "").unwrap();
+    let mut conn = daemon_b.connect();
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let archive = loop {
+        conn.writer
+            .write_all(b"{\"type\":\"ReadAttemptArchive\",\"attempt_id\":\"run-adopt-1\"}\n")
+            .unwrap();
+        conn.writer.flush().unwrap();
+        let mut line = String::new();
+        conn.reader.read_line(&mut line).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(value["type"], "AttemptArchive");
+        if !value["archive"].is_null() {
+            break value["archive"].clone();
+        }
+        assert!(Instant::now() < deadline);
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    assert_eq!(archive["binding"]["spawned_run_id"], "run-adopt-1");
+    assert!(
+        archive["observed_exit_code"].is_null(),
+        "adopted waitpid is unavailable"
+    );
+    assert!(archive["snapshot"]["vt"]
+        .as_str()
+        .unwrap()
+        .contains("AFTER_HANDOFF"));
+    drop(conn);
+    drop(daemon_b);
+    drop(daemon_a);
+    cleanup(&dir);
+}

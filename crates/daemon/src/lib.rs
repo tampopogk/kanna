@@ -22,3 +22,5 @@ pub mod session;
 pub use kanna_runtime_defaults::session_id;
 pub mod subprocess_env;
 pub mod terminal_perf;
+
+pub mod terminal_archive;

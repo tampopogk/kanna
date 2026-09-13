@@ -94,6 +94,7 @@ vi.mock("../../invoke", () => ({
 
 vi.mock("../../services/desktopServerClient", () => ({
   fetchDesktopTaskDetail: fetchTaskDetailMock,
+  listAgentTerminalAttempts: vi.fn().mockResolvedValue([]),
   openTerminalEditor: openTerminalEditorMock,
   readDesktopTaskFile: readTaskFileMock,
   listDesktopTaskDirectory: listTaskDirectoryMock,
@@ -138,6 +139,7 @@ describe("MainPanel", () => {
       unobserve() {}
     });
     tabs.openTab({ kind, ...(kind === "tree" ? { containedTaskId: "task-a" } : {}) });
+    tabs.splitPane("pane-1", "horizontal");
     const { default: MainPanel } = await import("../MainPanel.vue");
     const wrapper = mount(MainPanel, {
       props: {
@@ -1284,4 +1286,15 @@ describe("MainPanel", () => {
 
     wrapper.unmount();
   });
+});
+
+it("returns Latest to the same live terminal instance after inert history", async () => {
+  const { default: MainPanel } = await import("../MainPanel.vue");
+  const wrapper=mount(MainPanel,{props:{uiSlot:readySlot(),repoPath:"/work",hasRepos:true},global:{mocks:{$t:(key:string)=>key},stubs:{TaskHeader:true,CloudTerminalCache:true,AgentHistoryView:{template:'<div data-testid="history-stub" />'},TerminalTabs:{props:["active","visible"],template:'<div data-testid="live-terminal" :data-active="active" />'}}}});
+  await flushPromises();const terminal=wrapper.get('[data-testid="live-terminal"]').element;
+  const vm=wrapper.vm as unknown as {selectAttempt:(id:string)=>void};vm.selectAttempt("prior-run");await flushPromises();
+  expect(wrapper.find('[data-testid="history-stub"]').exists()).toBe(true);
+  expect(wrapper.get('[data-testid="live-terminal"]').element).toBe(terminal);
+  expect(wrapper.get('[data-testid="live-terminal"]').attributes('data-active')).toBe('false');
+  vm.selectAttempt("");await flushPromises();expect(wrapper.get('[data-testid="live-terminal"]').element).toBe(terminal);expect(wrapper.find('[data-testid="history-stub"]').exists()).toBe(false);wrapper.unmount();
 });

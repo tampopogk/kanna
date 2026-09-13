@@ -2,6 +2,7 @@ import { computed, reactive, type ComputedRef } from "vue";
 
 import type { TerminalEditorSession } from "../services/desktopServerClient";
 import type { ShortcutContext } from "./useShortcutContext";
+import { paneLeaves, paneRects, splitRects, resizeSplit, replacePane, removeEmptyPanes, restorePaneLayout, type TaskPaneLayout } from "./taskPaneLayout";
 
 /**
  * The view kinds the main content area can host.
@@ -81,6 +82,8 @@ export interface MainTab extends MainTabDescriptor {
 }
 
 interface MainTabScopeState {
+  layout?: TaskPaneLayout;
+  focusedPane?: string;
   referenceId?: string;
   split?: boolean;
   tabs: MainTab[];
@@ -91,6 +94,7 @@ interface MainTabScopeState {
 export const PERSISTED_MAIN_TABS_VERSION = 1;
 
 export interface PersistedMainTabScope {
+  layout?: TaskPaneLayout;
   referenceId?: string;
   split?: boolean;
   tabs: MainTabDescriptor[];
@@ -198,6 +202,7 @@ export function parsePersistedMainTabs(raw: string | null | undefined): Persiste
       ? (value as PersistedMainTabScope).activeId
       : "";
     scopes[key] = { tabs, activeId,
+      layout: value.layout,
       referenceId: typeof value.referenceId === "string" ? value.referenceId : undefined,
       split: typeof value.split === "boolean" ? value.split : undefined,
     };
@@ -337,6 +342,70 @@ export function useMainTabs({ scopeKey, onTabClosed }: UseMainTabsOptions) {
     tabs.value.find((tab) => tab.id === activeTabId.value) ?? null
   );
 
+  function ensureLayout(state: MainTabScopeState): TaskPaneLayout {
+    state.layout ??= restorePaneLayout(null, state.tabs.map(tab => tab.id), state.activeId);
+    return state.layout;
+  }
+  const panes = computed(() => {
+    const key = scopeKey.value;
+    if (!key) return [];
+    const state = scopes[key] ?? initialScopeState(key);
+    return paneRects(state.layout ?? restorePaneLayout(null, state.tabs.map(tab => tab.id), state.activeId));
+  });
+  const dividers = computed(() => {
+    const layout = scopeKey.value ? scopes[scopeKey.value]?.layout : undefined;
+    return layout ? splitRects(layout) : [];
+  });
+  function resizePane(path: string, ratio: number) {
+    if (scopeKey.value && Number.isFinite(ratio)) resizeSplit(ensureLayout(scopeState(scopeKey.value)), path, ratio);
+  }
+  function focusPane(id: string) {
+    if (!scopeKey.value) return;
+    const state = scopeState(scopeKey.value);
+    const pane = paneLeaves(ensureLayout(state)).find(pane => pane.id === id);
+    if (!pane) return;
+    state.focusedPane = id;
+    if (pane.active) state.activeId = pane.active;
+  }
+  function splitPane(id: string, axis: 'horizontal' | 'vertical', tabId?: string) {
+    if (!scopeKey.value) return;
+    const state = scopeState(scopeKey.value), layout = ensureLayout(state);
+    const leaves = paneLeaves(layout), pane = leaves.find(pane => pane.id === id);
+    if (!pane) return;
+    if (tabId && !state.tabs.some(tab => tab.id === tabId)) return;
+    let n = 1;
+    while (leaves.some(pane => pane.id === `pane-${n}`)) n++;
+    const moving = tabId ?? (pane.tabs.length > 1 ? pane.active : '');
+    if (moving) for (const source of leaves) {
+      source.tabs = source.tabs.filter(tab => tab !== moving);
+      if (source.active === moving) source.active = source.tabs[0] ?? '';
+    }
+    const added = { kind: 'pane' as const, id: `pane-${n}`, tabs: moving ? [moving] : [], active: moving };
+    state.layout = replacePane(layout, id, { kind: 'split', axis, ratio: .5, first: pane, second: added });
+    focusPane(added.id);
+  }
+  function moveTab(id: string, paneId: string, beforeId?: string) {
+    if (!scopeKey.value) return;
+    const state = scopeState(scopeKey.value), layout = ensureLayout(state);
+    const leaves = paneLeaves(layout), target = leaves.find(pane => pane.id === paneId);
+    if (!target || !state.tabs.some(tab => tab.id === id) || id === beforeId) return;
+    for (const pane of leaves) {
+      pane.tabs = pane.tabs.filter(tab => tab !== id);
+      if (pane.active === id) pane.active = pane.tabs[0] ?? '';
+    }
+    const index = beforeId ? target.tabs.indexOf(beforeId) : -1;
+    target.tabs.splice(index < 0 ? target.tabs.length : index, 0, id);
+    target.active = id;
+    state.layout = removeEmptyPanes(layout);
+    focusPane(paneId);
+  }
+  function joinPanes() {
+    if (!scopeKey.value) return;
+    const state = scopeState(scopeKey.value);
+    state.layout = restorePaneLayout(null, paneLeaves(ensureLayout(state)).flatMap(pane => pane.tabs), state.activeId);
+    state.focusedPane = 'pane-1';
+  }
+
   const activeTabContext = computed<ShortcutContext | null>(() => {
     const tab = activeTab.value;
     return tab ? mainTabShortcutContext(tab.kind) : null;
@@ -350,9 +419,10 @@ export function useMainTabs({ scopeKey, onTabClosed }: UseMainTabsOptions) {
     const id = key ? scopes[key]?.referenceId : undefined;
     return tabs.value.find(tab => tab.id === id && tab.kind !== "agent")?.id ?? "";
   });
-  const split = computed(() => hasAgentTab.value && (scopeKey.value ? scopes[scopeKey.value]?.split !== false : false));
+  const split = computed(() => panes.value.length > 1);
   function setSplit(value: boolean): void {
-    if (scopeKey.value) scopeState(scopeKey.value).split = value;
+    if (!value) joinPanes();
+    else if (panes.value.length === 1) splitPane(panes.value[0].pane.id, 'horizontal', referenceTabId.value || undefined);
   }
   function updateReading(id: string, reading: NonNullable<MainTabDescriptor["reading"]>): void {
     const tab = tabs.value.find(tab => tab.id === id);
@@ -366,9 +436,14 @@ export function useMainTabs({ scopeKey, onTabClosed }: UseMainTabsOptions) {
   function activateTab(id: string): void {
     const key = scopeKey.value;
     if (!key) return;
+    // Mounting the initial terminal focuses Agent before persistence hydrates.
+    // That no-op must not create a scope that would mask the saved layout.
+    if (id === activeTabId.value) return;
     const state = scopeState(key);
     if (!state.tabs.some((tab) => tab.id === id)) return;
     state.activeId = id;
+    const pane = paneLeaves(ensureLayout(state)).find(pane => pane.tabs.includes(id));
+    if (pane) { pane.active = id; state.focusedPane = pane.id; }
     if (id !== AGENT_TAB_ID) state.referenceId = id;
   }
 
@@ -391,10 +466,15 @@ export function useMainTabs({ scopeKey, onTabClosed }: UseMainTabsOptions) {
     options?: { activate?: boolean },
   ): string {
     const state = scopeState(key);
+    const layout = ensureLayout(state);
     const id = mainTabId(descriptor);
     const existing = state.tabs.findIndex((tab) => tab.id === id);
     if (existing === -1) {
       state.tabs.push({ ...descriptor, id });
+      const leaves = paneLeaves(layout);
+      const pane = leaves.find(pane => pane.id === state.focusedPane) ?? leaves[0];
+      pane.tabs.push(id);
+      if (options?.activate !== false || !pane.active) pane.active = id;
     } else if (descriptor.kind !== "agent") {
       // Re-opening a file at a different line re-aims the tab that is
       // already showing it rather than leaving the reader where they were.
@@ -407,6 +487,8 @@ export function useMainTabs({ scopeKey, onTabClosed }: UseMainTabsOptions) {
     if (options?.activate !== false) {
       state.activeId = id;
       if (id !== AGENT_TAB_ID) state.referenceId = id;
+      const pane = paneLeaves(layout).find(pane => pane.tabs.includes(id));
+      if (pane) { pane.active = id; state.focusedPane = pane.id; }
     }
     return id;
   }
@@ -419,6 +501,13 @@ export function useMainTabs({ scopeKey, onTabClosed }: UseMainTabsOptions) {
     const index = state.tabs.findIndex((tab) => tab.id === id);
     if (index === -1) return;
     const [closed] = state.tabs.splice(index, 1);
+    if (state.layout) {
+      for (const pane of paneLeaves(state.layout)) {
+        pane.tabs = pane.tabs.filter(tab => tab !== id);
+        if (pane.active === id) pane.active = pane.tabs[0] ?? '';
+      }
+      state.layout = removeEmptyPanes(state.layout);
+    }
     if (closed) onTabClosed?.(closed);
     if (state.referenceId === id) state.referenceId = state.tabs.find(tab => tab.kind !== "agent")?.id;
     if (state.activeId !== id) return;
@@ -427,6 +516,8 @@ export function useMainTabs({ scopeKey, onTabClosed }: UseMainTabsOptions) {
     // task scope the agent session is leftmost, so closing the only open view
     // lands there; a repository scope simply runs out of tabs.
     state.activeId = (state.tabs[index] ?? state.tabs[index - 1])?.id ?? "";
+    const activePane = state.layout && paneLeaves(state.layout).find(pane => pane.tabs.includes(state.activeId));
+    if (activePane) { activePane.active = state.activeId; state.focusedPane = activePane.id; }
     if (state.activeId !== AGENT_TAB_ID) state.referenceId = state.activeId;
   }
 
@@ -462,6 +553,7 @@ export function useMainTabs({ scopeKey, onTabClosed }: UseMainTabsOptions) {
       // reader would find missing.
       const activeId = tabs.some((tab) => mainTabId(tab) === state.activeId) ? state.activeId : "";
       persisted[key] = { tabs, activeId,
+        layout: state.layout,
         referenceId: tabs.some(tab => mainTabId(tab) === state.referenceId) ? state.referenceId : undefined,
         split: state.split,
       };
@@ -495,11 +587,21 @@ export function useMainTabs({ scopeKey, onTabClosed }: UseMainTabsOptions) {
       state.referenceId = state.tabs.find(tab => tab.id === stored.referenceId && tab.kind !== "agent")?.id
         ?? (active?.kind !== "agent" ? active?.id : undefined);
       state.split = stored.split;
+      state.layout = restorePaneLayout(stored.layout, state.tabs.map(tab => tab.id), state.activeId);
+      const activePane = paneLeaves(state.layout).find(pane => pane.tabs.includes(state.activeId));
+      if (activePane) { activePane.active = state.activeId; state.focusedPane = activePane.id; }
       scopes[key] = state;
     }
   }
 
   return {
+    panes,
+    dividers,
+    resizePane,
+    focusPane,
+    splitPane,
+    moveTab,
+    joinPanes,
     scopeKey,
     referenceTabId,
     split,
