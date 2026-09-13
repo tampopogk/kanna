@@ -507,5 +507,17 @@
   },
   "common": {
     "loading": "読み込み中..."
+  },
+  "startup": {
+    "preparing": "Kanna を起動しています…",
+    "services": "ローカルサービスを起動しています…",
+    "restoring": "ワークスペースを復元しています…",
+    "longWait": "ローカルの準備が終わるとワークスペースが開きます。",
+    "failedTitle": "Kanna を起動できませんでした",
+    "failedRestart": "Kanna を終了して再度開いてください。",
+    "failedServices": "ローカルサービスを起動できませんでした。",
+    "failedRestore": "ワークスペースを復元できませんでした。",
+    "failedCloseProtection": "このウィンドウの予期しないクローズを防ぐ保護を有効にできませんでした。",
+    "failedGeneric": "起動を完了できませんでした。"
   }
 }

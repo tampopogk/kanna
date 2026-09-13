@@ -13,6 +13,7 @@ import {
 } from "./perf/taskSwitchPerf";
 import App from "./App.vue";
 import { createWindowWorkspace, parseWindowBootstrap, resolveWindowBootstrap } from "./windowWorkspace";
+import { createStartupScreen } from "./startup";
 import { parseModalTearOffContext } from "./modalTearOff";
 import { e2eAppMetrics, e2eTerminalOutputPerf } from "./e2eAppMetrics";
 import { e2eInvokeHistory } from "./e2eInvokeHistory";
@@ -35,6 +36,33 @@ interface AppWithSetupState {
 }
 
 const FIREBASE_AUTH_DB_NAME = "firebaseLocalStorageDb";
+const E2E_STARTUP_HOLD_KEY = "kanna.e2e.startupHold";
+
+/**
+ * DEV/E2E only. Holds the local-service wait open so a driver can look at the
+ * startup screen in a real window, and release or fail it on demand. One-shot:
+ * the flag is consumed as it is read, so a driver that never releases cannot
+ * wedge the next launch.
+ */
+function holdStartupForE2E(): Promise<void> | null {
+  if (!import.meta.env.DEV) return null;
+  let held: string | null = null;
+  try {
+    held = window.localStorage.getItem(E2E_STARTUP_HOLD_KEY);
+    if (held) window.localStorage.removeItem(E2E_STARTUP_HOLD_KEY);
+  } catch (error: unknown) {
+    console.debug("[main] E2E startup hold flag unreadable:", error);
+    return null;
+  }
+  if (!held) return null;
+
+  return new Promise<void>((resolve, reject) => {
+    window.__KANNA_E2E_STARTUP_HOLD__ = {
+      release: () => resolve(),
+      fail: () => reject(new Error("E2E startup fault")),
+    };
+  });
+}
 
 let activeE2EServerWork: Promise<void> | null = null;
 let isE2EServerWorkActive = false;
@@ -146,6 +174,10 @@ function installFirebaseAuthIndexedDbOpenFailureForE2E(): void {
   });
 }
 
+// Mounted before the first awaited bootstrap work, so the window is never a
+// blank rectangle while it waits on its own local services.
+const startup = createStartupScreen({ target: document.getElementById("startup") });
+
 if (isTauri) {
   const { invoke } = await import("@tauri-apps/api/core");
   const originalConsoleDebug = console.debug;
@@ -207,7 +239,13 @@ if (isTauri) {
 try {
   const { db, dbName } = await loadDatabase();
   const parsedWindowBootstrap = parseWindowBootstrap(window.location.search);
+  // The saved window settings are read through `kanna-server`, so this is the
+  // first point at which the window is genuinely waiting on local services.
+  startup.enterPhase("services");
+  const startupHold = holdStartupForE2E();
+  if (startupHold) await startupHold;
   const windowBootstrap = await resolveWindowBootstrap(db, parsedWindowBootstrap);
+  startup.enterPhase("restoring");
   const tearOffContext = parseModalTearOffContext(window.location.search)
     ?? windowBootstrap.tearOffContext
     ?? null;
@@ -225,6 +263,7 @@ try {
   app.provide("db", db);
   app.provide("dbName", dbName);
   app.provide("windowWorkspace", windowWorkspace);
+  app.provide("startup", startup);
 
   if (import.meta.env.DEV) {
     const appWithSetupState = app as typeof app & AppWithSetupState;
@@ -302,6 +341,9 @@ try {
   }
 
   app.mount("#app");
+  // A preview root never runs the app lifecycle, so nothing would ever release
+  // the screen it is mounted behind.
+  if (RootComponent !== App) startup.dispose();
   if (!tearOffContext) {
     void windowWorkspace.restoreAdditionalWindows().catch((error) => {
       console.error("[windowWorkspace] failed to restore additional windows:", error);
@@ -309,6 +351,10 @@ try {
   }
 } catch (e) {
   console.error("[init] fatal:", e);
-  const el = document.getElementById("app");
-  if (el) el.textContent = `Failed to initialize: ${e}`;
+  startup.fail(
+    i18n.global.t(
+      startup.phase.value === "restoring" ? "startup.failedRestore" : "startup.failedServices",
+    ),
+    e,
+  );
 }
