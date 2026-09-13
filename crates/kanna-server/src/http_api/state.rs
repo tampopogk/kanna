@@ -191,6 +191,11 @@ pub struct AppState {
     pub(super) revision_requester: Option<TestRevisionRequester>,
     #[cfg(test)]
     pub(super) task_file_resolution_hook: Option<TestTaskFileResolutionHook>,
+    /// Held by a transfer finalization between acquiring the source and doing
+    /// anything to it, so a test can drive a real plan completion against the
+    /// same database while the attempt is genuinely mid-flight.
+    #[cfg(test)]
+    pub(crate) transfer_source_barrier: Option<Arc<tokio::sync::Semaphore>>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -604,6 +609,8 @@ impl AppState {
             revision_requester: None,
             #[cfg(test)]
             task_file_resolution_hook: None,
+            #[cfg(test)]
+            transfer_source_barrier: None,
         }
     }
 

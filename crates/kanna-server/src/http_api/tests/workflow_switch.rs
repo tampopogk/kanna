@@ -696,6 +696,17 @@ async fn replacement_preserves_history_and_compiles_legacy_post_snapshots() {
 
 /// The consultation-grown shape: a manual `plan` stage appended to the task
 /// that carried the consultation, with the planning run live.
+/// `plan_publication_fixture` with a barrier a finalization attempt holds
+/// between acquiring the source and doing anything to it, so a test can drive a
+/// real completion while the attempt is genuinely mid-flight. Permits are added
+/// by the test to release it.
+fn plan_publication_fixture_with_barrier(label: &str) -> (tempfile::TempDir, Arc<AppState>, Value) {
+    let (temp, state, before) = plan_publication_fixture(label);
+    let mut state = Arc::try_unwrap(state).unwrap_or_else(|_| panic!("sole owner of the fixture"));
+    state.transfer_source_barrier = Some(Arc::new(tokio::sync::Semaphore::new(0)));
+    (temp, Arc::new(state), before)
+}
+
 fn plan_publication_fixture(label: &str) -> (tempfile::TempDir, Arc<AppState>, Value) {
     let (temp, repo_path) = workflow_test_repo(label);
     let before = serde_json::json!({"name": "consultation", "stages": [
@@ -1264,6 +1275,7 @@ fn seed_outgoing_transfer(db: &Db, transfer_id: &str) {
                     "pipeline": "consultation",
                     "agent_type": "pty",
                     "agent_provider": "claude",
+                    "content_commitment": RECEIPT_COMMITMENT,
                 },
                 "repo": { "mode": "reuse-local", "path": "/repo" },
                 "artifacts": [],
@@ -1276,9 +1288,41 @@ fn seed_outgoing_transfer(db: &Db, transfer_id: &str) {
         &format!("finalize:{transfer_id}"),
         "finalize",
         Some(transfer_id),
-        "{}",
+        &finalize_payload(transfer_id),
     )
     .expect("queue the finalization work item");
+}
+
+/// What this source persisted at push time, and what a valid receipt must
+/// report back before it is allowed to close anything.
+const RECEIPT_COMMITMENT: &str = "commitment-for-the-payload-that-shipped";
+
+/// A receipt the destination would send for the payload above, in the shape the
+/// real `outgoing-committed` work carries.
+fn committed_receipt(transfer_id: &str) -> serde_json::Value {
+    serde_json::json!({
+        "transfer_id": transfer_id,
+        "source_task_id": "task-1",
+        "content_commitment": RECEIPT_COMMITMENT,
+        "destination_repo_id": "repo-destination",
+        "destination_local_task_id":
+            crate::transfer_engine::session::destination_task_id(transfer_id),
+    })
+}
+
+fn committed_work(transfer_id: &str) -> crate::db::TransferWorkItem {
+    crate::db::TransferWorkItem {
+        id: format!("committed:{transfer_id}"),
+        kind: "outgoing-committed".to_string(),
+        transfer_id: Some(transfer_id.to_string()),
+        payload_json: committed_receipt(transfer_id).to_string(),
+        attempts: 1,
+    }
+}
+
+/// The event body the real dispatch reads a finalization's transfer id from.
+fn finalize_payload(transfer_id: &str) -> String {
+    serde_json::json!({ "transfer_id": transfer_id }).to_string()
 }
 
 fn finalize_work(transfer_id: &str) -> crate::db::TransferWorkItem {
@@ -1286,7 +1330,7 @@ fn finalize_work(transfer_id: &str) -> crate::db::TransferWorkItem {
         id: format!("finalize:{transfer_id}"),
         kind: "finalize".to_string(),
         transfer_id: Some(transfer_id.to_string()),
-        payload_json: "{}".to_string(),
+        payload_json: finalize_payload(transfer_id),
         attempts: 1,
     }
 }
@@ -1413,16 +1457,36 @@ async fn a_settled_transfer_releases_the_task_and_a_later_plan_still_refuses_the
     let (status, _) = complete_plan(&app, "the full plan", Some((&before, &after))).await;
     assert_eq!(status, StatusCode::CONFLICT);
 
-    // The transfer fails, which is what releases the task.
+    // A failed transfer row is *not* settlement while its work can still run:
+    // the wrapper fails the transfer and the queue retries the same item, and
+    // that retry shuts down a source. Ownership has to outlive the display
+    // status.
     {
         let db = Db::open(&state.config.db_path).expect("db");
         db.fail_outgoing_task_transfer("transfer-first", "the destination went away")
             .expect("fail the transfer");
         assert_eq!(
             db.task_workflow_is_claimed_by_transfer("task-1")
+                .expect("read ownership")
+                .as_deref(),
+            Some("transfer-first"),
+            "a failed transfer whose work can still retry has not finished with the source"
+        );
+    }
+    let (status, _) = complete_plan(&app, "the full plan", Some((&before, &after))).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+
+    // Genuine settlement: the transfer is terminal *and* its source-effect work
+    // has finished. Only now does the task stop being owned.
+    {
+        let db = Db::open(&state.config.db_path).expect("db");
+        db.complete_transfer_work("finalize:transfer-first")
+            .expect("finish the finalization work");
+        assert_eq!(
+            db.task_workflow_is_claimed_by_transfer("task-1")
                 .expect("read ownership"),
             None,
-            "a settled transfer must not keep holding the task"
+            "a genuinely settled transfer must not keep holding the task"
         );
     }
     let (status, body) = complete_plan(&app, "the full plan", Some((&before, &after))).await;
@@ -1444,4 +1508,371 @@ async fn a_settled_transfer_releases_the_task_and_a_later_plan_still_refuses_the
     .expect_err("the retried transfer shipped a published plan");
     assert!(error.contains("carries a published plan"), "{error}");
     assert!(!finalization_ran(&state, "transfer-second"));
+}
+
+// --- Ownership across the real failure / retry / settlement lifecycle -------
+
+fn barrier_state(state: &Arc<AppState>) -> Arc<tokio::sync::Semaphore> {
+    Arc::clone(
+        state
+            .transfer_source_barrier
+            .as_ref()
+            .expect("the fixture installs a barrier"),
+    )
+}
+
+fn work_status(state: &Arc<AppState>, work_id: &str) -> Option<String> {
+    Db::open(&state.config.db_path)
+        .expect("db")
+        .transfer_work_status(work_id)
+        .expect("read work status")
+}
+
+fn transfer_status(state: &Arc<AppState>, transfer_id: &str) -> String {
+    Db::open(&state.config.db_path)
+        .expect("db")
+        .get_task_transfer(transfer_id)
+        .expect("read transfer")
+        .expect("transfer")
+        .status
+}
+
+/// A retry of a *failed* transfer still owns the source, and the plan cannot
+/// publish underneath it.
+///
+/// This is the lifecycle the display status gets wrong. The real wrapper marks
+/// the transfer `failed` when finalization errors, and the real queue requeues
+/// the same work item while attempts remain — so attempt two shuts down a
+/// source for a transfer whose row says it is over. Reading ownership from the
+/// row alone would make that attempt invisible to publication.
+///
+/// The attempt is held at a barrier between acquiring the source and touching
+/// it, and a real combined completion is driven against the same database while
+/// it waits.
+#[tokio::test]
+async fn a_retry_of_a_failed_transfer_still_excludes_publication() {
+    let (_temp, state, before) =
+        plan_publication_fixture_with_barrier("plan-vs-transfer-retry-own");
+    let app = router(Arc::clone(&state));
+    {
+        let db = Db::open(&state.config.db_path).expect("db");
+        seed_outgoing_transfer(&db, "transfer-retry");
+    }
+    let work_id = "finalize:transfer-retry";
+
+    // Attempt one, through the real dispatch and the real settlement
+    // bookkeeping. It fails downstream, which fails the transfer row and
+    // requeues the same work.
+    let barrier = barrier_state(&state);
+    barrier.add_permits(1);
+    let first = crate::transfer_engine::run_one_work_item_for_test(
+        &state,
+        &finalize_work("transfer-retry"),
+    )
+    .await;
+    assert!(first.is_err(), "this fixture cannot finalize: {first:?}");
+    assert_eq!(transfer_status(&state, "transfer-retry"), "failed");
+    assert_eq!(
+        work_status(&state, work_id).as_deref(),
+        Some("pending"),
+        "the same work must still be retriable"
+    );
+
+    // Attempt two claims the source and then holds, mid-flight, before any
+    // shutdown.
+    let mut attempt_two = finalize_work("transfer-retry");
+    attempt_two.attempts = 2;
+    let running = {
+        let state = Arc::clone(&state);
+        tokio::spawn(async move {
+            crate::transfer_engine::run_one_work_item_for_test(&state, &attempt_two).await
+        })
+    };
+    let db = Db::open(&state.config.db_path).expect("db");
+    let owner = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            if let Some(owner) = db
+                .task_workflow_is_claimed_by_transfer("task-1")
+                .expect("read ownership")
+            {
+                return owner;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the retry must acquire the source");
+    assert_eq!(owner, "transfer-retry");
+
+    // The real completion handler, while the attempt is genuinely in flight.
+    let after = single_reviewer_suffix(&before);
+    let (status, body) = complete_plan(&app, "the full plan", Some((&before, &after))).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(pinned(&state), before, "no suffix may be recorded");
+    let run = db.stage_run("run-plan").expect("read run").expect("run");
+    assert_eq!(run.status, "running", "no plan result may be recorded");
+    assert_eq!(run.result, None);
+
+    // Let the held attempt finish; it still must not have been able to publish.
+    barrier.add_permits(1);
+    let _ = running.await.expect("the attempt task must not panic");
+    assert_eq!(pinned(&state), before);
+}
+
+/// Reverse ordering, through the real queue: a plan that published first
+/// refuses a queued finalization before it wraps up, quits or stages anything.
+///
+/// The barrier sits after acquisition, so a refusal proves the attempt never
+/// reached it — the source is untouched rather than merely un-shipped.
+#[tokio::test]
+async fn a_queued_finalization_after_a_publication_is_refused_before_wrap_up() {
+    let (_temp, state, before) = plan_publication_fixture_with_barrier("plan-then-queued-finalize");
+    let app = router(Arc::clone(&state));
+    {
+        let db = Db::open(&state.config.db_path).expect("db");
+        seed_outgoing_transfer(&db, "transfer-after-plan");
+    }
+
+    let after = single_reviewer_suffix(&before);
+    let (status, body) = complete_plan(&app, "the full plan", Some((&before, &after))).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    // No permit is ever added: reaching the barrier would hang this test, so
+    // its completion is itself the proof that the attempt stopped before it.
+    let outcome = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        crate::transfer_engine::run_one_work_item_for_test(
+            &state,
+            &finalize_work("transfer-after-plan"),
+        ),
+    )
+    .await
+    .expect("the attempt must refuse rather than proceed to the source");
+    assert!(outcome.is_err(), "a published plan was shipped");
+
+    // The wrapper records the real reason on the transfer row before it tries
+    // to tell the destination, so that is where the refusal is readable without
+    // a sidecar to answer.
+    let db = Db::open(&state.config.db_path).expect("db");
+    let transfer = db
+        .get_task_transfer("transfer-after-plan")
+        .expect("read transfer")
+        .expect("transfer");
+    assert!(
+        transfer
+            .error
+            .as_deref()
+            .unwrap_or_default()
+            .contains("carries a published plan"),
+        "the transfer must fail for preservation: {:?}",
+        transfer.error
+    );
+    assert!(
+        !finalization_ran(&state, "transfer-after-plan"),
+        "the source session was finalized despite the refusal"
+    );
+}
+
+/// A second transfer cannot take a source away from one that can still act on
+/// it, and cannot make publication admissible by trying.
+///
+/// The active-outgoing uniqueness index does not cover failed rows, so a fresh
+/// transfer for the same source really can exist beside an old failed one whose
+/// work is still retriable.
+#[tokio::test]
+async fn a_second_transfer_cannot_take_a_source_that_is_still_owned() {
+    let (_temp, state, before) = plan_publication_fixture_with_barrier("plan-vs-transfer-second");
+    let app = router(Arc::clone(&state));
+    let db = Db::open(&state.config.db_path).expect("db");
+    seed_outgoing_transfer(&db, "transfer-one");
+    db.claim_task_workflow_for_transfer("transfer-one", "task-1")
+        .expect("db")
+        .expect("the first transfer owns the source");
+    db.fail_outgoing_task_transfer("transfer-one", "finalization failed")
+        .expect("fail the first transfer");
+
+    // Its work is still retriable, so it has not finished with the source.
+    seed_outgoing_transfer(&db, "transfer-two");
+    let refusal = db
+        .claim_task_workflow_for_transfer("transfer-two", "task-1")
+        .expect("db")
+        .expect_err("a live owner was displaced");
+    assert!(refusal.contains("already owns"), "{refusal}");
+    assert_eq!(
+        db.task_workflow_is_claimed_by_transfer("task-1")
+            .expect("read ownership")
+            .as_deref(),
+        Some("transfer-one"),
+        "the owner must not have changed"
+    );
+
+    let after = single_reviewer_suffix(&before);
+    let (status, _) = complete_plan(&app, "the full plan", Some((&before, &after))).await;
+    assert_eq!(
+        status,
+        StatusCode::CONFLICT,
+        "a failed takeover must not make publication admissible"
+    );
+    assert_eq!(pinned(&state), before);
+}
+
+/// Restart recovery keeps ownership, and only genuine exhaustion releases it.
+///
+/// A work row left `running` by a killed process is requeued to `pending` at
+/// startup — still owned. Publication becomes possible only once the work has
+/// genuinely finished with the source.
+#[tokio::test]
+async fn restart_recovery_keeps_ownership_until_the_work_is_genuinely_done() {
+    let (_temp, state, before) = plan_publication_fixture_with_barrier("plan-vs-transfer-restart");
+    let app = router(Arc::clone(&state));
+    let db = Db::open(&state.config.db_path).expect("db");
+    seed_outgoing_transfer(&db, "transfer-restart");
+    db.claim_task_workflow_for_transfer("transfer-restart", "task-1")
+        .expect("db")
+        .expect("owned");
+    db.fail_outgoing_task_transfer("transfer-restart", "finalization failed")
+        .expect("fail the transfer");
+    // Interrupted mid-attempt, then recovered by the engine's startup requeue.
+    db.claim_next_transfer_work(&[]).expect("claim the work");
+    assert_eq!(
+        work_status(&state, "finalize:transfer-restart").as_deref(),
+        Some("running")
+    );
+    assert!(db
+        .task_workflow_is_claimed_by_transfer("task-1")
+        .expect("read ownership")
+        .is_some());
+    db.requeue_interrupted_transfer_work().expect("requeue");
+    assert_eq!(
+        work_status(&state, "finalize:transfer-restart").as_deref(),
+        Some("pending")
+    );
+
+    let after = single_reviewer_suffix(&before);
+    let (status, _) = complete_plan(&app, "the full plan", Some((&before, &after))).await;
+    assert_eq!(
+        status,
+        StatusCode::CONFLICT,
+        "recovered work still owns the source"
+    );
+
+    // Bounded exhaustion is the end of the work, and the end of ownership.
+    for attempt in 1..=8 {
+        if !db
+            .fail_transfer_work_attempt("finalize:transfer-restart", attempt, "still failing")
+            .expect("record the failed attempt")
+        {
+            break;
+        }
+    }
+    assert_eq!(
+        work_status(&state, "finalize:transfer-restart").as_deref(),
+        Some("failed"),
+        "the attempt budget must be spendable"
+    );
+    assert_eq!(
+        db.task_workflow_is_claimed_by_transfer("task-1")
+            .expect("read ownership"),
+        None
+    );
+    let (status, body) = complete_plan(&app, "the full plan", Some((&before, &after))).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["workflowExtended"], serde_json::json!(true));
+}
+
+/// A committed receipt for an earlier payload must not close the source of a
+/// plan published since.
+///
+/// Receipts are durable on the sidecar and replayed on its own schedule, so one
+/// can arrive after this server has settled the work and after a plan has been
+/// published. It proves the payload it was issued for — not that plan. Closing
+/// the task would destroy it.
+#[tokio::test]
+async fn a_late_receipt_cannot_close_the_source_of_a_published_plan() {
+    let (_temp, state, before) = plan_publication_fixture_with_barrier("plan-vs-late-receipt");
+    let app = router(Arc::clone(&state));
+    {
+        let db = Db::open(&state.config.db_path).expect("db");
+        seed_outgoing_transfer(&db, "transfer-receipt");
+        // The transfer's own work has genuinely finished, which is what lets
+        // the plan publish at all.
+        db.complete_transfer_work("finalize:transfer-receipt")
+            .expect("finish the work");
+    }
+    let after = single_reviewer_suffix(&before);
+    let (status, body) = complete_plan(&app, "the full plan", Some((&before, &after))).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    // The receipt arrives through the real queue mapping and the real
+    // outgoing-committed path, carrying a proof that is genuinely valid for the
+    // payload that shipped.
+    {
+        let db = Db::open(&state.config.db_path).expect("db");
+        db.enqueue_transfer_work(
+            "committed:transfer-receipt",
+            "outgoing-committed",
+            Some("transfer-receipt"),
+            &committed_receipt("transfer-receipt").to_string(),
+        )
+        .expect("queue the receipt");
+    }
+    let refusal = crate::transfer_engine::run_one_work_item_for_test(
+        &state,
+        &committed_work("transfer-receipt"),
+    )
+    .await
+    .expect_err("a late receipt was allowed to close a published plan's source");
+    assert!(refusal.contains("carries a published plan"), "{refusal}");
+
+    // The source is still open with its plan intact.
+    let db = Db::open(&state.config.db_path).expect("db");
+    let item = db
+        .get_pipeline_item("task-1")
+        .expect("read task")
+        .expect("task");
+    assert!(item.closed_at.is_none(), "the source must stay open");
+    assert!(item
+        .pipeline_def
+        .as_deref()
+        .expect("pinned")
+        .contains("plan_context"));
+}
+
+/// The control for the test above: an ordinary receipt, for a task with no
+/// published plan, still reaches the close.
+///
+/// Without this, refusing every receipt would look like a fix.
+#[tokio::test]
+async fn an_ordinary_receipt_still_reaches_the_source_close() {
+    let (_temp, state, _before) = plan_publication_fixture_with_barrier("plan-vs-ordinary-receipt");
+    {
+        let db = Db::open(&state.config.db_path).expect("db");
+        seed_outgoing_transfer(&db, "transfer-ordinary");
+        db.complete_transfer_work("finalize:transfer-ordinary")
+            .expect("finish the work");
+        db.enqueue_transfer_work(
+            "committed:transfer-ordinary",
+            "outgoing-committed",
+            Some("transfer-ordinary"),
+            &committed_receipt("transfer-ordinary").to_string(),
+        )
+        .expect("queue the receipt");
+    }
+
+    let outcome = crate::transfer_engine::run_one_work_item_for_test(
+        &state,
+        &committed_work("transfer-ordinary"),
+    )
+    .await;
+
+    // This fixture has no daemon to close against, so the close itself cannot
+    // succeed — but it must be the close that fails, not the ownership check.
+    // An unpublished task is never refused for preservation.
+    if let Err(reason) = &outcome {
+        assert!(
+            !reason.contains("carries a published plan")
+                && !reason.contains("cannot take ownership"),
+            "an ordinary receipt was refused before it reached the close: {reason}"
+        );
+    }
 }

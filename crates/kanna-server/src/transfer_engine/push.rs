@@ -1181,6 +1181,14 @@ async fn run_finalization(
     db.claim_task_workflow_for_transfer(transfer_id, &source.item.id)
         .map_err(|error| format!("db error: {error}"))??;
 
+    // Everything below this line can touch the source. A test holds here to
+    // prove the exclusion is real across the awaits, rather than only at the
+    // two committed orderings.
+    #[cfg(test)]
+    if let Some(barrier) = state.transfer_source_barrier.clone() {
+        let _permit = barrier.acquire().await;
+    }
+
     // Locate the session state this payload will promise *before* the agent is
     // asked to stop: a transfer that cannot ship the conversation must fail
     // with the source task still alive and running, not after it has been shut
@@ -1454,6 +1462,19 @@ pub async fn outgoing_committed(
         .map_err(|error| format!("db error: {error}"))?
         .is_some_and(|item| item.closed_at.is_some());
     if !already_closed {
+        // Closing an open source is a source effect, and receipts are durable
+        // and replayed on the sidecar's own schedule — independently of whether
+        // this server has settled the work. A valid receipt proves the payload
+        // it was issued for; it proves nothing about a plan published since.
+        // Replaying one after that would destroy the source of the new plan, so
+        // ownership is re-acquired here under the same rule finalization uses,
+        // and a refusal leaves the task open with its plan intact.
+        //
+        // Asked only on the closing path: an already-closed source is an
+        // idempotent replay of work that has been applied, and re-asking there
+        // would refuse ordinary receipt bookkeeping for no benefit.
+        db.claim_task_workflow_for_transfer(&transfer_id, &source_task_id)
+            .map_err(|error| format!("db error: {error}"))??;
         if let Err((status, message)) =
             crate::http_api::close_task_in_process(Arc::clone(state), source_task_id.clone()).await
         {

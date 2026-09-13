@@ -224,6 +224,20 @@ fn report_joined(joined: Option<Result<(), tokio::task::JoinError>>) {
 }
 
 /// Records what an item's run achieved, and publishes the change.
+/// Test seam: run one queued work item through the real `execute` dispatch and
+/// the real `settle_item` bookkeeping, so a test exercises the wrapper that
+/// fails the transfer and the requeue that follows rather than re-implementing
+/// either.
+#[cfg(test)]
+pub(crate) async fn run_one_work_item_for_test(
+    state: &Arc<AppState>,
+    item: &TransferWorkItem,
+) -> Result<(), String> {
+    let outcome = execute(state, item).await;
+    settle_item(state, item, outcome.clone()).await;
+    outcome
+}
+
 async fn settle_item(state: &Arc<AppState>, item: &TransferWorkItem, outcome: Result<(), String>) {
     let Ok(db) = state.transfer_work().open_db() else {
         // Nothing can be recorded without the DB; the item stays `running`

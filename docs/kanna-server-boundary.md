@@ -635,13 +635,32 @@ in `docs/task-specs/c9f5721b.md` and enforced by the router authorization tests.
   the loser writes nothing.
   A snapshot check before finalization's first `await` would not be enough —
   finalization yields while shutting the agent down, and a plan published in that
-  window is serialized into the payload *after* the source has already quit. The
-  claim closes that window because it is held from before the shutdown until the
-  transfer settles, which also covers a resumed or retried finalization: each
-  attempt re-asks the same question. A claim whose transfer has settled is not
-  ownership, so a crash mid-finalization cannot hold a task's plan hostage. Push
-  also answers early, before anything is reserved on the peer, purely so the
-  operator is not left waiting; that check is a courtesy, not the guarantee.
+  window is serialized into the payload *after* the source has already quit.
+  **Ownership follows durable source work, not the transfer's display status.**
+  A transfer still owns a task while it is `pending`/`streaming` **or** while it
+  still has unfinished source-effect work (`finalize`, `outgoing-committed`) of
+  its own. That distinction is not academic: a failed finalization marks its
+  transfer `failed` and the queue still retries the same work item while attempts
+  remain, and that retry shuts a source down. Reading the row alone would make
+  the retry invisible to publication. Backed-off retries and restart-requeued
+  work both sit at `pending`, so both keep ownership without asking about
+  processes or clocks. Acquisition refuses on exactly the predicate the
+  publication side reads, so no attempt can proceed holding a claim publication
+  treats as released; it also refuses a transfer that is not this task's, and
+  refuses to displace an owner that can still act — only a claim whose owner has
+  genuinely finished is replaced. Release is therefore derived, never manual: a
+  terminal transfer with no unfinished source-effect work stops owning the task,
+  so a crash mid-finalization cannot hold a plan hostage and no teardown path has
+  to remember to delete anything.
+  The same acquisition guards the other entry that touches a source: the
+  `outgoing-committed` receipt, before it closes an open task. Receipts are
+  durable on the sidecar and replayed on its own schedule, so one can arrive
+  after this server settled the work and after a plan published. It proves the
+  payload it was issued for and nothing about that plan, so a late replay is
+  refused and the task stays open with its plan intact; an already-closed source
+  is left to its idempotent replay. Push also answers early, before anything is
+  reserved on the peer, purely so the operator is not left waiting; that check is
+  a courtesy, not the guarantee.
   No peer is contacted and no capability is negotiated: "unproved" is every peer,
   and the refusal is deliberately blunt rather than a compatibility platform
   built for one field. Ordinary tasks transfer unchanged.
