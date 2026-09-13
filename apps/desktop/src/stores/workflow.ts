@@ -3,6 +3,7 @@ import {
   fetchDesktopRepoAgentDefinition,
   fetchDesktopRepoWorkflowDefinition,
   fetchDesktopTaskDetail,
+  type PinnedTaskWorkflow,
 } from "../services/desktopServerClient";
 import { postDesktopTaskAction } from "../services/desktopTaskActions";
 import { requireService, type AdvanceStageOptions, type KannaSnapshot, type StoreContext } from "./state";
@@ -76,25 +77,80 @@ export function createWorkflowApi(context: StoreContext): WorkflowApi {
     await requireService(context.services.persistSelection, "persistSelection")();
   }
 
+  function projectStageAdvance(
+    stages: Array<{ name: string; post?: { name: string } | null }>,
+    stage: string,
+  ): StageAdvanceProjection | null {
+    const currentIndex = stages.findIndex((candidate) => candidate.name === stage);
+    if (currentIndex === -1) return null;
+    const pendingPostName = stages[currentIndex]?.post?.name ?? null;
+    return {
+      nextStageName: stages[currentIndex + 1]?.name ?? null,
+      pendingPostName,
+      closesOnSuccess: currentIndex === stages.length - 1 && pendingPostName === null,
+    };
+  }
+
+  /**
+   * What this advance is being taken against: the projected next stage, and the
+   * exact pinned workflow that projection was read from.
+   *
+   * A task's stage sequence is not its workflow name's. A plan can publish this
+   * task's remaining stages while an earlier stage runs, and an edit can
+   * repoint or remove a later one, so the repo file reads a grown task as one
+   * stage long — projecting it as closing on the next advance, which moves
+   * selection as if the task were gone, and equally can hide a real close
+   * behind a stage the repo file still lists.
+   *
+   * `observedDefinition` is sent back as the advance's `expectedDefinition`, so
+   * a tail that moved between reading and advancing is a refused conflict
+   * rather than a silently different next stage. It is absent only when the
+   * pinned definition could not be read at all; the advance then proceeds
+   * unfenced exactly as it always did, rather than becoming unavailable.
+   */
+  interface ObservedStageAdvance extends StageAdvanceProjection {
+    observedDefinition: PinnedTaskWorkflow | null;
+  }
+
   async function resolveStageAdvanceProjection(item: {
+    id: string;
     repo_id: string;
     pipeline: string;
     stage: string;
-  }): Promise<StageAdvanceProjection> {
+  }): Promise<ObservedStageAdvance> {
+    const unknown: ObservedStageAdvance = {
+      nextStageName: null,
+      pendingPostName: null,
+      closesOnSuccess: false,
+      observedDefinition: null,
+    };
+    try {
+      const pinned = (await fetchDesktopTaskDetail(item.id)).workflowDefinition;
+      if (pinned?.stages?.length) {
+        const projection = projectStageAdvance(
+          pinned.stages.map((stage) => ({
+            name: stage.name,
+            post:
+              stage.post && typeof stage.post === "object" && "name" in stage.post
+                ? { name: String((stage.post as { name: unknown }).name) }
+                : null,
+          })),
+          item.stage,
+        );
+        return { ...(projection ?? unknown), observedDefinition: pinned };
+      }
+    } catch (error) {
+      console.debug("[workflow:advanceStage] pinned workflow unavailable for optimistic update:", error);
+    }
+    // No pinned definition to read: fall back to the repo file for the
+    // cosmetic projection only, and send no fence, because nothing was
+    // observed to fence on.
     try {
       const workflow = await loadWorkflow(item.repo_id, item.pipeline || "no-review");
-      const currentIndex = workflow.stages.findIndex((stage) => stage.name === item.stage);
-      if (currentIndex === -1) return { nextStageName: null, pendingPostName: null, closesOnSuccess: false };
-      const currentStage = workflow.stages[currentIndex];
-      const pendingPostName = currentStage?.post?.name ?? null;
-      return {
-        nextStageName: workflow.stages[currentIndex + 1]?.name ?? null,
-        pendingPostName,
-        closesOnSuccess: currentIndex === workflow.stages.length - 1 && pendingPostName === null,
-      };
+      return { ...(projectStageAdvance(workflow.stages, item.stage) ?? unknown), observedDefinition: null };
     } catch (error) {
       console.debug("[workflow:advanceStage] could not resolve stage projection for optimistic update:", error);
-      return { nextStageName: null, pendingPostName: null, closesOnSuccess: false };
+      return unknown;
     }
   }
 
@@ -283,7 +339,8 @@ export function createWorkflowApi(context: StoreContext): WorkflowApi {
     const sourceTaskIsSelected = requireService(context.services.selectedTaskId, "selectedTaskId").value === item.id;
     const fallbackSelectionId = computeNextVisibleItemId(item.id);
     const initialTransitionRevision = item.transition_revision ?? null;
-    const { nextStageName, pendingPostName, closesOnSuccess } = await resolveStageAdvanceProjection(item);
+    const { nextStageName, pendingPostName, closesOnSuccess, observedDefinition } =
+      await resolveStageAdvanceProjection(item);
     debugLog("[workflow:advanceStage] selection policy", {
       taskId,
       currentStage: item.stage,
@@ -300,6 +357,8 @@ export function createWorkflowApi(context: StoreContext): WorkflowApi {
       return await withOptimisticStageAdvance(taskId, item.stage, nextStageName, pendingPostName, async () => {
         const response = await postDesktopTaskAction(taskId, "advance-stage", {
           source: "operator",
+          // The workflow this advance was actually taken against.
+          ...(observedDefinition ? { expectedDefinition: observedDefinition } : {}),
           ...(options.nextStageAgentProvider ? {
             nextStageAgentProvider: options.nextStageAgentProvider,
             nextStageModel: options.nextStageModel,
@@ -310,7 +369,14 @@ export function createWorkflowApi(context: StoreContext): WorkflowApi {
         if (!response.ok) {
           const message = await response.text();
           if (response.status === 409) {
-            context.toast.warning(context.tt("mainPanel.taskBlocked"));
+            // A refused fence is a different fact from a blocked task: the
+            // stages moved under the person who pressed the key, and saying
+            // "blocked" would send them looking for a blocker that is not there.
+            context.toast.warning(
+              message.includes("pinned workflow changed")
+                ? context.tt("mainPanel.stageSequenceChanged")
+                : context.tt("mainPanel.taskBlocked"),
+            );
             return "ignored" as const;
           }
           throw new Error(message);

@@ -3615,7 +3615,23 @@ export function createMobileController(
           sourceTask?.ownerDesktopId ??
           store.getState().selectedDesktopId;
         const ownerLocalRepoId = sourceTask?.ownerLocalRepoId ?? null;
-        const response = await client.advanceTaskStage(taskId);
+        // A task's remaining stages can be published while an earlier stage
+        // runs, so the advance carries the pinned workflow it was taken
+        // against and a moved tail is refused rather than advanced into.
+        // Read through the same client the action uses, so the fence and the
+        // action reach the same owning desktop; a detail read that fails or
+        // that this client cannot serve leaves the advance unfenced exactly
+        // as it was, rather than unavailable.
+        let expectedDefinition = null;
+        if (client.getTask) {
+          try {
+            expectedDefinition =
+              (await client.getTask(taskId)).workflowDefinition ?? null;
+          } catch {
+            expectedDefinition = null;
+          }
+        }
+        const response = await client.advanceTaskStage(taskId, expectedDefinition);
         const responseOwnerDesktopId =
           response.ownerDesktopId ?? ownerDesktopId;
         const responseOwnerLocalRepoId =

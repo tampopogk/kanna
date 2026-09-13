@@ -207,8 +207,11 @@ describe("stage model request", () => {
     await createWorkflowApi(context).advanceStage("task-model", {
       nextStageAgentProvider: "opencode", nextStageModel: "omlx/Qwen-Coder",
     });
-    expect(fetch).toHaveBeenCalled();
-    expect(JSON.parse(String(fetch.mock.calls[0]?.[1]?.body))).toEqual({
+    // The advance is preceded by the task-detail read the fence is taken from;
+    // that read fails here, so the advance goes out unfenced.
+    const advance = fetch.mock.calls.find(([url]) => String(url).includes("/actions/advance-stage"));
+    expect(advance).toBeDefined();
+    expect(JSON.parse(String(advance?.[1]?.body))).toEqual({
       source: "operator", nextStageAgentProvider: "opencode", nextStageModel: "omlx/Qwen-Coder", nextStageProviderSource: "operator",
     });
     vi.unstubAllGlobals();

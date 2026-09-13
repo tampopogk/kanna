@@ -9292,7 +9292,9 @@ describe("createMobileController", () => {
     expect(store.getState().errorMessage).toBe("daemon unavailable");
 
     await controller.advanceDesktopTaskStage("task-1");
-    expect(client.advanceTaskStage).toHaveBeenCalledWith("task-1");
+    // No pinned workflow could be read, so the advance goes out unfenced —
+    // the pre-fence behavior, not an unavailable action.
+    expect(client.advanceTaskStage).toHaveBeenCalledWith("task-1", null);
   });
 
   it("ignores duplicate stage advancement while one is already in flight", async () => {
@@ -9352,9 +9354,49 @@ describe("createMobileController", () => {
     await controller.bootstrap();
     await controller.advanceDesktopTaskStage("task-1");
 
-    expect(client.advanceTaskStage).toHaveBeenCalledWith("task-1");
+    // No pinned workflow could be read, so the advance goes out unfenced —
+    // the pre-fence behavior, not an unavailable action.
+    expect(client.advanceTaskStage).toHaveBeenCalledWith("task-1", null);
     expect(store.getState().selectedTaskId).toBe("task-pr");
     expect(store.getState().recentTasks[0]?.id).toBe("task-pr");
+  });
+
+  it("fences an advance on the pinned workflow it read from the owning desktop", async () => {
+    const store = createSessionStore();
+    const client = createClientMock();
+    const pinned = {
+      name: "consultation",
+      stages: [
+        { name: "consultation" },
+        { name: "plan" },
+        { name: "in progress" },
+        { name: "pr" }
+      ]
+    };
+    vi.mocked(client.listRecentTasks).mockResolvedValue([
+      {
+        id: "task-grown",
+        repoId: "repo-1",
+        title: "Grown task",
+        stage: "plan"
+      }
+    ]);
+    client.getTask = vi.fn(async (taskId: string) => ({
+      id: taskId,
+      repoId: "repo-1",
+      title: "Grown task",
+      stage: "plan",
+      workflowDefinition: pinned
+    })) as typeof client.getTask;
+    const controller = createMobileController(client, store);
+
+    await controller.bootstrap();
+    await controller.advanceDesktopTaskStage("task-grown");
+
+    // The fence is read through the same client the action uses, so both
+    // reach the same owning desktop.
+    expect(client.getTask).toHaveBeenCalledWith("task-grown");
+    expect(client.advanceTaskStage).toHaveBeenCalledWith("task-grown", pinned);
   });
 
   it("keeps display identities after routed merge and advance responses", async () => {
@@ -9444,7 +9486,7 @@ describe("createMobileController", () => {
 
     await controller.advanceDesktopTaskStage(duplicate.id);
     expect(store.getState().selectedTaskId).toBe(duplicate.id);
-    expect(lan.advanceTaskStage).toHaveBeenCalledWith("local-duplicate");
+    expect(lan.advanceTaskStage).toHaveBeenCalledWith("local-duplicate", null);
   });
 
   it("moves a provisional canonical action identity to its published cloud identity", async () => {
