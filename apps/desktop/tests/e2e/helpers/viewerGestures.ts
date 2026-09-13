@@ -3,7 +3,8 @@ import { expect } from "vitest";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { StreamClient } from "../../../../../packages/stream-client/src/index";
-import { observeTerminalViewerInteraction } from "../../../src/composables/terminalViewerInteraction";
+import { build } from "vite";
+import { fileURLToPath } from "node:url";
 import { buildTerminalDocument } from "../../../../mobile/src/screens/buildTerminalDocument";
 
 /** Real browser gesture producers -> shared KSP client -> isolated daemon/PTY.
@@ -22,15 +23,37 @@ export async function verifyViewerGestures(
    * final dimensions cannot detect oscillation; the sequence can. */
   readPtyHistory: () => Promise<string[]>,
 ): Promise<void> {
+  // Bundle the source module, including its module-scoped values and imports.
+  // Function.toString() silently loses those dependencies in the browser.
+  const bundled = await build({
+    configFile: false,
+    logLevel: "error",
+    build: {
+      write: false,
+      minify: false,
+      lib: {
+        entry: fileURLToPath(new URL("../../../src/composables/terminalViewerInteraction.ts", import.meta.url)),
+        name: "KannaViewerInteraction",
+        formats: ["iife"],
+      },
+    },
+  });
+  const output = Array.isArray(bundled) ? bundled[0] : bundled;
+  if (!("output" in output)) throw new Error("Expected a single observer bundle");
+  const observerBundle = output.output.find(chunk => chunk.type === "chunk");
+  if (!observerBundle || observerBundle.type !== "chunk") throw new Error("Missing observer bundle");
   const browser = await chromium.launch({ headless: true });
   const clients: StreamClient[] = [];
   const errors: string[] = [];
   try {
     const makeViewer = async (local: boolean) => {
       const page = await browser.newPage({ viewport: { width: local ? 1200 : 390, height: 720 }, hasTouch: !local });
+      page.on("pageerror", error => errors.push(`browser ${local ? "desktop" : "mobile"}: ${error.stack ?? error.message}`));
       let capacity = { cols: 0, rows: 0 };
       let client: StreamClient | null = null;
       let activations = 0;
+      let wheels = 0;
+      await page.exposeFunction("recordWheel", () => { wheels++; });
       const activate = () => {
         activations++;
         client?.setTerminalViewerVisibility(taskId, true);
@@ -51,7 +74,9 @@ export async function verifyViewerGestures(
       ));
       await expect.poll(() => capacity.cols).toBeGreaterThan(0);
       if (local) {
-        await page.evaluate(`(() => { const __name = fn => fn; (${observeTerminalViewerInteraction.toString()})(document.getElementById("viewport"), () => window.claimViewer()); })()`);
+        await page.evaluate('document.getElementById("viewport").addEventListener("wheel", event => { if (event.isTrusted) window.recordWheel(); }, { capture: true, passive: true });');
+        await page.addScriptTag({ content: observerBundle.code });
+        await page.evaluate('window.KannaViewerInteraction.observeTerminalViewerInteraction(document.getElementById("viewport"), () => window.claimViewer());');
       }
       client = new StreamClient({ url: baseUrl.replace(/^http/, "ws") + "/v1/stream", credential, terminalViewerRole: local ? "local" : "remote" });
       clients.push(client);
@@ -68,7 +93,7 @@ export async function verifyViewerGestures(
         },
         onOutput(dataB64) { paint(`window.__appendTerminalChunk(${JSON.stringify({ chunksB64: [dataB64] })});`); },
       });
-      return { page, client, get capacity() { return capacity; }, activations: () => activations, flush: async () => { await paints; if (paintError) throw paintError; } };
+      return { page, client, get capacity() { return capacity; }, activations: () => activations, wheels: () => wheels, flush: async () => { await paints; if (paintError) throw paintError; } };
     };
     const desktop = await makeViewer(true);
     const mobile = await makeViewer(false);
@@ -125,22 +150,52 @@ export async function verifyViewerGestures(
     await assertGrid(desktop.capacity);
     assertDirectTransition("desktop-claim", mark, await readPtyHistory(), desktop.capacity);
 
-    // Repeated claims by the viewer that already owns the geometry must cost
-    // the PTY nothing. (Driving the mouse over WebDriver is far slower than a
-    // real trackpad, so this exercises repetition rather than the producer's
-    // sub-100ms burst coalescing, which is unit-tested against a fake clock.)
+    // Repeated claims by the existing owner must cost the PTY nothing.
     mark = (await readPtyHistory()).length;
     const beforeBurst = desktop.activations();
     for (let tick = 0; tick < 40; tick += 1) {
       await desktop.page.mouse.wheel(0, -20);
     }
     await assertGrid(desktop.capacity);
-    expect(desktop.activations()).toBeGreaterThan(beforeBurst);
+    await expect.poll(desktop.activations).toBe(beforeBurst + 40);
     expect(
       (await readPtyHistory()).slice(mark),
       "a sustained scroll by the existing owner resized the PTY",
     ).toEqual([]);
     await assertNoFurtherResize("desktop-scroll-burst");
+
+    // Freeze A's browser time: real trusted wheel events execute the bundled
+    // production observer, while KSP and the real daemon drain independently.
+    // This establishes A@0, A@10, B@50 without any wall-clock race/deadline.
+    await desktop.page.clock.install({ time: 0 });
+    await desktop.page.clock.pauseAt(1000);
+    const beforeInterleave = desktop.activations();
+    const beforeWheels = desktop.wheels();
+    mark = (await readPtyHistory()).length;
+    await desktop.page.mouse.wheel(0, -20); // A@0
+    await expect.poll(desktop.wheels).toBe(beforeWheels + 1);
+    await desktop.page.clock.runFor(10);
+    await desktop.page.mouse.wheel(0, -20); // A@10
+    await expect.poll(desktop.wheels).toBe(beforeWheels + 2);
+    await assertGrid(desktop.capacity);
+    expect((await readPtyHistory()).slice(mark)).toEqual([]);
+    await desktop.page.clock.runFor(40);
+    await mobile.page.touchscreen.tap(100, 250); // B@50
+    await assertGrid(mobile.capacity);
+    assertDirectTransition("interleaved-newer-mobile", mark, await readPtyHistory(), mobile.capacity);
+    const newerViewerHistory = await readPtyHistory();
+    await desktop.page.clock.runFor(50); // Former A trailing claim at 100
+    await desktop.page.clock.runFor(5000);
+    expect(desktop.activations()).toBe(beforeInterleave + 2);
+    await assertGrid(mobile.capacity);
+    await assertNoFurtherResize("interleaved-no-stale-reclaim");
+    expect(await readPtyHistory()).toEqual(newerViewerHistory);
+    mark = newerViewerHistory.length;
+    await desktop.page.mouse.wheel(0, -20); // A's legitimate later handoff
+    await expect.poll(desktop.activations).toBe(beforeInterleave + 3);
+    await assertGrid(desktop.capacity);
+    assertDirectTransition("interleaved-legitimate-desktop-return", mark, await readPtyHistory(), desktop.capacity);
+    await desktop.page.clock.resume();
 
     // Two viewers actually contending: each handoff is worth exactly one
     // direct transition. Anything more is the reported oscillation.
@@ -174,6 +229,7 @@ export async function verifyViewerGestures(
       await mobile.page.screenshot({ path: join(artifactDir, "mobile-gesture-real-pty.png") });
       await writeFile(join(artifactDir, "viewer-gestures.json"), JSON.stringify({ desktop: desktop.capacity, mobile: mobile.capacity, desktopGestures: desktop.activations(), mobileGestures: mobile.activations(), ptyReport: await readPtyOutput(), ptyHistory: await readPtyHistory(), stability }, null, 2));
     }
+    expect(errors, "browser handlers and KSP must complete without errors").toEqual([]);
   } finally {
     for (const client of clients) client.close();
     await browser.close();

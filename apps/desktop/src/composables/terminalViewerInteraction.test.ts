@@ -9,11 +9,11 @@ describe("terminal viewer interaction", () => {
     vi.useRealTimers()
   })
 
-  function harness() {
+  function harness(onActivate?: () => void) {
     const container = document.createElement("div")
     const child = document.createElement("div")
     container.appendChild(child)
-    const activate = vi.fn()
+    const activate = vi.fn(onActivate)
     const stop = observeTerminalViewerInteraction(container, activate)
     const gesture = (name: string) => {
       const event = new Event(name, { bubbles: true, cancelable: true })
@@ -27,10 +27,9 @@ describe("terminal viewer interaction", () => {
   it("observes trusted gesture producers without consuming them, and removes listeners", () => {
     const { child, activate, stop, gesture } = harness()
     for (const name of ["wheel", "pointerdown", "touchstart", "keydown"]) gesture(name)
-    // Each of these is a producer, but they arrived inside one window.
-    expect(activate).toHaveBeenCalledTimes(1)
+    expect(activate).toHaveBeenCalledTimes(4)
     vi.advanceTimersByTime(500)
-    expect(activate).toHaveBeenCalledTimes(2)
+    expect(activate).toHaveBeenCalledTimes(4)
 
     activate.mockClear()
     for (const name of ["scroll", "selectionchange", "mousemove", "focusin"]) gesture(name)
@@ -51,18 +50,27 @@ describe("terminal viewer interaction", () => {
     stop()
   })
 
-  it("collapses a scroll burst into a bounded number of claims", () => {
-    const { activate, gesture, stop } = harness()
-    // A one-second trackpad flick at ~60 wheel events per second.
-    for (let tick = 0; tick < 60; tick += 1) {
-      gesture("wheel")
-      vi.advanceTimersByTime(16)
-    }
-    vi.advanceTimersByTime(500)
-    // One leading claim plus one per elapsed coalescing window, not sixty.
-    expect(activate.mock.calls.length).toBeLessThanOrEqual(12)
-    expect(activate.mock.calls.length).toBeGreaterThan(0)
-    stop()
+  it("preserves interleaved intent A@0, A@10, B@50 and a later handoff to A", () => {
+    vi.setSystemTime(0)
+    const claims: Array<[string, number]> = []
+    const a = harness(() => claims.push(["A", Date.now()]))
+    const b = harness(() => claims.push(["B", Date.now()]))
+    a.gesture("wheel")
+    vi.advanceTimersByTime(10)
+    a.gesture("wheel")
+    vi.advanceTimersByTime(40)
+    b.gesture("wheel")
+    expect(claims).toEqual([["A", 0], ["A", 10], ["B", 50]])
+    vi.advanceTimersByTime(50)
+    expect(claims.at(-1)).toEqual(["B", 50])
+    vi.advanceTimersByTime(5000)
+    expect(claims).toHaveLength(3)
+    a.gesture("wheel")
+    expect(claims.at(-1)).toEqual(["A", 5100])
+    vi.advanceTimersByTime(5000)
+    expect(claims).toHaveLength(4)
+    a.stop()
+    b.stop()
   })
 
   it("stops claiming once a gesture ends", () => {
