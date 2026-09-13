@@ -431,6 +431,10 @@ pub(crate) async fn run_daemon() {
             let stream_control = StreamControl::new();
             let notice_terminal = adopted_notice_terminal(&handoff)
                 .expect("failed to create notice projection for adopted session");
+            headless_terminal.archive_unavailable_reason = handoff
+                .archive_unavailable_reason
+                .clone()
+                .or(headless_terminal.archive_unavailable_reason);
             pty_session.archive_binding = handoff.archive_binding.clone();
             let handle = Arc::new(SessionHandle::new(SessionRecord {
                 pty: pty_session,

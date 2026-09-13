@@ -1325,25 +1325,16 @@ impl SessionHandle {
         let observed_exit_code = pty.observed_exit_code();
         let cwd = pty.cwd.clone();
         drop(pty);
-        let (snapshot, unavailable_reason) = match self
+        let (snapshot, unavailable_reason) = self
             .state
             .lock()
             .await
             .headless_terminal
-            .snapshot_with_metadata()
-        {
-            Ok(frame) if !frame.used_visible_text_fallback => (Some(frame.snapshot), None),
-            Ok(_) => (
-                None,
-                Some(
-                    "Terminal serialization degraded; full retained history unavailable"
-                        .to_string(),
-                ),
-            ),
-            Err(error) => (
-                None,
-                Some(format!("Terminal serialization failed: {error}")),
-            ),
+            .snapshot_with_archive_provenance();
+        let snapshot = if unavailable_reason.is_none() {
+            snapshot
+        } else {
+            None
         };
         Some(crate::protocol::TerminalAttemptArchive {
             binding,
@@ -1372,7 +1363,8 @@ impl SessionHandle {
         drop(pty);
 
         let mut state = self.state.lock().await;
-        let snapshot = state.headless_terminal.snapshot().ok();
+        let (snapshot, archive_unavailable_reason) =
+            state.headless_terminal.snapshot_with_archive_provenance();
         let notice_snapshot = match state.notice_terminal.snapshot_with_metadata() {
             Ok(snapshot) if !snapshot.used_visible_text_fallback => Some(snapshot.snapshot),
             Ok(_) => {
@@ -1390,6 +1382,7 @@ impl SessionHandle {
             .lock()
             .map_err(|_| "terminal input coordination lock was poisoned")?;
         Ok(Some(SessionHandoffParts {
+            archive_unavailable_reason,
             archive_binding,
             pid,
             child_start,
@@ -1413,6 +1406,7 @@ impl SessionHandle {
 }
 
 pub struct SessionHandoffParts {
+    pub archive_unavailable_reason: Option<String>,
     pub archive_binding: Option<crate::protocol::TerminalAttemptBinding>,
     pub pid: u32,
     /// Start-time identity of the child, so the adopting daemon can

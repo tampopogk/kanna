@@ -298,3 +298,38 @@ Commands/logs are retained in `.tmp/archive-work/` (task-local, not committed):
 `daemon-unit-final.txt`, `archive-reconnect-final.txt`, `handoff-test2.txt`,
 `server-final.txt`, `prebind-test.txt`, `post-test.txt`, `ui-tests-final.txt`,
 `ts-check-final.txt`, `vue-check-final.txt`, and `desktop-check.txt`.
+
+### Review correction: sticky handoff archive provenance
+
+Independent review `fead994c` found that `bfc989ecd` retained launch identity
+through adoption but could forget earlier history loss. This bounded correction
+carries an explicit archive-unavailability reason with handoff metadata. A
+missing snapshot or failed restoration marks the adopted terminal unavailable;
+serializer fallback carries the same evidence alongside its still-usable live
+snapshot. Later output, serialization and subsequent handoffs cannot erase it.
+Final capture keeps launch identity and observed-or-null exit, but omits the
+incomplete snapshot. Missing legacy provenance is conservatively unavailable.
+No live recovery, completion, sidebar or mobile behavior is redesigned.
+
+Focused evidence:
+
+- `cargo test -p kanna-daemon --lib archive`: 4 passed, including serializer
+  fallback at the metadata seam, actual restoration failure with invalid
+  dimensions, legacy metadata, existing retained-large-output persistence and
+  consumed exit observation.
+- `cargo test -p kanna-daemon --test handoff attempt_archive`: 2 passed. The
+  healthy real adopted PTY still archives successfully. The new test observes
+  a retained pre-handoff marker, injects a missing handoff snapshot, confirms
+  that marker was lost, interacts with the adopted PTY, transfers it again,
+  confirms new output survived, then exits and reads an explicitly unavailable
+  archive with unchanged attempt identity and unknown exit.
+- The initial integration assertion raced initial PTY output; the fixture now
+  waits for its pre-handoff marker before injecting loss. Final runs pass.
+- Logs: `.tmp/archive-work/provenance-unit.txt` and `provenance-handoff.txt`.
+  No broad coverage was rerun. Test daemons exited; the separately authorized
+  owner evaluation stack remains available.
+
+This correction does not incorporate newer main/attention PR #1482. When that
+separate integration is performed, agent-requested attention `!` and detected
+question `?` must both survive. Fresh re-review of this corrected candidate and
+owner native acceptance remain required; no advance, approval or merge.

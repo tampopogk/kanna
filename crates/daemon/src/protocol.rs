@@ -133,8 +133,15 @@ pub struct TerminalAttemptArchive {
     pub observed_exit_code: Option<i32>,
 }
 
+fn unknown_archive_provenance() -> Option<String> {
+    Some("Handoff archive retention provenance unavailable".to_string())
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HandoffSession {
+    /// None explicitly attests complete retention. Older senders cannot attest it.
+    #[serde(default = "unknown_archive_provenance")]
+    pub archive_unavailable_reason: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub archive_binding: Option<TerminalAttemptBinding>,
     pub session_id: String,
@@ -1166,6 +1173,7 @@ mod tests {
         let evt = Event::HandoffReady {
             sessions: vec![HandoffSession {
                 archive_binding: None,
+                archive_unavailable_reason: None,
                 session_id: "sess-1".to_string(),
                 pid: 42,
                 child_start: None,

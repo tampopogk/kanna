@@ -69,6 +69,8 @@ pub fn initial_session_status(provider: Option<AgentProvider>) -> SessionStatus 
 }
 
 pub struct HeadlessTerminal {
+    /// Sticky evidence of retained history lost before this live terminal was adopted.
+    pub(crate) archive_unavailable_reason: Option<String>,
     terminal: Box<Terminal<'static, 'static>>,
     render_state: RenderState<'static>,
     row_iterator: RowIterator<'static>,
@@ -147,6 +149,7 @@ impl HeadlessTerminal {
         })?;
 
         Ok(Self {
+            archive_unavailable_reason: None,
             terminal,
             render_state,
             row_iterator,
@@ -637,6 +640,24 @@ impl HeadlessTerminal {
         Ok(headless_terminal)
     }
 
+    /// Keep a live recovery usable, while retaining evidence that its history is incomplete.
+    fn finish_handoff_restore(
+        restored: Option<HeadlessTerminalResult<Self>>,
+        cols: u16,
+        rows: u16,
+        scrollback: usize,
+    ) -> HeadlessTerminalResult<Self> {
+        let reason = match restored {
+            Some(Ok(terminal)) => return Ok(terminal),
+            Some(Err(error)) => format!("Handoff terminal restoration failed: {error}"),
+            None => "Handoff terminal snapshot unavailable".to_string(),
+        };
+        log::warn!("[handoff] {reason}");
+        let mut terminal = Self::new(cols, rows, scrollback)?;
+        terminal.archive_unavailable_reason = Some(reason);
+        Ok(terminal)
+    }
+
     pub fn from_handoff(
         snapshot: Option<&TerminalSnapshot>,
         cols: u16,
@@ -644,21 +665,44 @@ impl HeadlessTerminal {
         scrollback: usize,
     ) -> HeadlessTerminalResult<Self> {
         let (cols, rows) = Self::normalize_dimensions(cols, rows);
-        match snapshot {
-            Some(snapshot) => match Self::from_snapshot(snapshot, scrollback) {
-                Ok(headless_terminal) => Ok(headless_terminal),
-                Err(error) => {
-                    log::warn!(
-                        "[handoff] failed to restore headless terminal from snapshot rows={} cols={}: {}",
-                        snapshot.rows,
-                        snapshot.cols,
-                        error
-                    );
-                    Self::new(cols, rows, scrollback)
-                }
-            },
-            None => Self::new(cols, rows, scrollback),
+        Self::finish_handoff_restore(
+            snapshot.map(|snapshot| Self::from_snapshot(snapshot, scrollback)),
+            cols,
+            rows,
+            scrollback,
+        )
+    }
+
+    fn archive_snapshot_result(
+        prior_unavailability: Option<String>,
+        result: HeadlessTerminalResult<TerminalSnapshotWithMetadata>,
+    ) -> (Option<TerminalSnapshot>, Option<String>) {
+        match result {
+            Ok(frame) => {
+                let reason = prior_unavailability.or_else(|| {
+                    frame.used_visible_text_fallback.then(|| {
+                        "Terminal serialization degraded; full retained history unavailable"
+                            .to_string()
+                    })
+                });
+                (Some(frame.snapshot), reason)
+            }
+            Err(error) => (
+                None,
+                prior_unavailability
+                    .or_else(|| Some(format!("Terminal serialization failed: {error}"))),
+            ),
         }
+    }
+
+    /// The snapshot may still support live continuity; archive callers must honor the reason.
+    pub(crate) fn snapshot_with_archive_provenance(
+        &mut self,
+    ) -> (Option<TerminalSnapshot>, Option<String>) {
+        Self::archive_snapshot_result(
+            self.archive_unavailable_reason.clone(),
+            self.snapshot_with_metadata(),
+        )
     }
 }
 
@@ -3330,5 +3374,52 @@ mod tests {
             SessionStatus::Busy
         );
         assert_eq!(initial_session_status(None), SessionStatus::Idle);
+    }
+}
+
+#[cfg(test)]
+mod archive_provenance_tests {
+    use super::*;
+
+    #[test]
+    fn archive_serializer_fallback_and_restore_failure_remain_unavailable() {
+        let mut terminal = HeadlessTerminal::new(80, 24, 10_000).unwrap();
+        terminal.write(b"retained marker\r\n");
+        let mut frame = terminal.snapshot_with_metadata().unwrap();
+        frame.used_visible_text_fallback = true;
+        let (snapshot, reason) = HeadlessTerminal::archive_snapshot_result(None, Ok(frame));
+        assert!(
+            snapshot.is_some(),
+            "live continuity still gets its fallback"
+        );
+        assert!(reason.as_ref().unwrap().contains("degraded"));
+        let mut successor =
+            HeadlessTerminal::from_handoff(snapshot.as_ref(), 80, 24, 10_000).unwrap();
+        successor.archive_unavailable_reason = reason.clone();
+        successor.write(b"later output");
+        assert_eq!(successor.snapshot_with_archive_provenance().1, reason);
+
+        let mut invalid = snapshot.unwrap();
+        invalid.cols = 0;
+        invalid.rows = 0;
+        assert!(HeadlessTerminal::from_snapshot(&invalid, 10_000).is_err());
+        let mut failed = HeadlessTerminal::from_handoff(Some(&invalid), 80, 24, 10_000).unwrap();
+        failed.write(b"live after failed restore");
+        let (snapshot, reason) = failed.snapshot_with_archive_provenance();
+        assert!(snapshot.unwrap().vt.contains("live after failed restore"));
+        assert!(reason.unwrap().contains("restoration failed"));
+    }
+
+    #[test]
+    fn archive_legacy_handoff_cannot_attest_retention() {
+        let legacy: crate::protocol::HandoffSession = serde_json::from_value(serde_json::json!({
+            "session_id":"legacy", "pid":1, "cwd":".", "cols":80, "rows":24
+        }))
+        .unwrap();
+        assert!(legacy.archive_unavailable_reason.is_some());
+        let mut wire = serde_json::to_value(legacy).unwrap();
+        wire["archive_unavailable_reason"] = serde_json::Value::Null;
+        let healthy: crate::protocol::HandoffSession = serde_json::from_value(wire).unwrap();
+        assert!(healthy.archive_unavailable_reason.is_none());
     }
 }

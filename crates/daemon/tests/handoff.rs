@@ -3256,3 +3256,77 @@ fn attempt_archive_handoff_keeps_launch_identity_and_unknown_adopted_exit() {
     drop(daemon_a);
     cleanup(&dir);
 }
+
+#[test]
+fn attempt_archive_missing_snapshot_stays_unavailable_after_two_handoffs() {
+    let dir = test_dir("attempt-archive-missing-adoption");
+    let daemon_a =
+        DaemonHandle::start_in_with_env(&dir, &[("KANNA_DAEMON_TEST_HANDOFF_DROP_SNAPSHOT", "1")]);
+    let mut conn = daemon_a.connect();
+    let release = dir.join("release");
+    spawn_provider_frame(&mut conn,"archive-adopt","codex", "printf 'BEFORE_HANDOFF\r\n'; while [ ! -f \"$RELEASE\" ]; do sleep .05; done; printf 'AFTER_HANDOFF\r\n'; exit 9",HashMap::from([("KANNA_TASK_ID".into(),"adopt".into()),("KANNA_STAGE_RUN_ID".into(),"run-adopt-1".into()),("RELEASE".into(),release.to_string_lossy().into_owned())]));
+    // Ensure a real retained pre-handoff marker exists, then deliberately lose it.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !request_snapshot(&mut conn, "archive-adopt")
+        .vt
+        .contains("BEFORE_HANDOFF")
+    {
+        assert!(
+            Instant::now() < deadline,
+            "pre-handoff output was not retained"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    drop(conn);
+    let daemon_b = DaemonHandle::start_in(&dir);
+    let mut live = daemon_b.connect();
+    assert!(!request_snapshot(&mut live, "archive-adopt")
+        .vt
+        .contains("BEFORE_HANDOFF"));
+    attach(&mut live, "archive-adopt");
+    send_input_and_wait_for_echo(
+        &mut live,
+        "archive-adopt",
+        b"AFTER_FIRST_HANDOFF\n",
+        "AFTER_FIRST_HANDOFF",
+    );
+    drop(live);
+    // A healthy serializer in a second successor must not erase loss provenance.
+    let daemon_c = DaemonHandle::start_in(&dir);
+    let mut conn = daemon_c.connect();
+    assert!(request_snapshot(&mut conn, "archive-adopt")
+        .vt
+        .contains("AFTER_FIRST_HANDOFF"));
+    std::fs::write(release, "").unwrap();
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let archive = loop {
+        conn.writer
+            .write_all(b"{\"type\":\"ReadAttemptArchive\",\"attempt_id\":\"run-adopt-1\"}\n")
+            .unwrap();
+        conn.writer.flush().unwrap();
+        let mut line = String::new();
+        conn.reader.read_line(&mut line).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(value["type"], "AttemptArchive");
+        if !value["archive"].is_null() {
+            break value["archive"].clone();
+        }
+        assert!(Instant::now() < deadline);
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    assert_eq!(archive["binding"]["spawned_run_id"], "run-adopt-1");
+    assert!(
+        archive["observed_exit_code"].is_null(),
+        "adopted waitpid is unavailable"
+    );
+    assert!(archive["snapshot"].is_null());
+    assert!(archive["unavailable_reason"]
+        .as_str()
+        .unwrap()
+        .contains("snapshot unavailable"));
+    drop(conn);
+    drop(daemon_c);
+    drop(daemon_b);
+    drop(daemon_a);
+    cleanup(&dir);
+}
