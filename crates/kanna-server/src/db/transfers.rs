@@ -143,6 +143,37 @@ pub type TransferredTaskContext = (
     Option<String>,
 );
 
+/// Work kinds that can still touch a source task: finalization shuts its agent
+/// down and stages its artifacts, and the committed receipt closes it.
+///
+/// A transfer whose display status has settled but which still has one of these
+/// queued or running has not finished with the source, and must keep owning its
+/// workflow until it has.
+const SOURCE_EFFECT_WORK_KINDS: &str = "('finalize', 'outgoing-committed')";
+
+/// Does this transfer still effectively own a source task?
+///
+/// Display status alone is the wrong answer in both directions. A finalization
+/// failure marks the transfer `failed` and still leaves its work item to be
+/// retried while attempts remain — and that retry shuts down a source. A
+/// transfer that has genuinely finished, by contrast, must stop owning anything
+/// so a historical claim row cannot block the task's plan forever.
+///
+/// So effectiveness is: the transfer is still live, **or** it still has source-
+/// effect work that has not finished. Backed-off retries and restart-requeued
+/// work both sit at `pending`, so both are covered without asking about
+/// processes, clocks, or whether an attempt happens to be executing right now.
+fn transfer_still_owns_source(alias: &str) -> String {
+    format!(
+        "({alias}.status IN {ACTIVE_OUTGOING_TRANSFER_STATUSES}
+          OR EXISTS (
+            SELECT 1 FROM transfer_work AS source_work
+            WHERE source_work.transfer_id = {alias}.id
+              AND source_work.kind IN {SOURCE_EFFECT_WORK_KINDS}
+              AND source_work.status IN ('pending', 'running')))"
+    )
+}
+
 impl Db {
     pub fn upsert_transferred_task_manifest(
         &self,
@@ -484,6 +515,152 @@ impl Db {
             Some(row) => Ok(Some(row?)),
             None => Ok(None),
         }
+    }
+
+    /// Claim a task's workflow for one transfer's source work, or refuse.
+    ///
+    /// Finalization shuts the source agent down and then serializes the task's
+    /// pinned workflow into the payload; the committed receipt closes the source
+    /// outright. Between any of that and the decision to do it, a combined plan
+    /// completion can publish `plan_context`, and the work would then hand an
+    /// older destination a plan it silently drops — or destroy the source of a
+    /// plan that had just been published. A snapshot check before the first
+    /// `await` cannot close that window.
+    ///
+    /// So the check and the claim are one transaction, and acquisition is
+    /// conditional:
+    ///
+    /// - the transfer must actually be this task's outgoing transfer;
+    /// - it must still effectively own the source by the *same* rule the
+    ///   publication side reads, so no attempt can walk on holding a claim
+    ///   publication treats as released;
+    /// - a live owner cannot be displaced — only a historical claim whose owner
+    ///   has genuinely finished is replaced;
+    /// - the task must not already carry a published plan.
+    ///
+    /// The same transfer re-entering is how a retried, backed-off or
+    /// restart-requeued attempt re-asks the question. `Err` means this attempt
+    /// must stop before it touches the source; nothing has been done to it.
+    pub fn claim_task_workflow_for_transfer(
+        &self,
+        transfer_id: &str,
+        task_id: &str,
+    ) -> Result<Result<(), String>, rusqlite::Error> {
+        self.with_immediate_transaction(|db| {
+            let association = db
+                .conn
+                .query_row(
+                    &format!(
+                        "SELECT {} FROM task_transfer
+                         WHERE id = ? AND direction = 'outgoing'
+                           AND (source_task_id = ? OR local_task_id = ?)",
+                        transfer_still_owns_source("task_transfer")
+                    ),
+                    (transfer_id, task_id, task_id),
+                    |row| row.get::<_, bool>(0),
+                )
+                .optional()?;
+            let Some(still_owns_source) = association else {
+                return Ok(Err(format!(
+                    "transfer {transfer_id} is not an outgoing transfer of task {task_id}, so it \
+                     cannot take ownership of its workflow; nothing was done to the source."
+                )));
+            };
+            if !still_owns_source {
+                // Acquiring here would hand this attempt a claim the
+                // publication transaction cannot see, which is worse than no
+                // claim at all: it would proceed toward source effects
+                // believing it was excluded.
+                return Ok(Err(format!(
+                    "transfer {transfer_id} has finished with task {task_id} — it is settled and \
+                     has no source work left — so it cannot take ownership of its workflow; \
+                     nothing was done to the source."
+                )));
+            }
+            let current_owner = db
+                .conn
+                .query_row(
+                    &format!(
+                        "SELECT claim.transfer_id, {}
+                         FROM task_transfer_workflow_claim AS claim
+                         JOIN task_transfer AS owner ON owner.id = claim.transfer_id
+                         WHERE claim.pipeline_item_id = ?",
+                        transfer_still_owns_source("owner")
+                    ),
+                    [task_id],
+                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, bool>(1)?)),
+                )
+                .optional()?;
+            if let Some((owner, owner_still_owns_source)) = current_owner {
+                if owner != transfer_id && owner_still_owns_source {
+                    return Ok(Err(format!(
+                        "transfer {owner} already owns task {task_id}'s workflow and can still act \
+                         on its source; transfer {transfer_id} cannot take it. Nothing was done to \
+                         the source."
+                    )));
+                }
+            }
+            let pinned = db
+                .conn
+                .query_row(
+                    "SELECT pipeline_def FROM pipeline_item WHERE id = ?",
+                    [task_id],
+                    |row| row.get::<_, Option<String>>(0),
+                )
+                .optional()?
+                .flatten();
+            let carries_plan = pinned
+                .as_deref()
+                .and_then(|definition| serde_json::from_str::<serde_json::Value>(definition).ok())
+                .is_some_and(|definition| definition.get("plan_context").is_some());
+            if carries_plan {
+                return Ok(Err(format!(
+                    "task {task_id} carries a published plan, and this transfer cannot prove the \
+                     destination would keep it: a machine older than this one drops the plan while \
+                     importing the stages it chose, and the plan cannot be reconstructed. The \
+                     transfer is refused with the source task untouched. Update the destination, or \
+                     finish this task here."
+                )));
+            }
+            db.conn.execute(
+                "INSERT INTO task_transfer_workflow_claim (pipeline_item_id, transfer_id)
+                 VALUES (?, ?)
+                 ON CONFLICT(pipeline_item_id) DO UPDATE SET
+                   transfer_id = excluded.transfer_id,
+                   claimed_at = datetime('now')",
+                (task_id, transfer_id),
+            )?;
+            Ok(Ok(()))
+        })
+    }
+
+    /// Is a transfer holding this task's workflow right now?
+    ///
+    /// Read by the combined plan completion inside its own write transaction.
+    /// It asks `transfer_still_owns_source` — the same rule acquisition refuses
+    /// on — so the two cannot disagree about what ownership means: no attempt
+    /// can hold a claim this treats as released, and a claim left behind by a
+    /// transfer that has genuinely finished stops blocking the task's plan
+    /// without any teardown path having to delete it.
+    pub fn task_workflow_is_claimed_by_transfer(
+        &self,
+        task_id: &str,
+    ) -> Result<Option<String>, rusqlite::Error> {
+        self.conn
+            .query_row(
+                &format!(
+                    "SELECT claim.transfer_id
+                     FROM task_transfer_workflow_claim AS claim
+                     JOIN task_transfer AS owner ON owner.id = claim.transfer_id
+                     WHERE claim.pipeline_item_id = ?
+                       AND owner.direction = 'outgoing'
+                       AND {}",
+                    transfer_still_owns_source("owner")
+                ),
+                [task_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
     }
 
     pub fn update_task_transfer_payload(

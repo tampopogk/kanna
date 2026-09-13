@@ -4018,6 +4018,7 @@ fn read_agent_definition_substitutes_repo_config_vars_in_agent_body() {
             task_prompt: None,
             prev_result: None,
             prev_main_result: None,
+            plan_result: None,
             revision_feedback: None,
             branch: None,
             base_ref: Some("origin/main"),
@@ -4053,6 +4054,7 @@ fn build_stage_prompt_does_not_reexpand_reserved_tokens_in_var_values() {
             task_prompt: Some("actual task prompt"),
             prev_result: None,
             prev_main_result: None,
+            plan_result: None,
             revision_feedback: None,
             branch: None,
             base_ref: None,
@@ -4079,6 +4081,7 @@ fn build_stage_prompt_leaves_unknown_vars_literal() {
             task_prompt: None,
             prev_result: None,
             prev_main_result: None,
+            plan_result: None,
             revision_feedback: None,
             branch: None,
             base_ref: None,
@@ -4103,6 +4106,7 @@ fn build_stage_prompt_resolves_stage_trigger() {
             task_prompt: None,
             prev_result: None,
             prev_main_result: None,
+            plan_result: None,
             revision_feedback: None,
             branch: None,
             base_ref: None,
@@ -4124,6 +4128,7 @@ fn build_stage_prompt_labels_agent_instructions_and_the_actual_task() {
             task_prompt: Some("Fix the buried task."),
             prev_result: None,
             prev_main_result: None,
+            plan_result: None,
             revision_feedback: None,
             branch: None,
             base_ref: None,
@@ -4144,6 +4149,7 @@ fn build_stage_prompt_appends_imported_revision_feedback_without_template_opt_in
             task_prompt: Some("Fix the transferred task."),
             prev_result: Some("commit completed"),
             prev_main_result: Some("implementation completed"),
+            plan_result: None,
             revision_feedback: Some("Keep the imported reviewer directive distinct."),
             branch: None,
             base_ref: None,
@@ -4168,6 +4174,7 @@ fn build_stage_prompt_keeps_explicit_revision_feedback_placement_compatible() {
             task_prompt: None,
             prev_result: None,
             prev_main_result: None,
+            plan_result: None,
             revision_feedback: Some("An explicitly placed directive."),
             branch: None,
             base_ref: None,
@@ -4189,6 +4196,7 @@ fn build_stage_prompt_omits_empty_prompt_sections() {
         task_prompt: Some("Ship it."),
         prev_result: None,
         prev_main_result: None,
+        plan_result: None,
         revision_feedback: None,
         branch: None,
         base_ref: None,
@@ -4229,6 +4237,7 @@ fn build_stage_prompt_replaces_base_ref() {
             task_prompt: None,
             prev_result: None,
             prev_main_result: None,
+            plan_result: None,
             revision_feedback: None,
             branch: Some("task-source"),
             base_ref: Some("origin/main"),
@@ -4269,6 +4278,7 @@ fn build_target_stage_prompt_sections_a_carried_task_without_rescanning_it() {
         &stage,
         "Carry $PREV_RESULT literally.",
         Some("do not reveal"),
+        None,
         None,
         None,
         None,
@@ -7900,4 +7910,108 @@ fn setup_legacy_entry_defaults_to_manual_but_explicit_workflow_is_preserved() {
         assert_eq!(task.pipeline.as_deref(), Some(expected));
     }
     let _ = std::fs::remove_dir_all(repo_root);
+}
+
+/// `$PLAN_RESULT` is bound independently of `$PREV_MAIN_RESULT`, which each
+/// later main stage overwrites, and it is spliced in the same single pass — so
+/// a plan whose own text quotes `$TASK_PROMPT` stays literal instead of being
+/// expanded a second time.
+#[test]
+fn plan_result_is_bound_separately_and_spliced_literally() {
+    let prompt = build_stage_prompt(
+        "Follow the approved plan.",
+        Some("PLAN[$PLAN_RESULT] LATEST[$PREV_MAIN_RESULT]"),
+        &PromptContext {
+            task_prompt: Some("Rename the label."),
+            prev_result: None,
+            prev_main_result: Some("the reviewer's verdict"),
+            plan_result: Some("step 1: read $TASK_PROMPT verbatim"),
+            revision_feedback: None,
+            branch: None,
+            base_ref: None,
+            source_worktree: None,
+            stage_trigger: "unspecified",
+            vars: None,
+        },
+    );
+
+    assert!(
+        prompt.contains("PLAN[step 1: read $TASK_PROMPT verbatim]"),
+        "{prompt}"
+    );
+    assert!(
+        prompt.contains("LATEST[the reviewer's verdict]"),
+        "{prompt}"
+    );
+    assert!(!prompt.contains("Rename the label."), "{prompt}");
+}
+
+/// A workflow with no stamped plan leaves the token bound to nothing rather
+/// than leaking an unrelated result into it.
+#[test]
+fn plan_result_is_empty_without_a_stamped_plan() {
+    let prompt = build_stage_prompt(
+        "",
+        Some("PLAN[$PLAN_RESULT]"),
+        &PromptContext {
+            task_prompt: None,
+            prev_result: None,
+            prev_main_result: Some("the previous stage"),
+            plan_result: None,
+            revision_feedback: None,
+            branch: None,
+            base_ref: None,
+            source_worktree: None,
+            stage_trigger: "unspecified",
+            vars: None,
+        },
+    );
+
+    assert_eq!(prompt, "## Your Task\n\nPLAN[]");
+}
+
+/// A transfer re-serializes the pinned definition on the destination, and the
+/// import then checks it read back equal to the source snapshot. Normalization
+/// must therefore carry `plan_context` through untouched: a destination that
+/// drops it fails that check and the transfer is rejected before the source is
+/// finalized, rather than silently losing the plan its stages were chosen
+/// under.
+#[test]
+fn normalizing_a_pinned_workflow_preserves_its_stamped_plan() {
+    let stored = serde_json::json!({
+        "name": "grown",
+        "revision_limit": 3,
+        "stages": [
+            {"name": "plan", "agent": "plan", "policy": {"transition": "manual"}},
+            {"name": "in progress", "agent": "implement", "policy": {"transition": "manual"},
+             "post": {"name": "commit", "agent": "commit", "prompt": "Commit."}}
+        ],
+        "plan_context": {
+            "source_run_id": "run-plan", "stage": "plan",
+            "result": "{\"status\":\"success\",\"summary\":\"the approved plan\"}"
+        }
+    })
+    .to_string();
+
+    let parsed = super::super::definitions::parse_stored_workflow_definition(&stored).unwrap();
+    let round_tripped: serde_json::Value =
+        serde_json::from_str(&serde_json::to_string(&parsed).unwrap()).unwrap();
+
+    assert_eq!(
+        round_tripped["plan_context"],
+        serde_json::from_str::<serde_json::Value>(&stored).unwrap()["plan_context"]
+    );
+
+    // A workflow that never grew stays byte-identical in shape: the field is
+    // omitted rather than serialized as null.
+    let plain = super::super::definitions::parse_stored_workflow_definition(
+        &serde_json::json!({"name": "plain", "stages": [
+            {"name": "in progress", "policy": {"transition": "manual"}}
+        ]})
+        .to_string(),
+    )
+    .unwrap();
+    let plain: serde_json::Value =
+        serde_json::from_str(&serde_json::to_string(&plain).unwrap()).unwrap();
+    assert!(plain.get("plan_context").is_none(), "{plain}");
 }

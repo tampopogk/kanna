@@ -587,6 +587,7 @@ pub(crate) async fn spawn_prepared_stage_run_for_api(
         task_id,
         follow_task: None,
         revision_budget: None,
+        workflow_extended: None,
     })
 }
 
@@ -1757,6 +1758,7 @@ pub(crate) async fn dispatch_prepared_post_for_api(
         task_id,
         follow_task: None,
         revision_budget: None,
+        workflow_extended: None,
     })
 }
 
@@ -1865,6 +1867,7 @@ pub(crate) async fn rerun_prepared_stage_for_api(
                 task_id,
                 follow_task: None,
                 revision_budget: None,
+                workflow_extended: None,
             })
         }
         DaemonEvent::Error { message, .. } => {

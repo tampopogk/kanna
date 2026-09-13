@@ -1303,8 +1303,8 @@ function createTrustedLanFallbackClient({
       (await resolveClient(input.desktopId)).abortTaskCreation(input),
     runMergeAgent: async (taskId) =>
       (await resolveClient(desktopId)).runMergeAgent(taskId),
-    advanceTaskStage: async (taskId) =>
-      (await resolveClient(desktopId)).advanceTaskStage(taskId),
+    advanceTaskStage: async (taskId, expectedDefinition) =>
+      (await resolveClient(desktopId)).advanceTaskStage(taskId, expectedDefinition),
     resumeTask: async (taskId) => {
       const client = await resolveClient(desktopId);
       if (!client.resumeTask) {
@@ -1549,7 +1549,8 @@ function createDelegatingClient(getClient: () => KannaClient): KannaClient {
     createTask: (input) => getClient().createTask(input),
     abortTaskCreation: (input) => getClient().abortTaskCreation(input),
     runMergeAgent: (taskId) => getClient().runMergeAgent(taskId),
-    advanceTaskStage: (taskId) => getClient().advanceTaskStage(taskId),
+    advanceTaskStage: (taskId, expectedDefinition) =>
+      getClient().advanceTaskStage(taskId, expectedDefinition),
     resumeTask: (taskId) => {
       const client = getClient();
       if (!client.resumeTask) {

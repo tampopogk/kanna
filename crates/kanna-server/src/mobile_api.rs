@@ -681,6 +681,16 @@ pub struct CompleteStageRequest {
     pub status: String,
     pub summary: String,
     pub metadata: Option<serde_json::Value>,
+    /// Remaining stages a planning stage publishes for its own task, in the
+    /// same complete-definition shape `kanna_replace_task_workflow` takes.
+    /// Recorded in the same transaction as the plan result, so a successful
+    /// plan and the stages it chose are never separately visible.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workflow_definition: Option<serde_json::Value>,
+    /// The pinned workflow the caller read before composing the extension.
+    /// Required with `workflow_definition`; a stale one is a 409.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_definition: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -808,6 +818,12 @@ pub struct TaskActionResponse {
     /// revision-round budget, and whether a revision was actually started.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub revision_budget: Option<RevisionBudgetStatus>,
+    /// Set by `complete-stage` when the completion also published the stages
+    /// the plan chose. `true` means both are durable; the field is absent when
+    /// no extension was requested, so an older server that ignored the
+    /// arguments can never read as a successful extension.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workflow_extended: Option<bool>,
 }
 
 /// The revision-round budget as it stands after a revision request.

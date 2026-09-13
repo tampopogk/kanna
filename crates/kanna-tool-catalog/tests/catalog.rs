@@ -449,7 +449,7 @@ fn removed_approval_override_is_not_an_agent_tool() {
         .iter()
         .find(|tool| tool.name == "kanna_advance_stage")
         .expect("advance tool");
-    assert_eq!(advance.params.len(), 7);
+    assert_eq!(advance.params.len(), 8);
     assert_eq!(advance.params[0].name, "machine_id");
     assert_eq!(advance.params[0].location, ParamLoc::Routing);
     assert_eq!(advance.params[1].name, "task_id");
@@ -466,6 +466,11 @@ fn removed_approval_override_is_not_an_agent_tool() {
     assert_eq!(advance.params[5].location, ParamLoc::Body);
     assert_eq!(advance.params[6].name, "next_stage_provider_source");
     assert_eq!(advance.params[6].location, ParamLoc::Body);
+    // A compare-and-set fence on the workflow the caller actually inspected,
+    // for a task whose remaining stages can be published while it runs. It
+    // refuses a stale advance; it authorizes nothing.
+    assert_eq!(advance.params[7].name, "expected_definition");
+    assert_eq!(advance.params[7].location, ParamLoc::Body);
 }
 
 #[test]

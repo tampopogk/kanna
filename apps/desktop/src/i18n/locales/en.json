@@ -376,6 +376,8 @@
     "shortcutClose": "Close"
   },
   "mainPanel": {
+    "stageSequenceChanged": "This task's stages changed while you were looking. Nothing was advanced — the list has been refreshed.",
+    "stageSequenceUnavailable": "Could not read this task's stages, so it was not advanced. Try again in a moment.",
     "taskBlocked": "Task Blocked",
     "taskBlockedHint": "This task will start automatically when all blockers complete.",
     "taskSettingUp": "Setting up task...",

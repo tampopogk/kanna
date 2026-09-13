@@ -70,6 +70,34 @@ describe("remote transport", () => {
     });
   });
 
+  it("carries the observed workflow to the owning desktop and surfaces its conflict", async () => {
+    const observed = {
+      name: "consultation",
+      stages: [{ name: "consultation" }, { name: "plan" }]
+    };
+    const conflict = new RemoteTransportError(
+      "remote_invocation_failed",
+      "Remote desktop request failed (409): stale stage advance for task-1: this task's pinned workflow changed; read it again before advancing"
+    );
+    const invokeDesktop = vi.fn<RemoteDesktopInvoker>().mockRejectedValue(conflict);
+    const transport = createRemoteTransport({
+      listDesktopRecords: async () => [],
+      getSelectedDesktopId: () => "desktop-1",
+      invokeDesktop
+    });
+
+    await expect(transport.advanceTaskStage("task-1", observed)).rejects.toBe(conflict);
+    // The fence rides the same owner route as the action, and a refused fence
+    // is reported rather than retried on another route.
+    expect(invokeDesktop).toHaveBeenCalledTimes(1);
+    expect(invokeDesktop).toHaveBeenCalledWith({
+      desktopId: "desktop-1",
+      method: "POST",
+      path: "/v1/tasks/task-1/actions/advance-stage",
+      body: { source: "operator", expectedDefinition: observed }
+    });
+  });
+
   it("routes repository command catalog and runs through the owning desktop", async () => {
     const invokeDesktop = vi.fn<RemoteDesktopInvoker>()
       .mockResolvedValueOnce({

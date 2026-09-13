@@ -552,6 +552,7 @@ fn prepare_stage_run_for_target_returning_prompt(
         resolve_current_source_worktree_branch(&context.repo.path, source_task.branch.as_deref());
     let prev_result = previous_stage_result(db, context.source_task_id, source_task)?;
     let prev_main_result = previous_main_stage_result(db, context.source_task_id)?;
+    let plan_result = stamped_plan_result(db, context.source_task_id);
     let task_prompt = prompt_override
         .or(source_task.prompt.as_deref())
         .unwrap_or("");
@@ -578,6 +579,7 @@ fn prepare_stage_run_for_target_returning_prompt(
         task_prompt,
         prev_result.as_deref(),
         prev_main_result.as_deref(),
+        plan_result.as_deref(),
         prompt_branch.as_deref(),
         source_task.base_ref.as_deref(),
         source_task.branch.as_deref(),
@@ -595,6 +597,7 @@ fn prepare_stage_run_for_target_returning_prompt(
             task_prompt,
             prev_result.as_deref(),
             prev_main_result.as_deref(),
+            plan_result.as_deref(),
             prompt_branch.as_deref(),
             source_task.base_ref.as_deref(),
             source_task.branch.as_deref(),
@@ -684,6 +687,19 @@ pub(crate) fn previous_stage_result(
 /// `review`) sees the post's result in `$PREV_RESULT`; this is what binds
 /// `$PREV_MAIN_RESULT` so such a stage can still read what the stage agent
 /// itself reported.
+/// The plan stamped onto this task's pinned workflow, if its plan stage
+/// published one. Read from the pinned definition rather than from run
+/// history, so it survives every later stage, revision, resume, and recovery
+/// without a second durable record.
+pub(crate) fn stamped_plan_result(db: &Db, source_task_id: &str) -> Option<String> {
+    let item = db.get_pipeline_item(source_task_id).ok().flatten()?;
+    let definition = item.pipeline_def.as_deref()?;
+    parse_stored_workflow_definition(definition)
+        .ok()?
+        .plan_context
+        .map(|context| context.result)
+}
+
 pub(crate) fn previous_main_stage_result(
     db: &Db,
     source_task_id: &str,
@@ -1294,6 +1310,7 @@ fn prepare_stage_restart(
             log::info!("task resume unavailable for {task_id}: {reason}; spawning fresh");
             let prev_result = previous_stage_result(db, task_id, source_task)?;
             let prev_main_result = previous_main_stage_result(db, task_id)?;
+            let plan_result = stamped_plan_result(db, task_id);
             // A fresh conversation knows only what the prompt tells it. When
             // the interrupted run was a revision, its reviewer feedback is
             // part of what the task is, so it is composed back into the task
@@ -1313,6 +1330,7 @@ fn prepare_stage_restart(
                 &task_prompt,
                 prev_result.as_deref(),
                 prev_main_result.as_deref(),
+                plan_result.as_deref(),
                 Some(branch),
                 source_task.base_ref.as_deref(),
                 source_task.branch.as_deref(),

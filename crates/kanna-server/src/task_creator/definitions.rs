@@ -215,6 +215,34 @@ pub(super) struct WorkflowDefinition {
     /// Resolution never consults it. See `DefinitionVisibility`.
     #[serde(default, skip_serializing_if = "DefinitionVisibility::is_public")]
     pub(super) visibility: DefinitionVisibility,
+    /// Plan published by an earlier stage of *this task*, stamped by the
+    /// server when a plan stage completes and appends the remaining stages in
+    /// one operation. Never authored by a caller. It rides inside the pinned
+    /// workflow so the approved plan survives later stages, revisions,
+    /// resume, and recovery without a second durable record, and it binds
+    /// `$PLAN_RESULT` for every stage and post of the extended workflow.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) plan_context: Option<WorkflowPlanContext>,
+}
+
+/// The stamped plan carried by an extended workflow. `result` is the full
+/// recorded stage result of the publishing run, in the same shape
+/// `$PREV_MAIN_RESULT` carries, so a stage prompt can read either without
+/// learning a second format.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub(crate) struct WorkflowPlanContext {
+    pub(crate) source_run_id: String,
+    pub(crate) stage: String,
+    pub(crate) result: String,
+    /// Fingerprint of the exact combined completion that published these
+    /// stages. The recorded result alone cannot identify that operation: two
+    /// completions can carry the same summary and publish different stages, so
+    /// without this a retry with a different suffix reads as a replay of the
+    /// first. Optional because a snapshot stamped before it existed has none;
+    /// such a stamp cannot confirm a replay and is treated as "not this
+    /// request".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) request_digest: Option<String>,
 }
 
 /// Rounds of agent-requested revision a task gets before the engine stops
@@ -366,6 +394,8 @@ struct RawWorkflowDefinition {
     revision_limit: Option<i64>,
     #[serde(default)]
     visibility: DefinitionVisibility,
+    #[serde(default)]
+    plan_context: Option<WorkflowPlanContext>,
 }
 
 #[derive(Deserialize)]
@@ -1746,6 +1776,7 @@ fn normalize_workflow_definition(raw: RawWorkflowDefinition) -> Result<WorkflowD
         environments: raw.environments,
         revision_limit: raw.revision_limit,
         visibility: raw.visibility,
+        plan_context: raw.plan_context,
     })
 }
 

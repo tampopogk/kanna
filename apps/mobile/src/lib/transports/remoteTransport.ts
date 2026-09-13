@@ -16,6 +16,7 @@ import type {
   CreateTaskResponse,
   DesktopSummary,
   MobileServerStatus,
+  PinnedTaskWorkflow,
   RepoSummary,
   RepoCheckoutOperation,
   RepoDirectoryListing,
@@ -854,12 +855,14 @@ export function createRemoteTransport({
         (localTaskId) =>
           `/v1/tasks/${encodeURIComponent(localTaskId)}/actions/run-merge-agent`
       ),
-    advanceTaskStage: (taskId: string) =>
+    advanceTaskStage: (taskId: string, expectedDefinition?: PinnedTaskWorkflow | null) =>
       requestTaskAction(
         taskId,
         (localTaskId) =>
           `/v1/tasks/${encodeURIComponent(localTaskId)}/actions/advance-stage`,
-        { source: "operator" }
+        expectedDefinition
+          ? { source: "operator", expectedDefinition }
+          : { source: "operator" }
       ),
     resumeTask: (taskId: string) =>
       requestTaskAction(

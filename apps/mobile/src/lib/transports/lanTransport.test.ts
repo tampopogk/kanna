@@ -366,6 +366,47 @@ describe("createLanTransport", () => {
     );
   });
 
+  it("sends the pinned workflow it was given as the advance's fence", async () => {
+    const fetchImpl = vi.fn<FetchLike>().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({ taskId: "task-1" })
+    });
+    const transport = createLanTransport("http://127.0.0.1:48120", fetchImpl);
+    const pinned = {
+      name: "consultation",
+      stages: [{ name: "consultation" }, { name: "plan" }]
+    };
+
+    await transport.advanceTaskStage("task-1", pinned);
+
+    expect(fetchImpl).toHaveBeenCalledWith(
+      "http://127.0.0.1:48120/v1/tasks/task-1/actions/advance-stage",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ source: "operator", expectedDefinition: pinned })
+      }
+    );
+  });
+
+  it("surfaces a refused stale-workflow fence without retrying another route", async () => {
+    const fetchImpl = vi.fn<FetchLike>().mockResolvedValue({
+      ok: false,
+      status: 409,
+      json: async () => ({
+        error:
+          "stale stage advance for task-1: this task's pinned workflow changed; read it again before advancing"
+      })
+    });
+    const transport = createLanTransport("http://127.0.0.1:48120", fetchImpl);
+
+    await expect(
+      transport.advanceTaskStage("task-1", { name: "stale", stages: [{ name: "plan" }] })
+    ).rejects.toThrow("LAN request failed (409)");
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
   it("fails closed instead of requesting task file contents over unauthenticated LAN", async () => {
     const fetchImpl = vi.fn<FetchLike>().mockResolvedValue({
       ok: true,

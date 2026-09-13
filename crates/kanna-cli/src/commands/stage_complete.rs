@@ -14,6 +14,8 @@ pub(crate) fn build_complete_stage_request(
     status: String,
     summary: String,
     metadata: Option<Value>,
+    workflow_definition: Option<Value>,
+    expected_definition: Option<Value>,
 ) -> CompleteStageRequest {
     CompleteStageRequest {
         run_id,
@@ -21,6 +23,8 @@ pub(crate) fn build_complete_stage_request(
         status,
         summary,
         metadata,
+        workflow_definition,
+        expected_definition,
     }
 }
 
@@ -43,6 +47,8 @@ pub(crate) async fn run(
     status: String,
     summary: String,
     metadata: Option<String>,
+    workflow_definition: Option<String>,
+    expected_definition: Option<String>,
     server_url: Option<&str>,
 ) {
     // Validate status
@@ -58,14 +64,38 @@ pub(crate) async fn run(
         process::exit(1);
     });
 
+    // Refused here rather than at the server, so a planner that sent only one
+    // half learns it before a verdict is recorded.
+    if workflow_definition.is_some() != expected_definition.is_some() {
+        eprintln!("Error: --workflow-definition and --expected-definition must be passed together");
+        process::exit(1);
+    }
+    let parse_definition = |raw: Option<String>, flag: &str| -> Option<Value> {
+        raw.map(|raw| {
+            serde_json::from_str::<Value>(&raw).unwrap_or_else(|error| {
+                eprintln!("Error: {flag} must be a JSON object: {error}");
+                process::exit(1);
+            })
+        })
+    };
+    let workflow_definition = parse_definition(workflow_definition, "--workflow-definition");
+    let expected_definition = parse_definition(expected_definition, "--expected-definition");
+
     let env_pairs = env::vars().collect::<Vec<_>>();
     let borrowed_pairs = env_pairs
         .iter()
         .map(|(key, value)| (key.as_str(), value.as_str()))
         .collect::<Vec<_>>();
     let base_url = resolve_server_base_url(&borrowed_pairs, server_url);
-    let mut request =
-        build_complete_stage_request(None, None, status.clone(), summary.clone(), metadata_value);
+    let mut request = build_complete_stage_request(
+        None,
+        None,
+        status.clone(),
+        summary.clone(),
+        metadata_value,
+        workflow_definition,
+        expected_definition,
+    );
     bind_completion_request(&base_url, &task_id, &mut request)
         .await
         .unwrap_or_else(|error| {
@@ -82,6 +112,21 @@ pub(crate) async fn run(
         "{}",
         render_stage_complete_confirmation(&task_id, &status, &response.task_id)
     );
+    if request.workflow_definition.is_some() {
+        // An older server ignores the arguments and answers without the flag;
+        // saying so is the difference between a published workflow and a plan
+        // whose stages silently do not exist.
+        match response.workflow_extended {
+            Some(true) => println!("The task's remaining stages were published with this plan."),
+            _ => {
+                eprintln!(
+                    "Error: this server did not confirm the workflow extension \
+                     (no workflowExtended in its response); the remaining stages were NOT published."
+                );
+                process::exit(1);
+            }
+        }
+    }
 }
 
 async fn bind_completion_request(

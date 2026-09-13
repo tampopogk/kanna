@@ -156,6 +156,7 @@ fn one_stage_operation_keeps_prompt_spawn_and_teardown_on_pinned_revision() {
         "Pinned task",
         None,
         None,
+        None,
         Some(branch),
         Some("origin/main"),
         Some(branch),
@@ -4177,5 +4178,437 @@ fn edited_workflow_spawn_case(seed_run: bool) {
         "a later fresh revision must retain the new run's provider"
     );
     assert_eq!(later_revision.model.as_deref(), Some("gpt-6-astra"));
+    let _ = std::fs::remove_dir_all(&repo_root);
+}
+
+/// The stamped plan is read from the task's pinned workflow, not from run
+/// history, so every later stage — after a revision, a resume, or a recovery
+/// that discarded the transcript — still binds the plan its stages were
+/// published under.
+#[test]
+fn stamped_plan_result_comes_from_the_pinned_workflow() {
+    let repo_root = init_git_repo("stamped-plan-result");
+    let config = test_config("stamped-plan-result");
+    let db = Db::open_for_tests(&config.db_path).unwrap();
+    db.insert_test_repo_with_path("repo-1", &repo_root.to_string_lossy(), "Repo One")
+        .unwrap();
+    db.insert_test_pipeline_item(
+        "task-plan",
+        "repo-1",
+        "Grown task",
+        Some("Grown task"),
+        "in progress",
+        "2026-09-12 00:00:00",
+    )
+    .unwrap();
+
+    let without_plan = serde_json::json!({"name": "grown", "stages": [
+        {"name": "in progress", "policy": {"transition": "manual"}}
+    ]});
+    db.update_test_pipeline_item_pipeline_def("task-plan", &without_plan.to_string())
+        .unwrap();
+    assert_eq!(
+        super::super::stages::stamped_plan_result(&db, "task-plan"),
+        None
+    );
+
+    let mut with_plan = without_plan;
+    with_plan["plan_context"] = serde_json::json!({
+        "source_run_id": "run-plan", "stage": "plan",
+        "result": "{\"status\":\"success\",\"summary\":\"the approved plan\"}"
+    });
+    db.update_test_pipeline_item_pipeline_def("task-plan", &with_plan.to_string())
+        .unwrap();
+    assert_eq!(
+        super::super::stages::stamped_plan_result(&db, "task-plan").as_deref(),
+        Some("{\"status\":\"success\",\"summary\":\"the approved plan\"}")
+    );
+
+    let _ = std::fs::remove_dir_all(&repo_root);
+}
+
+/// Write the agents a published delivery suffix binds, plus the planning
+/// agents that produced it, into a real repository fixture.
+fn write_grown_workflow_agents(repo_root: &std::path::Path) {
+    for (name, body) in [
+        ("consultant", "Consultant agent."),
+        ("plan", "Plan agent."),
+        ("implement", "Implement agent."),
+        ("commit", "Commit agent."),
+        ("review", "Review agent."),
+        ("pr", "PR agent."),
+        ("approve", "Approve agent."),
+    ] {
+        std::fs::create_dir_all(repo_root.join(format!(".kanna/agents/{name}"))).unwrap();
+        std::fs::write(
+            repo_root.join(format!(".kanna/agents/{name}/AGENT.md")),
+            format!(
+                "---\nname: {name}\ndescription: {name} agent\nagent_provider: claude\n---\n{body}"
+            ),
+        )
+        .unwrap();
+    }
+    std::fs::create_dir_all(repo_root.join(".kanna/workflows")).unwrap();
+    std::fs::write(
+        repo_root.join(".kanna/workflows/consultation.json"),
+        serde_json::json!({
+            "name": "consultation",
+            "stages": [{
+                "name": "consultation", "agent": "consultant", "prompt": "$TASK_PROMPT",
+                "policy": { "transition": "manual" }
+            }]
+        })
+        .to_string(),
+    )
+    .unwrap();
+    publish_origin_main(repo_root, "publish grown workflow fixtures");
+}
+
+/// The definition a manager appends and a plan then publishes, produced by the
+/// **same validators the API uses** rather than hand-written here: this test's
+/// job is to prove what those validators accept actually executes.
+fn publish_grown_workflow(repo: &crate::db::Repo, plan_run_id: &str, plan_result: &str) -> String {
+    let after_manager_append = serde_json::json!({
+        "name": "consultation",
+        "stages": [
+            {"name": "consultation", "agent": "consultant", "prompt": "$TASK_PROMPT",
+             "policy": {"transition": "manual"}},
+            {"name": "plan", "agent": "plan", "prompt": "Deliver the chosen outcome.",
+             "policy": {"transition": "manual"}}
+        ]
+    });
+    let published = serde_json::json!({
+        "name": "consultation",
+        "revision_limit": 3,
+        "stages": [
+            {"name": "consultation", "agent": "consultant", "prompt": "$TASK_PROMPT",
+             "policy": {"transition": "manual"}},
+            {"name": "plan", "agent": "plan", "prompt": "Deliver the chosen outcome.",
+             "policy": {"transition": "manual"}},
+            {"name": "in progress", "agent": "implement",
+             "prompt": "Build to this plan: $PLAN_RESULT",
+             "policy": {"transition": "manual", "revision_transition": "auto"},
+             "post": {"name": "commit", "agent": "commit",
+                      "prompt": "Commit the work for: $PLAN_RESULT"}},
+            {"name": "review", "agent": "review",
+             "prompt": "Review $BRANCH. Plan: $PLAN_RESULT. Build: $PREV_MAIN_RESULT",
+             "policy": {"transition": "manual"}},
+            {"name": "pr", "agent": "pr", "prompt": "Open a PR for $BRANCH.",
+             "policy": {"transition": "manual"},
+             "post": {"name": "approve", "agent": "approve", "prompt": "Approve $BRANCH."}}
+        ]
+    });
+    let previous = after_manager_append.to_string();
+    super::super::validate_plan_workflow_extension(&previous, &published, "plan")
+        .expect("the published suffix must satisfy the recipe the API enforces");
+    let stamp = super::super::WorkflowPlanContext {
+        source_run_id: plan_run_id.to_string(),
+        stage: "plan".to_string(),
+        result: plan_result.to_string(),
+        // This fixture stands in for a publication the API already made; the
+        // digest is that operation's identity and nothing here replays it.
+        request_digest: None,
+    };
+    super::super::validate_task_workflow_replacement_with_plan_context(
+        repo,
+        &published,
+        &previous,
+        "plan",
+        &[],
+        super::super::PlanContextPolicy::Stamp(&stamp),
+    )
+    .expect("the published definition must validate")
+    .snapshot
+    .definition_json
+}
+
+/// Commit a prepared stage swap the way the transition executor does: record
+/// the run, and move the task's stage and branch onto the forked workspace.
+/// Without this the chain cannot continue, and the point of this test is that
+/// the *published* stages run one after another.
+fn commit_prepared_run(
+    db: &Db,
+    run: &super::super::types::PreparedStageRunSpawn,
+    run_id: &str,
+) -> (String, String) {
+    let (branch, worktree_path) = match &run.workspace {
+        super::super::types::PreparedRunWorkspace::Forked(workspace)
+        | super::super::types::PreparedRunWorkspace::Resumed(workspace)
+        | super::super::types::PreparedRunWorkspace::Recreated(workspace) => {
+            (workspace.branch.clone(), workspace.worktree_path.clone())
+        }
+        super::super::types::PreparedRunWorkspace::Current => (
+            db.get_pipeline_item(&run.task_id)
+                .unwrap()
+                .unwrap()
+                .branch
+                .unwrap(),
+            run.cwd.clone(),
+        ),
+    };
+    db.insert_stage_run(NewStageRun {
+        id: run_id,
+        task_id: &run.task_id,
+        stage: &run.run_stage,
+        kind: run.run_kind,
+        agent: run.stage_agent.as_deref(),
+        agent_provider: Some(&run.agent_provider),
+        model: None,
+        effort: None,
+        status: "running",
+        result: None,
+        feedback: None,
+        session_id: Some(&run.session_id),
+        provider_session_id: None,
+        cwd: Some(&worktree_path),
+        resumed_from_run_id: None,
+    })
+    .unwrap();
+    db.update_test_pipeline_item_stage_context(
+        &run.task_id,
+        &branch,
+        "consultation",
+        None,
+        "claude",
+    )
+    .unwrap();
+    db.update_pipeline_item_stage(&run.task_id, &run.next_stage)
+        .unwrap();
+    (branch, worktree_path)
+}
+
+fn spawn_prompt(run: &super::super::types::PreparedStageRunSpawn) -> String {
+    match &run.session {
+        PreparedSessionSpawn::Pty { args, .. } => args.join(" "),
+        PreparedSessionSpawn::Agent {
+            prompt,
+            system_prompt,
+            ..
+        } => format!("{system_prompt}\n{prompt}"),
+    }
+}
+
+/// The whole grown-task journey against real git worktrees: the definition a
+/// plan publishes actually executes, and the plan it was published under stays
+/// bound through build, its commit post, review, PR, a revision-style rerun,
+/// and close.
+#[test]
+fn a_published_plan_suffix_executes_and_keeps_its_plan_bound() {
+    let repo_root = init_git_repo("grown-workflow-lifecycle");
+    write_grown_workflow_agents(&repo_root);
+
+    let config = test_config("grown-workflow-lifecycle");
+    let db = Db::open_for_tests(&config.db_path).unwrap();
+    db.insert_test_repo_with_path("repo-1", &repo_root.to_string_lossy(), "Repo One")
+        .unwrap();
+    let repo = db.get_repo("repo-1").unwrap().unwrap();
+
+    // The task the consultation ran in, now parked at its appended plan stage.
+    run_git_fixture(&repo_root, &["branch", "task-grown"]);
+    let source_worktree = repo_root.join(".kanna-worktrees/task-grown");
+    run_git_fixture(
+        &repo_root,
+        &[
+            "worktree",
+            "add",
+            source_worktree.to_string_lossy().as_ref(),
+            "task-grown",
+        ],
+    );
+    db.insert_test_pipeline_item(
+        "task-grown",
+        "repo-1",
+        "Rename the sidebar label",
+        Some("Grown task"),
+        "plan",
+        "2026-09-13 00:00:00",
+    )
+    .unwrap();
+    db.update_test_pipeline_item_stage_context(
+        "task-grown",
+        "task-grown",
+        "consultation",
+        None,
+        "claude",
+    )
+    .unwrap();
+
+    let plan_result =
+        r#"{"status":"success","summary":"PLAN-BODY rename one label; no reviewer panel"}"#;
+    db.update_test_pipeline_item_pipeline_def(
+        "task-grown",
+        &publish_grown_workflow(&repo, "run-plan", plan_result),
+    )
+    .unwrap();
+    for (id, stage, status, result) in [
+        (
+            "run-consultation",
+            "consultation",
+            "succeeded",
+            Some(r#"{"status":"success","summary":"CONSULT-BODY"}"#),
+        ),
+        ("run-plan", "plan", "succeeded", Some(plan_result)),
+    ] {
+        db.insert_stage_run(NewStageRun {
+            id,
+            task_id: "task-grown",
+            stage,
+            kind: "main",
+            agent: Some("plan"),
+            agent_provider: Some("claude"),
+            model: None,
+            effort: None,
+            status,
+            result,
+            feedback: None,
+            session_id: Some("task-grown"),
+            provider_session_id: None,
+            cwd: Some(&source_worktree.to_string_lossy()),
+            resumed_from_run_id: None,
+        })
+        .unwrap();
+    }
+
+    // plan -> in progress: a real fork, running the agent the plan chose, with
+    // the plan spliced into its prompt.
+    let build = match prepare_advance_stage_for_api(&db, &config, "task-grown").unwrap() {
+        PreparedStageTransition::Run(run) => run,
+        _ => panic!("expected a stage swap into the published suffix"),
+    };
+    assert_eq!(build.next_stage, "in progress");
+    assert_eq!(build.stage_agent.as_deref(), Some("implement"));
+    let build_prompt = spawn_prompt(&build);
+    assert!(build_prompt.contains("Implement agent."), "{build_prompt}");
+    assert!(build_prompt.contains("PLAN-BODY"), "{build_prompt}");
+    let (build_branch, build_worktree) = commit_prepared_run(&db, &build, "run-build");
+    assert_ne!(build_branch, "task-grown", "a stage swap forks a workspace");
+    assert!(
+        std::path::Path::new(&build_worktree).is_dir(),
+        "the forked worktree must exist: {build_worktree}"
+    );
+
+    // The build records success; the stage declares a post, so advancing
+    // dispatches `commit` into the running session with the plan still bound.
+    db.finish_stage_run(
+        "run-build",
+        "succeeded",
+        Some(r#"{"status":"success","summary":"BUILD-BODY"}"#),
+        Some("BUILD-BODY"),
+    )
+    .unwrap();
+    let post = match prepare_advance_stage_for_api(&db, &config, "task-grown").unwrap() {
+        PreparedStageTransition::Post(post) => post,
+        _ => panic!("expected the published commit post"),
+    };
+    assert_eq!(post.run_stage, "commit");
+    assert!(post.message.contains("PLAN-BODY"), "{}", post.message);
+    db.insert_stage_run(NewStageRun {
+        id: "run-commit",
+        task_id: "task-grown",
+        stage: "commit",
+        kind: "post",
+        agent: Some("commit"),
+        agent_provider: Some("claude"),
+        model: None,
+        effort: None,
+        status: "succeeded",
+        result: Some(r#"{"status":"success","summary":"COMMIT-BODY"}"#),
+        feedback: None,
+        session_id: Some("task-grown"),
+        provider_session_id: None,
+        cwd: Some(&build_worktree),
+        resumed_from_run_id: None,
+    })
+    .unwrap();
+
+    // in progress -> review: `$PLAN_RESULT` still carries the plan while
+    // `$PREV_MAIN_RESULT` has moved on to the build's own report. This is the
+    // property a second durable record would otherwise be needed for.
+    let review = match prepare_advance_stage_for_api(&db, &config, "task-grown").unwrap() {
+        PreparedStageTransition::Run(run) => run,
+        _ => panic!("expected a swap into review"),
+    };
+    assert_eq!(review.next_stage, "review");
+    assert_eq!(review.stage_agent.as_deref(), Some("review"));
+    let review_prompt = spawn_prompt(&review);
+    assert!(review_prompt.contains("PLAN-BODY"), "{review_prompt}");
+    assert!(review_prompt.contains("BUILD-BODY"), "{review_prompt}");
+    commit_prepared_run(&db, &review, "run-review");
+    db.finish_stage_run(
+        "run-review",
+        "succeeded",
+        Some(r#"{"status":"success","summary":"REVIEW-BODY"}"#),
+        Some("REVIEW-BODY"),
+    )
+    .unwrap();
+
+    // review -> pr, then the approve post, then close past the final stage.
+    let pr = match prepare_advance_stage_for_api(&db, &config, "task-grown").unwrap() {
+        PreparedStageTransition::Run(run) => run,
+        _ => panic!("expected a swap into pr"),
+    };
+    assert_eq!(pr.next_stage, "pr");
+    assert_eq!(pr.stage_agent.as_deref(), Some("pr"));
+    let (_, pr_worktree) = commit_prepared_run(&db, &pr, "run-pr");
+    db.finish_stage_run("run-pr", "succeeded", Some("{}"), Some("PR-BODY"))
+        .unwrap();
+    let approve = match prepare_advance_stage_for_api(&db, &config, "task-grown").unwrap() {
+        PreparedStageTransition::Post(post) => post,
+        _ => panic!("expected the published approve post"),
+    };
+    assert_eq!(approve.run_stage, "approve");
+    db.insert_stage_run(NewStageRun {
+        id: "run-approve",
+        task_id: "task-grown",
+        stage: "approve",
+        kind: "post",
+        agent: Some("approve"),
+        agent_provider: Some("claude"),
+        model: None,
+        effort: None,
+        status: "succeeded",
+        result: Some("{}"),
+        feedback: None,
+        session_id: Some("task-grown"),
+        provider_session_id: None,
+        cwd: Some(&pr_worktree),
+        resumed_from_run_id: None,
+    })
+    .unwrap();
+    assert!(
+        matches!(
+            prepare_advance_stage_for_api(&db, &config, "task-grown").unwrap(),
+            PreparedStageTransition::Close { .. }
+        ),
+        "advancing past the published final stage closes the task"
+    );
+
+    // Recovery: a fresh rerun of the build stage — the spawn a failed resume
+    // falls back to — still binds the plan, because it is read from the pinned
+    // definition rather than from a transcript or run history.
+    db.update_test_pipeline_item_stage_context(
+        "task-grown",
+        &build_branch,
+        "consultation",
+        None,
+        "claude",
+    )
+    .unwrap();
+    db.update_pipeline_item_stage("task-grown", "in progress")
+        .unwrap();
+    let rerun = super::super::prepare_rerun_stage_for_api(&db, &config, "task-grown").unwrap();
+    let rerun_prompt = match &rerun.session {
+        PreparedSessionSpawn::Pty { args, .. } => args.join(" "),
+        PreparedSessionSpawn::Agent {
+            prompt,
+            system_prompt,
+            ..
+        } => format!("{system_prompt}\n{prompt}"),
+    };
+    assert!(
+        rerun_prompt.contains("PLAN-BODY"),
+        "a recovery spawn must still carry the approved plan: {rerun_prompt}"
+    );
+
     let _ = std::fs::remove_dir_all(&repo_root);
 }

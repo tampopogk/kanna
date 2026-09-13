@@ -837,6 +837,7 @@ async fn ordinary_put_resume_and_rerun_refuse_unprepared_bound_task() {
                 task_id: task_id.to_string(),
                 follow_task: None,
                 revision_budget: None,
+                workflow_extended: None,
             })
         }),
     )));

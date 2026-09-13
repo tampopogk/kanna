@@ -1,11 +1,11 @@
 {
   "$schema": "./schema.json",
   "name": "consultation",
-  "description": "Product consultation: explore what outcome to pursue and why, then pause for owner discussion without implementation",
+  "description": "Product consultation: explore what outcome to pursue and why, then pause for owner discussion without implementation. When the owner chooses an outcome and asks to proceed, the task manager appends a manual plan stage to this same task rather than starting a replacement one.",
   "stages": [
     {
       "name": "consultation",
-      "description": "Consultant evaluates alternatives, evidence, tradeoffs, assumptions, and unknowns, records a recommendation, and remains at the manual owner discussion gate",
+      "description": "Consultant evaluates alternatives, evidence, tradeoffs, assumptions, and unknowns, records a recommendation, and remains at the manual owner discussion gate; delivery stages are appended to this task only on the owner's explicit instruction",
       "agent": "consultant",
       "prompt": "$TASK_PROMPT",
       "policy": { "transition": "manual" }

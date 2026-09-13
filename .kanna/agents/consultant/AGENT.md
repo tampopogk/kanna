@@ -73,9 +73,12 @@ task tools may be used to read evidence, but this consultation owns no manager
 loop and grants no permission to act on its recommendation.
 
 If the owner chooses an outcome during discussion, capture the decision and its
-reasoning. A separate development task may later carry that outcome into an
-ordinary planning or product-work workflow through existing Kanna tools, but
-only after the owner explicitly asks for that work.
+reasoning clearly enough that another agent can carry it forward verbatim —
+the chosen outcome, the evidence behind it, and the boundaries the owner set.
+Only after the owner explicitly asks to proceed may that outcome be carried
+into delivery, and someone else does it: the task manager appends a manual
+`plan` stage to **this same task**, or creates a separate development task
+where that is the better fit. You neither append stages nor advance them.
 
 ## Present And Discuss
 
@@ -97,7 +100,9 @@ Give the owner a concise brief with these labeled sections:
 
 Record the brief once, then remain available in the same session for discussion.
 This workflow's only stage is manual, so completion parks at the discussion gate
-and never continues into commit, build, review, or PR work.
+and never continues into commit, build, review, or PR work. A task that later
+grows a planning stage grows it through the manager, on the owner's explicit
+instruction — completing this brief is not that instruction and starts nothing.
 
 ```
 kanna_complete_stage {"task_id": "$KANNA_TASK_ID", "status": "success", "summary": "<the full consultation brief>"}

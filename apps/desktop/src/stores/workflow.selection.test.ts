@@ -205,11 +205,17 @@ describe("stage model request", () => {
     const fetch = vi.fn(async (_url: RequestInfo | URL, _init?: RequestInit) => new Response("Not advancing in this request contract", { status: 400 }));
     vi.stubGlobal("fetch", fetch);
     await createWorkflowApi(context).advanceStage("task-model", {
+      // The caller observed this definition, so no read happens inside the
+      // action and the advance carries exactly it.
+      expectedDefinition: { stages: [{ name: "in progress" }, { name: "review" }] },
       nextStageAgentProvider: "opencode", nextStageModel: "omlx/Qwen-Coder",
     });
-    expect(fetch).toHaveBeenCalled();
-    expect(JSON.parse(String(fetch.mock.calls[0]?.[1]?.body))).toEqual({
-      source: "operator", nextStageAgentProvider: "opencode", nextStageModel: "omlx/Qwen-Coder", nextStageProviderSource: "operator",
+    const advance = fetch.mock.calls.find(([url]) => String(url).includes("/actions/advance-stage"));
+    expect(advance).toBeDefined();
+    expect(JSON.parse(String(advance?.[1]?.body))).toEqual({
+      source: "operator",
+      expectedDefinition: { stages: [{ name: "in progress" }, { name: "review" }] },
+      nextStageAgentProvider: "opencode", nextStageModel: "omlx/Qwen-Coder", nextStageProviderSource: "operator",
     });
     vi.unstubAllGlobals();
   });

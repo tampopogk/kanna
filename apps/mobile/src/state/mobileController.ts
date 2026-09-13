@@ -2,6 +2,7 @@ import type {
   CreateTaskResponse,
   DesktopSummary,
   RepoCommandCatalog,
+  PinnedTaskWorkflow,
   RepoSummary,
   RepoDirectoryListing,
   RepoFileRange,
@@ -631,6 +632,20 @@ export function createMobileController(
     return slot ? slot.taskId : findCollectionTask(selectionId)?.id ?? null;
   };
 
+  /**
+   * The pinned workflow the last detail read for a task actually returned,
+   * bound to the route that read it.
+   *
+   * A task whose stages can be published or repointed while an earlier stage
+   * runs must not be advanced on a workflow nobody looked at — including one
+   * read inside the advance itself, which would fence on a tail the operator
+   * never saw. This is the definition the screen was populated from; the
+   * advance sends exactly it.
+   */
+  let observedTaskWorkflow:
+    | { taskId: string; routeIdentity: string; definition: PinnedTaskWorkflow | null }
+    | null = null;
+
   const taskPromptRouteIdentity = (task: TaskSummary): string =>
     task.ownerDesktopId && task.ownerLocalTaskId
       ? JSON.stringify([task.ownerDesktopId, task.ownerLocalTaskId])
@@ -691,6 +706,11 @@ export function createMobileController(
               }
             : null;
         store.setSelectedTaskReviewState(reviewState);
+        observedTaskWorkflow = {
+          taskId,
+          routeIdentity,
+          definition: detail.workflowDefinition ?? null
+        };
         if (typeof detail.prompt === "string") {
           loadedTaskPrompt = {
             taskId,
@@ -3576,6 +3596,11 @@ export function createMobileController(
         if (response.taskId !== taskId && responseRoute) {
           pendingTaskIdentities.set(response.taskId, responseRoute);
         }
+        // The task has moved on, and its stages may have too — a plan stage
+        // that just ran can have published the rest of them. Drop what was
+        // observed rather than keep believing the document that authorized
+        // this advance; the next screen read records the current one.
+        observedTaskWorkflow = null;
         taskCollectionsRevision += 1;
         await refreshTaskCollections();
         setUnownedErrorMessage(null);
@@ -3615,7 +3640,60 @@ export function createMobileController(
           sourceTask?.ownerDesktopId ??
           store.getState().selectedDesktopId;
         const ownerLocalRepoId = sourceTask?.ownerLocalRepoId ?? null;
-        const response = await client.advanceTaskStage(taskId);
+        // The definition this action is taken against is the one the task
+        // screen was populated from, bound to the route that read it — never
+        // one fetched inside the action, which would accept a tail nobody saw.
+        const routeIdentity = sourceTask ? taskPromptRouteIdentity(sourceTask) : null;
+        const expectedDefinition =
+          observedTaskWorkflow &&
+          observedTaskWorkflow.taskId === taskId &&
+          observedTaskWorkflow.routeIdentity === routeIdentity
+            ? observedTaskWorkflow.definition
+            : null;
+        if (!expectedDefinition && client.getTask && sourceTask) {
+          // Nothing observed for this task on this route. Read it once so the
+          // screen is current, then let the operator decide again rather than
+          // advancing a task whose stages can move underneath them.
+          //
+          // A read that *fails* is not permission to advance on nothing: it
+          // leaves this client unable to tell a task that can grow its own
+          // stages from one that cannot. A read that succeeds and reports no
+          // pinned workflow is a positive answer — there is nothing to fence
+          // on — so those tasks advance exactly as they always did.
+          const refreshed = await client
+            .getTask(taskId)
+            .then((detail) => ({ definition: detail.workflowDefinition ?? null }))
+            .catch(() => null);
+          if (!refreshed) {
+            fail(
+              new Error(
+                "Could not read this task's stages, so it was not advanced. Try again when its machine is reachable."
+              )
+            );
+            return null;
+          }
+          observedTaskWorkflow = {
+            taskId,
+            routeIdentity: routeIdentity ?? taskId,
+            definition: refreshed.definition
+          };
+          if (refreshed.definition) {
+            // A pinned workflow exists and nothing on this screen was read from
+            // it. Any pinned tail can move — a consultation can have a plan
+            // stage appended to it, and a plan can publish the stages after it,
+            // neither of which leaves a mark before it happens — so the
+            // presence of the document, not what is in it, is what makes this
+            // fenceable. The version just read is recorded for the next
+            // deliberate action and deliberately not dispatched by this one.
+            fail(
+              new Error(
+                "This task's stages changed while you were looking. Nothing was advanced — open the task again and retry."
+              )
+            );
+            return null;
+          }
+        }
+        const response = await client.advanceTaskStage(taskId, expectedDefinition);
         const responseOwnerDesktopId =
           response.ownerDesktopId ?? ownerDesktopId;
         const responseOwnerLocalRepoId =
@@ -3648,6 +3726,10 @@ export function createMobileController(
         this.openTask(taskIdToOpen);
         return store.getState().selectedTaskId;
       } catch (error) {
+        // A refused fence means what this client believed about the task's
+        // stages is known to be wrong. Drop it so the next screen read records
+        // the current one; this action does not re-read and re-dispatch.
+        observedTaskWorkflow = null;
         fail(error);
         return null;
       } finally {

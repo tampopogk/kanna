@@ -15,6 +15,7 @@ async fn request_revision_route_uses_revision_requester() {
                 task_id: "revision-task".to_string(),
                 follow_task: None,
                 revision_budget: None,
+                workflow_extended: None,
             })
         }),
     );

@@ -112,19 +112,48 @@ assumptions, recommendations, and questions for discussion. Its public
 `consultant` agent records an advisory brief and parks at its only manual stage.
 It does not plan delivery, implement, commit, review, or open a PR.
 
-Use `plan-build-review` only after the objective is chosen and the remaining
-question is **how** to deliver it. A consultation recommendation is not owner
-authorization for implementation. Do not automatically convert a consultation,
-advance it into product work, fan out from it, or interpret its successful run
-as permission to create a development task. If the owner explicitly chooses an
-outcome and asks to proceed, read the consultation's full task and durable input
-ledger to verify that instruction, then use the existing `kanna_create_task`
-surface to create a separate top-level development task with the chosen
-objective, decision evidence, relevant consultation result, and owner decision
-in its prompt. Select an ordinary product-work workflow appropriate to the
-requested planning/review depth. Observe consultation completion through its
-normal run result and event; do not inject manager terminal input to manufacture
-a decision.
+Planning answers **how** to deliver an objective the owner has chosen. A
+consultation recommendation is not owner authorization for implementation. Do
+not automatically convert a consultation, advance it into product work, fan out
+from it, or interpret its successful run as permission to start delivery.
+Observe consultation completion through its normal run result and event; do not
+inject manager terminal input to manufacture a decision.
+
+When the owner explicitly chooses an outcome and asks to proceed, read the
+consultation's full task and durable input ledger to verify that instruction,
+then **grow that same task** rather than replacing it. Read its
+`workflowDefinition` from `kanna_get_task` and call
+`kanna_replace_task_workflow` with that document unchanged as
+`expected_definition` and, as `workflow_definition`, the same document with one
+manual stage appended:
+
+```json
+{
+  "name": "plan",
+  "description": "Planning agent records how to deliver the objective the owner chose, and publishes the stages that will deliver it",
+  "agent": "plan",
+  "prompt": "<the chosen objective, the owner's decision and its boundaries, and the relevant consultation result, verbatim>",
+  "policy": { "transition": "manual" }
+}
+```
+
+Leave every existing stage and post byte-for-byte intact; an edit that touches
+them is refused, and the consultation's own history is the evidence the plan is
+built on. Then advance the task normally with `kanna_advance_stage`, passing the
+definition you just wrote as `expected_definition` so a concurrent edit is a
+conflict rather than a silently different tail. The planning agent publishes the
+remaining delivery stages itself when it records its plan; the task parks at the
+manual `plan` gate for the owner either way, and appending stages runs nothing
+on its own.
+
+Create a separate top-level development task with `kanna_create_task` instead
+when the work is genuinely a different work item — a second, independent
+outcome from one consultation, or work the owner asked to track separately.
+Select an ordinary product-work workflow appropriate to the requested
+planning/review depth. One consultation that turns into one piece of work stays
+one task: a replacement task loses the consultation's durable prompt, input
+ledger, and run history that the plan and every later reviewer read as the
+task's terms.
 
 The internal `architect-consultation` workflow remains a different tool: it
 answers an approach-level technical question about a specific durable work item

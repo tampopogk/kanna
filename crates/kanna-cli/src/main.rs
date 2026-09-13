@@ -53,6 +53,16 @@ pub(crate) enum Commands {
         #[arg(long)]
         metadata: Option<String>,
 
+        /// Complete replacement workflow appending this task's remaining
+        /// stages, published in the same transaction as this result. Requires
+        /// --expected-definition.
+        #[arg(long)]
+        workflow_definition: Option<String>,
+
+        /// The pinned workflow last read from task detail, as a JSON object.
+        #[arg(long)]
+        expected_definition: Option<String>,
+
         /// Override the local Kanna server base URL
         #[arg(long)]
         server_url: Option<String>,
@@ -609,6 +619,13 @@ pub(crate) enum TaskCommands {
         )]
         next_stage_provider_source: Option<String>,
 
+        /// The pinned workflow this caller inspected, as a JSON object. A
+        /// task's remaining stages can be published while an earlier stage
+        /// runs, so a stale one is refused rather than advancing into a tail
+        /// nobody read.
+        #[arg(long)]
+        expected_definition: Option<String>,
+
         /// Override the local Kanna server base URL
         #[arg(long)]
         server_url: Option<String>,
@@ -1157,6 +1174,8 @@ async fn main() {
             status,
             summary,
             metadata,
+            workflow_definition,
+            expected_definition,
             server_url,
         } => {
             commands::stage_complete::run(
@@ -1164,6 +1183,8 @@ async fn main() {
                 status,
                 summary,
                 metadata,
+                workflow_definition,
+                expected_definition,
                 server_url.as_deref(),
             )
             .await;

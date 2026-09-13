@@ -100,6 +100,21 @@ The desktop adds the repo/task sidebar, attention state, diff and file views,
 shell access, stage controls, and preferences around that terminal. See
 [Product Behavior: Workflows](product-behavior.md#workflows).
 
+### Decide the work and how it will be done
+
+For work whose objective is not yet chosen, the operator opens a consultation
+task. Its consultant explores what outcome to pursue and why and parks for
+discussion. When the operator chooses an outcome and asks to proceed, the task
+manager appends a planning stage to **that same task**, and the planning agent
+chooses the review depth, agents, providers, and revision budget the work
+actually warrants, publishing those stages together with the plan. One decision
+stays one task, with its prompt, input ledger, and run history intact, and the
+work's shape is proportional to the work rather than chosen before anyone knew
+what it was. Trivial work stays trivial: a label change gets no reviewer unless
+the plan argues for one. The operator reads both the plan and the stages it
+chose at a manual gate before anything runs. See
+[Product Behavior: Workflows](product-behavior.md#workflows).
+
 ### Review, revise, and hand off
 
 The operator inspects the branch diff and advances a manual gate when satisfied.

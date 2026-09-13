@@ -29,6 +29,37 @@ semantics, and the MCP task-management rule — stay in the repo-root
 4. Cmd+S → advance the workflow (commit post runs in-session; the pr-stage agent creates the GitHub PR and reports its URL)
 5. Human reviews the PR through its preserved PR link, then uses the ordinary task stage-advance action. When the task's pinned workflow ships the `approve` post, that post hands approved work to the merge queue/master; pinned workflows without the post only advance. The workflow's existing single-flight and completion semantics remain unchanged.
 
+**A task can grow its own workflow.** A workflow does not have to be chosen in
+full before the task starts. The owner opens a `consultation`; when they choose
+an outcome and ask to proceed, the task manager appends a manual `plan` stage to
+**that same task** with `kanna_replace_task_workflow` and advances it. The
+planning agent then chooses the review depth, agents, providers, and revision
+budget the work actually warrants, and publishes the delivery stages in the same
+`kanna_complete_stage` call that records the plan — the two are written in one
+transaction, so a recorded plan is never visible without the stages it chose.
+The task parks at its manual `plan` gate either way; appending stages runs
+nothing.
+
+- *Only what has not happened yet.* The stages already recorded must survive
+  byte-for-byte, and the published suffix must follow an existing recipe —
+  `in progress` (+`commit`) → `pr` (+`approve`), or the same with a `review`
+  stage between. Each stage's agent and provider are the planner's choice, which
+  is how one recipe covers both the ordinary `review` agent and the
+  `qa-dispatcher` panel. This is a linear engine, not a workflow language.
+- *The plan stays readable.* Kanna stamps `plan_context` onto the pinned
+  definition and binds its result to the reserved `$PLAN_RESULT` prompt
+  variable for every published stage and post — unlike `$PREV_MAIN_RESULT`,
+  which each later main stage overwrites. It survives revisions, resume, and
+  recovery because it lives in the pinned workflow, not in run history. An
+  ordinary workflow edit carries the stamp forward and may not author or change
+  it.
+- *Callers fence on what they read.* `kanna_advance_stage` and the combined
+  completion both take `expected_definition`; a tail that moved under the caller
+  is a conflict, never a silently different workflow. The desktop projects a
+  task's next stage from the task's own pinned definition, not from the repo
+  file its workflow name resolves to — a grown task would otherwise read as one
+  stage long and appear to close on the next advance.
+
 **Revisions.** Sending a task back for revision follows these contracts
 (engine code: `crates/kanna-server/src/task_creator/{stages,resume}.rs`):
 

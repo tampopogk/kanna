@@ -63,6 +63,9 @@ pub(crate) use state::{
     RemoteSingletonOwner,
 };
 
+#[cfg(test)]
+pub(crate) use state::TransferSourceBarrier;
+
 pub(crate) use transfers::{ensure_engine_cloud_transfer_credential, CloudTransferRefreshFailure};
 
 #[allow(dead_code)]

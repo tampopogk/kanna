@@ -222,6 +222,11 @@ export function createSelectionApi(context: StoreContext): SelectionApi {
     await persistSelection();
     if (slot.task_id) {
       emitTaskSelected(slot.task_id);
+      // Selecting a task is when the operator starts looking at it. Reading its
+      // stage sequence here is what lets a later advance fence on what they
+      // were shown, and what recovers a task whose stale observation a refused
+      // fence dropped. Deliberately not awaited: selection must not wait on it.
+      void context.services.observeTaskWorkflow?.(slot.task_id);
     }
   }
 

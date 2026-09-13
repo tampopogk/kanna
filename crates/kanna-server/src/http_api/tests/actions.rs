@@ -3999,6 +3999,7 @@ async fn advance_stage_route_uses_stage_advancer() {
                 task_id: "task-2".to_string(),
                 follow_task: None,
                 revision_budget: None,
+                workflow_extended: None,
             })
         }),
     );
@@ -4108,6 +4109,7 @@ async fn stale_advance_transition_revision_is_rejected_after_owner_transition() 
                     task_id,
                     follow_task: None,
                     revision_budget: None,
+                    workflow_extended: None,
                 })
             }
         }),
@@ -4157,6 +4159,7 @@ async fn two_immediate_advance_requests_share_one_owner_transition() {
                     task_id,
                     follow_task: None,
                     revision_budget: None,
+                    workflow_extended: None,
                 })
             }
         }),
@@ -4228,6 +4231,7 @@ async fn complete_stage_waits_for_competing_advance_stage_mutation() {
                     task_id,
                     follow_task: None,
                     revision_budget: None,
+                    workflow_extended: None,
                 })
             }
         }),
@@ -4237,6 +4241,7 @@ async fn complete_stage_waits_for_competing_advance_stage_mutation() {
             task_id,
             follow_task: None,
             revision_budget: None,
+            workflow_extended: None,
         })
     }));
     let app = super::router(Arc::new(state));
@@ -4317,6 +4322,7 @@ async fn blocker_replacement_waits_for_competing_advance_stage_mutation() {
                     task_id,
                     follow_task: None,
                     revision_budget: None,
+                    workflow_extended: None,
                 })
             }
         }),
@@ -4471,6 +4477,7 @@ async fn rerun_stage_route_uses_stage_rerunner() {
                 task_id: "task-1".to_string(),
                 follow_task: None,
                 revision_budget: None,
+                workflow_extended: None,
             })
         }),
     );
@@ -5471,6 +5478,7 @@ async fn complete_stage_route_uses_stage_completer() {
                 task_id: "task-2".to_string(),
                 follow_task: None,
                 revision_budget: None,
+                workflow_extended: None,
             })
         }),
     );

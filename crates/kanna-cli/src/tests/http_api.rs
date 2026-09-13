@@ -386,6 +386,7 @@ async fn advance_stage_posts_to_task_action_path_with_empty_json_body() {
         "task-123",
         None,
         NextStageProviderOverride::default(),
+        None,
     )
     .await
     .unwrap();
@@ -412,6 +413,7 @@ async fn advance_stage_posts_the_next_stage_provider_override() {
             effort: Some("low"),
             source: Some("agent"),
         },
+        None,
     )
     .await
     .unwrap();
@@ -436,12 +438,39 @@ async fn advance_stage_posts_declared_manager_source() {
         "task-123",
         Some("manager"),
         NextStageProviderOverride::default(),
+        None,
     )
     .await
     .unwrap();
     let request = handle.await.unwrap();
 
     assert!(request.ends_with(r#"{"source":"manager"}"#));
+}
+
+/// The fence a caller uses when it acted on a stage sequence it read: a task's
+/// remaining stages can be published while an earlier stage runs.
+#[tokio::test]
+async fn advance_stage_posts_the_inspected_workflow_as_a_fence() {
+    let response = http_json_response("200 OK", "{\"taskId\":\"task-123\"}");
+    let (base_url, handle) = serve_single_http_response(response).await;
+
+    advance_stage_via_api(
+        &base_url,
+        "task-123",
+        Some("operator"),
+        NextStageProviderOverride::default(),
+        Some(serde_json::json!({"name": "grown", "stages": [{"name": "plan"}]})),
+    )
+    .await
+    .unwrap();
+    let request = handle.await.unwrap();
+
+    assert!(
+        request.ends_with(
+            r#"{"expectedDefinition":{"name":"grown","stages":[{"name":"plan"}]},"source":"operator"}"#
+        ),
+        "{request}"
+    );
 }
 
 #[tokio::test]
@@ -911,6 +940,7 @@ async fn advance_stage_surfaces_http_errors() {
         "task-123",
         None,
         NextStageProviderOverride::default(),
+        None,
     )
     .await
     .unwrap_err();

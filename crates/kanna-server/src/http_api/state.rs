@@ -191,6 +191,29 @@ pub struct AppState {
     pub(super) revision_requester: Option<TestRevisionRequester>,
     #[cfg(test)]
     pub(super) task_file_resolution_hook: Option<TestTaskFileResolutionHook>,
+    /// Held by a transfer finalization between acquiring the source and doing
+    /// anything to it, so a test can drive a real plan completion against the
+    /// same database while the attempt is genuinely mid-flight.
+    #[cfg(test)]
+    pub(crate) transfer_source_barrier: Option<Arc<TransferSourceBarrier>>,
+}
+
+/// A stop between a finalization attempt acquiring a source and touching it.
+///
+/// Both halves are per-attempt on purpose. A bare semaphore cannot express
+/// this: a permit taken by one attempt and dropped at the end of its scope goes
+/// straight back, so a later attempt is never actually held — and a test that
+/// looked for the *durable claim* to decide an attempt had arrived would read
+/// the one the earlier attempt already wrote and carry on before the later
+/// attempt had even started.
+#[cfg(test)]
+pub(crate) struct TransferSourceBarrier {
+    /// One message per attempt that has acquired the source, identifying it.
+    /// Receiving one is what proves that attempt got past acquisition.
+    pub(crate) arrived: tokio::sync::mpsc::UnboundedSender<String>,
+    /// Permits are consumed permanently, so one added permit releases exactly
+    /// one attempt.
+    pub(crate) release: Arc<tokio::sync::Semaphore>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -604,6 +627,8 @@ impl AppState {
             revision_requester: None,
             #[cfg(test)]
             task_file_resolution_hook: None,
+            #[cfg(test)]
+            transfer_source_barrier: None,
         }
     }
 

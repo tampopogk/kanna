@@ -310,6 +310,14 @@ async fn run_push(state: &Arc<AppState>, work: &Value) -> Result<(), Result<Stri
         log::info!("skipping transfer push for closed task {source_task_id}");
         return Ok(());
     }
+    // Answered here as well as at finalization, so a task that already carries
+    // a plan is refused before anything is reserved on the peer rather than
+    // after its artifacts are staged. Finalization is the guard that matters —
+    // it also catches a transfer queued before the plan existed — but there is
+    // no reason to make the operator wait for it.
+    if let Err(reason) = refuse_unprovable_plan_preservation(&source.item) {
+        return Err(Err(TerminalPush(reason)));
+    }
 
     if let Err(error) = crate::http_api::ensure_engine_cloud_transfer_credential(
         state,
@@ -1058,6 +1066,46 @@ pub async fn finalize(
 /// an upgrade must still find its own observation.
 const SESSION_BEFORE_FINALIZATION_PHASE: &str = "session-before-signal";
 
+/// Refuses to hand over a task whose plan the destination may not be able to
+/// keep.
+///
+/// A grown task's `plan_context` is the plan its published stages were chosen
+/// under, and it is immutable: an edit may carry it forward but may not author
+/// or change it. A destination that predates the field drops it when it
+/// re-serializes the pinned workflow — the executable suffix arrives, the plan
+/// behind it does not, and nothing on either side can put it back. The
+/// destination-side preservation check cannot help here, because the machine
+/// that would run it is the one that is too old to have it.
+///
+/// So the source refuses. The protocol has no way to prove what a peer
+/// preserves, and inventing a capability exchange for one field is a bigger
+/// thing than this deserves — so "unproved" is every peer, and a stamped task
+/// simply does not transfer yet. Ordinary tasks are untouched.
+///
+/// This is the early answer, given at push before anything is reserved on the
+/// peer, purely so the operator is not left waiting. It is a snapshot read and
+/// cannot be the guarantee: a plan can publish after it. The guarantee is
+/// `Db::claim_task_workflow_for_transfer`, which asks the same question and
+/// takes ownership of the task's workflow in one transaction, so nothing can
+/// publish between the question and the answer.
+fn refuse_unprovable_plan_preservation(item: &crate::db::PipelineItem) -> Result<(), String> {
+    let carries_plan = item
+        .pipeline_def
+        .as_deref()
+        .and_then(|definition| serde_json::from_str::<Value>(definition).ok())
+        .is_some_and(|definition| definition.get("plan_context").is_some());
+    if !carries_plan {
+        return Ok(());
+    }
+    Err(format!(
+        "task {} carries a published plan, and this transfer cannot prove the destination would \
+         keep it: a machine older than this one drops the plan while importing the stages it \
+         chose, and the plan cannot be reconstructed. The transfer is refused with the source task \
+         untouched and still running. Update the destination, or finish this task here.",
+        item.id
+    ))
+}
+
 /// Refuses a payload that lost its session between the pre-shutdown plan and
 /// the post-shutdown one.
 ///
@@ -1083,6 +1131,18 @@ fn refuse_session_downgrade(
         )),
         _ => Ok(()),
     }
+}
+
+/// The shared source finalization path, exposed so a test outside this module
+/// can interleave it with a real plan completion against the same database —
+/// which is the only way to exercise the ownership rule the two share.
+#[cfg(test)]
+pub(crate) async fn run_finalization_for_test(
+    state: &Arc<AppState>,
+    work: &TransferWorkItem,
+    transfer_id: &str,
+) -> Result<(Value, bool), String> {
+    run_finalization(state, work, transfer_id).await
 }
 
 async fn run_finalization(
@@ -1112,6 +1172,27 @@ async fn run_finalization(
         .get_repo(&source.item.repo_id)
         .map_err(|error| format!("db error: {error}"))?
         .ok_or_else(|| format!("repo not found for outgoing transfer: {transfer_id}"))?;
+
+    // Before anything is observed, staged, or shut down — and, crucially, in
+    // one transaction with the check rather than as a snapshot read this
+    // function then awaits past. A plan published while finalization was
+    // shutting the agent down would otherwise be serialized into the payload
+    // at `build_payload`, after the source had already quit.
+    db.claim_task_workflow_for_transfer(transfer_id, &source.item.id)
+        .map_err(|error| format!("db error: {error}"))??;
+
+    // Everything below this line can touch the source. A test holds here to
+    // prove the exclusion is real across the awaits, rather than only at the
+    // two committed orderings.
+    #[cfg(test)]
+    if let Some(barrier) = state.transfer_source_barrier.clone() {
+        let _ = barrier.arrived.send(format!("{transfer_id}/{}", work.id));
+        if let Ok(permit) = barrier.release.acquire().await {
+            // Consumed for good: one added permit releases one attempt, so a
+            // later attempt cannot be let through by an earlier one's exit.
+            permit.forget();
+        }
+    }
 
     // Locate the session state this payload will promise *before* the agent is
     // asked to stop: a transfer that cannot ship the conversation must fail
@@ -1386,6 +1467,19 @@ pub async fn outgoing_committed(
         .map_err(|error| format!("db error: {error}"))?
         .is_some_and(|item| item.closed_at.is_some());
     if !already_closed {
+        // Closing an open source is a source effect, and receipts are durable
+        // and replayed on the sidecar's own schedule — independently of whether
+        // this server has settled the work. A valid receipt proves the payload
+        // it was issued for; it proves nothing about a plan published since.
+        // Replaying one after that would destroy the source of the new plan, so
+        // ownership is re-acquired here under the same rule finalization uses,
+        // and a refusal leaves the task open with its plan intact.
+        //
+        // Asked only on the closing path: an already-closed source is an
+        // idempotent replay of work that has been applied, and re-asking there
+        // would refuse ordinary receipt bookkeeping for no benefit.
+        db.claim_task_workflow_for_transfer(&transfer_id, &source_task_id)
+            .map_err(|error| format!("db error: {error}"))??;
         if let Err((status, message)) =
             crate::http_api::close_task_in_process(Arc::clone(state), source_task_id.clone()).await
         {
@@ -1790,6 +1884,124 @@ mod tests {
             )
             .expect("attempt 1's observation");
         }
+    }
+
+    /// Stamp a seeded finalization task with a published plan, as a plan
+    /// completion does.
+    fn publish_plan_on(db: &crate::db::Db, task_id: &str) {
+        db.update_test_pipeline_item_pipeline_def(
+            task_id,
+            &serde_json::json!({
+                "name": "consultation",
+                "revision_limit": 3,
+                "stages": [
+                    {"name": "consultation", "policy": {"transition": "manual"}},
+                    {"name": "plan", "policy": {"transition": "manual"}},
+                    {"name": "in progress", "policy": {"transition": "manual"}}
+                ],
+                "plan_context": {
+                    "source_run_id": "run-plan",
+                    "stage": "plan",
+                    "result": "{\"status\":\"success\",\"summary\":\"the approved plan\"}"
+                }
+            })
+            .to_string(),
+        )
+        .expect("publish the plan onto the pinned workflow");
+    }
+
+    /// A source will not hand a published plan to a machine that may drop it.
+    ///
+    /// The destination-side preservation check cannot answer this: the machine
+    /// that would run it is the one too old to have it. So the source refuses,
+    /// and it refuses before its own agent is asked to quit — the only point at
+    /// which the task is still recoverable here.
+    ///
+    /// The refusal is deliberately conservative: nothing in the protocol proves
+    /// what a peer preserves, so no peer is contacted and every stamped task is
+    /// refused.
+    #[tokio::test]
+    async fn a_published_plan_is_not_handed_over_before_the_source_is_finalized() {
+        let state = crate::http_api::test_state_with_seed(
+            "desktop-finalize-plan-guard",
+            "Finalize Plan Guard",
+            |db| {
+                seed_finalization(db, "finalize:transfer-plan", Some("ses_before_shutdown"));
+                publish_plan_on(db, "task-finalize");
+            },
+        );
+
+        let error = run_finalization(
+            &state,
+            &finalize_work_item("finalize:transfer-plan"),
+            "transfer-finalize",
+        )
+        .await
+        .expect_err("a published plan was handed to a destination that may drop it");
+        assert!(
+            error.contains("carries a published plan"),
+            "the refusal must name the reason: {error}"
+        );
+
+        // Finalization records its verdict under its own phase, and it records
+        // that verdict before anything else it does. Nothing there is the
+        // evidence that the source session was never touched.
+        let db = state.transfer_work().open_db().expect("db");
+        assert_eq!(
+            db.read_transfer_work_observation("finalize:transfer-plan", "finalization-outcome")
+                .expect("read the finalization verdict"),
+            None,
+            "the source session was finalized despite the refusal"
+        );
+        // The plan is still here, whole, on a task that is still open.
+        let item = db
+            .get_pipeline_item("task-finalize")
+            .expect("read task")
+            .expect("task");
+        assert!(item.closed_at.is_none());
+        assert!(
+            item.pipeline_def
+                .as_deref()
+                .expect("pinned workflow")
+                .contains("the approved plan"),
+            "the published plan must survive the refusal"
+        );
+    }
+
+    /// The same task before its plan is published transfers normally, and the
+    /// guard is re-asked at finalization — so a transfer queued while the task
+    /// was still ordinary cannot walk past it once the plan lands.
+    #[tokio::test]
+    async fn an_ordinary_task_still_transfers_and_the_guard_is_re_asked_at_finalization() {
+        let state = crate::http_api::test_state_with_seed(
+            "desktop-finalize-plan-late",
+            "Finalize Plan Late",
+            |db| seed_finalization(db, "finalize:transfer-late", Some("ses_before_shutdown")),
+        );
+        let work = finalize_work_item("finalize:transfer-late");
+
+        // Queued while ordinary: this reaches the existing downgrade guard,
+        // which is well past the preservation one.
+        let before = run_finalization(&state, &work, "transfer-finalize")
+            .await
+            .expect_err("this fixture has no session to ship");
+        assert!(
+            !before.contains("carries a published plan"),
+            "an ordinary task must not be refused for preservation: {before}"
+        );
+
+        // The plan lands after the transfer was queued.
+        let db = state.transfer_work().open_db().expect("db");
+        publish_plan_on(&db, "task-finalize");
+        drop(db);
+
+        let after = run_finalization(&state, &work, "transfer-finalize")
+            .await
+            .expect_err("the published plan must now refuse");
+        assert!(
+            after.contains("carries a published plan"),
+            "finalization did not re-ask the guard: {after}"
+        );
     }
 
     /// The retry seam migration 050 exists for, on the source side.

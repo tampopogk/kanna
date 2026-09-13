@@ -46,6 +46,32 @@
       "description": "Whether this workflow is offered as a choice. \"internal\" keeps the name out of every listing (the repo manifest, the desktop's new-task picker, the tool catalog's advertised lineup) while it still resolves when named explicitly on task creation — visibility governs listing, not access. Defaults to \"public\" when absent.",
       "enum": ["public", "internal"]
     },
+    "plan_context": {
+      "description": "Planning context Kanna stamps onto a task's pinned workflow when a plan stage publishes the remaining stages through kanna_complete_stage. It is written by the server, never authored by hand: an edit that changes it is refused, and an edit that omits it carries the stamped value forward. Its `result` is bound to the reserved $PLAN_RESULT prompt variable for every stage and post of the extended workflow, so the approved plan stays reachable after later stages, revisions, resume, and recovery.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source_run_id", "stage", "result"],
+      "properties": {
+        "source_run_id": {
+          "description": "Stage run whose successful completion published this plan.",
+          "type": "string",
+          "minLength": 1
+        },
+        "stage": {
+          "description": "Name of the stage that published the plan.",
+          "type": "string",
+          "minLength": 1
+        },
+        "result": {
+          "description": "The full recorded stage result of that run, in the same shape $PREV_MAIN_RESULT carries.",
+          "type": "string"
+        },
+        "request_digest": {
+          "description": "Fingerprint of the exact combined completion that published these stages: the recorded result together with the expected and requested definitions. A retry that matches it is the same operation replayed; one that differs is a different publication and is refused rather than silently ignored or applied over the stored one.",
+          "type": "string"
+        }
+      }
+    },
     "revision_limit": {
       "description": "Agent-requested revision rounds a task may spend before Kanna stops forking revisions and parks the task for its human. Defaults to 5 when omitted; 0 disables the cap. A human-requested revision is never refused and resets the count.",
       "type": "integer",
