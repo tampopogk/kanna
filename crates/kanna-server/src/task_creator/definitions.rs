@@ -1,3 +1,6 @@
+#[path = "doctor.rs"]
+pub(crate) mod doctor;
+
 use super::definition_source::{OriginFreshness, RepoDefinitionSnapshot};
 use super::local_config::{apply_local_config_override, LocalConfigOverride};
 use crate::db::Repo;
@@ -1186,10 +1189,6 @@ const BUILTIN_AGENT_RESOURCES: &[(&str, &str)] = &[
         include_str!("../../../../.kanna/agents/consultant/AGENT.md"),
     ),
     (
-        ".kanna/agents/config-factory/AGENT.md",
-        include_str!("../../../../.kanna/agents/config-factory/AGENT.md"),
-    ),
-    (
         ".kanna/agents/implement/AGENT.md",
         include_str!("../../../../.kanna/agents/implement/AGENT.md"),
     ),
@@ -1300,7 +1299,10 @@ fn is_builtin_agent_name(name: &str) -> bool {
 /// Built-in agents that shipped under an earlier product term. These are
 /// resolution aliases only: listings expose the current name, while both
 /// names continue to probe repository definitions and extensions.
-const LEGACY_BUILTIN_AGENTS: &[(&str, &str)] = &[("pr-triage", "pr-review-manager")];
+const LEGACY_BUILTIN_AGENTS: &[(&str, &str)] = &[
+    ("pr-triage", "pr-review-manager"),
+    ("config-factory", "setup"),
+];
 
 fn canonical_builtin_agent_name(name: &str) -> &str {
     LEGACY_BUILTIN_AGENTS
@@ -1357,6 +1359,10 @@ pub(super) fn canonical_builtin_workflow_name(name: &str) -> &str {
 /// while public consultation and complete product-work workflows remain
 /// operator choices.
 const BUILTIN_WORKFLOWS: &[(&str, &str)] = &[
+    (
+        "repository-setup",
+        include_str!("../../../../.kanna/workflows/repository-setup.json"),
+    ),
     (
         "architect-consultation",
         include_str!("../../../../.kanna/workflows/architect-consultation.json"),

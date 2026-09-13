@@ -1262,8 +1262,7 @@ describe("App", () => {
         commands: [
           { id: "factory:create-agent", label: "Create Agent", description: "Create a new agent definition", group: "configure" },
           { id: "factory:create-workflow", label: "Create Workflow", description: "Create a new workflow definition", group: "configure" },
-          { id: "factory:setup-repo", label: "Set Up Repository", description: "Configure .kanna workflow and agent flavors", group: "configure" },
-          { id: "factory:create-config", label: "Create Config", description: "Create or update .kanna/config.json", group: "configure" },
+          { id: "factory:setup-repo", label: "Set Up Repository", description: "Set up or revise repository configuration and policies", group: "configure" },
         ],
       }),
       runRepoCommand: async () => ({ taskId: "repo-command-task", reused: false }),
@@ -6274,22 +6273,15 @@ describe("App", () => {
     capturedKeyboardActions?.commandPalette();
     await flushPromises();
 
-    const createConfigButton = wrapper.get('[data-command-id="factory:create-config"]');
+    expect(wrapper.find('[data-command-id="factory:create-config"]').exists()).toBe(false);
     expect(wrapper.get('[data-command-id="factory:create-agent"]').text()).toBe("Create Agent");
     expect(wrapper.get('[data-command-id="factory:create-workflow"]').text()).toBe("Create Workflow");
     expect(wrapper.get('[data-command-id="factory:setup-repo"]').text()).toBe("Set Up Repository");
-    expect(wrapper.get('[data-command-id="factory:setup-repo"]').attributes("data-command-description")).toBe("Configure .kanna workflow and agent flavors");
-    expect(createConfigButton.text()).toBe("Create Config");
-    expect(createConfigButton.attributes("data-command-description")).toBe("Create or update .kanna/config.json");
+    expect(wrapper.get('[data-command-id="factory:setup-repo"]').attributes("data-command-description")).toBe("Set up or revise repository configuration and policies");
 
     await wrapper.get('[data-command-id="factory:setup-repo"]').trigger("click");
     await flushPromises();
 
-    expect(store.selectItem).toHaveBeenCalledWith("repo-command-task");
-    store.selectItem.mockClear();
-
-    await createConfigButton.trigger("click");
-    await flushPromises();
     expect(store.selectItem).toHaveBeenCalledWith("repo-command-task");
   });
 

@@ -848,3 +848,46 @@ stops Metro when the smoke runner started that Metro itself. Set
 `KANNA_IOS_DEVICE_UDID` for an exact device, or `KANNA_IOS_PHYSICAL_DEVICE_NAME`
 to target the visible phone name — one of them is required when more than one
 iPhone is attached.
+
+### Repository setup and static validation
+
+**Set Up Repository** runs one `setup` agent for initial setup and later scoped
+revisions. It inspects existing documentation, commands, CI, remotes, and Kanna
+files before proposing changes. Product conventions, workspace commands, tests,
+review, workflow/human gates, publishing/merging/shipping, and provider choices
+can each be deferred. Reruns preserve prior decisions and valid configuration.
+Git remotes inform hosting, not automation authority. Project extensions or
+custom agents can supply behavior that maintained built-ins do not cover.
+
+The old `config-factory` agent name and `factory:create-config` command id remain
+resolution aliases; the palette advertises only Set Up Repository. Automatic
+setup launches and setup requests without an explicit workflow use the internal
+`repository-setup` workflow: one manual stage, no publishing or approval post.
+An explicit API workflow selection remains authoritative, and previously created
+tasks retain their pinned workflows.
+
+Run the deterministic, read-only doctor independently:
+
+```sh
+kanna-cli tool call kanna_doctor --arg repo_id=<repo-id> --arg candidate_path=<absolute-task-worktree>
+```
+
+The equivalent MCP tool is `kanna_doctor`; `GET /v1/repos/{repo_id}/doctor` serves
+both adapters through the shared catalog. Omit `candidate_path` to validate the
+registered checkout. An explicit path must name that checkout or one of its
+recorded task worktrees. Findings contain file, location, problem, and guidance,
+in separate `errors` and `warnings` arrays. No `.kanna` or omitted setup areas
+are valid deferrals. Unknown flavors warn when runtime resolution would fall
+back to the base role. Stock push-only publishing followed by stock PR-dependent
+approval is an error; custom prose cannot be statically certified.
+
+Doctor uses the bundled schemas, actual definition parsers/resolver, provider
+rules, and local-config merge rules. It executes no shell commands, launches no
+services, modifies no files, and makes no runtime correctness claim. Candidate
+local overrides come from the directory being checked. This is distinct from
+active resolution: shared definitions normally come from origin's recorded
+default-branch snapshot, while machine-local settings come from the registered
+checkout. Without that origin snapshot, shared candidate files await integration
+or another supported activation path. Editing configuration does not replace an
+existing task's pinned workflow. Setup reports this distinction, doctor findings,
+separate command checks actually performed, and preserved/deferred decisions.

@@ -120,13 +120,7 @@ fn build_repo_command_catalog_from_definitions(
         command(
             "factory:setup-repo",
             "Set Up Repository",
-            "Configure .kanna workflow and agent flavors",
-            RepoCommandGroup::Configure,
-        ),
-        command(
-            "factory:create-config",
-            "Create Config",
-            "Create or update .kanna/config.json",
+            "Set up or revise repository configuration and policies",
             RepoCommandGroup::Configure,
         ),
         command(
@@ -445,15 +439,10 @@ fn custom_task_launch(slug: &str, definition: &CustomTaskDefinition) -> RepoComm
 
 fn factory_launch(command_id: &str) -> Option<RepoCommandLaunch> {
     let (display_name, prompt, agent) = match command_id {
-        "factory:setup-repo" => (
+        "factory:setup-repo" | "factory:create-config" => (
             "Set Up Repository",
-            "Set up Kanna for this repository.",
+            "Set up or revise Kanna for this repository. Inspect existing decisions first and agree on the scope.",
             Some("setup"),
-        ),
-        "factory:create-config" => (
-            "Create Config",
-            "Help me create or update the .kanna/config.json for this repository.",
-            Some("config-factory"),
         ),
         "factory:create-agent" => (
             "Create Agent",
@@ -526,6 +515,15 @@ mod tests {
     use std::fs;
 
     #[test]
+    fn retired_config_command_uses_the_unified_setup_agent() {
+        let current = super::factory_launch("factory:setup-repo").unwrap();
+        let legacy = super::factory_launch("factory:create-config").unwrap();
+        assert_eq!(current.agent.as_deref(), Some("setup"));
+        assert_eq!(legacy.agent, current.agent);
+        assert_eq!(legacy.prompt, current.prompt);
+    }
+
+    #[test]
     fn catalog_contains_automations_and_factory_commands_in_stable_order() {
         let repo_dir = tempfile::tempdir().expect("temporary repository");
         let repo = Repo {
@@ -556,7 +554,6 @@ mod tests {
                 ("custom:task-manager", "automation"),
                 ("custom:ship", "automation"),
                 ("factory:setup-repo", "configure"),
-                ("factory:create-config", "configure"),
                 ("factory:create-agent", "configure"),
                 ("factory:create-workflow", "configure"),
                 ("factory:new-custom-task", "configure"),

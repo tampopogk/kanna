@@ -1007,6 +1007,7 @@ describe("useAppTaskCreation", () => {
       "Set up Kanna for this repository.",
       "pty",
       expect.objectContaining({
+        workflowName: "repository-setup",
         customTask: expect.objectContaining({
           name: "Set Up Repository",
           agent: "setup",

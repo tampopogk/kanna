@@ -5,7 +5,7 @@ use serde_json::Value;
 use std::collections::BTreeMap;
 use std::sync::LazyLock;
 
-static SCHEMA: LazyLock<jsonschema::Validator> = LazyLock::new(|| {
+pub(super) static SCHEMA: LazyLock<jsonschema::Validator> = LazyLock::new(|| {
     let schema = serde_json::from_str(include_str!("../../../../.kanna/workflows/schema.json"))
         .expect("bundled workflow schema is JSON");
     jsonschema::validator_for(&schema).expect("bundled workflow schema compiles")

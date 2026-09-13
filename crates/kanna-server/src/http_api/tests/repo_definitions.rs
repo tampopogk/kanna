@@ -1101,3 +1101,95 @@ async fn malformed_remote_definition_returns_internal_server_error() {
     let response = response(&app, "/v1/repos/repo-1/kanna-definitions/workflows/broken").await;
     assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
 }
+
+#[tokio::test]
+async fn doctor_validates_dirty_candidate_instead_of_active_origin_and_confines_paths() {
+    let fixture = RemoteDefinitionsFixture::new("doctor", "main");
+    let app = fixture.router("doctor-repo");
+    // This fixture's checkout selects local-stale while origin selects remote-qa.
+    let (status, report) = json_response(&app, "/v1/repos/doctor-repo/doctor").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(report["errors"].as_array().unwrap().iter().any(|finding| {
+        finding["file"] == ".kanna/config.json"
+            && finding["problem"].as_str().unwrap().contains("local-stale")
+    }));
+    assert!(report["activation"]
+        .as_str()
+        .unwrap()
+        .contains("Not an active-configuration check"));
+    let (status, _) = json_response(&app, "/v1/repos/doctor-repo/kanna-definitions").await;
+    assert_eq!(status, StatusCode::OK);
+    let response = response(&app, "/v1/repos/doctor-repo/doctor?candidate_path=%2F").await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn doctor_uses_recorded_worktree_local_config_not_registered_checkout_local_config() {
+    let scratch = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../.tmp");
+    std::fs::create_dir_all(&scratch).unwrap();
+    let temp = tempfile::tempdir_in(scratch).unwrap();
+    let checkout = temp.path().join("checkout");
+    let candidate = temp.path().join("candidate");
+    for path in [&checkout, &candidate] {
+        std::fs::create_dir_all(path.join(".kanna")).unwrap();
+    }
+    std::fs::write(
+        checkout.join(".kanna/config.local.json"),
+        r#"{"workflow":"missing"}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        candidate.join(".kanna/config.local.json"),
+        r#"{"workflow":"repository-setup"}"#,
+    )
+    .unwrap();
+    // Dirty candidate legacy syntax resolves independently of active definitions.
+    std::fs::create_dir_all(candidate.join(".kanna/workflows")).unwrap();
+    std::fs::write(
+        candidate.join(".kanna/workflows/legacy.json"),
+        r#"{"name":"legacy","stages":[{"name":"work","agent":"implement","transition":"manual","post_action":{"name":"save","agent":"commit","prompt":"Save changes","transition":"auto"}}]}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        candidate.join(".kanna/config.json"),
+        r#"{"workflow":"legacy"}"#,
+    )
+    .unwrap();
+    let candidate_path = candidate.to_string_lossy().into_owned();
+    let seeded_candidate = candidate_path.clone();
+    let app = super::test_router_with_seed("doctor-candidate", "Test", move |db| {
+        db.insert_repo(NewRepo {
+            id: "repo-doctor",
+            path: checkout.to_str().unwrap(),
+            name: "Test",
+            default_branch: Some("main"),
+        })
+        .unwrap();
+        db.insert_test_pipeline_item(
+            "doctor-task",
+            "repo-doctor",
+            "Setup",
+            None,
+            "in progress",
+            "2026-09-12T00:00:00Z",
+        )
+        .unwrap();
+        db.upsert_worktree(
+            "doctor-worktree",
+            "doctor-task",
+            &seeded_candidate,
+            "task-doctor",
+        )
+        .unwrap();
+    });
+    let (status, registered) = json_response(&app, "/v1/repos/repo-doctor/doctor").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(!registered["errors"].as_array().unwrap().is_empty());
+    let url = format!("/v1/repos/repo-doctor/doctor?candidate_path={candidate_path}");
+    let (status, candidate_report) = json_response(&app, &url).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        candidate_report["errors"].as_array().unwrap().is_empty(),
+        "{candidate_report}"
+    );
+}

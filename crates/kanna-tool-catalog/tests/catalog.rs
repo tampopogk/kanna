@@ -48,6 +48,7 @@ fn bundled_catalog_parses_and_declares_all_tools() {
             "kanna_task_transfers",
             "kanna_search_tasks",
             "kanna_list_repo_tasks",
+            "kanna_doctor",
             "kanna_list_agents",
             "kanna_create_task",
             "kanna_signal_agent",
@@ -573,6 +574,14 @@ fn resolves_expected_requests_for_every_bundled_tool() {
             Method::Get,
             ResponseKind::Json,
             "/v1/repos/repo-1/tasks",
+            json!({}),
+        ),
+        (
+            "kanna_doctor",
+            json!({ "repo_id": "repo-1", "candidate_path": "/repo/task" }),
+            Method::Get,
+            ResponseKind::Json,
+            "/v1/repos/repo-1/doctor?candidate_path=%2Frepo%2Ftask",
             json!({}),
         ),
         (
@@ -2773,4 +2782,24 @@ fn human_queue_tool_is_distinct_from_ordinary_policy_handoff() {
         .params
         .iter()
         .any(|param| param.name == "origin" || param.name == "device_provenance"));
+}
+
+#[test]
+fn doctor_is_catalog_backed_read_only_candidate_validation() {
+    let catalog = bundled_catalog();
+    let tool = catalog
+        .tools
+        .iter()
+        .find(|tool| tool.name == "kanna_doctor")
+        .unwrap();
+    assert_eq!(tool.method, Method::Get);
+    assert_eq!(tool.path, "/v1/repos/{repo_id}/doctor");
+    assert!(tool
+        .params
+        .iter()
+        .any(|param| param.name == "candidate_path" && param.location == ParamLoc::Query));
+    assert!(catalog
+        .render_guide("config")
+        .unwrap()
+        .contains("kanna_doctor"));
 }
