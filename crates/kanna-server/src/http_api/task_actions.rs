@@ -2188,6 +2188,29 @@ pub(super) async fn complete_stage(
             // the stages it published, and a rejected extension leaves no
             // recorded verdict for the planner to discover later.
             let record = |db: &Db| -> Result<(), (axum::http::StatusCode, String)> {
+                // Asked inside the write transaction, not before it. A transfer
+                // finalizing this task claims its workflow in a transaction of
+                // its own, and SQLite's single writer is what makes the two
+                // mutually exclusive: whichever commits first wins, and the
+                // loser writes nothing. Committing the plan under a live
+                // transfer would hand an older destination a suffix whose plan
+                // it silently drops — and the source has already been asked to
+                // quit by then.
+                if extension.is_some() {
+                    if let Some(transfer_id) = db
+                        .task_workflow_is_claimed_by_transfer(&task_id)
+                        .map_err(|error| db_write_error("db error", error))?
+                    {
+                        return Err((
+                            axum::http::StatusCode::CONFLICT,
+                            format!(
+                                "transfer {transfer_id} is finalizing this task and owns its \
+                                 workflow; nothing was recorded. Wait for the transfer to settle, \
+                                 then complete the plan again."
+                            ),
+                        ));
+                    }
+                }
                 if let Some(key) = contextless_key {
                     db.finish_contextless_stage_run(
                         key, &payload_run_id, run_status, &stage_result, &payload_summary,

@@ -181,6 +181,7 @@ pub(crate) const CURRENT_SCHEMA_MIGRATIONS: &[&str] = &[
     "081_provider_usage_discovery",
     "082_pull_request_forge_attempts",
     "083_worktree_setup_pending",
+    "084_task_transfer_workflow_claim",
 ];
 
 #[derive(Debug, Serialize)]
@@ -2426,6 +2427,23 @@ fn run_schema_migrations(conn: &Connection) -> Result<(), rusqlite::Error> {
             "worktree",
             "setup_pending",
             "INTEGER NOT NULL DEFAULT 0",
+        )
+    })?;
+
+    // Which transfer currently owns a task's workflow, so a plan publication
+    // and a transfer finalization cannot both believe they have it. One row per
+    // task: the active-outgoing index already allows only one live outgoing
+    // transfer per source, and a claim left behind by a crash is ignored once
+    // its transfer is no longer active rather than blocking the task forever.
+    run_migration(conn, "084_task_transfer_workflow_claim", |conn| {
+        conn.execute_batch(
+            r#"
+            CREATE TABLE IF NOT EXISTS task_transfer_workflow_claim (
+              pipeline_item_id TEXT PRIMARY KEY REFERENCES pipeline_item(id) ON DELETE CASCADE,
+              transfer_id TEXT NOT NULL,
+              claimed_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            "#,
         )
     })?;
 

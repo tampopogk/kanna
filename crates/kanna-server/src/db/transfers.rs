@@ -486,6 +486,88 @@ impl Db {
         }
     }
 
+    /// Claim a task's workflow for one transfer's finalization, or refuse.
+    ///
+    /// Finalization shuts the source agent down and then serializes the task's
+    /// pinned workflow into the payload. Between those two things a combined
+    /// plan completion can publish `plan_context`, and the payload would then
+    /// carry a plan an older destination silently drops — the exact loss the
+    /// source-side refusal exists to prevent, arriving through a window a
+    /// snapshot check before the first `await` cannot close.
+    ///
+    /// So the check and the claim are one transaction. `Err` means the plan was
+    /// already published and this transfer must be refused before it touches
+    /// the source; `Ok` means this transfer owns the task's workflow, and the
+    /// publication path refuses for as long as that holds.
+    ///
+    /// Re-claiming by the same transfer is how a resumed or retried
+    /// finalization re-asks the question: it is not an error, but the plan check
+    /// runs again.
+    pub fn claim_task_workflow_for_transfer(
+        &self,
+        transfer_id: &str,
+        task_id: &str,
+    ) -> Result<Result<(), String>, rusqlite::Error> {
+        self.with_immediate_transaction(|db| {
+            let pinned = db
+                .conn
+                .query_row(
+                    "SELECT pipeline_def FROM pipeline_item WHERE id = ?",
+                    [task_id],
+                    |row| row.get::<_, Option<String>>(0),
+                )
+                .optional()?
+                .flatten();
+            let carries_plan = pinned
+                .as_deref()
+                .and_then(|definition| serde_json::from_str::<serde_json::Value>(definition).ok())
+                .is_some_and(|definition| definition.get("plan_context").is_some());
+            if carries_plan {
+                return Ok(Err(format!(
+                    "task {task_id} carries a published plan, and this transfer cannot prove the \
+                     destination would keep it: a machine older than this one drops the plan while \
+                     importing the stages it chose, and the plan cannot be reconstructed. The \
+                     transfer is refused with the source task untouched and still running. Update \
+                     the destination, or finish this task here."
+                )));
+            }
+            db.conn.execute(
+                "INSERT INTO task_transfer_workflow_claim (pipeline_item_id, transfer_id)
+                 VALUES (?, ?)
+                 ON CONFLICT(pipeline_item_id) DO UPDATE SET
+                   transfer_id = excluded.transfer_id,
+                   claimed_at = datetime('now')",
+                (task_id, transfer_id),
+            )?;
+            Ok(Ok(()))
+        })
+    }
+
+    /// Is a live transfer holding this task's workflow right now?
+    ///
+    /// A claim whose transfer has since settled is not ownership: the join is
+    /// what keeps a crash mid-finalization from blocking the task's plan
+    /// forever, without needing every teardown path to remember to release it.
+    pub fn task_workflow_is_claimed_by_transfer(
+        &self,
+        task_id: &str,
+    ) -> Result<Option<String>, rusqlite::Error> {
+        self.conn
+            .query_row(
+                &format!(
+                    "SELECT claim.transfer_id
+                     FROM task_transfer_workflow_claim AS claim
+                     JOIN task_transfer AS transfer ON transfer.id = claim.transfer_id
+                     WHERE claim.pipeline_item_id = ?
+                       AND transfer.direction = 'outgoing'
+                       AND transfer.status IN {ACTIVE_OUTGOING_TRANSFER_STATUSES}"
+                ),
+                [task_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+    }
+
     pub fn update_task_transfer_payload(
         &self,
         transfer_id: &str,

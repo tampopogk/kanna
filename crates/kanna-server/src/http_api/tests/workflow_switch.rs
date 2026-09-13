@@ -1075,9 +1075,9 @@ async fn a_same_summary_retry_with_different_stages_is_refused() {
     let (_temp, state, before) = plan_publication_fixture("plan-retry-different-suffix");
     let app = router(Arc::clone(&state));
     let published_suffix = single_reviewer_suffix(&before);
-    let (status, _) =
+    let (status, body) =
         complete_plan(&app, "the full plan", Some((&before, &published_suffix))).await;
-    assert_eq!(status, StatusCode::OK);
+    assert_eq!(status, StatusCode::OK, "{body}");
     let published = pinned(&state);
     assert_eq!(published["stages"].as_array().unwrap().len(), 5);
 
@@ -1235,4 +1235,213 @@ async fn bound_and_keyed_retries_carry_the_same_publication_identity() {
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["workflowExtended"], serde_json::json!(true));
     assert_eq!(pinned(&state), published);
+}
+
+// --- Plan publication against a transfer finalizing the same task ----------
+
+/// Seed the outgoing transfer and work item the shared source finalization path
+/// reads, for the task `plan_publication_fixture` created.
+fn seed_outgoing_transfer(db: &Db, transfer_id: &str) {
+    db.insert_task_transfer(&crate::db::NewTaskTransfer {
+        id: transfer_id.into(),
+        direction: "outgoing".into(),
+        status: "pending".into(),
+        source_peer_id: Some("peer-source".into()),
+        target_peer_id: Some("peer-destination".into()),
+        source_desktop_id: None,
+        target_desktop_id: None,
+        source_task_id: Some("task-1".into()),
+        local_task_id: Some("task-1".into()),
+        error: None,
+        payload_json: Some(
+            serde_json::json!({
+                "target_peer_id": "peer-destination",
+                "task": {
+                    "source_peer_id": "peer-source",
+                    "source_task_id": "task-1",
+                    "resume_session_id": null,
+                    "stage": "plan",
+                    "pipeline": "consultation",
+                    "agent_type": "pty",
+                    "agent_provider": "claude",
+                },
+                "repo": { "mode": "reuse-local", "path": "/repo" },
+                "artifacts": [],
+            })
+            .to_string(),
+        ),
+    })
+    .expect("outgoing transfer");
+    db.enqueue_transfer_work(
+        &format!("finalize:{transfer_id}"),
+        "finalize",
+        Some(transfer_id),
+        "{}",
+    )
+    .expect("queue the finalization work item");
+}
+
+fn finalize_work(transfer_id: &str) -> crate::db::TransferWorkItem {
+    crate::db::TransferWorkItem {
+        id: format!("finalize:{transfer_id}"),
+        kind: "finalize".to_string(),
+        transfer_id: Some(transfer_id.to_string()),
+        payload_json: "{}".to_string(),
+        attempts: 1,
+    }
+}
+
+fn finalization_ran(state: &Arc<AppState>, transfer_id: &str) -> bool {
+    Db::open(&state.config.db_path)
+        .expect("db")
+        .read_transfer_work_observation(&format!("finalize:{transfer_id}"), "finalization-outcome")
+        .expect("read the finalization verdict")
+        .is_some()
+}
+
+/// A plan publication and a transfer finalizing the same task cannot both
+/// believe they own its workflow.
+///
+/// Finalization shuts the source agent down and *then* serializes the pinned
+/// workflow into the payload, so a plan published in between would be handed to
+/// a destination that may drop it — after the source had already quit. A
+/// snapshot check before finalization's first `await` cannot close that window;
+/// only shared ownership can.
+///
+/// Here the transfer takes the task first. The publication is refused and — the
+/// part that matters — records nothing at all: not the suffix, not the plan.
+#[tokio::test]
+async fn a_plan_cannot_publish_while_a_transfer_owns_the_task() {
+    let (_temp, state, before) = plan_publication_fixture("plan-vs-transfer-owned");
+    let app = router(Arc::clone(&state));
+    {
+        let db = Db::open(&state.config.db_path).expect("db");
+        seed_outgoing_transfer(&db, "transfer-owned");
+    }
+
+    // The real shared source path. It claims the task's workflow before it
+    // observes or shuts anything down, then fails further downstream on this
+    // fixture — leaving the transfer live and holding the task, which is
+    // exactly the state the publication must refuse against.
+    let _ = crate::transfer_engine::push::run_finalization_for_test(
+        &state,
+        &finalize_work("transfer-owned"),
+        "transfer-owned",
+    )
+    .await;
+
+    let after = single_reviewer_suffix(&before);
+    let (status, body) = complete_plan(&app, "the full plan", Some((&before, &after))).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert!(
+        body.as_str()
+            .unwrap_or_default()
+            .contains("owns its workflow"),
+        "the refusal must name the transfer that holds the task: {body}"
+    );
+
+    // Nothing was committed: no suffix, no stamp, and the plan run is still
+    // running rather than recorded successful.
+    assert_eq!(pinned(&state), before);
+    let db = Db::open(&state.config.db_path).expect("db");
+    let run = db.stage_run("run-plan").expect("read run").expect("run");
+    assert_eq!(run.status, "running");
+    assert_eq!(run.result, None);
+}
+
+/// The same race the other way round: the plan publishes first, and the
+/// transfer is refused while its source is still alive.
+///
+/// The claim and the plan check are one transaction, so the publication that
+/// committed first is seen by finalization however late it lands — including on
+/// a resumed or retried attempt.
+#[tokio::test]
+async fn a_transfer_is_refused_when_the_plan_publishes_first() {
+    let (_temp, state, before) = plan_publication_fixture("plan-vs-transfer-published");
+    let app = router(Arc::clone(&state));
+    {
+        let db = Db::open(&state.config.db_path).expect("db");
+        seed_outgoing_transfer(&db, "transfer-published");
+    }
+
+    let after = single_reviewer_suffix(&before);
+    let (status, body) = complete_plan(&app, "the full plan", Some((&before, &after))).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["workflowExtended"], serde_json::json!(true));
+
+    let error = crate::transfer_engine::push::run_finalization_for_test(
+        &state,
+        &finalize_work("transfer-published"),
+        "transfer-published",
+    )
+    .await
+    .expect_err("a published plan was handed over");
+    assert!(
+        error.contains("carries a published plan"),
+        "the transfer must be refused for preservation: {error}"
+    );
+    assert!(
+        !finalization_ran(&state, "transfer-published"),
+        "the source session was finalized despite the refusal"
+    );
+}
+
+/// Ownership is released when the transfer settles, and the rule still holds
+/// for whatever comes next.
+///
+/// A claim left behind by a transfer that failed must not block the task's plan
+/// forever; a plan that publishes in that window must still refuse the *next*
+/// transfer before it touches the source. This is the retry / late-publication
+/// boundary, answered by the same ownership rule rather than a second one.
+#[tokio::test]
+async fn a_settled_transfer_releases_the_task_and_a_later_plan_still_refuses_the_next_one() {
+    let (_temp, state, before) = plan_publication_fixture("plan-vs-transfer-retry");
+    let app = router(Arc::clone(&state));
+    {
+        let db = Db::open(&state.config.db_path).expect("db");
+        seed_outgoing_transfer(&db, "transfer-first");
+    }
+    let _ = crate::transfer_engine::push::run_finalization_for_test(
+        &state,
+        &finalize_work("transfer-first"),
+        "transfer-first",
+    )
+    .await;
+
+    // While it is live, the task is held.
+    let after = single_reviewer_suffix(&before);
+    let (status, _) = complete_plan(&app, "the full plan", Some((&before, &after))).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+
+    // The transfer fails, which is what releases the task.
+    {
+        let db = Db::open(&state.config.db_path).expect("db");
+        db.fail_outgoing_task_transfer("transfer-first", "the destination went away")
+            .expect("fail the transfer");
+        assert_eq!(
+            db.task_workflow_is_claimed_by_transfer("task-1")
+                .expect("read ownership"),
+            None,
+            "a settled transfer must not keep holding the task"
+        );
+    }
+    let (status, body) = complete_plan(&app, "the full plan", Some((&before, &after))).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["workflowExtended"], serde_json::json!(true));
+
+    // A later transfer of the same task is refused before its source is
+    // touched, by the same claim.
+    {
+        let db = Db::open(&state.config.db_path).expect("db");
+        seed_outgoing_transfer(&db, "transfer-second");
+    }
+    let error = crate::transfer_engine::push::run_finalization_for_test(
+        &state,
+        &finalize_work("transfer-second"),
+        "transfer-second",
+    )
+    .await
+    .expect_err("the retried transfer shipped a published plan");
+    assert!(error.contains("carries a published plan"), "{error}");
+    assert!(!finalization_ran(&state, "transfer-second"));
 }

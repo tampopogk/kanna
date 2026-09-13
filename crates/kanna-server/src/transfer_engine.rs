@@ -22,7 +22,8 @@ pub mod session;
 
 mod finalize;
 pub(crate) mod import;
-mod push;
+#[cfg_attr(test, allow(unused))]
+pub(crate) mod push;
 
 use crate::db::TransferWorkItem;
 use crate::http_api::AppState;

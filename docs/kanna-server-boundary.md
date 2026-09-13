@@ -624,14 +624,27 @@ in `docs/task-specs/c9f5721b.md` and enforced by the router authorization tests.
   reconstruct. A destination-side check cannot answer this, because the machine
   that would run it is the one too old to have it, and the protocol has no way
   to prove what a peer preserves.
-  So the **source** refuses. A task whose pinned workflow carries `plan_context`
-  is refused at push, and again in the shared source finalization path before
-  `finalize_source_session` asks its agent to quit — the last point at which the
-  task is still recoverable there. Asking again at finalization is what stops a
-  transfer queued while the task was still ordinary from walking past the guard
-  once its plan lands. No peer is contacted and no capability is negotiated:
-  "unproved" is every peer, and the refusal is deliberately blunt rather than a
-  compatibility platform built for one field. Ordinary tasks transfer unchanged.
+  So the **source** refuses, and a transfer and a plan publication cannot both
+  hold the same task. Before `finalize_source_session` asks the source agent to
+  quit, the shared finalization path **claims the task's workflow**: one
+  transaction that both refuses a task already carrying `plan_context` and
+  records that this transfer owns it. While that claim is held by a live
+  transfer, a combined plan completion is refused inside its own write
+  transaction and records nothing — not the suffix, not the plan result. SQLite's
+  single writer is what makes the two exclusive: whichever commits first wins and
+  the loser writes nothing.
+  A snapshot check before finalization's first `await` would not be enough —
+  finalization yields while shutting the agent down, and a plan published in that
+  window is serialized into the payload *after* the source has already quit. The
+  claim closes that window because it is held from before the shutdown until the
+  transfer settles, which also covers a resumed or retried finalization: each
+  attempt re-asks the same question. A claim whose transfer has settled is not
+  ownership, so a crash mid-finalization cannot hold a task's plan hostage. Push
+  also answers early, before anything is reserved on the peer, purely so the
+  operator is not left waiting; that check is a courtesy, not the guarantee.
+  No peer is contacted and no capability is negotiated: "unproved" is every peer,
+  and the refusal is deliberately blunt rather than a compatibility platform
+  built for one field. Ordinary tasks transfer unchanged.
   Two destination-side checks remain and are unrelated to protecting the source.
   Before asking the source to finalize, a destination refuses a definition
   carrying fields *it* does not define — asked by name against its own bundled

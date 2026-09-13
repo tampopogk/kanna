@@ -441,6 +441,12 @@ impl Db {
               imported_at TEXT NOT NULL DEFAULT (datetime('now'))
             );
 
+            CREATE TABLE task_transfer_workflow_claim (
+              pipeline_item_id TEXT PRIMARY KEY REFERENCES pipeline_item(id) ON DELETE CASCADE,
+              transfer_id TEXT NOT NULL,
+              claimed_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+
             CREATE TABLE transfer_work (
                 id TEXT PRIMARY KEY,
                 kind TEXT NOT NULL,

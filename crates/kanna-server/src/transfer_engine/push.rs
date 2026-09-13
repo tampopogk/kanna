@@ -1077,15 +1077,17 @@ const SESSION_BEFORE_FINALIZATION_PHASE: &str = "session-before-signal";
 /// destination-side preservation check cannot help here, because the machine
 /// that would run it is the one that is too old to have it.
 ///
-/// So the source refuses, and it refuses *before* its own session is
-/// finalized: a transfer that will not ship is recoverable only while the task
-/// is still alive here. The protocol has no way to prove what a peer preserves,
-/// and inventing a capability exchange for one field is a bigger thing than
-/// this deserves — so "unproved" is every peer, and a stamped task simply does
-/// not transfer yet. Ordinary tasks are untouched.
+/// So the source refuses. The protocol has no way to prove what a peer
+/// preserves, and inventing a capability exchange for one field is a bigger
+/// thing than this deserves — so "unproved" is every peer, and a stamped task
+/// simply does not transfer yet. Ordinary tasks are untouched.
 ///
-/// Evaluated at finalization rather than only at push, so a transfer queued
-/// before its plan was published cannot walk past the guard.
+/// This is the early answer, given at push before anything is reserved on the
+/// peer, purely so the operator is not left waiting. It is a snapshot read and
+/// cannot be the guarantee: a plan can publish after it. The guarantee is
+/// `Db::claim_task_workflow_for_transfer`, which asks the same question and
+/// takes ownership of the task's workflow in one transaction, so nothing can
+/// publish between the question and the answer.
 fn refuse_unprovable_plan_preservation(item: &crate::db::PipelineItem) -> Result<(), String> {
     let carries_plan = item
         .pipeline_def
@@ -1131,6 +1133,18 @@ fn refuse_session_downgrade(
     }
 }
 
+/// The shared source finalization path, exposed so a test outside this module
+/// can interleave it with a real plan completion against the same database —
+/// which is the only way to exercise the ownership rule the two share.
+#[cfg(test)]
+pub(crate) async fn run_finalization_for_test(
+    state: &Arc<AppState>,
+    work: &TransferWorkItem,
+    transfer_id: &str,
+) -> Result<(Value, bool), String> {
+    run_finalization(state, work, transfer_id).await
+}
+
 async fn run_finalization(
     state: &Arc<AppState>,
     work: &TransferWorkItem,
@@ -1159,8 +1173,13 @@ async fn run_finalization(
         .map_err(|error| format!("db error: {error}"))?
         .ok_or_else(|| format!("repo not found for outgoing transfer: {transfer_id}"))?;
 
-    // Before anything is observed, staged, or shut down.
-    refuse_unprovable_plan_preservation(&source.item)?;
+    // Before anything is observed, staged, or shut down — and, crucially, in
+    // one transaction with the check rather than as a snapshot read this
+    // function then awaits past. A plan published while finalization was
+    // shutting the agent down would otherwise be serialized into the payload
+    // at `build_payload`, after the source had already quit.
+    db.claim_task_workflow_for_transfer(transfer_id, &source.item.id)
+        .map_err(|error| format!("db error: {error}"))??;
 
     // Locate the session state this payload will promise *before* the agent is
     // asked to stop: a transfer that cannot ship the conversation must fail
