@@ -1,9 +1,11 @@
-import { resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { mkdir, writeFile } from "node:fs/promises";
 import { setTimeout as sleep } from "node:timers/promises";
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { WebDriverClient } from "../helpers/webdriver";
-import { resetDatabase } from "../helpers/reset";
+import { importTestRepo, resetDatabase } from "../helpers/reset";
+import { cleanupFixtureRepos, createSeedFixtureRepo } from "../helpers/fixture-repo";
+import { execDb } from "../helpers/vue";
 import { pauseForSlowMode } from "../helpers/slowMode";
 import {
   assertNativeWindowIdentity,
@@ -144,10 +146,87 @@ describe("app launch", () => {
       );
     }
 
+    const focusTaskId = "e2e-startup-focus";
+    const focusBranch = `task-${focusTaskId}`;
+    const TERMINAL_TEXTAREA = ".terminal-container .xterm-helper-textarea";
+    let focusFixtureRepoPath = "";
+
     afterAll(async () => {
+      await cleanupFixtureRepos(focusFixtureRepoPath ? [focusFixtureRepoPath] : []);
       // Leave the window in its ordinary started state for anything after this.
       await client.reload({ dismissStartupShortcuts: false });
+      await resetDatabase(client);
     });
+
+    /** Leaves a task with a live agent terminal selected in this window. */
+    async function selectRestoredAgentTerminal(): Promise<void> {
+      await resetDatabase(client);
+      // The startup shortcuts modal would take the caret itself, and the
+      // terminal's own focus rules deliberately yield to an open modal.
+      await execDb(
+        client,
+        "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)",
+        ["hideShortcutsOnStartup", "true"],
+      );
+      focusFixtureRepoPath = await createSeedFixtureRepo("task-switch-minimal");
+      const repoId = await importTestRepo(client, focusFixtureRepoPath, "startup-focus-fixture");
+      await mkdir(join(focusFixtureRepoPath, ".kanna-worktrees", focusBranch), { recursive: true });
+      await execDb(
+        client,
+        `INSERT INTO pipeline_item
+           (id, repo_id, prompt, display_name, stage, branch, agent_type, agent_provider, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          focusTaskId,
+          repoId,
+          "Keep a terminal on screen for the startup focus check",
+          "Startup focus fixture",
+          "in progress",
+          focusBranch,
+          "pty",
+          "claude",
+          "2026-09-12T10:00:00.000Z",
+          "2026-09-12T10:00:00.000Z",
+        ],
+      );
+
+      // Importing the fixture leaves its own setup task selected; keep asking
+      // until this task owns the terminal view.
+      const deadline = Date.now() + 45_000;
+      while (Date.now() < deadline) {
+        const selected = await client.executeAsync<string>(
+          `const cb = arguments[arguments.length - 1];
+           const ctx = window.__KANNA_E2E__.setupState;
+           Promise.resolve(ctx.refreshAllItems())
+             .then(function () { return ctx.store.selectRepo(${JSON.stringify(repoId)}); })
+             .then(function () { return ctx.store.selectItem(${JSON.stringify(focusTaskId)}); })
+             .then(function () { cb("ok"); })
+             .catch(function (error) { cb("err:" + error); });`,
+        );
+        expect(selected).toBe("ok");
+        const registered = await client.executeSync<boolean>(
+          `return window.__KANNA_E2E__.terminalBuffers?.sessionIds().includes(${JSON.stringify(focusTaskId)}) === true;`,
+        );
+        if (registered) {
+          await client.waitForElement(TERMINAL_TEXTAREA, 10_000);
+          return;
+        }
+        await sleep(500);
+      }
+      throw new Error(`terminal buffer ${focusTaskId} was not registered`);
+    }
+
+    async function readTerminalFocus(): Promise<{ present: boolean; focused: boolean; inert: boolean }> {
+      return await client.executeSync(`
+        const textarea = document.querySelector(${JSON.stringify(TERMINAL_TEXTAREA)});
+        if (!textarea) return { present: false, focused: false, inert: false };
+        return {
+          present: true,
+          focused: document.activeElement === textarea,
+          inert: Boolean(textarea.closest('[inert]')),
+        };
+      `);
+    }
 
     it("covers the window with the animated app icon while local services start", async () => {
       await reloadHoldingLocalServices();
@@ -305,6 +384,65 @@ describe("app launch", () => {
         ),
       ).toBe(false);
       await client.screenshot(resolve(evidence, "startup-released-workspace.png"));
+    });
+
+    it("hands the caret to the restored terminal when the screen lifts", async () => {
+      await selectRestoredAgentTerminal();
+
+      // Hold the readiness edge, which sits after restoration has already
+      // mounted the workspace, so the terminal makes its own first focus
+      // attempt while the screen still covers it.
+      await client.executeSync(
+        `window.localStorage.setItem("kanna.e2e.readinessHold", "1");
+         delete window.__KANNA_E2E_READINESS_HOLD__;
+         location.reload();`,
+      );
+      await waitForPage<boolean>(
+        "return Boolean(window.__KANNA_E2E_READINESS_HOLD__);",
+        (held) => held,
+        "the held launch reached the readiness edge",
+      );
+      // A reload is a new window: re-verify before touching it.
+      await assertNativeWindowIdentity(
+        client,
+        await resolveExpectedNativeWindowIdentity(resolve("../..")),
+        "app launch (held readiness)",
+      );
+      await waitForPage<boolean>(
+        `return Boolean(document.querySelector(${JSON.stringify(TERMINAL_TEXTAREA)}));`,
+        (present) => present,
+        "the restored terminal mounted behind the startup screen",
+      );
+      // Its focus request runs through a tick, the native webview and an
+      // animation frame; give it room to finish and fail on its own.
+      await sleep(1500);
+
+      const covered = await readTerminalFocus();
+      expect(covered.present).toBe(true);
+      // This is the half happy-dom cannot stand in for: a real browser refuses
+      // focus through an inert ancestor, so the terminal's own attempt is lost.
+      expect(covered.inert).toBe(true);
+      expect(covered.focused).toBe(false);
+
+      await client.executeSync("window.__KANNA_E2E_READINESS_HOLD__.release();");
+      await client.waitForAppReady();
+
+      const revealed = await waitForPage<{ present: boolean; focused: boolean; inert: boolean }>(
+        `const textarea = document.querySelector(${JSON.stringify(TERMINAL_TEXTAREA)});
+         if (!textarea) return { present: false, focused: false, inert: false };
+         return {
+           present: true,
+           focused: document.activeElement === textarea,
+           inert: Boolean(textarea.closest('[inert]')),
+         };`,
+        (state) => state.focused,
+        "the revealed terminal took the caret without a click",
+      );
+      expect(revealed.inert).toBe(false);
+      // Focused helper textarea is how xterm receives typing: the terminal
+      // accepts input with no click and no activation change.
+      expect(revealed.focused).toBe(true);
+      await client.screenshot(resolve(evidence, "startup-terminal-focus.png"));
     });
 
     it("stops on a real startup failure and asks for a restart", async () => {

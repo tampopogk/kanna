@@ -46,6 +46,7 @@ import { parseRecentAgentChoices } from "../utils/agentChoiceUsage";
 import type { useAppUpdate } from "./useAppUpdate";
 import type { useToast } from "./useToast";
 import { showTerminalFileLinkHintOnce } from "./terminalFileLinkHint";
+import { refocusActiveTerminal } from "./useTerminalFocusWhenActive";
 import { openPath } from "@tauri-apps/plugin-opener";
 
 type AppPreferences = ReturnType<typeof useAppPreferences>["preferences"];
@@ -97,6 +98,32 @@ interface UseAppLifecycleOptions {
   toast: ReturnType<typeof useToast>;
   warmTransferSidecar: () => Promise<void>;
   windowWorkspace: WindowWorkspaceController;
+}
+
+const E2E_READINESS_HOLD_KEY = "kanna.e2e.readinessHold";
+
+/**
+ * DEV/E2E only. Holds the readiness edge open after restoration has already
+ * mounted the workspace, so a driver can look at a window whose terminal has
+ * asked for focus while the startup screen still covers it. One-shot: the flag
+ * is consumed as it is read, so a driver that never releases cannot wedge the
+ * next launch.
+ */
+function holdReadinessForE2E(): Promise<void> | null {
+  if (!import.meta.env.DEV) return null;
+  let held: string | null = null;
+  try {
+    held = window.localStorage.getItem(E2E_READINESS_HOLD_KEY);
+    if (held) window.localStorage.removeItem(E2E_READINESS_HOLD_KEY);
+  } catch (error: unknown) {
+    console.debug("[App] E2E readiness hold flag unreadable:", error);
+    return null;
+  }
+  if (!held) return null;
+
+  return new Promise<void>((resolve) => {
+    window.__KANNA_E2E_READINESS_HOLD__ = { release: () => resolve() };
+  });
 }
 
 function eventPayload(event: unknown): unknown {
@@ -530,10 +557,21 @@ export function useAppLifecycle({
       return;
     }
 
+    const readinessHold = holdReadinessForE2E();
+    if (readinessHold) await readinessHold;
+
     // The local workspace is restored and navigable. Terminal attachment,
     // cloud sign-in and the settings reads below are independent of that, so
     // the screen is released here rather than waiting on them.
     startup.markReady();
+    // A terminal restored while the screen was still up asked for focus
+    // through an `inert` ancestor, where the request could not take effect,
+    // and nothing about that terminal changes when the screen lifts. Ask its
+    // own focus owner again, once Vue has actually removed `inert` — the
+    // terminal keeps its own modal and sidebar rules, so this cannot steal a
+    // caret that belongs somewhere else.
+    await nextTick();
+    refocusActiveTerminal();
     if (import.meta.env.DEV && window.__KANNA_E2E__) {
       void remoteTaskDiagnostics.value;
       window.__KANNA_E2E__.ready = true;

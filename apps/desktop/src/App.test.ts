@@ -28,6 +28,15 @@ import { DesktopCloudCredentialConflictError } from "./services/desktopCloudCred
 import { updateDesktopServerClientHandlersForTests } from "./services/desktopServerClient";
 import { createStartupScreen, type StartupController } from "./startup";
 
+/**
+ * The readiness edge asks the terminals' own focus owner again. What matters
+ * at this level is that it happens after startup has actually released the
+ * workspace; the browser's real `inert`/focus behaviour is covered by
+ * `tests/e2e/mock/app-launch.test.ts`, which happy-dom cannot stand in for.
+ */
+const refocusActiveTerminalMock = vi.hoisted(() => vi.fn());
+const refocusStartupStateAtCall: Array<{ phase: string; active: boolean }> = [];
+
 async function flushPromises() {
   await Promise.resolve();
   await nextTick();
@@ -392,6 +401,11 @@ vi.mock("./composables/useBackup", () => ({
 
 vi.mock("./composables/useOperatorEvents", () => ({
   useOperatorEvents: vi.fn(),
+}));
+
+vi.mock("./composables/useTerminalFocusWhenActive", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./composables/useTerminalFocusWhenActive")>()),
+  refocusActiveTerminal: refocusActiveTerminalMock,
 }));
 
 vi.mock("./composables/useKeyboardShortcuts", async (importOriginal) => ({
@@ -1150,6 +1164,14 @@ describe("App", () => {
     window.localStorage.clear();
     startup.dispose();
     startup = createStartupScreen();
+    refocusStartupStateAtCall.length = 0;
+    refocusActiveTerminalMock.mockReset();
+    refocusActiveTerminalMock.mockImplementation(() => {
+      refocusStartupStateAtCall.push({
+        phase: startup.phase.value,
+        active: startup.active.value,
+      });
+    });
     sidebarSearchQuery.value = "";
     store.init.mockClear();
     store.createItem.mockClear();
@@ -1485,6 +1507,53 @@ describe("App", () => {
     expect(wrapper.get(".app").attributes("inert")).toBeUndefined();
     expect(capturedShortcutsEnabled?.()).toBe(true);
 
+    wrapper.unmount();
+  });
+
+  it("asks a terminal restored behind the screen for focus once the screen is gone", async () => {
+    const initDeferred = createDeferred<void>();
+    store.init.mockImplementationOnce(async () => initDeferred.promise);
+
+    const wrapper = await mountApp(SidebarWithRepoStub);
+
+    // A terminal that mounted and asked for focus during restoration was
+    // asking through an `inert` ancestor; nothing has re-asked yet.
+    expect(refocusActiveTerminalMock).not.toHaveBeenCalled();
+
+    initDeferred.resolve();
+    await waitForCondition(() => refocusActiveTerminalMock.mock.calls.length > 0, 40);
+
+    expect(refocusActiveTerminalMock).toHaveBeenCalledTimes(1);
+    // Asked only after the screen released the workspace, never while it still
+    // covered it — a focus request through `inert` cannot take effect.
+    expect(refocusStartupStateAtCall).toEqual([{ phase: "ready", active: false }]);
+
+    wrapper.unmount();
+  });
+
+  it("asks once at the readiness edge and not again for terminals that mount later", async () => {
+    const wrapper = await mountApp(SidebarWithRepoStub);
+    await flushPromises();
+    await flushPromises();
+
+    // A terminal mounting after readiness runs its own focus request from its
+    // own mount, into a workspace that is no longer inert. The readiness edge
+    // must not keep re-focusing on top of that.
+    expect(refocusActiveTerminalMock).toHaveBeenCalledTimes(1);
+
+    wrapper.unmount();
+  });
+
+  it("does not move focus into a workspace a startup failure left covered", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    store.init.mockRejectedValueOnce(new Error("store unavailable"));
+
+    const wrapper = await mountApp(SidebarWithRepoStub);
+
+    expect(startup.phase.value).toBe("failed");
+    expect(refocusActiveTerminalMock).not.toHaveBeenCalled();
+
+    errorSpy.mockRestore();
     wrapper.unmount();
   });
 

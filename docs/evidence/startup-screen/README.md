@@ -21,6 +21,7 @@ the mark's own bounds and the capsules sit directly on the window.
 | `flow-half-period.png` | The same window half a period later: the palette has travelled one and a half rows down and wrapped around. |
 | `light-theme.png` | The same state under the light theme. |
 | `failure.png` | A real startup failure: motion stopped, the icon's own artwork, restart guidance, no invented retry action. |
+| `terminal-focus.png` | The workspace just after the screen lifted, with the restored terminal holding the caret. |
 
 `StartupScreen.test.ts` holds the tile out: no white fill, no tile corner
 radius, no stroke, and the viewBox stays the mark's bounds.
@@ -29,6 +30,25 @@ radius, no stroke, and the viewBox stays the mark's bounds.
 shipped icon's own geometry, every strip gradient repeats with its first colour
 restated last, the segments are fully opaque, and the frame at one full period
 is byte-identical to the frame at zero — which is what makes the wrap seamless.
+
+## Terminal focus across the reveal
+
+A terminal restored while the screen was still up asks for focus through an
+`inert` ancestor, where a real browser refuses it — and nothing about that
+terminal changes when the screen lifts, so without a second ask the revealed
+terminal holds no caret until someone clicks it. The readiness edge therefore
+re-runs the terminals' own focus owner once `inert` is gone.
+
+`app-launch.test.ts` checks this in the real window: it holds the readiness
+edge open after restoration has mounted an agent terminal, lets that terminal's
+own focus attempt run and fail, then releases and waits for the caret. With the
+re-ask removed the same check reports `{focused: false, inert: false}` after the
+reveal — the reviewed race, reproduced — so this is a regression check rather
+than a restatement of the fix.
+
+happy-dom cannot stand in for this half: attribute assertions say nothing about
+whether a browser honours `inert` for focus. The unit tests cover the ordering
+(`App.test.ts`) and the focus owner's own rules (`useTerminalFocusWhenActive.test.ts`).
 
 ## Autonomous motion
 
