@@ -110,7 +110,11 @@ function flattenStyle(style: unknown): Record<string, unknown> {
     : {};
 }
 
-function renderTaskCard(activity?: TaskActivity): ElementNode {
+function renderTaskCard(
+  activity?: TaskActivity,
+  runtimeState?: TaskSummary["runtimeState"],
+  readState?: TaskSummary["readState"]
+): ElementNode {
   if (!TaskCard) throw new Error("TaskCard was not loaded");
 
   const task: TaskSummary = {
@@ -118,7 +122,9 @@ function renderTaskCard(activity?: TaskActivity): ElementNode {
     repoId: "repo-1",
     title: "Match desktop typography",
     stage: "in progress",
-    ...(activity === undefined ? {} : { activity })
+    ...(activity === undefined ? {} : { activity }),
+    ...(runtimeState === undefined ? {} : { runtimeState }),
+    ...(readState === undefined ? {} : { readState })
   };
 
   return TaskCard({
@@ -574,87 +580,72 @@ describe("TaskCard", () => {
     },
   );
 
-  it("keeps busy runtime accessible without a visible running badge", () => {
-    if (!TaskCard) throw new Error("TaskCard was not loaded");
-    const tree = TaskCard({
-      task: {
-        id: "task-1",
-        repoId: "repo-1",
-        title: "Busy with unread output",
-        stage: "in progress",
-        activity: "unread",
-        runtimeState: "busy",
-        readState: "unread"
-      },
-      onPress: vi.fn()
-    }) as ElementNode;
-
-    expect(tree.props?.accessibilityValue).toEqual({
-      text: "working, unread"
-    });
-    expect(findTextNodeByCompleteText(tree, "running")).toBeNull();
-    expect(flattenStyle(
-      findTextNodeByCompleteText(tree, "Busy with unread output")?.props?.style
-    )).toMatchObject({ fontWeight: "bold", fontStyle: "normal" });
-  });
-
-  it("exposes unread activity for an unread idle task", () => {
-    if (!TaskCard) throw new Error("TaskCard was not loaded");
-    const tree = TaskCard({
-      task: {
-        id: "task-1",
-        repoId: "repo-1",
-        title: "Finished with unread output",
-        stage: "review",
-        activity: "unread",
-        runtimeState: "idle",
-        readState: "unread"
-      },
-      onPress: vi.fn()
-    }) as ElementNode;
-
-    expect(tree.props?.accessibilityValue).toEqual({ text: "unread" });
-  });
-
-  it.each<{
-    activity: TaskActivity | undefined;
-    expectedFontWeight: "bold" | "normal";
-    expectedFontStyle: "italic" | "normal";
-  }>([
-    {
-      activity: "unread",
-      expectedFontWeight: "bold",
-      expectedFontStyle: "normal"
-    },
-    {
-      activity: "working",
-      expectedFontWeight: "normal",
-      expectedFontStyle: "italic"
-    },
-    {
-      activity: "idle",
-      expectedFontWeight: "normal",
-      expectedFontStyle: "normal"
-    },
-    {
-      activity: undefined,
-      expectedFontWeight: "normal",
-      expectedFontStyle: "normal"
-    }
-  ])(
-    "renders $activity activity with desktop-equivalent title typography",
-    ({ activity, expectedFontWeight, expectedFontStyle }) => {
-      const tree = renderTaskCard(activity);
+  it.each([
+    [
+      "busy and unread",
+      "unread",
+      "busy",
+      "unread",
+      "working, unread",
+      "normal",
+      "italic"
+    ],
+    [
+      "busy and read",
+      "working",
+      "busy",
+      "read",
+      "working",
+      "normal",
+      "italic"
+    ],
+    [
+      "idle and unread",
+      "unread",
+      "idle",
+      "unread",
+      "unread",
+      "bold",
+      "normal"
+    ],
+    ["idle and read", "idle", "idle", "read", "idle", "normal", "normal"]
+  ] as const)(
+    "renders %s with runtime taking visible precedence",
+    (
+      _label,
+      activity,
+      runtimeState,
+      readState,
+      expectedAccessibilityValue,
+      expectedFontWeight,
+      expectedFontStyle
+    ) => {
+      const tree = renderTaskCard(activity, runtimeState, readState);
       const title = findTextNodeByCompleteText(
         tree,
         "Match desktop typography"
       );
 
-      expect(title).not.toBeNull();
+      expect(tree.props?.accessibilityValue).toEqual({
+        text: expectedAccessibilityValue
+      });
+      expect(findTextNodeByCompleteText(tree, "running")).toBeNull();
       expect(flattenStyle(title?.props?.style)).toMatchObject({
         fontWeight: expectedFontWeight,
         fontStyle: expectedFontStyle
       });
     }
   );
+
+  it("renders missing activity as idle", () => {
+    const title = findTextNodeByCompleteText(
+      renderTaskCard(),
+      "Match desktop typography"
+    );
+
+    expect(flattenStyle(title?.props?.style)).toMatchObject({
+      fontWeight: "normal",
+      fontStyle: "normal"
+    });
+  });
 });
