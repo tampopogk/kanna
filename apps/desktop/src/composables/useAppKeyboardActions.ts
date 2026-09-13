@@ -26,6 +26,8 @@ interface UseAppKeyboardActionsOptions {
   selectedWorkspaceTask: ComputedRef<WorkspaceTask | null>;
   selectedWorkspaceTaskBlocked: ComputedRef<boolean>;
   currentShortcutContext: ComputedRef<ShortcutContext>;
+  /** False while the startup screen still covers this window. */
+  shortcutsEnabled?: ComputedRef<boolean>;
   /**
    * The main content area's tabs. While a task is selected, the view
    * shortcuts open, focus and close tabs there instead of raising a modal.
@@ -77,6 +79,7 @@ export function useAppKeyboardActions(options: UseAppKeyboardActionsOptions) {
     selectedWorkspaceTask,
     selectedWorkspaceTaskBlocked,
     currentShortcutContext,
+    shortcutsEnabled,
     mainTabs,
     mainPanelRef,
     showNewTaskModal,
@@ -399,6 +402,7 @@ export function useAppKeyboardActions(options: UseAppKeyboardActionsOptions) {
     },
   };
   useKeyboardShortcuts(keyboardActions, {
+    enabled: () => shortcutsEnabled?.value ?? true,
     context: () => currentShortcutContext.value,
     beforeAction: (action) => {
       if (action !== "showShortcuts" && action !== "showAllShortcuts" && action !== "dismiss" && showShortcutsModal.value) {

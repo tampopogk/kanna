@@ -1,8 +1,8 @@
 // @vitest-environment happy-dom
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { nextTick } from "vue";
-import { useTerminalFocusWhenActive } from "./useTerminalFocusWhenActive";
+import { effectScope, nextTick } from "vue";
+import { refocusActiveTerminal, useTerminalFocusWhenActive } from "./useTerminalFocusWhenActive";
 
 const setWebviewFocusMock = vi.fn(async () => {});
 
@@ -88,5 +88,81 @@ describe("useTerminalFocusWhenActive", () => {
     await pendingFocus;
 
     expect(focus).toHaveBeenCalledTimes(1);
+  });
+});
+
+async function flushFocusChain(): Promise<void> {
+  // The request awaits a tick, the native webview focus and an animation frame.
+  for (let attempt = 0; attempt < 10; attempt++) {
+    await nextTick();
+  }
+}
+
+describe("refocusActiveTerminal", () => {
+  const originalRequestAnimationFrame = globalThis.requestAnimationFrame;
+
+  beforeEach(() => {
+    setWebviewFocusMock.mockClear();
+    globalThis.requestAnimationFrame = (callback: FrameRequestCallback) => {
+      callback(0);
+      return 1;
+    };
+  });
+
+  afterEach(() => {
+    document.body.innerHTML = "";
+    globalThis.requestAnimationFrame = originalRequestAnimationFrame;
+  });
+
+  it("asks a live terminal for focus again, and only the active one", async () => {
+    const activeFocus = vi.fn();
+    const inactiveFocus = vi.fn();
+    const scope = effectScope();
+    scope.run(() => {
+      useTerminalFocusWhenActive({ isActive: () => true, getTerminal: () => ({ focus: activeFocus }) });
+      useTerminalFocusWhenActive({ isActive: () => false, getTerminal: () => ({ focus: inactiveFocus }) });
+    });
+
+    refocusActiveTerminal();
+    await flushFocusChain();
+
+    // A terminal that asked for focus behind `inert` gets asked again once the
+    // startup screen lifts; a background tab still does not steal the caret.
+    expect(activeFocus).toHaveBeenCalledTimes(1);
+    expect(inactiveFocus).not.toHaveBeenCalled();
+
+    scope.stop();
+  });
+
+  it("keeps the terminal's own modal and sidebar rules when asked again", async () => {
+    const focus = vi.fn();
+    const overlay = document.createElement("div");
+    overlay.className = "modal-overlay";
+    document.body.appendChild(overlay);
+    const scope = effectScope();
+    scope.run(() => {
+      useTerminalFocusWhenActive({ isActive: () => true, getTerminal: () => ({ focus }) });
+    });
+
+    refocusActiveTerminal();
+    await flushFocusChain();
+
+    expect(focus).not.toHaveBeenCalled();
+
+    scope.stop();
+  });
+
+  it("forgets a terminal's request when its scope is torn down", async () => {
+    const focus = vi.fn();
+    const scope = effectScope();
+    scope.run(() => {
+      useTerminalFocusWhenActive({ isActive: () => true, getTerminal: () => ({ focus }) });
+    });
+    scope.stop();
+
+    refocusActiveTerminal();
+    await flushFocusChain();
+
+    expect(focus).not.toHaveBeenCalled();
   });
 });

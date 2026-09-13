@@ -193,4 +193,14 @@ interface Window {
    */
   __KANNA_E2E_TERMINAL_RENDERER__?: "webgl" | "dom";
   __KANNA_E2E_AUTH_INDEXEDDB_FAULT__?: KannaAuthIndexedDbFaultE2EApi;
+  /**
+   * DEV/E2E-only control over the held local-service wait, present only in a
+   * launch the driver asked to hold. See `holdStartupForE2E` in `main.ts`.
+   */
+  __KANNA_E2E_STARTUP_HOLD__?: { release: () => void; fail: () => void };
+  /**
+   * DEV/E2E-only control over the held readiness edge, present only in a launch
+   * the driver asked to hold. See `holdReadinessForE2E` in `useAppLifecycle.ts`.
+   */
+  __KANNA_E2E_READINESS_HOLD__?: { release: () => void };
 }
