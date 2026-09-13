@@ -3725,7 +3725,7 @@ describe("createMobileController", () => {
     });
   });
 
-  it("marks an unread task idle after it remains open for one second", async () => {
+  it("marks a busy unread task read without losing its busy runtime", async () => {
     vi.useFakeTimers();
     const store = createSessionStore();
     const client = createClientMock();
@@ -3734,7 +3734,9 @@ describe("createMobileController", () => {
       repoId: "repo-1",
       title: "Refactor mobile shell",
       stage: "in progress",
-      activity: "unread" as const
+      activity: "unread" as const,
+      runtimeState: "busy" as const,
+      readState: "unread" as const
     };
     client.listRecentTasks.mockResolvedValue([unreadTask]);
     client.listRepoTasks.mockResolvedValue([unreadTask]);
@@ -3753,6 +3755,8 @@ describe("createMobileController", () => {
     expect(client.markTaskRead).toHaveBeenCalledWith("task-1");
     expect(store.getState().repoTasks[0]?.activity).toBe("idle");
     expect(store.getState().recentTasks[0]?.activity).toBe("idle");
+    expect(store.getState().repoTasks[0]?.runtimeState).toBe("busy");
+    expect(store.getState().recentTasks[0]?.runtimeState).toBe("busy");
   });
 
   it("marks an already-open task read after a LAN poll changes only activity", async () => {
