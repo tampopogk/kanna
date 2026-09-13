@@ -613,3 +613,19 @@ describe("cloud task publication reconciliation", () => {
   });
 
 });
+
+describe("explicit task attention publication", () => {
+  it("preserves explicit null clears and absence from older producers", () => {
+    for (const attentionReason of ["Choose 🦀", null]) {
+      const parsed = validateCloudTaskPublication(publication([task({ attentionReason })]), "desktop-1");
+      expect(parsed.tasks[0].attentionReason).toBe(attentionReason);
+    }
+    expect(validateCloudTaskPublication(publication(), "desktop-1").tasks[0]).not.toHaveProperty("attentionReason");
+  });
+  it("validates Unicode character bounds", () => {
+    expect(validateCloudTaskPublication(publication([task({ attentionReason: "🦀".repeat(240) })]), "desktop-1").tasks[0].attentionReason).toBe("🦀".repeat(240));
+    for (const attentionReason of [42, "🦀".repeat(241)]) {
+      expect(() => validateCloudTaskPublication(publication([task({ attentionReason })]), "desktop-1")).toThrow();
+    }
+  });
+});

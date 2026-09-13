@@ -155,7 +155,8 @@ impl Db {
                     -- the server's own derivation so both surfaces agree.
                     pipeline_item.runtime_status AS runtime_state,
                     CASE WHEN pipeline_item.activity = 'unread'
-                         THEN 'unread' ELSE 'read' END AS read_state
+                         THEN 'unread' ELSE 'read' END AS read_state,
+                    pipeline_item.attention_reason
              FROM pipeline_item
              LEFT JOIN task_transfer ON task_transfer.id = (
                SELECT candidate.id
@@ -260,6 +261,7 @@ impl Db {
                 transfer_error: row.get(44)?,
                 runtime_state: row.get(45)?,
                 read_state: row.get(46)?,
+                attention_reason: row.get(47)?,
             })
         })?;
         rows.collect()

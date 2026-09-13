@@ -111,6 +111,8 @@ pub struct MobileApi {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct TaskSummary {
+    #[serde(default)]
+    pub attention_reason: Option<String>,
     pub id: String,
     pub repo_id: String,
     pub repo_name: Option<String>,
@@ -165,6 +167,8 @@ pub struct TaskSummary {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct TaskDetail {
+    #[serde(default)]
+    pub attention_reason: Option<String>,
     /// Exact durable snapshot, also used as the replacement concurrency fence.
     pub workflow_definition: Option<serde_json::Value>,
     pub id: String,
@@ -484,6 +488,8 @@ impl CreateTaskRecoverySnapshot {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct TransferImportSummary {
+    #[serde(default)]
+    pub attention_reason: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub head_oid: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1390,6 +1396,7 @@ fn map_task_summary(
         .unwrap_or_else(|| item.id.clone());
     let waiting_prompt_snippet = item.last_output_preview.clone();
     TaskSummary {
+        attention_reason: item.attention_reason,
         id: item.id,
         repo_id: item.repo_id,
         repo_name,
@@ -1532,6 +1539,7 @@ fn map_task_detail(
         .or(item.agent_provider);
     ports.sort_by(|left, right| left.port.cmp(&right.port).then(left.name.cmp(&right.name)));
     TaskDetail {
+        attention_reason: item.attention_reason,
         workflow_definition: item
             .pipeline_def
             .as_deref()

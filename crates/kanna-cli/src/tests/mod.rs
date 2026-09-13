@@ -431,6 +431,20 @@ fn typed_tool_surfaces() -> BTreeMap<&'static str, TypedToolSurface> {
             },
         ),
         (
+            "kanna_set_task_attention",
+            TypedToolSurface {
+                command_path: &["task", "set-attention"],
+                param_args: &[("task_id", "task_id"), ("reason", "reason")],
+            },
+        ),
+        (
+            "kanna_clear_task_attention",
+            TypedToolSurface {
+                command_path: &["task", "clear-attention"],
+                param_args: &[("task_id", "task_id")],
+            },
+        ),
+        (
             "kanna_rename_task",
             TypedToolSurface {
                 command_path: &["task", "rename"],

@@ -89,7 +89,50 @@ pub(super) fn close_open_activity_interval(
     Ok(())
 }
 
+/// Normalize an explicit task annotation, measured in Unicode scalar values.
+pub(crate) fn normalize_attention_reason(reason: &str) -> Result<String, String> {
+    let reason = reason.trim();
+    if !(1..=240).contains(&reason.chars().count()) {
+        return Err("reason must contain 1–240 trimmed Unicode characters".into());
+    }
+    Ok(reason.to_string())
+}
+
 impl Db {
+    /// Does not change timestamps, ordering, activity, or lifecycle. The event
+    /// and annotation commit together; duplicate writes emit nothing.
+    pub fn set_task_attention(
+        &self,
+        id: &str,
+        reason: Option<&str>,
+    ) -> Result<bool, rusqlite::Error> {
+        let reason = reason
+            .map(normalize_attention_reason)
+            .transpose()
+            .map_err(rusqlite::Error::InvalidParameterName)?;
+        let transaction = self.conn.unchecked_transaction()?;
+        let previous: Option<String> = self.conn.query_row(
+            "SELECT attention_reason FROM pipeline_item WHERE id = ?",
+            [id],
+            |row| row.get(0),
+        )?;
+        if previous == reason {
+            transaction.commit()?;
+            return Ok(false);
+        }
+        self.conn.execute(
+            "UPDATE pipeline_item SET attention_reason = ? WHERE id = ?",
+            params![reason, id],
+        )?;
+        self.append_task_event(
+            id,
+            TaskEventKind::AttentionChanged,
+            json!({"previousAttentionReason": previous, "attentionReason": reason}),
+        )?;
+        transaction.commit()?;
+        Ok(true)
+    }
+
     pub fn count_busy_tasks(&self) -> Result<u64, rusqlite::Error> {
         self.conn.query_row(
             "SELECT COUNT(*) FROM pipeline_item WHERE closed_at IS NULL AND runtime_status = 'busy'",
@@ -246,7 +289,7 @@ impl Db {
         let sql = format!(
             "SELECT id, repo_id, issue_number, issue_title, prompt, pipeline, stage,
              pr_number, pr_url, branch, agent_type, agent_provider, activity, activity_changed_at,
-             closed_at, pinned, pin_order, display_name, last_output_preview, created_at, updated_at, base_ref, notify_task_id, notified_at, parent_task_id, pipeline_def, activity_revision, cloud_task_id, revision_rounds, runtime_status, composer_text, composer_attestation
+             closed_at, pinned, pin_order, display_name, last_output_preview, created_at, updated_at, base_ref, notify_task_id, notified_at, parent_task_id, pipeline_def, activity_revision, cloud_task_id, revision_rounds, runtime_status, composer_text, composer_attestation, attention_reason
              FROM pipeline_item
              WHERE (?1 OR closed_at IS NULL)
                AND (?2 IS NULL OR repo_id = ?2)
@@ -291,6 +334,7 @@ impl Db {
                     runtime_status: row.get(29)?,
                     composer_text: row.get(30)?,
                     composer_attestation: row.get(31)?,
+                    attention_reason: row.get(32)?,
                 })
             },
         )?;
@@ -312,7 +356,7 @@ impl Db {
         let mut stmt = self.conn.prepare(
             "SELECT id, repo_id, issue_number, issue_title, prompt, pipeline, stage,
              pr_number, pr_url, branch, agent_type, agent_provider, activity, activity_changed_at,
-             closed_at, pinned, pin_order, display_name, last_output_preview, created_at, updated_at, base_ref, notify_task_id, notified_at, parent_task_id, pipeline_def, activity_revision, cloud_task_id, revision_rounds, runtime_status, composer_text, composer_attestation
+             closed_at, pinned, pin_order, display_name, last_output_preview, created_at, updated_at, base_ref, notify_task_id, notified_at, parent_task_id, pipeline_def, activity_revision, cloud_task_id, revision_rounds, runtime_status, composer_text, composer_attestation, attention_reason
              FROM pipeline_item
              WHERE (?1 OR closed_at IS NULL)
                AND (?2 IS NULL OR repo_id = ?2)
@@ -360,6 +404,7 @@ impl Db {
                     runtime_status: row.get(29)?,
                     composer_text: row.get(30)?,
                     composer_attestation: row.get(31)?,
+                    attention_reason: row.get(32)?,
                 })
             },
         )?;
@@ -370,7 +415,7 @@ impl Db {
         let mut stmt = self.conn.prepare(
             "SELECT id, repo_id, issue_number, issue_title, prompt, pipeline, stage, \
              pr_number, pr_url, branch, agent_type, agent_provider, activity, activity_changed_at, \
-             closed_at, pinned, pin_order, display_name, last_output_preview, created_at, updated_at, base_ref, notify_task_id, notified_at, parent_task_id, pipeline_def, activity_revision, cloud_task_id, revision_rounds, runtime_status, composer_text, composer_attestation \
+             closed_at, pinned, pin_order, display_name, last_output_preview, created_at, updated_at, base_ref, notify_task_id, notified_at, parent_task_id, pipeline_def, activity_revision, cloud_task_id, revision_rounds, runtime_status, composer_text, composer_attestation, attention_reason \
              FROM pipeline_item WHERE repo_id = ? AND closed_at IS NULL \
              ORDER BY pin_order ASC, created_at DESC",
         )?;
@@ -408,6 +453,7 @@ impl Db {
                 runtime_status: row.get(29)?,
                 composer_text: row.get(30)?,
                 composer_attestation: row.get(31)?,
+                attention_reason: row.get(32)?,
             })
         })?;
         rows.collect()
@@ -445,7 +491,7 @@ impl Db {
         let mut stmt = self.conn.prepare(
             "SELECT id, repo_id, issue_number, issue_title, prompt, pipeline, stage, \
              pr_number, pr_url, branch, agent_type, agent_provider, activity, activity_changed_at, \
-             closed_at, pinned, pin_order, display_name, last_output_preview, created_at, updated_at, base_ref, notify_task_id, notified_at, parent_task_id, pipeline_def, activity_revision, cloud_task_id, revision_rounds, runtime_status, composer_text, composer_attestation \
+             closed_at, pinned, pin_order, display_name, last_output_preview, created_at, updated_at, base_ref, notify_task_id, notified_at, parent_task_id, pipeline_def, activity_revision, cloud_task_id, revision_rounds, runtime_status, composer_text, composer_attestation, attention_reason \
              FROM pipeline_item WHERE id = ?",
         )?;
         let mut rows = stmt.query_map([id], |row| {
@@ -482,6 +528,7 @@ impl Db {
                 runtime_status: row.get(29)?,
                 composer_text: row.get(30)?,
                 composer_attestation: row.get(31)?,
+                attention_reason: row.get(32)?,
             })
         })?;
         match rows.next() {

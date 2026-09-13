@@ -162,7 +162,8 @@ impl Db {
                 runtime_event_pending_at TEXT,
                 blocked_event_baseline INTEGER NOT NULL DEFAULT 0,
                 composer_text TEXT,
-                composer_attestation TEXT
+                composer_attestation TEXT,
+                attention_reason TEXT
             );
             CREATE UNIQUE INDEX idx_pipeline_item_open_cloud_task_id
             ON pipeline_item(cloud_task_id)

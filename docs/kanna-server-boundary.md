@@ -3293,3 +3293,22 @@ on another explicit open. The desktop persists the returned session descriptor
 and only attaches on restoration. Stage forks preserve editors in the original
 workspace; task-close paths enumerate and kill that task's editor sessions
 before removing worktrees. No editor save changes task stage or commits files.
+
+### Explicit task attention annotation
+
+`PUT /v1/tasks/{task_id}/attention` accepts `{ "reason": "..." }`; `DELETE` on
+the same path clears it. Catalog-backed MCP/CLI tools `kanna_set_task_attention`
+and `kanna_clear_task_attention` use equivalent `POST` action routes
+`/actions/set-attention` and `/actions/clear-attention`, preserving existing
+machine routing. No live PTY is required. Reasons are trimmed and limited to
+1–240 Unicode scalar values. Responses contain `taskId`, `attentionReason`
+(string or null), and `changed`. Identical writes succeed without an event.
+
+The durable task owns `attention_reason`. Actual changes atomically append
+`task.attention_changed` with `previousAttentionReason` and `attentionReason`,
+and publish the ordinary Tasks snapshot invalidation. Writes do not change
+timestamps/order, activity/read/runtime state, task input, approval or lifecycle.
+Close/reopen and stage transitions retain the annotation. Task detail (including
+brief), summaries, snapshots, LAN/cloud publications and supported transfers
+carry it. Explicit null propagates a clear; older producers may omit the metadata,
+and older relays or transfer peers may drop it. There is no mobile badge UI.

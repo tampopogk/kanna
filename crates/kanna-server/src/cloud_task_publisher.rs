@@ -122,6 +122,7 @@ struct CloudTaskSnapshot {
     title: String,
     prompt_snippet: Option<String>,
     waiting_prompt_snippet: Option<String>,
+    attention_reason: Option<String>,
     display_name: Option<String>,
     stage: String,
     activity: String,
@@ -346,6 +347,7 @@ fn map_task(
         prompt_snippet: (!prompt.is_empty()).then(|| prompt.chars().take(500).collect()),
         waiting_prompt_snippet: resting_snippet
             .unwrap_or_else(|| truncate_option(item.last_output_preview, 240)),
+        attention_reason: item.attention_reason,
         display_name: truncate_option(item.display_name, 512),
         stage: truncate(&item.stage, 64),
         activity: truncate(&item.activity, 32),
@@ -632,6 +634,7 @@ mod tests {
                     last_opened_at: None,
                 },
                 items: vec![SnapshotPipelineItem {
+                    attention_reason: None,
                     id: "task-1".into(),
                     cloud_task_id: "cloud-stable".into(),
                     transfer_id: None,
@@ -694,6 +697,29 @@ mod tests {
             blocker_task_states: HashMap::new(),
             worktree_paths: HashMap::new(),
             settings: HashMap::new(),
+        }
+    }
+
+    #[test]
+    fn attention_publication_preserves_explicit_clear() {
+        for reason in [Some("Choose approach".to_string()), None] {
+            let mut source = ui_snapshot("idle");
+            source.entries[0].items[0].attention_reason = reason.clone();
+            let value = serde_json::to_value(map_ui_snapshot(
+                "desktop-1",
+                "Mac",
+                test_agent_providers(),
+                source,
+            ))
+            .unwrap();
+            assert_eq!(
+                value["tasks"][0]["attentionReason"],
+                serde_json::json!(reason)
+            );
+            assert!(value["tasks"][0]
+                .as_object()
+                .unwrap()
+                .contains_key("attentionReason"));
         }
     }
 

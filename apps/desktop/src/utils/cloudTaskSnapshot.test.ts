@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { buildCloudTaskSnapshot, hashRemoteUrl } from "./cloudTaskSnapshot";
 
 describe("cloud task snapshot mapper", () => {
-  it("maps a local task and repo into a cloud-safe snapshot", async () => {
+  it.each(["Choose approach", null, undefined])("maps a local task and attention %s into a cloud-safe snapshot", async (attentionReason) => {
     await expect(hashRemoteUrl("git@github.com:jemdiggity/kanna.git")).resolves.toHaveLength(64);
 
     const snapshot = await buildCloudTaskSnapshot({
@@ -21,6 +21,7 @@ describe("cloud task snapshot mapper", () => {
         base_ref: "origin/main",
         pr_number: null,
         pr_url: null,
+        attention_reason: attentionReason,
         display_name: "Cloud mobile",
         last_output_preview: "Ready for review",
         agent_provider: "claude",
@@ -43,6 +44,7 @@ describe("cloud task snapshot mapper", () => {
       localRepoId: "repo-1",
       ownerDesktopId: "desktop-1",
       ownerLocalTaskId: "task-1",
+      attentionReason,
       title: "Cloud mobile",
       promptSnippet: "Fix cloud mobile task list",
       waitingPromptSnippet: "Ready for review",

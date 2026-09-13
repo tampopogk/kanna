@@ -902,3 +902,10 @@ describe("mapDesktopCloudTasks", () => {
     });
   });
 });
+
+it("carries attention set, explicit clear and older absence through remote projections", () => {
+  for (const attentionReason of ["Choose approach", null, undefined]) {
+    const snapshot = mapDesktopCloudTasks([remoteTaskSnapshot({ attentionReason })]);
+    expect(snapshot.items[0].attention_reason).toBe(attentionReason);
+  }
+});

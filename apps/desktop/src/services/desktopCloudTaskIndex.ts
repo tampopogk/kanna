@@ -29,6 +29,7 @@ export interface DesktopCloudTaskSnapshot {
   title: string;
   promptSnippet: string | null;
   waitingPromptSnippet?: string | null;
+  attentionReason?: string | null;
   displayName: string | null;
   stage: string;
   activity?: string;
@@ -437,6 +438,7 @@ export function mapDesktopCloudTasks(
       port_env: null,
       pinned: 0,
       pin_order: null,
+      attention_reason: snapshot.attentionReason,
       display_name: snapshot.displayName ?? `${snapshot.title} (${snapshot.ownerDesktopId})`,
       issue_number: null,
       issue_title: null,

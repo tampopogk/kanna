@@ -1550,6 +1550,7 @@ async fn build_create_request(
         setup_cmds: None,
         task_template: None,
         transfer_import: Some(crate::mobile_api::TransferImportSummary {
+            attention_reason: payload.task.attention_reason.clone(),
             head_oid: payload.task.head_oid.clone(),
             transfer_id: Some(transfer_id.to_string()),
             source_machine: resolve_source_machine_name(state, &payload.task.source_peer_id).await,

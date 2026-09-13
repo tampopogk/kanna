@@ -49,6 +49,7 @@ pub use blockers::ReplaceTaskBlockersError;
 pub use lifecycle_operations::LifecycleOperationIntent;
 #[allow(unused_imports)]
 pub use operator_events::NewOperatorEvent;
+pub(crate) use pipeline_items::normalize_attention_reason;
 #[allow(unused_imports)]
 pub use pipeline_items::MergeSignalSource;
 #[allow(unused_imports)]
@@ -182,6 +183,7 @@ pub(crate) const CURRENT_SCHEMA_MIGRATIONS: &[&str] = &[
     "082_pull_request_forge_attempts",
     "083_worktree_setup_pending",
     "084_task_transfer_workflow_claim",
+    "085_task_attention_reason",
 ];
 
 #[derive(Debug, Serialize)]
@@ -227,6 +229,7 @@ pub struct PipelineItem {
     pub closed_at: Option<String>,
     pub pinned: Option<i64>,
     pub pin_order: Option<i64>,
+    pub attention_reason: Option<String>,
     pub display_name: Option<String>,
     pub last_output_preview: Option<String>,
     pub created_at: Option<String>,
@@ -327,6 +330,7 @@ pub struct SnapshotPipelineItem {
     pub activity_changed_at: Option<String>,
     pub unread_at: Option<String>,
     pub port_offset: Option<i64>,
+    pub attention_reason: Option<String>,
     pub display_name: Option<String>,
     pub last_output_preview: Option<String>,
     pub port_env: Option<String>,
@@ -2445,6 +2449,10 @@ fn run_schema_migrations(conn: &Connection) -> Result<(), rusqlite::Error> {
             );
             "#,
         )
+    })?;
+
+    run_migration(conn, "085_task_attention_reason", |conn| {
+        add_column(conn, "pipeline_item", "attention_reason", "TEXT")
     })?;
 
     Ok(())

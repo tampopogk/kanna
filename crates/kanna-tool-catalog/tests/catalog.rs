@@ -58,6 +58,8 @@ fn bundled_catalog_parses_and_declares_all_tools() {
             "kanna_send_task_raw_input",
             "kanna_close_task",
             "kanna_rename_task",
+            "kanna_set_task_attention",
+            "kanna_clear_task_attention",
             "kanna_advance_stage",
             "kanna_push_task",
             "kanna_pull_task",
@@ -2807,4 +2809,28 @@ fn doctor_is_catalog_backed_read_only_candidate_validation() {
         .render_guide("config")
         .unwrap()
         .contains("kanna_doctor"));
+}
+
+#[test]
+fn attention_tools_use_existing_action_transport_and_machine_routing() {
+    let catalog = bundled_catalog();
+    for (name, args, path, body) in [
+        (
+            "kanna_set_task_attention",
+            json!({"task_id":"task 1","reason":"Choose", "machine_id":"remote"}),
+            "/v1/tasks/task%201/actions/set-attention",
+            json!({"reason":"Choose"}),
+        ),
+        (
+            "kanna_clear_task_attention",
+            json!({"task_id":"task 1", "machine_id":"remote"}),
+            "/v1/tasks/task%201/actions/clear-attention",
+            json!({}),
+        ),
+    ] {
+        let request = resolve_request(&catalog, name, &args).unwrap();
+        assert_eq!(request.method, Method::Post);
+        assert_eq!(request.path, path);
+        assert_eq!(request.body, body);
+    }
 }

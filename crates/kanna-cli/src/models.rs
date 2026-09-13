@@ -122,6 +122,7 @@ impl<'de> Deserialize<'de> for TaskSummary {
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct TaskDetail {
+    pub(crate) attention_reason: Option<String>,
     pub(crate) id: String,
     pub(crate) repo_id: String,
     pub(crate) title: String,
@@ -180,6 +181,8 @@ pub(crate) struct TaskDetail {
 #[derive(Deserialize)]
 #[serde(remote = "TaskDetail", rename_all = "camelCase")]
 struct TaskDetailDef {
+    #[serde(default)]
+    attention_reason: Option<String>,
     id: String,
     repo_id: String,
     title: String,
