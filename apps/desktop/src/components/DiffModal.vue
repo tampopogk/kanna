@@ -25,6 +25,7 @@ const diffViewRef = ref<{
 
 const props = defineProps<EmbeddableViewProps & {
   repoPath: string;
+  isVisible?: () => boolean;
   worktreePath?: string;
   initialScope?: "branch" | "working";
   initialScrollPositions?: Partial<Record<"branch" | "working", number>>;
@@ -123,6 +124,7 @@ onMounted(() => {
         :view-key="viewKey"
         :remote-diff-loader="remoteDiffLoader"
         :is-foreground="isForeground"
+        :is-visible="isVisible"
         @scope-change="emit('scope-change', $event)"
         @scroll-state-change="emit('scroll-state-change', $event)"
         @branch-include-change="emit('branch-include-change', $event)"

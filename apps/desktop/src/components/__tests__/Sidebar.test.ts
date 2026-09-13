@@ -241,6 +241,24 @@ describe("Sidebar", () => {
     getStageOrder.mockReturnValue(["merge", "pr", "review", "in progress"]);
   });
 
+  it("filters unread and positively detected prompts without treating idle as a question", async () => {
+    const wrapper = mountSidebar([
+      item("unread", { read_state: "unread", runtime_state: "busy" }),
+      item("question", { read_state: "read", runtime_state: "waiting", parent_task_id: "parent" }),
+      item("parent", { read_state: "read", runtime_state: "idle" }),
+      item("idle", { read_state: "read", runtime_state: "idle" }),
+    ]);
+    const buttons = wrapper.findAll(".attention-filters button");
+    await buttons[1].trigger("click");
+    expect(wrapper.findAll(".workflow-item").map(node => node.attributes("data-task-id"))).toEqual(["unread"]);
+    await buttons[2].trigger("click");
+    expect(wrapper.findAll(".workflow-item").map(node => node.attributes("data-task-id"))).toEqual(["question"]);
+    expect(wrapper.get(".question-marker").attributes("title")).toBe("Detected question / input prompt");
+    await buttons[0].trigger("click");
+    expect(wrapper.findAll(".workflow-item")).toHaveLength(4);
+    wrapper.unmount();
+  });
+
   it("renders settled server activity when runtime status has not been observed", () => {
     // runtime_status is nullable: a task no session has reported on yet has
     // no runtime dimension, so the row falls back to the blended activity

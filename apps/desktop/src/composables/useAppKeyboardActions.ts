@@ -399,7 +399,15 @@ export function useAppKeyboardActions(options: UseAppKeyboardActionsOptions) {
     },
   };
   useKeyboardShortcuts(keyboardActions, {
-    context: () => currentShortcutContext.value,
+    context: () => {
+      // Terminal editors and embedded pages own save; the task must not advance
+      // merely because these views have no floating-modal context registration.
+      if (currentShortcutContext.value === "main"
+        && ["editor", "preview"].includes(mainTabs.activeTab.value?.kind ?? "")) {
+        return mainTabs.activeTabContext.value ?? "main";
+      }
+      return currentShortcutContext.value;
+    },
     beforeAction: (action) => {
       if (action !== "showShortcuts" && action !== "showAllShortcuts" && action !== "dismiss" && showShortcutsModal.value) {
         showShortcutsModal.value = false;

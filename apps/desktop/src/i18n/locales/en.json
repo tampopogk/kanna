@@ -151,6 +151,7 @@
     "diff": "Diff Viewer Shortcuts",
     "file": "File Viewer Shortcuts",
     "shell": "Shell Shortcuts",
+    "preview": "Task Preview Shortcuts",
     "tree": "Tree Explorer Shortcuts",
     "newTask": "New Task Shortcuts",
     "graph": "Commit Graph Shortcuts",

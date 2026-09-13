@@ -24,7 +24,12 @@ interface TaskHeaderPresentation {
 
 const props = defineProps<{
   item: TaskHeaderPresentation;
+  taskId?: string;
+  ownerLabel?: string;
+  previewSupported?: boolean;
 }>();
+
+const emit = defineEmits<{ (e: "preview", portName: string): void }>();
 
 const stageBadgeLabel = computed(() => {
   const from = props.item.stage_advance_from;
@@ -53,7 +58,7 @@ const ports = computed<PortBadge[]>(() => {
     const env = JSON.parse(props.item.port_env) as Record<string, string | number>;
     return Object.entries(env)
       .map(([envName, value]) => ({ envName, port: Number(value) }))
-      .filter(({ port }) => !Number.isNaN(port))
+      .filter(({ port }) => Number.isInteger(port) && port > 0 && port <= 65535)
       .sort((a, b) => a.port - b.port || a.envName.localeCompare(b.envName));
   } catch (error) {
     console.debug("[task-header] failed to parse task port_env:", error);
@@ -90,20 +95,22 @@ function openLocalhostPort(port: number) {
       <h2 class="task-title" :title="taskPromptTooltip(item)" @mousedown.stop>{{ title(item) }}</h2>
     </div>
     <div class="header-meta">
+      <span v-if="taskId" class="meta-item">{{ taskId }} · {{ ownerLabel }}</span>
       <span v-if="item.launchProvider" class="meta-item" title="Recorded at stage launch. Changes made inside the agent TUI may differ.">Launched with {{ item.launchProvider }}{{ item.launchModel ? ` · ${item.launchModel}` : ' · CLI default' }}</span>
       <span v-if="item.branch" class="meta-item branch" @dblclick="copyBranch">
         <span class="meta-label">{{ $t('taskHeader.branchLabel') }}</span> {{ copied ? $t('taskHeader.copied', 'Copied!') : item.branch }}
       </span>
-      <span
+      <button
         v-for="portInfo in ports"
         :key="`${portInfo.envName}:${portInfo.port}`"
         class="meta-item port"
-        :title="`${portInfo.envName}=${portInfo.port}`"
+        :title="`${portInfo.envName}=${portInfo.port}${previewSupported ? ' · Preview' : ''}`"
+        :disabled="!previewSupported && !!ownerLabel"
         @mousedown.stop
-        @dblclick="openLocalhostPort(portInfo.port)"
+        @click="previewSupported ? emit('preview', portInfo.envName) : openLocalhostPort(portInfo.port)"
       >
-        :{{ portInfo.port }}
-      </span>
+        {{ previewSupported ? 'Preview ' : '' }}:{{ portInfo.port }}
+      </button>
       <a
         v-if="item.issue_number"
         class="meta-item link"
@@ -197,6 +204,7 @@ function openLocalhostPort(port: number) {
 }
 
 .port {
+  border: 0;
   font-family: "JetBrains Mono", "SF Mono", Menlo, monospace;
   font-size: 11px;
   background: var(--kn-bg-panel-raised);

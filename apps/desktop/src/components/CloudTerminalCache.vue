@@ -18,10 +18,12 @@ export interface CloudTerminalCacheEntry {
 import { onBeforeUnmount, ref, watch } from "vue";
 import CloudTerminalView from "./CloudTerminalView.vue";
 
-const props = defineProps<{
+const props = withDefaults(defineProps<{
   activeTerminal: CloudTerminalCacheEntry | null;
   discardKey?: string | null;
-}>();
+  focused?: boolean;
+  visible?: boolean;
+}>(), { focused: true, visible: true });
 
 interface WarmTerminalEntry extends CloudTerminalCacheEntry {
   lastActivated: number;
@@ -118,7 +120,8 @@ onBeforeUnmount(() => {
     >
       <CloudTerminalView
         :key="entry.sessionRevision ?? 'legacy'"
-        :active="entry.key === activeKey"
+        :active="entry.key === activeKey && visible !== false"
+        :focused="focused !== false"
         :owner-desktop-id="entry.ownerDesktopId"
         :owner-task-id="entry.ownerTaskId"
         :transport="entry.transport"

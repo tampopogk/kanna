@@ -7,6 +7,7 @@ import type { MainTab } from "../composables/useMainTabs";
 const props = defineProps<{
   tabs: MainTab[];
   activeTabId: string;
+  worktreePath?: string;
 }>();
 
 const emit = defineEmits<{
@@ -39,9 +40,12 @@ function lastPathSegment(value: string): string {
 
 function present(tab: MainTab): MainTabPresentation {
   const closable = tab.kind !== "agent";
+  if (tab.kind === "preview") return { id: tab.id, label: `Preview: ${tab.portName}`, title: `Task preview · ${tab.portName}`, closable };
   if (tab.kind === "editor") {
     const session = tab.editorSession;
-    return { id: tab.id, label: `Edit: ${lastPathSegment(session?.filePath ?? "")}`, title: `${session?.command} — ${session?.worktreePath}/${session?.filePath}`, closable };
+    const workspaceLabel = session && props.worktreePath && session.worktreePath !== props.worktreePath
+      ? ` · ${lastPathSegment(session.worktreePath)}` : "";
+    return { id: tab.id, label: `Edit: ${lastPathSegment(session?.filePath ?? "")}${workspaceLabel}`, title: `${session?.command} — ${session?.worktreePath}/${session?.filePath}`, closable };
   }
   if (tab.kind === "file") {
     const filePath = tab.filePath ?? "";
@@ -75,6 +79,9 @@ const presented = computed<MainTabPresentation[]>(() => props.tabs.map(present))
       class="main-tab"
       :class="{ active: tab.id === activeTabId }"
       role="tab"
+      tabindex="0"
+      @keydown.enter.prevent="emit('select', tab.id)"
+      @keydown.space.prevent="emit('select', tab.id)"
       :aria-selected="tab.id === activeTabId"
       :title="tab.title"
       :data-testid="`main-tab-${tab.id}`"

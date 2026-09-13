@@ -9,17 +9,18 @@ import { shouldStartTerminalSession } from "../composables/terminalVisibility"
 import { markTaskSwitchMounted, markTaskSwitchReady } from "../perf/taskSwitchPerf"
 import "@xterm/xterm/css/xterm.css"
 
-const props = defineProps<{
+const props = withDefaults(defineProps<{
   attachOnly?: boolean
   sessionId: string
   spawnOptions?: SpawnOptions
   active?: boolean
+  visible?: boolean
   kittyKeyboard?: boolean
   agentProvider?: string
   worktreePath?: string
   agentTerminal?: boolean
   recoverSession?: (sessionId: string, options?: { cols?: number; rows?: number }) => Promise<void>
-}>()
+}>(), { visible: undefined })
 
 const containerRef = ref<HTMLElement | null>(null)
 const {
@@ -101,7 +102,7 @@ const {
 })
 
 async function startWhenActive() {
-  if (!shouldStartTerminalSession(props.active) || started || !containerRef.value) return
+  if (!shouldStartTerminalSession(props.visible ?? props.active) || started || !containerRef.value) return
   started = true
   if (shouldDelayConnectUntilAfterInitialLayout(props.spawnOptions, {
     agentProvider: props.agentProvider,
@@ -160,6 +161,8 @@ onDeactivated(() => {
   pause()
   started = false
 })
+
+watch(() => props.visible, () => { void startWhenActive(); });
 
 watch(
   () => props.active,

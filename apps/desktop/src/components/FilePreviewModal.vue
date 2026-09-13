@@ -59,6 +59,7 @@ const props = withDefaults(
     editInTerminal?: (command: string) => Promise<void>;
     maximized?: boolean;
     initialLine?: number;
+    initialScrollTop?: number;
     initialMarkdownMode?: MarkdownPreviewMode;
     standalone?: boolean;
   }>(),
@@ -75,6 +76,7 @@ const isRemoteFile = computed(() =>
 
 const emit = defineEmits<{
   (e: "close"): void;
+  (e: "scroll-position", top: number): void;
   (e: "update-markdown-mode", mode: MarkdownPreviewMode): void;
 }>();
 
@@ -397,9 +399,24 @@ watch(isSearching, (searching) => {
 });
 
 let scrolledToLine = false;
-
+let readingTop = props.initialScrollTop;
 watch([loading, highlighted], async ([isLoading]) => {
-  if (isLoading || !props.initialLine || scrolledToLine) return;
+  if (isLoading || readingTop === undefined) return;
+  await nextTick();
+  if (contentRef.value) contentRef.value.scrollTop = readingTop;
+});
+function rememberScroll() {
+  if (!contentRef.value || contentRef.value.clientHeight === 0 || loading.value) return;
+  readingTop = contentRef.value.scrollTop;
+  emit("scroll-position", readingTop);
+}
+
+watch(() => props.initialLine, () => {
+  readingTop = undefined;
+  scrolledToLine = false;
+});
+watch([loading, highlighted, () => props.initialLine], async ([isLoading]) => {
+  if (isLoading || readingTop !== undefined || !props.initialLine || scrolledToLine) return;
   scrolledToLine = true;
 
   showLineNumbers.value = true;
@@ -617,6 +634,7 @@ watch(
         v-else
         ref="contentRef"
         class="preview-content"
+        @scroll="rememberScroll"
         :class="{ 'markdown-rendered': renderMarkdown && isMarkdownFile, 'with-line-numbers': showLineNumbers && !renderMarkdown }"
       >
         <template v-if="showLineNumbers && !renderMarkdown">

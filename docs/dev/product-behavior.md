@@ -79,6 +79,40 @@ semantics, and the MCP task-management rule — stay in the repo-root
 3. Close shell → focus returns to agent terminal
 4. Type in the agent terminal to send input to the running provider CLI
 
+### Task reference views
+
+A task opens with its provider TUI using the full work area. **Diff**, **Files…**,
+and **Shell** open task views; the tabs retain other views within this task.
+On desktop, opening a reference shows it beside the agent when the work area
+is at least 1000 CSS pixels wide. **Full width** expands the focused view;
+**Side by side** restores adjacency. Narrow windows display one view at a time.
+**Return to agent** selects and focuses the provider terminal. The highlighted
+pane owns view shortcuts, including the editor's existing save/quit semantics.
+Task id, owning machine, and branch remain visible; an older editor tab labels
+its original workspace when the current task has moved on.
+
+Selection, the chosen reference, and layout preference are stored per task,
+separately from repository and app tabs. File reading offsets and diff scope,
+branch inclusion, and reading offsets restore on task return and app restart
+for the same workspace. Positions are best effort if content changes. A new
+workspace resets those reading positions. Live terminal continuity comes from
+surviving daemon sessions; unavailable sessions and stale remote file snapshots
+are not restored by tab persistence.
+
+A local task's claimed port opens a reference preview after resolving its
+current workspace and port against the owning server. **Open in browser**
+retains full browser and DevTools access. The task server must be running and
+allow embedding. Up to five previews remain mounted during task/view switches,
+retaining their page state; app restart or cache eviction reloads the page.
+Only the port name is persisted, never a page snapshot or credential. Embedded
+previews are local desktop only; mobile and remote preview transport are
+unchanged.
+
+The compact sidebar offers **New task**, **Unread**, and **Questions** over the
+existing task list. Unread uses the existing read state; Questions requires a
+positively detected waiting prompt. Row tooltips explain each reason. Filters
+retain repo pins, nesting and stage order, and create no new lifecycle state.
+
 ### Editing a local task file
 
 File previews offer **Edit**, followed by a visible terminal-editor choice.
@@ -158,7 +192,7 @@ supervision reads `runtimeState`, because a busy task nobody has read carries
 
 Sidebar order: pinned (manual `pin_order`) → unpinned unblocked tasks grouped
 by workflow stage in the repo's `stage_order` (default `pr` → `review` →
-`in progress`; unknown stages last), newest first within each group → blocked
+`in progress` → `plan` → `consultation`; unknown stages last), newest first within each group → blocked
 (newest first). Subtasks nest under their parents (suppressed while
 searching).
 

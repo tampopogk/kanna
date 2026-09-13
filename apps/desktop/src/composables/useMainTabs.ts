@@ -20,7 +20,8 @@ export type MainTabKind =
   | "tree"
   | "graph"
   | "analytics"
-  | "image";
+  | "image"
+  | "preview";
 
 /**
  * Which shell a `shell` tab runs: the task's worktree (⌘J) or the repository
@@ -29,8 +30,22 @@ export type MainTabKind =
  */
 export type ShellTabScope = "worktree" | "repo";
 
+export interface MainTabReadingState {
+  workspace: string;
+  top?: number;
+  diff?: {
+    scope?: "branch" | "working";
+    scrollPositions?: { branch?: number; working?: number };
+    branchInclude?: "none" | "staged" | "all";
+  };
+}
+
 export interface MainTabDescriptor {
   kind: MainTabKind;
+  /** A preview stores a claimed port name, never a URL or entry credential. */
+  portName?: string;
+  /** Reading coordinates only apply to the workspace that produced them. */
+  reading?: MainTabReadingState;
   editorSession?: TerminalEditorSession;
   /** `file` tabs: worktree-relative or absolute path of the file to show. */
   filePath?: string;
@@ -66,14 +81,18 @@ export interface MainTab extends MainTabDescriptor {
 }
 
 interface MainTabScopeState {
+  referenceId?: string;
+  split?: boolean;
   tabs: MainTab[];
   activeId: string;
 }
 
-/** Bump when the stored shape changes; an older payload is discarded, not guessed at. */
+/** Bump when the stored shape becomes incompatible; an older payload is discarded, not guessed at. */
 export const PERSISTED_MAIN_TABS_VERSION = 1;
 
 export interface PersistedMainTabScope {
+  referenceId?: string;
+  split?: boolean;
   tabs: MainTabDescriptor[];
   activeId: string;
 }
@@ -101,11 +120,13 @@ export function isRestorableTab(tab: MainTabDescriptor): boolean {
     case "agent":
     case "image":
       return false;
+    case "preview":
+      return typeof tab.portName === "string" && tab.portName.length > 0;
     case "editor":
       return Boolean(tab.editorSession && [tab.editorSession.sessionId, tab.editorSession.worktreePath, tab.editorSession.filePath, tab.editorSession.command]
         .every(value => typeof value === "string" && value.length > 0));
     case "file":
-      return Boolean(tab.filePath) && !tab.remoteContent;
+      return Boolean(tab.filePath) && tab.remoteContent == null;
     default:
       return true;
   }
@@ -113,8 +134,24 @@ export function isRestorableTab(tab: MainTabDescriptor): boolean {
 
 function persistedDescriptor(tab: MainTabDescriptor): MainTabDescriptor {
   const descriptor: MainTabDescriptor = { kind: tab.kind };
-  // A tab an agent opened keeps reading through the server after a restart:
-  // dropping this would quietly restore the tab onto the unfenced local read.
+  if (typeof tab.portName === "string") descriptor.portName = tab.portName;
+  if (tab.reading && typeof tab.reading.workspace === "string") {
+    const { workspace, top, diff } = tab.reading;
+    descriptor.reading = { workspace };
+    if (typeof top === "number" && Number.isFinite(top) && top >= 0) descriptor.reading.top = top;
+    if (diff) {
+      descriptor.reading.diff = {};
+      if (diff.scope === "branch" || diff.scope === "working") descriptor.reading.diff.scope = diff.scope;
+      if (["none", "staged", "all"].includes(diff.branchInclude ?? "")) descriptor.reading.diff.branchInclude = diff.branchInclude;
+      for (const scope of ["branch", "working"] as const) {
+        const position = diff.scrollPositions?.[scope];
+        if (typeof position === "number" && Number.isFinite(position) && position >= 0) {
+          (descriptor.reading.diff.scrollPositions ??= {})[scope] = position;
+        }
+      }
+    }
+  }
+  // Keep server-contained reads contained after a restart.
   if (tab.containedTaskId) descriptor.containedTaskId = tab.containedTaskId;
   if (tab.editorSession !== undefined) descriptor.editorSession = { ...tab.editorSession };
   if (tab.filePath !== undefined) descriptor.filePath = tab.filePath;
@@ -160,7 +197,10 @@ export function parsePersistedMainTabs(raw: string | null | undefined): Persiste
     const activeId = typeof (value as PersistedMainTabScope).activeId === "string"
       ? (value as PersistedMainTabScope).activeId
       : "";
-    scopes[key] = { tabs, activeId };
+    scopes[key] = { tabs, activeId,
+      referenceId: typeof value.referenceId === "string" ? value.referenceId : undefined,
+      split: typeof value.split === "boolean" ? value.split : undefined,
+    };
   }
   return { version: PERSISTED_MAIN_TABS_VERSION, scopes };
 }
@@ -177,6 +217,7 @@ const TAB_SHORTCUT_CONTEXTS: Record<MainTabKind, ShortcutContext> = {
   graph: "graph",
   analytics: "main",
   image: "file",
+  preview: "preview",
 };
 
 /**
@@ -194,6 +235,8 @@ export function mainTabId(descriptor: MainTabDescriptor): string {
       return descriptor.shellScope === "repo" ? "shell:repo" : "shell";
     case "file":
       return `file:${descriptor.filePath ?? ""}`;
+    case "preview":
+      return `preview:${descriptor.portName ?? ""}`;
     case "image":
       return `image:${descriptor.imageUrl ?? ""}`;
     default:
@@ -302,6 +345,20 @@ export function useMainTabs({ scopeKey, onTabClosed }: UseMainTabsOptions) {
   /** True when this scope owns an agent session tab, i.e. it is a task's. */
   const hasAgentTab = computed(() => isTaskScopeKey(scopeKey.value));
 
+  const referenceTabId = computed(() => {
+    const key = scopeKey.value;
+    const id = key ? scopes[key]?.referenceId : undefined;
+    return tabs.value.find(tab => tab.id === id && tab.kind !== "agent")?.id ?? "";
+  });
+  const split = computed(() => hasAgentTab.value && (scopeKey.value ? scopes[scopeKey.value]?.split !== false : false));
+  function setSplit(value: boolean): void {
+    if (scopeKey.value) scopeState(scopeKey.value).split = value;
+  }
+  function updateReading(id: string, reading: NonNullable<MainTabDescriptor["reading"]>): void {
+    const tab = tabs.value.find(tab => tab.id === id);
+    if (tab) tab.reading = reading;
+  }
+
   function isOpen(id: string): boolean {
     return tabs.value.some((tab) => tab.id === id);
   }
@@ -312,6 +369,7 @@ export function useMainTabs({ scopeKey, onTabClosed }: UseMainTabsOptions) {
     const state = scopeState(key);
     if (!state.tabs.some((tab) => tab.id === id)) return;
     state.activeId = id;
+    if (id !== AGENT_TAB_ID) state.referenceId = id;
   }
 
   /** Opens the view, or focuses it when it is already open. Returns its id. */
@@ -340,9 +398,16 @@ export function useMainTabs({ scopeKey, onTabClosed }: UseMainTabsOptions) {
     } else if (descriptor.kind !== "agent") {
       // Re-opening a file at a different line re-aims the tab that is
       // already showing it rather than leaving the reader where they were.
-      state.tabs[existing] = { ...descriptor, id };
+      state.tabs[existing] = {
+        reading: descriptor.initialLine === undefined ? state.tabs[existing].reading : undefined,
+        ...descriptor,
+        id,
+      };
     }
-    if (options?.activate !== false) state.activeId = id;
+    if (options?.activate !== false) {
+      state.activeId = id;
+      if (id !== AGENT_TAB_ID) state.referenceId = id;
+    }
     return id;
   }
 
@@ -355,12 +420,14 @@ export function useMainTabs({ scopeKey, onTabClosed }: UseMainTabsOptions) {
     if (index === -1) return;
     const [closed] = state.tabs.splice(index, 1);
     if (closed) onTabClosed?.(closed);
+    if (state.referenceId === id) state.referenceId = state.tabs.find(tab => tab.kind !== "agent")?.id;
     if (state.activeId !== id) return;
     // Closing the active tab moves to the tab that took its place — the one to
     // its right — and falls back to its left neighbour when it was last. In a
     // task scope the agent session is leftmost, so closing the only open view
     // lands there; a repository scope simply runs out of tabs.
     state.activeId = (state.tabs[index] ?? state.tabs[index - 1])?.id ?? "";
+    if (state.activeId !== AGENT_TAB_ID) state.referenceId = state.activeId;
   }
 
   function cycleTab(direction: -1 | 1): void {
@@ -394,7 +461,10 @@ export function useMainTabs({ scopeKey, onTabClosed }: UseMainTabsOptions) {
       // either; the scope reopens on its own default instead of on a tab the
       // reader would find missing.
       const activeId = tabs.some((tab) => mainTabId(tab) === state.activeId) ? state.activeId : "";
-      persisted[key] = { tabs, activeId };
+      persisted[key] = { tabs, activeId,
+        referenceId: tabs.some(tab => mainTabId(tab) === state.referenceId) ? state.referenceId : undefined,
+        split: state.split,
+      };
     }
     return { version: PERSISTED_MAIN_TABS_VERSION, scopes: persisted };
   }
@@ -422,12 +492,19 @@ export function useMainTabs({ scopeKey, onTabClosed }: UseMainTabsOptions) {
       }
       const active = state.tabs.find((tab) => tab.id === stored.activeId);
       state.activeId = active?.id ?? state.tabs[0]?.id ?? "";
+      state.referenceId = state.tabs.find(tab => tab.id === stored.referenceId && tab.kind !== "agent")?.id
+        ?? (active?.kind !== "agent" ? active?.id : undefined);
+      state.split = stored.split;
       scopes[key] = state;
     }
   }
 
   return {
     scopeKey,
+    referenceTabId,
+    split,
+    setSplit,
+    updateReading,
     tabs,
     activeTabId,
     activeTab,
