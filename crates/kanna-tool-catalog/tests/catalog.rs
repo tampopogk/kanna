@@ -451,7 +451,7 @@ fn removed_approval_override_is_not_an_agent_tool() {
         .iter()
         .find(|tool| tool.name == "kanna_advance_stage")
         .expect("advance tool");
-    assert_eq!(advance.params.len(), 8);
+    assert_eq!(advance.params.len(), 9);
     assert_eq!(advance.params[0].name, "machine_id");
     assert_eq!(advance.params[0].location, ParamLoc::Routing);
     assert_eq!(advance.params[1].name, "task_id");
@@ -460,19 +460,24 @@ fn removed_approval_override_is_not_an_agent_tool() {
     // The per-advance provider override for the stage the advance enters.
     // These decide how the *next* stage spawns; none of them approves
     // anything, which is what this test is guarding the tool against.
-    assert_eq!(advance.params[3].name, "next_stage_agent_provider");
-    assert_eq!(advance.params[3].location, ParamLoc::Body);
-    assert_eq!(advance.params[4].name, "next_stage_model");
+    assert_eq!(advance.params[4].name, "next_stage_agent_provider");
     assert_eq!(advance.params[4].location, ParamLoc::Body);
-    assert_eq!(advance.params[5].name, "next_stage_effort");
+    assert_eq!(advance.params[5].name, "next_stage_model");
     assert_eq!(advance.params[5].location, ParamLoc::Body);
-    assert_eq!(advance.params[6].name, "next_stage_provider_source");
+    assert_eq!(advance.params[6].name, "next_stage_effort");
     assert_eq!(advance.params[6].location, ParamLoc::Body);
+    assert_eq!(advance.params[7].name, "next_stage_provider_source");
+    assert_eq!(advance.params[7].location, ParamLoc::Body);
     // A compare-and-set fence on the workflow the caller actually inspected,
     // for a task whose remaining stages can be published while it runs. It
     // refuses a stale advance; it authorizes nothing.
-    assert_eq!(advance.params[7].name, "expected_definition");
-    assert_eq!(advance.params[7].location, ParamLoc::Body);
+    assert_eq!(advance.params[8].name, "expected_definition");
+    assert_eq!(advance.params[8].location, ParamLoc::Body);
+    assert_eq!(advance.params[3].name, "next_stage_harness");
+    assert_eq!(
+        advance.params[3].key.as_deref(),
+        Some("nextStageAgentProvider")
+    );
 }
 
 #[test]
@@ -1959,6 +1964,7 @@ fn every_declared_parameter_round_trips_a_cli_spelling() {
         let args = tool
             .params
             .iter()
+            .filter(|param| !matches!(param.name.as_str(), "harness" | "next_stage_harness"))
             .map(|param| {
                 let raw = match param.param_type {
                     ParamType::String => param
