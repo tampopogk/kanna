@@ -230,7 +230,8 @@ pub(crate) fn stage_provider_candidates(
     let candidates = selectors
         .iter()
         .filter_map(|selector| {
-            kanna_agent_protocol::parse_provider_selector(selector)
+            selector
+                .resolve(true)
                 .ok()
                 .map(|selector| ProviderCandidate {
                     provider: selector.provider.as_str().to_string(),
@@ -764,7 +765,7 @@ pub(crate) fn prepare_rerun_stage_for_api(
             .as_deref()
             .unwrap_or_default()
             .iter()
-            .filter_map(|selector| kanna_agent_protocol::parse_provider_selector(selector).ok())
+            .filter_map(|selector| selector.resolve(true).ok())
             .find(|selector| {
                 !rejected_providers
                     .iter()
@@ -3224,7 +3225,7 @@ fn agent_tuning_plan(
     explicit_provider: Option<&str>,
     explicit_model: Option<String>,
     explicit_effort: Option<String>,
-    stage_provider: Option<&[String]>,
+    stage_provider: Option<&[kanna_agent_protocol::AgentSelectionEntry]>,
     repo_preference: Option<&definitions::AgentProviderPreference>,
     agent: Option<&definitions::AgentDefinition>,
 ) -> AgentTuningPlan {
@@ -3235,22 +3236,42 @@ fn agent_tuning_plan(
         model: explicit_model,
         effort: explicit_effort,
     }];
-    layers.extend(provider::stage_tuning_layers(stage_provider));
+    layers.extend(provider::selection_tuning_layers(stage_provider, true));
+    layers.extend(provider::selection_tuning_layers(
+        repo_preference.map(|p| p.providers.as_slice()),
+        false,
+    ));
     layers.push(AgentTuningLayer {
         providers: repo_preference
-            .map(|preference| preference.providers.clone())
+            .map(|preference| selection_harness_names(&preference.providers))
             .unwrap_or_default(),
         model: repo_preference.and_then(|preference| preference.model.clone()),
         effort: repo_preference.and_then(|preference| preference.effort.clone()),
     });
+    layers.extend(provider::selection_tuning_layers(
+        agent.map(|a| a.agent_providers.as_slice()),
+        false,
+    ));
     layers.push(AgentTuningLayer {
         providers: agent
-            .map(|agent| agent.agent_providers.clone())
+            .map(|agent| selection_harness_names(&agent.agent_providers))
             .unwrap_or_default(),
         model: agent.and_then(|agent| agent.model.clone()),
         effort: agent.and_then(|agent| agent.effort.clone()),
     });
     AgentTuningPlan::new(layers)
+}
+
+fn selection_harness_names(entries: &[kanna_agent_protocol::AgentSelectionEntry]) -> Vec<String> {
+    entries
+        .iter()
+        .map(|e| match e {
+            kanna_agent_protocol::AgentSelectionEntry::Legacy(value) => value.clone(),
+            kanna_agent_protocol::AgentSelectionEntry::Candidate(value) => {
+                value.harness.to_string()
+            }
+        })
+        .collect()
 }
 
 fn pin_task_workflow_definition(
@@ -3400,7 +3421,8 @@ fn resolve_task_spawn(
         request.default_provider.as_deref(),
     )
     .map_err(|error| match error {
-        ResolveProviderCandidatesError::Unsupported(_) => {
+        ResolveProviderCandidatesError::Unsupported(_)
+        | ResolveProviderCandidatesError::InvalidSelection(_) => {
             PrepareTaskError::InvalidRequest(error.to_string())
         }
         ResolveProviderCandidatesError::NotConfigured => PrepareTaskError::Other(error.to_string()),
@@ -3833,4 +3855,9 @@ fn new_task_setup_cmds(
     setup.extend(stage_setup.iter().cloned());
     setup.extend(request_setup_cmds.iter().cloned());
     setup
+}
+
+pub(crate) fn normalize_task_workflow_for_transfer(definition: &str) -> Result<String, String> {
+    serde_json::to_string(&definitions::parse_stored_workflow_definition(definition)?)
+        .map_err(|e| e.to_string())
 }

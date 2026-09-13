@@ -450,3 +450,10 @@ This should not appear.
     expect(result.errors).toHaveLength(0);
   });
 });
+
+it("takes one structured template candidate without composing another harness", () => {
+  const task = parseAgentMd("---\nagent_provider:\n  - harness: opencode\n    model: local/model-high\n    effort: custom-hi\n  - codex\n---\nBuild it", "literal-model");
+  expect(task?.agentProvider).toBe("opencode");
+  expect(task?.model).toBe("local/model-high");
+  expect(task?.effort).toBe("custom-hi");
+});

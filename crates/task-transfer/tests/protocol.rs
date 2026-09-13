@@ -752,6 +752,7 @@ fn transfer_artifact_control_messages_roundtrip() {
     assert_roundtrip(ControlRequest::FinalizeOutgoingTransfer {
         request_id: "req-finalize".into(),
         transfer_id: "transfer-1".into(),
+        selection_commitment: "accepted-selection".into(),
     });
 
     assert_roundtrip(ControlRequest::CompleteOutgoingTransferFinalization {
@@ -797,6 +798,7 @@ fn transfer_artifact_control_messages_roundtrip() {
 
     assert_roundtrip(SidecarEvent::OutgoingTransferFinalizationRequested {
         transfer_id: "transfer-1".into(),
+        selection_commitment: "accepted-selection".into(),
     });
 }
 
@@ -1325,4 +1327,43 @@ fn legacy_wire_message_variants_use_expected_json_shapes() {
             "message": "boom",
         })
     );
+}
+
+/// Frozen V1 discriminators: adding fields to the old operation would let an
+/// old server ignore acceptance. A distinct operation must fail deserialization.
+#[test]
+fn v2_finalization_is_not_readable_as_a_v1_operation() {
+    #[derive(serde::Deserialize)]
+    #[serde(tag = "type")]
+    enum V1Peer {
+        #[serde(rename = "finalize_transfer")]
+        Finalize,
+    }
+    #[derive(serde::Deserialize)]
+    #[serde(tag = "type")]
+    enum V1Control {
+        #[serde(rename = "finalize_outgoing_transfer")]
+        Finalize,
+    }
+    let control = serde_json::to_value(ControlRequest::FinalizeOutgoingTransfer {
+        request_id: "request".into(),
+        transfer_id: "transfer".into(),
+        selection_commitment: "accepted".into(),
+    })
+    .unwrap();
+    let peer = serde_json::to_value(PeerRequest::FinalizeTransfer {
+        request_id: "request".into(),
+        transfer_id: "transfer".into(),
+        requester_peer_id: "destination".into(),
+        sealed_payload: "authenticated".into(),
+    })
+    .unwrap();
+    assert!(serde_json::from_value::<V1Control>(control.clone()).is_err());
+    assert!(serde_json::from_value::<V1Peer>(peer.clone()).is_err());
+    let mut legacy = peer;
+    legacy["type"] = json!("finalize_transfer");
+    assert!(serde_json::from_value::<PeerRequest>(legacy).is_err());
+    let mut legacy = control;
+    legacy["type"] = json!("finalize_outgoing_transfer");
+    assert!(serde_json::from_value::<ControlRequest>(legacy).is_err());
 }

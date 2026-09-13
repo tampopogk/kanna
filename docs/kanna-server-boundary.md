@@ -1430,6 +1430,32 @@ These things are contract rather than convenience:
   rolling-upgrade direction therefore leaves the source task recoverable
   instead of reporting success with main or an empty instruction history.
 
+### Transfer selection compatibility
+
+Finalization uses the V2 operation across every destructive boundary: server
+control `finalize-outgoing-transfer-v2`, sidecar control
+`finalize_outgoing_transfer_v2`, authenticated peer `finalize_transfer_v2`, and
+source event `outgoing_transfer_finalization_requested_v2`. These discriminators
+have no V1 aliases. Both servers and sidecars must be updated; old requests or
+components cannot silently discard selection fields and finalize a source.
+The transfer transport version and artifact protocol are unchanged.
+
+The destination parses the complete workflow (including selector values) and
+validates the recorded launch selection before requesting finalization. Its
+required `selection_commitment` binds acceptance to the normalized workflow,
+workflow name, stage, source run id, harness, model and effort. After claiming
+the workflow, the source compares this with its reservation and current run
+before source effects; the finalized payload is checked against the same
+acceptance. Existing published-plan restrictions remain in force separately.
+
+The payload carries the recorded harness and optional `model` and `effort`.
+Import passes them to task preparation and verifies the persisted launch choices before spawning;
+they also participate in the content commitment used for acknowledgment.
+Omissions remain eligible for destination/native defaults, without inspecting
+transcripts or promising the effective native inference settings. Workflow
+normalization accepts equivalent object/list syntax without losing literal
+model or effort identifiers.
+
 ### Source finalization
 
 A push cannot ship a conversation the source agent is still writing to, so the

@@ -292,3 +292,27 @@ fn adapter_metadata() {
     // Codex has no in-band model switch; the daemon applies it on respawn.
     assert!(adapter.encode_set_model("gpt-5-codex").is_none());
 }
+
+#[test]
+fn native_effort_strings_are_escaped_for_initial_and_resume_config() {
+    let adapter = CodexAdapter::new();
+    let ctx = SpawnCtx {
+        effort: Some("custom\"\\variant".into()),
+        ..Default::default()
+    };
+    for spec in [
+        adapter.initial_spawn(&ctx),
+        adapter.resume_spawn(&ctx, "session", "continue"),
+    ] {
+        let config = spec
+            .args
+            .iter()
+            .find(|arg| arg.starts_with("model_reasoning_effort="))
+            .unwrap();
+        let literal = config.strip_prefix("model_reasoning_effort=").unwrap();
+        assert_eq!(
+            serde_json::from_str::<String>(literal).unwrap(),
+            ctx.effort.as_deref().unwrap()
+        );
+    }
+}

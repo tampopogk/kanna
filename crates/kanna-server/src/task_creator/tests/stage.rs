@@ -2909,7 +2909,7 @@ fn opencode_saved_next_stage_model_is_resolved_after_post_completion() {
               "policy": { "transition": "manual" },
               "post": { "name": "commit", "agent": "commit", "prompt": "Commit" } },
             { "name": "pr", "agent": "pr", "prompt": "Review",
-              "agent_provider": "opencode-cloud/coder", "policy": { "transition": "manual" } }
+              "agent_provider": { "harness": "opencode", "model": "local/model-high", "effort": "custom-hi" }, "policy": { "transition": "manual" } }
         ]
     });
     db.update_test_pipeline_item_pipeline_def("task-1", &snapshot.to_string())
@@ -2922,7 +2922,8 @@ fn opencode_saved_next_stage_model_is_resolved_after_post_completion() {
     };
     assert_eq!(run.next_stage, "pr");
     assert_eq!(run.agent_provider, "opencode");
-    assert_eq!(run.model.as_deref(), Some("cloud/coder"));
+    assert_eq!(run.model.as_deref(), Some("local/model-high"));
+    assert_eq!(run.effort.as_deref(), Some("custom-hi"));
     let _ = std::fs::remove_dir_all(&repo_root);
 }
 
@@ -3966,7 +3967,7 @@ async fn prompt_only_post_provider_overrides_source_task_provider_in_fallback_da
                     "post": {
                         "name": "commit",
                         "prompt": "Commit $TASK_PROMPT",
-                        "agent_provider": "codex"
+                        "agent_provider": { "harness": "codex" }
                     }
                 }
             ]
@@ -4088,7 +4089,8 @@ fn edited_workflow_spawn_case(seed_run: bool) {
     db.update_test_pipeline_item_pipeline_def("task-1", &before.to_string())
         .unwrap();
     let mut after = before.clone();
-    after["stages"][0]["agent_provider"] = serde_json::json!(["codex-gpt-6-astra-lo"]);
+    after["stages"][0]["agent_provider"] =
+        serde_json::json!([{ "harness": "codex", "model": "gpt-6-astra", "effort": "low" }]);
     let repo = db.get_repo("repo-1").unwrap().unwrap();
     let runs = db.list_stage_runs_for_task("task-1").unwrap();
     let validated = super::super::validate_task_workflow_replacement(

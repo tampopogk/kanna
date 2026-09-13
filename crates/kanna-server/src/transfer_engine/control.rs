@@ -182,11 +182,12 @@ pub struct FinalizedTransfer {
 pub async fn finalize_from_source(
     state: &Arc<AppState>,
     transfer_id: &str,
+    selection_commitment: &str,
 ) -> Result<FinalizedTransfer, String> {
     let response = control(
         state,
-        "finalize-outgoing-transfer",
-        json!({ "transferId": transfer_id }),
+        "finalize-outgoing-transfer-v2",
+        json!({ "transferId": transfer_id, "selectionCommitment": selection_commitment }),
     )
     .await?;
     if required_string(&response, "transferId")? != transfer_id {

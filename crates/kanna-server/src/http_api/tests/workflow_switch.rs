@@ -1273,6 +1273,8 @@ async fn bound_and_keyed_retries_carry_the_same_publication_identity() {
 /// Seed the outgoing transfer and work item the shared source finalization path
 /// reads, for the task `plan_publication_fixture` created.
 fn seed_outgoing_transfer(db: &Db, transfer_id: &str) {
+    let task = db.get_pipeline_item("task-1").unwrap().unwrap();
+    let run = db.latest_stage_run("task-1").unwrap();
     db.insert_task_transfer(&crate::db::NewTaskTransfer {
         id: transfer_id.into(),
         direction: "outgoing".into(),
@@ -1291,10 +1293,14 @@ fn seed_outgoing_transfer(db: &Db, transfer_id: &str) {
                     "source_peer_id": "peer-source",
                     "source_task_id": "task-1",
                     "resume_session_id": null,
-                    "stage": "plan",
-                    "pipeline": "consultation",
+                    "stage": task.stage,
+                    "pipeline": task.pipeline,
+                    "workflow_definition": task.pipeline_def,
+                    "source_run_id": run.as_ref().map(|r| &r.id),
+                    "model": run.as_ref().and_then(|r| r.model.as_ref()),
+                    "effort": run.as_ref().and_then(|r| r.effort.as_ref()),
                     "agent_type": "pty",
-                    "agent_provider": "claude",
+                    "agent_provider": run.as_ref().and_then(|r| r.agent_provider.as_deref()).or(task.agent_provider.as_deref()).unwrap_or("claude"),
                     "content_commitment": RECEIPT_COMMITMENT,
                 },
                 "repo": { "mode": "reuse-local", "path": "/repo" },
@@ -1308,7 +1314,9 @@ fn seed_outgoing_transfer(db: &Db, transfer_id: &str) {
         &format!("finalize:{transfer_id}"),
         "finalize",
         Some(transfer_id),
-        &finalize_payload(transfer_id),
+        &serde_json::json!({"transfer_id":transfer_id, "selection_commitment":
+            crate::transfer_engine::payload::parse_outgoing_transfer_payload(&serde_json::from_str(db.get_task_transfer(transfer_id).unwrap().unwrap().payload_json.as_deref().unwrap()).unwrap()).unwrap().task.selection_commitment().unwrap()
+        }).to_string(),
     )
     .expect("queue the finalization work item");
 }
@@ -1345,12 +1353,18 @@ fn finalize_payload(transfer_id: &str) -> String {
     serde_json::json!({ "transfer_id": transfer_id }).to_string()
 }
 
-fn finalize_work(transfer_id: &str) -> crate::db::TransferWorkItem {
+fn finalize_work(state: &Arc<AppState>, transfer_id: &str) -> crate::db::TransferWorkItem {
+    let db = Db::open(&state.config.db_path).unwrap();
+    let transfer = db.get_task_transfer(transfer_id).unwrap().unwrap();
+    let payload = crate::transfer_engine::payload::parse_outgoing_transfer_payload(
+        &serde_json::from_str(transfer.payload_json.as_deref().unwrap()).unwrap(),
+    )
+    .unwrap();
     crate::db::TransferWorkItem {
         id: format!("finalize:{transfer_id}"),
         kind: "finalize".to_string(),
         transfer_id: Some(transfer_id.to_string()),
-        payload_json: finalize_payload(transfer_id),
+        payload_json: serde_json::json!({"transfer_id": transfer_id, "selection_commitment": payload.task.selection_commitment().unwrap()}).to_string(),
         attempts: 1,
     }
 }
@@ -1389,7 +1403,7 @@ async fn a_plan_cannot_publish_while_a_transfer_owns_the_task() {
     // exactly the state the publication must refuse against.
     let _ = crate::transfer_engine::push::run_finalization_for_test(
         &state,
-        &finalize_work("transfer-owned"),
+        &finalize_work(&state, "transfer-owned"),
         "transfer-owned",
     )
     .await;
@@ -1435,7 +1449,7 @@ async fn a_transfer_is_refused_when_the_plan_publishes_first() {
 
     let error = crate::transfer_engine::push::run_finalization_for_test(
         &state,
-        &finalize_work("transfer-published"),
+        &finalize_work(&state, "transfer-published"),
         "transfer-published",
     )
     .await
@@ -1467,7 +1481,7 @@ async fn a_settled_transfer_releases_the_task_and_a_later_plan_still_refuses_the
     }
     let _ = crate::transfer_engine::push::run_finalization_for_test(
         &state,
-        &finalize_work("transfer-first"),
+        &finalize_work(&state, "transfer-first"),
         "transfer-first",
     )
     .await;
@@ -1521,7 +1535,7 @@ async fn a_settled_transfer_releases_the_task_and_a_later_plan_still_refuses_the
     }
     let error = crate::transfer_engine::push::run_finalization_for_test(
         &state,
-        &finalize_work("transfer-second"),
+        &finalize_work(&state, "transfer-second"),
         "transfer-second",
     )
     .await
@@ -1769,7 +1783,7 @@ async fn a_queued_finalization_after_a_publication_is_refused_before_wrap_up() {
         std::time::Duration::from_secs(10),
         crate::transfer_engine::run_one_work_item_for_test(
             &state,
-            &finalize_work("transfer-after-plan"),
+            &finalize_work(&state, "transfer-after-plan"),
         ),
     )
     .await
@@ -2017,4 +2031,108 @@ async fn an_ordinary_receipt_still_reaches_the_source_close() {
             "an ordinary receipt was refused before it reached the close: {reason}"
         );
     }
+}
+
+#[tokio::test]
+async fn equivalent_structured_workflow_edit_keeps_the_recorded_run_resumable() {
+    let (_temp, state, before) = replacement_fixture("equivalent-harness-selection");
+    let app = router(Arc::clone(&state));
+    let mut after = before.clone();
+    after["stages"][0]["agent_provider"] = serde_json::json!([
+        {"harness":"claude", "model":"fable"}, {"harness":"codex", "model":"gpt-6-astra"}
+    ]);
+    let (status, body) = replace_workflow(&app, &before, &after).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["supersededRunIds"], serde_json::json!([]));
+    assert!(!Db::open(&state.config.db_path)
+        .unwrap()
+        .stage_run_workflow_superseded("task-1", "run-old")
+        .unwrap());
+}
+
+#[tokio::test]
+async fn structured_selection_transfer_requires_v2_acceptance_before_finalization() {
+    let (_temp, state, before) = replacement_fixture("structured-transfer-refusal");
+    let app = router(Arc::clone(&state));
+    let mut after = before.clone();
+    after["stages"][1]["agent_provider"] =
+        serde_json::json!({"harness":"opencode", "model":"local/model-high"});
+    let (status, body) = replace_workflow(&app, &before, &after).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    seed_outgoing_transfer(
+        &Db::open(&state.config.db_path).unwrap(),
+        "transfer-structured",
+    );
+    let error = crate::transfer_engine::push::run_finalization_for_test(
+        &state,
+        &crate::db::TransferWorkItem {
+            payload_json: finalize_payload("transfer-structured"),
+            ..finalize_work(&state, "transfer-structured")
+        },
+        "transfer-structured",
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        error.contains("requires V2 destination acceptance"),
+        "{error}"
+    );
+    assert!(!finalization_ran(&state, "transfer-structured"));
+}
+
+#[tokio::test]
+async fn v2_acceptance_allows_structured_source_to_reach_finalization() {
+    let BarrieredFixture {
+        _temp,
+        state,
+        mut before,
+        mut arrivals,
+        ..
+    } = plan_publication_fixture_with_barrier("structured-v2-accepted");
+    before["stages"][1]["agent_provider"] = serde_json::json!({
+        "harness": "opencode", "model": "local/Model-high", "effort": "custom-hi"
+    });
+    let db = Db::open(&state.config.db_path).unwrap();
+    db.update_test_pipeline_item_pipeline_def("task-1", &before.to_string())
+        .unwrap();
+    seed_outgoing_transfer(&db, "transfer-v2");
+    let work = finalize_work(&state, "transfer-v2");
+    let attempt = {
+        let state = Arc::clone(&state);
+        tokio::spawn(async move {
+            crate::transfer_engine::push::run_finalization_for_test(&state, &work, "transfer-v2")
+                .await
+        })
+    };
+    assert_eq!(
+        next_arrival(&mut arrivals).await,
+        "transfer-v2/finalize:transfer-v2"
+    );
+    // Crossing the source-effects barrier proves acceptance. This fixture has
+    // no live agent; stop before source effects, which other suites exercise.
+    attempt.abort();
+    assert!(attempt.await.unwrap_err().is_cancelled());
+    assert!(!finalization_ran(&state, "transfer-v2"));
+}
+
+#[tokio::test]
+async fn v2_acceptance_refuses_a_changed_selection_before_source_effects() {
+    let (_temp, state, mut before) = replacement_fixture("structured-v2-stale");
+    let db = Db::open(&state.config.db_path).unwrap();
+    seed_outgoing_transfer(&db, "transfer-stale");
+    let work = finalize_work(&state, "transfer-stale");
+    before["stages"][1]["agent_provider"] = serde_json::json!({
+        "harness": "opencode", "model": "local/Changed-high"
+    });
+    db.update_test_pipeline_item_pipeline_def("task-1", &before.to_string())
+        .unwrap();
+    let error =
+        crate::transfer_engine::push::run_finalization_for_test(&state, &work, "transfer-stale")
+            .await
+            .unwrap_err();
+    assert!(
+        error.contains("changed after destination acceptance"),
+        "{error}"
+    );
+    assert!(!finalization_ran(&state, "transfer-stale"));
 }

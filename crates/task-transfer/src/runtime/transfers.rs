@@ -283,6 +283,7 @@ impl TransferRuntime {
     pub async fn finalize_outgoing_transfer(
         &self,
         transfer_id: &str,
+        selection_commitment: &str,
     ) -> Result<FinalizedOutgoingTransfer, RuntimeError> {
         let source_peer_id = {
             let mut reservations = self.incoming_reservations.lock().await;
@@ -305,11 +306,12 @@ impl TransferRuntime {
         let sealed_payload = self
             .seal_authenticated_peer_request(
                 &source_peer,
-                "finalize_transfer",
+                "finalize_transfer_v2",
                 &request_id,
                 serde_json::json!({
                     "requester_peer_id": self.config.peer_id,
                     "transfer_id": transfer_id,
+                    "selection_commitment": selection_commitment,
                     "reserved_target_peer_id": self.config.peer_id,
                 }),
             )

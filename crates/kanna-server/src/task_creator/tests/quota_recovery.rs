@@ -372,6 +372,18 @@ async fn quota_resume_round(
 async fn a_real_quota_replacement_stays_transparent_to_a_later_recovery() {
     let config = test_config("quota-recovery-chain");
     let (repo_root, db) = init_quota_fixture("quota-recovery-chain", &config);
+    // Exercise the durable candidate objects through quota replacement and
+    // subsequent recovery, retaining every candidate's own tuning.
+    let mut definition: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(repo_root.join(".kanna/workflows/candidates.json")).unwrap(),
+    )
+    .unwrap();
+    definition["stages"][1]["agent_provider"] = serde_json::json!([
+        {"harness":"claude", "model":"fable", "effort":"high"},
+        {"harness":"codex", "model":"gpt-6-astra", "effort":"low"}
+    ]);
+    db.update_test_pipeline_item_pipeline_def(TASK_ID, &definition.to_string())
+        .unwrap();
 
     // A: the stage's real verdict.
     insert_running_review_run(&db, &repo_root, "run-succeeded", "claude", None, None);

@@ -267,8 +267,15 @@ pub(crate) fn validate_task_workflow_replacement_with_plan_context(
             stage.name == name || stage.post.as_ref().is_some_and(|post| post.name == name)
         });
         let environment = owner.and_then(|stage| stage.environment.as_deref());
+        let selection = owner.and_then(|stage| {
+            if stage.name == name { stage.agent_provider.as_ref() }
+            else { stage.post.as_ref()?.agent_provider.as_ref() }
+        }).map(|entries| entries.iter().map(|entry| {
+            let candidate = entry.resolve(true).expect("validated workflow selection");
+            serde_json::json!({"harness": candidate.provider, "model": candidate.model, "effort": candidate.effort})
+        }).collect::<Vec<_>>());
         serde_json::json!({
-            "agent": value.get("agent"), "agent_provider": value.get("agent_provider"),
+            "agent": value.get("agent"), "agent_provider": selection,
             "prompt": value.get("prompt"), "environment": environment,
             "environmentDefinition": environment.and_then(|name| definition.environments.as_ref()?.get(name))
         })

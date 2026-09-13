@@ -742,6 +742,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 RuntimeEvent::OutgoingTransferFinalizationRequested(event) => {
                     SidecarEvent::OutgoingTransferFinalizationRequested {
                         transfer_id: event.transfer_id,
+                        selection_commitment: event.selection_commitment,
                     }
                 }
                 RuntimeEvent::TerminalEvent {
@@ -1302,7 +1303,11 @@ async fn handle_request(
         ControlRequest::FinalizeOutgoingTransfer {
             request_id,
             transfer_id,
-        } => match runtime.finalize_outgoing_transfer(&transfer_id).await {
+            selection_commitment,
+        } => match runtime
+            .finalize_outgoing_transfer(&transfer_id, &selection_commitment)
+            .await
+        {
             Ok(result) => ControlResponse::FinalizeOutgoingTransfer {
                 request_id,
                 transfer_id,

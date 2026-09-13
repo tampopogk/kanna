@@ -293,7 +293,13 @@ async fn run_import(
     let payload = if local_task_id.is_some() || has_manifest {
         stored
     } else {
-        let finalized = control::finalize_from_source(state, transfer_id).await?;
+        let accepted_selection = stored
+            .task
+            .selection_commitment()
+            .map_err(ImportFailure::Terminal)?;
+        validate_transfer_launch_selection(&stored.task)?;
+        let finalized =
+            control::finalize_from_source(state, transfer_id, &accepted_selection).await?;
         let payload = payload::parse_outgoing_transfer_payload(&finalized.payload)
             .map_err(ImportFailure::Terminal)?;
         if payload.repo.mode != RepoAcquisitionMode::TaskBundle {
@@ -302,6 +308,16 @@ async fn run_import(
             ));
         }
         assert_payload_matches_reservation(&transfer, &payload)?;
+        if payload
+            .task
+            .selection_commitment()
+            .map_err(ImportFailure::Terminal)?
+            != accepted_selection
+        {
+            return Err(ImportFailure::Terminal(
+                "finalized workflow or launch selection differs from destination acceptance".into(),
+            ));
+        }
         // The finalization rewrites the payload, so the definition that
         // actually crosses is re-checked rather than assumed identical to the
         // reserved one.
@@ -641,36 +657,24 @@ async fn run_import(
 fn stored_workflow_matches_source(stored: Option<&str>, expected: Option<&str>) -> bool {
     match (stored, expected) {
         (Some(stored), Some(expected)) if stored == expected => true,
-        (Some(stored), Some(expected)) => serde_json::from_str::<serde_json::Value>(stored)
-            .ok()
-            .zip(serde_json::from_str::<serde_json::Value>(expected).ok())
-            .is_some_and(|(a, b)| a == b),
+        (Some(stored), Some(expected)) => {
+            if !crate::task_creator::unknown_workflow_fields(expected).is_empty() {
+                return false;
+            }
+            crate::task_creator::normalize_task_workflow_for_transfer(stored)
+                .ok()
+                .zip(crate::task_creator::normalize_task_workflow_for_transfer(expected).ok())
+                .is_some_and(|(a, b)| a == b)
+        }
         (None, None) => true,
         _ => false,
     }
 }
 
-/// Refuse a payload this destination cannot carry, before anything asks the
-/// source to finalize.
-///
-/// The destination re-serializes a transferred workflow through its own
-/// `WorkflowDefinition`, so any field this build does not know is dropped on
-/// the way in. Discovering that after `finalize_from_source` means the source
-/// has already been told to wrap up and quit its agent for a transfer that
-/// then fails — so the same comparison is made here, against the payload as it
-/// arrived, while refusing still costs the source nothing.
-///
-/// This protects *this* machine from importing something it would silently
-/// trim. It is not what protects a source handing work to an older peer —
-/// that refusal is the source's, in `push::refuse_unprovable_plan_preservation`,
-/// because the machine that would run this check is the one too old to have it.
-///
-/// This compares the whole definition rather than looking for one field name:
-/// the loss it guards against is "this build does not know about X", and X is
-/// by definition something this build cannot enumerate. It cannot help a
-/// destination older than this check — no code here can — but from this
-/// version on, a definition that would not survive the trip is refused instead
-/// of costing the source its session.
+/// Validate both workflow keys and selector values before requesting source
+/// finalization. The V2 operation identifies receivers that perform this check;
+/// legacy finalization operations cannot reach source shutdown on updated peers.
+/// The existing source-side plan-context restriction remains separate.
 pub(crate) fn assert_destination_preserves_workflow(
     workflow_definition: Option<&str>,
 ) -> Result<(), ImportFailure> {
@@ -679,6 +683,8 @@ pub(crate) fn assert_destination_preserves_workflow(
     };
     let unknown = crate::task_creator::unknown_workflow_fields(definition);
     if unknown.is_empty() {
+        crate::task_creator::normalize_task_workflow_for_transfer(definition)
+            .map_err(ImportFailure::Terminal)?;
         return Ok(());
     }
     Err(ImportFailure::Terminal(format!(
@@ -688,6 +694,29 @@ pub(crate) fn assert_destination_preserves_workflow(
          machine and retry.",
         unknown.join(", ")
     )))
+}
+
+fn validate_transfer_launch_selection(
+    task: &payload::TransferTaskPayload,
+) -> Result<(), ImportFailure> {
+    use kanna_agent_protocol::{AgentCandidate, AgentSelectionEntry};
+    if task.workflow_definition.is_none() {
+        return Err(ImportFailure::Terminal(
+            "V2 transfer requires the complete pinned workflow before source finalization".into(),
+        ));
+    }
+    let harness = task
+        .agent_provider
+        .parse()
+        .map_err(ImportFailure::Terminal)?;
+    AgentSelectionEntry::Candidate(AgentCandidate {
+        harness,
+        model: task.model.clone(),
+        effort: task.effort.clone(),
+    })
+    .resolve(false)
+    .map_err(ImportFailure::Terminal)?;
+    Ok(())
 }
 
 pub(crate) async fn verify_persisted_task_bundle(
@@ -742,6 +771,43 @@ pub(crate) async fn verify_persisted_task_bundle(
             "transferred task {local_task_id} workflow definition does not match the source snapshot"
         )));
     }
+    let launch_harness = item.agent_provider.as_deref().ok_or_else(|| {
+        ImportFailure::Terminal("transferred task has no persisted launch harness".into())
+    })?;
+    if launch_harness != payload.task.agent_provider {
+        return Err(ImportFailure::Terminal(
+            "transferred task harness does not match the source launch selection".into(),
+        ));
+    }
+    // Initial preparation has persisted spawn options before any daemon call.
+    // Compare only the choices the source supplied: omissions may resolve locally.
+    let launch_options: Value = db
+        .get_pipeline_item_agent_spawn_options(local_task_id)
+        .map_err(|e| format!("db error: {e}"))?
+        .as_deref()
+        .map(serde_json::from_str)
+        .transpose()
+        .map_err(|e| format!("invalid destination launch options: {e}"))?
+        .unwrap_or(Value::Null);
+    for (key, expected) in [
+        ("model", payload.task.model.as_deref()),
+        ("effort", payload.task.effort.as_deref()),
+    ] {
+        if expected.is_some() && launch_options.get(key).and_then(Value::as_str) != expected {
+            return Err(ImportFailure::Terminal(format!("transferred task {local_task_id} {key} does not match the explicit source launch selection")));
+        }
+    }
+    let launch_model = payload
+        .task
+        .model
+        .as_ref()
+        .and_then(|_| launch_options.get("model").and_then(Value::as_str));
+    let launch_effort = payload
+        .task
+        .effort
+        .as_ref()
+        .and_then(|_| launch_options.get("effort").and_then(Value::as_str));
+
     let repo = db
         .get_repo(&item.repo_id)
         .map_err(|error| format!("db error: {error}"))?
@@ -905,6 +971,9 @@ pub(crate) async fn verify_persisted_task_bundle(
                 .as_ref()
                 .map(|ledger| ledger.sha256.as_str()),
             history: &read_back_history,
+            launch_harness,
+            launch_model,
+            launch_effort,
         })
         .map_err(ImportFailure::Terminal)?;
     let completed = verify_db
@@ -1540,8 +1609,8 @@ async fn build_create_request(
         ),
         terminal_cols: None,
         terminal_rows: None,
-        model: None,
-        effort: None,
+        model: payload.task.model.clone(),
+        effort: payload.task.effort.clone(),
         permission_mode: None,
         allowed_tools: None,
         disallowed_tools: None,
@@ -2184,7 +2253,7 @@ mod tests {
                 "pipeline": "single-reviewer",
                 "agent_type": "pty",
                 "agent_provider": "claude",
-                "workflow_definition": "{\"stages\":[{\"name\":\"in progress\"}]}",
+                "workflow_definition": r#"{"name":"single-reviewer","stages":[{"name":"in progress","policy":{"transition":"manual"}}]}"#,
                 "head_oid": "a".repeat(40),
                 "base_oid": "b".repeat(40),
             },
@@ -3060,6 +3129,8 @@ mod tests {
             "name": "single-reviewer",
             "stages": [{
                 "name": "in progress",
+                "agent_provider": {"harness":"opencode", "model":"local/Workflow-high", "effort":"workflow-hi"},
+                "post": {"name":"commit", "agent_provider":{"harness":"opencode", "model":"local/Post-high"}},
                 "prompt": "$TASK_PROMPT",
                 "policy": { "transition": "manual" }
             }]
@@ -3073,12 +3144,13 @@ mod tests {
         std::fs::write(
             path.join(".kanna/config.json"),
             serde_json::json!({
-                "workspace": { "path": { "prepend": [".kanna/test-provider-bin"] } }
+                "workspace": { "path": { "prepend": [".kanna/test-provider-bin"] } },
+                "agentProviders": {"*":{"harness":"opencode", "model":"local/Destination-default", "effort":"default-hi"}}
             })
             .to_string(),
         )
         .unwrap();
-        let provider = path.join(".kanna/test-provider-bin/claude");
+        let provider = path.join(".kanna/test-provider-bin/opencode");
         std::fs::write(&provider, "#!/bin/sh\nexit 0\n").unwrap();
         std::fs::set_permissions(&provider, std::fs::Permissions::from_mode(0o755)).unwrap();
         std::fs::write(path.join("README.md"), "base\n").unwrap();
@@ -3211,7 +3283,8 @@ mod tests {
                 }],
                 "pipeline": "single-reviewer",
                 "agent_type": "pty",
-                "agent_provider": "claude"
+                "agent_provider": "opencode",
+                "model": "local/Recorded-high", "effort": "custom-hi", "source_run_id": "source-run"
             },
             "repo": {
                 "mode": "task-bundle",
@@ -3293,6 +3366,15 @@ mod tests {
             );
             let event: Value = serde_json::from_str(&request.payload_json).unwrap();
             assert_eq!(event["transfer_id"], reservation.transfer_id);
+            assert_eq!(event["type"], "outgoing_transfer_finalization_requested_v2");
+            assert_eq!(
+                event["selection_commitment"],
+                payload::parse_outgoing_transfer_payload(&payload_json)
+                    .unwrap()
+                    .task
+                    .selection_commitment()
+                    .unwrap()
+            );
             reservation
                 .source
                 .control(
@@ -3373,10 +3455,33 @@ mod tests {
             let mut reader = BufReader::new(read_half);
             let command = read_import_test_daemon_command(&mut reader, &mut write_half).await;
             let session_id = match command {
-                kanna_daemon::protocol::Command::Spawn { session_id, .. } => session_id,
+                kanna_daemon::protocol::Command::Spawn {
+                    session_id,
+                    args,
+                    agent_provider,
+                    ..
+                } => {
+                    assert_eq!(
+                        agent_provider,
+                        Some(kanna_agent_protocol::AgentProvider::Opencode)
+                    );
+                    let command = args.join(" ");
+                    assert!(command.contains("local/Recorded-high"), "{command}");
+                    assert!(command.contains("custom-hi"), "{command}");
+                    assert!(!command.contains("local/Destination-default"), "{command}");
+                    session_id
+                }
                 other => panic!("expected recovery Spawn, got {other:?}"),
             };
             let db = crate::db::Db::open(&daemon_db_path).unwrap();
+            let options: Value = serde_json::from_str(
+                &db.get_pipeline_item_agent_spawn_options(&task_id_for_daemon)
+                    .unwrap()
+                    .unwrap(),
+            )
+            .unwrap();
+            assert_eq!(options["model"], "local/Recorded-high");
+            assert_eq!(options["effort"], "custom-hi");
             assert!(
                 db.transferred_task_manifest_content_commitment(&transfer_id_for_daemon)
                     .unwrap()
@@ -3495,6 +3600,14 @@ mod tests {
                 .as_deref(),
             Some("review")
         );
+        assert!(stored_workflow_matches_source(
+            db.get_pipeline_item(&destination_task_id)
+                .unwrap()
+                .unwrap()
+                .pipeline_def
+                .as_deref(),
+            Some(&workflow_definition)
+        ));
         let inputs = db.list_all_task_inputs(&destination_task_id).unwrap();
         assert_eq!(inputs.len(), 2);
         assert_eq!(inputs[0].message, "preserve this imported directive");
@@ -3529,6 +3642,34 @@ mod tests {
 mod stored_workflow_tests {
     use super::{assert_destination_preserves_workflow, stored_workflow_matches_source};
 
+    #[test]
+    fn structured_selection_snapshot_round_trips_without_losing_literals() {
+        let original = r#"{"name":"selection","stages":[{"name":"build","policy":{"transition":"manual"},"agent_provider":[{"harness":"opencode","model":"local/My/Model-high","effort":"custom-hi"}]}]}"#;
+        let normalized =
+            crate::task_creator::normalize_task_workflow_for_transfer(original).unwrap();
+        assert!(stored_workflow_matches_source(
+            Some(&normalized),
+            Some(original)
+        ));
+        assert!(assert_destination_preserves_workflow(Some(original)).is_ok());
+    }
+
+    #[test]
+    fn v2_acceptance_checks_selector_values_not_just_known_keys() {
+        for selection in [
+            serde_json::json!({"harness":"pi", "model":"example"}),
+            serde_json::json!({"harness":"opencode", "model":"local/model", "futureField":true}),
+            serde_json::json!({"harness":"claude", "effort":"invalid"}),
+        ] {
+            let workflow = serde_json::json!({"name":"transfer", "stages":[{
+                "name":"work", "policy":{"transition":"manual"}, "agent_provider":selection
+            }]})
+            .to_string();
+            assert!(crate::task_creator::unknown_workflow_fields(&workflow).is_empty());
+            assert!(assert_destination_preserves_workflow(Some(&workflow)).is_err());
+        }
+    }
+
     /// The false positive a shape comparison would produce.
     ///
     /// Normalization deliberately rewrites older spellings — a stage-level
@@ -3549,12 +3690,10 @@ mod stored_workflow_tests {
         }
     }
 
-    /// A document that is not a workflow at all is somebody else's error.
-    /// Answering it here would turn an existing downstream failure into a
-    /// transfer refusal.
+    /// V2 validates values before requesting any source finalization.
     #[test]
-    fn an_unparseable_definition_is_not_this_checks_answer() {
-        assert!(assert_destination_preserves_workflow(Some("not json")).is_ok());
+    fn an_unparseable_definition_is_refused_before_finalization() {
+        assert!(assert_destination_preserves_workflow(Some("not json")).is_err());
         assert!(assert_destination_preserves_workflow(None).is_ok());
     }
 

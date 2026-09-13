@@ -1,0 +1,147 @@
+[
+  {
+    "value": [
+      "codex-gpt-6-astra-hi"
+    ],
+    "expected": [
+      {
+        "provider": "codex",
+        "model": "gpt-6-astra",
+        "effort": "high"
+      }
+    ]
+  },
+  {
+    "value": [
+      {
+        "harness": "opencode",
+        "model": "Local/My/Model-high",
+        "effort": "custom-hi"
+      }
+    ],
+    "expected": [
+      {
+        "provider": "opencode",
+        "model": "Local/My/Model-high",
+        "effort": "custom-hi"
+      }
+    ]
+  },
+  {
+    "value": [
+      {
+        "harness": "codex"
+      },
+      {
+        "harness": "opencode",
+        "model": "local/a:b@c-max"
+      }
+    ],
+    "expected": [
+      {
+        "provider": "codex"
+      },
+      {
+        "provider": "opencode",
+        "model": "local/a:b@c-max"
+      }
+    ]
+  },
+  {
+    "value": [
+      "codex",
+      "codex"
+    ],
+    "expected": [
+      {
+        "provider": "codex"
+      },
+      {
+        "provider": "codex"
+      }
+    ]
+  },
+  {
+    "value": [],
+    "error": true
+  },
+  {
+    "value": [
+      {
+        "model": "x"
+      }
+    ],
+    "error": true
+  },
+  {
+    "value": [
+      {
+        "harness": "pi"
+      }
+    ],
+    "error": true
+  },
+  {
+    "value": [
+      {
+        "harness": "codex",
+        "models": "x"
+      }
+    ],
+    "error": true
+  },
+  {
+    "value": [
+      {
+        "harness": "codex",
+        "model": ""
+      }
+    ],
+    "error": true
+  },
+  {
+    "value": [
+      {
+        "harness": "codex",
+        "model": null
+      }
+    ],
+    "error": true
+  },
+  {
+    "value": [
+      {
+        "harness": "codex",
+        "effort": " high"
+      }
+    ],
+    "error": true
+  },
+  {
+    "value": [
+      {
+        "harness": "codex"
+      },
+      "codex"
+    ],
+    "error": true
+  },
+  {
+    "value": [
+      {
+        "harness": "opencode",
+        "model": "a\nb"
+      }
+    ],
+    "error": true
+  },
+  {
+    "value": [
+      {
+        "harness": "codex",
+        "effort": 4
+      }
+    ],
+    "error": true
+  }
+]

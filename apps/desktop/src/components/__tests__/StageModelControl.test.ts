@@ -43,7 +43,7 @@ describe("one-time OpenCode stage selection", () => {
     store.advanceStage.mockClear();
     const workflow = { name: "pinned", stages: [{ name: "plan", post: { name: "commit", prompt: "Commit" } }, { name: "implement", prompt: "Keep this prompt", policy: { transition: "manual" } }] };
     vi.mocked(fetchDesktopTaskDetail).mockResolvedValue({ id: "task-one", stage: "plan", workflowDefinition: workflow } as never);
-    const canonical = { ...workflow, stages: [workflow.stages[0], { ...workflow.stages[1], agent_provider: ["opencode-local/Qwen-Coder"] }] };
+    const canonical = { ...workflow, stages: [workflow.stages[0], { ...workflow.stages[1], agent_provider: [{ harness: "opencode", model: "local/Qwen-Coder" }] }] };
     vi.mocked(replaceDesktopTaskWorkflow).mockResolvedValueOnce(canonical);
     const wrapper = mount(StageModelControl, { props: { task } });
     await wrapper.get("button").trigger("click");
@@ -51,15 +51,15 @@ describe("one-time OpenCode stage selection", () => {
     await wrapper.get("input").setValue("local/Qwen-Coder");
     await wrapper.get(".stage-model-panel > button").trigger("click");
     expect(replaceDesktopTaskWorkflow).toHaveBeenCalledWith("task-one", workflow, {
-      ...workflow, stages: [workflow.stages[0], { ...workflow.stages[1], agent_provider: "opencode-local/Qwen-Coder" }],
+      ...workflow, stages: [workflow.stages[0], { ...workflow.stages[1], agent_provider: { harness: "opencode", model: "local/Qwen-Coder" } }],
     });
     expect(store.advanceStage).not.toHaveBeenCalled();
     expect(wrapper.text()).toContain("Advance normally when ready");
     await wrapper.get("input").setValue("cloud/Coder");
     await wrapper.get(".stage-model-panel > button").trigger("click");
-    expect(replaceDesktopTaskWorkflow).toHaveBeenLastCalledWith("task-one", canonical, expect.objectContaining({ stages: [canonical.stages[0], { ...canonical.stages[1], agent_provider: "opencode-cloud/Coder" }] }));
+    expect(replaceDesktopTaskWorkflow).toHaveBeenLastCalledWith("task-one", canonical, expect.objectContaining({ stages: [canonical.stages[0], { ...canonical.stages[1], agent_provider: { harness: "opencode", model: "cloud/Coder" } }] }));
   });
-  it("refuses ambiguous model IDs and surfaces stale workflow edits without retrying", async () => {
+  it("saves suffix-looking native model IDs and surfaces stale edits without retrying", async () => {
     vi.mocked(replaceDesktopTaskWorkflow).mockClear();
     vi.mocked(fetchDesktopTaskDetail).mockResolvedValue({ id: "task-one", stage: "plan", workflowDefinition: { stages: [{ name: "plan", post: { name: "commit" } }, { name: "implement" }] } } as never);
     const wrapper = mount(StageModelControl, { props: { task } });
@@ -67,12 +67,12 @@ describe("one-time OpenCode stage selection", () => {
     await vi.waitFor(() => expect(wrapper.find("input").exists()).toBe(true));
     await wrapper.get("input").setValue("local/model-high");
     await wrapper.get(".stage-model-panel > button").trigger("click");
-    expect(replaceDesktopTaskWorkflow).not.toHaveBeenCalled();
-    expect(wrapper.text()).toContain("ambiguous");
+    expect(replaceDesktopTaskWorkflow).toHaveBeenCalledWith("task-one", expect.anything(), expect.objectContaining({ stages: expect.arrayContaining([expect.objectContaining({ agent_provider: { harness: "opencode", model: "local/model-high" } })]) }));
+    expect(wrapper.text()).not.toContain("ambiguous");
     vi.mocked(replaceDesktopTaskWorkflow).mockRejectedValue(new Error("409: pinned workflow changed"));
     await wrapper.get("input").setValue("local/Qwen");
     await wrapper.get(".stage-model-panel > button").trigger("click");
-    expect(replaceDesktopTaskWorkflow).toHaveBeenCalledTimes(1);
+    expect(replaceDesktopTaskWorkflow).toHaveBeenCalledTimes(2);
     expect(wrapper.text()).toContain("pinned workflow changed");
   });
   it("keeps the selector open across snapshots of the same task and stage", async () => {

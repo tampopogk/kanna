@@ -64,6 +64,7 @@ pub(super) struct AdvanceStageRequest {
     /// explicit-override slot of the provider precedence chain, so it outranks
     /// that stage's own `agent_provider` selectors, the repo's
     /// `agentProviders`, the agent definition's frontmatter, and the default.
+    #[serde(alias = "nextStageHarness")]
     next_stage_agent_provider: Option<String>,
     /// Model for `next_stage_agent_provider`, passed to that CLI verbatim.
     /// Meaningless — and refused — without the provider it belongs to.
@@ -3080,5 +3081,19 @@ mod notification_failure_tests {
             .unwrap()
             .closed_at
             .is_none());
+    }
+}
+
+#[cfg(test)]
+mod harness_request_tests {
+    #[test]
+    fn advance_harness_alias_refuses_both_spellings() {
+        let request: super::AdvanceStageRequest =
+            serde_json::from_value(serde_json::json!({"nextStageHarness":"codex"})).unwrap();
+        assert_eq!(request.next_stage_agent_provider.as_deref(), Some("codex"));
+        assert!(serde_json::from_value::<super::AdvanceStageRequest>(
+            serde_json::json!({"nextStageHarness":"codex", "nextStageAgentProvider":"codex"})
+        )
+        .is_err());
     }
 }

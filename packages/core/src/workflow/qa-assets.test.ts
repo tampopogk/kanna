@@ -184,7 +184,7 @@ describe("QA workflow assets", () => {
       "workflow-factory",
     ]) {
       const agent = parseAgentDefinition(readRepoFile(`.kanna/agents/${name}/AGENT.md`));
-      expect(agent.agent_provider?.[0], name).toBe("claude");
+      expect((Array.isArray(agent.agent_provider) ? agent.agent_provider[0] : agent.agent_provider), name).toBe("claude");
     }
 
     // The repo wildcard is the only lever; the shipped definitions stay as they
@@ -204,7 +204,7 @@ describe("QA workflow assets", () => {
       "review-release",
     ]) {
       const agent = parseAgentDefinition(readRepoFile(`.kanna/agents/${name}/AGENT.md`));
-      expect(agent.agent_provider?.[0], name).toBe("claude");
+      expect((Array.isArray(agent.agent_provider) ? agent.agent_provider[0] : agent.agent_provider), name).toBe("claude");
     }
   });
 
@@ -213,7 +213,7 @@ describe("QA workflow assets", () => {
     const task = readRepoFile(".kanna/tasks/task-manager/agent.md");
 
     expect(agent.name).toBe("task-manager");
-    expect(agent.agent_provider?.[0]).toBe("codex");
+    expect((Array.isArray(agent.agent_provider) ? agent.agent_provider[0] : agent.agent_provider)).toBe("codex");
     expect(agent.prompt).toContain("kanna_wait_events");
     expect(agent.prompt).toContain("Scope the watch to the whole repository");
     expect(agent.prompt).toContain("kanna_subscribe_events");

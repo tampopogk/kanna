@@ -1,7 +1,9 @@
 import {
   isAgentProvider,
   splitAgentProviderValue,
-  type AgentProvider,
+  type AgentSelectionEntry,
+  parseAgentSelection,
+  validateSelectionSiblings,
 } from "./agent-providers.js";
 
 /**
@@ -27,7 +29,7 @@ export interface RepoWorkspaceConfig {
 }
 
 export interface RepoAgentProviderPreference {
-  provider: AgentProvider[];
+  provider: AgentSelectionEntry[];
   model?: string;
   effort?: string;
 }
@@ -106,11 +108,27 @@ export function parseRepoConfig(json: string): RepoConfig {
       raw.agentProviders as Record<string, unknown>,
     )) {
       if (pattern.trim().length === 0) continue;
+      if (Array.isArray(rawPreference) || (rawPreference && typeof rawPreference === "object" && ("harness" in rawPreference || !("provider" in rawPreference)))) {
+        agentProviders[pattern] = { provider: parseAgentSelection(rawPreference, false) };
+        continue;
+      }
       const providerValue = typeof rawPreference === "string"
         ? rawPreference
         : rawPreference && typeof rawPreference === "object" && !Array.isArray(rawPreference)
           ? (rawPreference as Record<string, unknown>).provider
           : undefined;
+      if (providerValue && typeof providerValue === "object" && (!Array.isArray(providerValue) || providerValue.some(v => typeof v === "object"))) {
+        const raw = rawPreference as Record<string, unknown>;
+        if (Object.keys(raw).some(key => !["provider", "model", "effort"].includes(key)) || ["model", "effort"].some(key => key in raw && typeof raw[key] !== "string")) {
+          throw new Error(`invalid structured agentProviders entry '${pattern}'`);
+        }
+        const provider = parseAgentSelection(providerValue, false);
+        const model = typeof raw.model === "string" ? raw.model : undefined;
+        const effort = typeof raw.effort === "string" ? raw.effort : undefined;
+        validateSelectionSiblings(provider, model, effort);
+        agentProviders[pattern] = { provider, model, effort };
+        continue;
+      }
       if (
         typeof providerValue !== "string" &&
         !(

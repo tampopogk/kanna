@@ -1045,7 +1045,11 @@ pub fn resolve_request(
                     continue;
                 }
                 let key = param.key.as_deref().unwrap_or(&param.name);
-                body.insert(key.to_string(), value);
+                if body.insert(key.to_string(), value).is_some() {
+                    return Err(format!(
+                        "conflicting arguments for {key}; specify only one spelling"
+                    ));
+                }
             }
             ParamLoc::Client => {}
             ParamLoc::Routing => {

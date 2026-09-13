@@ -1,6 +1,9 @@
 import { parse as parseYaml } from "yaml";
 import {
   AGENT_PROVIDERS,
+  parseAgentSelection,
+  resolveAgentSelectionEntry,
+  validateSelectionSiblings,
   isAgentProvider,
   splitAgentProviderValue,
   type AgentProvider,
@@ -156,9 +159,16 @@ export function parseAgentMd(content: string, dirName: string): CustomTaskConfig
   // Accept a YAML array / single / comma-separated value (e.g. "codex, claude") and
   // take the first known provider rather than silently dropping a list.
   if (fm.agent_provider !== undefined) {
-    const firstKnown = splitAgentProviderValue(fm.agent_provider).find(isAgentProvider);
-    if (firstKnown) {
-      config.agentProvider = firstKnown;
+    if (typeof fm.agent_provider === "object" && fm.agent_provider !== null && (!Array.isArray(fm.agent_provider) || fm.agent_provider.some(v => typeof v === "object"))) {
+      const entries = parseAgentSelection(fm.agent_provider, false);
+      validateSelectionSiblings(entries, config.model, config.effort);
+      const candidate = resolveAgentSelectionEntry(entries[0]!, false)!;
+      config.agentProvider = candidate.provider;
+      config.model = candidate.model ?? config.model;
+      config.effort = candidate.effort ?? config.effort;
+    } else {
+      const firstKnown = splitAgentProviderValue(fm.agent_provider).find(isAgentProvider);
+      if (firstKnown) config.agentProvider = firstKnown;
     }
   }
 

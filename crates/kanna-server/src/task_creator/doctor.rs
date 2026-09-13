@@ -90,12 +90,12 @@ impl DoctorReport {
         &mut self,
         file: &str,
         location: &str,
-        providers: &[String],
+        providers: &[AgentSelectionEntry],
         model: Option<&str>,
         effort: Option<&str>,
     ) {
         for name in providers {
-            if let Err(error) = AgentProvider::from_str(name) {
+            if let Err(error) = name.resolve(false) {
                 self.error(
                     file,
                     location,
@@ -107,12 +107,10 @@ impl DoctorReport {
         let result = provider::validate_model_shape(model)
             .and_then(|()| provider::validate_effort_shape(effort))
             .and_then(|()| {
-                if let Some(selected) = providers
-                    .first()
-                    .and_then(|name| AgentProvider::from_str(name).ok())
+                if let Some(selected) = providers.first().and_then(|name| name.resolve(false).ok())
                 {
-                    provider::validate_provider_model(selected, model)?;
-                    provider::validate_provider_effort(selected, effort)?;
+                    provider::validate_provider_model(selected.provider, model)?;
+                    provider::validate_provider_effort(selected.provider, effort)?;
                 }
                 Ok(())
             });

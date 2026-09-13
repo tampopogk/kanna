@@ -625,6 +625,7 @@ pub struct CreateTaskRequest {
     /// every ordinary task.
     pub diff_base_ref: Option<String>,
     pub agent: Option<String>,
+    #[serde(alias = "harness")]
     pub agent_provider: Option<String>,
     pub agent_type: Option<String>,
     pub terminal_cols: Option<u16>,
@@ -3008,5 +3009,19 @@ mod tests {
         assert_eq!(status_json["version"], "0.0.69-staging.1");
         assert_eq!(status_json["environment"], "staging");
         assert_eq!(status_json["serverVersion"], "0.0.69-staging.1");
+    }
+}
+
+#[cfg(test)]
+mod harness_request_tests {
+    #[test]
+    fn create_harness_alias_is_unambiguous_and_serializes_to_the_old_wire_key() {
+        let request: super::CreateTaskRequest = serde_json::from_value(serde_json::json!({"repoId":"r", "prompt":"p", "harness":"opencode", "model":"local/model-high"})).unwrap();
+        assert_eq!(request.agent_provider.as_deref(), Some("opencode"));
+        assert_eq!(
+            serde_json::to_value(request).unwrap()["agentProvider"],
+            "opencode"
+        );
+        assert!(serde_json::from_value::<super::CreateTaskRequest>(serde_json::json!({"repoId":"r", "prompt":"p", "harness":"codex", "agentProvider":"opencode"})).is_err());
     }
 }
