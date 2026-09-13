@@ -2971,6 +2971,142 @@ describe("StreamClient", () => {
     client.close();
   });
 
+  it("flushes the pending measurement before an already-attached viewer claims", () => {
+    const client = new StreamClient({
+      url: "ws://test/v1/stream",
+      webSocketFactory: factory,
+      terminalViewerRole: "remote",
+    });
+    const socket = sockets[0];
+    client.attachTerminal("task-pty", { onOutput() {} });
+    socket.open();
+    socket.receive({
+      type: "auth_ok",
+      capabilities: ["terminal_geometry", "terminal_active_view"],
+    });
+    client.sendTermResize("task-pty", 40, 20);
+    client.setTerminalViewerVisibility("task-pty", true);
+    client.activateTerminalViewer("task-pty");
+    socket.sent.length = 0;
+
+    // A remeasure occupies the coalescing slot; the viewing gesture that
+    // follows must not activate the older dimensions and correct them later.
+    client.sendTermResize("task-pty", 44, 22);
+    client.activateTerminalViewer("task-pty");
+
+    expect(socket.sent).toEqual([
+      expect.objectContaining({
+        type: "term_viewer_register",
+        task_id: "task-pty",
+        cols: 44,
+        rows: 22,
+        visible: true,
+      }),
+      { type: "term_viewer_active", task_id: "task-pty" },
+    ]);
+
+    // The flushed slot leaves nothing for the timer to send afterwards.
+    vi.advanceTimersByTime(200);
+    expect(socket.sent).toHaveLength(2);
+    client.close();
+  });
+
+  it("replays one current geometry claim after reconnect, not a size history", () => {
+    const client = new StreamClient({
+      url: "ws://test/v1/stream",
+      webSocketFactory: factory,
+      terminalViewerRole: "local",
+    });
+    const socket = sockets[0];
+    client.attachTerminal("task-pty", { onOutput() {} });
+    socket.open();
+    socket.receive({
+      type: "auth_ok",
+      capabilities: ["terminal_geometry", "terminal_active_view"],
+    });
+    client.sendTermResize("task-pty", 122, 40);
+    client.setTerminalViewerVisibility("task-pty", true);
+    client.activateTerminalViewer("task-pty");
+
+    socket.drop();
+    // The window is still being dragged while the socket is down. Each
+    // measurement used to queue its own resize and each gesture its own claim.
+    client.sendTermResize("task-pty", 122, 40);
+    client.activateTerminalViewer("task-pty");
+    client.sendTermResize("task-pty", 123, 40);
+    client.activateTerminalViewer("task-pty");
+    client.sendTermResize("task-pty", 124, 40);
+    client.activateTerminalViewer("task-pty");
+
+    vi.advanceTimersByTime(5000);
+    const replacement = sockets[1];
+    expect(replacement).toBeDefined();
+    replacement.open();
+    replacement.receive({
+      type: "auth_ok",
+      capabilities: ["terminal_geometry", "terminal_active_view"],
+    });
+
+    const geometry = replacement.sent.filter(
+      (frame) =>
+        frame.type === "term_viewer_register"
+        || frame.type === "term_resize"
+        || frame.type === "term_viewer_active",
+    );
+    expect(geometry).toEqual([
+      expect.objectContaining({
+        type: "term_viewer_register",
+        task_id: "task-pty",
+        cols: 124,
+        rows: 40,
+        visible: true,
+      }),
+      { type: "term_resize", task_id: "task-pty", cols: 124, rows: 40 },
+      { type: "term_viewer_active", task_id: "task-pty" },
+    ]);
+    client.close();
+  });
+
+  it("drops a retired terminal attachment's queued geometry", () => {
+    const client = new StreamClient({
+      url: "ws://test/v1/stream",
+      webSocketFactory: factory,
+      terminalViewerRole: "local",
+    });
+    const socket = sockets[0];
+    client.attachTerminal("task-pty", { onOutput() {} });
+    socket.open();
+    socket.receive({
+      type: "auth_ok",
+      capabilities: ["terminal_geometry", "terminal_active_view"],
+    });
+    client.setTerminalViewerVisibility("task-pty", true);
+
+    socket.drop();
+    client.sendTermResize("task-pty", 90, 30);
+    client.activateTerminalViewer("task-pty");
+    // The viewer goes away while the socket is down. Its last claim must not
+    // speak for whatever attaches next.
+    client.detach("task-pty", "terminal");
+
+    vi.advanceTimersByTime(5000);
+    const replacement = sockets[1];
+    replacement.open();
+    replacement.receive({
+      type: "auth_ok",
+      capabilities: ["terminal_geometry", "terminal_active_view"],
+    });
+
+    expect(replacement.sent).not.toContainEqual(
+      expect.objectContaining({ type: "term_resize", task_id: "task-pty" }),
+    );
+    expect(replacement.sent).not.toContainEqual({
+      type: "term_viewer_active",
+      task_id: "task-pty",
+    });
+    client.close();
+  });
+
   it("does not send active-view commands to a geometry-v1 peer", () => {
     const client = new StreamClient({
       url: "ws://test/v1/stream",

@@ -60,6 +60,13 @@ it("hands actual PTY geometry between mobile touch and desktop wheel while repla
     return (window.__KANNA_E2E__?.terminalBuffers?.lines(${JSON.stringify(`local:${id}`)}) ?? [])
       .filter(line => /^ACTIVE_VIEW:\\d+x\\d+$/.test(line.trim())).at(-1)?.trim() ?? "";
   `);
+  // The whole sequence of reported grids, not only the last one: a final
+  // dimension assertion cannot tell a direct handoff from several seconds of
+  // resizing that happened to end in the right place.
+  const readPtyHistory = () => client.executeSync<string[]>(`
+    return (window.__KANNA_E2E__?.terminalBuffers?.lines(${JSON.stringify(`local:${id}`)}) ?? [])
+      .map(line => line.trim()).filter(line => /^ACTIVE_VIEW:\\d+x\\d+$/.test(line));
+  `);
   await expect.poll(readPtyOutput, { timeout: 30_000 }).toContain("ACTIVE_VIEW:");
   const credential = await tauriInvoke(client, "local_control_credential") as string;
   await verifyViewerGestures(baseUrl, id, credential,
@@ -81,5 +88,6 @@ it("hands actual PTY geometry between mobile touch and desktop wheel while repla
         await client.screenshot(join(artifactDir, "native-viewer-final-grid.png"));
       }
     },
+    readPtyHistory,
   );
 });

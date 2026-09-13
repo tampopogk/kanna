@@ -254,8 +254,11 @@ async fn connection_drop_cleanup_reports_remaining_effective_terminal_size() {
     .await;
 
     assert_eq!(
-        remaining_sizes,
-        vec![("session-resize".to_string(), 120, 43)]
+        remaining_sizes
+            .iter()
+            .map(|remaining| (remaining.session_id.clone(), remaining.size))
+            .collect::<Vec<_>>(),
+        vec![("session-resize".to_string(), (120, 43))]
     );
 }
 
