@@ -42,6 +42,8 @@ pub fn appended() -> tokio::sync::futures::Notified<'static> {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TaskEventKind {
+    /// Explicit agent annotation; independent of detected questions and activity.
+    AttentionChanged,
     TaskCreated,
     RunStarted,
     RunFinished,
@@ -194,6 +196,7 @@ impl TaskEventKind {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::TaskCreated => "task.created",
+            Self::AttentionChanged => "task.attention_changed",
             Self::RunStarted => "run.started",
             Self::RunFinished => "run.finished",
             Self::StageChanged => "stage.changed",

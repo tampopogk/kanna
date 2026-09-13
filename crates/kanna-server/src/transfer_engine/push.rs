@@ -889,6 +889,7 @@ async fn build_payload(
             history,
             workflow: workflow_name.clone(),
             legacy_pipeline: workflow_name,
+            attention_reason: source.item.attention_reason.clone(),
             display_name: source.item.display_name.clone(),
             base_ref: repository
                 .as_ref()

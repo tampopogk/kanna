@@ -324,3 +324,12 @@ The control appears only when the task's own desktop advertises attachment
 support (asked once per task and route), and permission denials explain
 whether to retry or open Settings. The desktop stores the image outside the
 worktree and appends `[Attached image: <path>]` to the injected input.
+
+### Agent-requested task attention
+
+An agent can place one `!` before a desktop sidebar task title using Kanna's
+set/clear attention tools. The tooltip and accessible label give the short human
+action requested. The existing task row opens the task as usual. The annotation
+does not affect sorting, pins, unread state, detected questions, or navigation.
+It persists across restarts and stage changes until an agent explicitly clears
+it, including on owner request. Selecting a task does not dismiss it.

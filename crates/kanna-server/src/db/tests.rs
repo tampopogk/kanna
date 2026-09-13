@@ -229,7 +229,7 @@ fn open_creates_and_migrates_fresh_profile_database() {
             |row| row.get(0),
         )
         .expect("latest migration");
-    assert_eq!(latest_migration, "084_task_transfer_workflow_claim");
+    assert_eq!(latest_migration, "085_task_attention_reason");
     assert_eq!(
         index_columns(&db.conn, "idx_pipeline_item_parent_created_id"),
         vec!["parent_task_id", "created_at", "id"],
@@ -5418,4 +5418,59 @@ fn analytics_revision_statistics_use_real_review_verdicts_and_lifetime_history()
     assert_eq!(analytics.revisions.average_per_task, 0.75);
     assert_eq!(analytics.revisions.clean_pass_rate, Some(0.25));
     assert_eq!(analytics.revisions.parked_requests, 2);
+}
+
+#[test]
+fn attention_event_failure_rolls_back_annotation() {
+    let path = temp_db_path();
+    let db = Db::open_for_tests(path.to_str().unwrap()).unwrap();
+    db.insert_test_repo("attention-repo", "Attention").unwrap();
+    db.insert_test_pipeline_item(
+        "attention-task",
+        "attention-repo",
+        "Prompt",
+        None,
+        "in progress",
+        "2026-09-13 00:00:00",
+    )
+    .unwrap();
+    db.conn.execute_batch("CREATE TRIGGER refuse_attention BEFORE INSERT ON task_event WHEN NEW.type = 'task.attention_changed' BEGIN SELECT RAISE(ABORT, 'test refusal'); END;").unwrap();
+    assert!(db
+        .set_task_attention("attention-task", Some("Choose"))
+        .is_err());
+    assert!(db
+        .get_pipeline_item("attention-task")
+        .unwrap()
+        .unwrap()
+        .attention_reason
+        .is_none());
+}
+
+#[test]
+fn attention_migration_restart_and_close_reopen_preserve_annotation() {
+    let path = temp_db_path();
+    let db = Db::open_migrated(path.to_str().unwrap()).unwrap();
+    db.insert_test_repo("attention-repo", "Attention").unwrap();
+    db.insert_test_pipeline_item(
+        "attention-task",
+        "attention-repo",
+        "Prompt",
+        None,
+        "in progress",
+        "2026-09-13 00:00:00",
+    )
+    .unwrap();
+    db.set_task_attention("attention-task", Some("Choose"))
+        .unwrap();
+    db.close_pipeline_item("attention-task").unwrap();
+    assert!(db.ui_snapshot().unwrap().entries[0].items.is_empty());
+    drop(db);
+    let db = Db::open_migrated(path.to_str().unwrap()).unwrap();
+    db.reopen_pipeline_item("attention-task").unwrap();
+    assert_eq!(
+        db.ui_snapshot().unwrap().entries[0].items[0]
+            .attention_reason
+            .as_deref(),
+        Some("Choose")
+    );
 }

@@ -37,6 +37,7 @@ mod subscription_timing;
 mod task_actions;
 pub(crate) mod task_activity;
 mod task_agent_session;
+mod task_attention;
 mod task_blockers;
 mod task_diff;
 mod task_events;

@@ -302,6 +302,9 @@ function validateTask(
       `${path}.waitingPromptSnippet`,
       240,
     ),
+    ...(task.attentionReason === undefined ? {} : {
+      attentionReason: nullableUnicodeString(task.attentionReason, `${path}.attentionReason`, 240),
+    }),
     displayName: nullableString(task.displayName, `${path}.displayName`, 512),
     stage: requiredString(task.stage, `${path}.stage`, 64),
     activity: requiredString(task.activity, `${path}.activity`, 32),

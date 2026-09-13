@@ -572,6 +572,26 @@ pub(crate) enum TaskCommands {
         #[arg(long)]
         server_url: Option<String>,
     },
+    /// Set a task's explicit human-attention badge
+    SetAttention {
+        #[arg(long)]
+        task_id: String,
+        #[arg(long)]
+        reason: String,
+        #[arg(long)]
+        machine_id: Option<String>,
+        #[arg(long)]
+        server_url: Option<String>,
+    },
+    /// Clear a task's explicit human-attention badge
+    ClearAttention {
+        #[arg(long)]
+        task_id: String,
+        #[arg(long)]
+        machine_id: Option<String>,
+        #[arg(long)]
+        server_url: Option<String>,
+    },
     /// Rename a task by setting its display name
     Rename {
         /// The task ID

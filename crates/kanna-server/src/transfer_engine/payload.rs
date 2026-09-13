@@ -268,6 +268,8 @@ pub struct TransferTaskPayload {
     /// derived deserializer skips this key so `workflow`'s alias owns it.
     #[serde(rename = "pipeline", default, skip_deserializing)]
     pub legacy_pipeline: String,
+    #[serde(default)]
+    pub attention_reason: Option<String>,
     pub display_name: Option<String>,
     pub base_ref: Option<String>,
     pub agent_type: Option<String>,
@@ -1306,6 +1308,13 @@ pub fn parse_outgoing_transfer_payload(value: &Value) -> Result<OutgoingTransfer
             history: parse_history_records(task)?,
             workflow: workflow_name.clone(),
             legacy_pipeline: workflow_name,
+            attention_reason: nullable_string(
+                task,
+                &["attention_reason", "attentionReason"],
+                "task attention_reason must be a string or null",
+            )?
+            .map(|reason| crate::db::normalize_attention_reason(&reason))
+            .transpose()?,
             display_name: nullable_string(
                 task,
                 &["display_name", "displayName"],
@@ -1802,6 +1811,24 @@ mod tests {
         let parsed = parse_outgoing_transfer_payload(&payload_with(json!([])))
             .expect("payload without finalization");
         assert_eq!(parsed.finalization, TransferFinalizationState::clean());
+    }
+
+    #[test]
+    fn attention_payload_preserves_set_clear_and_older_absence() {
+        for reason in [json!("Choose 🦀"), Value::Null] {
+            let mut payload = payload_with(json!([]));
+            payload["task"]["attention_reason"] = reason.clone();
+            let parsed = parse_outgoing_transfer_payload(&payload).unwrap();
+            assert_eq!(
+                serde_json::to_value(&parsed).unwrap()["task"]["attention_reason"],
+                reason
+            );
+        }
+        let older = parse_outgoing_transfer_payload(&payload_with(json!([]))).unwrap();
+        assert!(older.task.attention_reason.is_none());
+        let mut invalid = payload_with(json!([]));
+        invalid["task"]["attention_reason"] = json!("🦀".repeat(241));
+        assert!(parse_outgoing_transfer_payload(&invalid).is_err());
     }
 
     #[test]
