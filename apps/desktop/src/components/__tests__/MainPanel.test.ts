@@ -125,6 +125,76 @@ describe("MainPanel", () => {
     localStorage.clear();
   });
 
+  it.each([
+    ["Split side by side", "horizontal"],
+    ["Split top and bottom", "vertical"],
+  ] as const)("moves the inactive context-clicked tab when choosing %s", async (label, axis) => {
+    const tabs = useMainTabs({ scopeKey: computed(() => "item:task-a") });
+    tabs.openTab({ kind: "file", filePath: "clicked.md" });
+    tabs.openTab({ kind: "file", filePath: "active.md" });
+    expect(tabs.activeTabId.value).toBe("file:active.md");
+
+    const resizeObserver = globalThis.ResizeObserver;
+    vi.stubGlobal("ResizeObserver", class {
+      constructor(private callback: ResizeObserverCallback) {}
+      observe() { this.callback([{ contentRect: { width: 1200 } }] as ResizeObserverEntry[], this as unknown as ResizeObserver); }
+      disconnect() {}
+      unobserve() {}
+    });
+    const { default: MainPanel } = await import("../MainPanel.vue");
+    const wrapper = mount(MainPanel, {
+      props: {
+        uiSlot: readySlot(durableTask({ id: "task-a" })),
+        repoPath: "/repo",
+        hasRepos: true,
+        views: {
+          tabs,
+          modals: {
+            activeTaskViewIsRemote: computed(() => false),
+            activeWorktreePath: computed(() => "/repo/task-a"),
+            currentPreviewMarkdownMode: computed(() => "raw"),
+            homePath: computed(() => "/home/tester"),
+          },
+          store: { worktreePaths: { "task-a": "/repo/task-a" } },
+        } as unknown as MainTabViewsController,
+      },
+      attachTo: document.body,
+      global: {
+        plugins: [createI18n({ legacy: false, locale: "en", messages: { en } })],
+        mocks: { $t: (key: string) => key },
+        stubs: {
+          TaskHeader: true,
+          TerminalTabs: true,
+          FilePreviewModal: true,
+        },
+      },
+    });
+    try {
+      await flushPromises();
+      await wrapper.get('[data-tab-id="file:clicked.md"]').trigger("contextmenu");
+      await flushPromises();
+      const action = Array.from(document.querySelectorAll<HTMLButtonElement>(".pane-layout-menu button"))
+        .find(button => button.textContent === label);
+      expect(action).toBeDefined();
+      action!.click();
+      await flushPromises();
+
+      expect(tabs.panes.value).toHaveLength(2);
+      expect(tabs.panes.value.map(rect => rect.pane.tabs)).toEqual([
+        ["agent", "file:active.md"],
+        ["file:clicked.md"],
+      ]);
+      expect(tabs.panes.value[0]?.pane.active).toBe("file:active.md");
+      expect(tabs.panes.value[1]?.pane.active).toBe("file:clicked.md");
+      expect(tabs.activeTabId.value).toBe("file:clicked.md");
+      expect(tabs.tabs.value.map(tab => tab.id)).toEqual(["agent", "file:active.md", "file:clicked.md"]);
+      expect(tabs.dividers.value[0]?.axis).toBe(axis);
+    } finally {
+      wrapper.unmount();
+      vi.stubGlobal("ResizeObserver", resizeObserver);
+    }
+  });
+
 
   it.each(["diff", "tree", "graph"] as const)("preserves agent selection when an adjacent %s remounts on task return", async (kind) => {
     const selected = ref("task-a");

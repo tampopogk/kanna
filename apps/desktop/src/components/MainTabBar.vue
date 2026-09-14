@@ -29,7 +29,7 @@ const emit = defineEmits<{
   (e: "close", id: string): void;
   (e: "new", id: string): void;
   (e: "closePane"): void;
-  (e: "layout", id: string): void;
+  (e: "layout", id: string, tabId?: string): void;
   (e: "dragTab", event: PointerEvent, id: string): void;
 }>();
 
@@ -142,7 +142,10 @@ function openView(id: string) {
   closeMenu();
   if (kind === 'layout' && id === 'close-right') {
     for (const tab of tabsToRight.value) emit('close', tab.id);
-  } else if (kind === 'layout') emit('layout', id);
+  } else if (kind === 'layout') {
+    if (contextTab.value) emit('layout', id, contextTab.value);
+    else emit('layout', id);
+  }
   else emit('new', id);
 }
 function menuKey(event: KeyboardEvent) {
