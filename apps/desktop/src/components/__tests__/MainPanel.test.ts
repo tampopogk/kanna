@@ -125,6 +125,65 @@ describe("MainPanel", () => {
     localStorage.clear();
   });
 
+  it("projects only a maximized pane, restores the split, and focuses selected pane content", async () => {
+    const tabs = useMainTabs({ scopeKey: computed(() => "item:task-a") });
+    tabs.openTab({ kind: "file", filePath: "focus.md" });
+    tabs.splitPane("pane-1", "horizontal");
+    const resizeObserver = globalThis.ResizeObserver;
+    vi.stubGlobal("ResizeObserver", class {
+      constructor(private callback: ResizeObserverCallback) {}
+      observe() { this.callback([{ contentRect: { width: 1200 } }] as ResizeObserverEntry[], this as unknown as ResizeObserver); }
+      disconnect() {}
+      unobserve() {}
+    });
+    const { default: MainPanel } = await import("../MainPanel.vue");
+    const wrapper = mount(MainPanel, {
+      props: {
+        uiSlot: readySlot(durableTask({ id: "task-a" })), repoPath: "/repo", hasRepos: true,
+        views: {
+          tabs,
+          modals: {
+            activeTaskViewIsRemote: computed(() => false),
+            activeWorktreePath: computed(() => "/repo/task-a"),
+            currentPreviewMarkdownMode: computed(() => "raw"),
+            homePath: computed(() => "/home/tester"),
+          },
+          store: { worktreePaths: { "task-a": "/repo/task-a" } },
+        } as unknown as MainTabViewsController,
+      },
+      attachTo: document.body,
+      global: {
+        mocks: { $t: (key: string) => key },
+        stubs: {
+          TaskHeader: true,
+          MainTabBar: true,
+          TerminalTabs: true,
+          FilePreviewModal: { template: '<div data-testid="pane-file-focus" tabindex="-1"></div>' },
+        },
+      },
+    });
+    try {
+      await flushPromises();
+      expect(wrapper.findAll(".pane-chrome")).toHaveLength(2);
+
+      tabs.toggleMaximizedPane();
+      await flushPromises();
+      expect(wrapper.findAll(".pane-chrome")).toHaveLength(1);
+      expect(wrapper.get<HTMLElement>(".pane-chrome").element.style.width).toBe("100%");
+      expect(tabs.panes.value).toHaveLength(2);
+
+      tabs.toggleMaximizedPane();
+      tabs.cyclePane(-1);
+      tabs.cyclePane(1);
+      await (wrapper.vm as unknown as { focusActivePaneContent: () => Promise<void> }).focusActivePaneContent();
+      expect(wrapper.findAll(".pane-chrome")).toHaveLength(2);
+      expect(document.activeElement).toBe(wrapper.get('[data-testid="pane-file-focus"]').element);
+    } finally {
+      wrapper.unmount();
+      vi.stubGlobal("ResizeObserver", resizeObserver);
+    }
+  });
+
   it.each([
     ["Split side by side", "horizontal"],
     ["Split top and bottom", "vertical"],

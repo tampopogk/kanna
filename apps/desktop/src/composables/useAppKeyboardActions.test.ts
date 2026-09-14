@@ -82,6 +82,7 @@ function createHarness(options: {
     advanceStage,
   };
   const mainTabs = useMainTabs({ scopeKey: computed(() => "item:task-durable") });
+  const focusActivePaneContent = vi.fn(async () => {});
   if (options.activeTabKind === "diff") mainTabs.openTab({ kind: "diff" });
   const overlayContext = ref<ShortcutContext>("main");
   const shortcutsEnabled = ref(true);
@@ -120,7 +121,7 @@ function createHarness(options: {
     selectedWorkspaceTaskBlocked: computed(() => options.workspaceTaskBlocked ?? false),
     advanceSelectedRemoteWorkspaceTask,
     mainTabs,
-    mainPanelRef: ref(null),
+    mainPanelRef: ref({ focusActivePaneContent }),
     requestCloseCurrentWindow,
     openNewTaskModal,
     shortcutsEnabled: computed(() => shortcutsEnabled.value),
@@ -158,6 +159,7 @@ function createHarness(options: {
     shortcutsContext,
     shortcutsStartFull,
     mainTabs,
+    focusActivePaneContent,
     requestCloseCurrentWindow,
     openWindow,
     advanceStage,
@@ -346,6 +348,25 @@ describe("useAppKeyboardActions durable selection", () => {
     expect(h.cyclePreferencesTab).toHaveBeenNthCalledWith(1, 1);
     expect(h.cyclePreferencesTab).toHaveBeenNthCalledWith(2, -1);
     expect(h.mainTabs.activeTabId.value).toBe("diff");
+  });
+
+  it("routes pane actions through the pane owner and requests content focus", async () => {
+    invokeMock.mockClear();
+    const h = createHarness({ activeTabKind: "diff" });
+    h.mainTabs.splitPane("pane-1", "horizontal");
+
+    h.keyboardActions.toggleMaximize();
+    expect(h.mainTabs.maximizedPaneId.value).toBe("pane-2");
+
+    h.keyboardActions.previousPane();
+    expect(h.mainTabs.activeTabId.value).toBe("agent");
+    expect(h.mainTabs.maximizedPaneId.value).toBe("pane-1");
+
+    h.keyboardActions.nextPane();
+    expect(h.mainTabs.activeTabId.value).toBe("diff");
+    expect(h.mainTabs.maximizedPaneId.value).toBe("pane-2");
+    expect(h.focusActivePaneContent).toHaveBeenCalledTimes(3);
+    expect(invokeMock).not.toHaveBeenCalled();
   });
 
   it("leaves tab cycling to Add Repository without moving the retained main tab", () => {

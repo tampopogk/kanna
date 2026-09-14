@@ -71,6 +71,8 @@ describe("getShortcutGroups", () => {
       "shortcuts.nextTask",
       "shortcuts.previousRepo",
       "shortcuts.nextRepo",
+      "shortcuts.previousPane",
+      "shortcuts.nextPane",
       "shortcuts.goBack",
       "shortcuts.goForward",
       "shortcuts.oldestUnread",
@@ -227,6 +229,8 @@ describe("useKeyboardShortcuts", () => {
     "showDiff",
     "showCommitGraph",
     "toggleMaximize",
+    "previousPane",
+    "nextPane",
     "showShortcuts",
     "showAllShortcuts",
     "toggleSidebar",
@@ -335,6 +339,25 @@ describe("useKeyboardShortcuts", () => {
     expect(actions.openFile).toHaveBeenCalledTimes(1);
     expect(actions.newTask).not.toHaveBeenCalled();
 
+    wrapper.unmount();
+  });
+
+  it.each([
+    { key: "ArrowLeft", action: "previousPane" as const },
+    { key: "ArrowRight", action: "nextPane" as const },
+  ])("dispatches Option+Command+$key to $action in a pane view", ({ key, action }) => {
+    const actions = buildActions();
+    const wrapper = mountShortcutHarness(actions, () => "shell");
+
+    window.dispatchEvent(new KeyboardEvent("keydown", {
+      key,
+      metaKey: true,
+      altKey: true,
+      bubbles: true,
+      cancelable: true,
+    }));
+
+    expect(actions[action]).toHaveBeenCalledOnce();
     wrapper.unmount();
   });
 

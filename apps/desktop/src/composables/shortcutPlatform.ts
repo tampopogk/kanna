@@ -120,6 +120,10 @@ const LINUX_EXCEPTIONS: Record<string, ShortcutModifiers> = {
   // repo navigation takes the Ctrl+Shift arrows the ⌘ tier never used.
   navigateUp: { alt: true },
   navigateDown: { alt: true },
+  // Ctrl+Alt+←/→ is also commonly owned by Linux workspace navigation.
+  // Alt+←/→ is browser history, so use the otherwise-free Ctrl+Shift pair.
+  previousPane: { ctrl: true, shift: true },
+  nextPane: { ctrl: true, shift: true },
   navigateRepoUp: { ctrl: true, shift: true },
   navigateRepoDown: { ctrl: true, shift: true },
   // ⌥⌘P would land on Ctrl+Alt+P, which ⇧⌘P (the command palette) already has.

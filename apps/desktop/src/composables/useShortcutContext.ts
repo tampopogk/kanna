@@ -109,7 +109,7 @@ function buildContextShortcutGroups(
     file: previewModalActions,
     shell: previewModalActions,
     tree: previewModalActions,
-    graph: previewModalActions.filter((action) => action !== "toggleMaximize"),
+    graph: previewModalActions,
     newTask: ["showShortcuts"],
     transfer: ["showShortcuts"],
   };

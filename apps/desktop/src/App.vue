@@ -323,8 +323,6 @@ const {
   blockerSelectMode,
   showPeerPicker,
   sidebarHidden,
-  maximizedModal,
-  maximized,
   sidebarRef,
   mainPanelRef,
   preferencesPanelRef,
@@ -342,15 +340,6 @@ const {
   openImageUrlPreview,
   getCurrentPreviewRecall,
 } = appModals;
-// Maximizing is a property of the main content area, so it cannot outlive
-// having something in it: closing the last tab of a scope with no agent
-// session would otherwise leave a hidden sidebar over an empty panel.
-watch(
-  () => mainTabs.activeTabId.value,
-  (activeTabId) => {
-    if (!activeTabId) maximizedModal.value = null;
-  },
-);
 
 // A transfer that fails is server-side news now, so the window learns about it
 // from the snapshot rather than from a call that threw.
@@ -584,7 +573,6 @@ const appKeyboardActions = useAppKeyboardActions({
   showFilePickerModal,
   showCommandPalette,
   showPeerPicker,
-  maximizedModal,
   sidebarHidden,
   sidebarRef,
   openNewTaskModal,
@@ -643,7 +631,7 @@ const modalLayerController = {
     :aria-hidden="startupPending || undefined"
   >
     <div
-      v-if="!maximized && !sidebarHidden && (!isMobile || !store.selectedItemId)"
+      v-if="!sidebarHidden && (!isMobile || !store.selectedItemId)"
       class="sidebar-shell"
       :style="sidebarShellStyle"
       data-testid="sidebar-shell"
@@ -689,7 +677,6 @@ const modalLayerController = {
         :repo-path="mainPanelRepo?.path"
         :spawn-pty-session="store.spawnPtySession"
         :recover-task-session="store.recoverTaskSession"
-        :maximized="maximized"
         :blockers="mainPanelBlockers"
         :blocked="mainPanelTaskIsBlocked"
         :has-repos="sidebarRepos.length > 0"

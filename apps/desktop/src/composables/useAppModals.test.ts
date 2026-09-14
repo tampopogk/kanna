@@ -262,7 +262,7 @@ describe("useAppModals", () => {
 
     harness.modals.restoreTransferredModal();
     expect(harness.mainTabs.activeTab.value?.kind).toBe("tree");
-    expect(harness.modals.maximizedModal.value).toBe("tree");
+    expect(harness.mainTabs.maximizedPaneId.value).toBe("pane-1");
     expect(harness.modals.treeExplorerRoot.value).toBe(
       "/current-repo/.kanna-worktrees/task-current",
     );
@@ -317,7 +317,7 @@ describe("useAppModals", () => {
 
     harness.modals.restoreTransferredModal();
     expect(harness.mainTabs.activeTab.value?.kind).toBe("diff");
-    expect(harness.modals.maximizedModal.value).toBe("diff");
+    expect(harness.mainTabs.maximizedPaneId.value).toBe("pane-1");
     expect(harness.modals.currentDiffViewKey.value).toBe("item:task-current");
     expect(harness.modals.activeRepoPath.value).toBe("/current-repo");
     expect(harness.modals.activeDiffWorktreePath.value).toBe(
