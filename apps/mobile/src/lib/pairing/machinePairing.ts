@@ -98,7 +98,9 @@ export function createMachinePairingService(input: {
       const payload = parseMachinePairingPayload(rawPayload);
       let refreshFailed = false;
       try {
-        await input.bonjourBrowser.refresh?.();
+        // A scan usually beats discovery to the punch, so wait for the desktop
+        // the QR names before deciding nothing advertised it.
+        await input.bonjourBrowser.refresh?.({ desktopId: payload.desktopId });
       } catch {
         refreshFailed = true;
       }
@@ -118,7 +120,8 @@ export function createMachinePairingService(input: {
       }
       let refreshFailed = false;
       try {
-        await input.bonjourBrowser.refresh?.();
+        // A typed code names no desktop, so any advertised machine will do.
+        await input.bonjourBrowser.refresh?.({});
       } catch {
         refreshFailed = true;
       }
