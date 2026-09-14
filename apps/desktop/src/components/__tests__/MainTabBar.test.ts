@@ -5,12 +5,12 @@ import MainTabBar from '../MainTabBar.vue';
 vi.mock('vue-i18n', () => ({ useI18n: () => ({ t: (key: string) => key }) }));
 afterEach(() => { document.body.innerHTML = ''; });
 it('opens views from the plus menu with keyboard navigation and dismissal', async () => {
-  const wrapper = mount(MainTabBar, { attachTo: document.body, props: { tabs: [{id:'agent',kind:'agent'}], activeTabId:'agent', newViews:[{id:'file',label:'Open file…'},{id:'shell',label:'Terminal'}] } });
+  const wrapper = mount(MainTabBar, { attachTo: document.body, props: { tabs: [{id:'agent',kind:'agent'}], activeTabId:'agent', newViews:[{id:'file',label:'Open file…'},{id:'shell',label:'Shell'}] } });
   await wrapper.get('.new-tab').trigger('click');
   await flushPromises();
   expect(document.activeElement?.textContent).toBe('Open file…');
   document.activeElement?.dispatchEvent(new KeyboardEvent('keydown', {key:'ArrowDown',bubbles:true}));
-  expect(document.activeElement?.textContent).toBe('Terminal');
+  expect(document.activeElement?.textContent).toBe('Shell');
   (document.activeElement as HTMLButtonElement).click();
   expect(wrapper.emitted('new')).toEqual([['shell']]);
   await flushPromises();
