@@ -32,8 +32,9 @@ function tokenPayload(authorization: string | undefined): FirebaseTokenPayload |
 }
 
 function startCheckoutCallableStub(): Promise<Server> {
-  // Test-only callable protocol stub. The billing task's real exported function
-  // replaces this server when its implementation lands in the emulator suite.
+  // Test-only callable protocol stub: this suite proves portal/Auth wiring.
+  // Actual exported HTTP handlers with injected Stripe I/O are exercised in
+  // services/relay/test/entitlement.integration.test.ts. Neither is hosted Stripe.
   const server = createServer((request, response) => {
     response.setHeader("access-control-allow-origin", "*");
     response.setHeader("access-control-allow-headers", "authorization, content-type");

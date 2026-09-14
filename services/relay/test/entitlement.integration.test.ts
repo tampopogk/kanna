@@ -11,16 +11,24 @@
  */
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { deleteApp, initializeApp, type App } from "firebase-admin/app";
+import { deleteApp, getApps, initializeApp, type App } from "firebase-admin/app";
 import { getAuth } from "firebase-admin/auth";
 import { getFirestore, type Firestore } from "firebase-admin/firestore";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import WebSocket from "ws";
 import { ENTITLEMENT_REQUIRED_CODE } from "../src/entitlement.js";
+import { billingFixture, startBillingHttpFixture } from "./support/billingHttpFixture.js";
+import { signStripePayload } from "../../firebase-functions/src/billing/stripeSignature.js";
+import type { StripeEventEnvelope } from "../../firebase-functions/src/billing/stripeEvents.js";
+
+vi.mock("../../firebase-functions/src/billing/stripeGateway.js", async () => {
+  const { billingGateways } = await import("./support/billingHttpFixture.js");
+  return billingGateways;
+});
 
 const PASSWORD = "password123";
 
@@ -485,6 +493,149 @@ describe("Relay entitlement enforcement", () => {
     delete process.env.FIREBASE_AUTH_EMULATOR_HOST;
     if (firebaseConfigDir) await rm(firebaseConfigDir, { recursive: true, force: true });
   });
+
+  it("joins fresh verified Auth, actual HTTP callables and signed billing events to live relay access", async () => {
+    // This is NOT the Firebase CLI Functions emulator or hosted Stripe. The
+    // exported onCall/onRequest handlers run on local HTTP with only Stripe
+    // gateway factories injected; their auth/protocol/core logic is unchanged.
+    vi.stubEnv("GCLOUD_PROJECT", "kanna-local");
+    vi.stubEnv("FIREBASE_CONFIG", JSON.stringify({ projectId: "kanna-local" }));
+    vi.stubEnv("STRIPE_SECRET_KEY", "sk_test_injected_fixture_only");
+    vi.stubEnv("STRIPE_WEBHOOK_SECRET", "whsec_launch_fixture_only");
+    vi.stubEnv("STRIPE_PORTAL_CONFIGURATION_ID", "bpc_fixture_only");
+    vi.stubEnv("KANNA_PORTAL_BASE_URL", "https://portal.example.test");
+    const priorApps = new Set(getApps());
+    const billing = await startBillingHttpFixture(Number(process.env.KANNA_FIREBASE_FUNCTIONS_PORT) || await findFreePort());
+    const sockets: WebSocket[] = [];
+    const email = `launch-${Date.now()}@example.test`;
+    const authRequest = async (method: string, body: Record<string, unknown>) => {
+      const response = await fetch(`http://127.0.0.1:${authPort}/identitytoolkit.googleapis.com/v1/accounts:${method}?key=kanna-local`, {
+        method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body),
+      });
+      expect(response.status).toBe(200);
+      return await response.json() as { localId: string; idToken: string };
+    };
+    const call = async (name: string, token?: string, data: Record<string, unknown> = {}) => {
+      const response = await fetch(`${billing.url}/${name}`, {
+        method: "POST", headers: { "content-type": "application/json", ...(token ? { authorization: `Bearer ${token}` } : {}) },
+        body: JSON.stringify({ data }),
+      });
+      return { status: response.status, body: await response.json() as Record<string, unknown> };
+    };
+    try {
+      const registered = await authRequest("signUp", { email, password: PASSWORD, returnSecureToken: true });
+      const uid = registered.localId;
+      expect((await call("createCheckoutSession", undefined, { plan: "monthly" })).body)
+        .toMatchObject({ error: { status: "UNAUTHENTICATED" } });
+      expect((await call("createCheckoutSession", registered.idToken, { plan: "monthly" })).body)
+        .toMatchObject({ error: { details: { reason: "email_verification_required" } } });
+      expect(billingFixture.checkoutCalls).toBe(0);
+      await authRequest("sendOobCode", { requestType: "VERIFY_EMAIL", idToken: registered.idToken });
+      const codesResponse = await fetch(`http://127.0.0.1:${authPort}/emulator/v1/projects/kanna-local/oobCodes`);
+      const codes = await codesResponse.json() as { oobCodes: { email: string; requestType: string; oobCode: string }[] };
+      const verification = codes.oobCodes.find((code) => code.email === email && code.requestType === "VERIFY_EMAIL");
+      if (!verification) throw new Error("No verification email fixture");
+      await authRequest("update", { oobCode: verification.oobCode });
+      const token = await signIn(email);
+      const checkout = await call("createCheckoutSession", token, { plan: "monthly" });
+      expect(checkout).toMatchObject({ status: 200, body: { result: { sessionId: "cs_launch_fixture", plan: "monthly" } } });
+      expect(billingFixture.checkoutInput).toMatchObject({ uid, customerId: "cus_launch_fixture", priceId: "price_launch_fixture" });
+      expect(await call("createCheckoutSession", token, { plan: "monthly" })).toEqual(checkout);
+      expect(billingFixture.checkoutCalls).toBe(1);
+      expect((await entitlementRef(uid).get()).exists).toBe(false);
+
+      const desktopId = `desktop-${uid}`;
+      const desktopSecret = `fixture-${uid}`;
+      // Desktop registration is an injected credential fixture, not native sign-in.
+      await db.doc(`desktopCredentials/${desktopId}`).set({ uid, desktopId, desktopSecretHash: sha256Hex(desktopSecret), revokedAt: null });
+      const desktop = await connectAndAuth(enforcingPort, { desktop_id: desktopId, desktop_secret: desktopSecret });
+      sockets.push(desktop.ws);
+      const phone = await connectAndAuth(enforcingPort, { id_token: token });
+      sockets.push(phone.ws);
+      const access = (active: boolean, status: string) => [desktop.ws, phone.ws].map((ws) => waitForMessage(ws, (message) => {
+        const entitlement = message.entitlement as { active?: boolean; status?: string } | undefined;
+        return message.type === "auth_ok" && entitlement?.active === active && entitlement.status === status;
+      }));
+      const checkAccess = async (id: string, active: boolean) => {
+        const publication = waitForMessage(desktop.ws, (m) => m.type === "task_snapshot_ack" && m.id === id);
+        desktop.ws.send(JSON.stringify({ type: "task_snapshot_publish", id, snapshot: snapshot(desktopId) }));
+        expect(await publication).toMatchObject(active ? { ok: true } : { ok: false, code: 4402 });
+        const invoke = waitForMessage(phone.ws, (m) => m.type === "response" && m.id === id);
+        phone.ws.send(JSON.stringify({ type: "invoke", id, command: "list_active_desktops", args: {} }));
+        const result = await invoke;
+        if (active) expect(result).toMatchObject({ data: { desktopIds: [desktopId] } });
+        else expect(result).toMatchObject({ code: 4402 });
+      };
+      let eventNumber = 0;
+      const deliver = async (file: string, patch: Record<string, unknown> = {}, signatureSecret = "whsec_launch_fixture_only") => {
+        const source = await readFile(new URL(`../../firebase-functions/test/fixtures/stripe/${file}`, import.meta.url), "utf8");
+        const event = JSON.parse(source.replaceAll("fixture-checkout-user", uid).replaceAll("cus_TestSlice1", "cus_launch_fixture")) as StripeEventEnvelope;
+        event.id = `evt_launch_${uid}_${++eventNumber}`;
+        event.created = Math.floor(Date.now() / 1000) + eventNumber;
+        Object.assign(event.data.object, patch);
+        const body = JSON.stringify(event);
+        const response = await fetch(`${billing.url}/stripeWebhook`, {
+          method: "POST", headers: { "content-type": "application/json", "stripe-signature": signStripePayload(body, signatureSecret) }, body,
+        });
+        return { status: response.status, body: await response.json() };
+      };
+      const transition = async (file: string, active: boolean, status: string, patch: Record<string, unknown> = {}) => {
+        const observed = access(active, status);
+        expect(await deliver(file, patch)).toMatchObject({ status: 200, body: { code: "applied" } });
+        await Promise.all(observed);
+        expect((await entitlementRef(uid).get()).data()).toMatchObject({ source: "stripe", status });
+      };
+      await checkAccess("pending", false);
+      expect(await deliver("checkout.session.completed.json", {}, "wrong_fixture_secret"))
+        .toMatchObject({ status: 400, body: { code: "invalid_signature" } });
+      await checkAccess("bad-signature", false);
+      await transition("checkout.session.completed.json", true, "active");
+      await checkAccess("purchased", true);
+      await transition("invoice.paid.json", true, "active");
+      await checkAccess("renewed", true);
+      await transition("invoice.payment_failed.json", true, "grace", { next_payment_attempt: Math.floor(Date.now() / 1000) + 3 });
+      const graceExpired = access(false, "grace");
+      await checkAccess("grace", true);
+      await Promise.all(graceExpired);
+      await checkAccess("grace-expired", false);
+      await transition("invoice.paid.json", true, "active");
+      await checkAccess("recovered", true);
+      expect(await call("createPortalSession", token)).toMatchObject({ status: 200, body: { result: { url: "https://billing.stripe.test/launch-fixture" } } });
+      expect(billingFixture.portalCustomer).toBe("cus_launch_fixture");
+      await transition("customer.subscription.updated.cancel_at_period_end.json", true, "active");
+      expect((await db.doc(`users/${uid}/billing/stripe`).get()).data()).toMatchObject({ cancelAtPeriodEnd: true });
+      await checkAccess("cancel-pending", true);
+      await transition("customer.subscription.deleted.json", false, "expired");
+      await checkAccess("canceled", false);
+      expect((await db.doc(`users/${uid}`).get()).exists).toBe(true);
+
+      const deletedAccess = access(false, "none");
+      expect(await call("deleteAccount", token)).toMatchObject({ status: 200, body: { result: { deleted: true } } });
+      await Promise.all(deletedAccess);
+      // Control sessions can remain open; deletion fences value-bearing work
+      // and removes credentials, rather than promising immediate socket closure.
+      const denied = waitForMessage(phone.ws, (m) => m.type === "response" && m.id === "deleted-invoke");
+      phone.ws.send(JSON.stringify({ type: "invoke", id: "deleted-invoke", command: "list_active_desktops", args: {} }));
+      expect(await denied).toMatchObject({ code: 4402 });
+      expect(billingFixture.canceledSubscriptions).toContain("sub_TestSlice1");
+      expect(billingFixture.closedCustomers).toContain("cus_launch_fixture");
+      expect((await db.doc(`accountDeletions/${uid}`).get()).exists).toBe(true);
+      expect((await db.doc(`users/${uid}`).get()).exists).toBe(false);
+      expect((await db.doc(`desktopCredentials/${desktopId}`).get()).exists).toBe(false);
+      expect(await deliver("invoice.paid.json", { metadata: { firebase_uid: uid } }))
+        .toMatchObject({ status: 200, body: { code: "deleted_account" } });
+      expect((await entitlementRef(uid).get()).exists).toBe(false);
+      expect(await deliver("invoice.paid.json", { metadata: {}, customer: "cus_unmapped_fixture" }))
+        .toMatchObject({ status: 200, body: { code: "unresolved_account" } });
+      if (!adminApp) throw new Error("Missing emulator app");
+      await expect(getAuth(adminApp).getUser(uid)).rejects.toMatchObject({ code: "auth/user-not-found" });
+    } finally {
+      await Promise.all(sockets.map(closeAndWait));
+      await billing.close();
+      await Promise.all(getApps().filter((app) => !priorApps.has(app)).map(deleteApp));
+      vi.unstubAllEnvs();
+    }
+  }, 60_000);
 
   it("advertises the full capability set to an entitled desktop and publishes", async () => {
     const { ack, auth } = await publishAs(enforcingPort, accounts.entitled, "entitled-publish");
