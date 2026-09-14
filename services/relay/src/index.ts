@@ -19,6 +19,8 @@ import {
   ENTITLEMENT_REQUIRED_ERROR,
   entitlementEnforcementEnabled,
   resolveSessionEntitlement,
+  observeSessionEntitlement,
+  type SessionEntitlement,
   sessionHasCapability,
   type CloudAccessCapability,
   type EntitlementSubject,
@@ -526,6 +528,7 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
   };
 
   let authenticated = false;
+  let accessUpdatesRequested = false;
   let userId: string | null = null;
   let role: "phone" | "server" | null = null;
   let desktopId: string | null = null;
@@ -539,6 +542,8 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
   let entitlementSubject: EntitlementSubject | null = null;
   let publicationSessionGeneration: number | null = null;
   let nextPublicationSequence = 1;
+  let stopEntitlementObservation: (() => void) | null = null;
+  ws.on("close", () => stopEntitlementObservation?.());
 
   ws.on("close", () => {
     if (
@@ -592,6 +597,7 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
       let phoneEmailVerified: boolean | null = null;
       let msg: {
         type?: string;
+        access_updates?: boolean;
         id_token?: string;
         device_token?: string;
         desktop_id?: string;
@@ -608,6 +614,8 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
         clearTimeout(authTimer);
         return;
       }
+
+      if (msg.type === "auth") accessUpdatesRequested = msg.access_updates === true;
 
       if (pendingAnonymousNonce) {
         if (
@@ -745,6 +753,13 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
         releasePreAuthSlot();
         clearTimeout(authTimer);
         attachDesktopTunnel(userId, desktopId, msg.tunnel_id, ws);
+        if (entitlementSubject && ws.readyState === WebSocket.OPEN) {
+          stopEntitlementObservation = observeSessionEntitlement(entitlementSubject, (access) => {
+            if (!access.grants("cloud_relay") && ws.readyState === WebSocket.OPEN) {
+              ws.close(ENTITLEMENT_REQUIRED_CODE, ENTITLEMENT_REQUIRED_ERROR);
+            }
+          });
+        }
         console.log(
           `[ws] Authenticated tunnel socket for ${userId}/${desktopId} from ${remoteAddr}`
         );
@@ -798,45 +813,67 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
       // enforcement off every `grants` call answers true and this frame is
       // byte-identical to the pre-enforcement relay, `entitlement` included:
       // the field is absent, not false.
-      const authOk = JSON.stringify({
-        type: "auth_ok",
-        userId,
-        capabilities: {
-          tunnelServices: sessionEntitlement?.grants("cloud_relay")
-            ? ["ksp", "task-transfer"]
-            : [],
-          ...(principalKind === "anonymousDesktop" ? {
-            mobileNotifications: { version: MOBILE_NOTIFICATIONS_CAPABILITY_VERSION },
-          } : {}),
-          ...(serverAuthProof?.kind === "desktop" ? {
-            ...(sessionEntitlement?.grants("cloud_task_index") ? {
-              taskSnapshotPublication: {
-                version: 2,
-                authModes: ["desktop-secret"],
-              },
+      let lastAdvertisement = "";
+      const advertiseAccess = (sessionEntitlement: SessionEntitlement | null) => {
+        if (ws.readyState !== WebSocket.OPEN) return;
+        // A tunnel now carries opaque KSP/transfer frames, never control auth.
+        if (isTunnelSocket(ws)) {
+          if (!sessionEntitlement?.grants("cloud_relay")) {
+            ws.close(ENTITLEMENT_REQUIRED_CODE, ENTITLEMENT_REQUIRED_ERROR);
+          }
+          return;
+        }
+        const authOk = JSON.stringify({
+          type: "auth_ok",
+          userId,
+          capabilities: {
+            ...(sessionEntitlement?.snapshot ? { accessUpdates: { version: 1 } } : {}),
+            tunnelServices: sessionEntitlement?.grants("cloud_relay")
+              ? ["ksp", "task-transfer"]
+              : [],
+            ...(principalKind === "anonymousDesktop" ? {
+              mobileNotifications: { version: MOBILE_NOTIFICATIONS_CAPABILITY_VERSION },
             } : {}),
-            mobileNotifications: {
-              version: MOBILE_NOTIFICATIONS_CAPABILITY_VERSION,
-            },
-            ...(sessionEntitlement?.grants("remote_task_control") ? {
-              // v2: a forwarded "invoke" frame carries `sourceDesktopId`,
-              // stamped by this router from the sending connection's own
-              // verified identity (see `routeMessage`'s "invoke" branch) -
-              // never anything a sender can claim itself. A server that
-              // only knows v1 simply doesn't look for the field; nothing
-              // else about the wire format changed.
-              desktopRouting: {
-                version: 2,
+            ...(serverAuthProof?.kind === "desktop" ? {
+              ...(sessionEntitlement?.grants("cloud_task_index") ? {
+                taskSnapshotPublication: {
+                  version: 2,
+                  authModes: ["desktop-secret"],
+                },
+              } : {}),
+              mobileNotifications: {
+                version: MOBILE_NOTIFICATIONS_CAPABILITY_VERSION,
               },
+              ...(sessionEntitlement?.grants("remote_task_control") ? {
+                // v2: a forwarded "invoke" frame carries `sourceDesktopId`,
+                // stamped by this router from the sending connection's own
+                // verified identity (see `routeMessage`'s "invoke" branch) -
+                // never anything a sender can claim itself. A server that
+                // only knows v1 simply doesn't look for the field; nothing
+                // else about the wire format changed.
+                desktopRouting: {
+                  version: 2,
+                },
+              } : {}),
             } : {}),
-          } : {}),
-        },
-        ...(sessionEntitlement?.snapshot
-          ? { entitlement: sessionEntitlement.snapshot }
-          : {}),
-      });
-      ws.send(authOk);
-      recordBytesSent(ws, "control", Buffer.byteLength(authOk));
+          },
+          ...(sessionEntitlement?.snapshot
+            ? { entitlement: sessionEntitlement.snapshot }
+            : {}),
+        });
+        if (authOk === lastAdvertisement) return;
+        lastAdvertisement = authOk;
+        ws.send(authOk);
+        recordBytesSent(ws, "control", Buffer.byteLength(authOk));
+      };
+      advertiseAccess(sessionEntitlement);
+      if (entitlementSubject && ws.readyState === WebSocket.OPEN) {
+        stopEntitlementObservation = observeSessionEntitlement(entitlementSubject, (access) => {
+          // Old peers can be waiting for exactly tunnel_ready after auth_ok.
+          // Only opted-in control clients accept repeated capability frames.
+          if (accessUpdatesRequested || isTunnelSocket(ws)) advertiseAccess(access);
+        });
+      }
       console.log(
         `[ws] Authenticated ${role} for user ${userId} from ${remoteAddr}`
       );

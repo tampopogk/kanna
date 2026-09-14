@@ -254,7 +254,7 @@ async function mountModel(model: AppModel): Promise<ReactTestRenderer> {
 }
 
 describe("App component wiring", () => {
-  it("wires account creation and polls while the signed-in email is unverified", async () => {
+  it("wires account creation and refreshes verification on foreground without polling", async () => {
     vi.useFakeTimers();
     const { model, controller, sessionStore } = createModel();
     sessionStore.setAuthState({
@@ -285,6 +285,8 @@ describe("App component wiring", () => {
     });
 
     expect(createAccount).toHaveBeenCalledWith("new@example.com", "secret1");
+    expect(refreshAccount).not.toHaveBeenCalled();
+    await act(async () => { harness.appStateListener?.("active"); await flushMicrotasks(); });
     expect(refreshAccount).toHaveBeenCalledOnce();
   });
 
@@ -368,6 +370,17 @@ describe("App component wiring", () => {
       status: "signedIn",
       user: { cloudAccess: "active" }
     });
+  });
+
+  it("refreshes an active account on foreground even when the account sheet is closed", async () => {
+    const { model, controller, sessionStore } = createModel();
+    sessionStore.setAuthState({ status: "signedIn", user: {
+      uid: "owner", email: "owner@example.test", displayName: null, emailVerified: true, cloudAccess: "active"
+    } });
+    const refresh = vi.spyOn(controller, "refreshAccount").mockResolvedValue(undefined);
+    await mountModel(model);
+    await act(async () => { harness.appStateListener?.("active"); await flushMicrotasks(); });
+    expect(refresh).toHaveBeenCalledOnce();
   });
 
   it("coalesces overlapping Account-sheet and foreground account refreshes", async () => {

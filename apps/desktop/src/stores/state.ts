@@ -128,6 +128,7 @@ export interface TransferAlert {
 }
 
 export interface KannaSnapshot {
+  cloudAccount?: import("../services/desktopServerClient").CloudAccountSnapshot;
   entries: RepoSnapshotEntry[];
   repoSidebarOrder?: Record<string, number>;
   transferAlerts?: TransferAlert[];
@@ -170,6 +171,7 @@ export interface StoreState {
   blockerTaskStates: Ref<BlockerTaskStates>;
   worktreePaths: Ref<Record<string, string>>;
   snapshotSettings: Ref<Record<string, string>>;
+  cloudAccount: Ref<import("../services/desktopServerClient").CloudAccountSnapshot | null>;
   repoSidebarOrder: Ref<Record<string, number>>;
   initialWindowBootstrap: Ref<WindowBootstrap | null>;
   selectedRepoId: Ref<string | null>;
@@ -333,6 +335,7 @@ export function createStoreState(): StoreState {
   const blockerTaskStates = ref<BlockerTaskStates>({});
   const worktreePaths = ref<Record<string, string>>({});
   const snapshotSettings = ref<Record<string, string>>({});
+  const cloudAccount = ref<import("../services/desktopServerClient").CloudAccountSnapshot | null>(null);
   const repoSidebarOrder = ref<Record<string, number>>({});
   const initialWindowBootstrap = ref<WindowBootstrap | null>(null);
   const selectedRepoId = ref<string | null>(null);
@@ -365,6 +368,7 @@ export function createStoreState(): StoreState {
     blockerTaskStates,
     worktreePaths,
     snapshotSettings,
+    cloudAccount,
     repoSidebarOrder,
     initialWindowBootstrap,
     selectedRepoId,

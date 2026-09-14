@@ -12,6 +12,7 @@ const mocks = vi.hoisted(() => ({
   signInWithEmailAndPassword: vi.fn(),
   createUserWithEmailAndPassword: vi.fn(),
   sendEmailVerification: vi.fn(),
+  sendPasswordResetEmail: vi.fn(),
   signOut: vi.fn(),
   firestore: { kind: "firestore" },
   getFirestore: vi.fn(),
@@ -40,6 +41,7 @@ vi.mock("firebase/auth", () => ({
   signInWithEmailAndPassword: mocks.signInWithEmailAndPassword,
   createUserWithEmailAndPassword: mocks.createUserWithEmailAndPassword,
   sendEmailVerification: mocks.sendEmailVerification,
+  sendPasswordResetEmail: mocks.sendPasswordResetEmail,
   signOut: mocks.signOut
 }));
 
@@ -47,7 +49,7 @@ vi.mock("firebase/firestore", () => ({
   getFirestore: mocks.getFirestore,
   connectFirestoreEmulator: mocks.connectFirestoreEmulator,
   doc: mocks.doc,
-  getDoc: mocks.getDoc
+  getDocFromServer: mocks.getDoc
 }));
 
 vi.mock("@react-native-async-storage/async-storage", () => ({
@@ -149,4 +151,16 @@ describe("createConfiguredMobileAuthSession", () => {
     await expect(sdk.getIdToken(true)).resolves.toBe("fresh-id-token");
     expect(firebaseUser.getIdToken).toHaveBeenCalledWith(true);
   });
+  it("uses Firebase reset and treats elapsed grace and read failures distinctly", async () => {
+    const { createFirebaseMobileAuthSdk } = await import("./sdk");
+    const sdk = createFirebaseMobileAuthSdk(mocks.auth as never, mocks.app as never);
+    await sdk.sendPasswordResetEmail?.("owner@example.test");
+    expect(mocks.sendPasswordResetEmail).toHaveBeenCalledWith(mocks.auth, "owner@example.test");
+    mocks.getDoc.mockResolvedValue({ exists: () => true, data: () => ({ status: "grace", graceEndsAt: "2000-01-01T00:00:00Z" }) });
+    await expect(sdk.getCloudAccess("owner")).resolves.toBe("inactive");
+    await expect(sdk.getCloudEntitlement?.("owner")).resolves.toMatchObject({ active: false, status: "grace" });
+    mocks.getDoc.mockRejectedValue(new Error("offline"));
+    await expect(sdk.getCloudAccess("owner")).resolves.toBe("unknown");
+  });
+
 });

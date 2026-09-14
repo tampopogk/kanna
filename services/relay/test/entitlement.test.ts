@@ -7,6 +7,11 @@ interface EntitlementStore {
   record: Record<string, unknown> | null;
   /** Set to make the read fail, standing in for a Firestore outage. */
   failure: Error | null;
+  emit?: () => void;
+  failObserver?: () => void;
+  stops?: number;
+  observations?: number;
+  activeObservations?: number;
 }
 
 function activeRecord(overrides: Record<string, unknown> = {}): Record<string, unknown> {
@@ -45,6 +50,30 @@ async function importEntitlement(
           doc: vi.fn(() => ({
             collection: vi.fn(() => ({
               doc: vi.fn(() => ({
+                onSnapshot: (next: (snapshot: { exists: boolean; data(): Record<string, unknown> | undefined }) => void, error: (error: Error) => void) => {
+                  store.observations = (store.observations ?? 0) + 1;
+                  store.activeObservations = (store.activeObservations ?? 0) + 1;
+                  let live = true;
+                  const terminate = () => {
+                    if (!live) return;
+                    live = false;
+                    store.activeObservations! -= 1;
+                  };
+                  store.emit = () => {
+                    if (live) next({ exists: store.record !== null, data: () => store.record ?? undefined });
+                  };
+                  store.failObserver = () => {
+                    if (!live) return;
+                    // Firestore's error callback is terminal: this registration
+                    // can never deliver another snapshot, even after recovery.
+                    terminate();
+                    error(new Error("permission-denied"));
+                  };
+                  return () => {
+                    terminate();
+                    store.stops = (store.stops ?? 0) + 1;
+                  };
+                },
                 get: vi.fn(async () => {
                   reads += 1;
                   if (store.failure) throw store.failure;
@@ -362,5 +391,133 @@ describe("entitlement cache TTL configuration", () => {
     expect(entitlement.resolveEntitlementCacheTtlMs({
       KANNA_RELAY_ENTITLEMENT_CACHE_TTL_MS: "-1",
     })).toBe(entitlement.DEFAULT_ENTITLEMENT_CACHE_TTL_MS);
+  });
+});
+
+
+describe("live entitlement ownership", () => {
+  it("shares observation, expires grace, fails open and releases its listener/deadline", async () => {
+    vi.useFakeTimers();
+    const store: EntitlementStore = { record: null, failure: null };
+    const { entitlement } = await importEntitlement(ENFORCING, store);
+    const phoneStates: unknown[] = [];
+    const desktopStates: unknown[] = [];
+    const stopPhone = entitlement.observeSessionEntitlement(phone(), (access) => phoneStates.push(access.snapshot));
+    const stopDesktop = entitlement.observeSessionEntitlement(DESKTOP_SUBJECT, (access) => desktopStates.push(access.snapshot));
+    expect(store.observations).toBe(1);
+    store.emit?.();
+    expect(phoneStates.at(-1)).toMatchObject({ active: false, status: "none" });
+    store.record = activeRecord({ status: "grace", graceEndsAt: new Date(Date.now() + 1000).toISOString() });
+    store.emit?.();
+    expect(await entitlement.sessionHasCapability(phone(), "cloud_relay")).toBe(true);
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(desktopStates.at(-1)).toMatchObject({ active: false, status: "grace" });
+    expect(await entitlement.sessionHasCapability(phone(), "cloud_relay")).toBe(false);
+    store.record = activeRecord({ source: "comp" });
+    store.emit?.();
+    expect(desktopStates.at(-1)).toMatchObject({ active: true, status: "active" });
+    store.failure = new Error("unavailable");
+    store.failObserver?.();
+    expect(phoneStates.at(-1)).toMatchObject({ active: true, status: "unknown" });
+    expect(await entitlement.sessionHasCapability(phone(), "cloud_relay")).toBe(true);
+    stopPhone();
+    expect(store.stops).toBe(1);
+    stopDesktop();
+    expect(store.stops).toBe(1);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it.each(["capability check", "joining subscriber"])(
+    "recovers a terminal watch through a %s without losing existing subscribers",
+    async (trigger) => {
+      vi.useFakeTimers();
+      const store: EntitlementStore = {
+        record: activeRecord({ status: "grace", graceEndsAt: new Date(Date.now() + 1000).toISOString() }),
+        failure: null,
+      };
+      const { entitlement, reads } = await importEntitlement(ENFORCING, store);
+      const phoneStates: unknown[] = [];
+      const desktopStates: unknown[] = [];
+      const stopPhone = entitlement.observeSessionEntitlement(phone(), (access) => phoneStates.push(access.snapshot));
+      store.emit?.();
+      expect(vi.getTimerCount()).toBe(1);
+      const terminatedEmit = store.emit;
+      store.failure = new Error("unavailable");
+      store.failObserver?.();
+      expect(store.activeObservations).toBe(0);
+      expect(vi.getTimerCount()).toBe(0);
+      expect(phoneStates.at(-1)).toMatchObject({ active: true, status: "unknown" });
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        expect(await entitlement.sessionHasCapability(phone(), "cloud_relay")).toBe(true);
+      }
+      expect(reads()).toBe(2);
+      expect(store.observations).toBe(1);
+
+      store.failure = null;
+      store.record = activeRecord({ status: "revoked", capabilities: [] });
+      terminatedEmit?.();
+      expect(phoneStates.at(-1)).toMatchObject({ active: true, status: "unknown" });
+      if (trigger === "capability check") {
+        expect(await entitlement.sessionHasCapability(phone(), "cloud_relay")).toBe(false);
+        expect(phoneStates.at(-1)).toMatchObject({ active: false, status: "revoked" });
+      }
+      const stopDesktop = entitlement.observeSessionEntitlement(DESKTOP_SUBJECT, (access) => desktopStates.push(access.snapshot));
+      // A concurrent request shares the joining socket's authoritative read.
+      expect(await entitlement.sessionHasCapability(phone(), "cloud_relay")).toBe(false);
+      expect(reads()).toBe(3);
+      expect(store.observations).toBe(2);
+      expect(store.activeObservations).toBe(1);
+      for (const states of [phoneStates, desktopStates]) {
+        expect(states.at(-1)).toMatchObject({ active: false, status: "revoked" });
+      }
+      for (const capability of ["cloud_relay", "cloud_task_index", "remote_task_control"] as const) {
+        expect(await entitlement.sessionHasCapability(DESKTOP_SUBJECT, capability)).toBe(false);
+      }
+
+      store.record = activeRecord({ source: "comp" });
+      store.emit?.();
+      for (const states of [phoneStates, desktopStates]) {
+        expect(states.at(-1)).toMatchObject({ active: true, status: "active" });
+      }
+      expect(await entitlement.sessionHasCapability(phone(), "cloud_relay")).toBe(true);
+      store.record = activeRecord({ status: "grace", graceEndsAt: new Date(Date.now() + 1000).toISOString() });
+      store.emit?.();
+      expect(vi.getTimerCount()).toBe(1);
+      await vi.advanceTimersByTimeAsync(1000);
+      for (const states of [phoneStates, desktopStates]) {
+        expect(states.at(-1)).toMatchObject({ active: false, status: "grace" });
+      }
+      expect(await entitlement.sessionHasCapability(phone(), "cloud_relay")).toBe(false);
+
+      store.record = activeRecord({ status: "grace", graceEndsAt: new Date(Date.now() + 1000).toISOString() });
+      store.emit?.();
+      stopPhone();
+      expect(store.activeObservations).toBe(1);
+      expect(vi.getTimerCount()).toBe(1);
+      stopDesktop();
+      expect(store.stops).toBe(2);
+      expect(store.activeObservations).toBe(0);
+      expect(vi.getTimerCount()).toBe(0);
+      const statesAtClose = desktopStates.length;
+      store.emit?.();
+      expect(desktopStates).toHaveLength(statesAtClose);
+    },
+  );
+
+  it("does not restore observation when the final socket closes during recovery", async () => {
+    const store: EntitlementStore = { record: activeRecord(), failure: null };
+    const { entitlement } = await importEntitlement(ENFORCING, store);
+    const states: unknown[] = [];
+    const stop = entitlement.observeSessionEntitlement(phone(), (access) => states.push(access.snapshot));
+    store.emit?.();
+    store.failObserver?.();
+    store.record = activeRecord({ status: "revoked", capabilities: [] });
+    const checking = entitlement.sessionHasCapability(phone(), "cloud_relay");
+    stop();
+    const statesAtClose = states.length;
+    expect(await checking).toBe(false);
+    expect(states).toHaveLength(statesAtClose);
+    expect(store.observations).toBe(1);
+    expect(store.activeObservations).toBe(0);
   });
 });

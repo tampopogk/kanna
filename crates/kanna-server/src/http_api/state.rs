@@ -119,6 +119,7 @@ pub struct AppState {
     /// usable between an account transition and the next reconciliation
     /// pass.
     authenticated_account_uid: Arc<StdMutex<Option<String>>>,
+    relay_entitlement: Arc<StdMutex<Option<crate::relay_client::RelayEntitlement>>>,
     /// Bumped by every call that changes `authenticated_account_uid` -
     /// a fresh relay `AuthOk`, an authoritative rejection, or an explicit
     /// local sign-out. `machine_trust` reconciliation is decided by whoever
@@ -583,6 +584,7 @@ impl AppState {
             known_singleton_owners: Arc::new(StdMutex::new(HashMap::new())),
             relay_reconnect: Arc::new(Notify::new()),
             authenticated_account_uid: Arc::new(StdMutex::new(None)),
+            relay_entitlement: Arc::new(StdMutex::new(None)),
             account_state_generation: Arc::new(AtomicU64::new(0)),
             lan_candidates: Arc::new(StdMutex::new(HashMap::new())),
             lan_bootstrap_in_flight: Arc::new(StdMutex::new(HashSet::new())),
@@ -842,16 +844,61 @@ impl AppState {
         self.relay_desktop_routing_available.load(Ordering::Acquire)
     }
 
+    pub(crate) fn cloud_account_snapshot(
+        &self,
+    ) -> (
+        Option<String>,
+        Option<crate::relay_client::RelayEntitlement>,
+    ) {
+        let uid = self
+            .authenticated_account_uid
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        (uid.clone(), self.relay_entitlement())
+    }
+
+    pub(crate) fn relay_entitlement(&self) -> Option<crate::relay_client::RelayEntitlement> {
+        self.relay_entitlement
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone()
+    }
+
+    pub(crate) fn set_relay_entitlement(
+        &self,
+        access: Option<crate::relay_client::RelayEntitlement>,
+    ) {
+        let mut current = self
+            .relay_entitlement
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        if *current == access {
+            return;
+        }
+        *current = access;
+        drop(current);
+        self.publish_state_changed(StateChangeScope::Settings);
+    }
+
     /// Sets the account UID this desktop's relay connection currently
     /// authenticates as. `None` on sign-out, an authoritative rejection, or
     /// before the first successful authentication. Returns the new
     /// `account_state_generation` - see that field's own doc comment for why
     /// a reconciliation caller must capture and pass this along.
     pub(crate) fn set_authenticated_account_uid(&self, account_uid: Option<String>) -> u64 {
-        *self
+        let mut current_uid = self
             .authenticated_account_uid
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) = account_uid;
+            .unwrap_or_else(|p| p.into_inner());
+        let changed = *current_uid != account_uid;
+        *current_uid = account_uid;
+        if changed {
+            self.set_relay_entitlement(None);
+        }
+        drop(current_uid);
+        if changed {
+            self.publish_state_changed(StateChangeScope::Settings);
+        }
         self.account_state_generation
             .fetch_add(1, Ordering::AcqRel)
             .wrapping_add(1)

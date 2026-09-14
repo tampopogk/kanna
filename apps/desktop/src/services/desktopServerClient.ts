@@ -13,7 +13,13 @@ export interface DesktopSnapshotEntry {
   items: PipelineItem[];
 }
 
+export interface CloudAccountSnapshot {
+  userId: string | null;
+  entitlement: import("@kanna/stream-client").CloudAccessSnapshot | null;
+}
+
 export interface DesktopSnapshot {
+  cloudAccount?: CloudAccountSnapshot;
   entries: DesktopSnapshotEntry[];
   repoSidebarOrder?: Record<string, number>;
   taskBlockers: TaskBlocker[];

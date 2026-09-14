@@ -22,6 +22,73 @@ async function flushPromises(): Promise<void> {
 }
 
 describe("createRelayDesktopClient", () => {
+  it("keeps access refusals actionable and accepts recovery on the same socket", async () => {
+    const socket = createSocket();
+    const onAccessChange = vi.fn();
+    const client = createRelayDesktopClient({ createSocket: () => socket, getIdToken: async () => "token", relayUrl: "ws://fixture", nextId: () => "request", onAccessChange });
+    const invoke = () => client.invokeDesktop({ desktopId: "desktop", method: "GET", path: "/v1/repos", body: null });
+    const denied = invoke();
+    const rejection = expect(denied).rejects.toMatchObject({ status: 4402, reason: "subscription_required", detail: expect.stringContaining("grace period has ended") });
+    socket.onopen?.();
+    await flushPromises();
+    socket.onmessage?.({ data: JSON.stringify({ type: "auth_ok", userId: "owner", entitlement: {
+      active: false, status: "grace", graceEndsAt: "2000-01-01T00:00:00Z", currentPeriodEndsAt: null,
+    } }) });
+    await flushPromises();
+    socket.onmessage?.({ data: JSON.stringify({ type: "response", id: "request", code: 4402, error: "entitlement required" }) });
+    await rejection;
+    socket.onmessage?.({ data: JSON.stringify({ type: "auth_ok", userId: "owner", entitlement: {
+      active: true, status: "active", graceEndsAt: null, currentPeriodEndsAt: null,
+    } }) });
+    const recovered = invoke();
+    await flushPromises();
+    socket.onmessage?.({ data: JSON.stringify({ type: "response", id: "request", data: ["repo"] }) });
+    await expect(recovered).resolves.toEqual(["repo"]);
+    expect(onAccessChange).toHaveBeenLastCalledWith("owner", expect.objectContaining({ active: true }));
+    expect(socket.close).not.toHaveBeenCalled();
+    client.close();
+  });
+
+  it.each([true, false])("restores a refused terminal from control auth without polling (entitlement block: %s)", async (hasEntitlement) => {
+    vi.useFakeTimers();
+    const sockets: RelaySocketLike[] = [];
+    const client = createRelayDesktopClient({
+      createSocket: () => { const socket = createSocket(); sockets.push(socket); return socket; },
+      getIdToken: async () => "token", relayUrl: "ws://fixture"
+    });
+    try {
+      client.observeTaskTerminal({ desktopId: "desktop", taskId: "task" }, () => undefined);
+      const tunnel = sockets[0];
+      tunnel.onopen?.();
+      await flushPromises();
+      tunnel.onmessage?.({ data: JSON.stringify({ type: "auth_ok" }) });
+      tunnel.onmessage?.({ data: JSON.stringify({ type: "response", code: 4402, error: "entitlement required" }) });
+      // A denied tunnel opens the account control channel, which remains free.
+      expect(sockets).toHaveLength(2);
+      const control = sockets[1];
+      control.onopen?.();
+      await flushPromises();
+      const update = (active: boolean) => control.onmessage?.({ data: JSON.stringify({
+        type: "auth_ok", userId: "owner", entitlement: {
+          active, status: active ? "active" : "none", currentPeriodEndsAt: null, graceEndsAt: null
+        }
+      }) });
+      update(false);
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(sockets).toHaveLength(2);
+      if (hasEntitlement) update(true);
+      else control.onmessage?.({ data: JSON.stringify({ type: "auth_ok", userId: "owner" }) });
+      expect(sockets).toHaveLength(3);
+      expect(control.close).not.toHaveBeenCalled();
+      sockets[2].onopen?.();
+      await flushPromises();
+      expect(sockets[2].send).toHaveBeenCalledWith(JSON.stringify({ type: "auth", id_token: "token" }));
+    } finally {
+      client.close();
+      vi.useRealTimers();
+    }
+  });
+
   it("carries visual companion frames transparently through the shared relay tunnel", async () => {
     const socket = createSocket();
     const client = createRelayDesktopClient({
@@ -130,7 +197,8 @@ describe("createRelayDesktopClient", () => {
       1,
       JSON.stringify({
         type: "auth",
-        id_token: "id-token-1"
+        id_token: "id-token-1",
+        access_updates: true
       })
     );
 

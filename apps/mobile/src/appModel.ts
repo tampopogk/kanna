@@ -108,6 +108,7 @@ interface AppModelOptions {
     relayUrl: string;
     getIdToken(forceRefresh?: boolean): Promise<string | null>;
     onAuthError(): void;
+    onAccessChange?(userId: string, access: import("@kanna/stream-client").CloudAccessSnapshot): void;
   }) => RelayDesktopClient;
 }
 
@@ -811,6 +812,7 @@ function createClientForMode({
     relayUrl: string;
     getIdToken(forceRefresh?: boolean): Promise<string | null>;
     onAuthError(): void;
+    onAccessChange?(userId: string, access: import("@kanna/stream-client").CloudAccessSnapshot): void;
   }): RelayDesktopClient;
   fetchImpl: FetchLike;
   forceCloud: boolean;
@@ -849,6 +851,7 @@ function createClientForMode({
       relayUrl,
       getIdToken: (forceRefresh) => authSession.getIdToken(forceRefresh),
       onAuthError: () => authSession.notifyAuthExpired(),
+      onAccessChange: (userId, access) => authSession.observeRelayAccess(userId, access),
     });
     let disposed = false;
     let accountDesktopIds = new Set(

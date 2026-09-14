@@ -570,6 +570,25 @@ describe("kanna query snapshot regressions", () => {
     expect(selection.getStageOrder(added.id)).toEqual([added.id]);
   });
 
+  it("reconciles cloud account projection through the existing snapshot store", async () => {
+    let cloudAccount: KannaSnapshot["cloudAccount"] = { userId: "owner", entitlement: {
+      active: false, status: "none", graceEndsAt: null, currentPeriodEndsAt: null,
+    } };
+    const state = createStoreState();
+    const context = createStoreContext(state, { error: vi.fn(), warning: vi.fn() } as never, {
+      fetchSnapshot: async () => ({ entries: [], taskBlockers: [], worktreePaths: {}, settings: {}, cloudAccount }),
+    });
+    const queries = createQueriesApi(context);
+    await queries.reloadSnapshot();
+    expect(state.cloudAccount.value?.entitlement?.active).toBe(false);
+    cloudAccount = { userId: "owner", entitlement: { active: true, status: "active", graceEndsAt: null, currentPeriodEndsAt: null } };
+    await queries.reloadSnapshot();
+    expect(state.cloudAccount.value?.entitlement?.active).toBe(true);
+    cloudAccount = undefined;
+    await queries.reloadSnapshot();
+    expect(state.cloudAccount.value).toBeNull();
+  });
+
   it("applies versioned task state without replacing item or slot collections", async () => {
     const repo = mockState.makeRepo();
     const item = mockState.makeItem();

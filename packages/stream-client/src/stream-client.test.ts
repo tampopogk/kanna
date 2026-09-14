@@ -3674,6 +3674,28 @@ describe("StreamClient", () => {
     client.close();
   });
 
+  it("parks a subscription-refused tunnel until an access event restores it", async () => {
+    const required = vi.fn();
+    const client = new StreamClient({
+      url: "ignored",
+      webSocketFactory: createRelayTunnelWebSocketFactory({ relayUrl: "ws://fixture", desktopId: "desktop", getIdentityToken: async () => "token", webSocketFactory: factory }),
+      onAccessRequired: required,
+    });
+    const errors = vi.fn();
+    client.attachTerminal("task", { onOutput: () => undefined, onError: errors });
+    sockets[0].open();
+    await flushMicrotasks();
+    sockets[0].onmessage?.({ data: JSON.stringify({ type: "auth_ok" }) });
+    sockets[0].onmessage?.({ data: JSON.stringify({ type: "response", code: 4402, error: "entitlement required" }) });
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(sockets).toHaveLength(1);
+    expect(required).toHaveBeenCalledOnce();
+    expect(errors).toHaveBeenCalledWith("subscription_required", expect.stringContaining("account"));
+    client.refreshAccess();
+    expect(sockets).toHaveLength(2);
+    client.close();
+  });
+
   it("surfaces relay tunnel request failures to terminal attachments", async () => {
     const tunnelFactory = createRelayTunnelWebSocketFactory({
       relayUrl: "ws://relay",
