@@ -526,6 +526,7 @@ describe("NewTaskModal", () => {
     await flushPromises();
     const modelInput = wrapper.get('[aria-label="OpenCode model"]');
     await modelInput.setValue("local/qwen-coder");
+    const blur = vi.spyOn(modelInput.element as HTMLInputElement, "blur");
 
     for (const nativeKey of ["ArrowDown", "Enter", "Escape"]) {
       const nativeKeydown = new KeyboardEvent("keydown", {
@@ -553,6 +554,7 @@ describe("NewTaskModal", () => {
     await flushPromises();
 
     expect(selectedAgentLabel(wrapper)).toBe(expectedProvider);
+    expect(blur).toHaveBeenCalledOnce();
   });
 
   it("keeps a cancelled Cmd+Enter from submitting through the focused model input", async () => {

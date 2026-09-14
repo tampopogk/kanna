@@ -8,6 +8,27 @@ import { fetchDesktopOpenCodeModels } from "../../services/desktopServerClient";
 vi.mock("../../services/desktopServerClient", () => ({ fetchDesktopOpenCodeModels: vi.fn() }));
 
 describe("OpenCode model selection", () => {
+  it("dismisses a committed discovered suggestion without blurring custom model entry", async () => {
+    vi.mocked(fetchDesktopOpenCodeModels).mockResolvedValue([
+      { id: "local/qwen", name: "Qwen", local: true },
+    ]);
+    const wrapper = mount(OpenCodeModelSelect, {
+      attachTo: document.body,
+      props: { repoId: "repo-local", modelValue: "" },
+    });
+    await vi.waitFor(() => expect(wrapper.find("option").exists()).toBe(true));
+
+    const input = wrapper.get("input");
+    const blur = vi.spyOn(input.element as HTMLInputElement, "blur");
+    await input.setValue("local/qwen");
+    expect(blur).toHaveBeenCalledOnce();
+
+    blur.mockClear();
+    await input.setValue("custom/backend-model");
+    expect(blur).not.toHaveBeenCalled();
+    wrapper.unmount();
+  });
+
   it("shows native local models with connection and context, without claiming readiness", async () => {
     vi.mocked(fetchDesktopOpenCodeModels).mockResolvedValue([
       { id: "omlx/qwen-coder", name: "Qwen", local: true, connection: "http://127.0.0.1:8000", context: 32768 },
