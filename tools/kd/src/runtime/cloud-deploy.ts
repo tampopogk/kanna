@@ -1,6 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { cloudEnvironmentToKdEnvironment, resolveKdEnvironment } from "./environment";
+import { cloudEnvironmentToKdEnvironment, resolveKdEnvironment, resolveRelayEntitlementEnforcement } from "./environment";
 import type { CommandRunner } from "./process";
 import { RELAY_STATS_TOKEN_SECRET_NAME } from "./relay-stats";
 import { resolveSourceRef, type ResolvedSourceRef } from "./source-ref";
@@ -53,8 +53,11 @@ export interface CloudDeployInput {
   functions?: boolean;
   /** Build and deploy the web account portal. */
   portal?: boolean;
+  /** Relay-only local plan: resolves source/config but performs no remote calls or builds. */
+  dryRun?: boolean;
   /** Receives best-effort preflight warnings without making deployment fatal. */
   writeWarning?: (message: string) => void;
+  writeInfo?: (message: string) => void;
 }
 
 export interface CloudDeployResult {
@@ -64,9 +67,12 @@ export interface CloudDeployResult {
   targets: string[];
   source: ResolvedSourceRef;
   relay?: RelayDeployResult;
+  dryRun?: true;
 }
 
 export interface RelayDeployResult {
+  environment: CloudDeployEnvironment;
+  entitlementEnforcement: ReturnType<typeof resolveRelayEntitlementEnforcement>;
   projectId: string;
   vmName: string;
   zone: string;
@@ -93,6 +99,8 @@ export interface RelayProvisionPlan {
 }
 
 export interface RelayDeployPlan {
+  environment: CloudDeployEnvironment;
+  entitlementEnforcement: ReturnType<typeof resolveRelayEntitlementEnforcement>;
   projectId: string;
   vmName: string;
   zone: string;
@@ -385,6 +393,9 @@ export function buildCloudDeployTargets(input: {
 
 export async function deployFirebaseCloud(input: CloudDeployInput & { relay?: boolean }): Promise<CloudDeployResult> {
   assertCloudDeployEnvironment(input.environment);
+  if (input.dryRun && (!input.relay || input.functions || input.portal)) {
+    throw new Error("cloud deploy --dry-run requires --relay as its only target.");
+  }
 
   const projectId = resolveFirebaseProject(input.repoRoot, input.env, input.environment);
   const source = await resolveSourceRef({
@@ -395,6 +406,14 @@ export async function deployFirebaseCloud(input: CloudDeployInput & { relay?: bo
     requireRef: input.environment === "production",
     command: "cloud deploy"
   });
+  // Validate the relay's policy and project before any selected target mutates remotely.
+  if (input.relay) {
+    const plan = buildRelayDeployPlan({ ...input, commit: source.shortCommit });
+    assertRelayProject(projectId, plan);
+    if (input.dryRun) {
+      return { projectId, deployed: false, targets: [], source, dryRun: true, relay: relayDeployEvidence(plan) };
+    }
+  }
 
   const hasExplicitTarget = input.functions === true || input.portal === true || input.relay === true;
   const functions = input.functions === true;
@@ -485,6 +504,10 @@ export async function deployRelayCloud(
     environment: input.environment,
     commit: input.source.shortCommit
   });
+  assertRelayProject(resolveFirebaseProject(input.repoRoot, input.env, input.environment), plan);
+  if (input.dryRun) return relayDeployEvidence(plan);
+  const writeInfo = input.writeInfo ?? ((message: string) => process.stderr.write(message));
+  writeInfo(`Relay deploy plan: ${JSON.stringify(relayDeployEvidence(plan))}\n`);
   await warnIfRelayStatsSecretIamMissing({
     repoRoot: input.repoRoot,
     env: input.env,
@@ -504,7 +527,22 @@ export async function deployRelayCloud(
       throw new Error(result.stderr || result.stdout || `Relay VM deploy step failed: ${step.command} ${step.args.join(" ")}`);
     }
   }
+  return relayDeployEvidence(plan);
+}
+
+function assertRelayProject(projectId: string, plan: RelayDeployPlan): void {
+  if (projectId !== plan.projectId) {
+    throw new Error(
+      `Relay ${plan.environment} project is ${plan.projectId}, but Firebase selected ${projectId}. ` +
+      "Refusing a cross-project relay deploy; reconcile the environment registry, .firebaserc and project overrides."
+    );
+  }
+}
+
+function relayDeployEvidence(plan: RelayDeployPlan): RelayDeployResult {
   return {
+    environment: plan.environment,
+    entitlementEnforcement: plan.entitlementEnforcement,
     projectId: plan.projectId,
     vmName: plan.vmName,
     zone: plan.zone,
@@ -733,6 +771,10 @@ export function buildRelayDeployPlan(input: {
   assertCloudDeployEnvironment(input.environment);
 
   const identity = resolveKdEnvironment(cloudEnvironmentToKdEnvironment(input.environment));
+  if (identity.name !== cloudEnvironmentToKdEnvironment(input.environment)) {
+    throw new Error(`Relay environment identity does not match ${input.environment}.`);
+  }
+  const entitlementEnforcement = resolveRelayEntitlementEnforcement(identity);
   if (!identity.relayDomain || !identity.gceVmName || !identity.artifactRegistryImage) {
     throw new Error(`Relay VM deploy is not configured for ${input.environment}.`);
   }
@@ -752,6 +794,8 @@ export function buildRelayDeployPlan(input: {
   const registryHost = getArtifactRegistryHost(identity.artifactRegistryImage);
 
   return {
+    environment: input.environment,
+    entitlementEnforcement,
     projectId,
     vmName: identity.gceVmName,
     zone,
@@ -825,7 +869,8 @@ export function buildRelayDeployPlan(input: {
             projectId,
             image: identity.artifactRegistryImage,
             registryHost,
-            otaBucket
+            otaBucket,
+            entitlementEnforcement: entitlementEnforcement.value
           })
         ],
         cwd: input.repoRoot,
@@ -849,6 +894,7 @@ function buildRemoteRelayDeployCommand(input: {
   image: string;
   registryHost: string;
   otaBucket: string;
+  entitlementEnforcement: "off" | "on";
 }): string {
   return [
     "cd /opt/kanna-relay",
@@ -864,6 +910,7 @@ function buildRemoteRelayDeployCommand(input: {
     `KANNA_RELAY_DOMAIN=${input.domain}`,
     `FIREBASE_PROJECT_ID=${input.projectId}`,
     `KANNA_RELAY_IMAGE=${input.image}`,
+    `KANNA_RELAY_ENTITLEMENT_ENFORCEMENT=${input.entitlementEnforcement}`,
     `KANNA_OTA_BUCKET=${input.otaBucket}`,
     "KANNA_OTA_KEY_ID=kanna-mobile-ota-v1",
     "KANNA_OTA_PRIVATE_KEY_PATH=/run/secrets/kanna_ota_private_key.pem",

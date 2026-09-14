@@ -312,10 +312,12 @@ fall back to the defaults. The deploy sets none of them.
 
 ### `KANNA_RELAY_ENTITLEMENT_ENFORCEMENT`
 
-**Off in every environment today, and it must stay off until the Slice-3 flag
-day** (`docs/specs/accounts-and-billing.md`, Decisions 5 and 7). The deploy
-writes no value for it and `deploy/docker-compose.yml` defaults it to `off`, so
-the relay serves every authenticated account exactly as it always has.
+The checked-in `kd` environment registry explicitly selects **off** for both
+staging and production. This is deployment intent, not evidence of either live
+VM's state. Enabling requires a separate owner-authorized handoff after the
+billing/client prerequisites and cohort decision (`docs/specs/accounts-and-billing.md`,
+Decisions 5 and 7). Production Stripe is confirmed not set up as of 2026-09-14;
+this technical handoff does not establish payment readiness.
 
 When it is turned on, the relay resolves each authenticated session's uid to
 `users/{uid}/entitlements/cloud_access` — the single record the billing reducer
@@ -346,17 +348,72 @@ kinds, phone ID token and desktop credential:
 
 LAN is unaffected, permanently: it involves no account and no relay.
 
-To flip it on the flag day, add the line to `/opt/kanna-relay/.env` on the VM
-(or to the `.env` block the deploy writes in
-`tools/kd/src/runtime/cloud-deploy.ts`) and `docker compose up -d`:
+### Environment-owned deployment handoff
 
-```text
-KANNA_RELAY_ENTITLEMENT_ENFORCEMENT=on
-```
+The source of truth is `relayEntitlementEnforcement` on the selected identity in
+`tools/kd/src/runtime/environment.ts`: `staging` for `--staging`, `prod` for
+`--production`. Only the literal strings `off` and `on` are valid. Omission
+resolves to `off` and is labelled `default off` in plan evidence; any other
+value aborts before builds or remote work. Each environment owns its choice
+independently. A staging enable is never inherited by production.
 
-Recognised values are `on`/`true`/`1` and `off`/`false`/`0`. Anything else logs
-a warning and stays **off** — the failure mode of a typo is an open relay, not a
-relay that refuses everyone.
+Every `kd cloud deploy --relay` writes the resolved value into the replacement
+VM `.env`; Compose passes it to the relay. Shell
+`KANNA_RELAY_ENTITLEMENT_ENFORCEMENT` and manual VM `.env` edits are not deployment
+policy and do not override the registry. Redeploys from the same policy retain
+it. A different source revision can contain a different policy, so review the
+setting on every deployment and rollback. Firebase project selection from
+`KANNA_FIREBASE_STAGING_PROJECT` / `KANNA_FIREBASE_PRODUCTION_PROJECT` or
+`.firebaserc` must match the relay registry project; a mismatch aborts before
+any selected cloud target deploys.
+
+For a later authorized change:
+
+1. Record the owner authorization, target environment/project, intended `off` or
+   `on`, and the known-good source and setting for rollback. Change only that
+   environment's registry entry and commit it. Keep production's choice explicit
+   even after a successful staging rehearsal.
+2. From the clean checkout of the chosen source, capture the local plan. For
+   example, replace `<approved-sha>` with that checked-out commit:
+
+   ```bash
+   ./kd cloud deploy --staging --relay --ref <approved-sha> --dry-run
+   ```
+
+   For production, use `--production` and its separately approved source.
+   `--dry-run` requires `--relay` as the only target and runs local Git/config
+   checks only: no build, credentials lookup, remote inspection or deployment.
+   The result records the full source commit, relay project/VM/environment,
+   short image commit, `entitlementEnforcement.value`, and its registry `source`.
+   Review the matching project (`kanna-staging` or `kanna-build`) and policy.
+3. Only under the separate deployment authorization, run the same canonical
+   command without `--dry-run`. `kd` emits safe relay plan evidence before remote
+   relay commands and includes the same fields in its successful deploy result.
+   Keep that result with the authorization and source revision. It reports the
+   submitted configuration, not a readback of running enforcement.
+4. Attach proof from the separately authorized rehearsal: matching `/health`
+   commit plus paid/comp access, denial for an unentitled account when enabled,
+   and retained free account/anonymous push and LAN behavior. `/health` alone
+   does not prove enforcement. Record redacted test/build identifiers and
+   observed outcomes, never tokens, keys or a dump of the VM `.env`.
+5. If the authorized stop conditions occur, use `kd` from the recorded compatible
+   rollback source **and review its registry setting in a fresh dry-run**. An
+   owner-authorized temporary disable uses a committed `off` for that environment
+   and the same deployment path. Carry the intended setting into any older
+   compatible source; an old source predating this handoff cannot retain it.
+   Disabling enforcement is not cancellation/refund authority and does not
+   change entitlement records. Do not restore secrets or billing data from a
+   deployment snapshot.
+
+Handoff evidence should name: authorization, environment/project, selected
+setting and configuration source, full source revision, dry-run result,
+deployment result, behavioral proof, and authorized rollback source/setting.
+Unperformed deployment or payment checks remain explicitly unobserved.
+
+The relay runtime itself still accepts `on`/`true`/`1` and `off`/`false`/`0`,
+and warns then stays off for unrecognized values. Canonical `kd` deployment
+uses the stricter `off`/`on` registry contract above. Relay credential ownership,
+capability checks and free push behavior are unchanged.
 
 ### `KANNA_RELAY_ENTITLEMENT_CACHE_TTL_MS`
 
