@@ -259,6 +259,8 @@ interface RenderTaskScreenOptions {
     }>;
   }>;
   onReadTaskFile?: (path: string) => Promise<{ path: string; content: string }>;
+  onDownloadTaskFile?: (path: string) => Promise<unknown>;
+  fileAccessScopeKey?: string;
   onReadTaskDiff?: () => Promise<{
     taskId: string;
     baseRef: string | null;
@@ -336,6 +338,13 @@ function renderTaskScreen(options: RenderTaskScreenOptions = {}): ElementNode {
       path: "docs/spec.md",
       content: "# Spec"
     }),
+    onDownloadTaskFile = vi.fn().mockResolvedValue({
+      path: "docs/spec.md",
+      fileName: "spec.md",
+      mediaType: "text/plain",
+      dataBase64: "IyBTcGVj"
+    }),
+    fileAccessScopeKey = "account-1\0desktop-1\0task-1",
     onReadTaskDiff = vi.fn().mockResolvedValue({
       taskId: "task-1",
       baseRef: "main",
@@ -417,6 +426,8 @@ function renderTaskScreen(options: RenderTaskScreenOptions = {}): ElementNode {
     onRecoverTaskCreation,
     onResolveTaskFileMentions,
     onReadTaskFile,
+    onDownloadTaskFile,
+    fileAccessScopeKey,
     onListTaskDirectory: vi.fn().mockResolvedValue({
       path: "",
       entries: [],
@@ -983,16 +994,40 @@ describe("TaskScreen", () => {
     expect(findByType(tree, "TaskDiffPreview")).toBeNull();
   });
 
-  it("opens the worktree browser and inserts its line reference into the composer", () => {
-    let tree = renderTaskScreen({ draftInput: "Check this" });
+  it("wires original-file download through the worktree browser", async () => {
+    const original = {
+      path: "assets/logo.PNG",
+      fileName: "logo.PNG",
+      mediaType: "image/png",
+      dataBase64: "iVBORw0KGgo="
+    };
+    const onDownloadTaskFile = vi.fn().mockResolvedValue(original);
+    let tree = renderTaskScreen({
+      draftInput: "Check this",
+      onDownloadTaskFile,
+      fileAccessScopeKey: "account-1\0desktop-1\0task-1"
+    });
     pressByTestId(tree, "mobile.task-more-button");
     const onSelect = componentMocks.showTaskActionMenu.mock.calls[0]![1] as (
       selectedAction: "browse-files"
     ) => void;
     onSelect("browse-files");
-    tree = renderTaskScreen({ draftInput: "Check this" });
+    tree = renderTaskScreen({
+      draftInput: "Check this",
+      onDownloadTaskFile,
+      fileAccessScopeKey: "account-1\0desktop-1\0task-1"
+    });
     const explorer = findByType(tree, "RepoExplorer");
     expect(explorer).not.toBeNull();
+    expect(explorer?.props?.downloadScopeKey).toBe(
+      "account-1\0desktop-1\0task-1"
+    );
+    await expect(
+      (explorer?.props?.downloadFile as (path: string) => Promise<unknown>)(
+        "assets/logo.PNG"
+      )
+    ).resolves.toEqual(original);
+    expect(onDownloadTaskFile).toHaveBeenCalledWith("assets/logo.PNG");
 
     (explorer?.props?.onInsertReference as (value: string) => void)(
       "src/main.ts:12-18"
@@ -1776,7 +1811,8 @@ describe("TaskScreen", () => {
     const preview = findByType(tree, "TaskFilePreview");
     expect(preview?.props).toMatchObject({
       path: "packages/app/src/main.ts",
-      initialLine: 42
+      initialLine: 42,
+      downloadScopeKey: "account-1\0desktop-1\0task-1"
     });
     await expect(
       (preview?.props?.readFile as () => Promise<unknown>)()
@@ -1785,6 +1821,7 @@ describe("TaskScreen", () => {
       content: "export {}"
     });
     expect(onReadTaskFile).toHaveBeenCalledWith("packages/app/src/main.ts");
+    await (preview?.props?.downloadFile as () => Promise<unknown>)();
 
     (preview?.props?.onClose as () => void)();
     tree = renderTaskScreen({

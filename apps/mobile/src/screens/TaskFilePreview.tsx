@@ -16,6 +16,11 @@ import {
 import type { TaskFileContent } from "../lib/api/types";
 import { MOBILE_E2E_IDS } from "../e2eTestIds";
 import {
+  isTaskFileShareCancellation,
+  shareTaskFile,
+  taskFileDownloadErrorMessage
+} from "../lib/files/taskFileDownload";
+import {
   buildTaskFilePreviewDocument,
   prepareTaskFileMarkdown,
   type TaskFilePreviewMode
@@ -25,6 +30,8 @@ export interface TaskFilePreviewProps {
   path: string;
   initialLine?: number;
   readFile(): Promise<TaskFileContent>;
+  downloadFile(): Promise<TaskFileContent>;
+  downloadScopeKey: string;
   onClose(): void;
 }
 
@@ -35,6 +42,7 @@ type LoadState =
       error: string;
       requestPath: string;
       retryable: boolean;
+      unsupportedPreview: boolean;
       status: "error";
     };
 
@@ -42,6 +50,11 @@ interface ModeState {
   key: string;
   mode: TaskFilePreviewMode;
 }
+
+type DownloadState =
+  | { status: "idle" }
+  | { status: "sharing" }
+  | { error: string; status: "error" };
 
 const WebView = NativeWebView as unknown as React.ComponentType<WebViewProps>;
 const ENABLE_E2E_WEBVIEW_INSPECTION =
@@ -51,17 +64,25 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-export function isTaskFilePreviewErrorRetryable(error: unknown): boolean {
+function errorStatus(error: unknown): number | null {
   if (typeof error === "object" && error !== null && "status" in error) {
     const status = (error as { status?: unknown }).status;
-    if (status === 400 || status === 413 || status === 415) return false;
+    if (typeof status === "number") return status;
   }
+  const match = errorMessage(error).match(/\((\d{3})\)|\bstatus\s+(\d{3})\b/i);
+  const status = Number(match?.[1] ?? match?.[2]);
+  return Number.isInteger(status) ? status : null;
+}
 
-  const message = errorMessage(error);
-  const statusMatch = message.match(/\((\d{3})\)|\bstatus\s+(\d{3})\b/i);
-  const status = Number(statusMatch?.[1] ?? statusMatch?.[2]);
+function isUnsupportedPreviewError(error: unknown): boolean {
+  return errorStatus(error) === 415 || /unsupported media type|not valid utf-?8/i.test(errorMessage(error));
+}
+
+export function isTaskFilePreviewErrorRetryable(error: unknown): boolean {
+  const status = errorStatus(error);
   if (status === 400 || status === 413 || status === 415) return false;
 
+  const message = errorMessage(error);
   return !(
     /file path must|file exceeds (?:the )?.*limit|file is not valid utf-?8/i.test(
       message
@@ -89,10 +110,20 @@ export function TaskFilePreview({
   path,
   initialLine,
   readFile,
+  downloadFile,
+  downloadScopeKey,
   onClose
 }: TaskFilePreviewProps) {
   const readFileRef = useRef(readFile);
   readFileRef.current = readFile;
+  const downloadFileRef = useRef(downloadFile);
+  downloadFileRef.current = downloadFile;
+  const pathRef = useRef(path);
+  pathRef.current = path;
+  const downloadScopeRef = useRef(downloadScopeKey);
+  downloadScopeRef.current = downloadScopeKey;
+  const downloadBusyRef = useRef(false);
+  const downloadOperationRef = useRef(0);
 
   const [retryGeneration, setRetryGeneration] = useState(0);
   const [loadState, setLoadState] = useState<LoadState>({
@@ -103,6 +134,9 @@ export function TaskFilePreview({
     key: modeKey(path, initialLine),
     mode: defaultMode(path, initialLine)
   }));
+  const [downloadState, setDownloadState] = useState<DownloadState>({
+    status: "idle"
+  });
 
   const visibleState: LoadState =
     loadState.requestPath === path
@@ -117,7 +151,8 @@ export function TaskFilePreview({
       : defaultMode(displayPath, initialLine);
   const markdownContent =
     visibleState.status === "content" &&
-    isMarkdownPath(visibleState.file.path)
+    isMarkdownPath(visibleState.file.path) &&
+    typeof visibleState.file.content === "string"
       ? visibleState.file.content
       : null;
   const preparedMarkdown = useMemo(
@@ -139,6 +174,7 @@ export function TaskFilePreview({
   const previewDocument = useMemo(
     () =>
       visibleState.status === "content"
+        && typeof visibleState.file.content === "string"
         ? buildTaskFilePreviewDocument({
             path: visibleState.file.path,
             content: visibleState.file.content,
@@ -153,6 +189,9 @@ export function TaskFilePreview({
   useEffect(() => {
     let active = true;
     const requestPath = path;
+    downloadOperationRef.current += 1;
+    downloadBusyRef.current = false;
+    setDownloadState({ status: "idle" });
     setLoadState({ requestPath, status: "loading" });
 
     let request: Promise<TaskFileContent>;
@@ -173,6 +212,7 @@ export function TaskFilePreview({
           error: errorMessage(error),
           requestPath,
           retryable: isTaskFilePreviewErrorRetryable(error),
+          unsupportedPreview: isUnsupportedPreviewError(error),
           status: "error"
         });
       }
@@ -180,8 +220,10 @@ export function TaskFilePreview({
 
     return () => {
       active = false;
+      downloadOperationRef.current += 1;
+      downloadBusyRef.current = false;
     };
-  }, [path, retryGeneration]);
+  }, [downloadScopeKey, path, retryGeneration]);
 
   const retry = () => {
     setLoadState({ requestPath: path, status: "loading" });
@@ -193,6 +235,66 @@ export function TaskFilePreview({
       key: currentModeKey,
       mode: mode === "rendered" ? "raw" : "rendered"
     });
+  };
+
+  const download = async () => {
+    const downloadable =
+      visibleState.status === "content" ||
+      (visibleState.status === "error" && visibleState.unsupportedPreview);
+    if (downloadBusyRef.current || !downloadable) return;
+    downloadBusyRef.current = true;
+    const operation = ++downloadOperationRef.current;
+    const requestPath = path;
+    const requestScope = downloadScopeKey;
+    const expectedPath =
+      visibleState.status === "content" ? visibleState.file.path : null;
+    setDownloadState({ status: "sharing" });
+    let failed = false;
+
+    try {
+      // Read original bytes at the action boundary. The explicit scope is
+      // stable across ordinary parent renders and changes only with the
+      // account/desktop/task route that owns the file.
+      const file = await downloadFileRef.current();
+      if (
+        operation !== downloadOperationRef.current ||
+        requestPath !== pathRef.current ||
+        requestScope !== downloadScopeRef.current
+      ) {
+        return;
+      }
+      if (expectedPath !== null && file.path !== expectedPath) {
+        throw new Error("The task workspace changed. Reopen this file and try again.");
+      }
+      if (
+        file.dataBase64 === undefined ||
+        !file.fileName ||
+        !file.mediaType
+      ) {
+        throw new Error(
+          "This desktop does not support original file downloads. Update the desktop and try again."
+        );
+      }
+      await shareTaskFile({
+        dataBase64: file.dataBase64,
+        fileName: file.fileName,
+        mediaType: file.mediaType
+      });
+    } catch (error) {
+      failed = true;
+      if (operation === downloadOperationRef.current) {
+        setDownloadState(
+          isTaskFileShareCancellation(error)
+            ? { status: "idle" }
+            : { error: taskFileDownloadErrorMessage(error), status: "error" }
+        );
+      }
+    } finally {
+      if (operation === downloadOperationRef.current) {
+        downloadBusyRef.current = false;
+        if (!failed) setDownloadState({ status: "idle" });
+      }
+    }
   };
 
   return (
@@ -214,23 +316,56 @@ export function TaskFilePreview({
               {displayPath}
             </Text>
           </View>
-          <Pressable
-            accessibilityRole="button"
-            hitSlop={10}
-            onPress={onClose}
-            style={styles.closeButton}
-            testID={MOBILE_E2E_IDS.taskFilePreviewClose}
-          >
-            <Text style={styles.closeText}>Close</Text>
-          </Pressable>
+          <View style={styles.headerActions}>
+            {visibleState.status === "content" ||
+            (visibleState.status === "error" && visibleState.unsupportedPreview) ? (
+              <Pressable
+                accessibilityRole="button"
+                accessibilityState={{
+                  busy: downloadState.status === "sharing",
+                  disabled: downloadState.status === "sharing"
+                }}
+                disabled={downloadState.status === "sharing"}
+                onPress={() => void download()}
+                style={styles.downloadButton}
+                testID={MOBILE_E2E_IDS.taskFilePreviewDownload}
+              >
+                {downloadState.status === "sharing" ? (
+                  <ActivityIndicator color="#FFFFFF" size="small" />
+                ) : null}
+                <Text style={styles.downloadText}>
+                  {downloadState.status === "sharing" ? "Preparing…" : "Download"}
+                </Text>
+              </Pressable>
+            ) : null}
+            <Pressable
+              accessibilityRole="button"
+              hitSlop={10}
+              onPress={onClose}
+              style={styles.closeButton}
+              testID={MOBILE_E2E_IDS.taskFilePreviewClose}
+            >
+              <Text style={styles.closeText}>Close</Text>
+            </Pressable>
+          </View>
         </View>
+
+        {downloadState.status === "error" ? (
+          <Text
+            selectable
+            style={styles.downloadError}
+            testID={MOBILE_E2E_IDS.taskFilePreviewDownloadError}
+          >
+            {downloadState.error}
+          </Text>
+        ) : null}
 
         {visibleState.status === "loading" ? (
           <View style={styles.centeredState}>
             <ActivityIndicator color="#73b7ff" size="large" />
             <Text style={styles.stateText}>Loading file…</Text>
           </View>
-        ) : visibleState.status === "error" ? (
+        ) : visibleState.status === "error" && !visibleState.unsupportedPreview ? (
           <View style={styles.centeredState}>
             <Text
               style={styles.errorTitle}
@@ -255,9 +390,26 @@ export function TaskFilePreview({
               </Pressable>
             ) : null}
           </View>
+        ) : visibleState.status === "error" ? (
+          <View style={styles.centeredState}>
+            <Text style={styles.errorTitle}>Preview unavailable</Text>
+            <Text style={styles.errorText}>
+              Download the original file to open it in another app.
+            </Text>
+            <Text selectable style={styles.errorText}>
+              {visibleState.error}
+            </Text>
+          </View>
         ) : (
           <View style={styles.content}>
-            {isMarkdownPath(visibleState.file.path) ? (
+            {typeof visibleState.file.content !== "string" ? (
+              <View style={styles.centeredState}>
+                <Text style={styles.errorTitle}>Preview unavailable</Text>
+                <Text style={styles.errorText}>
+                  Download the original file to open it in another app.
+                </Text>
+              </View>
+            ) : isMarkdownPath(visibleState.file.path) ? (
               <View style={styles.modeBar}>
                 <Text
                   style={styles.modeLabel}
@@ -282,31 +434,33 @@ export function TaskFilePreview({
                 ) : null}
               </View>
             ) : null}
-            <WebView
-              allowFileAccess={false}
-              allowFileAccessFromFileURLs={false}
-              allowUniversalAccessFromFileURLs={false}
-              allowsLinkPreview={false}
-              domStorageEnabled={false}
-              javaScriptCanOpenWindowsAutomatically={false}
-              javaScriptEnabled={mode === "raw" && hasPositiveLine(initialLine)}
-              mixedContentMode="never"
-              onShouldStartLoadWithRequest={(request: WebViewNavigation) =>
-                request.url === "about:blank"
-              }
-              originWhitelist={["about:blank"]}
-              setSupportMultipleWindows={false}
-              sharedCookiesEnabled={false}
-              source={{ html: previewDocument }}
-              style={styles.webView}
-              thirdPartyCookiesEnabled={false}
-              webviewDebuggingEnabled={ENABLE_E2E_WEBVIEW_INSPECTION}
-            />
+            {typeof visibleState.file.content === "string" ? (
+              <WebView
+                allowFileAccess={false}
+                allowFileAccessFromFileURLs={false}
+                allowUniversalAccessFromFileURLs={false}
+                allowsLinkPreview={false}
+                domStorageEnabled={false}
+                javaScriptCanOpenWindowsAutomatically={false}
+                javaScriptEnabled={mode === "raw" && hasPositiveLine(initialLine)}
+                mixedContentMode="never"
+                onShouldStartLoadWithRequest={(request: WebViewNavigation) =>
+                  request.url === "about:blank"
+                }
+                originWhitelist={["about:blank"]}
+                setSupportMultipleWindows={false}
+                sharedCookiesEnabled={false}
+                source={{ html: previewDocument }}
+                style={styles.webView}
+                thirdPartyCookiesEnabled={false}
+                webviewDebuggingEnabled={ENABLE_E2E_WEBVIEW_INSPECTION}
+              />
+            ) : null}
             {ENABLE_E2E_WEBVIEW_INSPECTION ? (
               <Text
                 accessibilityValue={{
                   text: JSON.stringify({
-                    content: visibleState.file.content,
+                    content: visibleState.file.content ?? null,
                     initialLine: initialLine ?? null,
                     mode,
                     path: visibleState.file.path
@@ -317,7 +471,7 @@ export function TaskFilePreview({
                 testID={MOBILE_E2E_IDS.taskFilePreviewInspection}
               >
                 {JSON.stringify({
-                  content: visibleState.file.content,
+                  content: visibleState.file.content ?? null,
                   initialLine: initialLine ?? null,
                   mode,
                   path: visibleState.file.path
@@ -355,6 +509,11 @@ const styles = StyleSheet.create({
   headerCopy: {
     flex: 1
   },
+  headerActions: {
+    alignItems: "center",
+    flexDirection: "row",
+    gap: 8
+  },
   title: {
     color: "#F4F8FF",
     fontSize: 17,
@@ -378,6 +537,31 @@ const styles = StyleSheet.create({
     color: "#D7E2F0",
     fontSize: 14,
     fontWeight: "600"
+  },
+  downloadButton: {
+    alignItems: "center",
+    backgroundColor: "#2D6EB8",
+    borderRadius: 9,
+    flexDirection: "row",
+    gap: 6,
+    minHeight: 38,
+    paddingHorizontal: 12,
+    paddingVertical: 8
+  },
+  downloadText: {
+    color: "#FFFFFF",
+    fontSize: 14,
+    fontWeight: "700"
+  },
+  downloadError: {
+    backgroundColor: "#391B22",
+    borderBottomColor: "#6D2B3C",
+    borderBottomWidth: 1,
+    color: "#FFD4DC",
+    fontSize: 13,
+    lineHeight: 18,
+    paddingHorizontal: 18,
+    paddingVertical: 10
   },
   centeredState: {
     alignItems: "center",

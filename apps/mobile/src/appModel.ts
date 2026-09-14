@@ -1069,6 +1069,7 @@ function createDisconnectedClient(): KannaClient {
     // No desktop is reachable, so nothing can receive a photo.
     supportsTaskInputAttachments: async () => false,
     readTaskFile: unavailable,
+    downloadTaskFile: unavailable,
     listTaskDirectory: unavailable,
     readTaskFileRange: unavailable,
     resolveTaskFileMentions: unavailable,
@@ -1336,6 +1337,8 @@ function createTrustedLanFallbackClient({
       (await resolveClient(desktopId)).supportsTaskInputAttachments(taskId),
     readTaskFile: async (taskId, path) =>
       (await resolveClient(desktopId)).readTaskFile(taskId, path),
+    downloadTaskFile: async (taskId, path) =>
+      (await resolveClient(desktopId)).downloadTaskFile(taskId, path),
     listTaskDirectory: async (taskId, path, showAllFiles, offset, filter) =>
       (await resolveClient(desktopId)).listTaskDirectory(taskId, path, showAllFiles, offset, filter),
     readTaskFileRange: async (taskId, path, startLine, lineCount, metadataOnly, startByte) =>
@@ -1575,6 +1578,7 @@ function createDelegatingClient(getClient: () => KannaClient): KannaClient {
     supportsTaskInputAttachments: (taskId) =>
       getClient().supportsTaskInputAttachments(taskId),
     readTaskFile: (taskId, path) => getClient().readTaskFile(taskId, path),
+    downloadTaskFile: (taskId, path) => getClient().downloadTaskFile(taskId, path),
     listTaskDirectory: (taskId, path, showAllFiles, offset, filter) => getClient().listTaskDirectory(taskId, path, showAllFiles, offset, filter),
     readTaskFileRange: (taskId, path, startLine, lineCount, metadataOnly, startByte) => getClient().readTaskFileRange(taskId, path, startLine, lineCount, metadataOnly, startByte),
     resolveTaskFileMentions: (taskId, mentions) =>

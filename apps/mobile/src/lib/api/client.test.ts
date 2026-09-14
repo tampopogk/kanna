@@ -113,6 +113,12 @@ describe("createKannaClient", () => {
         path: "docs/spec one.md",
         content: "# Spec"
       }),
+      downloadTaskFile: vi.fn().mockResolvedValue({
+        path: "assets/logo.PNG",
+        fileName: "logo.PNG",
+        mediaType: "image/png",
+        dataBase64: "iVBORw0KGgo="
+      }),
       resolveTaskFileMentions: vi.fn().mockResolvedValue({
         mentions: [{
           path: "TaskScreen.tsx",
@@ -203,6 +209,13 @@ describe("createKannaClient", () => {
     expect(transport.readTaskFile).toHaveBeenCalledWith(
       "task/read",
       "docs/spec one.md"
+    );
+    await expect(
+      client.downloadTaskFile("task/read", "assets/logo.PNG")
+    ).resolves.toMatchObject({ fileName: "logo.PNG", mediaType: "image/png" });
+    expect(transport.downloadTaskFile).toHaveBeenCalledWith(
+      "task/read",
+      "assets/logo.PNG"
     );
     await expect(
       client.resolveTaskFileMentions("task/read", [

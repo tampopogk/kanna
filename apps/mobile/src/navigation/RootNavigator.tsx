@@ -767,6 +767,11 @@ function TaskDetailRoute({
       ? state.pendingTaskAction.action
       : null);
   const previewTaskId = resolveDurableTaskId(state, routeTaskId);
+  const fileAccessScopeKey = [
+    state.auth.status === "signedIn" ? state.auth.user.uid : "signed-out",
+    task.ownerDesktopId ?? "local",
+    previewTaskId ?? routeTaskId
+  ].join("\0");
 
   return (
     <TaskScreen
@@ -835,6 +840,13 @@ function TaskDetailRoute({
           ? controller.readTaskFile(durableTaskId, path)
           : Promise.reject(new Error("Task creation is still in progress."));
       }}
+      onDownloadTaskFile={(path) => {
+        const durableTaskId = resolveDurableTaskId(state, routeTaskId);
+        return durableTaskId
+          ? controller.downloadTaskFile(durableTaskId, path)
+          : Promise.reject(new Error("Task creation is still in progress."));
+      }}
+      fileAccessScopeKey={fileAccessScopeKey}
       onListTaskDirectory={(path, showAllFiles, offset, filter) => {
         const durableTaskId = resolveDurableTaskId(state, routeTaskId);
         return durableTaskId

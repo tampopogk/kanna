@@ -939,6 +939,14 @@ export function createRemoteTransport({
           `/v1/tasks/${encodeURIComponent(localTaskId)}/files/content?path=${encodeURIComponent(path)}`,
         null
       ),
+    downloadTaskFile: (taskId: string, path: string) =>
+      requestTask<TaskFileContent>(
+        taskId,
+        "GET",
+        (localTaskId) =>
+          `/v1/tasks/${encodeURIComponent(localTaskId)}/files/download?path=${encodeURIComponent(path)}`,
+        null
+      ),
     listTaskDirectory: (taskId, path, showAllFiles = false, offset = 0, filter = "") =>
       requestTask<RepoDirectoryListing>(taskId, "GET", (localTaskId) => `/v1/tasks/${encodeURIComponent(localTaskId)}/browse?path=${encodeURIComponent(path)}&showAllFiles=${showAllFiles}&offset=${offset}&limit=60&filter=${encodeURIComponent(filter)}`, null),
     readTaskFileRange: (taskId, path, startLine, lineCount, metadataOnly = false, startByte = 0) =>

@@ -119,6 +119,7 @@ export interface MobileController {
   runMergeAgent(taskId: string): Promise<string | null>;
   advanceDesktopTaskStage(taskId: string): Promise<string | null>;
   readTaskFile(taskId: string, path: string): Promise<TaskFileContent>;
+  downloadTaskFile(taskId: string, path: string): Promise<TaskFileContent>;
   listTaskDirectory(taskId: string, path: string, showAllFiles?: boolean, offset?: number, filter?: string): Promise<RepoDirectoryListing>;
   readTaskFileRange(taskId: string, path: string, startLine: number, lineCount: number, metadataOnly?: boolean, startByte?: number): Promise<RepoFileRange>;
   resolveTaskFileMentions(
@@ -3745,6 +3746,10 @@ export function createMobileController(
 
     readTaskFile(taskId, path) {
       return client.readTaskFile(taskId, path);
+    },
+
+    downloadTaskFile(taskId, path) {
+      return client.downloadTaskFile(taskId, path);
     },
 
     listTaskDirectory(taskId, path, showAllFiles, offset, filter) {

@@ -243,6 +243,7 @@ export interface KannaTransport {
    */
   supportsTaskInputAttachments(taskId: string): Promise<boolean>;
   readTaskFile(taskId: string, path: string): Promise<TaskFileContent>;
+  downloadTaskFile(taskId: string, path: string): Promise<TaskFileContent>;
   listTaskDirectory(taskId: string, path: string, showAllFiles?: boolean, offset?: number, filter?: string): Promise<RepoDirectoryListing>;
   readTaskFileRange(taskId: string, path: string, startLine: number, lineCount: number, metadataOnly?: boolean, startByte?: number): Promise<RepoFileRange>;
   resolveTaskFileMentions(
@@ -325,6 +326,7 @@ export interface KannaClient {
    */
   supportsTaskInputAttachments(taskId: string): Promise<boolean>;
   readTaskFile(taskId: string, path: string): Promise<TaskFileContent>;
+  downloadTaskFile(taskId: string, path: string): Promise<TaskFileContent>;
   listTaskDirectory(taskId: string, path: string, showAllFiles?: boolean, offset?: number, filter?: string): Promise<RepoDirectoryListing>;
   readTaskFileRange(taskId: string, path: string, startLine: number, lineCount: number, metadataOnly?: boolean, startByte?: number): Promise<RepoFileRange>;
   resolveTaskFileMentions(
@@ -469,6 +471,7 @@ export function createKannaClient(transport: KannaTransport): KannaClient {
     supportsTaskInputAttachments: (taskId) =>
       transport.supportsTaskInputAttachments(taskId),
     readTaskFile: (taskId, path) => transport.readTaskFile(taskId, path),
+    downloadTaskFile: (taskId, path) => transport.downloadTaskFile(taskId, path),
     listTaskDirectory: (taskId, path, showAllFiles, offset, filter) => transport.listTaskDirectory(taskId, path, showAllFiles, offset, filter),
     readTaskFileRange: (taskId, path, startLine, lineCount, metadataOnly, startByte) => transport.readTaskFileRange(taskId, path, startLine, lineCount, metadataOnly, startByte),
     resolveTaskFileMentions: (taskId, mentions) =>

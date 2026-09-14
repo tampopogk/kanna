@@ -5748,6 +5748,39 @@ impl TaskFileRouteFixture {
             .unwrap()
     }
 
+    async fn download(&self, task_id: &str, encoded_path: &str) -> axum::response::Response {
+        self.app
+            .clone()
+            .oneshot(
+                Request::get(format!(
+                    "/v1/tasks/{task_id}/files/download?path={encoded_path}"
+                ))
+                .extension(AuthenticatedTaskFileAccess)
+                .body(Body::empty())
+                .unwrap(),
+            )
+            .await
+            .unwrap()
+    }
+
+    async fn download_unauthenticated(
+        &self,
+        task_id: &str,
+        encoded_path: &str,
+    ) -> axum::response::Response {
+        self.app
+            .clone()
+            .oneshot(
+                Request::get(format!(
+                    "/v1/tasks/{task_id}/files/download?path={encoded_path}"
+                ))
+                .body(Body::empty())
+                .unwrap(),
+            )
+            .await
+            .unwrap()
+    }
+
     async fn get_unauthenticated(
         &self,
         task_id: &str,
@@ -5794,6 +5827,20 @@ impl TaskFileRouteFixture {
             Arc::clone(&self.state),
             "GET",
             &format!("/v1/tasks/{task_id}/files/content?path={encoded_path}"),
+            serde_json::Value::Null,
+        )
+        .await
+    }
+
+    async fn download_through_authenticated_relay(
+        &self,
+        task_id: &str,
+        encoded_path: &str,
+    ) -> crate::http_api::HttpInvokeResponse {
+        crate::http_api::dispatch_authenticated_http_invoke(
+            Arc::clone(&self.state),
+            "GET",
+            &format!("/v1/tasks/{task_id}/files/download?path={encoded_path}"),
             serde_json::Value::Null,
         )
         .await
@@ -6267,6 +6314,35 @@ async fn task_file_route_allows_authenticated_relay_dispatch() {
 }
 
 #[tokio::test]
+async fn task_file_route_preserves_png_bytes_through_authenticated_relay_dispatch() {
+    use base64::Engine as _;
+    use sha2::Digest as _;
+
+    let fixture = TaskFileRouteFixture::new();
+    let png = [
+        0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0xff, 0x80, 0x42,
+    ];
+    fixture.write("assets/kanna-logo.PNG", &png);
+
+    let response = fixture
+        .download_through_authenticated_relay("task-file", "assets%2Fkanna-logo.PNG")
+        .await;
+
+    assert_eq!(response.status, StatusCode::OK.as_u16());
+    assert_eq!(response.error, None);
+    let body = response.body.expect("authenticated PNG response body");
+    assert_eq!(body["path"], "assets/kanna-logo.PNG");
+    assert_eq!(body["fileName"], "kanna-logo.PNG");
+    assert_eq!(body["mediaType"], "image/png");
+    assert!(body.get("content").is_none());
+    let decoded = base64::engine::general_purpose::STANDARD
+        .decode(body["dataBase64"].as_str().expect("base64 response bytes"))
+        .expect("valid response base64");
+    assert_eq!(sha2::Sha256::digest(&decoded), sha2::Sha256::digest(png));
+    assert_eq!(decoded, png);
+}
+
+#[tokio::test]
 async fn task_file_route_reads_from_newest_task_worktree_when_timestamps_tie() {
     let fixture = TaskFileRouteFixture::new();
     fixture.write("docs/spec.md", b"stale workspace");
@@ -6423,6 +6499,20 @@ async fn task_file_route_maps_non_utf8_file_to_unsupported_media_type() {
     assert!(task_file_response_text(response)
         .await
         .contains("valid UTF-8"));
+}
+
+#[tokio::test]
+async fn task_file_download_route_requires_authenticated_file_access() {
+    let fixture = TaskFileRouteFixture::new();
+    fixture.write("logo.png", &[0x89, b'P', b'N', b'G']);
+
+    let unauthenticated = fixture
+        .download_unauthenticated("task-file", "logo.png")
+        .await;
+    assert_eq!(unauthenticated.status(), StatusCode::UNAUTHORIZED);
+
+    let authenticated = fixture.download("task-file", "logo.png").await;
+    assert_eq!(authenticated.status(), StatusCode::OK);
 }
 
 #[tokio::test]

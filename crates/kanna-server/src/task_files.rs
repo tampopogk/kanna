@@ -1,4 +1,5 @@
 use crate::db::Db;
+use base64::Engine as _;
 use std::collections::HashMap;
 use std::fmt;
 use std::io::Read;
@@ -16,6 +17,17 @@ const MAX_TASK_FILE_WALK_ENTRIES: usize = 50_000;
 pub struct TaskFileContent {
     pub path: String,
     pub content: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskFileTransferContent {
+    pub path: String,
+    pub file_name: String,
+    pub media_type: String,
+    pub data_base64: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub content: Option<String>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
@@ -131,6 +143,40 @@ pub fn read_task_file(
     task_or_branch_id: &str,
     requested_path: &str,
 ) -> Result<TaskFileContent, TaskFileError> {
+    let (path, bytes) = read_bounded_task_file(db, task_or_branch_id, requested_path)?;
+    let content = String::from_utf8(bytes).map_err(|_| TaskFileError::UnsupportedContent)?;
+    Ok(TaskFileContent { path, content })
+}
+
+pub fn read_task_file_transfer(
+    db: &Db,
+    task_or_branch_id: &str,
+    requested_path: &str,
+) -> Result<TaskFileTransferContent, TaskFileError> {
+    let (path, bytes) = read_bounded_task_file(db, task_or_branch_id, requested_path)?;
+    let file_name = Path::new(&path)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(disallowed_path)?
+        .to_string();
+    let media_type = task_file_media_type(&path).to_string();
+    let content = String::from_utf8(bytes.clone()).ok();
+    let data_base64 = base64::engine::general_purpose::STANDARD.encode(bytes);
+
+    Ok(TaskFileTransferContent {
+        path,
+        file_name,
+        media_type,
+        data_base64,
+        content,
+    })
+}
+
+fn read_bounded_task_file(
+    db: &Db,
+    task_or_branch_id: &str,
+    requested_path: &str,
+) -> Result<(String, Vec<u8>), TaskFileError> {
     let (path, mut file) = open_validated_task_file(db, task_or_branch_id, requested_path)?;
     let metadata = file.metadata().map_err(|error| {
         TaskFileError::Internal(format!("failed to inspect task file: {error}"))
@@ -148,9 +194,56 @@ pub fn read_task_file(
         return Err(TaskFileError::TooLarge);
     }
 
-    let content = String::from_utf8(bytes).map_err(|_| TaskFileError::UnsupportedContent)?;
+    Ok((path, bytes))
+}
 
-    Ok(TaskFileContent { path, content })
+fn task_file_media_type(path: &str) -> &'static str {
+    let extension = Path::new(path)
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .unwrap_or_default();
+    if extension.eq_ignore_ascii_case("png") {
+        "image/png"
+    } else if extension.eq_ignore_ascii_case("jpg") || extension.eq_ignore_ascii_case("jpeg") {
+        "image/jpeg"
+    } else if extension.eq_ignore_ascii_case("gif") {
+        "image/gif"
+    } else if extension.eq_ignore_ascii_case("webp") {
+        "image/webp"
+    } else if extension.eq_ignore_ascii_case("svg") {
+        "image/svg+xml"
+    } else if extension.eq_ignore_ascii_case("pdf") {
+        "application/pdf"
+    } else if extension.eq_ignore_ascii_case("zip") {
+        "application/zip"
+    } else if extension.eq_ignore_ascii_case("json") {
+        "application/json"
+    } else if extension.eq_ignore_ascii_case("html") || extension.eq_ignore_ascii_case("htm") {
+        "text/html"
+    } else if extension.eq_ignore_ascii_case("css") {
+        "text/css"
+    } else if extension.eq_ignore_ascii_case("csv") {
+        "text/csv"
+    } else if extension.eq_ignore_ascii_case("js")
+        || extension.eq_ignore_ascii_case("mjs")
+        || extension.eq_ignore_ascii_case("cjs")
+    {
+        "text/javascript"
+    } else if extension.eq_ignore_ascii_case("md")
+        || extension.eq_ignore_ascii_case("txt")
+        || extension.eq_ignore_ascii_case("log")
+        || extension.eq_ignore_ascii_case("rs")
+        || extension.eq_ignore_ascii_case("ts")
+        || extension.eq_ignore_ascii_case("tsx")
+        || extension.eq_ignore_ascii_case("jsx")
+        || extension.eq_ignore_ascii_case("toml")
+        || extension.eq_ignore_ascii_case("yaml")
+        || extension.eq_ignore_ascii_case("yml")
+    {
+        "text/plain"
+    } else {
+        "application/octet-stream"
+    }
 }
 
 pub fn resolve_task_file_mentions(
@@ -538,9 +631,9 @@ mod tests {
     #[cfg(unix)]
     use super::{open_task_file_from_root, open_task_workspace_root};
     use super::{
-        read_task_file, resolve_task_file_mentions, resolve_task_file_mentions_with_limit,
-        TaskFileError, TaskFileMatch, TaskFileMention, MAX_TASK_FILE_BYTES, MAX_TASK_FILE_MENTIONS,
-        MAX_TASK_FILE_MENTION_MATCHES,
+        read_task_file, read_task_file_transfer, resolve_task_file_mentions,
+        resolve_task_file_mentions_with_limit, TaskFileError, TaskFileMatch, TaskFileMention,
+        MAX_TASK_FILE_BYTES, MAX_TASK_FILE_MENTIONS, MAX_TASK_FILE_MENTION_MATCHES,
     };
     use crate::db::Db;
     use std::path::{Path, PathBuf};
@@ -624,6 +717,12 @@ mod tests {
 
         assert_eq!(result.path, "docs/spec.md");
         assert_eq!(result.content, "# Spec\n");
+
+        let transfer = read_task_file_transfer(&fixture.db, "task-1", "docs/spec.md").unwrap();
+        assert_eq!(transfer.file_name, "spec.md");
+        assert_eq!(transfer.media_type, "text/plain");
+        assert_eq!(transfer.content.as_deref(), Some("# Spec\n"));
+        assert_eq!(transfer.data_base64, "IyBTcGVjCg==");
     }
 
     #[test]
@@ -1105,14 +1204,21 @@ mod tests {
     }
 
     #[test]
-    fn rejects_invalid_utf8() {
+    fn returns_original_png_bytes_when_text_preview_is_unsupported() {
         let fixture = TaskFileFixture::new();
-        fixture.write("binary.md", &[0xff, 0xfe]);
+        let png = [0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a, 0xff];
+        fixture.write("assets/logo.PNG", &png);
 
         assert_eq!(
-            read_task_file(&fixture.db, "task-1", "binary.md"),
+            read_task_file(&fixture.db, "task-1", "assets/logo.PNG"),
             Err(TaskFileError::UnsupportedContent)
         );
+        let result = read_task_file_transfer(&fixture.db, "task-1", "assets/logo.PNG").unwrap();
+        assert_eq!(result.path, "assets/logo.PNG");
+        assert_eq!(result.file_name, "logo.PNG");
+        assert_eq!(result.media_type, "image/png");
+        assert_eq!(result.content, None);
+        assert_eq!(result.data_base64, "iVBORw0KGgr/");
     }
 
     #[test]

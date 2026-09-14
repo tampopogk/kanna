@@ -463,6 +463,71 @@ describe("createLanTransport", () => {
     );
   });
 
+  it("downloads original task file bytes over the distinct authenticated route", async () => {
+    const original = {
+      path: "assets/logo.PNG",
+      fileName: "logo.PNG",
+      mediaType: "image/png",
+      dataBase64: "iVBORw0KGgo="
+    };
+    const fetchImpl = vi.fn<FetchLike>().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => original
+    });
+    const transport = createLanTransport(
+      "http://192.168.1.20:48120",
+      fetchImpl,
+      undefined,
+      { deviceCredentials: { deviceId: "phone-1", deviceSecret: "lan-secret" } }
+    );
+
+    await expect(
+      transport.downloadTaskFile("task/read", "assets/logo.PNG")
+    ).resolves.toEqual(original);
+    expect(fetchImpl).toHaveBeenCalledWith(
+      "http://192.168.1.20:48120/v1/tasks/task%2Fread/files/download?path=assets%2Flogo.PNG",
+      {
+        headers: {
+          "X-Kanna-Device-Id": "phone-1",
+          "X-Kanna-Device-Secret": "lan-secret"
+        }
+      }
+    );
+  });
+
+  it.each([401, 404, 413])(
+    "preserves download refusal status %s without fallback",
+    async (status) => {
+      const fetchImpl = vi.fn<FetchLike>().mockResolvedValue({
+        ok: false,
+        status,
+        text: async () => "refused"
+      });
+      const transport = createLanTransport(
+        "http://192.168.1.20:48120",
+        fetchImpl,
+        undefined,
+        { deviceCredentials: { deviceId: "phone-1", deviceSecret: "lan-secret" } }
+      );
+
+      await expect(
+        transport.downloadTaskFile("task/read", "assets/logo.PNG")
+      ).rejects.toMatchObject({ status });
+      expect(fetchImpl).toHaveBeenCalledOnce();
+    }
+  );
+
+  it("fails closed instead of downloading original bytes over unauthenticated LAN", async () => {
+    const fetchImpl = vi.fn<FetchLike>();
+    const transport = createLanTransport("http://127.0.0.1:48120", fetchImpl);
+
+    await expect(
+      transport.downloadTaskFile("task/read", "assets/logo.PNG")
+    ).rejects.toThrow(/paired device|authenticated relay/i);
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
   it("resolves task file mentions over LAN with paired device credentials", async () => {
     const resolution = {
       mentions: [{

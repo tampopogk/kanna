@@ -2731,14 +2731,23 @@ makes subsequent requests follow the task into its newly recorded worktree.
 for skeleton sizing, while content ranges contain text for the same viewport.
 The server caps directory pages, line counts, and returned text bytes regardless
 of caller values. Binary files are identified without returning their contents.
+`GET /v1/tasks/{task_id}/files/download` reads at most 1 MiB from one securely
+resolved regular file and returns its original bytes as base64 together with
+the resolved basename and MIME type. Mobile keeps text preview reads on the
+separate authenticated `/files/content` route so a newer native client retains
+text previews with desktops that predate downloads; it never reconstructs
+original bytes from that preview response. The client writes decoded download
+bytes to an app-owned temporary file only for the lifetime of the native
+save/share sheet. It never shares the authenticated LAN or relay URL.
 
-Both routes require either a paired LAN device or an authenticated relay
-invoke. Relay invokes remain behind `remote_task_control`; LAN access is free.
+All task browse, preview-content, and download routes require either a paired
+LAN device or an authenticated relay invoke. Relay invokes remain behind
+`remote_task_control`; LAN access is free.
 The relay's byte odometer attributes browse invokes and responses to the
 dedicated `fileBrowse` class. Every requested root and target is canonicalized,
 and a target whose resolved path leaves the worktree root is rejected, including
-symlink escapes. The surface is read-only: there are no write, delete, download,
-git, or search-in-files operations.
+symlink escapes. The surface is read-only: there are no write, delete, git, or
+search-in-files operations.
 
 ### Remote task commit graph
 

@@ -317,6 +317,16 @@ export function createLanTransport(
         `/v1/tasks/${encodeURIComponent(taskId)}/files/content?path=${encodeURIComponent(path)}`
       );
     },
+    downloadTaskFile: async (taskId: string, path: string): Promise<TaskFileContent> => {
+      if (!deviceCredentials) {
+        throw new Error(
+          "Task file download requires a paired device or an authenticated relay connection."
+        );
+      }
+      return request<TaskFileContent>(
+        `/v1/tasks/${encodeURIComponent(taskId)}/files/download?path=${encodeURIComponent(path)}`
+      );
+    },
     listTaskDirectory: (taskId, path, showAllFiles = false, offset = 0, filter = "") => request<RepoDirectoryListing>(`/v1/tasks/${encodeURIComponent(taskId)}/browse?path=${encodeURIComponent(path)}&showAllFiles=${showAllFiles}&offset=${offset}&limit=60&filter=${encodeURIComponent(filter)}`),
     readTaskFileRange: (taskId, path, startLine, lineCount, metadataOnly = false, startByte = 0) => request<RepoFileRange>(`/v1/tasks/${encodeURIComponent(taskId)}/browse/content?path=${encodeURIComponent(path)}&startLine=${startLine}&startByte=${startByte}&lineCount=${lineCount}&metadataOnly=${metadataOnly}`),
     resolveTaskFileMentions: async (
