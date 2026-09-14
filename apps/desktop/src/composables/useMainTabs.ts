@@ -84,6 +84,8 @@ export interface MainTab extends MainTabDescriptor {
 interface MainTabScopeState {
   identity?: string;
   nextPaneId?: number;
+  /** Reserved for this incarnation even after a restored pane is removed. */
+  restoredPaneIds?: Set<string>;
   layout?: TaskPaneLayout;
   focusedPane?: string;
   referenceId?: string;
@@ -392,7 +394,7 @@ export function useMainTabs({ scopeKey, onTabClosed }: UseMainTabsOptions) {
     if (!pane) return;
     if (tabId && !state.tabs.some(tab => tab.id === tabId)) return;
     let n = state.nextPaneId ?? 1;
-    while (leaves.some(pane => pane.id === `pane-${n}`)) n++;
+    while (state.restoredPaneIds?.has(`pane-${n}`) || leaves.some(pane => pane.id === `pane-${n}`)) n++;
     state.nextPaneId = n + 1;
     const moving = tabId ?? (pane.tabs.length > 1 && pane.active !== AGENT_TAB_ID ? pane.active : '');
     if (moving) for (const source of leaves) {
@@ -629,6 +631,7 @@ export function useMainTabs({ scopeKey, onTabClosed }: UseMainTabsOptions) {
         ?? (active?.kind !== "agent" ? active?.id : undefined);
       state.split = stored.split;
       state.layout = restorePaneLayout(stored.layout, state.tabs.map(tab => tab.id), state.activeId);
+      state.restoredPaneIds = new Set(paneLeaves(state.layout).map(pane => pane.id));
       const activePane = paneLeaves(state.layout).find(pane => pane.tabs.includes(state.activeId));
       if (activePane) { activePane.active = state.activeId; state.focusedPane = activePane.id; }
       scopes[key] = state;

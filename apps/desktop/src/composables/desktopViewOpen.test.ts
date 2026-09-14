@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import type { PersistedMainTabs } from "./useMainTabs";
 
 import {
   mainTabDescriptorForCommand,
@@ -175,12 +176,13 @@ describe("performDesktopViewOpen", () => {
 // Exercise the command parser and production pane controller together; view
 // readiness is held explicitly so a queued/loading view cannot be acknowledged.
 describe("workspace command/controller contract", () => {
-  async function fixture() {
+  async function fixture(persisted?: PersistedMainTabs) {
     const { computed, ref, nextTick } = await import("vue");
     const { useMainTabs } = await import("./useMainTabs");
     const selected = ref("task-a");
     const branch = ref("task-task-a");
     const tabs = useMainTabs({ scopeKey: computed(() => `item:${selected.value}`) });
+    tabs.restoreScopes(persisted ?? null);
     const dependencies = deps({
       selectTask: async () => { selected.value = "task-a"; },
       openTab: (key, descriptor) => tabs.openTabInScope(key, descriptor),
@@ -226,6 +228,53 @@ describe("workspace command/controller contract", () => {
     expect(resplit.paneId).not.toBe(second.id); // stale pane ids never alias a replacement
     expect(tabs.tabs.value.filter(tab => tab.id === file.id)).toHaveLength(1);
     expect(tabs.tabs.value.find(tab => tab.id === file.id)).toBe(file);
+  });
+
+  it.each(["open", "move"] as const)("reserves restored pane IDs before closure and refuses stale %s without mutation", async operation => {
+    const saved: PersistedMainTabs = {
+      version: 1,
+      scopes: { "item:task-a": {
+        tabs: [{ kind: "file", filePath: "kept.md" }], activeId: "agent",
+        layout: { kind: "split", axis: "horizontal", ratio: .5,
+          first: { kind: "pane", id: "pane-1", tabs: ["agent"], active: "agent" },
+          second: { kind: "pane", id: "pane-2", tabs: ["file:kept.md"], active: "file:kept.md" },
+        },
+      } },
+    };
+    const { tabs, run, address } = await fixture(saved);
+    const inspected = (await run({ operation: "inspect" })).workspace!;
+    const staleAddress = { ...address, paneId: inspected.panes[1].id };
+    tabs.closePane(staleAddress.paneId);
+    const replacement = await run({ operation: "split", direction: "vertical", ...address });
+    expect(replacement.opened).toBe(true);
+    const before = (await run({ operation: "inspect" })).workspace!;
+    const existingTab = tabs.tabs.value.find(tab => tab.id === "file:kept.md");
+    const outcome = await run(operation === "open"
+      ? { view: "file", target: { path: "AGENTS.md" }, ...staleAddress }
+      : { operation: "move", tabId: "file:kept.md", ...staleAddress });
+    expect(outcome).toMatchObject({ opened: false, code: "pane_not_found" });
+    expect(replacement.paneId).not.toBe(staleAddress.paneId);
+    expect((await run({ operation: "inspect" })).workspace).toEqual(before);
+    expect(tabs.tabs.value.find(tab => tab.id === "file:kept.md")).toBe(existingTab);
+
+    // The new destination still opens/selects normally and moves the same tab.
+    const opened = await run({ view: "file", target: { path: "AGENTS.md" }, ...address, paneId: replacement.paneId });
+    expect(opened).toMatchObject({ opened: true, paneId: replacement.paneId, tabId: "file:AGENTS.md" });
+    expect(tabs.activeTabId.value).toBe(opened.tabId);
+    const file = tabs.tabs.value.find(tab => tab.id === opened.tabId);
+    expect(await run({ operation: "move", tabId: opened.tabId, ...address }))
+      .toMatchObject({ opened: true, paneId: address.paneId, tabId: opened.tabId });
+    expect(tabs.tabs.value.find(tab => tab.id === opened.tabId)).toBe(file);
+    expect(tabs.activeTabId.value).toBe(opened.tabId);
+
+    // Reservations are local to a renderer incarnation; restoring persisted
+    // state must still issue a fresh workspace fence and reject old addresses.
+    const reloaded = await fixture(JSON.parse(JSON.stringify(tabs.snapshotScopes())));
+    expect(reloaded.address.workspaceId).not.toBe(address.workspaceId);
+    const reloadBefore = (await reloaded.run({ operation: "inspect" })).workspace;
+    expect(await reloaded.run({ operation: "move", tabId: "file:kept.md", ...address }))
+      .toMatchObject({ opened: false, code: "stale_workspace" });
+    expect((await reloaded.run({ operation: "inspect" })).workspace).toEqual(reloadBefore);
   });
 
   it("rejects missing/stale/cross-task identities before changing tabs", async () => {
