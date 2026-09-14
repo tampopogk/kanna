@@ -23,7 +23,7 @@ import {
   FIXTURE_ENVIRONMENT,
 } from "../src/billing/fixtures.js";
 import { seedBillingFixtures } from "../src/billing/seed.js";
-import type { StripeCheckoutGateway } from "../src/billing/stripeGateway.js";
+import type { StripeCheckoutGateway, StripeCheckoutSessionInput, StripeCheckoutSessionState, StripeCustomerInput } from "../src/billing/stripeGateway.js";
 import { signStripePayload } from "../src/billing/stripeSignature.js";
 import { handleStripeWebhook } from "../src/billing/stripeWebhook.js";
 import {
@@ -100,26 +100,66 @@ async function readDoc<T>(db: Firestore, path: string): Promise<T | null> {
 }
 
 interface StubGateway extends StripeCheckoutGateway {
-  calls: { customers: number; sessions: unknown[]; closedSessions: string[] };
+  calls: { customers: number; sessions: StripeCheckoutSessionInput[]; closedSessions: string[] };
+  sessions: Map<string, StripeCheckoutSessionState>;
+  customerRequests: StripeCustomerInput[];
+  sessionRequests: StripeCheckoutSessionInput[];
 }
 
 function stubGateway(): StubGateway {
-  const calls = { customers: 0, sessions: [] as unknown[], closedSessions: [] as string[] };
+  const calls = { customers: 0, sessions: [] as StripeCheckoutSessionInput[], closedSessions: [] as string[] };
+  const customerKeys = new Map<string, string>();
+  const sessionKeys = new Map<string, string>();
+  const sessions = new Map<string, StripeCheckoutSessionState>();
+  const customerRequests: StripeCustomerInput[] = [];
+  const sessionRequests: StripeCheckoutSessionInput[] = [];
   return {
-    calls,
-    async createCustomer() {
-      calls.customers += 1;
-      return { id: "cus_TestSlice1" };
+    calls, sessions, customerRequests, sessionRequests,
+    async createCustomer(input) {
+      customerRequests.push(input);
+      let id = customerKeys.get(input.idempotencyKey);
+      if (!id) {
+        calls.customers += 1;
+        id = calls.customers === 1 ? "cus_TestSlice1" : `cus_${calls.customers}`;
+        customerKeys.set(input.idempotencyKey, id);
+      }
+      return { id };
     },
     async resolvePriceId(lookupKey) {
       return `price_for_${lookupKey}`;
     },
     async createCheckoutSession(input) {
-      calls.sessions.push(input);
-      return { id: "cs_test_TestSlice1", url: "https://checkout.stripe.com/c/pay/cs_test" };
+      sessionRequests.push(input);
+      let id = sessionKeys.get(input.idempotencyKey);
+      if (!id) {
+        calls.sessions.push(input);
+        id = calls.sessions.length === 1 ? "cs_test_TestSlice1" : `cs_test_${calls.sessions.length}`;
+        sessionKeys.set(input.idempotencyKey, id);
+        sessions.set(id, {
+          id, url: `https://checkout.stripe.com/c/pay/${id}`, status: "open", mode: "subscription",
+          uid: input.uid, customerId: input.customerId, subscriptionStatus: null,
+        });
+      }
+      const session = sessions.get(id);
+      if (!session) throw new Error("unknown fixture session");
+      return { id, url: session.url };
+    },
+    async retrieveCheckoutSession(id) {
+      const session = sessions.get(id);
+      if (!session) throw new Error("unknown fixture session");
+      return { ...session };
+    },
+    async listOpenCheckoutSessions(customerId) {
+      return [...sessions.values()].filter((session) => session.customerId === customerId && session.status === "open").map((session) => ({ ...session }));
+    },
+    async hasBlockingSubscription(customerId) {
+      return [...sessions.values()].some((session) => session.customerId === customerId
+        && session.subscriptionStatus && !["canceled", "incomplete_expired"].includes(session.subscriptionStatus));
     },
     async closeCheckoutSession(sessionId) {
       calls.closedSessions.push(sessionId);
+      const session = sessions.get(sessionId);
+      if (session) sessions.set(sessionId, { ...session, status: "expired", subscriptionStatus: "canceled" });
     },
   };
 }
@@ -471,7 +511,7 @@ describeWithEmulator("billing backend against the Firestore emulator", () => {
 
     it("creates a customer stamped with the uid and records the reverse map", async () => {
       const gateway = stubGateway();
-      const result = await createCheckoutSession({ plan: "monthly" }, verified, deps(gateway));
+      const result = await createCheckoutSession({ plan: "monthly", uid: "victim", customerId: "cus_victim" }, verified, deps(gateway));
 
       expect(result).toMatchObject({
         sessionId: "cs_test_TestSlice1",
@@ -508,6 +548,227 @@ describeWithEmulator("billing backend against the Firestore emulator", () => {
       await createCheckoutSession({ plan: "monthly" }, verified, deps(gateway));
       await createCheckoutSession({ plan: "monthly" }, verified, deps(gateway));
       expect(gateway.calls.customers).toBe(1);
+    });
+
+    it("gives repeated tabs and concurrent callers only one payable session", async () => {
+      const gateway = stubGateway();
+      const results = await Promise.all(Array.from({ length: 4 }, () =>
+        createCheckoutSession({ plan: "monthly" }, verified, deps(gateway))));
+      const again = await createCheckoutSession({ plan: "monthly" }, verified, deps(gateway));
+      expect(new Set([...results, again].map((result) => result.sessionId)).size).toBe(1);
+      expect(gateway.calls.customers).toBe(1);
+      expect(gateway.calls.sessions).toHaveLength(1);
+      expect([...gateway.sessions.values()].filter((session) => session.status === "open")).toHaveLength(1);
+      expect(await readDoc(db, accountCheckoutPath(CHECKOUT_UID))).toMatchObject({
+        creating: false, sessionIds: [again.sessionId], attempt: { sessionId: again.sessionId },
+      });
+    });
+
+    it("blocks a completed session before its delayed webhook, even when payment is still pending", async () => {
+      const gateway = stubGateway();
+      const first = await createCheckoutSession({ plan: "monthly" }, verified, deps(gateway));
+      const session = await gateway.retrieveCheckoutSession(first.sessionId);
+      gateway.sessions.set(first.sessionId, { ...session, status: "complete", subscriptionStatus: "incomplete", url: null });
+      expect(await readDoc(db, billingSourcePath(CHECKOUT_UID, "stripe"))).toBeNull();
+      await expect(createCheckoutSession({ plan: "monthly" }, verified, deps(gateway)))
+        .rejects.toMatchObject({ reason: "already_subscribed" });
+      await deliver(db, "checkout.session.completed.json");
+      await expect(createCheckoutSession({ plan: "monthly" }, verified, deps(gateway)))
+        .rejects.toMatchObject({ reason: "already_subscribed" });
+      expect(gateway.calls.sessions).toHaveLength(1);
+      expect(gateway.calls.closedSessions).toEqual([]);
+    });
+
+    it.each(["expired", "canceled"])("replaces only a remotely retired %s session under concurrent retry", async (retired) => {
+      const gateway = stubGateway();
+      const first = await createCheckoutSession({ plan: "monthly" }, verified, deps(gateway));
+      const session = await gateway.retrieveCheckoutSession(first.sessionId);
+      gateway.sessions.set(first.sessionId, { ...session,
+        status: retired === "expired" ? "expired" : "complete",
+        subscriptionStatus: retired === "canceled" ? "canceled" : null,
+      });
+      const results = await Promise.all(Array.from({ length: 3 }, () =>
+        createCheckoutSession({ plan: "monthly" }, verified, deps(gateway))));
+      expect(new Set(results.map((result) => result.sessionId)).size).toBe(1);
+      expect(results[0]?.sessionId).not.toBe(first.sessionId);
+      expect(gateway.calls.sessions).toHaveLength(2);
+      expect(gateway.calls.customers).toBe(1);
+      expect(gateway.calls.closedSessions).toEqual([]);
+    });
+
+    it("recovers an uncertain customer response with the original key and frozen email", async () => {
+      const gateway = stubGateway();
+      const create = gateway.createCustomer.bind(gateway);
+      gateway.createCustomer = vi.fn(async (input) => {
+        await create(input);
+        throw new Error("connection lost after customer creation");
+      });
+      await expect(createCheckoutSession({ plan: "monthly" }, verified, deps(gateway))).rejects.toMatchObject({ reason: "stripe_error" });
+      await expect(firestoreAccountDeletionStore(db).markAccountDeletionStarted(CHECKOUT_UID))
+        .rejects.toMatchObject({ reason: "checkout_in_progress" });
+      gateway.createCustomer = create;
+      await createCheckoutSession({ plan: "monthly" }, { ...verified, email: "changed@example.test" }, deps(gateway));
+      expect(gateway.calls.customers).toBe(1);
+      expect(gateway.customerRequests).toHaveLength(2);
+      expect(gateway.customerRequests[0]).toEqual(gateway.customerRequests[1]);
+      expect(gateway.calls.sessions).toHaveLength(1);
+    });
+
+    it("recovers an uncertain session response after a restart without changing price, URLs or key", async () => {
+      const gateway = stubGateway();
+      const create = gateway.createCheckoutSession.bind(gateway);
+      gateway.createCheckoutSession = vi.fn(async (input) => {
+        await create(input);
+        throw new Error("process interrupted before recording response");
+      });
+      await expect(createCheckoutSession({ plan: "monthly" }, verified, deps(gateway))).rejects.toMatchObject({ reason: "stripe_error" });
+      expect(await readDoc(db, accountCheckoutPath(CHECKOUT_UID))).toMatchObject({ creating: true });
+      gateway.createCheckoutSession = create;
+      gateway.resolvePriceId = vi.fn(async () => "price_changed");
+      await createCheckoutSession({ plan: "monthly" }, verified, {
+        ...deps(gateway), env: { ...checkoutEnv, KANNA_PORTAL_BASE_URL: "https://new.example.test" },
+      });
+      expect(gateway.resolvePriceId).not.toHaveBeenCalled();
+      expect(gateway.sessionRequests).toHaveLength(2);
+      expect(gateway.sessionRequests[0]).toEqual(gateway.sessionRequests[1]);
+      expect(gateway.calls.customers).toBe(1);
+      expect(gateway.calls.sessions).toHaveLength(1);
+    });
+
+    it("replays the same session after a failed Firestore response commit", async () => {
+      const gateway = stubGateway();
+      const create = gateway.createCheckoutSession.bind(gateway);
+      gateway.createCheckoutSession = async (input) => {
+        const session = await create(input);
+        vi.spyOn(db, "runTransaction").mockRejectedValueOnce(new Error("commit unavailable"));
+        return session;
+      };
+      await expect(createCheckoutSession({ plan: "monthly" }, verified, deps(gateway))).rejects.toMatchObject({ reason: "stripe_error" });
+      vi.restoreAllMocks();
+      gateway.createCheckoutSession = create;
+      await createCheckoutSession({ plan: "monthly" }, verified, deps(gateway));
+      expect(gateway.calls.sessions).toHaveLength(1);
+      expect(gateway.sessionRequests[0]).toEqual(gateway.sessionRequests[1]);
+      expect(gateway.calls.closedSessions).toEqual([]);
+    });
+
+    it("resumes an invocation interrupted before the external session call", async () => {
+      const gateway = stubGateway();
+      const create = gateway.createCheckoutSession.bind(gateway);
+      gateway.createCheckoutSession = async () => { throw new Error("invocation interrupted"); };
+      await expect(createCheckoutSession({ plan: "monthly" }, verified, deps(gateway))).rejects.toMatchObject({ reason: "stripe_error" });
+      expect(gateway.calls.sessions).toHaveLength(0);
+      gateway.createCheckoutSession = create;
+      await createCheckoutSession({ plan: "monthly" }, verified, deps(gateway));
+      expect(gateway.calls.sessions).toHaveLength(1);
+      expect(gateway.calls.customers).toBe(1);
+    });
+
+    it("recovers the durable session even if its webhook activated access before the lost response", async () => {
+      const gateway = stubGateway();
+      const create = gateway.createCheckoutSession.bind(gateway);
+      gateway.createCheckoutSession = async (input) => {
+        await create(input);
+        throw new Error("lost response");
+      };
+      await expect(createCheckoutSession({ plan: "monthly" }, verified, deps(gateway))).rejects.toMatchObject({ reason: "stripe_error" });
+      await deliver(db, "checkout.session.completed.json");
+      gateway.createCheckoutSession = create;
+      await expect(createCheckoutSession({ plan: "monthly" }, verified, deps(gateway))).rejects.toMatchObject({ reason: "already_subscribed" });
+      expect(await readDoc(db, accountCheckoutPath(CHECKOUT_UID))).toMatchObject({ creating: false, sessionIds: ["cs_test_TestSlice1"] });
+      await expect(firestoreAccountDeletionStore(db).markAccountDeletionStarted(CHECKOUT_UID)).resolves.toEqual(["cs_test_TestSlice1"]);
+      expect(gateway.calls.sessions).toHaveLength(1);
+    });
+
+    it.each(["customer", "session"])("requires reconciliation for an old uncertain %s, never rotates its key", async (operation) => {
+      const gateway = stubGateway();
+      const startedAt = "2026-09-14T00:00:00.000Z";
+      const broken = { ...gateway,
+        ...(operation === "customer" ? { createCustomer: async () => { throw new Error("unknown"); } }
+          : { createCheckoutSession: async () => { throw new Error("unknown"); } }),
+      };
+      await expect(createCheckoutSession({ plan: "monthly" }, verified, { ...deps(broken), now: () => startedAt })).rejects.toMatchObject({ reason: "stripe_error" });
+      const before = await readDoc(db, accountCheckoutPath(CHECKOUT_UID));
+      await expect(createCheckoutSession({ plan: "monthly" }, verified, { ...deps(gateway), now: () => "2026-09-15T00:00:00.000Z" }))
+        .rejects.toMatchObject({ reason: "checkout_reconciliation_required" });
+      expect(await readDoc(db, accountCheckoutPath(CHECKOUT_UID))).toEqual(before);
+      expect(gateway.calls.sessions).toHaveLength(0);
+      expect(gateway.calls.customers).toBe(operation === "customer" ? 0 : 1);
+    });
+
+    it("adopts an outstanding legacy session and refuses ambiguous or foreign legacy records", async () => {
+      const gateway = stubGateway();
+      const first = await createCheckoutSession({ plan: "monthly" }, verified, deps(gateway));
+      const legacy = { creating: false, sessionIds: [first.sessionId] };
+      await db.doc(accountCheckoutPath(CHECKOUT_UID)).set(legacy);
+      await expect(createCheckoutSession({ plan: "monthly" }, verified, deps(gateway))).resolves.toEqual(first);
+      const session = await gateway.retrieveCheckoutSession(first.sessionId);
+      gateway.sessions.set("cs_other", { ...session, id: "cs_other", uid: "other-user" });
+      await db.doc(accountCheckoutPath(CHECKOUT_UID)).set({ ...legacy, sessionIds: [first.sessionId, "cs_other"] });
+      await expect(createCheckoutSession({ plan: "monthly" }, verified, deps(gateway))).rejects.toMatchObject({ reason: "checkout_reconciliation_required" });
+      gateway.sessions.set("cs_other", { ...session, id: "cs_other" });
+      await expect(createCheckoutSession({ plan: "monthly" }, verified, deps(gateway))).rejects.toMatchObject({ reason: "checkout_reconciliation_required" });
+      expect(gateway.calls.sessions).toHaveLength(1);
+      expect(gateway.calls.closedSessions).toEqual([]);
+      await db.doc(accountCheckoutPath(CHECKOUT_UID)).set({ creating: true, sessionIds: [] });
+      await expect(createCheckoutSession({ plan: "monthly" }, verified, deps(gateway))).rejects.toMatchObject({ reason: "checkout_reconciliation_required" });
+    });
+
+    it("finds a legacy open session missing from the ledger without creating or expiring another", async () => {
+      const gateway = stubGateway();
+      const first = await createCheckoutSession({ plan: "monthly" }, verified, deps(gateway));
+      await db.doc(accountCheckoutPath(CHECKOUT_UID)).delete();
+      await expect(createCheckoutSession({ plan: "monthly" }, verified, deps(gateway))).resolves.toEqual(first);
+      expect(gateway.calls.sessions).toHaveLength(1);
+      expect(gateway.calls.closedSessions).toEqual([]);
+    });
+
+    it("refuses an open legacy session beside an existing subscription even before its webhook", async () => {
+      const gateway = stubGateway();
+      await createCheckoutSession({ plan: "monthly" }, verified, deps(gateway));
+      await db.doc(accountCheckoutPath(CHECKOUT_UID)).delete();
+      gateway.hasBlockingSubscription = async () => true;
+      await expect(createCheckoutSession({ plan: "monthly" }, verified, deps(gateway))).rejects.toMatchObject({ reason: "already_subscribed" });
+      expect(gateway.calls.sessions).toHaveLength(1);
+      expect(gateway.calls.closedSessions).toEqual([]);
+    });
+
+    it("never reuses or expires an unrelated checkout on the mapped customer", async () => {
+      const gateway = stubGateway();
+      await db.doc(userDocPath(CHECKOUT_UID)).set({ stripeCustomerId: "cus_TestSlice1" });
+      gateway.sessions.set("cs_unrelated", {
+        id: "cs_unrelated", customerId: "cus_TestSlice1", uid: "different-user",
+        status: "open", mode: "payment", url: "https://checkout.example.test/unrelated", subscriptionStatus: null,
+      });
+      await expect(createCheckoutSession({ plan: "monthly" }, verified, deps(gateway))).rejects.toMatchObject({ reason: "checkout_reconciliation_required" });
+      expect(gateway.calls.sessions).toHaveLength(0);
+      expect(gateway.calls.closedSessions).toEqual([]);
+    });
+
+    it("does not confuse an expired entitlement with a subscription that can still collect payment", async () => {
+      const gateway = stubGateway();
+      await db.doc(billingSourcePath(CHECKOUT_UID, "stripe")).set(stripeSource({ status: "expired" }));
+      gateway.hasBlockingSubscription = async () => true;
+      await expect(createCheckoutSession({ plan: "monthly" }, verified, deps(gateway))).rejects.toMatchObject({ reason: "already_subscribed" });
+      expect(gateway.calls.sessions).toHaveLength(0);
+      await expect(firestoreAccountDeletionStore(db).markAccountDeletionStarted(CHECKOUT_UID)).resolves.toEqual([]);
+    });
+
+    it("rechecks comp and deletion transactionally after read-only price resolution", async () => {
+      const gateway = stubGateway();
+      gateway.resolvePriceId = async () => {
+        await db.doc(billingSourcePath(CHECKOUT_UID, "comp")).set(compSource());
+        return "price_for_cloud_monthly";
+      };
+      await expect(createCheckoutSession({ plan: "monthly" }, verified, deps(gateway))).rejects.toMatchObject({ reason: "comp_active" });
+      expect(gateway.calls.sessions).toHaveLength(0);
+      await db.doc(billingSourcePath(CHECKOUT_UID, "comp")).delete();
+      gateway.resolvePriceId = async () => {
+        await firestoreAccountDeletionStore(db).markAccountDeletionStarted(CHECKOUT_UID);
+        return "price_for_cloud_monthly";
+      };
+      await expect(createCheckoutSession({ plan: "monthly" }, verified, deps(gateway))).rejects.toMatchObject({ reason: "account_deleted" });
+      expect(gateway.calls.sessions).toHaveLength(0);
     });
 
     it("writes no billing source doc merely because checkout was opened", async () => {
@@ -568,6 +829,12 @@ describeWithEmulator("billing backend against the Firestore emulator", () => {
       const releaseStripe = deferred();
       const usableSessions = new Set<string>();
       const gateway: StripeCheckoutGateway = {
+        async retrieveCheckoutSession(id) {
+          return { id, url: "https://checkout.stripe.test/cs_racing_delete", status: "open", mode: "subscription",
+            uid, customerId: "cus_racing_delete", subscriptionStatus: null };
+        },
+        async hasBlockingSubscription() { return false; },
+        async listOpenCheckoutSessions() { return []; },
         async createCustomer() {
           return { id: "cus_racing_delete" };
         },
@@ -629,6 +896,44 @@ describeWithEmulator("billing backend against the Firestore emulator", () => {
       expect((await db.doc(accountCheckoutPath(uid)).get()).exists).toBe(false);
       expect((await db.doc(accountDeletionPath(uid)).get()).exists).toBe(true);
       expect(auth.deleteUser).toHaveBeenCalledWith(uid);
+    });
+
+    it("a paused duplicate invocation cannot recreate billing after deletion settles the shared session", async () => {
+      const gateway = stubGateway();
+      const create = gateway.createCheckoutSession.bind(gateway);
+      const enteredFirst = deferred();
+      const enteredReplay = deferred();
+      const releaseFirst = deferred();
+      const releaseReplay = deferred();
+      let calls = 0;
+      gateway.createCheckoutSession = async (input) => {
+        calls += 1;
+        if (calls === 1) { enteredFirst.resolve(); await releaseFirst.promise; }
+        else { enteredReplay.resolve(); await releaseReplay.promise; }
+        return create(input);
+      };
+      const dependencies = { db, env: checkoutEnv, gateway, logger: silentLogger };
+      const caller = { uid: CHECKOUT_UID, email: "checkout@example.test", emailVerified: true };
+      const first = createCheckoutSession({ plan: "monthly" }, caller, dependencies);
+      await enteredFirst.promise;
+      const replay = createCheckoutSession({ plan: "monthly" }, caller, dependencies);
+      const rejectedReplay = expect(replay).rejects.toMatchObject({ reason: "account_deleted" });
+      await enteredReplay.promise;
+      releaseFirst.resolve();
+      await first;
+      await deleteAccount({ uid: CHECKOUT_UID }, {
+        store: firestoreAccountDeletionStore(db),
+        auth: { revokeRefreshTokens: async () => {}, deleteUser: async () => {} },
+        stripe: { cancelSubscription: async () => {}, closeCustomerBilling: async () => {},
+          closeCheckoutSession: (id) => gateway.closeCheckoutSession(id) },
+      });
+      releaseReplay.resolve();
+      await rejectedReplay;
+      expect(gateway.calls.sessions).toHaveLength(1);
+      expect([...gateway.sessions.values()].every((session) => session.status === "expired")).toBe(true);
+      expect((await db.doc(userDocPath(CHECKOUT_UID)).get()).exists).toBe(false);
+      expect((await db.doc(accountCheckoutPath(CHECKOUT_UID)).get()).exists).toBe(false);
+      expect((await db.doc(accountDeletionPath(CHECKOUT_UID)).get()).exists).toBe(true);
     });
 
     it("removes every uid-owned Firestore record, including nested mirrors and relay pairings", async () => {

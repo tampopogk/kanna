@@ -22,9 +22,9 @@ describe("createCheckoutSession callable adapter", () => {
     });
   });
 
-  it("forwards the shared monthly request to the checkout core", async () => {
+  it("uses authenticated identity even when the monthly request supplies another uid/customer", async () => {
     const request = {
-      data: { plan: "monthly" },
+      data: { plan: "monthly", uid: "victim", customerId: "cus_victim" },
       auth: {
         uid: "user-jpy",
         token: { email: "jpy@example.com", email_verified: true },
@@ -35,7 +35,7 @@ describe("createCheckoutSession callable adapter", () => {
 
     expect(checkoutMocks.createCheckoutSessionCore).toHaveBeenCalledOnce();
     expect(checkoutMocks.createCheckoutSessionCore).toHaveBeenCalledWith(
-      { plan: "monthly" },
+      { plan: "monthly", uid: "victim", customerId: "cus_victim" },
       { uid: "user-jpy", email: "jpy@example.com", emailVerified: true },
       expect.objectContaining({ env: process.env })
     );

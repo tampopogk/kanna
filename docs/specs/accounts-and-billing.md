@@ -141,12 +141,14 @@ link that leaves account deletion available only on the web.
 The callable performs these phases strictly in order:
 
 1. Atomically coordinate checkout and deletion through
-   `accountCheckouts/{uid}`. Checkout transactionally admits one Stripe-creation
-   operation only while no deletion tombstone exists, and does not write
-   `users/{uid}` or `stripeCustomers` until a second transaction records the
-   resulting session and releases that admission. Deletion refuses retryably
-   while an admitted operation is still creating Stripe state. Once it has
-   finished, deletion atomically creates the durable
+   `accountCheckouts/{uid}`. Checkout transactionally owns one durable attempt
+   only while no deletion tombstone exists. It records the customer mapping
+   before admitting session creation and retains the session after returning
+   its URL (see checkout recovery below). Deletion refuses while a customer or
+   session creation has an unresolved outcome, including after a process exit.
+   Recover that same checkout before retrying deletion; old ambiguous outcomes
+   require operator reconciliation. Once creation is resolved, deletion
+   atomically creates the durable
    `accountDeletions/{uid}` tombstone and reads every recorded session. No new
    checkout can pass admission after that transaction commits.
 2. Before deleting any local billing/customer index, collect every Stripe
@@ -234,6 +236,46 @@ cloud account, not the local install.
 Data export is a separate follow-up. The deliberate no-undo choice keeps this
 operation honest and immediate; export support does not weaken or delay
 deletion.
+
+### Repeated checkout and recovery (implemented 2026-09-14)
+
+`accountCheckouts/{uid}.attempt` owns the immutable customer request, session
+request, idempotency keys and resulting IDs. Concurrent calls and restarted
+invocations replay the same request. Customer mappings are saved before session
+creation; an error never clears an uncertain external operation. Known open
+sessions are reused. Completed sessions block another purchase even before
+webhook activation, including pending payments. A replacement requires Stripe
+to report an expired session or a completed session whose subscription is
+`canceled`/`incomplete_expired`; a local entitlement marked expired is not enough.
+Before fresh creation, the gateway also checks the mapped customer's open
+sessions and nonterminal subscriptions, paging the Stripe collections. Legacy
+recorded sessions are inspected as well. A foreign owner, non-subscription
+session or multiple outstanding sessions requires reconciliation; checkout
+never cancels or expires sessions to make room. The authenticated uid and the
+single `cloud_monthly` price contract are unchanged.
+
+Stripe can prune [idempotency keys after 24 hours](https://docs.stripe.com/api/idempotent_requests).
+Unresolved creation is replayed only within 23 hours of its durable request
+stamp. Crossing that bound fails closed with `checkout_reconciliation_required`;
+it does not release a lease or authorize a new key. Session requests pin an
+absolute 24-hour `expires_at` alongside their price, customer and return URLs.
+There are no polling loops, lock timers or new ledgers. A known session can
+still be inspected after the replay bound. Unresolved pre-idempotency `creating`
+records also fail closed.
+
+Operator limits: a cached Stripe error, an old ambiguous outcome, a missing
+remote resource, multiple historical customers/sessions, or a missing legacy
+customer mapping may require manual reconciliation. The normal checkout path
+checks its one server-resolved customer; it does not infer ownership of orphaned
+Stripe customers or repair historical duplicate payments. Under separately
+authorized access, reconcile the uid's ledger request keys, Stripe request
+results, customer/session/subscription IDs and webhook state before repairing
+that same attempt. Preserve session IDs for deletion; never clear `creating`,
+rotate keys, erase the ledger or remove a tombstone merely because time elapsed.
+Ensure older function invocations have stopped before any manual repair or
+rollout cutover. Deletion remains fenced until unresolved creation is recovered.
+Production Stripe is confirmed not set up. Emulator and injected-gateway tests
+prove local coordination, not actual hosted payments, charges or refunds.
 
 ## Decision 2 — The Apple question (superseded; portal link-out adopted for dogfood)
 
@@ -895,8 +937,8 @@ legacy accounts).
     relay; active access is not expired merely by a period-end timestamp.
     Firebase SDK reset/resend and forced token refresh preserve the existing
     identity path. Hosted Portal behavior and real mail delivery still need
-    separately authorized observation. The outstanding-checkout ledger is a
-    separate checkout-safety task.
+    separately authorized observation. Outstanding-checkout ownership and its
+    operator limits are documented in “Repeated checkout and recovery” above.
   - Apple backend: `appStoreNotifications` (JWS verification, dedupe,
     mapping table), `beginAppStorePurchase`, `registerAppStoreTransaction`,
     restore conflict rule, tombstones; emulator + fixture coverage

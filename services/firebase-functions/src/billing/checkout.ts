@@ -7,17 +7,23 @@
  * allowed to pay, and an App-Store-sourced subscriber must be sent to Apple's
  * settings instead of into a second, parallel subscription.
  */
-import type { Firestore } from "firebase-admin/firestore";
+import { randomUUID } from "node:crypto";
+import type { Firestore, Transaction } from "firebase-admin/firestore";
 import {
   CheckoutContractError,
   parseCheckoutSessionRequest,
   type CheckoutSessionResponse,
 } from "./contract.js";
 import { resolveCheckoutConfig } from "./config.js";
-import { readBillingState } from "./entitlement.js";
+import { readBillingState, type BillingState } from "./entitlement.js";
 import { BillingRequestError } from "./errors.js";
 import { consoleBillingLogger, type BillingLogger } from "./logger.js";
-import type { StripeCheckoutGateway } from "./stripeGateway.js";
+import type {
+  StripeCheckoutGateway,
+  StripeCheckoutSessionInput,
+  StripeCheckoutSessionState,
+  StripeCustomerInput,
+} from "./stripeGateway.js";
 import {
   accountCheckoutPath,
   accountDeletionPath,
@@ -88,229 +94,241 @@ export async function createCheckoutSession(
     throw new BillingRequestError("internal", "not_configured", message);
   }
 
-  const state = await readBillingState(deps.db, caller.uid);
-
-  if (state.sources.comp?.active) {
-    throw new BillingRequestError(
-      "failed-precondition",
-      "comp_active",
-      "This account has complimentary Kanna Cloud access and does not need a subscription."
-    );
-  }
-  if (isBlockingStatus(state.sources.app_store)) {
-    throw new BillingRequestError(
-      "failed-precondition",
-      "app_store_active",
-      "This account is subscribed through the App Store. Manage it in Apple's subscription settings."
-    );
-  }
-  if (isBlockingStatus(state.sources.stripe)) {
-    throw new BillingRequestError(
-      "failed-precondition",
-      "already_subscribed",
-      "This account already has an active Kanna Cloud subscription."
-    );
-  }
-
   const gateway = deps.gateway ?? (await liveGateway(config.secretKey));
   const base = config.portalBaseUrl.replace(/\/+$/, "");
-  const startedAt = now();
-  await admitCheckout(deps.db, caller.uid, startedAt);
-
-  let session: Awaited<ReturnType<StripeCheckoutGateway["createCheckoutSession"]>> | null = null;
-  let customerId: string | null = null;
   try {
-    customerId = await resolveCustomerId({
-      db: deps.db,
-      gateway,
-      caller,
-      existing: state.sources.stripe?.stripeCustomerId ?? null,
-    });
-    const lookupKey = "cloud_monthly";
-    const priceId = await gateway.resolvePriceId(lookupKey);
-    if (!priceId) {
-      throw new Error(`No active Stripe price has lookup_key ${lookupKey}`);
+    let attempt = await admitCheckout(deps.db, caller, base, now());
+    if (attempt.sessionId) {
+      const existing = await gateway.retrieveCheckoutSession(attempt.sessionId);
+      assertSessionOwner(existing, caller.uid, attempt.customerId);
+      if (!isRetired(existing)) {
+        return await checkoutResponse(deps.db, gateway, caller.uid, attempt, existing, plan, now());
+      }
+      // Stripe, not a local deadline or a delayed webhook, proves the previous
+      // session can never be paid again. Only one caller can replace its owner.
+      attempt = await admitCheckout(deps.db, caller, base, now(), attempt.id);
     }
-    session = await gateway.createCheckoutSession({
-      uid: caller.uid,
-      customerId,
-      priceId,
-      successUrl: `${base}/billing/success?session_id={CHECKOUT_SESSION_ID}`,
-      cancelUrl: `${base}/billing/canceled`,
-    });
-    await completeCheckoutAdmission({
-      db: deps.db,
-      uid: caller.uid,
-      customerId,
-      sessionId: session.id,
-      now: now(),
-    });
+
+    if (!attempt.customerId) {
+      assertReplayWindow(attempt, now());
+      const customer = await gateway.createCustomer(attempt.customerInput);
+      attempt = await updateAttempt(deps.db, caller.uid, attempt.id, now(), (current, transaction) => {
+        if (current.customerId) return current;
+        transaction.set(deps.db.doc(userDocPath(caller.uid)), {
+          stripeCustomerId: customer.id, updatedAt: now(),
+        }, { merge: true });
+        transaction.set(deps.db.doc(stripeCustomerPath(customer.id)), {
+          uid: caller.uid, stripeCustomerId: customer.id, updatedAt: now(),
+        }, { merge: true });
+        return { ...current, customerId: customer.id };
+      });
+    }
+    const customerId = attempt.customerId;
+    if (!customerId) throw reconciliationRequired();
+
+    if (!attempt.checkoutInput && !attempt.sessionId) {
+      // Old ledgers may already have issued a URL. Inspect every recorded
+      // session before migrating; never expire/cancel a session to make room.
+      const previous = await Promise.all(attempt.previousSessionIds.map((id) => gateway.retrieveCheckoutSession(id)));
+      // Older error paths released admission without recording an uncertain
+      // response. Include open sessions on this customer, not just ledger ids.
+      const open = await gateway.listOpenCheckoutSessions(customerId);
+      const candidates = [...new Map([...previous, ...open].map((session) => [session.id, session])).values()];
+      for (const session of candidates) assertSessionOwner(session, caller.uid, customerId);
+      const outstanding = candidates.filter((session) => !isRetired(session));
+      if (outstanding.length > 1) throw reconciliationRequired();
+      const [existing] = outstanding;
+      if (existing) {
+        attempt = await recordSession(deps.db, caller.uid, attempt.id, existing.id, now());
+        return await checkoutResponse(deps.db, gateway, caller.uid, attempt, existing, plan, now());
+      }
+      // Incomplete/unpaid/paused subscriptions can still collect money even
+      // though they don't grant access. Entitlement expiry is not retirement.
+      if (await gateway.hasBlockingSubscription(customerId)) throw alreadySubscribed();
+      const priceId = await gateway.resolvePriceId("cloud_monthly");
+      if (!priceId) throw new Error("No active Stripe price has lookup_key cloud_monthly");
+      attempt = await updateAttempt(deps.db, caller.uid, attempt.id, now(), (current) => {
+        if (current.checkoutInput || current.sessionId) return current;
+        return { ...current, checkoutInput: {
+          uid: caller.uid, customerId, priceId,
+          successUrl: current.successUrl, cancelUrl: current.cancelUrl,
+          idempotencyKey: `checkout-${current.id}`,
+          expiresAt: Math.floor(Date.parse(now()) / 1000) + 24 * 60 * 60,
+        }, checkoutStartedAt: now() };
+      }, true);
+    }
+
+    if (!attempt.sessionId) {
+      assertReplayWindow(attempt, now());
+      if (!attempt.checkoutInput) throw reconciliationRequired();
+      const session = await gateway.createCheckoutSession(attempt.checkoutInput);
+      // An error or process exit before this transaction leaves the immutable
+      // request owned by this attempt. A new invocation replays the same key.
+      attempt = await recordSession(deps.db, caller.uid, attempt.id, session.id, now());
+    }
+    if (!attempt.sessionId) throw reconciliationRequired();
+    const session = await gateway.retrieveCheckoutSession(attempt.sessionId);
+    assertSessionOwner(session, caller.uid, customerId);
+    logger.info("Resolved a Stripe checkout session", { uid: caller.uid, plan, sessionId: session.id });
+    return await checkoutResponse(deps.db, gateway, caller.uid, attempt, session, plan, now());
   } catch (error) {
-    if (session) {
-      await recordAbortedCheckout(deps.db, caller.uid, session.id, now());
-      await gateway.closeCheckoutSession(session.id);
-    } else {
-      await releaseCheckoutAdmission(deps.db, caller.uid, now());
-    }
+    // Never release an uncertain external operation or cancel a possibly-paid
+    // session on an ordinary error. The existing deletion ledger retains it.
     if (error instanceof BillingRequestError) throw error;
     const message = error instanceof Error ? error.message : String(error);
-    logger.error("Stripe rejected a checkout session request", { uid: caller.uid, message });
-    throw new BillingRequestError(
-      "internal",
-      "stripe_error",
-      "Could not start checkout. Please try again."
-    );
+    logger.error("Stripe checkout requires retry or reconciliation", { uid: caller.uid, message });
+    throw new BillingRequestError("internal", "stripe_error", "Could not start checkout. Please try again.");
   }
-
-  logger.info("Created a Stripe checkout session", {
-    uid: caller.uid,
-    plan,
-    sessionId: session.id,
-  });
-  if (!customerId || !session) {
-    throw new BillingRequestError("internal", "stripe_error", "Could not start checkout.");
-  }
-  return { sessionId: session.id, url: session.url, customerId, plan };
 }
 
-/**
- * Reuse the account's Stripe customer, or create one stamped with its uid.
- *
- * The customer id is recorded on `users/{uid}` and in the `stripeCustomers`
- * reverse map — not in `billing/stripe`, because merely opening checkout is not
- * a billing state and must not cause an entitlement record to be written.
- */
-async function resolveCustomerId(input: {
-  db: Firestore;
-  gateway: StripeCheckoutGateway;
-  caller: CheckoutCaller;
-  existing: string | null;
-}): Promise<string> {
-  const { db, gateway, caller } = input;
-  if (input.existing) return input.existing;
-
-  const userDoc = await db.doc(userDocPath(caller.uid)).get();
-  const stored = (userDoc.data() as { stripeCustomerId?: unknown } | undefined)?.stripeCustomerId;
-  if (typeof stored === "string" && stored.length > 0) return stored;
-
-  const customer = await gateway.createCustomer({ uid: caller.uid, email: caller.email });
-  return customer.id;
+interface CheckoutAttempt {
+  id: string;
+  startedAt: string;
+  customerInput: StripeCustomerInput;
+  customerId: string | null;
+  successUrl: string;
+  cancelUrl: string;
+  checkoutInput: StripeCheckoutSessionInput | null;
+  checkoutStartedAt: string | null;
+  sessionId: string | null;
+  previousSessionIds: string[];
 }
 
 interface CheckoutCoordination {
-  creating?: unknown;
-  sessionIds?: unknown;
+  creating?: boolean;
+  sessionIds?: string[];
+  attempt?: CheckoutAttempt;
 }
 
-function sessionIds(data: CheckoutCoordination | undefined): string[] {
-  return Array.isArray(data?.sessionIds)
-    ? data.sessionIds.filter((value): value is string => typeof value === "string")
-    : [];
+function assertCanSubscribe(state: BillingState): void {
+  if (state.sources.comp?.active) {
+    throw new BillingRequestError("failed-precondition", "comp_active",
+      "This account has complimentary Kanna Cloud access and does not need a subscription.");
+  }
+  if (isBlockingStatus(state.sources.app_store)) {
+    throw new BillingRequestError("failed-precondition", "app_store_active",
+      "This account is subscribed through the App Store. Manage it in Apple's subscription settings.");
+  }
+  if (isBlockingStatus(state.sources.stripe)) throw alreadySubscribed();
 }
 
-async function admitCheckout(db: Firestore, uid: string, now: string): Promise<void> {
-  const deletionRef = db.doc(accountDeletionPath(uid));
-  const checkoutRef = db.doc(accountCheckoutPath(uid));
-  await db.runTransaction(async (transaction) => {
-    const [deletion, checkout] = await Promise.all([
-      transaction.get(deletionRef),
-      transaction.get(checkoutRef),
+function alreadySubscribed(): BillingRequestError {
+  return new BillingRequestError("failed-precondition", "already_subscribed",
+    "This account already has a subscription or a payment awaiting confirmation. Review your account before subscribing again.");
+}
+
+function reconciliationRequired(): BillingRequestError {
+  return new BillingRequestError("failed-precondition", "checkout_reconciliation_required",
+    "An earlier checkout needs reconciliation. Contact support before starting another payment.");
+}
+
+function assertReplayWindow(attempt: CheckoutAttempt, now: string): void {
+  // Stripe may prune keys after 24h. This is a fail-closed replay bound, not
+  // a lock lease: elapsed time NEVER authorizes a new customer or session.
+  const startedAt = attempt.customerId ? attempt.checkoutStartedAt : attempt.startedAt;
+  const age = Date.parse(now) - Date.parse(startedAt ?? "");
+  if (!Number.isFinite(age) || age < 0 || age >= 23 * 60 * 60 * 1000) throw reconciliationRequired();
+}
+
+function assertSessionOwner(session: StripeCheckoutSessionState, uid: string, customerId: string | null): void {
+  if (session.mode !== "subscription" || session.uid !== uid || !customerId || session.customerId !== customerId) {
+    throw reconciliationRequired();
+  }
+}
+
+function isRetired(session: StripeCheckoutSessionState): boolean {
+  return session.status === "expired"
+    || (session.status === "complete" && (session.subscriptionStatus === "canceled"
+      || session.subscriptionStatus === "incomplete_expired"));
+}
+
+async function checkoutResponse(
+  db: Firestore, gateway: StripeCheckoutGateway, uid: string, attempt: CheckoutAttempt,
+  session: StripeCheckoutSessionState, plan: CheckoutSessionResponse["plan"], now: string,
+): Promise<CheckoutSessionResponse> {
+  if (session.status === "open" && attempt.customerId && await gateway.hasBlockingSubscription(attempt.customerId)) {
+    throw alreadySubscribed();
+  }
+  await updateAttempt(db, uid, attempt.id, now, (current) => current, true);
+  if (session.status === "complete") throw alreadySubscribed();
+  if (session.status !== "open" || !session.url || !attempt.customerId) {
+    throw new BillingRequestError("failed-precondition", "checkout_in_progress",
+      "Checkout is no longer open. Please try again to check its current status.");
+  }
+  return { sessionId: session.id, url: session.url, customerId: attempt.customerId, plan };
+}
+
+async function admitCheckout(
+  db: Firestore, caller: CheckoutCaller, base: string, now: string, replaceId?: string,
+): Promise<CheckoutAttempt> {
+  const checkoutRef = db.doc(accountCheckoutPath(caller.uid));
+  return db.runTransaction(async (transaction) => {
+    const [deletion, checkout, user] = await Promise.all([
+      transaction.get(db.doc(accountDeletionPath(caller.uid))),
+      transaction.get(checkoutRef), transaction.get(db.doc(userDocPath(caller.uid))),
     ]);
-    if (deletion.exists) {
-      throw new BillingRequestError(
-        "failed-precondition",
-        "account_deleted",
-        "This account has been permanently deleted.",
-      );
-    }
+    const state = await readBillingState(db, caller.uid, transaction);
+    assertNotDeleted(deletion.exists);
     const coordination = checkout.data() as CheckoutCoordination | undefined;
-    if (coordination?.creating === true) {
-      throw new BillingRequestError(
-        "failed-precondition",
-        "checkout_in_progress",
-        "Another checkout is already being created. Please try again.",
-      );
+    if (coordination?.attempt && (!replaceId || coordination.attempt.id !== replaceId)) {
+      // An unresolved request must be recoverable even if its webhook arrived
+      // first. Recovery records the session; the response still checks guards.
+      if (!coordination.creating) assertCanSubscribe(state);
+      return coordination.attempt;
     }
+    assertCanSubscribe(state);
+    if (coordination?.creating) throw reconciliationRequired(); // pre-idempotency legacy attempt
+    const id = randomUUID();
+    const customerId = state.sources.stripe?.stripeCustomerId
+      ?? (user.data() as { stripeCustomerId?: string } | undefined)?.stripeCustomerId ?? null;
+    const attempt: CheckoutAttempt = {
+      id, startedAt: now, customerInput: { uid: caller.uid, email: caller.email, idempotencyKey: `customer-${id}` },
+      customerId, successUrl: `${base}/billing/success?session_id={CHECKOUT_SESSION_ID}`,
+      cancelUrl: `${base}/billing/canceled`, checkoutInput: null, checkoutStartedAt: null, sessionId: null,
+      previousSessionIds: replaceId ? [] : coordination?.sessionIds ?? [],
+    };
     transaction.set(checkoutRef, {
-      uid,
-      creating: true,
-      sessionIds: sessionIds(coordination),
-      updatedAt: now,
+      uid: caller.uid, creating: !customerId, sessionIds: coordination?.sessionIds ?? [], attempt, updatedAt: now,
     });
+    return attempt;
   });
 }
 
-async function completeCheckoutAdmission(input: {
-  db: Firestore;
-  uid: string;
-  customerId: string;
-  sessionId: string;
-  now: string;
-}): Promise<void> {
-  const checkoutRef = input.db.doc(accountCheckoutPath(input.uid));
-  const deletionRef = input.db.doc(accountDeletionPath(input.uid));
-  await input.db.runTransaction(async (transaction) => {
+function assertNotDeleted(deleted: boolean): void {
+  if (deleted) throw new BillingRequestError("failed-precondition", "account_deleted", "This account has been permanently deleted.");
+}
+
+async function updateAttempt(
+  db: Firestore, uid: string, id: string, now: string,
+  update: (attempt: CheckoutAttempt, transaction: Transaction) => CheckoutAttempt,
+  checkGuards = false,
+): Promise<CheckoutAttempt> {
+  const checkoutRef = db.doc(accountCheckoutPath(uid));
+  return db.runTransaction(async (transaction) => {
     const [deletion, checkout] = await Promise.all([
-      transaction.get(deletionRef),
-      transaction.get(checkoutRef),
+      transaction.get(db.doc(accountDeletionPath(uid))), transaction.get(checkoutRef),
     ]);
-    if (deletion.exists) {
-      throw new BillingRequestError(
-        "failed-precondition",
-        "account_deleted",
-        "This account has been permanently deleted.",
-      );
+    const state = checkGuards ? await readBillingState(db, uid, transaction) : null;
+    assertNotDeleted(deletion.exists);
+    const coordination = checkout.data() as CheckoutCoordination | undefined;
+    if (!coordination?.attempt || coordination.attempt.id !== id) {
+      throw new BillingRequestError("failed-precondition", "checkout_in_progress", "Checkout changed. Please try again.");
     }
-    const coordination = checkout.data() as CheckoutCoordination | undefined;
-    transaction.set(input.db.doc(userDocPath(input.uid)), {
-      stripeCustomerId: input.customerId,
-      updatedAt: input.now,
-    }, { merge: true });
-    transaction.set(input.db.doc(stripeCustomerPath(input.customerId)), {
-      uid: input.uid,
-      stripeCustomerId: input.customerId,
-      updatedAt: input.now,
-    }, { merge: true });
+    if (state) assertCanSubscribe(state);
+    const attempt = update(coordination.attempt, transaction);
     transaction.set(checkoutRef, {
-      uid: input.uid,
-      creating: false,
-      sessionIds: [...new Set([...sessionIds(coordination), input.sessionId])],
-      updatedAt: input.now,
+      ...coordination, attempt, updatedAt: now,
+      creating: !attempt.customerId || (!!attempt.checkoutInput && !attempt.sessionId),
+      sessionIds: [...new Set([...(coordination.sessionIds ?? []), ...(attempt.sessionId ? [attempt.sessionId] : [])])],
     });
+    return attempt;
   });
 }
 
-async function recordAbortedCheckout(
-  db: Firestore,
-  uid: string,
-  sessionId: string,
-  now: string,
-): Promise<void> {
-  const checkoutRef = db.doc(accountCheckoutPath(uid));
-  await db.runTransaction(async (transaction) => {
-    const checkout = await transaction.get(checkoutRef);
-    const coordination = checkout.data() as CheckoutCoordination | undefined;
-    transaction.set(checkoutRef, {
-      uid,
-      creating: false,
-      sessionIds: [...new Set([...sessionIds(coordination), sessionId])],
-      updatedAt: now,
-    });
-  });
-}
-
-async function releaseCheckoutAdmission(db: Firestore, uid: string, now: string): Promise<void> {
-  const checkoutRef = db.doc(accountCheckoutPath(uid));
-  await db.runTransaction(async (transaction) => {
-    const checkout = await transaction.get(checkoutRef);
-    if (!checkout.exists) return;
-    const coordination = checkout.data() as CheckoutCoordination | undefined;
-    transaction.set(checkoutRef, {
-      uid,
-      creating: false,
-      sessionIds: sessionIds(coordination),
-      updatedAt: now,
-    });
+async function recordSession(db: Firestore, uid: string, id: string, sessionId: string, now: string): Promise<CheckoutAttempt> {
+  return updateAttempt(db, uid, id, now, (attempt) => {
+    if (attempt.sessionId && attempt.sessionId !== sessionId) throw reconciliationRequired();
+    return { ...attempt, sessionId };
   });
 }
 
