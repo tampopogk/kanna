@@ -49,6 +49,7 @@ import type { MainTabViewsController } from "./MainPanel.types";
 import type { BranchInclude, DiffScope, DiffScrollPositions } from "../composables/useAppModals";
 import type { MarkdownPreviewMode } from "../stores/markdownPreviewMode";
 import { shortcutHint, shortcutHintKeys } from "../composables/useKeyboardShortcuts";
+import { refocusActiveTerminal } from "../composables/useTerminalFocusWhenActive";
 import CloudTerminalCache, {
   type CloudTerminalCacheEntry,
 } from "./CloudTerminalCache.vue";
@@ -58,7 +59,6 @@ const props = defineProps<{
   repoPath?: string;
   spawnPtySession?: (sessionId: string, cwd: string, prompt: string, cols: number, rows: number) => Promise<void>;
   recoverTaskSession?: (sessionId: string, options?: { cols?: number; rows?: number }) => Promise<void>;
-  maximized?: boolean;
   blockers?: BlockerDisplayItem[];
   blocked?: boolean;
   hasRepos?: boolean;
@@ -110,6 +110,13 @@ onBeforeUnmount(() => workAreaObserver?.disconnect());
 const paneRects = computed(() => props.views?.tabs.panes.value ?? []);
 const narrowLayout = computed(() => isMobile || workAreaWidth.value < 800);
 const visiblePanes = computed(() => {
+  const maximizedPaneId = props.views?.tabs.maximizedPaneId.value;
+  if (maximizedPaneId) {
+    const maximized = paneRects.value.find((rect) => rect.pane.id === maximizedPaneId);
+    return maximized
+      ? [{ ...maximized, left: 0, top: 0, width: 100, height: 100 }]
+      : paneRects.value;
+  }
   if (!narrowLayout.value) return paneRects.value;
   const active = paneRects.value.find(rect => rect.pane.tabs.includes(activeTabId.value)) ?? paneRects.value[0];
   return active ? [{ ...active, pane: { ...active.pane, tabs: tabs.value.map(tab => tab.id), active: activeTabId.value }, left: 0, top: 0, width: 100, height: 100 }] : [];
@@ -176,6 +183,7 @@ const tabDrag = usePaneTabDrag({
 const ownerLabel = computed(() => props.cloudTerminalRef?.ownerDesktopId
   ?? (props.cloudTask ? "Owner unavailable" : "This machine"));
 const previewCache = ref<InstanceType<typeof TaskPreviewCache> | null>(null);
+const agentHistoryRef = ref<InstanceType<typeof AgentHistoryView> | null>(null);
 const previewWorkspaces = computed(() => Object.fromEntries(
   (props.views?.store.items ?? []).filter(task => task.closed_at == null)
     .map(task => [task.id, props.views?.store.worktreePaths?.[task.id] ?? ""]),
@@ -224,6 +232,41 @@ function selectTab(id: string) {
 
 function closeTab(id: string) {
   props.views?.tabs.closeTab(id);
+}
+
+/** Move the caret with pane selection without manufacturing terminal input. */
+async function focusActivePaneContent(paneId?: string) {
+  await nextTick();
+  const pane = visiblePanes.value.find((rect) => rect.pane.id === paneId)
+    ?? visiblePanes.value.find((rect) => rect.pane.tabs.includes(activeTabId.value));
+  const id = pane?.pane.active;
+  const focusPaneChrome = () => {
+    workArea.value?.querySelector<HTMLElement>(`[data-workspace-pane-id="${pane?.pane.id ?? paneId ?? ""}"]`)?.focus({ preventScroll: true });
+  };
+  if (!id) {
+    focusPaneChrome();
+    return;
+  }
+  if (id === AGENT_TAB_ID) {
+    if (selectedAttempt.value) {
+      if (!agentHistoryRef.value?.focusContent()) focusPaneChrome();
+      return;
+    }
+    refocusActiveTerminal();
+    return;
+  }
+  const tab = tabs.value.find((candidate) => candidate.id === id);
+  if (tab?.kind === "preview") {
+    if (!previewCache.value?.focus(tabKey(tab))) focusPaneChrome();
+    return;
+  }
+  // Embedded views with their own activation watcher get first refusal. The
+  // extra tick lets that watcher focus a terminal, filter, or reading surface.
+  await nextTick();
+  const panel = Array.from(workArea.value?.querySelectorAll<HTMLElement>("[data-main-tab-id]") ?? [])
+    .find((candidate) => candidate.dataset.mainTabId === id);
+  if (!panel || (document.activeElement instanceof Node && panel.contains(document.activeElement))) return;
+  (panel.querySelector<HTMLElement>('[tabindex="-1"]') ?? panel).focus({ preventScroll: true });
 }
 
 /**
@@ -787,6 +830,7 @@ defineExpose({
   dismissActiveTab,
   revealTabTarget,
   onTabClosed,
+  focusActivePaneContent,
 });
 
 async function copyCommand(agent: AgentProvider) {
@@ -816,7 +860,7 @@ function dismissCommandHint() {
         <span class="mobile-back-arrow">&larr;</span>
         <span>Tasks</span>
       </div>
-      <TaskHeader v-if="!maximized && headerItem" :item="headerItem" :owner-label="ownerLabel" :task-id="item?.id" :preview-supported="taskDetailIsLocal && !isMobile && !views?.modals.activeTaskViewIsRemote?.value && !!views" @preview="(portName) => views?.tabs.openTab({ kind: 'preview', portName })" />
+      <TaskHeader v-if="headerItem" :item="headerItem" :owner-label="ownerLabel" :task-id="item?.id" :preview-supported="taskDetailIsLocal && !isMobile && !views?.modals.activeTaskViewIsRemote?.value && !!views" @preview="(portName) => views?.tabs.openTab({ kind: 'preview', portName })" />
       <section v-if="revisionBudgetExhausted" class="revision-exhausted" data-testid="revision-exhausted-status">
         <div>
           <p class="revision-exhausted-title">{{ $t('mainPanel.revisionExhaustedTitle') }}</p>
@@ -830,7 +874,7 @@ function dismissCommandHint() {
       </section>
     </template>
     <div ref="workArea" class="work-area" v-show="!showEmptyState" :class="{ split: splitVisible }" data-testid="task-work-area">
-      <div v-for="rect in visiblePanes" :key="rect.pane.id" class="pane-chrome" :style="paneStyle(rect)">
+      <div v-for="rect in visiblePanes" :key="rect.pane.id" class="pane-chrome" :style="paneStyle(rect)" :data-workspace-pane-id="rect.pane.id" tabindex="-1">
         <MainTabBar
           :tabs="tabs.filter(tab => rect.pane.tabs.includes(tab.id)).sort((a, b) => rect.pane.tabs.indexOf(a.id) - rect.pane.tabs.indexOf(b.id))"
           :active-tab-id="rect.pane.active"
@@ -856,7 +900,7 @@ function dismissCommandHint() {
         />
         <div v-if="!rect.pane.tabs.length" class="empty-pane" @click="views?.tabs.focusPane(rect.pane.id)">Drop a tab here or use + to open a view.</div>
       </div>
-      <template v-if="!narrowLayout">
+      <template v-if="!narrowLayout && !views?.tabs.maximizedPaneId.value">
         <div
           v-for="divider in views?.tabs.dividers.value" :key="divider.path"
           class="pane-divider" :style="dividerStyle(divider)"
@@ -909,7 +953,7 @@ function dismissCommandHint() {
             </p>
           </div>
         </section>
-        <AgentHistoryView v-if="selectedAttempt && item" :task-id="item.id" :attempt-id="selectedAttempt" />
+        <AgentHistoryView ref="agentHistoryRef" v-if="selectedAttempt && item" :task-id="item.id" :attempt-id="selectedAttempt" />
         <div v-show="!selectedAttempt" class="agent-live-content">
         <CloudTerminalCache
           :active-terminal="activeCloudTerminal"
@@ -969,7 +1013,7 @@ function dismissCommandHint() {
       </div>
     </template>
     <div v-if="views" class="reference-area" data-testid="reference-area">
-      <div v-for="tab in openViewTabs.filter(tab => tab.kind !== 'preview')" :key="tabKey(tab)" v-show="viewVisible(tab.id)" :style="tabStyle(tab.id)" class="reference-view" @pointerdown.capture="selectTab(tab.id)" @focusin="selectTab(tab.id)">
+      <div v-for="tab in openViewTabs.filter(tab => tab.kind !== 'preview')" :key="tabKey(tab)" v-show="viewVisible(tab.id)" :style="tabStyle(tab.id)" class="reference-view" :data-main-tab-id="tab.id" tabindex="-1" @pointerdown.capture="selectTab(tab.id)" @focusin="selectTab(tab.id)">
         <DiffModal
           v-if="tab.kind === 'diff' && diffViewProps"
           :ref="(component) => setViewRef(tab.id, component)"

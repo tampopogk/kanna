@@ -1024,7 +1024,6 @@ const TabHostMainPanelStub = defineComponent({
   name: "MainPanel",
   props: {
     views: { type: Object, required: false, default: undefined },
-    maximized: { type: Boolean, default: false },
   },
   setup(props, { expose }) {
     const viewRefs = new Map<string, { dismiss?: () => boolean; cycleTab?: (d: -1 | 1) => void }>();
@@ -1047,7 +1046,7 @@ const TabHostMainPanelStub = defineComponent({
     return { setViewRef };
   },
   template: `
-    <div data-testid="main-panel">
+    <div data-testid="main-panel" :data-maximized-pane-id="views?.tabs.maximizedPaneId.value || ''">
       <span
         v-for="tab in (views ? views.tabs.tabs.value : [])"
         :key="tab.id"
@@ -1063,7 +1062,6 @@ const TabHostMainPanelStub = defineComponent({
           :initial-scroll-positions="views.modals.currentDiffViewState.value?.scrollPositions"
           :initial-branch-include="views.modals.currentDiffViewState.value?.branchInclude"
           :view-key="views.modals.currentDiffViewKey.value"
-          :maximized="maximized"
           embedded
           @scope-change="(scope) => views.modals.updateCurrentDiffViewState({ scope })"
           @scroll-state-change="(p) => views.modals.updateCurrentDiffViewState({ scrollPositions: p })"
@@ -1088,7 +1086,6 @@ const TabHostMainPanelStub = defineComponent({
           v-show="views.tabs.activeTabId.value === tab.id"
           :worktree-path="views.modals.treeExplorerRoot.value"
           :repo-root="views.modals.activeRepoPath.value || ''"
-          :maximized="maximized"
           embedded
           :active="views.tabs.activeTabId.value === tab.id"
           @open-file="(f) => views.modals.openFilePreview(f)"
@@ -7250,7 +7247,7 @@ describe("App", () => {
     expect(wrapper.find('[data-testid="commit-graph-modal"]').exists()).toBe(true);
   });
 
-  it("passes maximize state through to the tree explorer modal", async () => {
+  it("maximizes the selected pane without hiding the sidebar or maximizing the view", async () => {
     const wrapper = await mountAppWithOverrides(SidebarWithRepoStub, {
       MainPanel: TabHostMainPanelStub,
       TreeExplorerModal: TreeExplorerModalTestStub,
@@ -7267,7 +7264,9 @@ describe("App", () => {
     capturedKeyboardActions?.toggleMaximize();
     await flushPromises();
 
-    expect(wrapper.get('[data-testid="tree-explorer-modal"]').attributes("data-maximized")).toBe("true");
+    expect(wrapper.get('[data-testid="tree-explorer-modal"]').attributes("data-maximized")).toBe("false");
+    expect(wrapper.get('[data-testid="main-panel"]').attributes("data-maximized-pane-id")).toBe("pane-1");
+    expect(wrapper.find('[data-testid="sidebar-shell"]').exists()).toBe(true);
   });
 
   
@@ -7298,7 +7297,7 @@ describe("App", () => {
     wrapper.unmount();
   });
 
-  it("clears main-area maximize when the tab that was maximized closes", async () => {
+  it("restores pane maximize without changing the native workspace frame", async () => {
     const TreeExplorerClosableStub = defineComponent({
       name: "TreeExplorerModal",
       emits: ["close"],
@@ -7322,14 +7321,13 @@ describe("App", () => {
     capturedKeyboardActions?.toggleMaximize();
     await flushPromises();
 
-    // Maximizing hides the sidebar; it is the main area that is maximized,
-    // not the individual view.
-    expect(wrapper.find('[data-testid="sidebar-shell"]').exists()).toBe(false);
+    expect(wrapper.get('[data-testid="main-panel"]').attributes("data-maximized-pane-id")).toBe("pane-1");
+    expect(wrapper.find('[data-testid="sidebar-shell"]').exists()).toBe(true);
 
-    await wrapper.get('[data-testid="close-tree-explorer"]').trigger("click");
+    capturedKeyboardActions?.toggleMaximize();
     await flushPromises();
 
-    // With nothing left in the main area, maximize has nothing to mean.
+    expect(wrapper.get('[data-testid="main-panel"]').attributes("data-maximized-pane-id")).toBe("");
     expect(wrapper.find('[data-testid="sidebar-shell"]').exists()).toBe(true);
 
     wrapper.unmount();

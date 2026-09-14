@@ -201,6 +201,50 @@ describe("useMainTabs", () => {
     expect(tabs.activeTabId.value).toBe("shell");
   });
 
+  it("cycles panes in displayed traversal order and activates each pane's tab", () => {
+    const { tabs } = setup();
+    tabs.openTab({ kind: "diff" });
+    tabs.splitPane("pane-1", "horizontal");
+
+    expect(tabs.panes.value.map(({ pane }) => pane.id)).toEqual(["pane-1", "pane-2"]);
+    expect(tabs.activeTabId.value).toBe("diff");
+
+    expect(tabs.cyclePane(-1)).toBe("pane-1");
+    expect(tabs.activeTabId.value).toBe(AGENT_TAB_ID);
+    expect(tabs.cyclePane(1)).toBe("pane-2");
+    expect(tabs.activeTabId.value).toBe("diff");
+  });
+
+  it("maximizes only the selected pane and restores the unchanged split state", () => {
+    const { tabs } = setup();
+    tabs.openTab({ kind: "diff" });
+    tabs.splitPane("pane-1", "horizontal");
+    const before = tabs.snapshotScopes();
+
+    expect(tabs.toggleMaximizedPane()).toBe("pane-2");
+    expect(tabs.maximizedPaneId.value).toBe("pane-2");
+    expect(tabs.panes.value).toHaveLength(2);
+    expect(tabs.snapshotScopes()).toEqual(before);
+
+    expect(tabs.toggleMaximizedPane()).toBeNull();
+    expect(tabs.maximizedPaneId.value).toBeNull();
+    expect(tabs.panes.value).toHaveLength(2);
+    expect(tabs.snapshotScopes()).toEqual(before);
+  });
+
+  it("moves a maximized selection through pane focus and pane removal", () => {
+    const { tabs } = setup();
+    tabs.openTab({ kind: "diff" });
+    tabs.splitPane("pane-1", "horizontal");
+    tabs.toggleMaximizedPane();
+
+    tabs.cyclePane(-1);
+    expect(tabs.maximizedPaneId.value).toBe("pane-1");
+    tabs.closePane("pane-1");
+    expect(tabs.maximizedPaneId.value).toBe("pane-2");
+    expect(tabs.activeTabId.value).toBe(AGENT_TAB_ID);
+  });
+
   it("reports the shortcut context of the active tab", () => {
     const { tabs } = setup();
 

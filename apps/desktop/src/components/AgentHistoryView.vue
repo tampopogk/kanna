@@ -4,6 +4,7 @@ import { readAgentTerminalArchive } from "../services/desktopServerClient";
 import { renderTerminalArchive } from "../composables/renderTerminalArchive";
 const props = defineProps<{ taskId: string; attemptId: string }>();
 const body = ref<HTMLElement | null>(null);
+const output = ref<HTMLElement | null>(null);
 const text = ref("");
 const status = ref("Loading historical output…");
 let request = 0;
@@ -28,10 +29,15 @@ watch(() => [props.taskId, props.attemptId], async ([task, attempt]) => {
   }
 }, { immediate: true });
 onBeforeUnmount(() => { request++; });
+function focusContent(): boolean {
+  (output.value ?? body.value)?.focus({ preventScroll: true });
+  return document.activeElement === (output.value ?? body.value);
+}
+defineExpose({ focusContent });
 </script>
 <template>
   <section ref="body" class="agent-history" aria-label="Read-only historical agent output" data-testid="agent-history">
-    <pre tabindex="0">{{ text }}</pre>
+    <pre ref="output" tabindex="0">{{ text }}</pre>
     <p role="status">{{ status }}</p>
   </section>
 </template>

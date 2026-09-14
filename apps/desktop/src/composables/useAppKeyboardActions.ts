@@ -45,7 +45,6 @@ interface UseAppKeyboardActionsOptions {
   showFilePickerModal: Ref<boolean>;
   showCommandPalette: Ref<boolean>;
   showPeerPicker: Ref<boolean>;
-  maximizedModal: Ref<ShortcutContext | null>;
   sidebarHidden: Ref<boolean>;
   sidebarRef: Ref<InstanceType<typeof Sidebar> | null>;
   openNewTaskModal: () => Promise<void>;
@@ -93,7 +92,6 @@ export function useAppKeyboardActions(options: UseAppKeyboardActionsOptions) {
     showFilePickerModal,
     showCommandPalette,
     showPeerPicker,
-    maximizedModal,
     sidebarHidden,
     sidebarRef,
     openNewTaskModal,
@@ -293,8 +291,8 @@ export function useAppKeyboardActions(options: UseAppKeyboardActionsOptions) {
     navigateRepoDown: () => navigateRepos(1),
     toggleSidebar: () => { sidebarHidden.value = !sidebarHidden.value; },
     toggleMaximize: () => {
-      const ctx = activeSurfaceContext();
-      maximizedModal.value = maximizedModal.value === ctx ? null : ctx;
+      const paneId = mainTabs.toggleMaximizedPane();
+      void mainPanelRef.value?.focusActivePaneContent?.(paneId ?? undefined);
     },
     dismiss: () => {
       // Dialogs first, in stacking order; the main area's tabs are below all
@@ -396,6 +394,14 @@ export function useAppKeyboardActions(options: UseAppKeyboardActionsOptions) {
     },
     prevTab: () => { cycleTabs(-1); },
     nextTab: () => { cycleTabs(1); },
+    previousPane: () => {
+      const paneId = mainTabs.cyclePane(-1);
+      if (paneId) void mainPanelRef.value?.focusActivePaneContent?.(paneId);
+    },
+    nextPane: () => {
+      const paneId = mainTabs.cyclePane(1);
+      if (paneId) void mainPanelRef.value?.focusActivePaneContent?.(paneId);
+    },
     focusSearch: () => {
       if (tabInFrontOwns(SEARCH_BOUND_BY_VIEW)) return;
       sidebarRef.value?.focusSearch();

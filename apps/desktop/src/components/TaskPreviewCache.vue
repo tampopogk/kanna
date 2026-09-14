@@ -1,11 +1,12 @@
 <script setup lang="ts">
-import { ref, watch, type CSSProperties } from "vue";
+import { ref, watch, type ComponentPublicInstance, type CSSProperties } from "vue";
 import TaskPreviewView from "./TaskPreviewView.vue";
 
 interface PreviewEntry { key: string; taskId: string; portName: string; workspace: string; supported: boolean; style?: CSSProperties }
 const props = defineProps<{ visibleEntries: PreviewEntry[]; workspaces: Record<string, string> }>();
 const emit = defineEmits<{ (e: "activate", key: string): void }>();
 const entries = ref<PreviewEntry[]>([]);
+const viewRefs = new Map<string, { focusContent: () => boolean }>();
 const recency = new Map<string, number>();
 let sequence = 0;
 watch(() => props.visibleEntries, visible => {
@@ -28,13 +29,21 @@ watch(() => props.workspaces, workspaces => {
     if (workspaces[cached.taskId] !== cached.workspace) discard(cached.key);
   }
 }, { deep: true });
-function discard(key: string) { recency.delete(key); entries.value = entries.value.filter(entry => entry.key !== key); }
-defineExpose({ discard });
+function setViewRef(key: string, component: Element | ComponentPublicInstance | null) {
+  if (component && "focusContent" in component) {
+    viewRefs.set(key, component as ComponentPublicInstance & { focusContent: () => boolean });
+  }
+  else viewRefs.delete(key);
+}
+function focus(key: string): boolean { return viewRefs.get(key)?.focusContent() ?? false; }
+function discard(key: string) { recency.delete(key); viewRefs.delete(key); entries.value = entries.value.filter(entry => entry.key !== key); }
+defineExpose({ discard, focus });
 </script>
 <template>
   <div class="preview-cache">
     <TaskPreviewView
       v-for="cached in entries" :key="cached.key"
+      :ref="component => setViewRef(cached.key, component)"
       v-show="visibleEntries.some(entry => entry.key === cached.key)"
       :style="visibleEntries.find(entry => entry.key === cached.key)?.style"
       :task-id="cached.taskId" :port-name="cached.portName"

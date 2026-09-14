@@ -98,6 +98,7 @@ vi.mock("../../services/desktopServerClient", () => ({
   openTerminalEditor: openTerminalEditorMock,
   readDesktopTaskFile: readTaskFileMock,
   listDesktopTaskDirectory: listTaskDirectoryMock,
+  readAgentTerminalArchive: vi.fn().mockResolvedValue(null),
 }));
 
 describe("MainPanel", () => {
@@ -123,6 +124,139 @@ describe("MainPanel", () => {
     });
     vi.stubGlobal("__KANNA_MOBILE__", false);
     localStorage.clear();
+  });
+
+  it("projects only a maximized pane, restores the split, and focuses selected pane content", async () => {
+    const tabs = useMainTabs({ scopeKey: computed(() => "item:task-a") });
+    tabs.openTab({ kind: "file", filePath: "focus.md" });
+    tabs.splitPane("pane-1", "horizontal");
+    const resizeObserver = globalThis.ResizeObserver;
+    vi.stubGlobal("ResizeObserver", class {
+      constructor(private callback: ResizeObserverCallback) {}
+      observe() { this.callback([{ contentRect: { width: 1200 } }] as ResizeObserverEntry[], this as unknown as ResizeObserver); }
+      disconnect() {}
+      unobserve() {}
+    });
+    const { default: MainPanel } = await import("../MainPanel.vue");
+    const wrapper = mount(MainPanel, {
+      props: {
+        uiSlot: readySlot(durableTask({ id: "task-a" })), repoPath: "/repo", hasRepos: true,
+        views: {
+          tabs,
+          modals: {
+            activeTaskViewIsRemote: computed(() => false),
+            activeWorktreePath: computed(() => "/repo/task-a"),
+            currentPreviewMarkdownMode: computed(() => "raw"),
+            homePath: computed(() => "/home/tester"),
+          },
+          store: { worktreePaths: { "task-a": "/repo/task-a" } },
+        } as unknown as MainTabViewsController,
+      },
+      attachTo: document.body,
+      global: {
+        mocks: { $t: (key: string) => key },
+        stubs: {
+          TaskHeader: true,
+          MainTabBar: true,
+          TerminalTabs: true,
+          FilePreviewModal: { template: '<div data-testid="pane-file-focus" tabindex="-1"></div>' },
+        },
+      },
+    });
+    try {
+      await flushPromises();
+      expect(wrapper.findAll(".pane-chrome")).toHaveLength(2);
+      expect(wrapper.findAll('[role="separator"]')).toHaveLength(1);
+      const layoutBefore = tabs.snapshotScopes();
+
+      tabs.toggleMaximizedPane();
+      await flushPromises();
+      expect(wrapper.findAll(".pane-chrome")).toHaveLength(1);
+      expect(wrapper.findAll('[role="separator"]')).toHaveLength(0);
+      expect(wrapper.get<HTMLElement>(".pane-chrome").element.style.width).toBe("100%");
+      expect(tabs.panes.value).toHaveLength(2);
+      expect(tabs.snapshotScopes()).toEqual(layoutBefore);
+
+      tabs.toggleMaximizedPane();
+      await flushPromises();
+      expect(wrapper.findAll('[role="separator"]')).toHaveLength(1);
+      expect(tabs.snapshotScopes()).toEqual(layoutBefore);
+      tabs.cyclePane(-1);
+      tabs.cyclePane(1);
+      await (wrapper.vm as unknown as { focusActivePaneContent: () => Promise<void> }).focusActivePaneContent();
+      expect(wrapper.findAll(".pane-chrome")).toHaveLength(2);
+      expect(document.activeElement).toBe(wrapper.get('[data-testid="pane-file-focus"]').element);
+    } finally {
+      wrapper.unmount();
+      vi.stubGlobal("ResizeObserver", resizeObserver);
+    }
+  });
+
+  it("focuses cached preview content when pane cycling selects its tab", async () => {
+    const task = durableTask({ id: "task-a" });
+    const tabs = useMainTabs({ scopeKey: computed(() => "item:task-a") });
+    tabs.openTab({ kind: "preview", portName: "WEB_PORT" });
+    tabs.splitPane("pane-1", "horizontal");
+    const resizeObserver = globalThis.ResizeObserver;
+    vi.stubGlobal("ResizeObserver", class {
+      constructor(private callback: ResizeObserverCallback) {}
+      observe() { this.callback([{ contentRect: { width: 1200 } }] as ResizeObserverEntry[], this as unknown as ResizeObserver); }
+      disconnect() {}
+      unobserve() {}
+    });
+    const { default: MainPanel } = await import("../MainPanel.vue");
+    const wrapper = mount(MainPanel, {
+      props: {
+        uiSlot: readySlot(task), repoPath: "/repo", hasRepos: true,
+        views: {
+          tabs,
+          modals: {
+            activeTaskViewIsRemote: computed(() => false),
+            activeWorktreePath: computed(() => "/repo/task-a"),
+            homePath: computed(() => "/home/tester"),
+          },
+          store: { items: [task], worktreePaths: { "task-a": "/repo/task-a" } },
+        } as unknown as MainTabViewsController,
+      },
+      attachTo: document.body,
+      global: { mocks: { $t: (key: string) => key }, stubs: { TaskHeader: true, MainTabBar: true, TerminalTabs: true } },
+    });
+    try {
+      await flushPromises();
+      tabs.cyclePane(-1);
+      tabs.cyclePane(1);
+      await (wrapper.vm as unknown as { focusActivePaneContent: (id: string) => Promise<void> }).focusActivePaneContent("pane-2");
+      expect(document.activeElement).toBe(wrapper.get('[data-testid="task-preview"]').element);
+    } finally {
+      wrapper.unmount();
+      vi.stubGlobal("ResizeObserver", resizeObserver);
+    }
+  });
+
+  it("focuses archived output instead of the inactive live terminal", async () => {
+    const tabs = useMainTabs({ scopeKey: computed(() => "item:task-a") });
+    const { default: MainPanel } = await import("../MainPanel.vue");
+    const wrapper = mount(MainPanel, {
+      props: {
+        uiSlot: readySlot(durableTask({ id: "task-a" })), repoPath: "/repo", hasRepos: true,
+        views: {
+          tabs,
+          modals: { activeTaskViewIsRemote: computed(() => false), homePath: computed(() => "/home/tester") },
+          store: {},
+        } as unknown as MainTabViewsController,
+      },
+      attachTo: document.body,
+      global: { mocks: { $t: (key: string) => key }, stubs: { TaskHeader: true, MainTabBar: true, TerminalTabs: true } },
+    });
+    try {
+      await flushPromises();
+      (wrapper.vm as unknown as { selectAttempt: (id: string) => void }).selectAttempt("prior-run");
+      await flushPromises();
+      await (wrapper.vm as unknown as { focusActivePaneContent: (id: string) => Promise<void> }).focusActivePaneContent("pane-1");
+      expect(document.activeElement).toBe(wrapper.get('[data-testid="agent-history"] pre').element);
+    } finally {
+      wrapper.unmount();
+    }
   });
 
   it.each([

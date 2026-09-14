@@ -30,6 +30,8 @@ export type ActionName =
   | "showDiff"
   | "showCommitGraph"
   | "toggleMaximize"
+  | "previousPane"
+  | "nextPane"
   | "showShortcuts"
   | "showAllShortcuts"
   | "toggleSidebar"
@@ -107,6 +109,8 @@ export const shortcuts: ShortcutDef[] = [
   { action: "navigateDown",   labelKey: "shortcuts.nextTask",       groupKey: "shortcuts.groupMoveAround", key: "ArrowDown",                 meta: true, alt: true,    display: "⌥⌘↓",     context: ["main"] },
   { action: "navigateRepoUp",   labelKey: "shortcuts.previousRepo",   groupKey: "shortcuts.groupMoveAround", key: "ArrowUp",                   meta: true, shift: true,  display: "⇧⌘↑",     context: ["main"] },
   { action: "navigateRepoDown", labelKey: "shortcuts.nextRepo",       groupKey: "shortcuts.groupMoveAround", key: "ArrowDown",                 meta: true, shift: true,  display: "⇧⌘↓",     context: ["main"] },
+  { action: "previousPane", labelKey: "shortcuts.previousPane", groupKey: "shortcuts.groupMoveAround", key: "ArrowLeft", meta: true, alt: true, display: "⌥⌘←", context: PREVIEW_MODAL_CONTEXTS },
+  { action: "nextPane", labelKey: "shortcuts.nextPane", groupKey: "shortcuts.groupMoveAround", key: "ArrowRight", meta: true, alt: true, display: "⌥⌘→", context: PREVIEW_MODAL_CONTEXTS },
   // Tools — open task and repo tools
   { action: "openFile",       labelKey: "shortcuts.filePicker",     groupKey: "shortcuts.groupOpenInspect", key: "p",                         meta: true,               display: "⌘P",       context: PREVIEW_MODAL_CONTEXTS },
   { action: "openLatestFileLink", labelKey: "shortcuts.openLatestAgentFile", groupKey: "shortcuts.groupOpenInspect", key: "l", meta: true, display: "⌘L", context: PREVIEW_MODAL_CONTEXTS },
@@ -122,7 +126,7 @@ export const shortcuts: ShortcutDef[] = [
   { action: "closeWindow",  labelKey: "shortcuts.closeWindow",  groupKey: "shortcuts.groupWorkspace", key: ["W", "w"],                     meta: true, shift: true,  display: "⇧⌘W",     context: ["main", "diff", "file", "shell", "preview", "tree", "graph", "newTask", "transfer"] },
   // Views — layout and framing controls
   { action: "toggleSidebar", labelKey: "shortcuts.toggleSidebar", groupKey: "shortcuts.groupWorkspace", key: "b",                            meta: true,               display: "⌘B",       context: ["main"] },
-  { action: "toggleMaximize", labelKey: "shortcuts.maximize",       groupKey: "shortcuts.groupWorkspace", key: "Enter",                     meta: true, shift: true,  display: "⇧⌘Enter", context: ["main", "diff", "file", "shell", "preview", "tree"] },
+  { action: "toggleMaximize", labelKey: "shortcuts.maximize",       groupKey: "shortcuts.groupWorkspace", key: "Enter",                     meta: true, shift: true,  display: "⇧⌘Enter", context: PREVIEW_MODAL_CONTEXTS },
   { action: "goBack",       labelKey: "shortcuts.goBack",         groupKey: "shortcuts.groupMoveAround", key: "-",                            ctrl: true,               display: "⌃-",       context: ["main"] },
   { action: "goForward",    labelKey: "shortcuts.goForward",      groupKey: "shortcuts.groupMoveAround", key: ["_", "-"],                     ctrl: true, shift: true,  display: "⌃⇧-",     context: ["main"] },
   { action: "toggleTreeExplorer", labelKey: "shortcuts.treeExplorer", groupKey: "shortcuts.groupOpenInspect", key: ["E", "e"], meta: true, shift: true, display: "⇧⌘E", context: PREVIEW_MODAL_CONTEXTS },
