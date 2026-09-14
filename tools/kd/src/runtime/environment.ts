@@ -3,6 +3,7 @@ export type CloudEnvironmentName = "staging" | "production";
 export type ClientBuildIdentity = "dev" | "staging" | "production";
 export type DesktopOwnerEnvironment = "worktree" | "staging" | "production";
 export type CloudTarget = "emulators" | "staging" | "production";
+export type RelayEntitlementEnforcement = "off" | "on";
 
 export interface KdEnvironmentProfile {
   clientBuild: ClientBuildIdentity;
@@ -29,6 +30,8 @@ export interface KdEnvironmentIdentity {
   relayDomain?: string;
   gceVmName?: string;
   artifactRegistryImage?: string;
+  /** Environment-owned deploy policy. Omission means off; changes require owner authorization. */
+  relayEntitlementEnforcement?: RelayEntitlementEnforcement;
   /**
    * Reserved static external IP resource name in GCP. Explicit per env so it
    * matches the actual reservation (prod `kanna-relay-ip`, staging
@@ -53,6 +56,7 @@ const environmentRegistry: Record<KdEnvironmentName, KdEnvironmentIdentity> = {
     otaChannel: "staging",
     relayDomain: "relay-staging.kanna.build",
     gceVmName: "kanna-relay-staging",
+    relayEntitlementEnforcement: "off",
     artifactRegistryImage: "us-central1-docker.pkg.dev/kanna-staging/kanna-relay/relay:latest",
     staticIpName: "relay-staging-ip"
   },
@@ -65,6 +69,7 @@ const environmentRegistry: Record<KdEnvironmentName, KdEnvironmentIdentity> = {
     otaChannel: "production",
     relayDomain: "relay.kanna.build",
     gceVmName: "kanna-relay-vm",
+    relayEntitlementEnforcement: "off",
     artifactRegistryImage: "us-central1-docker.pkg.dev/kanna-build/kanna-relay/relay:latest",
     staticIpName: "kanna-relay-ip"
   }
@@ -206,6 +211,18 @@ export function applyEnvironmentProfile(
 
 export function resolveKdEnvironment(name: KdEnvironmentName): KdEnvironmentIdentity {
   return environmentRegistry[name];
+}
+
+export function resolveRelayEntitlementEnforcement(identity: KdEnvironmentIdentity): {
+  value: RelayEntitlementEnforcement;
+  source: string;
+} {
+  const value = identity.relayEntitlementEnforcement;
+  const source = `tools/kd/src/runtime/environment.ts#${identity.name}.relayEntitlementEnforcement`;
+  if (value !== undefined && value !== "off" && value !== "on") {
+    throw new Error(`${source} must be off or on; omission defaults to off.`);
+  }
+  return { value: value ?? "off", source: value === undefined ? `${source} (default off)` : source };
 }
 
 export function cloudEnvironmentToKdEnvironment(environment: CloudEnvironmentName): KdEnvironmentName {

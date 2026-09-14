@@ -504,6 +504,7 @@ const cloudDeployInputSchema = z.object({
   relay: z.boolean().default(false),
   functions: z.boolean().default(false),
   portal: z.boolean().default(false),
+  dryRun: z.boolean().default(false),
   ref: z.string().optional()
 });
 
@@ -3419,12 +3420,13 @@ export const taskDefinitions = [
           relay: parsed.relay,
           functions: parsed.functions,
           portal: parsed.portal,
+          dryRun: parsed.dryRun,
           ref: parsed.ref
         });
         return {
           ok: true,
           message: [
-            `Deployed ${environment} ${[
+            `${result.dryRun ? "Planned" : "Deployed"} ${environment} ${[
               ...result.targets,
               ...(result.relay ? ["relay"] : [])
             ].join(", ")} to ${result.projectId} from ${result.source.ref} (${result.source.shortCommit}).`,

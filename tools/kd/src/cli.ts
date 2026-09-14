@@ -1071,7 +1071,8 @@ export function parseCliArgs(args: string[]): ParsedCliCommand {
         production: false,
         relay: false,
         functions: false,
-        portal: false
+        portal: false,
+        dryRun: false
       })
     };
   }
@@ -1226,7 +1227,7 @@ const helpTopics: Record<string, string[]> = {
     "  release cut --version X.Y.0 --recut --reason <why> --confirm-recut <staging-version|empty> --confirm-old-tip <sha> [--dry-run]",
     "  release reset-staging --to main|release/X.Y --reason <why> --confirm-abandon <staging-version> [--dry-run]",
     "  release status",
-    "  cloud deploy --staging|--production [--ref <branch|tag|sha>] [--functions] [--portal] [--relay]",
+    "  cloud deploy --staging|--production [--ref <branch|tag|sha>] [--functions] [--portal] [--relay] [--dry-run]",
     "  cloud relay-provision --staging|--production",
     "  relay stats --staging|--production [--open] [--dry-run]",
     "  pages build-schema --out-dir <dir>",
@@ -1744,11 +1745,11 @@ const helpTopics: Record<string, string[]> = {
     "Usage: kd cloud <command>",
     "",
     "Commands:",
-    "  cloud deploy --staging|--production [--ref <branch|tag|sha>] [--functions] [--portal] [--relay]",
+    "  cloud deploy --staging|--production [--ref <branch|tag|sha>] [--functions] [--portal] [--relay] [--dry-run]",
     "  cloud relay-provision --staging|--production"
   ],
   "cloud deploy": [
-    "Usage: kd cloud deploy --staging|--production [--ref <branch|tag|sha>] [--functions] [--portal] [--relay]",
+    "Usage: kd cloud deploy --staging|--production [--ref <branch|tag|sha>] [--functions] [--portal] [--relay] [--dry-run]",
     "",
     "Deploy Kanna Firebase cloud services.",
     "",
@@ -1760,7 +1761,12 @@ const helpTopics: Record<string, string[]> = {
     "  --portal                Build and deploy the web account portal.",
     "  --relay                 Build and deploy only the relay VM image unless combined with",
     "                          another explicit target. With no target flag, deploy Firestore",
-    "                          rules, indexes, and the account portal."
+    "                          rules, indexes, and the account portal.",
+    "  --dry-run               With --relay as the only target, report project, source and",
+    "                          entitlement policy from the kd environment registry locally.",
+    "                          No build, remote inspection or deployment is performed.",
+    "Relay entitlement policy is environment-owned in tools/kd/src/runtime/environment.ts;",
+    "only off/on are accepted, omission defaults off, and shell/VM flags do not override it."
   ],
   "cloud relay-provision": [
     "Usage: kd cloud relay-provision --staging|--production",

@@ -1,8 +1,8 @@
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { describe, expect, it } from "vitest";
-import { parseCliArgs } from "../src/cli";
+import { describe, expect, it, vi } from "vitest";
+import { parseCliArgs, runCli } from "../src/cli";
 import {
   buildRelayDeployPlan,
   buildRelayProvisionPlan,
@@ -17,7 +17,7 @@ import {
   resolveWebPortalBuildEnvironment,
   warnIfRelayStatsSecretIamMissing
 } from "../src/runtime/cloud-deploy";
-import type { CommandRunner } from "../src/runtime/process";
+import { nodeCommandRunner, type CommandRunner } from "../src/runtime/process";
 
 const HEAD_COMMIT = "1f2e3d4c5b6a79880123456789abcdef01234567";
 const SHORT_COMMIT = HEAD_COMMIT.slice(0, 12);
@@ -49,6 +49,50 @@ function gitSourceResult(
 }
 
 describe("cloud deploy runtime", () => {
+  it("routes relay dry-run through CLI/schema and reports Planned without remote commands", async () => {
+    const repoRoot = resolve(import.meta.dirname, "..", "..", "..");
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    const runner = vi.spyOn(nodeCommandRunner, "run").mockImplementation(async (command, args) => {
+      if (command !== "git") throw new Error(`Unexpected non-local command: ${command}`);
+      if (args.includes("--show-toplevel")) return { exitCode: 0, stdout: repoRoot, stderr: "" };
+      return gitSourceResult(command, args) ?? { exitCode: 0, stdout: "", stderr: "" };
+    });
+    vi.stubEnv("KANNA_FIREBASE_STAGING_PROJECT", "kanna-staging");
+    try {
+      await expect(runCli(["cloud", "deploy", "--staging", "--relay", "--dry-run"])).resolves.toBe(0);
+      const output = log.mock.calls.map((args) => args.join(" ")).join("\n");
+      expect(output).toContain("Planned staging relay to kanna-staging");
+      expect(output).toContain('"dryRun": true');
+      expect(output).toContain('"value": "off"');
+      expect(output).toContain("#staging.relayEntitlementEnforcement");
+      expect(output).toContain(HEAD_COMMIT);
+      expect(runner.mock.calls.every(([command]) => command === "git")).toBe(true);
+    } finally {
+      vi.restoreAllMocks();
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("refuses a cross-environment .firebaserc relay selection before remote work", async () => {
+    const repoRoot = mkdtempSync(join(tmpdir(), "kd-cloud-deploy-"));
+    writeFileSync(join(repoRoot, ".firebaserc"), JSON.stringify({ projects: { production: "kanna-staging" } }));
+    const calls: string[] = [];
+    const runner: CommandRunner = {
+      async run(command, args) {
+        calls.push(command);
+        return gitSourceResult(command, args) ?? { exitCode: 0, stdout: "", stderr: "" };
+      }
+    };
+    try {
+      await expect(deployFirebaseCloud({
+        repoRoot, runner, env: {}, environment: "production", relay: true, ref: "release/0.2", dryRun: true
+      })).rejects.toThrow("Refusing a cross-project relay deploy");
+      expect(calls.every((command) => command === "git")).toBe(true);
+    } finally {
+      rmSync(repoRoot, { recursive: true, force: true });
+    }
+  });
+
   it("derives the deployed public function services from the real source entrypoint", () => {
     const repoRoot = resolve(import.meta.dirname, "..", "..", "..");
     const source = readFileSync(
@@ -683,11 +727,11 @@ describe("cloud deploy runtime", () => {
   it("parses --functions for cloud deploy", () => {
     expect(parseCliArgs(["cloud", "deploy", "--staging", "--functions"])).toEqual({
       taskId: "cloud.deploy",
-      input: { staging: true, production: false, relay: false, functions: true, portal: false }
+      input: { staging: true, production: false, relay: false, functions: true, portal: false, dryRun: false }
     });
     expect(parseCliArgs(["cloud", "deploy", "--staging"])).toEqual({
       taskId: "cloud.deploy",
-      input: { staging: true, production: false, relay: false, functions: false, portal: false }
+      input: { staging: true, production: false, relay: false, functions: false, portal: false, dryRun: false }
     });
   });
 
@@ -895,6 +939,7 @@ describe("cloud deploy runtime", () => {
             "KANNA_RELAY_DOMAIN=relay.kanna.build",
             "FIREBASE_PROJECT_ID=kanna-build",
             "KANNA_RELAY_IMAGE=us-central1-docker.pkg.dev/kanna-build/kanna-relay/relay:latest",
+            "KANNA_RELAY_ENTITLEMENT_ENFORCEMENT=off",
             "KANNA_OTA_BUCKET=kanna-build.firebasestorage.app",
             "KANNA_OTA_KEY_ID=kanna-mobile-ota-v1",
             "KANNA_OTA_PRIVATE_KEY_PATH=/run/secrets/kanna_ota_private_key.pem",
@@ -1034,6 +1079,11 @@ describe("cloud deploy runtime", () => {
       });
 
       expect(result).toEqual({
+        environment: "production",
+        entitlementEnforcement: {
+          value: "off",
+          source: "tools/kd/src/runtime/environment.ts#prod.relayEntitlementEnforcement"
+        },
         projectId: "kanna-build",
         vmName: "kanna-relay-vm",
         zone: "us-central1-a",
@@ -1142,6 +1192,7 @@ describe("cloud deploy runtime", () => {
               "KANNA_RELAY_DOMAIN=relay.kanna.build",
               "FIREBASE_PROJECT_ID=kanna-build",
               "KANNA_RELAY_IMAGE=us-central1-docker.pkg.dev/kanna-build/kanna-relay/relay:latest",
+              "KANNA_RELAY_ENTITLEMENT_ENFORCEMENT=off",
               "KANNA_OTA_BUCKET=kanna-build.firebasestorage.app",
               "KANNA_OTA_KEY_ID=kanna-mobile-ota-v1",
               "KANNA_OTA_PRIVATE_KEY_PATH=/run/secrets/kanna_ota_private_key.pem",
@@ -1202,7 +1253,7 @@ describe("cloud deploy runtime", () => {
   it("parses --ref for cloud deploy", () => {
     expect(parseCliArgs(["cloud", "deploy", "--production", "--relay", "--ref", "release/0.2"])).toEqual({
       taskId: "cloud.deploy",
-      input: { staging: false, production: true, relay: true, functions: false, portal: false, ref: "release/0.2" }
+      input: { staging: false, production: true, relay: true, functions: false, portal: false, dryRun: false, ref: "release/0.2" }
     });
     expect(() => parseCliArgs(["cloud", "deploy", "--production", "--ref"])).toThrow("--ref requires a value");
   });

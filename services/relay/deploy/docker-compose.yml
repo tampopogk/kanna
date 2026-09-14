@@ -12,8 +12,8 @@ services:
       # (the VM's attached service account). Set it only for a key-based deploy.
       GOOGLE_APPLICATION_CREDENTIALS_JSON: ${GOOGLE_APPLICATION_CREDENTIALS_JSON:-}
       # Entitlement enforcement (docs/specs/accounts-and-billing.md, Decision
-      # 5). Off until the Slice-3 flag day: the deploy writes no value for it,
-      # so this default is what every environment runs. Declared here because a
+      # 5). kd writes the selected environment registry's off/on policy on every
+      # deploy; omission in that registry defaults off. Declared here because a
       # variable absent from this block never reaches the container, however
       # carefully it was written into /opt/kanna-relay/.env.
       KANNA_RELAY_ENTITLEMENT_ENFORCEMENT: ${KANNA_RELAY_ENTITLEMENT_ENFORCEMENT:-off}
