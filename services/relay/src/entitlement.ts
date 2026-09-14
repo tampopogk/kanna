@@ -275,6 +275,7 @@ export async function resolveEntitlement(
   userId: string,
 ): Promise<EntitlementRecord | null | undefined> {
   const watched = watchedEntitlements.get(userId);
+  if (watched && !watched.stop) return watched.reconcile();
   if (watched?.ready) return watched.record;
   const nowMs = Date.now();
   const cached = cachedEntitlement(userId, nowMs);
@@ -422,7 +423,8 @@ interface WatchedEntitlement {
   ready: boolean;
   record: EntitlementRecord | null | undefined;
   listeners: Set<() => void>;
-  stop(): void;
+  stop: (() => void) | null;
+  reconcile(): Promise<EntitlementRecord | null | undefined>;
   deadline: ReturnType<typeof setTimeout> | null;
 }
 const watchedEntitlements = new Map<string, WatchedEntitlement>();
@@ -430,7 +432,9 @@ const watchedEntitlements = new Map<string, WatchedEntitlement>();
 /** One Firestore listener per connected account, owned by its live sockets.
  * Billing writes invalidate both enforcement and capability advertisements.
  * Grace has one deadline (not a poll); final socket cleanup releases both.
- * A failed listener reports unknown and fails open, like an unavailable read.
+ * A terminal listener failure reports unknown and fails open. The next check
+ * or joining socket reconciles through a read and restores the shared listener;
+ * there is no retry timer, and failed reads are never retained as ready state.
  */
 export function observeSessionEntitlement(
   subject: EntitlementSubject,
@@ -440,7 +444,8 @@ export function observeSessionEntitlement(
   let watched = watchedEntitlements.get(subject.userId);
   if (!watched) {
     const entry: WatchedEntitlement = {
-      ready: false, record: undefined, listeners: new Set(), stop: () => undefined, deadline: null,
+      ready: false, record: undefined, listeners: new Set(), stop: null,
+      reconcile: () => Promise.resolve(undefined), deadline: null,
     };
     watched = entry;
     watchedEntitlements.set(subject.userId, entry);
@@ -460,30 +465,66 @@ export function observeSessionEntitlement(
         }, Math.min(ends - Date.now(), 2_147_483_647));
       }
     };
-    entry.stop = getFirebaseServices().db.collection("users").doc(subject.userId)
-      .collection("entitlements").doc("cloud_access").onSnapshot((snapshot) => {
-        entry.record = parseEntitlementRecord(snapshot.exists, snapshot.data());
-        entry.ready = true;
-        invalidateEntitlementCache(subject.userId);
-        scheduleDeadline();
-        notify();
-      }, (error) => {
+    const update = (record: EntitlementRecord | null | undefined) => {
+      entry.record = record;
+      entry.ready = record !== undefined;
+      invalidateEntitlementCache(subject.userId);
+      scheduleDeadline();
+      notify();
+    };
+    const start = () => {
+      let live = true;
+      let unsubscribe: (() => void) | undefined;
+      entry.stop = () => { live = false; unsubscribe?.(); };
+      const failed = (error: unknown) => {
+        if (!live) return;
         console.error(`[entitlement] Account observation failed for ${subject.userId}:`, error);
-        entry.record = undefined;
-        entry.ready = true;
-        invalidateEntitlementCache(subject.userId);
-        scheduleDeadline();
-        notify();
-      });
+        // Firestore shuts this registration down after onError. Retain the
+        // socket subscribers, but never reuse the terminated watch as ready.
+        entry.stop?.();
+        entry.stop = null;
+        update(undefined);
+      };
+      try {
+        unsubscribe = getFirebaseServices().db.collection("users").doc(subject.userId)
+          .collection("entitlements").doc("cloud_access").onSnapshot((snapshot) => {
+            if (live) update(parseEntitlementRecord(snapshot.exists, snapshot.data()));
+          }, failed);
+        if (!live) unsubscribe();
+      } catch (error) {
+        failed(error);
+      }
+    };
+    let recovery: Promise<EntitlementRecord | null | undefined> | null = null;
+    entry.reconcile = () => {
+      recovery ??= (async () => {
+        try {
+          const record = await readEntitlementRecord(subject.userId);
+          // A read finishing after the final socket closes owns no observer.
+          if (watchedEntitlements.get(subject.userId) !== entry) return record;
+          update(record);
+          if (watchedEntitlements.get(subject.userId) === entry) start();
+          return entry.record;
+        } catch (error) {
+          console.error(`[entitlement] Failed to reconcile the entitlement for ${subject.userId}:`, error);
+          return undefined;
+        } finally {
+          recovery = null;
+        }
+      })();
+      return recovery;
+    };
+    start();
   }
   const entry = watched;
   const callback = () => listener(sessionEntitlementFromRecord(subject, entry.record));
   entry.listeners.add(callback);
-  if (entry.ready) callback();
+  if (entry.ready || !entry.stop) callback();
+  if (!entry.stop) void entry.reconcile();
   return () => {
     entry.listeners.delete(callback);
     if (entry.listeners.size) return;
-    entry.stop();
+    entry.stop?.();
     if (entry.deadline) clearTimeout(entry.deadline);
     watchedEntitlements.delete(subject.userId);
     invalidateEntitlementCache(subject.userId);
