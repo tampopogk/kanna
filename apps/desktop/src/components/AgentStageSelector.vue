@@ -29,6 +29,6 @@ const stage = computed(() => (props.selected ? props.attempts.find(attempt => at
 .agent-stage { display: inline-flex; position: relative; align-items: center; gap: 5px; min-width: 0; max-width: 220px; user-select: none; -webkit-user-select: none; }
 .stage-arrow { display: inline-flex; width: 22px; height: 18px; flex: 0 0 22px; align-items: center; justify-content: center; color: var(--kn-text-secondary); }
 .stage-name { overflow: hidden; text-overflow: ellipsis; }
-select { position: absolute; inset: -3px 0; width: 24px; opacity: 0; cursor: pointer; }
+select { position: absolute; inset: -3px 0 -3px auto; width: 24px; opacity: 0; cursor: pointer; }
 .agent-stage:focus-within .stage-arrow { outline: 1px solid var(--kn-accent); border-radius: 2px; }
 </style>
