@@ -331,10 +331,10 @@ kinds, phone ID token and desktop credential:
   "subscription required" rather than a connection fault. `status` is the
   record's own word, or `none` when the account has no entitlement document, or
   `unknown` when the relay did not read one.
-- It is advertised **no** `tunnelServices`, and no `taskSnapshotPublication` or
-  `mobileNotifications` capability — the relay advertises only what it will
-  serve.
-- `tunnel_request`, `task_snapshot_publish` and `mobile_notification_publish`
+- It is advertised **no** `tunnelServices`, `taskSnapshotPublication` or
+  `desktopRouting` capability. Account and anonymous push remain free;
+  `mobileNotifications` stays available to those desktop sessions.
+- `tunnel_request`, `task_snapshot_publish` and paid `invoke` routing
   are refused with `code: 4402` and `error: "entitlement required"`. A tunnel
   socket that reaches the relay anyway is closed with the same code.
 - Nothing is deleted. A published task index simply goes stale and returns on
@@ -347,6 +347,13 @@ kinds, phone ID token and desktop credential:
   not disconnect every paying subscriber.
 
 LAN is unaffected, permanently: it involves no account and no relay.
+
+Current local billing-to-relay evidence, compatible source contracts and the
+remaining provider/release approvals are recorded in the
+[paid-cloud launch handoff](ops/paid-cloud-launch.md). Opted-in control clients
+receive updated `auth_ok` capabilities on entitlement changes and grace expiry;
+older peers do not receive unsolicited frames. This does not establish deployed
+enforcement or hosted Stripe readiness.
 
 ### Environment-owned deployment handoff
 
