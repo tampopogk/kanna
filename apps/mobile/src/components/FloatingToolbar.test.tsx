@@ -117,7 +117,10 @@ describe("FloatingToolbar", () => {
     );
 
     expect(flattenStyle(needsYou.props.style).backgroundColor).toBe("#E8F1FF");
+    expect(needsYou.findByType("Ionicons").props.name).toBe("warning-outline");
+    expect(needsYou.findAllByType("Text")).toHaveLength(0);
     expect(needsYou.props).toMatchObject({
+      accessibilityLabel: "Needs you",
       accessibilityRole: "tab",
       accessibilityState: { selected: true }
     });
