@@ -538,6 +538,7 @@ pub(super) async fn update_task(
         task_id,
         follow_task: None,
         revision_budget: None,
+        workflow_extended: None,
     }))
 }
 
@@ -933,6 +934,15 @@ fn persist_transferred_task_context(
     ) else {
         return Ok(());
     };
+    // Import only once: a retry must not overwrite a later explicit agent clear.
+    if db
+        .transferred_task_context(task_id)
+        .map_err(|error| db_write_error("db error", error))?
+        .is_none()
+    {
+        db.set_task_attention(task_id, context.attention_reason.as_deref())
+            .map_err(|error| db_write_error("could not import task attention", error))?;
+    }
     db.upsert_transferred_task_context(
         task_id,
         transfer_id,
@@ -1785,5 +1795,49 @@ pub(super) fn resolve_create_task_prepare_error(
         crate::task_creator::PrepareTaskError::Other(error) => {
             Err((axum::http::StatusCode::INTERNAL_SERVER_ERROR, error))
         }
+    }
+}
+
+#[cfg(test)]
+mod attention_import_tests {
+    use super::*;
+
+    #[test]
+    fn attention_import_preserves_annotation_without_overwriting_later_clear() {
+        let path = Db::test_db_path("attention-import");
+        let db = Db::open_for_tests(&path).unwrap();
+        db.insert_test_repo("repo-attention", "Attention").unwrap();
+        db.insert_test_pipeline_item(
+            "attention-task",
+            "repo-attention",
+            "Prompt",
+            None,
+            "in progress",
+            "2026-09-13 00:00:00",
+        )
+        .unwrap();
+        let context = crate::mobile_api::TransferImportSummary {
+            transfer_id: Some("transfer-attention".into()),
+            workflow_definition: Some("{}".into()),
+            attention_reason: Some("Choose approach".into()),
+            ..Default::default()
+        };
+        persist_transferred_task_context(&db, "attention-task", Some(&context)).unwrap();
+        assert_eq!(
+            db.get_pipeline_item("attention-task")
+                .unwrap()
+                .unwrap()
+                .attention_reason
+                .as_deref(),
+            Some("Choose approach")
+        );
+        db.set_task_attention("attention-task", None).unwrap();
+        persist_transferred_task_context(&db, "attention-task", Some(&context)).unwrap();
+        assert!(db
+            .get_pipeline_item("attention-task")
+            .unwrap()
+            .unwrap()
+            .attention_reason
+            .is_none());
     }
 }

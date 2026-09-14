@@ -58,6 +58,8 @@ fn bundled_catalog_parses_and_declares_all_tools() {
             "kanna_send_task_raw_input",
             "kanna_close_task",
             "kanna_rename_task",
+            "kanna_set_task_attention",
+            "kanna_clear_task_attention",
             "kanna_advance_stage",
             "kanna_push_task",
             "kanna_pull_task",
@@ -449,7 +451,7 @@ fn removed_approval_override_is_not_an_agent_tool() {
         .iter()
         .find(|tool| tool.name == "kanna_advance_stage")
         .expect("advance tool");
-    assert_eq!(advance.params.len(), 7);
+    assert_eq!(advance.params.len(), 9);
     assert_eq!(advance.params[0].name, "machine_id");
     assert_eq!(advance.params[0].location, ParamLoc::Routing);
     assert_eq!(advance.params[1].name, "task_id");
@@ -458,14 +460,24 @@ fn removed_approval_override_is_not_an_agent_tool() {
     // The per-advance provider override for the stage the advance enters.
     // These decide how the *next* stage spawns; none of them approves
     // anything, which is what this test is guarding the tool against.
-    assert_eq!(advance.params[3].name, "next_stage_agent_provider");
-    assert_eq!(advance.params[3].location, ParamLoc::Body);
-    assert_eq!(advance.params[4].name, "next_stage_model");
+    assert_eq!(advance.params[4].name, "next_stage_agent_provider");
     assert_eq!(advance.params[4].location, ParamLoc::Body);
-    assert_eq!(advance.params[5].name, "next_stage_effort");
+    assert_eq!(advance.params[5].name, "next_stage_model");
     assert_eq!(advance.params[5].location, ParamLoc::Body);
-    assert_eq!(advance.params[6].name, "next_stage_provider_source");
+    assert_eq!(advance.params[6].name, "next_stage_effort");
     assert_eq!(advance.params[6].location, ParamLoc::Body);
+    assert_eq!(advance.params[7].name, "next_stage_provider_source");
+    assert_eq!(advance.params[7].location, ParamLoc::Body);
+    // A compare-and-set fence on the workflow the caller actually inspected,
+    // for a task whose remaining stages can be published while it runs. It
+    // refuses a stale advance; it authorizes nothing.
+    assert_eq!(advance.params[8].name, "expected_definition");
+    assert_eq!(advance.params[8].location, ParamLoc::Body);
+    assert_eq!(advance.params[3].name, "next_stage_harness");
+    assert_eq!(
+        advance.params[3].key.as_deref(),
+        Some("nextStageAgentProvider")
+    );
 }
 
 #[test]
@@ -1952,6 +1964,7 @@ fn every_declared_parameter_round_trips_a_cli_spelling() {
         let args = tool
             .params
             .iter()
+            .filter(|param| !matches!(param.name.as_str(), "harness" | "next_stage_harness"))
             .map(|param| {
                 let raw = match param.param_type {
                     ParamType::String => param
@@ -2802,4 +2815,59 @@ fn doctor_is_catalog_backed_read_only_candidate_validation() {
         .render_guide("config")
         .unwrap()
         .contains("kanna_doctor"));
+}
+
+#[test]
+fn attention_tools_use_existing_action_transport_and_machine_routing() {
+    let catalog = bundled_catalog();
+    for (name, args, path, body) in [
+        (
+            "kanna_set_task_attention",
+            json!({"task_id":"task 1","reason":"Choose", "machine_id":"remote"}),
+            "/v1/tasks/task%201/actions/set-attention",
+            json!({"reason":"Choose"}),
+        ),
+        (
+            "kanna_clear_task_attention",
+            json!({"task_id":"task 1", "machine_id":"remote"}),
+            "/v1/tasks/task%201/actions/clear-attention",
+            json!({}),
+        ),
+    ] {
+        let request = resolve_request(&catalog, name, &args).unwrap();
+        assert_eq!(request.method, Method::Post);
+        assert_eq!(request.path, path);
+        assert_eq!(request.body, body);
+    }
+}
+
+#[test]
+fn harness_aliases_use_legacy_wire_keys_and_refuse_duplicate_spellings() {
+    let catalog = bundled_catalog();
+    for (tool, old, new, wire, base) in [
+        (
+            "kanna_create_task",
+            "agent_provider",
+            "harness",
+            "agentProvider",
+            json!({"repo_id":"r", "prompt":"p"}),
+        ),
+        (
+            "kanna_advance_stage",
+            "next_stage_agent_provider",
+            "next_stage_harness",
+            "nextStageAgentProvider",
+            json!({"task_id":"t"}),
+        ),
+    ] {
+        let mut args = base;
+        args[new] = "opencode".into();
+        let request = resolve_request(&catalog, tool, &args).unwrap();
+        assert_eq!(request.body[wire], "opencode");
+        assert!(request.body.get(new).is_none());
+        args[old] = "opencode".into();
+        assert!(resolve_request(&catalog, tool, &args)
+            .unwrap_err()
+            .contains("conflicting"));
+    }
 }

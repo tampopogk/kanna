@@ -1,10 +1,11 @@
 import type {
   WorkflowDefinition,
+  WorkflowPlanContext,
   WorkflowPost,
   WorkflowStage,
   WorkflowStagePolicy,
 } from "./workflow-types";
-import { parseAgentProviderSelector } from "../config/agent-providers";
+import { parseAgentSelection, parseAgentProviderSelector, type AgentSelection } from "../config/agent-providers";
 
 function formatRawValue(value: unknown): string {
   if (value === undefined) {
@@ -23,32 +24,17 @@ function validationError(message: string): Error {
 function parseAgentProviderSelection(
   value: unknown,
   location: string,
-): string | string[] | undefined {
+): AgentSelection | undefined {
   if (value === undefined) return undefined;
-
-  const values = typeof value === "string"
-    ? [value]
-    : Array.isArray(value) && value.every((entry) => typeof entry === "string")
-      ? value
-      : null;
-
-  if (!values || values.length === 0) {
-    throw validationError(`${location} has an invalid agent_provider value`);
+  const values = Array.isArray(value) ? value : [value];
+  const invalidStrings = values.filter(v => typeof v === "string" && parseAgentProviderSelector(v) === null);
+  if (invalidStrings.length) throw validationError(`${location} has unsupported agent_provider values: ${invalidStrings.join(", ")}`);
+  try {
+    const entries = parseAgentSelection(value);
+    return Array.isArray(value) ? entries : entries[0];
+  } catch (error) {
+    throw validationError(`${location} has an invalid agent_provider value: ${String(error)}`);
   }
-
-  // Entries are compact provider selectors (`provider[-model[-effort]]`,
-  // e.g. `claude`, `codex-gpt-5.6-sol`, `claude-fable-hi`); they keep their written
-  // form — the server derives each candidate's model/effort at spawn time.
-  const invalid = values.filter(
-    (provider) => parseAgentProviderSelector(provider) === null,
-  );
-  if (invalid.length > 0) {
-    throw validationError(
-      `${location} has unsupported agent_provider values: ${invalid.join(", ")}`,
-    );
-  }
-
-  return typeof value === "string" ? values[0] : values;
 }
 
 function parseTransition(
@@ -230,6 +216,25 @@ export function parseWorkflowJson(raw: string): WorkflowDefinition {
       );
     }
     def.revision_limit = limit;
+  }
+
+  // Preserved rather than parsed from a file: only the server stamps it, but
+  // a pinned definition round-tripped through this loader must not silently
+  // drop the plan the task's later stages were published under.
+  const planContext = obj["plan_context"];
+  if (planContext !== undefined && planContext !== null) {
+    if (
+      typeof planContext !== "object" ||
+      Array.isArray(planContext) ||
+      typeof (planContext as Record<string, unknown>)["source_run_id"] !== "string" ||
+      typeof (planContext as Record<string, unknown>)["stage"] !== "string" ||
+      typeof (planContext as Record<string, unknown>)["result"] !== "string"
+    ) {
+      throw validationError(
+        `Workflow "${def.name}" has an invalid plan_context; Kanna stamps it when a plan stage publishes its remaining stages and it is not authored by hand`
+      );
+    }
+    def.plan_context = planContext as WorkflowPlanContext;
   }
 
   if (obj["environments"] !== undefined && obj["environments"] !== null) {

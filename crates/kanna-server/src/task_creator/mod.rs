@@ -18,7 +18,15 @@ mod work_tip;
 pub(crate) use work_tip::task_work_tip_for_transfer;
 mod workflow_edit;
 mod worktree;
-pub(crate) use workflow_edit::validate_task_workflow_replacement;
+pub(crate) use definitions::WorkflowPlanContext;
+
+pub(crate) use workflow_edit::unknown_workflow_fields;
+
+pub(crate) use workflow_edit::{
+    validate_plan_workflow_extension, validate_task_workflow_replacement,
+    validate_task_workflow_replacement_with_plan_context, PlanContextPolicy,
+    ValidatedWorkflowReplacement,
+};
 
 #[cfg(test)]
 mod tests;
@@ -222,7 +230,8 @@ pub(crate) fn stage_provider_candidates(
     let candidates = selectors
         .iter()
         .filter_map(|selector| {
-            kanna_agent_protocol::parse_provider_selector(selector)
+            selector
+                .resolve(true)
                 .ok()
                 .map(|selector| ProviderCandidate {
                     provider: selector.provider.as_str().to_string(),
@@ -658,6 +667,7 @@ pub(crate) fn prepare_rerun_stage_for_api(
         .map(|base_ref| format!("{}/.kanna-worktrees/{base_ref}", repo.path));
     let prev_result = stages::previous_stage_result(db, task_id, &source_task)?;
     let prev_main_result = stages::previous_main_stage_result(db, task_id)?;
+    let plan_result = stages::stamped_plan_result(db, task_id);
     let prompt = build_stage_prompt(
         agent
             .as_ref()
@@ -668,6 +678,7 @@ pub(crate) fn prepare_rerun_stage_for_api(
             task_prompt: source_task.prompt.as_deref(),
             prev_result: prev_result.as_deref(),
             prev_main_result: prev_main_result.as_deref(),
+            plan_result: plan_result.as_deref(),
             revision_feedback: None,
             branch: Some(branch),
             base_ref: source_task.base_ref.as_deref(),
@@ -754,7 +765,7 @@ pub(crate) fn prepare_rerun_stage_for_api(
             .as_deref()
             .unwrap_or_default()
             .iter()
-            .filter_map(|selector| kanna_agent_protocol::parse_provider_selector(selector).ok())
+            .filter_map(|selector| selector.resolve(true).ok())
             .find(|selector| {
                 !rejected_providers
                     .iter()
@@ -2158,6 +2169,7 @@ pub(crate) fn prepare_singleton_agent_task_for_api(
         }],
         environments: None,
         revision_limit: None,
+        plan_context: None,
         // Kanna binds this synthetic workflow itself; it is never a listed
         // choice, and visibility is never consulted on resolution anyway.
         visibility: definitions::DefinitionVisibility::Internal,
@@ -2289,6 +2301,7 @@ completion with status success so Kanna can run the commit post and close this i
         }],
         environments: None,
         revision_limit: None,
+        plan_context: None,
         // Kanna binds this synthetic workflow itself; it is never a listed
         // choice, and visibility is never consulted on resolution anyway.
         visibility: definitions::DefinitionVisibility::Internal,
@@ -2627,6 +2640,7 @@ pub(crate) fn prepare_start_dormant_task_for_api(
             task_prompt: item.prompt.as_deref(),
             prev_result: None,
             prev_main_result: None,
+            plan_result: None,
             revision_feedback: None,
             branch: base_ref.as_deref(),
             base_ref: base_ref.as_deref(),
@@ -3211,7 +3225,7 @@ fn agent_tuning_plan(
     explicit_provider: Option<&str>,
     explicit_model: Option<String>,
     explicit_effort: Option<String>,
-    stage_provider: Option<&[String]>,
+    stage_provider: Option<&[kanna_agent_protocol::AgentSelectionEntry]>,
     repo_preference: Option<&definitions::AgentProviderPreference>,
     agent: Option<&definitions::AgentDefinition>,
 ) -> AgentTuningPlan {
@@ -3222,22 +3236,42 @@ fn agent_tuning_plan(
         model: explicit_model,
         effort: explicit_effort,
     }];
-    layers.extend(provider::stage_tuning_layers(stage_provider));
+    layers.extend(provider::selection_tuning_layers(stage_provider, true));
+    layers.extend(provider::selection_tuning_layers(
+        repo_preference.map(|p| p.providers.as_slice()),
+        false,
+    ));
     layers.push(AgentTuningLayer {
         providers: repo_preference
-            .map(|preference| preference.providers.clone())
+            .map(|preference| selection_harness_names(&preference.providers))
             .unwrap_or_default(),
         model: repo_preference.and_then(|preference| preference.model.clone()),
         effort: repo_preference.and_then(|preference| preference.effort.clone()),
     });
+    layers.extend(provider::selection_tuning_layers(
+        agent.map(|a| a.agent_providers.as_slice()),
+        false,
+    ));
     layers.push(AgentTuningLayer {
         providers: agent
-            .map(|agent| agent.agent_providers.clone())
+            .map(|agent| selection_harness_names(&agent.agent_providers))
             .unwrap_or_default(),
         model: agent.and_then(|agent| agent.model.clone()),
         effort: agent.and_then(|agent| agent.effort.clone()),
     });
     AgentTuningPlan::new(layers)
+}
+
+fn selection_harness_names(entries: &[kanna_agent_protocol::AgentSelectionEntry]) -> Vec<String> {
+    entries
+        .iter()
+        .map(|e| match e {
+            kanna_agent_protocol::AgentSelectionEntry::Legacy(value) => value.clone(),
+            kanna_agent_protocol::AgentSelectionEntry::Candidate(value) => {
+                value.harness.to_string()
+            }
+        })
+        .collect()
 }
 
 fn pin_task_workflow_definition(
@@ -3323,6 +3357,10 @@ fn resolve_task_spawn(
                     task_prompt: Some(&request.task_prompt),
                     prev_result: import.previous_stage_result.as_deref(),
                     prev_main_result: import.previous_main_result.as_deref(),
+                    plan_result: workflow
+                        .plan_context
+                        .as_ref()
+                        .map(|context| context.result.as_str()),
                     revision_feedback: import.revision_feedback.as_deref(),
                     branch: destination_branch
                         .as_deref()
@@ -3350,6 +3388,10 @@ fn resolve_task_spawn(
                 task_prompt: Some(&request.task_prompt),
                 prev_result: None,
                 prev_main_result: None,
+                plan_result: workflow
+                    .plan_context
+                    .as_ref()
+                    .map(|context| context.result.as_str()),
                 revision_feedback: None,
                 branch: destination_branch
                     .as_deref()
@@ -3379,7 +3421,8 @@ fn resolve_task_spawn(
         request.default_provider.as_deref(),
     )
     .map_err(|error| match error {
-        ResolveProviderCandidatesError::Unsupported(_) => {
+        ResolveProviderCandidatesError::Unsupported(_)
+        | ResolveProviderCandidatesError::InvalidSelection(_) => {
             PrepareTaskError::InvalidRequest(error.to_string())
         }
         ResolveProviderCandidatesError::NotConfigured => PrepareTaskError::Other(error.to_string()),
@@ -3812,4 +3855,9 @@ fn new_task_setup_cmds(
     setup.extend(stage_setup.iter().cloned());
     setup.extend(request_setup_cmds.iter().cloned());
     setup
+}
+
+pub(crate) fn normalize_task_workflow_for_transfer(definition: &str) -> Result<String, String> {
+    serde_json::to_string(&definitions::parse_stored_workflow_definition(definition)?)
+        .map_err(|e| e.to_string())
 }

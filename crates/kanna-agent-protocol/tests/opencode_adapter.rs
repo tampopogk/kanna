@@ -331,8 +331,8 @@ fn installed_opencode_accepts_generated_spawn_config() {
     };
     let content = kanna_agent_protocol::mcp::opencode_spawn_config(
         Some(&server),
-        Some("omlx/config-contract"),
-        Some("medium"),
+        Some("omlx/config-contract-high"),
+        Some("custom-hi"),
     )
     .unwrap();
     let local_config =
@@ -356,10 +356,34 @@ fn installed_opencode_accepts_generated_spawn_config() {
         config["mcp"]["kanna-mcp"]["environment"]["KANNA_TASK_ID"],
         "config-contract"
     );
-    assert_eq!(config["small_model"], "omlx/config-contract");
+    assert_eq!(config["small_model"], "omlx/config-contract-high");
     assert_eq!(config["enabled_providers"], serde_json::json!(["omlx"]));
     assert_eq!(config["permission"]["*"], "deny");
     assert_eq!(config["permission"]["bash"]["*"], "deny");
     assert_eq!(config["permission"]["bash"]["git status"], "allow");
     std::fs::remove_file(local_config).unwrap();
+    assert_eq!(config["agent"]["build"]["variant"], "custom-hi");
+}
+
+#[test]
+fn literal_models_and_custom_variants_reach_initial_and_resume_native_commands() {
+    let adapter = OpencodeAdapter::new();
+    let ctx = SpawnCtx {
+        model: Some("local/My/Model-high".into()),
+        effort: Some("custom-hi".into()),
+        ..Default::default()
+    };
+    for spec in [
+        adapter.initial_spawn(&ctx),
+        adapter.resume_spawn(&ctx, "ses_test", "continue"),
+    ] {
+        assert!(spec
+            .args
+            .windows(2)
+            .any(|v| v == ["-m", "local/My/Model-high"]));
+        assert!(spec
+            .args
+            .windows(2)
+            .any(|v| v == ["--variant", "custom-hi"]));
+    }
 }

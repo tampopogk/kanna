@@ -122,6 +122,7 @@ impl<'de> Deserialize<'de> for TaskSummary {
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct TaskDetail {
+    pub(crate) attention_reason: Option<String>,
     pub(crate) id: String,
     pub(crate) repo_id: String,
     pub(crate) title: String,
@@ -180,6 +181,8 @@ pub(crate) struct TaskDetail {
 #[derive(Deserialize)]
 #[serde(remote = "TaskDetail", rename_all = "camelCase")]
 struct TaskDetailDef {
+    #[serde(default)]
+    attention_reason: Option<String>,
     id: String,
     repo_id: String,
     title: String,
@@ -375,6 +378,13 @@ pub(crate) struct CompleteStageRequest {
     pub(crate) summary: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) metadata: Option<Value>,
+    /// Remaining stages a planning stage publishes for its own task, recorded
+    /// in the same transaction as this result. Sent only together with
+    /// `expected_definition`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) workflow_definition: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) expected_definition: Option<Value>,
 }
 
 #[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -543,6 +553,11 @@ pub(crate) struct TaskActionResponse {
     /// parked task as a started revision.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) revision_budget: Option<RevisionBudgetStatus>,
+    /// Whether a plan completion also published the task's remaining stages.
+    /// Absent from an older server that ignored the arguments entirely, which
+    /// is why the CLI treats anything but `Some(true)` as "not published".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) workflow_extended: Option<bool>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]

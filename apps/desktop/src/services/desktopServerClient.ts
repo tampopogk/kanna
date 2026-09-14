@@ -1,3 +1,4 @@
+import type { AgentSelectionEntry } from "@kanna/agent-protocol";
 import { isAgentProvider, type AgentProvider } from "@kanna/agent-protocol";
 import type { RepoConfig } from "@kanna/core";
 import type { AgentDefinition, WorkflowDefinition } from "../../../../packages/core/src/workflow/workflow-types";
@@ -1374,7 +1375,7 @@ export async function fetchDesktopOpenCodeModels(repoId: string): Promise<OpenCo
 
 export interface PinnedTaskWorkflow {
   [key: string]: unknown;
-  stages: Array<{ [key: string]: unknown; name: string; post?: unknown }>;
+  stages: Array<{ [key: string]: unknown; name: string; agent_provider?: AgentSelectionEntry | AgentSelectionEntry[]; post?: unknown }>;
 }
 
 export async function replaceDesktopTaskWorkflow(

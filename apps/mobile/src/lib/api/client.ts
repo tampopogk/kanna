@@ -34,6 +34,7 @@ import type {
   TaskFileMentionResolution,
   TaskInputAttachment,
   TaskInputResult,
+  PinnedTaskWorkflow,
   TaskDetail,
   TaskPreviewOpenResult,
   TaskSummary
@@ -212,7 +213,10 @@ export interface KannaTransport {
   createTask(input: CreateTaskRequest): Promise<CreateTaskResponse>;
   abortTaskCreation(input: AbortTaskCreationRequest): Promise<void>;
   runMergeAgent(taskId: string): Promise<TaskActionResponse>;
-  advanceTaskStage(taskId: string): Promise<TaskActionResponse>;
+  advanceTaskStage(
+    taskId: string,
+    expectedDefinition?: PinnedTaskWorkflow | null
+  ): Promise<TaskActionResponse>;
   resumeTask?(taskId: string): Promise<TaskActionResponse>;
   markTaskRead(
     taskId: string,
@@ -290,7 +294,10 @@ export interface KannaClient {
   createTask(input: CreateTaskRequest): Promise<CreateTaskResponse>;
   abortTaskCreation(input: AbortTaskCreationRequest): Promise<void>;
   runMergeAgent(taskId: string): Promise<TaskActionResponse>;
-  advanceTaskStage(taskId: string): Promise<TaskActionResponse>;
+  advanceTaskStage(
+    taskId: string,
+    expectedDefinition?: PinnedTaskWorkflow | null
+  ): Promise<TaskActionResponse>;
   resumeTask?(taskId: string): Promise<TaskActionResponse>;
   markTaskRead(
     taskId: string,

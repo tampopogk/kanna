@@ -111,6 +111,8 @@ pub struct MobileApi {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct TaskSummary {
+    #[serde(default)]
+    pub attention_reason: Option<String>,
     pub id: String,
     pub repo_id: String,
     pub repo_name: Option<String>,
@@ -165,6 +167,8 @@ pub struct TaskSummary {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct TaskDetail {
+    #[serde(default)]
+    pub attention_reason: Option<String>,
     /// Exact durable snapshot, also used as the replacement concurrency fence.
     pub workflow_definition: Option<serde_json::Value>,
     pub id: String,
@@ -484,6 +488,8 @@ impl CreateTaskRecoverySnapshot {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct TransferImportSummary {
+    #[serde(default)]
+    pub attention_reason: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub head_oid: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -619,6 +625,7 @@ pub struct CreateTaskRequest {
     /// every ordinary task.
     pub diff_base_ref: Option<String>,
     pub agent: Option<String>,
+    #[serde(alias = "harness")]
     pub agent_provider: Option<String>,
     pub agent_type: Option<String>,
     pub terminal_cols: Option<u16>,
@@ -681,6 +688,16 @@ pub struct CompleteStageRequest {
     pub status: String,
     pub summary: String,
     pub metadata: Option<serde_json::Value>,
+    /// Remaining stages a planning stage publishes for its own task, in the
+    /// same complete-definition shape `kanna_replace_task_workflow` takes.
+    /// Recorded in the same transaction as the plan result, so a successful
+    /// plan and the stages it chose are never separately visible.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workflow_definition: Option<serde_json::Value>,
+    /// The pinned workflow the caller read before composing the extension.
+    /// Required with `workflow_definition`; a stale one is a 409.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_definition: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -808,6 +825,12 @@ pub struct TaskActionResponse {
     /// revision-round budget, and whether a revision was actually started.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub revision_budget: Option<RevisionBudgetStatus>,
+    /// Set by `complete-stage` when the completion also published the stages
+    /// the plan chose. `true` means both are durable; the field is absent when
+    /// no extension was requested, so an older server that ignored the
+    /// arguments can never read as a successful extension.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workflow_extended: Option<bool>,
 }
 
 /// The revision-round budget as it stands after a revision request.
@@ -1374,6 +1397,7 @@ fn map_task_summary(
         .unwrap_or_else(|| item.id.clone());
     let waiting_prompt_snippet = item.last_output_preview.clone();
     TaskSummary {
+        attention_reason: item.attention_reason,
         id: item.id,
         repo_id: item.repo_id,
         repo_name,
@@ -1516,6 +1540,7 @@ fn map_task_detail(
         .or(item.agent_provider);
     ports.sort_by(|left, right| left.port.cmp(&right.port).then(left.name.cmp(&right.name)));
     TaskDetail {
+        attention_reason: item.attention_reason,
         workflow_definition: item
             .pipeline_def
             .as_deref()
@@ -2984,5 +3009,19 @@ mod tests {
         assert_eq!(status_json["version"], "0.0.69-staging.1");
         assert_eq!(status_json["environment"], "staging");
         assert_eq!(status_json["serverVersion"], "0.0.69-staging.1");
+    }
+}
+
+#[cfg(test)]
+mod harness_request_tests {
+    #[test]
+    fn create_harness_alias_is_unambiguous_and_serializes_to_the_old_wire_key() {
+        let request: super::CreateTaskRequest = serde_json::from_value(serde_json::json!({"repoId":"r", "prompt":"p", "harness":"opencode", "model":"local/model-high"})).unwrap();
+        assert_eq!(request.agent_provider.as_deref(), Some("opencode"));
+        assert_eq!(
+            serde_json::to_value(request).unwrap()["agentProvider"],
+            "opencode"
+        );
+        assert!(serde_json::from_value::<super::CreateTaskRequest>(serde_json::json!({"repoId":"r", "prompt":"p", "harness":"codex", "agentProvider":"opencode"})).is_err());
     }
 }

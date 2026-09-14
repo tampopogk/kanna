@@ -37,6 +37,7 @@ mod subscription_timing;
 mod task_actions;
 pub(crate) mod task_activity;
 mod task_agent_session;
+mod task_attention;
 mod task_blockers;
 mod task_diff;
 mod task_events;
@@ -63,6 +64,9 @@ pub(crate) use state::{
     DesktopRelayRequest, MobileNotificationRequest, ObservedSingletonTask, RemoteSingletonClaim,
     RemoteSingletonOwner,
 };
+
+#[cfg(test)]
+pub(crate) use state::TransferSourceBarrier;
 
 pub(crate) use transfers::{ensure_engine_cloud_transfer_credential, CloudTransferRefreshFailure};
 

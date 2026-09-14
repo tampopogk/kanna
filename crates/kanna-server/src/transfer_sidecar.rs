@@ -56,7 +56,7 @@ fn transfer_event_type(value: &Value) -> Option<&str> {
             | "task_pull_requested"
             | "task_pull_refused"
             | "outgoing_transfer_committed"
-            | "outgoing_transfer_finalization_requested"
+            | "outgoing_transfer_finalization_requested_v2"
             | "terminal_event"
             | "sidecar_exited"
     )
@@ -1027,7 +1027,7 @@ mod tests {
             "task_pull_requested",
             "task_pull_refused",
             "outgoing_transfer_committed",
-            "outgoing_transfer_finalization_requested",
+            "outgoing_transfer_finalization_requested_v2",
         ] {
             assert!(is_durable_transfer_event(kind), "{kind} must be durable");
             assert_eq!(transfer_event_type(&event(kind)), Some(kind));

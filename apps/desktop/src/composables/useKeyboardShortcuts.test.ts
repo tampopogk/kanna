@@ -254,16 +254,46 @@ describe("useKeyboardShortcuts", () => {
     return Object.fromEntries(actionNames.map((name) => [name, vi.fn()])) as KeyboardActions;
   }
 
-  function mountShortcutHarness(actions: KeyboardActions, context: () => ShortcutContext) {
+  function mountShortcutHarness(
+    actions: KeyboardActions,
+    context: () => ShortcutContext,
+    enabled?: () => boolean,
+  ) {
     const Harness = defineComponent({
       setup() {
-        useKeyboardShortcuts(actions, { context });
+        useKeyboardShortcuts(actions, { context, ...(enabled ? { enabled } : {}) });
         return () => null;
       },
     });
 
     return mount(Harness);
   }
+
+  it("ignores workspace shortcuts until the window is ready for them", () => {
+    const actions = buildActions();
+    let ready = false;
+    const wrapper = mountShortcutHarness(actions, () => "main", () => ready);
+
+    const pressNewTask = () => window.dispatchEvent(new KeyboardEvent("keydown", {
+      key: "N",
+      metaKey: true,
+      shiftKey: true,
+      bubbles: true,
+      cancelable: true,
+    }));
+
+    // The listener is registered in the capture phase, so it would otherwise
+    // act on a workspace that is still being restored behind the startup
+    // screen — `inert` on the workspace does not reach it.
+    pressNewTask();
+    expect(actions.newTask).not.toHaveBeenCalled();
+
+    ready = true;
+    pressNewTask();
+    expect(actions.newTask).toHaveBeenCalledTimes(1);
+
+    wrapper.unmount();
+  });
 
   it.each([
     { key: "U", action: "goToOldestUnreadAllRepos" as const, labelKey: "shortcuts.oldestUnreadAllRepos" },

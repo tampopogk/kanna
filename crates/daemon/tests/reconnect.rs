@@ -1182,6 +1182,25 @@ struct DaemonHandle {
     _dir: PathBuf,
 }
 
+/// Everything this daemon process has written to its rotating log file.
+fn daemon_log_text(dir: &Path) -> String {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return String::new();
+    };
+    let mut text = String::new();
+    for entry in entries.filter_map(Result::ok) {
+        let path = entry.path();
+        let is_log = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.starts_with("kanna-daemon_") && name.ends_with(".log"));
+        if is_log {
+            text.push_str(&std::fs::read_to_string(&path).unwrap_or_default());
+        }
+    }
+    text
+}
+
 impl DaemonHandle {
     fn start() -> Self {
         Self::start_with_env([])
@@ -1252,6 +1271,10 @@ impl DaemonHandle {
             socket_path,
             _dir: dir,
         }
+    }
+
+    fn log_text(&self) -> String {
+        daemon_log_text(&self._dir)
     }
 
     /// Best-effort teardown of every session this daemon still owns. Failure
@@ -4061,6 +4084,89 @@ fn test_one_way_follower_resize_applies_without_attached_size_owner() {
     thread::sleep(Duration::from_millis(100));
     let snapshot = recv_snapshot_for(&mut follower, "sess-follower-resize");
     assert_eq!((snapshot.cols, snapshot.rows), (80, 48));
+}
+
+/// An operator debugging "the terminal kept resizing" needs the daemon's own
+/// account of what moved the geometry and why. Every ownership change and every
+/// applied resize must reach the running daemon's log without an opt-in env
+/// var, and a claim that changed nothing must not be indistinguishable from one
+/// that resized the PTY.
+#[test]
+fn test_terminal_geometry_changes_are_logged_by_a_running_daemon() {
+    let daemon = DaemonHandle::start();
+    let mut management = daemon.connect();
+    spawn_echo_session(&mut management, "sess-geometry-log");
+
+    let mut wide = daemon.connect();
+    attach_snapshot_and_capture(&mut wide, "sess-geometry-log");
+    wide.send(&Cmd::RegisterViewer {
+        session_id: "sess-geometry-log".to_string(),
+        viewer_id: "wide-viewer".to_string(),
+        role: TerminalViewerRole::Local,
+        generation: 1,
+        cols: 150,
+        rows: 45,
+        visible: true,
+    });
+    wide.send(&Cmd::ActiveViewer {
+        session_id: "sess-geometry-log".to_string(),
+    });
+    let snapshot = recv_snapshot(&mut wide, "sess-geometry-log");
+    assert_eq!((snapshot.cols, snapshot.rows), (150, 45));
+
+    let mut narrow = daemon.connect();
+    attach_snapshot_and_capture(&mut narrow, "sess-geometry-log");
+    narrow.send(&Cmd::RegisterViewer {
+        session_id: "sess-geometry-log".to_string(),
+        viewer_id: "narrow-viewer".to_string(),
+        role: TerminalViewerRole::Remote,
+        generation: 1,
+        cols: 60,
+        rows: 30,
+        visible: true,
+    });
+    narrow.send(&Cmd::ActiveViewer {
+        session_id: "sess-geometry-log".to_string(),
+    });
+    let snapshot = recv_snapshot(&mut narrow, "sess-geometry-log");
+    assert_eq!((snapshot.cols, snapshot.rows), (60, 30));
+
+    thread::sleep(Duration::from_millis(200));
+    let log = daemon.log_text();
+    let geometry: Vec<&str> = log
+        .lines()
+        .filter(|line| line.contains("event=terminal_geometry"))
+        .collect();
+    assert!(
+        !geometry.is_empty(),
+        "a running daemon logged no terminal geometry at all: {log}"
+    );
+    let handoff = geometry
+        .iter()
+        .find(|line| {
+            line.contains("cause=activate_viewer")
+                && line.contains("applied=Some((60, 30))")
+                && line.contains("outcome=applied")
+        })
+        .unwrap_or_else(|| {
+            panic!("no applied-resize line for the narrow viewer's claim: {geometry:?}")
+        });
+    assert!(
+        handoff.contains("owner_changed=true"),
+        "the handoff must name the ownership change: {handoff}"
+    );
+    assert!(
+        handoff.contains("previous=(150, 45)"),
+        "the handoff must name the geometry it replaced: {handoff}"
+    );
+    assert!(
+        handoff.contains("viewer=Some(\"narrow-viewer\")"),
+        "the handoff must name the viewer that claimed: {handoff}"
+    );
+    assert!(
+        !geometry.iter().any(|line| line.contains("outcome=failed")),
+        "no geometry application should have failed: {geometry:?}"
+    );
 }
 
 /// Two clients attached to the same session both receive output (broadcast model).

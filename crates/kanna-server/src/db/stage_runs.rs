@@ -482,7 +482,7 @@ impl Db {
         result: &str,
         summary: &str,
     ) -> Result<(), rusqlite::Error> {
-        self.with_immediate_transaction(|db| {
+        self.in_immediate_transaction_if_needed(|db| {
             db.finish_stage_run(run_id, status, Some(result), Some(summary))?;
             db.record_contextless_completion_attempt(attempt_key, run_id, result)
         })

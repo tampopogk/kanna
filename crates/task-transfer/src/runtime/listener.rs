@@ -907,7 +907,7 @@ async fn handle_connection(
                     &context,
                     &requester_peer_id,
                     Some(&sealed_payload),
-                    "finalize_transfer",
+                    "finalize_transfer_v2",
                     &request_id,
                 )
                 .await?;
@@ -926,6 +926,11 @@ async fn handle_connection(
                     "reserved_target_peer_id",
                     &requester_peer_id,
                 )?;
+
+                let selection_commitment = authenticated.get("selection_commitment")
+                    .and_then(Value::as_str).filter(|value| !value.is_empty())
+                    .ok_or_else(|| RuntimeError::Protocol("V2 finalization requires a selection commitment".into()))?
+                    .to_string();
 
                 let (tx, rx) = oneshot::channel();
                 let (emit_event, cached) = {
@@ -966,6 +971,7 @@ async fn handle_connection(
                         .try_send(RuntimeEvent::OutgoingTransferFinalizationRequested(
                             OutgoingTransferFinalizationRequestedEvent {
                                 transfer_id: transfer_id.clone(),
+                                selection_commitment,
                             },
                         ))
                         .is_err()
@@ -2069,7 +2075,7 @@ async fn authenticate_peer_request(
         "close_task"
             | "advance_task_stage"
             | "prepare_transfer"
-            | "finalize_transfer"
+            | "finalize_transfer_v2"
             | "request_task_pull"
     );
     let expired_durable = {

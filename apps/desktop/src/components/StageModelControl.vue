@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import { computed, ref, shallowRef, watch } from "vue";
-import { parseAgentProviderSelector } from "../../../../packages/core/src/config/agent-providers";
 import type { PipelineItem } from "../types/kanna";
 import { useKannaStore } from "../stores/kanna";
 import {
@@ -68,13 +67,7 @@ async function apply() {
     if (throughPost.value) {
       const before = pinnedWorkflow.value;
       if (!before) return;
-      const selector = `opencode-${model.value}`;
-      // Compact workflow selectors have an effort suffix; never silently
-      // reinterpret part of a native model ID as reasoning effort.
-      if (parseAgentProviderSelector(selector)?.model !== model.value) {
-        message.value = "This model ID is ambiguous in workflow selector syntax. Use a native OpenCode model alias without an effort suffix for a saved stage selection.";
-        return;
-      }
+      const selector = { harness: "opencode" as const, model: model.value };
       const after = {
         ...before,
         stages: before.stages.map(stage => stage.name === nextStage.value
@@ -88,6 +81,9 @@ async function apply() {
       return;
     }
     const result = await useKannaStore().advanceStage(props.task.id, {
+      // The stage sequence this control showed, not whatever is pinned now:
+      // the next stage named above was read from it.
+      expectedDefinition: pinnedWorkflow.value,
       nextStageAgentProvider: "opencode",
       nextStageModel: model.value,
     });

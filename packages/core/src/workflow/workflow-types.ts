@@ -1,4 +1,4 @@
-import type { AgentProvider } from "@kanna/agent-protocol";
+import type { AgentSelection } from "../config/agent-providers";
 
 export interface WorkflowEnvironment {
   setup?: string[];
@@ -25,7 +25,7 @@ export interface WorkflowPost {
    * `codex-gpt-5.6-sol`, `claude-fable-hi`) — validated by the loader via
    * `parseAgentProviderSelector`; entries keep their written form.
    */
-  agent_provider?: string | string[];
+  agent_provider?: AgentSelection;
 }
 
 export interface WorkflowStage {
@@ -38,7 +38,7 @@ export interface WorkflowStage {
    * `codex-gpt-5.6-sol`, `claude-fable-hi`) — validated by the loader via
    * `parseAgentProviderSelector`; entries keep their written form.
    */
-  agent_provider?: string | string[];
+  agent_provider?: AgentSelection;
   environment?: string;
   policy: WorkflowStagePolicy;
   post?: WorkflowPost;
@@ -56,12 +56,27 @@ export interface WorkflowDefinition {
    * `request_revision`.
    */
   revision_limit?: number;
+  /**
+   * The plan Kanna stamps onto a task's pinned workflow when its planning
+   * stage publishes the remaining stages in the same call that records the
+   * plan. Server-written provenance, never authored in a `.kanna/workflows`
+   * file: an edit that changes it is refused, and its `result` is bound to the
+   * reserved `$PLAN_RESULT` prompt variable for the whole extended workflow.
+   */
+  plan_context?: WorkflowPlanContext;
+}
+
+export interface WorkflowPlanContext {
+  source_run_id: string;
+  stage: string;
+  /** The full recorded stage result, in the shape `$PREV_MAIN_RESULT` carries. */
+  result: string;
 }
 
 export interface AgentDefinition {
   name: string;
   description: string;
-  agent_provider?: AgentProvider | AgentProvider[];
+  agent_provider?: AgentSelection;
   model?: string;
   effort?: string;
   permission_mode?: "default" | "acceptEdits" | "dontAsk";
@@ -78,7 +93,7 @@ export interface AgentDefinition {
  */
 export interface AgentExtension {
   description?: string;
-  agent_provider?: AgentProvider | AgentProvider[];
+  agent_provider?: AgentSelection;
   model?: string;
   effort?: string;
   permission_mode?: "default" | "acceptEdits" | "dontAsk";

@@ -44,6 +44,9 @@ use std::sync::Arc;
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct SourceSession {
     provider: Option<String>,
+    model: Option<String>,
+    effort: Option<String>,
+    run_id: Option<String>,
     session_id: Option<String>,
 }
 
@@ -61,6 +64,9 @@ impl SourceSession {
             // the composition this exists to stop.
             Some(run) if run.agent_provider.is_some() => Self {
                 provider: run.agent_provider.clone(),
+                model: run.model.clone(),
+                effort: run.effort.clone(),
+                run_id: Some(run.id.clone()),
                 session_id: run.provider_session_id.clone(),
             },
             // No run yet, or one too old to have recorded a provider: the task
@@ -68,6 +74,9 @@ impl SourceSession {
             // least written by the same spawn.
             _ => Self {
                 provider: item_provider.map(str::to_string),
+                model: None,
+                effort: None,
+                run_id: None,
                 session_id: item_session_id.map(str::to_string),
             },
         }
@@ -309,6 +318,14 @@ async fn run_push(state: &Arc<AppState>, work: &Value) -> Result<(), Result<Stri
         // wanted has already ended.
         log::info!("skipping transfer push for closed task {source_task_id}");
         return Ok(());
+    }
+    // Answered here as well as at finalization, so a task that already carries
+    // a plan is refused before anything is reserved on the peer rather than
+    // after its artifacts are staged. Finalization is the guard that matters —
+    // it also catches a transfer queued before the plan existed — but there is
+    // no reason to make the operator wait for it.
+    if let Err(reason) = refuse_unprovable_plan_preservation(&source.item) {
+        return Err(Err(TerminalPush(reason)));
     }
 
     if let Err(error) = crate::http_api::ensure_engine_cloud_transfer_credential(
@@ -841,6 +858,9 @@ async fn build_payload(
                 workflow_definition: workflow_definition.as_deref(),
                 input_ledger_sha256: input_ledger.as_ref().map(|ledger| ledger.sha256.as_str()),
                 history: &history,
+                launch_harness: source.session.provider.as_deref().unwrap_or("claude"),
+                launch_model: source.session.model.as_deref(),
+                launch_effort: source.session.effort.as_deref(),
             },
         )?),
         _ => None,
@@ -881,12 +901,16 @@ async fn build_payload(
             history,
             workflow: workflow_name.clone(),
             legacy_pipeline: workflow_name,
+            attention_reason: source.item.attention_reason.clone(),
             display_name: source.item.display_name.clone(),
             base_ref: repository
                 .as_ref()
                 .map(|repository| repository.base_label.clone())
                 .or_else(|| source.item.base_ref.clone()),
             agent_type: source.item.agent_type.clone(),
+            model: source.session.model.clone(),
+            effort: source.session.effort.clone(),
+            source_run_id: source.session.run_id.clone(),
             // The provider the session shipped above belongs to, not the one
             // the task was created under: the destination spawns this CLI, and
             // a payload that names a different one hands a Claude transcript to
@@ -1058,6 +1082,46 @@ pub async fn finalize(
 /// an upgrade must still find its own observation.
 const SESSION_BEFORE_FINALIZATION_PHASE: &str = "session-before-signal";
 
+/// Refuses to hand over a task whose plan the destination may not be able to
+/// keep.
+///
+/// A grown task's `plan_context` is the plan its published stages were chosen
+/// under, and it is immutable: an edit may carry it forward but may not author
+/// or change it. A destination that predates the field drops it when it
+/// re-serializes the pinned workflow — the executable suffix arrives, the plan
+/// behind it does not, and nothing on either side can put it back. The
+/// destination-side preservation check cannot help here, because the machine
+/// that would run it is the one that is too old to have it.
+///
+/// So the source refuses. The protocol has no way to prove what a peer
+/// preserves, and inventing a capability exchange for one field is a bigger
+/// thing than this deserves — so "unproved" is every peer, and a stamped task
+/// simply does not transfer yet. Ordinary tasks are untouched.
+///
+/// This is the early answer, given at push before anything is reserved on the
+/// peer, purely so the operator is not left waiting. It is a snapshot read and
+/// cannot be the guarantee: a plan can publish after it. The guarantee is
+/// `Db::claim_task_workflow_for_transfer`, which asks the same question and
+/// takes ownership of the task's workflow in one transaction, so nothing can
+/// publish between the question and the answer.
+fn refuse_unprovable_plan_preservation(item: &crate::db::PipelineItem) -> Result<(), String> {
+    let carries_plan = item
+        .pipeline_def
+        .as_deref()
+        .and_then(|definition| serde_json::from_str::<Value>(definition).ok())
+        .is_some_and(|definition| definition.get("plan_context").is_some());
+    if !carries_plan {
+        return Ok(());
+    }
+    Err(format!(
+        "task {} carries a published plan, and this transfer cannot prove the destination would \
+         keep it: a machine older than this one drops the plan while importing the stages it \
+         chose, and the plan cannot be reconstructed. The transfer is refused with the source task \
+         untouched and still running. Update the destination, or finish this task here.",
+        item.id
+    ))
+}
+
 /// Refuses a payload that lost its session between the pre-shutdown plan and
 /// the post-shutdown one.
 ///
@@ -1083,6 +1147,18 @@ fn refuse_session_downgrade(
         )),
         _ => Ok(()),
     }
+}
+
+/// The shared source finalization path, exposed so a test outside this module
+/// can interleave it with a real plan completion against the same database —
+/// which is the only way to exercise the ownership rule the two share.
+#[cfg(test)]
+pub(crate) async fn run_finalization_for_test(
+    state: &Arc<AppState>,
+    work: &TransferWorkItem,
+    transfer_id: &str,
+) -> Result<(Value, bool), String> {
+    run_finalization(state, work, transfer_id).await
 }
 
 async fn run_finalization(
@@ -1112,6 +1188,64 @@ async fn run_finalization(
         .get_repo(&source.item.repo_id)
         .map_err(|error| format!("db error: {error}"))?
         .ok_or_else(|| format!("repo not found for outgoing transfer: {transfer_id}"))?;
+
+    // Before anything is observed, staged, or shut down — and, crucially, in
+    // one transaction with the check rather than as a snapshot read this
+    // function then awaits past. A plan published while finalization was
+    // shutting the agent down would otherwise be serialized into the payload
+    // at `build_payload`, after the source had already quit.
+    db.claim_task_workflow_for_transfer(transfer_id, &source.item.id)
+        .map_err(|error| format!("db error: {error}"))??;
+
+    // Re-read after claiming ownership: a workflow edit may have won before
+    // the claim. Acceptance of the reserved selection cannot authorize it.
+    let source = SourceTask::load(&db, &local_task_id)?
+        .ok_or_else(|| "source task disappeared after workflow claim".to_string())?;
+    let request: Value = serde_json::from_str(&work.payload_json).map_err(|e| e.to_string())?;
+    let accepted = request.get("selection_commitment").and_then(Value::as_str)
+        .ok_or_else(|| "transfer finalization requires V2 destination acceptance; update both machines and retry".to_string())?;
+    let mut current = existing.task.clone();
+    current.workflow = source
+        .item
+        .pipeline
+        .clone()
+        .unwrap_or_else(|| "no-review".into());
+    current.workflow_definition = source.item.pipeline_def.clone().or_else(|| {
+        crate::task_creator::resolve_task_workflow_snapshot(&repo, &current.workflow)
+            .ok()
+            .map(|snapshot| snapshot.definition_json)
+    });
+    current.stage = source
+        .item
+        .stage
+        .clone()
+        .unwrap_or_else(|| "in progress".into());
+    current.agent_provider = source
+        .session
+        .provider
+        .clone()
+        .unwrap_or_else(|| "claude".into());
+    current.model = source.session.model.clone();
+    current.effort = source.session.effort.clone();
+    current.source_run_id = source.session.run_id.clone();
+    if accepted != existing.task.selection_commitment()?
+        || accepted != current.selection_commitment()?
+    {
+        return Err("task workflow or launch selection changed after destination acceptance; retry the transfer with a fresh reservation. Source session was not stopped".into());
+    }
+
+    // Everything below this line can touch the source. A test holds here to
+    // prove the exclusion is real across the awaits, rather than only at the
+    // two committed orderings.
+    #[cfg(test)]
+    if let Some(barrier) = state.transfer_source_barrier.clone() {
+        let _ = barrier.arrived.send(format!("{transfer_id}/{}", work.id));
+        if let Ok(permit) = barrier.release.acquire().await {
+            // Consumed for good: one added permit releases one attempt, so a
+            // later attempt cannot be let through by an earlier one's exit.
+            permit.forget();
+        }
+    }
 
     // Locate the session state this payload will promise *before* the agent is
     // asked to stop: a transfer that cannot ship the conversation must fail
@@ -1226,6 +1360,11 @@ async fn run_finalization(
         finalization_outcome.recovery_snapshot,
     )
     .await?;
+    if payload.task.selection_commitment()? != accepted {
+        return Err(
+            "task selection changed during finalization; source remains recoverable".into(),
+        );
+    }
     let encoded = payload::encode_outgoing_transfer_payload(&payload)?;
     let payload_json =
         serde_json::to_string(&encoded).map_err(|error| format!("db error: {error}"))?;
@@ -1386,6 +1525,19 @@ pub async fn outgoing_committed(
         .map_err(|error| format!("db error: {error}"))?
         .is_some_and(|item| item.closed_at.is_some());
     if !already_closed {
+        // Closing an open source is a source effect, and receipts are durable
+        // and replayed on the sidecar's own schedule — independently of whether
+        // this server has settled the work. A valid receipt proves the payload
+        // it was issued for; it proves nothing about a plan published since.
+        // Replaying one after that would destroy the source of the new plan, so
+        // ownership is re-acquired here under the same rule finalization uses,
+        // and a refusal leaves the task open with its plan intact.
+        //
+        // Asked only on the closing path: an already-closed source is an
+        // idempotent replay of work that has been applied, and re-asking there
+        // would refuse ordinary receipt bookkeeping for no benefit.
+        db.claim_task_workflow_for_transfer(&transfer_id, &source_task_id)
+            .map_err(|error| format!("db error: {error}"))??;
         if let Err((status, message)) =
             crate::http_api::close_task_in_process(Arc::clone(state), source_task_id.clone()).await
         {
@@ -1720,7 +1872,9 @@ mod tests {
             id: id.to_string(),
             kind: super::super::queue::KIND_FINALIZE.to_string(),
             transfer_id: Some("transfer-finalize".to_string()),
-            payload_json: "{}".to_string(),
+            payload_json: serde_json::json!({
+                "selection_commitment": payload::parse_outgoing_transfer_payload(&serde_json::from_str(&finalize_payload_json()).unwrap()).unwrap().task.selection_commitment().unwrap()
+            }).to_string(),
             attempts: 2,
         }
     }
@@ -1733,7 +1887,8 @@ mod tests {
                 "source_task_id": "task-source",
                 "resume_session_id": null,
                 "stage": "in progress",
-                "pipeline": "single-reviewer",
+                "pipeline": "no-review",
+                "workflow_definition": r#"{"name":"no-review","stages":[{"name":"in progress","policy":{"transition":"manual"}}]}"#,
                 "agent_type": "pty",
                 "agent_provider": "claude",
             },
@@ -1755,8 +1910,10 @@ mod tests {
         work_id: &str,
         observed_before_finalization: Option<&str>,
     ) {
-        db.insert_test_repo("repo-finalize", "Finalize Repo")
-            .expect("repo");
+        if db.get_repo("repo-finalize").unwrap().is_none() {
+            db.insert_test_repo("repo-finalize", "Finalize Repo")
+                .expect("repo");
+        }
         db.insert_test_pipeline_item(
             "task-finalize",
             "repo-finalize",
@@ -1766,6 +1923,15 @@ mod tests {
             "2026-08-07 00:00:00",
         )
         .expect("task");
+        db.update_test_pipeline_item_stage_context(
+            "task-finalize",
+            "task-finalize",
+            "no-review",
+            None,
+            "claude",
+        )
+        .unwrap();
+        db.update_test_pipeline_item_pipeline_def("task-finalize", r#"{"name":"no-review","stages":[{"name":"in progress","policy":{"transition":"manual"}}]}"#).unwrap();
         db.insert_task_transfer(&crate::db::NewTaskTransfer {
             id: "transfer-finalize".into(),
             direction: "outgoing".into(),
@@ -1792,6 +1958,124 @@ mod tests {
         }
     }
 
+    /// Stamp a seeded finalization task with a published plan, as a plan
+    /// completion does.
+    fn publish_plan_on(db: &crate::db::Db, task_id: &str) {
+        db.update_test_pipeline_item_pipeline_def(
+            task_id,
+            &serde_json::json!({
+                "name": "consultation",
+                "revision_limit": 3,
+                "stages": [
+                    {"name": "consultation", "policy": {"transition": "manual"}},
+                    {"name": "plan", "policy": {"transition": "manual"}},
+                    {"name": "in progress", "policy": {"transition": "manual"}}
+                ],
+                "plan_context": {
+                    "source_run_id": "run-plan",
+                    "stage": "plan",
+                    "result": "{\"status\":\"success\",\"summary\":\"the approved plan\"}"
+                }
+            })
+            .to_string(),
+        )
+        .expect("publish the plan onto the pinned workflow");
+    }
+
+    /// A source will not hand a published plan to a machine that may drop it.
+    ///
+    /// The destination-side preservation check cannot answer this: the machine
+    /// that would run it is the one too old to have it. So the source refuses,
+    /// and it refuses before its own agent is asked to quit — the only point at
+    /// which the task is still recoverable here.
+    ///
+    /// The refusal is deliberately conservative: nothing in the protocol proves
+    /// what a peer preserves, so no peer is contacted and every stamped task is
+    /// refused.
+    #[tokio::test]
+    async fn a_published_plan_is_not_handed_over_before_the_source_is_finalized() {
+        let state = crate::http_api::test_state_with_seed(
+            "desktop-finalize-plan-guard",
+            "Finalize Plan Guard",
+            |db| {
+                seed_finalization(db, "finalize:transfer-plan", Some("ses_before_shutdown"));
+                publish_plan_on(db, "task-finalize");
+            },
+        );
+
+        let error = run_finalization(
+            &state,
+            &finalize_work_item("finalize:transfer-plan"),
+            "transfer-finalize",
+        )
+        .await
+        .expect_err("a published plan was handed to a destination that may drop it");
+        assert!(
+            error.contains("carries a published plan"),
+            "the refusal must name the reason: {error}"
+        );
+
+        // Finalization records its verdict under its own phase, and it records
+        // that verdict before anything else it does. Nothing there is the
+        // evidence that the source session was never touched.
+        let db = state.transfer_work().open_db().expect("db");
+        assert_eq!(
+            db.read_transfer_work_observation("finalize:transfer-plan", "finalization-outcome")
+                .expect("read the finalization verdict"),
+            None,
+            "the source session was finalized despite the refusal"
+        );
+        // The plan is still here, whole, on a task that is still open.
+        let item = db
+            .get_pipeline_item("task-finalize")
+            .expect("read task")
+            .expect("task");
+        assert!(item.closed_at.is_none());
+        assert!(
+            item.pipeline_def
+                .as_deref()
+                .expect("pinned workflow")
+                .contains("the approved plan"),
+            "the published plan must survive the refusal"
+        );
+    }
+
+    /// The same task before its plan is published transfers normally, and the
+    /// guard is re-asked at finalization — so a transfer queued while the task
+    /// was still ordinary cannot walk past it once the plan lands.
+    #[tokio::test]
+    async fn an_ordinary_task_still_transfers_and_the_guard_is_re_asked_at_finalization() {
+        let state = crate::http_api::test_state_with_seed(
+            "desktop-finalize-plan-late",
+            "Finalize Plan Late",
+            |db| seed_finalization(db, "finalize:transfer-late", Some("ses_before_shutdown")),
+        );
+        let work = finalize_work_item("finalize:transfer-late");
+
+        // Queued while ordinary: this reaches the existing downgrade guard,
+        // which is well past the preservation one.
+        let before = run_finalization(&state, &work, "transfer-finalize")
+            .await
+            .expect_err("this fixture has no session to ship");
+        assert!(
+            !before.contains("carries a published plan"),
+            "an ordinary task must not be refused for preservation: {before}"
+        );
+
+        // The plan lands after the transfer was queued.
+        let db = state.transfer_work().open_db().expect("db");
+        publish_plan_on(&db, "task-finalize");
+        drop(db);
+
+        let after = run_finalization(&state, &work, "transfer-finalize")
+            .await
+            .expect_err("the published plan must now refuse");
+        assert!(
+            after.contains("carries a published plan"),
+            "finalization did not re-ask the guard: {after}"
+        );
+    }
+
     /// The retry seam migration 050 exists for, on the source side.
     ///
     /// Finalization shuts the agent down, so by attempt 2 the session it was
@@ -1805,9 +2089,34 @@ mod tests {
     /// this covers `run_finalization` being wired to them.
     #[tokio::test]
     async fn finalization_compares_against_the_session_the_first_attempt_saw() {
+        // Finalization resolves the pinned source workflow, so this fixture
+        // supplies a real repository snapshot.
+        let temp = tempfile::tempdir().unwrap();
+        let repo = git2::Repository::init(temp.path()).unwrap();
+        let tree_id = repo.treebuilder(None).unwrap().write().unwrap();
+        let tree = repo.find_tree(tree_id).unwrap();
+        let signature = git2::Signature::now("Test", "test@example.com").unwrap();
+        let commit = repo
+            .commit(
+                Some("refs/heads/main"),
+                &signature,
+                &signature,
+                "fixture",
+                &tree,
+                &[],
+            )
+            .unwrap();
+        repo.reference("refs/remotes/origin/main", commit, true, "fixture")
+            .unwrap();
         let seen_before_finalization = "ses_02645d9aaffeeOgwt2rbXIcTdp";
         let state =
             crate::http_api::test_state_with_seed("desktop-finalize-memo", "Finalize Memo", |db| {
+                db.insert_test_repo_with_path(
+                    "repo-finalize",
+                    &temp.path().to_string_lossy(),
+                    "Finalize Repo",
+                )
+                .unwrap();
                 seed_finalization(
                     db,
                     "finalize:transfer-finalize",
@@ -2094,6 +2403,9 @@ mod tests {
             workflow_definition,
             input_ledger_sha256,
             history,
+            launch_harness: "claude",
+            launch_model: None,
+            launch_effort: None,
         })
         .expect("digest")
     }
@@ -2112,7 +2424,9 @@ mod tests {
             "head-a",
             "base-a",
             "in progress",
-            Some("{}"),
+            Some(
+                r#"{"name":"a","stages":[{"name":"in progress","policy":{"transition":"manual"}}]}"#,
+            ),
             Some("ledger-sha-a"),
             &history,
         );
@@ -2125,7 +2439,9 @@ mod tests {
                 "head-DIFFERENT",
                 "base-a",
                 "in progress",
-                Some("{}"),
+                Some(
+                    r#"{"name":"a","stages":[{"name":"in progress","policy":{"transition":"manual"}}]}"#,
+                ),
                 Some("ledger-sha-a"),
                 &history,
             ),
@@ -2133,7 +2449,9 @@ mod tests {
                 "head-a",
                 "base-DIFFERENT",
                 "in progress",
-                Some("{}"),
+                Some(
+                    r#"{"name":"a","stages":[{"name":"in progress","policy":{"transition":"manual"}}]}"#,
+                ),
                 Some("ledger-sha-a"),
                 &history,
             ),
@@ -2141,7 +2459,9 @@ mod tests {
                 "head-a",
                 "base-a",
                 "review",
-                Some("{}"),
+                Some(
+                    r#"{"name":"a","stages":[{"name":"in progress","policy":{"transition":"manual"}}]}"#,
+                ),
                 Some("ledger-sha-a"),
                 &history,
             ),
@@ -2149,7 +2469,9 @@ mod tests {
                 "head-a",
                 "base-a",
                 "in progress",
-                Some("{\"different\":true}"),
+                Some(
+                    r#"{"name":"b","stages":[{"name":"in progress","policy":{"transition":"manual"}}]}"#,
+                ),
                 Some("ledger-sha-a"),
                 &history,
             ),
@@ -2157,7 +2479,9 @@ mod tests {
                 "head-a",
                 "base-a",
                 "in progress",
-                Some("{}"),
+                Some(
+                    r#"{"name":"a","stages":[{"name":"in progress","policy":{"transition":"manual"}}]}"#,
+                ),
                 Some("ledger-sha-DIFFERENT"),
                 &history,
             ),
@@ -2165,7 +2489,9 @@ mod tests {
                 "head-a",
                 "base-a",
                 "in progress",
-                Some("{}"),
+                Some(
+                    r#"{"name":"a","stages":[{"name":"in progress","policy":{"transition":"manual"}}]}"#,
+                ),
                 Some("ledger-sha-a"),
                 &different_history,
             ),
@@ -2185,7 +2511,9 @@ mod tests {
             "head-a",
             "base-a",
             "in progress",
-            Some("{}"),
+            Some(
+                r#"{"name":"a","stages":[{"name":"in progress","policy":{"transition":"manual"}}]}"#,
+            ),
             Some("ledger-sha-a"),
             &history,
         );
@@ -2193,7 +2521,9 @@ mod tests {
             "head-a",
             "base-a",
             "in progress",
-            Some("{}"),
+            Some(
+                r#"{"name":"a","stages":[{"name":"in progress","policy":{"transition":"manual"}}]}"#,
+            ),
             Some("ledger-sha-a"),
             &history,
         );

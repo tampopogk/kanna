@@ -16,6 +16,7 @@ import type {
   DesktopDescriptor,
   DesktopSummary,
   MobileServerStatus,
+  PinnedTaskWorkflow,
   PushPairingMaterial,
   RepoSummary,
   RepoCheckoutOperation,
@@ -236,11 +237,15 @@ export function createLanTransport(
       request<TaskActionResponse>(`/v1/tasks/${encodeURIComponent(taskId)}/actions/run-merge-agent`, {
         method: "POST"
       }),
-    advanceTaskStage: (taskId: string) =>
+    advanceTaskStage: (taskId: string, expectedDefinition?: PinnedTaskWorkflow | null) =>
       request<TaskActionResponse>(`/v1/tasks/${encodeURIComponent(taskId)}/actions/advance-stage`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ source: "operator" })
+        body: JSON.stringify({
+          source: "operator",
+          // The workflow this advance was taken against, when one was read.
+          ...(expectedDefinition ? { expectedDefinition } : {})
+        })
       }),
     resumeTask: (taskId: string) =>
       request<TaskActionResponse>(`/v1/tasks/${encodeURIComponent(taskId)}/actions/resume`, {

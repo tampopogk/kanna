@@ -100,6 +100,21 @@ The desktop adds the repo/task sidebar, attention state, diff and file views,
 shell access, stage controls, and preferences around that terminal. See
 [Product Behavior: Workflows](product-behavior.md#workflows).
 
+### Decide the work and how it will be done
+
+For work whose objective is not yet chosen, the operator opens a consultation
+task. Its consultant explores what outcome to pursue and why and parks for
+discussion. When the operator chooses an outcome and asks to proceed, the task
+manager appends a planning stage to **that same task**, and the planning agent
+chooses the review depth, agents, providers, and revision budget the work
+actually warrants, publishing those stages together with the plan. One decision
+stays one task, with its prompt, input ledger, and run history intact, and the
+work's shape is proportional to the work rather than chosen before anyone knew
+what it was. Trivial work stays trivial: a label change gets no reviewer unless
+the plan argues for one. The operator reads both the plan and the stages it
+chose at a manual gate before anything runs. See
+[Product Behavior: Workflows](product-behavior.md#workflows).
+
 ### Review, revise, and hand off
 
 The operator inspects the branch diff and advances a manual gate when satisfied.
@@ -189,3 +204,16 @@ permanent wishlist.
 6. **Platform promise:** Linux has a working headless path and partial desktop
    implementation, but the supported end-user platform and distribution promise
    have not been settled here.
+
+
+### Agent role and execution choice
+
+The agent role owns instructions; the harness is the executable CLI. A native
+model identity and optional harness/model-native effort are separate choices.
+For a multi-backend harness such as OpenCode, the model includes its native
+backend namespace (`local/model-high`). That namespace belongs to OpenCode's
+configuration. Kanna accepts structured `{ harness, model?, effort? }`
+candidates alongside legacy selection strings, keeps fallback values coherent,
+and records the launch binding without claiming to observe later TUI changes.
+Pi execution, same-harness model failover and a model catalog service remain
+outside this contract. See [selection defaults and compatibility](dev-workflow.md#harness-model-and-effort).

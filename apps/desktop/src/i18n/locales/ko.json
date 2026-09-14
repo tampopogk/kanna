@@ -377,6 +377,8 @@
     "shortcutClose": "닫기"
   },
   "mainPanel": {
+    "stageSequenceChanged": "보는 동안 이 작업의 스테이지가 변경되었습니다. 아무것도 진행되지 않았으며 목록을 새로 고쳤습니다.",
+    "stageSequenceUnavailable": "이 작업의 스테이지를 읽을 수 없어 진행하지 않았습니다. 잠시 후 다시 시도하세요.",
     "taskBlocked": "작업 차단됨",
     "taskBlockedHint": "모든 차단 요소가 완료되면 이 작업이 자동으로 시작됩니다.",
     "taskSettingUp": "작업 설정 중...",
@@ -509,5 +511,17 @@
   },
   "common": {
     "loading": "로딩 중..."
+  },
+  "startup": {
+    "preparing": "Kanna를 시작하는 중…",
+    "services": "로컬 서비스를 시작하는 중…",
+    "restoring": "작업 공간을 복원하는 중…",
+    "longWait": "로컬 준비가 끝나면 작업 공간이 열립니다.",
+    "failedTitle": "Kanna를 시작하지 못했습니다",
+    "failedRestart": "Kanna를 종료하고 다시 열어 주세요.",
+    "failedServices": "로컬 서비스를 시작하지 못했습니다.",
+    "failedRestore": "작업 공간을 복원하지 못했습니다.",
+    "failedCloseProtection": "이 창이 예기치 않게 닫히지 않도록 보호하지 못했습니다.",
+    "failedGeneric": "시작을 마치지 못했습니다."
   }
 }

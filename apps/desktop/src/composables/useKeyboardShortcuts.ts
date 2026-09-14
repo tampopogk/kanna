@@ -244,8 +244,22 @@ export function getShortcutGroups(t: (key: string) => string): { key: string; ti
   }));
 }
 
-export function useKeyboardShortcuts(actions: KeyboardActions, options?: { beforeAction?: (action: ActionName) => void; context?: () => ShortcutContext }) {
+export function useKeyboardShortcuts(
+  actions: KeyboardActions,
+  options?: {
+    beforeAction?: (action: ActionName) => void;
+    context?: () => ShortcutContext;
+    /**
+     * Whether workspace shortcuts may run. The window-level listener captures
+     * keydown before anything else, so marking the workspace `inert` is not
+     * enough on its own to keep a shortcut from acting on a workspace that is
+     * still being restored.
+     */
+    enabled?: () => boolean;
+  },
+) {
   function handler(e: KeyboardEvent) {
+    if (options?.enabled && !options.enabled()) return;
     const ctx = options?.context?.();
     for (const def of shortcuts) {
       if (matches(def, e)) {

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, inject, nextTick, toRef, watch, type Ref } from "vue";
+import { createStartupScreen, type StartupController } from "./startup";
 import { useI18n } from "vue-i18n";
 import { type BlockerDisplayItem, type DbHandle } from "./types/kanna";
 import type { TaskUiSlot } from "./types/taskUi";
@@ -53,6 +54,12 @@ const { t } = useI18n();
 const db = inject<DbHandle>("db")!;
 const dbName = inject<string>("dbName")!;
 const windowWorkspace = inject<WindowWorkspaceController>("windowWorkspace")!;
+// `main.ts` mounts the screen before this component exists and provides its
+// controller. A window that never hosted one (tests, embedded mounts) gets a
+// headless controller so the lifecycle has one contract either way.
+const startup = inject<StartupController | null>("startup", null) ?? createStartupScreen();
+/** True while the startup screen still covers this window. */
+const startupPending = computed(() => startup.active.value);
 const { catalog: repoCommandCatalog, scan: scanRepoCommands } = useRepoCommands();
 const { effectiveAppTheme } = useThemeRuntime();
 const appUpdate = useAppUpdate();
@@ -545,6 +552,7 @@ const {
   restoreTransferredModal,
   shortcutsStartFull,
   showShortcutsModal,
+  startup,
   startSystemThemeListener,
   stopSidebarResize,
   stopSystemThemeListener,
@@ -562,6 +570,7 @@ const appKeyboardActions = useAppKeyboardActions({
   selectedWorkspaceTask,
   selectedWorkspaceTaskBlocked: selectedRemoteTaskIsBlocked,
   currentShortcutContext,
+  shortcutsEnabled: computed(() => !startupPending.value),
   mainTabs,
   mainPanelRef,
   showNewTaskModal,
@@ -620,11 +629,19 @@ const modalLayerController = {
     class="fatal-initialization-error"
     data-testid="fatal-initialization-error"
     role="alert"
+    :inert="startupPending || undefined"
+    :aria-hidden="startupPending || undefined"
   >
     <h1>Kanna couldn't start safely</h1>
     <p>{{ fatalInitializationError }}</p>
   </main>
-  <div v-else class="app" :class="{ mobile: isMobile }">
+  <div
+    v-else
+    class="app"
+    :class="{ mobile: isMobile }"
+    :inert="startupPending || undefined"
+    :aria-hidden="startupPending || undefined"
+  >
     <div
       v-if="!maximized && !sidebarHidden && (!isMobile || !store.selectedItemId)"
       class="sidebar-shell"

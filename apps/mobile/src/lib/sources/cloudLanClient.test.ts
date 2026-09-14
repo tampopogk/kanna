@@ -1704,7 +1704,7 @@ describe("createCloudLanClient", () => {
       "continue"
     );
     expect(lan.closeTask).toHaveBeenCalledWith("lan-only");
-    expect(cloud.advanceTaskStage).toHaveBeenCalledWith("cloud-only");
+    expect(cloud.advanceTaskStage).toHaveBeenCalledWith("cloud-only", undefined);
     expect(lan.runMergeAgent).toHaveBeenCalledWith("local-duplicate");
     expect(lan.markTaskRead).toHaveBeenCalledWith("local-duplicate", 7);
     expect(cloud.markTaskRead).not.toHaveBeenCalled();
@@ -2116,8 +2116,8 @@ describe("createCloudLanClient", () => {
     });
     await client.advanceTaskStage(canonicalNextTaskId);
 
-    expect(lan.advanceTaskStage).toHaveBeenNthCalledWith(1, "local-duplicate");
-    expect(lan.advanceTaskStage).toHaveBeenNthCalledWith(2, "local-next");
+    expect(lan.advanceTaskStage).toHaveBeenNthCalledWith(1, "local-duplicate", undefined);
+    expect(lan.advanceTaskStage).toHaveBeenNthCalledWith(2, "local-next", undefined);
     expect(cloud.advanceTaskStage).not.toHaveBeenCalled();
   });
 
@@ -2164,7 +2164,7 @@ describe("createCloudLanClient", () => {
     );
 
     expect(desktopALan.runMergeAgent).toHaveBeenCalledWith("local-task");
-    expect(desktopALan.advanceTaskStage).toHaveBeenCalledWith("local-task");
+    expect(desktopALan.advanceTaskStage).toHaveBeenCalledWith("local-task", undefined);
     expect(desktopALan.closeTask).toHaveBeenCalledWith("local-task");
     expect(desktopALan.sendTaskInput).toHaveBeenCalledWith(
       "local-task",
@@ -2637,7 +2637,7 @@ describe("createCloudLanClient", () => {
       ownerLocalRepoId: "repo-local",
       ownerLocalTaskId: "task-advanced"
     });
-    expect(desktopALan.advanceTaskStage).toHaveBeenCalledWith("created-on-a");
+    expect(desktopALan.advanceTaskStage).toHaveBeenCalledWith("created-on-a", undefined);
     expect(
       client.observeTaskTerminal(canonicalTaskId, vi.fn())
     ).toBe(terminalSubscription);
@@ -2874,13 +2874,13 @@ describe("createCloudLanClient", () => {
     await expect(
       client.advanceTaskStage(publishedTask.id)
     ).resolves.toEqual({ taskId: publishedTask.id });
-    expect(desktopALan.advanceTaskStage).toHaveBeenCalledWith("created-on-a");
+    expect(desktopALan.advanceTaskStage).toHaveBeenCalledWith("created-on-a", undefined);
     vi.mocked(desktopALan.advanceTaskStage).mockClear();
 
     lanEnabled = false;
     await client.advanceTaskStage(created.taskId);
 
-    expect(cloud.advanceTaskStage).toHaveBeenCalledWith(created.taskId);
+    expect(cloud.advanceTaskStage).toHaveBeenCalledWith(created.taskId, undefined);
     expect(desktopALan.advanceTaskStage).not.toHaveBeenCalled();
   });
 

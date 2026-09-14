@@ -1523,9 +1523,9 @@ export function createCloudLanClient(
       invokeTaskActionRoute(taskId, (client, routedTaskId) =>
         client.runMergeAgent(routedTaskId)
       ),
-    advanceTaskStage: (taskId) =>
+    advanceTaskStage: (taskId, expectedDefinition) =>
       invokeTaskActionRoute(taskId, (client, routedTaskId) =>
-        client.advanceTaskStage(routedTaskId)
+        client.advanceTaskStage(routedTaskId, expectedDefinition)
       ),
     resumeTask: (taskId) =>
       invokeTaskActionRoute(taskId, (client, routedTaskId) => {

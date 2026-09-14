@@ -8,6 +8,8 @@ fn builds_complete_stage_payload() {
         "success".to_string(),
         "review passed".to_string(),
         Some(json!({ "coverage": "sufficient" })),
+        None,
+        None,
     );
 
     assert_eq!(
@@ -17,6 +19,39 @@ fn builds_complete_stage_payload() {
             "status": "success",
             "summary": "review passed",
             "metadata": { "coverage": "sufficient" },
+        })
+    );
+}
+
+/// A plan publishes its stages in the same request that records it, and the
+/// fields stay absent for every other completion so an old server sees exactly
+/// the request it always did.
+#[test]
+fn builds_a_plan_completion_that_publishes_its_remaining_stages() {
+    let workflow = json!({
+        "name": "grown",
+        "revision_limit": 3,
+        "stages": [{"name": "plan"}, {"name": "in progress"}, {"name": "pr"}]
+    });
+    let expected = json!({"name": "grown", "stages": [{"name": "plan"}]});
+    let request = build_complete_stage_request(
+        Some("run-plan".to_string()),
+        None,
+        "success".to_string(),
+        "the full plan".to_string(),
+        None,
+        Some(workflow.clone()),
+        Some(expected.clone()),
+    );
+
+    assert_eq!(
+        serde_json::to_value(request).unwrap(),
+        json!({
+            "runId": "run-plan",
+            "status": "success",
+            "summary": "the full plan",
+            "workflowDefinition": workflow,
+            "expectedDefinition": expected,
         })
     );
 }

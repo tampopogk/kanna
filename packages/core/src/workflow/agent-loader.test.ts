@@ -470,3 +470,14 @@ Extra.
     );
   });
 });
+
+it("keeps structured frontmatter literals and rejects conflicting EXTEND tuning", () => {
+  const base = parseAgentDefinition("---\nname: test\ndescription: Test\nagent_provider:\n  harness: opencode\n  model: local/model-high\n  effort: custom-hi\n---\nDo work");
+  expect(base.agent_provider).toEqual([{ harness: "opencode", model: "local/model-high", effort: "custom-hi" }]);
+  expect(() => applyAgentExtension(base, { prompt: "", model: "another-model" })).toThrow(/conflicting/);
+});
+
+it("refuses EXTEND attaching a different structured harness to inherited sibling tuning", () => {
+  const base = parseAgentDefinition("---\nname: test\ndescription: Test\nagent_provider: codex\nmodel: gpt-6-astra\n---\nWork");
+  expect(() => applyAgentExtension(base, { prompt: "", agent_provider: { harness: "opencode" } })).toThrow(/conflicting selection/);
+});

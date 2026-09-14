@@ -244,9 +244,9 @@ fn extend_effort_flags(provider: AgentProvider, flags: &mut Vec<String>, effort:
         }
         EffortOverride::Config(key) => {
             flags.push(format!(
-                "-c '{}=\"{}\"'",
+                "-c '{}={}'",
                 shell_single_quote(key),
-                shell_single_quote(effort)
+                shell_single_quote(&serde_json::to_string(effort).expect("string serialization"))
             ));
         }
     }

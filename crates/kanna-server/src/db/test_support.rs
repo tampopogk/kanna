@@ -162,7 +162,8 @@ impl Db {
                 runtime_event_pending_at TEXT,
                 blocked_event_baseline INTEGER NOT NULL DEFAULT 0,
                 composer_text TEXT,
-                composer_attestation TEXT
+                composer_attestation TEXT,
+                attention_reason TEXT
             );
             CREATE UNIQUE INDEX idx_pipeline_item_open_cloud_task_id
             ON pipeline_item(cloud_task_id)
@@ -440,6 +441,12 @@ impl Db {
               source_task_id TEXT NOT NULL,
               source_machine_task_label TEXT,
               imported_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+
+            CREATE TABLE task_transfer_workflow_claim (
+              pipeline_item_id TEXT PRIMARY KEY REFERENCES pipeline_item(id) ON DELETE CASCADE,
+              transfer_id TEXT NOT NULL,
+              claimed_at TEXT NOT NULL DEFAULT (datetime('now'))
             );
 
             CREATE TABLE transfer_work (

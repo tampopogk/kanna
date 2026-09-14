@@ -6,6 +6,7 @@ import i18n from "../i18n";
 import { invoke } from "../invoke";
 import { listen, listenCurrentWebviewWindow } from "../listen";
 import type { useKannaStore } from "../stores/kanna";
+import type { StartupController } from "../startup";
 import { isTauri } from "../tauri-mock";
 import {
   normalizeAppThemePreference,
@@ -45,6 +46,7 @@ import { parseRecentAgentChoices } from "../utils/agentChoiceUsage";
 import type { useAppUpdate } from "./useAppUpdate";
 import type { useToast } from "./useToast";
 import { showTerminalFileLinkHintOnce } from "./terminalFileLinkHint";
+import { refocusActiveTerminal } from "./useTerminalFocusWhenActive";
 import { openPath } from "@tauri-apps/plugin-opener";
 
 type AppPreferences = ReturnType<typeof useAppPreferences>["preferences"];
@@ -87,6 +89,8 @@ interface UseAppLifecycleOptions {
   restoreTransferredModal: () => void;
   shortcutsStartFull: Ref<boolean>;
   showShortcutsModal: Ref<boolean>;
+  /** The pre-mount startup screen this window is running behind. */
+  startup: StartupController;
   startSystemThemeListener: () => void;
   stopSidebarResize: () => void;
   stopSystemThemeListener: () => void;
@@ -94,6 +98,32 @@ interface UseAppLifecycleOptions {
   toast: ReturnType<typeof useToast>;
   warmTransferSidecar: () => Promise<void>;
   windowWorkspace: WindowWorkspaceController;
+}
+
+const E2E_READINESS_HOLD_KEY = "kanna.e2e.readinessHold";
+
+/**
+ * DEV/E2E only. Holds the readiness edge open after restoration has already
+ * mounted the workspace, so a driver can look at a window whose terminal has
+ * asked for focus while the startup screen still covers it. One-shot: the flag
+ * is consumed as it is read, so a driver that never releases cannot wedge the
+ * next launch.
+ */
+function holdReadinessForE2E(): Promise<void> | null {
+  if (!import.meta.env.DEV) return null;
+  let held: string | null = null;
+  try {
+    held = window.localStorage.getItem(E2E_READINESS_HOLD_KEY);
+    if (held) window.localStorage.removeItem(E2E_READINESS_HOLD_KEY);
+  } catch (error: unknown) {
+    console.debug("[App] E2E readiness hold flag unreadable:", error);
+    return null;
+  }
+  if (!held) return null;
+
+  return new Promise<void>((resolve) => {
+    window.__KANNA_E2E_READINESS_HOLD__ = { release: () => resolve() };
+  });
 }
 
 function eventPayload(event: unknown): unknown {
@@ -128,6 +158,7 @@ export function useAppLifecycle({
   restoreTransferredModal,
   shortcutsStartFull,
   showShortcutsModal,
+  startup,
   startSystemThemeListener,
   stopSidebarResize,
   stopSystemThemeListener,
@@ -301,6 +332,7 @@ export function useAppLifecycle({
         finishWindowMembershipInitialization();
         fatalInitializationError.value =
           "Native window-close protection is unavailable. Restart Kanna and try again.";
+        startup.fail(i18n.global.t("startup.failedCloseProtection"), e);
         console.error("[App] native window close-request listener registration failed:", e);
         return;
       }
@@ -308,209 +340,238 @@ export function useAppLifecycle({
 
     if (currentWindowClosePhase !== "open") {
       finishWindowMembershipInitialization();
+      startup.dispose();
       return;
     }
+    // Everything up to the readiness edge below is what "the local workspace is
+    // usable" actually means. A rejection anywhere in it is a visible startup
+    // failure rather than an unhandled rejection behind a blank window.
     try {
-      await windowWorkspace.initialize();
-    } finally {
-      finishWindowMembershipInitialization();
-    }
-    if (currentWindowClosePhase !== "open") return;
-    try {
-      appUnlisteners.push(await windowWorkspace.startGeometryTracking());
-    } catch (error: unknown) {
-      console.warn("[App] native window geometry tracking unavailable:", error);
-    }
+      try {
+        await windowWorkspace.initialize();
+      } finally {
+        finishWindowMembershipInitialization();
+      }
+      if (currentWindowClosePhase !== "open") {
+        startup.dispose();
+        return;
+      }
+      try {
+        appUnlisteners.push(await windowWorkspace.startGeometryTracking());
+      } catch (error: unknown) {
+        console.warn("[App] native window geometry tracking unavailable:", error);
+      }
 
-    appUpdate.start();
-    window.addEventListener("dragenter", suppressFileDropNavigation);
-    window.addEventListener("dragover", suppressFileDropNavigation);
-    window.addEventListener("drop", suppressFileDropNavigation);
-    document.addEventListener("file-link-activate", handleFileLinkActivateEvent);
-    document.addEventListener("image-link-activate", handleImageLinkActivate);
-    document.addEventListener("terminal-file-link-available", handleTerminalFileLinkAvailable);
+      appUpdate.start();
+      window.addEventListener("dragenter", suppressFileDropNavigation);
+      window.addEventListener("dragover", suppressFileDropNavigation);
+      window.addEventListener("drop", suppressFileDropNavigation);
+      document.addEventListener("file-link-activate", handleFileLinkActivateEvent);
+      document.addEventListener("image-link-activate", handleImageLinkActivate);
+      document.addEventListener("terminal-file-link-available", handleTerminalFileLinkAvailable);
 
-    await restoreSidebarWidth();
-    await store.init(db);
-    // After the store holds this desktop's tasks and repositories, so a stored
-    // tab set whose subject was closed while the app was shut down is left
-    // behind rather than restored into a window with nothing to show it for.
-    await restoreMainTabs();
-    restoreTransferredModal();
-    preferences.appTheme = normalizeAppThemePreference(store.appTheme);
-    preferences.codeTheme = normalizeCodeThemePreference(store.codeTheme);
-    startSystemThemeListener();
-    await nextTick();
-    if (windowWorkspace && windowWorkspace.bootstrap.windowId === "main") {
-      scheduleStartupBackup(dbName);
-    }
-    void initializeDesktopCloudAuth().catch((error) =>
-      console.warn("[cloud] failed to initialize desktop auth:", error),
-    );
-
-    try {
-      const unlistenNativeNewWindow = await listenCurrentWebviewWindow(WINDOW_WORKSPACE_NATIVE_NEW_WINDOW_EVENT, async () => {
-        await getKeyboardActions().newWindow();
-      });
-      appUnlisteners.push(unlistenNativeNewWindow);
-    } catch (e: unknown) {
-      console.error("[App] native new-window listener registration failed:", e);
-    }
-
-    try {
-      const unlistenNativeCloseWindow = await listenCurrentWebviewWindow(WINDOW_WORKSPACE_NATIVE_CLOSE_WINDOW_EVENT, async () => {
-        await getKeyboardActions().closeTabOrWindow();
-      });
-      appUnlisteners.push(unlistenNativeCloseWindow);
-    } catch (e: unknown) {
-      console.error("[App] native close-window listener registration failed:", e);
-    }
-
-    listenNativeMenuAction(
-      WINDOW_WORKSPACE_NATIVE_NAVIGATE_TASK_UP_EVENT,
-      getKeyboardActions().navigateUp,
-      "navigate-task-up",
-    );
-    listenNativeMenuAction(
-      WINDOW_WORKSPACE_NATIVE_NAVIGATE_TASK_DOWN_EVENT,
-      getKeyboardActions().navigateDown,
-      "navigate-task-down",
-    );
-    listenNativeMenuAction(
-      WINDOW_WORKSPACE_NATIVE_NAVIGATE_REPO_UP_EVENT,
-      getKeyboardActions().navigateRepoUp,
-      "navigate-repo-up",
-    );
-    listenNativeMenuAction(
-      WINDOW_WORKSPACE_NATIVE_NAVIGATE_REPO_DOWN_EVENT,
-      getKeyboardActions().navigateRepoDown,
-      "navigate-repo-down",
-    );
-
-    try {
-      // Window-scoped, not global: the native side picks one window and
-      // addresses the command to it, the same way the native menu events are
-      // addressed. A global listener is registered for "any target" and does
-      // not receive a webview-addressed emit.
-      const unlistenDesktopViewOpen = await listenCurrentWebviewWindow(
-        DESKTOP_VIEW_OPEN_EVENT,
-        (event: unknown) => {
-          let command: DesktopViewOpenCommand;
-          try {
-            command = parseDesktopViewOpenCommand(eventPayload(event));
-          } catch (e: unknown) {
-            // Nothing to acknowledge with: a command this window cannot read
-            // carries no request id to answer. The caller learns of it as an
-            // unavailable desktop, which is as close to the truth as this
-            // window can get.
-            console.error("[App] failed to read a desktop view open command:", e);
-            return;
-          }
-          void openTaskView(command).catch((e: unknown) => {
-            console.error("[App] failed to handle desktop view open command:", e);
-          });
-        },
+      await restoreSidebarWidth();
+      await store.init(db);
+      // After the store holds this desktop's tasks and repositories, so a stored
+      // tab set whose subject was closed while the app was shut down is left
+      // behind rather than restored into a window with nothing to show it for.
+      await restoreMainTabs();
+      restoreTransferredModal();
+      preferences.appTheme = normalizeAppThemePreference(store.appTheme);
+      preferences.codeTheme = normalizeCodeThemePreference(store.codeTheme);
+      startSystemThemeListener();
+      await nextTick();
+      if (windowWorkspace && windowWorkspace.bootstrap.windowId === "main") {
+        scheduleStartupBackup(dbName);
+      }
+      void initializeDesktopCloudAuth().catch((error) =>
+        console.warn("[cloud] failed to initialize desktop auth:", error),
       );
-      appUnlisteners.push(unlistenDesktopViewOpen);
-    } catch (e: unknown) {
-      console.error("[App] desktop-view-open listener registration failed:", e);
-    }
 
-    try {
-      const unlistenCloudTransferCredentialRefresh = await listenCurrentWebviewWindow(
-        CLOUD_TRANSFER_CREDENTIAL_REFRESH_EVENT,
-        (event: unknown) => {
-          let command: CloudTransferCredentialRefreshCommand;
-          try {
-            command = parseCloudTransferCredentialRefreshCommand(eventPayload(event));
-          } catch (e: unknown) {
-            console.error("[App] failed to read a cloud transfer credential refresh command:", e);
-            return;
-          }
-          void refreshCloudTransferCredential(command).catch((e: unknown) => {
-            console.error("[App] failed to handle a cloud transfer credential refresh:", e);
-          });
-        },
+      try {
+        const unlistenNativeNewWindow = await listenCurrentWebviewWindow(WINDOW_WORKSPACE_NATIVE_NEW_WINDOW_EVENT, async () => {
+          await getKeyboardActions().newWindow();
+        });
+        appUnlisteners.push(unlistenNativeNewWindow);
+      } catch (e: unknown) {
+        console.error("[App] native new-window listener registration failed:", e);
+      }
+
+      try {
+        const unlistenNativeCloseWindow = await listenCurrentWebviewWindow(WINDOW_WORKSPACE_NATIVE_CLOSE_WINDOW_EVENT, async () => {
+          await getKeyboardActions().closeTabOrWindow();
+        });
+        appUnlisteners.push(unlistenNativeCloseWindow);
+      } catch (e: unknown) {
+        console.error("[App] native close-window listener registration failed:", e);
+      }
+
+      listenNativeMenuAction(
+        WINDOW_WORKSPACE_NATIVE_NAVIGATE_TASK_UP_EVENT,
+        getKeyboardActions().navigateUp,
+        "navigate-task-up",
       );
-      appUnlisteners.push(unlistenCloudTransferCredentialRefresh);
-    } catch (e: unknown) {
-      console.error("[App] cloud transfer credential refresh listener registration failed:", e);
-    }
+      listenNativeMenuAction(
+        WINDOW_WORKSPACE_NATIVE_NAVIGATE_TASK_DOWN_EVENT,
+        getKeyboardActions().navigateDown,
+        "navigate-task-down",
+      );
+      listenNativeMenuAction(
+        WINDOW_WORKSPACE_NATIVE_NAVIGATE_REPO_UP_EVENT,
+        getKeyboardActions().navigateRepoUp,
+        "navigate-repo-up",
+      );
+      listenNativeMenuAction(
+        WINDOW_WORKSPACE_NATIVE_NAVIGATE_REPO_DOWN_EVENT,
+        getKeyboardActions().navigateRepoDown,
+        "navigate-repo-down",
+      );
 
-    try {
-      const unlistenPairingStarted = await listen("pairing-started", async (event: unknown) => {
-        try {
-          const pairing = parsePairingCompletedEvent(eventPayload(event));
-          toast.info(`Enter code ${pairing.verificationCode} on ${pairing.displayName}.`);
-        } catch (e: unknown) {
-          console.error("[App] failed to handle pairing started event:", e);
-        }
-      });
-      appUnlisteners.push(unlistenPairingStarted);
-    } catch (e: unknown) {
-      console.error("[App] pairing-started listener registration failed:", e);
-    }
-
-    try {
-      const unlistenPairingRequested = await listen("pairing-requested", async (event: unknown) => {
-        let pairingRequestId: string | null = null;
-        try {
-          const pairing = parsePairingRequestedEvent(eventPayload(event));
-          pairingRequestId = pairing.requestId;
-          const enteredCode = window
-            .prompt(`Enter pairing code for ${pairing.displayName}`)
-            ?.trim() ?? null;
-          if (enteredCode !== pairing.verificationCode) {
-            await invoke("reject_peer_pairing", { pairingRequestId: pairing.requestId });
-            toast.error("Pairing code did not match.");
-            return;
-          }
-
-          await invoke("accept_peer_pairing", {
-            pairingRequestId: pairing.requestId,
-            verificationCode: enteredCode,
-          });
-          toast.info(`Paired with ${pairing.displayName}. Verify code ${pairing.verificationCode}.`);
-        } catch (e: unknown) {
-          console.error("[App] failed to handle pairing request event:", e);
-          if (pairingRequestId) {
+      try {
+        // Window-scoped, not global: the native side picks one window and
+        // addresses the command to it, the same way the native menu events are
+        // addressed. A global listener is registered for "any target" and does
+        // not receive a webview-addressed emit.
+        const unlistenDesktopViewOpen = await listenCurrentWebviewWindow(
+          DESKTOP_VIEW_OPEN_EVENT,
+          (event: unknown) => {
+            let command: DesktopViewOpenCommand;
             try {
-              await invoke("reject_peer_pairing", { pairingRequestId });
-            } catch (rejectError: unknown) {
-              console.error("[App] failed to reject pairing request:", rejectError);
+              command = parseDesktopViewOpenCommand(eventPayload(event));
+            } catch (e: unknown) {
+              // Nothing to acknowledge with: a command this window cannot read
+              // carries no request id to answer. The caller learns of it as an
+              // unavailable desktop, which is as close to the truth as this
+              // window can get.
+              console.error("[App] failed to read a desktop view open command:", e);
+              return;
             }
+            void openTaskView(command).catch((e: unknown) => {
+              console.error("[App] failed to handle desktop view open command:", e);
+            });
+          },
+        );
+        appUnlisteners.push(unlistenDesktopViewOpen);
+      } catch (e: unknown) {
+        console.error("[App] desktop-view-open listener registration failed:", e);
+      }
+
+      try {
+        const unlistenCloudTransferCredentialRefresh = await listenCurrentWebviewWindow(
+          CLOUD_TRANSFER_CREDENTIAL_REFRESH_EVENT,
+          (event: unknown) => {
+            let command: CloudTransferCredentialRefreshCommand;
+            try {
+              command = parseCloudTransferCredentialRefreshCommand(eventPayload(event));
+            } catch (e: unknown) {
+              console.error("[App] failed to read a cloud transfer credential refresh command:", e);
+              return;
+            }
+            void refreshCloudTransferCredential(command).catch((e: unknown) => {
+              console.error("[App] failed to handle a cloud transfer credential refresh:", e);
+            });
+          },
+        );
+        appUnlisteners.push(unlistenCloudTransferCredentialRefresh);
+      } catch (e: unknown) {
+        console.error("[App] cloud transfer credential refresh listener registration failed:", e);
+      }
+
+      try {
+        const unlistenPairingStarted = await listen("pairing-started", async (event: unknown) => {
+          try {
+            const pairing = parsePairingCompletedEvent(eventPayload(event));
+            toast.info(`Enter code ${pairing.verificationCode} on ${pairing.displayName}.`);
+          } catch (e: unknown) {
+            console.error("[App] failed to handle pairing started event:", e);
           }
-          toast.error(e instanceof Error ? e.message : String(e));
-        }
-      });
-      appUnlisteners.push(unlistenPairingRequested);
-    } catch (e: unknown) {
-      console.error("[App] pairing-requested listener registration failed:", e);
+        });
+        appUnlisteners.push(unlistenPairingStarted);
+      } catch (e: unknown) {
+        console.error("[App] pairing-started listener registration failed:", e);
+      }
+
+      try {
+        const unlistenPairingRequested = await listen("pairing-requested", async (event: unknown) => {
+          let pairingRequestId: string | null = null;
+          try {
+            const pairing = parsePairingRequestedEvent(eventPayload(event));
+            pairingRequestId = pairing.requestId;
+            const enteredCode = window
+              .prompt(`Enter pairing code for ${pairing.displayName}`)
+              ?.trim() ?? null;
+            if (enteredCode !== pairing.verificationCode) {
+              await invoke("reject_peer_pairing", { pairingRequestId: pairing.requestId });
+              toast.error("Pairing code did not match.");
+              return;
+            }
+
+            await invoke("accept_peer_pairing", {
+              pairingRequestId: pairing.requestId,
+              verificationCode: enteredCode,
+            });
+            toast.info(`Paired with ${pairing.displayName}. Verify code ${pairing.verificationCode}.`);
+          } catch (e: unknown) {
+            console.error("[App] failed to handle pairing request event:", e);
+            if (pairingRequestId) {
+              try {
+                await invoke("reject_peer_pairing", { pairingRequestId });
+              } catch (rejectError: unknown) {
+                console.error("[App] failed to reject pairing request:", rejectError);
+              }
+            }
+            toast.error(e instanceof Error ? e.message : String(e));
+          }
+        });
+        appUnlisteners.push(unlistenPairingRequested);
+      } catch (e: unknown) {
+        console.error("[App] pairing-requested listener registration failed:", e);
+      }
+
+      try {
+        const unlistenPairingCompleted = await listen("pairing-completed", async (event: unknown) => {
+          try {
+            const pairing = parsePairingCompletedEvent(eventPayload(event));
+            console.debug("[transfer] pairing-completed event received", {
+              peerId: pairing.peerId,
+              displayName: pairing.displayName,
+            });
+            toast.info(`Paired with ${pairing.displayName}. Verify code ${pairing.verificationCode}.`);
+          } catch (e: unknown) {
+            console.error("[App] failed to handle pairing completion event:", e);
+          }
+        });
+        appUnlisteners.push(unlistenPairingCompleted);
+      } catch (e: unknown) {
+        console.error("[App] pairing-completed listener registration failed:", e);
+      }
+
+      // The desktop no longer elects a transfer consumer: the four lifecycle
+      // events never leave `kanna-server`, so there is nothing to claim and
+      // nothing to hand over when this window closes. LAN task sync is a window
+      // concern and still starts here.
+      initializeDesktopLanTaskSync();
+    } catch (error: unknown) {
+      console.error("[App] startup initialization failed:", error);
+      startup.fail(i18n.global.t("startup.failedRestore"), error);
+      return;
     }
 
-    try {
-      const unlistenPairingCompleted = await listen("pairing-completed", async (event: unknown) => {
-        try {
-          const pairing = parsePairingCompletedEvent(eventPayload(event));
-          console.debug("[transfer] pairing-completed event received", {
-            peerId: pairing.peerId,
-            displayName: pairing.displayName,
-          });
-          toast.info(`Paired with ${pairing.displayName}. Verify code ${pairing.verificationCode}.`);
-        } catch (e: unknown) {
-          console.error("[App] failed to handle pairing completion event:", e);
-        }
-      });
-      appUnlisteners.push(unlistenPairingCompleted);
-    } catch (e: unknown) {
-      console.error("[App] pairing-completed listener registration failed:", e);
-    }
+    const readinessHold = holdReadinessForE2E();
+    if (readinessHold) await readinessHold;
 
-    // The desktop no longer elects a transfer consumer: the four lifecycle
-    // events never leave `kanna-server`, so there is nothing to claim and
-    // nothing to hand over when this window closes. LAN task sync is a window
-    // concern and still starts here.
-    initializeDesktopLanTaskSync();
+    // The local workspace is restored and navigable. Terminal attachment,
+    // cloud sign-in and the settings reads below are independent of that, so
+    // the screen is released here rather than waiting on them.
+    startup.markReady();
+    // A terminal restored while the screen was still up asked for focus
+    // through an `inert` ancestor, where the request could not take effect,
+    // and nothing about that terminal changes when the screen lifts. Ask its
+    // own focus owner again, once Vue has actually removed `inert` — the
+    // terminal keeps its own modal and sidebar rules, so this cannot steal a
+    // caret that belongs somewhere else.
+    await nextTick();
+    refocusActiveTerminal();
     if (import.meta.env.DEV && window.__KANNA_E2E__) {
       void remoteTaskDiagnostics.value;
       window.__KANNA_E2E__.ready = true;
@@ -582,6 +643,9 @@ export function useAppLifecycle({
   });
 
   onBeforeUnmount(() => {
+    // Releases the long-wait timer and any screen still mounted, so a window
+    // torn down mid-startup leaves nothing running behind it.
+    startup.dispose();
     disposeDesktopCloudWorkspace();
     stopSidebarResize();
     window.removeEventListener("dragenter", suppressFileDropNavigation);

@@ -46,6 +46,7 @@ use super::task_actions::{
 };
 use super::task_activity::{apply_runtime_status, mark_task_read};
 use super::task_agent_session::put_task_agent_session;
+use super::task_attention::{clear_task_attention, set_task_attention};
 use super::task_blockers::{block_task, unblock_task};
 use super::task_diff::get_task_diff;
 use super::task_events::wait_task_events;
@@ -220,6 +221,18 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route(
             "/v1/tasks/{task_id}",
             get(get_task).put(put_task).patch(update_task),
+        )
+        .route(
+            "/v1/tasks/{task_id}/attention",
+            axum::routing::put(set_task_attention).delete(clear_task_attention),
+        )
+        .route(
+            "/v1/tasks/{task_id}/actions/set-attention",
+            post(set_task_attention),
+        )
+        .route(
+            "/v1/tasks/{task_id}/actions/clear-attention",
+            post(clear_task_attention),
         )
         .route("/v1/tasks/{task_id}/children", get(get_task_children))
         .route("/v1/tasks/{task_id}/inputs", get(get_task_inputs))

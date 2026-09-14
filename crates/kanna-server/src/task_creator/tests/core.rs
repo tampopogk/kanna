@@ -541,9 +541,9 @@ struct ProviderResolutionCase {
     #[serde(default)]
     explicit: Vec<String>,
     #[serde(default)]
-    stage: Vec<String>,
+    stage: Vec<kanna_agent_protocol::AgentSelectionEntry>,
     #[serde(default)]
-    agent: Vec<String>,
+    agent: Vec<kanna_agent_protocol::AgentSelectionEntry>,
     #[serde(default)]
     fallback: Vec<String>,
     #[serde(default)]
@@ -860,15 +860,15 @@ fn provider_resolution_prefers_explicit_then_stage_then_repo_then_agent_then_fal
         name: "review".to_string(),
         description: "Review".to_string(),
         prompt: String::new(),
-        agent_providers: vec!["opencode".to_string()],
+        agent_providers: vec![kanna_agent_protocol::AgentSelectionEntry::from("opencode")],
         model: Some("agent-model".to_string()),
         effort: None,
         permission_mode: None,
         allowed_tools: Vec::new(),
         visibility: DefinitionVisibility::Public,
     };
-    let stage = vec!["copilot".to_string()];
-    let repo = vec!["codex".to_string()];
+    let stage = vec!["copilot".into()];
+    let repo = vec!["codex".into()];
     let available = |_| true;
 
     assert_eq!(
@@ -942,11 +942,17 @@ fn repo_agent_provider_preferences_resolve_exact_then_most_specific_glob_then_wi
     let exact = config
         .agent_provider_preference(Some("review-security"))
         .unwrap();
-    assert_eq!(exact.providers, vec!["copilot"]);
+    assert_eq!(
+        exact.providers,
+        vec![kanna_agent_protocol::AgentSelectionEntry::from("copilot")]
+    );
     let glob = config
         .agent_provider_preference(Some("review-storage"))
         .unwrap();
-    assert_eq!(glob.providers, vec!["opencode"]);
+    assert_eq!(
+        glob.providers,
+        vec![kanna_agent_protocol::AgentSelectionEntry::from("opencode")]
+    );
     assert_eq!(glob.model.as_deref(), Some("glob-model"));
     assert_eq!(glob.effort.as_deref(), Some("high"));
     assert_eq!(
@@ -954,14 +960,16 @@ fn repo_agent_provider_preferences_resolve_exact_then_most_specific_glob_then_wi
             .agent_provider_preference(Some("review-ui"))
             .unwrap()
             .providers,
-        vec!["codex"],
+        vec![kanna_agent_protocol::AgentSelectionEntry::from("codex")],
     );
     assert_eq!(
         config
             .agent_provider_preference(Some("implement"))
             .unwrap()
             .providers,
-        vec!["antigravity"],
+        vec![kanna_agent_protocol::AgentSelectionEntry::from(
+            "antigravity"
+        )],
     );
 }
 
@@ -971,7 +979,7 @@ fn model_resolution_prefers_explicit_then_repo_then_layered_agent_definition() {
         name: "review".to_string(),
         description: "Review".to_string(),
         prompt: String::new(),
-        agent_providers: vec!["claude".to_string()],
+        agent_providers: vec![kanna_agent_protocol::AgentSelectionEntry::from("claude")],
         model: Some("agent-model".to_string()),
         effort: Some("agent-effort".to_string()),
         permission_mode: None,
@@ -979,7 +987,7 @@ fn model_resolution_prefers_explicit_then_repo_then_layered_agent_definition() {
         visibility: DefinitionVisibility::Public,
     };
     let preference = super::super::definitions::AgentProviderPreference {
-        providers: vec!["codex".to_string()],
+        providers: vec![kanna_agent_protocol::AgentSelectionEntry::from("codex")],
         model: Some("repo-model".to_string()),
         effort: Some("repo-effort".to_string()),
     };
@@ -1066,7 +1074,7 @@ fn model_resolution_skips_layers_written_for_another_provider() {
         name: "implement".to_string(),
         description: "Implement".to_string(),
         prompt: String::new(),
-        agent_providers: vec!["opencode".to_string()],
+        agent_providers: vec![kanna_agent_protocol::AgentSelectionEntry::from("opencode")],
         model: Some("opencode-model".to_string()),
         effort: Some("opencode-effort".to_string()),
         permission_mode: None,
@@ -1075,7 +1083,7 @@ fn model_resolution_skips_layers_written_for_another_provider() {
     };
     // The shape of the machine-local override in the incident.
     let preference = super::super::definitions::AgentProviderPreference {
-        providers: vec!["claude".to_string()],
+        providers: vec![kanna_agent_protocol::AgentSelectionEntry::from("claude")],
         model: Some("opus".to_string()),
         effort: Some("xhigh".to_string()),
     };
@@ -1137,7 +1145,10 @@ fn model_resolution_skips_layers_written_for_another_provider() {
     // the moment claude — the provider the escape hatch is routing around — is
     // unavailable.
     let ordered_preference = super::super::definitions::AgentProviderPreference {
-        providers: vec!["claude".to_string(), "codex".to_string()],
+        providers: vec![
+            kanna_agent_protocol::AgentSelectionEntry::from("claude"),
+            kanna_agent_protocol::AgentSelectionEntry::from("codex"),
+        ],
         model: Some("opus".to_string()),
         effort: Some("xhigh".to_string()),
     };
@@ -1167,7 +1178,10 @@ fn model_resolution_skips_layers_written_for_another_provider() {
         name: "implement".to_string(),
         description: "Implement".to_string(),
         prompt: String::new(),
-        agent_providers: vec!["codex".to_string(), "opencode".to_string()],
+        agent_providers: vec![
+            kanna_agent_protocol::AgentSelectionEntry::from("codex"),
+            kanna_agent_protocol::AgentSelectionEntry::from("opencode"),
+        ],
         model: Some("gpt-5-codex".to_string()),
         effort: Some("high".to_string()),
         permission_mode: None,
@@ -1890,7 +1904,10 @@ fn repo_definitions_pin_all_repo_owned_resources_to_remote_default_branch() {
     let agent = definitions.agent("review").unwrap();
     assert_eq!(agent.name, "remote-review");
     assert_eq!(agent.description, "REMOTE_EXTENSION description");
-    assert_eq!(agent.agent_providers, vec!["copilot"]);
+    assert_eq!(
+        agent.agent_providers,
+        vec![kanna_agent_protocol::AgentSelectionEntry::from("copilot")]
+    );
     assert_eq!(agent.model.as_deref(), Some("extension-model"));
     assert_eq!(agent.permission_mode.as_deref(), Some("acceptEdits"));
     assert_eq!(agent.allowed_tools, vec!["Bash"]);
@@ -1951,7 +1968,10 @@ fn repo_definitions_pin_all_repo_owned_resources_to_remote_default_branch() {
     let agent_v2 = definitions_v2.agent("review").unwrap();
     assert_eq!(agent_v2.name, "remote-review-v2");
     assert_eq!(agent_v2.description, "REMOTE_EXTENSION_V2 description");
-    assert_eq!(agent_v2.agent_providers, vec!["codex"]);
+    assert_eq!(
+        agent_v2.agent_providers,
+        vec![kanna_agent_protocol::AgentSelectionEntry::from("codex")]
+    );
     assert_eq!(agent_v2.model.as_deref(), Some("extension-model-v2"));
     assert_eq!(agent_v2.permission_mode.as_deref(), Some("dontAsk"));
     assert_eq!(agent_v2.allowed_tools, vec!["Bash", "Read"]);
@@ -2271,7 +2291,7 @@ fn legacy_pr_triage_pins_and_repo_overrides_resolve_through_pr_review_manager() 
             .agent_provider_preference(Some("pr-review-manager"))
             .unwrap()
             .providers,
-        vec!["codex"]
+        vec![kanna_agent_protocol::AgentSelectionEntry::from("codex")]
     );
     let listed = definitions
         .agents()
@@ -3295,8 +3315,8 @@ fn workflow_provider_selectors_supply_per_candidate_model_and_effort() {
         stage.agent_provider.as_deref(),
         Some(
             &[
-                "claude-fable-hi".to_string(),
-                "codex-gpt-6-astra-lo".to_string(),
+                kanna_agent_protocol::AgentSelectionEntry::from("claude-fable-hi"),
+                kanna_agent_protocol::AgentSelectionEntry::from("codex-gpt-6-astra-lo"),
             ][..]
         ),
     );
@@ -3305,7 +3325,11 @@ fn workflow_provider_selectors_supply_per_candidate_model_and_effort() {
             .post
             .as_ref()
             .and_then(|post| post.agent_provider.as_deref()),
-        Some(&["claude-haiku".to_string()][..]),
+        Some(
+            &[kanna_agent_protocol::AgentSelectionEntry::from(
+                "claude-haiku"
+            )][..]
+        ),
     );
 
     // Candidate resolution reads the provider part of each selector …
@@ -3435,8 +3459,8 @@ fn builtin_plan_build_review_workflow_and_plan_agent_resolve_from_compiled_resou
         plan_stage.agent_provider.as_deref(),
         Some(
             &[
-                "codex-gpt-6-astra-hi".to_string(),
-                "claude-fable-hi".to_string(),
+                kanna_agent_protocol::AgentSelectionEntry::from("codex-gpt-6-astra-hi"),
+                kanna_agent_protocol::AgentSelectionEntry::from("claude-fable-hi"),
             ][..]
         ),
     );
@@ -3456,8 +3480,8 @@ fn builtin_plan_build_review_workflow_and_plan_agent_resolve_from_compiled_resou
         build_stage.agent_provider.as_deref(),
         Some(
             &[
-                "claude-opus-med".to_string(),
-                "codex-gpt-6-astra-lo".to_string(),
+                kanna_agent_protocol::AgentSelectionEntry::from("claude-opus-med"),
+                kanna_agent_protocol::AgentSelectionEntry::from("codex-gpt-6-astra-lo"),
             ][..]
         ),
     );
@@ -3466,7 +3490,12 @@ fn builtin_plan_build_review_workflow_and_plan_agent_resolve_from_compiled_resou
             .post
             .as_ref()
             .and_then(|post| post.agent_provider.as_deref()),
-        Some(&["claude-haiku".to_string(), "codex-gpt-5.6-luna".to_string(),][..]),
+        Some(
+            &[
+                kanna_agent_protocol::AgentSelectionEntry::from("claude-haiku"),
+                kanna_agent_protocol::AgentSelectionEntry::from("codex-gpt-5.6-luna"),
+            ][..]
+        ),
     );
 
     let review_stage = &workflow.stages[2];
@@ -3481,7 +3510,12 @@ fn builtin_plan_build_review_workflow_and_plan_agent_resolve_from_compiled_resou
     );
     assert_eq!(
         review_stage.agent_provider.as_deref(),
-        Some(&["claude-fable".to_string(), "codex-gpt-6-astra".to_string(),][..]),
+        Some(
+            &[
+                kanna_agent_protocol::AgentSelectionEntry::from("claude-fable"),
+                kanna_agent_protocol::AgentSelectionEntry::from("codex-gpt-6-astra"),
+            ][..]
+        ),
     );
 
     let pr_stage = &workflow.stages[3];
@@ -3490,13 +3524,22 @@ fn builtin_plan_build_review_workflow_and_plan_agent_resolve_from_compiled_resou
             .post
             .as_ref()
             .and_then(|post| post.agent_provider.as_deref()),
-        Some(&["claude-haiku".to_string(), "codex-gpt-5.6-luna".to_string(),][..]),
+        Some(
+            &[
+                kanna_agent_protocol::AgentSelectionEntry::from("claude-haiku"),
+                kanna_agent_protocol::AgentSelectionEntry::from("codex-gpt-5.6-luna"),
+            ][..]
+        ),
     );
 
     let agent = definitions.agent("plan").unwrap();
     assert_eq!(agent.name, "plan");
     assert_eq!(
-        agent.agent_providers.first().map(String::as_str),
+        agent
+            .agent_providers
+            .first()
+            .and_then(|e| e.resolve(false).ok())
+            .map(|e| e.provider.as_str()),
         Some("claude")
     );
 
@@ -3595,7 +3638,10 @@ fn read_agent_definition_appends_extension_body_and_overrides_frontmatter() {
     assert_eq!(definition.prompt, "Base prompt.\n\nRun the full suite.");
     assert_eq!(definition.model.as_deref(), Some("opus"));
     assert_eq!(definition.permission_mode.as_deref(), Some("acceptEdits"));
-    assert_eq!(definition.agent_providers, vec!["codex".to_string()]);
+    assert_eq!(
+        definition.agent_providers,
+        vec![kanna_agent_protocol::AgentSelectionEntry::from("codex")]
+    );
 
     let _ = std::fs::remove_dir_all(&repo_root);
 }
@@ -3632,7 +3678,10 @@ fn read_agent_definition_extension_without_frontmatter_extends_prompt_only() {
         "Base prompt.\n\nRepo-specific extra instructions."
     );
     assert_eq!(definition.model.as_deref(), Some("sonnet"));
-    assert_eq!(definition.agent_providers, vec!["claude".to_string()]);
+    assert_eq!(
+        definition.agent_providers,
+        vec![kanna_agent_protocol::AgentSelectionEntry::from("claude")]
+    );
 
     let _ = std::fs::remove_dir_all(&repo_root);
 }
@@ -3717,7 +3766,11 @@ fn read_agent_definition_loads_repo_agnostic_builtin_ship_agent() {
 
     assert_eq!(definition.name, "ship");
     assert_eq!(
-        definition.agent_providers.first().map(String::as_str),
+        definition
+            .agent_providers
+            .first()
+            .and_then(|e| e.resolve(false).ok())
+            .map(|e| e.provider.as_str()),
         Some("claude")
     );
     assert!(definition.prompt.contains("shipping is not configured"));
@@ -3745,7 +3798,11 @@ fn repo_ship_extension_layers_kanna_release_policy_onto_the_builtin_contract() {
     let definition = resolve_test_agent_definition(&repo_root, "ship").unwrap();
 
     assert_eq!(
-        definition.agent_providers.first().map(String::as_str),
+        definition
+            .agent_providers
+            .first()
+            .and_then(|e| e.resolve(false).ok())
+            .map(|e| e.provider.as_str()),
         Some("codex")
     );
     assert!(definition.prompt.contains("shipping is not configured"));
@@ -3766,7 +3823,11 @@ fn read_agent_definition_loads_builtin_task_manager_agent_with_codex_first() {
     assert!(definition.prompt.contains("source: \"manager\""));
     assert!(definition.prompt.contains("--source manager"));
     assert_eq!(
-        definition.agent_providers.first().map(String::as_str),
+        definition
+            .agent_providers
+            .first()
+            .and_then(|e| e.resolve(false).ok())
+            .map(|e| e.provider.as_str()),
         Some("codex")
     );
     assert!(definition.prompt.contains("kanna_wait_events"));
@@ -4018,6 +4079,7 @@ fn read_agent_definition_substitutes_repo_config_vars_in_agent_body() {
             task_prompt: None,
             prev_result: None,
             prev_main_result: None,
+            plan_result: None,
             revision_feedback: None,
             branch: None,
             base_ref: Some("origin/main"),
@@ -4053,6 +4115,7 @@ fn build_stage_prompt_does_not_reexpand_reserved_tokens_in_var_values() {
             task_prompt: Some("actual task prompt"),
             prev_result: None,
             prev_main_result: None,
+            plan_result: None,
             revision_feedback: None,
             branch: None,
             base_ref: None,
@@ -4079,6 +4142,7 @@ fn build_stage_prompt_leaves_unknown_vars_literal() {
             task_prompt: None,
             prev_result: None,
             prev_main_result: None,
+            plan_result: None,
             revision_feedback: None,
             branch: None,
             base_ref: None,
@@ -4103,6 +4167,7 @@ fn build_stage_prompt_resolves_stage_trigger() {
             task_prompt: None,
             prev_result: None,
             prev_main_result: None,
+            plan_result: None,
             revision_feedback: None,
             branch: None,
             base_ref: None,
@@ -4124,6 +4189,7 @@ fn build_stage_prompt_labels_agent_instructions_and_the_actual_task() {
             task_prompt: Some("Fix the buried task."),
             prev_result: None,
             prev_main_result: None,
+            plan_result: None,
             revision_feedback: None,
             branch: None,
             base_ref: None,
@@ -4144,6 +4210,7 @@ fn build_stage_prompt_appends_imported_revision_feedback_without_template_opt_in
             task_prompt: Some("Fix the transferred task."),
             prev_result: Some("commit completed"),
             prev_main_result: Some("implementation completed"),
+            plan_result: None,
             revision_feedback: Some("Keep the imported reviewer directive distinct."),
             branch: None,
             base_ref: None,
@@ -4168,6 +4235,7 @@ fn build_stage_prompt_keeps_explicit_revision_feedback_placement_compatible() {
             task_prompt: None,
             prev_result: None,
             prev_main_result: None,
+            plan_result: None,
             revision_feedback: Some("An explicitly placed directive."),
             branch: None,
             base_ref: None,
@@ -4189,6 +4257,7 @@ fn build_stage_prompt_omits_empty_prompt_sections() {
         task_prompt: Some("Ship it."),
         prev_result: None,
         prev_main_result: None,
+        plan_result: None,
         revision_feedback: None,
         branch: None,
         base_ref: None,
@@ -4229,6 +4298,7 @@ fn build_stage_prompt_replaces_base_ref() {
             task_prompt: None,
             prev_result: None,
             prev_main_result: None,
+            plan_result: None,
             revision_feedback: None,
             branch: Some("task-source"),
             base_ref: Some("origin/main"),
@@ -4269,6 +4339,7 @@ fn build_target_stage_prompt_sections_a_carried_task_without_rescanning_it() {
         &stage,
         "Carry $PREV_RESULT literally.",
         Some("do not reveal"),
+        None,
         None,
         None,
         None,
@@ -7703,10 +7774,7 @@ fn default_agent_provider_setting_falls_back_to_claude_when_invalid() {
 /// moves the spawn to a different provider than the stage would have chosen.
 #[test]
 fn an_advance_provider_override_outranks_the_target_stage_selectors() {
-    let stage_providers = vec![
-        "claude-fable-hi".to_string(),
-        "codex-gpt-6-astra-lo".to_string(),
-    ];
+    let stage_providers = vec!["claude-fable-hi".into(), "codex-gpt-6-astra-lo".into()];
 
     // Without an override the stage's own selectors decide.
     let stage_only =
@@ -7769,10 +7837,7 @@ fn an_advance_provider_override_outranks_the_target_stage_selectors() {
 /// composition: the value was authored beside the provider it lands on.
 #[test]
 fn a_provider_only_advance_override_keeps_that_providers_own_lower_layers() {
-    let stage_providers = vec![
-        "claude-fable-hi".to_string(),
-        "codex-gpt-6-astra-lo".to_string(),
-    ];
+    let stage_providers = vec!["claude-fable-hi".into(), "codex-gpt-6-astra-lo".into()];
     let advance_override = crate::db::StageProviderOverride {
         source: "operator".to_string(),
         provider: "codex".to_string(),
@@ -7900,4 +7965,184 @@ fn setup_legacy_entry_defaults_to_manual_but_explicit_workflow_is_preserved() {
         assert_eq!(task.pipeline.as_deref(), Some(expected));
     }
     let _ = std::fs::remove_dir_all(repo_root);
+}
+
+/// `$PLAN_RESULT` is bound independently of `$PREV_MAIN_RESULT`, which each
+/// later main stage overwrites, and it is spliced in the same single pass — so
+/// a plan whose own text quotes `$TASK_PROMPT` stays literal instead of being
+/// expanded a second time.
+#[test]
+fn plan_result_is_bound_separately_and_spliced_literally() {
+    let prompt = build_stage_prompt(
+        "Follow the approved plan.",
+        Some("PLAN[$PLAN_RESULT] LATEST[$PREV_MAIN_RESULT]"),
+        &PromptContext {
+            task_prompt: Some("Rename the label."),
+            prev_result: None,
+            prev_main_result: Some("the reviewer's verdict"),
+            plan_result: Some("step 1: read $TASK_PROMPT verbatim"),
+            revision_feedback: None,
+            branch: None,
+            base_ref: None,
+            source_worktree: None,
+            stage_trigger: "unspecified",
+            vars: None,
+        },
+    );
+
+    assert!(
+        prompt.contains("PLAN[step 1: read $TASK_PROMPT verbatim]"),
+        "{prompt}"
+    );
+    assert!(
+        prompt.contains("LATEST[the reviewer's verdict]"),
+        "{prompt}"
+    );
+    assert!(!prompt.contains("Rename the label."), "{prompt}");
+}
+
+/// A workflow with no stamped plan leaves the token bound to nothing rather
+/// than leaking an unrelated result into it.
+#[test]
+fn plan_result_is_empty_without_a_stamped_plan() {
+    let prompt = build_stage_prompt(
+        "",
+        Some("PLAN[$PLAN_RESULT]"),
+        &PromptContext {
+            task_prompt: None,
+            prev_result: None,
+            prev_main_result: Some("the previous stage"),
+            plan_result: None,
+            revision_feedback: None,
+            branch: None,
+            base_ref: None,
+            source_worktree: None,
+            stage_trigger: "unspecified",
+            vars: None,
+        },
+    );
+
+    assert_eq!(prompt, "## Your Task\n\nPLAN[]");
+}
+
+/// A transfer re-serializes the pinned definition on the destination, and the
+/// import then checks it read back equal to the source snapshot. Normalization
+/// must therefore carry `plan_context` through untouched: a destination that
+/// drops it fails that check and the transfer is rejected before the source is
+/// finalized, rather than silently losing the plan its stages were chosen
+/// under.
+#[test]
+fn normalizing_a_pinned_workflow_preserves_its_stamped_plan() {
+    let stored = serde_json::json!({
+        "name": "grown",
+        "revision_limit": 3,
+        "stages": [
+            {"name": "plan", "agent": "plan", "policy": {"transition": "manual"}},
+            {"name": "in progress", "agent": "implement", "policy": {"transition": "manual"},
+             "post": {"name": "commit", "agent": "commit", "prompt": "Commit."}}
+        ],
+        "plan_context": {
+            "source_run_id": "run-plan", "stage": "plan",
+            "result": "{\"status\":\"success\",\"summary\":\"the approved plan\"}"
+        }
+    })
+    .to_string();
+
+    let parsed = super::super::definitions::parse_stored_workflow_definition(&stored).unwrap();
+    let round_tripped: serde_json::Value =
+        serde_json::from_str(&serde_json::to_string(&parsed).unwrap()).unwrap();
+
+    assert_eq!(
+        round_tripped["plan_context"],
+        serde_json::from_str::<serde_json::Value>(&stored).unwrap()["plan_context"]
+    );
+
+    // A workflow that never grew stays byte-identical in shape: the field is
+    // omitted rather than serialized as null.
+    let plain = super::super::definitions::parse_stored_workflow_definition(
+        &serde_json::json!({"name": "plain", "stages": [
+            {"name": "in progress", "policy": {"transition": "manual"}}
+        ]})
+        .to_string(),
+    )
+    .unwrap();
+    let plain: serde_json::Value =
+        serde_json::from_str(&serde_json::to_string(&plain).unwrap()).unwrap();
+    assert!(plain.get("plan_context").is_none(), "{plain}");
+}
+
+#[test]
+fn structured_extension_cannot_reassign_inherited_sibling_tuning() {
+    let repo_root = init_git_repo_without_provider_fixtures("structured-extension-owner");
+    let agent_dir = repo_root.join(".kanna/agents/review");
+    std::fs::create_dir_all(&agent_dir).unwrap();
+    std::fs::write(
+        agent_dir.join("AGENT.md"),
+        "---\nname: review\ndescription: Review\nagent_provider: codex\nmodel: gpt-6-astra\n---\nReview.\n",
+    )
+    .unwrap();
+    std::fs::write(
+        agent_dir.join("EXTEND.md"),
+        "---\nagent_provider: { harness: opencode }\n---\n",
+    )
+    .unwrap();
+    publish_origin_main(&repo_root, "publish structured extension");
+
+    let definitions = RepoDefinitions::resolve(&definition_repo(&repo_root, "main")).unwrap();
+    let error = definitions.agent("review").unwrap_err();
+    assert!(
+        error.contains("conflicting selection representations"),
+        "{error}"
+    );
+
+    // Replacing the sibling tuning explicitly supplies a coherent owner.
+    std::fs::write(
+        agent_dir.join("EXTEND.md"),
+        "---\nagent_provider: { harness: opencode }\nmodel: local/model-high\n---\n",
+    )
+    .unwrap();
+    publish_origin_main(&repo_root, "publish coherent structured extension");
+    let definitions = RepoDefinitions::resolve(&definition_repo(&repo_root, "main")).unwrap();
+    let agent = definitions.agent("review").unwrap();
+    assert_eq!(agent.model.as_deref(), Some("local/model-high"));
+    let _ = std::fs::remove_dir_all(repo_root);
+}
+
+#[test]
+fn structured_candidates_keep_fallback_tuning_and_omission_coherent() {
+    let entries = serde_json::from_value::<Vec<kanna_agent_protocol::AgentSelectionEntry>>(
+        serde_json::json!([
+            {"harness":"codex", "model":"gpt-6-astra", "effort":"high"},
+            {"harness":"opencode", "model":"local/My/Model-high", "effort":"custom-hi"}
+        ]),
+    )
+    .unwrap();
+    let selected = resolve_agent_provider_with(None, Some(&entries), None, None, None, |p| {
+        p == AgentProvider::Opencode
+    })
+    .unwrap();
+    let tuning =
+        super::super::agent_tuning_plan(Some("opencode"), None, None, Some(&entries), None, None);
+    assert_eq!(selected, AgentProvider::Opencode);
+    assert_eq!(
+        tuning.model_for(selected).as_deref(),
+        Some("local/My/Model-high")
+    );
+    assert_eq!(tuning.effort_for(selected).as_deref(), Some("custom-hi"));
+    let preference = super::super::definitions::parse_agent_provider_preference(
+        &serde_json::to_value(&entries).unwrap(),
+    )
+    .unwrap();
+    let encoded = serde_json::to_value(&preference).unwrap();
+    let decoded: super::super::definitions::AgentProviderPreference =
+        serde_json::from_value(encoded).unwrap();
+    let tuning = super::super::agent_tuning_plan(None, None, None, None, Some(&decoded), None);
+    assert_eq!(
+        tuning.model_for(selected).as_deref(),
+        Some("local/My/Model-high")
+    );
+    assert_eq!(
+        tuning.model_for(AgentProvider::Codex).as_deref(),
+        Some("gpt-6-astra")
+    );
 }

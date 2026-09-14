@@ -2718,3 +2718,46 @@ fn subscription_tools_pass_diagnostic_true_through_stdio_to_http_on_all_three_en
 
 #[path = "stdio_http/brief_task.rs"]
 mod brief_task;
+
+#[test]
+fn attention_tools_set_locally_and_clear_on_owning_machine() {
+    let (base_url, server) = start_http_fixture(vec![
+        ExpectedRequest {
+            method: "POST",
+            path: "/v1/tasks/task-1/actions/set-attention",
+            body: Some(json!({"reason":"Choose approach"})),
+            response_status: "200 OK",
+            response_body: json!({"attentionReason":"Choose approach","changed":true}),
+        },
+        ExpectedRequest {
+            method: "GET",
+            path: "/v1/status",
+            body: None,
+            response_status: "200 OK",
+            response_body: json!({"desktopId":"local"}),
+        },
+        ExpectedRequest {
+            method: "POST",
+            path: "/v1/cloud/desktops/remote/invoke",
+            body: Some(
+                json!({"method":"POST", "path":"/v1/tasks/task-1/actions/clear-attention", "body":{}}),
+            ),
+            response_status: "200 OK",
+            response_body: json!({"status":200,"body":{"attentionReason":null,"changed":true},"error":null}),
+        },
+    ]);
+    let responses = run_kanna_mcp(
+        &base_url,
+        &[
+            json!({"jsonrpc":"2.0","id":1,"method":"initialize"}),
+            json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"kanna_set_task_attention","arguments":{"task_id":"task-1","reason":"Choose approach"}}}),
+            json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"kanna_clear_task_attention","arguments":{"task_id":"task-1","machine_id":"remote"}}}),
+        ],
+    );
+    assert_eq!(
+        tool_text(&responses[1])["attentionReason"],
+        "Choose approach"
+    );
+    assert!(tool_text(&responses[2])["attentionReason"].is_null());
+    assert_eq!(server.join().unwrap().len(), 3);
+}

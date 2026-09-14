@@ -229,7 +229,7 @@ fn open_creates_and_migrates_fresh_profile_database() {
             |row| row.get(0),
         )
         .expect("latest migration");
-    assert_eq!(latest_migration, "083_worktree_setup_pending");
+    assert_eq!(latest_migration, "085_task_attention_reason");
     assert_eq!(
         index_columns(&db.conn, "idx_pipeline_item_parent_created_id"),
         vec!["parent_task_id", "created_at", "id"],
@@ -5418,4 +5418,132 @@ fn analytics_revision_statistics_use_real_review_verdicts_and_lifetime_history()
     assert_eq!(analytics.revisions.average_per_task, 0.75);
     assert_eq!(analytics.revisions.clean_pass_rate, Some(0.25));
     assert_eq!(analytics.revisions.parked_requests, 2);
+}
+
+#[test]
+fn attention_event_failure_rolls_back_annotation() {
+    let path = temp_db_path();
+    let db = Db::open_for_tests(path.to_str().unwrap()).unwrap();
+    db.insert_test_repo("attention-repo", "Attention").unwrap();
+    db.insert_test_pipeline_item(
+        "attention-task",
+        "attention-repo",
+        "Prompt",
+        None,
+        "in progress",
+        "2026-09-13 00:00:00",
+    )
+    .unwrap();
+    db.conn.execute_batch("CREATE TRIGGER refuse_attention BEFORE INSERT ON task_event WHEN NEW.type = 'task.attention_changed' BEGIN SELECT RAISE(ABORT, 'test refusal'); END;").unwrap();
+    assert!(db
+        .set_task_attention("attention-task", Some("Choose"))
+        .is_err());
+    assert!(db
+        .get_pipeline_item("attention-task")
+        .unwrap()
+        .unwrap()
+        .attention_reason
+        .is_none());
+}
+
+#[test]
+fn attention_migration_restart_and_close_reopen_preserve_annotation() {
+    let path = temp_db_path();
+    let db = Db::open_migrated(path.to_str().unwrap()).unwrap();
+    db.insert_test_repo("attention-repo", "Attention").unwrap();
+    db.insert_test_pipeline_item(
+        "attention-task",
+        "attention-repo",
+        "Prompt",
+        None,
+        "in progress",
+        "2026-09-13 00:00:00",
+    )
+    .unwrap();
+    db.set_task_attention("attention-task", Some("Choose"))
+        .unwrap();
+    db.close_pipeline_item("attention-task").unwrap();
+    assert!(db.ui_snapshot().unwrap().entries[0].items.is_empty());
+    drop(db);
+    let db = Db::open_migrated(path.to_str().unwrap()).unwrap();
+    db.reopen_pipeline_item("attention-task").unwrap();
+    assert_eq!(
+        db.ui_snapshot().unwrap().entries[0].items[0]
+            .attention_reason
+            .as_deref(),
+        Some("Choose")
+    );
+}
+
+#[test]
+fn main_and_archive_migrations_upgrade_either_branch_without_losing_data() {
+    use super::terminal_archives::tests::{archive, seed};
+    for from_archive in [false, true] {
+        let path = temp_db_path();
+        let db = Db::open_migrated(path.to_str().unwrap()).unwrap();
+        seed(&db);
+        let snapshot = archive();
+        if from_archive {
+            db.ingest_agent_terminal_archive("task-a", "run-task-a-1", &snapshot)
+                .unwrap();
+            db.conn
+                .execute_batch(
+                    "DROP TABLE task_transfer_workflow_claim;
+                 ALTER TABLE pipeline_item DROP COLUMN attention_reason;
+                 DELETE FROM schema_migrations WHERE id IN
+                 ('084_task_transfer_workflow_claim', '085_task_attention_reason');",
+                )
+                .unwrap();
+        } else {
+            db.set_task_attention("task-a", Some("Keep this reason"))
+                .unwrap();
+            db.conn.execute_batch(
+                "INSERT INTO task_transfer_workflow_claim (pipeline_item_id,transfer_id) VALUES ('task-a','transfer-a');
+                 DROP TABLE agent_terminal_attempt;
+                 DELETE FROM schema_migrations WHERE id='084_agent_terminal_attempt';"
+            ).unwrap();
+        }
+        drop(db);
+        // Two opens prove that the full migration IDs, including the two
+        // independent 084 entries, are applied once rather than renumbered.
+        for _ in 0..2 {
+            let db = Db::open_migrated(path.to_str().unwrap()).unwrap();
+            for id in [
+                "084_agent_terminal_attempt",
+                "084_task_transfer_workflow_claim",
+                "085_task_attention_reason",
+            ] {
+                assert!(super::has_migration(&db.conn, id).unwrap());
+            }
+            if from_archive {
+                assert_eq!(
+                    serde_json::to_value(
+                        db.agent_terminal_archive("task-a", "run-task-a-1").unwrap()
+                    )
+                    .unwrap(),
+                    serde_json::to_value(Some(&snapshot)).unwrap()
+                );
+                db.conn
+                    .prepare("SELECT attention_reason FROM pipeline_item")
+                    .unwrap();
+                db.conn
+                    .prepare("SELECT transfer_id FROM task_transfer_workflow_claim")
+                    .unwrap();
+            } else {
+                let reason: String = db
+                    .conn
+                    .query_row(
+                        "SELECT attention_reason FROM pipeline_item WHERE id='task-a'",
+                        [],
+                        |r| r.get(0),
+                    )
+                    .unwrap();
+                assert_eq!(reason, "Keep this reason");
+                let transfer: String = db.conn.query_row("SELECT transfer_id FROM task_transfer_workflow_claim WHERE pipeline_item_id='task-a'", [], |r| r.get(0)).unwrap();
+                assert_eq!(transfer, "transfer-a");
+                db.bind_agent_terminal_attempt("run-task-a-1").unwrap();
+            }
+        }
+        std::fs::remove_file(path).unwrap();
+    }
 }

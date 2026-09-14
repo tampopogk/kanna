@@ -26,6 +26,16 @@ import {
 import type { DesktopCloudSnapshot } from "./services/desktopCloudTaskIndex";
 import { DesktopCloudCredentialConflictError } from "./services/desktopCloudCredentialConflict";
 import { updateDesktopServerClientHandlersForTests } from "./services/desktopServerClient";
+import { createStartupScreen, type StartupController } from "./startup";
+
+/**
+ * The readiness edge asks the terminals' own focus owner again. What matters
+ * at this level is that it happens after startup has actually released the
+ * workspace; the browser's real `inert`/focus behaviour is covered by
+ * `tests/e2e/mock/app-launch.test.ts`, which happy-dom cannot stand in for.
+ */
+const refocusActiveTerminalMock = vi.hoisted(() => vi.fn());
+const refocusStartupStateAtCall: Array<{ phase: string; active: boolean }> = [];
 
 async function flushPromises() {
   await Promise.resolve();
@@ -281,6 +291,7 @@ const mockWindowWorkspace = {
 };
 
 let capturedKeyboardActions: KeyboardActions | null = null;
+let capturedShortcutsEnabled: (() => boolean) | null = null;
 
 const invokeMock = vi.fn(async (command: string, args?: Record<string, unknown>) => {
   if (command === "list_dir") return ["default.json"];
@@ -392,13 +403,19 @@ vi.mock("./composables/useOperatorEvents", () => ({
   useOperatorEvents: vi.fn(),
 }));
 
+vi.mock("./composables/useTerminalFocusWhenActive", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./composables/useTerminalFocusWhenActive")>()),
+  refocusActiveTerminal: refocusActiveTerminalMock,
+}));
+
 vi.mock("./composables/useKeyboardShortcuts", async (importOriginal) => ({
   // Only the registration hook is replaced, so the test can drive actions
   // directly. The hint helpers stay real: components render them, and a stub
   // would let a platform mapping regress without anything noticing.
   ...(await importOriginal<typeof import("./composables/useKeyboardShortcuts")>()),
-  useKeyboardShortcuts: vi.fn((actions: KeyboardActions) => {
+  useKeyboardShortcuts: vi.fn((actions: KeyboardActions, options?: { enabled?: () => boolean }) => {
     capturedKeyboardActions = actions;
+    capturedShortcutsEnabled = options?.enabled ?? null;
   }),
 }));
 
@@ -951,6 +968,12 @@ function buildCrossRepoCollidingBlockerSnapshot(): DesktopCloudSnapshot {
   };
 }
 
+/**
+ * The startup screen controller this window runs behind. `main.ts` mounts the
+ * screen and provides it; a mounted App is always on the far side of one.
+ */
+let startup: StartupController = createStartupScreen();
+
 async function mountApp(sidebarStub: typeof SidebarWithRepoStub | typeof SidebarWithoutRepoStub) {
   vi.stubGlobal("__KANNA_MOBILE__", false);
   const { default: App } = await import("./App.vue");
@@ -960,6 +983,7 @@ async function mountApp(sidebarStub: typeof SidebarWithRepoStub | typeof Sidebar
         db: dbMock,
         dbName: "test.db",
         windowWorkspace: mockWindowWorkspace,
+        startup,
       },
       mocks: {
         $t: (key: string) => key,
@@ -1096,6 +1120,7 @@ async function mountAppWithOverrides(
         db: dbMock,
         dbName: "test.db",
         windowWorkspace: mockWindowWorkspace,
+        startup,
       },
       mocks: {
         $t: (key: string) => key,
@@ -1137,6 +1162,16 @@ describe("App", () => {
     // from window storage, so leaving a previous test's tabs there would open
     // this one on views it never asked for.
     window.localStorage.clear();
+    startup.dispose();
+    startup = createStartupScreen();
+    refocusStartupStateAtCall.length = 0;
+    refocusActiveTerminalMock.mockReset();
+    refocusActiveTerminalMock.mockImplementation(() => {
+      refocusStartupStateAtCall.push({
+        phase: startup.phase.value,
+        active: startup.active.value,
+      });
+    });
     sidebarSearchQuery.value = "";
     store.init.mockClear();
     store.createItem.mockClear();
@@ -1219,6 +1254,7 @@ describe("App", () => {
     nativeCloseRegistrationHarness.error = null;
     nativeWindowDestroyMock.mockClear();
     capturedKeyboardActions = null;
+    capturedShortcutsEnabled = null;
     mockWindowWorkspace.loadSnapshot.mockClear();
     mockWindowWorkspace.saveSnapshot.mockClear();
     mockWindowWorkspace.openWindow.mockClear();
@@ -1450,6 +1486,175 @@ describe("App", () => {
     wrapper.unmount();
   });
 
+  it("keeps the workspace covered, inert and unreachable while restoration is pending", async () => {
+    const initDeferred = createDeferred<void>();
+    store.init.mockImplementationOnce(async () => initDeferred.promise);
+
+    const wrapper = await mountApp(SidebarWithRepoStub);
+
+    expect(startup.active.value).toBe(true);
+    expect(startup.phase.value).toBe("preparing");
+    expect(wrapper.get(".app").attributes("inert")).toBeDefined();
+    expect(wrapper.get(".app").attributes("aria-hidden")).toBe("true");
+    // `inert` does not stop the window-level capture listener, so the shortcut
+    // handler has to be told as well.
+    expect(capturedShortcutsEnabled?.()).toBe(false);
+
+    initDeferred.resolve();
+    await waitForCondition(() => !startup.active.value);
+
+    expect(startup.phase.value).toBe("ready");
+    expect(wrapper.get(".app").attributes("inert")).toBeUndefined();
+    expect(capturedShortcutsEnabled?.()).toBe(true);
+
+    wrapper.unmount();
+  });
+
+  it("asks a terminal restored behind the screen for focus once the screen is gone", async () => {
+    const initDeferred = createDeferred<void>();
+    store.init.mockImplementationOnce(async () => initDeferred.promise);
+
+    const wrapper = await mountApp(SidebarWithRepoStub);
+
+    // A terminal that mounted and asked for focus during restoration was
+    // asking through an `inert` ancestor; nothing has re-asked yet.
+    expect(refocusActiveTerminalMock).not.toHaveBeenCalled();
+
+    initDeferred.resolve();
+    await waitForCondition(() => refocusActiveTerminalMock.mock.calls.length > 0, 40);
+
+    expect(refocusActiveTerminalMock).toHaveBeenCalledTimes(1);
+    // Asked only after the screen released the workspace, never while it still
+    // covered it — a focus request through `inert` cannot take effect.
+    expect(refocusStartupStateAtCall).toEqual([{ phase: "ready", active: false }]);
+
+    wrapper.unmount();
+  });
+
+  it("asks once at the readiness edge and not again for terminals that mount later", async () => {
+    const wrapper = await mountApp(SidebarWithRepoStub);
+    await flushPromises();
+    await flushPromises();
+
+    // A terminal mounting after readiness runs its own focus request from its
+    // own mount, into a workspace that is no longer inert. The readiness edge
+    // must not keep re-focusing on top of that.
+    expect(refocusActiveTerminalMock).toHaveBeenCalledTimes(1);
+
+    wrapper.unmount();
+  });
+
+  it("does not move focus into a workspace a startup failure left covered", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    store.init.mockRejectedValueOnce(new Error("store unavailable"));
+
+    const wrapper = await mountApp(SidebarWithRepoStub);
+
+    expect(startup.phase.value).toBe("failed");
+    expect(refocusActiveTerminalMock).not.toHaveBeenCalled();
+
+    errorSpy.mockRestore();
+    wrapper.unmount();
+  });
+
+  it("releases the startup screen with cloud and settings work still pending", async () => {
+    const cloudDeferred = createDeferred<void>();
+    associateDesktopCloudCredentialMock.mockImplementationOnce(async () => cloudDeferred.promise);
+    updateDesktopServerClientHandlersForTests({
+      getSetting: (key) => (key === "locale" ? new Promise<string | null>(() => {}) : null),
+    });
+
+    const wrapper = await mountApp(SidebarWithRepoStub);
+
+    // Cloud availability and the later preference reads are not what "the
+    // local workspace is usable" means, so neither holds the screen up.
+    expect(startup.phase.value).toBe("ready");
+    expect(startup.active.value).toBe(false);
+
+    cloudDeferred.resolve();
+    await flushPromises();
+
+    wrapper.unmount();
+  });
+
+  it.each([
+    ["window membership initialization", () => {
+      mockWindowWorkspace.initialize.mockRejectedValueOnce(new Error("membership unavailable"));
+    }],
+    ["the task store", () => {
+      store.init.mockRejectedValueOnce(new Error("store unavailable"));
+    }],
+  ])("fails visibly when %s cannot be restored", async (_label, breakIt) => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    breakIt();
+
+    const wrapper = await mountApp(SidebarWithRepoStub);
+
+    expect(startup.phase.value).toBe("failed");
+    expect(startup.state.failureDetail.value).toBe("startup.failedRestore");
+    // The workspace behind the failure stays unreachable rather than looking
+    // usable while it is half-restored.
+    expect(startup.active.value).toBe(true);
+    expect(wrapper.get(".app").attributes("inert")).toBeDefined();
+    expect(capturedShortcutsEnabled?.()).toBe(false);
+
+    errorSpy.mockRestore();
+    wrapper.unmount();
+  });
+
+  it("does not put the startup screen back over a workspace that is already usable", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const wrapper = await mountApp(SidebarWithRepoStub);
+    expect(startup.phase.value).toBe("ready");
+
+    // Work that runs past the readiness edge — a sidecar warm-up, a preference
+    // read — must not turn a usable workspace back into a startup screen.
+    startup.fail("startup.failedRestore", new Error("late"));
+    await flushPromises();
+
+    expect(startup.phase.value).toBe("ready");
+    expect(wrapper.get(".app").attributes("inert")).toBeUndefined();
+    expect(capturedShortcutsEnabled?.()).toBe(true);
+
+    errorSpy.mockRestore();
+    wrapper.unmount();
+  });
+
+  it("tears the startup screen down without claiming readiness when the window closes first", async () => {
+    const initializeDeferred = createDeferred<void>();
+    mockWindowWorkspace.initialize.mockImplementationOnce(async () => initializeDeferred.promise);
+
+    const wrapper = await mountApp(SidebarWithRepoStub);
+    const { completion } = dispatchNativeCloseRequest();
+    initializeDeferred.resolve();
+    await completion;
+    await flushPromises();
+
+    expect(startup.active.value).toBe(false);
+    expect(startup.phase.value).not.toBe("ready");
+    expect(store.init).not.toHaveBeenCalled();
+
+    wrapper.unmount();
+  });
+
+  it("releases the startup screen in a restored tear-off window", async () => {
+    mockWindowWorkspace.bootstrap.windowId = "window-2";
+    mockWindowWorkspace.bootstrap.tearOffContext = {
+      surface: "tree",
+      worktreePath: "/tmp/repo/.kanna-worktrees/task-a",
+      repoRoot: "/tmp/repo",
+    };
+
+    const wrapper = await mountAppWithOverrides(SidebarWithRepoStub, { MainPanel: TabHostMainPanelStub });
+
+    await waitForCondition(() => !startup.active.value, 40);
+
+    expect(startup.phase.value).toBe("ready");
+    expect(startup.active.value).toBe(false);
+
+    wrapper.unmount();
+  });
+
   it("shows a fatal startup state when native close protection cannot register", async () => {
     nativeCloseRegistrationHarness.error = new Error("listener unavailable");
     const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
@@ -1460,6 +1665,8 @@ describe("App", () => {
     expect(wrapper.get('[data-testid="fatal-initialization-error"]').text()).toContain(
       "Native window-close protection is unavailable",
     );
+    expect(startup.phase.value).toBe("failed");
+    expect(startup.state.failureDetail.value).toBe("startup.failedCloseProtection");
     expect(mockWindowWorkspace.initialize).not.toHaveBeenCalled();
     expect(store.init).not.toHaveBeenCalled();
     expect(associateDesktopCloudCredentialMock).not.toHaveBeenCalled();

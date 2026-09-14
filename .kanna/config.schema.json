@@ -65,7 +65,9 @@
           {
             "type": "object",
             "additionalProperties": false,
-            "required": ["provider"],
+            "required": [
+              "provider"
+            ],
             "properties": {
               "provider": {
                 "oneOf": [
@@ -77,21 +79,48 @@
                     "minItems": 1,
                     "uniqueItems": true,
                     "items": {
-                      "$ref": "#/$defs/agentProvider"
+                      "oneOf": [
+                        {
+                          "$ref": "#/$defs/agentProvider"
+                        },
+                        {
+                          "$ref": "#/$defs/agentCandidate"
+                        }
+                      ]
                     }
+                  },
+                  {
+                    "$ref": "#/$defs/agentCandidate"
                   }
                 ]
               },
               "model": {
                 "type": "string",
                 "minLength": 1,
-                "description": "Model id for the provider this entry selects — the first name in `provider`. It is not applied to any other provider, including a fallback candidate listed behind that name; such a candidate takes its model from a lower layer written for it, or runs on its own stamped or default model."
+                "description": "Model id for the provider this entry selects \u2014 the first name in `provider`. It is not applied to any other provider, including a fallback candidate listed behind that name; such a candidate takes its model from a lower layer written for it, or runs on its own stamped or default model."
               },
               "effort": {
                 "type": "string",
                 "minLength": 1,
-                "description": "Reasoning effort for the provider this entry selects — the first name in `provider`. Effort vocabularies are provider-specific, so this value is not applied to any other provider; a fallback candidate listed behind that name takes its effort from a lower layer written for it, or runs on its own stamped or default effort."
+                "description": "Reasoning effort for the provider this entry selects \u2014 the first name in `provider`. Effort vocabularies are provider-specific, so this value is not applied to any other provider; a fallback candidate listed behind that name takes its effort from a lower layer written for it, or runs on its own stamped or default effort."
               }
+            }
+          },
+          {
+            "$ref": "#/$defs/agentCandidate"
+          },
+          {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "oneOf": [
+                {
+                  "$ref": "#/$defs/agentProvider"
+                },
+                {
+                  "$ref": "#/$defs/agentCandidate"
+                }
+              ]
             }
           }
         ]
@@ -197,7 +226,10 @@
       "agentProviders": {
         "review": "codex",
         "review-*": {
-          "provider": ["codex", "claude"],
+          "provider": [
+            "codex",
+            "claude"
+          ],
           "model": "gpt-5",
           "effort": "high"
         }
@@ -211,7 +243,35 @@
   "$defs": {
     "agentProvider": {
       "type": "string",
-      "enum": ["claude", "copilot", "codex", "opencode", "antigravity"]
+      "enum": [
+        "claude",
+        "copilot",
+        "codex",
+        "opencode",
+        "antigravity"
+      ]
+    },
+    "agentCandidate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "harness"
+      ],
+      "properties": {
+        "harness": {
+          "$ref": "#/$defs/agentProvider"
+        },
+        "model": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Opaque native model ID. OpenCode uses backend/model; suffixes are literal."
+        },
+        "effort": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Exact native effort or variant; no compact aliases are expanded."
+        }
+      }
     }
   }
 }

@@ -51,6 +51,7 @@ pub use blockers::ReplaceTaskBlockersError;
 pub use lifecycle_operations::LifecycleOperationIntent;
 #[allow(unused_imports)]
 pub use operator_events::NewOperatorEvent;
+pub(crate) use pipeline_items::normalize_attention_reason;
 #[allow(unused_imports)]
 pub use pipeline_items::MergeSignalSource;
 #[allow(unused_imports)]
@@ -184,6 +185,8 @@ pub(crate) const CURRENT_SCHEMA_MIGRATIONS: &[&str] = &[
     "082_pull_request_forge_attempts",
     "083_worktree_setup_pending",
     "084_agent_terminal_attempt",
+    "084_task_transfer_workflow_claim",
+    "085_task_attention_reason",
 ];
 
 #[derive(Debug, Serialize)]
@@ -229,6 +232,7 @@ pub struct PipelineItem {
     pub closed_at: Option<String>,
     pub pinned: Option<i64>,
     pub pin_order: Option<i64>,
+    pub attention_reason: Option<String>,
     pub display_name: Option<String>,
     pub last_output_preview: Option<String>,
     pub created_at: Option<String>,
@@ -329,6 +333,7 @@ pub struct SnapshotPipelineItem {
     pub activity_changed_at: Option<String>,
     pub unread_at: Option<String>,
     pub port_offset: Option<i64>,
+    pub attention_reason: Option<String>,
     pub display_name: Option<String>,
     pub last_output_preview: Option<String>,
     pub port_env: Option<String>,
@@ -2439,6 +2444,27 @@ fn run_schema_migrations(conn: &Connection) -> Result<(), rusqlite::Error> {
             archive TEXT
         );",
         )
+    })?;
+
+    // Which transfer currently owns a task's workflow, so a plan publication
+    // and a transfer finalization cannot both believe they have it. One row per
+    // task: the active-outgoing index already allows only one live outgoing
+    // transfer per source, and a claim left behind by a crash is ignored once
+    // its transfer is no longer active rather than blocking the task forever.
+    run_migration(conn, "084_task_transfer_workflow_claim", |conn| {
+        conn.execute_batch(
+            r#"
+            CREATE TABLE IF NOT EXISTS task_transfer_workflow_claim (
+              pipeline_item_id TEXT PRIMARY KEY REFERENCES pipeline_item(id) ON DELETE CASCADE,
+              transfer_id TEXT NOT NULL,
+              claimed_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            "#,
+        )
+    })?;
+
+    run_migration(conn, "085_task_attention_reason", |conn| {
+        add_column(conn, "pipeline_item", "attention_reason", "TEXT")
     })?;
 
     Ok(())

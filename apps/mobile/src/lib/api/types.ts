@@ -1,3 +1,4 @@
+import type { AgentSelectionEntry } from "@kanna/agent-protocol";
 import type { AgentProvider } from "@kanna/agent-protocol";
 
 export type DesktopMode = "lan" | "remote";
@@ -450,8 +451,20 @@ export interface HumanReviewDecision {
   ownerDesktopId?: string | null;
 }
 
+/**
+ * The task's own pinned workflow, as stored. Mobile does not render its stages;
+ * it reads this only to send back as an advance's `expectedDefinition`, so a
+ * tail published or edited between reading and advancing is a refused conflict
+ * rather than a silently different next stage.
+ */
+export interface PinnedTaskWorkflow {
+  [key: string]: unknown;
+  stages: Array<{ [key: string]: unknown; name: string; agent_provider?: AgentSelectionEntry | AgentSelectionEntry[] }>;
+}
+
 export interface TaskDetail extends TaskSummary {
   workflowName?: string | null;
+  workflowDefinition?: PinnedTaskWorkflow | null;
   stageTransition?: string | null;
   /** Resolved model used by the latest stage run. */
   model?: string | null;

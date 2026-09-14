@@ -74,6 +74,19 @@ reconnect, `tests/cli-contract/` for agent CLI compatibility.
   resume until the task closes.
 - **Post** — tail work injected into the stage's *running* agent session before
   the transition. Stages fork workspaces and swap sessions; posts continue them.
+- **A grown workflow** — a task's stages need not all be chosen before it
+  starts. A consultation task that the owner authorizes gets a manual `plan`
+  stage appended to it by the task manager, and that plan publishes the delivery
+  stages it chose in the same `kanna_complete_stage` call that records it (one
+  transaction; `workflowDefinition` + `expectedDefinition`). The recorded stages
+  survive byte-for-byte and the suffix must follow an existing recipe — this is
+  still the linear engine, not a workflow language. Kanna stamps `plan_context`
+  onto the pinned definition and binds it to `$PLAN_RESULT` for the whole
+  extended workflow; an ordinary edit carries the stamp forward and may not
+  author it. Callers that act on a stage sequence pass `expectedDefinition` to
+  `kanna_advance_stage`, and anything projecting a task's next stage must read
+  the *task's* pinned definition, not the repo file its workflow name resolves
+  to. See `docs/kanna-server-boundary.md`.
 - **Daemon** — standalone process managing PTY sessions. Survives app restarts.
 
 Advancing past the final stage closes the task. Close snapshots dirty state
@@ -238,23 +251,33 @@ acknowledging transferred descriptors.
   the Codex CLI, and no two CLIs share an effort vocabulary — so resolution
   never composes them across layers: it walks the same chain and takes the
   first layer that both names a value *and* would itself have selected the
-  resolved provider. A layer that names an ordered candidate list wrote its
+  resolved provider. A legacy layer with a sibling model beside an ordered candidate list wrote its
   model beside the *leading* candidate, so the value applies to that one only
   and the outage fallbacks behind it run on their own defaults. A layer
   written for another provider is skipped, and the spawn falls back to the
   resolved provider's own stamped or default model.
-  Workflow stage/post `agent_provider` entries are the one shape that pins a
-  pair per candidate: each entry is a compact selector,
-  `provider[-model[-effort]]` (`claude`, `codex-gpt-5.6-sol`, `claude-fable-hi`,
-  `codex-gpt-6-astra-lo` — effort tokens `lo`/`low`, `med`/`medium`, `hi`/`high`,
-  `xhi`/`xhigh`, `max`). A selector names exactly one provider, so an ordered
-  list like `["claude-fable-hi", "codex-gpt-6-astra-lo"]` gives every fallback
-  candidate its own coherent model/effort; anything under-specified inherits
-  the provider CLI's own defaults, and the model text is passed to the CLI
-  verbatim.
+  Prefer structured candidates in the existing `agent_provider` slot:
+  `{ "harness": "codex", "model": "gpt-6-astra", "effort": "high" }`, or an
+  ordered list, each candidate carrying its own native values. The same shape
+  works in agent/EXTEND frontmatter, task-template defaults and repo
+  `agentProviders` entries. The role (`agent`), executable harness, native model
+  and optional effort are distinct. OpenCode models include the native backend
+  namespace (`local/my-model-high`); Kanna keeps the whole identifier literal,
+  and structured effort aliases are not expanded. Unknown fields, missing
+  harnesses, empty lists and conflicting nested/sibling tuning are rejected.
+  Structured lists cannot repeat a harness: same-harness backend/model failover
+  and Pi execution require separate adapters/contracts. Legacy workflow compact
+  selectors `provider[-model[-effort]]` keep their existing suffix parsing, and
+  legacy repo list siblings still belong only to their leading candidate.
+  Omitted fields inherit lower coherent layers, then CLI defaults; they do not
+  reset a choice. Live sessions are unchanged. Transfers carry the complete
+  workflow and recorded launch model/effort through V2 finalization: both
+  machines need updated servers and transfer sidecars. The receiver validates
+  selection values before asking the source to stop; omissions remain eligible
+  for destination/native defaults. See `docs/dev/dev-workflow.md`.
   One stage advance may fill the explicit-override slot for the stage it
   *enters*: `kanna_advance_stage` (and `kanna-cli task advance-stage`) accept
-  `next_stage_agent_provider` with `next_stage_model` and `next_stage_effort`,
+  `next_stage_harness` (alias `next_stage_agent_provider`) with `next_stage_model` and `next_stage_effort`,
   which outrank that stage's own selectors, the repo config, frontmatter, and
   the default. It is a per-advance override — it changes no workflow
   definition, no pin, and no default, and the stage after it resolves normally.

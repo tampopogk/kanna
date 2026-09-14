@@ -239,6 +239,16 @@ function itemTooltip(item: SidebarTaskItem): string | undefined {
     .join(": ");
 }
 
+function itemRowTooltip(item: SidebarTaskItem): string | undefined {
+  const tooltip = itemTooltip(item);
+  const attention = attentionLabel(item);
+  return attention ? `${tooltip} — ${attention}` : tooltip;
+}
+
+function attentionLabel(item: SidebarTaskItem): string | undefined {
+  return item.attention_reason ? `Agent requests attention: ${item.attention_reason}` : undefined;
+}
+
 function isRemoteTask(item: SidebarTaskItem): boolean {
   return item.remote_task === true;
 }
@@ -850,8 +860,9 @@ defineExpose({ renameSelectedItem, focusSearch, searchQuery, matchesSearch, emit
                       textDecoration: isTaskTearingDown(row.item) ? 'line-through' : 'none',
                       opacity: isTaskTearingDown(row.item) ? 0.5 : 1,
                     }"
-                    :title="itemTooltip(row.item)"
+                    :title="itemRowTooltip(row.item)"
                   >
+                    <span v-if="row.item.attention_reason" class="task-attention-marker" role="img" :title="attentionLabel(row.item)" :aria-label="attentionLabel(row.item)">! </span>
                     <span v-if="transferMarker(row.item)" class="transfer-task-marker" :class="`transfer-task-marker-${transferMarker(row.item)?.state}`" :aria-label="transferMarker(row.item)?.label" :title="transferMarkerTitle(row.item)" @click="onTransferMarkerClick($event, row.item)">{{ transferMarker(row.item)?.glyph }} </span><span v-if="isRemoteTask(row.item)" class="remote-task-marker" :aria-label="t('sidebar.remoteTaskTooltip')">&lt; </span><span v-if="row.item.runtime_state === 'waiting'" class="question-marker" title="Detected question / input prompt" aria-label="Detected question / input prompt">? </span>{{ itemTitle(row.item) }}</span>
                   <button
                     v-if="canDetachSubtask(row)"
@@ -959,8 +970,9 @@ defineExpose({ renameSelectedItem, focusSearch, searchQuery, matchesSearch, emit
                         textDecoration: isTaskTearingDown(row.item) ? 'line-through' : 'none',
                         opacity: isTaskTearingDown(row.item) ? 0.5 : 1,
                       }"
-                      :title="itemTooltip(row.item)"
+                      :title="itemRowTooltip(row.item)"
                     >
+                      <span v-if="row.item.attention_reason" class="task-attention-marker" role="img" :title="attentionLabel(row.item)" :aria-label="attentionLabel(row.item)">! </span>
                       <span v-if="transferMarker(row.item)" class="transfer-task-marker" :class="`transfer-task-marker-${transferMarker(row.item)?.state}`" :aria-label="transferMarker(row.item)?.label" :title="transferMarkerTitle(row.item)" @click="onTransferMarkerClick($event, row.item)">{{ transferMarker(row.item)?.glyph }} </span><span v-if="isRemoteTask(row.item)" class="remote-task-marker" :aria-label="t('sidebar.remoteTaskTooltip')">&lt; </span><span v-if="row.item.runtime_state === 'waiting'" class="question-marker" title="Detected question / input prompt" aria-label="Detected question / input prompt">? </span>{{ itemTitle(row.item) }}</span>
                     <button
                       v-if="canDetachSubtask(row)"
@@ -1024,8 +1036,9 @@ defineExpose({ renameSelectedItem, focusSearch, searchQuery, matchesSearch, emit
                       textDecoration: isTaskTearingDown(row.item) ? 'line-through' : 'none',
                       opacity: isTaskTearingDown(row.item) ? 0.5 : 1,
                     }"
-                    :title="itemTooltip(row.item)"
+                    :title="itemRowTooltip(row.item)"
                   >
+                    <span v-if="row.item.attention_reason" class="task-attention-marker" role="img" :title="attentionLabel(row.item)" :aria-label="attentionLabel(row.item)">! </span>
                     <span v-if="transferMarker(row.item)" class="transfer-task-marker" :class="`transfer-task-marker-${transferMarker(row.item)?.state}`" :aria-label="transferMarker(row.item)?.label" :title="transferMarkerTitle(row.item)" @click="onTransferMarkerClick($event, row.item)">{{ transferMarker(row.item)?.glyph }} </span><span v-if="isRemoteTask(row.item)" class="remote-task-marker" :aria-label="t('sidebar.remoteTaskTooltip')">&lt; </span><span v-if="row.item.runtime_state === 'waiting'" class="question-marker" title="Detected question / input prompt" aria-label="Detected question / input prompt">? </span>{{ itemTitle(row.item) }}</span>
                   <span
                     v-if="row.item.task_id && blockerNames?.[row.item.task_id]"
@@ -1085,8 +1098,9 @@ defineExpose({ renameSelectedItem, focusSearch, searchQuery, matchesSearch, emit
                     textDecoration: isTaskTearingDown(item) ? 'line-through' : 'none',
                     opacity: isTaskTearingDown(item) ? 0.5 : 1,
                   }"
-                  :title="itemTooltip(item)"
+                  :title="itemRowTooltip(item)"
                 >
+                  <span v-if="item.attention_reason" class="task-attention-marker" role="img" :title="attentionLabel(item)" :aria-label="attentionLabel(item)">! </span>
                   <span v-if="transferMarker(item)" class="transfer-task-marker" :class="`transfer-task-marker-${transferMarker(item)?.state}`" :aria-label="transferMarker(item)?.label" :title="transferMarkerTitle(item)" @click="onTransferMarkerClick($event, item)">{{ transferMarker(item)?.glyph }} </span><span v-if="isRemoteTask(item)" class="remote-task-marker" :aria-label="t('sidebar.remoteTaskTooltip')">&lt; </span><span v-if="item.runtime_state === 'waiting'" class="question-marker" title="Detected question / input prompt" aria-label="Detected question / input prompt">? </span>{{ itemTitle(item) }}</span>
               </div>
             </div>
@@ -1138,6 +1152,7 @@ defineExpose({ renameSelectedItem, focusSearch, searchQuery, matchesSearch, emit
 .attention-filters { display: flex; gap: 4px; flex-wrap: wrap; }
 .attention-filters button[aria-pressed="true"] { color: var(--kn-accent); background: var(--kn-bg-accent-subtle); }
 
+.task-attention-marker { color: var(--kn-accent); font-weight: 700; font-style: normal; }
 .sidebar {
   width: 260px;
   min-width: 260px;

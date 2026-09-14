@@ -622,3 +622,35 @@ describe("validateWorkflow", () => {
     expect(errors.length).toBeGreaterThanOrEqual(2);
   });
 });
+
+describe("plan context", () => {
+  const base = {
+    name: "grown",
+    stages: [{ name: "plan", policy: { transition: "manual" } }],
+  };
+
+  it("preserves a stamped plan context through the loader", () => {
+    const def = parseWorkflowJson(
+      JSON.stringify({
+        ...base,
+        plan_context: { source_run_id: "run-1", stage: "plan", result: '{"status":"success"}' },
+      })
+    );
+
+    expect(def.plan_context).toEqual({
+      source_run_id: "run-1",
+      stage: "plan",
+      result: '{"status":"success"}',
+    });
+  });
+
+  it("leaves a workflow without one alone", () => {
+    expect(parseWorkflowJson(JSON.stringify(base)).plan_context).toBeUndefined();
+  });
+
+  it("rejects a malformed plan context rather than dropping it", () => {
+    expect(() =>
+      parseWorkflowJson(JSON.stringify({ ...base, plan_context: { source_run_id: "run-1" } }))
+    ).toThrow(/invalid plan_context/);
+  });
+});

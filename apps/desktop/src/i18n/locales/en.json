@@ -377,6 +377,8 @@
     "shortcutClose": "Close"
   },
   "mainPanel": {
+    "stageSequenceChanged": "This task's stages changed while you were looking. Nothing was advanced — the list has been refreshed.",
+    "stageSequenceUnavailable": "Could not read this task's stages, so it was not advanced. Try again in a moment.",
     "taskBlocked": "Task Blocked",
     "taskBlockedHint": "This task will start automatically when all blockers complete.",
     "taskSettingUp": "Setting up task...",
@@ -506,5 +508,17 @@
   },
   "common": {
     "loading": "Loading..."
+  },
+  "startup": {
+    "preparing": "Starting Kanna…",
+    "services": "Starting local services…",
+    "restoring": "Restoring your workspace…",
+    "longWait": "Your workspace opens when local setup finishes.",
+    "failedTitle": "Kanna couldn’t start",
+    "failedRestart": "Quit and reopen Kanna to try again.",
+    "failedServices": "Kanna could not start its local services.",
+    "failedRestore": "Kanna could not restore your workspace.",
+    "failedCloseProtection": "Kanna could not protect this window from closing unexpectedly.",
+    "failedGeneric": "Kanna could not finish starting up."
   }
 }

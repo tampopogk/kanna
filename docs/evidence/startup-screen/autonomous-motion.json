@@ -1,0 +1,16 @@
+{
+  "activation": {
+    "frontmostNameAfter": "Safari",
+    "frontmostNameBefore": "Safari",
+    "frontmostPidAfter": 32824,
+    "frontmostPidBefore": 32824,
+    "targetActiveAfter": false,
+    "targetActiveBefore": false,
+    "targetPid": 47667
+  },
+  "focused": true,
+  "before": 3325,
+  "after": 4025,
+  "advancedMs": 700,
+  "waitedMs": 700
+}

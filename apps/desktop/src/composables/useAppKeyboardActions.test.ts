@@ -84,6 +84,7 @@ function createHarness(options: {
   const mainTabs = useMainTabs({ scopeKey: computed(() => "item:task-durable") });
   if (options.activeTabKind === "diff") mainTabs.openTab({ kind: "diff" });
   const overlayContext = ref<ShortcutContext>("main");
+  const shortcutsEnabled = ref(true);
   const showShortcutsModal = ref(false);
   const showPreferencesPanel = ref(false);
   const showNewTaskModal = ref(false);
@@ -122,6 +123,7 @@ function createHarness(options: {
     mainPanelRef: ref(null),
     requestCloseCurrentWindow,
     openNewTaskModal,
+    shortcutsEnabled: computed(() => shortcutsEnabled.value),
     currentShortcutContext: computed(() => showShortcutsModal.value ? "main" : overlayContext.value),
     showShortcutsModal,
     showNewTaskModal,
@@ -144,6 +146,7 @@ function createHarness(options: {
   } as unknown as Parameters<typeof useAppKeyboardActions>[0]);
   return {
     keyboardActions,
+    shortcutsEnabled,
     overlayContext,
     showShortcutsModal,
     showNewTaskModal,
@@ -169,8 +172,12 @@ function createHarness(options: {
 
 describe("useAppKeyboardActions durable selection", () => {
   it("leaves save with the focused editor or preview while retaining modal priority", () => {
-    const { mainTabs, overlayContext } = createHarness();
-    const context = vi.mocked(useKeyboardShortcuts).mock.calls.at(-1)?.[1]?.context;
+    const { mainTabs, overlayContext, shortcutsEnabled } = createHarness();
+    const registration = vi.mocked(useKeyboardShortcuts).mock.calls.at(-1)?.[1];
+    const context = registration?.context;
+    expect(registration?.enabled?.()).toBe(true);
+    shortcutsEnabled.value = false;
+    expect(registration?.enabled?.()).toBe(false);
     mainTabs.openTab({ kind: "editor", editorSession: { sessionId: "edit-test" } as never });
     expect(context?.()).toBe("shell");
     mainTabs.openTab({ kind: "preview", portName: "PORT" });

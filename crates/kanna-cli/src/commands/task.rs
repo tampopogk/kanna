@@ -851,6 +851,35 @@ pub(crate) async fn run(command: TaskCommands) {
                 process::exit(1);
             }
         }
+        TaskCommands::SetAttention {
+            task_id,
+            reason,
+            machine_id,
+            server_url,
+        } => {
+            attention_command(
+                "kanna_set_task_attention",
+                &task_id,
+                Some(&reason),
+                machine_id.as_deref(),
+                server_url.as_deref(),
+            )
+            .await;
+        }
+        TaskCommands::ClearAttention {
+            task_id,
+            machine_id,
+            server_url,
+        } => {
+            attention_command(
+                "kanna_clear_task_attention",
+                &task_id,
+                None,
+                machine_id.as_deref(),
+                server_url.as_deref(),
+            )
+            .await;
+        }
         TaskCommands::Rename {
             task_id,
             name,
@@ -876,6 +905,7 @@ pub(crate) async fn run(command: TaskCommands) {
             next_stage_model,
             next_stage_effort,
             next_stage_provider_source,
+            expected_definition,
             server_url,
         } => {
             let base_url = resolve_server_base_url_from_env(server_url.as_deref());
@@ -885,13 +915,24 @@ pub(crate) async fn run(command: TaskCommands) {
                 effort: next_stage_effort.as_deref(),
                 source: next_stage_provider_source.as_deref(),
             };
-            let advanced =
-                advance_stage_via_api(&base_url, &task_id, source.as_deref(), next_stage)
-                    .await
-                    .unwrap_or_else(|e| {
-                        eprintln!("Error: {e}");
-                        process::exit(1);
-                    });
+            let expected_definition = expected_definition.map(|raw| {
+                serde_json::from_str::<serde_json::Value>(&raw).unwrap_or_else(|error| {
+                    eprintln!("Error: --expected-definition must be a JSON object: {error}");
+                    process::exit(1);
+                })
+            });
+            let advanced = advance_stage_via_api(
+                &base_url,
+                &task_id,
+                source.as_deref(),
+                next_stage,
+                expected_definition,
+            )
+            .await
+            .unwrap_or_else(|e| {
+                eprintln!("Error: {e}");
+                process::exit(1);
+            });
             if let Err(e) = print_json(&advanced) {
                 eprintln!("Error: {e}");
                 process::exit(1);
@@ -1332,4 +1373,32 @@ fn bind_revision_request(request: &mut RequestRevisionRequest) -> Result<(), Str
         }
     }
     Ok(())
+}
+
+async fn attention_command(
+    name: &str,
+    task_id: &str,
+    reason: Option<&str>,
+    machine_id: Option<&str>,
+    server_url: Option<&str>,
+) {
+    let mut args = json!({"task_id": task_id});
+    if let Some(reason) = reason {
+        args["reason"] = json!(reason);
+    }
+    if let Some(machine_id) = machine_id {
+        args["machine_id"] = json!(machine_id);
+    }
+    let result = crate::commands::tool::call_catalog_tool(
+        &resolve_server_base_url_from_env(server_url),
+        &kanna_tool_catalog::bundled_catalog(),
+        name,
+        &args,
+    )
+    .await
+    .and_then(|(_, response)| print_json(&response));
+    if let Err(error) = result {
+        eprintln!("Error: {error}");
+        process::exit(1);
+    }
 }

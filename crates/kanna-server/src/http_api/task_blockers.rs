@@ -467,6 +467,7 @@ pub(super) async fn block_task(
         task_id,
         follow_task: None,
         revision_budget: None,
+        workflow_extended: None,
     }))
 }
 
@@ -502,5 +503,6 @@ pub(super) async fn unblock_task(
         task_id,
         follow_task: None,
         revision_budget: None,
+        workflow_extended: None,
     }))
 }

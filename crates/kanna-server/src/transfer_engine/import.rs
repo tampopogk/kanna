@@ -285,10 +285,21 @@ async fn run_import(
         .transferred_task_manifest(transfer_id)
         .map_err(|error| format!("db error: {error}"))?;
     let has_manifest = persisted_manifest.is_some();
+    // Before anything asks the source to wrap up: a payload this build would
+    // silently strip is refused now, while refusing is free. Checked on every
+    // attempt, so a queued transfer whose payload changed since it was
+    // reserved is re-checked rather than trusted.
+    assert_destination_preserves_workflow(stored.task.workflow_definition.as_deref())?;
     let payload = if local_task_id.is_some() || has_manifest {
         stored
     } else {
-        let finalized = control::finalize_from_source(state, transfer_id).await?;
+        let accepted_selection = stored
+            .task
+            .selection_commitment()
+            .map_err(ImportFailure::Terminal)?;
+        validate_transfer_launch_selection(&stored.task)?;
+        let finalized =
+            control::finalize_from_source(state, transfer_id, &accepted_selection).await?;
         let payload = payload::parse_outgoing_transfer_payload(&finalized.payload)
             .map_err(ImportFailure::Terminal)?;
         if payload.repo.mode != RepoAcquisitionMode::TaskBundle {
@@ -297,6 +308,20 @@ async fn run_import(
             ));
         }
         assert_payload_matches_reservation(&transfer, &payload)?;
+        if payload
+            .task
+            .selection_commitment()
+            .map_err(ImportFailure::Terminal)?
+            != accepted_selection
+        {
+            return Err(ImportFailure::Terminal(
+                "finalized workflow or launch selection differs from destination acceptance".into(),
+            ));
+        }
+        // The finalization rewrites the payload, so the definition that
+        // actually crosses is re-checked rather than assumed identical to the
+        // reserved one.
+        assert_destination_preserves_workflow(payload.task.workflow_definition.as_deref())?;
         if !finalized.finalized_cleanly {
             // The source could not shut its agent down cleanly. The
             // conversation still crosses, but this machine's operator has to
@@ -621,6 +646,79 @@ async fn run_import(
     Ok(())
 }
 
+/// Does the workflow this destination actually stored read back equal to the
+/// source's pinned snapshot?
+///
+/// The final integrity check, run after the task row exists. It is a semantic
+/// comparison rather than a formatting one, and it is deliberately *not* the
+/// thing that protects the source: by the time it runs the source has already
+/// been finalized. `assert_destination_preserves_workflow` is what refuses a
+/// definition this destination cannot carry, and it runs first.
+fn stored_workflow_matches_source(stored: Option<&str>, expected: Option<&str>) -> bool {
+    match (stored, expected) {
+        (Some(stored), Some(expected)) if stored == expected => true,
+        (Some(stored), Some(expected)) => {
+            if !crate::task_creator::unknown_workflow_fields(expected).is_empty() {
+                return false;
+            }
+            crate::task_creator::normalize_task_workflow_for_transfer(stored)
+                .ok()
+                .zip(crate::task_creator::normalize_task_workflow_for_transfer(expected).ok())
+                .is_some_and(|(a, b)| a == b)
+        }
+        (None, None) => true,
+        _ => false,
+    }
+}
+
+/// Validate both workflow keys and selector values before requesting source
+/// finalization. The V2 operation identifies receivers that perform this check;
+/// legacy finalization operations cannot reach source shutdown on updated peers.
+/// The existing source-side plan-context restriction remains separate.
+pub(crate) fn assert_destination_preserves_workflow(
+    workflow_definition: Option<&str>,
+) -> Result<(), ImportFailure> {
+    let Some(definition) = workflow_definition else {
+        return Ok(());
+    };
+    let unknown = crate::task_creator::unknown_workflow_fields(definition);
+    if unknown.is_empty() {
+        crate::task_creator::normalize_task_workflow_for_transfer(definition)
+            .map_err(ImportFailure::Terminal)?;
+        return Ok(());
+    }
+    Err(ImportFailure::Terminal(format!(
+        "this machine cannot carry the transferred task's pinned workflow without losing part of \
+         it: its definition uses {}, which this version does not know about. The transfer is \
+         refused before the source is finalized, so the source task is untouched. Update this \
+         machine and retry.",
+        unknown.join(", ")
+    )))
+}
+
+fn validate_transfer_launch_selection(
+    task: &payload::TransferTaskPayload,
+) -> Result<(), ImportFailure> {
+    use kanna_agent_protocol::{AgentCandidate, AgentSelectionEntry};
+    if task.workflow_definition.is_none() {
+        return Err(ImportFailure::Terminal(
+            "V2 transfer requires the complete pinned workflow before source finalization".into(),
+        ));
+    }
+    let harness = task
+        .agent_provider
+        .parse()
+        .map_err(ImportFailure::Terminal)?;
+    AgentSelectionEntry::Candidate(AgentCandidate {
+        harness,
+        model: task.model.clone(),
+        effort: task.effort.clone(),
+    })
+    .resolve(false)
+    .map_err(ImportFailure::Terminal)?;
+    Ok(())
+}
+
 pub(crate) async fn verify_persisted_task_bundle(
     state: &Arc<AppState>,
     payload: &OutgoingTransferPayload,
@@ -665,23 +763,51 @@ pub(crate) async fn verify_persisted_task_bundle(
             )));
         }
     }
-    let workflow_matches = match (
+    if !stored_workflow_matches_source(
         item.pipeline_def.as_deref(),
         payload.task.workflow_definition.as_deref(),
     ) {
-        (Some(stored), Some(expected)) if stored == expected => true,
-        (Some(stored), Some(expected)) => serde_json::from_str::<serde_json::Value>(stored)
-            .ok()
-            .zip(serde_json::from_str::<serde_json::Value>(expected).ok())
-            .is_some_and(|(a, b)| a == b),
-        (None, None) => true,
-        _ => false,
-    };
-    if !workflow_matches {
         return Err(ImportFailure::Terminal(format!(
             "transferred task {local_task_id} workflow definition does not match the source snapshot"
         )));
     }
+    let launch_harness = item.agent_provider.as_deref().ok_or_else(|| {
+        ImportFailure::Terminal("transferred task has no persisted launch harness".into())
+    })?;
+    if launch_harness != payload.task.agent_provider {
+        return Err(ImportFailure::Terminal(
+            "transferred task harness does not match the source launch selection".into(),
+        ));
+    }
+    // Initial preparation has persisted spawn options before any daemon call.
+    // Compare only the choices the source supplied: omissions may resolve locally.
+    let launch_options: Value = db
+        .get_pipeline_item_agent_spawn_options(local_task_id)
+        .map_err(|e| format!("db error: {e}"))?
+        .as_deref()
+        .map(serde_json::from_str)
+        .transpose()
+        .map_err(|e| format!("invalid destination launch options: {e}"))?
+        .unwrap_or(Value::Null);
+    for (key, expected) in [
+        ("model", payload.task.model.as_deref()),
+        ("effort", payload.task.effort.as_deref()),
+    ] {
+        if expected.is_some() && launch_options.get(key).and_then(Value::as_str) != expected {
+            return Err(ImportFailure::Terminal(format!("transferred task {local_task_id} {key} does not match the explicit source launch selection")));
+        }
+    }
+    let launch_model = payload
+        .task
+        .model
+        .as_ref()
+        .and_then(|_| launch_options.get("model").and_then(Value::as_str));
+    let launch_effort = payload
+        .task
+        .effort
+        .as_ref()
+        .and_then(|_| launch_options.get("effort").and_then(Value::as_str));
+
     let repo = db
         .get_repo(&item.repo_id)
         .map_err(|error| format!("db error: {error}"))?
@@ -845,6 +971,9 @@ pub(crate) async fn verify_persisted_task_bundle(
                 .as_ref()
                 .map(|ledger| ledger.sha256.as_str()),
             history: &read_back_history,
+            launch_harness,
+            launch_model,
+            launch_effort,
         })
         .map_err(ImportFailure::Terminal)?;
     let completed = verify_db
@@ -1480,8 +1609,8 @@ async fn build_create_request(
         ),
         terminal_cols: None,
         terminal_rows: None,
-        model: None,
-        effort: None,
+        model: payload.task.model.clone(),
+        effort: payload.task.effort.clone(),
         permission_mode: None,
         allowed_tools: None,
         disallowed_tools: None,
@@ -1490,6 +1619,7 @@ async fn build_create_request(
         setup_cmds: None,
         task_template: None,
         transfer_import: Some(crate::mobile_api::TransferImportSummary {
+            attention_reason: payload.task.attention_reason.clone(),
             head_oid: payload.task.head_oid.clone(),
             transfer_id: Some(transfer_id.to_string()),
             source_machine: resolve_source_machine_name(state, &payload.task.source_peer_id).await,
@@ -1701,6 +1831,125 @@ mod tests {
             .expect("transfer");
         assert_eq!(transfer.local_task_id, None);
         assert_eq!(transfer.status, "claimed");
+    }
+
+    /// A task-bundle payload whose only variable is the pinned workflow this
+    /// destination is asked to carry.
+    fn preservation_payload_json(workflow_definition: &str) -> String {
+        let mut payload = item4_task_bundle_payload_json("task-source", "in progress");
+        payload["task"]["workflow_definition"] = serde_json::json!(workflow_definition);
+        payload.to_string()
+    }
+
+    fn preservation_transfer(
+        transfer_id: &str,
+        workflow_definition: &str,
+    ) -> crate::db::NewTaskTransfer {
+        crate::db::NewTaskTransfer {
+            id: transfer_id.to_string(),
+            direction: "incoming".into(),
+            status: "pending".into(),
+            source_peer_id: Some("peer-source".into()),
+            target_peer_id: None,
+            source_desktop_id: None,
+            target_desktop_id: None,
+            source_task_id: Some("task-source".into()),
+            // No local task and no manifest, so this import would go on to ask
+            // the source to finalize — which is the call the check must beat.
+            local_task_id: None,
+            error: None,
+            payload_json: Some(preservation_payload_json(workflow_definition)),
+        }
+    }
+
+    /// A pinned workflow this build cannot carry is refused while refusing is
+    /// still free.
+    ///
+    /// The ordering is the whole point: `finalize_from_source` asks the source
+    /// to shut its agent down, and the read-back integrity check runs long
+    /// after that. This state has no usable transfer sidecar, so *any* control
+    /// call fails with a spawn error — which is exactly what makes the
+    /// assertion an ordering proof rather than a message check. The paired
+    /// test below takes the same fixture past the check and does get that
+    /// spawn error.
+    #[tokio::test]
+    async fn an_unpreservable_workflow_is_refused_before_source_finalization() {
+        let work = work_item("import:unpreservable-transfer");
+        let state = crate::http_api::test_state_with_seed(
+            "desktop-unpreservable-workflow",
+            "Unpreservable",
+            |db| {
+                db.insert_task_transfer(&preservation_transfer(
+                    "transfer-1",
+                    // A definition from a newer peer: this build's
+                    // `WorkflowDefinition` drops `future_contract`, so importing
+                    // it would silently lose part of the task.
+                    r#"{"name":"grown","stages":[{"name":"in progress","policy":{"transition":"manual"}}],"future_contract":{"budget":7}}"#,
+                ))
+                .expect("incoming transfer");
+            },
+        );
+
+        let failure = run_import(&state, &work, "transfer-1")
+            .await
+            .expect_err("an unpreservable workflow must not be imported");
+        let ImportFailure::Terminal(reason) = failure else {
+            panic!("an unpreservable workflow must be a terminal refusal, not a retry");
+        };
+        assert!(
+            reason.contains("cannot carry the transferred task's pinned workflow"),
+            "the refusal must be the preservation one, not a downstream failure: {reason}"
+        );
+        // Any control call on this state fails with a sidecar/spawn error, so
+        // its absence is the evidence that nothing reached the source.
+        assert!(
+            !reason.contains("sidecar") && !reason.contains("transfer sidecar"),
+            "the source must not have been asked to finalize: {reason}"
+        );
+        let transfer = state
+            .transfer_work()
+            .open_db()
+            .expect("db")
+            .get_task_transfer("transfer-1")
+            .expect("read transfer")
+            .expect("transfer");
+        // Nothing was imported and no destination task exists, so the source
+        // still owns the task and can keep working.
+        assert_eq!(transfer.local_task_id, None);
+    }
+
+    /// The same fixture with a definition this build round-trips intact gets
+    /// past the preservation check and fails at the finalize call instead.
+    /// Without this, the test above would also pass if the check simply
+    /// refused everything.
+    #[tokio::test]
+    async fn a_preservable_workflow_proceeds_to_source_finalization() {
+        let work = work_item("import:preservable-transfer");
+        let state = crate::http_api::test_state_with_seed(
+            "desktop-preservable-workflow",
+            "Preservable",
+            |db| {
+                db.insert_task_transfer(&preservation_transfer(
+                    "transfer-1",
+                    // Includes the plan a grown task's stages were published
+                    // under: this build knows `plan_context`, so it survives.
+                    r#"{"name":"grown","revision_limit":3,"stages":[{"name":"plan","policy":{"transition":"manual"}}],"plan_context":{"source_run_id":"run-plan","stage":"plan","result":"{}"}}"#,
+                ))
+                .expect("incoming transfer");
+            },
+        );
+
+        let failure = run_import(&state, &work, "transfer-1")
+            .await
+            .expect_err("this fixture has no sidecar to finalize against");
+        let reason = match failure {
+            ImportFailure::Terminal(reason) => reason,
+            ImportFailure::Retry(reason) => reason,
+        };
+        assert!(
+            !reason.contains("cannot carry the transferred task's pinned workflow"),
+            "a definition this build preserves must not be refused: {reason}"
+        );
     }
 
     /// The retry seam migration 050 exists for.
@@ -2004,7 +2253,7 @@ mod tests {
                 "pipeline": "single-reviewer",
                 "agent_type": "pty",
                 "agent_provider": "claude",
-                "workflow_definition": "{\"stages\":[{\"name\":\"in progress\"}]}",
+                "workflow_definition": r#"{"name":"single-reviewer","stages":[{"name":"in progress","policy":{"transition":"manual"}}]}"#,
                 "head_oid": "a".repeat(40),
                 "base_oid": "b".repeat(40),
             },
@@ -2880,6 +3129,8 @@ mod tests {
             "name": "single-reviewer",
             "stages": [{
                 "name": "in progress",
+                "agent_provider": {"harness":"opencode", "model":"local/Workflow-high", "effort":"workflow-hi"},
+                "post": {"name":"commit", "agent_provider":{"harness":"opencode", "model":"local/Post-high"}},
                 "prompt": "$TASK_PROMPT",
                 "policy": { "transition": "manual" }
             }]
@@ -2893,12 +3144,13 @@ mod tests {
         std::fs::write(
             path.join(".kanna/config.json"),
             serde_json::json!({
-                "workspace": { "path": { "prepend": [".kanna/test-provider-bin"] } }
+                "workspace": { "path": { "prepend": [".kanna/test-provider-bin"] } },
+                "agentProviders": {"*":{"harness":"opencode", "model":"local/Destination-default", "effort":"default-hi"}}
             })
             .to_string(),
         )
         .unwrap();
-        let provider = path.join(".kanna/test-provider-bin/claude");
+        let provider = path.join(".kanna/test-provider-bin/opencode");
         std::fs::write(&provider, "#!/bin/sh\nexit 0\n").unwrap();
         std::fs::set_permissions(&provider, std::fs::Permissions::from_mode(0o755)).unwrap();
         std::fs::write(path.join("README.md"), "base\n").unwrap();
@@ -3031,7 +3283,8 @@ mod tests {
                 }],
                 "pipeline": "single-reviewer",
                 "agent_type": "pty",
-                "agent_provider": "claude"
+                "agent_provider": "opencode",
+                "model": "local/Recorded-high", "effort": "custom-hi", "source_run_id": "source-run"
             },
             "repo": {
                 "mode": "task-bundle",
@@ -3113,6 +3366,15 @@ mod tests {
             );
             let event: Value = serde_json::from_str(&request.payload_json).unwrap();
             assert_eq!(event["transfer_id"], reservation.transfer_id);
+            assert_eq!(event["type"], "outgoing_transfer_finalization_requested_v2");
+            assert_eq!(
+                event["selection_commitment"],
+                payload::parse_outgoing_transfer_payload(&payload_json)
+                    .unwrap()
+                    .task
+                    .selection_commitment()
+                    .unwrap()
+            );
             reservation
                 .source
                 .control(
@@ -3193,10 +3455,33 @@ mod tests {
             let mut reader = BufReader::new(read_half);
             let command = read_import_test_daemon_command(&mut reader, &mut write_half).await;
             let session_id = match command {
-                kanna_daemon::protocol::Command::Spawn { session_id, .. } => session_id,
+                kanna_daemon::protocol::Command::Spawn {
+                    session_id,
+                    args,
+                    agent_provider,
+                    ..
+                } => {
+                    assert_eq!(
+                        agent_provider,
+                        Some(kanna_agent_protocol::AgentProvider::Opencode)
+                    );
+                    let command = args.join(" ");
+                    assert!(command.contains("local/Recorded-high"), "{command}");
+                    assert!(command.contains("custom-hi"), "{command}");
+                    assert!(!command.contains("local/Destination-default"), "{command}");
+                    session_id
+                }
                 other => panic!("expected recovery Spawn, got {other:?}"),
             };
             let db = crate::db::Db::open(&daemon_db_path).unwrap();
+            let options: Value = serde_json::from_str(
+                &db.get_pipeline_item_agent_spawn_options(&task_id_for_daemon)
+                    .unwrap()
+                    .unwrap(),
+            )
+            .unwrap();
+            assert_eq!(options["model"], "local/Recorded-high");
+            assert_eq!(options["effort"], "custom-hi");
             assert!(
                 db.transferred_task_manifest_content_commitment(&transfer_id_for_daemon)
                     .unwrap()
@@ -3315,6 +3600,14 @@ mod tests {
                 .as_deref(),
             Some("review")
         );
+        assert!(stored_workflow_matches_source(
+            db.get_pipeline_item(&destination_task_id)
+                .unwrap()
+                .unwrap()
+                .pipeline_def
+                .as_deref(),
+            Some(&workflow_definition)
+        ));
         let inputs = db.list_all_task_inputs(&destination_task_id).unwrap();
         assert_eq!(inputs.len(), 2);
         assert_eq!(inputs[0].message, "preserve this imported directive");
@@ -3342,5 +3635,140 @@ mod tests {
         let _ = std::fs::remove_dir_all(destination_home);
         let _ = std::fs::remove_dir_all(source_repo);
         let _ = std::fs::remove_dir_all(source_remote);
+    }
+}
+
+#[cfg(test)]
+mod stored_workflow_tests {
+    use super::{assert_destination_preserves_workflow, stored_workflow_matches_source};
+
+    #[test]
+    fn structured_selection_snapshot_round_trips_without_losing_literals() {
+        let original = r#"{"name":"selection","stages":[{"name":"build","policy":{"transition":"manual"},"agent_provider":[{"harness":"opencode","model":"local/My/Model-high","effort":"custom-hi"}]}]}"#;
+        let normalized =
+            crate::task_creator::normalize_task_workflow_for_transfer(original).unwrap();
+        assert!(stored_workflow_matches_source(
+            Some(&normalized),
+            Some(original)
+        ));
+        assert!(assert_destination_preserves_workflow(Some(original)).is_ok());
+    }
+
+    #[test]
+    fn v2_acceptance_checks_selector_values_not_just_known_keys() {
+        for selection in [
+            serde_json::json!({"harness":"pi", "model":"example"}),
+            serde_json::json!({"harness":"opencode", "model":"local/model", "futureField":true}),
+            serde_json::json!({"harness":"claude", "effort":"invalid"}),
+        ] {
+            let workflow = serde_json::json!({"name":"transfer", "stages":[{
+                "name":"work", "policy":{"transition":"manual"}, "agent_provider":selection
+            }]})
+            .to_string();
+            assert!(crate::task_creator::unknown_workflow_fields(&workflow).is_empty());
+            assert!(assert_destination_preserves_workflow(Some(&workflow)).is_err());
+        }
+    }
+
+    /// The false positive a shape comparison would produce.
+    ///
+    /// Normalization deliberately rewrites older spellings — a stage-level
+    /// `transition`, a `post_action` — so a definition that round-trips into a
+    /// *different* document is the normal case for an old pin, not a loss.
+    /// Refusing those would break every transfer of a long-lived task.
+    #[test]
+    fn a_legacy_definition_is_carried_rather_than_refused() {
+        for definition in [
+            r#"{"name":"old","stages":[{"name":"in progress","transition":"manual"}]}"#,
+            r#"{"name":"old","stages":[{"name":"in progress","policy":{"transition":"manual"},"post_action":{"name":"commit","prompt":"Commit."}}]}"#,
+            r#"{"name":"old","stages":[{"name":"in progress","transition":"auto","mode":"continue"}]}"#,
+        ] {
+            assert!(
+                assert_destination_preserves_workflow(Some(definition)).is_ok(),
+                "legacy definition must transfer: {definition}"
+            );
+        }
+    }
+
+    /// V2 validates values before requesting any source finalization.
+    #[test]
+    fn an_unparseable_definition_is_refused_before_finalization() {
+        assert!(assert_destination_preserves_workflow(Some("not json")).is_err());
+        assert!(assert_destination_preserves_workflow(None).is_ok());
+    }
+
+    /// A field from a newer Kanna is refused by name.
+    #[test]
+    fn a_field_this_version_does_not_know_is_refused() {
+        let failure = assert_destination_preserves_workflow(Some(
+            r#"{"name":"new","stages":[{"name":"plan","policy":{"transition":"manual"},"budget":{"tokens":1}}],"future_contract":{}}"#,
+        ))
+        .expect_err("a newer document must not be silently trimmed");
+        let super::ImportFailure::Terminal(reason) = failure else {
+            panic!("an unknown field is a terminal refusal, not a retry");
+        };
+        assert!(reason.contains("future_contract"), "{reason}");
+        assert!(reason.contains("stages[0].budget"), "{reason}");
+    }
+
+    /// `plan_context` is the field this build added, so it must not be the
+    /// thing that makes a document unrecognizable to itself.
+    #[test]
+    fn this_versions_own_plan_context_is_carried() {
+        assert!(assert_destination_preserves_workflow(Some(
+            r#"{"name":"grown","stages":[{"name":"plan","policy":{"transition":"manual"}}],"plan_context":{"source_run_id":"run-plan","stage":"plan","result":"{}"}}"#
+        ))
+        .is_ok());
+    }
+
+    fn pinned(with_plan_context: bool) -> String {
+        let mut definition = serde_json::json!({
+            "name": "consultation",
+            "revision_limit": 3,
+            "stages": [
+                {"name": "plan", "agent": "plan", "policy": {"transition": "manual"}},
+                {"name": "in progress", "agent": "implement", "policy": {"transition": "manual"}}
+            ]
+        });
+        if with_plan_context {
+            definition["plan_context"] = serde_json::json!({
+                "source_run_id": "run-plan", "stage": "plan",
+                "result": "{\"status\":\"success\",\"summary\":\"the approved plan\"}"
+            });
+        }
+        definition.to_string()
+    }
+
+    /// A same-version destination re-serializes the definition with different
+    /// key order and whitespace and still matches: the check is semantic.
+    #[test]
+    fn a_same_version_destination_matches_after_reserialization() {
+        let source = pinned(true);
+        let reserialized = serde_json::to_string_pretty(
+            &serde_json::from_str::<serde_json::Value>(&source).unwrap(),
+        )
+        .unwrap();
+        assert_ne!(reserialized, source);
+        assert!(stored_workflow_matches_source(
+            Some(&reserialized),
+            Some(&source)
+        ));
+    }
+
+    /// The final integrity check still catches a definition that changed
+    /// between the source snapshot and what this destination stored. It runs
+    /// after finalization, so it is a corruption check rather than the thing
+    /// that protects the source — `assert_destination_preserves_workflow` is.
+    #[test]
+    fn a_stored_definition_that_lost_the_plan_context_fails_the_final_read_back() {
+        assert!(!stored_workflow_matches_source(
+            Some(&pinned(false)),
+            Some(&pinned(true))
+        ));
+        // And the same peer carrying a workflow that never had one is fine.
+        assert!(stored_workflow_matches_source(
+            Some(&pinned(false)),
+            Some(&pinned(false))
+        ));
     }
 }

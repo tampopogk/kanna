@@ -56,6 +56,34 @@ function textContent(node: ElementNode | string | null | undefined): string {
   return flattenChildren(node.props?.children).map(textContent).join("");
 }
 
+function findTextNodeByCompleteText(
+  node: ElementNode,
+  expectedText: string
+): ElementNode | null {
+  if (node.type === "Text" && textContent(node) === expectedText) return node;
+  for (const child of flattenChildren(node.props?.children)) {
+    if (typeof child === "string") continue;
+    const match = findTextNodeByCompleteText(child, expectedText);
+    if (match) return match;
+  }
+  return null;
+}
+
+function flattenStyle(style: unknown): Record<string, unknown> {
+  if (Array.isArray(style)) {
+    return style.reduce<Record<string, unknown>>(
+      (effectiveStyle, item) => ({
+        ...effectiveStyle,
+        ...flattenStyle(item)
+      }),
+      {}
+    );
+  }
+  return style && typeof style === "object"
+    ? (style as Record<string, unknown>)
+    : {};
+}
+
 function findElement(node: ElementNode, type: unknown): ElementNode | null {
   if (node.type === type) return node;
   for (const child of flattenChildren(node.props?.children)) {
@@ -304,6 +332,40 @@ describe("TasksScreen", () => {
     );
     expect(tree.props?.testID).toBe(MOBILE_E2E_IDS.recentScreen);
     expect(textContent(tree)).not.toContain("Repo A");
+  });
+
+  it("shows a busy unread task as busy before it is opened", () => {
+    if (!TaskList || !TaskCard) throw new Error("Task list was not loaded");
+    const tree = renderTasksScreen({
+      taskSlots: projectTaskUiSlots(
+        [
+          {
+            id: "task-busy-unread",
+            repoId: "repo-1",
+            title: "Busy before opening",
+            stage: "in progress",
+            activity: "unread",
+            runtimeState: "busy",
+            readState: "unread"
+          }
+        ],
+        []
+      )
+    });
+    const taskListTree = TaskList(
+      findElement(tree, TaskList)?.props as never
+    ) as ElementNode;
+    const taskCard = findElement(taskListTree, TaskCard);
+    const row = TaskCard(taskCard?.props as never) as ElementNode;
+    const title = findTextNodeByCompleteText(row, "Busy before opening");
+
+    expect(flattenStyle(title?.props?.style)).toMatchObject({
+      fontStyle: "italic",
+      fontWeight: "normal"
+    });
+    expect(row.props?.accessibilityValue).toEqual({
+      text: "working, unread"
+    });
   });
 
   it("shows only unread Activity entries while preserving source order", () => {

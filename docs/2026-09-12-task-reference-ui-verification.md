@@ -447,3 +447,43 @@ menu dispatch branch. The existing global Cmd+P file-picker handler is unchanged
 54 focused MainPanel/useAppKeyboardActions tests and diffcheck pass. No new tests,
 native interaction, backend restart or broader verification for this menu-only
 change. Existing isolated frontend HMR and evaluation stack remain available.
+
+### Owner acceptance and current-main integration
+
+Owner accepted the final native UI at a6ba0deb17667c5ec017e43ce8567283b8bec47d:
+"okay. i think we're good. proceed." Coordinator independently confirmed and
+authorized merging current main into this same author branch, with a single
+consolidated independent review still required before actual PR merge.
+
+Integrated origin/main15153405a3ce29c83a30b04cd4cb0a725ce28600 using a merge,
+preserving reviewed commit identities. Four conflict surfaces:
+- Sidebar keeps main's explicit attention reason/tooltip/! alongside the
+  independent detected waiting/? marker, in all four row rendering paths.
+  Questions/Unread filters retain their existing meaning.
+- TaskHeader keeps task/owner identity and the owner's removal of launch
+  metadata; main's rewording of that removed tooltip does not restore it.
+- Keyboard registration combines main's startup-screen enabled guard with
+  editor/preview save ownership and modal priority.
+- DB keeps archive, workflow-transfer-claim and attention migrations. IDs stay
+  unchanged: migrations key on the full string, not numeric prefixes. This
+  preserves already-created evaluation databases as well as main databases.
+  Main's structured harness/model/effort behavior is retained; no selector
+  metadata or archive identity was replaced.
+
+Focused validation:180 tests pass across Sidebar, TaskHeader, MainTabBar,
+MainPanel, useMainTabs, useAppKeyboardActions and useKeyboardShortcuts. Nine
+StageModelControl/OpenCodeModelSelect tests pass for structured selection.
+Vue typecheck and diffcheck pass. Seven server migration tests pass, including
+new main-only/archive-only upgrade and repeat-open preservation of archive,
+attention and transfer-claim data. One existing archive persistence/ownership/
+immutability test passes. Initial cargo invocation incorrectly requested a
+library target; reran successfully against the kanna-server binary target.
+
+Before integration, verified owned process paths, stopped preview10115 and
+ran ./kd dev down --kill-daemon from this worktree. Desktop29022, server30134,
+daemon30000, recovery30031, agent38183 and shells30694/92318 are gone; no listeners
+remain on1433/4475/48133/5189. Fixtures, DB and artifacts are retained. No installed
+app/unrelated session interaction or new native launch. Prior accepted backend/
+pointer reviews and owner UI acceptance are reused, not rerun as a full gate.
+Review scope is8dd688..final tab refinements plus these integration resolutions;
+actual PR approve/merge remains held for the coordinator's consolidated review.

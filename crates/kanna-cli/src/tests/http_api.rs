@@ -386,6 +386,7 @@ async fn advance_stage_posts_to_task_action_path_with_empty_json_body() {
         "task-123",
         None,
         NextStageProviderOverride::default(),
+        None,
     )
     .await
     .unwrap();
@@ -412,6 +413,7 @@ async fn advance_stage_posts_the_next_stage_provider_override() {
             effort: Some("low"),
             source: Some("agent"),
         },
+        None,
     )
     .await
     .unwrap();
@@ -436,12 +438,39 @@ async fn advance_stage_posts_declared_manager_source() {
         "task-123",
         Some("manager"),
         NextStageProviderOverride::default(),
+        None,
     )
     .await
     .unwrap();
     let request = handle.await.unwrap();
 
     assert!(request.ends_with(r#"{"source":"manager"}"#));
+}
+
+/// The fence a caller uses when it acted on a stage sequence it read: a task's
+/// remaining stages can be published while an earlier stage runs.
+#[tokio::test]
+async fn advance_stage_posts_the_inspected_workflow_as_a_fence() {
+    let response = http_json_response("200 OK", "{\"taskId\":\"task-123\"}");
+    let (base_url, handle) = serve_single_http_response(response).await;
+
+    advance_stage_via_api(
+        &base_url,
+        "task-123",
+        Some("operator"),
+        NextStageProviderOverride::default(),
+        Some(serde_json::json!({"name": "grown", "stages": [{"name": "plan"}]})),
+    )
+    .await
+    .unwrap();
+    let request = handle.await.unwrap();
+
+    assert!(
+        request.ends_with(
+            r#"{"expectedDefinition":{"name":"grown","stages":[{"name":"plan"}]},"source":"operator"}"#
+        ),
+        "{request}"
+    );
 }
 
 #[tokio::test]
@@ -911,6 +940,7 @@ async fn advance_stage_surfaces_http_errors() {
         "task-123",
         None,
         NextStageProviderOverride::default(),
+        None,
     )
     .await
     .unwrap_err();
@@ -1286,4 +1316,32 @@ async fn unsubscribe_events_places_diagnostic_on_the_query_string_not_the_body()
     assert!(request
         .starts_with("POST /v1/event-subscriptions/sub-1/unsubscribe?diagnostic=true HTTP/1.1"));
     assert!(!request.contains(r#"{"diagnostic":true}"#), "{request}");
+}
+
+#[tokio::test]
+async fn attention_catalog_cli_set_and_clear_use_declared_routes() {
+    let catalog = kanna_tool_catalog::bundled_catalog();
+    for (name, args, action) in [
+        (
+            "kanna_set_task_attention",
+            json!({"task_id":"task-1","reason":"Choose"}),
+            "set-attention",
+        ),
+        (
+            "kanna_clear_task_attention",
+            json!({"task_id":"task-1"}),
+            "clear-attention",
+        ),
+    ] {
+        let (base_url, server) =
+            serve_http_responses(vec![http_json_response("200 OK", "{\"changed\":true}")]).await;
+        let (_, value) = call_catalog_tool_with_task_id(&base_url, &catalog, name, &args, None)
+            .await
+            .unwrap();
+        assert_eq!(value["changed"], true);
+        let requests = server.await.unwrap();
+        assert!(
+            requests[0].starts_with(&format!("POST /v1/tasks/task-1/actions/{action} HTTP/1.1"))
+        );
+    }
 }

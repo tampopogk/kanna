@@ -594,11 +594,95 @@ in `docs/task-specs/c9f5721b.md` and enforced by the router authorization tests.
 - `POST /v1/tasks`
 - `POST /v1/tasks/{task_id}/input` (optionally with one base64 image `attachment`; see [Image attachments](#image-attachments))
 - `POST /v1/tasks/{task_id}/actions/complete-stage`
+  also accepts an optional `workflowDefinition` with `expectedDefinition`, by
+  which a planning stage publishes the stages its plan chose for its **own**
+  task. Both are recorded in one transaction, so a plan is never durably
+  successful without the stages it selected and a rejected extension leaves no
+  verdict for the planner to discover later. It is accepted only on
+  `status: "success"`, on the task's current `main` run, when that stage is
+  named `plan`, declares `policy.transition: "manual"`, has no post, and is the
+  final stage of the pinned workflow; the recorded stages must survive
+  byte-for-byte as a prefix, the appended suffix must follow a supported recipe
+  (`in progress` (+`commit`) → `pr` (+`approve`), or the same with `review`
+  between) with each stage's agent and provider free, and a finite positive
+  `revision_limit` is required. The server stamps `plan_context`
+  (`{source_run_id, stage, result}`) onto the stored definition and binds its
+  `result` to the reserved `$PLAN_RESULT` prompt variable for every stage and
+  post of the extended workflow — separate from `$PREV_MAIN_RESULT`, which each
+  later main stage overwrites. A stale `expectedDefinition` is a `409`. An
+  exact replay of the same completion is a no-op; a *differing* retry of the
+  run that published a plan is refused, because the recorded plan and the
+  executing stages would otherwise describe different work. The response
+  carries `workflowExtended: true`; a server that predates this ignores both
+  arguments and returns no such field, so a plain success must never be read as
+  a successful extension.
+  **Transfer compatibility: a stamped task does not transfer yet.** `plan_context`
+  rides inside the pinned definition transfer already carries, and every
+  destination re-serializes that definition through its own `WorkflowDefinition`
+  — so a machine that predates the field imports the executable suffix and drops
+  the immutable plan those stages were chosen under, which nothing can
+  reconstruct. A destination-side check cannot answer this, because the machine
+  that would run it is the one too old to have it, and the protocol has no way
+  to prove what a peer preserves.
+  So the **source** refuses, and a transfer and a plan publication cannot both
+  hold the same task. Before `finalize_source_session` asks the source agent to
+  quit, the shared finalization path **claims the task's workflow**: one
+  transaction that both refuses a task already carrying `plan_context` and
+  records that this transfer owns it. While that claim is held by a live
+  transfer, a combined plan completion is refused inside its own write
+  transaction and records nothing — not the suffix, not the plan result. SQLite's
+  single writer is what makes the two exclusive: whichever commits first wins and
+  the loser writes nothing.
+  A snapshot check before finalization's first `await` would not be enough —
+  finalization yields while shutting the agent down, and a plan published in that
+  window is serialized into the payload *after* the source has already quit.
+  **Ownership follows durable source work, not the transfer's display status.**
+  A transfer still owns a task while it is `pending`/`streaming` **or** while it
+  still has unfinished source-effect work (`finalize`, `outgoing-committed`) of
+  its own. That distinction is not academic: a failed finalization marks its
+  transfer `failed` and the queue still retries the same work item while attempts
+  remain, and that retry shuts a source down. Reading the row alone would make
+  the retry invisible to publication. Backed-off retries and restart-requeued
+  work both sit at `pending`, so both keep ownership without asking about
+  processes or clocks. Acquisition refuses on exactly the predicate the
+  publication side reads, so no attempt can proceed holding a claim publication
+  treats as released; it also refuses a transfer that is not this task's, and
+  refuses to displace an owner that can still act — only a claim whose owner has
+  genuinely finished is replaced. Release is therefore derived, never manual: a
+  terminal transfer with no unfinished source-effect work stops owning the task,
+  so a crash mid-finalization cannot hold a plan hostage and no teardown path has
+  to remember to delete anything.
+  The same acquisition guards the other entry that touches a source: the
+  `outgoing-committed` receipt, before it closes an open task. Receipts are
+  durable on the sidecar and replayed on its own schedule, so one can arrive
+  after this server settled the work and after a plan published. It proves the
+  payload it was issued for and nothing about that plan, so a late replay is
+  refused and the task stays open with its plan intact; an already-closed source
+  is left to its idempotent replay. Push also answers early, before anything is
+  reserved on the peer, purely so the operator is not left waiting; that check is
+  a courtesy, not the guarantee.
+  No peer is contacted and no capability is negotiated: "unproved" is every peer,
+  and the refusal is deliberately blunt rather than a compatibility platform
+  built for one field. Ordinary tasks transfer unchanged.
+  Two destination-side checks remain and are unrelated to protecting the source.
+  Before asking the source to finalize, a destination refuses a definition
+  carrying fields *it* does not define — asked by name against its own bundled
+  schema, because normalization deliberately rewrites legacy spellings and a
+  shape comparison would flag every old pin as a loss. After persistence, the
+  read-back equality check remains a corruption check; it runs after
+  finalization and protects nothing on the source.
 - `POST /v1/tasks/{task_id}/actions/request-revision`
 - `POST /v1/tasks/{task_id}/actions/close`
 - `POST /v1/tasks/{task_id}/actions/advance-stage`
   accepts optional `source: "operator" | "manager"`. The server records this
   caller declaration without authentication; omission means `unspecified`.
+  It also accepts an optional `expectedDefinition` — the pinned workflow the
+  caller inspected before deciding to advance — checked under the same mutation
+  guard as preparation. A task's remaining stages can be published while an
+  earlier stage runs, so a caller that acted on a displayed stage sequence
+  fences on it; a moved tail is a `409` with nothing scheduled, never a silently
+  different next stage or an accidental close past a final stage that is no
+  longer final.
   Engine policy transitions use `auto`. The trigger is stored on the spawned
   main `stage_run`, carried through any pending post run, emitted on
   `stage.changed`, and returned as `latestRun.trigger`.
@@ -1345,6 +1429,32 @@ These things are contract rather than convenience:
   current receiver refuses legacy payloads before source finalization. Either
   rolling-upgrade direction therefore leaves the source task recoverable
   instead of reporting success with main or an empty instruction history.
+
+### Transfer selection compatibility
+
+Finalization uses the V2 operation across every destructive boundary: server
+control `finalize-outgoing-transfer-v2`, sidecar control
+`finalize_outgoing_transfer_v2`, authenticated peer `finalize_transfer_v2`, and
+source event `outgoing_transfer_finalization_requested_v2`. These discriminators
+have no V1 aliases. Both servers and sidecars must be updated; old requests or
+components cannot silently discard selection fields and finalize a source.
+The transfer transport version and artifact protocol are unchanged.
+
+The destination parses the complete workflow (including selector values) and
+validates the recorded launch selection before requesting finalization. Its
+required `selection_commitment` binds acceptance to the normalized workflow,
+workflow name, stage, source run id, harness, model and effort. After claiming
+the workflow, the source compares this with its reservation and current run
+before source effects; the finalized payload is checked against the same
+acceptance. Existing published-plan restrictions remain in force separately.
+
+The payload carries the recorded harness and optional `model` and `effort`.
+Import passes them to task preparation and verifies the persisted launch choices before spawning;
+they also participate in the content commitment used for acknowledgment.
+Omissions remain eligible for destination/native defaults, without inspecting
+transcripts or promising the effective native inference settings. Workflow
+normalization accepts equivalent object/list syntax without losing literal
+model or effort identifiers.
 
 ### Source finalization
 
@@ -3209,3 +3319,22 @@ on another explicit open. The desktop persists the returned session descriptor
 and only attaches on restoration. Stage forks preserve editors in the original
 workspace; task-close paths enumerate and kill that task's editor sessions
 before removing worktrees. No editor save changes task stage or commits files.
+
+### Explicit task attention annotation
+
+`PUT /v1/tasks/{task_id}/attention` accepts `{ "reason": "..." }`; `DELETE` on
+the same path clears it. Catalog-backed MCP/CLI tools `kanna_set_task_attention`
+and `kanna_clear_task_attention` use equivalent `POST` action routes
+`/actions/set-attention` and `/actions/clear-attention`, preserving existing
+machine routing. No live PTY is required. Reasons are trimmed and limited to
+1–240 Unicode scalar values. Responses contain `taskId`, `attentionReason`
+(string or null), and `changed`. Identical writes succeed without an event.
+
+The durable task owns `attention_reason`. Actual changes atomically append
+`task.attention_changed` with `previousAttentionReason` and `attentionReason`,
+and publish the ordinary Tasks snapshot invalidation. Writes do not change
+timestamps/order, activity/read/runtime state, task input, approval or lifecycle.
+Close/reopen and stage transitions retain the annotation. Task detail (including
+brief), summaries, snapshots, LAN/cloud publications and supported transfers
+carry it. Explicit null propagates a clear; older producers may omit the metadata,
+and older relays or transfer peers may drop it. There is no mobile badge UI.

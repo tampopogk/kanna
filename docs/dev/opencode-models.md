@@ -57,14 +57,14 @@ stage's provider selector in this task's pinned workflow. It uses the existing
 compare-and-set workflow API and records an operator-authored workflow change.
 It neither advances the task nor skips the post: advance normally when ready.
 This saved choice also applies to future reruns of that stage. Concurrent edits
-are rejected without retrying or overwriting them. A model ID ambiguous with
-the workflow's effort-suffix syntax is refused; configure a native model alias
-without that suffix to save it. The final stage has no next model to select.
+are rejected without retrying or overwriting them. The choice is saved as
+`{ "harness": "opencode", "model": "local/my-model-high" }`, preserving native
+suffixes literally. The final stage has no next model to select.
 
 For defaults on newly created tasks, edit the repository workflow stage selectors. For
-example, add `"agent_provider": "opencode-local/YOUR_LOCAL_MODEL_ID"` to the
+example, add `"agent_provider": { "harness": "opencode", "model": "local/YOUR_LOCAL_MODEL_ID" }` to the
 implementation stage, and
-`"agent_provider": "opencode-anthropic/YOUR_CLOUD_MODEL_ID"` to review. Keep
+`"agent_provider": { "harness": "opencode", "model": "anthropic/YOUR_CLOUD_MODEL_ID" }` to review. Keep
 the workflow's prompts, policies and posts. Stage transitions start fresh
 sessions/worktrees from committed work; they are not mid-turn model swaps.
 Repo `agentProviders` and machine-local `.kanna/config.local.json` remain
@@ -105,3 +105,18 @@ and queries are not returned. “Local connection” means a configured loopback
 address, not proof that inference ran or that a server is ready.
 
 Native configuration reference: https://opencode.ai/docs/config/
+
+
+Structured `effort` is an exact OpenCode variant name, including custom names.
+OpenCode 1.4.3 was checked on 2026-09-13: its TUI accepts `-m provider/model`,
+while `--variant` is a `run` option. Kanna keeps the TUI's `agent.build.model`
+and `agent.build.variant` config path and uses `--variant` for headless runs.
+OpenCode's native `build` agent is distinct from Kanna's instruction role.
+See the [native model/variant documentation](https://opencode.ai/docs/models/)
+and [Kanna selection contract](dev-workflow.md#harness-model-and-effort).
+
+Structured workflows and recorded OpenCode model/variant choices transfer
+intact through V2 finalization. Both machines need updated servers and transfer
+sidecars; older finalization operations are refused before source shutdown.
+Unspecified choices may use destination or native resume defaults. See the
+[Kanna selection contract](dev-workflow.md#harness-model-and-effort).

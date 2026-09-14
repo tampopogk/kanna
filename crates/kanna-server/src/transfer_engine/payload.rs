@@ -268,10 +268,38 @@ pub struct TransferTaskPayload {
     /// derived deserializer skips this key so `workflow`'s alias owns it.
     #[serde(rename = "pipeline", default, skip_deserializing)]
     pub legacy_pipeline: String,
+    #[serde(default)]
+    pub attention_reason: Option<String>,
     pub display_name: Option<String>,
     pub base_ref: Option<String>,
     pub agent_type: Option<String>,
     pub agent_provider: String,
+    /// Resolved explicit launch choices; None leaves native/destination defaults eligible.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_run_id: Option<String>,
+}
+
+impl TransferTaskPayload {
+    /// Destination acceptance is bound to the exact workflow and launch selection,
+    /// not a whole payload whose artifacts/history change during finalization.
+    pub fn selection_commitment(&self) -> Result<String, String> {
+        let workflow = self
+            .workflow_definition
+            .as_deref()
+            .map(crate::task_creator::normalize_task_workflow_for_transfer)
+            .transpose()?;
+        let bytes = serde_json::to_vec(&serde_json::json!({
+            "workflow": self.workflow, "workflow_definition": workflow,
+            "stage": self.stage, "source_run_id": self.source_run_id,
+            "harness": self.agent_provider, "model": self.model, "effort": self.effort,
+        }))
+        .map_err(|e| e.to_string())?;
+        Ok(sha256_hex(&bytes))
+    }
 }
 
 /// One historical stage/main/post/revision run, as carried in
@@ -437,7 +465,7 @@ pub fn sha256_hex(bytes: &[u8]) -> String {
 
 /// The facts a transfer content commitment binds together: head, base,
 /// stage, pinned workflow, the shipped input ledger's checksum, and the
-/// ordered foreign history. Grouped into one type rather than passed as
+/// ordered foreign history, plus the recorded launch selection. Grouped into one type rather than passed as
 /// loose arguments so the source (authoring what it shipped) and the
 /// destination (reporting what it read back) construct the identical shape
 /// from two very differently sourced sets of values.
@@ -451,11 +479,16 @@ pub struct TransferContentCommitmentInput<'a> {
     pub workflow_definition: Option<&'a str>,
     pub input_ledger_sha256: Option<&'a str>,
     pub history: &'a [TransferHistoryRecordPayload],
+    pub launch_harness: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub launch_model: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub launch_effort: Option<&'a str>,
 }
 
 /// A digest binding exactly the facts a destination must independently prove
 /// after import — head, base, stage, pinned workflow, the shipped input
-/// ledger's checksum, and the ordered foreign history — to this transfer and
+/// ledger's checksum, ordered foreign history, and launch selection — to this transfer and
 /// task's identity.
 ///
 /// The source calls this once, at build time, over what it is authoring, and
@@ -468,7 +501,15 @@ pub struct TransferContentCommitmentInput<'a> {
 pub fn transfer_content_commitment(
     input: &TransferContentCommitmentInput<'_>,
 ) -> Result<String, String> {
-    let bytes = serde_json::to_vec(input)
+    let mut content = serde_json::to_value(input).map_err(|e| e.to_string())?;
+    content["workflow_definition"] = serde_json::to_value(
+        input
+            .workflow_definition
+            .map(crate::task_creator::normalize_task_workflow_for_transfer)
+            .transpose()?,
+    )
+    .map_err(|e| e.to_string())?;
+    let bytes = serde_json::to_vec(&content)
         .map_err(|error| format!("failed to encode transfer content commitment: {error}"))?;
     Ok(sha256_hex(&bytes))
 }
@@ -659,6 +700,19 @@ fn nullable_string(
         };
     }
     Ok(None)
+}
+
+/// Native selection values are opaque; an explicit empty value is invalid,
+/// never an instruction to inherit a different value on the destination.
+fn native_selection_string(
+    record: &serde_json::Map<String, Value>,
+    key: &str,
+) -> Result<Option<String>, String> {
+    match record.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(value)) if !value.trim().is_empty() => Ok(Some(value.clone())),
+        _ => Err(format!("task {key} must be a non-empty string or null")),
+    }
 }
 
 /// One safe path component: no separators, no traversal, no control bytes.
@@ -1306,6 +1360,13 @@ pub fn parse_outgoing_transfer_payload(value: &Value) -> Result<OutgoingTransfer
             history: parse_history_records(task)?,
             workflow: workflow_name.clone(),
             legacy_pipeline: workflow_name,
+            attention_reason: nullable_string(
+                task,
+                &["attention_reason", "attentionReason"],
+                "task attention_reason must be a string or null",
+            )?
+            .map(|reason| crate::db::normalize_attention_reason(&reason))
+            .transpose()?,
             display_name: nullable_string(
                 task,
                 &["display_name", "displayName"],
@@ -1320,6 +1381,13 @@ pub fn parse_outgoing_transfer_payload(value: &Value) -> Result<OutgoingTransfer
                 task,
                 &["agent_type", "agentType"],
                 "task agent_type must be a string or null",
+            )?,
+            model: native_selection_string(task, "model")?,
+            effort: native_selection_string(task, "effort")?,
+            source_run_id: nullable_string(
+                task,
+                &["source_run_id"],
+                "task source_run_id must be a string or null",
             )?,
             agent_provider,
         },
@@ -1382,6 +1450,50 @@ mod tests {
             "repo": { "mode": "reuse-local", "path": "/repo" },
             "artifacts": artifacts,
         })
+    }
+
+    #[test]
+    fn v2_selection_roundtrip_binds_literals_and_preserves_omissions() {
+        let mut value = payload_with(json!([]));
+        value["task"]["workflow_definition"] = json!(json!({"name":"single-reviewer", "stages":[{
+            "name":"in progress", "agent":"implement", "policy":{"transition":"manual"},
+            "agent_provider":{"harness":"opencode", "model":"local/Workflow-high", "effort":"variant-hi"}
+        }]}).to_string());
+        value["task"]["agent_provider"] = json!("opencode");
+        let omitted = parse_outgoing_transfer_payload(&value).unwrap();
+        assert_eq!(omitted.task.model, None);
+        assert_eq!(omitted.task.effort, None);
+        let omitted_hash = omitted.task.selection_commitment().unwrap();
+        value["task"]["model"] = json!("local/Model-high");
+        value["task"]["effort"] = json!("custom-hi");
+        value["task"]["source_run_id"] = json!("run-source");
+        let explicit = parse_outgoing_transfer_payload(&value).unwrap();
+        let roundtrip =
+            parse_outgoing_transfer_payload(&encode_outgoing_transfer_payload(&explicit).unwrap())
+                .unwrap();
+        assert_eq!(roundtrip.task.model.as_deref(), Some("local/Model-high"));
+        assert_eq!(roundtrip.task.effort.as_deref(), Some("custom-hi"));
+        let accepted = explicit.task.selection_commitment().unwrap();
+        assert_ne!(accepted, omitted_hash);
+        for key in ["model", "effort", "source_run_id"] {
+            let mut changed = value.clone();
+            changed["task"][key] = json!("different");
+            assert_ne!(
+                parse_outgoing_transfer_payload(&changed)
+                    .unwrap()
+                    .task
+                    .selection_commitment()
+                    .unwrap(),
+                accepted
+            );
+        }
+        for key in ["model", "effort"] {
+            let mut invalid = value.clone();
+            invalid["task"][key] = json!("");
+            assert!(parse_outgoing_transfer_payload(&invalid)
+                .unwrap_err()
+                .contains(key));
+        }
     }
 
     /// A peer on either naming must import, and every payload this machine
@@ -1802,6 +1914,24 @@ mod tests {
         let parsed = parse_outgoing_transfer_payload(&payload_with(json!([])))
             .expect("payload without finalization");
         assert_eq!(parsed.finalization, TransferFinalizationState::clean());
+    }
+
+    #[test]
+    fn attention_payload_preserves_set_clear_and_older_absence() {
+        for reason in [json!("Choose 🦀"), Value::Null] {
+            let mut payload = payload_with(json!([]));
+            payload["task"]["attention_reason"] = reason.clone();
+            let parsed = parse_outgoing_transfer_payload(&payload).unwrap();
+            assert_eq!(
+                serde_json::to_value(&parsed).unwrap()["task"]["attention_reason"],
+                reason
+            );
+        }
+        let older = parse_outgoing_transfer_payload(&payload_with(json!([]))).unwrap();
+        assert!(older.task.attention_reason.is_none());
+        let mut invalid = payload_with(json!([]));
+        invalid["task"]["attention_reason"] = json!("🦀".repeat(241));
+        assert!(parse_outgoing_transfer_payload(&invalid).is_err());
     }
 
     #[test]

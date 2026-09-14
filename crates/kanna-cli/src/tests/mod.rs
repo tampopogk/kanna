@@ -370,6 +370,7 @@ fn typed_tool_surfaces() -> BTreeMap<&'static str, TypedToolSurface> {
                     ("review_context", "review_context"),
                     ("agent", "agent"),
                     ("agent_provider", "agent_provider"),
+                    ("harness", "agent_provider"),
                     ("model", "model"),
                     ("effort", "effort"),
                     ("permission_mode", "permission_mode"),
@@ -388,6 +389,7 @@ fn typed_tool_surfaces() -> BTreeMap<&'static str, TypedToolSurface> {
                     ("agent", "agent"),
                     ("message", "message"),
                     ("agent_provider", "agent_provider"),
+                    ("harness", "agent_provider"),
                     ("effort", "effort"),
                 ],
             },
@@ -431,6 +433,20 @@ fn typed_tool_surfaces() -> BTreeMap<&'static str, TypedToolSurface> {
             },
         ),
         (
+            "kanna_set_task_attention",
+            TypedToolSurface {
+                command_path: &["task", "set-attention"],
+                param_args: &[("task_id", "task_id"), ("reason", "reason")],
+            },
+        ),
+        (
+            "kanna_clear_task_attention",
+            TypedToolSurface {
+                command_path: &["task", "clear-attention"],
+                param_args: &[("task_id", "task_id")],
+            },
+        ),
+        (
             "kanna_rename_task",
             TypedToolSurface {
                 command_path: &["task", "rename"],
@@ -445,9 +461,11 @@ fn typed_tool_surfaces() -> BTreeMap<&'static str, TypedToolSurface> {
                     ("task_id", "task_id"),
                     ("source", "source"),
                     ("next_stage_agent_provider", "next_stage_agent_provider"),
+                    ("next_stage_harness", "next_stage_agent_provider"),
                     ("next_stage_model", "next_stage_model"),
                     ("next_stage_effort", "next_stage_effort"),
                     ("next_stage_provider_source", "next_stage_provider_source"),
+                    ("expected_definition", "expected_definition"),
                 ],
             },
         ),
@@ -510,6 +528,8 @@ fn typed_tool_surfaces() -> BTreeMap<&'static str, TypedToolSurface> {
                     ("status", "status"),
                     ("summary", "summary"),
                     ("metadata", "metadata"),
+                    ("workflow_definition", "workflow_definition"),
+                    ("expected_definition", "expected_definition"),
                 ],
             },
         ),

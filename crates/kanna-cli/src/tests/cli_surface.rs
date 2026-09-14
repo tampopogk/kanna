@@ -1434,3 +1434,63 @@ fn typed_set_workflow_body_matches_catalog_set_workflow_body() {
 
     assert_eq!(typed_body, resolved.body);
 }
+
+#[test]
+fn harness_cli_aliases_share_the_existing_override_slots() {
+    let cli = crate::Cli::try_parse_from([
+        "kanna-cli",
+        "task",
+        "create",
+        "--repo-id",
+        "r",
+        "--prompt",
+        "p",
+        "--harness",
+        "opencode",
+        "--model",
+        "local/model-high",
+    ])
+    .unwrap();
+    match cli.command {
+        crate::Commands::Task {
+            command:
+                crate::TaskCommands::Create {
+                    agent_provider,
+                    model,
+                    ..
+                },
+        } => {
+            assert_eq!(agent_provider.as_deref(), Some("opencode"));
+            assert_eq!(model.as_deref(), Some("local/model-high"));
+        }
+        _ => panic!("expected task create"),
+    }
+    assert!(crate::Cli::try_parse_from([
+        "kanna-cli",
+        "task",
+        "create",
+        "--repo-id",
+        "r",
+        "--prompt",
+        "p",
+        "--harness",
+        "codex",
+        "--agent-provider",
+        "opencode"
+    ])
+    .is_err());
+    assert!(crate::Cli::try_parse_from([
+        "kanna-cli",
+        "task",
+        "advance-stage",
+        "--task-id",
+        "t",
+        "--next-stage-harness",
+        "codex",
+        "--next-stage-model",
+        "gpt-6-astra",
+        "--next-stage-effort",
+        "high"
+    ])
+    .is_ok());
+}

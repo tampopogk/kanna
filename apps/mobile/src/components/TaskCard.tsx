@@ -96,15 +96,17 @@ export function TaskCard({
       ? task.activity
       : "idle";
   // `activity` blends runtime and read state: a busy task with unread output
-  // reports `unread`. Keep unread typography, but render runtime independently
-  // so opening detail is never required to discover that the agent is alive.
+  // reports `unread`. Runtime owns the visible busy treatment so unread output
+  // cannot make a running task look stopped before detail marks it read.
   const isRunning = task.runtimeState === "busy";
   const titleActivityStyle =
-    effectiveActivity === "unread"
-      ? styles.titleUnread
-      : effectiveActivity === "working"
-        ? styles.titleWorking
-        : styles.titleIdle;
+    isRunning
+      ? styles.titleWorking
+      : effectiveActivity === "unread"
+        ? styles.titleUnread
+        : effectiveActivity === "working"
+          ? styles.titleWorking
+          : styles.titleIdle;
   const handleAccessibilityAction = (event: AccessibilityActionEvent) => {
     if (event.nativeEvent.actionName === (pinned ? "unpin" : "pin")) {
       pinAction?.onToggle();

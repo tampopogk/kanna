@@ -1544,3 +1544,60 @@ describe("Sidebar", () => {
     expect(wrapper.emitted("rename-repo")).toEqual([["repo-1", "Kanna Desktop"]]);
   });
 });
+
+describe("explicit task attention annotation", () => {
+  it.each([
+    ["ordinary", {}],
+    ["pinned", { pinned: 1 }],
+    ["nested", { parent_task_id: "parent" }],
+    ["remote", { remote_task: true }],
+  ])("renders and clears a selected %s badge without changing navigation or order", async (_name, overrides) => {
+    const reason = '<img src=x onerror="alert(1)"> Choose approach';
+    const tasks = [item("parent"), item("marked", { ...overrides, attention_reason: reason }), item("other")];
+    const wrapper = mountSidebar(tasks, "slot:marked");
+    const order = () => wrapper.findAll("[data-task-id]").map(row => row.attributes("data-task-id"));
+    const before = order();
+    const marker = wrapper.get('[data-task-id="marked"] .task-attention-marker');
+    expect(marker.text()).toBe("!");
+    expect(marker.attributes("aria-label")).toBe(`Agent requests attention: ${reason}`);
+    expect(wrapper.get('[data-task-id="marked"] .item-title').attributes("title")).toContain(reason);
+    expect(wrapper.find("img").exists()).toBe(false);
+    expect(wrapper.find('[data-task-id="other"] .task-attention-marker').exists()).toBe(false);
+    await marker.trigger("click");
+    expect(wrapper.emitted("select-item")).toEqual([["slot:marked"]]);
+    expect(order()).toEqual(before);
+    await wrapper.setProps({ taskSlots: tasks.map(task => ({ ...task, attention_reason: null })) });
+    expect(wrapper.find(".task-attention-marker").exists()).toBe(false);
+    expect(order()).toEqual(before);
+    wrapper.unmount();
+  });
+
+  it("keeps requested attention and detected questions independent", async () => {
+    const tasks = [
+      item("both", { attention_reason: "Choose", runtime_state: "waiting" }),
+      item("attention", { attention_reason: "Review", runtime_state: "idle" }),
+      item("question", { runtime_state: "waiting" }),
+    ];
+    const wrapper = mountSidebar(tasks, null);
+    expect(wrapper.findAll(".task-attention-marker")).toHaveLength(2);
+    expect(wrapper.findAll(".question-marker")).toHaveLength(2);
+    await wrapper.setProps({ taskSlots: tasks.map(task => ({ ...task, attention_reason: null })) });
+    expect(wrapper.findAll(".task-attention-marker")).toHaveLength(0);
+    expect(wrapper.findAll(".question-marker")).toHaveLength(2);
+    await wrapper.setProps({ taskSlots: tasks.map(task => ({ ...task, runtime_state: "idle" })) });
+    expect(wrapper.findAll(".task-attention-marker")).toHaveLength(2);
+    expect(wrapper.findAll(".question-marker")).toHaveLength(0);
+    wrapper.unmount();
+  });
+
+  it("retains blocked-task context alongside the annotation", () => {
+    const wrapper = mountSidebar([item("blocked", { attention_reason: "Choose a dependency" }), item("blocker")], null, {
+      taskBlockers: [{ blocked_item_id: "blocked", blocker_item_id: "blocker" }],
+      blockerTaskStates: { blocker: { stage: "in progress", closed_at: null, pr_url: null } },
+      blockerNames: { blocked: "blocker" },
+    });
+    expect(wrapper.get('[data-task-id="blocked"] .task-attention-marker').text()).toBe("!");
+    expect(wrapper.get('[data-task-id="blocked"]').text()).toContain("blocker");
+    wrapper.unmount();
+  });
+});

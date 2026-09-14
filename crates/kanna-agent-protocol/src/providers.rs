@@ -17,6 +17,112 @@ pub enum AgentProvider {
     Antigravity,
 }
 
+/// The executable harness; the historical wire name remains AgentProvider.
+pub type AgentHarness = AgentProvider;
+
+/// Native identifiers are opaque. In particular, a model ending in `-high`
+/// and a custom OpenCode variant are never parsed as compact selectors.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "typescript", derive(TS), ts(export))]
+pub struct AgentCandidate {
+    pub harness: AgentHarness,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_native_option",
+        skip_serializing_if = "Option::is_none"
+    )]
+    #[cfg_attr(feature = "typescript", ts(optional))]
+    pub model: Option<String>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_native_option",
+        skip_serializing_if = "Option::is_none"
+    )]
+    #[cfg_attr(feature = "typescript", ts(optional))]
+    pub effort: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+#[cfg_attr(feature = "typescript", derive(TS), ts(export))]
+pub enum AgentSelectionEntry {
+    Legacy(String),
+    Candidate(AgentCandidate),
+}
+
+impl From<String> for AgentSelectionEntry {
+    fn from(value: String) -> Self {
+        Self::Legacy(value)
+    }
+}
+
+impl From<&str> for AgentSelectionEntry {
+    fn from(value: &str) -> Self {
+        Self::Legacy(value.to_string())
+    }
+}
+
+impl AgentSelectionEntry {
+    pub fn resolve(&self, compact: bool) -> Result<ProviderSelector, String> {
+        match self {
+            Self::Legacy(value) if compact => parse_provider_selector(value),
+            Self::Legacy(value) => Ok(ProviderSelector {
+                provider: value.parse()?,
+                model: None,
+                effort: None,
+            }),
+            Self::Candidate(candidate) => {
+                validate_native_identifier("model", candidate.model.as_deref())?;
+                validate_native_identifier("effort", candidate.effort.as_deref())?;
+                validate_provider_model(candidate.harness, candidate.model.as_deref())?;
+                validate_provider_effort(candidate.harness, candidate.effort.as_deref())?;
+                Ok(ProviderSelector {
+                    provider: candidate.harness,
+                    model: candidate.model.clone(),
+                    effort: candidate.effort.clone(),
+                })
+            }
+        }
+    }
+}
+
+pub fn validate_native_identifier(name: &str, value: Option<&str>) -> Result<(), String> {
+    if let Some(value) = value {
+        if value.is_empty() || value.trim() != value || value.chars().any(char::is_control) {
+            return Err(format!(
+                "{name} must be non-empty, without surrounding whitespace or control characters"
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Legacy lists keep their historical acceptance. A list using objects cannot
+/// repeat a harness: availability and quota recovery identify harnesses only.
+pub fn validate_agent_selection(
+    entries: &[AgentSelectionEntry],
+    compact: bool,
+) -> Result<(), String> {
+    if entries.is_empty() {
+        return Err("agent_provider must include at least one non-empty provider".into());
+    }
+    let structured = entries
+        .iter()
+        .any(|entry| matches!(entry, AgentSelectionEntry::Candidate(_)));
+    let mut seen = std::collections::HashSet::new();
+    for entry in entries {
+        let candidate = entry.resolve(compact)?;
+        if !seen.insert(candidate.provider) && structured {
+            return Err(format!(
+                "repeated harness '{}' in structured candidate list",
+                candidate.provider
+            ));
+        }
+    }
+    Ok(())
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[cfg_attr(feature = "typescript", derive(TS), ts(export))]
@@ -323,6 +429,12 @@ pub fn agent_provider_specs() -> Vec<AgentProviderSpec> {
             supports_headless: provider.supports_headless(),
         })
         .collect()
+}
+
+fn deserialize_native_option<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<String>, D::Error> {
+    String::deserialize(deserializer).map(Some)
 }
 
 #[cfg(test)]

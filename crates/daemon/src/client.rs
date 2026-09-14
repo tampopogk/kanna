@@ -206,6 +206,67 @@ impl SessionSizeState {
     pub(crate) fn mark_applied(&mut self, size: (u16, u16)) {
         self.last_applied = size;
     }
+
+    /// Capture ownership and geometry either side of a transition. Ownership
+    /// can change without the dimensions moving, so the log needs both halves
+    /// of the state, not just the returned pending resize.
+    pub(crate) fn snapshot(&self) -> GeometrySnapshot {
+        let controller = self.controller.and_then(|id| self.viewers.get(&id));
+        GeometrySnapshot {
+            controller_writer: self.controller,
+            controller_viewer: controller.map(|viewer| viewer.viewer_id.clone()),
+            controller_size: controller.map(|viewer| (viewer.cols, viewer.rows)),
+            last_applied: self.last_applied,
+            active_sequence: self.active_sequence,
+            viewers: self.viewers.len(),
+            legacy_viewers: self.legacy_sizes.len(),
+        }
+    }
+
+    /// The generation the named connection's viewer is registered at, for log
+    /// correlation with the client that sent the frame.
+    pub(crate) fn viewer_generation(&self, writer_id: usize) -> Option<u64> {
+        self.viewers.get(&writer_id).map(|viewer| viewer.generation)
+    }
+
+    /// The viewer id the named connection is registered under.
+    pub(crate) fn viewer_id(&self, writer_id: usize) -> Option<&str> {
+        self.viewers
+            .get(&writer_id)
+            .map(|viewer| viewer.viewer_id.as_str())
+    }
+}
+
+/// A point-in-time view of one session's geometry ownership.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct GeometrySnapshot {
+    pub controller_writer: Option<usize>,
+    pub controller_viewer: Option<String>,
+    pub controller_size: Option<(u16, u16)>,
+    pub last_applied: (u16, u16),
+    pub active_sequence: u64,
+    pub viewers: usize,
+    pub legacy_viewers: usize,
+}
+
+impl GeometrySnapshot {
+    /// An empty snapshot for a session that had no geometry state at all yet.
+    pub(crate) fn absent(fallback: (u16, u16)) -> Self {
+        Self {
+            controller_writer: None,
+            controller_viewer: None,
+            controller_size: None,
+            last_applied: fallback,
+            active_sequence: 0,
+            viewers: 0,
+            legacy_viewers: 0,
+        }
+    }
+
+    pub(crate) fn owner_changed(&self, other: &Self) -> bool {
+        self.controller_writer != other.controller_writer
+            || self.controller_viewer != other.controller_viewer
+    }
 }
 
 impl Default for SessionSizeState {
@@ -266,20 +327,40 @@ pub(crate) async fn unregister_terminal_emulator_client(
     }
 }
 
+/// One session's pending resize left behind by a dropped connection, with the
+/// ownership state either side of the removal so the caller can log why the
+/// geometry moved.
+#[derive(Debug, Clone)]
+pub(crate) struct RemainingResize {
+    pub session_id: String,
+    pub size: (u16, u16),
+    pub viewer_id: Option<String>,
+    pub before: GeometrySnapshot,
+    pub after: GeometrySnapshot,
+}
+
 pub(crate) async fn cleanup_client_writer_registries(
     writer: &SessionWriter,
     fanouts: &SessionFanouts,
     terminal_emulator_clients: &TerminalEmulatorClients,
     session_sizes: &SessionSizes,
-) -> Vec<(String, u16, u16)> {
+) -> Vec<RemainingResize> {
     let writer_id = Arc::as_ptr(writer) as usize;
 
     let mut sizes = session_sizes.lock().await;
     let mut remaining_sizes = Vec::new();
     for (session_id, state) in sizes.iter_mut() {
         if state.viewers.contains_key(&writer_id) || state.legacy_sizes.contains_key(&writer_id) {
+            let before = state.snapshot();
+            let viewer_id = state.viewer_id(writer_id).map(str::to_string);
             if let Some(size) = state.remove(writer_id) {
-                remaining_sizes.push((session_id.clone(), size.0, size.1));
+                remaining_sizes.push(RemainingResize {
+                    session_id: session_id.clone(),
+                    size,
+                    viewer_id,
+                    before,
+                    after: state.snapshot(),
+                });
             }
         }
     }
@@ -409,6 +490,70 @@ mod tests {
         );
         assert_eq!(state.controller, Some(2));
         assert_eq!(state.proposed_size(), (40, 20));
+    }
+
+    #[test]
+    fn equal_size_handoff_moves_ownership_without_a_resize() {
+        // The controller changes while the dimensions do not. `pending_resize`
+        // is deliberately silent here, so runtime visibility has to come from
+        // the before/after ownership snapshot rather than the returned size.
+        let mut state = SessionSizeState::new((80, 24));
+        register(&mut state, 1, "mac", TerminalViewerRole::Local, 100, 30);
+        if let Some(size) = state.activate(1) {
+            state.mark_applied(size);
+        }
+        register(&mut state, 2, "phone", TerminalViewerRole::Remote, 100, 30);
+
+        let before = state.snapshot();
+        let resize = state.activate(2);
+
+        assert_eq!(resize, None, "equal dimensions must not resize the PTY");
+        let after = state.snapshot();
+        assert!(before.owner_changed(&after));
+        assert_eq!(before.controller_viewer.as_deref(), Some("mac"));
+        assert_eq!(after.controller_viewer.as_deref(), Some("phone"));
+        assert_eq!(after.last_applied, (100, 30));
+        assert!(after.active_sequence > before.active_sequence);
+    }
+
+    #[test]
+    fn a_size_change_reports_both_new_ownership_and_the_proposed_size() {
+        let mut state = SessionSizeState::new((80, 24));
+        register(&mut state, 1, "mac", TerminalViewerRole::Local, 100, 30);
+        if let Some(size) = state.activate(1) {
+            state.mark_applied(size);
+        }
+        register(&mut state, 2, "phone", TerminalViewerRole::Remote, 40, 20);
+
+        let before = state.snapshot();
+        let resize = state.activate(2);
+
+        assert_eq!(resize, Some((40, 20)));
+        let after = state.snapshot();
+        assert!(before.owner_changed(&after));
+        assert_eq!(before.last_applied, (100, 30));
+        assert_eq!(after.controller_size, Some((40, 20)));
+        // Until the PTY accepts it, the proposal is not the applied geometry.
+        assert_eq!(after.last_applied, (100, 30));
+        state.mark_applied((40, 20));
+        assert_eq!(state.snapshot().last_applied, (40, 20));
+    }
+
+    #[test]
+    fn a_passive_follower_resize_changes_neither_owner_nor_geometry() {
+        let mut state = SessionSizeState::new((80, 24));
+        register(&mut state, 1, "mac", TerminalViewerRole::Local, 100, 30);
+        if let Some(size) = state.activate(1) {
+            state.mark_applied(size);
+        }
+        register(&mut state, 2, "phone", TerminalViewerRole::Remote, 40, 20);
+
+        let before = state.snapshot();
+        assert_eq!(state.resize(2, 44, 22), None);
+        let after = state.snapshot();
+
+        assert!(!before.owner_changed(&after));
+        assert_eq!(after.last_applied, (100, 30));
     }
 
     #[test]

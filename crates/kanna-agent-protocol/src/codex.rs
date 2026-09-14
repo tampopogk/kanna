@@ -72,7 +72,10 @@ impl CodexAdapter {
         }
         if let Some(effort) = &ctx.effort {
             args.push("-c".to_string());
-            args.push(format!("model_reasoning_effort=\"{effort}\""));
+            args.push(format!(
+                "model_reasoning_effort={}",
+                serde_json::to_string(effort).expect("string serialization")
+            ));
         }
         args.push("--json".to_string());
         args
@@ -291,7 +294,10 @@ impl ProviderAdapter for CodexAdapter {
         }
         if let Some(effort) = &ctx.effort {
             args.push("-c".to_string());
-            args.push(format!("model_reasoning_effort=\"{effort}\""));
+            args.push(format!(
+                "model_reasoning_effort={}",
+                serde_json::to_string(effort).expect("string serialization")
+            ));
         }
         args.push("--json".to_string());
         args.push(message.to_string());

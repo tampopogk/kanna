@@ -393,6 +393,8 @@ function handleKeydown(e: KeyboardEvent) {
         <h3>{{ $t('tasks.newTask') }}</h3>
         <button
           class="agent-provider"
+          aria-label="Agent harness"
+          title="Executable harness for this task"
           type="button"
           :disabled="optionsLoading || agentChoices.length === 0"
           @mousedown.prevent

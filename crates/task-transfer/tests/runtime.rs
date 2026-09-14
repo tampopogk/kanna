@@ -1038,18 +1038,19 @@ async fn finalize_transfer_authenticates_reserved_target_and_rejects_replay_befo
         let sealed_payload = seal_authenticated_transfer_request(
             &destination_identity,
             &source_public_key,
-            "finalize_transfer",
+            "finalize_transfer_v2",
             request_id,
             &owner_epoch,
             current_unix_ms(),
             json!({
                 "requester_peer_id": "peer-destination",
                 "transfer_id": authenticated_transfer_id,
+                "selection_commitment": "accepted-selection",
                 "reserved_target_peer_id": "peer-destination",
             }),
         );
         json!({
-            "type": "finalize_transfer",
+            "type": "finalize_transfer_v2",
             "request_id": request_id,
             "transfer_id": transfer_id,
             "requester_peer_id": "peer-destination",
@@ -1111,7 +1112,7 @@ async fn finalize_transfer_authenticates_reserved_target_and_rejects_replay_befo
     ));
 
     let replay = send_raw_peer_value(&endpoint, &valid_request).await;
-    assert!(peer_error_message(replay).contains("replayed authenticated finalize_transfer"));
+    assert!(peer_error_message(replay).contains("replayed authenticated finalize_transfer_v2"));
     assert!(
         tokio::time::timeout(Duration::from_millis(50), source.next_event())
             .await
@@ -7308,7 +7309,7 @@ async fn failed_outgoing_finalization_deletes_owned_source_artifacts() {
     });
 
     let error = secondary
-        .finalize_outgoing_transfer(&preflight.transfer_id)
+        .finalize_outgoing_transfer(&preflight.transfer_id, "accepted-selection")
         .await
         .unwrap_err();
     completion.await.unwrap();
@@ -8107,7 +8108,7 @@ async fn live_ttl_pruning_removes_outgoing_and_incoming_reservation_files() {
         .await
         .unwrap_err();
     let _ = secondary
-        .finalize_outgoing_transfer(&preflight.transfer_id)
+        .finalize_outgoing_transfer(&preflight.transfer_id, "accepted-selection")
         .await
         .unwrap_err();
     assert!(!outgoing_path.exists());
@@ -8570,6 +8571,7 @@ async fn destination_can_finalize_outgoing_transfer_after_approval() {
             panic!("expected outgoing transfer finalization request");
         };
         assert_eq!(event.transfer_id, transfer_id);
+        assert_eq!(event.selection_commitment, "accepted-selection");
 
         primary_for_completion
             .complete_outgoing_transfer_finalization(
@@ -8589,7 +8591,7 @@ async fn destination_can_finalize_outgoing_transfer_after_approval() {
     });
 
     let finalized = secondary
-        .finalize_outgoing_transfer(&preflight.transfer_id)
+        .finalize_outgoing_transfer(&preflight.transfer_id, "accepted-selection")
         .await
         .unwrap();
 
@@ -8714,7 +8716,7 @@ async fn a_finalization_slower_than_the_peer_request_window_answers_the_first_re
     });
 
     let finalized = secondary
-        .finalize_outgoing_transfer(&preflight.transfer_id)
+        .finalize_outgoing_transfer(&preflight.transfer_id, "accepted-selection")
         .await
         .expect(
             "the first finalization request must survive a wrap-up longer than the ordinary \
@@ -8773,7 +8775,7 @@ async fn slow_outgoing_finalization_retry_joins_one_desktop_operation() {
     let _incoming = next_incoming_transfer_request(&secondary).await;
 
     let first_error = secondary
-        .finalize_outgoing_transfer(&preflight.transfer_id)
+        .finalize_outgoing_transfer(&preflight.transfer_id, "accepted-selection")
         .await
         .expect_err("first request should time out while desktop finalization is slow");
     assert!(
@@ -8790,7 +8792,7 @@ async fn slow_outgoing_finalization_retry_joins_one_desktop_operation() {
     let retry_transfer_id = preflight.transfer_id.clone();
     let retry = tokio::spawn(async move {
         retry_runtime
-            .finalize_outgoing_transfer(&retry_transfer_id)
+            .finalize_outgoing_transfer(&retry_transfer_id, "accepted-selection")
             .await
     });
     assert!(
@@ -8817,7 +8819,7 @@ async fn slow_outgoing_finalization_retry_joins_one_desktop_operation() {
     assert_eq!(retry.await.unwrap().unwrap(), expected);
     assert_eq!(
         secondary
-            .finalize_outgoing_transfer(&preflight.transfer_id)
+            .finalize_outgoing_transfer(&preflight.transfer_id, "accepted-selection")
             .await
             .unwrap(),
         expected,
@@ -11670,4 +11672,61 @@ async fn send_inbound_bytes(endpoint: &str, bytes: &[u8]) -> Vec<u8> {
         Err(error) => panic!("failed reading bounded peer response: {error}"),
     }
     response
+}
+
+/// A deployed old receiver sends this exact V1 discriminator. It must never
+/// reach the source server's finalization queue, even with a valid reservation.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn v1_receiver_cannot_request_source_finalization() {
+    let temp = tempfile::tempdir().unwrap();
+    let source = TransferRuntime::spawn(RuntimeConfig::for_tests(
+        "v2-source",
+        "Source",
+        temp.path(),
+        0,
+    ))
+    .await
+    .unwrap();
+    let destination = TransferRuntime::spawn(RuntimeConfig::for_tests(
+        "v1-destination",
+        "Destination",
+        temp.path(),
+        0,
+    ))
+    .await
+    .unwrap();
+    pair_peers(&source, &destination, "v1-destination").await;
+    let preflight = source
+        .prepare_transfer_preflight("v1-destination", "task-source")
+        .await
+        .unwrap();
+    let endpoint = runtime_endpoint(temp.path(), "v2-source");
+    let epoch = authenticated_request_epoch(&endpoint).await;
+    let identity = stored_runtime_identity(temp.path(), "v1-destination");
+    let sealed_payload = seal_authenticated_transfer_request(
+        &identity,
+        &source.local_identity().public_key,
+        "finalize_transfer",
+        "old-finalize",
+        &epoch,
+        current_unix_ms(),
+        json!({
+            "requester_peer_id": "v1-destination", "transfer_id": preflight.transfer_id,
+            "reserved_target_peer_id": "v1-destination",
+        }),
+    );
+    let response = send_raw_peer_value(&endpoint, &json!({
+        "type": "finalize_transfer", "request_id": "old-finalize",
+        "transfer_id": preflight.transfer_id, "requester_peer_id": "v1-destination", "sealed_payload": sealed_payload,
+    })).await;
+    assert!(
+        matches!(response, PeerResponse::Error { .. }),
+        "{response:?}"
+    );
+    assert!(
+        tokio::time::timeout(Duration::from_millis(100), source.next_event())
+            .await
+            .is_err(),
+        "legacy receiver reached source finalization"
+    );
 }
