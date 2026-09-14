@@ -102,7 +102,7 @@ describe("cloud deploy runtime", () => {
 
     expect(parsePublicFirebaseFunctions(source)).toEqual({
       region: "us-central1",
-      serviceNames: ["createcheckoutsession", "deleteaccount", "stripewebhook"]
+      serviceNames: ["createcheckoutsession", "createportalsession", "deleteaccount", "stripewebhook"]
     });
   });
 
