@@ -1,5 +1,6 @@
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import { MOBILE_E2E_IDS } from "../e2eTestIds";
+import type { TaskSummary } from "../lib/api/types";
 import type { TaskCollectionStatus } from "../state/sessionStore";
 import type { LocalTaskListPreferences } from "../state/taskListPreferences";
 import {
@@ -25,12 +26,18 @@ vi.mock("../components/LoadingText", () => ({
 let TasksScreen: typeof import("./TasksScreen").TasksScreen | null = null;
 let TaskList: typeof import("../components/TaskList").TaskList | null = null;
 let TaskCard: typeof import("../components/TaskCard").TaskCard | null = null;
+let SwipeableTaskCard:
+  | typeof import("../components/SwipeableTaskCard").SwipeableTaskCard
+  | null = null;
 
 beforeAll(async () => {
-  [TasksScreen, TaskList, TaskCard] = await Promise.all([
+  [TasksScreen, TaskList, TaskCard, SwipeableTaskCard] = await Promise.all([
     import("./TasksScreen").then((module) => module.TasksScreen),
     import("../components/TaskList").then((module) => module.TaskList),
-    import("../components/TaskCard").then((module) => module.TaskCard)
+    import("../components/TaskCard").then((module) => module.TaskCard),
+    import("../components/SwipeableTaskCard").then(
+      (module) => module.SwipeableTaskCard
+    )
   ]);
 });
 
@@ -92,6 +99,18 @@ function findElement(node: ElementNode, type: unknown): ElementNode | null {
     if (match) return match;
   }
   return null;
+}
+
+function collectElements(
+  node: ElementNode,
+  type: unknown,
+  out: ElementNode[] = []
+): ElementNode[] {
+  if (node.type === type) out.push(node);
+  for (const child of flattenChildren(node.props?.children)) {
+    if (typeof child !== "string") collectElements(child, type, out);
+  }
+  return out;
 }
 
 function findPressableByText(node: ElementNode, text: string): ElementNode | null {
@@ -293,7 +312,7 @@ describe("TasksScreen", () => {
     });
   });
 
-  it("keeps Recent pan-repo even when the Tasks view has a selected repo", () => {
+  it("keeps Needs you pan-repo even when the Tasks view has a selected repo", () => {
     if (!TasksScreen || !TaskList || !TaskCard) throw new Error("TasksScreen was not loaded");
     const tasks = [
       {
@@ -301,7 +320,7 @@ describe("TasksScreen", () => {
         repoId: "repo-a",
         title: "Task A",
         stage: "review",
-        activity: "unread" as const,
+        attentionReason: "Review choice",
         createdAt: "2026-07-15T08:00:00.000Z"
       },
       {
@@ -309,13 +328,14 @@ describe("TasksScreen", () => {
         repoId: "repo-b",
         title: "Task B",
         stage: "in progress",
-        activity: "unread" as const,
+        runtimeState: "waiting" as const,
         createdAt: "2026-07-17T08:00:00.000Z"
       }
     ];
 
     const tree = TasksScreen({
-      heading: "Recent",
+      heading: "Needs you",
+      listMode: "needsYou",
       repos: [
         { id: "repo-a", name: "Repo A" },
         { id: "repo-b", name: "Repo B" }
@@ -368,7 +388,7 @@ describe("TasksScreen", () => {
     });
   });
 
-  it("shows only unread Activity entries while preserving source order", () => {
+  it("shows only positive Needs you entries while preserving source order", () => {
     if (!TasksScreen || !TaskList) throw new Error("TasksScreen was not loaded");
     const tasks = [
       {
@@ -376,14 +396,16 @@ describe("TasksScreen", () => {
         repoId: "repo-a",
         title: "Working 1",
         stage: "in progress",
-        activity: "working" as const
+        activity: "working" as const,
+        attentionReason: "Choose approach"
       },
       {
         id: "unread-1",
         repoId: "repo-a",
         title: "Unread 1",
         stage: "review",
-        activity: "unread" as const
+        activity: "unread" as const,
+        runtimeState: "waiting" as const
       },
       {
         id: "idle-1",
@@ -402,7 +424,8 @@ describe("TasksScreen", () => {
     ];
 
     const tree = TasksScreen({
-      heading: "Recent",
+      heading: "Needs you",
+      listMode: "needsYou",
       repos: [],
       selectedRepoId: "repo-a",
       taskCollectionStatus: "ready",
@@ -417,10 +440,87 @@ describe("TasksScreen", () => {
       }>).map(
         ({ taskId }) => taskId
       )
-    ).toEqual(["unread-1", "unread-2"]);
+    ).toEqual(["working-1", "unread-1"]);
   });
 
-  it("labels Recent tasks with their repo so similar titles stay distinguishable", () => {
+  it.each([
+    ["loading", "Loading tasks"],
+    ["ready", "No tasks need you right now."],
+    ["error", "Could not load tasks."]
+  ] as const)("keeps the Needs you %s state truthful", (status, expected) => {
+    if (!TasksScreen || !TaskList) throw new Error("TasksScreen was not loaded");
+    const tree = TasksScreen({
+      heading: "Needs you",
+      listMode: "needsYou",
+      repos: [],
+      selectedRepoId: null,
+      taskCollectionStatus: status,
+      taskSlots: [],
+      onOpenTask: vi.fn(),
+      onSelectRepo: vi.fn()
+    }) as ElementNode;
+    const list = findElement(tree, TaskList);
+    const renderedList = TaskList(list?.props as never) as ElementNode;
+
+    if (status === "loading") {
+      expect(findElement(renderedList, "LoadingText")?.props?.label).toBe(expected);
+    } else {
+      expect(textContent(renderedList)).toContain(expected);
+    }
+  });
+
+  it("shows the recorded reason, a truthful detected label, and opens the exact desktop task", () => {
+    if (!TasksScreen || !TaskList || !SwipeableTaskCard) {
+      throw new Error("TasksScreen was not loaded");
+    }
+    const onOpenTask = vi.fn();
+    const onSetTaskPinned = vi.fn().mockResolvedValue(undefined);
+    const tasks: TaskSummary[] = [
+      {
+        id: "cloud:desktop-b:repo-b:task-explicit",
+        ownerDesktopId: "desktop-b",
+        ownerLocalTaskId: "task-explicit",
+        repoId: "repo-b",
+        title: "Explicit request",
+        stage: "review",
+        attentionReason: "Approve the rollout"
+      },
+      {
+        id: "cloud:desktop-a:repo-a:task-waiting",
+        ownerDesktopId: "desktop-a",
+        ownerLocalTaskId: "task-waiting",
+        repoId: "repo-a",
+        title: "Detected request",
+        stage: "in progress",
+        runtimeState: "waiting"
+      }
+    ];
+    const tree = TasksScreen({
+      heading: "Needs you",
+      listMode: "needsYou",
+      repos: [],
+      selectedRepoId: null,
+      taskCollectionStatus: "ready",
+      taskSlots: projectTaskUiSlots(tasks, []),
+      onOpenTask,
+      onSelectRepo: vi.fn(),
+      onSetTaskPinned
+    }) as ElementNode;
+    const taskListProps = findElement(tree, TaskList)?.props;
+    const renderedList = TaskList(taskListProps as never) as ElementNode;
+    const cards = collectElements(renderedList, SwipeableTaskCard);
+
+    expect(cards.map((card) => card.props?.contextLabel)).toEqual([
+      "Approve the rollout",
+      "Detected question / input prompt"
+    ]);
+    cards[0]?.props?.onPress?.();
+    expect(onOpenTask).toHaveBeenCalledWith(tasks[0]?.id);
+    cards[1]?.props?.onPress?.();
+    expect(onOpenTask).toHaveBeenLastCalledWith(tasks[1]?.id);
+  });
+
+  it("labels Needs you tasks with their repo so similar titles stay distinguishable", () => {
     if (!TasksScreen || !TaskList || !TaskCard) throw new Error("TasksScreen was not loaded");
     const tasks = [
       {
@@ -429,26 +529,30 @@ describe("TasksScreen", () => {
         repoName: "Cloud Repo",
         title: "Fix login",
         stage: "review",
-        activity: "unread" as const
+        activity: "unread" as const,
+        attentionReason: "Review"
       },
       {
         id: "task-lan",
         repoId: "repo-b",
         title: "Fix login",
         stage: "review",
-        activity: "unread" as const
+        activity: "unread" as const,
+        attentionReason: "Review"
       },
       {
         id: "task-unknown",
         repoId: "repo-unknown",
         title: "Fix login",
         stage: "review",
-        activity: "unread" as const
+        activity: "unread" as const,
+        attentionReason: "Review"
       }
     ];
 
     const tree = TasksScreen({
-      heading: "Recent",
+      heading: "Needs you",
+      listMode: "needsYou",
       repos: [{ id: "repo-b", name: "Lan Repo" }],
       selectedRepoId: null,
       taskCollectionStatus: "ready",
@@ -667,11 +771,12 @@ describe("TasksScreen", () => {
     ).toEqual(["task-ordinary", "task-merge"]);
   });
 
-  it("hides Activity rows this phone dismissed and brings back newer activity", () => {
+  it("does not let legacy Activity dismissals hide current human requests", () => {
     if (!TasksScreen || !TaskList) throw new Error("TasksScreen was not loaded");
     const renderRecent = (activityRevision: number) => {
       const tree = TasksScreen({
-        heading: "Recent",
+        heading: "Needs you",
+        listMode: "needsYou",
         repos: [{ id: "repo-a", name: "Repo A" }],
         selectedRepoId: "repo-a",
         taskCollectionStatus: "ready",
@@ -690,7 +795,8 @@ describe("TasksScreen", () => {
               title: "Seen already",
               stage: "review",
               activity: "unread",
-              activityRevision
+              activityRevision,
+              attentionReason: "Choose"
             },
             {
               id: "task-fresh",
@@ -698,7 +804,8 @@ describe("TasksScreen", () => {
               title: "Still unread",
               stage: "review",
               activity: "unread",
-              activityRevision: 1
+              activityRevision: 1,
+              runtimeState: "waiting"
             }
           ],
           []
@@ -713,7 +820,7 @@ describe("TasksScreen", () => {
       ).map(({ taskId }) => taskId);
     };
 
-    expect(renderRecent(4)).toEqual(["task-fresh"]);
+    expect(renderRecent(4)).toEqual(["task-seen", "task-fresh"]);
     expect(renderRecent(5)).toEqual(["task-seen", "task-fresh"]);
   });
 
@@ -883,13 +990,15 @@ describe("TasksScreen", () => {
         repoId: "repo-1",
         title: "Task",
         stage: "review",
-        activity: "unread"
+        activity: "unread",
+        attentionReason: "Review"
       }],
       []
     );
     const stableSlot = { ...slot!, slotId: "create:slot-1" };
     const tree = TasksScreen({
-      heading: "Recent",
+      heading: "Needs you",
+      listMode: "needsYou",
       repos: [],
       selectedRepoId: null,
       taskCollectionStatus: "ready",

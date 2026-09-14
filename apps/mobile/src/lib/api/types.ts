@@ -329,6 +329,10 @@ export interface TaskSummary {
   /** Bounded in list responses; task detail returns the complete prompt. */
   prompt?: string | null;
   stage: string | null;
+  /** Explicit agent-authored request for human action. Independent of read/runtime state. */
+  attentionReason?: string | null;
+  /** Null/absent for open task-list rows; present only on lifecycle-inclusive projections. */
+  closedAt?: string | null;
   createdAt?: string | null;
   waitingPromptSnippet?: string | null;
   agentProvider?: string | null;
@@ -472,7 +476,6 @@ export interface TaskDetail extends TaskSummary {
   effort?: string | null;
   branch?: string | null;
   prUrl?: string | null;
-  closedAt?: string | null;
   worktreePath?: string | null;
   commitsAhead?: number;
   commitsBehind?: number;

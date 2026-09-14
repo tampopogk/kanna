@@ -164,7 +164,7 @@ describe("createAppModel task creation persistence", () => {
         return response([{ id: "repo-lan", name: "LAN Repo" }]);
       }
       if (
-        url.endsWith("/v1/tasks/recent") ||
+        url.includes("/v1/tasks/recent") ||
         url.endsWith("/v1/repos/repo-lan/tasks")
       ) {
         return response([]);

@@ -965,6 +965,33 @@ impl MobileApi {
         self.map_task_summaries(items, &repo_names)
     }
 
+    pub fn list_recent_tasks_including_attention(
+        &self,
+        repo_id: Option<&str>,
+        limit: u32,
+    ) -> Result<Vec<TaskSummary>, String> {
+        record_orphaned_initialized_tasks(&self._db)?;
+        let repo_names = self.repo_names_by_id()?;
+        let mut items = self
+            ._db
+            .list_recent_pipeline_items_including_closed(false, repo_id, limit)
+            .map_err(|e| format!("db error: {e}"))?;
+        let mut seen = items
+            .iter()
+            .map(|item| item.id.clone())
+            .collect::<std::collections::HashSet<_>>();
+        for item in self
+            ._db
+            .list_pipeline_items_needing_attention(repo_id)
+            .map_err(|e| format!("db error: {e}"))?
+        {
+            if seen.insert(item.id.clone()) {
+                items.push(item);
+            }
+        }
+        self.map_task_summaries(items, &repo_names)
+    }
+
     pub fn get_tasks(
         &self,
         include_closed: bool,
@@ -982,6 +1009,7 @@ impl MobileApi {
                 include_closed,
                 repo_id,
                 runtime_state,
+                false,
                 sort,
                 order,
                 limit.saturating_add(1),

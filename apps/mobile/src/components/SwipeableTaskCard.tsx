@@ -76,6 +76,8 @@ interface SwipeableTaskCardProps {
   uiId: string;
   isSubtask: boolean;
   repoLabel: string | null;
+  /** Needs-you reason or another list-specific context; see {@link TaskCard}. */
+  contextLabel?: string | null;
   /** The row's short task id; see {@link TaskCard}. */
   shortId?: string | null;
   /** This phone's own pin state for the row. */
@@ -90,6 +92,7 @@ export function SwipeableTaskCard({
   uiId,
   isSubtask,
   repoLabel,
+  contextLabel = null,
   shortId = null,
   pinned = false,
   onPress,
@@ -332,6 +335,7 @@ export function SwipeableTaskCard({
   if (!onTogglePin && !onDismiss) {
     return (
       <TaskCard
+        contextLabel={contextLabel}
         isSubtask={isSubtask}
         pinned={pinned}
         repoLabel={repoLabel}
@@ -448,6 +452,7 @@ export function SwipeableTaskCard({
         {...panResponder.panHandlers}
       >
         <TaskCard
+          contextLabel={contextLabel}
           dismissAction={
             onDismiss
               ? {

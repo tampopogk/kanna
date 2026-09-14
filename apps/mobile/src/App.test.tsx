@@ -64,7 +64,7 @@ function createFetchMock(): FetchLike {
       } as Response;
     }
 
-    if (url.endsWith("/v1/tasks/recent")) {
+    if (url.includes("/v1/tasks/recent")) {
       return {
         ok: true,
         status: 200,
@@ -154,7 +154,7 @@ function createTrustedDesktopFetchMock(
       } as Response;
     }
 
-    if (url.endsWith("/v1/tasks/recent")) {
+    if (url.includes("/v1/tasks/recent")) {
       return {
         ok: true,
         status: 200,
@@ -987,7 +987,7 @@ describe("createAppModel", () => {
         } as Response;
       }
 
-      if (url === "http://right.lan:48120/v1/tasks/recent") {
+      if (url === "http://right.lan:48120/v1/tasks/recent?includeNeedsAttention=true") {
         return {
           ok: true,
           status: 200,
@@ -1224,7 +1224,7 @@ describe("createAppModel", () => {
           json: async () => [{ id: "repo-trusted", name: "Trusted Repo" }]
         } as Response;
       }
-      if (url.endsWith("/v1/tasks/recent")) {
+      if (url.includes("/v1/tasks/recent")) {
         recentTaskReadCount += 1;
         const tasks = recentTaskReadCount === 1
           ? await obsoleteLanRead.promise

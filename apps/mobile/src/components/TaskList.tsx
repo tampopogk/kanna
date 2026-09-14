@@ -21,6 +21,7 @@ interface TaskListProps {
   compact?: boolean;
   selectedTaskId?: string | null;
   repoLabelForTask?: (task: TaskSummary) => string | null;
+  contextLabelForTask?: (task: TaskSummary) => string | null;
   /** Task ids this phone has pinned, in its own pin order. */
   pinnedTaskIds?: readonly string[];
   taskSlots: TaskUiSlot[];
@@ -39,6 +40,7 @@ export function TaskList({
   selectedTaskId = null,
   pinnedTaskIds = [],
   repoLabelForTask,
+  contextLabelForTask,
   testID,
   taskSlots,
   onOpenTask,
@@ -75,6 +77,7 @@ export function TaskList({
           pinned: pinnedTaskIds.includes(task.id),
           selected: slot.slotId === selectedTaskId || task.id === selectedTaskId,
           repoLabel: repoLabelForTask?.(task) ?? null,
+          contextLabel: contextLabelForTask?.(task) ?? null,
           // A slot still being created has no durable id yet — only the local
           // slot id, which is not something the owner can cross-check — so it
           // renders no id rather than a synthetic one.

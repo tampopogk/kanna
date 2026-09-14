@@ -1849,6 +1849,38 @@ describe("createSessionStore", () => {
     expect(store.getState().recentTasks[0]?.activity).toBe("working");
   });
 
+  it("publishes explicit-attention clears and runtime waiting changes independently", () => {
+    const store = createSessionStore();
+    let publishes = 0;
+    store.subscribe(() => {
+      publishes += 1;
+    });
+    const task: TaskSummary = {
+      id: "task-attention",
+      repoId: "repo-1",
+      title: "Needs a choice",
+      stage: "in progress",
+      activity: "idle",
+      runtimeState: "idle",
+      readState: "read",
+      attentionReason: "Choose approach"
+    };
+    store.setRecentTasks([task]);
+    publishes = 0;
+
+    store.setRecentTasks([{ ...task, attentionReason: null }]);
+    expect(publishes).toBe(1);
+    expect(store.getState().recentTasks[0]?.attentionReason).toBeNull();
+
+    store.setRecentTasks([{
+      ...task,
+      attentionReason: null,
+      runtimeState: "waiting"
+    }]);
+    expect(publishes).toBe(2);
+    expect(store.getState().recentTasks[0]?.runtimeState).toBe("waiting");
+  });
+
   it("publishes when a task's canonical prompt changes without a title change", () => {
     const store = createSessionStore();
     let publishes = 0;

@@ -9,7 +9,7 @@ import {
 } from "../navigation/navigationConfig";
 
 interface FloatingToolbarProps extends BottomTabBarProps {
-  activityCount?: number;
+  needsYouCount?: number;
   onSelectUtilityAction(action: "search" | "create"): void;
 }
 
@@ -17,7 +17,7 @@ export function FloatingToolbar({
   state,
   navigation,
   insets,
-  activityCount = 0,
+  needsYouCount = 0,
   onSelectUtilityAction
 }: FloatingToolbarProps) {
   const searchAction = UTILITY_ACTIONS.find((action) => action.name === "search");
@@ -52,13 +52,13 @@ export function FloatingToolbar({
           );
           if (!tab) return null;
           const active = state.index === index;
-          const tabActivityCount =
-            route.name === "Activity" ? activityCount : 0;
+          const tabNeedsYouCount =
+            route.name === "Activity" ? needsYouCount : 0;
           return (
             <Pressable
               accessibilityLabel={
-                tabActivityCount > 0
-                  ? `${tab.label}, ${tabActivityCount} unread`
+                tabNeedsYouCount > 0
+                  ? `${tab.label}, ${tabNeedsYouCount} tasks`
                   : tab.label
               }
               accessibilityRole="tab"
@@ -82,13 +82,13 @@ export function FloatingToolbar({
                 name={tab.icon as keyof typeof Ionicons.glyphMap}
                 size={23}
               />
-              {tabActivityCount > 0 ? (
+              {tabNeedsYouCount > 0 ? (
                 <View
                   style={styles.badge}
                   testID={MOBILE_E2E_IDS.activityBadge}
                 >
                   <Text style={styles.badgeLabel}>
-                    {tabActivityCount > 99 ? "99+" : tabActivityCount}
+                    {tabNeedsYouCount > 99 ? "99+" : tabNeedsYouCount}
                   </Text>
                 </View>
               ) : null}

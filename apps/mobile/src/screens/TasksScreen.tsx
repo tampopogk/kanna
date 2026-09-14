@@ -3,7 +3,7 @@ import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { MOBILE_E2E_IDS } from "../e2eTestIds";
 import type { RepoSummary, TaskSummary } from "../lib/api/types";
 import { TaskList } from "../components/TaskList";
-import { visibleActivityTasks } from "./activityTaskOrder";
+import { needsYouReason, visibleNeedsYouTasks } from "./needsYouTaskOrder";
 import { orderRepoTaskSlots } from "./repoTaskOrder";
 import type { TaskUiSlot } from "../state/taskUiSlots";
 import { taskUiSlotToTaskSummary } from "../state/taskUiSlots";
@@ -16,6 +16,7 @@ import {
 
 interface TasksScreenProps {
   heading?: string | null;
+  listMode?: "repo" | "needsYou";
   needsDesktopSetup?: boolean;
   repos: RepoSummary[];
   selectedRepoId: string | null;
@@ -33,12 +34,12 @@ interface TasksScreenProps {
   onDismissRepoCommandError?(): void;
   onSelectRepo(repoId: string): void;
   onOpenTask(taskId: string): void;
-  onDismissActivity?(taskId: string): Promise<void>;
   onSetTaskPinned?(taskId: string, pinned: boolean): Promise<void>;
 }
 
 export function TasksScreen({
   heading,
+  listMode = "repo",
   needsDesktopSetup = false,
   repos,
   selectedRepoId,
@@ -55,10 +56,9 @@ export function TasksScreen({
   onDismissRepoCommandError,
   onSelectRepo,
   onOpenTask,
-  onDismissActivity,
   onSetTaskPinned
 }: TasksScreenProps) {
-  const isRecentView = heading === "Recent";
+  const isNeedsYouView = listMode === "needsYou";
   const pinnedTaskIds = localPinnedTaskIds(
     taskListPreferences,
     taskSlots.map(taskUiSlotToTaskSummary)
@@ -68,23 +68,20 @@ export function TasksScreen({
     task.repoName?.trim() ||
     repoNamesById.get(task.repoId)?.trim() ||
     task.repoId;
-  const scopedTaskSlots = !isRecentView && selectedRepoId
+  const scopedTaskSlots = !isNeedsYouView && selectedRepoId
     ? taskSlots.filter(
         (slot) => taskUiSlotToTaskSummary(slot).repoId === selectedRepoId
       )
     : taskSlots;
-  const displayedTaskSlots = isRecentView
-    ? visibleActivityTasks(
-        taskSlots.map(taskUiSlotToTaskSummary),
-        taskListPreferences
-      ).map(
+  const displayedTaskSlots = isNeedsYouView
+    ? visibleNeedsYouTasks(taskSlots.map(taskUiSlotToTaskSummary)).map(
         (task) => taskSlots.find(
           (slot) => taskUiSlotToTaskSummary(slot).id === task.id
         )!
       )
     : orderRepoTaskSlots(scopedTaskSlots, pinnedTaskIds);
   const showDesktopSetup =
-    !isRecentView &&
+    !isNeedsYouView &&
     needsDesktopSetup &&
     taskCollectionStatus === "ready" &&
     displayedTaskSlots.length === 0 &&
@@ -100,7 +97,7 @@ export function TasksScreen({
       keyboardShouldPersistTaps="handled"
       showsVerticalScrollIndicator={false}
       testID={
-        isRecentView
+        isNeedsYouView
           ? MOBILE_E2E_IDS.recentScreen
           : MOBILE_E2E_IDS.tasksScreen
       }
@@ -108,7 +105,7 @@ export function TasksScreen({
       <View style={styles.wrap}>
         {heading ? <Text style={styles.heading}>{heading}</Text> : null}
 
-        {!isRecentView && repos.length > 0 ? (
+        {!isNeedsYouView && repos.length > 0 ? (
           <ScrollView
             contentContainerStyle={styles.repoRow}
             horizontal
@@ -147,7 +144,7 @@ export function TasksScreen({
           </ScrollView>
         ) : null}
 
-        {!isRecentView && repoCommandErrorMessage ? (
+        {!isNeedsYouView && repoCommandErrorMessage ? (
           <View accessibilityRole="alert" style={styles.commandErrorCard}>
             <Text style={styles.commandErrorTitle}>
               Command task unavailable
@@ -183,7 +180,7 @@ export function TasksScreen({
         ) : (
           <TaskList
             compact={sidebarMode}
-            emptyLabel={isRecentView ? "You're all caught up." : "No tasks yet."}
+            emptyLabel={isNeedsYouView ? "No tasks need you right now." : "No tasks yet."}
             errorLabel={
               taskCollectionStatus === "error" ? "Could not load tasks." : null
             }
@@ -193,10 +190,10 @@ export function TasksScreen({
             nestSubtasks
             pinnedTaskIds={pinnedTaskIds}
             selectedTaskId={selectedTaskId}
-            repoLabelForTask={isRecentView ? recentTaskRepoLabel : undefined}
+            repoLabelForTask={isNeedsYouView ? recentTaskRepoLabel : undefined}
+            contextLabelForTask={isNeedsYouView ? needsYouReason : undefined}
             taskSlots={displayedTaskSlots}
             onOpenTask={onOpenTask}
-            onDismissTask={isRecentView ? onDismissActivity : undefined}
             onSetTaskPinned={onSetTaskPinned}
           />
         )}

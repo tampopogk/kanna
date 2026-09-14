@@ -772,7 +772,7 @@ describe("remote transport", () => {
     expect(invokeDesktop).toHaveBeenNthCalledWith(2, {
       desktopId: "desktop-1",
       method: "GET",
-      path: "/v1/tasks/recent",
+      path: "/v1/tasks/recent?includeNeedsAttention=true",
       body: null
     });
     expect(invokeDesktop).toHaveBeenNthCalledWith(3, {

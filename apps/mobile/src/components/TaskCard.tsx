@@ -56,6 +56,8 @@ interface TaskCardProps {
   selected?: boolean;
   pinAction?: TaskCardPinAction;
   dismissAction?: TaskCardDismissAction;
+  /** List-specific context, such as the positive reason this task needs the human. */
+  contextLabel?: string | null;
   onPress(): void;
 }
 
@@ -70,6 +72,7 @@ export function TaskCard({
   selected = false,
   pinAction,
   dismissAction,
+  contextLabel = null,
   onPress
 }: TaskCardProps) {
   const model = buildTaskListItemModel(task);
@@ -87,7 +90,8 @@ export function TaskCard({
     shortId ? `Task ID ${shortId}` : null,
     repoLabel,
     model.stageLabel,
-    model.waitingPromptSnippet
+    contextLabel,
+    contextLabel ? null : model.waitingPromptSnippet
   ]
     .filter((part): part is string => Boolean(part))
     .join(". ");
@@ -211,7 +215,15 @@ export function TaskCard({
           ) : null}
         </View>
       </View>
-      {model.waitingPromptSnippet ? (
+      {contextLabel ? (
+        <Text
+          numberOfLines={compact ? 1 : 3}
+          style={styles.preview}
+          testID={MOBILE_E2E_IDS.needsYouReason(uiId)}
+        >
+          {contextLabel}
+        </Text>
+      ) : model.waitingPromptSnippet ? (
         <Text
           numberOfLines={compact ? 1 : 3}
           style={[

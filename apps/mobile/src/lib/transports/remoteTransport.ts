@@ -752,7 +752,11 @@ export function createRemoteTransport({
     listRecentTasks: () =>
       listCloudTasks
         ? listFreshCloudTasks()
-        : request<TaskSummary[]>("GET", "/v1/tasks/recent", null),
+        : request<TaskSummary[]>(
+            "GET",
+            "/v1/tasks/recent?includeNeedsAttention=true",
+            null
+          ),
     getTask: async (taskId: string) => {
       const route = await resolveCloudTaskRoute(taskId);
       if (!route) {

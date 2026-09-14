@@ -35,8 +35,8 @@ describe("createRootNavigator", () => {
       {
         name: "recent",
         routeName: "Activity",
-        label: "Activity",
-        icon: "notifications-outline"
+        label: "Needs you",
+        icon: "hand-left-outline"
       },
       {
         name: "more",

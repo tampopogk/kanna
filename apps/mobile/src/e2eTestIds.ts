@@ -18,6 +18,9 @@ export const MOBILE_E2E_IDS = {
   },
   recentScreen: "mobile.recent-screen",
   activityBadge: "mobile.activity-badge",
+  needsYouReason(taskId: string): string {
+    return `mobile.needs-you-reason.${taskId}`;
+  },
   activityDismissAction(taskId: string): string {
     return `mobile.activity-dismiss-action.${taskId}`;
   },

@@ -367,6 +367,45 @@ function longTitleCardElement() {
 }
 
 describe("SwipeableTaskCard", () => {
+  it.each([
+    "Approve the rollout",
+    "Detected question / input prompt"
+  ])("forwards list context through the swipe wrapper: %s", async (contextLabel) => {
+    if (!SwipeableTaskCard) throw new Error("SwipeableTaskCard was not loaded");
+    const onPress = vi.fn();
+    let renderer: ReactTestRenderer | null = null;
+    await act(async () => {
+      renderer = create(
+        <SwipeableTaskCard
+          contextLabel={contextLabel}
+          isSubtask={false}
+          repoLabel={null}
+          task={{
+            id: "cloud:desktop-a:repo-a:task-needs-you",
+            repoId: "repo-a",
+            title: "Needs owner",
+            stage: "review"
+          }}
+          uiId="cloud:desktop-a:repo-a:task-needs-you"
+          onPress={onPress}
+          onTogglePin={vi.fn().mockResolvedValue(undefined)}
+        />
+      );
+    });
+    if (!renderer) throw new Error("SwipeableTaskCard did not render");
+    const row = renderer as ReactTestRenderer;
+    expect(
+      row.root
+        .findAllByType("Text")
+        .map((node) => node.props.children)
+        .flat()
+    ).toContain(contextLabel);
+    act(() => {
+      row.root.findByType("Pressable").props.onPress();
+    });
+    expect(onPress).toHaveBeenCalledOnce();
+  });
+
   it("keeps the complete short id on a long-titled row, open or closed", async () => {
     let renderer: ReactTestRenderer | null = null;
     await act(async () => {

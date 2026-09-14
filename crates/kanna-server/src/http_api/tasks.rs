@@ -213,9 +213,12 @@ pub(super) async fn list_recent_tasks(
         .limit
         .unwrap_or(DEFAULT_RECENT_TASK_LIMIT)
         .clamp(1, MAX_RECENT_TASK_LIMIT);
-    let tasks = api
-        .list_recent_tasks_including_closed(query.include_closed, repo_id, limit)
-        .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    let tasks = if query.include_needs_attention && !query.include_closed {
+        api.list_recent_tasks_including_attention(repo_id, limit)
+    } else {
+        api.list_recent_tasks_including_closed(query.include_closed, repo_id, limit)
+    }
+    .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e))?;
     if !query.all_machines {
         return Ok(Json(serde_json::json!(tasks)));
     }
@@ -229,6 +232,10 @@ pub(super) async fn list_recent_tasks(
                 ("allMachines", "false".to_string()),
                 ("allRepos", query.all_repos.to_string()),
                 ("limit", limit.to_string()),
+                (
+                    "includeNeedsAttention",
+                    query.include_needs_attention.to_string(),
+                ),
             ],
             repo_id.map(|repo_id| ("repoId", repo_id)),
         ),
@@ -566,6 +573,8 @@ pub(super) struct ListTasksQuery {
     include_closed: bool,
     #[serde(default)]
     all_machines: bool,
+    #[serde(default)]
+    include_needs_attention: bool,
 }
 
 #[derive(Debug, Default, serde::Deserialize)]
