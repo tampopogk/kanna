@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, inject, nextTick, toRef, watch, type Ref } from "vue";
+import { computed, inject, nextTick, toRef, type Ref } from "vue";
 import { createStartupScreen, type StartupController } from "./startup";
 import { useI18n } from "vue-i18n";
 import { type BlockerDisplayItem, type DbHandle } from "./types/kanna";
