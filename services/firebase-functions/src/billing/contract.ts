@@ -1,4 +1,8 @@
 export type CheckoutPlan = "monthly";
+export type PortalSessionRequest = Record<string, never>;
+export interface PortalSessionResponse {
+  url: string;
+}
 export type CheckoutContractErrorReason = "unknown_plan";
 
 export interface CheckoutSessionRequest {

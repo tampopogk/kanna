@@ -1,10 +1,15 @@
 <script setup lang="ts">
-import { ref } from "vue";
+import { onScopeDispose, ref, watch } from "vue";
+import { RouterLink } from "vue-router";
 import { checkoutSessionRequest } from "../checkout";
 import { formatCloudMonthlyPrice } from "../localizedPrice";
-import { usePortalFirebase } from "../session";
+import { usePortalFirebase, usePortalSession } from "../session";
 
 const api = usePortalFirebase();
+const session = usePortalSession();
+let generation = 0;
+watch(() => session.user.value?.uid, () => { ++generation; pending.value = false; error.value = ""; }, { flush: "sync" });
+onScopeDispose(() => { ++generation; });
 const props = withDefaults(defineProps<{ redirect?: (url: string) => void }>(), {
   redirect: (url: string) => window.location.assign(url)
 });
@@ -17,13 +22,17 @@ const price = configuredPrice && configuredPrice !== defaultConfiguredPrice
   : `${formatCloudMonthlyPrice(navigator.language)}/month`;
 
 async function subscribe(): Promise<void> {
+  if (pending.value || !session.canSubscribe.value) return;
+  const version = generation;
   pending.value = true;
   error.value = "";
   try {
     const { url } = await api.createCheckoutSession(checkoutSessionRequest());
+    if (version !== generation) return;
     if (!url) throw new Error("Stripe did not return a Checkout URL. Please try again.");
     props.redirect(url);
   } catch (caught: unknown) {
+    if (version !== generation) return;
     error.value = caught instanceof Error ? caught.message : "Could not start Checkout.";
     pending.value = false;
   }
@@ -43,7 +52,8 @@ async function subscribe(): Promise<void> {
       <li>Remote task control</li>
     </ul>
     <p v-if="error" class="error" role="alert">{{ error }}</p>
-    <button :disabled="pending" type="button" @click="subscribe">{{ pending ? "Opening Checkout…" : "Subscribe with Stripe" }}</button>
+    <button v-if="session.canSubscribe.value" :disabled="pending" type="button" @click="subscribe">{{ pending ? "Opening Checkout…" : "Subscribe with Stripe" }}</button>
+    <p v-else>Review your account’s access before starting a subscription. <RouterLink to="/account">View account</RouterLink></p>
     <p class="quiet">Payment is completed securely on Stripe.</p>
   </section>
 </template>

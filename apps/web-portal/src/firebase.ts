@@ -5,13 +5,14 @@ import {
   getAuth,
   onAuthStateChanged,
   sendEmailVerification,
+  sendPasswordResetEmail,
   signInWithEmailAndPassword,
   signOut,
   type User
 } from "firebase/auth";
-import { connectFirestoreEmulator, doc, getDoc, getFirestore } from "firebase/firestore";
+import { connectFirestoreEmulator, doc, getDoc, getFirestore, onSnapshot } from "firebase/firestore";
 import { connectFunctionsEmulator, getFunctions, httpsCallable } from "firebase/functions";
-import type { CheckoutSessionRequest, CheckoutSessionResponse } from "@kanna/firebase-functions/billing-contract";
+import type { CheckoutSessionRequest, CheckoutSessionResponse, PortalSessionRequest, PortalSessionResponse } from "@kanna/firebase-functions/billing-contract";
 import type { CloudEntitlement } from "./types";
 
 function required(name: keyof ImportMetaEnv): string {
@@ -52,9 +53,39 @@ export const portalFirebase = {
   signOut(): Promise<void> {
     return signOut(auth);
   },
+  resetPassword(email: string): Promise<void> {
+    return sendPasswordResetEmail(auth, email);
+  },
+  resendVerification(user: User): Promise<void> {
+    return sendEmailVerification(user);
+  },
   async reloadUser(user: User): Promise<User> {
     await user.reload();
-    return auth.currentUser ?? user;
+    if (auth.currentUser !== user) throw new Error("The signed-in account changed. Please try again.");
+    // reload updates emailVerified locally; callables need the refreshed claim too.
+    await user.getIdToken(true);
+    if (auth.currentUser !== user) throw new Error("The signed-in account changed. Please try again.");
+    return user;
+  },
+  observeEntitlement(
+    uid: string,
+    next: (entitlement: CloudEntitlement | null, fromCache?: boolean) => void,
+    error: (error: Error) => void,
+  ): () => void {
+    return onSnapshot(doc(db, "users", uid, "entitlements", "cloud_access"),
+      { includeMetadataChanges: true },
+      (snapshot) => {
+        if (snapshot.metadata.fromCache) {
+          // Initial/cache-only snapshots are pending, not a failed read or proof of access.
+          next(null, true);
+          return;
+        }
+        next(snapshot.exists() ? snapshot.data() as CloudEntitlement : null);
+      }, error);
+  },
+  async createPortalSession(): Promise<PortalSessionResponse> {
+    const callable = httpsCallable<PortalSessionRequest, PortalSessionResponse>(functions, "createPortalSession");
+    return (await callable({})).data;
   },
   async entitlement(uid: string): Promise<CloudEntitlement | null> {
     const snapshot = await getDoc(doc(db, "users", uid, "entitlements", "cloud_access"));

@@ -11,7 +11,11 @@ import type { PortalFirebase } from "../src/firebase";
 
 function api(overrides: Partial<PortalFirebase> = {}): PortalFirebase {
   return {
-    observeUser: vi.fn(() => () => undefined),
+    observeUser: vi.fn((callback) => { callback({ uid: "user-1", email: "owner@example.com", emailVerified: true } as User); return () => undefined; }),
+    observeEntitlement: vi.fn((_uid, next) => { next(null); return () => undefined; }),
+    resetPassword: vi.fn(async () => undefined),
+    resendVerification: vi.fn(async () => undefined),
+    createPortalSession: vi.fn(async () => ({ url: "https://billing.stripe.test/session" })),
     register: vi.fn(),
     signIn: vi.fn(),
     signOut: vi.fn(),
@@ -127,10 +131,11 @@ describe("checkout pages", () => {
     };
     const wrapper = mount(host, { global: { plugins: [router] } });
     expect(wrapper.text()).toContain("Checkout cancelled");
-    expect(wrapper.text()).toContain("No charge was made");
+    expect(wrapper.text()).not.toContain("No charge was made");
+    expect(wrapper.text()).toContain("does not confirm whether a payment was made");
   });
 
-  it("confirms the active subscription without displaying the Stripe session id", () => {
+  it("does not infer activation from a success return or session id", () => {
     const host = {
       template: '<CheckoutReturnPage result="success" session-id="cs_test_return" />',
       components: { CheckoutReturnPage },
@@ -138,7 +143,8 @@ describe("checkout pages", () => {
     };
     const wrapper = mount(host, { global: { stubs: { RouterLink: true } } });
 
-    expect(wrapper.text()).toContain("Your subscription is active.");
+    expect(wrapper.text()).toContain("Cloud access has not been confirmed yet.");
+    expect(wrapper.text()).not.toContain("Your subscription is active.");
     expect(wrapper.text()).not.toContain("cs_test_return");
     expect(wrapper.get("router-link-stub").attributes("to")).toBe("/account");
   });
@@ -149,7 +155,7 @@ describe("email verification", () => {
     vi.useRealTimers();
   });
 
-  it("advances automatically when a polling refresh reports a verified user", async () => {
+  it("advances when browser focus refresh reports a verified user", async () => {
     vi.useFakeTimers();
     const router = createRouter({
       history: createMemoryHistory(),
@@ -172,7 +178,7 @@ describe("email verification", () => {
     };
     const wrapper = mount(host, { global: { plugins: [router] } });
 
-    await vi.advanceTimersByTimeAsync(3_000);
+    window.dispatchEvent(new Event("focus"));
     await flushPromises();
 
     expect(mockApi.reloadUser).toHaveBeenCalledOnce();

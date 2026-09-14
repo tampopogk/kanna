@@ -1,6 +1,6 @@
 import { createServer, type Server } from "node:http";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { applyActionCode } from "firebase/auth";
+import { applyActionCode, confirmPasswordReset } from "firebase/auth";
 import { auth, portalFirebase } from "../src/firebase";
 
 const run = process.env.KANNA_RUN_WEB_PORTAL_EMULATOR_INTEGRATION === "1";
@@ -100,6 +100,7 @@ integration("web portal Firebase emulator flow", () => {
       plan: "monthly",
     })).rejects.toMatchObject({ code: "functions/failed-precondition" });
 
+    await portalFirebase.resendVerification(registered);
     const codesResponse = await fetch(`http://127.0.0.1:${authPort}/emulator/v1/projects/${projectId}/oobCodes`);
     const codes = await codesResponse.json() as { oobCodes: OutOfBandCode[] };
     const verification = codes.oobCodes.find((code) => code.email === email && code.requestType === "VERIFY_EMAIL");
@@ -107,14 +108,25 @@ integration("web portal Firebase emulator flow", () => {
     if (!verification) throw new Error("Auth emulator did not create an email verification code");
     await applyActionCode(auth, verification.oobCode);
 
-    await portalFirebase.signOut();
-    const signedIn = await portalFirebase.signIn(email, password);
-    expect(signedIn.emailVerified).toBe(true);
+    const refreshed = await portalFirebase.reloadUser(registered);
+    expect(refreshed.uid).toBe(registered.uid);
+    expect(refreshed.emailVerified).toBe(true);
+    expect((await refreshed.getIdTokenResult()).claims.email_verified).toBe(true);
 
     const checkout = await portalFirebase.createCheckoutSession({
       plan: "monthly",
     });
     expect(checkout.url).toMatch(/^https?:\/\//);
+    await portalFirebase.resetPassword(email);
+    const resetResponse = await fetch(`http://127.0.0.1:${authPort}/emulator/v1/projects/${projectId}/oobCodes`);
+    const resetCodes = await resetResponse.json() as { oobCodes: OutOfBandCode[] };
+    const reset = resetCodes.oobCodes.find((code) => code.email === email && code.requestType === "PASSWORD_RESET");
+    expect(reset).toBeDefined();
+    await confirmPasswordReset(auth, reset!.oobCode, "replacement-password-for-test");
+    await portalFirebase.signOut();
+    const signedIn = await portalFirebase.signIn(email, "replacement-password-for-test");
+    expect(signedIn.uid).toBe(registered.uid);
+    await portalFirebase.signOut();
     // Redirect is deliberately outside this integration boundary; component tests mock it.
   });
 });

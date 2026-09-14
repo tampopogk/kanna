@@ -521,6 +521,13 @@ describeWithEmulator("firestore security rules", () => {
     await expectDenied(deleteDoc("alice", "users/alice/entitlements/cloud_access"));
   });
 
+  it("prevents clients from selecting their own Stripe customer on a profile", async () => {
+    await seedDoc("users/alice", { displayName: "Alice", stripeCustomerId: "cus_alice" });
+    await expectDenied(clientUpdate("alice", "users/alice", { stripeCustomerId: "cus_bob" }));
+    await expectDenied(clientUpdate("bob", "users/bob", { stripeCustomerId: "cus_alice" }));
+    await expectDenied(clientUpdate("alice", "users/alice/billing/stripe", { stripeCustomerId: "cus_bob" }));
+  });
+
   it("keeps every billing source doc owner-readable and unwritable by any client", async () => {
     for (const source of ["stripe", "app_store", "comp"]) {
       await seedDoc(`users/alice/billing/${source}`, {

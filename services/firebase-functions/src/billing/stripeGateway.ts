@@ -7,6 +7,28 @@
  */
 import Stripe from "stripe";
 
+export interface StripePortalGateway {
+  createPortalSession(input: {
+    customerId: string;
+    returnUrl: string;
+    configurationId: string;
+  }): Promise<{ url: string }>;
+}
+
+export function stripePortalGateway(secretKey: string): StripePortalGateway {
+  const stripe = new Stripe(secretKey);
+  return {
+    async createPortalSession(input) {
+      const session = await stripe.billingPortal.sessions.create({
+        customer: input.customerId,
+        return_url: input.returnUrl,
+        configuration: input.configurationId,
+      });
+      return { url: session.url };
+    },
+  };
+}
+
 export interface StripeCustomerInput {
   uid: string;
   email: string | null;
