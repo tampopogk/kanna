@@ -10,8 +10,11 @@ vi.mock("../invoke", () => ({
 vi.mock("./desktopAuthSdk", () => ({
   getConfiguredDesktopAuthSession: vi.fn(async () => ({
     getIdToken: getIdTokenMock,
+    getState: () => ({ status: "signedIn", user: { uid: "user-1" } }),
   })),
 }));
+
+vi.mock("../stores/kanna", () => ({ useKannaStore: () => ({ cloudAccount: null }) }));
 
 import {
   PRODUCTION_CLOUD_TRANSPORT_URL,
@@ -118,7 +121,7 @@ describe("configured desktop relay helpers", () => {
     }));
     expect(sent).toContainEqual({
       type: "auth",
-      capabilities: ["companion_event_epoch", "term_input_boundary", "terminal_geometry"],
+      capabilities: ["companion_event_epoch", "term_input_boundary", "terminal_geometry", "terminal_active_view"],
       credential: "id-token",
     });
     expect(sent).toContainEqual({
@@ -171,6 +174,34 @@ describe("createDesktopRelayTerminalClient", () => {
     vi.useRealTimers();
   });
 
+  it("recovers a refused terminal through the server account observer without retry polling", async () => {
+    vi.useFakeTimers();
+    const sockets: FakeSocket[] = [];
+    let accessChanged!: (access: import("@kanna/stream-client").CloudAccessSnapshot) => void;
+    const stopAccess = vi.fn();
+    const client = createDesktopRelayTerminalClient({
+      relayUrl: "ws://relay.test",
+      getIdToken: async () => "id-token",
+      createSocket: () => { const socket = new FakeSocket(); sockets.push(socket); return socket; },
+      observeAccess: (listener) => { accessChanged = listener; return stopAccess; },
+    });
+    const events: DesktopRelayTerminalEvent[] = [];
+    client.observeTerminal({ desktopId: "desktop-owner", taskId: "task-1", listener: (event) => events.push(event) });
+    await openRelayTunnel(sockets[0]);
+    accessChanged({ active: false, status: "expired", graceEndsAt: null, currentPeriodEndsAt: null });
+    sockets[0].drop(4402);
+    expect(events).toContainEqual({ type: "error", taskId: "task-1", message: "Manage your Kanna account to restore cloud access." });
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(sockets).toHaveLength(1);
+    accessChanged({ active: true, status: "active", graceEndsAt: null, currentPeriodEndsAt: null });
+    expect(sockets).toHaveLength(2);
+    await openRelayTunnel(sockets[1]);
+    expect(JSON.parse(sockets[1].sent[2])).toMatchObject({ type: "auth", credential: "id-token" });
+    client.close();
+    expect(stopAccess).toHaveBeenCalledOnce();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
   it("force-refreshes both relay and stream credentials after an auth rejection", async () => {
     vi.useFakeTimers();
     const sockets: FakeSocket[] = [];
@@ -216,7 +247,7 @@ describe("createDesktopRelayTerminalClient", () => {
     });
     expect(refreshedSocket.sent.map((entry) => JSON.parse(entry))).toContainEqual({
       type: "auth",
-      capabilities: ["companion_event_epoch", "term_input_boundary", "terminal_geometry"],
+      capabilities: ["companion_event_epoch", "term_input_boundary", "terminal_geometry", "terminal_active_view"],
       credential: "refreshed-token",
     });
     expect(refreshedSocket.sent.map((entry) => JSON.parse(entry))).toContainEqual({
@@ -428,7 +459,7 @@ describe("createDesktopRelayTerminalClient", () => {
 
     expect(JSON.parse(socket.sent[2])).toEqual({
       type: "auth",
-      capabilities: ["companion_event_epoch", "term_input_boundary", "terminal_geometry"],
+      capabilities: ["companion_event_epoch", "term_input_boundary", "terminal_geometry", "terminal_active_view"],
       credential: "id-token",
     });
     socket.onmessage?.({
@@ -450,7 +481,8 @@ describe("createDesktopRelayTerminalClient", () => {
       rows: 24,
       visible: false,
     });
-    expect(JSON.parse(socket.sent[4])).toEqual({
+    subscription.activate();
+    expect(socket.sent.map((frame) => JSON.parse(frame))).toContainEqual({
       type: "attach",
       task_id: "task-1",
       kind: "terminal",

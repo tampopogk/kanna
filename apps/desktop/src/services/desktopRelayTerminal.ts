@@ -1,6 +1,6 @@
 import { getConfiguredDesktopAuthSession } from "./desktopAuthSdk";
 import { invoke } from "../invoke";
-import { createRelayTunnelWebSocketFactory, StreamClient } from "@kanna/stream-client";
+import { type CloudAccessSnapshot, createRelayTunnelWebSocketFactory, StreamClient } from "@kanna/stream-client";
 import { createDesktopStreamFrameDecoder } from "./desktopStreamFrameDecoder";
 import type {
   DesktopRemoteTaskClient,
@@ -41,6 +41,7 @@ export interface DesktopRelayTerminalClientOptions {
   createSocket?: (url: string) => RelaySocketLike;
   getIdToken(forceRefresh?: boolean): Promise<string | null>;
   relayUrl: string;
+  observeAccess?(listener: (access: CloudAccessSnapshot) => void): () => void;
 }
 
 interface PendingInvoke {
@@ -76,6 +77,7 @@ export async function createConfiguredDesktopRelayTerminalClient(): Promise<Desk
   return createDesktopRelayTerminalClient({
     relayUrl,
     getIdToken: (forceRefresh?: boolean) => authSession.getIdToken(forceRefresh),
+    observeAccess: await configuredAccessObserver(authSession),
   });
 }
 
@@ -86,7 +88,19 @@ export async function createConfiguredDesktopRemoteTaskViewClient(): Promise<Des
   return createDesktopRelayTerminalClient({
     relayUrl,
     getIdToken: (forceRefresh?: boolean) => authSession.getIdToken(forceRefresh),
+    observeAccess: await configuredAccessObserver(authSession),
   });
+}
+
+async function configuredAccessObserver(authSession: Awaited<ReturnType<typeof getConfiguredDesktopAuthSession>>) {
+  const [{ watch }, { useKannaStore }] = await Promise.all([import("vue"), import("../stores/kanna")]);
+  const store = useKannaStore();
+  return (listener: (access: CloudAccessSnapshot) => void) => watch(() => store.cloudAccount, (account) => {
+    const auth = authSession.getState();
+    if (auth.status === "signedIn" && auth.user.uid === account?.userId) {
+      listener(account.entitlement ?? { active: true, status: "unknown", currentPeriodEndsAt: null, graceEndsAt: null });
+    }
+  }, { immediate: true });
 }
 
 export async function listActiveDesktopIdsViaRelay(): Promise<Set<string> | null> {
@@ -115,8 +129,14 @@ export function createDesktopRelayTerminalClient({
   createSocket = (url) => new WebSocket(url) as unknown as RelaySocketLike,
   getIdToken,
   relayUrl,
+  observeAccess,
 }: DesktopRelayTerminalClientOptions): DesktopRemoteTaskViewClient {
   const clients = new Map<string, StreamClient>();
+  let latestAccess: CloudAccessSnapshot | null = null;
+  const stopAccess = observeAccess?.((access) => {
+    latestAccess = access;
+    for (const client of clients.values()) client.refreshAccess(access.active);
+  });
 
   const clientForDesktop = (desktopId: string): StreamClient => {
     const existing = clients.get(desktopId);
@@ -131,15 +151,18 @@ export function createDesktopRelayTerminalClient({
         webSocketFactory: createSocket,
       }),
       reconnectDelaysMs: [250, 500, 1000, 2000],
+      onAccessRequired: observeAccess ? () => undefined : undefined,
       terminalViewerRole: "remote",
       frameDecoder: createDesktopStreamFrameDecoder(),
     });
     clients.set(desktopId, client);
+    if (latestAccess) client.refreshAccess(latestAccess.active);
     return client;
   };
 
   return {
     close() {
+      stopAccess?.();
       for (const client of clients.values()) {
         client.close();
       }

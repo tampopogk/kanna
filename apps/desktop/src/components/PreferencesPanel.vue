@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import { cloudAccessAction } from "@kanna/stream-client"
+import { useKannaStore } from "../stores/kanna"
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { openUrl } from '@tauri-apps/plugin-opener'
@@ -25,6 +27,7 @@ import type { MobilePushRegistrationStatus } from '../types/mobilePushRegistrati
 import type { AppThemePreference, CodeThemePreference } from '../theme/theme'
 import type { AgentMessageAppearance } from '../stores/state'
 
+const store = useKannaStore()
 useI18n()
 const isDev = import.meta.env.DEV
 
@@ -102,6 +105,14 @@ const accountPassword = ref("")
 const accountPasswordVisible = ref(false)
 const accountMessage = ref("")
 let unsubscribeAuth: (() => void) | null = null
+
+const cloudAccess = computed(() => {
+  const user = authState.value.status === "signedIn" ? authState.value.user : null
+  return user && store.cloudAccount?.userId === user.uid ? store.cloudAccount.entitlement : null
+})
+const cloudAccountMessage = computed(() => cloudAccessAction(cloudAccess.value)
+  ?? (cloudAccess.value?.status === "unknown" ? "Cloud access could not be confirmed. Your local data and LAN access remain available."
+    : cloudAccess.value?.active ? "Cloud access active." : null))
 
 const isSigningIn = computed(() => authState.value.status === "signingIn")
 const signedInUserEmail = computed(() =>
@@ -478,6 +489,7 @@ defineExpose({ bringToFront, cycleTab, isOnTop })
           </div>
 
           <div v-if="signedInUserEmail" class="account-signed-in">
+            <p v-if="cloudAccountMessage" class="account-help" role="status" data-testid="account-cloud-access">{{ cloudAccountMessage }}</p>
             <span class="account-label">Signed in</span>
             <strong>{{ signedInUserEmail }}</strong>
             <button

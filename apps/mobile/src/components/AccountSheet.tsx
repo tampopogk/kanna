@@ -1,3 +1,4 @@
+import { cloudAccessAction } from "@kanna/stream-client";
 import React, { useState } from "react";
 import {
   KeyboardAvoidingView,
@@ -33,6 +34,7 @@ interface AccountSheetProps {
   onSignIn(email: string, password: string): void;
   onCreateAccount(email: string, password: string): void;
   onRefreshAccount(): void;
+  onResetPassword?(email: string): Promise<void>;
   onSignOut(): void;
   onSaveCustomRelayUrl(relayUrl: string | null): Promise<void>;
   subscriptionUrl: string;
@@ -54,11 +56,14 @@ export function AccountSheet({
   onSignIn,
   onCreateAccount,
   onRefreshAccount,
+  onResetPassword,
   onSignOut,
   onSaveCustomRelayUrl,
   subscriptionUrl,
   onDeleteAccount
 }: AccountSheetProps) {
+  const [resetMessage, setResetMessage] = useState("");
+  const [resetPending, setResetPending] = useState(false);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [isPasswordVisible, setIsPasswordVisible] = useState(false);
@@ -268,7 +273,7 @@ export function AccountSheet({
 
             {auth.status === "signedIn" ? (
               <View style={styles.form}>
-                {auth.user.emailVerified === false ? (
+                {(auth.user.emailVerified === false || auth.user.cloudEntitlement?.reason === "unverified_email") ? (
                   <View
                     style={styles.accountState}
                     testID={MOBILE_E2E_IDS.accountVerificationState}
@@ -294,12 +299,13 @@ export function AccountSheet({
                     <Text style={styles.accountStateTitle}>
                       {activeCustomRelayUrl
                         ? "Kanna Cloud subscription inactive"
-                        : "Subscription required"}
+                        : auth.user.cloudEntitlement?.status === "grace"
+                          ? "Payment grace period ended" : "Subscription required"}
                     </Text>
                     <Text style={styles.accountStateCopy}>
                       {activeCustomRelayUrl
                         ? "Hosted Kanna Cloud features need a subscription. Your custom relay can still connect without one."
-                        : "Kanna Cloud features need an active subscription. Subscribe on the Kanna account portal."}
+                        : cloudAccessAction(auth.user.cloudEntitlement) ?? "Kanna Cloud features need an active subscription. Subscribe on the Kanna account portal."}
                     </Text>
                     <Pressable
                       accessibilityLabel="Subscribe to Kanna Cloud"
@@ -315,14 +321,18 @@ export function AccountSheet({
                   <View style={styles.accountState} testID={MOBILE_E2E_IDS.accountEntitledState}>
                     <Text style={styles.accountStateTitle}>Cloud access active</Text>
                     <Text style={styles.accountStateCopy}>
-                      Your Kanna Cloud subscription is ready.
+                      Your account has cloud access.
                     </Text>
                   </View>
                 ) : (
                   <View style={styles.accountState}>
-                    <Text style={styles.accountStateCopy}>Checking cloud subscription…</Text>
+                    <Text style={styles.accountStateCopy}>Cloud access could not be confirmed. Refresh your account to check again.</Text>
                   </View>
                 )}
+                <Text style={styles.accountStateCopy}>Local and paired LAN access stay free. Push notifications remain available.</Text>
+                <Pressable accessibilityLabel="Refresh account" style={styles.secondaryButton} onPress={onRefreshAccount}>
+                  <Text style={styles.secondaryLabel}>Refresh account</Text>
+                </Pressable>
                 <Pressable
                   accessibilityLabel="Sign Out"
                   style={styles.secondaryButton}
@@ -352,6 +362,25 @@ export function AccountSheet({
                   testID={MOBILE_E2E_IDS.accountEmailInput}
                   value={email}
                 />
+                <Pressable
+                  accessibilityLabel="Reset password"
+                  disabled={!email.trim() || resetPending || !onResetPassword}
+                  style={styles.secondaryButton}
+                  onPress={() => {
+                    if (!onResetPassword) return;
+                    setResetPending(true);
+                    setResetMessage("");
+                    void onResetPassword(email.trim()).then(() => {
+                      setResetMessage("If this email has an account, check your inbox for a password reset link.");
+                    }).catch((error: unknown) => {
+                      console.error("Could not send password reset:", error);
+                      setResetMessage(error instanceof Error ? error.message : "Could not send password reset.");
+                    }).finally(() => setResetPending(false));
+                  }}
+                >
+                  <Text style={styles.secondaryLabel}>{resetPending ? "Sending…" : "Forgot password?"}</Text>
+                </Pressable>
+                {resetMessage ? <Text accessibilityRole="alert" style={styles.accountStateCopy}>{resetMessage}</Text> : null}
                 <View style={styles.passwordRow}>
                   <TextInput
                     autoCapitalize="none"

@@ -114,9 +114,25 @@ fn relay_connect_error(error: TungsteniteError) -> Box<dyn std::error::Error + S
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct RelayAuthentication {
     pub user_id: String,
     pub capabilities: RelayCapabilities,
+    #[serde(default)]
+    pub entitlement: Option<RelayEntitlement>,
+}
+
+/// Absent on older/permissive relays; unknown is an outage, never inactivity.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RelayEntitlement {
+    pub active: bool,
+    pub status: String,
+    pub current_period_ends_at: Option<String>,
+    pub grace_ends_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -166,9 +182,11 @@ pub enum RelayInvoke {
     },
 }
 
-#[derive(Debug, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RelayCapabilities {
+    #[serde(default)]
+    pub access_updates: Option<DesktopRoutingCapability>,
     #[serde(default)]
     pub task_snapshot_publication: Option<TaskSnapshotPublicationCapability>,
     #[serde(default)]
@@ -177,17 +195,17 @@ pub struct RelayCapabilities {
     pub desktop_routing: Option<DesktopRoutingCapability>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TaskSnapshotPublicationCapability {
     pub version: u64,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MobileNotificationsCapability {
     pub version: u64,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DesktopRoutingCapability {
     pub version: u64,
 }
@@ -258,6 +276,8 @@ pub struct MobileNotificationFailureReason {
 pub enum RelayMessage {
     #[serde(rename = "auth")]
     Auth {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        access_updates: Option<bool>,
         #[serde(skip_serializing_if = "Option::is_none")]
         device_token: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -358,6 +378,8 @@ pub enum RelayMessage {
         user_id: String,
         #[serde(default)]
         capabilities: RelayCapabilities,
+        #[serde(default)]
+        entitlement: Option<RelayEntitlement>,
     },
     #[serde(rename = "tunnel_establish")]
     TunnelEstablish {
@@ -380,8 +402,10 @@ pub enum RelayMessage {
 }
 
 fn build_auth_message(config: &Config, tunnel_id: Option<String>) -> RelayMessage {
+    let access_updates = tunnel_id.is_none().then_some(true);
     match &config.desktop_secret {
         Some(desktop_secret) => RelayMessage::Auth {
+            access_updates,
             device_token: None,
             desktop_id: Some(config.desktop_id.clone()),
             desktop_secret: Some(desktop_secret.clone()),
@@ -394,6 +418,7 @@ fn build_auth_message(config: &Config, tunnel_id: Option<String>) -> RelayMessag
         },
         None => match crate::pairing::anonymous_push_public_key(config) {
             Ok(public_key) => RelayMessage::Auth {
+                access_updates,
                 device_token: None,
                 desktop_id: None,
                 desktop_secret: None,
@@ -401,6 +426,7 @@ fn build_auth_message(config: &Config, tunnel_id: Option<String>) -> RelayMessag
                 anon_pub_key: Some(public_key),
             },
             Err(_) => RelayMessage::Auth {
+                access_updates,
                 device_token: Some(config.device_token.clone()),
                 desktop_id: Some(config.desktop_id.clone()),
                 desktop_secret: None,
@@ -493,9 +519,11 @@ fn parse_authentication(
         RelayMessage::AuthOk {
             user_id,
             capabilities,
+            entitlement,
         } => Ok(RelayAuthentication {
             user_id,
             capabilities,
+            entitlement,
         }),
         RelayMessage::Error { message } => {
             Err(format!("relay refused {credential_kind} authentication: {message}").into())
@@ -512,6 +540,7 @@ pub async fn connect_anonymous_push_to_relay(
     let (mut sink, mut stream) = ws_stream.split();
     sink.send(Message::Text(
         serde_json::to_string(&RelayMessage::Auth {
+            access_updates: None,
             device_token: None,
             desktop_id: None,
             desktop_secret: None,
@@ -772,6 +801,7 @@ mod tests {
             serde_json::json!({
                 "type": "auth",
                 "device_token": "device-token",
+                "access_updates": true,
                 "desktop_id": "desktop-1"
             })
         );
@@ -790,7 +820,8 @@ mod tests {
             serde_json::json!({
                 "type": "auth",
                 "desktop_id": "desktop-1",
-                "desktop_secret": "desktop-secret"
+                "desktop_secret": "desktop-secret",
+                "access_updates": true
             })
         );
     }

@@ -244,4 +244,52 @@ describe("createMobileAuthSession", () => {
 
     expect(session.getState()).toEqual({ status: "signedOut" });
   });
+  it("expires an observed grace deadline and clears it after recovery or sign-out", async () => {
+    vi.useFakeTimers();
+    try {
+      const session = createMobileAuthSession({ sdk: createSdkMock(createUser("owner", "owner@example.test")) });
+      await session.initialize();
+      await session.refreshAccount();
+      const grace = () => session.observeRelayAccess("owner", {
+        active: true, status: "grace", currentPeriodEndsAt: null,
+        graceEndsAt: new Date(Date.now() + 1000).toISOString()
+      });
+      grace();
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(session.getState()).toMatchObject({ user: { cloudAccess: "inactive" } });
+      grace();
+      session.observeRelayAccess("owner", { active: true, status: "active", currentPeriodEndsAt: null, graceEndsAt: null });
+      expect(vi.getTimerCount()).toBe(0);
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(session.getState()).toMatchObject({ user: { cloudAccess: "active" } });
+      grace();
+      await session.signOut();
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("projects same-account relay access and fences a refresh that finishes after sign-out", async () => {
+    const sdk = createSdkMock(createUser("owner", "owner@example.test"));
+    const session = createMobileAuthSession({ sdk });
+    await session.initialize();
+    await session.refreshAccount();
+    session.observeRelayAccess("other", { active: false, status: "none", currentPeriodEndsAt: null, graceEndsAt: null });
+    expect(session.getState()).toMatchObject({ user: { cloudAccess: "active" } });
+    session.observeRelayAccess("owner", { active: false, status: "grace", currentPeriodEndsAt: null, graceEndsAt: "2000-01-01T00:00:00Z" });
+    expect(session.getState()).toMatchObject({ user: { cloudAccess: "inactive", cloudEntitlement: { status: "grace" } } });
+    session.observeRelayAccess("owner", { active: true, status: "unknown", currentPeriodEndsAt: null, graceEndsAt: null });
+    expect(session.getState()).toMatchObject({ user: { cloudAccess: "unknown" } });
+    let finishRead: ((value: "active") => void) | undefined;
+    vi.mocked(sdk.getCloudAccess).mockImplementation(() => new Promise((resolve) => { finishRead = resolve; }));
+    const refresh = session.refreshAccount();
+    await Promise.resolve();
+    await Promise.resolve();
+    await session.signOut();
+    finishRead?.("active");
+    await refresh;
+    expect(session.getState()).toEqual({ status: "signedOut" });
+  });
+
 });

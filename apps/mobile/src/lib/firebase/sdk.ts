@@ -7,12 +7,14 @@ import {
   initializeAuth,
   onAuthStateChanged,
   sendEmailVerification,
+  sendPasswordResetEmail,
   signInWithEmailAndPassword,
   signOut as firebaseSignOut,
   type Auth,
   type User
 } from "firebase/auth";
-import { doc, getDoc } from "firebase/firestore";
+import { type CloudAccessSnapshot } from "@kanna/stream-client";
+import { doc, getDocFromServer } from "firebase/firestore";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import {
   parseMobileFirebaseConfig,
@@ -81,6 +83,25 @@ function isReactNativeRuntime(): boolean {
 
 export function createFirebaseMobileAuthSdk(auth: Auth, app: FirebaseApp): MobileAuthSdk {
   const db = getConfiguredFirestore(app);
+  const getCloudEntitlement = async (uid: string): Promise<CloudAccessSnapshot> => {
+    try {
+      const snapshot = await getDocFromServer(doc(db, "users", uid, "entitlements", "cloud_access"));
+      const data = snapshot.data();
+      const status = data?.status;
+      const graceEndsAt = typeof data?.graceEndsAt === "string" ? data.graceEndsAt : null;
+      const active = status === "active" || (status === "grace" &&
+        (!graceEndsAt || Number.isNaN(Date.parse(graceEndsAt)) || Date.parse(graceEndsAt) > Date.now()));
+      return {
+        active,
+        status: status === "active" || status === "grace" || status === "expired" || status === "revoked" ? status : "none",
+        graceEndsAt,
+        currentPeriodEndsAt: typeof data?.currentPeriodEndsAt === "string" ? data.currentPeriodEndsAt : null
+      };
+    } catch (error) {
+      console.error("Could not load cloud entitlement:", error);
+      return { active: true, status: "unknown", graceEndsAt: null, currentPeriodEndsAt: null };
+    }
+  };
   return {
     getCurrentUser: () => mapFirebaseUser(auth.currentUser),
     onAuthStateChanged(listener) {
@@ -100,17 +121,12 @@ export function createFirebaseMobileAuthSdk(auth: Auth, app: FirebaseApp): Mobil
       await auth.currentUser.reload();
       return mapFirebaseUser(auth.currentUser);
     },
+    getCloudEntitlement,
     async getCloudAccess(uid) {
-      try {
-        const snapshot = await getDoc(doc(db, "users", uid, "entitlements", "cloud_access"));
-        if (!snapshot.exists()) return "inactive";
-        const status = snapshot.data().status;
-        return status === "active" || status === "grace" ? "active" : "inactive";
-      } catch (error) {
-        console.error("Could not load cloud entitlement:", error);
-        return "unknown";
-      }
+      const access = await getCloudEntitlement(uid);
+      return access.status === "unknown" ? "unknown" : access.active ? "active" : "inactive";
     },
+    sendPasswordResetEmail: (email) => sendPasswordResetEmail(auth, email),
     async signOut() {
       await firebaseSignOut(auth);
     },

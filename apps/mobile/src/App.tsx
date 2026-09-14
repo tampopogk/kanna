@@ -89,8 +89,6 @@ function AppContent() {
     "pending"
   );
   const [accountSheetVisible, setAccountSheetVisible] = useState(false);
-  const accountSheetVisibleRef = useRef(accountSheetVisible);
-  accountSheetVisibleRef.current = accountSheetVisible;
   const accountAuthRef = useRef(state.auth);
   accountAuthRef.current = state.auth;
   const [quickReplyEditorVisible, setQuickReplyEditorVisible] = useState(false);
@@ -219,20 +217,6 @@ function AppContent() {
     };
   }, []);
 
-  useEffect(() => {
-    if (
-      !accountSheetVisible ||
-      state.auth.status !== "signedIn" ||
-      state.auth.user.emailVerified !== false
-    ) {
-      return;
-    }
-    const interval = setInterval(() => {
-      void refreshAccount();
-    }, 3_000);
-    return () => clearInterval(interval);
-  }, [accountSheetVisible, refreshAccount, state.auth]);
-
   const saveQuickReplies = useCallback(
     async (
       replies: readonly TaskQuickReply[],
@@ -337,10 +321,7 @@ function AppContent() {
         });
         const accountAuth = accountAuthRef.current;
         if (
-          accountSheetVisibleRef.current &&
-          accountAuth.status === "signedIn" &&
-          accountAuth.user.emailVerified !== false &&
-          accountAuth.user.cloudAccess === "inactive"
+          accountAuth.status === "signedIn"
         ) {
           void refreshAccount();
         }
@@ -522,6 +503,7 @@ function AppContent() {
           onCreateAccount={(email, password) => {
             void controller.createUserWithEmailPassword(email, password);
           }}
+          onResetPassword={(email) => controller.sendPasswordResetEmail(email)}
           onRefreshAccount={() => {
             void refreshAccount();
           }}

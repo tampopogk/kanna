@@ -1,3 +1,4 @@
+export { readCloudAccess, cloudAccessAction, type CloudAccessSnapshot } from "./cloud-access";
 // Kanna Stream Protocol client, shared by the desktop (Vue) and mobile
 // (React Native) apps. One multiplexed WebSocket carries every stream and
 // request; this client owns the auth handshake, per-task attachments with
@@ -231,6 +232,7 @@ export interface StreamClientOptions {
    * refresh. The client stops reconnecting; callers should surface an
    * auth-expired state and require the user to sign in again. */
   onAuthError?(): void;
+  onAccessRequired?(): void;
   /** Injectable local monotonic clock for terminal dispatch diagnostics. */
   now?: () => number;
   /** Decode large inbound frames away from the UI thread. */
@@ -426,6 +428,22 @@ export class StreamClient {
     this.now = options.now ?? (() => performance.now());
     this.frameDecoder = options.frameDecoder;
     this.connect();
+  }
+
+  private accessAllowed: boolean | null = null;
+
+  /** Access recovery comes from the account/control observer, never a poll. */
+  refreshAccess(allowed = true): void {
+    this.accessAllowed = allowed;
+    if (!allowed && this.reconnectTimer !== null) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+    if (allowed && !this.closed && !this.socket) {
+      if (this.reconnectTimer !== null) clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+      this.connect();
+    }
   }
 
   close(): void {
@@ -908,7 +926,7 @@ export class StreamClient {
   // ---- internals ----
 
   private connect(): void {
-    if (this.closed) return;
+    if (this.closed || this.socket || this.accessAllowed === false) return;
     this.authed = false;
     this.supportedStreamKinds.clear();
     this.supportedCapabilities.clear();
@@ -976,7 +994,16 @@ export class StreamClient {
         attachment.handlers.onConnectionChange?.(false);
       }
     }
-    this.failPendingRequests(new Error("stream disconnected"));
+    this.failPendingRequests(new Error(closeEventCode(closeEvent) === 4402
+      ? "Manage your Kanna account to restore cloud access." : "stream disconnected"));
+
+    if (closeEventCode(closeEvent) === 4402) {
+      this.options.onAccessRequired?.();
+      for (const attachment of this.attachments.values()) {
+        attachment.handlers.onError?.("subscription_required", "Manage your Kanna account to restore cloud access.");
+      }
+      if (this.accessAllowed !== true && this.options.onAccessRequired) return;
+    }
 
     // An auth-failure close (or a local credential fetch failure) before we
     // ever authenticated means the credential was rejected — distinct from an
@@ -1992,6 +2019,7 @@ class RelayTunnelSocket implements WebSocketLike {
   private readonly queued: string[] = [];
   private identityToken: string | null = null;
   private ready = false;
+  private tunnelRequested = false;
   private closed = false;
   private closeNotified = false;
   onopen: ((event: unknown) => void) | null = null;
@@ -2074,6 +2102,8 @@ class RelayTunnelSocket implements WebSocketLike {
     }
 
     if (parsed.type === "auth_ok") {
+      if (this.tunnelRequested) return;
+      this.tunnelRequested = true;
       this.socket.send(
         JSON.stringify({
           type: "tunnel_request",
@@ -2098,11 +2128,12 @@ class RelayTunnelSocket implements WebSocketLike {
       this.onmessage?.({
         data: JSON.stringify({
           type: "error",
-          code: "relay_tunnel",
-          message: parsed.error,
+          code: parsed.code === 4402 ? "subscription_required" : "relay_tunnel",
+          message: parsed.code === 4402 ? "Manage your Kanna account to restore cloud access." : parsed.error,
         }),
       });
-      this.onerror?.(new Error(parsed.error));
+      if (parsed.code === 4402) this.emitClose({ code: 4402, reason: parsed.error });
+      else this.onerror?.(new Error(parsed.error));
       if (!this.closed) this.close();
     }
   }

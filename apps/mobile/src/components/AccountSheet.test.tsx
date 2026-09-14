@@ -135,7 +135,7 @@ function findNodeByAccessibilityLabel(
   return null;
 }
 
-function renderSignedOutSheet(): ElementNode {
+function renderSignedOutSheet(onResetPassword?: (email: string) => Promise<void>): ElementNode {
   if (!AccountSheet) {
     throw new Error("AccountSheet was not loaded");
   }
@@ -153,6 +153,7 @@ function renderSignedOutSheet(): ElementNode {
     onSignIn: vi.fn(),
     onCreateAccount: vi.fn(),
     onRefreshAccount: vi.fn(),
+    onResetPassword,
     onSignOut: vi.fn(),
     customRelayControlEnabled: true,
     subscriptionUrl: "https://portal.example.test/subscribe"
@@ -167,6 +168,20 @@ function textContent(node: ElementNode | ElementNode[] | string | null | undefin
 }
 
 describe("AccountSheet", () => {
+  it("resets the entered email through the account SDK and reports success", async () => {
+    const reset = vi.fn().mockResolvedValue(undefined);
+    let sheet = renderSignedOutSheet(reset);
+    const email = findNodeByTestId(sheet, MOBILE_E2E_IDS.accountEmailInput);
+    (email?.props?.onChangeText as (value: string) => void)(" owner@example.test ");
+    sheet = renderSignedOutSheet(reset);
+    const button = findNodeByAccessibilityLabel(sheet, "Reset password");
+    (button?.props?.onPress as () => void)();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(reset).toHaveBeenCalledWith("owner@example.test");
+    expect(textContent(renderSignedOutSheet(reset))).toContain("check your inbox");
+  });
+
   it("validates, saves, indicates, and resets a custom relay", async () => {
     if (!AccountSheet) throw new Error("AccountSheet was not loaded");
     const onSaveCustomRelayUrl = vi.fn().mockResolvedValue(undefined);

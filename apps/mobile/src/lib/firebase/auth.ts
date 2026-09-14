@@ -1,9 +1,11 @@
+import { type CloudAccessSnapshot } from "@kanna/stream-client";
 export interface MobileAuthUser {
   uid: string;
   email: string | null;
   displayName: string | null;
   emailVerified?: boolean;
   cloudAccess?: "active" | "inactive" | "unknown";
+  cloudEntitlement?: CloudAccessSnapshot;
 }
 
 export type MobileAuthState =
@@ -24,6 +26,8 @@ export interface MobileAuthSdk {
   createUserWithEmailPassword(email: string, password: string): Promise<MobileAuthUser>;
   reloadUser(): Promise<MobileAuthUser | null>;
   getCloudAccess(uid: string): Promise<"active" | "inactive" | "unknown">;
+  getCloudEntitlement?(uid: string): Promise<CloudAccessSnapshot>;
+  sendPasswordResetEmail?(email: string): Promise<void>;
   signOut(): Promise<void>;
   getIdToken(forceRefresh?: boolean): Promise<string | null>;
 }
@@ -35,6 +39,8 @@ export interface MobileAuthSession {
   signInWithEmailPassword(input: EmailPasswordSignInInput): Promise<void>;
   createUserWithEmailPassword(input: EmailPasswordSignInInput): Promise<void>;
   refreshAccount(): Promise<void>;
+  sendPasswordResetEmail(email: string): Promise<void>;
+  observeRelayAccess(userId: string, access: CloudAccessSnapshot): void;
   signOut(): Promise<void>;
   getIdToken(forceRefresh?: boolean): Promise<string | null>;
   /** Mark the session as expired after the relay rejected the ID token even
@@ -54,9 +60,24 @@ export function createMobileAuthSession({
   let state: MobileAuthState = normalizeUserState(sdk.getCurrentUser());
   let initialAuthPromise: Promise<void> | null = null;
   const listeners = new Set<(state: MobileAuthState) => void>();
+  let revision = 0;
+  let graceDeadline: ReturnType<typeof setTimeout> | null = null;
 
   const publish = (nextState: MobileAuthState) => {
     state = nextState;
+    if (graceDeadline) clearTimeout(graceDeadline);
+    graceDeadline = null;
+    const access = nextState.status === "signedIn" ? nextState.user.cloudEntitlement : undefined;
+    const ends = access?.active && access.status === "grace" && access.graceEndsAt
+      ? Date.parse(access.graceEndsAt) : NaN;
+    if (Number.isFinite(ends)) {
+      graceDeadline = setTimeout(() => {
+        graceDeadline = null;
+        if (state !== nextState || nextState.status !== "signedIn" || !access) return;
+        if (ends > Date.now()) { publish(nextState); return; }
+        publish({ status: "signedIn", user: { ...nextState.user, cloudAccess: "inactive", cloudEntitlement: { ...access, active: false } } });
+      }, Math.max(0, Math.min(ends - Date.now(), 2_147_483_647)));
+    }
     for (const listener of listeners) {
       listener(state);
     }
@@ -76,12 +97,13 @@ export function createMobileAuthSession({
 
     try {
       sdk.onAuthStateChanged((user) => {
+        const observedRevision = ++revision;
         publish(normalizeUserState(user));
         resolveInitialAuth();
         if (user) {
           void loadAccountState(user).then((loadedUser) => {
             const currentUser = state.status === "signedIn" ? state.user : null;
-            if (currentUser?.uid === loadedUser.uid) {
+            if (observedRevision === revision && currentUser?.uid === loadedUser.uid) {
               publish({ status: "signedIn", user: loadedUser });
             }
           }).catch((error: unknown) => {
@@ -100,6 +122,7 @@ export function createMobileAuthSession({
     user: MobileAuthUser
   ): Promise<MobileAuthUser> {
     const refreshed = (await sdk.reloadUser()) ?? user;
+    if (refreshed.uid !== user.uid) throw new Error("Account changed during refresh.");
     if (refreshed.emailVerified === false) {
       return { ...refreshed, cloudAccess: "inactive" };
     }
@@ -109,9 +132,13 @@ export function createMobileAuthSession({
       // that state transition cannot inherit an email_verified=false claim.
       await sdk.getIdToken(true);
     }
+    const entitlement = await sdk.getCloudEntitlement?.(refreshed.uid);
     return {
       ...refreshed,
-      cloudAccess: await sdk.getCloudAccess(refreshed.uid)
+      ...(entitlement ? { cloudEntitlement: entitlement } : {}),
+      cloudAccess: entitlement
+        ? entitlement.status === "unknown" ? "unknown" : entitlement.active ? "active" : "inactive"
+        : await sdk.getCloudAccess(refreshed.uid)
     };
   }
 
@@ -169,9 +196,12 @@ export function createMobileAuthSession({
         ? state.user
         : null;
       if (!user) return;
+      const observedRevision = ++revision;
       try {
-        publish({ status: "signedIn", user: await loadAccountState(user) });
+        const loaded = await loadAccountState(user);
+        if (observedRevision === revision) publish({ status: "signedIn", user: loaded });
       } catch (error) {
+        if (observedRevision !== revision) return;
         publish({
           status: "error",
           message: error instanceof Error ? error.message : "Could not refresh account",
@@ -179,7 +209,22 @@ export function createMobileAuthSession({
         });
       }
     },
+    async sendPasswordResetEmail(email) {
+      if (!sdk.sendPasswordResetEmail) throw new Error("Password reset is unavailable.");
+      await sdk.sendPasswordResetEmail(email.trim());
+    },
+    observeRelayAccess(userId, access) {
+      if (state.status !== "signedIn" || state.user.uid !== userId) return;
+      ++revision;
+      publish({ status: "signedIn", user: {
+        ...state.user,
+        cloudEntitlement: access,
+        cloudAccess: access.reason === "unverified_email" ? "inactive"
+          : access.status === "unknown" ? "unknown" : access.active ? "active" : "inactive"
+      } });
+    },
     async signOut() {
+      ++revision;
       await sdk.signOut();
       publish({ status: "signedOut" });
     },

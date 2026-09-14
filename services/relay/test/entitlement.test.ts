@@ -7,6 +7,10 @@ interface EntitlementStore {
   record: Record<string, unknown> | null;
   /** Set to make the read fail, standing in for a Firestore outage. */
   failure: Error | null;
+  emit?: () => void;
+  failObserver?: () => void;
+  stops?: number;
+  observations?: number;
 }
 
 function activeRecord(overrides: Record<string, unknown> = {}): Record<string, unknown> {
@@ -45,6 +49,12 @@ async function importEntitlement(
           doc: vi.fn(() => ({
             collection: vi.fn(() => ({
               doc: vi.fn(() => ({
+                onSnapshot: (next: (snapshot: { exists: boolean; data(): Record<string, unknown> | undefined }) => void, error: (error: Error) => void) => {
+                  store.observations = (store.observations ?? 0) + 1;
+                  store.emit = () => next({ exists: store.record !== null, data: () => store.record ?? undefined });
+                  store.failObserver = () => error(new Error("unavailable"));
+                  return () => { store.stops = (store.stops ?? 0) + 1; };
+                },
                 get: vi.fn(async () => {
                   reads += 1;
                   if (store.failure) throw store.failure;
@@ -362,5 +372,38 @@ describe("entitlement cache TTL configuration", () => {
     expect(entitlement.resolveEntitlementCacheTtlMs({
       KANNA_RELAY_ENTITLEMENT_CACHE_TTL_MS: "-1",
     })).toBe(entitlement.DEFAULT_ENTITLEMENT_CACHE_TTL_MS);
+  });
+});
+
+
+describe("live entitlement ownership", () => {
+  it("shares observation, expires grace, fails open and releases its listener/deadline", async () => {
+    vi.useFakeTimers();
+    const store: EntitlementStore = { record: null, failure: null };
+    const { entitlement } = await importEntitlement(ENFORCING, store);
+    const phoneStates: unknown[] = [];
+    const desktopStates: unknown[] = [];
+    const stopPhone = entitlement.observeSessionEntitlement(phone(), (access) => phoneStates.push(access.snapshot));
+    const stopDesktop = entitlement.observeSessionEntitlement(DESKTOP_SUBJECT, (access) => desktopStates.push(access.snapshot));
+    expect(store.observations).toBe(1);
+    store.emit?.();
+    expect(phoneStates.at(-1)).toMatchObject({ active: false, status: "none" });
+    store.record = activeRecord({ status: "grace", graceEndsAt: new Date(Date.now() + 1000).toISOString() });
+    store.emit?.();
+    expect(await entitlement.sessionHasCapability(phone(), "cloud_relay")).toBe(true);
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(desktopStates.at(-1)).toMatchObject({ active: false, status: "grace" });
+    expect(await entitlement.sessionHasCapability(phone(), "cloud_relay")).toBe(false);
+    store.record = activeRecord({ source: "comp" });
+    store.emit?.();
+    expect(desktopStates.at(-1)).toMatchObject({ active: true, status: "active" });
+    store.failObserver?.();
+    expect(phoneStates.at(-1)).toMatchObject({ active: true, status: "unknown" });
+    expect(await entitlement.sessionHasCapability(phone(), "cloud_relay")).toBe(true);
+    stopPhone();
+    expect(store.stops ?? 0).toBe(0);
+    stopDesktop();
+    expect(store.stops).toBe(1);
+    expect(vi.getTimerCount()).toBe(0);
   });
 });

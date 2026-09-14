@@ -4,8 +4,7 @@
  *
  * The relay is the enforcement point because it terminates every unit of remote
  * value — tunnels, cloud task snapshot publication, and remote task control —
- * and already re-reads
- * Firestore per connection for credential revalidation. After identity
+ * and owns live Firestore observation for connected accounts. After identity
  * verification the session's uid is resolved to
  * `users/{uid}/entitlements/cloud_access`, the single record the reducer in
  * `services/firebase-functions` derives from every billing source.
@@ -126,13 +125,9 @@ export function resolveEntitlementEnforcement(
 /**
  * How long a resolved entitlement stays usable.
  *
- * Same tradeoff, and the same 60s, as the desktop-credential cache in
- * `auth.ts`: the read happens on every publication, push and tunnel request, so
- * an uncached read costs a Firestore read per message for a document that
- * changes when somebody subscribes or cancels. The TTL is the window in which
- * an entitlement revoked out from under a session is still honoured, and the
- * relay sees no entitlement write of its own, so this bound is the real
- * revocation latency rather than a backstop behind a hook.
+ * Used by one-off checks before a live account observer is established. Live
+ * sockets share a Firestore listener instead: writes and grace deadlines update
+ * their enforcement state and advertisements without waiting for this TTL.
  */
 export const DEFAULT_ENTITLEMENT_CACHE_TTL_MS = 60_000;
 
@@ -243,18 +238,20 @@ function parseStatus(value: unknown): EntitlementStatus | null {
  * Firestore throws, so the caller can tell the two apart.
  */
 async function readEntitlementRecord(userId: string): Promise<EntitlementRecord | null> {
-  const { db } = getFirebaseServices();
-  const snapshot = await db
+  const snapshot = await getFirebaseServices().db
     .collection("users")
     .doc(userId)
     .collection("entitlements")
     .doc("cloud_access")
     .get();
-  if (!snapshot.exists) return null;
-  const data = snapshot.data();
+  return parseEntitlementRecord(snapshot.exists, snapshot.data());
+}
+
+function parseEntitlementRecord(exists: boolean, data: Record<string, unknown> | undefined): EntitlementRecord | null {
+  if (!exists) return null;
   const status = parseStatus(data?.status);
   if (!status) {
-    console.warn(`[entitlement] Entitlement document for ${userId} has no usable status`);
+    console.warn(`[entitlement] Entitlement document has no usable status`);
     return null;
   }
   return {
@@ -277,6 +274,8 @@ async function readEntitlementRecord(userId: string): Promise<EntitlementRecord 
 export async function resolveEntitlement(
   userId: string,
 ): Promise<EntitlementRecord | null | undefined> {
+  const watched = watchedEntitlements.get(userId);
+  if (watched?.ready) return watched.record;
   const nowMs = Date.now();
   const cached = cachedEntitlement(userId, nowMs);
   if (cached) return cached.record;
@@ -345,14 +344,13 @@ export async function sessionHasCapability(
 }
 
 /**
- * Everything a session needs to know about its own entitlement, resolved once
- * at authentication: what to tell the client, and which capabilities to
+ * Everything a session needs to know about its own entitlement, at authentication
+ * and on each observed access change: what to tell the client, and which capabilities to
  * advertise.
  *
  * `grants` is the advertisement rule, not the enforcement rule — the value-
  * bearing paths re-check through `sessionHasCapability` on every request, which
- * is what makes a revocation land inside the TTL bound rather than at the next
- * reconnect.
+ * uses the same observed record as advertisements.
  */
 export interface SessionEntitlement {
   /**
@@ -374,6 +372,13 @@ export async function resolveSessionEntitlement(
   subject: EntitlementSubject,
 ): Promise<SessionEntitlement> {
   if (!enforcementEnabled) return UNRESTRICTED_SESSION;
+  const record = subject.emailVerified === false ? undefined : await resolveEntitlement(subject.userId);
+  return sessionEntitlementFromRecord(subject, record);
+}
+
+function sessionEntitlementFromRecord(
+  subject: EntitlementSubject, record: EntitlementRecord | null | undefined,
+): SessionEntitlement {
   if (subject.emailVerified === false) {
     // Decision 1: an unverified email cannot activate an entitlement, so the
     // relay treats the session as unentitled without consulting the document —
@@ -390,7 +395,6 @@ export async function resolveSessionEntitlement(
       grants: () => false,
     };
   }
-  const record = await resolveEntitlement(subject.userId);
   if (record === undefined) {
     // Fail open: the session is served, and says so, rather than being told it
     // is unsubscribed because a database was briefly unreachable.
@@ -410,5 +414,78 @@ export async function resolveSessionEntitlement(
         }
       : { active: false, status: "none", currentPeriodEndsAt: null, graceEndsAt: null },
     grants: (capability) => hasCapability(record, capability, nowMs),
+  };
+}
+
+
+interface WatchedEntitlement {
+  ready: boolean;
+  record: EntitlementRecord | null | undefined;
+  listeners: Set<() => void>;
+  stop(): void;
+  deadline: ReturnType<typeof setTimeout> | null;
+}
+const watchedEntitlements = new Map<string, WatchedEntitlement>();
+
+/** One Firestore listener per connected account, owned by its live sockets.
+ * Billing writes invalidate both enforcement and capability advertisements.
+ * Grace has one deadline (not a poll); final socket cleanup releases both.
+ * A failed listener reports unknown and fails open, like an unavailable read.
+ */
+export function observeSessionEntitlement(
+  subject: EntitlementSubject,
+  listener: (access: SessionEntitlement) => void,
+): () => void {
+  if (!enforcementEnabled) return () => undefined;
+  let watched = watchedEntitlements.get(subject.userId);
+  if (!watched) {
+    const entry: WatchedEntitlement = {
+      ready: false, record: undefined, listeners: new Set(), stop: () => undefined, deadline: null,
+    };
+    watched = entry;
+    watchedEntitlements.set(subject.userId, entry);
+    const notify = () => {
+      for (const callback of entry.listeners) callback();
+    };
+    const scheduleDeadline = () => {
+      if (entry.deadline) clearTimeout(entry.deadline);
+      entry.deadline = null;
+      const ends = entry.record?.status === "grace" && entry.record.graceEndsAt
+        ? Date.parse(entry.record.graceEndsAt) : NaN;
+      if (ends > Date.now()) {
+        entry.deadline = setTimeout(() => {
+          entry.deadline = null;
+          notify();
+          scheduleDeadline();
+        }, Math.min(ends - Date.now(), 2_147_483_647));
+      }
+    };
+    entry.stop = getFirebaseServices().db.collection("users").doc(subject.userId)
+      .collection("entitlements").doc("cloud_access").onSnapshot((snapshot) => {
+        entry.record = parseEntitlementRecord(snapshot.exists, snapshot.data());
+        entry.ready = true;
+        invalidateEntitlementCache(subject.userId);
+        scheduleDeadline();
+        notify();
+      }, (error) => {
+        console.error(`[entitlement] Account observation failed for ${subject.userId}:`, error);
+        entry.record = undefined;
+        entry.ready = true;
+        invalidateEntitlementCache(subject.userId);
+        scheduleDeadline();
+        notify();
+      });
+  }
+  const entry = watched;
+  const callback = () => listener(sessionEntitlementFromRecord(subject, entry.record));
+  entry.listeners.add(callback);
+  if (entry.ready) callback();
+  return () => {
+    entry.listeners.delete(callback);
+    if (entry.listeners.size) return;
+    entry.stop();
+    if (entry.deadline) clearTimeout(entry.deadline);
+    watchedEntitlements.delete(subject.userId);
+    invalidateEntitlementCache(subject.userId);
   };
 }

@@ -138,6 +138,7 @@ Use this branch as the default when the user does not specify a target branch. B
     taskBlockers: state.taskBlockers,
     blockerTaskStates: state.blockerTaskStates,
     snapshotSettings: state.snapshotSettings,
+    cloudAccount: state.cloudAccount,
     repoSidebarOrder: state.repoSidebarOrder,
     selectedRepoId: state.selectedRepoId,
     selectedItemId: state.selectedItemId,

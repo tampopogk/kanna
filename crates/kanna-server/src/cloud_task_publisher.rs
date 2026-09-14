@@ -484,6 +484,12 @@ impl PublisherState {
         self.reconnect = false;
     }
 
+    pub(crate) fn set_access_allowed(&mut self, allowed: bool) {
+        if !allowed {
+            self.on_disconnected();
+        }
+    }
+
     pub(crate) fn on_disconnected(&mut self) {
         self.authenticated = false;
         self.force_reconcile = true;

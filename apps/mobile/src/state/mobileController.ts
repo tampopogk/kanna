@@ -83,6 +83,7 @@ export interface MobileController {
   signInWithEmailPassword(email: string, password: string): Promise<void>;
   createUserWithEmailPassword(email: string, password: string): Promise<void>;
   refreshAccount(): Promise<void>;
+  sendPasswordResetEmail(email: string): Promise<void>;
   signOut(): Promise<void>;
   getIdToken(forceRefresh?: boolean): Promise<string | null>;
   refresh(options?: { preserveTaskSession?: boolean }): Promise<void>;
@@ -2821,6 +2822,11 @@ export function createMobileController(
 
       await authSession.createUserWithEmailPassword({ email, password });
       store.setAuthState(authSession.getState());
+    },
+
+    async sendPasswordResetEmail(email) {
+      if (!authSession) throw new Error("Firebase Auth is not configured.");
+      await authSession.sendPasswordResetEmail(email);
     },
 
     async refreshAccount() {

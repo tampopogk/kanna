@@ -113,6 +113,7 @@ fn apply_relay_authentication(
     let relay_client::RelayAuthentication {
         user_id,
         capabilities,
+        entitlement,
     } = authentication;
     log::info!("Relay authenticated as user {user_id}");
     // Authority changes before cleanup runs: every LAN trust lookup reads
@@ -134,14 +135,25 @@ fn apply_relay_authentication(
         *routing_generation = http_state.set_desktop_routing_available(true);
     } else {
         http_state.set_desktop_routing_unavailable(
-            "relay authenticated without desktop-routing capability",
+            match entitlement.as_ref() {
+                Some(access) if !access.active && access.reason.as_deref() == Some("unverified_email") => "Verify your email to use Kanna Cloud.",
+                Some(access) if !access.active && access.status == "grace" => "Payment grace period ended. Manage your Kanna subscription to restore cloud access.",
+                Some(access) if !access.active => "An active subscription is required. Manage your Kanna account to restore cloud access.",
+                _ => "relay authenticated without desktop-routing capability",
+            },
         );
     }
+    http_state.set_relay_entitlement(entitlement.clone());
+    let publication_allowed =
+        capabilities.access_updates.is_none() || capabilities.task_snapshot_publication.is_some();
     publisher.on_authenticated(
         capabilities
             .task_snapshot_publication
             .map(|capability| capability.version),
     );
+    // Only a relay promising live updates may park publication indefinitely.
+    // Older peers retain their existing fallback/recovery; unknown reads advertise access.
+    publisher.set_access_allowed(publication_allowed);
     http_state.set_mobile_notifications_version(
         capabilities
             .mobile_notifications
@@ -332,8 +344,7 @@ async fn run_relay_loop_with_timing(
             || account_auth == relay_client::AccountAuthProbe::Rejected;
         if signed_out_or_rejected {
             let generation = http_state.set_authenticated_account_uid(None);
-            if let Err(error) = reconcile_machine_trust_for_account(&http_state, None, generation)
-            {
+            if let Err(error) = reconcile_machine_trust_for_account(&http_state, None, generation) {
                 log::warn!(
                     "Failed to persist machine trust store after account reconciliation: {error}"
                 );
@@ -966,11 +977,13 @@ async fn run_relay_loop_with_timing(
                         RelayMessage::AuthOk {
                             user_id,
                             capabilities,
+                            entitlement,
                         } => {
                             apply_relay_authentication(
                                 relay_client::RelayAuthentication {
                                     user_id,
                                     capabilities,
+                                    entitlement,
                                 },
                                 &http_state,
                                 &mut publisher,
@@ -2022,8 +2035,7 @@ mod tests {
         store.save(&store_path).expect("seed machine trust store");
 
         let generation = state.account_state_generation();
-        reconcile_machine_trust_for_account(&state, None, generation)
-            .expect("reconcile succeeds");
+        reconcile_machine_trust_for_account(&state, None, generation).expect("reconcile succeeds");
 
         let reloaded = crate::machine_trust::MachineTrustStore::load_fail_closed(&store_path)
             .expect("reload after reconcile");
@@ -4680,6 +4692,42 @@ mod tests {
                         break;
                     }
                     barrier.await.expect("barrier join").expect("barrier acknowledged");
+                    // Same control socket: explicit denial pauses paid publication,
+                    // free notifications survive, and recovery republishes unchanged data.
+                    for (active, status) in [(false, "grace"), (true, "active"), (true, "unknown")] {
+                        let mut changes = state.subscribe_state_changes();
+                        second_connection.send(TungsteniteMessage::Text(serde_json::json!({
+                            "type": "auth_ok", "userId": "user-1",
+                            "capabilities": {
+                                "accessUpdates": { "version": 1 },
+                                "mobileNotifications": { "version": 2 },
+                                "desktopRouting": if active { serde_json::json!({ "version": 2 }) } else { serde_json::Value::Null },
+                                "taskSnapshotPublication": if active { serde_json::json!({ "version": 2 }) } else { serde_json::Value::Null }
+                            },
+                            "entitlement": { "active": active, "status": status, "currentPeriodEndsAt": null, "graceEndsAt": null }
+                        }).to_string().into())).await.expect("update access");
+                        changes.recv().await.expect("account state event");
+                        assert_eq!(state.relay_entitlement().unwrap().status, status);
+                        assert_eq!(state.desktop_routing_available(), active);
+                        assert!(state.mobile_notifications_available());
+                        if active {
+                            loop {
+                                let frame = second_connection.next().await.unwrap().unwrap();
+                                let TungsteniteMessage::Text(text) = frame else { continue; };
+                                let frame: serde_json::Value = serde_json::from_str(&text).unwrap();
+                                if frame["type"] != "task_snapshot_publish" { continue; }
+                                second_connection.send(TungsteniteMessage::Text(serde_json::json!({
+                                    "type": "task_snapshot_ack", "id": frame["id"], "ok": true
+                                }).to_string().into())).await.unwrap();
+                                break;
+                            }
+                        } else {
+                            // This direct barrier uses the negotiated routing state,
+                            // so no network request or reconnect is needed to refuse it.
+                            assert!(state.publish_task_snapshot_now().await.is_err());
+                        }
+                    }
+
                     second_connection
                         .close(None)
                         .await

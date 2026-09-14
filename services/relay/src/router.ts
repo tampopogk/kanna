@@ -405,7 +405,7 @@ function stopTunnelKeepalive(ws: WebSocket): void {
   tunnelKeepalives.delete(ws);
 }
 
-function closeTunnelPeer(ws: WebSocket): void {
+function closeTunnelPeer(ws: WebSocket, code = 1000): void {
   const peer = tunnelPeers.get(ws);
   stopTunnelKeepalive(ws);
   if (peer) stopTunnelKeepalive(peer);
@@ -431,7 +431,7 @@ function closeTunnelPeer(ws: WebSocket): void {
     tunnelSockets.delete(peer);
     backpressuredTunnelSources.delete(peer);
     if (peer.readyState <= 1) {
-      peer.close(1000, "Tunnel peer closed");
+      peer.close(code === 4402 ? 4402 : 1000, code === 4402 ? "entitlement required" : "Tunnel peer closed");
     }
   }
 }
@@ -715,8 +715,8 @@ export function attachDesktopTunnel(
   tunnelServices.set(ws, tunnel.service);
   tunnelPeakBufferedBytes.set(tunnel.client, 0);
   tunnelPeakBufferedBytes.set(ws, 0);
-  ws.on("close", () => closeTunnelPeer(ws));
-  tunnel.client.on("close", () => closeTunnelPeer(tunnel.client));
+  ws.on("close", (code) => closeTunnelPeer(ws, code));
+  tunnel.client.on("close", (code) => closeTunnelPeer(tunnel.client, code));
   startTunnelKeepalive(tunnel.client, ws);
 
   identifyByteAccount(ws, {

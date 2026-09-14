@@ -11,9 +11,8 @@
  */
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
-import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { deleteApp, initializeApp, type App } from "firebase-admin/app";
@@ -25,19 +24,7 @@ import { ENTITLEMENT_REQUIRED_CODE } from "../src/entitlement.js";
 
 const PASSWORD = "password123";
 
-/**
- * Short enough that the revocation test can observe the bound instead of
- * waiting the production minute for it, and long enough that the same test's
- * *other* half is not a race.
- *
- * The cache is warmed at the handshake, so "still entitled inside the window"
- * is only observable if the connect, the first publication round trip and the
- * revoking Firestore write all fit inside the TTL. At a few hundred
- * milliseconds they do not, reliably, on a machine running several suites at
- * once — which is a flaky test, not a finding about the relay. Three seconds is
- * twenty times shorter than production and roughly ten times longer than that
- * sequence takes.
- */
+/** Nonzero cache: live socket updates must not depend on TTL expiry. */
 const ENTITLEMENT_CACHE_TTL_MS = 3_000;
 
 interface TestAccount {
@@ -190,7 +177,7 @@ function connectAndAuth(port: number, payload: Record<string, unknown>): Promise
       ws.close();
       reject(new Error("auth timed out"));
     }, 10_000);
-    ws.on("open", () => ws.send(JSON.stringify({ type: "auth", ...payload })));
+    ws.on("open", () => ws.send(JSON.stringify({ type: "auth", access_updates: true, ...payload })));
     const handler = (raw: Buffer) => {
       const message = JSON.parse(raw.toString()) as Record<string, unknown>;
       if (message.type !== "auth_ok") return;
@@ -226,7 +213,7 @@ function connectAndAwaitClose(
       ws.close();
       reject(new Error("close timed out"));
     }, 10_000);
-    ws.on("open", () => ws.send(JSON.stringify({ type: "auth", ...payload })));
+    ws.on("open", () => ws.send(JSON.stringify({ type: "auth", access_updates: true, ...payload })));
     ws.on("close", (code: number) => {
       clearTimeout(timeout);
       resolveCode(code);
@@ -383,14 +370,16 @@ async function terminateProcessTree(child: ChildProcessWithoutNullStreams | null
 
 describe("Relay entitlement enforcement", () => {
   beforeAll(async () => {
-    authPort = await findFreePort();
-    firestorePort = await findFreePort();
-    enforcingPort = await findFreePort();
+    authPort = Number(process.env.KANNA_FIREBASE_AUTH_PORT) || await findFreePort();
+    firestorePort = Number(process.env.KANNA_FIREBASE_FIRESTORE_PORT) || await findFreePort();
+    enforcingPort = Number(process.env.KANNA_RELAY_PORT) || await findFreePort();
     permissivePort = await findFreePort();
     const hubPort = await findFreePort();
     const loggingPort = await findFreePort();
 
-    firebaseConfigDir = await mkdtemp(join(tmpdir(), "kanna-entitlement-firebase-"));
+    const taskTmp = fileURLToPath(new URL("../../../.tmp/", import.meta.url));
+    await mkdir(taskTmp, { recursive: true });
+    firebaseConfigDir = await mkdtemp(join(taskTmp, "kanna-entitlement-firebase-"));
     const configPath = join(firebaseConfigDir, "firebase.json");
     await writeFile(
       configPath,
@@ -788,53 +777,107 @@ describe("Relay entitlement enforcement", () => {
     await closeAndWait(auth.ws);
   });
 
-  it("honours a revocation on a live session within the cache TTL", async () => {
-    // The cache is warmed during the handshake, so the window opens no earlier
-    // than this instant; measuring from here can only over-state the elapsed
-    // time, which is the safe direction for the assertion below.
-    const windowOpenedAt = Date.now();
-    const first = await publishAs(enforcingPort, accounts.entitled, "revoke-before");
-    expect(first.ack).toMatchObject({ ok: true });
-
+  it("activates, revokes, expires grace and recovers publication and invokes on the same connections", async () => {
+    const account = accounts.unentitled;
+    const desktop = await connectAndAuth(enforcingPort, {
+      desktop_id: account.desktopId, desktop_secret: account.desktopSecret,
+    });
+    const phone = await connectAndAuth(enforcingPort, { id_token: account.idToken });
+    const publish = async (id: string) => {
+      const ack = waitForMessage(desktop.ws, (m) => m.type === "task_snapshot_ack" && m.id === id);
+      desktop.ws.send(JSON.stringify({ type: "task_snapshot_publish", id, snapshot: snapshot(account.desktopId) }));
+      return ack;
+    };
+    const invoke = async (id: string) => {
+      const response = waitForMessage(phone.ws, (m) => m.type === "response" && m.id === id);
+      phone.ws.send(JSON.stringify({ type: "invoke", id, command: "list_active_desktops", args: {} }));
+      return response;
+    };
+    const accessUpdate = (ws: WebSocket, active: boolean, status: string) => waitForMessage(ws, (m) => {
+      const entitlement = m.entitlement as Record<string, unknown> | undefined;
+      return m.type === "auth_ok" && entitlement?.active === active && entitlement.status === status;
+    });
+    const update = async (record: Record<string, unknown>, active: boolean, status: string) => {
+      const observed = [accessUpdate(desktop.ws, active, status), accessUpdate(phone.ws, active, status)];
+      await entitlementRef(account.uid).set(entitlementDoc(record));
+      return Promise.all(observed);
+    };
     try {
-      await entitlementRef(accounts.entitled.uid).set(entitlementDoc({
-        status: "revoked",
-        capabilities: [],
-      }));
-
-      const publish = async (id: string): Promise<Record<string, unknown>> => {
-        const ack = waitForMessage(first.auth.ws, (message) =>
-          message.type === "task_snapshot_ack" && message.id === id);
-        first.auth.ws.send(JSON.stringify({
-          type: "task_snapshot_publish",
-          id,
-          snapshot: snapshot(accounts.entitled.desktopId),
-        }));
-        return await ack;
-      };
-
-      // Inside the window the open session keeps the entitlement it was granted.
-      // The elapsed time rides along in the failure message so a machine too
-      // slow to reach here inside the TTL says so, instead of reading as a
-      // relay that stopped honouring its own cache.
-      const insideTtl = await publish("revoke-inside-ttl");
-      const elapsedMs = Date.now() - windowOpenedAt;
-      expect(
-        insideTtl,
-        `published ${elapsedMs}ms into a ${ENTITLEMENT_CACHE_TTL_MS}ms cache window`,
-      ).toMatchObject({ ok: true });
-      expect(elapsedMs).toBeLessThan(ENTITLEMENT_CACHE_TTL_MS);
-
-      // The TTL is the revocation bound, so it must actually bind — without a
-      // reconnect, and without the relay polling anything.
-      await new Promise((r) => setTimeout(r, ENTITLEMENT_CACHE_TTL_MS + 250));
-      expect(await publish("revoke-after-ttl")).toMatchObject({
-        ok: false,
-        code: ENTITLEMENT_REQUIRED_CODE,
-      });
+      expect(await publish("before-purchase")).toMatchObject({ ok: false, code: 4402 });
+      expect(await invoke("before-purchase-invoke")).toMatchObject({ code: 4402 });
+      const activated = await update({}, true, "active");
+      expect(activated[0].capabilities).toMatchObject({ taskSnapshotPublication: { version: 2 }, desktopRouting: { version: 2 } });
+      expect(await publish("purchased")).toMatchObject({ ok: true });
+      expect(await invoke("purchased-invoke")).toMatchObject({ data: { desktopIds: [account.desktopId] } });
+      await update({ status: "revoked", capabilities: [] }, false, "revoked");
+      expect(await publish("revoked")).toMatchObject({ ok: false, code: 4402 });
+      expect(await invoke("revoked-invoke")).toMatchObject({ code: 4402 });
+      await update({ status: "grace", graceEndsAt: new Date(Date.now() + 1500).toISOString() }, true, "grace");
+      const expired = [accessUpdate(desktop.ws, false, "grace"), accessUpdate(phone.ws, false, "grace")];
+      expect(await publish("in-grace")).toMatchObject({ ok: true });
+      await Promise.all(expired);
+      expect(await publish("grace-ended")).toMatchObject({ ok: false, code: 4402 });
+      await update({ source: "comp" }, true, "active");
+      expect(await publish("recovered")).toMatchObject({ ok: true });
+      expect(await invoke("recovered-invoke")).toMatchObject({ data: { desktopIds: [account.desktopId] } });
+      expect(desktop.ws.readyState).toBe(WebSocket.OPEN);
+      expect(phone.ws.readyState).toBe(WebSocket.OPEN);
     } finally {
-      await entitlementRef(accounts.entitled.uid).set(entitlementDoc({}));
-      await closeAndWait(first.auth.ws);
+      await closeAndWait(phone.ws);
+      await closeAndWait(desktop.ws);
+      await entitlementRef(account.uid).delete();
+    }
+  });
+
+  it("does not send unsolicited capability frames to older control peers", async () => {
+    const account = accounts.unentitled;
+    const old = await connectAndAuth(enforcingPort, { id_token: account.idToken, access_updates: false });
+    const current = await connectAndAuth(enforcingPort, { desktop_id: account.desktopId, desktop_secret: account.desktopSecret });
+    const frames: string[] = [];
+    old.ws.on("message", (frame) => frames.push(frame.toString()));
+    try {
+      const changed = waitForMessage(current.ws, (m) => m.type === "auth_ok" && (m.entitlement as { active?: boolean })?.active === true);
+      await entitlementRef(account.uid).set(entitlementDoc({}));
+      await changed;
+      expect(frames).toEqual([]);
+    } finally {
+      await closeAndWait(old.ws);
+      await closeAndWait(current.ws);
+      await entitlementRef(account.uid).delete();
+    }
+  });
+
+  it("revokes an established tunnel without closing the desktop control session", async () => {
+    const account = accounts.entitled;
+    const desktop = await connectAndAuth(enforcingPort, {
+      desktop_id: account.desktopId, desktop_secret: account.desktopSecret,
+    });
+    const phone = await connectAndAuth(enforcingPort, { id_token: account.idToken });
+    let tunnel: WebSocket | null = null;
+    try {
+      const establish = waitForMessage(desktop.ws, (m) => m.type === "tunnel_establish");
+      const ready = waitForMessage(phone.ws, (m) => m.type === "tunnel_ready");
+      phone.ws.send(JSON.stringify({ type: "tunnel_request", id: "open", desktopId: account.desktopId }));
+      const request = await establish;
+      tunnel = new WebSocket(`ws://127.0.0.1:${enforcingPort}`);
+      const desktopTunnel = tunnel;
+      desktopTunnel.on("open", () => desktopTunnel.send(JSON.stringify({
+        type: "auth", desktop_id: account.desktopId, desktop_secret: account.desktopSecret, tunnel_id: request.tunnelId,
+      })));
+      const desktopReady = waitForMessage(desktopTunnel, (m) => m.type === "tunnel_ready");
+      await Promise.all([ready, desktopReady]);
+      const forwarded = new Promise<string>((resolveFrame) => desktopTunnel.once("message", (data) => resolveFrame(data.toString())));
+      phone.ws.send("opaque payload");
+      expect(await forwarded).toBe("opaque payload");
+      const closed = new Promise<number>((resolveClose) => phone.ws.once("close", resolveClose));
+      await entitlementRef(account.uid).set(entitlementDoc({ status: "revoked", capabilities: [] }));
+      expect(await closed).toBe(4402);
+      expect(desktop.ws.readyState).toBe(WebSocket.OPEN);
+    } finally {
+      if (tunnel) await closeAndWait(tunnel);
+      await closeAndWait(phone.ws);
+      await closeAndWait(desktop.ws);
+      await entitlementRef(account.uid).set(entitlementDoc({}));
     }
   });
 

@@ -116,6 +116,7 @@ export function createQueriesApi(context: StoreContext): QueriesApi {
     context.state.blockerTaskStates.value = { ...(mergedSnapshot.value.blockerTaskStates ?? {}) };
     context.state.worktreePaths.value = { ...mergedSnapshot.value.worktreePaths };
     context.state.snapshotSettings.value = { ...mergedSnapshot.value.settings };
+    context.state.cloudAccount.value = mergedSnapshot.value.cloudAccount ?? null;
     context.state.repoSidebarOrder.value = { ...(mergedSnapshot.value.repoSidebarOrder ?? {}) };
     context.state.taskUiSlots.value = reconcileTaskUiSlots(
       context.state.taskUiSlots.value,

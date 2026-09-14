@@ -13,6 +13,12 @@ const authSession = {
   getIdToken: vi.fn(),
 };
 
+const accountStore = vi.hoisted(() => ({ cloudAccount: null as import("../../services/desktopServerClient").CloudAccountSnapshot | null }));
+vi.mock("../../stores/kanna", async () => {
+  const { reactive } = await import("vue");
+  return { useKannaStore: () => reactive(accountStore) };
+});
+
 const portal = vi.hoisted(() => ({
   baseUrl: "http://127.0.0.1:5173",
   openUrl: vi.fn(),
@@ -93,10 +99,37 @@ describe("PreferencesPanel account sign-in", () => {
   beforeEach(async () => {
     vi.resetModules();
     vi.clearAllMocks();
+    accountStore.cloudAccount = null;
     portal.baseUrl = "http://127.0.0.1:5173";
     portal.openUrl.mockResolvedValue(undefined);
     signedOutSession();
     PreferencesPanel = (await import("../PreferencesPanel.vue")).default;
+  });
+
+  it("projects relay access changes for this account without changing sign-in", async () => {
+    const wrapper = mountPreferences();
+    await flushPromises();
+    await wrapper.get('[data-testid="preferences-account-tab"]').trigger("click");
+    await wrapper.get('[data-testid="account-email"]').setValue("owner@example.test");
+    await wrapper.get('[data-testid="account-password"]').setValue("password123");
+    await wrapper.get('[data-testid="account-sign-in"]').trigger("submit");
+    const { useKannaStore } = await import("../../stores/kanna");
+    const store = useKannaStore();
+    store.cloudAccount = { userId: "user-1", entitlement: {
+      active: false, status: "grace", graceEndsAt: "2000-01-01T00:00:00Z", currentPeriodEndsAt: null,
+    } };
+    await flushPromises();
+    expect(wrapper.get('[data-testid="account-cloud-access"]').text()).toContain("grace period has ended");
+    store.cloudAccount.entitlement = { active: true, status: "active", graceEndsAt: null, currentPeriodEndsAt: null };
+    await flushPromises();
+    expect(wrapper.get('[data-testid="account-cloud-access"]').text()).toBe("Cloud access active.");
+    store.cloudAccount.entitlement = { active: true, status: "unknown", graceEndsAt: null, currentPeriodEndsAt: null };
+    await flushPromises();
+    expect(wrapper.get('[data-testid="account-cloud-access"]').text()).toContain("could not be confirmed");
+    store.cloudAccount.userId = "another-account";
+    await flushPromises();
+    expect(wrapper.find('[data-testid="account-cloud-access"]').exists()).toBe(false);
+    wrapper.unmount();
   });
 
   it("signs in with email and password from the Account tab", async () => {

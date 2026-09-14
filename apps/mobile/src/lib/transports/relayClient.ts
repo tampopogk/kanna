@@ -18,7 +18,7 @@ import type {
   RemoteTaskCompanionObserver,
   RemoteTaskTerminalObserver
 } from "./remoteTransport";
-import { createRelayTunnelWebSocketFactory, StreamClient } from "@kanna/stream-client";
+import { cloudAccessAction, readCloudAccess, type CloudAccessSnapshot, createRelayTunnelWebSocketFactory, StreamClient } from "@kanna/stream-client";
 
 export interface RelaySocketLike {
   readyState: number;
@@ -54,6 +54,7 @@ export interface RelayDesktopClientDependencies {
   /** Called when the relay rejects auth even after a forced token refresh, so
    * the app can surface an auth-expired state and require re-login. */
   onAuthError?(): void;
+  onAccessChange?(userId: string, access: CloudAccessSnapshot): void;
   reconnectDelaysMs?: readonly number[];
 }
 
@@ -87,6 +88,7 @@ export function createRelayDesktopClient({
   nextId = createSequentialIdFactory(),
   relayUrl,
   onAuthError,
+  onAccessChange,
   reconnectDelaysMs = [250, 500, 1000, 2000]
 }: RelayDesktopClientDependencies): RelayDesktopClient {
   let socket: RelaySocketLike | null = null;
@@ -102,6 +104,9 @@ export function createRelayDesktopClient({
   const terminalObservers = new Map<string, TerminalObserver>();
   const terminalConnectionListeners = new Map<string, Set<(connected: boolean) => void>>();
   const streamClients = new Map<string, StreamClient>();
+  const agentStreamClients = new Set<StreamClient>();
+  let access: CloudAccessSnapshot | null = null;
+  let accessUserId: string | null = null;
 
   const streamClientForDesktop = (desktopId: string) => {
     const existing = streamClients.get(desktopId);
@@ -119,6 +124,7 @@ export function createRelayDesktopClient({
       }),
       reconnectDelaysMs: [250, 500, 1000, 2000],
       onAuthError,
+      onAccessRequired: () => { ensureSocket(); },
       // The relay path is the one the owner measured at ~4.9 MB per five
       // minutes of viewing: bounded snapshots, on-demand scrollback, and delta
       // resubscribe are all negotiated here.
@@ -131,6 +137,7 @@ export function createRelayDesktopClient({
       },
     });
     streamClients.set(desktopId, client);
+    if (access) client.refreshAccess(access.active);
     return client;
   };
 
@@ -211,7 +218,8 @@ export function createRelayDesktopClient({
       openSocket.send(
         JSON.stringify({
           type: "auth",
-          id_token: idToken
+          id_token: idToken,
+          access_updates: true
         })
       );
     } catch (error) {
@@ -256,6 +264,7 @@ export function createRelayDesktopClient({
   };
 
   const handleRelayMessage = (raw: unknown) => {
+    if (disposed || !foreground) return;
     if (typeof raw !== "string") {
       return;
     }
@@ -265,6 +274,12 @@ export function createRelayDesktopClient({
     }
 
     if (parsed.type === "auth_ok") {
+      const nextAccess = readCloudAccess(parsed.entitlement);
+      access = nextAccess;
+      accessUserId = typeof parsed.userId === "string" ? parsed.userId : null;
+      if (access && accessUserId) onAccessChange?.(accessUserId, access);
+      // Older/permissive relays omit the block: absence must not retain a paid-access denial.
+      for (const client of [...streamClients.values(), ...agentStreamClients]) client.refreshAccess(access?.active ?? true);
       reconnectAttempt = 0;
       resolveReady?.();
       resolveReady = null;
@@ -294,6 +309,15 @@ export function createRelayDesktopClient({
     }
 
     pendingInvokes.delete(id);
+    if (message.code === 4402) {
+      pending.reject(new ServerRefusalError(
+        "Kanna Cloud access required.",
+        access?.reason === "unverified_email" ? "verify_email" : "subscription_required",
+        4402,
+        cloudAccessAction(access) ?? "Manage your Kanna account to restore cloud access."
+      ));
+      return;
+    }
     const status = typeof message.status === "number" ? message.status : 200;
     if (typeof message.error === "string" && message.error.trim()) {
       // A frame carrying the desktop's own failure status is the desktop
@@ -425,6 +449,8 @@ export function createRelayDesktopClient({
         client.close();
       }
       streamClients.clear();
+      for (const client of agentStreamClients) client.close();
+      agentStreamClients.clear();
     },
     setForeground(nextForeground) {
       if (disposed || foreground === nextForeground) {
@@ -585,9 +611,12 @@ export function createRelayDesktopClient({
         }),
         reconnectDelaysMs: [250, 500, 1000, 2000],
         onAuthError,
+        onAccessRequired: () => { ensureSocket(); },
         agentHistoryWindow: true,
       });
 
+      agentStreamClients.add(client);
+      if (access) client.refreshAccess(access.active);
       client.attachAgent(taskId, {
         onSnapshot(events, nextSeq, window) {
           listener({
@@ -630,6 +659,7 @@ export function createRelayDesktopClient({
 
       return {
         close() {
+          agentStreamClients.delete(client);
           client.close();
         },
         sendInput(input: string) {
