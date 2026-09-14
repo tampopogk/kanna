@@ -70,15 +70,21 @@ interface DraggableChange<T> {
 
 const collapsedRepos = ref<Set<string>>(new Set());
 const searchQuery = ref("");
-const attentionFilter = ref<"all" | "unread" | "questions">("all");
+const attentionFilter = ref<"all" | "unread" | "needs-you">("all");
+
+function needsHumanInput(item: SidebarTaskItem): boolean {
+  return item.closed_at == null
+    && (Boolean(item.attention_reason?.trim()) || item.runtime_state === "waiting");
+}
+
 function matchesAttention(item: SidebarTaskItem): boolean {
   if (attentionFilter.value === "unread") return isTaskUnread(item);
-  if (attentionFilter.value === "questions") return item.runtime_state === "waiting";
+  if (attentionFilter.value === "needs-you") return needsHumanInput(item);
   return true;
 }
 const attentionItems = computed(() => props.taskSlots.filter(matchesAttention));
 const unreadCount = computed(() => props.taskSlots.filter(item => item.closed_at == null && isTaskUnread(item)).length);
-const questionCount = computed(() => props.taskSlots.filter(item => item.closed_at == null && item.runtime_state === "waiting").length);
+const needsYouCount = computed(() => props.taskSlots.filter(needsHumanInput).length);
 const searchInputRef = ref<HTMLInputElement | null>(null);
 const sidebarContentRef = ref<HTMLElement | null>(null);
 const preSearchCollapsed = ref<Set<string> | null>(null);
@@ -732,10 +738,10 @@ defineExpose({ renameSelectedItem, focusSearch, searchQuery, matchesSearch, emit
 <template>
   <aside class="sidebar" :class="{ 'is-filtering': hasActiveSearch }" @mousedown="preventFocusSteal">
     <div class="sidebar-actions">
-      <div class="attention-filters" aria-label="Filter tasks">
-        <button :aria-pressed="attentionFilter === 'all'" @click="attentionFilter = 'all'">All</button>
-        <button :aria-pressed="attentionFilter === 'unread'" @click="attentionFilter = 'unread'" title="Tasks with unread output">Unread {{ unreadCount }}</button>
-        <button :aria-pressed="attentionFilter === 'questions'" @click="attentionFilter = 'questions'" title="Positively detected questions or input prompts; not inferred from idle">Questions {{ questionCount }}</button>
+      <div class="attention-filters" :aria-label="$t('sidebar.filterTasks')">
+        <button :aria-pressed="attentionFilter === 'all'" @click="attentionFilter = 'all'">{{ $t('sidebar.filterAll') }}</button>
+        <button :aria-pressed="attentionFilter === 'unread'" @click="attentionFilter = 'unread'" :title="$t('sidebar.filterUnreadTitle')">{{ $t('sidebar.filterUnread') }} {{ unreadCount }}</button>
+        <button :aria-pressed="attentionFilter === 'needs-you'" @click="attentionFilter = 'needs-you'" :title="$t('sidebar.filterNeedsYouTitle')">{{ $t('sidebar.filterNeedsYou') }} {{ needsYouCount }}</button>
       </div>
     </div>
     <div ref="sidebarContentRef" class="sidebar-content">
@@ -1108,7 +1114,9 @@ defineExpose({ renameSelectedItem, focusSearch, searchQuery, matchesSearch, emit
 
           <div v-if="itemsForRepo(repo.id).length === 0" class="no-items">
             {{ hasActiveSearch
-              ? (trimmedSearchQuery ? $t('sidebar.noTasksMatching', { query: trimmedSearchQuery }) : `No ${attentionFilter === 'questions' ? 'detected questions' : 'unread tasks'}`)
+              ? (trimmedSearchQuery
+                ? $t('sidebar.noTasksMatching', { query: trimmedSearchQuery })
+                : $t(attentionFilter === 'needs-you' ? 'sidebar.noTasksNeedingYou' : 'sidebar.noUnreadTasks'))
               : $t('sidebar.noTasks')
             }}
           </div>
