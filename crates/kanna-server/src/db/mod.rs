@@ -33,6 +33,8 @@ mod revisions;
 mod settings;
 mod snapshot;
 mod stage_runs;
+pub(crate) mod terminal_archives;
+pub use terminal_archives::AgentTerminalAttempt;
 mod task_events;
 mod task_inputs;
 #[cfg(test)]
@@ -182,6 +184,7 @@ pub(crate) const CURRENT_SCHEMA_MIGRATIONS: &[&str] = &[
     "081_provider_usage_discovery",
     "082_pull_request_forge_attempts",
     "083_worktree_setup_pending",
+    "084_agent_terminal_attempt",
     "084_task_transfer_workflow_claim",
     "085_task_attention_reason",
 ];
@@ -2431,6 +2434,15 @@ fn run_schema_migrations(conn: &Connection) -> Result<(), rusqlite::Error> {
             "worktree",
             "setup_pending",
             "INTEGER NOT NULL DEFAULT 0",
+        )
+    })?;
+
+    run_migration(conn, "084_agent_terminal_attempt", |conn| {
+        conn.execute_batch(
+            "CREATE TABLE agent_terminal_attempt (
+            run_id TEXT PRIMARY KEY REFERENCES stage_run(id) ON DELETE CASCADE,
+            archive TEXT
+        );",
         )
     })?;
 

@@ -352,3 +352,74 @@ describe("useMainTabs", () => {
     });
   });
 });
+
+describe("optional task reference", () => {
+  it("keeps reference selection independently of focus, scoped across tasks and restart", () => {
+    const key = ref("item:a");
+    const tabs = useMainTabs({ scopeKey: computed(() => key.value) });
+    expect(tabs.referenceTabId.value).toBe("");
+    tabs.openTab({ kind: "diff" });
+    tabs.activateTab("agent");
+    expect(tabs.activeTabId.value).toBe("agent");
+    expect(tabs.referenceTabId.value).toBe("diff");
+    tabs.setSplit(false);
+    key.value = "item:b";
+    expect(tabs.referenceTabId.value).toBe("");
+    expect(tabs.activeTabId.value).toBe("agent");
+    key.value = "item:a";
+    expect(tabs.split.value).toBe(false);
+    const restored = useMainTabs({ scopeKey: computed(() => key.value) });
+    restored.restoreScopes(tabs.snapshotScopes());
+    expect(restored.activeTabId.value).toBe("agent");
+    expect(restored.referenceTabId.value).toBe("diff");
+    expect(restored.split.value).toBe(false);
+    restored.closeTab("diff");
+    expect(restored.referenceTabId.value).toBe("");
+  });
+  it("persists workspace-bound reading coordinates and a preview's port name only", () => {
+    const tabs = useMainTabs({ scopeKey: computed(() => "item:a") });
+    tabs.openTab({ kind: "file", filePath: "a.ts" });
+    tabs.updateReading("file:a.ts", { workspace: "/a", top: 480 });
+    tabs.openTab({ kind: "preview", portName: "DEV_PORT" });
+    const restored = useMainTabs({ scopeKey: computed(() => "item:a") });
+    restored.restoreScopes(parsePersistedMainTabs(JSON.stringify(tabs.snapshotScopes())));
+    expect(restored.tabs.value.find(tab => tab.kind === "file")?.reading).toEqual({ workspace: "/a", top: 480 });
+    expect(restored.activeTab.value).toEqual({ kind: "preview", portName: "DEV_PORT", id: "preview:DEV_PORT" });
+    expect(restored.activeTabContext.value).not.toBe("main");
+  });
+});
+
+it('closes just one nested pane and preserves its tabs and remaining split', () => {
+  const scopeKey = ref('item:a');
+  const tabs = useMainTabs({ scopeKey });
+  tabs.openTab({kind:'file',filePath:'one.md'});
+  tabs.splitPane('pane-1','horizontal');
+  tabs.openTab({kind:'file',filePath:'two.md'});
+  tabs.splitPane('pane-2','vertical');
+  const allTabs = tabs.tabs.value.map(tab => tab.id);
+  expect(tabs.panes.value).toHaveLength(3);
+  tabs.closePane('pane-3');
+  expect(tabs.panes.value).toHaveLength(2);
+  expect(tabs.panes.value.find(rect => rect.pane.id === 'pane-2')?.pane.tabs).toEqual(['file:one.md','file:two.md']);
+  expect(tabs.tabs.value.map(tab => tab.id)).toEqual(allTabs);
+  tabs.closePane('pane-1');
+  expect(tabs.panes.value).toHaveLength(1);
+  expect(tabs.panes.value[0].pane.tabs).toContain('agent');
+  tabs.closePane('pane-2');
+  expect(tabs.panes.value).toHaveLength(1);
+});
+
+it('cycles through visual pane/tab order after reordering and moving tabs', () => {
+  const { tabs } = setup();
+  tabs.openTab({kind:'diff'});
+  tabs.openTab({kind:'graph'});
+  tabs.moveTab('graph','pane-1','agent');
+  tabs.activateTab('graph');
+  tabs.cycleTab(1);expect(tabs.activeTabId.value).toBe('agent');
+  tabs.cycleTab(1);expect(tabs.activeTabId.value).toBe('diff');
+  tabs.splitPane('pane-1','horizontal','agent');
+  expect(tabs.tabs.value.map(tab=>tab.id)).toEqual(['graph','diff','agent']);
+  tabs.activateTab('graph');
+  tabs.cycleTab(-1);expect(tabs.activeTabId.value).toBe('agent');
+  tabs.cycleTab(1);expect(tabs.activeTabId.value).toBe('graph');
+});

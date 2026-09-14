@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 
 import { mount } from "@vue/test-utils";
-import { nextTick } from "vue";
+import { defineComponent, nextTick, ref } from "vue";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import DiffModal from "../DiffModal.vue";
 import DiffView from "../DiffView.vue";
@@ -288,6 +288,38 @@ describe("DiffView opening scope", () => {
     for (let tick = 0; tick < 6; tick += 1) await flushPromises();
     return wrapper;
   }
+
+  it("does not let either diff mount path activate an unfocused visible reference", async () => {
+    mockGit(true);
+    const selected = ref("agent");
+    const Host = defineComponent({
+      components: { DiffModal },
+      setup: () => ({ selected }),
+      template: `<div>
+        <textarea class="agent-input" />
+        <div @focusin="selected = 'diff'">
+          <DiffModal repo-path="/repo" worktree-path="/worktree" embedded
+            :active="selected === 'diff'" :is-visible="() => true" />
+        </div>
+      </div>`,
+    });
+    const wrapper = mount(Host, {
+      attachTo: document.body,
+      global: { mocks: { $t: (key: string) => key } },
+    });
+    try {
+      const input = wrapper.get<HTMLTextAreaElement>(".agent-input").element;
+      input.focus();
+      for (let tick = 0; tick < 6; tick += 1) await flushPromises();
+      expect(selected.value).toBe("agent");
+      expect(document.activeElement).toBe(input);
+      wrapper.get<HTMLElement>(".diff-view").element.focus();
+      await flushPromises();
+      expect(selected.value).toBe("diff");
+    } finally {
+      wrapper.unmount();
+    }
+  });
 
   it("opens a clean worktree on the branch diff", async () => {
     mockGit(false);

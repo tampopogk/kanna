@@ -241,6 +241,32 @@ describe("Sidebar", () => {
     getStageOrder.mockReturnValue(["merge", "pr", "review", "in progress"]);
   });
 
+  it("creates tasks only from the repository header", async () => {
+    const wrapper = mountSidebar([item("task-1")]);
+    expect(wrapper.find('.new-task-action').exists()).toBe(false);
+    await wrapper.get('.repo-header .btn-add-task').trigger('click');
+    expect(wrapper.emitted('new-task')).toEqual([[repo.id]]);
+    wrapper.unmount();
+  });
+
+  it("filters unread and positively detected prompts without treating idle as a question", async () => {
+    const wrapper = mountSidebar([
+      item("unread", { read_state: "unread", runtime_state: "busy" }),
+      item("question", { read_state: "read", runtime_state: "waiting", parent_task_id: "parent" }),
+      item("parent", { read_state: "read", runtime_state: "idle" }),
+      item("idle", { read_state: "read", runtime_state: "idle" }),
+    ]);
+    const buttons = wrapper.findAll(".attention-filters button");
+    await buttons[1].trigger("click");
+    expect(wrapper.findAll(".workflow-item").map(node => node.attributes("data-task-id"))).toEqual(["unread"]);
+    await buttons[2].trigger("click");
+    expect(wrapper.findAll(".workflow-item").map(node => node.attributes("data-task-id"))).toEqual(["question"]);
+    expect(wrapper.get(".question-marker").attributes("title")).toBe("Detected question / input prompt");
+    await buttons[0].trigger("click");
+    expect(wrapper.findAll(".workflow-item")).toHaveLength(4);
+    wrapper.unmount();
+  });
+
   it("renders settled server activity when runtime status has not been observed", () => {
     // runtime_status is nullable: a task no session has reported on yet has
     // no runtime dimension, so the row falls back to the blended activity
@@ -1543,6 +1569,24 @@ describe("explicit task attention annotation", () => {
     await wrapper.setProps({ taskSlots: tasks.map(task => ({ ...task, attention_reason: null })) });
     expect(wrapper.find(".task-attention-marker").exists()).toBe(false);
     expect(order()).toEqual(before);
+    wrapper.unmount();
+  });
+
+  it("keeps requested attention and detected questions independent", async () => {
+    const tasks = [
+      item("both", { attention_reason: "Choose", runtime_state: "waiting" }),
+      item("attention", { attention_reason: "Review", runtime_state: "idle" }),
+      item("question", { runtime_state: "waiting" }),
+    ];
+    const wrapper = mountSidebar(tasks, null);
+    expect(wrapper.findAll(".task-attention-marker")).toHaveLength(2);
+    expect(wrapper.findAll(".question-marker")).toHaveLength(2);
+    await wrapper.setProps({ taskSlots: tasks.map(task => ({ ...task, attention_reason: null })) });
+    expect(wrapper.findAll(".task-attention-marker")).toHaveLength(0);
+    expect(wrapper.findAll(".question-marker")).toHaveLength(2);
+    await wrapper.setProps({ taskSlots: tasks.map(task => ({ ...task, runtime_state: "idle" })) });
+    expect(wrapper.findAll(".task-attention-marker")).toHaveLength(2);
+    expect(wrapper.findAll(".question-marker")).toHaveLength(0);
     wrapper.unmount();
   });
 

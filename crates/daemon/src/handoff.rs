@@ -1124,6 +1124,8 @@ pub(crate) async fn handle_handoff(
                     );
                 }
                 infos.push(protocol::HandoffSession {
+                    archive_binding: parts.archive_binding,
+                    archive_unavailable_reason: parts.archive_unavailable_reason,
                     session_id: id.clone(),
                     pid,
                     child_start: parts.child_start,
@@ -1228,6 +1230,8 @@ pub(crate) async fn handle_handoff(
             session_fds
         );
         infos.push(protocol::HandoffSession {
+            archive_binding: None,
+            archive_unavailable_reason: None,
             session_id: id.clone(),
             pid: record.pid,
             child_start: record.child_start,
@@ -1262,6 +1266,13 @@ pub(crate) async fn handle_handoff(
         infos.len(),
         dead_count
     );
+    // Focused adoption fault injection, excluded from release builds.
+    #[cfg(debug_assertions)]
+    if std::env::var_os("KANNA_DAEMON_TEST_HANDOFF_DROP_SNAPSHOT").is_some() {
+        for info in &mut infos {
+            info.snapshot = None;
+        }
+    }
     let transfer_ids = infos
         .iter()
         .map(|info| info.session_id.clone())

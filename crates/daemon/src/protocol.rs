@@ -114,8 +114,36 @@ pub struct TerminalSnapshot {
     pub vt: String,
 }
 
+/// Immutable server launch identity, frozen before the reader starts. Posts do
+/// not change it when they rebind the mutable completion context.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TerminalAttemptBinding {
+    pub task_id: String,
+    pub spawned_run_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TerminalAttemptArchive {
+    pub binding: TerminalAttemptBinding,
+    pub session_id: String,
+    pub cwd: String,
+    pub snapshot: Option<TerminalSnapshot>,
+    pub unavailable_reason: Option<String>,
+    /// An observation, not legacy Exit.code or the intent to kill a process.
+    pub observed_exit_code: Option<i32>,
+}
+
+fn unknown_archive_provenance() -> Option<String> {
+    Some("Handoff archive retention provenance unavailable".to_string())
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HandoffSession {
+    /// None explicitly attests complete retention. Older senders cannot attest it.
+    #[serde(default = "unknown_archive_provenance")]
+    pub archive_unavailable_reason: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub archive_binding: Option<TerminalAttemptBinding>,
     pub session_id: String,
     pub pid: u32,
     /// Start-time identity of `pid` (`proc_bsdinfo` start seconds/micros),
@@ -307,6 +335,12 @@ pub enum ComposerAttestation {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum Command {
+    ReadAttemptArchive {
+        attempt_id: String,
+    },
+    ReleaseAttemptArchive {
+        attempt_id: String,
+    },
     /// Negotiate the generic-input fence with the exact kanna-server process.
     /// The daemon pins the caller's kernel identity for this generation.
     NegotiateProtectedInput {
@@ -572,6 +606,9 @@ pub enum Command {
 #[serde(tag = "type")]
 #[allow(clippy::enum_variant_names)]
 pub enum Event {
+    AttemptArchive {
+        archive: Option<TerminalAttemptArchive>,
+    },
     ProtectedInputReady {
         version: u32,
     },
@@ -1135,6 +1172,8 @@ mod tests {
     fn test_handoff_ready_roundtrip_without_snapshot() {
         let evt = Event::HandoffReady {
             sessions: vec![HandoffSession {
+                archive_binding: None,
+                archive_unavailable_reason: None,
                 session_id: "sess-1".to_string(),
                 pid: 42,
                 child_start: None,

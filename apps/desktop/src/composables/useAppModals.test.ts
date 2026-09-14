@@ -50,6 +50,7 @@ function mountMarkdownModalHarness(options: {
   );
   const store = reactive({
     repos: [],
+    worktreePaths: {} as Record<string, string>,
     selectedRepo: options.selectedRepo ?? { id: "repo-1", path: "/repo" },
     currentItem: options.currentItem ?? { id: "task-a", branch: "task-a" },
     markdownPreviewMode: options.markdownPreviewMode ?? "rendered",
@@ -128,6 +129,20 @@ describe("useAppModals", () => {
       patch: "diff",
       truncated: false,
     });
+  });
+
+  it("uses recorded workspace identity for reading state and resets offsets at a new workspace", () => {
+    const harness = mountMarkdownModalHarness();
+    harness.store.worktreePaths["task-a"] = "/recorded/task-a";
+    harness.mainTabs.openTab({ kind: "diff" });
+    harness.modals.updateCurrentDiffViewState({ scope: "working", scrollPositions: { working: 600 } });
+    expect(harness.modals.activeWorktreePath.value).toBe("/recorded/task-a");
+    expect(harness.mainTabs.tabs.value.find(tab => tab.kind === "diff")?.reading?.workspace).toBe("/recorded/task-a");
+    harness.store.worktreePaths["task-a"] = "/recorded/task-a-2";
+    harness.store.currentItem.branch = "task-a-2";
+    expect(harness.modals.currentDiffViewState.value).toBeUndefined();
+    expect(harness.mainTabs.activeTabId.value).toBe("diff");
+    harness.wrapper.unmount();
   });
 
   it("routes remote-owned task views without constructing a local worktree path", () => {

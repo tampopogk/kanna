@@ -110,6 +110,66 @@ nothing.
 3. Close shell → focus returns to agent terminal
 4. Type in the agent terminal to send input to the running provider CLI
 
+### Task reference views
+
+A task opens with its provider TUI using the full work area. Each pane has its
+own tab bar, directly above its contents. **+** opens a menu for diff,
+terminal, file explorer or commit graph. Right-click a pane’s tab strip (or
+focus it and press Shift+F10) for splitting side by side or top and bottom,
+with a pane-specific **×** to close that pane. Splitting a pane with multiple tabs moves its selected reference tab into the
+new pane; splitting the Agent view or a single-tab pane opens an empty destination. Drag any tab,
+including Agent, onto another pane's tab bar or an empty pane. Dropping before a
+tab reorders it. Empty source panes collapse after a tab moves or closes.
+Dividers resize with the pointer or arrow keys. A pane’s **×** removes only
+that pane, moving its tabs to its adjacent sibling while preserving other splits
+and terminal sessions. The last pane cannot be removed. Tabs use pointer dragging
+with insertion markers; stage dropdowns and close buttons do not initiate drags.
+The **+** menu shows each content command’s existing keyboard shortcut.
+Open a file with **⌘P**; it has no separate + menu item.
+The Agent tab shows its stage name followed by a dropdown arrow; tab labels
+cannot be text-selected. Modified bracket shortcuts cycle in displayed pane/tab
+order after moves. Right-click a tab for **Close all right**, which closes only
+reference tabs to its right in that pane and preserves Agent. Insertion markers
+also show the append position after the last tab and in empty panes.
+
+Narrow work areas (under 800 CSS pixels) show one readable view and a combined
+tab bar without discarding the saved split layout. Select the **Agent** tab
+to return to the provider terminal. The focused view owns shortcuts, including
+the editor's existing save/quit semantics. Task id, owning machine and branch
+remain visible. Launch provider/model metadata and the Next stage model control
+are absent from this header. An older editor tab labels its original workspace
+when the task has moved on.
+Selection, pane membership, tab ordering and split proportions are stored per task,
+separately from repository and app tabs. File reading offsets and diff scope,
+branch inclusion, and reading offsets restore on task return and app restart
+for the same workspace. Positions are best effort if content changes. A new
+workspace resets those reading positions. Live terminal continuity comes from
+surviving daemon sessions; unavailable sessions and stale remote file snapshots
+are not restored by tab persistence.
+
+The Agent tab's stage selector offers Latest and dated historical attempts.
+Earlier attempts show read-only terminal-retained scrollback (including the
+final alternate screen) and the observed exit status, or an explicit unknown
+status. Repeated attempts remain separate. Uncaptured legacy history is marked
+unavailable; saved stage summaries do not stand in for terminal output. Selecting
+history never starts or attaches to an ended process. Latest returns to the
+same current terminal. Continued posts share a process's launch identity;
+retries and fallback launches receive distinct identities.
+
+A local task's claimed port opens a reference preview after resolving its
+current workspace and port against the owning server. **Open in browser**
+retains full browser and DevTools access. The task server must be running and
+allow embedding. All visible previews and a bounded cache of hidden previews remain mounted during task/view switches,
+retaining their page state; app restart or cache eviction reloads the page.
+Only the port name is persisted, never a page snapshot or credential. Embedded
+previews are local desktop only; mobile and remote preview transport are
+unchanged.
+
+The compact sidebar offers **New task**, **Unread**, and **Questions** over the
+existing task list. Unread uses the existing read state; Questions requires a
+positively detected waiting prompt. Row tooltips explain each reason. Filters
+retain repo pins, nesting and stage order, and create no new lifecycle state.
+
 ### Editing a local task file
 
 File previews offer **Edit**, followed by a visible terminal-editor choice.
@@ -189,7 +249,7 @@ supervision reads `runtimeState`, because a busy task nobody has read carries
 
 Sidebar order: pinned (manual `pin_order`) → unpinned unblocked tasks grouped
 by workflow stage in the repo's `stage_order` (default `pr` → `review` →
-`in progress`; unknown stages last), newest first within each group → blocked
+`in progress` → `plan` → `consultation`; unknown stages last), newest first within each group → blocked
 (newest first). Subtasks nest under their parents (suppressed while
 searching).
 

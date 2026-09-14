@@ -243,6 +243,8 @@ impl PtyKillPlan {
 /// A PTY session backed by raw libc calls.
 /// Stores the master fd directly so it can be extracted for handoff.
 pub struct PtySession {
+    pub(crate) archive_binding: Option<crate::protocol::TerminalAttemptBinding>,
+    observed_exit_code: Option<i32>,
     master_fd: OwnedFd,
     child_pid: libc::pid_t,
     ownership: ChildOwnership,
@@ -465,6 +467,19 @@ impl PtySession {
         let master = unsafe { OwnedFd::from_raw_fd(master_fd) };
 
         Ok(PtySession {
+            archive_binding: env
+                .get("KANNA_STAGE_RUN_ID")
+                .zip(env.get("KANNA_TASK_ID"))
+                .and_then(|(run, task)| {
+                    (kanna_daemon::session_id::is_safe(run)
+                        && kanna_daemon::session_id::is_safe(task)
+                        && run.starts_with(&format!("run-{task}-")))
+                    .then(|| crate::protocol::TerminalAttemptBinding {
+                        task_id: task.clone(),
+                        spawned_run_id: run.clone(),
+                    })
+                }),
+            observed_exit_code: None,
             master_fd: master,
             child_pid: pid,
             ownership: ChildOwnership::Owned {
@@ -548,6 +563,8 @@ impl PtySession {
             }
         };
         PtySession {
+            archive_binding: None,
+            observed_exit_code: None,
             master_fd,
             child_pid,
             ownership,
@@ -622,6 +639,10 @@ impl PtySession {
         self.cols
     }
 
+    pub fn observed_exit_code(&self) -> Option<i32> {
+        self.observed_exit_code
+    }
+
     pub fn try_wait(&mut self) -> Option<i32> {
         // Only an owned, unreaped child can be waited on. Adopted children
         // belong to the exited old daemon (waitpid would report ECHILD), and
@@ -634,13 +655,16 @@ impl PtySession {
         let ret = unsafe { libc::waitpid(self.child_pid, &mut status, libc::WNOHANG) };
         if ret == self.child_pid {
             self.mark_reaped();
-            if libc::WIFEXITED(status) {
+            let observed = if libc::WIFEXITED(status) {
                 Some(libc::WEXITSTATUS(status))
             } else if libc::WIFSIGNALED(status) {
                 Some(128 + libc::WTERMSIG(status))
             } else {
-                Some(1)
-            }
+                None
+            };
+            self.observed_exit_code = observed;
+            // Keep the legacy wait result separate from archival evidence.
+            observed.or(Some(1))
         } else {
             if ret < 0 && io::Error::last_os_error().raw_os_error() == Some(libc::ECHILD) {
                 // Someone else (e.g. the background reaper) already reaped
@@ -1997,5 +2021,39 @@ mod tests {
 
         let other = std::io::Error::from_raw_os_error(libc::EMFILE);
         assert!(!is_pty_exhaustion_error(&other));
+    }
+}
+
+#[cfg(test)]
+mod archive_status_tests {
+    use super::*;
+    #[test]
+    fn archive_keeps_a_status_consumed_by_an_earlier_observer() {
+        for code in [0, 7] {
+            let mut child = PtySession::spawn(
+                "/bin/sh",
+                &["-c".into(), format!("exit {code}")],
+                "/",
+                &HashMap::new(),
+                80,
+                24,
+            )
+            .unwrap();
+            let deadline = Instant::now() + std::time::Duration::from_secs(5);
+            loop {
+                if let Some(observed) = child.try_wait() {
+                    assert_eq!(observed, code);
+                    break;
+                }
+                assert!(Instant::now() < deadline);
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            assert_eq!(
+                child.try_wait(),
+                None,
+                "legacy wait semantics stay consumed"
+            );
+            assert_eq!(child.observed_exit_code(), Some(code));
+        }
     }
 }

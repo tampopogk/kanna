@@ -5,6 +5,7 @@ import type { WorkspaceTask } from "../workspace/types";
 import { useAppKeyboardActions } from "./useAppKeyboardActions";
 import type { ShortcutContext } from "./useShortcutContext";
 import { useMainTabs } from "./useMainTabs";
+import { useKeyboardShortcuts } from "./useKeyboardShortcuts";
 
 const invokeMock = vi.hoisted(() => vi.fn());
 
@@ -83,6 +84,7 @@ function createHarness(options: {
   const mainTabs = useMainTabs({ scopeKey: computed(() => "item:task-durable") });
   if (options.activeTabKind === "diff") mainTabs.openTab({ kind: "diff" });
   const overlayContext = ref<ShortcutContext>("main");
+  const shortcutsEnabled = ref(true);
   const showShortcutsModal = ref(false);
   const showPreferencesPanel = ref(false);
   const showNewTaskModal = ref(false);
@@ -121,6 +123,7 @@ function createHarness(options: {
     mainPanelRef: ref(null),
     requestCloseCurrentWindow,
     openNewTaskModal,
+    shortcutsEnabled: computed(() => shortcutsEnabled.value),
     currentShortcutContext: computed(() => showShortcutsModal.value ? "main" : overlayContext.value),
     showShortcutsModal,
     showNewTaskModal,
@@ -143,6 +146,7 @@ function createHarness(options: {
   } as unknown as Parameters<typeof useAppKeyboardActions>[0]);
   return {
     keyboardActions,
+    shortcutsEnabled,
     overlayContext,
     showShortcutsModal,
     showNewTaskModal,
@@ -167,6 +171,24 @@ function createHarness(options: {
 }
 
 describe("useAppKeyboardActions durable selection", () => {
+  it("leaves save with the focused editor or preview while retaining modal priority", () => {
+    const { mainTabs, overlayContext, shortcutsEnabled } = createHarness();
+    const registration = vi.mocked(useKeyboardShortcuts).mock.calls.at(-1)?.[1];
+    const context = registration?.context;
+    expect(registration?.enabled?.()).toBe(true);
+    shortcutsEnabled.value = false;
+    expect(registration?.enabled?.()).toBe(false);
+    mainTabs.openTab({ kind: "editor", editorSession: { sessionId: "edit-test" } as never });
+    expect(context?.()).toBe("shell");
+    mainTabs.openTab({ kind: "preview", portName: "PORT" });
+    expect(context?.()).toBe("preview");
+    overlayContext.value = "newTask";
+    expect(context?.()).toBe("newTask");
+    overlayContext.value = "main";
+    mainTabs.activateTab("agent");
+    expect(context?.()).toBe("main");
+  });
+
   it("opens a local task window with the durable task id, not its UI slot", async () => {
     const { keyboardActions, openWindow } = createHarness({
       selectedSlotId: "create:stable",

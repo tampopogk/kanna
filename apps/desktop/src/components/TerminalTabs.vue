@@ -7,10 +7,11 @@ import { buildTerminalSpawnOptions } from "../composables/terminalSpawnOptions";
 
 const taskTerminalWarmCacheMax = 10;
 
-const props = defineProps<{
+const props = withDefaults(defineProps<{
   sessionId: string | null;
   /** False while another main-area tab is in front of the agent session. */
   active?: boolean;
+  visible?: boolean;
   agentType?: string;
   agentProvider?: AgentProvider;
   worktreePath?: string;
@@ -25,7 +26,7 @@ const props = defineProps<{
     options?: { agentProvider?: AgentProvider },
   ) => Promise<void>;
   recoverTaskSession?: (sessionId: string, options?: { cols?: number; rows?: number }) => Promise<void>;
-}>();
+}>(), { visible: undefined });
 
 function buildSpawnOptions() {
   return buildTerminalSpawnOptions(props.spawnPtySession, {
@@ -45,6 +46,7 @@ function buildSpawnOptions() {
         :key="sessionId"
         :session-id="sessionId"
         :active="active !== false"
+        :visible="visible"
         :spawn-options="buildSpawnOptions()"
         :kitty-keyboard="!!(spawnPtySession && worktreePath && prompt) && shouldEnableKittyKeyboard({ agentProvider })"
         :agent-provider="agentProvider"

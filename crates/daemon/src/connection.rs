@@ -1945,6 +1945,16 @@ pub(crate) async fn handle_command(
                 // killed Exit, and recovery teardown. The manager claim above
                 // independently ensures the handoff snapshot and this Kill
                 // agree on the exact outgoing incarnation.
+                if let Some(session) = &session {
+                    if let Some(archive) = session.final_attempt_archive(&session_id).await {
+                        if let Err(error) = kanna_daemon::terminal_archive::persist(
+                            &recovery_manager.attempt_archive_dir(),
+                            &archive,
+                        ) {
+                            log::warn!("[attempt-archive] kill capture failed: {error}");
+                        }
+                    }
+                }
                 let exit_evt = Event::Exit {
                     session_id: session_id.clone(),
                     code: 128 + libc::SIGKILL,
@@ -1996,6 +2006,27 @@ pub(crate) async fn handle_command(
             sessions_list.extend(agent_runtime::agent_session_infos(&agent_sessions).await);
             let evt = Event::SessionList {
                 sessions: sessions_list,
+            };
+            let _ = write_event(&mut *writer.lock().await, &evt).await;
+        }
+
+        Command::ReleaseAttemptArchive { attempt_id } => {
+            let evt = match kanna_daemon::terminal_archive::release(
+                &recovery_manager.attempt_archive_dir(),
+                &attempt_id,
+            ) {
+                Ok(()) => Event::Ok,
+                Err(error) => error_event(None, error),
+            };
+            let _ = write_event(&mut *writer.lock().await, &evt).await;
+        }
+        Command::ReadAttemptArchive { attempt_id } => {
+            let evt = match kanna_daemon::terminal_archive::read(
+                &recovery_manager.attempt_archive_dir(),
+                &attempt_id,
+            ) {
+                Ok(archive) => Event::AttemptArchive { archive },
+                Err(error) => error_event(None, error),
             };
             let _ = write_event(&mut *writer.lock().await, &evt).await;
         }

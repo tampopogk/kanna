@@ -294,6 +294,8 @@ pub(crate) async fn spawn_prepared_task_for_api_recording_stage_run_detailed(
         ))
     })?
     .map_err(PreparedTaskDeliveryError::BeforeAcknowledgement)?;
+    bind_terminal_launch(db_path, &run_id, &prepared.session)
+        .map_err(PreparedTaskDeliveryError::BeforeAcknowledgement)?;
     let created = match spawn_prepared_task_classified(daemon, prepared.clone()).await {
         Ok(created) => created,
         Err(SpawnPreparedError::BeforeAcknowledgement(message)) => {
@@ -502,6 +504,7 @@ pub(crate) async fn spawn_prepared_stage_run_for_api(
 
     mark_stage_operation_phase(db_path, &run_id, "spawn_ready")?;
     record_stage_transition_run(db_path, &prepared, &run_id)?;
+    bind_terminal_launch(db_path, &run_id, &prepared.session)?;
 
     let command = spawn_session_command(
         session_id.clone(),
@@ -1840,6 +1843,8 @@ pub(crate) async fn rerun_prepared_stage_for_api(
         &run_id,
     )?;
 
+    bind_terminal_launch(db_path, &run_id, &prepared.session)?;
+
     let command = spawn_session_command(
         session_id.clone(),
         prepared.cwd,
@@ -2249,10 +2254,11 @@ fn generate_stage_run_id(task_id: &str) -> String {
 
 fn initialize_completion_context(
     env: &mut std::collections::HashMap<String, String>,
-    _task_id: &str,
+    task_id: &str,
     run_id: &str,
     daemon_dir: &str,
 ) -> Result<CompletionContextArtifact, String> {
+    env.insert("KANNA_TASK_ID".to_string(), task_id.to_string());
     let daemon_dir = std::path::PathBuf::from(daemon_dir);
     let path = daemon_dir
         .join("runtime")
@@ -3925,6 +3931,13 @@ mod lifecycle_operation_tests {
                 .run_id,
             second_post
         );
+        assert_eq!(env.get("KANNA_STAGE_RUN_ID"), Some(&spawned_run));
+        assert_eq!(
+            kanna_tool_catalog::read_completion_context(&path)
+                .unwrap()
+                .spawned_run_id,
+            Some(spawned_run)
+        );
         let _ = std::fs::remove_dir_all(daemon_dir);
     }
 
@@ -4624,4 +4637,18 @@ mod teardown_deadline_tests {
             .unwrap();
         let _ = std::fs::remove_dir_all(daemon_dir);
     }
+}
+
+fn bind_terminal_launch(
+    db_path: &str,
+    run_id: &str,
+    session: &PreparedSessionSpawn,
+) -> Result<(), String> {
+    if matches!(session, PreparedSessionSpawn::Pty { .. }) {
+        Db::open(db_path)
+            .map_err(|e| e.to_string())?
+            .bind_agent_terminal_attempt(run_id)
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(())
 }

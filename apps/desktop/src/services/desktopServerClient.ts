@@ -313,6 +313,8 @@ export interface DesktopHumanReviewDecision {
 }
 
 export interface DesktopTaskDetail {
+  ports?: Array<{ name: string; port: number }> | null;
+  worktreePath?: string | null;
   workflowDefinition?: PinnedTaskWorkflow | null;
   id: string;
   stage: string | null;
@@ -336,11 +338,11 @@ export interface DesktopTaskDetail {
   humanReviewDecision?: DesktopHumanReviewDecision | null;
 }
 
-export async function fetchDesktopTaskDetail(taskId: string): Promise<DesktopTaskDetail> {
+export async function fetchDesktopTaskDetail(taskId: string, options?: { localOnly?: boolean }): Promise<DesktopTaskDetail> {
   if (clientHandlersForTests?.fetchTaskDetail) {
     return await clientHandlersForTests.fetchTaskDetail(taskId);
   }
-  return await requestJson<DesktopTaskDetail>(`/v1/tasks/${encodeURIComponent(taskId)}`);
+  return await requestJson<DesktopTaskDetail>(`/v1/tasks/${encodeURIComponent(taskId)}${options?.localOnly ? "?localOnly=true" : ""}`);
 }
 
 export interface CreateDesktopTaskRequest {
@@ -1383,4 +1385,28 @@ export async function replaceDesktopTaskWorkflow(
     method: "POST", body: { expectedDefinition, workflowDefinition, source: "operator" },
   });
   return response.workflowDefinition;
+}
+
+export interface AgentTerminalAttempt {
+  id: string;
+  stage: string;
+  startedAt: string;
+  cwd: string | null;
+  archived: boolean;
+  recordedLaunch: boolean;
+  observedExitCode: number | null;
+}
+export interface AgentTerminalArchive {
+  binding: { task_id: string; spawned_run_id: string };
+  session_id: string;
+  cwd: string;
+  snapshot: { vt: string; cols: number; rows: number } | null;
+  unavailable_reason: string | null;
+  observed_exit_code: number | null;
+}
+export function listAgentTerminalAttempts(taskId: string): Promise<AgentTerminalAttempt[]> {
+  return requestJson(`/v1/tasks/${encodeURIComponent(taskId)}/terminal-attempts`);
+}
+export function readAgentTerminalArchive(taskId: string, runId: string): Promise<AgentTerminalArchive | null> {
+  return requestJson(`/v1/tasks/${encodeURIComponent(taskId)}/terminal-attempts/${encodeURIComponent(runId)}`);
 }

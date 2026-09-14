@@ -88,7 +88,7 @@ interface ShortcutDef {
   paletteHidden?: boolean;
 }
 
-const PREVIEW_MODAL_CONTEXTS: ShortcutContext[] = ["main", "diff", "file", "shell", "tree", "graph"];
+const PREVIEW_MODAL_CONTEXTS: ShortcutContext[] = ["main", "diff", "file", "shell", "preview", "tree", "graph"];
 
 /**
  * Single source of truth for all app-level keyboard shortcuts.
@@ -118,11 +118,11 @@ export const shortcuts: ShortcutDef[] = [
   { action: "openShellRepoRoot", labelKey: "shortcuts.shellRepoRoot", groupKey: "shortcuts.groupOpenInspect", key: ["J", "j"],                  meta: true, shift: true,  display: "⇧⌘J",     context: PREVIEW_MODAL_CONTEXTS },
   { action: "openInIDE",      labelKey: "shortcuts.openInIDE",      groupKey: "shortcuts.groupOpenInspect", key: "o",                         meta: true,               display: "⌘O",       context: ["main"] },
   { action: "newWindow",    labelKey: "shortcuts.newWindow",    groupKey: "shortcuts.groupWorkspace", key: "n",                            meta: true,               display: "⌘N",       context: ["main"] },
-  { action: "closeTabOrWindow", labelKey: "shortcuts.closeTab", groupKey: "shortcuts.groupWorkspace", key: "w",                    meta: true,               display: "⌘W",       context: ["main", "diff", "file", "shell", "tree", "graph", "newTask", "transfer"] },
-  { action: "closeWindow",  labelKey: "shortcuts.closeWindow",  groupKey: "shortcuts.groupWorkspace", key: ["W", "w"],                     meta: true, shift: true,  display: "⇧⌘W",     context: ["main", "diff", "file", "shell", "tree", "graph", "newTask", "transfer"] },
+  { action: "closeTabOrWindow", labelKey: "shortcuts.closeTab", groupKey: "shortcuts.groupWorkspace", key: "w",                    meta: true,               display: "⌘W",       context: ["main", "diff", "file", "shell", "preview", "tree", "graph", "newTask", "transfer"] },
+  { action: "closeWindow",  labelKey: "shortcuts.closeWindow",  groupKey: "shortcuts.groupWorkspace", key: ["W", "w"],                     meta: true, shift: true,  display: "⇧⌘W",     context: ["main", "diff", "file", "shell", "preview", "tree", "graph", "newTask", "transfer"] },
   // Views — layout and framing controls
   { action: "toggleSidebar", labelKey: "shortcuts.toggleSidebar", groupKey: "shortcuts.groupWorkspace", key: "b",                            meta: true,               display: "⌘B",       context: ["main"] },
-  { action: "toggleMaximize", labelKey: "shortcuts.maximize",       groupKey: "shortcuts.groupWorkspace", key: "Enter",                     meta: true, shift: true,  display: "⇧⌘Enter", context: ["main", "diff", "file", "shell", "tree"] },
+  { action: "toggleMaximize", labelKey: "shortcuts.maximize",       groupKey: "shortcuts.groupWorkspace", key: "Enter",                     meta: true, shift: true,  display: "⇧⌘Enter", context: ["main", "diff", "file", "shell", "preview", "tree"] },
   { action: "goBack",       labelKey: "shortcuts.goBack",         groupKey: "shortcuts.groupMoveAround", key: "-",                            ctrl: true,               display: "⌃-",       context: ["main"] },
   { action: "goForward",    labelKey: "shortcuts.goForward",      groupKey: "shortcuts.groupMoveAround", key: ["_", "-"],                     ctrl: true, shift: true,  display: "⌃⇧-",     context: ["main"] },
   { action: "toggleTreeExplorer", labelKey: "shortcuts.treeExplorer", groupKey: "shortcuts.groupOpenInspect", key: ["E", "e"], meta: true, shift: true, display: "⇧⌘E", context: PREVIEW_MODAL_CONTEXTS },
@@ -134,8 +134,8 @@ export const shortcuts: ShortcutDef[] = [
   // Help — global app controls and help entry points
   { action: "openPreferences", labelKey: "shortcuts.preferences", groupKey: "shortcuts.groupAppHelp", key: ",",                            meta: true,               display: "⌘,",       context: ["main"] },
   // Help — ⇧⌘/ must come before ⌘/ so the more specific shortcut matches first
-  { action: "showAllShortcuts", labelKey: "shortcuts.allShortcuts",       groupKey: "shortcuts.groupAppHelp",   key: "/",                           meta: true, shift: true,  display: "⇧⌘/",     context: ["main", "file", "shell", "tree", "newTask"], hidden: true },
-  { action: "showShortcuts",  labelKey: "shortcuts.keyboardShortcuts",  groupKey: "shortcuts.groupAppHelp",   key: "/",                           meta: true,               display: "⌘/",       context: ["main", "diff", "file", "shell", "tree", "graph", "newTask", "transfer"] },
+  { action: "showAllShortcuts", labelKey: "shortcuts.allShortcuts",       groupKey: "shortcuts.groupAppHelp",   key: "/",                           meta: true, shift: true,  display: "⇧⌘/",     context: ["main", "file", "shell", "preview", "tree", "newTask"], hidden: true },
+  { action: "showShortcuts",  labelKey: "shortcuts.keyboardShortcuts",  groupKey: "shortcuts.groupAppHelp",   key: "/",                           meta: true,               display: "⌘/",       context: ["main", "diff", "file", "shell", "preview", "tree", "graph", "newTask", "transfer"] },
   // Tab cycling — main-area tabs, delegated to Preferences sections while its dialog is open
   { action: "prevTab",    labelKey: "shortcuts.prevTab",       groupKey: "shortcuts.groupMoveAround", key: ["[", "{"],                     meta: true, shift: true,  display: "⇧⌘[",     hidden: true },
   { action: "nextTab",    labelKey: "shortcuts.nextTab",       groupKey: "shortcuts.groupMoveAround", key: ["]", "}"],                     meta: true, shift: true,  display: "⇧⌘]",     hidden: true },

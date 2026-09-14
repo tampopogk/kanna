@@ -522,6 +522,7 @@ async fn acknowledged_stage_survives_db_failure_restart_and_can_complete() {
     let socket_path = test_daemon_socket_path(&config.daemon_dir);
     let _ = std::fs::remove_file(&socket_path);
     let listener = UnixListener::bind(&socket_path).unwrap();
+    let archive_db_path = config.db_path.clone();
     let fake_daemon = tokio::spawn(async move {
         let (stream, _) = listener.accept().await.unwrap();
         let (read_half, mut write_half) = stream.into_split();
@@ -537,9 +538,21 @@ async fn acknowledged_stage_survives_db_failure_restart_and_can_complete() {
                 kanna_daemon::protocol::Command::Kill { .. } if expected == "Kill" => {
                     kanna_daemon::protocol::Event::Ok
                 }
-                kanna_daemon::protocol::Command::Spawn { session_id, .. }
-                    if expected == "Spawn" =>
-                {
+                kanna_daemon::protocol::Command::Spawn {
+                    session_id, env, ..
+                } if expected == "Spawn" => {
+                    let run_id = env.get("KANNA_STAGE_RUN_ID").expect("immutable launch run");
+                    assert_eq!(env.get("KANNA_TASK_ID").map(String::as_str), Some("task-1"));
+                    let bound = Db::open(&archive_db_path)
+                        .unwrap()
+                        .agent_terminal_attempts("task-1")
+                        .unwrap();
+                    assert!(
+                        bound
+                            .iter()
+                            .any(|attempt| attempt.id == *run_id && attempt.recorded_launch),
+                        "binding must be durable before Spawn acknowledgement"
+                    );
                     kanna_daemon::protocol::Event::SessionCreated { session_id }
                 }
                 other => panic!("expected {expected}, got {other:?}"),

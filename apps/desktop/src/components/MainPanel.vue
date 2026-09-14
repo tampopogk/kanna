@@ -2,6 +2,8 @@
 import {
   computed,
   nextTick,
+  onMounted,
+  onBeforeUnmount,
   ref,
   watch,
   type ComponentPublicInstance,
@@ -19,10 +21,13 @@ import {
 import { isBlockerResolved } from "../utils/blockerResolution";
 import { isRemotePresentationTaskId } from "../utils/remoteTaskIdentity";
 import { invoke } from "../invoke";
-import StageModelControl from "./StageModelControl.vue";
+import TaskPreviewCache from "./TaskPreviewCache.vue";
 import TaskHeader from "./TaskHeader.vue";
 import TerminalTabs from "./TerminalTabs.vue";
+import AgentHistoryView from "./AgentHistoryView.vue";
+import { listAgentTerminalAttempts, type AgentTerminalAttempt } from "../services/desktopServerClient";
 import MainTabBar from "./MainTabBar.vue";
+import { usePaneTabDrag } from "../composables/usePaneTabDrag";
 import DiffModal from "./DiffModal.vue";
 import FilePreviewModal from "./FilePreviewModal.vue";
 import ShellModal from "./ShellModal.vue";
@@ -34,6 +39,7 @@ import AnalyticsModal from "./AnalyticsModal.vue";
 import ImageUrlPreviewModal from "./ImageUrlPreviewModal.vue";
 import { AGENT_TAB_ID, mainTabScopeKeyForTask, type MainTab } from "../composables/useMainTabs";
 import type { RemoteDirectoryEntry } from "../composables/useTreeExplorer";
+import type { SplitRect } from "../composables/taskPaneLayout";
 import {
   waitForViewReady,
   type DesktopViewOpenCommand,
@@ -76,11 +82,124 @@ const emit = defineEmits<{
 const isMobile = __KANNA_MOBILE__;
 const COMMAND_HINT_STORAGE_KEY = "kanna:hide-command-hint";
 const item = computed(() => props.uiSlot?.task ?? null);
+const selectedAttempt = ref("");
+const agentAttempts = ref<AgentTerminalAttempt[]>([]);
+let attemptsRequest = 0;
+async function loadAgentAttempts(taskId: string) {
+  const request = ++attemptsRequest;
+  try {
+    const attempts = await listAgentTerminalAttempts(taskId);
+    if (request === attemptsRequest && item.value?.id === taskId) agentAttempts.value = attempts;
+  } catch (error) { console.debug("[agent-history] attempt list unavailable", error); }
+}
+function selectAttempt(id: string) { selectedAttempt.value = id; selectTab(AGENT_TAB_ID); }
+
 
 const tabs = computed<MainTab[]>(() => props.views?.tabs.tabs.value ?? []);
 const activeTabId = computed(() => props.views?.tabs.activeTabId.value ?? AGENT_TAB_ID);
 const agentTabActive = computed(() => activeTabId.value === AGENT_TAB_ID);
+const workArea = ref<HTMLElement | null>(null);
+const workAreaWidth = ref(0);
+let workAreaObserver: ResizeObserver | undefined;
+onMounted(() => {
+  workAreaObserver = new ResizeObserver(([entry]) => { workAreaWidth.value = entry.contentRect.width; });
+  if (workArea.value) workAreaObserver.observe(workArea.value);
+});
+onBeforeUnmount(() => workAreaObserver?.disconnect());
+const paneRects = computed(() => props.views?.tabs.panes.value ?? []);
+const narrowLayout = computed(() => isMobile || workAreaWidth.value < 800);
+const visiblePanes = computed(() => {
+  if (!narrowLayout.value) return paneRects.value;
+  const active = paneRects.value.find(rect => rect.pane.tabs.includes(activeTabId.value)) ?? paneRects.value[0];
+  return active ? [{ ...active, pane: { ...active.pane, tabs: tabs.value.map(tab => tab.id), active: activeTabId.value }, left: 0, top: 0, width: 100, height: 100 }] : [];
+});
+const splitVisible = computed(() => visiblePanes.value.length > 1);
+function viewVisible(id: string) {
+  return !props.views ? id === AGENT_TAB_ID : visiblePanes.value.some(rect => rect.pane.active === id);
+}
+const agentVisible = computed(() => viewVisible(AGENT_TAB_ID));
+// Pane geometry changes without reparenting content: moving an iframe in the
+// DOM reloads it, and remounting terminal views loses their local reading state.
+function tabStyle(id: string) {
+  const rect = visiblePanes.value.find(rect => rect.pane.active === id);
+  if (!rect) return {};
+  return { position: 'absolute' as const, left: `${rect.left}%`, top: `calc(${rect.top}% + 34px)`, width: `${rect.width}%`, height: `calc(${rect.height}% - 34px)`, padding: '2px', boxSizing: 'border-box' as const, boxShadow: activeTabId.value === id ? 'inset 0 2px var(--kn-accent)' : undefined };
+}
+function paneStyle(rect: typeof visiblePanes.value[number]) {
+  return { left: `${rect.left}%`, top: `${rect.top}%`, width: `${rect.width}%`, height: `${rect.height}%` };
+}
+function dividerStyle(rect: SplitRect) {
+  return rect.axis === 'horizontal'
+    ? { left: `calc(${rect.left + rect.width * rect.ratio}% - 3px)`, top: `${rect.top}%`, width: '6px', height: `${rect.height}%`, cursor: 'col-resize' }
+    : { left: `${rect.left}%`, top: `calc(${rect.top + rect.height * rect.ratio}% - 3px)`, width: `${rect.width}%`, height: '6px', cursor: 'row-resize' };
+}
+function resizeDivider(event: PointerEvent, rect: SplitRect) {
+  if (!(event.currentTarget instanceof HTMLElement) || !event.currentTarget.hasPointerCapture(event.pointerId)) return;
+  const bounds = workArea.value?.getBoundingClientRect();
+  if (!bounds) return;
+  const ratio = rect.axis === 'horizontal'
+    ? ((event.clientX - bounds.left) / bounds.width * 100 - rect.left) / rect.width
+    : ((event.clientY - bounds.top) / bounds.height * 100 - rect.top) / rect.height;
+  props.views?.tabs.resizePane(rect.path, ratio);
+}
+function captureDivider(event: PointerEvent) {
+  if (event.currentTarget instanceof HTMLElement) event.currentTarget.setPointerCapture(event.pointerId);
+}
+function openPaneView(paneId: string, id: string) {
+  props.views?.tabs.focusPane(paneId);
+  if (id === 'split-horizontal' || id === 'split-vertical') props.views?.tabs.splitPane(paneId, id === 'split-horizontal' ? 'horizontal' : 'vertical');
+  else openNewView(id);
+}
+const tabDrag = usePaneTabDrag({
+  scope: () => props.views?.tabs.scopeKey.value,
+  target: (x, y) => {
+    const bounds = workArea.value?.getBoundingClientRect();
+    if (!bounds || narrowLayout.value) return null;
+    const rect = visiblePanes.value.find(rect => x >= bounds.left + bounds.width * rect.left / 100
+      && x < bounds.left + bounds.width * (rect.left + rect.width) / 100
+      && y >= bounds.top + bounds.height * rect.top / 100
+      && y < bounds.top + bounds.height * (rect.top + rect.height) / 100);
+    if (!rect) return null;
+    const bar = workArea.value?.querySelector(`[data-pane-id="${rect.pane.id}"]`);
+    const overTab = Array.from(bar?.querySelectorAll<HTMLElement>('[data-tab-id]') ?? [])
+      .find(tab => { const r = tab.getBoundingClientRect(); return y >= r.top && y < r.bottom && x < r.right; });
+    // Midpoint decides before/after, so dragging the last tab right can reorder too.
+    const index = overTab ? rect.pane.tabs.indexOf(overTab.dataset.tabId!) : -1;
+    const box = overTab?.getBoundingClientRect();
+    const beforeId = box && x >= box.left + box.width / 2
+      ? rect.pane.tabs[index + 1] : overTab?.dataset.tabId;
+    return { paneId: rect.pane.id, beforeId };
+  },
+  move: (id, target) => props.views?.tabs.moveTab(id, target.paneId, target.beforeId),
+});
+const ownerLabel = computed(() => props.cloudTerminalRef?.ownerDesktopId
+  ?? (props.cloudTask ? "Owner unavailable" : "This machine"));
+const previewCache = ref<InstanceType<typeof TaskPreviewCache> | null>(null);
+const previewWorkspaces = computed(() => Object.fromEntries(
+  (props.views?.store.items ?? []).filter(task => task.closed_at == null)
+    .map(task => [task.id, props.views?.store.worktreePaths?.[task.id] ?? ""]),
+));
+
 const openViewTabs = computed(() => tabs.value.filter((tab) => tab.kind !== "agent"));
+const visiblePreviews = computed(() => tabs.value.filter(tab => tab.kind === 'preview' && viewVisible(tab.id)).map(tab => ({
+  key: tabKey(tab), taskId: item.value?.id ?? '', portName: tab.portName ?? '',
+  workspace: props.views?.modals.activeWorktreePath.value ?? '',
+  supported: taskDetailIsLocal.value && !isMobile && !props.views?.modals.activeTaskViewIsRemote.value,
+  style: tabStyle(tab.id),
+})));
+const newViews = computed(() => [
+  ...(props.uiSlot ? [{ id: "diff", label: "Diff", shortcut: shortcutHint("showDiff") }] : []),
+  { id: "shell", label: "Terminal", shortcut: shortcutHint("openShell") },
+  { id: "tree", label: "File explorer", shortcut: shortcutHint("toggleTreeExplorer") },
+  ...(scopeRepoPath.value ? [{ id: "graph", label: "Commit graph", shortcut: shortcutHint("showCommitGraph") }] : []),
+]);
+const paneActions = computed(() => narrowLayout.value ? [] : [
+  { id: "split-horizontal", label: "Split side by side" },
+  { id: "split-vertical", label: "Split top and bottom" },
+]);
+function openNewView(id: string) {
+  if (id === "diff" || id === "shell" || id === "tree" || id === "graph") props.views?.tabs.openTab({ kind: id });
+}
 /**
  * The panel's own empty state — "no task selected", or the agent-install help
  * when there are no repositories — belongs to a main area with nothing in it.
@@ -94,7 +213,8 @@ const scopeRepoPath = computed(() =>
   props.repoPath ?? props.views?.store.selectedRepo?.path ?? ""
 );
 const taskWorktreePath = computed(() =>
-  item.value?.branch ? `${props.repoPath}/.kanna-worktrees/${item.value.branch}` : undefined
+  item.value ? (props.views?.store.worktreePaths?.[item.value.id]
+    ?? (item.value.branch ? `${props.repoPath}/.kanna-worktrees/${item.value.branch}` : undefined)) : undefined
 );
 
 function selectTab(id: string) {
@@ -112,6 +232,7 @@ function closeTab(id: string) {
 function onTabClosed(tab: MainTab) {
   // The shell is how an operator installs an agent CLI before they have any
   // repositories, so closing it is the moment to look again.
+  if (tab.kind === "preview") previewCache.value?.discard(tabKey(tab));
   if (tab.kind === "shell" && !props.hasRepos) void checkAllClis();
 }
 
@@ -122,7 +243,7 @@ function onTabClosed(tab: MainTab) {
  * previous task's content in a reused node.
  */
 function tabKey(tab: MainTab): string {
-  return `${props.views?.tabs.scopeKey.value ?? ""}:${tab.id}`;
+  return `${props.views?.tabs.scopeKey.value ?? ""}:${tab.id}:${tab.kind === "editor" ? tab.editorSession?.worktreePath : props.views?.modals.readingWorkspace?.value ?? props.views?.modals.activeWorktreePath?.value}`;
 }
 
 const diffViewProps = computed(() => {
@@ -206,6 +327,7 @@ function fileViewProps(tab: MainTab) {
     contentLoader: containedFileLoader(tab.containedTaskId),
     ideCommand: props.views?.store.ideCommand,
     initialLine: tab.initialLine,
+    initialScrollTop: tab.reading?.workspace === modals?.readingWorkspace?.value ? tab.reading?.top : undefined,
     initialMarkdownMode: modals?.currentPreviewMarkdownMode.value,
   };
 }
@@ -350,11 +472,7 @@ const headerItem = computed(() => {
   const slot = props.uiSlot;
   if (!slot) return null;
   const task = slot.task;
-  const run = taskDetail.value?.id === task?.id && taskDetail.value?.latestRun?.stage === task?.stage
-    ? taskDetail.value?.latestRun : undefined;
   return {
-    launchModel: run?.model,
-    launchProvider: run?.agentProvider,
     display_name: task?.display_name ?? slot.draft.display_name,
     issue_title: task?.issue_title ?? null,
     prompt: task?.prompt ?? slot.draft.prompt,
@@ -498,11 +616,15 @@ watch(
   ] as const,
   ([taskId], previous) => {
     if (taskId !== previous?.[0]) {
+      attemptsRequest++;
+      agentAttempts.value = [];
+      selectedAttempt.value = "";
       taskDetailRequest += 1;
       taskDetail.value = null;
     }
     if (taskId && taskDetailIsLocal.value) {
       void loadTaskDetail(taskId);
+      void loadAgentAttempts(taskId);
     } else if (taskDetail.value) {
       taskDetail.value = null;
     }
@@ -687,8 +809,7 @@ function dismissCommandHint() {
         <span class="mobile-back-arrow">&larr;</span>
         <span>Tasks</span>
       </div>
-      <TaskHeader v-if="!maximized && headerItem" :item="headerItem" />
-      <StageModelControl v-if="!maximized && uiSlot?.task && taskDetailIsLocal && uiSlot.task.closed_at == null" :task="uiSlot.task" />
+      <TaskHeader v-if="!maximized && headerItem" :item="headerItem" :owner-label="ownerLabel" :task-id="item?.id" :preview-supported="taskDetailIsLocal && !isMobile && !views?.modals.activeTaskViewIsRemote?.value && !!views" @preview="(portName) => views?.tabs.openTab({ kind: 'preview', portName })" />
       <section v-if="revisionBudgetExhausted" class="revision-exhausted" data-testid="revision-exhausted-status">
         <div>
           <p class="revision-exhausted-title">{{ $t('mainPanel.revisionExhaustedTitle') }}</p>
@@ -701,23 +822,50 @@ function dismissCommandHint() {
         </div>
       </section>
     </template>
-    <!--
-      One bar for every scope, above every panel including the agent session's.
-      It belongs to the main area rather than to whichever view is in front, so
-      it sits below a task's header and above the panels — placed after the
-      agent panel it rendered underneath it, at the bottom of the window. The
-      task-slot block is split around it rather than the bar being repeated,
-      because a repository scope has no header to sit under but still has tabs.
-    -->
-    <MainTabBar
-      v-if="views && tabs.length > 0"
-      :tabs="tabs"
-      :active-tab-id="activeTabId"
-      @select="selectTab"
-      @close="closeTab"
-    />
+    <div ref="workArea" class="work-area" v-show="!showEmptyState" :class="{ split: splitVisible }" data-testid="task-work-area">
+      <div v-for="rect in visiblePanes" :key="rect.pane.id" class="pane-chrome" :style="paneStyle(rect)">
+        <MainTabBar
+          :tabs="tabs.filter(tab => rect.pane.tabs.includes(tab.id)).sort((a, b) => rect.pane.tabs.indexOf(a.id) - rect.pane.tabs.indexOf(b.id))"
+          :active-tab-id="rect.pane.active"
+          :worktree-path="taskWorktreePath"
+          :pane-id="narrowLayout ? undefined : rect.pane.id"
+          :scope-key="views?.tabs.scopeKey.value"
+          :new-views="newViews"
+          :pane-actions="paneActions"
+          :can-close-pane="!narrowLayout && paneRects.length > 1"
+          @close-pane="views?.tabs.closePane(rect.pane.id)"
+          :agent-attempts="taskDetailIsLocal ? agentAttempts : undefined"
+          :selected-attempt="selectedAttempt"
+          :current-stage="item?.stage"
+          @select-attempt="selectAttempt"
+          @select="selectTab"
+          @close="closeTab"
+          @new="id => openPaneView(rect.pane.id, id)"
+          @layout="id => openPaneView(rect.pane.id, id)"
+          @drag-tab="tabDrag.start"
+          :dragged-tab="tabDrag.dragging.value"
+          :drop-active="tabDrag.target.value?.paneId === rect.pane.id"
+          :drop-before="tabDrag.target.value?.paneId === rect.pane.id ? tabDrag.target.value?.beforeId : undefined"
+        />
+        <div v-if="!rect.pane.tabs.length" class="empty-pane" @click="views?.tabs.focusPane(rect.pane.id)">Drop a tab here or use + to open a view.</div>
+      </div>
+      <template v-if="!narrowLayout">
+        <div
+          v-for="divider in views?.tabs.dividers.value" :key="divider.path"
+          class="pane-divider" :style="dividerStyle(divider)"
+          role="separator" tabindex="0" aria-label="Resize panes"
+          :aria-orientation="divider.axis === 'horizontal' ? 'vertical' : 'horizontal'"
+          :aria-valuenow="Math.round(divider.ratio * 100)"
+          @pointerdown.prevent="captureDivider"
+          @pointermove="resizeDivider($event, divider)"
+          @keydown.left.prevent="views?.tabs.resizePane(divider.path, divider.ratio - .05)"
+          @keydown.right.prevent="views?.tabs.resizePane(divider.path, divider.ratio + .05)"
+          @keydown.up.prevent="views?.tabs.resizePane(divider.path, divider.ratio - .05)"
+          @keydown.down.prevent="views?.tabs.resizePane(divider.path, divider.ratio + .05)"
+        />
+      </template>
     <template v-if="uiSlot">
-      <div v-show="agentTabActive" class="main-tab-panel" data-testid="main-tab-panel-agent">
+      <div v-show="agentVisible" :style="views ? tabStyle(AGENT_TAB_ID) : {}" @pointerdown.capture="selectTab(AGENT_TAB_ID)" @focusin="selectTab(AGENT_TAB_ID)" :class="{ 'pane-focused': agentTabActive }" class="main-tab-panel" data-testid="main-tab-panel-agent">
         <section
           v-if="reviewContext"
           class="review-merge"
@@ -754,8 +902,12 @@ function dismissCommandHint() {
             </p>
           </div>
         </section>
+        <AgentHistoryView v-if="selectedAttempt && item" :task-id="item.id" :attempt-id="selectedAttempt" />
+        <div v-show="!selectedAttempt" class="agent-live-content">
         <CloudTerminalCache
           :active-terminal="activeCloudTerminal"
+          :focused="agentTabActive && !selectedAttempt"
+          :visible="agentVisible && !selectedAttempt"
           :discard-key="discardedCloudTerminalKey"
         />
         <template v-if="uiSlot.state !== 'ready' || !item">
@@ -795,7 +947,8 @@ function dismissCommandHint() {
         <template v-else>
           <TerminalTabs
             :session-id="item.id"
-            :active="agentTabActive"
+            :active="agentTabActive && !selectedAttempt"
+            :visible="agentVisible && !selectedAttempt"
             :agent-type="item.agent_type || 'pty'"
             :agent-provider="item.agent_provider"
             :repo-path="repoPath"
@@ -805,15 +958,17 @@ function dismissCommandHint() {
             :recover-task-session="recoverTaskSession"
           />
         </template>
+        </div>
       </div>
     </template>
-    <template v-if="views">
-      <template v-for="tab in openViewTabs" :key="tabKey(tab)">
+    <div v-if="views" class="reference-area" data-testid="reference-area">
+      <div v-for="tab in openViewTabs.filter(tab => tab.kind !== 'preview')" :key="tabKey(tab)" v-show="viewVisible(tab.id)" :style="tabStyle(tab.id)" class="reference-view" @pointerdown.capture="selectTab(tab.id)" @focusin="selectTab(tab.id)">
         <DiffModal
           v-if="tab.kind === 'diff' && diffViewProps"
           :ref="(component) => setViewRef(tab.id, component)"
-          v-show="activeTabId === tab.id"
+          v-show="viewVisible(tab.id)"
           v-bind="diffViewProps"
+          :is-visible="() => viewVisible(tab.id)"
           embedded
           :active="activeTabId === tab.id"
           @scope-change="onDiffScopeChange"
@@ -824,26 +979,29 @@ function dismissCommandHint() {
         <FilePreviewModal
           v-else-if="tab.kind === 'file'"
           :ref="(component) => setViewRef(tab.id, component)"
-          v-show="activeTabId === tab.id"
+          v-show="viewVisible(tab.id)"
           v-bind="fileViewProps(tab)"
           embedded
           :active="activeTabId === tab.id"
           @update-markdown-mode="onMarkdownModeChange"
+          @scroll-position="(top: number) => views?.tabs.updateReading(tab.id, { workspace: views.modals.readingWorkspace.value, top })"
           @close="closeTab(tab.id)"
         />
         <TerminalEditorView
           v-else-if="tab.kind === 'editor' && tab.editorSession && taskDetailIsLocal && !views?.modals.activeTaskViewIsRemote.value"
-          v-show="activeTabId === tab.id"
+          v-show="viewVisible(tab.id)"
           :session="tab.editorSession"
+          :visible="viewVisible(tab.id)"
           :active="activeTabId === tab.id"
         />
-        <div v-else-if="tab.kind === 'editor'" v-show="activeTabId === tab.id" class="cloud-task-placeholder">
+        <div v-else-if="tab.kind === 'editor'" v-show="viewVisible(tab.id)" class="cloud-task-placeholder">
           Terminal editing is available only on the desktop holding this workspace. Remote editor sessions are not transported.
         </div>
         <ShellModal
           v-else-if="tab.kind === 'shell' && shellSessionId(tab)"
-          v-show="activeTabId === tab.id"
+          v-show="viewVisible(tab.id)"
           :session-id="shellSessionId(tab)"
+          :visible="viewVisible(tab.id)"
           :cwd="shellCwd(tab)"
           :fallback-cwd="tab.shellScope === 'repo' ? undefined : scopeRepoPath"
           :port-env="tab.shellScope === 'repo' ? undefined : item?.port_env"
@@ -854,7 +1012,7 @@ function dismissCommandHint() {
         <TreeExplorerModal
           v-else-if="tab.kind === 'tree'"
           :ref="(component) => setViewRef(tab.id, component)"
-          v-show="activeTabId === tab.id"
+          v-show="viewVisible(tab.id)"
           v-bind="treeViewProps(tab)"
           embedded
           :active="activeTabId === tab.id"
@@ -864,7 +1022,7 @@ function dismissCommandHint() {
         <CommitGraphModal
           v-else-if="tab.kind === 'graph' && scopeRepoPath"
           :ref="(component) => setViewRef(tab.id, component)"
-          v-show="activeTabId === tab.id"
+          v-show="viewVisible(tab.id)"
           :repo-path="scopeRepoPath"
           :worktree-path="taskWorktreePath"
           :remote-graph-loader="views?.modals.activeTaskViewIsRemote.value ? views.modals.readRemoteTaskGraph : undefined"
@@ -875,7 +1033,7 @@ function dismissCommandHint() {
         <AnalyticsModal
           v-else-if="tab.kind === 'analytics'"
           :ref="(component) => setViewRef(tab.id, component)"
-          v-show="activeTabId === tab.id"
+          v-show="viewVisible(tab.id)"
           :repo-id="scopeRepoId"
           embedded
           :active="activeTabId === tab.id"
@@ -883,14 +1041,21 @@ function dismissCommandHint() {
         />
         <ImageUrlPreviewModal
           v-else-if="tab.kind === 'image'"
-          v-show="activeTabId === tab.id"
+          v-show="viewVisible(tab.id)"
           :image-url="tab.imageUrl ?? ''"
           embedded
           :active="activeTabId === tab.id"
           @close="closeTab(tab.id)"
         />
-      </template>
-    </template>
+      </div>
+      <TaskPreviewCache
+        ref="previewCache"
+        :workspaces="previewWorkspaces"
+        :visible-entries="visiblePreviews"
+        @activate="key => { const tab = tabs.find(tab => tabKey(tab) === key); if (tab) selectTab(tab.id); }"
+      />
+    </div>
+    </div>
     <div v-if="showEmptyState" class="empty-state">
       <template v-if="!hasRepos">
         <div class="agent-setup">
@@ -963,6 +1128,17 @@ function dismissCommandHint() {
 </template>
 
 <style scoped>
+.agent-live-content { display: flex; flex-direction: column; flex: 1; min-height: 0; height: 100%; }
+.action-spacer { flex: 1; }
+.work-area { display: flex; flex: 1; min-height: 0; min-width: 0; overflow: hidden; }
+.reference-area, .reference-view { display: flex; flex-direction: column; flex: 1; min-width: 0; min-height: 0; overflow: hidden; }
+.work-area > .main-tab-panel { min-width: 0; }
+
+
+.work-area.split > .pane-focused { box-shadow: inset 0 2px var(--kn-accent); }
+
+
+
 .main-panel {
   flex: 1;
   display: flex;
@@ -1366,4 +1542,14 @@ function dismissCommandHint() {
 .mobile-back-arrow {
   font-size: 18px;
 }
+</style>
+
+<style scoped>
+.work-area { position: relative; }
+.reference-area { display: contents; }
+.pane-chrome { position: absolute; pointer-events: none; box-sizing: border-box; border: 1px solid var(--kn-border-default); }
+.pane-chrome :deep(.main-tab-bar) { pointer-events: auto; height: 34px; box-sizing: border-box; }
+.empty-pane { pointer-events: auto; height: calc(100% - 34px); display: grid; place-items: center; color: var(--kn-text-muted); font-size: 12px; }
+.pane-divider { position: absolute; z-index: 3; touch-action: none; }
+.pane-divider:hover, .pane-divider:focus-visible { background: var(--kn-accent); }
 </style>

@@ -47,11 +47,13 @@ import {
 
 const props = withDefaults(defineProps<{
   active?: boolean;
+  focused?: boolean;
   ownerDesktopId: string;
   ownerTaskId: string;
   transport?: "cloud" | "lan";
 }>(), {
   active: true,
+  focused: true,
 });
 
 const containerRef = ref<HTMLElement | null>(null);
@@ -83,7 +85,7 @@ const {
   cancelPendingFocus,
   focusWhenActive,
 } = useTerminalFocusWhenActive({
-  isActive: () => props.active,
+  isActive: () => props.active && props.focused,
   getTerminal: () => terminal,
 });
 const MAX_PENDING_REMOTE_INPUT_CHARS = 64 * 1024;
@@ -695,6 +697,8 @@ async function initializeTerminalWhenVisible() {
     await nextFrameOrTimeout();
   }
 }
+
+watch(() => props.focused, focused => { if (focused && props.active) void focusWhenActive(); });
 
 onMounted(() => {
   startForegroundTracking();

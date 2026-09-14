@@ -5474,3 +5474,76 @@ fn attention_migration_restart_and_close_reopen_preserve_annotation() {
         Some("Choose")
     );
 }
+
+#[test]
+fn main_and_archive_migrations_upgrade_either_branch_without_losing_data() {
+    use super::terminal_archives::tests::{archive, seed};
+    for from_archive in [false, true] {
+        let path = temp_db_path();
+        let db = Db::open_migrated(path.to_str().unwrap()).unwrap();
+        seed(&db);
+        let snapshot = archive();
+        if from_archive {
+            db.ingest_agent_terminal_archive("task-a", "run-task-a-1", &snapshot)
+                .unwrap();
+            db.conn
+                .execute_batch(
+                    "DROP TABLE task_transfer_workflow_claim;
+                 ALTER TABLE pipeline_item DROP COLUMN attention_reason;
+                 DELETE FROM schema_migrations WHERE id IN
+                 ('084_task_transfer_workflow_claim', '085_task_attention_reason');",
+                )
+                .unwrap();
+        } else {
+            db.set_task_attention("task-a", Some("Keep this reason"))
+                .unwrap();
+            db.conn.execute_batch(
+                "INSERT INTO task_transfer_workflow_claim (pipeline_item_id,transfer_id) VALUES ('task-a','transfer-a');
+                 DROP TABLE agent_terminal_attempt;
+                 DELETE FROM schema_migrations WHERE id='084_agent_terminal_attempt';"
+            ).unwrap();
+        }
+        drop(db);
+        // Two opens prove that the full migration IDs, including the two
+        // independent 084 entries, are applied once rather than renumbered.
+        for _ in 0..2 {
+            let db = Db::open_migrated(path.to_str().unwrap()).unwrap();
+            for id in [
+                "084_agent_terminal_attempt",
+                "084_task_transfer_workflow_claim",
+                "085_task_attention_reason",
+            ] {
+                assert!(super::has_migration(&db.conn, id).unwrap());
+            }
+            if from_archive {
+                assert_eq!(
+                    serde_json::to_value(
+                        db.agent_terminal_archive("task-a", "run-task-a-1").unwrap()
+                    )
+                    .unwrap(),
+                    serde_json::to_value(Some(&snapshot)).unwrap()
+                );
+                db.conn
+                    .prepare("SELECT attention_reason FROM pipeline_item")
+                    .unwrap();
+                db.conn
+                    .prepare("SELECT transfer_id FROM task_transfer_workflow_claim")
+                    .unwrap();
+            } else {
+                let reason: String = db
+                    .conn
+                    .query_row(
+                        "SELECT attention_reason FROM pipeline_item WHERE id='task-a'",
+                        [],
+                        |r| r.get(0),
+                    )
+                    .unwrap();
+                assert_eq!(reason, "Keep this reason");
+                let transfer: String = db.conn.query_row("SELECT transfer_id FROM task_transfer_workflow_claim WHERE pipeline_item_id='task-a'", [], |r| r.get(0)).unwrap();
+                assert_eq!(transfer, "transfer-a");
+                db.bind_agent_terminal_attempt("run-task-a-1").unwrap();
+            }
+        }
+        std::fs::remove_file(path).unwrap();
+    }
+}

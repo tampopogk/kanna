@@ -55,6 +55,9 @@ describe("useMainTabPersistence", () => {
       }),
     });
 
+    // Initial layout reads and the terminal's focus event are not user edits.
+    expect(tabs.panes.value).toHaveLength(1);
+    tabs.activateTab(AGENT_TAB_ID);
     await persistence.hydrate();
 
     expect(tabs.tabs.value.map((tab) => tab.id)).toEqual([AGENT_TAB_ID, "diff", "shell:repo"]);

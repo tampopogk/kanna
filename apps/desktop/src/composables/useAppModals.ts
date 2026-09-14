@@ -42,6 +42,7 @@ export interface DiffScrollPositions {
 }
 
 export interface DiffViewState {
+  workspace?: string;
   scope?: DiffScope;
   scrollPositions?: DiffScrollPositions;
   branchInclude?: BranchInclude;
@@ -143,6 +144,8 @@ export function useAppModals({
   );
   const currentWorktreePath = computed(() => {
     if (selectedTaskIsRemote.value) return undefined;
+    const taskId = activeTask.value?.id;
+    if (taskId && store.worktreePaths?.[taskId]) return store.worktreePaths[taskId];
     if (!store.selectedRepo?.path || !activeTask.value?.branch) return undefined;
     return `${store.selectedRepo.path}/.kanna-worktrees/${activeTask.value.branch}`;
   });
@@ -207,16 +210,23 @@ export function useAppModals({
     if (store.selectedRepo) return `repo:${store.selectedRepo.id}`;
     return undefined;
   });
+  const readingWorkspace = computed(() => activeTaskViewIsRemote.value
+    ? `remote:${activeRemoteTaskRoute.value?.desktopId}:${activeRemoteTaskRoute.value?.taskId}:${activeTask.value?.branch ?? ""}`
+    : activeWorktreePath.value);
   const currentDiffViewState = computed(() => {
     const key = currentDiffViewKey.value;
-    return key ? diffViewStates[key] : undefined;
+    const state = key ? diffViewStates[key] : undefined;
+    if (state && (!state.workspace || state.workspace === readingWorkspace.value)) return state;
+    const saved = mainTabs?.tabs.value.find(tab => tab.kind === "diff")?.reading;
+    return saved?.workspace === readingWorkspace.value ? saved.diff : undefined;
   });
 
   function updateCurrentDiffViewState(partial: DiffViewState) {
     const key = currentDiffViewKey.value;
     if (!key) return;
-    const current = diffViewStates[key] ?? {};
-    diffViewStates[key] = { ...current, ...partial };
+    const current = currentDiffViewState.value ?? {};
+    diffViewStates[key] = { ...current, ...partial, workspace: readingWorkspace.value };
+    mainTabs?.updateReading("diff", { workspace: readingWorkspace.value, diff: diffViewStates[key] });
   }
 
   /**
@@ -237,6 +247,7 @@ export function useAppModals({
     const key = context.viewKey ?? currentDiffViewKey.value;
     if (key) {
       diffViewStates[key] = {
+        workspace: readingWorkspace.value,
         ...(context.initialScope ? { scope: context.initialScope } : {}),
         ...(context.initialScrollPositions
           ? { scrollPositions: context.initialScrollPositions }
@@ -575,6 +586,7 @@ export function useAppModals({
     sidebarShellStyle,
     canResizeSidebar,
     currentDiffViewKey,
+    readingWorkspace,
     // The per-view diff state record, keyed by `currentDiffViewKey`. Returned
     // so a caller can drop a view's remembered state — the E2E harness resets
     // it to exercise a genuine first open, which is when the diff view probes

@@ -8,13 +8,14 @@ import {
 } from "../composables/useEmbeddableView";
 import { useKannaStore } from "../stores/kanna";
 
-const props = defineProps<EmbeddableViewProps & {
+const props = withDefaults(defineProps<EmbeddableViewProps & {
   sessionId: string;
+  visible?: boolean;
   cwd: string;
   fallbackCwd?: string | null;
   portEnv?: string | null;
   maximized?: boolean;
-}>();
+}>(), { visible: undefined });
 
 const emit = defineEmits<{ (e: "close"): void }>();
 const termRef = ref<InstanceType<typeof TerminalView> | null>(null);
@@ -71,6 +72,7 @@ async function spawnShell(sessionId: string, cwd: string, _prompt: string, _cols
         :key="sessionId"
         :session-id="sessionId"
         :active="active !== false"
+        :visible="visible"
         :spawn-options="{ cwd, prompt: '', spawnFn: spawnShell }"
       />
     </div>

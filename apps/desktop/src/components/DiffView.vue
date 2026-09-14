@@ -89,6 +89,7 @@ const props = defineProps<{
    * which is what a modal always is while it is open.
    */
   isForeground?: () => boolean;
+  isVisible?: () => boolean;
 }>();
 const baseRef = computed(() => props.baseRef);
 
@@ -298,7 +299,7 @@ function updateScrollPosition(scopeName: DiffScope, top: number) {
 }
 
 function saveCurrentScrollPosition() {
-  if (!containerRef.value || allLines.value) return;
+  if (!containerRef.value || !(props.isVisible?.() ?? props.isForeground?.() ?? true) || allLines.value) return;
   updateScrollPosition(scope.value, containerRef.value.scrollTop);
 }
 
@@ -307,6 +308,13 @@ function restoreScrollPosition() {
   const top = scrollPositions.value[scope.value] ?? 0;
   containerRef.value.scrollTo({ top, behavior: "auto" });
 }
+
+// Visibility is separate from shortcut ownership in the adjacent reference pane.
+watch(() => props.isVisible?.() ?? props.isForeground?.() ?? true, async visible => {
+  if (!visible) return;
+  await nextTick();
+  restoreScrollPosition();
+}, { flush: "post" });
 
 function restoreScrollAnchor(activeAnchor: ActiveDiffScrollAnchor): boolean {
   const container = containerRef.value;
@@ -767,7 +775,9 @@ onMounted(() => {
   syncViewStateFromProps();
   void openView();
   window.addEventListener("focus", refreshBranchDiffOnWindowFocus);
-  nextTick(() => diffViewRef.value?.focus());
+  nextTick(() => {
+    if (props.isForeground?.() ?? true) diffViewRef.value?.focus();
+  });
 });
 
 onUnmounted(() => {
