@@ -15,13 +15,26 @@ Bump `runtimeVersion` whenever a change touches native code, native config, the
 Expo SDK, native dependencies, or `plugins/withKannaNativeIdentity.js`. JS-only
 changes keep the same `runtimeVersion` and are OTA-deliverable.
 
-The Android identity/config slice uses `runtimeVersion` `2.2.5` for dev and
-`2.2.4` for staging/production. OTA updates built for an earlier runtime are
+The Android discovery slice uses `runtimeVersion` `2.2.6` for dev and `2.2.5`
+for staging/production. OTA updates built for an earlier runtime are
 not compatible; install a native build with the matching runtime before
 publishing or applying an update.
 
+`2.2.5` adds Android's half of desktop discovery: `plugins/withKannaBonjour.js`
+now generates an Android `KannaBonjourModule`/`KannaBonjourPackage` that browses
+`_kanna-mobile._tcp` with the platform `NsdManager` and emits the same
+`kannaBonjourServiceChanged` events as the iOS module, registers that package in
+the generated `MainApplication`, and points shipped Android manifests at a
+network security config that permits cleartext for mDNS `.local` names only.
+That is the route discovery produces — pairing claims and authenticated LAN
+HTTP/KSP talk `http`/`ws` to a desktop on the local network — and everything
+else stays on Android's cleartext-denying default. Discovery uses the system
+`NsdManager`, so at `targetSdk` 36 `INTERNET` is the only permission involved:
+do not add `NEARBY_WIFI_DEVICES`, location, or `ACCESS_LOCAL_NETWORK` (that
+becomes a runtime-permission migration when the app targets Android 17).
+
 `2.2.4` adds the Android package identities and keeps cleartext LAN access off
-for shipped identities. Dev advances once more to `2.2.5` because its emulator
+for shipped identities. Dev advanced once more to `2.2.5` because its emulator
 identity explicitly permits the task-scoped HTTP development endpoint.
 
 `2.2.3` replaces the pre-masked mobile app icon with full-bleed iOS/legacy

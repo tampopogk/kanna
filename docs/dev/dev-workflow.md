@@ -768,8 +768,8 @@ emulators, relay, and `kanna-server` use Android's host alias `10.0.2.2`.
 `EXPO_PUBLIC_KANNA_SERVER_URL` is consumed only in a development runtime: the
 app probes `/v1/status`, derives the real desktop identity from that response,
 and then uses the unchanged pairing-code claim and device-secret-authenticated
-LAN transport. This lane does not provide physical-device NSD, Firebase push,
-Android OTA publication, signing, or Play distribution.
+LAN transport. This lane does not provide Firebase push, Android OTA
+publication, signing, or Play distribution.
 
 For an authorized physical Android phone, pass its exact adb serial to
 `./kd mobile doctor --android-device <serial>`, then
@@ -797,6 +797,20 @@ It does not start the worktree dev stack, create reverse routes, require Metro,
 or publish to Play, Firebase, production, or OTA. The staging client uses the
 staging Firebase and relay configuration baked into the app. Production Android
 installation remains unsupported and guarded.
+
+A shipped Android build discovers desktops for itself: the Bonjour config
+plugin generates an `NsdManager` module that browses `_kanna-mobile._tcp`, so a
+physical phone on the same Wi-Fi can scan the desktop's pairing QR, claim the
+session, and then read tasks and terminals over the LAN. Discovery runs through
+the system `NsdManager`, which at `targetSdk` 36 needs no permission beyond
+`INTERNET` — no location, `NEARBY_WIFI_DEVICES`, or `ACCESS_LOCAL_NETWORK`
+prompt is involved, and adding one now would only create an Android 17
+migration. Shipped Android identities permit cleartext to mDNS `.local` names
+only, which is why the resolver publishes the advertised hostname rather than a
+numeric address; a numeric host reaching the claim is a discovery bug to fix,
+not a reason to widen the policy. The dev identity keeps its global
+`usesCleartextTraffic` for the emulator alias and explicit numeric development
+server, and gets no network security config.
 
 ## iOS development targets
 
