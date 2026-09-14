@@ -116,6 +116,8 @@ describe("Linux bindings", () => {
     expect(linux.get("navigateUp")?.display).toBe("Alt+↑")
     expect(linux.get("navigateRepoDown")?.display).toBe("Ctrl+Shift+↓")
     expect(linux.get("closeTask")?.display).toBe("Ctrl+Shift+Backspace")
+    expect(linux.get("previousPane")?.display).toBe("Ctrl+Shift+←")
+    expect(linux.get("nextPane")?.display).toBe("Ctrl+Shift+→")
   })
 })
 

@@ -210,7 +210,6 @@ onBeforeUnmount(() => closeMenu());
 .close-pane { flex: 0 0 26px; margin-left: auto; border: 0; background: transparent; color: var(--kn-text-muted); cursor: pointer; font-size: 18px; }
 .close-pane:hover { background: var(--kn-bg-hover); color: var(--kn-text-primary); }
 .new-tab:hover, .new-tab:focus-visible, .new-tab[aria-expanded="true"] { background: var(--kn-bg-hover); border-color: var(--kn-border-default); color: var(--kn-text-primary); }
-.main-tab-bar.drop-target { box-shadow: inset 0 0 0 2px var(--kn-accent); }
 .main-tab.movable { cursor: grab; touch-action: none; }
 .main-tab.movable:active { cursor: grabbing; }
 .main-tab.dragging { opacity: .55; }

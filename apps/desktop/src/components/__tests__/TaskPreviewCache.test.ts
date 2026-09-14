@@ -5,6 +5,16 @@ import TaskPreviewCache from '../TaskPreviewCache.vue';
 
 const entry = (key: string, left: string) => ({ key, taskId:'task', portName:key, workspace:'/worktree', supported:true, style:{left} });
 describe('preview pane continuity', () => {
+  it('focuses the retained visible preview surface through the cache owner', async () => {
+    const wrapper = mount(TaskPreviewCache, {
+      props:{visibleEntries:[{...entry('one','0%'),supported:false}],workspaces:{task:'/worktree'}},
+      attachTo: document.body,
+    });
+    expect((wrapper.vm as unknown as {focus:(key:string)=>boolean}).focus('one')).toBe(true);
+    expect(document.activeElement).toBe(wrapper.get('[data-testid="task-preview"]').element);
+    wrapper.unmount();
+  });
+
   it('keeps the same mounted views while panes move and discards superseded workspaces', async () => {
     const wrapper = mount(TaskPreviewCache, {
       props:{visibleEntries:[entry('one','0%'),entry('two','50%')],workspaces:{task:'/worktree'}},

@@ -73,7 +73,7 @@ it('closes only tabs visually to the right of the clicked tab, preserving Agent'
 it('shows only an arrow and stage name, retaining detailed history choices', async () => {
   const wrapper = mount(MainTabBar, { props: { tabs:[{id:'agent',kind:'agent'}],activeTabId:'agent',currentStage:'build',agentAttempts:[{id:'old',stage:'plan',startedAt:'yesterday',cwd:'/repo',archived:true,recordedLaunch:true,observedExitCode:0}] } });
   expect(wrapper.find('.main-tab-label').exists()).toBe(false);
-  expect(wrapper.get('.stage-arrow').text()).toBe('▾');
+  expect(wrapper.get('.stage-arrow svg').attributes('viewBox')).toBe('0 0 16 16');
   expect(wrapper.get('.stage-name').text()).toBe('build');
   expect(wrapper.get('select').text()).toContain('plan · attempt 1');
   const key = new KeyboardEvent('keydown',{key:']',metaKey:true,shiftKey:true,bubbles:true});

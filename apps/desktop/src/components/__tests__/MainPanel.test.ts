@@ -99,6 +99,7 @@ vi.mock("../../services/desktopServerClient", () => ({
   openTerminalEditor: openTerminalEditorMock,
   readDesktopTaskFile: readTaskFileMock,
   listDesktopTaskDirectory: listTaskDirectoryMock,
+  readAgentTerminalArchive: vi.fn().mockResolvedValue(null),
 }));
 
 describe("MainPanel", () => {
@@ -126,7 +127,7 @@ describe("MainPanel", () => {
     localStorage.clear();
   });
 
-  it("confirms AGENTS.md in the inspected second pane through the real renderer", async () => {
+  it.each([false, true])("confirms AGENTS.md in the inspected second pane through the real renderer (maximized=%s)", async (maximized) => {
     const tabs = useMainTabs({ scopeKey: computed(() => "item:task-a") });
     readTaskFileMock.mockResolvedValue("# Workspace instructions\nRead this file.\n");
     const resizeObserver = globalThis.ResizeObserver;
@@ -172,21 +173,175 @@ describe("MainPanel", () => {
       const inspected = (await run({ operation: "inspect" })).workspace!;
       const second = inspected.displayedPanes[1];
       tabs.focusPane(first.panes[0].id);
+      if (maximized) tabs.toggleMaximizedPane();
       const outcome = await run({ view: "file", target: { path: "AGENTS.md" }, workspaceId: first.workspaceId, paneId: second.id });
       expect(outcome).toMatchObject({ opened: true, paneId: second.id, tabId: "file:AGENTS.md" });
       expect(readTaskFileMock).toHaveBeenCalledWith("task-a", "AGENTS.md");
       const shown = wrapper.findAll(".reference-view").find(view => view.text().includes("Workspace instructions"));
       expect(shown?.isVisible()).toBe(true);
-      expect(shown?.attributes("style")).toContain("left: 50%");
+      expect(shown?.attributes("style")).toContain(maximized ? "left: 0%" : "left: 50%");
+      if (maximized) {
+        expect(outcome.workspace?.panes).toHaveLength(2);
+        expect(outcome.workspace?.displayedPanes).toEqual([
+          { id: second.id, left: 0, top: 0, width: 100, height: 100, activeTabId: "file:AGENTS.md" },
+        ]);
+        expect(outcome.workspace?.focusedPaneId).toBe(second.id);
+        expect(wrapper.findAll('[role="separator"]')).toHaveLength(0);
+        const retained = tabs.snapshotScopes();
+        tabs.toggleMaximizedPane();
+        const restored = (await run({ operation: "inspect" })).workspace!;
+        expect(restored.displayedPanes).toHaveLength(2);
+        expect(tabs.snapshotScopes()).toEqual(retained);
+        tabs.toggleMaximizedPane();
+      }
       const fileElement = shown!.element;
       const moved = await run({ operation: "move", workspaceId: first.workspaceId, paneId: first.panes[0].id, tabId: "file:AGENTS.md" });
       expect(moved).toMatchObject({ opened: true, paneId: first.panes[0].id, tabId: "file:AGENTS.md" });
+      if (maximized) {
+        expect(tabs.maximizedPaneId.value).toBe(first.panes[0].id);
+        expect(moved.workspace?.displayedPanes).toEqual([
+          { id: first.panes[0].id, left: 0, top: 0, width: 100, height: 100, activeTabId: "file:AGENTS.md" },
+        ]);
+      }
       expect(wrapper.find(".reference-view").element).toBe(fileElement);
       expect(fileElement.isConnected).toBe(true);
       expect(tabs.tabs.value.filter(tab => tab.id === "file:AGENTS.md")).toHaveLength(1);
     } finally {
       wrapper.unmount();
       vi.stubGlobal("ResizeObserver", resizeObserver);
+    }
+  });
+
+  it("projects only a maximized pane, restores the split, and focuses selected pane content", async () => {
+    const tabs = useMainTabs({ scopeKey: computed(() => "item:task-a") });
+    tabs.openTab({ kind: "file", filePath: "focus.md" });
+    tabs.splitPane("pane-1", "horizontal");
+    const resizeObserver = globalThis.ResizeObserver;
+    vi.stubGlobal("ResizeObserver", class {
+      constructor(private callback: ResizeObserverCallback) {}
+      observe() { this.callback([{ contentRect: { width: 1200 } }] as ResizeObserverEntry[], this as unknown as ResizeObserver); }
+      disconnect() {}
+      unobserve() {}
+    });
+    const { default: MainPanel } = await import("../MainPanel.vue");
+    const wrapper = mount(MainPanel, {
+      props: {
+        uiSlot: readySlot(durableTask({ id: "task-a" })), repoPath: "/repo", hasRepos: true,
+        views: {
+          tabs,
+          modals: {
+            activeTaskViewIsRemote: computed(() => false),
+            activeWorktreePath: computed(() => "/repo/task-a"),
+            currentPreviewMarkdownMode: computed(() => "raw"),
+            homePath: computed(() => "/home/tester"),
+          },
+          store: { worktreePaths: { "task-a": "/repo/task-a" } },
+        } as unknown as MainTabViewsController,
+      },
+      attachTo: document.body,
+      global: {
+        mocks: { $t: (key: string) => key },
+        stubs: {
+          TaskHeader: true,
+          MainTabBar: true,
+          TerminalTabs: true,
+          FilePreviewModal: { template: '<div data-testid="pane-file-focus" tabindex="-1"></div>' },
+        },
+      },
+    });
+    try {
+      await flushPromises();
+      expect(wrapper.findAll(".pane-chrome")).toHaveLength(2);
+      expect(wrapper.findAll('[role="separator"]')).toHaveLength(1);
+      const layoutBefore = tabs.snapshotScopes();
+
+      tabs.toggleMaximizedPane();
+      await flushPromises();
+      expect(wrapper.findAll(".pane-chrome")).toHaveLength(1);
+      expect(wrapper.findAll('[role="separator"]')).toHaveLength(0);
+      expect(wrapper.get<HTMLElement>(".pane-chrome").element.style.width).toBe("100%");
+      expect(tabs.panes.value).toHaveLength(2);
+      expect(tabs.snapshotScopes()).toEqual(layoutBefore);
+
+      tabs.toggleMaximizedPane();
+      await flushPromises();
+      expect(wrapper.findAll('[role="separator"]')).toHaveLength(1);
+      expect(tabs.snapshotScopes()).toEqual(layoutBefore);
+      tabs.cyclePane(-1);
+      tabs.cyclePane(1);
+      await (wrapper.vm as unknown as { focusActivePaneContent: () => Promise<void> }).focusActivePaneContent();
+      expect(wrapper.findAll(".pane-chrome")).toHaveLength(2);
+      expect(document.activeElement).toBe(wrapper.get('[data-testid="pane-file-focus"]').element);
+    } finally {
+      wrapper.unmount();
+      vi.stubGlobal("ResizeObserver", resizeObserver);
+    }
+  });
+
+  it("focuses cached preview content when pane cycling selects its tab", async () => {
+    const task = durableTask({ id: "task-a" });
+    const tabs = useMainTabs({ scopeKey: computed(() => "item:task-a") });
+    tabs.openTab({ kind: "preview", portName: "WEB_PORT" });
+    tabs.splitPane("pane-1", "horizontal");
+    const resizeObserver = globalThis.ResizeObserver;
+    vi.stubGlobal("ResizeObserver", class {
+      constructor(private callback: ResizeObserverCallback) {}
+      observe() { this.callback([{ contentRect: { width: 1200 } }] as ResizeObserverEntry[], this as unknown as ResizeObserver); }
+      disconnect() {}
+      unobserve() {}
+    });
+    const { default: MainPanel } = await import("../MainPanel.vue");
+    const wrapper = mount(MainPanel, {
+      props: {
+        uiSlot: readySlot(task), repoPath: "/repo", hasRepos: true,
+        views: {
+          tabs,
+          modals: {
+            activeTaskViewIsRemote: computed(() => false),
+            activeWorktreePath: computed(() => "/repo/task-a"),
+            homePath: computed(() => "/home/tester"),
+          },
+          store: { items: [task], worktreePaths: { "task-a": "/repo/task-a" } },
+        } as unknown as MainTabViewsController,
+      },
+      attachTo: document.body,
+      global: { mocks: { $t: (key: string) => key }, stubs: { TaskHeader: true, MainTabBar: true, TerminalTabs: true } },
+    });
+    try {
+      await flushPromises();
+      tabs.cyclePane(-1);
+      tabs.cyclePane(1);
+      await (wrapper.vm as unknown as { focusActivePaneContent: (id: string) => Promise<void> }).focusActivePaneContent("pane-2");
+      expect(document.activeElement).toBe(wrapper.get('[data-testid="task-preview"]').element);
+    } finally {
+      wrapper.unmount();
+      vi.stubGlobal("ResizeObserver", resizeObserver);
+    }
+  });
+
+  it("focuses archived output instead of the inactive live terminal", async () => {
+    const tabs = useMainTabs({ scopeKey: computed(() => "item:task-a") });
+    const { default: MainPanel } = await import("../MainPanel.vue");
+    const wrapper = mount(MainPanel, {
+      props: {
+        uiSlot: readySlot(durableTask({ id: "task-a" })), repoPath: "/repo", hasRepos: true,
+        views: {
+          tabs,
+          modals: { activeTaskViewIsRemote: computed(() => false), homePath: computed(() => "/home/tester") },
+          store: {},
+        } as unknown as MainTabViewsController,
+      },
+      attachTo: document.body,
+      global: { mocks: { $t: (key: string) => key }, stubs: { TaskHeader: true, MainTabBar: true, TerminalTabs: true } },
+    });
+    try {
+      await flushPromises();
+      (wrapper.vm as unknown as { selectAttempt: (id: string) => void }).selectAttempt("prior-run");
+      await flushPromises();
+      await (wrapper.vm as unknown as { focusActivePaneContent: (id: string) => Promise<void> }).focusActivePaneContent("pane-1");
+      expect(document.activeElement).toBe(wrapper.get('[data-testid="agent-history"] pre').element);
+    } finally {
+      wrapper.unmount();
     }
   });
 
@@ -347,6 +502,7 @@ describe("MainPanel", () => {
   it("only explicitly edits a local recorded workspace and keeps an asynchronous open in its originating task", async () => {
     const selected = ref("task-a");
     const tabs = useMainTabs({ scopeKey: computed(() => `item:${selected.value}`) });
+    const savePreference = vi.fn().mockResolvedValue(undefined);
     tabs.openTab({ kind: "file", filePath: "README.md" });
     const { default: MainPanel } = await import("../MainPanel.vue");
     const wrapper = mount(MainPanel, {
@@ -355,7 +511,11 @@ describe("MainPanel", () => {
         views: {
           tabs,
           modals: { activeTaskViewIsRemote: computed(() => false), activeWorktreePath: computed(() => "/incorrect-derived-path"), currentPreviewMarkdownMode: computed(() => "raw") },
-          store: { worktreePaths: { "task-a": "/recorded/workspace" } },
+          store: {
+            worktreePaths: { "task-a": "/recorded/workspace" },
+            snapshotSettings: {},
+            savePreference,
+          },
         } as unknown as MainTabViewsController,
       },
       global: { mocks: { $t: (key: string) => key }, stubs: { TaskHeader: true, TerminalTabs: true, MainTabBar: true, FilePreviewModal: true, TerminalEditorView: true } },
@@ -363,6 +523,9 @@ describe("MainPanel", () => {
     await flushPromises();
     const preview = wrapper.findComponent({ name: "FilePreviewModal" });
     expect(preview.props("worktreePath")).toBe("/recorded/workspace");
+    expect(preview.props("terminalEditorNoticeDismissed")).toBe(false);
+    await preview.props("dismissTerminalEditorNotice")();
+    expect(savePreference).toHaveBeenCalledWith("hideTerminalEditorNotice", "true");
     expect(openTerminalEditorMock).not.toHaveBeenCalled();
     let resolveOpen!: (session: unknown) => void;
     openTerminalEditorMock.mockImplementation(() => new Promise(resolve => { resolveOpen = resolve; }));

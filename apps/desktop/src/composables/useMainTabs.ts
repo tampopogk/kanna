@@ -88,6 +88,8 @@ interface MainTabScopeState {
   restoredPaneIds?: Set<string>;
   layout?: TaskPaneLayout;
   focusedPane?: string;
+  /** Presentation-only: the split tree remains intact while siblings are hidden. */
+  maximizedPane?: string;
   referenceId?: string;
   split?: boolean;
   tabs: MainTab[];
@@ -376,6 +378,15 @@ export function useMainTabs({ scopeKey, onTabClosed }: UseMainTabsOptions) {
     const layout = scopeKey.value ? scopes[scopeKey.value]?.layout : undefined;
     return layout ? splitRects(layout) : [];
   });
+  const maximizedPaneId = computed<string | null>(() => {
+    const key = scopeKey.value;
+    if (!key) return null;
+    const state = scopes[key];
+    if (!state?.maximizedPane || !state.layout) return null;
+    return paneLeaves(state.layout).some((pane) => pane.id === state.maximizedPane)
+      ? state.maximizedPane
+      : null;
+  });
   function resizePane(path: string, ratio: number) {
     if (scopeKey.value && Number.isFinite(ratio)) resizeSplit(ensureLayout(scopeState(scopeKey.value)), path, ratio);
   }
@@ -385,7 +396,41 @@ export function useMainTabs({ scopeKey, onTabClosed }: UseMainTabsOptions) {
     const pane = paneLeaves(ensureLayout(state)).find(pane => pane.id === id);
     if (!pane) return;
     state.focusedPane = id;
+    if (state.maximizedPane) state.maximizedPane = id;
     if (pane.active) state.activeId = pane.active;
+  }
+  function cyclePane(direction: -1 | 1): string | null {
+    if (!scopeKey.value) return null;
+    const state = scopeState(scopeKey.value);
+    const leaves = paneLeaves(ensureLayout(state));
+    if (leaves.length < 2) return null;
+    const activePane = leaves.find((pane) => pane.tabs.includes(state.activeId));
+    const current = leaves.findIndex((pane) => pane.id === state.focusedPane);
+    const index = current >= 0 ? current : Math.max(0, leaves.indexOf(activePane ?? leaves[0]));
+    const target = leaves[(index + direction + leaves.length) % leaves.length];
+    focusPane(target.id);
+    return target.id;
+  }
+  function toggleMaximizedPane(): string | null {
+    if (!scopeKey.value) return null;
+    const state = scopeState(scopeKey.value);
+    const leaves = paneLeaves(ensureLayout(state));
+    const pane = leaves.find((candidate) => candidate.id === state.focusedPane)
+      ?? leaves.find((candidate) => candidate.tabs.includes(state.activeId))
+      ?? leaves[0];
+    if (!pane) return null;
+    state.maximizedPane = state.maximizedPane === pane.id ? undefined : pane.id;
+    return state.maximizedPane ?? null;
+  }
+  function maximizeFocusedPane(): string | null {
+    if (!scopeKey.value) return null;
+    const state = scopeState(scopeKey.value);
+    const leaves = paneLeaves(ensureLayout(state));
+    const pane = leaves.find((candidate) => candidate.id === state.focusedPane)
+      ?? leaves.find((candidate) => candidate.tabs.includes(state.activeId))
+      ?? leaves[0];
+    state.maximizedPane = pane?.id;
+    return state.maximizedPane ?? null;
   }
   function splitPane(id: string, axis: 'horizontal' | 'vertical', tabId?: string) {
     if (!scopeKey.value) return;
@@ -440,6 +485,12 @@ export function useMainTabs({ scopeKey, onTabClosed }: UseMainTabsOptions) {
       return { ...node, first: remove(node.first), second: remove(node.second) };
     }
     state.layout = remove(layout);
+    const leaves = paneLeaves(state.layout);
+    const selected = leaves.find((pane) => pane.id === state.focusedPane)
+      ?? leaves.find((pane) => pane.tabs.includes(state.activeId))
+      ?? leaves[0];
+    state.focusedPane = selected?.id;
+    if (state.maximizedPane) state.maximizedPane = selected?.id;
   }
   function joinPanes() {
     if (!scopeKey.value) return;
@@ -447,6 +498,7 @@ export function useMainTabs({ scopeKey, onTabClosed }: UseMainTabsOptions) {
     const leaves = paneLeaves(ensureLayout(state));
     state.layout = { kind: 'pane', id: leaves[0].id, tabs: leaves.flatMap(pane => pane.tabs), active: state.activeId };
     state.focusedPane = leaves[0].id;
+    state.maximizedPane = undefined;
   }
 
   const activeTabContext = computed<ShortcutContext | null>(() => {
@@ -561,6 +613,7 @@ export function useMainTabs({ scopeKey, onTabClosed }: UseMainTabsOptions) {
     state.activeId = (state.tabs[index] ?? state.tabs[index - 1])?.id ?? "";
     const activePane = state.layout && paneLeaves(state.layout).find(pane => pane.tabs.includes(state.activeId));
     if (activePane) { activePane.active = state.activeId; state.focusedPane = activePane.id; }
+    if (state.maximizedPane) state.maximizedPane = activePane?.id;
     if (state.activeId !== AGENT_TAB_ID) state.referenceId = state.activeId;
   }
 
@@ -643,8 +696,12 @@ export function useMainTabs({ scopeKey, onTabClosed }: UseMainTabsOptions) {
     workspaceIdentity,
     focusedPaneId,
     dividers,
+    maximizedPaneId,
     resizePane,
     focusPane,
+    cyclePane,
+    toggleMaximizedPane,
+    maximizeFocusedPane,
     splitPane,
     moveTab,
     joinPanes,

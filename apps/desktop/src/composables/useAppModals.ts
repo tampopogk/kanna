@@ -183,8 +183,6 @@ export function useAppModals({
   const showPeerPicker = ref(false);
   const sidebarHidden = ref(false);
   const sidebarWidth = ref(DEFAULT_SIDEBAR_WIDTH);
-  const maximizedModal = ref<ShortcutContext | null>(null);
-  const maximized = computed(() => maximizedModal.value !== null);
   const sidebarRef = ref<InstanceType<typeof Sidebar> | null>(null);
   const mainPanelRef = ref<InstanceType<typeof MainPanel> | null>(null);
   const filePickerRef = ref<InstanceType<typeof FilePickerModal> | null>(null);
@@ -240,7 +238,7 @@ export function useAppModals({
     if (!context) return;
     if (context.surface === "tree") {
       mainTabs?.openTab({ kind: "tree" });
-      maximizedModal.value = "tree";
+      mainTabs?.maximizeFocusedPane();
       return;
     }
 
@@ -258,7 +256,7 @@ export function useAppModals({
       };
     }
     mainTabs?.openTab({ kind: "diff" });
-    maximizedModal.value = "diff";
+    mainTabs?.maximizeFocusedPane();
   }
 
   /**
@@ -577,8 +575,6 @@ export function useAppModals({
     blockerSelectMode,
     showPeerPicker,
     sidebarHidden,
-    maximizedModal,
-    maximized,
     sidebarRef,
     mainPanelRef,
     filePickerRef,
