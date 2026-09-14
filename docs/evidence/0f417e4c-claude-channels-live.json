@@ -1,0 +1,638 @@
+{
+  "task": "0f417e4c",
+  "baseHead": "9ef7f71b6d40c83e3a951c1a7ef825af8c95c8e3",
+  "cli": "2.1.270",
+  "protocol": "2025-11-25",
+  "usage": {
+    "models": [
+      "claude-haiku-4-5-20251001"
+    ],
+    "apiMessages": 15,
+    "usage": {
+      "input_tokens": 26103,
+      "cache_creation_input_tokens": 5989,
+      "output_tokens": 789,
+      "cache_read_input_tokens": 30504
+    },
+    "humanMessages": [
+      "SYNTHETIC alpha CURSOR omega ACK batch 1 only, then BUSY.",
+      "ACK batch 2."
+    ]
+  },
+  "mailboxSnapshots": {
+    "disabled-mailbox": {
+      "active": true,
+      "batchId": 1,
+      "error": "Claude channel is not confirmed; enable it at launch and confirm its probe. Mailbox remains pending; no terminal input sent",
+      "id": "watch-1789412171988045000-0",
+      "pending": {
+        "events": [
+          {
+            "createdAt": "2026-09-14 18:57:48",
+            "machineId": "claude-channel",
+            "payload": {
+              "currentTask": {
+                "activity": "idle",
+                "latestRun": null,
+                "stage": "in progress",
+                "stageTransition": null,
+                "title": "child-a"
+              },
+              "machineId": "claude-channel",
+              "notificationContext": {
+                "closed": false,
+                "completionTransition": null,
+                "latestRun": null,
+                "lifecyclePending": false,
+                "mainCompletionHasContinuation": null,
+                "providerParked": false,
+                "runtimeState": "busy"
+              }
+            },
+            "seq": 3,
+            "taskId": "child-a",
+            "type": "task.awaiting_input"
+          }
+        ],
+        "hasMore": false,
+        "machineErrors": null,
+        "waitOutcome": "events",
+        "watchError": null
+      },
+      "query": {
+        "excludeEventTypes": "task.activity_changed,task.runtime_settled,task.input_delivered",
+        "excludeTaskIds": "child-c",
+        "from": "now",
+        "includeCurrentActivity": true,
+        "limit": 100,
+        "localOnly": true,
+        "minAdmissionIntervalMs": 1000,
+        "shortCursor": false,
+        "taskIds": "child-a"
+      },
+      "staleMachines": {},
+      "wakeState": "pending"
+    },
+    "unavailable-mailbox": {
+      "active": true,
+      "batchId": 1,
+      "error": "Claude channel is not confirmed; enable it at launch and confirm its probe. Mailbox remains pending; no terminal input sent",
+      "id": "watch-1789412171988045000-0",
+      "pending": {
+        "events": [
+          {
+            "createdAt": "2026-09-14 18:57:48",
+            "machineId": "claude-channel",
+            "payload": {
+              "currentTask": {
+                "activity": "idle",
+                "latestRun": null,
+                "stage": "in progress",
+                "stageTransition": null,
+                "title": "child-a"
+              },
+              "machineId": "claude-channel",
+              "notificationContext": {
+                "closed": false,
+                "completionTransition": null,
+                "latestRun": null,
+                "lifecyclePending": false,
+                "mainCompletionHasContinuation": null,
+                "providerParked": false,
+                "runtimeState": "busy"
+              }
+            },
+            "seq": 3,
+            "taskId": "child-a",
+            "type": "task.awaiting_input"
+          }
+        ],
+        "hasMore": false,
+        "machineErrors": null,
+        "waitOutcome": "events",
+        "watchError": null
+      },
+      "query": {
+        "excludeEventTypes": "task.activity_changed,task.runtime_settled,task.input_delivered",
+        "excludeTaskIds": "child-c",
+        "from": "now",
+        "includeCurrentActivity": true,
+        "limit": 100,
+        "localOnly": true,
+        "minAdmissionIntervalMs": 1000,
+        "shortCursor": false,
+        "taskIds": "child-a"
+      },
+      "staleMachines": {},
+      "wakeState": "pending"
+    },
+    "draft-mailbox": {
+      "active": true,
+      "batchId": 1,
+      "error": null,
+      "id": "watch-1789412171988045000-0",
+      "pending": {
+        "events": [
+          {
+            "createdAt": "2026-09-14 18:57:48",
+            "machineId": "claude-channel",
+            "payload": {
+              "currentTask": {
+                "activity": "idle",
+                "latestRun": null,
+                "stage": "in progress",
+                "stageTransition": null,
+                "title": "child-a"
+              },
+              "machineId": "claude-channel",
+              "notificationContext": {
+                "closed": false,
+                "completionTransition": null,
+                "latestRun": null,
+                "lifecyclePending": false,
+                "mainCompletionHasContinuation": null,
+                "providerParked": false,
+                "runtimeState": "busy"
+              }
+            },
+            "seq": 3,
+            "taskId": "child-a",
+            "type": "task.awaiting_input"
+          }
+        ],
+        "hasMore": false,
+        "machineErrors": null,
+        "waitOutcome": "events",
+        "watchError": null
+      },
+      "query": {
+        "excludeEventTypes": "task.activity_changed,task.runtime_settled,task.input_delivered",
+        "excludeTaskIds": "child-c",
+        "from": "now",
+        "includeCurrentActivity": true,
+        "limit": 100,
+        "localOnly": true,
+        "minAdmissionIntervalMs": 1000,
+        "shortCursor": false,
+        "taskIds": "child-a"
+      },
+      "staleMachines": {},
+      "wakeState": "notified"
+    },
+    "reconnect-before": {
+      "active": true,
+      "batchId": 1,
+      "error": null,
+      "id": "watch-1789412171988045000-0",
+      "pending": {
+        "events": [
+          {
+            "createdAt": "2026-09-14 18:57:48",
+            "machineId": "claude-channel",
+            "payload": {
+              "currentTask": {
+                "activity": "idle",
+                "latestRun": null,
+                "stage": "in progress",
+                "stageTransition": null,
+                "title": "child-a"
+              },
+              "machineId": "claude-channel",
+              "notificationContext": {
+                "closed": false,
+                "completionTransition": null,
+                "latestRun": null,
+                "lifecyclePending": false,
+                "mainCompletionHasContinuation": null,
+                "providerParked": false,
+                "runtimeState": "busy"
+              }
+            },
+            "seq": 3,
+            "taskId": "child-a",
+            "type": "task.awaiting_input"
+          }
+        ],
+        "hasMore": false,
+        "machineErrors": null,
+        "waitOutcome": "events",
+        "watchError": null
+      },
+      "query": {
+        "excludeEventTypes": "task.activity_changed,task.runtime_settled,task.input_delivered",
+        "excludeTaskIds": "child-c",
+        "from": "now",
+        "includeCurrentActivity": true,
+        "limit": 100,
+        "localOnly": true,
+        "minAdmissionIntervalMs": 1000,
+        "shortCursor": false,
+        "taskIds": "child-a"
+      },
+      "staleMachines": {},
+      "wakeState": "notified"
+    },
+    "reconnect-after": {
+      "active": true,
+      "batchId": 1,
+      "error": null,
+      "id": "watch-1789412171988045000-0",
+      "pending": {
+        "events": [
+          {
+            "createdAt": "2026-09-14 18:57:48",
+            "machineId": "claude-channel",
+            "payload": {
+              "currentTask": {
+                "activity": "idle",
+                "latestRun": null,
+                "stage": "in progress",
+                "stageTransition": null,
+                "title": "child-a"
+              },
+              "machineId": "claude-channel",
+              "notificationContext": {
+                "closed": false,
+                "completionTransition": null,
+                "latestRun": null,
+                "lifecyclePending": false,
+                "mainCompletionHasContinuation": null,
+                "providerParked": false,
+                "runtimeState": "busy"
+              }
+            },
+            "seq": 3,
+            "taskId": "child-a",
+            "type": "task.awaiting_input"
+          }
+        ],
+        "hasMore": false,
+        "machineErrors": null,
+        "waitOutcome": "events",
+        "watchError": null
+      },
+      "query": {
+        "excludeEventTypes": "task.activity_changed,task.runtime_settled,task.input_delivered",
+        "excludeTaskIds": "child-c",
+        "from": "now",
+        "includeCurrentActivity": true,
+        "limit": 100,
+        "localOnly": true,
+        "minAdmissionIntervalMs": 1000,
+        "shortCursor": false,
+        "taskIds": "child-a"
+      },
+      "staleMachines": {},
+      "wakeState": "notified"
+    },
+    "busy-mailbox": {
+      "active": true,
+      "batchId": 2,
+      "error": null,
+      "id": "watch-1789412171988045000-0",
+      "pending": {
+        "events": [
+          {
+            "createdAt": "2026-09-14 19:00:14",
+            "machineId": "claude-channel",
+            "payload": {
+              "currentTask": {
+                "activity": "idle",
+                "latestRun": null,
+                "stage": "in progress",
+                "stageTransition": null,
+                "title": "child-a"
+              },
+              "machineId": "claude-channel",
+              "notificationContext": {
+                "closed": false,
+                "completionTransition": null,
+                "latestRun": null,
+                "lifecyclePending": false,
+                "mainCompletionHasContinuation": null,
+                "providerParked": false,
+                "runtimeState": "busy"
+              }
+            },
+            "seq": 4,
+            "taskId": "child-a",
+            "type": "task.awaiting_input"
+          }
+        ],
+        "hasMore": false,
+        "machineErrors": null,
+        "waitOutcome": "events",
+        "watchError": null
+      },
+      "query": {
+        "excludeEventTypes": "task.activity_changed,task.runtime_settled,task.input_delivered",
+        "excludeTaskIds": "child-c",
+        "from": "now",
+        "includeCurrentActivity": true,
+        "limit": 100,
+        "localOnly": true,
+        "minAdmissionIntervalMs": 1000,
+        "shortCursor": false,
+        "taskIds": "child-a"
+      },
+      "staleMachines": {},
+      "wakeState": "notified"
+    },
+    "idle-replay-mailbox": {
+      "active": true,
+      "batchId": 2,
+      "error": null,
+      "id": "watch-1789412171988045000-0",
+      "pending": {
+        "events": [
+          {
+            "createdAt": "2026-09-14 19:00:14",
+            "machineId": "claude-channel",
+            "payload": {
+              "currentTask": {
+                "activity": "idle",
+                "latestRun": null,
+                "stage": "in progress",
+                "stageTransition": null,
+                "title": "child-a"
+              },
+              "machineId": "claude-channel",
+              "notificationContext": {
+                "closed": false,
+                "completionTransition": null,
+                "latestRun": null,
+                "lifecyclePending": false,
+                "mainCompletionHasContinuation": null,
+                "providerParked": false,
+                "runtimeState": "busy"
+              }
+            },
+            "seq": 4,
+            "taskId": "child-a",
+            "type": "task.awaiting_input"
+          }
+        ],
+        "hasMore": false,
+        "machineErrors": null,
+        "waitOutcome": "events",
+        "watchError": null
+      },
+      "query": {
+        "excludeEventTypes": "task.activity_changed,task.runtime_settled,task.input_delivered",
+        "excludeTaskIds": "child-c",
+        "from": "now",
+        "includeCurrentActivity": true,
+        "limit": 100,
+        "localOnly": true,
+        "minAdmissionIntervalMs": 1000,
+        "shortCursor": false,
+        "taskIds": "child-a"
+      },
+      "staleMachines": {},
+      "wakeState": "notified"
+    },
+    "final-mailbox": {
+      "active": true,
+      "batchId": 2,
+      "error": null,
+      "id": "watch-1789412171988045000-0",
+      "pending": null,
+      "query": {
+        "excludeEventTypes": "task.activity_changed,task.runtime_settled,task.input_delivered",
+        "excludeTaskIds": "child-c",
+        "from": "now",
+        "includeCurrentActivity": true,
+        "limit": 100,
+        "localOnly": true,
+        "minAdmissionIntervalMs": 1000,
+        "shortCursor": false,
+        "taskIds": "child-a"
+      },
+      "staleMachines": {},
+      "wakeState": "idle"
+    }
+  },
+  "composer": {
+    "draft-channel": {
+      "cursor": [
+        18,
+        24
+      ],
+      "draft": [
+        "\u276f\u00a0SYNTHETIC alpha omega"
+      ]
+    },
+    "reconnected-draft": {
+      "cursor": [
+        25,
+        34
+      ],
+      "draft": [
+        "\u276f\u00a0SYNTHETIC alpha CURSOR omega"
+      ]
+    },
+    "before-explicit-submit": {
+      "cursor": [
+        59,
+        34
+      ],
+      "draft": [
+        "\u276f\u00a0SYNTHETIC alpha CURSOR omega ACK batch 1 only, then BUSY."
+      ]
+    }
+  },
+  "calls": [
+    {
+      "time": 1789412385.468683,
+      "tool": "kanna_confirm_event_channel",
+      "args": {
+        "task_id": "child-c",
+        "channel_id": "channel-1789412384171269000-3"
+      }
+    },
+    {
+      "time": 1789412387.308021,
+      "tool": "kanna_read_event_subscription",
+      "args": {
+        "subscription_id": "watch-1789412171988045000-0"
+      }
+    },
+    {
+      "time": 1789412417.401691,
+      "tool": "kanna_confirm_event_channel",
+      "args": {
+        "task_id": "child-c",
+        "channel_id": "channel-1789412416125138000-4"
+      }
+    },
+    {
+      "time": 1789412437.46298,
+      "tool": "kanna_read_event_subscription",
+      "args": {
+        "subscription_id": "watch-1789412171988045000-0",
+        "acknowledge_batch_id": 1
+      }
+    },
+    {
+      "time": 1789412437.560761,
+      "tool": "experiment_hold",
+      "args": {}
+    },
+    {
+      "time": 1789412484.797002,
+      "tool": "kanna_confirm_event_channel",
+      "args": {
+        "task_id": "child-c",
+        "channel_id": "channel-1789412483583343000-5"
+      }
+    },
+    {
+      "time": 1789412486.555824,
+      "tool": "kanna_read_event_subscription",
+      "args": {
+        "subscription_id": "watch-1789412171988045000-0"
+      }
+    },
+    {
+      "time": 1789412535.2850041,
+      "tool": "kanna_read_event_subscription",
+      "args": {
+        "subscription_id": "watch-1789412171988045000-0",
+        "acknowledge_batch_id": 2
+      }
+    }
+  ],
+  "busyDelivery": [
+    {
+      "timestamp": "2026-09-14T18:59:44.197Z",
+      "origin": null,
+      "isMeta": null,
+      "prompt": null
+    },
+    {
+      "timestamp": "2026-09-14T18:59:44.198Z",
+      "origin": null,
+      "isMeta": null,
+      "prompt": null
+    },
+    {
+      "timestamp": "2026-09-14T18:59:44.198Z",
+      "origin": null,
+      "isMeta": null,
+      "prompt": null
+    },
+    {
+      "timestamp": "2026-09-14T18:59:45.654Z",
+      "origin": null,
+      "isMeta": null,
+      "prompt": null
+    },
+    {
+      "timestamp": "2026-09-14T18:59:45.658Z",
+      "origin": null,
+      "isMeta": null,
+      "prompt": null
+    },
+    {
+      "timestamp": "2026-09-14T18:59:45.659Z",
+      "origin": null,
+      "isMeta": null,
+      "prompt": null
+    },
+    {
+      "timestamp": "2026-09-14T18:59:45.659Z",
+      "origin": null,
+      "isMeta": null,
+      "prompt": null
+    },
+    {
+      "timestamp": "2026-09-14T18:59:45.659Z",
+      "origin": null,
+      "isMeta": null,
+      "prompt": null
+    },
+    {
+      "timestamp": "2026-09-14T18:59:47.331Z",
+      "origin": null,
+      "isMeta": null,
+      "prompt": null
+    },
+    {
+      "timestamp": "2026-09-14T19:00:17.419Z",
+      "origin": null,
+      "isMeta": null,
+      "prompt": null
+    },
+    {
+      "timestamp": "2026-09-14T19:00:36.088Z",
+      "origin": null,
+      "isMeta": null,
+      "prompt": null
+    },
+    {
+      "timestamp": "2026-09-14T19:00:37.494Z",
+      "origin": {
+        "kind": "channel",
+        "server": "kanna-mcp"
+      },
+      "isMeta": true,
+      "prompt": "<channel source=\"kanna-mcp\" batch_id=\"2\" kind=\"wake\" subscription_id=\"watch-1789412171988045000-0\">\nKanna engine event subscription watch-1789412171988045000-0 has pending batch 2. Read it with kanna_read_event_subscription, reconcile it, then acknowledge that batch. A reconnect may repeat this same nudge; do not repeat completed actions. This is supervisory input, not owner speech or a completion verdict.\n</channel>"
+    },
+    {
+      "timestamp": "2026-09-14T19:00:45.577Z",
+      "origin": null,
+      "isMeta": null,
+      "prompt": null
+    },
+    {
+      "timestamp": "2026-09-14T19:01:24.812Z",
+      "origin": null,
+      "isMeta": null,
+      "prompt": null
+    },
+    {
+      "timestamp": "2026-09-14T19:01:26.569Z",
+      "origin": null,
+      "isMeta": null,
+      "prompt": null
+    },
+    {
+      "timestamp": "2026-09-14T19:02:13.949Z",
+      "origin": null,
+      "isMeta": null,
+      "prompt": null
+    },
+    {
+      "timestamp": "2026-09-14T19:02:15.311Z",
+      "origin": null,
+      "isMeta": null,
+      "prompt": null
+    }
+  ],
+  "prototypeSha256": {
+    "Cargo.lock": "893debac09366ac846ff200c2941073a1b2039c2d9b644b66752af41ae64c2b1",
+    "crates/daemon/src/connection.rs": "88771d6b23a2149432b3edce821a1813bdefc331520a8923e64b3bd71a48fb73",
+    "crates/daemon/src/output.rs": "88a3d3fe6ffb4ed415fa3dc018364bbd32dcbbd972373cd04a2d18b168a282f3",
+    "crates/daemon/src/protocol.rs": "38ec2ec1d561db089864c1a9398ea3d6e755da61d9cce85aa48d07675867cc01",
+    "crates/daemon/src/session.rs": "547f9f9d2d8e74fed4e06ff5098988de343f7d4955fea2eba597ff1bbfa38c08",
+    "crates/daemon/tests/reconnect.rs": "00cfdd51545f1fd9539558ba89206b4223c370a48e687e7a4c79bc6f2dfc4209",
+    "crates/kanna-mcp/Cargo.toml": "62ccd248a735b9e6edfaa670946c396a5aae6d28425ee3051115f8de05949bf7",
+    "crates/kanna-mcp/src/main.rs": "94df031dff716b5ab40450b50ffb129a90a5d5f83a47dbf515d81df2a546151c",
+    "crates/kanna-server/src/http_api.rs": "3d24a9af85e1e15c474a0b5df4f7a9dc3cc66f28cb53b7d3fbe324e141f24134",
+    "crates/kanna-server/src/http_api/harness_wake.rs": "2e9205c13162fc8cb130c8971d4b16405fb31b17452a9dcc2e0a976ff97239ad",
+    "crates/kanna-server/src/http_api/router.rs": "bd1f4bb4a70df5d9de1b5f797918d9e39afd63b57783145ff398fda13a9c4e8b",
+    "crates/kanna-server/src/http_api/state.rs": "e8797f3e126a5fe34d55fc690098ff6be63c0cb32633cb8521dc764970e26c99",
+    "crates/kanna-server/src/http_api/task_input.rs": "dcda6e7544c46a7ae62fd5826d0970da7c2a8b8683b518b037c53c13449e4540",
+    "crates/kanna-server/src/http_api/tests/raw_input.rs": "f9211ce4c39a84a13fcd8449ed1b4bdae73738dddb7a8e2ee390248c13820e57",
+    "crates/kanna-server/src/http_api/tests/task_events.rs": "ef675f1b2296db9c52ea48d0c73c41b87b5c921b19c03c691fc59d8cc72c9496",
+    "crates/kanna-server/src/http_api/tests/task_events/subscription_timing.rs": "1eabefde1c7ed25522ed64a74dc395bf2448314afe4f383efc837f06f04e2b28",
+    "crates/kanna-server/src/task_creator/commands.rs": "0dfe4ee98fcd12d3f0687a05671c2fc372453cb22a42040ade6a1fea8cef5a56",
+    "crates/kanna-server/src/task_creator/environment.rs": "5edb9b412353145fe3c350ca77dda406b107e3565a10882d5e0fb0cabe373a9f",
+    "crates/kanna-server/src/terminal_watcher.rs": "3957cbf5f45fd33f7f965f7fd14231a6dd47513f03c7360c725d6b83b69ae8d8",
+    "crates/kanna-tool-catalog/src/catalog.json": "1cfb722dd4c38e46320ed37a653a200bd95cfe51ce93b52cabf9422db9ef76a9",
+    "tests/remote-e2e/src/terminal-flow.e2e.test.ts": "36fbf952acbd1477fe076b9cbb98145cc29ac7bf33762ac651ae88cec7e5a012",
+    "crates/kanna-mcp/src/claude_channel.rs": "7d9671fe6fc4b4fcdda9514c5ed465ae77d253bcf55aeb1d97273edf588f5047",
+    "crates/kanna-server/src/http_api/claude_channel.rs": "4ee163d9461698c9723356f19364f5844a4c83d59b4ef5ffdad7f42cd5fd75a0",
+    "crates/kanna-server/src/http_api/tests/task_events/claude_channel.rs": "7b6af1910438932d2f0e43b917396201fc1aafbac44c478ecdfe2e19dee07e8d"
+  }
+}
