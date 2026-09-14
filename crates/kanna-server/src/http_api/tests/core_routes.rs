@@ -4199,6 +4199,53 @@ async fn list_recent_tasks_route_filters_by_repo_and_applies_the_requested_limit
 }
 
 #[tokio::test]
+async fn mobile_recent_tasks_can_include_older_positive_attention_signals_beyond_the_limit() {
+    let app = super::test_router_with_seed("desktop-1", "Studio Mac", |db| {
+        db.insert_test_repo("repo-1", "Repo One").unwrap();
+        for (id, created_at) in [
+            ("explicit-old", "2026-08-24 07:00:00"),
+            ("waiting-old", "2026-08-24 08:00:00"),
+            ("ordinary-new", "2026-08-24 09:00:00"),
+        ] {
+            db.insert_test_pipeline_item(id, "repo-1", id, Some(id), "in progress", created_at)
+                .unwrap();
+        }
+        db.set_task_attention("explicit-old", Some("Choose approach"))
+            .unwrap();
+        db.update_pipeline_item_runtime_status("waiting-old", "waiting", Some("Pick one"))
+            .unwrap();
+        db.update_pipeline_item_runtime_status("ordinary-new", "busy", None)
+            .unwrap();
+    });
+
+    let response = app
+        .oneshot(
+            Request::get("/v1/tasks/recent?limit=1&includeNeedsAttention=true")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let tasks: Vec<crate::mobile_api::TaskSummary> = from_slice(&body).unwrap();
+    assert_eq!(
+        tasks
+            .iter()
+            .map(|task| task.id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["ordinary-new", "waiting-old", "explicit-old"]
+    );
+    assert_eq!(
+        tasks[2].attention_reason.as_deref(),
+        Some("Choose approach")
+    );
+}
+
+#[tokio::test]
 async fn get_tasks_route_filters_runtime_before_limit_and_reports_query_completeness() {
     let app = super::test_router_with_seed("desktop-1", "Studio Mac", |db| {
         db.insert_test_repo("repo-1", "Repo One").unwrap();

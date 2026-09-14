@@ -270,7 +270,7 @@ function createLanFetchFixture(): FetchLike {
       revision: "catalog-v1",
       commands: []
     }],
-    [/^\/v1\/tasks\/recent$/, [task]],
+    [/^\/v1\/tasks\/recent(?:\?includeNeedsAttention=true)?$/, [task]],
     [/^\/v1\/tasks\/search/, []],
     [/^\/v1\/tasks\/task-1\/actions\/mark-read$/, { taskId: TASK_ID, activity: "idle" }]
   ];

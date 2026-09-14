@@ -208,6 +208,7 @@ describe("cloud task index", () => {
         promptSnippet:
           "Canonical prompt first line\nDetailed cloud requirements stay distinct from the rename.\nCLOUD_PROMPT_END_SENTINEL",
         waitingPromptSnippet: "Ready for review",
+        attentionReason: "Choose the release window",
         displayName: "Short renamed cloud task",
         stage: "in progress",
         activity: "working",
@@ -247,6 +248,7 @@ describe("cloud task index", () => {
       stage: "in progress",
       createdAt: "2026-05-14T00:00:00.000Z",
       waitingPromptSnippet: "Ready for review",
+      attentionReason: "Choose the release window",
       agentProvider: "claude",
       agentType: "agent",
       activity: "working",

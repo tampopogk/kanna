@@ -163,6 +163,18 @@ export function mergeCloudAndLanTasks({
       if (lanTask.activity !== undefined) {
         mergedTask.activity = lanTask.activity;
       }
+      if (lanTask.runtimeState !== undefined) {
+        mergedTask.runtimeState = lanTask.runtimeState;
+      }
+      if (lanTask.readState !== undefined) {
+        mergedTask.readState = lanTask.readState;
+      }
+      // Explicit attention is a third independent dimension. In particular,
+      // null from the live owner is an authoritative agent clear and must not
+      // fall back to a stale cloud reason.
+      if (lanTask.attentionReason !== undefined) {
+        mergedTask.attentionReason = lanTask.attentionReason;
+      }
       if (lanTask.activityRevision !== undefined) {
         mergedTask.activityRevision = lanTask.activityRevision;
       }

@@ -207,7 +207,8 @@ export function createLanTransport(
           body: JSON.stringify({ catalogRevision })
         }
       ),
-    listRecentTasks: () => request<TaskSummary[]>("/v1/tasks/recent"),
+    listRecentTasks: () =>
+      request<TaskSummary[]>("/v1/tasks/recent?includeNeedsAttention=true"),
     getTask: (taskId: string) =>
       request<TaskDetail>(`/v1/tasks/${encodeURIComponent(taskId)}`),
     searchTasks: (query) =>

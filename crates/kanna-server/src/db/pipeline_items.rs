@@ -261,6 +261,7 @@ impl Db {
             include_closed,
             repo_id,
             None,
+            false,
             TaskListSort::UpdatedAt,
             TaskListOrder::Desc,
             limit,
@@ -272,6 +273,7 @@ impl Db {
         include_closed: bool,
         repo_id: Option<&str>,
         runtime_state: Option<&str>,
+        needs_attention: bool,
         sort: TaskListSort,
         order: TaskListOrder,
         limit: u32,
@@ -294,12 +296,19 @@ impl Db {
              WHERE (?1 OR closed_at IS NULL)
                AND (?2 IS NULL OR repo_id = ?2)
                AND (?3 IS NULL OR runtime_status = ?3)
+               AND (NOT ?4 OR NULLIF(trim(attention_reason), '') IS NOT NULL OR runtime_status = 'waiting')
              ORDER BY {order_clause}
-             LIMIT ?4"
+             LIMIT ?5"
         );
         let mut stmt = self.conn.prepare(&sql)?;
         let rows = stmt.query_map(
-            rusqlite::params![include_closed, repo_id, runtime_state, limit],
+            rusqlite::params![
+                include_closed,
+                repo_id,
+                runtime_state,
+                needs_attention,
+                limit
+            ],
             |row| {
                 Ok(PipelineItem {
                     id: row.get(0)?,
@@ -339,6 +348,21 @@ impl Db {
             },
         )?;
         rows.collect()
+    }
+
+    pub fn list_pipeline_items_needing_attention(
+        &self,
+        repo_id: Option<&str>,
+    ) -> Result<Vec<PipelineItem>, rusqlite::Error> {
+        self.list_pipeline_items_query(
+            false,
+            repo_id,
+            None,
+            true,
+            TaskListSort::UpdatedAt,
+            TaskListOrder::Desc,
+            u32::MAX,
+        )
     }
 
     #[cfg(test)]

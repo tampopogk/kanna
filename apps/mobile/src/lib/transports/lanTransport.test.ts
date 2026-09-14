@@ -810,7 +810,7 @@ describe("createLanTransport", () => {
 
     expect(fetchImpl).toHaveBeenNthCalledWith(
       1,
-      "http://127.0.0.1:48120/v1/tasks/recent",
+      "http://127.0.0.1:48120/v1/tasks/recent?includeNeedsAttention=true",
       undefined
     );
     expect(fetchImpl).toHaveBeenNthCalledWith(

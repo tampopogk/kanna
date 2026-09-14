@@ -96,7 +96,7 @@ describe("FloatingToolbar", () => {
     expect(flattenStyle(rendered!.root.findAllByType("View")[0].props.style).bottom).toBe(expected);
   });
 
-  it("derives Activity from navigator state and navigates through the tab router", async () => {
+  it("derives Needs you from navigator state and navigates through the tab router", async () => {
     if (!FloatingToolbar) throw new Error("FloatingToolbar was not loaded");
     const navigatorProps = createNavigatorProps(1);
 
@@ -109,15 +109,15 @@ describe("FloatingToolbar", () => {
       );
     });
 
-    const activity = rendered.root.find(
+    const needsYou = rendered.root.find(
       (node) => node.type === "Pressable" && node.props.testID?.endsWith("recent")
     );
     const tasks = rendered.root.find(
       (node) => node.type === "Pressable" && node.props.testID?.endsWith("tasks")
     );
 
-    expect(flattenStyle(activity.props.style).backgroundColor).toBe("#E8F1FF");
-    expect(activity.props).toMatchObject({
+    expect(flattenStyle(needsYou.props.style).backgroundColor).toBe("#E8F1FF");
+    expect(needsYou.props).toMatchObject({
       accessibilityRole: "tab",
       accessibilityState: { selected: true }
     });
@@ -137,7 +137,7 @@ describe("FloatingToolbar", () => {
     );
   });
 
-  it("shows the unread Activity count from the shared notification projection", async () => {
+  it("shows the Needs you count from the shared positive-signal projection", async () => {
     if (!FloatingToolbar) throw new Error("FloatingToolbar was not loaded");
     const navigatorProps = createNavigatorProps();
 
@@ -145,19 +145,19 @@ describe("FloatingToolbar", () => {
       rendered = create(
         React.createElement(FloatingToolbar, {
           ...navigatorProps,
-          activityCount: 3,
+          needsYouCount: 3,
           onSelectUtilityAction: vi.fn()
         } as never)
       );
     });
 
-    const activity = rendered.root.find(
+    const needsYou = rendered.root.find(
       (node) => node.props.testID?.endsWith("recent")
     );
     const badge = rendered.root.findByProps({
       testID: "mobile.activity-badge"
     });
-    expect(activity.props.accessibilityLabel).toBe("Activity, 3 unread");
+    expect(needsYou.props.accessibilityLabel).toBe("Needs you, 3 tasks");
     expect(badge.findByType("Text").props.children).toBe(3);
   });
 

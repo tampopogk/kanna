@@ -165,7 +165,7 @@ function createLanFixture(
     if (url.endsWith("/v1/repos")) {
       return response([{ id: "repo-lan", name: "LAN Repo" }]);
     }
-    if (url.endsWith("/v1/tasks/recent")) {
+    if (url.includes("/v1/tasks/recent")) {
       return response(await listRecentTasks());
     }
     if (/\/v1\/repos\/[^/]+\/tasks$/.test(url)) {
@@ -277,7 +277,7 @@ function createTwoDesktopLanFixture() {
     if (url.endsWith("/v1/repos/repo-a/commands/factory%3Acreate-agent/run")) {
       return response({ taskId: "task-command-a", reused: false });
     }
-    if (url.endsWith("/v1/tasks/recent")) {
+    if (url.includes("/v1/tasks/recent")) {
       return response(
         desktopId === "desktop-a"
           ? [

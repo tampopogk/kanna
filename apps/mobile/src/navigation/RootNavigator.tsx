@@ -50,7 +50,7 @@ import { SearchScreen } from "../screens/SearchScreen";
 import { TaskScreen } from "../screens/TaskScreen";
 import type { TaskQuickReply } from "../screens/taskQuickReplies";
 import { TasksScreen } from "../screens/TasksScreen";
-import { unreadActivityCount } from "../screens/activityTaskOrder";
+import { needsYouCount } from "../screens/needsYouTaskOrder";
 import type {
   MobileController,
   TaskInputSendOutcome
@@ -364,7 +364,7 @@ function MainTabsRoute() {
       tabBar={(props: BottomTabBarProps) => <NavigatorTabBar {...props} />}
     >
       <MainTabs.Screen component={TasksTabRoute} name="Tasks" />
-      <MainTabs.Screen component={ActivityTabRoute} name="Activity" />
+      <MainTabs.Screen component={NeedsYouTabRoute} name="Activity" />
       <MainTabs.Screen component={MoreTabRoute} name="More" />
     </MainTabs.Navigator>
   );
@@ -464,10 +464,7 @@ function NavigatorTabBar(props: BottomTabBarProps) {
   return (
     <FloatingToolbar
       {...props}
-      activityCount={unreadActivityCount(
-        state.recentTasks,
-        state.localTaskListPreferences
-      )}
+      needsYouCount={needsYouCount(state.recentTasks)}
       onSelectUtilityAction={(action) => {
         if (action === "search") {
           pushSearch();
@@ -528,25 +525,25 @@ function TasksTabRoute() {
   );
 }
 
-function ActivityTabRoute() {
+function NeedsYouTabRoute() {
   const { controller, pushTask, state } = useNavigationContent();
   const scrollViewRef = useTabReselectionScrollToTop();
   return (
-    <StandardScreen title="Activity">
+    <StandardScreen title="Needs you">
       <TasksScreen
-        heading="Recent"
+        heading="Needs you"
+        listMode="needsYou"
         repos={state.repos}
         selectedRepoId={state.selectedRepoId}
         taskCollectionStatus={state.taskCollectionStatus}
         repoSelectionDisabled={state.runningRepoCommandId !== null}
         taskListPreferences={state.localTaskListPreferences}
-        taskSlots={projectTaskUiSlots(state.recentTasks, state.taskUiSlots)}
+        taskSlots={projectTaskUiSlots(state.recentTasks, [])}
         scrollViewRef={scrollViewRef}
         onSelectRepo={(repoId) => {
           void controller.selectRepo(repoId);
         }}
         onOpenTask={pushTask}
-        onDismissActivity={(taskId) => controller.dismissActivity(taskId)}
         onSetTaskPinned={(taskId, pinned) =>
           controller.setTaskPinned(taskId, pinned)
         }

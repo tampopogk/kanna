@@ -35,7 +35,7 @@ describe("buildInitialNavigationState", () => {
     expect(projectActiveView(state)).toBe(activeView);
   });
 
-  it("restores task detail above Activity and projects Activity while detail is active", () => {
+  it("restores task detail above Needs you and preserves its origin while detail is active", () => {
     const state = buildInitialNavigationState({
       activeView: "recent",
       selectedTaskId: "task-activity"
