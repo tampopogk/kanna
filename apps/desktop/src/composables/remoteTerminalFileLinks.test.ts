@@ -3,10 +3,12 @@ import {
   createRemoteTerminalFileLinkProvider,
   resolveRemoteTerminalFileLinkPath,
 } from "./remoteTerminalFileLinks"
+import type { ShortcutPlatform } from "./shortcutPlatform"
 
 function createProviderWithReadFile(
   lineText: string,
   readFile: (path: string) => Promise<string | null>,
+  platform?: ShortcutPlatform,
 ) {
   let registeredProvider: {
     provideLinks(bufferLineNumber: number, callback: (links: unknown[] | undefined) => void): void
@@ -20,6 +22,7 @@ function createProviderWithReadFile(
     ),
   }
   const term = {
+    element: container,
     buffer: { active: buffer, normal: buffer },
     registerLinkProvider: vi.fn((provider) => {
       registeredProvider = provider
@@ -30,6 +33,7 @@ function createProviderWithReadFile(
     term: term as never,
     readFile,
     getContainer: () => container,
+    platform,
   })
   provider.register()
 
@@ -119,6 +123,27 @@ describe("remoteTerminalFileLinks", () => {
     })
     // once for the existence check, once refreshed on activation
     expect(readFile).toHaveBeenCalledTimes(2)
+  })
+
+  it("activates and labels remote links with Ctrl+click on Linux", async () => {
+    const readFile = vi.fn(async () => "remote file body")
+    const { container, registeredProvider } = createProviderWithReadFile(
+      "wrote src/app.ts:42",
+      readFile,
+      "linux",
+    )
+    const links = await probeLinks(registeredProvider)
+    const link = links?.[0] as {
+      activate(event: MouseEvent): void
+      hover(event: MouseEvent): void
+    }
+
+    link.hover(new MouseEvent("mousemove"))
+    expect(container.querySelector(".xterm-hover")?.textContent).toBe("Open preview (Ctrl+click)")
+
+    const activation = waitForFileLinkActivation(container)
+    link.activate(new MouseEvent("click", { ctrlKey: true }))
+    await expect(activation).resolves.toMatchObject({ path: "src/app.ts", line: 42 })
   })
 
   it("ignores plain clicks without the meta key", async () => {

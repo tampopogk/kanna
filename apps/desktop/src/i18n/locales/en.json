@@ -174,7 +174,7 @@
     "noTasksMatching": "No tasks match \"{query}\"",
     "noReposYet": "No repos yet.",
     "noReposHint": "Press {shortcut} to create one.",
-    "newTaskTooltip": "New Task (⌘N)",
+    "newTaskTooltip": "New Task ({shortcut})",
     "removeRepoTooltip": "Remove Repo",
     "remoteTaskTooltip": "Remote task",
     "transferringTaskTooltip": "Transferring between machines",
@@ -191,7 +191,7 @@
     "selectRepo": "Select a Git Repository",
     "chooseDirectory": "Choose parent directory",
     "chooseCloneDirectory": "Choose clone directory",
-    "submitHint": "⌘Enter to {action}"
+    "submitHint": "{shortcut} to {action}"
   },
   "toasts": {
     "taskCreationFailed": "Task creation failed",
@@ -230,7 +230,7 @@
     "stageTeardownFailed": "Stage teardown script failed",
     "stageSetupFailed": "Stage setup script failed",
     "stageNotFound": "Stage not found in workflow",
-    "latestAgentFileHint": "Tip: Press ⌘L to open the latest file mentioned by the agent.",
+    "latestAgentFileHint": "Tip: Press {shortcut} to open the latest file mentioned by the agent.",
     "noTerminalFileLink": "No file link found in this terminal.",
     "transferFinalizationFailed": "Task transfer failed",
     "transferPullRefused": "The other machine will not send task {taskId}",
@@ -358,7 +358,7 @@
     "rendered": "Rendered",
     "raw": "Raw",
     "openInIDE": "Open in IDE",
-    "openInIDETooltip": "Open in IDE (⌘O)",
+    "openInIDETooltip": "Open in IDE ({shortcut})",
     "shortcutOpenIDE": "Open in IDE",
     "shortcutToggleMarkdown": "Toggle Markdown",
     "shortcutLineUpDown": "Line ↓/↑",

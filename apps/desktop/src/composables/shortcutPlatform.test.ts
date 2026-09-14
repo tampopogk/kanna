@@ -97,7 +97,7 @@ describe("Linux bindings", () => {
   })
 
   it("moves an unshifted Command binding to Ctrl+Shift and a shifted one to Ctrl+Alt", () => {
-    expect(linux.get("createRepo")).toMatchObject({ ctrl: true, shift: true, alt: false, display: "Ctrl+Shift+I" })
+    expect(linux.get("createRepo")).toMatchObject({ ctrl: true, shift: true, alt: true, display: "Ctrl+Alt+Shift+I" })
     expect(linux.get("importRepo")).toMatchObject({ ctrl: true, shift: false, alt: true, display: "Ctrl+Alt+I" })
     expect(linux.get("closeTabOrWindow")).toMatchObject({ ctrl: true, shift: true, display: "Ctrl+Shift+W" })
     expect(linux.get("closeWindow")).toMatchObject({ ctrl: true, alt: true, display: "Ctrl+Alt+W" })
@@ -171,5 +171,6 @@ describe("metaOrControlHint", () => {
   it("labels a binding the view already dispatches on either modifier", () => {
     expect(metaOrControlHint("f", "mac")).toBe("⌘F")
     expect(metaOrControlHint("f", "linux")).toBe("Ctrl+F")
+    expect(metaOrControlHint("Enter", "linux")).toBe("Ctrl+Enter")
   })
 })

@@ -6,6 +6,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   getShortcutGroups,
   isAppShortcut,
+  resetShortcutBindingsForTests,
   useKeyboardShortcuts,
   shortcuts,
   type ActionName,
@@ -340,6 +341,75 @@ describe("useKeyboardShortcuts", () => {
     expect(actions.newTask).not.toHaveBeenCalled();
 
     wrapper.unmount();
+  });
+
+  it("dispatches physical shifted-letter events to Linux actions", () => {
+    for (const nav of [globalThis.navigator, window.navigator]) {
+      Object.defineProperty(nav, "platform", { value: "Linux x86_64", configurable: true });
+    }
+    resetShortcutBindingsForTests();
+    const actions = buildActions();
+    const wrapper = mountShortcutHarness(actions, () => "main");
+
+    try {
+      for (const key of ["P", "B"]) {
+        window.dispatchEvent(new KeyboardEvent("keydown", {
+          key,
+          code: `Key${key}`,
+          ctrlKey: true,
+          shiftKey: true,
+          bubbles: true,
+          cancelable: true,
+        }));
+      }
+
+      expect(actions.openFile).toHaveBeenCalledOnce();
+      expect(actions.toggleSidebar).toHaveBeenCalledOnce();
+    } finally {
+      wrapper.unmount();
+      for (const nav of [globalThis.navigator, window.navigator]) {
+        Object.defineProperty(nav, "platform", { value: "MacIntel", configurable: true });
+      }
+      resetShortcutBindingsForTests();
+    }
+  });
+
+  it("leaves WebKitGTK's inspector chord native and dispatches the Linux Create Repository chord", () => {
+    for (const nav of [globalThis.navigator, window.navigator]) {
+      Object.defineProperty(nav, "platform", { value: "Linux x86_64", configurable: true });
+    }
+    resetShortcutBindingsForTests();
+    const actions = buildActions();
+    const wrapper = mountShortcutHarness(actions, () => "main");
+
+    try {
+      window.dispatchEvent(new KeyboardEvent("keydown", {
+        key: "I",
+        code: "KeyI",
+        ctrlKey: true,
+        shiftKey: true,
+        bubbles: true,
+        cancelable: true,
+      }));
+      expect(actions.createRepo).not.toHaveBeenCalled();
+
+      window.dispatchEvent(new KeyboardEvent("keydown", {
+        key: "I",
+        code: "KeyI",
+        ctrlKey: true,
+        altKey: true,
+        shiftKey: true,
+        bubbles: true,
+        cancelable: true,
+      }));
+      expect(actions.createRepo).toHaveBeenCalledOnce();
+    } finally {
+      wrapper.unmount();
+      for (const nav of [globalThis.navigator, window.navigator]) {
+        Object.defineProperty(nav, "platform", { value: "MacIntel", configurable: true });
+      }
+      resetShortcutBindingsForTests();
+    }
   });
 
   it.each([

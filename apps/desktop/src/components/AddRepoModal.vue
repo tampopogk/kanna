@@ -8,6 +8,7 @@ import type { ParsedInput } from "../utils/parseRepoInput";
 import { defaultReposHome } from "../utils/reposHome";
 import { isTopModal, useModalZIndex } from "../composables/useModalZIndex";
 import { macOsTextInputAttrs } from "../utils/textInput";
+import { metaOrControlHint } from "../composables/shortcutPlatform";
 
 interface GitRepositoryState {
   defaultBranch: string;
@@ -327,7 +328,7 @@ function cancelLocalRepoRename() {
 }
 
 function isMetaEnter(event: KeyboardEvent): boolean {
-  return event.key === "Enter" && event.metaKey && !event.ctrlKey && !event.altKey;
+  return event.key === "Enter" && (event.metaKey || event.ctrlKey) && !event.altKey;
 }
 
 function submitFromInput(event: KeyboardEvent) {
@@ -561,7 +562,7 @@ function switchTab(tab: "create" | "import") {
 
       <div class="modal-footer">
         <span class="hint">
-          {{ $t('modals.submitHint', { action: activeTab === 'create' ? $t('actions.create').toLowerCase() : $t('actions.import').toLowerCase() }) }}
+          {{ $t('modals.submitHint', { shortcut: metaOrControlHint('Enter'), action: activeTab === 'create' ? $t('actions.create').toLowerCase() : $t('actions.import').toLowerCase() }) }}
         </span>
         <div class="modal-actions">
           <button class="btn btn-cancel" @click="emit('cancel')">{{ $t('actions.cancel') }}</button>

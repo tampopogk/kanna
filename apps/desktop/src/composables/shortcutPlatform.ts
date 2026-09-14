@@ -115,6 +115,9 @@ function renderDisplay(binding: ShortcutModifiers & { key: string | string[] }, 
  * taken, or somewhere it should not go. Keyed by action name.
  */
 const LINUX_EXCEPTIONS: Record<string, ShortcutModifiers> = {
+  // Ctrl+Shift+I is WebKitGTK's built-in inspector shortcut. Let the native
+  // webview keep it instead of opening both devtools and Create Repository.
+  createRepo: { ctrl: true, alt: true, shift: true },
   // Ctrl+Alt+↑/↓ switches GNOME workspaces, and an app cannot win that fight.
   // That rules the chord out for both arrow pairs, not only the ⌥⌘ one, so
   // repo navigation takes the Ctrl+Shift arrows the ⌘ tier never used.
@@ -220,5 +223,6 @@ export function terminalClipboardAction(
  * an in-view find, say. Those already work on Linux; only their labels said ⌘.
  */
 export function metaOrControlHint(key: string, platform: ShortcutPlatform = resolveShortcutPlatform()): string {
-  return platform === "mac" ? `⌘${key.toUpperCase()}` : `Ctrl+${key.toUpperCase()}`
+  const display = key.length === 1 ? key.toUpperCase() : key
+  return platform === "mac" ? `⌘${display}` : `Ctrl+${display}`
 }

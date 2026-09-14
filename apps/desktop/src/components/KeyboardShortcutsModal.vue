@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, watch, computed } from "vue";
 import { useI18n } from "vue-i18n";
-import { getShortcutGroups } from "../composables/useKeyboardShortcuts";
+import { getShortcutGroups, shortcutHintKeys } from "../composables/useKeyboardShortcuts";
 import { useModalZIndex } from "../composables/useModalZIndex";
 import {
   getContextShortcutGroups,
@@ -210,6 +210,7 @@ const contextModeEntries = computed<ContextModeEntry[]>(() => {
 const visibleEntries = computed(() => (
   showFullMode.value ? fullModeEntries.value : contextModeEntries.value
 ));
+const showAllShortcutKeys = shortcutHintKeys("showAllShortcuts");
 
 function toggleMode() {
   showFullMode.value = !showFullMode.value;
@@ -265,7 +266,7 @@ function splitKeys(display: string): string[] {
       <div class="shortcuts-footer">
         <a v-if="props.context !== 'main'" class="toggle-link" @click="toggleMode">
           {{ showFullMode ? t('shortcuts.showContext', { context: contextTitle.toLowerCase() }) : t('shortcuts.showAll') }}
-          <span class="toggle-hint"><kbd>⇧</kbd><kbd>⌘</kbd><kbd>/</kbd></span>
+          <span class="toggle-hint"><kbd v-for="key in showAllShortcutKeys" :key="key">{{ key }}</kbd></span>
         </a>
         <span v-else />
         <label v-if="showFullMode" class="startup-checkbox">

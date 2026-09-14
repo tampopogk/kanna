@@ -174,7 +174,7 @@
     "noTasksMatching": "「{query}」に一致するタスクはありません",
     "noReposYet": "リポジトリがありません。",
     "noReposHint": "{shortcut} で作成できます。",
-    "newTaskTooltip": "新規タスク (⌘N)",
+    "newTaskTooltip": "新規タスク ({shortcut})",
     "removeRepoTooltip": "リポジトリを削除",
     "remoteTaskTooltip": "リモートタスク",
     "transferringTaskTooltip": "マシン間で転送中",
@@ -191,7 +191,7 @@
     "selectRepo": "Gitリポジトリを選択",
     "chooseDirectory": "親ディレクトリを選択",
     "chooseCloneDirectory": "クローン先ディレクトリを選択",
-    "submitHint": "⌘Enterで{action}"
+    "submitHint": "{shortcut}で{action}"
   },
   "toasts": {
     "taskCreationFailed": "タスクの作成に失敗しました",
@@ -230,7 +230,7 @@
     "stageTeardownFailed": "ステージのティアダウンスクリプトが失敗しました",
     "stageSetupFailed": "ステージのセットアップスクリプトが失敗しました",
     "stageNotFound": "ワークフローにステージが見つかりません",
-    "latestAgentFileHint": "ヒント: ⌘Lでエージェントが言及した最新のファイルを開けます。",
+    "latestAgentFileHint": "ヒント: {shortcut}でエージェントが言及した最新のファイルを開けます。",
     "noTerminalFileLink": "このターミナルにファイルリンクが見つかりません。",
     "transferFinalizationFailed": "タスク転送に失敗しました",
     "transferPullRefused": "相手のマシンはタスク {taskId} を送信できません",
@@ -355,7 +355,7 @@
     "rendered": "レンダリング",
     "raw": "ソース",
     "openInIDE": "IDEで開く",
-    "openInIDETooltip": "IDEで開く (⌘O)",
+    "openInIDETooltip": "IDEで開く ({shortcut})",
     "shortcutOpenIDE": "IDEで開く",
     "shortcutToggleMarkdown": "Markdown切替",
     "shortcutLineUpDown": "行 ↓/↑",

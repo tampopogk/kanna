@@ -796,7 +796,7 @@ defineExpose({ renameSelectedItem, focusSearch, searchQuery, matchesSearch, emit
             <span class="repo-count">{{ repoCountLabel(repo.id) }}</span>
             <button
               class="btn-icon btn-add-task"
-              :title="$t('sidebar.newTaskTooltip')"
+              :title="$t('sidebar.newTaskTooltip', { shortcut: shortcutHint('newTask') })"
               @click.stop="emit('new-task', repo.id)"
             >+</button>
             <button

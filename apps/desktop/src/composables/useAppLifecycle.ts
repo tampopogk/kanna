@@ -40,7 +40,7 @@ import {
   parseCloudTransferCredentialRefreshCommand,
   type CloudTransferCredentialRefreshCommand,
 } from "./cloudTransferCredentialRefresh";
-import type { KeyboardActions } from "./useKeyboardShortcuts";
+import { shortcutHint, type KeyboardActions } from "./useKeyboardShortcuts";
 import type { useAppPreferences } from "./useAppPreferences";
 import { parseRecentAgentChoices } from "../utils/agentChoiceUsage";
 import type { useAppUpdate } from "./useAppUpdate";
@@ -290,7 +290,7 @@ export function useAppLifecycle({
     showTerminalFileLinkHintOnce(
       window.localStorage,
       toast.info,
-      i18n.global.t("toasts.latestAgentFileHint"),
+      i18n.global.t("toasts.latestAgentFileHint", { shortcut: shortcutHint("openLatestFileLink") }),
     );
   }
 

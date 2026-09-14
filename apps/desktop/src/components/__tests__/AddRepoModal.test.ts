@@ -184,6 +184,21 @@ describe("AddRepoModal", () => {
     ]);
   });
 
+  it("creates a repo with Ctrl+Enter in the name input", async () => {
+    const wrapper = mountModal("create");
+
+    await flushPromises();
+
+    const createInput = wrapper.get('input[placeholder="addRepo.namePlaceholder"]');
+    await createInput.setValue("linux-app");
+    await createInput.trigger("keydown", { key: "Enter", ctrlKey: true });
+    await flushPromises();
+
+    expect(wrapper.emitted("create")).toEqual([
+      ["linux-app", "/Users/me/.kanna/repos/linux-app"],
+    ]);
+  });
+
   it("rejects spaces in new repo names", async () => {
     const wrapper = mountModal("create");
 
