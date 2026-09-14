@@ -160,6 +160,14 @@
     "transfer": "Task Transfer Shortcuts"
   },
   "sidebar": {
+    "filterTasks": "Filter tasks",
+    "filterAll": "All",
+    "filterUnread": "Unread",
+    "filterUnreadTitle": "Tasks with unread output",
+    "filterNeedsYou": "Needs you",
+    "filterNeedsYouTitle": "Tasks with an explicit attention request or positively detected question or input prompt",
+    "noUnreadTasks": "No unread tasks",
+    "noTasksNeedingYou": "No tasks need you",
     "searchPlaceholder": "Search tasks…  {shortcut}",
     "clearSearch": "Clear task search",
     "noTasks": "No tasks",

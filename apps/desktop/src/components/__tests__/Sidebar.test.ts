@@ -35,6 +35,17 @@ function translate(key: string, params?: Record<string, string>) {
   if (key === "sidebar.awaitingVerdictBadge") {
     return `Awaiting ${params?.stage ?? ""} verdict`;
   }
+  const sidebarFilters: Record<string, string> = {
+    "sidebar.filterTasks": "Filter tasks",
+    "sidebar.filterAll": "All",
+    "sidebar.filterUnread": "Unread",
+    "sidebar.filterUnreadTitle": "Tasks with unread output",
+    "sidebar.filterNeedsYou": "Needs you",
+    "sidebar.filterNeedsYouTitle": "Tasks needing human input",
+    "sidebar.noUnreadTasks": "No unread tasks",
+    "sidebar.noTasksNeedingYou": "No tasks need you",
+  };
+  if (key in sidebarFilters) return sidebarFilters[key]!;
   return key;
 }
 
@@ -249,21 +260,38 @@ describe("Sidebar", () => {
     wrapper.unmount();
   });
 
-  it("filters unread and positively detected prompts without treating idle as a question", async () => {
-    const wrapper = mountSidebar([
-      item("unread", { read_state: "unread", runtime_state: "busy" }),
-      item("question", { read_state: "read", runtime_state: "waiting", parent_task_id: "parent" }),
-      item("parent", { read_state: "read", runtime_state: "idle" }),
+  it("filters unread independently from distinct open tasks that need the human", async () => {
+    const tasks = [
+      item("unread", { read_state: "unread", runtime_state: "idle" }),
+      item("requested", { read_state: "read", runtime_state: "idle", attention_reason: "Choose approach" }),
+      item("waiting", { read_state: "read", runtime_state: "waiting" }),
+      item("both", { read_state: "read", runtime_state: "waiting", attention_reason: "Review result", remote_task: true }),
       item("idle", { read_state: "read", runtime_state: "idle" }),
-    ]);
+      item("closed", { closed_at: "2026-01-02T00:00:00.000Z", runtime_state: "waiting", attention_reason: "No longer actionable" }),
+    ];
+    const wrapper = mountSidebar(tasks);
     const buttons = wrapper.findAll(".attention-filters button");
+
+    expect(buttons.map(button => button.text())).toEqual(["All", "Unread 1", "Needs you 3"]);
     await buttons[1].trigger("click");
     expect(wrapper.findAll(".workflow-item").map(node => node.attributes("data-task-id"))).toEqual(["unread"]);
     await buttons[2].trigger("click");
-    expect(wrapper.findAll(".workflow-item").map(node => node.attributes("data-task-id"))).toEqual(["question"]);
-    expect(wrapper.get(".question-marker").attributes("title")).toBe("Detected question / input prompt");
+    expect(wrapper.findAll(".workflow-item").map(node => node.attributes("data-task-id")).sort()).toEqual(["both", "requested", "waiting"]);
+
+    await wrapper.setProps({
+      taskSlots: tasks.map(task => task.task_id === "requested" ? { ...task, attention_reason: null } : task),
+    });
+    expect(wrapper.findAll(".workflow-item").map(node => node.attributes("data-task-id")).sort()).toEqual(["both", "waiting"]);
+    expect(wrapper.findAll(".attention-filters button")[2]!.text()).toBe("Needs you 2");
+
+    await wrapper.setProps({
+      taskSlots: tasks.map(task => task.task_id === "both" ? { ...task, attention_reason: null } : task),
+    });
+    expect(wrapper.findAll(".workflow-item").map(node => node.attributes("data-task-id")).sort()).toEqual(["both", "requested", "waiting"]);
+    expect(wrapper.findAll(".attention-filters button")[2]!.text()).toBe("Needs you 3");
+
     await buttons[0].trigger("click");
-    expect(wrapper.findAll(".workflow-item")).toHaveLength(4);
+    expect(wrapper.findAll(".workflow-item")).toHaveLength(5);
     wrapper.unmount();
   });
 

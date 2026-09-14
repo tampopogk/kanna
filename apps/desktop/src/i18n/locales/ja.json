@@ -160,6 +160,14 @@
     "transfer": "タスク転送ショートカット"
   },
   "sidebar": {
+    "filterTasks": "タスクを絞り込む",
+    "filterAll": "すべて",
+    "filterUnread": "未読",
+    "filterUnreadTitle": "未読の出力があるタスク",
+    "filterNeedsYou": "対応が必要",
+    "filterNeedsYouTitle": "明示的な対応依頼、または検出された質問や入力プロンプトがあるタスク",
+    "noUnreadTasks": "未読のタスクはありません",
+    "noTasksNeedingYou": "対応が必要なタスクはありません",
     "searchPlaceholder": "タスクを検索…  {shortcut}",
     "clearSearch": "タスク検索をクリア",
     "noTasks": "タスクなし",
