@@ -24,7 +24,7 @@ export const MAIN_TAB_ROUTES: TabRoute[] = [
     name: "recent",
     // Keep the persisted route key stable while replacing its presentation.
     routeName: "Activity",
-    label: "Input",
+    label: "You",
     icon: "warning-outline"
   },
   {
