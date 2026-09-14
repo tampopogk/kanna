@@ -32,6 +32,7 @@ export function stripePortalGateway(secretKey: string): StripePortalGateway {
 export interface StripeCustomerInput {
   uid: string;
   email: string | null;
+  idempotencyKey: string;
 }
 
 export interface StripeCheckoutSessionInput {
@@ -40,6 +41,8 @@ export interface StripeCheckoutSessionInput {
   priceId: string;
   successUrl: string;
   cancelUrl: string;
+  idempotencyKey: string;
+  expiresAt: number;
 }
 
 export interface StripeCheckoutSession {
@@ -47,10 +50,21 @@ export interface StripeCheckoutSession {
   url: string | null;
 }
 
+export interface StripeCheckoutSessionState extends StripeCheckoutSession {
+  mode: string | null;
+  uid: string | null;
+  customerId: string | null;
+  status: "open" | "complete" | "expired" | null;
+  subscriptionStatus: string | null;
+}
+
 export interface StripeCheckoutGateway {
   createCustomer(input: StripeCustomerInput): Promise<{ id: string }>;
   resolvePriceId(lookupKey: string): Promise<string | null>;
   createCheckoutSession(input: StripeCheckoutSessionInput): Promise<StripeCheckoutSession>;
+  retrieveCheckoutSession(sessionId: string): Promise<StripeCheckoutSessionState>;
+  listOpenCheckoutSessions(customerId: string): Promise<StripeCheckoutSessionState[]>;
+  hasBlockingSubscription(customerId: string): Promise<boolean>;
   closeCheckoutSession(sessionId: string): Promise<void>;
 }
 
@@ -75,7 +89,7 @@ export function stripeCheckoutGateway(secretKey: string): StripeCheckoutGateway 
       const customer = await stripe.customers.create({
         ...(input.email ? { email: input.email } : {}),
         metadata: { firebase_uid: input.uid },
-      });
+      }, { idempotencyKey: input.idempotencyKey });
       return { id: customer.id };
     },
     async resolvePriceId(lookupKey) {
@@ -90,17 +104,45 @@ export function stripeCheckoutGateway(secretKey: string): StripeCheckoutGateway 
         line_items: [{ price: input.priceId, quantity: 1 }],
         success_url: input.successUrl,
         cancel_url: input.cancelUrl,
+        expires_at: input.expiresAt,
         payment_method_options: {
           card: { request_three_d_secure: "any" },
         },
         subscription_data: { metadata: { firebase_uid: input.uid } },
         metadata: { firebase_uid: input.uid },
-      });
+      }, { idempotencyKey: input.idempotencyKey });
       return { id: session.id, url: session.url };
+    },
+    async retrieveCheckoutSession(sessionId) {
+      const session = await stripe.checkout.sessions.retrieve(sessionId, { expand: ["subscription"] });
+      return checkoutSessionState(session);
+    },
+    async listOpenCheckoutSessions(customerId) {
+      const sessions: StripeCheckoutSessionState[] = [];
+      for await (const session of stripe.checkout.sessions.list({ customer: customerId, status: "open", limit: 100 })) {
+        sessions.push(checkoutSessionState(session));
+      }
+      return sessions;
+    },
+    async hasBlockingSubscription(customerId) {
+      for await (const subscription of stripe.subscriptions.list({ customer: customerId, status: "all", limit: 100 })) {
+        if (subscription.status !== "canceled" && subscription.status !== "incomplete_expired") return true;
+      }
+      return false;
     },
     async closeCheckoutSession(sessionId) {
       await closeStripeCheckoutSession(stripe, sessionId);
     },
+  };
+}
+
+function checkoutSessionState(session: Stripe.Checkout.Session): StripeCheckoutSessionState {
+  return {
+    id: session.id, url: session.url, mode: session.mode,
+    uid: session.client_reference_id ?? session.metadata?.firebase_uid ?? null,
+    customerId: typeof session.customer === "string" ? session.customer : session.customer?.id ?? null,
+    status: session.status,
+    subscriptionStatus: typeof session.subscription === "object" ? session.subscription?.status ?? null : null,
   };
 }
 

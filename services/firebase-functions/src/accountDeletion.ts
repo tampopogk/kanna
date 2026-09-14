@@ -98,7 +98,7 @@ export function firestoreAccountDeletionStore(db: Firestore): AccountDeletionSto
           throw new BillingRequestError(
             "failed-precondition",
             "checkout_in_progress",
-            "Account deletion is waiting for an active checkout operation. Please retry.",
+            "An earlier checkout must be recovered before account deletion. Retry checkout or contact support.",
           );
         }
         transaction.set(deletionRef, { uid, started: true });
