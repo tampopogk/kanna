@@ -82,7 +82,7 @@ semantics, and the MCP task-management rule — stay in the repo-root
 ### Task reference views
 
 A task opens with its provider TUI using the full work area. Each pane has its
-own tab bar, directly above its contents. **+** opens a menu for a file, diff,
+own tab bar, directly above its contents. **+** opens a menu for diff,
 terminal, file explorer or commit graph. Right-click a pane’s tab strip (or
 focus it and press Shift+F10) for splitting side by side or top and bottom,
 with a pane-specific **×** to close that pane. Splitting a pane with multiple tabs moves its selected reference tab into the
@@ -94,6 +94,7 @@ that pane, moving its tabs to its adjacent sibling while preserving other splits
 and terminal sessions. The last pane cannot be removed. Tabs use pointer dragging
 with insertion markers; stage dropdowns and close buttons do not initiate drags.
 The **+** menu shows each content command’s existing keyboard shortcut.
+Open a file with **⌘P**; it has no separate + menu item.
 The Agent tab shows its stage name followed by a dropdown arrow; tab labels
 cannot be text-selected. Modified bracket shortcuts cycle in displayed pane/tab
 order after moves. Right-click a tab for **Close all right**, which closes only

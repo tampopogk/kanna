@@ -441,3 +441,9 @@ none. Agent38183 and shell30694/92318 remain unchanged. Evidence:
 These are wiring/geometry checks, not owner physical acceptance. Prior 8dd688
 technical review is accepted; this delta needs bounded independent review and
 owner acceptance. Same PR1477, no advance or merge.
+
+Owner menu follow-up after acca794e8: remove Open file from + and its now-unused
+menu dispatch branch. The existing global Cmd+P file-picker handler is unchanged.
+54 focused MainPanel/useAppKeyboardActions tests and diffcheck pass. No new tests,
+native interaction, backend restart or broader verification for this menu-only
+change. Existing isolated frontend HMR and evaluation stack remain available.

@@ -189,7 +189,6 @@ const visiblePreviews = computed(() => tabs.value.filter(tab => tab.kind === 'pr
 })));
 const newViews = computed(() => [
   ...(props.uiSlot ? [{ id: "diff", label: "Diff", shortcut: shortcutHint("showDiff") }] : []),
-  { id: "file", label: "Open file…", shortcut: shortcutHint("openFile") },
   { id: "shell", label: "Terminal", shortcut: shortcutHint("openShell") },
   { id: "tree", label: "File explorer", shortcut: shortcutHint("toggleTreeExplorer") },
   ...(scopeRepoPath.value ? [{ id: "graph", label: "Commit graph", shortcut: shortcutHint("showCommitGraph") }] : []),
@@ -199,8 +198,7 @@ const paneActions = computed(() => narrowLayout.value ? [] : [
   { id: "split-vertical", label: "Split top and bottom" },
 ]);
 function openNewView(id: string) {
-  if (id === "file") props.views?.modals.showFilePickerOnTop();
-  else if (id === "diff" || id === "shell" || id === "tree" || id === "graph") props.views?.tabs.openTab({ kind: id });
+  if (id === "diff" || id === "shell" || id === "tree" || id === "graph") props.views?.tabs.openTab({ kind: id });
 }
 /**
  * The panel's own empty state — "no task selected", or the agent-install help
