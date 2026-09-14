@@ -105,6 +105,7 @@ describe("withKannaBonjour Android", () => {
 
   it("generates a module and package in the app's own Kotlin package", () => {
     const module = __internal.androidModuleSource(packageName);
+    const compat = __internal.androidNsdCompatSource(packageName);
     const pkg = __internal.androidPackageSource(packageName);
 
     expect(module.startsWith(`package ${packageName}\n`)).toBe(true);
@@ -119,7 +120,14 @@ describe("withKannaBonjour Android", () => {
     expect(module).toContain("override fun onHostResume()");
     expect(module).toContain("NsdManager.PROTOCOL_DNS_SD");
     // A numeric address would be blocked by the scoped cleartext policy.
-    expect(module).toContain("normalizeHostname(serviceInfo.hostname)");
+    expect(module).toContain("normalizeHostname(KannaNsdCompat.hostname(serviceInfo))");
+    expect(module).not.toContain("serviceInfo.hostname");
+
+    expect(compat).toContain("Build.VERSION.SDK_INT >= HOSTNAME_SDK");
+    expect(compat).toContain("Build.VERSION_CODES.TIRAMISU");
+    expect(compat).toContain("HOSTNAME_T_EXTENSION = 17");
+    expect(compat).toContain("catch (LinkageError error)");
+    expect(compat).not.toContain("SERVICE_INFO_CALLBACK_SDK");
 
     expect(pkg.startsWith(`package ${packageName}\n`)).toBe(true);
     expect(pkg).toContain("listOf(KannaBonjourModule(reactContext))");

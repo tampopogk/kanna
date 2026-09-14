@@ -15,6 +15,7 @@ const LOCAL_NETWORK_USAGE_DESCRIPTION =
   "Kanna uses your local network to find and connect to your paired Kanna desktop app.";
 const ANDROID_MODULE_NAME = "KannaBonjourModule";
 const ANDROID_PACKAGE_CLASS = "KannaBonjourPackage";
+const ANDROID_NSD_COMPAT_CLASS = "KannaNsdCompat";
 const NETWORK_SECURITY_CONFIG_RESOURCE = "kanna_network_security_config";
 
 const SWIFT_SOURCE = `import Foundation
@@ -437,12 +438,10 @@ class ${ANDROID_MODULE_NAME}(reactContext: ReactApplicationContext) :
    * to fix, never a reason to widen the policy.
    */
   private fun resolveHost(serviceInfo: NsdServiceInfo): String {
-    if (Build.VERSION.SDK_INT >= SERVICE_INFO_CALLBACK_SDK) {
-      val hostname = normalizeHostname(serviceInfo.hostname)
-      if (hostname.isNotEmpty()) {
-        Log.d(NAME, "Resolved a Kanna desktop by its mDNS hostname.")
-        return hostname
-      }
+    val hostname = normalizeHostname(KannaNsdCompat.hostname(serviceInfo))
+    if (hostname.isNotEmpty()) {
+      Log.d(NAME, "Resolved a Kanna desktop by its mDNS hostname.")
+      return hostname
     }
     val address = formatAddress(hostAddress(serviceInfo))
     if (address.isNotEmpty()) {
@@ -493,8 +492,47 @@ class ${ANDROID_MODULE_NAME}(reactContext: ReactApplicationContext) :
     /** iOS reports the resolved type with its trailing dot; match it. */
     private const val EVENT_SERVICE_TYPE = "${SERVICE_TYPE}."
     private const val ERROR_CODE = "kanna_bonjour_unavailable"
-    /** NsdManager.ServiceInfoCallback, and NsdServiceInfo.getHostname(). */
+    /** NsdManager.ServiceInfoCallback. */
     private const val SERVICE_INFO_CALLBACK_SDK = 34
+  }
+}
+`;
+}
+
+/**
+ * NsdServiceInfo.getHostname() arrived after ServiceInfoCallback: API 36, or
+ * API 33+ with T extension 17. Keep that binary compatibility boundary in a
+ * small Java class so API 34/35 devices do not try to link the newer method.
+ */
+function androidNsdCompatSource(packageName) {
+  return `package ${packageName};
+
+import android.net.nsd.NsdServiceInfo;
+import android.os.Build;
+import android.os.ext.SdkExtensions;
+
+final class ${ANDROID_NSD_COMPAT_CLASS} {
+  private static final int HOSTNAME_SDK = 36;
+  private static final int HOSTNAME_T_EXTENSION = 17;
+
+  private ${ANDROID_NSD_COMPAT_CLASS}() {}
+
+  static String hostname(NsdServiceInfo serviceInfo) {
+    if (!hasHostname()) return null;
+    try {
+      return serviceInfo.getHostname();
+    } catch (LinkageError error) {
+      // Be defensive if a vendor reports an extension level whose framework
+      // does not actually expose the promised method.
+      return null;
+    }
+  }
+
+  private static boolean hasHostname() {
+    return Build.VERSION.SDK_INT >= HOSTNAME_SDK
+        || (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
+            && SdkExtensions.getExtensionVersion(Build.VERSION_CODES.TIRAMISU)
+                >= HOSTNAME_T_EXTENSION);
   }
 }
 `;
@@ -601,6 +639,10 @@ function writeAndroidSources(projectRoot, packageName) {
   fs.writeFileSync(
     path.join(sourceRoot, `${ANDROID_PACKAGE_CLASS}.kt`),
     androidPackageSource(packageName)
+  );
+  fs.writeFileSync(
+    path.join(sourceRoot, `${ANDROID_NSD_COMPAT_CLASS}.java`),
+    androidNsdCompatSource(packageName)
   );
 }
 
@@ -775,6 +817,7 @@ function withKannaAndroidBonjour(config) {
 module.exports = withKannaBonjour;
 module.exports.__internal = {
   androidModuleSource,
+  androidNsdCompatSource,
   androidPackageSource,
   applyAndroidManifest,
   applyInfoPlist,
