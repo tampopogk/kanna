@@ -23,6 +23,7 @@ tauri.conf.local.json
 apps/desktop/src-tauri/binaries/
 apps/mobile/.expo/
 apps/mobile/ios/
+apps/mobile/android/
 .claude/settings.local.json
 /.kanna/setup.local.sh
 /.kanna/config.local.json

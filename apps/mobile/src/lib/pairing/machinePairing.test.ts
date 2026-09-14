@@ -1,5 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
-import { createStaticBonjourBrowser } from "../discovery/bonjour";
+import {
+  createNativeBonjourBrowser,
+  createStaticBonjourBrowser,
+  createUnavailableBonjourBrowser
+} from "../discovery/bonjour";
+import { fakeNativeBonjourModule } from "../discovery/fakeNativeBonjourModule";
 import type { FetchLike, FetchResponseLike } from "../transports/lanTransport";
 import { createMachinePairingService } from "./machinePairing";
 
@@ -299,5 +304,124 @@ describe("machine pairing", () => {
         100
       ))
     ])).resolves.toMatchObject({ desktopId: "desktop-1" });
+  });
+});
+
+// The Android defect this covers: the app scanned a valid QR, found no
+// discovered machine, and told the owner to check the network. These run the
+// real browser and the real pairing service against native discovery events.
+describe("pairing against native discovery events", () => {
+  const studio = {
+    name: "Jeremy's Mac Studio",
+    type: "_kanna-mobile._tcp.",
+    host: "Jeremys-Mac-Studio.local",
+    port: 48121,
+    txt: { desktopId: "desktop-2" }
+  };
+  const other = {
+    name: "Laptop",
+    type: "_kanna-mobile._tcp.",
+    host: "laptop.local",
+    port: 48120,
+    txt: { desktopId: "desktop-1" }
+  };
+
+  function nativePairingService(
+    native: ReturnType<typeof fakeNativeBonjourModule>,
+    fetchImpl: FetchLike
+  ) {
+    return createMachinePairingService({
+      bonjourBrowser: createNativeBonjourBrowser(native.module, native.Emitter),
+      fetchImpl,
+      getDeviceIdentity: () => ({
+        deviceId: "phone-1",
+        deviceName: "Galaxy A15"
+      }),
+      now: () => new Date("2026-09-11T00:00:00.000Z")
+    });
+  }
+
+  it("claims the scanned desktop once discovery resolves it", async () => {
+    const native = fakeNativeBonjourModule();
+    const fetchImpl = vi.fn<FetchLike>(async () => response(200, {
+      desktopId: "desktop-2",
+      desktopName: "Jeremy's Mac Studio",
+      deviceSecret: "device-secret"
+    }));
+    const claimed = nativePairingService(native, fetchImpl).claimPayload(validPayload);
+
+    // The scan beats discovery, as it does on a real phone: the claim is
+    // already waiting when the resolved services arrive.
+    setTimeout(() => {
+      native.emit(other);
+      native.emit(studio);
+    }, 5);
+
+    await expect(claimed).resolves.toEqual({
+      desktopId: "desktop-2",
+      displayName: "Jeremy's Mac Studio",
+      deviceSecret: "device-secret",
+      lanEndpoints: [{
+        baseUrl: "http://Jeremys-Mac-Studio.local:48121",
+        lastSeenAt: "2026-09-11T00:00:00.000Z"
+      }],
+      lastSeenAt: "2026-09-11T00:00:00.000Z"
+    });
+    // Only the desktop the QR named was claimed.
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(fetchImpl).toHaveBeenCalledWith(
+      "http://Jeremys-Mac-Studio.local:48121/v1/pairing/sessions/claim",
+      expect.anything()
+    );
+  });
+
+  it("tries every advertised desktop for a typed code", async () => {
+    const native = fakeNativeBonjourModule();
+    const fetchImpl = vi.fn<FetchLike>(async (url) => (
+      url.includes("Jeremys-Mac-Studio")
+        ? response(200, { desktopId: "desktop-2", desktopName: "Jeremy's Mac Studio" })
+        : response(400, { error: "invalid code" })
+    ));
+    const claimed = nativePairingService(native, fetchImpl).claimCode("abc123");
+
+    setTimeout(() => {
+      native.emit(other);
+      native.emit(studio);
+    }, 5);
+
+    await expect(claimed).resolves.toMatchObject({ desktopId: "desktop-2" });
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  it("reports an unreachable machine when the device cannot discover at all", async () => {
+    const service = createMachinePairingService({
+      bonjourBrowser: createUnavailableBonjourBrowser(
+        "This build cannot search the local network for Kanna desktops."
+      ),
+      fetchImpl: vi.fn(),
+      getDeviceIdentity: () => ({ deviceId: "phone-1", deviceName: "Galaxy A15" })
+    });
+
+    await expect(service.claimPayload(validPayload)).rejects.toMatchObject({
+      reason: "unreachable"
+    });
+  });
+
+  it("never names the pairing code or the issued secret in a failure", async () => {
+    const native = fakeNativeBonjourModule();
+    const fetchImpl = vi.fn<FetchLike>(async () => response(410, {}));
+    const service = createMachinePairingService({
+      bonjourBrowser: createNativeBonjourBrowser(native.module, native.Emitter),
+      fetchImpl,
+      getDeviceIdentity: () => ({ deviceId: "phone-1", deviceName: "Galaxy A15" }),
+      claimTimeoutMs: 50
+    });
+    const claimed = service.claimPayload(validPayload);
+    native.emit(studio);
+
+    const error = await claimed.catch((reason: Error) => reason);
+
+    expect((error as Error).message).not.toContain("ABC123");
+    expect((error as Error).message).not.toContain("device-secret");
   });
 });

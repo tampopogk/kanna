@@ -99,3 +99,119 @@ class AppDelegate: ExpoAppDelegate {
       .toThrow("Unsupported React Native bundle phase template");
   });
 });
+
+describe("withKannaBonjour Android", () => {
+  const packageName = "build.kanna.app.staging";
+
+  it("generates a module and package in the app's own Kotlin package", () => {
+    const module = __internal.androidModuleSource(packageName);
+    const pkg = __internal.androidPackageSource(packageName);
+
+    expect(module.startsWith(`package ${packageName}\n`)).toBe(true);
+    expect(module).toContain("class KannaBonjourModule(reactContext: ReactApplicationContext)");
+    expect(module).toContain('private const val DISCOVERY_SERVICE_TYPE = "_kanna-mobile._tcp"');
+    expect(module).toContain('private const val EVENT_SERVICE_TYPE = "_kanna-mobile._tcp."');
+    expect(module).toContain('private const val EVENT_NAME = "kannaBonjourServiceChanged"');
+    // The readiness surface the pairing flow awaits, and the lifecycle that
+    // keeps exactly one browse alive while the app is foregrounded.
+    expect(module).toContain("fun ensureBrowsing(promise: Promise)");
+    expect(module).toContain("override fun onHostPause()");
+    expect(module).toContain("override fun onHostResume()");
+    expect(module).toContain("NsdManager.PROTOCOL_DNS_SD");
+    // A numeric address would be blocked by the scoped cleartext policy.
+    expect(module).toContain("normalizeHostname(serviceInfo.hostname)");
+
+    expect(pkg.startsWith(`package ${packageName}\n`)).toBe(true);
+    expect(pkg).toContain("listOf(KannaBonjourModule(reactContext))");
+  });
+
+  // Verbatim shape of the Expo SDK 57 / React Native 0.86 template.
+  it("registers the package in the generated MainApplication exactly once", () => {
+    const mainApplication = `package ${packageName}
+
+class MainApplication : Application(), ReactApplication {
+
+  override val reactHost: ReactHost by lazy {
+    ExpoReactHostFactory.getDefaultReactHost(
+      context = applicationContext,
+      packageList =
+        PackageList(this).packages.apply {
+          // Packages that cannot be autolinked yet can be added manually here, for example:
+          // add(MyReactNativePackage())
+        }
+    )
+  }
+}
+`;
+
+    const patched = __internal.patchMainApplication(mainApplication);
+
+    expect(patched).toContain("PackageList(this).packages.apply {\n          add(KannaBonjourPackage())");
+    expect(__internal.patchMainApplication(patched)).toBe(patched);
+  });
+
+  it("registers the package in a MainApplication that returns the list directly", () => {
+    const mainApplication = `package ${packageName}
+
+override fun getPackages(): List<ReactPackage> {
+  return PackageList(this).packages
+}
+`;
+
+    const patched = __internal.patchMainApplication(mainApplication);
+
+    expect(patched).toContain("add(KannaBonjourPackage())");
+    expect(__internal.patchMainApplication(patched)).toBe(patched);
+  });
+
+  it("registers the package in a MainApplication that builds a package list", () => {
+    const mainApplication = `package ${packageName}
+
+override fun getPackages(): List<ReactPackage> {
+  val packages = PackageList(this).packages
+  return packages
+}
+`;
+
+    const patched = __internal.patchMainApplication(mainApplication);
+
+    expect(patched).toContain("packages.add(KannaBonjourPackage())");
+    expect(patched.indexOf("packages.add(KannaBonjourPackage())"))
+      .toBeLessThan(patched.indexOf("return packages"));
+    expect(__internal.patchMainApplication(patched)).toBe(patched);
+  });
+
+  it("fails when the Expo MainApplication template no longer matches", () => {
+    expect(() => __internal.patchMainApplication("class MainApplication {}"))
+      .toThrow("Unsupported Expo MainApplication template");
+  });
+
+  it("permits LAN cleartext for mDNS names only", () => {
+    const xml = __internal.NETWORK_SECURITY_CONFIG_XML;
+
+    expect(xml).toContain('<base-config cleartextTrafficPermitted="false" />');
+    expect(xml).toContain('<domain includeSubdomains="true">local</domain>');
+    expect(xml).not.toContain('<base-config cleartextTrafficPermitted="true"');
+  });
+
+  it("points the shipped manifest at the scoped network security config", () => {
+    const manifest = {
+      manifest: {
+        application: [{ $: { "android:name": ".MainApplication" } }]
+      }
+    };
+
+    const patched = __internal.applyAndroidManifest(manifest);
+
+    expect(patched.manifest.application[0].$["android:networkSecurityConfig"])
+      .toBe("@xml/kanna_network_security_config");
+  });
+
+  it("leaves the iOS plist and AppDelegate behavior untouched", () => {
+    // The Android slice must not disturb the shipped iOS discovery contract.
+    expect(__internal.applyInfoPlist({}).NSBonjourServices).toEqual([
+      "_kanna-mobile._tcp"
+    ]);
+    expect(__internal.androidModuleSource(packageName)).not.toContain("NetServiceBrowser");
+  });
+});
