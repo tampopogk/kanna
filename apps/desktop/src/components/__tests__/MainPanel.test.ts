@@ -282,6 +282,7 @@ describe("MainPanel", () => {
   it("only explicitly edits a local recorded workspace and keeps an asynchronous open in its originating task", async () => {
     const selected = ref("task-a");
     const tabs = useMainTabs({ scopeKey: computed(() => `item:${selected.value}`) });
+    const savePreference = vi.fn().mockResolvedValue(undefined);
     tabs.openTab({ kind: "file", filePath: "README.md" });
     const { default: MainPanel } = await import("../MainPanel.vue");
     const wrapper = mount(MainPanel, {
@@ -290,7 +291,11 @@ describe("MainPanel", () => {
         views: {
           tabs,
           modals: { activeTaskViewIsRemote: computed(() => false), activeWorktreePath: computed(() => "/incorrect-derived-path"), currentPreviewMarkdownMode: computed(() => "raw") },
-          store: { worktreePaths: { "task-a": "/recorded/workspace" } },
+          store: {
+            worktreePaths: { "task-a": "/recorded/workspace" },
+            snapshotSettings: {},
+            savePreference,
+          },
         } as unknown as MainTabViewsController,
       },
       global: { mocks: { $t: (key: string) => key }, stubs: { TaskHeader: true, TerminalTabs: true, MainTabBar: true, FilePreviewModal: true, TerminalEditorView: true } },
@@ -298,6 +303,9 @@ describe("MainPanel", () => {
     await flushPromises();
     const preview = wrapper.findComponent({ name: "FilePreviewModal" });
     expect(preview.props("worktreePath")).toBe("/recorded/workspace");
+    expect(preview.props("terminalEditorNoticeDismissed")).toBe(false);
+    await preview.props("dismissTerminalEditorNotice")();
+    expect(savePreference).toHaveBeenCalledWith("hideTerminalEditorNotice", "true");
     expect(openTerminalEditorMock).not.toHaveBeenCalled();
     let resolveOpen!: (session: unknown) => void;
     openTerminalEditorMock.mockImplementation(() => new Promise(resolve => { resolveOpen = resolve; }));

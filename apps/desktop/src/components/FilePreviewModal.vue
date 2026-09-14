@@ -57,6 +57,8 @@ const props = withDefaults(
     contentLoader?: (path: string) => Promise<string>;
     ideCommand?: string;
     editInTerminal?: (command: string) => Promise<void>;
+    terminalEditorNoticeDismissed?: boolean;
+    dismissTerminalEditorNotice?: () => Promise<void>;
     maximized?: boolean;
     initialLine?: number;
     initialScrollTop?: number;
@@ -621,7 +623,12 @@ watch(
           <span v-if="isMarkdownFile" class="mode-badge" @click="toggleMarkdownMode" title="m">
             {{ renderMarkdown ? $t('filePreview.rendered') : $t('filePreview.raw') }}
           </span>
-          <TerminalEditorPicker v-if="editInTerminal && !isRemoteFile && !loading && !error" :open-editor="editInTerminal" />
+          <TerminalEditorPicker
+            v-if="editInTerminal && !isRemoteFile && !loading && !error"
+            :open-editor="editInTerminal"
+            :notice-dismissed="terminalEditorNoticeDismissed"
+            :dismiss-notice="dismissTerminalEditorNotice"
+          />
           <span v-if="isRemoteFile" title="Terminal editing is available only on the desktop holding the local workspace">Remote · read-only</span>
           <button v-if="!isRemoteFile" class="btn-open" @click="openInIDE" :title="$t('filePreview.openInIDETooltip')">{{ $t('filePreview.openInIDE') }}</button>
         </div>

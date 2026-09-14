@@ -81,6 +81,7 @@ const emit = defineEmits<{
 
 const isMobile = __KANNA_MOBILE__;
 const COMMAND_HINT_STORAGE_KEY = "kanna:hide-command-hint";
+const TERMINAL_EDITOR_NOTICE_SETTING_KEY = "hideTerminalEditorNotice";
 const item = computed(() => props.uiSlot?.task ?? null);
 const selectedAttempt = ref("");
 const agentAttempts = ref<AgentTerminalAttempt[]>([]);
@@ -305,6 +306,7 @@ function containedDirectoryLoader(taskId: string | undefined) {
 
 function fileViewProps(tab: MainTab) {
   const modals = props.views?.modals;
+  const views = props.views;
   const taskId = item.value?.id;
   const local = !isMobile && !props.cloudTask && !modals?.activeTaskViewIsRemote.value && taskId && !isRemotePresentationTaskId(taskId);
   const worktreePath = local ? props.views?.store.worktreePaths?.[taskId] : undefined;
@@ -326,6 +328,11 @@ function fileViewProps(tab: MainTab) {
     // screen under this task's name.
     contentLoader: containedFileLoader(tab.containedTaskId),
     ideCommand: props.views?.store.ideCommand,
+    terminalEditorNoticeDismissed:
+      props.views?.store.snapshotSettings?.[TERMINAL_EDITOR_NOTICE_SETTING_KEY] === "true",
+    dismissTerminalEditorNotice: views
+      ? () => views.store.savePreference(TERMINAL_EDITOR_NOTICE_SETTING_KEY, "true")
+      : undefined,
     initialLine: tab.initialLine,
     initialScrollTop: tab.reading?.workspace === modals?.readingWorkspace?.value ? tab.reading?.top : undefined,
     initialMarkdownMode: modals?.currentPreviewMarkdownMode.value,
