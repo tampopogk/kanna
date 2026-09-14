@@ -5,7 +5,6 @@ export interface TabRoute {
   routeName: "Tasks" | "Activity" | "More";
   label: string;
   icon: string;
-  showLabel?: boolean;
 }
 
 export interface UtilityAction {
@@ -25,9 +24,8 @@ export const MAIN_TAB_ROUTES: TabRoute[] = [
     name: "recent",
     // Keep the persisted route key stable while replacing its presentation.
     routeName: "Activity",
-    label: "Needs you",
-    icon: "warning-outline",
-    showLabel: false
+    label: "Input",
+    icon: "warning-outline"
   },
   {
     name: "more",

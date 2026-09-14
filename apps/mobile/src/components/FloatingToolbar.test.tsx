@@ -118,9 +118,9 @@ describe("FloatingToolbar", () => {
 
     expect(flattenStyle(needsYou.props.style).backgroundColor).toBe("#E8F1FF");
     expect(needsYou.findByType("Ionicons").props.name).toBe("warning-outline");
-    expect(needsYou.findAllByType("Text")).toHaveLength(0);
+    expect(needsYou.findByType("Text").props.children).toBe("Input");
     expect(needsYou.props).toMatchObject({
-      accessibilityLabel: "Needs you",
+      accessibilityLabel: "Input",
       accessibilityRole: "tab",
       accessibilityState: { selected: true }
     });
@@ -160,7 +160,7 @@ describe("FloatingToolbar", () => {
     const badge = rendered.root.findByProps({
       testID: "mobile.activity-badge"
     });
-    expect(needsYou.props.accessibilityLabel).toBe("Needs you, 3 tasks");
+    expect(needsYou.props.accessibilityLabel).toBe("Input, 3 tasks");
     expect(badge.findByType("Text").props.children).toBe(3);
   });
 

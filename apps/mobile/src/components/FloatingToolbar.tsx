@@ -92,11 +92,9 @@ export function FloatingToolbar({
                   </Text>
                 </View>
               ) : null}
-              {tab.showLabel !== false ? (
-                <Text style={[styles.label, active ? styles.labelActive : null]}>
-                  {tab.label}
-                </Text>
-              ) : null}
+              <Text style={[styles.label, active ? styles.labelActive : null]}>
+                {tab.label}
+              </Text>
             </Pressable>
           );
         })}
