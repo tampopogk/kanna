@@ -1,6 +1,8 @@
-import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { AndroidConfig } from "expo/config-plugins";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
   createExpoConfig,
@@ -379,5 +381,25 @@ describe("mobile app config", () => {
       .filter((permission) => permission !== undefined);
 
     expect(cameraPermissions).toEqual([CAMERA_PERMISSION, CAMERA_PERMISSION]);
+  });
+});
+
+
+describe("Android OTA native config transformation", () => {
+  it.each(["staging", "prod"])("embeds the shared certificate and channel for %s", async (environment) => {
+    const config = createExpoConfig({ KANNA_APP_ENV: environment });
+    const projectRoot = fileURLToPath(new URL("..", import.meta.url));
+    const manifest = await AndroidConfig.Updates.setUpdatesConfigAsync(projectRoot, config, {
+      manifest: { $: { "xmlns:android": "http://schemas.android.com/apk/res/android" },
+        application: [{ $: { "android:name": ".MainApplication" } }] },
+    }, "57.0.4");
+    const metadata = Object.fromEntries(manifest.manifest.application![0]["meta-data"]!.map(item => [item.$["android:name"], item.$["android:value"]]));
+    const prefix = "expo.modules.updates.";
+    expect(metadata[prefix + "EXPO_UPDATE_URL"]).toBe(config.updates!.url);
+    expect(JSON.parse(metadata[prefix + "UPDATES_CONFIGURATION_REQUEST_HEADERS_KEY"]!)).toEqual(config.updates!.requestHeaders);
+    expect(JSON.parse(metadata[prefix + "CODE_SIGNING_METADATA"]!)).toEqual({ keyid: "kanna-mobile-ota-v1", alg: "rsa-v1_5-sha256" });
+    expect(metadata[prefix + "CODE_SIGNING_CERTIFICATE"]).toBe(await readFile(join(projectRoot, "certs/ota-codesign.pem"), "utf8"));
+    const resources = await AndroidConfig.Updates.applyRuntimeVersionFromConfigForProjectRootAsync(projectRoot, config, { resources: {} });
+    expect(resources.resources.string).toContainEqual(expect.objectContaining({ _: config.runtimeVersion, $: expect.objectContaining({ name: "expo_runtime_version" }) }));
   });
 });

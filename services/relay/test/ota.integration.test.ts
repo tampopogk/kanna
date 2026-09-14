@@ -5,11 +5,15 @@ import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { verifyManifestSignatureForTest } from "../src/ota.js";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 let relayProcess: ChildProcessWithoutNullStreams | null = null;
 let storageDir: string | null = null;
 let port = 0;
+let signingKey = "";
+let relayExit: Promise<unknown> | undefined;
+const updateIds = { ios: "12b4a6d5-7dd6-5bf2-973e-c141ef211ca8", android: "22b4a6d5-7dd6-5bf2-973e-c141ef211ca8" };
 
 async function findFreePort(): Promise<number> {
   return await new Promise<number>((resolvePort, reject) => {
@@ -45,44 +49,50 @@ describe("OTA relay integration", () => {
   beforeAll(async () => {
     port = await findFreePort();
     storageDir = await mkdtemp(join(tmpdir(), "kanna-ota-storage-"));
-    const updateRoot = join(
-      storageDir,
-      "ota/ios/1.0.0/updates/12b4a6d5-7dd6-5bf2-973e-c141ef211ca8"
-    );
-    await mkdir(join(updateRoot, "bundles"), { recursive: true });
-    await mkdir(join(updateRoot, "assets"), { recursive: true });
-    await mkdir(join(storageDir, "ota/ios/1.0.0/channels"), { recursive: true });
-    const bundleBytes = Buffer.from("bundle bytes");
-    const assetBytes = Buffer.from("png bytes");
-    const bundleKey = createHash("sha256").update(bundleBytes).digest("base64url");
-    const assetKey = createHash("sha256").update(assetBytes).digest("base64url");
-    await writeFile(
-      join(updateRoot, "metadata.json"),
-      JSON.stringify({
-        fileMetadata: {
-          ios: {
-            bundle: `bundles/${bundleKey}.hbc`,
-            assets: [{ path: `assets/${assetKey}`, ext: "png" }],
+    for (const platform of ["ios", "android"] as const) {
+      const updateRoot = join(
+        storageDir,
+        `ota/${platform}/1.0.0/updates/${updateIds[platform]}`
+      );
+      await mkdir(join(updateRoot, "bundles"), { recursive: true });
+      await mkdir(join(updateRoot, "assets"), { recursive: true });
+      await mkdir(join(storageDir, `ota/${platform}/1.0.0/channels`), { recursive: true });
+      const bundleBytes = Buffer.from(`${platform} bundle bytes`);
+      const assetBytes = Buffer.from(`${platform} png bytes`);
+      const bundleKey = createHash("sha256").update(bundleBytes).digest("base64url");
+      const assetKey = createHash("sha256").update(assetBytes).digest("base64url");
+      await writeFile(
+        join(updateRoot, "metadata.json"),
+        JSON.stringify({
+          fileMetadata: {
+            [platform]: {
+              bundle: `bundles/${bundleKey}.hbc`,
+              assets: [{ path: `assets/${assetKey}`, ext: "png" }],
+            },
           },
-        },
-      })
-    );
-    await writeFile(join(updateRoot, "expoConfig.json"), JSON.stringify({ name: "Kanna" }));
-    await writeFile(join(updateRoot, `bundles/${bundleKey}.hbc`), bundleBytes);
-    await writeFile(join(updateRoot, `assets/${assetKey}`), assetBytes);
-    await writeFile(
-      join(storageDir, "ota/ios/1.0.0/channels/staging.json"),
-      JSON.stringify({
-        currentUpdateId: "12b4a6d5-7dd6-5bf2-973e-c141ef211ca8",
-        createdAt: "2026-06-24T12:00:00.000Z",
-      })
-    );
+        })
+      );
+      await writeFile(join(updateRoot, "expoConfig.json"), JSON.stringify({ name: "Kanna" }));
+      await writeFile(join(updateRoot, `bundles/${bundleKey}.hbc`), bundleBytes);
+      await writeFile(join(updateRoot, `assets/${assetKey}`), assetBytes);
+      await writeFile(
+        join(storageDir, `ota/${platform}/1.0.0/channels/staging.json`),
+        JSON.stringify({
+          currentUpdateId: updateIds[platform],
+          createdAt: "2026-06-24T12:00:00.000Z",
+        })
+      );
+    }
+    await writeFile(join(storageDir, "ota/ios/1.0.0/channels/ios-only.json"), JSON.stringify({
+      currentUpdateId: updateIds.ios, createdAt: "2026-06-24T12:00:00.000Z",
+    }));
     const privateKeyPath = join(storageDir, "private-key.pem");
     const privateKey = generateKeyPairSync("rsa", {
       modulusLength: 2048,
       publicKeyEncoding: { type: "spki", format: "pem" },
       privateKeyEncoding: { type: "pkcs8", format: "pem" },
     }).privateKey;
+    signingKey = privateKey;
     await writeFile(privateKeyPath, privateKey);
 
     relayProcess = spawn("pnpm", ["exec", "tsx", "src/index.ts"], {
@@ -91,10 +101,13 @@ describe("OTA relay integration", () => {
         ...process.env,
         PORT: String(port),
         KANNA_OTA_STORAGE_DIR: storageDir,
+        KANNA_OTA_PRIVATE_KEY_PEM: "",
         KANNA_OTA_PRIVATE_KEY_PATH: privateKeyPath,
       },
       stdio: "pipe",
+      detached: true,
     });
+    relayExit = new Promise(resolve => relayProcess!.once("exit", resolve));
     relayProcess.stderr?.on("data", (chunk: Buffer) => {
       process.stderr.write(`[relay] ${chunk.toString()}`);
     });
@@ -102,16 +115,18 @@ describe("OTA relay integration", () => {
   }, 45_000);
 
   afterAll(async () => {
-    relayProcess?.kill("SIGTERM");
-    await new Promise((resolve) => setTimeout(resolve, 300));
+    if (relayProcess?.pid) {
+      try { process.kill(-relayProcess.pid, "SIGTERM"); } catch { /* already exited */ }
+      await relayExit;
+    }
     if (storageDir) await rm(storageDir, { recursive: true, force: true });
   });
 
-  it("serves a signed multipart manifest and streams assets by hash", async () => {
+  it.each(["ios", "android"] as const)("serves a signed %s manifest and streams isolated assets by hash", async (platform) => {
     const manifestResponse = await fetch(`http://127.0.0.1:${port}/ota/manifest`, {
       headers: {
         "expo-protocol-version": "1",
-        "expo-platform": "ios",
+        "expo-platform": platform,
         "expo-runtime-version": "1.0.0",
         "expo-channel-name": "staging",
         "expo-expect-signature": 'sig, keyid="kanna-mobile-ota-v1", alg="rsa-v1_5-sha256"',
@@ -125,24 +140,66 @@ describe("OTA relay integration", () => {
     expect(body).toContain("expo-signature:");
     expect(body).toContain('"runtimeVersion":"1.0.0"');
 
+    const signature = /expo-signature: ([^\r]+)/.exec(body)![1];
+    const manifestJson = body.split("\r\n\r\n")[1].split("\r\n--")[0];
+    expect(JSON.parse(manifestJson).id).toBe(updateIds[platform]);
+    expect(verifyManifestSignatureForTest(manifestJson, signature, signingKey)).toBe(true);
+    expect(verifyManifestSignatureForTest(manifestJson + " ", signature, signingKey)).toBe(false);
+    const current = await fetch(
+      `http://127.0.0.1:${port}/ota/manifest`, { headers: {
+        "expo-protocol-version": "1", "expo-platform": platform,
+        "expo-runtime-version": "1.0.0", "expo-channel-name": "staging",
+        "expo-current-update-id": JSON.parse(manifestJson).id,
+      } });
+    const directive = await current.text();
+    expect(directive).toContain('"type":"noUpdateAvailable"');
+    expect(verifyManifestSignatureForTest(
+      directive.split("\r\n\r\n")[1].split("\r\n--")[0],
+      /expo-signature: ([^\r]+)/.exec(directive)![1], signingKey,
+    )).toBe(true);
+
     const key = /"launchAsset":\{"hash":"([^"]+)"/.exec(body)?.[1];
     expect(key).toBeTruthy();
     const assetResponse = await fetch(
-      `http://127.0.0.1:${port}/ota/assets?key=${key ?? ""}&runtimeVersion=1.0.0&platform=ios`
+      `http://127.0.0.1:${port}/ota/assets?key=${key ?? ""}&runtimeVersion=1.0.0&platform=${platform}`
     );
     expect(assetResponse.status).toBe(200);
     expect(assetResponse.headers.get("content-type")).toBe("application/javascript");
     expect(assetResponse.headers.get("cache-control")).toBe("public, max-age=31536000, immutable");
-    expect(await assetResponse.text()).toBe("bundle bytes");
+    expect(await assetResponse.text()).toBe(`${platform} bundle bytes`);
 
     const assetKey = /"assets":\[\{"hash":"([^"]+)"/.exec(body)?.[1];
     expect(assetKey).toBeTruthy();
     const pngResponse = await fetch(
-      `http://127.0.0.1:${port}/ota/assets?key=${assetKey ?? ""}&runtimeVersion=1.0.0&platform=ios`
+      `http://127.0.0.1:${port}/ota/assets?key=${assetKey ?? ""}&runtimeVersion=1.0.0&platform=${platform}`
     );
     expect(pngResponse.status).toBe(200);
     expect(pngResponse.headers.get("content-type")).toBe("image/png");
-    expect(await pngResponse.text()).toBe("png bytes");
+    expect(await pngResponse.text()).toBe(`${platform} png bytes`);
+    const other = platform === "ios" ? "android" : "ios";
+    expect((await fetch(`http://127.0.0.1:${port}/ota/assets?key=${key}&runtimeVersion=1.0.0&platform=${other}`)).status).toBe(404);
+    expect((await fetch(`http://127.0.0.1:${port}/ota/assets?key=${key}&runtimeVersion=missing&platform=${platform}`)).status).toBe(404);
+  });
+
+  it("does not reuse a cached iOS pointer for an absent Android publication", async () => {
+    for (const platform of ["ios", "android"]) {
+      const response = await fetch(`http://127.0.0.1:${port}/ota/manifest`, { headers: {
+        "expo-protocol-version": "1", "expo-platform": platform,
+        "expo-runtime-version": "1.0.0", "expo-channel-name": "ios-only",
+      } });
+      expect(response.status).toBe(platform === "ios" ? 200 : 404);
+    }
+  });
+
+  it.each(["ios", "android", "web"])("rejects absent runtimes or unsupported platform %s", async (platform) => {
+    const response = await fetch(`http://127.0.0.1:${port}/ota/manifest`, { headers: {
+      "expo-protocol-version": "1", "expo-platform": platform,
+      "expo-runtime-version": "missing", "expo-channel-name": "staging",
+    } });
+    expect(response.status).toBe(platform === "web" ? 400 : 404);
+    if (platform === "web") {
+      expect((await fetch(`http://127.0.0.1:${port}/ota/assets?key=x&runtimeVersion=1.0.0&platform=web`)).status).toBe(400);
+    }
   });
 
   it("returns 404 JSON when the channel pointer is missing", async () => {

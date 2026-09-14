@@ -6,7 +6,11 @@ import { Storage, type File } from "@google-cloud/storage";
 
 export const OTA_CODE_SIGNING_KEY_ID = "kanna-mobile-ota-v1";
 const OTA_PROTOCOL_VERSION = "1";
-const OTA_PLATFORM = "ios";
+export type OtaPlatform = "ios" | "android";
+
+function isOtaPlatform(value: unknown): value is OtaPlatform {
+  return value === "ios" || value === "android";
+}
 const POINTER_CACHE_TTL_MS = 15_000;
 
 export interface ExpoExportMetadata {
@@ -57,7 +61,7 @@ export interface ExpoManifestAsset {
 
 export interface ManifestRequestHeaders {
   protocolVersion: "1";
-  platform: "ios";
+  platform: OtaPlatform;
   runtimeVersion: string;
   channel: "staging" | "production" | string;
   currentUpdateId?: string;
@@ -72,7 +76,7 @@ export interface OtaChannelPointer {
 interface BuildManifestInput {
   origin: string;
   runtimeVersion: string;
-  platform: "ios";
+  platform: OtaPlatform;
   updateId: string;
   createdAt: string;
   metadata: ExpoExportMetadata;
@@ -101,7 +105,7 @@ interface OtaAssetResult {
 interface OtaStorageBackend {
   readJson<T>(path: string): Promise<T | null>;
   readBuffer(path: string): Promise<Buffer | null>;
-  findAsset(runtimeVersion: string, platform: "ios", key: string): Promise<OtaAssetResult | null>;
+  findAsset(runtimeVersion: string, platform: OtaPlatform, key: string): Promise<OtaAssetResult | null>;
 }
 
 interface CachedPointer {
@@ -140,7 +144,7 @@ export function parseManifestRequestHeaders(headers: IncomingHttpHeaders): Manif
   }
 
   const platform = singleHeader(headers["expo-platform"]);
-  if (platform !== OTA_PLATFORM) {
+  if (!isOtaPlatform(platform)) {
     throw new Error("Unsupported Expo platform.");
   }
 
@@ -159,7 +163,7 @@ export function parseManifestRequestHeaders(headers: IncomingHttpHeaders): Manif
 
   return {
     protocolVersion: OTA_PROTOCOL_VERSION,
-    platform: OTA_PLATFORM,
+    platform,
     runtimeVersion,
     channel,
     ...(currentUpdateId ? { currentUpdateId } : {}),
@@ -337,12 +341,12 @@ async function handleAssetRequest(url: URL, res: ServerResponse): Promise<void> 
   const key = url.searchParams.get("key")?.trim();
   const runtimeVersion = url.searchParams.get("runtimeVersion")?.trim();
   const platform = url.searchParams.get("platform")?.trim();
-  if (!key || !runtimeVersion || platform !== OTA_PLATFORM) {
-    jsonResponse(res, 400, { error: "Expected key, runtimeVersion, and platform=ios." });
+  if (!key || !runtimeVersion || !isOtaPlatform(platform)) {
+    jsonResponse(res, 400, { error: "Expected key, runtimeVersion, and platform=ios|android." });
     return;
   }
 
-  const asset = await createOtaStorageBackend().findAsset(runtimeVersion, OTA_PLATFORM, key);
+  const asset = await createOtaStorageBackend().findAsset(runtimeVersion, platform, key);
   if (!asset) {
     jsonResponse(res, 404, { error: "OTA asset not found." });
     return;
@@ -395,7 +399,7 @@ function writeMultipartResponse(res: ServerResponse, response: SignedMultipartRe
 async function readCachedPointer(
   storage: OtaStorageBackend,
   runtimeVersion: string,
-  platform: "ios",
+  platform: OtaPlatform,
   channel: string
 ): Promise<OtaChannelPointer | null> {
   const cacheKey = `${platform}:${runtimeVersion}:${channel}`;
@@ -446,7 +450,7 @@ class LocalOtaStorageBackend implements OtaStorageBackend {
     }
   }
 
-  async findAsset(runtimeVersion: string, platform: "ios", key: string): Promise<OtaAssetResult | null> {
+  async findAsset(runtimeVersion: string, platform: OtaPlatform, key: string): Promise<OtaAssetResult | null> {
     const base = join(this.root, "ota", platform, runtimeVersion, "updates");
     const files = await listFiles(base).catch((error: unknown) => {
       if (isNotFound(error)) return [];
@@ -468,7 +472,7 @@ class LocalOtaStorageBackend implements OtaStorageBackend {
 
   private async contentTypeForObject(
     runtimeVersion: string,
-    platform: "ios",
+    platform: OtaPlatform,
     normalizedObjectPath: string,
     key: string
   ): Promise<string> {
@@ -515,7 +519,7 @@ class GcsOtaStorageBackend implements OtaStorageBackend {
     }
   }
 
-  async findAsset(runtimeVersion: string, platform: "ios", key: string): Promise<OtaAssetResult | null> {
+  async findAsset(runtimeVersion: string, platform: OtaPlatform, key: string): Promise<OtaAssetResult | null> {
     const prefix = `ota/${platform}/${runtimeVersion}/updates/`;
     const [files] = await this.storage.bucket(this.bucketName).getFiles({ prefix });
     const file = files.find((candidate) => assetObjectMatchesKey(candidate.name, key));
@@ -530,7 +534,7 @@ class GcsOtaStorageBackend implements OtaStorageBackend {
   private async contentTypeForObject(
     file: File,
     updatesPrefix: string,
-    platform: "ios",
+    platform: OtaPlatform,
     key: string
   ): Promise<string> {
     if (file.name.endsWith(`/bundles/${key}.hbc`)) {
@@ -553,7 +557,7 @@ function updateIdFromObjectName(name: string, updatesPrefix: string): string | n
 
 function contentTypeFromMetadata(
   metadata: ExpoExportMetadata | null,
-  platform: "ios",
+  platform: OtaPlatform,
   key: string
 ): string | null {
   const assets = metadata?.fileMetadata[platform]?.assets ?? [];
@@ -574,11 +578,11 @@ function assetObjectMatchesKey(name: string, key: string): boolean {
   return name.endsWith(`/assets/${key}`) || name.endsWith(`/bundles/${key}.hbc`);
 }
 
-function updateObjectPrefix(runtimeVersion: string, platform: "ios", updateId: string): string {
+function updateObjectPrefix(runtimeVersion: string, platform: OtaPlatform, updateId: string): string {
   return `ota/${platform}/${runtimeVersion}/updates/${updateId}`;
 }
 
-function buildAssetUrl(origin: string, key: string, runtimeVersion: string, platform: "ios"): string {
+function buildAssetUrl(origin: string, key: string, runtimeVersion: string, platform: OtaPlatform): string {
   const url = new URL("/ota/assets", origin);
   url.searchParams.set("key", key);
   url.searchParams.set("runtimeVersion", runtimeVersion);
