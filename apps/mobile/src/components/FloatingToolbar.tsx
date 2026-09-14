@@ -1,7 +1,7 @@
 import React from "react";
 import { Ionicons } from "@expo/vector-icons";
 import type { BottomTabBarProps } from "@react-navigation/bottom-tabs";
-import { Pressable, StyleSheet, Text, View } from "react-native";
+import { Platform, Pressable, StyleSheet, Text, View } from "react-native";
 import { MOBILE_E2E_IDS } from "../e2eTestIds";
 import {
   MAIN_TAB_ROUTES,
@@ -16,6 +16,7 @@ interface FloatingToolbarProps extends BottomTabBarProps {
 export function FloatingToolbar({
   state,
   navigation,
+  insets,
   activityCount = 0,
   onSelectUtilityAction
 }: FloatingToolbarProps) {
@@ -23,7 +24,11 @@ export function FloatingToolbar({
   const createAction = UTILITY_ACTIONS.find((action) => action.name === "create");
 
   return (
-    <View style={styles.wrap}>
+    <View style={[
+      styles.wrap,
+      // iOS is already inset by the app shell; Android draws edge to edge.
+      Platform.OS === "android" ? { bottom: 16 + insets.bottom } : null
+    ]}>
       {searchAction ? (
         <Pressable
           accessibilityLabel={searchAction.label}

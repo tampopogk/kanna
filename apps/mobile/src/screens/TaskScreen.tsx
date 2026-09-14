@@ -14,6 +14,7 @@ import {
   useWindowDimensions,
   View
 } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { MOBILE_E2E_IDS } from "../e2eTestIds";
 import { LoadingText } from "../components/LoadingText";
 import { displayTaskId } from "../lib/api/taskIdentity";
@@ -294,6 +295,7 @@ export function TaskScreen({
   );
   const [isPickingAttachment, setIsPickingAttachment] = useState(false);
   const [keyboardHeight, setKeyboardHeight] = useState(0);
+  const insets = useSafeAreaInsets();
   const [isBackPending, setIsBackPending] = useState(false);
   const [measuredTerminalCapacity, setMeasuredTerminalCapacity] = useState<{
     cols: number;
@@ -1245,7 +1247,10 @@ export function TaskScreen({
         }}
         style={[
           styles.bottomChrome,
-          { bottom: getComposerBottomOffset(keyboardHeight) }
+          { bottom: Math.max(
+            getComposerBottomOffset(keyboardHeight),
+            getComposerBottomOffset(0) + (Platform.OS === "android" ? insets.bottom : 0)
+          ) }
         ]}
       >
         {activeInputFailure ? (

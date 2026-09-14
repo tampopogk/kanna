@@ -36,6 +36,10 @@ const SCROLL_INPUT_B64 = "G1s8NjU7MTM7MTJN";
 const ESC_INPUT_B64 = "Gw==";
 const ENTER_INPUT_B64 = "DQ==";
 
+vi.mock("react-native-safe-area-context", () => ({
+  useSafeAreaInsets: () => ({ bottom: 48 })
+}));
+
 vi.mock("@expo/vector-icons", () => ({
   Ionicons: "Ionicons"
 }));
