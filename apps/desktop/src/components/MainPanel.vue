@@ -189,7 +189,7 @@ const visiblePreviews = computed(() => tabs.value.filter(tab => tab.kind === 'pr
 })));
 const newViews = computed(() => [
   ...(props.uiSlot ? [{ id: "diff", label: "Diff", shortcut: shortcutHint("showDiff") }] : []),
-  { id: "shell", label: "Terminal", shortcut: shortcutHint("openShell") },
+  { id: "shell", label: "Shell", shortcut: shortcutHint("openShell") },
   { id: "tree", label: "File explorer", shortcut: shortcutHint("toggleTreeExplorer") },
   ...(scopeRepoPath.value ? [{ id: "graph", label: "Commit graph", shortcut: shortcutHint("showCommitGraph") }] : []),
 ]);
