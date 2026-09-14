@@ -204,9 +204,17 @@ function matches(def: ShortcutDef, e: KeyboardEvent): boolean {
   if (e.shiftKey !== (binding.shift ?? false)) return false;
   if (e.altKey !== (binding.alt ?? false)) return false;
   if (e.ctrlKey !== (binding.ctrl ?? false)) return false;
-  const keys = Array.isArray(def.key) ? def.key : [def.key];
-  const codes = def.code ? (Array.isArray(def.code) ? def.code : [def.code]) : [];
-  return keys.includes(e.key) || codes.includes(e.code);
+  const keys = Array.isArray(binding.key) ? binding.key : [binding.key];
+  const codes = binding.code ? (Array.isArray(binding.code) ? binding.code : [binding.code]) : [];
+  const eventKey = /^[A-Za-z]$/.test(e.key) ? e.key.toLowerCase() : e.key;
+  return keys.some((key) => (/^[A-Za-z]$/.test(key) ? key.toLowerCase() : key) === eventKey)
+    || codes.includes(e.code);
+}
+
+/** Match one named shortcut through the same platform-aware owner as globals. */
+export function isShortcutAction(action: ActionName, e: KeyboardEvent): boolean {
+  const def = shortcuts.find((shortcut) => shortcut.action === action);
+  return def ? matches(def, e) : false;
 }
 
 /**

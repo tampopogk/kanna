@@ -1,5 +1,5 @@
 import { ref, onUnmounted } from "vue";
-import { shortcuts } from "./useKeyboardShortcuts";
+import { shortcutHint, shortcuts } from "./useKeyboardShortcuts";
 
 export type ShortcutContext = "main" | "diff" | "file" | "shell" | "preview" | "tree" | "newTask" | "graph" | "transfer";
 
@@ -130,11 +130,11 @@ function buildContextShortcutGroups(
       : def.groupKey;
     if (def.context && def.context.includes(ctx)) {
       const existing = result.get(targetGroupKey) ?? [];
-      existing.push({ keys: def.display, action: resolveAction(def.labelKey, true) });
+      existing.push({ keys: shortcutHint(def.action), action: resolveAction(def.labelKey, true) });
       result.set(targetGroupKey, existing);
     } else if (!def.context && ctx === "main") {
       const existing = result.get(targetGroupKey) ?? [];
-      existing.push({ keys: def.display, action: resolveAction(def.labelKey, true) });
+      existing.push({ keys: shortcutHint(def.action), action: resolveAction(def.labelKey, true) });
       result.set(targetGroupKey, existing);
     }
   }

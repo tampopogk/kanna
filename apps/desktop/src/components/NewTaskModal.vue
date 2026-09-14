@@ -6,6 +6,8 @@ import BlockerSelectModal from "./BlockerSelectModal.vue";
 import type { AgentProvider, PipelineItem } from "../types/kanna";
 import { useModalZIndex } from "../composables/useModalZIndex";
 import { registerContextShortcuts } from "../composables/useShortcutContext";
+import { isShortcutAction, shortcutHint } from "../composables/useKeyboardShortcuts";
+import { metaOrControlHint } from "../composables/shortcutPlatform";
 import { macOsTextInputAttrs } from "../utils/textInput";
 import { filterBaseBranchCandidates } from "../utils/baseBranchPicker";
 import { agentChoiceKey, sortAgentChoicesByRecentUsage, type RecentAgentChoice } from "../utils/agentChoiceUsage";
@@ -13,7 +15,7 @@ import type { AgentExecutionType } from "../stores/agentExecutionType";
 const { zIndex } = useModalZIndex();
 
 registerContextShortcuts("newTask", [
-  { label: "Switch agent", display: "⇧⌘[ / ⇧⌘]", groupKey: "shortcuts.groupActions" },
+  { label: "Switch agent", display: `${shortcutHint("prevTab")} / ${shortcutHint("nextTab")}`, groupKey: "shortcuts.groupActions" },
 ]);
 
 const props = defineProps<{
@@ -366,14 +368,14 @@ function handleKeydown(e: KeyboardEvent) {
     return;
   }
 
-  // ⇧⌘[ / ⇧⌘] to switch agent provider
-  if (e.metaKey && e.shiftKey && (e.key === "[" || e.key === "{")) {
+  // The tab-cycle chord switches agent provider while this modal owns it.
+  if (isShortcutAction("prevTab", e)) {
     e.preventDefault();
     e.stopPropagation();
     cycleAgentChoice(-1);
     return;
   }
-  if (e.metaKey && e.shiftKey && (e.key === "]" || e.key === "}")) {
+  if (isShortcutAction("nextTab", e)) {
     e.preventDefault();
     e.stopPropagation();
     cycleAgentChoice(1);
@@ -567,7 +569,7 @@ function handleKeydown(e: KeyboardEvent) {
         </div>
       </div>
       <div class="modal-footer">
-        <span class="hint">{{ $t('modals.submitHint', { action: $t('actions.submit').toLowerCase() }) }}</span>
+        <span class="hint">{{ $t('modals.submitHint', { shortcut: metaOrControlHint('Enter'), action: $t('actions.submit').toLowerCase() }) }}</span>
         <div class="modal-actions">
           <button class="btn btn-cancel" @click="emit('cancel')">{{ $t('actions.cancel') }}</button>
           <button

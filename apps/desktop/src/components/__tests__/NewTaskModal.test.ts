@@ -8,6 +8,7 @@ import NewTaskModal from "../NewTaskModal.vue";
 import BlockerSelectModal from "../BlockerSelectModal.vue";
 import type { PipelineItem } from "../../types/kanna";
 import { clearContextShortcuts, getContextShortcuts } from "../../composables/useShortcutContext";
+import { resetShortcutBindingsForTests } from "../../composables/useKeyboardShortcuts";
 
 async function flushPromises() {
   await Promise.resolve();
@@ -195,6 +196,10 @@ describe("NewTaskModal", () => {
 
   afterEach(() => {
     clearContextShortcuts("newTask");
+    for (const nav of [globalThis.navigator, window.navigator]) {
+      Object.defineProperty(nav, "platform", { value: "MacIntel", configurable: true });
+    }
+    resetShortcutBindingsForTests();
   });
 
   it("shows only the selected agent choice and updates it when cycling", async () => {
@@ -473,6 +478,34 @@ describe("NewTaskModal", () => {
       action: "Switch agent",
       keys: "⇧⌘[ / ⇧⌘]",
     });
+  });
+
+  it("dispatches and labels the Linux agent switching shortcut", async () => {
+    for (const nav of [globalThis.navigator, window.navigator]) {
+      Object.defineProperty(nav, "platform", { value: "Linux x86_64", configurable: true });
+    }
+    resetShortcutBindingsForTests();
+    const wrapper = mount(NewTaskModal, {
+      props: {
+        defaultAgentProvider: "codex",
+        availableAgentProviders: ["claude", "codex"],
+      },
+      global: { mocks: { $t: (key: string) => key } },
+    });
+
+    await flushPromises();
+    expect(getContextShortcuts("newTask")).toContainEqual({
+      action: "Switch agent",
+      keys: "Ctrl+Alt+[ / Ctrl+Alt+]",
+    });
+
+    await wrapper.get("textarea").trigger("keydown", {
+      key: "[",
+      code: "BracketLeft",
+      ctrlKey: true,
+      altKey: true,
+    });
+    expect(selectedAgentLabel(wrapper)).toBe("claude");
   });
 
   it("emits the selected base branch on submit", async () => {

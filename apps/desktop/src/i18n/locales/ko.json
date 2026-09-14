@@ -174,7 +174,7 @@
     "noTasksMatching": "\"{query}\"와 일치하는 작업이 없습니다",
     "noReposYet": "저장소가 없습니다.",
     "noReposHint": "{shortcut}을 눌러 생성하세요.",
-    "newTaskTooltip": "새 작업 (⌘N)",
+    "newTaskTooltip": "새 작업 ({shortcut})",
     "removeRepoTooltip": "저장소 삭제",
     "remoteTaskTooltip": "원격 작업",
     "transferringTaskTooltip": "기기 간 전송 중",
@@ -191,7 +191,7 @@
     "selectRepo": "Git 저장소 선택",
     "chooseDirectory": "상위 디렉토리 선택",
     "chooseCloneDirectory": "복제 디렉토리 선택",
-    "submitHint": "⌘Enter로 {action}"
+    "submitHint": "{shortcut}로 {action}"
   },
   "toasts": {
     "taskCreationFailed": "작업 생성 실패",
@@ -230,7 +230,7 @@
     "stageTeardownFailed": "단계 종료 스크립트 실패",
     "stageSetupFailed": "단계 설정 스크립트 실패",
     "stageNotFound": "워크플로에서 단계를 찾을 수 없습니다",
-    "latestAgentFileHint": "팁: ⌘L을 눌러 에이전트가 언급한 최신 파일을 여세요.",
+    "latestAgentFileHint": "팁: {shortcut}을 눌러 에이전트가 언급한 최신 파일을 여세요.",
     "noTerminalFileLink": "이 터미널에서 파일 링크를 찾을 수 없습니다.",
     "transferFinalizationFailed": "작업 전송에 실패했습니다",
     "transferPullRefused": "상대 머신이 작업 {taskId} 을(를) 보내지 않습니다",
@@ -358,7 +358,7 @@
     "rendered": "렌더링",
     "raw": "원본",
     "openInIDE": "IDE에서 열기",
-    "openInIDETooltip": "IDE에서 열기 (⌘O)",
+    "openInIDETooltip": "IDE에서 열기 ({shortcut})",
     "shortcutOpenIDE": "IDE에서 열기",
     "shortcutToggleMarkdown": "마크다운 전환",
     "shortcutLineUpDown": "줄 ↓/↑",

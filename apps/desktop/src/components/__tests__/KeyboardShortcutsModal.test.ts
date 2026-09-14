@@ -5,6 +5,7 @@ import { defineComponent, h, nextTick } from "vue";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import KeyboardShortcutsModal from "../KeyboardShortcutsModal.vue";
 import { clearContextShortcuts, setContextShortcuts } from "../../composables/useShortcutContext";
+import { resetShortcutBindingsForTests } from "../../composables/useKeyboardShortcuts";
 import { useModalZIndex } from "../../composables/useModalZIndex";
 
 vi.mock("vue-i18n", () => ({
@@ -27,6 +28,10 @@ function styleZIndex(element: Element): number {
 describe("KeyboardShortcutsModal", () => {
   afterEach(() => {
     clearContextShortcuts();
+    for (const nav of [globalThis.navigator, window.navigator]) {
+      Object.defineProperty(nav, "platform", { value: "MacIntel", configurable: true });
+    }
+    resetShortcutBindingsForTests();
   });
 
   it("renders full-mode entries in a shared three-column grid", () => {
@@ -50,12 +55,28 @@ describe("KeyboardShortcutsModal", () => {
     expect(entryAt("1", "12")).toBe("shortcuts.closeWindow⇧⌘W");
     expect(entryAt("1", "13")).toBe("shortcuts.toggleSidebar⌘B");
     expect(entryAt("1", "17")).toBe("shortcuts.preferences⌘,");
-    expect(entryAt("2", "9")).toBe("shortcuts.oldestUnreadAllRepos⇧⌘U");
-    expect(entryAt("2", "10")).toBe("shortcuts.oldestRead⌘R");
-    expect(entryAt("2", "11")).toBe("shortcuts.oldestReadAllRepos⇧⌘R");
+    expect(entryAt("2", "11")).toBe("shortcuts.oldestUnreadAllRepos⇧⌘U");
+    expect(entryAt("2", "12")).toBe("shortcuts.oldestRead⌘R");
+    expect(entryAt("2", "13")).toBe("shortcuts.oldestReadAllRepos⇧⌘R");
     expect(entryAt("3", "8")).toBe("shortcuts.openLatestAgentFile⌘L");
     expect(entryAt("3", "11")).toBe("shortcuts.treeExplorer⇧⌘E");
     expect(entryAt("3", "12")).toBe("shortcuts.viewDiff⌘D");
+  });
+
+  it("renders Linux bindings in the full list and mode-toggle footer", () => {
+    for (const nav of [globalThis.navigator, window.navigator]) {
+      Object.defineProperty(nav, "platform", { value: "Linux x86_64", configurable: true });
+    }
+    resetShortcutBindingsForTests();
+
+    const wrapper = mount(KeyboardShortcutsModal, {
+      props: { context: "file", startInFullMode: true },
+    });
+
+    expect(wrapper.text()).toContain("shortcuts.filePickerCtrl+Shift+P");
+    expect(wrapper.text()).toContain("shortcuts.toggleSidebarCtrl+Shift+B");
+    expect(wrapper.get(".toggle-hint").text()).toBe("CtrlAlt/");
+    expect(wrapper.text()).not.toContain("⌘");
   });
 
   it("renders context-mode shortcuts in the shared multi-column grid", () => {

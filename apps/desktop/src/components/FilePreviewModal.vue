@@ -115,7 +115,7 @@ const fileContextShortcuts: ContextShortcut[] = [
     ? [{ label: t('filePreview.shortcutToggleMarkdown'), display: "m", groupKey: "shortcuts.groupViews" }]
     : []),
   ...(!isRemoteFile.value
-    ? [{ label: t('filePreview.shortcutOpenIDE'), display: "⌘O", groupKey: "shortcuts.groupActions" }]
+    ? [{ label: t('filePreview.shortcutOpenIDE'), display: metaOrControlHint("o"), groupKey: "shortcuts.groupActions" }]
     : []),
   { label: t('filePreview.shortcutClose'), display: "q", groupKey: "shortcuts.groupActions" },
 ];
@@ -630,7 +630,7 @@ watch(
             :dismiss-notice="dismissTerminalEditorNotice"
           />
           <span v-if="isRemoteFile" title="Terminal editing is available only on the desktop holding the local workspace">Remote · read-only</span>
-          <button v-if="!isRemoteFile" class="btn-open" @click="openInIDE" :title="$t('filePreview.openInIDETooltip')">{{ $t('filePreview.openInIDE') }}</button>
+          <button v-if="!isRemoteFile" class="btn-open" @click="openInIDE" :title="$t('filePreview.openInIDETooltip', { shortcut: metaOrControlHint('o') })">{{ $t('filePreview.openInIDE') }}</button>
         </div>
       </div>
       <div v-if="loading" class="preview-status">{{ $t('common.loading') }}</div>

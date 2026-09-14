@@ -3,6 +3,7 @@ import {
   detectTerminalFileLinkCandidates,
   IMAGE_FILE_EXTENSION,
 } from "./terminalFileLinks"
+import { resolveShortcutPlatform, type ShortcutPlatform } from "./shortcutPlatform"
 
 const WORKTREE_DIR_SEGMENT = "/.kanna-worktrees/"
 
@@ -43,7 +44,9 @@ export function createRemoteTerminalFileLinkProvider(params: {
   term: Terminal
   readFile: (path: string) => Promise<string | null>
   getContainer: () => HTMLElement | null
+  platform?: ShortcutPlatform
 }): RemoteTerminalFileLinkProvider {
+  const linkModifier = params.platform ?? resolveShortcutPlatform()
   const fileContentCache = new Map<string, Promise<string | null>>()
 
   function detectLineLinks(lineText: string): RemoteTerminalFileLink[] {
@@ -113,13 +116,13 @@ export function createRemoteTerminalFileLinkProvider(params: {
             },
             text: match.text,
             activate(event: MouseEvent) {
-              if (event.metaKey) void activateLink(match)
+              if (linkModifier === "mac" ? event.metaKey : event.ctrlKey) void activateLink(match)
             },
             hover(event: MouseEvent) {
               if (!params.term.element) return
               tooltipEl = document.createElement("div")
               tooltipEl.className = "xterm-hover"
-              tooltipEl.textContent = "Open preview (⌘+click)"
+              tooltipEl.textContent = `Open preview (${linkModifier === "mac" ? "⌘" : "Ctrl"}+click)`
               tooltipEl.style.cssText = `
                 position: fixed;
                 left: ${event.clientX + 8}px;
