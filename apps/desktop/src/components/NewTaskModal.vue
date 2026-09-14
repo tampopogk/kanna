@@ -41,7 +41,6 @@ const emit = defineEmits<{
 const prompt = ref("");
 const model = ref("");
 const agentProvider = ref<AgentProvider>(props.defaultAgentProvider ?? "claude");
-watch(() => agentProvider.value, () => { model.value = ""; });
 const workflowOptions = computed(() => {
   if (props.workflows && props.workflows.length > 0) return props.workflows;
   return ["no-review"];

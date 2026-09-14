@@ -584,6 +584,38 @@ describe("NewTaskModal", () => {
     expect(wrapper.emitted("submit")).toBeUndefined();
   });
 
+  it("retains the chosen OpenCode model after cycling through other providers", async () => {
+    const wrapper = mount(NewTaskModal, {
+      props: {
+        repoId: "repo-local",
+        defaultAgentProvider: "opencode",
+        availableAgentProviders: ["claude", "codex", "opencode"],
+        baseBranches: ["origin/main"],
+      },
+      global: { mocks: { $t: (key: string) => key } },
+    });
+
+    await flushPromises();
+    await wrapper.get('[aria-label="OpenCode model"]').setValue("custom/backend-model");
+    for (let cycle = 0; cycle < 3; cycle += 1) {
+      await wrapper.get(".modal").trigger("keydown", {
+        key: "]",
+        metaKey: true,
+        shiftKey: true,
+      });
+      await flushPromises();
+    }
+
+    expect(selectedAgentLabel(wrapper)).toBe("opencode");
+    expect((wrapper.get('[aria-label="OpenCode model"]').element as HTMLInputElement).value).toBe("custom/backend-model");
+
+    await wrapper.get("textarea").setValue("Keep the selected model");
+    await wrapper.get("textarea").trigger("keydown", { key: "Enter", metaKey: true });
+    expect(wrapper.emitted("submit")?.at(-1)).toEqual([
+      "Keep the selected model", "opencode", "no-review", "origin/main", "pty", [], "custom/backend-model",
+    ]);
+  });
+
   it("emits the selected base branch on submit", async () => {
     const wrapper = mount(NewTaskModal, {
       props: {
