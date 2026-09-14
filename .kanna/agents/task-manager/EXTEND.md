@@ -45,4 +45,12 @@ requires a separate explicit human request naming the environment.
 
 ## Kanna Desktop Release Policy
 
-For this repository, never run `./kd release ship` directly in the manager session. Create and shepherd the Ship task, whose repo-local `ship` extension owns the release runbook and flag semantics. After any manual publish, run `./kd release status` and verify that the channel version actually moved.
+For this repository, production promotions and production mobile OTA publishes
+require an explicit human request. Staging is available to agents only within
+the repository's release runbook; operations that discard its candidate
+lineage still require the named human authorization that runbook specifies.
+
+Never run `./kd release ship` directly in the manager session. Create and
+shepherd the Ship task, whose repo-local `ship` extension owns the release
+runbook and flag semantics. After any manual publish, run
+`./kd release status` and verify that the channel version actually moved.
