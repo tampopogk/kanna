@@ -233,7 +233,14 @@ export interface TaskActivityResponse {
 
 export interface TaskFileContent {
   path: string;
-  content: string;
+  /** UTF-8 preview text. Absent for binary files that can still be downloaded. */
+  content?: string;
+  /** Original bytes. Absent only when talking to a desktop predating downloads. */
+  dataBase64?: string;
+  /** Basename supplied by the securely resolved workspace file. */
+  fileName?: string;
+  /** MIME inferred from the securely resolved filename, with octet-stream fallback. */
+  mediaType?: string;
 }
 
 export interface RepoBrowseEntry {

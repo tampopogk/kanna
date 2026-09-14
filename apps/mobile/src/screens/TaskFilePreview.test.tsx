@@ -31,6 +31,10 @@ const previewDocumentMocks = vi.hoisted(() => ({
   prepareMarkdown: vi.fn()
 }));
 
+const downloadMocks = vi.hoisted(() => ({
+  shareTaskFile: vi.fn().mockResolvedValue(undefined)
+}));
+
 function dependenciesChanged(
   previous: readonly unknown[] | undefined,
   next: readonly unknown[] | undefined
@@ -128,6 +132,10 @@ vi.mock("react-native-webview", () => ({
   WebView: "WebView"
 }));
 
+vi.mock("../lib/files/taskFileDownload", () => ({
+  shareTaskFile: downloadMocks.shareTaskFile
+}));
+
 interface ElementNode {
   type: unknown;
   props?: {
@@ -156,6 +164,8 @@ beforeEach(() => {
   harness.refs.length = 0;
   harness.states.length = 0;
   previewDocumentMocks.prepareMarkdown.mockClear();
+  downloadMocks.shareTaskFile.mockReset();
+  downloadMocks.shareTaskFile.mockResolvedValue(undefined);
 });
 
 function renderPreview(overrides: Partial<{
@@ -344,6 +354,145 @@ describe("TaskFilePreview", () => {
     );
     expect(findPressableByText(tree, "Rendered")).toBeNull();
     expect(findPressableByText(tree, "Raw")).toBeNull();
+  });
+
+  it("offers original PNG download when no text preview is available", async () => {
+    const file = {
+      path: "assets/logo.PNG",
+      fileName: "logo.PNG",
+      mediaType: "image/png",
+      dataBase64: "iVBORw0KGgr/"
+    };
+    const readFile = vi.fn().mockResolvedValue(file);
+    let tree = renderPreview({ path: file.path, readFile });
+    await runEffects();
+    tree = renderPreview({ path: file.path, readFile });
+
+    expect(findByType(tree, "WebView")).toBeNull();
+    expect(textContent(tree)).toContain("Preview unavailable");
+    const download = findPressableByText(tree, "Download");
+    expect(download).not.toBeNull();
+    (download?.props?.onPress as () => void)();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(readFile).toHaveBeenCalledTimes(2);
+    expect(downloadMocks.shareTaskFile).toHaveBeenCalledWith({
+      dataBase64: file.dataBase64,
+      fileName: file.fileName,
+      mediaType: file.mediaType
+    });
+  });
+
+  it("blocks duplicate taps while refreshing bytes and sharing", async () => {
+    const fresh = deferred<TaskFileContent>();
+    const file = {
+      path: "assets/logo.png",
+      content: "preview",
+      fileName: "logo.png",
+      mediaType: "image/png",
+      dataBase64: "AA=="
+    };
+    const readFile = vi
+      .fn<() => Promise<TaskFileContent>>()
+      .mockResolvedValueOnce(file)
+      .mockImplementationOnce(() => fresh.promise);
+    let tree = renderPreview({ path: file.path, readFile });
+    await runEffects();
+    tree = renderPreview({ path: file.path, readFile });
+
+    const download = findPressableByText(tree, "Download");
+    (download?.props?.onPress as () => void)();
+    (download?.props?.onPress as () => void)();
+    tree = renderPreview({ path: file.path, readFile });
+
+    expect(readFile).toHaveBeenCalledTimes(2);
+    expect(findPressableByText(tree, "Preparing…")?.props?.disabled).toBe(true);
+    fresh.resolve(file);
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(downloadMocks.shareTaskFile).toHaveBeenCalledOnce();
+  });
+
+  it("does not share a stale download after the requested path changes", async () => {
+    const staleDownload = deferred<TaskFileContent>();
+    const oldFile = {
+      path: "old.png",
+      fileName: "old.png",
+      mediaType: "image/png",
+      dataBase64: "AA=="
+    };
+    const oldRead = vi
+      .fn<() => Promise<TaskFileContent>>()
+      .mockResolvedValueOnce(oldFile)
+      .mockImplementationOnce(() => staleDownload.promise);
+    let tree = renderPreview({ path: "old.png", readFile: oldRead });
+    await runEffects();
+    tree = renderPreview({ path: "old.png", readFile: oldRead });
+    (findPressableByText(tree, "Download")?.props?.onPress as () => void)();
+
+    const newRead = vi.fn().mockResolvedValue({
+      path: "new.png",
+      fileName: "new.png",
+      mediaType: "image/png",
+      dataBase64: "AQ=="
+    });
+    renderPreview({ path: "new.png", readFile: newRead });
+    await runEffects();
+    staleDownload.resolve(oldFile);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(downloadMocks.shareTaskFile).not.toHaveBeenCalled();
+  });
+
+  it("does not share bytes returned by a replaced account/controller source", async () => {
+    const staleDownload = deferred<TaskFileContent>();
+    const file = {
+      path: "logo.png",
+      fileName: "logo.png",
+      mediaType: "image/png",
+      dataBase64: "AA=="
+    };
+    const oldRead = vi
+      .fn<() => Promise<TaskFileContent>>()
+      .mockResolvedValueOnce(file)
+      .mockImplementationOnce(() => staleDownload.promise);
+    let tree = renderPreview({ path: file.path, readFile: oldRead });
+    await runEffects();
+    tree = renderPreview({ path: file.path, readFile: oldRead });
+    (findPressableByText(tree, "Download")?.props?.onPress as () => void)();
+
+    renderPreview({
+      path: file.path,
+      readFile: vi.fn().mockResolvedValue({ ...file, dataBase64: "AQ==" })
+    });
+    staleDownload.resolve(file);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(downloadMocks.shareTaskFile).not.toHaveBeenCalled();
+  });
+
+  it("does not report native share cancellation as an error or success", async () => {
+    const file = {
+      path: "logo.png",
+      fileName: "logo.png",
+      mediaType: "image/png",
+      dataBase64: "AA=="
+    };
+    const readFile = vi.fn().mockResolvedValue(file);
+    downloadMocks.shareTaskFile.mockRejectedValue(new Error("Share cancelled"));
+    let tree = renderPreview({ path: file.path, readFile });
+    await runEffects();
+    tree = renderPreview({ path: file.path, readFile });
+    (findPressableByText(tree, "Download")?.props?.onPress as () => void)();
+    await Promise.resolve();
+    await Promise.resolve();
+    tree = renderPreview({ path: file.path, readFile });
+
+    expect(findByTestId(tree, "mobile.task-file-preview.download-error")).toBeNull();
+    expect(textContent(tree)).not.toContain("saved");
   });
 
   it("starts a linked Markdown line in raw mode and targets that line", async () => {

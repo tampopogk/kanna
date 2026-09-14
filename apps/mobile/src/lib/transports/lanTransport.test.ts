@@ -453,7 +453,7 @@ describe("createLanTransport", () => {
       transport.readTaskFile("task/read", "docs/spec one.md")
     ).resolves.toEqual({ path: "docs/spec one.md", content: "# Spec" });
     expect(fetchImpl).toHaveBeenCalledWith(
-      "http://192.168.1.20:48120/v1/tasks/task%2Fread/files/content?path=docs%2Fspec%20one.md",
+      "http://192.168.1.20:48120/v1/tasks/task%2Fread/files/download?path=docs%2Fspec%20one.md",
       {
         headers: {
           "X-Kanna-Device-Id": "phone-1",

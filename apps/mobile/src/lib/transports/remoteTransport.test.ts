@@ -235,7 +235,7 @@ describe("remote transport", () => {
     expect(invokeDesktop).toHaveBeenCalledWith({
       desktopId: "desktop-owner",
       method: "GET",
-      path: "/v1/tasks/local%2Ftask-1/files/content?path=docs%2Fspec%20one.md",
+      path: "/v1/tasks/local%2Ftask-1/files/download?path=docs%2Fspec%20one.md",
       body: null
     });
   });
@@ -334,7 +334,7 @@ describe("remote transport", () => {
     expect(invokeDesktop).toHaveBeenCalledWith({
       desktopId: "desktop-selected",
       method: "GET",
-      path: "/v1/tasks/task%2Fread/files/content?path=README.md",
+      path: "/v1/tasks/task%2Fread/files/download?path=README.md",
       body: null
     });
   });

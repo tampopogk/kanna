@@ -3,6 +3,7 @@ use super::state::{AppState, TunneledHttpInvoke};
 use crate::db::Db;
 use crate::task_files::{
     TaskFileContent, TaskFileError, TaskFileMention, TaskFileMentionResolution,
+    TaskFileTransferContent,
 };
 use axum::extract::{ConnectInfo, Extension, Path, Query, State};
 use axum::http::StatusCode;
@@ -38,6 +39,24 @@ pub(super) async fn get_task_file(
     let db = open_db(&state)?;
 
     crate::task_files::read_task_file(&db, &task_id, &query.path)
+        .map(Json)
+        .map_err(map_task_file_error)
+}
+
+pub(super) async fn download_task_file(
+    State(state): State<Arc<AppState>>,
+    relay: Option<Extension<AuthenticatedTaskFileAccess>>,
+    lan: Option<Extension<TrustedLanDeviceAccess>>,
+    tunneled: Option<Extension<TunneledHttpInvoke>>,
+    peer: Option<Extension<ConnectInfo<SocketAddr>>>,
+    Path(task_id): Path<String>,
+    Query(query): Query<TaskFileQuery>,
+) -> Result<Json<TaskFileTransferContent>, (StatusCode, String)> {
+    require_task_file_access(relay, lan, tunneled, peer)?;
+
+    let db = open_db(&state)?;
+
+    crate::task_files::read_task_file_transfer(&db, &task_id, &query.path)
         .map(Json)
         .map_err(map_task_file_error)
 }

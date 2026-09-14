@@ -50,7 +50,7 @@ use super::task_attention::{clear_task_attention, set_task_attention};
 use super::task_blockers::{block_task, unblock_task};
 use super::task_diff::get_task_diff;
 use super::task_events::wait_task_events;
-use super::task_files::{get_task_file, resolve_task_file_mentions};
+use super::task_files::{download_task_file, get_task_file, resolve_task_file_mentions};
 use super::task_graph::get_task_graph;
 use super::task_input::send_task_input;
 use super::task_logs::task_logs;
@@ -246,6 +246,10 @@ pub fn router(state: Arc<AppState>) -> Router {
             post(super::terminal_editor::open),
         )
         .route("/v1/tasks/{task_id}/files/content", get(get_task_file))
+        .route(
+            "/v1/tasks/{task_id}/files/download",
+            get(download_task_file),
+        )
         .route("/v1/tasks/{task_id}/browse", get(list_task_directory))
         .route(
             "/v1/tasks/{task_id}/browse/content",

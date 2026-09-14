@@ -936,7 +936,7 @@ export function createRemoteTransport({
         taskId,
         "GET",
         (localTaskId) =>
-          `/v1/tasks/${encodeURIComponent(localTaskId)}/files/content?path=${encodeURIComponent(path)}`,
+          `/v1/tasks/${encodeURIComponent(localTaskId)}/files/download?path=${encodeURIComponent(path)}`,
         null
       ),
     listTaskDirectory: (taskId, path, showAllFiles = false, offset = 0, filter = "") =>

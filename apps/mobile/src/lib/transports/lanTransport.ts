@@ -314,7 +314,7 @@ export function createLanTransport(
         );
       }
       return request<TaskFileContent>(
-        `/v1/tasks/${encodeURIComponent(taskId)}/files/content?path=${encodeURIComponent(path)}`
+        `/v1/tasks/${encodeURIComponent(taskId)}/files/download?path=${encodeURIComponent(path)}`
       );
     },
     listTaskDirectory: (taskId, path, showAllFiles = false, offset = 0, filter = "") => request<RepoDirectoryListing>(`/v1/tasks/${encodeURIComponent(taskId)}/browse?path=${encodeURIComponent(path)}&showAllFiles=${showAllFiles}&offset=${offset}&limit=60&filter=${encodeURIComponent(filter)}`),

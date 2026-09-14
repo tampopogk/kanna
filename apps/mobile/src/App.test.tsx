@@ -87,7 +87,7 @@ function createFetchMock(): FetchLike {
 
     if (
       url.endsWith(
-        "/v1/tasks/task%2Fread/files/content?path=docs%2Fspec%20one.md"
+        "/v1/tasks/task%2Fread/files/download?path=docs%2Fspec%20one.md"
       )
     ) {
       return {
