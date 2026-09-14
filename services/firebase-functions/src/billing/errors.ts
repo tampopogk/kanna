@@ -22,6 +22,9 @@ export type BillingErrorReason =
   | "app_store_active"
   | "already_subscribed"
   | "unknown_plan"
+  | "invalid_portal_request"
+  | "no_stripe_customer"
+  | "customer_ownership_mismatch"
   | "not_configured"
   | "stripe_error";
 

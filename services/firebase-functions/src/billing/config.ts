@@ -14,6 +14,13 @@ import type { BillingEnvironment } from "./types.js";
 export const STRIPE_SECRET_KEY_ENV = "STRIPE_SECRET_KEY";
 export const STRIPE_WEBHOOK_SECRET_ENV = "STRIPE_WEBHOOK_SECRET";
 export const PORTAL_BASE_URL_ENV = "KANNA_PORTAL_BASE_URL";
+export const STRIPE_PORTAL_CONFIGURATION_ENV = "STRIPE_PORTAL_CONFIGURATION_ID";
+
+/** Operator-selected hosted Portal features; this code does not choose billing policy. */
+export const STRIPE_PORTAL_CONFIGURATION_PARAM = defineString(STRIPE_PORTAL_CONFIGURATION_ENV, {
+  description: "Stripe Customer Portal configuration ID for this environment",
+  default: "",
+});
 
 /** Public Checkout return origin, resolved by Firebase from the project `.env`. */
 export const PORTAL_BASE_URL_PARAM = defineString(PORTAL_BASE_URL_ENV, {
@@ -54,6 +61,7 @@ const DEFAULT_STRIPE_GRACE_FALLBACK_DAYS = 14;
  * a deployed environment.
  */
 export const CHECKOUT_SECRET_ENVS = [STRIPE_SECRET_KEY_ENV] as const;
+export const PORTAL_SECRET_ENVS = [STRIPE_SECRET_KEY_ENV] as const;
 
 /** Account deletion calls Stripe only to cancel an existing subscription. */
 export const DELETE_ACCOUNT_SECRET_ENVS = [STRIPE_SECRET_KEY_ENV] as const;
@@ -118,6 +126,14 @@ export function resolveCheckoutConfig(env: NodeJS.ProcessEnv): Omit<StripeConfig
     portalBaseUrl: requireEnv(env, PORTAL_BASE_URL_ENV),
     graceFallbackDays: stripeGraceFallbackDays(env),
     environment: resolveBillingEnvironment(env),
+  };
+}
+
+export function resolvePortalConfig(env: NodeJS.ProcessEnv) {
+  return {
+    secretKey: requireEnv(env, STRIPE_SECRET_KEY_ENV),
+    portalBaseUrl: requireEnv(env, PORTAL_BASE_URL_ENV),
+    configurationId: requireEnv(env, STRIPE_PORTAL_CONFIGURATION_ENV),
   };
 }
 

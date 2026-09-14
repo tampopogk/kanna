@@ -16,6 +16,9 @@ import { declaredParams } from "firebase-functions/params";
 import { describe, expect, it } from "vitest";
 import {
   CHECKOUT_SECRET_ENVS,
+  PORTAL_SECRET_ENVS,
+  STRIPE_PORTAL_CONFIGURATION_PARAM,
+  resolvePortalConfig,
   DELETE_ACCOUNT_SECRET_ENVS,
   PORTAL_BASE_URL_PARAM,
   STRIPE_WEBHOOK_SECRET_ENVS,
@@ -29,7 +32,7 @@ interface DeployedFunction {
   __endpoint: { secretEnvironmentVariables?: { key: string }[] };
 }
 
-function boundSecrets(name: "createCheckoutSession" | "deleteAccount" | "stripeWebhook"): string[] {
+function boundSecrets(name: "createCheckoutSession" | "createPortalSession" | "deleteAccount" | "stripeWebhook"): string[] {
   const endpoint = (functions[name] as unknown as DeployedFunction).__endpoint;
   return (endpoint.secretEnvironmentVariables ?? []).map((entry) => entry.key);
 }
@@ -39,17 +42,28 @@ function envFor(names: readonly string[]): NodeJS.ProcessEnv {
 }
 
 describe("deployed function secret bindings", () => {
-  it("deploys exactly the two billing functions and no stray endpoint", () => {
+  it("deploys exactly the intended account and billing functions and no stray endpoint", () => {
     const deployed = Object.entries(functions)
       .filter(([, value]) => typeof value === "function")
       .map(([name]) => name)
       .sort();
-    expect(deployed).toEqual(["createCheckoutSession", "deleteAccount", "stripeWebhook"]);
+    expect(deployed).toEqual(["createCheckoutSession", "createPortalSession", "deleteAccount", "stripeWebhook"]);
   });
 
   it("binds createCheckoutSession to its declared Secret Manager entries", () => {
     expect(boundSecrets("createCheckoutSession")).toEqual([...CHECKOUT_SECRET_ENVS]);
     expect(boundSecrets("createCheckoutSession")).toEqual(["STRIPE_SECRET_KEY"]);
+  });
+
+  it("binds Customer Portal to only the Stripe API key and declares its configuration", () => {
+    expect(boundSecrets("createPortalSession")).toEqual([...PORTAL_SECRET_ENVS]);
+    expect(boundSecrets("createPortalSession")).toEqual(["STRIPE_SECRET_KEY"]);
+    expect(declaredParams.map((param) => param.name)).toContain("STRIPE_PORTAL_CONFIGURATION_ID");
+    expect(STRIPE_PORTAL_CONFIGURATION_PARAM.options.default).toBe("");
+    expect(readFileSync(join(import.meta.dirname, "..", ".env"), "utf8")).toContain("STRIPE_PORTAL_CONFIGURATION_ID=\n");
+    expect(() => resolvePortalConfig({
+      STRIPE_SECRET_KEY: "sk_test_mocked", KANNA_PORTAL_BASE_URL: "https://account.example.test",
+    })).toThrow("STRIPE_PORTAL_CONFIGURATION_ID");
   });
 
   it("declares the portal URL as a required Firebase string parameter", () => {

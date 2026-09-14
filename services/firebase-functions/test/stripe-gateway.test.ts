@@ -4,10 +4,12 @@ const stripeMocks = vi.hoisted(() => ({
   customersCreate: vi.fn(),
   pricesList: vi.fn(),
   sessionsCreate: vi.fn(),
+  portalCreate: vi.fn(),
 }));
 
 vi.mock("stripe", () => ({
   default: class MockStripe {
+    billingPortal = { sessions: { create: stripeMocks.portalCreate } };
     customers = { create: stripeMocks.customersCreate };
     prices = { list: stripeMocks.pricesList };
     checkout = {
@@ -16,7 +18,7 @@ vi.mock("stripe", () => ({
   },
 }));
 
-import { stripeCheckoutGateway } from "../src/billing/stripeGateway.js";
+import { stripeCheckoutGateway, stripePortalGateway } from "../src/billing/stripeGateway.js";
 
 describe("Stripe checkout gateway", () => {
   beforeEach(() => {
@@ -44,5 +46,15 @@ describe("Stripe checkout gateway", () => {
         card: { request_three_d_secure: "any" },
       },
     }));
+  });
+});
+
+it("creates the hosted Portal with only trusted customer, configured features and return URL", async () => {
+  stripeMocks.portalCreate.mockResolvedValue({ url: "https://billing.stripe.test/session" });
+  await expect(stripePortalGateway("sk_test_mocked").createPortalSession({
+    customerId: "cus_owned", configurationId: "bpc_test", returnUrl: "https://account.example.test/account",
+  })).resolves.toEqual({ url: "https://billing.stripe.test/session" });
+  expect(stripeMocks.portalCreate).toHaveBeenCalledWith({
+    customer: "cus_owned", configuration: "bpc_test", return_url: "https://account.example.test/account",
   });
 });

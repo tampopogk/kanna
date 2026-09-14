@@ -877,6 +877,26 @@ legacy accounts).
     pipeline + portal deletion UI; password reset surfaces; grace/dunning
     state rendering; the portal's App-Store-sourced and `duplicateSources`
     states.
+    The self-serve portal implementation (task `ce9475d4`, September 2026)
+    uses an authenticated, parameter-free `createPortalSession` callable.
+    It resolves the caller's admin-written Stripe customer records and opens
+    hosted Portal management without writing or deleting Kanna account data.
+    The function binds only `STRIPE_SECRET_KEY`, returns to the environment's
+    `KANNA_PORTAL_BASE_URL/account`, and requires
+    `STRIPE_PORTAL_CONFIGURATION_ID`. The committed empty default keeps
+    emulator startup non-interactive and makes the callable fail closed until
+    an operator selects a configuration for that environment; it does not
+    select cancellation, refund or other billing policies. Production Stripe
+    was confirmed **not set up** by the owner; source and emulator coverage
+    are not deployment or hosted-payment evidence.
+    The portal observes the uid-owned entitlement with listener cleanup and
+    account-switch fencing. Success/cancel return URLs are not payment or
+    activation proof. Grace ends at its recorded deadline, matching the
+    relay; active access is not expired merely by a period-end timestamp.
+    Firebase SDK reset/resend and forced token refresh preserve the existing
+    identity path. Hosted Portal behavior and real mail delivery still need
+    separately authorized observation. The outstanding-checkout ledger is a
+    separate checkout-safety task.
   - Apple backend: `appStoreNotifications` (JWS verification, dedupe,
     mapping table), `beginAppStorePurchase`, `registerAppStoreTransaction`,
     restore conflict rule, tombstones; emulator + fixture coverage

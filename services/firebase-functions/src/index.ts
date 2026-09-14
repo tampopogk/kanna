@@ -33,8 +33,10 @@ import { setGlobalOptions } from "firebase-functions/v2";
 import { HttpsError, onCall, onRequest } from "firebase-functions/v2/https";
 import * as functionsLogger from "firebase-functions/logger";
 import { createCheckoutSession as createCheckoutSessionCore } from "./billing/checkout.js";
+import { createPortalSession as createPortalSessionCore } from "./billing/portal.js";
 import {
   CHECKOUT_SECRET_ENVS,
+  PORTAL_SECRET_ENVS,
   DELETE_ACCOUNT_SECRET_ENVS,
   STRIPE_WEBHOOK_SECRET_ENVS,
 } from "./billing/config.js";
@@ -92,6 +94,25 @@ export const createCheckoutSession = onCall(
       throw error;
     }
   }
+);
+
+/** Open hosted billing management, retaining the caller's Kanna account. */
+export const createPortalSession = onCall(
+  { secrets: [...PORTAL_SECRET_ENVS] },
+  async (request) => {
+    try {
+      return await createPortalSessionCore(
+        request.data,
+        request.auth ? { uid: request.auth.uid } : null,
+        { db: db(), env: process.env },
+      );
+    } catch (error) {
+      if (error instanceof BillingRequestError) {
+        throw new HttpsError(error.code, error.message, { reason: error.reason });
+      }
+      throw error;
+    }
+  },
 );
 
 /** Permanently delete the signed-in caller's cloud account and Auth identity. */
