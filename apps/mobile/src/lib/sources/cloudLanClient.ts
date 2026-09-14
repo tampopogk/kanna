@@ -1620,6 +1620,10 @@ export function createCloudLanClient(
       }
       return route.client.readTaskFile(route.taskId, path);
     },
+    downloadTaskFile: (taskId, path) =>
+      invokeTaskRoute(taskId, (client, routedTaskId) =>
+        client.downloadTaskFile(routedTaskId, path)
+      ),
     listTaskDirectory: (taskId, path, showAllFiles = false, offset = 0, filter = "") =>
       invokeTaskRoute(taskId, (client, routedTaskId) => client.listTaskDirectory(routedTaskId, path, showAllFiles, offset, filter)),
     readTaskFileRange: (taskId, path, startLine, lineCount, metadataOnly = false, startByte = 0) =>

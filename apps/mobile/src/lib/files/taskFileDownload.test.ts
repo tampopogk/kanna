@@ -13,7 +13,9 @@ vi.mock("expo-sharing", () => ({
   shareAsync: vi.fn()
 }));
 
-const { shareTaskFile } = await import("./taskFileDownload");
+const { shareTaskFile, taskFileDownloadErrorMessage } = await import(
+  "./taskFileDownload"
+);
 
 function adapter(overrides: Partial<TaskFileDownloadAdapter> = {}) {
   const cleanup = vi.fn();
@@ -27,6 +29,12 @@ function adapter(overrides: Partial<TaskFileDownloadAdapter> = {}) {
 }
 
 describe("shareTaskFile", () => {
+  it("explains a 404 without hiding that the file may have disappeared", () => {
+    expect(
+      taskFileDownloadErrorMessage(new Error("LAN request failed (404)"))
+    ).toContain("desktop may need an update, or the file is no longer available");
+  });
+
   it("writes exact binary bytes and shares the original filename and MIME", async () => {
     const harness = adapter();
 

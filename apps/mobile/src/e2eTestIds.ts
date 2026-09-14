@@ -116,6 +116,8 @@ export const MOBILE_E2E_IDS = {
   taskFilePreviewMode: "mobile.task-file-preview.mode",
   taskFilePreviewDownload: "mobile.task-file-preview.download",
   taskFilePreviewDownloadError: "mobile.task-file-preview.download-error",
+  repoExplorerDownload: "mobile.repo-explorer.download",
+  repoExplorerDownloadError: "mobile.repo-explorer.download-error",
   taskFilePreviewClose: "mobile.task-file-preview.close",
   taskFilePreviewError: "mobile.task-file-preview.error",
   taskFilePreviewErrorMessage: "mobile.task-file-preview.error-message",

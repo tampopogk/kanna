@@ -235,10 +235,65 @@ describe("remote transport", () => {
     expect(invokeDesktop).toHaveBeenCalledWith({
       desktopId: "desktop-owner",
       method: "GET",
-      path: "/v1/tasks/local%2Ftask-1/files/download?path=docs%2Fspec%20one.md",
+      path: "/v1/tasks/local%2Ftask-1/files/content?path=docs%2Fspec%20one.md",
       body: null
     });
   });
+
+  it("routes original-byte download separately to the owner desktop", async () => {
+    const original = {
+      path: "assets/logo.PNG",
+      fileName: "logo.PNG",
+      mediaType: "image/png",
+      dataBase64: "iVBORw0KGgo="
+    };
+    const invokeDesktop = vi.fn<RemoteDesktopInvoker>().mockResolvedValue(original);
+    const transport = createRemoteTransport({
+      listDesktopRecords: async () => [],
+      getSelectedDesktopId: () => null,
+      invokeDesktop,
+      listCloudTasks: async () => [{
+        id: "cloud-task-1",
+        repoId: "repo-1",
+        title: "Cloud task",
+        stage: "in progress",
+        ownerDesktopId: "desktop-owner",
+        ownerLocalTaskId: "local/task-1",
+        ownerOnline: true
+      }]
+    });
+
+    await expect(
+      transport.downloadTaskFile("cloud-task-1", "assets/logo.PNG")
+    ).resolves.toEqual(original);
+    expect(invokeDesktop).toHaveBeenCalledWith({
+      desktopId: "desktop-owner",
+      method: "GET",
+      path: "/v1/tasks/local%2Ftask-1/files/download?path=assets%2Flogo.PNG",
+      body: null
+    });
+  });
+
+  it.each(["authorization", "not found", "too large"])(
+    "preserves remote download %s failures without fallback",
+    async (kind) => {
+      const refusal = new RemoteTransportError(
+        "remote_invocation_failed",
+        `Remote desktop request failed: ${kind}`
+      );
+      const invokeDesktop = vi.fn<RemoteDesktopInvoker>().mockRejectedValue(refusal);
+      const transport = createRemoteTransport({
+        listDesktopRecords: async () => [],
+        getSelectedDesktopId: () => "desktop-selected",
+        invokeDesktop
+      });
+
+      await expect(
+        transport.downloadTaskFile("task/read", "assets/logo.PNG")
+      ).rejects.toBe(refusal);
+      expect(invokeDesktop).toHaveBeenCalledOnce();
+    }
+  );
 
   it("routes mentioned-file resolution to the owner desktop", async () => {
     const invokeDesktop = vi.fn<RemoteDesktopInvoker>().mockResolvedValue({
@@ -334,7 +389,7 @@ describe("remote transport", () => {
     expect(invokeDesktop).toHaveBeenCalledWith({
       desktopId: "desktop-selected",
       method: "GET",
-      path: "/v1/tasks/task%2Fread/files/download?path=README.md",
+      path: "/v1/tasks/task%2Fread/files/content?path=README.md",
       body: null
     });
   });

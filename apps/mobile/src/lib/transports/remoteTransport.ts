@@ -936,6 +936,14 @@ export function createRemoteTransport({
         taskId,
         "GET",
         (localTaskId) =>
+          `/v1/tasks/${encodeURIComponent(localTaskId)}/files/content?path=${encodeURIComponent(path)}`,
+        null
+      ),
+    downloadTaskFile: (taskId: string, path: string) =>
+      requestTask<TaskFileContent>(
+        taskId,
+        "GET",
+        (localTaskId) =>
           `/v1/tasks/${encodeURIComponent(localTaskId)}/files/download?path=${encodeURIComponent(path)}`,
         null
       ),

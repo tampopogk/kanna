@@ -314,6 +314,16 @@ export function createLanTransport(
         );
       }
       return request<TaskFileContent>(
+        `/v1/tasks/${encodeURIComponent(taskId)}/files/content?path=${encodeURIComponent(path)}`
+      );
+    },
+    downloadTaskFile: async (taskId: string, path: string): Promise<TaskFileContent> => {
+      if (!deviceCredentials) {
+        throw new Error(
+          "Task file download requires a paired device or an authenticated relay connection."
+        );
+      }
+      return request<TaskFileContent>(
         `/v1/tasks/${encodeURIComponent(taskId)}/files/download?path=${encodeURIComponent(path)}`
       );
     },

@@ -15,7 +15,11 @@ import {
 } from "react-native-webview";
 import type { TaskFileContent } from "../lib/api/types";
 import { MOBILE_E2E_IDS } from "../e2eTestIds";
-import { shareTaskFile } from "../lib/files/taskFileDownload";
+import {
+  isTaskFileShareCancellation,
+  shareTaskFile,
+  taskFileDownloadErrorMessage
+} from "../lib/files/taskFileDownload";
 import {
   buildTaskFilePreviewDocument,
   prepareTaskFileMarkdown,
@@ -26,6 +30,8 @@ export interface TaskFilePreviewProps {
   path: string;
   initialLine?: number;
   readFile(): Promise<TaskFileContent>;
+  downloadFile(): Promise<TaskFileContent>;
+  downloadScopeKey: string;
   onClose(): void;
 }
 
@@ -36,6 +42,7 @@ type LoadState =
       error: string;
       requestPath: string;
       retryable: boolean;
+      unsupportedPreview: boolean;
       status: "error";
     };
 
@@ -57,21 +64,25 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-function isShareCancellation(error: unknown): boolean {
-  return /cancel(?:led|ed)?/i.test(errorMessage(error));
+function errorStatus(error: unknown): number | null {
+  if (typeof error === "object" && error !== null && "status" in error) {
+    const status = (error as { status?: unknown }).status;
+    if (typeof status === "number") return status;
+  }
+  const match = errorMessage(error).match(/\((\d{3})\)|\bstatus\s+(\d{3})\b/i);
+  const status = Number(match?.[1] ?? match?.[2]);
+  return Number.isInteger(status) ? status : null;
+}
+
+function isUnsupportedPreviewError(error: unknown): boolean {
+  return errorStatus(error) === 415 || /unsupported media type|not valid utf-?8/i.test(errorMessage(error));
 }
 
 export function isTaskFilePreviewErrorRetryable(error: unknown): boolean {
-  if (typeof error === "object" && error !== null && "status" in error) {
-    const status = (error as { status?: unknown }).status;
-    if (status === 400 || status === 413 || status === 415) return false;
-  }
-
-  const message = errorMessage(error);
-  const statusMatch = message.match(/\((\d{3})\)|\bstatus\s+(\d{3})\b/i);
-  const status = Number(statusMatch?.[1] ?? statusMatch?.[2]);
+  const status = errorStatus(error);
   if (status === 400 || status === 413 || status === 415) return false;
 
+  const message = errorMessage(error);
   return !(
     /file path must|file exceeds (?:the )?.*limit|file is not valid utf-?8/i.test(
       message
@@ -99,10 +110,18 @@ export function TaskFilePreview({
   path,
   initialLine,
   readFile,
+  downloadFile,
+  downloadScopeKey,
   onClose
 }: TaskFilePreviewProps) {
   const readFileRef = useRef(readFile);
   readFileRef.current = readFile;
+  const downloadFileRef = useRef(downloadFile);
+  downloadFileRef.current = downloadFile;
+  const pathRef = useRef(path);
+  pathRef.current = path;
+  const downloadScopeRef = useRef(downloadScopeKey);
+  downloadScopeRef.current = downloadScopeKey;
   const downloadBusyRef = useRef(false);
   const downloadOperationRef = useRef(0);
 
@@ -193,6 +212,7 @@ export function TaskFilePreview({
           error: errorMessage(error),
           requestPath,
           retryable: isTaskFilePreviewErrorRetryable(error),
+          unsupportedPreview: isUnsupportedPreviewError(error),
           status: "error"
         });
       }
@@ -203,7 +223,7 @@ export function TaskFilePreview({
       downloadOperationRef.current += 1;
       downloadBusyRef.current = false;
     };
-  }, [path, retryGeneration]);
+  }, [downloadScopeKey, path, retryGeneration]);
 
   const retry = () => {
     setLoadState({ requestPath: path, status: "loading" });
@@ -218,28 +238,32 @@ export function TaskFilePreview({
   };
 
   const download = async () => {
-    if (downloadBusyRef.current || visibleState.status !== "content") return;
+    const downloadable =
+      visibleState.status === "content" ||
+      (visibleState.status === "error" && visibleState.unsupportedPreview);
+    if (downloadBusyRef.current || !downloadable) return;
     downloadBusyRef.current = true;
     const operation = ++downloadOperationRef.current;
     const requestPath = path;
-    const expectedPath = visibleState.file.path;
-    const readFileForOperation = readFileRef.current;
+    const requestScope = downloadScopeKey;
+    const expectedPath =
+      visibleState.status === "content" ? visibleState.file.path : null;
     setDownloadState({ status: "sharing" });
     let failed = false;
 
     try {
-      // Read again at the action boundary. The callback ref follows the active
-      // task/account route, so cached preview bytes can never cross a route
-      // change and a moved workspace is re-resolved by the desktop.
-      const file = await readFileForOperation();
+      // Read original bytes at the action boundary. The explicit scope is
+      // stable across ordinary parent renders and changes only with the
+      // account/desktop/task route that owns the file.
+      const file = await downloadFileRef.current();
       if (
         operation !== downloadOperationRef.current ||
-        requestPath !== path ||
-        readFileRef.current !== readFileForOperation
+        requestPath !== pathRef.current ||
+        requestScope !== downloadScopeRef.current
       ) {
         return;
       }
-      if (file.path !== expectedPath) {
+      if (expectedPath !== null && file.path !== expectedPath) {
         throw new Error("The task workspace changed. Reopen this file and try again.");
       }
       if (
@@ -260,9 +284,9 @@ export function TaskFilePreview({
       failed = true;
       if (operation === downloadOperationRef.current) {
         setDownloadState(
-          isShareCancellation(error)
+          isTaskFileShareCancellation(error)
             ? { status: "idle" }
-            : { error: errorMessage(error), status: "error" }
+            : { error: taskFileDownloadErrorMessage(error), status: "error" }
         );
       }
     } finally {
@@ -293,7 +317,8 @@ export function TaskFilePreview({
             </Text>
           </View>
           <View style={styles.headerActions}>
-            {visibleState.status === "content" ? (
+            {visibleState.status === "content" ||
+            (visibleState.status === "error" && visibleState.unsupportedPreview) ? (
               <Pressable
                 accessibilityRole="button"
                 accessibilityState={{
@@ -340,7 +365,7 @@ export function TaskFilePreview({
             <ActivityIndicator color="#73b7ff" size="large" />
             <Text style={styles.stateText}>Loading file…</Text>
           </View>
-        ) : visibleState.status === "error" ? (
+        ) : visibleState.status === "error" && !visibleState.unsupportedPreview ? (
           <View style={styles.centeredState}>
             <Text
               style={styles.errorTitle}
@@ -364,6 +389,16 @@ export function TaskFilePreview({
                 <Text style={styles.retryText}>Retry</Text>
               </Pressable>
             ) : null}
+          </View>
+        ) : visibleState.status === "error" ? (
+          <View style={styles.centeredState}>
+            <Text style={styles.errorTitle}>Preview unavailable</Text>
+            <Text style={styles.errorText}>
+              Download the original file to open it in another app.
+            </Text>
+            <Text selectable style={styles.errorText}>
+              {visibleState.error}
+            </Text>
           </View>
         ) : (
           <View style={styles.content}>

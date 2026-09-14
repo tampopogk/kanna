@@ -133,7 +133,15 @@ vi.mock("react-native-webview", () => ({
 }));
 
 vi.mock("../lib/files/taskFileDownload", () => ({
-  shareTaskFile: downloadMocks.shareTaskFile
+  isTaskFileShareCancellation: (error: unknown) =>
+    /cancel(?:led|ed)?/i.test(error instanceof Error ? error.message : String(error)),
+  shareTaskFile: downloadMocks.shareTaskFile,
+  taskFileDownloadErrorMessage: (error: unknown) => {
+    const message = error instanceof Error ? error.message : String(error);
+    return /\(404\)|\bstatus\s+404\b/i.test(message)
+      ? `${message}. This desktop may need an update, or the file is no longer available.`
+      : message;
+  }
 }));
 
 interface ElementNode {
@@ -172,6 +180,8 @@ function renderPreview(overrides: Partial<{
   path: string;
   initialLine: number;
   readFile: () => Promise<TaskFileContent>;
+  downloadFile: () => Promise<TaskFileContent>;
+  downloadScopeKey: string;
   onClose: () => void;
 }> = {}): ElementNode {
   harness.hookIndex = 0;
@@ -181,6 +191,15 @@ function renderPreview(overrides: Partial<{
     readFile:
       overrides.readFile ??
       vi.fn().mockResolvedValue({ path: "docs/spec.md", content: "# Spec" }),
+    downloadFile:
+      overrides.downloadFile ??
+      vi.fn().mockResolvedValue({
+        path: overrides.path ?? "docs/spec.md",
+        fileName: "spec.md",
+        mediaType: "text/plain",
+        dataBase64: "IyBTcGVj"
+      }),
+    downloadScopeKey: overrides.downloadScopeKey ?? "account-1\0desktop-1\0task-1",
     onClose: overrides.onClose ?? vi.fn()
   }) as ElementNode;
 }
@@ -363,10 +382,12 @@ describe("TaskFilePreview", () => {
       mediaType: "image/png",
       dataBase64: "iVBORw0KGgr/"
     };
-    const readFile = vi.fn().mockResolvedValue(file);
-    let tree = renderPreview({ path: file.path, readFile });
+    const unsupported = Object.assign(new Error("Unsupported media type"), { status: 415 });
+    const readFile = vi.fn().mockRejectedValue(unsupported);
+    const downloadFile = vi.fn().mockResolvedValue(file);
+    let tree = renderPreview({ path: file.path, readFile, downloadFile });
     await runEffects();
-    tree = renderPreview({ path: file.path, readFile });
+    tree = renderPreview({ path: file.path, readFile, downloadFile });
 
     expect(findByType(tree, "WebView")).toBeNull();
     expect(textContent(tree)).toContain("Preview unavailable");
@@ -376,7 +397,8 @@ describe("TaskFilePreview", () => {
     await Promise.resolve();
     await Promise.resolve();
 
-    expect(readFile).toHaveBeenCalledTimes(2);
+    expect(readFile).toHaveBeenCalledOnce();
+    expect(downloadFile).toHaveBeenCalledOnce();
     expect(downloadMocks.shareTaskFile).toHaveBeenCalledWith({
       dataBase64: file.dataBase64,
       fileName: file.fileName,
@@ -393,20 +415,19 @@ describe("TaskFilePreview", () => {
       mediaType: "image/png",
       dataBase64: "AA=="
     };
-    const readFile = vi
-      .fn<() => Promise<TaskFileContent>>()
-      .mockResolvedValueOnce(file)
-      .mockImplementationOnce(() => fresh.promise);
-    let tree = renderPreview({ path: file.path, readFile });
+    const readFile = vi.fn().mockResolvedValue(file);
+    const downloadFile = vi.fn(() => fresh.promise);
+    let tree = renderPreview({ path: file.path, readFile, downloadFile });
     await runEffects();
-    tree = renderPreview({ path: file.path, readFile });
+    tree = renderPreview({ path: file.path, readFile, downloadFile });
 
     const download = findPressableByText(tree, "Download");
     (download?.props?.onPress as () => void)();
     (download?.props?.onPress as () => void)();
-    tree = renderPreview({ path: file.path, readFile });
+    tree = renderPreview({ path: file.path, readFile, downloadFile });
 
-    expect(readFile).toHaveBeenCalledTimes(2);
+    expect(readFile).toHaveBeenCalledOnce();
+    expect(downloadFile).toHaveBeenCalledOnce();
     expect(findPressableByText(tree, "Preparing…")?.props?.disabled).toBe(true);
     fresh.resolve(file);
     await Promise.resolve();
@@ -422,13 +443,11 @@ describe("TaskFilePreview", () => {
       mediaType: "image/png",
       dataBase64: "AA=="
     };
-    const oldRead = vi
-      .fn<() => Promise<TaskFileContent>>()
-      .mockResolvedValueOnce(oldFile)
-      .mockImplementationOnce(() => staleDownload.promise);
-    let tree = renderPreview({ path: "old.png", readFile: oldRead });
+    const oldRead = vi.fn().mockResolvedValue({ path: "old.png", content: "preview" });
+    const oldDownload = vi.fn(() => staleDownload.promise);
+    let tree = renderPreview({ path: "old.png", readFile: oldRead, downloadFile: oldDownload });
     await runEffects();
-    tree = renderPreview({ path: "old.png", readFile: oldRead });
+    tree = renderPreview({ path: "old.png", readFile: oldRead, downloadFile: oldDownload });
     (findPressableByText(tree, "Download")?.props?.onPress as () => void)();
 
     const newRead = vi.fn().mockResolvedValue({
@@ -437,7 +456,7 @@ describe("TaskFilePreview", () => {
       mediaType: "image/png",
       dataBase64: "AQ=="
     });
-    renderPreview({ path: "new.png", readFile: newRead });
+    renderPreview({ path: "new.png", readFile: newRead, downloadFile: newRead });
     await runEffects();
     staleDownload.resolve(oldFile);
     await Promise.resolve();
@@ -446,7 +465,7 @@ describe("TaskFilePreview", () => {
     expect(downloadMocks.shareTaskFile).not.toHaveBeenCalled();
   });
 
-  it("does not share bytes returned by a replaced account/controller source", async () => {
+  it("shares once across ordinary same-scope parent callback churn", async () => {
     const staleDownload = deferred<TaskFileContent>();
     const file = {
       path: "logo.png",
@@ -454,24 +473,70 @@ describe("TaskFilePreview", () => {
       mediaType: "image/png",
       dataBase64: "AA=="
     };
-    const oldRead = vi
-      .fn<() => Promise<TaskFileContent>>()
-      .mockResolvedValueOnce(file)
-      .mockImplementationOnce(() => staleDownload.promise);
-    let tree = renderPreview({ path: file.path, readFile: oldRead });
+    const readFile = vi.fn().mockResolvedValue({ path: file.path, content: "preview" });
+    const oldDownload = vi.fn(() => staleDownload.promise);
+    let tree = renderPreview({ path: file.path, readFile, downloadFile: oldDownload });
     await runEffects();
-    tree = renderPreview({ path: file.path, readFile: oldRead });
+    tree = renderPreview({ path: file.path, readFile, downloadFile: oldDownload });
     (findPressableByText(tree, "Download")?.props?.onPress as () => void)();
 
     renderPreview({
       path: file.path,
-      readFile: vi.fn().mockResolvedValue({ ...file, dataBase64: "AQ==" })
+      readFile: vi.fn().mockResolvedValue({ path: file.path, content: "preview" }),
+      downloadFile: vi.fn().mockResolvedValue({ ...file, dataBase64: "AQ==" })
+    });
+    staleDownload.resolve(file);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(downloadMocks.shareTaskFile).toHaveBeenCalledOnce();
+  });
+
+  it("does not share bytes returned after the account/task scope changes", async () => {
+    const staleDownload = deferred<TaskFileContent>();
+    const file = {
+      path: "logo.png",
+      fileName: "logo.png",
+      mediaType: "image/png",
+      dataBase64: "AA=="
+    };
+    const readFile = vi.fn().mockResolvedValue({ path: file.path, content: "preview" });
+    let tree = renderPreview({ path: file.path, readFile, downloadFile: () => staleDownload.promise });
+    await runEffects();
+    tree = renderPreview({ path: file.path, readFile, downloadFile: () => staleDownload.promise });
+    (findPressableByText(tree, "Download")?.props?.onPress as () => void)();
+
+    renderPreview({
+      path: file.path,
+      readFile,
+      downloadFile: vi.fn().mockResolvedValue(file),
+      downloadScopeKey: "account-2\0desktop-1\0task-1"
     });
     staleDownload.resolve(file);
     await Promise.resolve();
     await Promise.resolve();
 
     expect(downloadMocks.shareTaskFile).not.toHaveBeenCalled();
+  });
+
+  it("keeps an older desktop text preview and reports download unsupported", async () => {
+    const readFile = vi.fn().mockResolvedValue({ path: "README.md", content: "# Old desktop" });
+    const downloadFile = vi.fn().mockRejectedValue(
+      Object.assign(new Error("LAN request failed (404): Not Found"), { status: 404 })
+    );
+    let tree = renderPreview({ path: "README.md", readFile, downloadFile });
+    await runEffects();
+    tree = renderPreview({ path: "README.md", readFile, downloadFile });
+    expect(findByType(tree, "WebView")).not.toBeNull();
+
+    (findPressableByText(tree, "Download")?.props?.onPress as () => void)();
+    await Promise.resolve();
+    await Promise.resolve();
+    tree = renderPreview({ path: "README.md", readFile, downloadFile });
+
+    expect(textContent(findByTestId(tree, "mobile.task-file-preview.download-error"))).toContain("404");
+    expect(textContent(tree)).toContain("may need an update");
+    expect(findByType(tree, "WebView")).not.toBeNull();
   });
 
   it("does not report native share cancellation as an error or success", async () => {
@@ -481,11 +546,12 @@ describe("TaskFilePreview", () => {
       mediaType: "image/png",
       dataBase64: "AA=="
     };
-    const readFile = vi.fn().mockResolvedValue(file);
+    const readFile = vi.fn().mockResolvedValue({ path: file.path, content: "preview" });
+    const downloadFile = vi.fn().mockResolvedValue(file);
     downloadMocks.shareTaskFile.mockRejectedValue(new Error("Share cancelled"));
-    let tree = renderPreview({ path: file.path, readFile });
+    let tree = renderPreview({ path: file.path, readFile, downloadFile });
     await runEffects();
-    tree = renderPreview({ path: file.path, readFile });
+    tree = renderPreview({ path: file.path, readFile, downloadFile });
     (findPressableByText(tree, "Download")?.props?.onPress as () => void)();
     await Promise.resolve();
     await Promise.resolve();

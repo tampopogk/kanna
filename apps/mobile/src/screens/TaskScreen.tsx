@@ -152,6 +152,8 @@ interface TaskScreenProps {
     mentions: readonly TaskFileMentionInput[]
   ): Promise<TaskFileMentionResolution>;
   onReadTaskFile(path: string): Promise<TaskFileContent>;
+  onDownloadTaskFile(path: string): Promise<TaskFileContent>;
+  fileAccessScopeKey: string;
   onListTaskDirectory(path: string, showAllFiles?: boolean, offset?: number, filter?: string): Promise<RepoDirectoryListing>;
   onReadTaskFileRange(path: string, startLine: number, lineCount: number, metadataOnly?: boolean, startByte?: number): Promise<RepoFileRange>;
   onReadTaskDiff(request: TaskDiffRequest): Promise<TaskDiffContent>;
@@ -238,6 +240,8 @@ export function TaskScreen({
   onCloseTask,
   onResolveTaskFileMentions,
   onReadTaskFile,
+  onDownloadTaskFile,
+  fileAccessScopeKey,
   onListTaskDirectory,
   onReadTaskFileRange,
   onReadTaskDiff,
@@ -1535,6 +1539,8 @@ export function TaskScreen({
           initialLine={activeSelectedFile.line}
           path={activeSelectedFile.path}
           readFile={() => onReadTaskFile(activeSelectedFile.path)}
+          downloadFile={() => onDownloadTaskFile(activeSelectedFile.path)}
+          downloadScopeKey={fileAccessScopeKey}
           onClose={() => setSelectedFile(null)}
         />
       ) : null}
@@ -1543,6 +1549,8 @@ export function TaskScreen({
           title={task.title}
           listDirectory={onListTaskDirectory}
           readFile={onReadTaskFileRange}
+          downloadFile={onDownloadTaskFile}
+          downloadScopeKey={fileAccessScopeKey}
           onInsertReference={(reference) => {
             const current = composerSnapshotRef.current.draftInput;
             updateDraftInput(appendComposerFileReference(current, reference));

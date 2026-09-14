@@ -1,7 +1,13 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { ActivityIndicator, Animated, AppState, FlatList, Modal, PanResponder, Pressable, RefreshControl, SafeAreaView, StyleSheet, Text, TextInput, View, type GestureResponderEvent, type LayoutChangeEvent, type NativeScrollEvent, type NativeSyntheticEvent, type PanResponderGestureState } from "react-native";
 import { WebView as NativeWebView, type WebViewMessageEvent, type WebViewProps } from "react-native-webview";
-import type { RepoBrowseEntry, RepoDirectoryListing, RepoFileRange } from "../lib/api/types";
+import type { RepoBrowseEntry, RepoDirectoryListing, RepoFileRange, TaskFileContent } from "../lib/api/types";
+import { MOBILE_E2E_IDS } from "../e2eTestIds";
+import {
+  isTaskFileShareCancellation,
+  shareTaskFile,
+  taskFileDownloadErrorMessage
+} from "../lib/files/taskFileDownload";
 import { highlightTaskFileSource } from "./taskFileSyntaxHighlight";
 import { createLoiterRangeLoader, type LoiterRangeLoader } from "./repoExplorerLoiter";
 import { appendDirectoryPage, backExplorer, explorerFilterQuery, forwardExplorer, initialExplorerNavigation, navigateExplorer, type RepoExplorerLocation, type RepoExplorerNavigation } from "./repoExplorerState";
@@ -26,11 +32,13 @@ export interface RepoExplorerProps {
   title: string;
   listDirectory(path: string, showAllFiles: boolean, offset: number, filter?: string): Promise<RepoDirectoryListing>;
   readFile(path: string, startLine: number, lineCount: number, metadataOnly?: boolean, startByte?: number): Promise<RepoFileRange>;
+  downloadFile(path: string): Promise<TaskFileContent>;
+  downloadScopeKey: string;
   onInsertReference(value: string): void;
   onClose(): void;
 }
 
-export function RepoExplorer({ title, listDirectory, readFile, onInsertReference, onClose }: RepoExplorerProps) {
+export function RepoExplorer({ title, listDirectory, readFile, downloadFile, downloadScopeKey, onInsertReference, onClose }: RepoExplorerProps) {
   const [navigation, setNavigation] = useState(initialExplorerNavigation);
   const { path, filePath } = navigation.current;
   const [entries, setEntries] = useState<RepoBrowseEntry[]>([]);
@@ -247,7 +255,7 @@ export function RepoExplorer({ title, listDirectory, readFile, onInsertReference
   const renderPage = (location: RepoExplorerLocation, pageEntries: RepoBrowseEntry[], pageFilter: string, interactive: boolean) => <View style={styles.navigationPage} testID={interactive ? "mobile.repo-explorer.current-page" : "mobile.repo-explorer.incoming-page"}>
     <View style={styles.header}><Pressable onPress={interactive ? goBack : undefined} testID={interactive ? "mobile.repo-explorer.back" : undefined}><Text style={styles.action}>Back</Text></Pressable><View style={styles.headerCopy}><Text numberOfLines={1} style={styles.title}>{location.filePath ?? title}</Text><Text numberOfLines={1} style={styles.breadcrumb}>{location.path || "Task worktree"}</Text></View><Pressable onPress={interactive ? onClose : undefined} testID={interactive ? "mobile.repo-explorer.close" : undefined}><Text style={styles.action}>Close</Text></Pressable></View>
     {location.filePath
-      ? <View onLayout={interactive ? (event) => { previewBodyTopRef.current = event.nativeEvent.layout.y; } : undefined} style={styles.viewer} testID={interactive ? "mobile.repo-explorer.file-preview-gesture-surface" : undefined}><LoiterFileViewer path={location.filePath} readFile={readFile} onInsertReference={onInsertReference} /></View>
+      ? <View onLayout={interactive ? (event) => { previewBodyTopRef.current = event.nativeEvent.layout.y; } : undefined} style={styles.viewer} testID={interactive ? "mobile.repo-explorer.file-preview-gesture-surface" : undefined}><LoiterFileViewer path={location.filePath} readFile={readFile} downloadFile={downloadFile} downloadScopeKey={downloadScopeKey} onInsertReference={onInsertReference} /></View>
       : <View style={styles.pageBody} testID={interactive ? "mobile.repo-explorer.directory-gesture-surface" : undefined}>
       <View style={styles.controls}><TextInput autoCapitalize="none" autoCorrect={false} editable={interactive} onChangeText={interactive ? setFilter : undefined} placeholder="Filter this folder" placeholderTextColor="#7185A3" style={styles.filter} testID={interactive ? "mobile.repo-explorer.filter" : undefined} value={pageFilter}/><Pressable accessibilityRole="switch" accessibilityState={{checked:showAllFiles}} disabled={!interactive} onPress={interactive ? ()=>setShowAllFiles((value)=>!value) : undefined}><Text style={styles.toggle}>{showAllFiles?"Hide ignored":"Show all"}</Text></Pressable></View>
       {interactive && error?<Text style={styles.error}>{error}</Text>:null}
@@ -268,27 +276,143 @@ export function RepoExplorer({ title, listDirectory, readFile, onInsertReference
   </View></SafeAreaView></Modal>;
 }
 
-export function LoiterFileViewer({ path, readFile, onInsertReference }: { path:string; readFile(path:string,startLine:number,lineCount:number,metadataOnly?:boolean,startByte?:number):Promise<RepoFileRange>; onInsertReference(value:string):void }) {
+export function LoiterFileViewer({
+  path,
+  readFile,
+  downloadFile,
+  downloadScopeKey,
+  onInsertReference
+}: {
+  path: string;
+  readFile(path: string, startLine: number, lineCount: number, metadataOnly?: boolean, startByte?: number): Promise<RepoFileRange>;
+  downloadFile(path: string): Promise<TaskFileContent>;
+  downloadScopeKey: string;
+  onInsertReference(value: string): void;
+}) {
   const webRef = useRef<NativeWebView>(null);
   const contentRanges = useRef(new Set<string>());
   const metadataRanges = useRef(new Set<string>());
   const readFileRef = useRef(readFile); readFileRef.current = readFile;
+  const downloadFileRef = useRef(downloadFile); downloadFileRef.current = downloadFile;
+  const pathRef = useRef(path); pathRef.current = path;
+  const downloadScopeRef = useRef(downloadScopeKey); downloadScopeRef.current = downloadScopeKey;
   const viewerGenerationRef = useRef(0);
+  const downloadOperationRef = useRef(0);
+  const downloadBusyRef = useRef(false);
   const [initial, setInitial] = useState<RepoFileRange|null>(null);
   const [error,setError]=useState<string|null>(null);
-  useEffect(()=>{const viewerGeneration=++viewerGenerationRef.current;contentRanges.current.clear();metadataRanges.current.clear();setInitial(null);setError(null);void readFileRef.current(path,0,VIEWPORT_LINE_COUNT,true).then((range)=>{if(viewerGenerationRef.current===viewerGeneration)setInitial(range);},(reason:unknown)=>{if(viewerGenerationRef.current===viewerGeneration)setError(message(reason));});return()=>{if(viewerGenerationRef.current===viewerGeneration)viewerGenerationRef.current++;};},[path]);
+  const [downloadState,setDownloadState]=useState<"idle"|"sharing"|"error">("idle");
+  const [downloadError,setDownloadError]=useState<string|null>(null);
+  useEffect(() => {
+    const viewerGeneration = ++viewerGenerationRef.current;
+    downloadOperationRef.current += 1;
+    downloadBusyRef.current = false;
+    contentRanges.current.clear();
+    metadataRanges.current.clear();
+    setInitial(null);
+    setError(null);
+    setDownloadState("idle");
+    setDownloadError(null);
+    void readFileRef.current(path, 0, VIEWPORT_LINE_COUNT, true).then(
+      (range) => {
+        if (viewerGenerationRef.current === viewerGeneration) setInitial(range);
+      },
+      (reason: unknown) => {
+        if (viewerGenerationRef.current === viewerGeneration) setError(message(reason));
+      }
+    );
+    return () => {
+      if (viewerGenerationRef.current === viewerGeneration) viewerGenerationRef.current += 1;
+      downloadOperationRef.current += 1;
+      downloadBusyRef.current = false;
+    };
+  }, [downloadScopeKey, path]);
+  const download = async () => {
+    if (downloadBusyRef.current) return;
+    downloadBusyRef.current = true;
+    const operation = ++downloadOperationRef.current;
+    const requestPath = path;
+    const requestScope = downloadScopeKey;
+    setDownloadState("sharing");
+    setDownloadError(null);
+    let failed = false;
+    try {
+      const file = await downloadFileRef.current(requestPath);
+      if (
+        operation !== downloadOperationRef.current ||
+        requestPath !== pathRef.current ||
+        requestScope !== downloadScopeRef.current
+      ) return;
+      if (file.path !== requestPath) {
+        throw new Error("The task workspace changed. Reopen this file and try again.");
+      }
+      if (file.dataBase64 === undefined || !file.fileName || !file.mediaType) {
+        throw new Error(
+          "This desktop does not support original file downloads. Update the desktop and try again."
+        );
+      }
+      await shareTaskFile({
+        dataBase64: file.dataBase64,
+        fileName: file.fileName,
+        mediaType: file.mediaType
+      });
+    } catch (reason) {
+      failed = true;
+      if (operation === downloadOperationRef.current) {
+        if (isTaskFileShareCancellation(reason)) {
+          setDownloadState("idle");
+        } else {
+          setDownloadState("error");
+          setDownloadError(taskFileDownloadErrorMessage(reason));
+        }
+      }
+    } finally {
+      if (operation === downloadOperationRef.current) {
+        downloadBusyRef.current = false;
+        if (!failed) setDownloadState("idle");
+      }
+    }
+  };
   const inject=(script:string)=>webRef.current?.injectJavaScript(`${script};true;`);
   const fetchRange=(start:number, metadataOnly:boolean,startByte=0)=>{const key=`${start}:${VIEWPORT_LINE_COUNT}:${startByte}`;const cache=metadataOnly?metadataRanges.current:contentRanges.current;if(cache.has(key))return;const viewerGeneration=viewerGenerationRef.current;cache.add(key);void readCompleteRange(readFileRef.current,path,start,VIEWPORT_LINE_COUNT,metadataOnly,startByte).then((range)=>{if(viewerGenerationRef.current!==viewerGeneration)return;if(range.binary){inject("window.showBinary()");return;} const payload=metadataOnly?range.lines.map((length,index)=>({number:start+index,length:Number(length)})):range.lines.map((text,index)=>({number:start+index,text,html:highlightTaskFileSource(text,path)}));inject(metadataOnly?`window.applyMetadata(${JSON.stringify(payload)})`:`window.applyContent(${JSON.stringify(payload)},${startByte},${JSON.stringify(range.nextLine)},${JSON.stringify(range.nextByte??null)})`);},(reason:unknown)=>{if(viewerGenerationRef.current===viewerGeneration){cache.delete(key);setError(message(reason));}});};
   const rangeLoaderRef=useRef<LoiterRangeLoader|null>(null);
   useEffect(()=>{const loader=createLoiterRangeLoader((start)=>fetchRange(start,false));rangeLoaderRef.current=loader;return()=>{loader.dispose();if(rangeLoaderRef.current===loader)rangeLoaderRef.current=null;};},[path]);
   const onMessage=(event:WebViewMessageEvent)=>{try{const data=JSON.parse(event.nativeEvent.data) as {type?:unknown;start?:unknown;line?:unknown;byte?:unknown;reference?:unknown};if(data.type==="viewport"&&typeof data.start==="number"){fetchRange(data.start,true);rangeLoaderRef.current?.observe(data.start);}else if(data.type==="continue"&&typeof data.line==="number"&&typeof data.byte==="number"){fetchRange(data.line,false,data.byte);}else if(data.type==="insert"&&typeof data.reference==="string"){onInsertReference(data.reference);}}catch(error){setError(message(error));}};
-  if(error)return <Text style={styles.error}>{error}</Text>; if(!initial)return <ActivityIndicator color="#73B7FF" style={styles.loader}/>; if(initial.binary)return <View style={styles.center}><Text style={styles.binaryTitle}>Binary file</Text><Text style={styles.muted}>Preview is unavailable for this file.</Text></View>;
+  if(error)return <Text style={styles.error}>{error}</Text>; if(!initial)return <ActivityIndicator color="#73B7FF" style={styles.loader}/>;
+  const downloadAction = <>
+    <View style={styles.fileActions}>
+      <Pressable
+        accessibilityRole="button"
+        accessibilityState={{
+          busy: downloadState === "sharing",
+          disabled: downloadState === "sharing"
+        }}
+        disabled={downloadState === "sharing"}
+        onPress={() => void download()}
+        style={styles.downloadButton}
+        testID={MOBILE_E2E_IDS.repoExplorerDownload}
+      >
+        <Text style={styles.downloadText}>
+          {downloadState === "sharing" ? "Preparing…" : "Download"}
+        </Text>
+      </Pressable>
+    </View>
+    {downloadError ? (
+      <Text
+        style={styles.downloadError}
+        testID={MOBILE_E2E_IDS.repoExplorerDownloadError}
+      >
+        {downloadError}
+      </Text>
+    ) : null}
+  </>;
+  if(initial.binary)return <View style={styles.viewer}>{downloadAction}<View style={styles.center}><Text style={styles.binaryTitle}>Binary file</Text><Text style={styles.muted}>Preview is unavailable for this file.</Text></View></View>;
   metadataRanges.current.add(`0:${VIEWPORT_LINE_COUNT}:0`);
-  return <View style={styles.viewer}><WebView ref={webRef} originWhitelist={["about:blank"]} onMessage={onMessage} onScroll={(event:NativeSyntheticEvent<NativeScrollEvent>)=>inject(`window.setNativeScrollY?.(${event.nativeEvent.contentOffset.y})`)} source={{html:buildViewerDocument(path,initial)}} style={styles.webView}/>{error?<Text style={styles.error}>{error}</Text>:null}</View>;
+  return <View style={styles.viewer}>{downloadAction}<WebView ref={webRef} originWhitelist={["about:blank"]} onMessage={onMessage} onScroll={(event:NativeSyntheticEvent<NativeScrollEvent>)=>inject(`window.setNativeScrollY?.(${event.nativeEvent.contentOffset.y})`)} source={{html:buildViewerDocument(path,initial)}} style={styles.webView}/>{error?<Text style={styles.error}>{error}</Text>:null}</View>;
 }
 
 function message(error:unknown):string{return error instanceof Error?error.message:String(error)}
 function formatBytes(bytes:number):string{return bytes<1024?`${bytes} B`:`${(bytes/1024).toFixed(bytes<10240?1:0)} KB`}
 function directoryListingKey(path:string,filter:string,showAllFiles:boolean):string{return `${path}\0${explorerFilterQuery(filter)}\0${showAllFiles}`}
 function explorerLocationKey(location:RepoExplorerLocation):string{return `${location.path}\0${location.filePath??""}`}
-const styles=StyleSheet.create({safeArea:{backgroundColor:"#08111E",flex:1},gestureSurface:{backgroundColor:"#08111E",flex:1,overflow:"hidden"},currentLayer:{backgroundColor:"#08111E",flex:1,shadowColor:"#000000",shadowOffset:{width:-3,height:0},shadowOpacity:0.28,shadowRadius:8},incomingLayer:{bottom:0,left:0,position:"absolute",right:0,top:0},incomingDim:{backgroundColor:"#000000",bottom:0,left:0,position:"absolute",right:0,top:0},navigationPage:{backgroundColor:"#08111E",flex:1},pageBody:{flex:1},header:{alignItems:"center",borderBottomColor:"#20304C",borderBottomWidth:1,flexDirection:"row",gap:12,padding:14},headerCopy:{flex:1},title:{color:"#F5F7FB",fontSize:17,fontWeight:"800"},breadcrumb:{color:"#8398B8",fontSize:12},action:{color:"#73B7FF",fontSize:15,fontWeight:"700"},controls:{alignItems:"center",flexDirection:"row",gap:10,padding:12},filter:{backgroundColor:"#111C30",borderColor:"#263754",borderRadius:10,borderWidth:1,color:"#F5F7FB",flex:1,padding:10},toggle:{color:"#9EC8F0",fontSize:12,fontWeight:"700"},listContent:{flexGrow:1},row:{alignItems:"center",borderBottomColor:"#17243A",borderBottomWidth:1,flexDirection:"row",minHeight:50,paddingHorizontal:16},icon:{color:"#73B7FF",width:20},name:{color:"#E8EEF8",flex:1,fontSize:15},size:{color:"#7185A3",fontSize:12},loader:{padding:24},error:{color:"#FF9C9C",padding:16,textAlign:"center"},center:{alignItems:"center",flex:1,justifyContent:"center"},binaryTitle:{color:"#F5F7FB",fontSize:20,fontWeight:"800"},muted:{color:"#8398B8"},viewer:{flex:1},webView:{backgroundColor:"#08111E",flex:1}});
+const styles=StyleSheet.create({safeArea:{backgroundColor:"#08111E",flex:1},gestureSurface:{backgroundColor:"#08111E",flex:1,overflow:"hidden"},currentLayer:{backgroundColor:"#08111E",flex:1,shadowColor:"#000000",shadowOffset:{width:-3,height:0},shadowOpacity:0.28,shadowRadius:8},incomingLayer:{bottom:0,left:0,position:"absolute",right:0,top:0},incomingDim:{backgroundColor:"#000000",bottom:0,left:0,position:"absolute",right:0,top:0},navigationPage:{backgroundColor:"#08111E",flex:1},pageBody:{flex:1},header:{alignItems:"center",borderBottomColor:"#20304C",borderBottomWidth:1,flexDirection:"row",gap:12,padding:14},headerCopy:{flex:1},title:{color:"#F5F7FB",fontSize:17,fontWeight:"800"},breadcrumb:{color:"#8398B8",fontSize:12},action:{color:"#73B7FF",fontSize:15,fontWeight:"700"},controls:{alignItems:"center",flexDirection:"row",gap:10,padding:12},filter:{backgroundColor:"#111C30",borderColor:"#263754",borderRadius:10,borderWidth:1,color:"#F5F7FB",flex:1,padding:10},toggle:{color:"#9EC8F0",fontSize:12,fontWeight:"700"},listContent:{flexGrow:1},row:{alignItems:"center",borderBottomColor:"#17243A",borderBottomWidth:1,flexDirection:"row",minHeight:50,paddingHorizontal:16},icon:{color:"#73B7FF",width:20},name:{color:"#E8EEF8",flex:1,fontSize:15},size:{color:"#7185A3",fontSize:12},loader:{padding:24},error:{color:"#FF9C9C",padding:16,textAlign:"center"},center:{alignItems:"center",flex:1,justifyContent:"center"},binaryTitle:{color:"#F5F7FB",fontSize:20,fontWeight:"800"},muted:{color:"#8398B8"},viewer:{flex:1},fileActions:{alignItems:"flex-end",borderBottomColor:"#20304C",borderBottomWidth:1,padding:10},downloadButton:{backgroundColor:"#2D6EB8",borderRadius:9,minHeight:38,paddingHorizontal:14,paddingVertical:9},downloadText:{color:"#FFFFFF",fontSize:14,fontWeight:"700"},downloadError:{backgroundColor:"#391B22",color:"#FFD4DC",fontSize:13,padding:10},webView:{backgroundColor:"#08111E",flex:1}});

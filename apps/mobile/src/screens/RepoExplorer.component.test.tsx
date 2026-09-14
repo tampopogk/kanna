@@ -1,10 +1,21 @@
 import React from "react";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { RepoDirectoryListing, RepoFileRange } from "../lib/api/types";
+import type { RepoDirectoryListing, RepoFileRange, TaskFileContent } from "../lib/api/types";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
-const { injectedScripts } = vi.hoisted(() => ({ injectedScripts: [] as string[] }));
+const { injectedScripts, shareTaskFile } = vi.hoisted(() => ({
+  injectedScripts: [] as string[],
+  shareTaskFile: vi.fn().mockResolvedValue(undefined)
+}));
+
+vi.mock("../lib/files/taskFileDownload", () => ({
+  isTaskFileShareCancellation: (error: unknown) =>
+    /cancel(?:led|ed)?/i.test(error instanceof Error ? error.message : String(error)),
+  shareTaskFile,
+  taskFileDownloadErrorMessage: (error: unknown) =>
+    error instanceof Error ? error.message : String(error)
+}));
 
 vi.mock("react-native", async () => {
   const ReactModule = await import("react");
@@ -78,6 +89,30 @@ function range(startLine: number, metadataOnly: boolean): RepoFileRange {
   return { path:"src/file.ts",startLine,startByte:0,lines:metadataOnly?["4"]:[`line-${startLine}`],nextLine:null,nextByte:null,totalLines:300,totalBytes:1200,binary:false,metadataOnly };
 }
 
+function originalFile(path = "src/file.ts"): Promise<TaskFileContent> {
+  return Promise.resolve({
+    path,
+    fileName: path.split("/").at(-1)!,
+    mediaType: path.toLowerCase().endsWith(".png") ? "image/png" : "text/plain",
+    dataBase64: "AA=="
+  });
+}
+
+function binaryRange(path: string): RepoFileRange {
+  return {
+    path,
+    startLine: 0,
+    startByte: 0,
+    lines: [],
+    nextLine: null,
+    nextByte: null,
+    totalLines: 0,
+    totalBytes: 9,
+    binary: true,
+    metadataOnly: true
+  };
+}
+
 function outgoingOffset(tree: ReactTestRenderer): number {
   const outgoing = tree.root.findByProps({ testID: "mobile.repo-explorer.outgoing-surface" });
   return outgoing.props.style[1].transform[0].translateX.value;
@@ -87,6 +122,8 @@ let mounted: ReactTestRenderer | null = null;
 afterEach(async () => {
   vi.useRealTimers();
   injectedScripts.length = 0;
+  shareTaskFile.mockReset();
+  shareTaskFile.mockResolvedValue(undefined);
   if (mounted) await act(async () => mounted?.unmount());
   mounted = null;
 });
@@ -98,7 +135,7 @@ describe("RepoExplorer request ownership", () => {
       ? [{ name: "only.ts", path: "src/only.ts", isDir: false, size: 4 }]
       : [{ name: "src", path: "src", isDir: true }], null)));
     await act(async () => {
-      mounted = create(<RepoExplorer title="Files" listDirectory={listDirectory} readFile={vi.fn()} onInsertReference={vi.fn()} onClose={onClose} />);
+      mounted = create(<RepoExplorer title="Files" listDirectory={listDirectory} readFile={vi.fn()} downloadFile={originalFile} downloadScopeKey="account-1/task-1" onInsertReference={vi.fn()} onClose={onClose} />);
     });
     const surface = mounted.root.findByProps({ testID: "mobile.repo-explorer.navigation-surface" });
     const directorySurface = mounted.root.findByProps({ testID: "mobile.repo-explorer.directory-gesture-surface" });
@@ -162,7 +199,7 @@ describe("RepoExplorer request ownership", () => {
       ? [{ name: "file.ts", path: "src/file.ts", isDir: false, size: 4 }]
       : [{ name: "src", path: "src", isDir: true }], null)));
     await act(async () => {
-      mounted = create(<RepoExplorer title="Files" listDirectory={listDirectory} readFile={() => Promise.resolve(range(0, true))} onInsertReference={vi.fn()} onClose={onClose} />);
+      mounted = create(<RepoExplorer title="Files" listDirectory={listDirectory} readFile={() => Promise.resolve(range(0, true))} downloadFile={originalFile} downloadScopeKey="account-1/task-1" onInsertReference={vi.fn()} onClose={onClose} />);
     });
     const pressEntry = async (path: string) => {
       const list = mounted?.root.findByType("FlatList");
@@ -210,7 +247,7 @@ describe("RepoExplorer request ownership", () => {
       : [{ name: "src", path: "src", isDir: true }], null)));
     const readFile = vi.fn(() => Promise.resolve(range(0, true)));
     await act(async () => {
-      mounted = create(<RepoExplorer title="Files" listDirectory={listDirectory} readFile={readFile} onInsertReference={vi.fn()} onClose={vi.fn()} />);
+      mounted = create(<RepoExplorer title="Files" listDirectory={listDirectory} readFile={readFile} downloadFile={originalFile} downloadScopeKey="account-1/task-1" onInsertReference={vi.fn()} onClose={vi.fn()} />);
     });
     const pressEntry = async (path: string) => {
       const list = mounted?.root.findByType("FlatList");
@@ -241,6 +278,91 @@ describe("RepoExplorer request ownership", () => {
     expect(readFile).toHaveBeenCalledTimes(2);
   });
 
+  it("downloads original PNG bytes from a selected rendered directory entry", async () => {
+    const path = "assets/logo.PNG";
+    const listDirectory = vi.fn().mockResolvedValue(listing([
+      { name: "logo.PNG", path, isDir: false, size: 9 }
+    ], null));
+    const readFile = vi.fn().mockResolvedValue(binaryRange(path));
+    const downloadFile = vi.fn(() => originalFile(path));
+    await act(async () => {
+      mounted = create(<RepoExplorer title="Files" listDirectory={listDirectory} readFile={readFile} downloadFile={downloadFile} downloadScopeKey="account-1/task-1" onInsertReference={vi.fn()} onClose={vi.fn()} />);
+    });
+
+    const list = mounted.root.findByType("FlatList");
+    await act(async () => {
+      list.props.renderItem({ item: list.props.data[0] }).props.onPress();
+    });
+    expect(mounted.root.findByProps({ testID: "mobile.repo-explorer.download" })).toBeDefined();
+
+    await act(async () => {
+      mounted?.root.findByProps({ testID: "mobile.repo-explorer.download" }).props.onPress();
+    });
+
+    expect(downloadFile).toHaveBeenCalledWith(path);
+    expect(shareTaskFile).toHaveBeenCalledWith({
+      dataBase64: "AA==",
+      fileName: "logo.PNG",
+      mediaType: "image/png"
+    });
+    expect(readFile).toHaveBeenCalledWith(path, 0, 50, true);
+  });
+
+  it("drops a pending explorer download after navigating away", async () => {
+    const path = "assets/logo.PNG";
+    const pending = deferred<TaskFileContent>();
+    const listDirectory = vi.fn().mockResolvedValue(listing([
+      { name: "logo.PNG", path, isDir: false, size: 9 }
+    ], null));
+    await act(async () => {
+      mounted = create(<RepoExplorer title="Files" listDirectory={listDirectory} readFile={() => Promise.resolve(binaryRange(path))} downloadFile={() => pending.promise} downloadScopeKey="account-1/task-1" onInsertReference={vi.fn()} onClose={vi.fn()} />);
+    });
+    const list = mounted.root.findByType("FlatList");
+    await act(async () => { list.props.renderItem({ item: list.props.data[0] }).props.onPress(); });
+    await act(async () => {
+      mounted?.root.findByProps({ testID: "mobile.repo-explorer.download" }).props.onPress();
+      mounted?.root.findByProps({ testID: "mobile.repo-explorer.back" }).props.onPress();
+    });
+    await act(async () => { pending.resolve(await originalFile(path)); });
+    expect(shareTaskFile).not.toHaveBeenCalled();
+  });
+
+  it("keeps a pending same-scope download across callback churn but fences scope changes and unmount", async () => {
+    const path = "assets/logo.PNG";
+    const sameScope = deferred<TaskFileContent>();
+    await act(async () => {
+      mounted = create(<LoiterFileViewer path={path} readFile={() => Promise.resolve(binaryRange(path))} downloadFile={() => sameScope.promise} downloadScopeKey="account-1/task-1" onInsertReference={vi.fn()} />);
+    });
+    await act(async () => { mounted?.root.findByProps({ testID: "mobile.repo-explorer.download" }).props.onPress(); });
+    await act(async () => {
+      mounted?.update(<LoiterFileViewer path={path} readFile={() => Promise.resolve(binaryRange(path))} downloadFile={() => originalFile(path)} downloadScopeKey="account-1/task-1" onInsertReference={vi.fn()} />);
+      sameScope.resolve(await originalFile(path));
+    });
+    expect(shareTaskFile).toHaveBeenCalledOnce();
+
+    shareTaskFile.mockClear();
+    const staleScope = deferred<TaskFileContent>();
+    await act(async () => {
+      mounted?.update(<LoiterFileViewer path={path} readFile={() => Promise.resolve(binaryRange(path))} downloadFile={() => staleScope.promise} downloadScopeKey="account-1/task-1" onInsertReference={vi.fn()} />);
+    });
+    await act(async () => { mounted?.root.findByProps({ testID: "mobile.repo-explorer.download" }).props.onPress(); });
+    await act(async () => {
+      mounted?.update(<LoiterFileViewer path={path} readFile={() => Promise.resolve(binaryRange(path))} downloadFile={() => originalFile(path)} downloadScopeKey="account-2/task-1" onInsertReference={vi.fn()} />);
+    });
+    await act(async () => { staleScope.resolve(await originalFile(path)); });
+    expect(shareTaskFile).not.toHaveBeenCalled();
+
+    const unmounted = deferred<TaskFileContent>();
+    await act(async () => {
+      mounted?.update(<LoiterFileViewer path={path} readFile={() => Promise.resolve(binaryRange(path))} downloadFile={() => unmounted.promise} downloadScopeKey="account-2/task-1" onInsertReference={vi.fn()} />);
+    });
+    await act(async () => { mounted?.root.findByProps({ testID: "mobile.repo-explorer.download" }).props.onPress(); });
+    await act(async () => { mounted?.unmount(); mounted = null; });
+    unmounted.resolve(await originalFile(path));
+    await Promise.resolve();
+    expect(shareTaskFile).not.toHaveBeenCalled();
+  });
+
   it("drops stale and duplicate directory pages after the listing scope changes", async () => {
     const oldNext = deferred<RepoDirectoryListing>();
     const listDirectory = vi.fn((path: string, showAll: boolean, offset: number, filter?: string) => {
@@ -249,7 +371,7 @@ describe("RepoExplorer request ownership", () => {
       return Promise.resolve(listing([{name:"old.ts",path:"old.ts",isDir:false,size:1}], 60));
     });
     await act(async () => {
-      mounted = create(<RepoExplorer title="Files" listDirectory={listDirectory} readFile={vi.fn()} onInsertReference={vi.fn()} onClose={vi.fn()} />);
+      mounted = create(<RepoExplorer title="Files" listDirectory={listDirectory} readFile={vi.fn()} downloadFile={originalFile} downloadScopeKey="account-1/task-1" onInsertReference={vi.fn()} onClose={vi.fn()} />);
     });
     const list = () => mounted?.root.findByType("FlatList");
     await act(async () => {
@@ -269,7 +391,7 @@ describe("RepoExplorer request ownership", () => {
     vi.useFakeTimers();
     const underlying = vi.fn((path: string, startLine: number, lineCount: number, metadataOnly = false) => Promise.resolve(range(startLine, metadataOnly)));
     const callback = () => (path: string, startLine: number, lineCount: number, metadataOnly?: boolean, startByte?: number) => underlying(path,startLine,lineCount,metadataOnly,startByte);
-    await act(async () => { mounted = create(<LoiterFileViewer path="src/file.ts" readFile={callback()} onInsertReference={vi.fn()} />); });
+    await act(async () => { mounted = create(<LoiterFileViewer path="src/file.ts" readFile={callback()} downloadFile={originalFile} downloadScopeKey="account-1/task-1" onInsertReference={vi.fn()} />); });
     const sendViewport = async (start: number) => {
       await act(async () => {
         mounted?.root.findByType("WebView").props.onMessage({nativeEvent:{data:JSON.stringify({type:"viewport",start})}});
@@ -279,7 +401,7 @@ describe("RepoExplorer request ownership", () => {
     await sendViewport(0);
     expect(underlying.mock.calls.filter((call) => call[3] === true && call[1] === 0)).toHaveLength(1);
     expect(underlying.mock.calls.filter((call) => call[3] === false && call[1] === 0)).toHaveLength(1);
-    await act(async () => { mounted?.update(<LoiterFileViewer path="src/file.ts" readFile={callback()} onInsertReference={vi.fn()} />); });
+    await act(async () => { mounted?.update(<LoiterFileViewer path="src/file.ts" readFile={callback()} downloadFile={originalFile} downloadScopeKey="account-1/task-1" onInsertReference={vi.fn()} />); });
     await sendViewport(100);
     await sendViewport(0);
     expect(underlying.mock.calls.filter((call) => call[3] === true && call[1] === 0)).toHaveLength(1);
@@ -287,7 +409,7 @@ describe("RepoExplorer request ownership", () => {
   });
 
   it("forwards the native WebView scroll offset to the viewer document", async () => {
-    await act(async () => { mounted = create(<LoiterFileViewer path="src/file.ts" readFile={(path,startLine,lineCount,metadataOnly=false)=>Promise.resolve(range(startLine,metadataOnly))} onInsertReference={vi.fn()} />); });
+    await act(async () => { mounted = create(<LoiterFileViewer path="src/file.ts" readFile={(path,startLine,lineCount,metadataOnly=false)=>Promise.resolve(range(startLine,metadataOnly))} downloadFile={originalFile} downloadScopeKey="account-1/task-1" onInsertReference={vi.fn()} />); });
     await act(async () => {
       mounted?.root.findByType("WebView").props.onScroll({nativeEvent:{contentOffset:{y:2380}}});
     });

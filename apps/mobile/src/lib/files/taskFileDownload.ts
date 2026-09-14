@@ -16,6 +16,20 @@ export interface TaskFileDownloadAdapter {
   share(uri: string, mediaType: string, fileName: string): Promise<void>;
 }
 
+export function isTaskFileShareCancellation(error: unknown): boolean {
+  return /cancel(?:led|ed)?/i.test(
+    error instanceof Error ? error.message : String(error)
+  );
+}
+
+export function taskFileDownloadErrorMessage(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  if (/\(404\)|\bstatus\s+404\b/i.test(message)) {
+    return `${message}. This desktop may need an update, or the file is no longer available.`;
+  }
+  return message;
+}
+
 function decodeBase64(dataBase64: string): Uint8Array {
   if (
     dataBase64.length % 4 !== 0 ||
