@@ -8,6 +8,10 @@ vi.mock("../../services/desktopServerClient",()=>({readAgentTerminalArchive:read
 vi.mock("../../composables/renderTerminalArchive",()=>({renderTerminalArchive:async(s:{vt:string})=>s.vt}));
 const archive=(task:string,id:string,code:number|null)=>({binding:{task_id:task,spawned_run_id:id},snapshot:{vt:id,cols:80,rows:24},observed_exit_code:code});
 beforeEach(()=>read.mockReset());
+it("focuses the read-only archive surface on request",async()=>{
+  read.mockResolvedValue(null);const view=mount(AgentHistoryView,{props:{taskId:"task",attemptId:"a"},attachTo:document.body});await flushPromises();
+  expect((view.vm as unknown as {focusContent:()=>boolean}).focusContent()).toBe(true);expect(document.activeElement).toBe(view.get("pre").element);view.unmount();
+});
 it.each([0,7,null])("shows recorded termination %s without inventing success",async(code)=>{
   read.mockResolvedValue(archive("task","a",code));const view=mount(AgentHistoryView,{props:{taskId:"task",attemptId:"a"}});await flushPromises();
   expect(view.text()).toContain(code===null?"Exit status unknown":`Exit ${code}`);expect(read).toHaveBeenCalledExactlyOnceWith("task","a");view.unmount();

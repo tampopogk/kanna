@@ -183,6 +183,7 @@ const tabDrag = usePaneTabDrag({
 const ownerLabel = computed(() => props.cloudTerminalRef?.ownerDesktopId
   ?? (props.cloudTask ? "Owner unavailable" : "This machine"));
 const previewCache = ref<InstanceType<typeof TaskPreviewCache> | null>(null);
+const agentHistoryRef = ref<InstanceType<typeof AgentHistoryView> | null>(null);
 const previewWorkspaces = computed(() => Object.fromEntries(
   (props.views?.store.items ?? []).filter(task => task.closed_at == null)
     .map(task => [task.id, props.views?.store.worktreePaths?.[task.id] ?? ""]),
@@ -239,12 +240,24 @@ async function focusActivePaneContent(paneId?: string) {
   const pane = visiblePanes.value.find((rect) => rect.pane.id === paneId)
     ?? visiblePanes.value.find((rect) => rect.pane.tabs.includes(activeTabId.value));
   const id = pane?.pane.active;
+  const focusPaneChrome = () => {
+    workArea.value?.querySelector<HTMLElement>(`[data-workspace-pane-id="${pane?.pane.id ?? paneId ?? ""}"]`)?.focus({ preventScroll: true });
+  };
   if (!id) {
-    workArea.value?.querySelector<HTMLElement>(`[data-workspace-pane-id="${paneId ?? ""}"]`)?.focus({ preventScroll: true });
+    focusPaneChrome();
     return;
   }
   if (id === AGENT_TAB_ID) {
+    if (selectedAttempt.value) {
+      if (!agentHistoryRef.value?.focusContent()) focusPaneChrome();
+      return;
+    }
     refocusActiveTerminal();
+    return;
+  }
+  const tab = tabs.value.find((candidate) => candidate.id === id);
+  if (tab?.kind === "preview") {
+    if (!previewCache.value?.focus(tabKey(tab))) focusPaneChrome();
     return;
   }
   // Embedded views with their own activation watcher get first refusal. The
@@ -887,7 +900,7 @@ function dismissCommandHint() {
         />
         <div v-if="!rect.pane.tabs.length" class="empty-pane" @click="views?.tabs.focusPane(rect.pane.id)">Drop a tab here or use + to open a view.</div>
       </div>
-      <template v-if="!narrowLayout">
+      <template v-if="!narrowLayout && !views?.tabs.maximizedPaneId.value">
         <div
           v-for="divider in views?.tabs.dividers.value" :key="divider.path"
           class="pane-divider" :style="dividerStyle(divider)"
@@ -940,7 +953,7 @@ function dismissCommandHint() {
             </p>
           </div>
         </section>
-        <AgentHistoryView v-if="selectedAttempt && item" :task-id="item.id" :attempt-id="selectedAttempt" />
+        <AgentHistoryView ref="agentHistoryRef" v-if="selectedAttempt && item" :task-id="item.id" :attempt-id="selectedAttempt" />
         <div v-show="!selectedAttempt" class="agent-live-content">
         <CloudTerminalCache
           :active-terminal="activeCloudTerminal"

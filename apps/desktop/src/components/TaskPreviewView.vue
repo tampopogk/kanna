@@ -7,6 +7,7 @@ import { localTaskPreviewUrl } from "../utils/taskPreview";
 
 const props = defineProps<{ taskId: string; portName: string; workspace: string; supported: boolean; visible: boolean }>();
 const emit = defineEmits<{ (e: "activate"): void }>();
+const surface = ref<HTMLElement | null>(null);
 const frame = ref<HTMLIFrameElement | null>(null);
 let focusFrame = 0;
 function onFrameFocus() {
@@ -77,9 +78,15 @@ async function openExternal() {
   if (isTauri) await openUrl(url.value);
   else window.open(url.value, "_blank", "noopener,noreferrer");
 }
+function focusContent(): boolean {
+  if (!props.visible) return false;
+  (frame.value ?? surface.value)?.focus({ preventScroll: true });
+  return document.activeElement === (frame.value ?? surface.value);
+}
+defineExpose({ focusContent });
 </script>
 <template>
-  <section class="task-preview" data-testid="task-preview">
+  <section ref="surface" class="task-preview" data-testid="task-preview" tabindex="-1">
     <div class="preview-toolbar">
       <span :title="workspace">{{ portName }} · This machine</span>
       <button v-if="supported" @click="reload">Reload</button>
