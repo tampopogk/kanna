@@ -10,6 +10,7 @@ const props = defineProps<{
   tabs: MainTab[];
   agentAttempts?: AgentTerminalAttempt[];
   selectedAttempt?: string;
+  currentStage?: string;
   activeTabId: string;
   worktreePath?: string;
   newViews?: { id: string; label: string; shortcut?: string }[];
@@ -90,7 +91,16 @@ const menu = ref<HTMLElement | null>(null);
 const menuButton = ref<HTMLButtonElement | null>(null);
 const menuKind = ref<'new' | 'layout' | null>(null);
 const menuOpen = computed(() => menuKind.value !== null);
-const menuItems = computed(() => menuKind.value === 'layout' ? props.paneActions : props.newViews);
+const contextTab = ref<string | null>(null);
+const tabsToRight = computed(() => {
+  const index = props.tabs.findIndex(tab => tab.id === contextTab.value);
+  return index < 0 ? [] : props.tabs.slice(index + 1).filter(tab => tab.kind !== 'agent');
+});
+const layoutItems = computed(() => [
+  ...(contextTab.value ? [{ id: 'close-right', label: 'Close all right', disabled: !tabsToRight.value.length }] : []),
+  ...(props.paneActions ?? []),
+]);
+const menuItems = computed(() => menuKind.value === 'layout' ? layoutItems.value : props.newViews);
 const tabBar = ref<HTMLElement | null>(null);
 
 let menuOrigin: HTMLElement | null = null;
@@ -101,7 +111,7 @@ function closeMenu(event?: PointerEvent) {
   document.removeEventListener("pointerdown", closeMenu);
 }
 function showMenu(kind: 'new' | 'layout', left: number, top: number, origin: HTMLElement | null) {
-  const count = (kind === 'layout' ? props.paneActions : props.newViews)?.length ?? 0;
+  const count = (kind === 'layout' ? layoutItems.value : props.newViews)?.length ?? 0;
   menuPosition.value = {
     left: `${Math.max(8, Math.min(left, window.innerWidth - 248))}px`,
     top: `${Math.max(8, Math.min(top, window.innerHeight - count * 40 - 20))}px`,
@@ -109,7 +119,7 @@ function showMenu(kind: 'new' | 'layout', left: number, top: number, origin: HTM
   menuOrigin = origin;
   menuKind.value = kind;
   document.addEventListener("pointerdown", closeMenu);
-  void nextTick(() => menu.value?.querySelector('button')?.focus());
+  void nextTick(() => (menu.value?.querySelector<HTMLButtonElement>('button:not(:disabled)') ?? menu.value)?.focus());
 }
 function toggleMenu() {
   if (menuKind.value === 'new') { closeMenu(); return; }
@@ -117,7 +127,8 @@ function toggleMenu() {
   if (rect) showMenu('new', rect.left, rect.bottom + 4, menuButton.value);
 }
 function openLayoutMenu(event: MouseEvent | KeyboardEvent) {
-  if (!props.paneActions?.length) return;
+  contextTab.value = event.target instanceof Element ? event.target.closest<HTMLElement>('[data-tab-id]')?.dataset.tabId ?? null : null;
+  if (!layoutItems.value.length) return;
   event.preventDefault();
   const rect = tabBar.value?.getBoundingClientRect();
   showMenu('layout', event instanceof MouseEvent ? event.clientX : rect?.left ?? 0,
@@ -129,13 +140,16 @@ function tabBarKey(event: KeyboardEvent) {
 function openView(id: string) {
   const kind = menuKind.value;
   closeMenu();
-  if (kind === 'layout') emit('layout', id);
+  if (kind === 'layout' && id === 'close-right') {
+    for (const tab of tabsToRight.value) emit('close', tab.id);
+  } else if (kind === 'layout') emit('layout', id);
   else emit('new', id);
 }
 function menuKey(event: KeyboardEvent) {
   if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return;
   event.preventDefault();
-  const buttons = Array.from(menu.value?.querySelectorAll('button') ?? []);
+  const buttons = Array.from(menu.value?.querySelectorAll<HTMLButtonElement>('button:not(:disabled)') ?? []);
+  if (!buttons.length) return;
   const current = buttons.findIndex(button => button === document.activeElement);
   const next = event.key === 'Home' ? 0 : event.key === 'End' ? buttons.length - 1 : (current + (event.key === 'ArrowDown' ? 1 : -1) + buttons.length) % buttons.length;
   buttons[next]?.focus();
@@ -164,8 +178,8 @@ onBeforeUnmount(() => closeMenu());
       @click="emit('select', tab.id)"
       @auxclick.middle.prevent="tab.closable && emit('close', tab.id)"
     >
-      <span class="main-tab-label">{{ tab.label }}</span>
-      <AgentStageSelector v-if="tab.id === 'agent' && agentAttempts" :attempts="agentAttempts" :selected="selectedAttempt ?? ''" @select="emit('selectAttempt', $event)" />
+      <span v-if="tab.id !== 'agent' || !agentAttempts" class="main-tab-label">{{ tab.label }}</span>
+      <AgentStageSelector v-if="tab.id === 'agent' && agentAttempts" :attempts="agentAttempts" :current-stage="currentStage" :selected="selectedAttempt ?? ''" @select="emit('selectAttempt', $event)" />
       <button
         v-if="tab.closable"
         type="button"
@@ -177,18 +191,19 @@ onBeforeUnmount(() => closeMenu());
         ×
       </button>
     </div>
-    <button v-if="newViews?.length" ref="menuButton" class="new-tab" aria-label="New tab" title="New tab" :aria-expanded="menuKind === 'new'" aria-haspopup="menu" @click="toggleMenu">+</button>
+    <span v-if="dropActive && !dropBefore" class="drop-end" aria-hidden="true" />
+    <button v-if="newViews?.length" ref="menuButton" class="new-tab" aria-label="New tab" title="New tab" :aria-expanded="menuKind === 'new'" aria-haspopup="menu" @click="toggleMenu"><svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2v12M2 8h12" fill="none" stroke="currentColor" stroke-width="1.5" /></svg></button>
     <button v-if="canClosePane" class="close-pane" aria-label="Close pane" title="Close pane — move tabs to adjacent pane" @click="emit('closePane')">×</button>
     <Teleport to="body">
-      <div v-if="menuOpen" ref="menu" class="tab-menu" :class="menuKind === 'new' ? 'new-tab-menu' : 'pane-layout-menu'" :style="menuPosition" role="menu" :aria-label="menuKind === 'new' ? 'New tab' : 'Pane layout'" @keydown="menuKey" @keydown.esc.stop="closeMenu(); menuOrigin?.focus()">
-        <button v-for="view in menuItems" :key="view.id" role="menuitem" @click="openView(view.id)"><span>{{ view.label }}</span><kbd v-if="'shortcut' in view && view.shortcut">{{ view.shortcut }}</kbd></button>
+      <div v-if="menuOpen" ref="menu" class="tab-menu" :class="menuKind === 'new' ? 'new-tab-menu' : 'pane-layout-menu'" :style="menuPosition" role="menu" tabindex="-1" :aria-label="menuKind === 'new' ? 'New tab' : 'Pane layout'" @keydown="menuKey" @keydown.esc.stop="closeMenu(); menuOrigin?.focus()">
+        <button v-for="view in menuItems" :key="view.id" role="menuitem" :disabled="'disabled' in view && view.disabled" @click="openView(view.id)"><span>{{ view.label }}</span><kbd v-if="'shortcut' in view && view.shortcut">{{ view.shortcut }}</kbd></button>
       </div>
     </Teleport>
   </div>
 </template>
 
 <style scoped>
-.new-tab { flex: 0 0 28px; width: 28px; height: 26px; align-self: center; box-sizing: border-box; border: 1px solid transparent; border-radius: 5px; background: transparent; color: var(--kn-text-secondary); font-size: 22px; line-height: 22px; padding: 0; margin: 0 3px; cursor: pointer; }
+.new-tab { display: inline-flex; align-items: center; justify-content: center; flex: 0 0 28px; width: 28px; height: 26px; align-self: center; box-sizing: border-box; border: 1px solid transparent; border-radius: 5px; background: transparent; color: var(--kn-text-secondary); font-size: 22px; line-height: 22px; padding: 0; margin: 0 3px; cursor: pointer; }
 .close-pane { flex: 0 0 26px; margin-left: auto; border: 0; background: transparent; color: var(--kn-text-muted); cursor: pointer; font-size: 18px; }
 .close-pane:hover { background: var(--kn-bg-hover); color: var(--kn-text-primary); }
 .new-tab:hover, .new-tab:focus-visible, .new-tab[aria-expanded="true"] { background: var(--kn-bg-hover); border-color: var(--kn-border-default); color: var(--kn-text-primary); }
@@ -196,6 +211,8 @@ onBeforeUnmount(() => closeMenu());
 .main-tab.movable { cursor: grab; touch-action: none; }
 .main-tab.movable:active { cursor: grabbing; }
 .main-tab.dragging { opacity: .55; }
+.drop-end { position: relative; flex: 0 0 0; margin-right: -2px; pointer-events: none; }
+.drop-end::after { content: ""; position: absolute; inset: 0 auto 0 -2px; width: 2px; background: var(--kn-accent); }
 .main-tab.drop-before { box-shadow: inset 2px 0 var(--kn-accent); }
 .main-tab.agent-tab { max-width: 340px; }
 .agent-tab .main-tab-label { flex: 0 0 auto; }
@@ -234,6 +251,7 @@ onBeforeUnmount(() => closeMenu());
   white-space: nowrap;
   cursor: pointer;
   user-select: none;
+  -webkit-user-select: none;
 }
 
 .main-tab:hover {
@@ -246,6 +264,8 @@ onBeforeUnmount(() => closeMenu());
   border-bottom-color: var(--kn-accent);
 }
 
+.main-tab :deep(*) { user-select: none; -webkit-user-select: none; }
+.tab-menu button:disabled { opacity: .45; cursor: default; }
 .main-tab-label {
   overflow: hidden;
   text-overflow: ellipsis;

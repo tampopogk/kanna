@@ -411,3 +411,33 @@ The final check reads the rendered MainPanel's actual controller and dismisses
 the hot-reload startup overlay, preserving fixture files/DB/history. Logs and
 screenshots: `.tmp/tab-drag/`. This UI delta requires bounded independent review
 and owner physical acceptance; prior89394d694 approval does not cover it.
+
+### Minimal tabs and visual-order follow-up after 8dd688faf
+
+Agent now displays only its stage name and a right-side dropdown arrow. Detailed
+Latest/history choices remain in the native select; the arrow owns its hit area,
+leaving the stage label draggable. Tab descendants disable WebKit text selection.
+Cycling uses the same pane-leaf/tab order as display after moves. The tab context
+menu closes reference tabs visually to its right through existing close lifecycle,
+preserving Agent. Disabled-only menus retain keyboard dismissal. The + is a
+geometrically centered SVG, and append targets show a vertical insertion marker,
+including empty panes.
+
+87 focused tests pass across MainTabBar, MainPanel, useMainTabs and
+useAppKeyboardActions; Vue typecheck and diffcheck pass. Coverage includes
+visual ordering after cross-pane moves, historical labels/shortcut bubbling,
+close-right protection and disabled-menu Escape, and append/empty/inactive markers.
+No backend or unchanged sidebar tests rerun.
+
+Exact native title verified before interaction:
+Kanna — task 0e269a87 · task-0e269a87-5 · persistent-task-reference-split (0.0.68 @ 6bf5f011e).
+Frontend HMR carries this newer UI; backend was not restarted. Geometry confirms
+arrow right of stage and zero vertical center offset for +. An injected pointer
+gesture showed the end marker and was cancelled without moving owner tabs.
+The initial script sent move events to window rather than the document listener;
+corrected harness passes. Display and cycling orders match; WebKit selection is
+none. Agent38183 and shell30694/92318 remain unchanged. Evidence:
+.tmp/tab-minimal/native-final.log, end-marker.png and ready.png.
+These are wiring/geometry checks, not owner physical acceptance. Prior 8dd688
+technical review is accepted; this delta needs bounded independent review and
+owner acceptance. Same PR1477, no advance or merge.

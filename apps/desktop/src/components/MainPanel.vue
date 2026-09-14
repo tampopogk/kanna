@@ -838,6 +838,7 @@ function dismissCommandHint() {
           @close-pane="views?.tabs.closePane(rect.pane.id)"
           :agent-attempts="taskDetailIsLocal ? agentAttempts : undefined"
           :selected-attempt="selectedAttempt"
+          :current-stage="item?.stage"
           @select-attempt="selectAttempt"
           @select="selectTab"
           @close="closeTab"

@@ -408,3 +408,18 @@ it('closes just one nested pane and preserves its tabs and remaining split', () 
   tabs.closePane('pane-2');
   expect(tabs.panes.value).toHaveLength(1);
 });
+
+it('cycles through visual pane/tab order after reordering and moving tabs', () => {
+  const { tabs } = setup();
+  tabs.openTab({kind:'diff'});
+  tabs.openTab({kind:'graph'});
+  tabs.moveTab('graph','pane-1','agent');
+  tabs.activateTab('graph');
+  tabs.cycleTab(1);expect(tabs.activeTabId.value).toBe('agent');
+  tabs.cycleTab(1);expect(tabs.activeTabId.value).toBe('diff');
+  tabs.splitPane('pane-1','horizontal','agent');
+  expect(tabs.tabs.value.map(tab=>tab.id)).toEqual(['graph','diff','agent']);
+  tabs.activateTab('graph');
+  tabs.cycleTab(-1);expect(tabs.activeTabId.value).toBe('agent');
+  tabs.cycleTab(1);expect(tabs.activeTabId.value).toBe('graph');
+});

@@ -52,3 +52,49 @@ it('closes only its pane through a separate control', async () => {
   expect(wrapper.find('.close-pane').exists()).toBe(false);
   wrapper.unmount();
 });
+
+it('closes only tabs visually to the right of the clicked tab, preserving Agent', async () => {
+  const wrapper = mount(MainTabBar, { global:{mocks:{$t:(key:string)=>key}}, attachTo:document.body, props: {
+    tabs:[{id:'file:left',kind:'file',filePath:'left'},{id:'diff',kind:'diff'},{id:'agent',kind:'agent'},{id:'file:right',kind:'file',filePath:'right'}],activeTabId:'file:left',
+  } });
+  await wrapper.get('[data-tab-id="diff"]').trigger('contextmenu');
+  await flushPromises();
+  (document.querySelector('.pane-layout-menu button') as HTMLButtonElement).click();
+  expect(wrapper.emitted('close')).toEqual([['file:right']]);
+  await wrapper.get('[data-tab-id="file:right"]').trigger('contextmenu');
+  await flushPromises();
+  expect((document.querySelector('.pane-layout-menu button') as HTMLButtonElement).disabled).toBe(true);
+  document.activeElement?.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true}));
+  await flushPromises();
+  expect(document.querySelector('.pane-layout-menu')).toBeNull();
+  wrapper.unmount();
+});
+
+it('shows only an arrow and stage name, retaining detailed history choices', async () => {
+  const wrapper = mount(MainTabBar, { props: { tabs:[{id:'agent',kind:'agent'}],activeTabId:'agent',currentStage:'build',agentAttempts:[{id:'old',stage:'plan',startedAt:'yesterday',cwd:'/repo',archived:true,recordedLaunch:true,observedExitCode:0}] } });
+  expect(wrapper.find('.main-tab-label').exists()).toBe(false);
+  expect(wrapper.get('.stage-arrow').text()).toBe('▾');
+  expect(wrapper.get('.stage-name').text()).toBe('build');
+  expect(wrapper.get('select').text()).toContain('plan · attempt 1');
+  const key = new KeyboardEvent('keydown',{key:']',metaKey:true,shiftKey:true,bubbles:true});
+  let reachedTab = false;
+  wrapper.get('.main-tab').element.addEventListener('keydown',()=>{reachedTab=true;});
+  wrapper.get('select').element.dispatchEvent(key);
+  expect(reachedTab).toBe(true);
+  await wrapper.setProps({selectedAttempt:'old'});
+  expect(wrapper.get('.stage-name').text()).toBe('plan');
+  wrapper.unmount();
+});
+
+it('marks the append position, including empty panes, without retaining it on other targets', async () => {
+  const wrapper = mount(MainTabBar, { props: { tabs:[{id:'agent',kind:'agent'}],activeTabId:'agent',dropActive:true } });
+  expect(wrapper.find('.drop-end').exists()).toBe(true);
+  await wrapper.setProps({dropBefore:'agent'});
+  expect(wrapper.find('.drop-end').exists()).toBe(false);
+  expect(wrapper.get('[data-tab-id="agent"]').classes()).toContain('drop-before');
+  await wrapper.setProps({tabs:[],dropBefore:undefined});
+  expect(wrapper.find('.drop-end').exists()).toBe(true);
+  await wrapper.setProps({dropActive:false});
+  expect(wrapper.find('.drop-end').exists()).toBe(false);
+  wrapper.unmount();
+});

@@ -329,7 +329,12 @@ export function useMainTabs({ scopeKey, onTabClosed }: UseMainTabsOptions) {
   const tabs = computed<MainTab[]>(() => {
     const key = scopeKey.value;
     if (!key) return [];
-    return scopes[key]?.tabs ?? initialScopeState(key).tabs;
+    const state = scopes[key];
+    if (!state) return initialScopeState(key).tabs;
+    if (!state.layout) return state.tabs;
+    const byId = new Map(state.tabs.map(tab => [tab.id, tab]));
+    return paneLeaves(state.layout).flatMap(pane => pane.tabs)
+      .map(id => byId.get(id)).filter((tab): tab is MainTab => !!tab);
   });
 
   const activeTabId = computed<string>(() => {

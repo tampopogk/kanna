@@ -94,6 +94,11 @@ that pane, moving its tabs to its adjacent sibling while preserving other splits
 and terminal sessions. The last pane cannot be removed. Tabs use pointer dragging
 with insertion markers; stage dropdowns and close buttons do not initiate drags.
 The **+** menu shows each content command’s existing keyboard shortcut.
+The Agent tab shows its stage name followed by a dropdown arrow; tab labels
+cannot be text-selected. Modified bracket shortcuts cycle in displayed pane/tab
+order after moves. Right-click a tab for **Close all right**, which closes only
+reference tabs to its right in that pane and preserves Agent. Insertion markers
+also show the append position after the last tab and in empty panes.
 
 Narrow work areas (under 800 CSS pixels) show one readable view and a combined
 tab bar without discarding the saved split layout. Select the **Agent** tab
