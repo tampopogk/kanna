@@ -1,17 +1,26 @@
 <script setup lang="ts">
-import { ref } from "vue";
+import { computed, ref } from "vue";
 import {
   DesktopServerRequestError,
   fetchTerminalEditorChoices,
   type TerminalEditorChoice,
 } from "../services/desktopServerClient";
 
-const props = defineProps<{ openEditor: (command: string) => Promise<void> }>();
+const props = withDefaults(defineProps<{
+  openEditor: (command: string) => Promise<void>;
+  noticeDismissed?: boolean;
+  dismissNotice?: () => Promise<void>;
+}>(), {
+  noticeDismissed: false,
+});
 const choosing = ref(false);
 const busy = ref(false);
 const error = ref("");
 const choices = ref<TerminalEditorChoice[]>([]);
 const command = ref("");
+const dontShowAgain = ref(false);
+const noticeDismissedHere = ref(false);
+const showNotice = computed(() => !props.noticeDismissed && !noticeDismissedHere.value);
 
 function showError(e: unknown) {
   console.error("[terminal-editor]", e);
@@ -32,12 +41,28 @@ async function choose() {
   }
 }
 
+async function persistNoticeChoice() {
+  if (!dontShowAgain.value || noticeDismissedHere.value || props.noticeDismissed) return;
+  noticeDismissedHere.value = true;
+  try {
+    await props.dismissNotice?.();
+  } catch (e) {
+    console.error("[terminal-editor] failed to save notice preference", e);
+  }
+}
+
+async function dismiss() {
+  choosing.value = false;
+  await persistNoticeChoice();
+}
+
 async function start() {
   busy.value = true;
   error.value = "";
   try {
     await props.openEditor(command.value);
     choosing.value = false;
+    await persistNoticeChoice();
   } catch (e) {
     showError(e);
   } finally {
@@ -49,8 +74,11 @@ async function start() {
 <template>
   <div class="editor-picker">
     <button type="button" data-testid="edit-in-terminal" @click="choose" :disabled="busy">Edit</button>
-    <div v-if="choosing" class="editor-choice" @keydown.esc.stop="choosing = false">
-      <p>Use the editor’s own save and quit commands. Closing its tab hides it; closing the task ends it and loses unsaved buffers. Stage changes leave it in its original workspace. The agent can also write these files.</p>
+    <div v-if="choosing" class="editor-choice" @keydown.esc.stop="dismiss">
+      <div v-if="showNotice" data-testid="terminal-editor-notice">
+        <p>Use the editor’s own save and quit commands. Closing its tab hides it; closing the task ends it and loses unsaved buffers. Stage changes leave it in its original workspace. The agent can also write these files.</p>
+        <label class="notice-option"><input v-model="dontShowAgain" type="checkbox" /> Don't show again</label>
+      </div>
       <p v-if="error" role="alert">{{ error }}</p>
       <template v-else>
         <label>Terminal editor <select v-model="command" :disabled="busy" aria-label="Terminal editor">
@@ -58,7 +86,7 @@ async function start() {
         </select></label>
         <button type="button" :disabled="busy || !command" data-testid="start-terminal-editor" @click="start">Open editor</button>
       </template>
-      <button type="button" :disabled="busy" @click="choosing = false">Cancel</button>
+      <button type="button" :disabled="busy" @click="dismiss">Cancel</button>
     </div>
   </div>
 </template>
@@ -67,6 +95,7 @@ async function start() {
 button, select { color: var(--kn-text-primary); background: var(--kn-bg-panel); border: 1px solid var(--kn-border-default); border-radius: 4px; padding: 4px 8px; }
 .editor-choice { position: absolute; z-index: 10; right: 0; top: 100%; width: 380px; padding: 12px; background: var(--kn-bg-panel); border: 1px solid var(--kn-border-strong); border-radius: 6px; white-space: normal; font-size: 12px; }
 p { margin: 0 0 10px; }
+.notice-option { display: flex; align-items: center; gap: 6px; margin: 0 0 10px; }
 select { width: 100%; margin: 6px 0; }
 button { cursor: pointer; }
 </style>
