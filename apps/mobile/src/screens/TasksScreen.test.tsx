@@ -26,12 +26,18 @@ vi.mock("../components/LoadingText", () => ({
 let TasksScreen: typeof import("./TasksScreen").TasksScreen | null = null;
 let TaskList: typeof import("../components/TaskList").TaskList | null = null;
 let TaskCard: typeof import("../components/TaskCard").TaskCard | null = null;
+let SwipeableTaskCard:
+  | typeof import("../components/SwipeableTaskCard").SwipeableTaskCard
+  | null = null;
 
 beforeAll(async () => {
-  [TasksScreen, TaskList, TaskCard] = await Promise.all([
+  [TasksScreen, TaskList, TaskCard, SwipeableTaskCard] = await Promise.all([
     import("./TasksScreen").then((module) => module.TasksScreen),
     import("../components/TaskList").then((module) => module.TaskList),
-    import("../components/TaskCard").then((module) => module.TaskCard)
+    import("../components/TaskCard").then((module) => module.TaskCard),
+    import("../components/SwipeableTaskCard").then(
+      (module) => module.SwipeableTaskCard
+    )
   ]);
 });
 
@@ -464,8 +470,11 @@ describe("TasksScreen", () => {
   });
 
   it("shows the recorded reason, a truthful detected label, and opens the exact desktop task", () => {
-    if (!TasksScreen || !TaskList || !TaskCard) throw new Error("TasksScreen was not loaded");
+    if (!TasksScreen || !TaskList || !SwipeableTaskCard) {
+      throw new Error("TasksScreen was not loaded");
+    }
     const onOpenTask = vi.fn();
+    const onSetTaskPinned = vi.fn().mockResolvedValue(undefined);
     const tasks: TaskSummary[] = [
       {
         id: "cloud:desktop-b:repo-b:task-explicit",
@@ -494,20 +503,21 @@ describe("TasksScreen", () => {
       taskCollectionStatus: "ready",
       taskSlots: projectTaskUiSlots(tasks, []),
       onOpenTask,
-      onSelectRepo: vi.fn()
+      onSelectRepo: vi.fn(),
+      onSetTaskPinned
     }) as ElementNode;
     const taskListProps = findElement(tree, TaskList)?.props;
     const renderedList = TaskList(taskListProps as never) as ElementNode;
-    const cards = collectElements(renderedList, TaskCard);
+    const cards = collectElements(renderedList, SwipeableTaskCard);
 
     expect(cards.map((card) => card.props?.contextLabel)).toEqual([
       "Approve the rollout",
       "Detected question / input prompt"
     ]);
-    const firstCard = TaskCard(cards[0]?.props as never) as ElementNode;
-    expect(textContent(firstCard)).toContain("Approve the rollout");
-    firstCard.props?.onPress?.();
+    cards[0]?.props?.onPress?.();
     expect(onOpenTask).toHaveBeenCalledWith(tasks[0]?.id);
+    cards[1]?.props?.onPress?.();
+    expect(onOpenTask).toHaveBeenLastCalledWith(tasks[1]?.id);
   });
 
   it("labels Needs you tasks with their repo so similar titles stay distinguishable", () => {

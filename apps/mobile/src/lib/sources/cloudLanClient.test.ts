@@ -15,6 +15,7 @@ import {
   createCloudLanClient,
   mergeCloudAndLanTasks
 } from "./cloudLanClient";
+import { visibleNeedsYouTasks } from "../../screens/needsYouTaskOrder";
 
 function runningStatus(desktopId = "desktop-lan"): MobileServerStatus {
   return {
@@ -491,6 +492,103 @@ describe("mergeCloudAndLanTasks", () => {
 });
 
 describe("createCloudLanClient", () => {
+  it.each([
+    {
+      description: "an authoritative explicit-attention clear",
+      cloudState: {
+        attentionReason: "Stale cloud request",
+        runtimeState: "idle" as const,
+        readState: "unread" as const
+      },
+      lanState: {
+        attentionReason: null,
+        runtimeState: "idle" as const,
+        readState: "read" as const
+      },
+      expectedNeedsYouCount: 0
+    },
+    {
+      description: "an active explicit request",
+      cloudState: {
+        attentionReason: null,
+        runtimeState: "idle" as const,
+        readState: "read" as const
+      },
+      lanState: {
+        attentionReason: "Approve the rollout",
+        runtimeState: "idle" as const,
+        readState: "unread" as const
+      },
+      expectedNeedsYouCount: 1
+    },
+    {
+      description: "positively detected waiting",
+      cloudState: {
+        attentionReason: null,
+        runtimeState: "idle" as const,
+        readState: "unread" as const
+      },
+      lanState: {
+        attentionReason: null,
+        runtimeState: "waiting" as const,
+        readState: "read" as const
+      },
+      expectedNeedsYouCount: 1
+    }
+  ])(
+    "preserves $description across failed LAN fallback and reconnect",
+    async ({ cloudState, lanState, expectedNeedsYouCount }) => {
+      const cloudTask = task({
+        id: "cloud:desktop-lan:repo-1:local-task",
+        ownerDesktopId: "desktop-lan",
+        ownerLocalRepoId: "repo-1",
+        ownerLocalTaskId: "local-task",
+        ...cloudState
+      });
+      const lanTask = task({
+        id: "local-task",
+        repoId: "repo-1",
+        ...lanState
+      });
+      const cloud = createClientMock({
+        listRecentTasks: vi.fn().mockResolvedValue([cloudTask])
+      });
+      const lanGetTask = vi.fn().mockResolvedValue(lanTask);
+      const lan = createClientMock({
+        getStatus: vi
+          .fn<KannaClient["getStatus"]>()
+          .mockResolvedValueOnce(runningStatus())
+          .mockRejectedValueOnce(new Error("LAN probe failed"))
+          .mockResolvedValueOnce(runningStatus()),
+        listRecentTasks: vi
+          .fn<KannaClient["listRecentTasks"]>()
+          .mockResolvedValueOnce([lanTask])
+          .mockResolvedValueOnce([lanTask]),
+        getTask: lanGetTask
+      });
+      const client = createCloudLanClient(cloud, lan, {
+        isLanEnabled: () => true
+      });
+
+      for (const phase of ["accepted", "failed fallback", "reconnected"]) {
+        const tasks = await client.listRecentTasks();
+        expect(tasks, phase).toHaveLength(1);
+        expect(tasks[0], phase).toMatchObject({
+          id: cloudTask.id,
+          attentionReason: lanState.attentionReason,
+          runtimeState: lanState.runtimeState,
+          readState: lanState.readState
+        });
+        expect(visibleNeedsYouTasks(tasks), phase).toHaveLength(
+          expectedNeedsYouCount
+        );
+      }
+
+      await client.getTask(cloudTask.id);
+      expect(lanGetTask).toHaveBeenCalledWith("local-task");
+    }
+  );
+
   it("offers task preview only while that task has a live LAN route", async () => {
     const lanPreview = vi.fn().mockResolvedValue({
       url: "http://192.168.1.10:55000/",
