@@ -244,6 +244,14 @@ fn dispatch_cloud_transfer_refresh(app: &AppHandle, event: &Value) {
     }
 }
 
+fn desktop_view_window_label(id: &str) -> String {
+    if id == "main" {
+        "main".to_string()
+    } else {
+        format!("window-{id}")
+    }
+}
+
 /// Bring the chosen window to the operator and give it the command.
 ///
 /// Showing, unminimizing and focusing happen here rather than in the renderer
@@ -253,7 +261,12 @@ fn dispatch_cloud_transfer_refresh(app: &AppHandle, event: &Value) {
 /// renderer's acknowledgement is about the view being ready, and a window
 /// manager declining a raise is not a reason to report the open as failed.
 fn dispatch_desktop_view_open(app: &AppHandle, event: &Value) {
-    let Some(window) = choose_desktop_view_window(app) else {
+    // An explicit destination never falls back to another window.
+    let window = match event.get("windowId").and_then(Value::as_str) {
+        Some(id) => app.get_webview_window(&desktop_view_window_label(id)),
+        None => choose_desktop_view_window(app),
+    };
+    let Some(window) = window else {
         eprintln!(
             "[desktop-view-commands] no window is available to open a view;              the request will be reported as unavailable"
         );
@@ -262,10 +275,18 @@ fn dispatch_desktop_view_open(app: &AppHandle, event: &Value) {
     let _ = window.unminimize();
     let _ = window.show();
     let _ = window.set_focus();
+    let mut command = event.clone();
+    command["windowId"] = Value::String(
+        window
+            .label()
+            .strip_prefix("window-")
+            .unwrap_or(window.label())
+            .to_string(),
+    );
     if let Err(error) = app.emit_to(
         tauri::EventTarget::webview_window(window.label()),
         "desktop-view-open",
-        event,
+        command,
     ) {
         eprintln!(
             "[desktop-view-commands] failed to hand the command to {}: {error}",

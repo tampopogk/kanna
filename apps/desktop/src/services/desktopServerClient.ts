@@ -746,13 +746,13 @@ export async function listDesktopTaskDirectory(
  */
 export async function acknowledgeDesktopViewOpen(
   requestId: string,
-  outcome: { opened: boolean; code?: string; message?: string },
+  outcome: import("../composables/desktopViewOpen").DesktopViewOpenOutcome,
 ): Promise<void> {
   await requestJson<{ acknowledged: boolean }>("/v1/desktop/views/ack", {
     method: "POST",
     body: {
       requestId,
-      opened: outcome.opened,
+      ...outcome,
       ...(outcome.code === undefined ? {} : { code: outcome.code }),
       ...(outcome.message === undefined ? {} : { message: outcome.message }),
     },

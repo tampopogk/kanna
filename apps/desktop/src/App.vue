@@ -212,8 +212,23 @@ const mainTabScopeKey = computed(() => {
  */
 async function openTaskView(command: DesktopViewOpenCommand): Promise<void> {
   const outcome = await performDesktopViewOpen(command, {
+    // Older servers send no branch fence and accept only the original ack shape.
+    workspace: command.branch ? {
+      tabs: mainTabs,
+      windowId: windowWorkspace.bootstrap.windowId,
+      currentBranch: (taskId) => {
+        const task = store.items.find(item => item.id === taskId);
+        return task && mainPanelUiSlot.value === store.currentTaskSlot
+          && mainPanelUiSlot.value?.task?.id === taskId ? task.branch : null;
+      },
+      rendered: () => nextTick(),
+      presentation: () => {
+        if (!mainPanelRef.value?.workspacePresentation) throw new Error("the workspace renderer is unavailable");
+        return mainPanelRef.value.workspacePresentation();
+      },
+    } : undefined,
     findTaskSlotId: (taskId) =>
-      sidebarItems.value.find((item) => item.task_id === taskId || item.slot_id === taskId)
+      sidebarItems.value.find((item) => store.items.some(local => local.id === taskId) && item.task_id === taskId)
         ?.slot_id ?? null,
     refreshTasks: () => store.reloadSnapshot(),
     selectTask: (slotId) => selectSidebarItemById(slotId),

@@ -2760,14 +2760,76 @@ machine. It exists because an agent could already *read* a task's files, diff
 and commit graph but had no way to take the reviewer to one — which is exactly
 what a "read these first" finding needs.
 
-The request is four fields: `taskId`, `view`, an optional `target`, and the
-usual `machine_id` routing. The view is a whitelist —
+The view request takes `taskId`, `view`, an optional `target`, optional
+`windowId` / `workspaceId` / `paneId`, and the usual `machine_id` routing. The view is a whitelist —
 `agent`, `file`, `diff`, `tree`, `graph`, `analytics` — not "any main tab":
 `shell` runs commands, `image` takes an arbitrary URL, and `preferences` is not
 a view of a task. Adding a view means adding its target shape, its renderer
-handler, its readiness contract and its tests; the action never accepts a tab
-id, a component name, a URL, a filesystem root, a shell command, or serialized
+handler, its readiness contract and its tests; opening a view never accepts a component name, a URL, a filesystem root, a shell command, or serialized
 UI state.
+
+`kanna_workspace` uses the same route and acknowledgement lane with
+`operation: inspect | split | move` instead of `view` / `target`. No layout is
+stored on the server. The renderer reads and changes the existing task tab
+controller, then returns `opened: true` with a `workspace` snapshot:
+
+- `taskId`, current `branch`, `windowId`, opaque `workspaceId`;
+- `focusedPaneId`, `activeTabId`;
+- `panes`: owned layout in traversal order, with 1-based `order`, percentage
+  rectangles, stable pane `id`, `activeTabId`, and ordered `tabs` (`id`, `kind`,
+  and `filePath` for files);
+- `displayedPanes`: the actual MainPanel projection, in rendered order, with
+  pane `id`, percentage rectangle and `activeTabId`. Narrow windows display
+  one pane while retaining their owned layout.
+
+To open AGENTS.md in the second displayed pane:
+
+```text
+kanna_workspace {task_id: TASK, operation: "inspect"}
+# Let w be result.workspace and p be w.displayedPanes[1].
+kanna_open_view {task_id: TASK, view: "file", target: {path: "AGENTS.md"},
+                 window_id: w.windowId, workspace_id: w.workspaceId, pane_id: p.id}
+# Require opened:true, paneId:p.id and tabId:"file:AGENTS.md".
+```
+
+If there is no second displayed pane, inspect its owned layout before splitting:
+`kanna_workspace {task_id, operation:"split", window_id, workspace_id, pane_id,
+direction:"horizontal"}` adds to the right; `"vertical"` adds below. Optional
+`tab_id` moves that existing tab into the new pane (including the agent);
+omitting it uses the normal UI split selection rule and may create an empty
+pane. `operation:"move"` requires `tab_id` and the destination `pane_id`,
+selects the moved tab, and prunes empty panes using the existing move rule.
+Both return the confirmed destination `paneId`, `tabId` when nonempty, and the
+resulting snapshot. Moving preserves the existing tab object and mounted view.
+Opening an already-open view into a destination moves and re-aims its single
+existing tab. Omitting a destination preserves the prior open-view behavior.
+
+All explicit pane actions require the `window_id` and `workspace_id` returned
+by inspection. The workspace incarnation is local to that renderer, task and
+branch; a reload or stage change invalidates it. Removed pane ids are not reused
+within an incarnation. Native delivery addresses the named window exactly,
+never falls back to another window, and reports `desktop_unavailable` if it
+cannot deliver. `pane_not_found`, `tab_not_found`, `stale_workspace`,
+`workspace_unavailable`, `window_not_found`, and `request_expired` are truthful
+renderer failures. Requests are serialized through the renderer's existing
+open-view lane and expire rather than applying after their caller times out.
+The server rechecks the current branch after acknowledgement. A legacy desktop
+can still acknowledge an ordinary open; it cannot claim success for pane
+controls without the workspace/destination confirmation.
+
+`machine_id` routes the request to that machine under the existing privileged
+open-view authority. That machine's **local** desktop must respond; a remote
+projection in this desktop is not a substitute, and a headless peer times out.
+The acknowledgement remains local-desktop-only. File validation and subsequent
+contained file reads use the same path as before. No task state, session input,
+external process launch or arbitrary layout replacement is added.
+
+The generic CLI shares this schema:
+`kanna-cli tool call kanna_workspace --json '{"task_id":"TASK","operation":"inspect"}'`.
+`kanna-cli task workspace --task-id TASK --operation inspect` is the typed
+equivalent. `kanna-cli task open-view` also accepts `--window-id`, `--workspace-id`, and
+`--pane-id`. The canonical catalog generates MCP and generic CLI schemas at
+runtime; there is no second checked-in tool schema to update.
 
 Each view fixes the shape of its `target`, and an unknown key in it is refused
 rather than ignored:

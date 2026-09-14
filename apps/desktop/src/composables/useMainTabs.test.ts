@@ -245,6 +245,22 @@ describe("useMainTabs", () => {
     expect(tabs.activeTabId.value).toBe(AGENT_TAB_ID);
   });
 
+  it("joins maximized panes retaining the surviving identity and clearing maximize", () => {
+    const { tabs } = setup();
+    tabs.openTab({ kind: "diff" });
+    const second = tabs.splitPane("pane-1", "horizontal")!;
+    tabs.closePane("pane-1");
+    tabs.splitPane(second, "vertical");
+    tabs.toggleMaximizedPane();
+    const before = tabs.tabs.value.map(tab => tab.id);
+    tabs.joinPanes();
+    expect(tabs.panes.value).toHaveLength(1);
+    expect(tabs.panes.value[0].pane.id).toBe(second);
+    expect(tabs.focusedPaneId.value).toBe(second);
+    expect(tabs.maximizedPaneId.value).toBeNull();
+    expect(tabs.tabs.value.map(tab => tab.id)).toEqual(before);
+  });
+
   it("reports the shortcut context of the active tab", () => {
     const { tabs } = setup();
 

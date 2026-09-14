@@ -432,6 +432,8 @@ export function useAppLifecycle({
         // addresses the command to it, the same way the native menu events are
         // addressed. A global listener is registered for "any target" and does
         // not receive a webview-addressed emit.
+        // Commands share selection and pane state: serialize the whole render/ack lane.
+        let desktopViewQueue = Promise.resolve();
         const unlistenDesktopViewOpen = await listenCurrentWebviewWindow(
           DESKTOP_VIEW_OPEN_EVENT,
           (event: unknown) => {
@@ -446,7 +448,7 @@ export function useAppLifecycle({
               console.error("[App] failed to read a desktop view open command:", e);
               return;
             }
-            void openTaskView(command).catch((e: unknown) => {
+            desktopViewQueue = desktopViewQueue.then(() => openTaskView(command)).catch((e: unknown) => {
               console.error("[App] failed to handle desktop view open command:", e);
             });
           },
