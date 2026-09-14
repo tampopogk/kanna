@@ -145,9 +145,9 @@ function resizeDivider(event: PointerEvent, rect: SplitRect) {
 function captureDivider(event: PointerEvent) {
   if (event.currentTarget instanceof HTMLElement) event.currentTarget.setPointerCapture(event.pointerId);
 }
-function openPaneView(paneId: string, id: string) {
+function openPaneView(paneId: string, id: string, tabId?: string) {
   props.views?.tabs.focusPane(paneId);
-  if (id === 'split-horizontal' || id === 'split-vertical') props.views?.tabs.splitPane(paneId, id === 'split-horizontal' ? 'horizontal' : 'vertical');
+  if (id === 'split-horizontal' || id === 'split-vertical') props.views?.tabs.splitPane(paneId, id === 'split-horizontal' ? 'horizontal' : 'vertical', tabId);
   else openNewView(id);
 }
 const tabDrag = usePaneTabDrag({
@@ -841,7 +841,7 @@ function dismissCommandHint() {
           @select="selectTab"
           @close="closeTab"
           @new="id => openPaneView(rect.pane.id, id)"
-          @layout="id => openPaneView(rect.pane.id, id)"
+          @layout="(id, tabId) => openPaneView(rect.pane.id, id, tabId)"
           @drag-tab="tabDrag.start"
           :dragged-tab="tabDrag.dragging.value"
           :drop-active="tabDrag.target.value?.paneId === rect.pane.id"
