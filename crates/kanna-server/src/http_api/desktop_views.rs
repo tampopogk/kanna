@@ -241,9 +241,22 @@ pub(super) struct OpenDesktopViewRequest {
     task_id: String,
     /// Kept as a string so an unrecognised view is answered with the
     /// whitelist rather than with a deserialization rejection.
+    #[serde(default)]
     view: String,
     #[serde(default)]
     target: Option<Value>,
+    #[serde(default)]
+    operation: Option<String>,
+    #[serde(default)]
+    window_id: Option<String>,
+    #[serde(default)]
+    workspace_id: Option<String>,
+    #[serde(default)]
+    pane_id: Option<String>,
+    #[serde(default)]
+    tab_id: Option<String>,
+    #[serde(default)]
+    direction: Option<String>,
 }
 
 pub(super) async fn open_desktop_view(
@@ -279,18 +292,68 @@ pub(super) async fn open_desktop_view(
         "requestId": acknowledgement.request_id(),
         "taskId": prepared.task_id,
         "view": prepared.view.as_str(),
+        "branch": prepared.branch,
+        "expiresAt": std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default().as_millis() as u64 + state.desktop_view_open_timeout_ms(),
     });
     if let Some(target) = prepared.target.clone() {
         command["target"] = target;
+    }
+    for (key, value) in &prepared.controls {
+        command[key] = value.clone();
     }
     state.desktop_view_commands().append(command);
 
     let timeout = Duration::from_millis(state.desktop_view_open_timeout_ms());
     match acknowledgement.wait(timeout).await {
-        Some(DesktopViewAck { opened: true, .. }) => {
-            let mut body = json!({ "opened": true, "view": prepared.view.as_str() });
+        Some(ack) if ack.opened => {
+            let requires_identity = prepared.controls.contains_key("operation")
+                || prepared.controls.contains_key("paneId")
+                || prepared.controls.contains_key("windowId");
+            if (requires_identity || ack.workspace.is_some())
+                && !confirmed_workspace(&prepared, &ack)
+            {
+                return Ok(Json(failure_body(OpenViewFailure::new(
+                    "renderer_failed",
+                    "the desktop did not confirm the requested workspace destination",
+                ))));
+            }
+            // The DB owns stage/workspace identity, even while a renderer was loading.
+            let db_path = state.config().db_path.clone();
+            let task_id = prepared.task_id.clone();
+            let branch = super::blocking::run_handler_blocking(
+                "desktop workspace acknowledgement",
+                move || {
+                    let db = Db::open(&db_path)
+                        .map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?;
+                    Ok(current_branch(&db, &task_id))
+                },
+            )
+            .await?;
+            if branch.ok().as_deref() != Some(&prepared.branch) {
+                return Ok(Json(failure_body(OpenViewFailure::new(
+                    "stale_workspace",
+                    "the task changed workspace while the desktop was responding",
+                ))));
+            }
+            let mut body = json!({ "opened": true });
+            if !prepared.controls.contains_key("operation") {
+                body["view"] = json!(prepared.view.as_str());
+            }
             if let Some(target) = prepared.target {
                 body["target"] = target;
+            }
+            if let Some(workspace) = ack.workspace {
+                body["workspace"] = workspace;
+            }
+            if let Some(pane_id) = ack.pane_id {
+                body["paneId"] = json!(pane_id);
+            }
+            if let Some(tab_id) = ack.tab_id {
+                body["tabId"] = json!(tab_id);
+            }
+            if let Some(operation) = prepared.controls.get("operation") {
+                body["operation"] = operation.clone();
             }
             Ok(Json(body))
         }
@@ -313,6 +376,11 @@ fn renderer_failure_code(code: Option<&str>) -> &'static str {
     match code {
         Some("task_not_found") => "task_not_found",
         Some("workspace_unavailable") => "workspace_unavailable",
+        Some("stale_workspace") => "stale_workspace",
+        Some("window_not_found") => "window_not_found",
+        Some("pane_not_found") => "pane_not_found",
+        Some("tab_not_found") => "tab_not_found",
+        Some("request_expired") => "request_expired",
         Some("file_not_found") => "file_not_found",
         Some("invalid_target") => "invalid_target",
         Some("diff_target_not_found") => "diff_target_not_found",
@@ -331,12 +399,76 @@ fn failure_body(failure: OpenViewFailure) -> Value {
 
 struct PreparedOpen {
     task_id: String,
+    branch: String,
+    controls: serde_json::Map<String, Value>,
     view: DesktopViewKind,
     target: Option<Value>,
 }
 
 fn prepare_open(db: &Db, request: OpenDesktopViewRequest) -> Result<PreparedOpen, OpenViewFailure> {
-    let Some(view) = DesktopViewKind::parse(request.view.trim()) else {
+    let mut controls = serde_json::Map::new();
+    if let Some(operation) = request.operation.as_deref() {
+        if !["inspect", "split", "move"].contains(&operation)
+            || !request.view.is_empty()
+            || request.target.is_some()
+        {
+            return Err(OpenViewFailure::new(
+                "invalid_target",
+                "workspace operation must be inspect, split or move and takes no view/target",
+            ));
+        }
+        controls.insert("operation".into(), json!(operation));
+    }
+    let operation = request.operation.as_deref();
+    if request.pane_id.is_some() || matches!(operation, Some("split" | "move")) {
+        if request.pane_id.is_none()
+            || request.window_id.is_none()
+            || request.workspace_id.is_none()
+        {
+            return Err(OpenViewFailure::new(
+                "invalid_target",
+                "pane operations require paneId, windowId and workspaceId from inspect",
+            ));
+        }
+    } else if request.workspace_id.is_some() {
+        return Err(OpenViewFailure::new(
+            "invalid_target",
+            "workspaceId requires paneId",
+        ));
+    }
+    if (operation == Some("split")) != request.direction.is_some()
+        || request
+            .direction
+            .as_deref()
+            .is_some_and(|direction| !["horizontal", "vertical"].contains(&direction))
+        || (operation == Some("move") && request.tab_id.is_none())
+        || (!matches!(operation, Some("split" | "move")) && request.tab_id.is_some())
+        || (operation == Some("inspect") && request.pane_id.is_some())
+    {
+        return Err(OpenViewFailure::new("invalid_target", "split needs direction; move needs tabId; inspect takes only taskId and optional windowId"));
+    }
+    for (key, value) in [
+        ("windowId", request.window_id),
+        ("workspaceId", request.workspace_id),
+        ("paneId", request.pane_id),
+        ("tabId", request.tab_id),
+        ("direction", request.direction),
+    ] {
+        if let Some(value) = value {
+            if value.trim().is_empty() {
+                return Err(OpenViewFailure::new(
+                    "invalid_target",
+                    format!("{key} must not be empty"),
+                ));
+            }
+            controls.insert(key.into(), json!(value));
+        }
+    }
+    let Some(view) = DesktopViewKind::parse(if operation.is_some() {
+        "agent"
+    } else {
+        request.view.trim()
+    }) else {
         return Err(OpenViewFailure::new(
             "unsupported_view",
             format!(
@@ -347,12 +479,127 @@ fn prepare_open(db: &Db, request: OpenDesktopViewRequest) -> Result<PreparedOpen
     };
 
     let task_id = resolve_task(db, &request.task_id)?;
+    let branch = current_branch(db, &task_id)?;
     let target = resolve_target(db, &task_id, view, request.target)?;
     Ok(PreparedOpen {
         task_id,
+        branch,
+        controls,
         view,
         target,
     })
+}
+
+fn current_branch(db: &Db, task_id: &str) -> Result<String, OpenViewFailure> {
+    let task = db
+        .get_pipeline_item(task_id)
+        .map_err(|error| OpenViewFailure::new("internal", error.to_string()))?
+        .ok_or_else(|| OpenViewFailure::new("task_not_found", "the task no longer exists"))?;
+    let root = db
+        .get_task_worktree_path(task_id)
+        .map_err(|error| OpenViewFailure::new("internal", error.to_string()))?;
+    if task.closed_at.is_some() || !root.is_some_and(|root| std::path::Path::new(&root).is_dir()) {
+        return Err(OpenViewFailure::new(
+            "workspace_unavailable",
+            "the task has no current workspace",
+        ));
+    }
+    task.branch.ok_or_else(|| {
+        OpenViewFailure::new("workspace_unavailable", "the task has no current branch")
+    })
+}
+
+fn confirmed_workspace(prepared: &PreparedOpen, ack: &DesktopViewAck) -> bool {
+    let Some(workspace) = &ack.workspace else {
+        return false;
+    };
+    if workspace["taskId"] != prepared.task_id
+        || workspace["branch"] != prepared.branch
+        || !workspace["windowId"]
+            .as_str()
+            .is_some_and(|id| !id.is_empty())
+        || !workspace["workspaceId"]
+            .as_str()
+            .is_some_and(|id| !id.is_empty())
+        || !workspace["panes"]
+            .as_array()
+            .is_some_and(|panes| !panes.is_empty())
+    {
+        return false;
+    }
+    for key in ["windowId", "workspaceId"] {
+        if prepared
+            .controls
+            .get(key)
+            .is_some_and(|value| workspace[key] != *value)
+        {
+            return false;
+        }
+    }
+    let operation = prepared.controls.get("operation").and_then(Value::as_str);
+    if operation == Some("inspect") {
+        return true;
+    }
+    let Some(pane_id) = ack.pane_id.as_deref() else {
+        return false;
+    };
+    if operation != Some("split")
+        && prepared
+            .controls
+            .get("paneId")
+            .is_some_and(|value| value != pane_id)
+    {
+        return false;
+    }
+    let Some(pane) = workspace["panes"]
+        .as_array()
+        .and_then(|panes| panes.iter().find(|pane| pane["id"] == pane_id))
+    else {
+        return false;
+    };
+    if operation == Some("split") {
+        if prepared
+            .controls
+            .get("paneId")
+            .is_some_and(|source| source == pane_id)
+        {
+            return false;
+        }
+        if ack.tab_id.is_none() {
+            return !prepared.controls.contains_key("tabId") && pane["activeTabId"] == "";
+        }
+    }
+    let Some(tab_id) = ack.tab_id.as_deref() else {
+        return false;
+    };
+    if prepared
+        .controls
+        .get("tabId")
+        .is_some_and(|value| value != tab_id)
+    {
+        return false;
+    }
+    let Some(tab) = pane["tabs"]
+        .as_array()
+        .and_then(|tabs| tabs.iter().find(|tab| tab["id"] == tab_id))
+    else {
+        return false;
+    };
+    if operation.is_none()
+        && (tab["kind"] != prepared.view.as_str()
+            || (prepared.view == DesktopViewKind::File
+                && prepared
+                    .target
+                    .as_ref()
+                    .is_none_or(|target| tab["filePath"] != target["path"])))
+    {
+        return false;
+    }
+    workspace["displayedPanes"].as_array().is_some_and(|panes| {
+        panes
+            .iter()
+            .any(|pane| pane["id"] == pane_id && pane["activeTabId"] == tab_id)
+    }) && pane["activeTabId"] == tab_id
 }
 
 /// Resolve a task id or its *current* branch name.
@@ -923,6 +1170,9 @@ pub(super) struct DesktopViewAck {
     opened: bool,
     code: Option<String>,
     message: Option<String>,
+    workspace: Option<Value>,
+    pane_id: Option<String>,
+    tab_id: Option<String>,
 }
 
 /// The in-flight opens, keyed by request id.
@@ -1007,6 +1257,12 @@ pub(super) struct DesktopViewAckRequest {
     code: Option<String>,
     #[serde(default)]
     message: Option<String>,
+    #[serde(default)]
+    workspace: Option<Value>,
+    #[serde(default)]
+    pane_id: Option<String>,
+    #[serde(default)]
+    tab_id: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -1030,6 +1286,9 @@ pub(super) async fn acknowledge_desktop_view(
             opened: request.opened,
             code: request.code,
             message: request.message,
+            workspace: request.workspace,
+            pane_id: request.pane_id,
+            tab_id: request.tab_id,
         },
     );
     Json(DesktopViewAckResponse { acknowledged })

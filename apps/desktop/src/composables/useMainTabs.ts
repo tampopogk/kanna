@@ -82,6 +82,8 @@ export interface MainTab extends MainTabDescriptor {
 }
 
 interface MainTabScopeState {
+  identity?: string;
+  nextPaneId?: number;
   layout?: TaskPaneLayout;
   focusedPane?: string;
   referenceId?: string;
@@ -357,6 +359,17 @@ export function useMainTabs({ scopeKey, onTabClosed }: UseMainTabsOptions) {
     const state = scopes[key] ?? initialScopeState(key);
     return paneRects(state.layout ?? restorePaneLayout(null, state.tabs.map(tab => tab.id), state.activeId));
   });
+  /** Window-local incarnation; never accepted in another task or after a reload. */
+  function workspaceIdentity(key: string, branch: string): string {
+    const state = scopeState(key);
+    state.identity ??= crypto.randomUUID();
+    return `${state.identity}:${branch}`;
+  }
+
+  const focusedPaneId = computed(() => {
+    const state = scopeKey.value ? scopes[scopeKey.value] : undefined;
+    return state?.focusedPane ?? panes.value[0]?.pane.id ?? null;
+  });
   const dividers = computed(() => {
     const layout = scopeKey.value ? scopes[scopeKey.value]?.layout : undefined;
     return layout ? splitRects(layout) : [];
@@ -378,8 +391,9 @@ export function useMainTabs({ scopeKey, onTabClosed }: UseMainTabsOptions) {
     const leaves = paneLeaves(layout), pane = leaves.find(pane => pane.id === id);
     if (!pane) return;
     if (tabId && !state.tabs.some(tab => tab.id === tabId)) return;
-    let n = 1;
+    let n = state.nextPaneId ?? 1;
     while (leaves.some(pane => pane.id === `pane-${n}`)) n++;
+    state.nextPaneId = n + 1;
     const moving = tabId ?? (pane.tabs.length > 1 && pane.active !== AGENT_TAB_ID ? pane.active : '');
     if (moving) for (const source of leaves) {
       source.tabs = source.tabs.filter(tab => tab !== moving);
@@ -388,6 +402,7 @@ export function useMainTabs({ scopeKey, onTabClosed }: UseMainTabsOptions) {
     const added = { kind: 'pane' as const, id: `pane-${n}`, tabs: moving ? [moving] : [], active: moving };
     state.layout = replacePane(layout, id, { kind: 'split', axis, ratio: .5, first: pane, second: added });
     focusPane(added.id);
+    return added.id;
   }
   function moveTab(id: string, paneId: string, beforeId?: string) {
     if (!scopeKey.value) return;
@@ -427,8 +442,9 @@ export function useMainTabs({ scopeKey, onTabClosed }: UseMainTabsOptions) {
   function joinPanes() {
     if (!scopeKey.value) return;
     const state = scopeState(scopeKey.value);
-    state.layout = restorePaneLayout(null, paneLeaves(ensureLayout(state)).flatMap(pane => pane.tabs), state.activeId);
-    state.focusedPane = 'pane-1';
+    const leaves = paneLeaves(ensureLayout(state));
+    state.layout = { kind: 'pane', id: leaves[0].id, tabs: leaves.flatMap(pane => pane.tabs), active: state.activeId };
+    state.focusedPane = leaves[0].id;
   }
 
   const activeTabContext = computed<ShortcutContext | null>(() => {
@@ -621,6 +637,8 @@ export function useMainTabs({ scopeKey, onTabClosed }: UseMainTabsOptions) {
 
   return {
     panes,
+    workspaceIdentity,
+    focusedPaneId,
     dividers,
     resizePane,
     focusPane,

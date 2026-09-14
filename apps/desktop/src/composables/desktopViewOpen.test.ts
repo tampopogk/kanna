@@ -171,3 +171,86 @@ describe("performDesktopViewOpen", () => {
     expect(outcome).toEqual({ opened: false, code: "commit_not_found", message: "gone" });
   });
 });
+
+// Exercise the command parser and production pane controller together; view
+// readiness is held explicitly so a queued/loading view cannot be acknowledged.
+describe("workspace command/controller contract", () => {
+  async function fixture() {
+    const { computed, ref, nextTick } = await import("vue");
+    const { useMainTabs } = await import("./useMainTabs");
+    const selected = ref("task-a");
+    const branch = ref("task-task-a");
+    const tabs = useMainTabs({ scopeKey: computed(() => `item:${selected.value}`) });
+    const dependencies = deps({
+      selectTask: async () => { selected.value = "task-a"; },
+      openTab: (key, descriptor) => tabs.openTabInScope(key, descriptor),
+      workspace: {
+        tabs, windowId: "main", currentBranch: () => branch.value, rendered: nextTick,
+        presentation: () => tabs.panes.value.map(({ pane, ...rect }) => ({ id: pane.id, activeTabId: pane.active, ...rect })),
+      },
+    });
+    const run = (overrides: Partial<DesktopViewOpenCommand>) => performDesktopViewOpen(parseDesktopViewOpenCommand(command({
+      branch: branch.value, windowId: "main", view: "agent", ...overrides,
+    })), dependencies);
+    const initial = await run({ operation: "inspect" });
+    const address = { windowId: "main", workspaceId: initial.workspace!.workspaceId, paneId: initial.workspace!.panes[0].id };
+    return { tabs, run, address, selected, branch, dependencies };
+  }
+
+  it.each(["horizontal", "vertical"] as const)("inspect -> split %s -> open second pane -> move preserves identity/state", async direction => {
+    const { tabs, run, address, dependencies } = await fixture();
+    const split = await run({ operation: "split", direction, ...address });
+    expect(split.opened).toBe(true);
+    const second = split.workspace!.panes[1];
+    expect(second.order).toBe(2);
+    expect(direction === "horizontal" ? second.left : second.top).toBe(50);
+    // Focus the first pane to prove explicit destination outranks focus.
+    tabs.focusPane(address.paneId);
+    let ready!: () => void;
+    dependencies.revealTab = async () => { await new Promise<void>(resolve => { ready = resolve; }); return { opened: true }; };
+    const pending = run({ view: "file", target: { path: "AGENTS.md" }, ...address, paneId: second.id });
+    await vi.waitFor(() => expect(ready).toBeTypeOf("function"));
+    expect(tabs.panes.value[1].pane.tabs).toEqual(["file:AGENTS.md"]);
+    ready();
+    const opened = await pending;
+    expect(opened).toMatchObject({ opened: true, paneId: second.id, tabId: "file:AGENTS.md" });
+    expect(opened.workspace?.activeTabId).toBe("file:AGENTS.md");
+    const file = tabs.tabs.value.find(tab => tab.id === opened.tabId)!;
+    tabs.updateReading(file.id, { workspace: "task-task-a", top: 123 });
+    const moved = await run({ operation: "move", tabId: file.id, ...address });
+    expect(moved).toMatchObject({ opened: true, paneId: address.paneId, tabId: file.id });
+    expect(tabs.tabs.value.find(tab => tab.id === file.id)).toBe(file);
+    expect(file.reading?.top).toBe(123);
+    expect(moved.workspace?.panes).toHaveLength(1); // empty source removed
+    const resplit = await run({ operation: "split", direction, tabId: file.id, ...address });
+    expect(resplit.paneId).not.toBe(second.id); // stale pane ids never alias a replacement
+    expect(tabs.tabs.value.filter(tab => tab.id === file.id)).toHaveLength(1);
+    expect(tabs.tabs.value.find(tab => tab.id === file.id)).toBe(file);
+  });
+
+  it("rejects missing/stale/cross-task identities before changing tabs", async () => {
+    const { tabs, run, address, dependencies, branch } = await fixture();
+    for (const [overrides, code] of [
+      [{ paneId: "gone" }, "pane_not_found"],
+      [{ workspaceId: tabs.workspaceIdentity("item:task-b", branch.value) }, "stale_workspace"],
+      [{ windowId: "other-window" }, "window_not_found"],
+      [{ branch: "previous-branch" }, "workspace_unavailable"],
+      [{ expiresAt: 1 }, "request_expired"],
+    ] as const) {
+      expect(await run({ view: "file", target: { path: "AGENTS.md" }, ...address, ...overrides })).toMatchObject({ opened: false, code });
+    }
+    expect(await run({ operation: "move", ...address, tabId: "file:other-task.md" })).toMatchObject({ opened: false, code: "tab_not_found" });
+    expect(tabs.tabs.value.map(tab => tab.id)).toEqual(["agent"]);
+    dependencies.revealTab = async () => { branch.value = "next-stage"; return { opened: true }; };
+    expect(await run({ view: "file", target: { path: "AGENTS.md" }, ...address })).toMatchObject({ opened: false, code: "workspace_unavailable" });
+  });
+
+  it("does not confirm a tab hidden or moved while its content loads", async () => {
+    const { run, tabs, address, dependencies } = await fixture();
+    const split = await run({ operation: "split", direction: "horizontal", ...address });
+    dependencies.revealTab = async id => { tabs.moveTab(id, address.paneId); return { opened: true }; };
+    expect(await run({ view: "file", target: { path: "AGENTS.md" }, ...address, paneId: split.paneId })).toMatchObject({ opened: false, code: "pane_not_found" });
+    dependencies.workspace!.presentation = () => [];
+    expect(await run({ view: "agent" })).toMatchObject({ opened: false, code: "renderer_failed" });
+  });
+});

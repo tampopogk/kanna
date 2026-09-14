@@ -674,6 +674,9 @@ pub(crate) async fn run(command: TaskCommands) {
             view,
             target,
             machine_id,
+            window_id,
+            workspace_id,
+            pane_id,
             server_url,
         } => {
             let mut args = serde_json::json!({
@@ -698,7 +701,34 @@ pub(crate) async fn run(command: TaskCommands) {
                 }
             }
             insert_optional(&mut args, "machine_id", machine_id);
+            insert_optional(&mut args, "window_id", window_id);
+            insert_optional(&mut args, "workspace_id", workspace_id);
+            insert_optional(&mut args, "pane_id", pane_id);
             run_catalog_task_tool("kanna_open_view", &args, server_url.as_deref()).await;
+        }
+        TaskCommands::Workspace {
+            task_id,
+            operation,
+            window_id,
+            workspace_id,
+            pane_id,
+            tab_id,
+            direction,
+            machine_id,
+            server_url,
+        } => {
+            let mut args = serde_json::json!({ "task_id": task_id, "operation": operation });
+            for (name, value) in [
+                ("window_id", window_id),
+                ("workspace_id", workspace_id),
+                ("pane_id", pane_id),
+                ("tab_id", tab_id),
+                ("direction", direction),
+                ("machine_id", machine_id),
+            ] {
+                insert_optional(&mut args, name, value);
+            }
+            run_catalog_task_tool("kanna_workspace", &args, server_url.as_deref()).await;
         }
         TaskCommands::Logs {
             task_id,

@@ -1494,3 +1494,52 @@ fn harness_cli_aliases_share_the_existing_override_slots() {
     ])
     .is_ok());
 }
+
+#[test]
+fn workspace_cli_and_open_view_destinations_match_catalog() {
+    let catalog = kanna_tool_catalog::bundled_catalog();
+    let typed = typed_tool_surfaces();
+    let cli = crate::Cli::command();
+    for name in ["kanna_workspace", "kanna_open_view"] {
+        let tool = catalog.tools.iter().find(|tool| tool.name == name).unwrap();
+        let surface = &typed[name];
+        let command = command_for_path(&cli, surface.command_path).unwrap();
+        let mapped = surface
+            .param_args
+            .iter()
+            .map(|(name, _)| *name)
+            .collect::<BTreeSet<_>>();
+        let params = tool
+            .params
+            .iter()
+            .filter(|param| param.location != ParamLoc::Routing)
+            .map(|param| param.name.as_str())
+            .collect::<BTreeSet<_>>();
+        assert_eq!(mapped, params);
+        for (_, arg) in surface.param_args {
+            assert!(command
+                .get_arguments()
+                .any(|candidate| candidate.get_id().as_str() == *arg));
+        }
+    }
+    let parsed = crate::Cli::try_parse_from([
+        "kanna-cli",
+        "task",
+        "workspace",
+        "--task-id",
+        "task-a",
+        "--operation",
+        "move",
+        "--window-id",
+        "main",
+        "--workspace-id",
+        "opaque",
+        "--pane-id",
+        "pane-2",
+        "--tab-id",
+        "agent",
+        "--machine-id",
+        "remote",
+    ]);
+    assert!(parsed.is_ok());
+}

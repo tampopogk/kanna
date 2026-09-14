@@ -7744,6 +7744,13 @@ async fn acknowledge_desktop_view(
         body["code"] = serde_json::json!(code);
         body["message"] = serde_json::json!("the window says so");
     }
+    acknowledge_desktop_view_body(fixture, body).await
+}
+
+async fn acknowledge_desktop_view_body(
+    fixture: &TaskFileRouteFixture,
+    body: serde_json::Value,
+) -> serde_json::Value {
     let mut request = Request::post("/v1/desktop/views/ack")
         .header("content-type", "application/json")
         .body(Body::from(body.to_string()))
@@ -7786,6 +7793,213 @@ async fn open_desktop_view_expecting_refusal(
             .unwrap(),
     )
     .unwrap()
+}
+
+#[tokio::test]
+async fn desktop_workspace_catalog_request_and_ack_preserve_exact_destination() {
+    let fixture = TaskFileRouteFixture::new();
+    fixture.write("AGENTS.md", b"# instructions\n");
+    let catalog = kanna_tool_catalog::bundled_catalog();
+    let mut workspace = serde_json::json!({
+        "taskId": "task-file", "branch": "", "windowId": "main", "workspaceId": "renderer:task-file",
+        "focusedPaneId": "pane-1", "activeTabId": "agent",
+        "panes": [{"id":"pane-1", "order":1, "activeTabId":"agent", "tabs":[{"id":"agent", "kind":"agent"}]}],
+        "displayedPanes": [{"id":"pane-1", "activeTabId":"agent"}]
+    });
+    for (tool, args, pane_id, tab_id) in [
+        (
+            "kanna_workspace",
+            serde_json::json!({"task_id":"task-file", "operation":"inspect"}),
+            None,
+            None,
+        ),
+        (
+            "kanna_workspace",
+            serde_json::json!({"task_id":"task-file", "operation":"split", "direction":"horizontal", "window_id":"main", "workspace_id":"renderer:task-file", "pane_id":"pane-1"}),
+            Some("pane-2"),
+            None,
+        ),
+        (
+            "kanna_open_view",
+            serde_json::json!({"task_id":"task-file", "view":"file", "target":{"path":"./AGENTS.md"}, "window_id":"main", "workspace_id":"renderer:task-file", "pane_id":"pane-2"}),
+            Some("pane-2"),
+            Some("file:AGENTS.md"),
+        ),
+        (
+            "kanna_workspace",
+            serde_json::json!({"task_id":"task-file", "operation":"move", "tab_id":"file:AGENTS.md", "window_id":"main", "workspace_id":"renderer:task-file", "pane_id":"pane-1"}),
+            Some("pane-1"),
+            Some("file:AGENTS.md"),
+        ),
+    ] {
+        let request = kanna_tool_catalog::resolve_request(&catalog, tool, &args).unwrap();
+        assert_eq!(request.path, "/v1/desktop/views/open");
+        let (pending, command) = start_desktop_view_open(&fixture, request.body).await;
+        assert!(!pending.is_finished());
+        workspace["branch"] = command["branch"].clone();
+        if let Some(pane) = pane_id {
+            workspace["panes"] = serde_json::json!([
+                {"id":pane,"order":1,"activeTabId":tab_id.unwrap_or(""),"tabs":tab_id.map(|id| vec![serde_json::json!({"id":id,"kind":"file","filePath":"AGENTS.md"})]).unwrap_or_default()}
+            ]);
+            workspace["displayedPanes"] =
+                serde_json::json!([{"id":pane,"activeTabId":tab_id.unwrap_or("")}]);
+        }
+        let mut ack = serde_json::json!({"requestId":command["requestId"],"opened":true,"workspace":workspace});
+        if let Some(pane) = pane_id {
+            ack["paneId"] = serde_json::json!(pane);
+        }
+        if let Some(tab) = tab_id {
+            ack["tabId"] = serde_json::json!(tab);
+        }
+        acknowledge_desktop_view_body(&fixture, ack).await;
+        let result = pending.await.unwrap();
+        assert_eq!(result["opened"], true, "{result}");
+        assert_eq!(result["workspace"], workspace);
+        if let Some(pane) = pane_id {
+            assert_eq!(result["paneId"], pane);
+        }
+        if let Some(tab) = tab_id {
+            assert_eq!(result["tabId"], tab);
+        }
+        if tool == "kanna_open_view" {
+            assert_eq!(result["target"]["path"], "AGENTS.md");
+        }
+    }
+}
+
+#[tokio::test]
+async fn desktop_workspace_refuses_an_ack_for_the_wrong_destination_or_file() {
+    let fixture = TaskFileRouteFixture::new();
+    fixture.write("AGENTS.md", b"instructions\n");
+    for (field, value) in [
+        ("windowId", "other"),
+        ("paneId", "other"),
+        ("filePath", "OTHER.md"),
+    ] {
+        let (pending, command) = start_desktop_view_open(
+            &fixture,
+            serde_json::json!({
+                "taskId":"task-file", "view":"file", "target":{"path":"AGENTS.md"},
+                "windowId":"main", "workspaceId":"w", "paneId":"pane-2"
+            }),
+        )
+        .await;
+        let mut workspace = serde_json::json!({"taskId":"task-file", "branch":command["branch"], "windowId":"main", "workspaceId":"w",
+            "panes":[{"id":"pane-2","activeTabId":"file:AGENTS.md","tabs":[{"id":"file:AGENTS.md","kind":"file","filePath":"AGENTS.md"}]}],
+            "displayedPanes":[{"id":"pane-2","activeTabId":"file:AGENTS.md"}]});
+        if field == "windowId" {
+            workspace["windowId"] = serde_json::json!(value);
+        }
+        if field == "filePath" {
+            workspace["panes"][0]["tabs"][0]["filePath"] = serde_json::json!(value);
+        }
+        let ack = serde_json::json!({"requestId":command["requestId"],"opened":true,"workspace":workspace,"paneId":if field == "paneId" {value} else {"pane-2"},"tabId":"file:AGENTS.md"});
+        acknowledge_desktop_view_body(&fixture, ack).await;
+        let result = pending.await.unwrap();
+        assert_eq!(result["opened"], false);
+        assert_eq!(result["code"], "renderer_failed");
+    }
+}
+
+#[tokio::test]
+async fn desktop_workspace_refuses_incomplete_identity_and_containment_escapes_before_delivery() {
+    let fixture = TaskFileRouteFixture::new();
+    for (request, code) in [
+        (
+            serde_json::json!({"taskId":"task-file","operation":"move","paneId":"pane-2","tabId":"agent"}),
+            "invalid_target",
+        ),
+        (
+            serde_json::json!({"taskId":"task-file","operation":"split","windowId":"main","workspaceId":"w","paneId":"pane-1","direction":"diagonal"}),
+            "invalid_target",
+        ),
+        (
+            serde_json::json!({"taskId":"task-file","operation":"inspect","view":"shell"}),
+            "invalid_target",
+        ),
+        (
+            serde_json::json!({"taskId":"task-file","view":"file","target":{"path":"../outside.md"},"windowId":"main","workspaceId":"w","paneId":"pane-2"}),
+            "invalid_path",
+        ),
+        (
+            serde_json::json!({"taskId":"task-file-no-workspace","operation":"inspect"}),
+            "workspace_unavailable",
+        ),
+    ] {
+        let result = open_desktop_view_expecting_refusal(&fixture, request).await;
+        assert_eq!(result["opened"], false);
+        assert_eq!(result["code"], code);
+    }
+    assert!(fixture
+        .state
+        .desktop_view_commands()
+        .read(None, None, 100)
+        .events
+        .is_empty());
+}
+
+#[tokio::test]
+async fn desktop_workspace_requires_identity_ack_and_passes_truthful_renderer_failures() {
+    let fixture = TaskFileRouteFixture::new();
+    for code in [
+        None,
+        Some("pane_not_found"),
+        Some("tab_not_found"),
+        Some("stale_workspace"),
+        Some("workspace_unavailable"),
+    ] {
+        let (pending, command) = start_desktop_view_open(
+            &fixture,
+            serde_json::json!({"taskId":"task-file","operation":"inspect"}),
+        )
+        .await;
+        acknowledge_desktop_view(
+            &fixture,
+            command["requestId"].as_str().unwrap(),
+            code.is_none(),
+            code,
+        )
+        .await;
+        let result = pending.await.unwrap();
+        assert_eq!(result["opened"], false);
+        assert_eq!(result["code"], code.unwrap_or("renderer_failed"));
+    }
+    fixture.state.set_desktop_view_open_timeout_ms(1);
+    let result = open_desktop_view_expecting_refusal(
+        &fixture,
+        serde_json::json!({"taskId":"task-file","operation":"inspect","windowId":"missing-window"}),
+    )
+    .await;
+    assert_eq!(result["code"], "desktop_unavailable");
+}
+
+#[tokio::test]
+async fn desktop_workspace_rejects_cross_task_ack_and_workspace_changed_during_delivery() {
+    let fixture = TaskFileRouteFixture::new();
+    for changed in [false, true] {
+        let (pending, command) = start_desktop_view_open(
+            &fixture,
+            serde_json::json!({"taskId":"task-file","operation":"inspect"}),
+        )
+        .await;
+        let workspace = serde_json::json!({"taskId":if changed {"task-file"} else {"another-task"},"branch":command["branch"],"windowId":"main","workspaceId":"w","panes":[{"id":"pane-1"}]});
+        if changed {
+            let db = Db::open(fixture.db_path.to_str().unwrap()).unwrap();
+            db.update_pipeline_item_branch("task-file", "next-workspace")
+                .unwrap();
+        }
+        acknowledge_desktop_view_body(&fixture, serde_json::json!({"requestId":command["requestId"],"opened":true,"workspace":workspace})).await;
+        let result = pending.await.unwrap();
+        assert_eq!(result["opened"], false);
+        assert_eq!(
+            result["code"],
+            if changed {
+                "stale_workspace"
+            } else {
+                "renderer_failed"
+            }
+        );
+    }
 }
 
 #[tokio::test]

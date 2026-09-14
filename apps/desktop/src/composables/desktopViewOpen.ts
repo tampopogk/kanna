@@ -10,7 +10,7 @@
  * that was right there and simply could not find the task.
  */
 
-import { mainTabScopeKeyForTask, type MainTabDescriptor } from "./useMainTabs";
+import { mainTabScopeKeyForTask, type MainTabsController, type MainTabDescriptor } from "./useMainTabs";
 
 /**
  * The native event carrying one command. Addressed to a single window rather
@@ -34,12 +34,40 @@ export interface DesktopViewOpenCommand {
   taskId: string;
   view: DesktopViewKind;
   target?: Record<string, unknown>;
+  operation?: "inspect" | "split" | "move";
+  branch?: string;
+  windowId?: string;
+  workspaceId?: string;
+  paneId?: string;
+  tabId?: string;
+  direction?: "horizontal" | "vertical";
+  expiresAt?: number;
 }
 
 export interface DesktopViewOpenOutcome {
   opened: boolean;
+  workspace?: DesktopWorkspaceSnapshot;
+  paneId?: string;
+  tabId?: string;
   code?: string;
   message?: string;
+}
+
+export interface DesktopWorkspaceSnapshot {
+  taskId: string;
+  branch: string;
+  windowId: string;
+  workspaceId: string;
+  focusedPaneId: string | null;
+  activeTabId: string;
+  displayedPanes: Array<{ id: string; left: number; top: number; width: number; height: number; activeTabId: string }>;
+  panes: Array<{
+    id: string;
+    order: number;
+    left: number; top: number; width: number; height: number;
+    activeTabId: string;
+    tabs: Array<{ id: string; kind: string; filePath?: string }>;
+  }>;
 }
 
 function isViewKind(value: unknown): value is DesktopViewKind {
@@ -64,6 +92,12 @@ export function parseDesktopViewOpenCommand(payload: unknown): DesktopViewOpenCo
   ) {
     throw new Error("malformed desktop view open command");
   }
+  for (const key of ["branch", "windowId", "workspaceId", "paneId", "tabId"] as const) {
+    if (command[key] !== undefined && (typeof command[key] !== "string" || !command[key])) throw new Error(`malformed ${key}`);
+  }
+  if (command.operation !== undefined && !["inspect", "split", "move"].includes(command.operation)) throw new Error("malformed workspace operation");
+  if (command.direction !== undefined && !["horizontal", "vertical"].includes(command.direction)) throw new Error("malformed split direction");
+  if (command.expiresAt !== undefined && (typeof command.expiresAt !== "number" || !Number.isFinite(command.expiresAt))) throw new Error("malformed expiry");
   const target = command.target;
   if (target !== undefined && (typeof target !== "object" || target === null || Array.isArray(target))) {
     throw new Error("malformed desktop view open target");
@@ -73,6 +107,8 @@ export function parseDesktopViewOpenCommand(payload: unknown): DesktopViewOpenCo
     taskId: command.taskId,
     view: command.view,
     target: target as Record<string, unknown> | undefined,
+    ...Object.fromEntries(["operation", "branch", "windowId", "workspaceId", "paneId", "tabId", "direction", "expiresAt"]
+      .filter(key => key in command).map(key => [key, command[key as keyof DesktopViewOpenCommand]])),
   };
 }
 
@@ -101,6 +137,14 @@ export function mainTabDescriptorForCommand(command: DesktopViewOpenCommand): Ma
 }
 
 export interface DesktopViewOpenDeps {
+  /** Production controller, with the selected local workspace checked at each async boundary. */
+  workspace?: {
+    tabs: MainTabsController;
+    windowId: string;
+    currentBranch: (taskId: string) => string | null;
+    rendered: () => Promise<void>;
+    presentation: () => DesktopWorkspaceSnapshot["displayedPanes"];
+  };
   /** The selectable sidebar row for a task id, if this window has one. */
   findTaskSlotId: (taskId: string) => string | null;
   /** One reload, for a task this window has not heard about yet. */
@@ -120,6 +164,9 @@ export async function performDesktopViewOpen(
   command: DesktopViewOpenCommand,
   deps: DesktopViewOpenDeps,
 ): Promise<DesktopViewOpenOutcome> {
+  if (command.expiresAt && Date.now() >= command.expiresAt) return { opened: false, code: "request_expired", message: "the desktop request expired" };
+  if (command.windowId && deps.workspace && command.windowId !== deps.workspace.windowId)
+    return { opened: false, code: "window_not_found", message: "the command was delivered to a different window" };
   let slotId = deps.findTaskSlotId(command.taskId);
   if (slotId === null) {
     // The server resolved this task a moment ago, so a window that has not
@@ -151,25 +198,82 @@ export async function performDesktopViewOpen(
     };
   }
 
-  let tabId: string;
-  try {
-    tabId = deps.openTab(mainTabScopeKeyForTask(command.taskId), mainTabDescriptorForCommand(command));
-  } catch (error: unknown) {
+  const workspace = deps.workspace;
+  const scope = mainTabScopeKeyForTask(command.taskId);
+  const failure = (code: string, message: string): DesktopViewOpenOutcome => ({ opened: false, code, message });
+  function check(): DesktopViewOpenOutcome | null {
+    if (command.expiresAt && Date.now() >= command.expiresAt) return failure("request_expired", "the desktop request expired");
+    if (!workspace) return command.operation || command.paneId
+      ? failure("renderer_failed", "this desktop does not support pane controls") : null;
+    if (command.windowId && command.windowId !== workspace.windowId) return failure("window_not_found", "the requested window is unavailable");
+    if (!command.branch || workspace.currentBranch(command.taskId) !== command.branch || workspace.tabs.scopeKey.value !== scope)
+      return failure("workspace_unavailable", "the task's current local workspace is not selected");
+    if (command.workspaceId && command.workspaceId !== workspace.tabs.workspaceIdentity(scope, command.branch))
+      return failure("stale_workspace", "inspect the current workspace before addressing its panes");
+    if (command.paneId && !workspace.tabs.panes.value.some(({ pane }) => pane.id === command.paneId))
+      return failure("pane_not_found", "the requested pane no longer exists in this workspace");
+    return null;
+  }
+  function snapshot(): DesktopWorkspaceSnapshot {
+    const tabs = workspace!.tabs;
+    const panes = tabs.panes.value;
     return {
-      opened: false,
-      code: "renderer_failed",
-      message: `opening the view failed: ${error instanceof Error ? error.message : String(error)}`,
+      taskId: command.taskId, branch: command.branch!, windowId: workspace!.windowId,
+      workspaceId: tabs.workspaceIdentity(scope, command.branch!),
+      focusedPaneId: tabs.focusedPaneId.value,
+      activeTabId: tabs.activeTabId.value,
+      displayedPanes: workspace!.presentation(),
+      // Same depth-first order and percentage rectangles MainPanel renders.
+      panes: panes.map(({ pane, ...rect }, index) => ({
+        id: pane.id, order: index + 1, ...rect, activeTabId: pane.active,
+        tabs: pane.tabs.map(id => {
+          const tab = tabs.tabs.value.find(tab => tab.id === id)!;
+          return { id, kind: tab.kind, ...(tab.filePath ? { filePath: tab.filePath } : {}) };
+        }),
+      })),
     };
   }
-
   try {
-    return await deps.revealTab(tabId, command);
+    if (workspace) await workspace.rendered();
+    const invalid = check();
+    if (invalid) return invalid;
+    let paneId = command.paneId;
+    let tabId = command.tabId;
+    if (command.operation) {
+      const tabs = workspace!.tabs;
+      if (tabId && !tabs.tabs.value.some(tab => tab.id === tabId)) return failure("tab_not_found", "the requested tab does not belong to this workspace");
+      if (command.operation === "split") {
+        if (!paneId || !command.direction) return failure("invalid_target", "split needs a pane and direction");
+        paneId = tabs.splitPane(paneId, command.direction, tabId);
+        tabId = tabs.panes.value.find(({ pane }) => pane.id === paneId)?.pane.active || undefined;
+      } else if (command.operation === "move") {
+        if (!paneId || !tabId) return failure("invalid_target", "move needs a pane and tab");
+        tabs.moveTab(tabId, paneId);
+      }
+    } else {
+      // Validate the destination before creating or re-aiming anything.
+      tabId = deps.openTab(scope, mainTabDescriptorForCommand(command));
+      if (paneId) workspace!.tabs.moveTab(tabId, paneId);
+      const outcome = await deps.revealTab(tabId, command);
+      if (!outcome.opened) return outcome;
+    }
+    if (!workspace) return { opened: true };
+    await workspace.rendered();
+    // A task switch/stage transition during a view's load must never confirm a different screen.
+    const changed = check();
+    if (changed) return changed;
+    const result = snapshot();
+    if (tabId) {
+      const destination = result.panes.find(pane => pane.tabs.some(tab => tab.id === tabId));
+      if (!destination || destination.activeTabId !== tabId || (paneId && destination.id !== paneId)
+        || !result.displayedPanes.some(pane => pane.id === destination.id && pane.activeTabId === tabId))
+        return failure("renderer_failed", "the requested tab is no longer showing in the destination pane");
+      paneId = destination.id;
+    }
+    if (paneId && !result.panes.some(pane => pane.id === paneId)) return failure("pane_not_found", "the destination pane disappeared");
+    return { opened: true, workspace: result, ...(paneId ? { paneId } : {}), ...(tabId ? { tabId } : {}) };
   } catch (error: unknown) {
-    return {
-      opened: false,
-      code: "renderer_failed",
-      message: `showing the view failed: ${error instanceof Error ? error.message : String(error)}`,
-    };
+    return failure("renderer_failed", `showing the workspace failed: ${error instanceof Error ? error.message : String(error)}`);
   }
 }
 

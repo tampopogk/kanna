@@ -9,7 +9,8 @@ import ja from "../../i18n/locales/ja.json";
 import ko from "../../i18n/locales/ko.json";
 import type { PipelineItem } from "../../types/kanna";
 import type { TaskUiSlot } from "../../types/taskUi";
-import { computed, ref } from "vue";
+import { computed, ref, nextTick } from "vue";
+import { performDesktopViewOpen, parseDesktopViewOpenCommand, type DesktopViewOpenCommand } from "../../composables/desktopViewOpen";
 import { AGENT_TAB_ID, useMainTabs } from "../../composables/useMainTabs";
 import type { MainTabViewsController } from "../MainPanel.types";
 
@@ -123,6 +124,70 @@ describe("MainPanel", () => {
     });
     vi.stubGlobal("__KANNA_MOBILE__", false);
     localStorage.clear();
+  });
+
+  it("confirms AGENTS.md in the inspected second pane through the real renderer", async () => {
+    const tabs = useMainTabs({ scopeKey: computed(() => "item:task-a") });
+    readTaskFileMock.mockResolvedValue("# Workspace instructions\nRead this file.\n");
+    const resizeObserver = globalThis.ResizeObserver;
+    vi.stubGlobal("ResizeObserver", class {
+      constructor(private callback: ResizeObserverCallback) {}
+      observe() { this.callback([{ contentRect: { width: 1200 } }] as ResizeObserverEntry[], this as unknown as ResizeObserver); }
+      disconnect() {}
+      unobserve() {}
+    });
+    const { default: MainPanel } = await import("../MainPanel.vue");
+    const wrapper = mount(MainPanel, {
+      props: {
+        uiSlot: readySlot(durableTask({ id: "task-a" })), repoPath: "/repo", hasRepos: true,
+        views: {
+          tabs,
+          modals: {
+            activeTaskViewIsRemote: computed(() => false), activeWorktreePath: computed(() => "/repo/task-a"),
+            currentPreviewMarkdownMode: computed(() => "raw"), homePath: computed(() => "/home/tester"),
+          },
+          store: { worktreePaths: { "task-a": "/repo/task-a" } }, preferences: {},
+        } as unknown as MainTabViewsController,
+      },
+      attachTo: document.body,
+      global: {
+        plugins: [createI18n({ legacy: false, locale: "en", messages: { en } })],
+        mocks: { $t: (key: string) => key },
+        stubs: { TaskHeader: true, TerminalTabs: true },
+      },
+    });
+    try {
+      await flushPromises();
+      const run = (fields: Partial<DesktopViewOpenCommand>) => performDesktopViewOpen(parseDesktopViewOpenCommand({
+        requestId: "r", taskId: "task-a", branch: "task-task-a", windowId: "main", view: "agent", ...fields,
+      }), {
+        findTaskSlotId: () => "slot-a", selectTask: async () => {}, refreshTasks: async () => {},
+        openTab: (scope, descriptor) => tabs.openTabInScope(scope, descriptor),
+        revealTab: async (id, command) => { await nextTick(); return wrapper.vm.revealTabTarget(id, command); },
+        workspace: { tabs, windowId: "main", currentBranch: () => "task-task-a", rendered: nextTick,
+          presentation: () => wrapper.vm.workspacePresentation() },
+      });
+      const first = (await run({ operation: "inspect" })).workspace!;
+      await run({ operation: "split", direction: "horizontal", workspaceId: first.workspaceId, paneId: first.panes[0].id });
+      const inspected = (await run({ operation: "inspect" })).workspace!;
+      const second = inspected.displayedPanes[1];
+      tabs.focusPane(first.panes[0].id);
+      const outcome = await run({ view: "file", target: { path: "AGENTS.md" }, workspaceId: first.workspaceId, paneId: second.id });
+      expect(outcome).toMatchObject({ opened: true, paneId: second.id, tabId: "file:AGENTS.md" });
+      expect(readTaskFileMock).toHaveBeenCalledWith("task-a", "AGENTS.md");
+      const shown = wrapper.findAll(".reference-view").find(view => view.text().includes("Workspace instructions"));
+      expect(shown?.isVisible()).toBe(true);
+      expect(shown?.attributes("style")).toContain("left: 50%");
+      const fileElement = shown!.element;
+      const moved = await run({ operation: "move", workspaceId: first.workspaceId, paneId: first.panes[0].id, tabId: "file:AGENTS.md" });
+      expect(moved).toMatchObject({ opened: true, paneId: first.panes[0].id, tabId: "file:AGENTS.md" });
+      expect(wrapper.find(".reference-view").element).toBe(fileElement);
+      expect(fileElement.isConnected).toBe(true);
+      expect(tabs.tabs.value.filter(tab => tab.id === "file:AGENTS.md")).toHaveLength(1);
+    } finally {
+      wrapper.unmount();
+      vi.stubGlobal("ResizeObserver", resizeObserver);
+    }
   });
 
   it.each([

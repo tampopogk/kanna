@@ -384,7 +384,40 @@ pub(crate) enum TaskCommands {
         #[arg(long)]
         machine_id: Option<String>,
 
+        /// Exact window id returned by kanna_workspace inspect
+        #[arg(long)]
+        window_id: Option<String>,
+        /// Workspace incarnation returned by inspect (required with --pane-id)
+        #[arg(long)]
+        workspace_id: Option<String>,
+        /// Destination pane returned by inspect
+        #[arg(long)]
+        pane_id: Option<String>,
+
         /// Override the local Kanna server base URL
+        #[arg(long)]
+        server_url: Option<String>,
+    },
+    /// Inspect, split or move tabs in the task's current desktop workspace
+    Workspace {
+        #[arg(long)]
+        task_id: String,
+        /// inspect, split or move; pane actions require identities from inspect
+        #[arg(long)]
+        operation: String,
+        #[arg(long)]
+        window_id: Option<String>,
+        #[arg(long)]
+        workspace_id: Option<String>,
+        #[arg(long)]
+        pane_id: Option<String>,
+        #[arg(long)]
+        tab_id: Option<String>,
+        /// horizontal (right) or vertical (below), only for split
+        #[arg(long)]
+        direction: Option<String>,
+        #[arg(long)]
+        machine_id: Option<String>,
         #[arg(long)]
         server_url: Option<String>,
     },

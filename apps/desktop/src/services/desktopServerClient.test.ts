@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  acknowledgeDesktopViewOpen,
   closeDesktopTask,
   createDesktopTask,
   createDesktopBackup,
@@ -51,6 +52,19 @@ vi.mock("../invoke", () => ({
 }));
 
 describe("desktopServerClient", () => {
+  it("delivers the renderer's exact pane/tab confirmation in the acknowledged lane", async () => {
+    const fetchMock = vi.fn(async () => new Response('{"acknowledged":true}', { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const outcome = { opened: true, paneId: "pane-2", tabId: "file:AGENTS.md", workspace: {
+      taskId: "task-a", branch: "task-a-2", windowId: "main", workspaceId: "incarnation:task-a-2",
+      activeTabId: "file:AGENTS.md", focusedPaneId: "pane-2", panes: [], displayedPanes: [],
+    } };
+    await acknowledgeDesktopViewOpen("request-1", outcome);
+    expect(fetchMock).toHaveBeenCalledWith("http://127.0.0.1:48121/v1/desktop/views/ack", expect.objectContaining({
+      method: "POST", headers: JSON_REQUEST_HEADERS, body: JSON.stringify({ requestId: "request-1", ...outcome }),
+    }));
+  });
+
   it("discovers models on the selected repo and saves a task-only stage choice with a precondition", async () => {
     const fetchMock = vi.fn(async () => new Response("[]", { status: 200 }));
     vi.stubGlobal("fetch", fetchMock);

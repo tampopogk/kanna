@@ -43,6 +43,7 @@ fn bundled_catalog_parses_and_declares_all_tools() {
             "kanna_set_task_workflow",
             "kanna_replace_task_workflow",
             "kanna_open_view",
+            "kanna_workspace",
             "kanna_task_logs",
             "kanna_task_inputs",
             "kanna_task_transfers",
@@ -2870,4 +2871,30 @@ fn harness_aliases_use_legacy_wire_keys_and_refuse_duplicate_spellings() {
             .unwrap_err()
             .contains("conflicting"));
     }
+}
+
+#[test]
+fn desktop_pane_controls_keep_machine_routing_and_destination_on_the_shared_wire() {
+    let catalog = bundled_catalog();
+    let args = json!({"task_id":"task-a", "operation":"move", "machine_id":"remote",
+        "window_id":"window-a", "workspace_id":"opaque", "pane_id":"pane-2", "tab_id":"file:AGENTS.md"});
+    let request = resolve_request(&catalog, "kanna_workspace", &args).unwrap();
+    assert_eq!(request.machine_id.as_deref(), Some("remote"));
+    assert_eq!(
+        request.body,
+        json!({"taskId":"task-a", "operation":"move", "windowId":"window-a",
+        "workspaceId":"opaque", "paneId":"pane-2", "tabId":"file:AGENTS.md"})
+    );
+    assert!(resolve_request(
+        &catalog,
+        "kanna_workspace",
+        &json!({"task_id":"task-a", "operation":"execute"})
+    )
+    .is_err());
+    assert!(resolve_request(
+        &catalog,
+        "kanna_workspace",
+        &json!({"task_id":"task-a", "operation":"split", "direction":"diagonal"})
+    )
+    .is_err());
 }

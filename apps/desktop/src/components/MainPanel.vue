@@ -428,6 +428,7 @@ async function revealTabTarget(
   // it lands through the store rather than in the same tick — so activation is
   // retried until the scope catches up rather than giving up on the first one.
   const activated = await waitForViewReady(() => {
+    if (controller.scopeKey.value !== `item:${command.taskId}`) return false;
     controller.activateTab(tabId);
     return controller.activeTabId.value === tabId;
   }, { timeoutMs: 3_000 });
@@ -775,7 +776,14 @@ watch(() => props.hasRepos, (has) => {
   if (!has) checkAllClis();
 }, { immediate: true });
 
+function workspacePresentation() {
+  return visiblePanes.value.map(({ pane, left, top, width, height }) => ({
+    id: pane.id, left, top, width, height, activeTabId: pane.active,
+  }));
+}
+
 defineExpose({
+  workspacePresentation,
   recheckClis: checkAllClis,
   dismissActiveTab,
   revealTabTarget,
