@@ -16,9 +16,9 @@ by the relay and stored in the per-environment Firebase/GCS bucket.
 
 ## Shared Contract
 
-- Protocol: Expo Updates protocol version `1`, platform `ios`.
+- Protocol: Expo Updates protocol version `1`, platform `ios` or `android`.
 - Manifest endpoint: `GET /ota/manifest`.
-- Asset endpoint: `GET /ota/assets?key=<hash>&runtimeVersion=<rv>&platform=ios`.
+- Asset endpoint: `GET /ota/assets?key=<hash>&runtimeVersion=<rv>&platform=<ios|android>`.
 - Origins: `https://relay-staging.kanna.build` for staging and `https://relay.kanna.build` for production.
 - Dev: disabled.
 - Channels: `staging` and `production`, passed by `expo-channel-name`.
@@ -102,13 +102,21 @@ Connect identifiers.
 Objects live in the environment bucket under `ota/`:
 
 ```text
-ota/ios/<runtimeVersion>/updates/<updateId>/metadata.json
-ota/ios/<runtimeVersion>/updates/<updateId>/expoConfig.json
-ota/ios/<runtimeVersion>/updates/<updateId>/kanna-source.json
-ota/ios/<runtimeVersion>/updates/<updateId>/bundles/<sha256-base64url>.hbc
-ota/ios/<runtimeVersion>/updates/<updateId>/assets/<sha256-base64url>
-ota/ios/<runtimeVersion>/channels/<channel>.json
+ota/<platform>/<runtimeVersion>/updates/<updateId>/metadata.json
+ota/<platform>/<runtimeVersion>/updates/<updateId>/expoConfig.json
+ota/<platform>/<runtimeVersion>/updates/<updateId>/kanna-source.json
+ota/<platform>/<runtimeVersion>/updates/<updateId>/bundles/<sha256-base64url>.hbc
+ota/<platform>/<runtimeVersion>/updates/<updateId>/assets/<sha256-base64url>
+ota/<platform>/<runtimeVersion>/channels/<channel>.json
 ```
+
+Each platform/runtime/channel has its own pointer. Existing iOS objects need no
+migration. Android requests its embedded runtime and only receives objects from
+that exact Android runtime path; missing pointers return 404, never an iOS or
+other-runtime fallback. An iOS binary at runtime R does not authorize Android
+runtime S to load R. Publishing Android/R before an Android/R binary ships is
+safe but reaches no Android installation until a compatible binary exists.
+Keep older pointers; never relabel new JS with an older runtime to force delivery.
 
 The channel pointer is the commit point:
 
@@ -129,7 +137,7 @@ UUID shape using the first 32 hex characters.
 `kanna-source.json` records the git source and mobile release the update was exported from:
 
 ```json
-{ "updateId": "<updateId>", "ref": "release/0.2", "commit": "<40-hex sha>", "shortCommit": "<12-hex sha>", "releaseVersion": "1.0.1" }
+{ "updateId": "<updateId>", "ref": "release/0.2", "commit": "<40-hex sha>", "shortCommit": "<12-hex sha>", "releaseVersion": "1.0.1", "sourceBranch": "release/0.2" }
 ```
 
 The pointer's `sourceRef`/`sourceCommit` answer "what is this channel serving
@@ -140,8 +148,9 @@ that file's hash, two otherwise identical releases with different release
 numbers remain distinct immutable updates. The relay copies it into signed Expo
 manifest metadata, which lets the running client display the release without
 confusing it with the installed native binary. Older metadata without the field
-continues to serve. A rollback pointer carries no source fields, but preserves
-the target's release version when its metadata provides one.
+continues to serve. A staging rollback pointer recovers source fields from the target record and
+preserves its release version when metadata provides one. New staging source
+records also carry the verified canonical `sourceBranch`.
 
 ## Relay
 
@@ -200,11 +209,14 @@ Deploy relay support through the normal cloud deploy flow:
 ./kd cloud deploy --production --relay --ref release/0.2
 ```
 
-Publish a JS/asset update:
+Publish one platform's JS/asset update (`--platform` defaults to `ios`).
+`kd mobile publish` remains the iOS App Store binary pipeline; OTA uses
+`kd mobile ota publish`:
 
 ```bash
-./kd mobile ota publish --staging
-./kd mobile ota publish --production --ref release/0.2
+./kd mobile ota publish --staging --platform ios
+./kd mobile ota publish --staging --platform android
+./kd mobile ota publish --production --platform android --ref release/0.2
 ```
 
 `publish` exports whatever the working tree contains, so the source is a guard
@@ -231,24 +243,57 @@ policy. Production publishes and rollbacks still require an explicit human
 request (see [release.md](../dev/release.md#mobile-ota)).
 
 `publish` validates the committed certificate and its validity window before
-Expo export or cloud upload.
+Expo export or cloud upload. The same RSA key, certificate and key ID cover both
+platforms. Expo's Android plugin embeds the global URL, request headers,
+certificate and signing metadata, and the Android downloader verifies signed
+manifests/directives. Android support here changes no native configuration and
+requires no runtime bump.
+
+Staging OTA now invokes the existing desktop staging-lineage policy **before
+export, including dry-run**. This closes a previous guard gap: some publishes
+that previously succeeded are now refused. A source must be verifiably on
+`origin/main` or `origin/release/X.Y`, then satisfy the same active-candidate
+ancestry, freeze and recorded lineage rules as desktop staging. An arbitrary
+task branch cannot bypass an active release-branch freeze. Name a canonical
+`--ref` at the checked-out commit or publish from that canonical branch;
+unverifiable source/candidate data refuses publication. Rollback checks the
+target's durable `kanna-source.json` commit/branch, never the current checkout.
+Legacy targets with missing or unidentifiable provenance cannot authorize a
+staging rollback. No reset, abandon, or soak bypass is added.
+
+Export, config/runtime validation, hashing and staging finish before any upload.
+The complete selected update directory is reconciled (including checksums)
+before writing its pointer, even if metadata exists from an interrupted upload.
+Export/upload failure leaves the pointer unchanged; a pointer-write failure is
+reported as failure. Each invocation selects one platform: a later Android
+failure leaves an earlier successful iOS publication intact. There is no
+cross-platform transaction or automatic rollback. The same mobile release
+number can be published separately to both platforms; changed content advances
+`apps/mobile/VERSION` under the existing per-pointer version guard.
+
+There is no OTA promotion command and `kd release` does not copy or require OTA
+objects. Production delivery uses its own explicitly authorized platform publish
+and verification.
 
 Check the current pointer:
 
 ```bash
-./kd mobile ota status --staging
-./kd mobile ota status --production
+./kd mobile ota status --staging --platform android
+./kd mobile ota status --production --platform android
 ```
 
 Run the read-only cloud and relay preflight before asking a human to verify an
 OTA on a physical device:
 
 ```bash
-./kd mobile ota doctor --staging
-./kd mobile ota doctor --production
+./kd mobile ota doctor --staging --platform android
+./kd mobile ota doctor --production --platform android
 ```
 
-`preflight` is an alias for `doctor`. The command does not publish, roll back,
+`status`, `doctor`, and its alias `preflight` accept `--platform ios|android`
+(default `ios`). They inspect only that platform; missing Android objects do not
+fail an iOS check. The iOS native `mobile qa --production --ota` caller stays
+explicitly iOS; use Android OTA doctor for Android. `preflight` is an alias for `doctor`. The command does not publish, roll back,
 write GCS objects, modify Secret Manager, or install/launch a device app. It
 requires Google Cloud credentials for the target project and verifies:
 
@@ -259,7 +304,7 @@ requires Google Cloud credentials for the target project and verifies:
 - Secret Manager private-key secret existence
 - relay VM service account resolution
 - relay service account IAM for Secret Manager and OTA GCS reads
-- every runtime channel pointer, with older pointer publication dates marked stale relative to the newest channel pointer
+- every selected-platform runtime channel pointer, with older pointer publication dates marked stale relative to the newest channel pointer
 - paired-device build observations from the running desktop, including compatibility and confirmed application when available
 
 Publish success means the artifacts and pointer were published. It does not mean
@@ -269,8 +314,11 @@ runtimes, and reports unknown inventory explicitly. It remains allowed.
 `status` includes these observations alongside the pointer and recent updates;
 its exit status still describes pointer readability. `doctor` returns a nonzero
 result for WARN as well as FAIL, so unknown device data cannot produce an
-all-PASS preflight. A matching runtime alone does not confirm application:
-confirmation requires a recent report naming the channel's current update id.
+all-PASS preflight. The current device-report contract has no platform field,
+so reports are labelled platform-unidentified. A matching runtime alone proves
+neither Android compatibility nor application. Confirmation requires a fresh OTA
+report naming the exact selected-platform update ID; identifying a particular
+phone still requires device-specific evidence.
 
 The inventory source defaults to `http://127.0.0.1:48121` for staging and
 `http://127.0.0.1:48120` for production, regardless of the publishing worktree's
@@ -320,7 +368,7 @@ not implied by provisioning or deployment.
 Rollback by repointing the channel to a prior update id:
 
 ```bash
-./kd mobile ota publish --staging --rollback-to <updateId>
+./kd mobile ota publish --staging --platform android --rollback-to <updateId>
 ./kd mobile ota publish --production --rollback-to <updateId>
 ```
 
@@ -348,3 +396,42 @@ app on a physical iPhone, confirm the update is fetched and applied, change a
 visible JS string, republish, and confirm the replacement update applies on
 foreground or restart. Agent automation must not install, launch, or run
 physical-device Appium for this check.
+
+
+### Android implementation and Ship acceptance
+
+Run the opt-in real-export integration locally (no cloud writes or device access):
+
+```sh
+KANNA_RUN_OTA_EXPORT_INTEGRATION=1 pnpm --dir tools/kd exec vitest run src/runtime/mobile-ota.integration.test.ts
+```
+
+It exports Android through the publisher's command plan, stages with production
+code, serves via the real relay process/local storage, verifies the signed
+manifest, and compares the launch bundle and every declared asset to the export.
+Evidence is written under the worktree's `.tmp/`.
+
+For task c1516501, deployment/publication/device acceptance belongs to Ship after
+implementation/review. Coordinate exclusive phone access with task 69234f81;
+resolve the staging environment with `kanna_info`. The authorized Samsung serial
+is `R5CX42N3NLK`, package `build.kanna.app.staging`; every adb invocation must use
+`adb -s R5CX42N3NLK`. Preserve its pairing/data and send no agent input from it.
+Inspect the actual installed embedded runtime, certificate/channel and launch
+source first; never assume an earlier runtime is still installed. From a clean,
+reviewed, lineage-eligible source:
+
+```sh
+./kd cloud deploy --staging --relay
+./kd mobile ota publish --staging --platform android
+./kd mobile ota status --staging --platform android
+./kd mobile ota doctor --staging --platform android
+```
+
+Observe download of the exact published update, application through the existing
+reload/foreground flow, then OTA launch source/update ID at the same native
+runtime. Do not rebuild just to force runtime numbers to match, discard task
+0d72b7af's native pairing changes, or bypass staging lineage. If credentials,
+lineage, device access or runtime mismatch prevent acceptance, report that limit
+and the narrower local evidence. Local integration is not on-device delivery.
+The existing physical-iPhone human check above remains unchanged. Production
+publication/promotions still require an explicit human request.

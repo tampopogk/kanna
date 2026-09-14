@@ -1180,8 +1180,8 @@ async function resolveCandidateLineage(
  * active release soak, or ship against unverifiable channel metadata. Runs
  * before any build so a refusal costs seconds, not a signed build.
  */
-async function assertStagingPublishAllowed(
-  input: ReleaseShipInput,
+export async function assertStagingPublishAllowed(
+  input: ReleaseCommandContext,
   proposed: { sourceBranch: string; commit: string; branchTip: string | null }
 ): Promise<{ active: StagingCandidate | null; postPromotion: PostPromotionTrunkRecord | null; recut: LineageRecutRecord | null; repoSlug: string }> {
   const remoteUrl = await mustRun(input.runner, "git", ["remote", "get-url", "origin"], input.repoRoot, input.env);

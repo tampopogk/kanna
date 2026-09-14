@@ -1,6 +1,6 @@
 import { z } from "zod";
 import type { CloudEnvironmentName } from "./environment";
-import type { MobileOtaContext } from "./mobile-ota";
+import type { MobileOtaContext, MobileOtaPlatform } from "./mobile-ota";
 
 const buildSchema = z.object({
   environment: z.string(), channel: z.string(), runtimeVersion: z.string().nullable(),
@@ -56,7 +56,7 @@ export async function observeMobileDevices(
     const inventory = devicesSchema.parse(JSON.parse(result.stdout));
     lines.push(`desktop: ${inventory.desktopId}`);
     let warnings = false;
-    let compatible = 0;
+    let appliedCount = 0;
     const runtimes = new Set<string>();
     for (const device of inventory.devices) {
       const build = device.build;
@@ -74,17 +74,18 @@ export async function observeMobileDevices(
       const runtimeKnown = build.runtimeVersion && (build.source === "ota" || build.source === "embedded") && build.runtimeVersion !== "Unknown";
       if (runtimeKnown) runtimes.add(build.runtimeVersion!);
       const matches = runtimeKnown && build.runtimeVersion === runtime;
-      if (matches && fresh) compatible++;
-      if (!matches || !fresh || (updateId && build.updateId !== updateId)) warnings = true;
-      lines.push(`${device.deviceName} (${device.deviceId}): runtime ${build.runtimeVersion ?? "unknown"}, build ${build.nativeVersion ?? "unknown"} (${build.nativeBuild ?? "unknown"}), ${build.source} update ${build.updateId ?? "none"}; reported ${new Date(build.reportedAtUnixMs).toISOString()}${fresh ? "" : " [STALE/invalid observation: over 24h or clock mismatch]"}`);
+      const applied = matches && fresh && updateId && build.source === "ota" && build.updateId === updateId;
+      if (applied) appliedCount++;
+      else warnings = true;
+      lines.push(`${device.deviceName} (${device.deviceId}): platform unidentified, runtime ${build.runtimeVersion ?? "unknown"}, build ${build.nativeVersion ?? "unknown"} (${build.nativeBuild ?? "unknown"}), ${build.source} update ${build.updateId ?? "none"}; reported ${new Date(build.reportedAtUnixMs).toISOString()}${fresh ? "" : " [STALE/invalid observation: over 24h or clock mismatch]"}`);
       if (runtimeKnown && !matches) lines.push(`WARNING OTA DRIFT: the reported build cannot receive runtime ${runtime}; install a compatible native build to receive this publication.`);
-      if (matches) lines.push(updateId && build.source === "ota" && build.updateId === updateId && fresh
+      if (matches) lines.push(applied
         ? "Applied update confirmed by last device report."
-        : "Runtime compatible; application of the channel update is NOT confirmed.");
+        : "Runtime matches; platform compatibility and application of the channel update are NOT confirmed.");
     }
-    if (!compatible) {
+    if (!appliedCount) {
       warnings = true;
-      lines.push(`WARNING: no recently observed paired device runs published runtime ${runtime} on ${channel}. Reported runtimes: ${[...runtimes].sort().join(", ") || "UNKNOWN (no device runtime data for this channel)"}.`);
+      lines.push(`WARNING: no recently observed paired device confirms the exact update at published runtime ${runtime} on ${channel}. Reported runtimes: ${[...runtimes].sort().join(", ") || "UNKNOWN (no device runtime data for this channel)"}.`);
     }
     if (warnings) lines.push("WARNING: device delivery is not fully verified; see observations above.");
     return { status: warnings ? "WARN" : "PASS", detail: lines.join("\n") };
@@ -94,9 +95,9 @@ export async function observeMobileDevices(
 }
 
 export async function observeRuntimePointers(
-  context: MobileOtaContext, bucket: string, channel: string, runtime: string
+  context: MobileOtaContext, bucket: string, channel: string, runtime: string, platform: MobileOtaPlatform = "ios"
 ): Promise<OtaObservation> {
-  const prefix = `gs://${bucket}/ota/ios/`;
+  const prefix = `gs://${bucket}/ota/${platform}/`;
   try {
     const result = await context.runner.run("gcloud", ["storage", "ls", `${prefix}*/channels/${channel}.json`], { cwd: context.repoRoot, env: context.env });
     if (result.exitCode !== 0 || !result.stdout.trim()) throw new Error("channel pointer listing unavailable or empty");

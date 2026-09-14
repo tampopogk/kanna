@@ -637,7 +637,7 @@ function parseFlagInput(
       index += 1;
       continue;
     }
-    if (arg === "--build" || arg === "--owner" || arg === "--cloud") {
+    if (arg === "--build" || arg === "--owner" || arg === "--cloud" || arg === "--platform") {
       const value = rest[index + 1];
       if (!value || value.startsWith("--")) {
         throw new Error(`${arg} requires a value`);
@@ -1202,9 +1202,9 @@ const helpTopics: Record<string, string[]> = {
     "  mobile verify --ipa <path> [--version <version>] [--build-number <number>]",
     "  mobile doctor (--device | --android-emulator [<avd>] | --android-device <serial>)",
     "  mobile qa --production [--ota]",
-    "  mobile ota publish --staging|--production [--ref <branch|tag|sha>] [--dry-run] [--rollback-to <updateId>]",
-    "  mobile ota status --staging|--production",
-    "  mobile ota doctor|preflight --staging|--production",
+    "  mobile ota publish --staging|--production [--platform ios|android] [--ref <branch|tag|sha>] [--dry-run] [--rollback-to <updateId>]",
+    "  mobile ota status --staging|--production [--platform ios|android]",
+    "  mobile ota doctor|preflight --staging|--production [--platform ios|android]",
     "  mobile ota provision --staging|--production",
     "  mobile ota provision-secret --staging|--production --key-path <path>",
     "  mobile test",
@@ -1481,19 +1481,21 @@ const helpTopics: Record<string, string[]> = {
   ],
   "mobile ota": [
     "Usage: kd mobile ota <command>",
+    "OTA publish/status/doctor select one platform; --platform defaults to ios.",
     "",
     "Commands:",
-    "  mobile ota publish --staging|--production [--ref <branch|tag|sha>] [--dry-run] [--rollback-to <updateId>]",
-    "  mobile ota status --staging|--production",
-    "  mobile ota doctor|preflight --staging|--production",
+    "  mobile ota publish --staging|--production [--platform ios|android] [--ref <branch|tag|sha>] [--dry-run] [--rollback-to <updateId>]",
+    "  mobile ota status --staging|--production [--platform ios|android]",
+    "  mobile ota doctor|preflight --staging|--production [--platform ios|android]",
     "  mobile ota provision --staging|--production",
     "  mobile ota provision-secret --staging|--production --key-path <path>"
   ],
   "mobile ota publish": [
-    "Usage: kd mobile ota publish --staging|--production [--ref <branch|tag|sha>] [--dry-run] [--rollback-to <updateId>]",
+    "Usage: kd mobile ota publish --staging|--production [--platform ios|android] [--ref <branch|tag|sha>] [--dry-run] [--rollback-to <updateId>]",
     "",
     "Publish or roll back a Kanna mobile OTA update.",
-    "A publish uses apps/mobile/VERSION as its signed release version and requires it to advance on that channel.",
+    "A publish uses apps/mobile/VERSION as its signed release version and requires it to advance on that platform/runtime/channel.",
+    "Staging validates main/release source lineage against desktop-staging, including dry-run; rollback validates the target source record.",
     "",
     "Options:",
     "  --ref <branch|tag|sha>    Source ref the update is exported from. Required with",
@@ -1501,21 +1503,22 @@ const helpTopics: Record<string, string[]> = {
     "                            ref must be checked out and the tree clean. Omitted elsewhere,",
     "                            HEAD is resolved and reported. Not required for --rollback-to,",
     "                            which exports nothing.",
+    "  --platform ios|android    Select one platform (default ios).",
     "  --dry-run                 Export and stage without writing to GCS.",
     "  --rollback-to <updateId>  Repoint the channel at an already-published update."
   ],
   "mobile ota status": [
-    "Usage: kd mobile ota status --staging|--production",
+    "Usage: kd mobile ota status --staging|--production [--platform ios|android]",
     "",
     "Show the current Kanna mobile OTA channel pointer."
   ],
   "mobile ota doctor": [
-    "Usage: kd mobile ota doctor --staging|--production",
+    "Usage: kd mobile ota doctor --staging|--production [--platform ios|android]",
     "",
     "Run read-only preflight checks for Kanna mobile OTA cloud and relay wiring."
   ],
   "mobile ota preflight": [
-    "Usage: kd mobile ota preflight --staging|--production",
+    "Usage: kd mobile ota preflight --staging|--production [--platform ios|android]",
     "",
     "Alias for 'kd mobile ota doctor'."
   ],

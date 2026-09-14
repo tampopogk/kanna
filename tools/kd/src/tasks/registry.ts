@@ -349,6 +349,7 @@ const mobileVerifyInputSchema = z.object({
 });
 
 const mobileOtaPublishInputSchema = z.object({
+  platform: z.enum(["ios", "android"]).default("ios"),
   production: z.boolean().default(false),
   staging: z.boolean().default(false),
   dryRun: z.boolean().default(false),
@@ -357,11 +358,13 @@ const mobileOtaPublishInputSchema = z.object({
 });
 
 const mobileOtaStatusInputSchema = z.object({
+  platform: z.enum(["ios", "android"]).default("ios"),
   production: z.boolean().default(false),
   staging: z.boolean().default(false)
 });
 
 const mobileOtaDoctorInputSchema = z.object({
+  platform: z.enum(["ios", "android"]).default("ios"),
   production: z.boolean().default(false),
   staging: z.boolean().default(false)
 });
@@ -2516,11 +2519,11 @@ async function executeMobileQa(input: MobileQaInput): Promise<TaskResult> {
       env: context.env,
       runner: nodeCommandRunner
     };
-    const status = await executeMobileOtaStatusWithContext({ production: true, staging: false }, otaContext);
+    const status = await executeMobileOtaStatusWithContext({ production: true, staging: false, platform: "ios" }, otaContext);
     otaResults.push(status);
     messages.push("", status.message);
     if (status.ok) {
-      const doctor = await executeMobileOtaDoctorWithContext({ production: true, staging: false }, otaContext);
+      const doctor = await executeMobileOtaDoctorWithContext({ production: true, staging: false, platform: "ios" }, otaContext);
       otaResults.push(doctor);
       messages.push("", doctor.message);
     }

@@ -21,6 +21,10 @@ const metadata: ExpoExportMetadata = {
   bundler: "metro",
   kanna: { releaseVersion: "1.0.1" },
   fileMetadata: {
+    android: {
+      bundle: "_expo/static/js/android/main.hbc",
+      assets: [{ path: "assets/android.png", ext: "png" }],
+    },
     ios: {
       bundle: "_expo/static/js/ios/main.hbc",
       assets: [{ path: "assets/icon.png", ext: "png" }],
@@ -29,6 +33,8 @@ const metadata: ExpoExportMetadata = {
 };
 
 const files = new Map<string, Buffer>([
+  ["_expo/static/js/android/main.hbc", Buffer.from("android bundle bytes")],
+  ["assets/android.png", Buffer.from("android png bytes")],
   ["_expo/static/js/ios/main.hbc", Buffer.from("bundle bytes")],
   ["assets/icon.png", Buffer.from("png bytes")],
 ]);
@@ -50,11 +56,11 @@ describe("OTA manifest helpers", () => {
     ).toBe("12b4a6d5-7dd6-5bf2-973e-c141ef211ca8");
   });
 
-  it("builds protocol-correct iOS manifest JSON from Expo export metadata", async () => {
+  it.each(["ios", "android"] as const)("builds protocol-correct %s manifest JSON from Expo export metadata", async (platform) => {
     const manifest = await buildExpoManifest({
       origin: "https://relay-staging.kanna.build",
       runtimeVersion: "1.0.0",
-      platform: "ios",
+      platform,
       updateId: "12b4a6d5-7dd6-5bf2-973e-c141ef211ca8",
       createdAt: "2026-06-24T12:00:00.000Z",
       metadata,
@@ -63,10 +69,10 @@ describe("OTA manifest helpers", () => {
     });
 
     const bundleHash = createHash("sha256")
-      .update(files.get("_expo/static/js/ios/main.hbc") ?? Buffer.alloc(0))
+      .update(files.get(metadata.fileMetadata[platform].bundle) ?? Buffer.alloc(0))
       .digest("base64url");
     const assetHash = createHash("sha256")
-      .update(files.get("assets/icon.png") ?? Buffer.alloc(0))
+      .update(files.get(metadata.fileMetadata[platform].assets![0].path) ?? Buffer.alloc(0))
       .digest("base64url");
 
     expect(manifest).toMatchObject({
@@ -81,7 +87,7 @@ describe("OTA manifest helpers", () => {
         contentType: "application/javascript",
         url:
           "https://relay-staging.kanna.build/ota/assets?key=" +
-          `${bundleHash}&runtimeVersion=1.0.0&platform=ios`,
+          `${bundleHash}&runtimeVersion=1.0.0&platform=${platform}`,
       },
       assets: [
         {
@@ -91,7 +97,7 @@ describe("OTA manifest helpers", () => {
           fileExtension: ".png",
           url:
             "https://relay-staging.kanna.build/ota/assets?key=" +
-            `${assetHash}&runtimeVersion=1.0.0&platform=ios`,
+            `${assetHash}&runtimeVersion=1.0.0&platform=${platform}`,
         },
       ],
     });
@@ -140,6 +146,13 @@ describe("OTA manifest helpers", () => {
     expect(response.headers["cache-control"]).toBe("private, max-age=0");
   });
 
+  it("accepts Android request headers", () => {
+    expect(parseManifestRequestHeaders({
+      "expo-protocol-version": "1", "expo-platform": "android",
+      "expo-runtime-version": "1.0.0", "expo-channel-name": "staging",
+    }).platform).toBe("android");
+  });
+
   it("validates the shared request contract and rejects unsupported platforms", () => {
     expect(
       parseManifestRequestHeaders({
@@ -158,7 +171,7 @@ describe("OTA manifest helpers", () => {
     expect(() =>
       parseManifestRequestHeaders({
         "expo-protocol-version": "1",
-        "expo-platform": "android",
+        "expo-platform": "web",
         "expo-runtime-version": "1.0.0",
         "expo-channel-name": "staging",
       })

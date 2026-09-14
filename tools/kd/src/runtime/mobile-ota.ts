@@ -11,9 +11,19 @@ import {
 } from "./mobile-ota-certificate";
 import type { CommandRunner } from "./process";
 import { formatSourceRef, resolveSourceRef, type ResolvedSourceRef } from "./source-ref";
-import { compareVersions } from "./release";
+import { assertStagingPublishAllowed, compareVersions } from "./release";
+import { isReleaseBranchName } from "./release-lineage";
+
+export type MobileOtaPlatform = "ios" | "android";
+
+export function resolveMobileOtaPlatform(platform?: string): MobileOtaPlatform {
+  if (platform === undefined) return "ios";
+  if (platform === "ios" || platform === "android") return platform;
+  throw new Error("Mobile OTA --platform must be ios or android.");
+}
 
 export interface MobileOtaInput {
+  platform?: MobileOtaPlatform;
   staging: boolean;
   production: boolean;
   dryRun?: boolean;
@@ -68,6 +78,7 @@ export interface MobileOtaCommandPlan {
 }
 
 export interface MobileOtaPublishPlan {
+  platform: MobileOtaPlatform;
   environment: CloudEnvironmentName;
   /** Resolved source the update was exported from. */
   source?: ResolvedSourceRef;
@@ -148,6 +159,7 @@ interface OtaSourceRecord {
   commit: string;
   shortCommit: string;
   releaseVersion: string;
+  sourceBranch?: string;
 }
 
 interface OtaDoctorCheck {
@@ -166,6 +178,44 @@ interface IamPolicy {
 const OTA_SOURCE_OBJECT = "kanna-source.json";
 const OTA_SECRET_NAME = "kanna-mobile-ota-private-key-pem";
 const OTA_KEY_ID = "kanna-mobile-ota-v1";
+
+/** Establish a real source branch before invoking the shared desktop policy.
+ * A task branch must never masquerade as a third lineage outside the main freeze.
+ * Rollback uses only the target's durable provenance, never the current checkout.
+ */
+async function assertMobileOtaStagingSource(
+  context: MobileOtaContext,
+  source: ResolvedSourceRef & { sourceBranch?: string },
+  rollback = false
+): Promise<string> {
+  const canonical = (ref: string) => ref.replace(/^(refs\/heads\/|refs\/remotes\/origin\/|origin\/)/, "");
+  let branch = canonical(source.sourceBranch ?? source.ref);
+  if (branch !== "main" && !isReleaseBranchName(branch) && !rollback) {
+    const current = await context.runner.run("git", ["branch", "--show-current"], {
+      cwd: context.repoRoot, env: context.env,
+    });
+    branch = current.exitCode === 0 ? current.stdout.trim() : "";
+  }
+  if (branch !== "main" && !isReleaseBranchName(branch)) {
+    throw new Error("Cannot establish staging OTA source lineage. Publish a reviewed main or release/X.Y commit with --ref main|release/X.Y; rollback targets must record that source branch.");
+  }
+  await mustRun(context.runner, "git", ["fetch", "origin", `refs/heads/${branch}`], context.repoRoot, context.env);
+  const remote = await context.runner.run("git", ["ls-remote", "origin", `refs/heads/${branch}`], {
+    cwd: context.repoRoot, env: context.env,
+  });
+  const tip = remote.stdout.trim().split(/\s+/)[0] ?? "";
+  if (remote.exitCode !== 0 || !/^[0-9a-f]{40}$/.test(tip)) {
+    throw new Error(`Cannot verify staging OTA source branch origin/${branch}.`);
+  }
+  const ancestor = await context.runner.run("git", ["merge-base", "--is-ancestor", source.commit, tip], {
+    cwd: context.repoRoot, env: context.env,
+  });
+  if (ancestor.exitCode !== 0) {
+    throw new Error(`Cannot verify OTA source ${source.commit} belongs to origin/${branch}. Publish from a reviewed source on that branch.`);
+  }
+  await assertStagingPublishAllowed(context, { sourceBranch: branch, commit: source.commit, branchTip: tip });
+  return branch;
+}
 
 export function computeExpoUpdateId(metadataBytes: Buffer): string {
   const hash = createHash("sha256").update(metadataBytes).digest("hex");
@@ -196,12 +246,14 @@ export async function resolveMobileRuntimeVersion(
 export async function buildMobileOtaPublishPlan(input: {
   repoRoot: string;
   environment: CloudEnvironmentName;
+  platform?: MobileOtaPlatform;
   distDir?: string;
   dryRun?: boolean;
   updateId?: string;
   source?: ResolvedSourceRef;
   releaseVersion?: string;
 }): Promise<MobileOtaPublishPlan> {
+  const platform = resolveMobileOtaPlatform(input.platform);
   const identity = resolveKdEnvironment(cloudEnvironmentToKdEnvironment(input.environment));
   if (!identity.otaBucket || !identity.otaChannel) {
     throw new Error(`Mobile OTA is not configured for ${input.environment}.`);
@@ -214,13 +266,14 @@ export async function buildMobileOtaPublishPlan(input: {
   const distDir = input.distDir ?? join(input.repoRoot, "apps/mobile/dist");
   const runtimeVersion = await resolveMobileRuntimeVersion(input.repoRoot, kdEnvironmentName);
   const releaseVersion = input.releaseVersion ?? await readCurrentVersion(input.repoRoot);
-  const updateId = input.updateId ?? (await buildStagedExpoMetadata(distDir, releaseVersion)).updateId;
-  const updateObjectPrefix = `ota/ios/${runtimeVersion}/updates/${updateId}`;
-  const pointerObject = `ota/ios/${runtimeVersion}/channels/${identity.otaChannel}.json`;
+  const updateId = input.updateId ?? (await buildStagedExpoMetadata(distDir, releaseVersion, platform)).updateId;
+  const updateObjectPrefix = `ota/${platform}/${runtimeVersion}/updates/${updateId}`;
+  const pointerObject = `ota/${platform}/${runtimeVersion}/channels/${identity.otaChannel}.json`;
   const relayManifestUrl = `${identity.relayUrl.replace(/^ws/, "http")}/ota/manifest`;
 
   return {
     environment: input.environment,
+    platform,
     source: input.source,
     bucket: identity.otaBucket,
     channel: identity.otaChannel,
@@ -233,7 +286,7 @@ export async function buildMobileOtaPublishPlan(input: {
     relayManifestUrl,
     dryRun: input.dryRun === true,
     commands: [
-      buildExpoExportCommand(input.repoRoot, input.environment, distDir, releaseVersion),
+      buildExpoExportCommand(input.repoRoot, input.environment, distDir, releaseVersion, platform),
       buildExpoPublicConfigCommand(input.repoRoot, input.environment, releaseVersion),
       {
         command: "gcloud",
@@ -241,6 +294,7 @@ export async function buildMobileOtaPublishPlan(input: {
           "storage",
           "rsync",
           "--recursive",
+          "--checksums-only",
           "<staged-update-dir>",
           `gs://${identity.otaBucket}/${updateObjectPrefix}`,
         ],
@@ -266,6 +320,7 @@ export async function executeMobileOtaPublishWithContext(
   input: MobileOtaInput,
   context: MobileOtaContext
 ): Promise<{ ok: boolean; message: string; data?: unknown }> {
+  const platform = resolveMobileOtaPlatform(input.platform);
   const environment = resolveMobileOtaEnvironment(input, "publish");
   // A publish exports the working tree, so the source is a guard, not a
   // parameter: the tree must be clean and a named --ref must be the checked-out
@@ -295,6 +350,9 @@ export async function executeMobileOtaPublishWithContext(
   }
   const runtimeVersion = await resolveMobileRuntimeVersion(context.repoRoot, kdEnvironmentName);
   const releaseVersion = await readCurrentVersion(context.repoRoot);
+  const sourceBranch = environment === "staging" && !input.rollbackTo
+    ? await assertMobileOtaStagingSource(context, source)
+    : undefined;
 
   // Everything the command stages for upload sits under one root that this
   // call owns, so the root is gone when the call returns, however it returns.
@@ -304,13 +362,32 @@ export async function executeMobileOtaPublishWithContext(
   const scratch = await mkdtemp(join(context.scratchDir ?? tmpdir(), "kanna-ota-"));
   try {
     if (input.rollbackTo) {
+      let rollbackSource: OtaSourceRecord | undefined;
+      if (environment === "staging") {
+        const object = `gs://${identity.otaBucket}/ota/${platform}/${runtimeVersion}/updates/${input.rollbackTo}/${OTA_SOURCE_OBJECT}`;
+        const result = await context.runner.run("gcloud", ["storage", "cat", object], {
+          cwd: context.repoRoot, env: context.env,
+        });
+        try {
+          rollbackSource = JSON.parse(result.stdout) as OtaSourceRecord;
+          if (result.exitCode !== 0 || rollbackSource.updateId !== input.rollbackTo ||
+              !/^[0-9a-f]{40}$/.test(rollbackSource.commit) || typeof rollbackSource.ref !== "string" ||
+              (rollbackSource.sourceBranch !== undefined && typeof rollbackSource.sourceBranch !== "string")) {
+            throw new Error("invalid source");
+          }
+        } catch {
+          throw new Error(`Refusing staging rollback: target provenance ${object} is missing or unverifiable.`);
+        }
+        await assertMobileOtaStagingSource(context, rollbackSource, true);
+      }
       const rollbackReleaseVersionLookup = input.dryRun === true
         ? { status: "legacy" as const }
         : await readUpdateReleaseVersion(
             context,
             identity.otaBucket,
             runtimeVersion,
-            input.rollbackTo
+            input.rollbackTo,
+            platform
           );
       const rollbackReleaseVersion = rollbackReleaseVersionLookup.status === "known"
         ? rollbackReleaseVersionLookup.releaseVersion
@@ -319,9 +396,10 @@ export async function executeMobileOtaPublishWithContext(
         scratch,
         updateId: input.rollbackTo,
         runtimeVersion,
+        source: rollbackSource,
         ...(rollbackReleaseVersion ? { releaseVersion: rollbackReleaseVersion } : {})
       });
-      const pointerObject = `ota/ios/${runtimeVersion}/channels/${identity.otaChannel}.json`;
+      const pointerObject = `ota/${platform}/${runtimeVersion}/channels/${identity.otaChannel}.json`;
       if (input.dryRun !== true) {
         await mustRun(context.runner, "gcloud", [
           "storage",
@@ -333,6 +411,7 @@ export async function executeMobileOtaPublishWithContext(
       return {
         ok: true,
         message: (await observeMobileDevices(context, environment, identity.otaChannel, runtimeVersion, input.rollbackTo)).detail + "\n" + formatRollbackMessage({
+          platform,
           dryRun: input.dryRun === true,
           bucket: identity.otaBucket,
           channel: identity.otaChannel,
@@ -343,6 +422,7 @@ export async function executeMobileOtaPublishWithContext(
           relayManifestUrl: identity.relayUrl.replace(/^ws/, "http") + "/ota/manifest",
         }),
         data: {
+          platform,
           updateId: input.rollbackTo,
           runtimeVersion,
           releaseVersion: rollbackReleaseVersion,
@@ -358,7 +438,8 @@ export async function executeMobileOtaPublishWithContext(
       context.repoRoot,
       environment,
       distDir,
-      releaseVersion
+      releaseVersion,
+      platform
     );
     await mustRun(
       context.runner,
@@ -380,11 +461,15 @@ export async function executeMobileOtaPublishWithContext(
       distDir,
       expoConfigBytes,
       source,
-      releaseVersion
+      sourceBranch,
+      releaseVersion,
+      platform,
+      runtimeVersion
     });
     const plan = await buildMobileOtaPublishPlan({
       repoRoot: context.repoRoot,
       environment,
+      platform,
       distDir,
       updateId: staged.updateId,
       dryRun: input.dryRun === true,
@@ -425,7 +510,8 @@ export async function executeMobileOtaPublishWithContext(
             context,
             plan.bucket,
             plan.runtimeVersion,
-            currentPointer
+            currentPointer,
+            platform
           )
         : { status: "legacy" as const };
       if (currentRelease.status === "unreadable") {
@@ -444,20 +530,12 @@ export async function executeMobileOtaPublishWithContext(
             "`kd mobile version bump --patch` (or --minor/--major), commit it, and retry."
         );
       }
-      const exists = await context.runner.run("gcloud", [
-        "storage",
-        "ls",
-        `gs://${plan.bucket}/${plan.updateObjectPrefix}/metadata.json`,
-      ], { cwd: context.repoRoot, env: context.env });
-      if (exists.exitCode !== 0) {
-        await mustRun(context.runner, "gcloud", [
-          "storage",
-          "rsync",
-          "--recursive",
-          staged.path,
-          `gs://${plan.bucket}/${plan.updateObjectPrefix}`,
-        ], context.repoRoot, context.env);
-      }
+      // Reconcile every artifact even if metadata survived an interrupted upload.
+      // Only a successful full sync authorizes the channel pointer write.
+      await mustRun(context.runner, "gcloud", [
+        "storage", "rsync", "--recursive", "--checksums-only",
+        staged.path, `gs://${plan.bucket}/${plan.updateObjectPrefix}`,
+      ], context.repoRoot, context.env);
       await mustRun(context.runner, "gcloud", [
         "storage",
         "cp",
@@ -471,6 +549,7 @@ export async function executeMobileOtaPublishWithContext(
       ok: true,
       message: `${formatPublishMessage(plan)}\n${devices.detail}`,
       data: {
+        platform,
         updateId: plan.updateId,
         runtimeVersion: plan.runtimeVersion,
         releaseVersion: plan.releaseVersion,
@@ -487,9 +566,10 @@ export async function executeMobileOtaPublishWithContext(
 }
 
 export async function executeMobileOtaStatusWithContext(
-  input: Pick<MobileOtaInput, "staging" | "production">,
+  input: Pick<MobileOtaInput, "staging" | "production" | "platform">,
   context: MobileOtaContext
 ): Promise<{ ok: boolean; message: string; data?: unknown }> {
+  const platform = resolveMobileOtaPlatform(input.platform);
   const environment = resolveMobileOtaEnvironment(input, "status");
   const identity = resolveKdEnvironment(cloudEnvironmentToKdEnvironment(environment));
   if (!identity.otaBucket || !identity.otaChannel) {
@@ -500,7 +580,7 @@ export async function executeMobileOtaStatusWithContext(
     throw new Error("Mobile OTA applies only to staging and production.");
   }
   const runtimeVersion = await resolveMobileRuntimeVersion(context.repoRoot, kdEnvironmentName);
-  const pointerObject = `ota/ios/${runtimeVersion}/channels/${identity.otaChannel}.json`;
+  const pointerObject = `ota/${platform}/${runtimeVersion}/channels/${identity.otaChannel}.json`;
   const pointer = await context.runner.run("gcloud", [
     "storage",
     "cat",
@@ -509,17 +589,18 @@ export async function executeMobileOtaStatusWithContext(
   const updates = await context.runner.run("gcloud", [
     "storage",
     "ls",
-    `gs://${identity.otaBucket}/ota/ios/${runtimeVersion}/updates/`,
+    `gs://${identity.otaBucket}/ota/${platform}/${runtimeVersion}/updates/`,
   ], { cwd: context.repoRoot, env: context.env });
 
-  const pointers = await observeRuntimePointers(context, identity.otaBucket, identity.otaChannel, runtimeVersion);
+  const pointers = await observeRuntimePointers(context, identity.otaBucket, identity.otaChannel, runtimeVersion, platform);
   const parsedPointer = parsePointer(pointer.stdout);
   const releaseVersionLookup = parsedPointer
     ? await resolvePointerReleaseVersion(
         context,
         identity.otaBucket,
         runtimeVersion,
-        parsedPointer
+        parsedPointer,
+        platform
       )
     : { status: "legacy" as const };
   const releaseVersion = releaseVersionLookup.status === "known"
@@ -535,7 +616,7 @@ export async function executeMobileOtaStatusWithContext(
   return {
     ok: pointer.exitCode === 0,
     message: [
-      `Mobile OTA ${environment}`,
+      `Mobile OTA ${environment} (${platform})`,
       `bucket: ${identity.otaBucket}`,
       `channel: ${identity.otaChannel}`,
       `runtimeVersion: ${runtimeVersion}`,
@@ -546,6 +627,7 @@ export async function executeMobileOtaStatusWithContext(
       devices.detail,
     ].join("\n"),
     data: {
+      platform,
       bucket: identity.otaBucket,
       channel: identity.otaChannel,
       runtimeVersion,
@@ -662,9 +744,10 @@ export async function executeMobileOtaProvisionWithContext(
 }
 
 export async function executeMobileOtaDoctorWithContext(
-  input: Pick<MobileOtaInput, "staging" | "production">,
+  input: Pick<MobileOtaInput, "staging" | "production" | "platform">,
   context: MobileOtaContext
 ): Promise<{ ok: boolean; message: string; data?: unknown }> {
+  const platform = resolveMobileOtaPlatform(input.platform);
   const environment = resolveMobileOtaEnvironment(input, "doctor");
   const identity = resolveKdEnvironment(cloudEnvironmentToKdEnvironment(environment));
   if (!identity.otaBucket || !identity.otaChannel) {
@@ -682,7 +765,7 @@ export async function executeMobileOtaDoctorWithContext(
   const projectId = identity.firebaseProjectId;
   const bucket = identity.otaBucket;
   const channel = identity.otaChannel;
-  const pointerObject = `ota/ios/${runtimeVersion}/channels/${channel}.json`;
+  const pointerObject = `ota/${platform}/${runtimeVersion}/channels/${channel}.json`;
   const relayBaseUrl = identity.relayUrl.replace(/^ws/, "http");
   const relayHealthUrl = `${relayBaseUrl}/health`;
   const relayManifestUrl = `${relayBaseUrl}/ota/manifest`;
@@ -733,8 +816,8 @@ export async function executeMobileOtaDoctorWithContext(
         detail: `gs://${bucket}/${pointerObject} -> ${updateId}`,
       });
     }
-    await addGcsObjectCheck(checks, context, bucket, `ota/ios/${runtimeVersion}/updates/${updateId}/metadata.json`, "update metadata");
-    await addGcsObjectCheck(checks, context, bucket, `ota/ios/${runtimeVersion}/updates/${updateId}/expoConfig.json`, "update expoConfig");
+    await addGcsObjectCheck(checks, context, bucket, `ota/${platform}/${runtimeVersion}/updates/${updateId}/metadata.json`, "update metadata");
+    await addGcsObjectCheck(checks, context, bucket, `ota/${platform}/${runtimeVersion}/updates/${updateId}/expoConfig.json`, "update expoConfig");
   } else {
     checks.push({
       status: "FAIL",
@@ -751,7 +834,7 @@ export async function executeMobileOtaDoctorWithContext(
     failDetail: `${relayHealthUrl} failed`,
   });
 
-  const manifestResult = await context.runner.run("curl", manifestCurlArgs(relayManifestUrl, runtimeVersion, channel), {
+  const manifestResult = await context.runner.run("curl", manifestCurlArgs(relayManifestUrl, runtimeVersion, channel, platform), {
     cwd: context.repoRoot,
     env: context.env,
   });
@@ -857,20 +940,21 @@ export async function executeMobileOtaDoctorWithContext(
     });
   }
 
-  checks.push({ name: "runtime channel pointers", ...await observeRuntimePointers(context, bucket, channel, runtimeVersion) });
+  checks.push({ name: "runtime channel pointers", ...await observeRuntimePointers(context, bucket, channel, runtimeVersion, platform) });
   checks.push({ name: "device compatibility", ...await observeMobileDevices(context, environment, channel, runtimeVersion, updateId) });
   const ok = checks.every((check) => check.status === "PASS");
   return {
     ok,
     message: formatDoctorMessage({
       environment,
+      platform,
       bucket,
       channel,
       runtimeVersion,
       relayManifestUrl,
       checks,
     }),
-    data: { environment, bucket, channel, runtimeVersion, pointerObject, checks },
+    data: { environment, platform, bucket, channel, runtimeVersion, pointerObject, checks },
   };
 }
 
@@ -1074,9 +1158,10 @@ async function readUpdateReleaseVersion(
   context: MobileOtaContext,
   bucket: string,
   runtimeVersion: string,
-  updateId: string
+  updateId: string,
+  platform: MobileOtaPlatform
 ): Promise<OtaReleaseVersionLookup> {
-  const object = `gs://${bucket}/ota/ios/${runtimeVersion}/updates/${updateId}/metadata.json`;
+  const object = `gs://${bucket}/ota/${platform}/${runtimeVersion}/updates/${updateId}/metadata.json`;
   const result = await context.runner.run("gcloud", [
     "storage",
     "cat",
@@ -1108,13 +1193,14 @@ async function resolvePointerReleaseVersion(
   context: MobileOtaContext,
   bucket: string,
   runtimeVersion: string,
-  pointer: OtaChannelPointer
+  pointer: OtaChannelPointer,
+  platform: MobileOtaPlatform
 ): Promise<OtaReleaseVersionLookup> {
   const pointerVersion = pointer.releaseVersion?.trim();
   if (pointerVersion) return { status: "known", releaseVersion: pointerVersion };
   const updateId = pointer.currentUpdateId?.trim();
   return updateId
-    ? readUpdateReleaseVersion(context, bucket, runtimeVersion, updateId)
+    ? readUpdateReleaseVersion(context, bucket, runtimeVersion, updateId, platform)
     : { status: "legacy" };
 }
 
@@ -1149,11 +1235,12 @@ function buildExpoExportCommand(
   repoRoot: string,
   environment: CloudEnvironmentName,
   distDir: string,
-  releaseVersion: string
+  releaseVersion: string,
+  platform: MobileOtaPlatform
 ): MobileOtaCommandPlan {
   return {
     command: "pnpm",
-    args: ["exec", "expo", "export", "--platform", "ios", "--output-dir", distDir],
+    args: ["exec", "expo", "export", "--platform", platform, "--output-dir", distDir],
     cwd: join(repoRoot, "apps/mobile"),
     env: {
       KANNA_APP_ENV: environment === "staging" ? "staging" : "prod",
@@ -1205,14 +1292,22 @@ async function readExpoPublicConfig(
 }
 
 /** Lays the update out under the caller's scratch root, which the caller removes. */
-async function stageOtaUpdate(input: {
+export async function stageOtaUpdate(input: {
   scratch: string;
   distDir: string;
   expoConfigBytes: Buffer;
+  platform: MobileOtaPlatform;
+  runtimeVersion: string;
   source: ResolvedSourceRef;
+  sourceBranch?: string;
   releaseVersion: string;
 }): Promise<{ path: string; updateId: string }> {
-  const stagedMetadata = await buildStagedExpoMetadata(input.distDir, input.releaseVersion);
+  const config = JSON.parse(input.expoConfigBytes.toString("utf8"));
+  const resolvedRuntime = config[input.platform]?.runtimeVersion ?? config.runtimeVersion;
+  if (resolvedRuntime !== input.runtimeVersion) {
+    throw new Error(`Expo ${input.platform} runtimeVersion ${JSON.stringify(resolvedRuntime)} does not match publication runtime ${input.runtimeVersion}.`);
+  }
+  const stagedMetadata = await buildStagedExpoMetadata(input.distDir, input.releaseVersion, input.platform);
   const output = join(input.scratch, stagedMetadata.updateId);
   await mkdir(join(output, "bundles"), { recursive: true });
   await mkdir(join(output, "assets"), { recursive: true });
@@ -1231,6 +1326,7 @@ async function stageOtaUpdate(input: {
     commit: input.source.commit,
     shortCommit: input.source.shortCommit,
     releaseVersion: input.releaseVersion,
+    ...(input.sourceBranch ? { sourceBranch: input.sourceBranch } : {}),
   };
   await writeFile(join(output, OTA_SOURCE_OBJECT), JSON.stringify(sourceRecord));
   return { path: output, updateId: stagedMetadata.updateId };
@@ -1238,22 +1334,23 @@ async function stageOtaUpdate(input: {
 
 async function buildStagedExpoMetadata(
   distDir: string,
-  releaseVersion: string
+  releaseVersion: string,
+  platform: MobileOtaPlatform
 ): Promise<StagedExpoMetadata> {
   const metadata = JSON.parse(await readFile(join(distDir, "metadata.json"), "utf8")) as ExpoMetadata;
-  const ios = metadata.fileMetadata?.ios;
-  if (!ios?.bundle) {
-    throw new Error("Expo metadata.json does not include fileMetadata.ios.bundle.");
+  const selected = metadata.fileMetadata?.[platform];
+  if (!selected?.bundle) {
+    throw new Error(`Expo metadata.json does not include fileMetadata.${platform}.bundle.`);
   }
 
-  const bundlePath = ios.bundle;
+  const bundlePath = selected.bundle;
   const bundleBytes = await readFile(join(distDir, bundlePath));
   const bundleKey = createHash("sha256").update(bundleBytes).digest("base64url");
   const bundleTarget = `bundles/${bundleKey}.hbc`;
 
   const assets: ExpoMetadataAsset[] = [];
   const stagedAssets: StagedExpoFile[] = [];
-  for (const asset of ios.assets ?? []) {
+  for (const asset of selected.assets ?? []) {
     const assetBytes = await readFile(join(distDir, asset.path));
     const assetKey = createHash("sha256").update(assetBytes).digest("base64url");
     const target = `assets/${assetKey}`;
@@ -1272,9 +1369,8 @@ async function buildStagedExpoMetadata(
     ...metadata,
     kanna: { releaseVersion },
     fileMetadata: {
-      ...metadata.fileMetadata,
-      ios: {
-        ...ios,
+      [platform]: {
+        ...selected,
         bundle: bundleTarget,
         assets,
       },
@@ -1351,15 +1447,17 @@ function formatPublishMessage(plan: MobileOtaPublishPlan): string {
   return [
     `${plan.dryRun ? "Dry run: mobile OTA update" : "Published mobile OTA update"} ${plan.updateId}`,
     ...(plan.source ? [formatSourceRef(plan.source)] : []),
+    `platform: ${plan.platform}`,
     `runtimeVersion: ${plan.runtimeVersion}`,
     `releaseVersion: ${plan.releaseVersion}`,
     `channel: ${plan.channel}`,
     `bucket: gs://${plan.bucket}/${plan.updateObjectPrefix}`,
-    `verify: ${manifestCurl(plan.relayManifestUrl, plan.runtimeVersion, plan.channel)}`,
+    `verify: ${manifestCurl(plan.relayManifestUrl, plan.runtimeVersion, plan.channel, plan.platform)}`,
   ].join("\n");
 }
 
 function formatRollbackMessage(input: {
+  platform: MobileOtaPlatform;
   dryRun: boolean;
   bucket: string;
   channel: string;
@@ -1372,14 +1470,16 @@ function formatRollbackMessage(input: {
   return [
     `${input.dryRun ? "Dry run: mobile OTA rollback" : "Rolled back mobile OTA channel"} ${input.channel}`,
     `updateId: ${input.updateId}`,
+    `platform: ${input.platform}`,
     `runtimeVersion: ${input.runtimeVersion}`,
     `releaseVersion: ${input.releaseVersion ?? "unknown (legacy update or dry run)"}`,
     `pointer: gs://${input.bucket}/${input.pointerObject}`,
-    `verify: ${manifestCurl(input.relayManifestUrl, input.runtimeVersion, input.channel)}`,
+    `verify: ${manifestCurl(input.relayManifestUrl, input.runtimeVersion, input.channel, input.platform)}`,
   ].join("\n");
 }
 
 function formatDoctorMessage(input: {
+  platform: MobileOtaPlatform;
   environment: CloudEnvironmentName;
   bucket: string;
   channel: string;
@@ -1391,6 +1491,7 @@ function formatDoctorMessage(input: {
     `Mobile OTA ${input.environment} preflight`,
     `bucket: ${input.bucket}`,
     `channel: ${input.channel}`,
+    `platform: ${input.platform}`,
     `runtimeVersion: ${input.runtimeVersion}`,
     `manifest: ${input.relayManifestUrl}`,
     ...input.checks.map((check) => `${check.status} ${check.name}: ${check.detail}`),
@@ -1399,18 +1500,18 @@ function formatDoctorMessage(input: {
   ].join("\n");
 }
 
-function manifestCurl(url: string, runtimeVersion: string, channel: string): string {
+function manifestCurl(url: string, runtimeVersion: string, channel: string, platform: MobileOtaPlatform): string {
   return [
     "curl",
     "-H 'expo-protocol-version: 1'",
-    "-H 'expo-platform: ios'",
+    `-H 'expo-platform: ${platform}'`,
     `-H 'expo-runtime-version: ${runtimeVersion}'`,
     `-H 'expo-channel-name: ${channel}'`,
     `'${url}'`,
   ].join(" ");
 }
 
-function manifestCurlArgs(url: string, runtimeVersion: string, channel: string): string[] {
+function manifestCurlArgs(url: string, runtimeVersion: string, channel: string, platform: MobileOtaPlatform): string[] {
   return [
     "--fail",
     "--silent",
@@ -1418,7 +1519,7 @@ function manifestCurlArgs(url: string, runtimeVersion: string, channel: string):
     "-H",
     "expo-protocol-version: 1",
     "-H",
-    "expo-platform: ios",
+    `expo-platform: ${platform}`,
     "-H",
     `expo-runtime-version: ${runtimeVersion}`,
     "-H",

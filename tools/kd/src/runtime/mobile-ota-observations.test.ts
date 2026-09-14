@@ -62,8 +62,8 @@ describe("OTA device observations", () => {
   it("separates compatible from applied and continues warning about stranded devices in a mixed fleet", async () => {
     const result = await observeMobileDevices(context([device(), device("2.2.3")]), "staging", "staging", "2.2.3", "new-update");
     expect(result.status).toBe("WARN");
-    expect(result.detail).toContain("application of the channel update is NOT confirmed");
-    expect(result.detail).not.toContain("no recently observed");
+    expect(result.detail).toContain("platform compatibility and application of the channel update are NOT confirmed");
+    expect(result.detail).toContain("platform unidentified");
     const applied = await observeMobileDevices(context([device("2.2.3")]), "staging", "staging", "2.2.3", "old-update");
     expect(applied.status).toBe("PASS");
     expect(applied.detail).toContain("Applied update confirmed");
@@ -78,8 +78,8 @@ describe("OTA device observations", () => {
     unavailable.runner.run = vi.fn().mockRejectedValue(new Error("offline"));
     expect((await observeMobileDevices(unavailable, "staging", "staging", "2.2.3")).detail).toContain("reachability UNKNOWN");
   });
-  it("lists historical runtime pointers and identifies those predating the newest pointer, even from an older checkout", async () => {
-    const prefix = "gs://bucket/ota/ios/";
+  it.each(["ios", "android"] as const)("lists %s runtime pointers and identifies those predating the newest pointer", async (platform) => {
+    const prefix = `gs://bucket/ota/${platform}/`;
     const ctx = context([]);
     ctx.runner.run = vi.fn().mockImplementation(async (_command, args: string[]) => ({ exitCode: 0, stderr: "", stdout: args.includes("ls")
       ? `${prefix}2.2.2/channels/staging.json\n${prefix}2.2.3/channels/staging.json`
@@ -88,10 +88,18 @@ describe("OTA device observations", () => {
           releaseVersion: args.at(-1)?.includes("2.2.2") ? undefined : "1.0.1",
           createdAt: args.at(-1)?.includes("2.2.2") ? "2026-09-02" : "2026-09-08"
         }) }));
-    const result = await observeRuntimePointers(ctx, "bucket", "staging", "2.2.3");
+    const result = await observeRuntimePointers(ctx, "bucket", "staging", "2.2.3", platform);
     expect(result.detail).toContain("runtime 2.2.2: old; release unknown (legacy); pointer published 2026-09-02 [STALE");
     expect(result.detail).toContain("runtime 2.2.3: new; release 1.0.1; pointer published 2026-09-08 [configured]");
-    const olderCheckout = await observeRuntimePointers(ctx, "bucket", "staging", "2.2.2");
+    const olderCheckout = await observeRuntimePointers(ctx, "bucket", "staging", "2.2.2", platform);
     expect(olderCheckout.detail).toContain("2026-09-02 [STALE: predates newest channel pointer] [configured]");
   });
+});
+
+
+it("does not claim Android compatibility from a platform-unidentified matching runtime", async () => {
+  const result = await observeMobileDevices(context([device("2.2.3")]), "staging", "staging", "2.2.3");
+  expect(result.status).toBe("WARN");
+  expect(result.detail).toContain("platform unidentified");
+  expect(result.detail).toContain("platform compatibility and application of the channel update are NOT confirmed");
 });

@@ -573,7 +573,12 @@ committed certificate `apps/mobile/certs/ota-codesign.pem` (key id
 `runtimeVersion` in `apps/mobile/src/mobileEnvironments.json` gates
 compatibility: bump it for any native code/config/SDK/dependency change
 (including the identity config plugin and the embedded OTA certificate);
-JS-only changes keep the runtime and are OTA-deliverable.
+JS-only changes keep the runtime and are OTA-deliverable. Delivery is isolated
+by platform as well as runtime: Android/R and iOS/R have independent channel
+pointers, and neither can fall back to another platform or runtime. Publishing
+Android/R ahead of its native rollout reaches no device until an Android/R
+binary is installed. The existing global channel and RSA signing configuration
+already covers Android; extending the pipeline requires no native/runtime change.
 
 Every new OTA release also advances and commits `apps/mobile/VERSION`. The OTA
 publisher pins that value into the exported config and signed manifest
@@ -587,11 +592,11 @@ Every OTA command requires an explicit `--staging` or `--production` flag;
 the examples below use staging except where the production gate is the point:
 
 ```sh
-./kd mobile ota publish --staging                     # publish signed update
+./kd mobile ota publish --staging --platform android  # one platform; default ios
 ./kd mobile ota publish --production --ref release/0.2  # production needs a named source
 ./kd mobile ota publish --staging --rollback-to <id>  # repoint the channel
-./kd mobile ota status --staging                      # channel pointer
-./kd mobile ota doctor --staging                      # read-only preflight
+./kd mobile ota status --staging --platform android   # selected platform pointer
+./kd mobile ota doctor --staging --platform android   # read-only preflight
 ./kd mobile ota provision --staging                   # bucket + relay IAM
 ./kd mobile ota provision-secret --staging --key-path <pem>  # key → Secret Manager
 ```
@@ -606,6 +611,35 @@ traces back to the commit it shipped from. `--rollback-to` exports nothing and
 so needs no `--ref`; it still refuses a dirty worktree and recovers the target
 update's release version when that metadata exists. `status` reports the
 release version, or clearly marks a legacy update whose release is unknown.
+
+`--platform ios|android` selects OTA publish/rollback, status and doctor/preflight;
+omitting it preserves iOS behavior. `kd mobile publish` remains the App Store
+binary command. Export/config validation/staging complete before upload; the
+full selected update is reconciled before its pointer is written. Failure leaves
+the other platform untouched; a pointer-write error is reported, never labelled
+successful. The same mobile release can be published to both platforms, with
+subsequent changed content subject to each pointer's increasing-version guard.
+
+Staging OTA now checks the shared desktop staging-lineage gate before export,
+including dry-run. It refuses behind/divergent or unreadable candidates under
+the existing policy and main publishes during an unpromoted release-branch soak.
+The source must be verifiably on origin/main or origin/release/X.Y; task branch
+names cannot evade that freeze. Rollback validates the target's durable source,
+not checkout HEAD, and refuses missing/unverifiable provenance. This is stricter
+than the former OTA publisher. No new lineage bypass is provided. Desktop
+promotion neither copies nor requires Android OTA objects; no OTA promotion
+command is introduced.
+
+Device reports have no platform field. Status/doctor label them unidentified;
+runtime agreement alone cannot prove Android compatibility. Exact, fresh OTA
+update-ID reports support application evidence; phone-specific acceptance still
+needs the device check. The iOS `mobile qa --production --ota` path stays iOS.
+
+Android OTA deployment, publication and Samsung acceptance for task c1516501
+are a Ship handoff after implementation/review; follow the exact serial,
+pairing-preservation and installed-runtime checks in
+[the OTA runbook](../specs/mobile-ota-updates.md#android-implementation-and-ship-acceptance).
+Local export/relay integration does not establish on-device delivery.
 
 **Approval policy:** staging publish/rollback is self-serve (including for
 agents). Production publish/rollback requires explicit human approval per

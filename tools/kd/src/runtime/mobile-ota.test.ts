@@ -105,6 +105,9 @@ function gitResult(
   args: string[],
   options: { status?: string; commits?: Record<string, string> } = {}
 ): { exitCode: number; stdout: string; stderr: string } {
+  if (args[0] === "branch") return { exitCode: 0, stdout: "main", stderr: "" };
+  if (args[0] === "remote") return { exitCode: 0, stdout: "https://github.com/example/kanna.git", stderr: "" };
+  if (args[0] === "ls-remote") return { exitCode: 0, stdout: HEAD_COMMIT + "\t" + args.at(-1), stderr: "" };
   if (args[0] === "status") {
     return { exitCode: 0, stdout: options.status ?? "", stderr: "" };
   }
@@ -129,8 +132,12 @@ function publishRunner(
   return {
     async run(command, args) {
       if (command === "git") return gitResult(args, { commits: options.commits });
+      if (command === "gh") return { exitCode: 0, stdout: JSON.stringify({ assets: [] }), stderr: "" };
+      if (command === "gcloud" && args.at(-1)?.endsWith("kanna-source.json")) {
+        return { exitCode: 0, stdout: JSON.stringify({ updateId: args.at(-1)!.split("/").at(-2), ref: "main", commit: HEAD_COMMIT, shortCommit: SHORT_HEAD_COMMIT, releaseVersion: "1.0.0" }), stderr: "" };
+      }
       if (command === "pnpm" && args.includes("export")) {
-        await writeMinimalSdk57Export(repoRoot);
+        await writeMinimalSdk57Export(repoRoot, args[args.indexOf("--platform") + 1] as "ios" | "android");
         return { exitCode: 0, stdout: "", stderr: "" };
       }
       if (command === "pnpm" && args.includes("config")) {
@@ -149,12 +156,12 @@ function publishRunner(
   };
 }
 
-async function writeMinimalSdk57Export(repoRoot: string): Promise<void> {
+async function writeMinimalSdk57Export(repoRoot: string, platform: "ios" | "android" = "ios"): Promise<void> {
   await mkdir(join(repoRoot, "apps/mobile/dist/bundles"), { recursive: true });
   await writeFile(
     join(repoRoot, "apps/mobile/dist/metadata.json"),
     JSON.stringify({
-      fileMetadata: { ios: { bundle: "bundles/main.hbc", assets: [] } },
+      fileMetadata: { [platform]: { bundle: "bundles/main.hbc", assets: [] } },
     })
   );
   await writeFile(join(repoRoot, "apps/mobile/dist/bundles/main.hbc"), "bundle");
@@ -288,6 +295,7 @@ describe("kd mobile OTA", () => {
       async run(command, args, options) {
         calls.push({ command, args, cwd: options?.cwd, env: options?.env });
         if (command === "git") return gitResult(args);
+        if (command === "gh") return { exitCode: 0, stdout: JSON.stringify({ assets: [] }), stderr: "" };
         if (command === "pnpm" && args.includes("export")) {
           await mkdir(join(repoRoot, "apps/mobile/dist/bundles"), { recursive: true });
           await writeFile(
@@ -327,8 +335,8 @@ describe("kd mobile OTA", () => {
       args: ["rev-parse", "--verify", "--quiet", "HEAD^{commit}"],
       cwd: repoRoot,
     });
-    expect(calls[2]).toMatchObject({ command: "pnpm", cwd: join(repoRoot, "apps/mobile") });
-    expect(calls[3]).toMatchObject({
+    expect(calls.find(call => call.args.includes("export"))).toMatchObject({ command: "pnpm", cwd: join(repoRoot, "apps/mobile") });
+    expect(calls.find(call => call.args.includes("config"))).toMatchObject({
       command: "pnpm",
       args: ["exec", "expo", "config", "--type", "public", "--json"],
       cwd: join(repoRoot, "apps/mobile"),
@@ -367,6 +375,7 @@ describe("kd mobile OTA", () => {
       async run(command, args) {
         calls.push({ command, args });
         if (command === "git") return gitResult(args);
+        if (command === "gh") return { exitCode: 0, stdout: JSON.stringify({ assets: [] }), stderr: "" };
         if (command === "pnpm" && args.includes("export")) {
           await writeMinimalSdk57Export(repoRoot);
           return { exitCode: 0, stdout: "", stderr: "" };
@@ -394,6 +403,7 @@ describe("kd mobile OTA", () => {
       async run(command, args) {
         calls.push({ command, args });
         if (command === "git") return gitResult(args);
+        if (command === "gh") return { exitCode: 0, stdout: JSON.stringify({ assets: [] }), stderr: "" };
         if (command === "pnpm" && args.includes("export")) {
           await writeMinimalSdk57Export(repoRoot);
           return { exitCode: 0, stdout: "", stderr: "" };
@@ -439,6 +449,7 @@ describe("kd mobile OTA", () => {
     const runner: CommandRunner = {
       async run(command, args) {
         if (command === "git") return gitResult(args);
+        if (command === "gh") return { exitCode: 0, stdout: JSON.stringify({ assets: [] }), stderr: "" };
         if (command === "pnpm" && args.includes("export")) {
           await mkdir(join(repoRoot, "apps/mobile/dist/_expo/static/js/ios"), { recursive: true });
           await mkdir(join(repoRoot, "apps/mobile/dist/assets"), { recursive: true });
@@ -666,7 +677,7 @@ describe("kd mobile OTA", () => {
         if (args[1] === "cat") return { exitCode: 1, stdout: "", stderr: "not found: 404" };
         // A missing metadata.json is what makes the publish upload the update.
         if (args[1] === "ls") return { exitCode: 1, stdout: "", stderr: "not found" };
-        if (args[1] === "rsync") uploaded.set("source", readFileSync(join(args[3], "kanna-source.json"), "utf8"));
+        if (args[1] === "rsync") uploaded.set("source", readFileSync(join(args[args.indexOf("--checksums-only") + 1], "kanna-source.json"), "utf8"));
         if (args[1] === "cp") uploaded.set("pointer", readFileSync(args[2], "utf8"));
         return { exitCode: 0, stdout: "", stderr: "" };
       },
@@ -1559,4 +1570,177 @@ describe("kd mobile OTA", () => {
     expect(result.ok).toBe(false);
     expect(result.message).toContain("FAIL GCS IAM");
   });
+});
+
+describe("platform-specific OTA publication", () => {
+  it.each(["publish", "status", "doctor", "preflight"])("propagates --platform for %s and rejects unknown platforms at the task boundary", async (command) => {
+    const { getTaskDefinition } = await import("../tasks/registry");
+    const parsed = parseCliArgs(["mobile", "ota", command, "--staging", "--platform", "android"]);
+    const schema = getTaskDefinition(parsed.taskId).inputSchema;
+    expect(schema.parse(parsed.input)).toMatchObject({ platform: "android" });
+    expect(schema.parse({ staging: true })).toMatchObject({ platform: "ios" });
+    expect(() => schema.parse({ ...parsed.input, platform: "web" })).toThrow();
+    expect(() => parseCliArgs(["mobile", "ota", command, "--platform"])).toThrow("requires a value");
+  });
+
+  it.each(["ios", "android"] as const)("exports, hashes, reconciles partial objects, and commits only the %s pointer", async (platform) => {
+    const repoRoot = await makeRepoFixture();
+    const calls: string[][] = [];
+    let stagedMetadata: any;
+    const base = publishRunner(repoRoot, { onGcloud: (args) => {
+      calls.push(args);
+      if (args[1] === "cat") return { exitCode: 1, stdout: "", stderr: "404 not found" };
+      // Simulate metadata already existing: this must not skip the full sync.
+      if (args[1] === "rsync") {
+        stagedMetadata = JSON.parse(readFileSync(join(args[4], "metadata.json"), "utf8"));
+        expect(readFileSync(join(args[4], stagedMetadata.fileMetadata[platform].bundle), "utf8")).toBe("bundle");
+      }
+      return { exitCode: 0, stdout: "metadata already exists", stderr: "" };
+    } });
+    const result = await executeMobileOtaPublishWithContext({ staging: true, production: false, platform }, {
+      repoRoot, env: {}, runner: base, validateOtaCertificate: acceptOtaCertificate,
+    });
+    expect(result.data).toMatchObject({ platform });
+    expect(result.message).toContain(`expo-platform: ${platform}`);
+    expect(Object.keys(stagedMetadata.fileMetadata)).toEqual([platform]);
+    const writes = calls.filter(args => ["rsync", "cp"].includes(args[1]));
+    expect(writes.map(args => args[1])).toEqual(["rsync", "cp"]);
+    expect(writes.every(args => args.at(-1)?.includes(`/ota/${platform}/1.0.0/`))).toBe(true);
+    expect(writes[0]).toContain("--checksums-only");
+  });
+
+  it.each(["export", "config-runtime", "rsync", "cp"])("reports %s failure without committing a pointer prematurely", async (failure) => {
+    const repoRoot = await makeRepoFixture();
+    const writes: string[] = [];
+    const base = publishRunner(repoRoot);
+    const runner: CommandRunner = { async run(command, args, options) {
+      if (command === "gcloud" && ["rsync", "cp"].includes(args[1])) writes.push(args[1]);
+      if (args.includes(failure)) return { exitCode: 1, stdout: "", stderr: "injected failure" };
+      if (failure === "config-runtime" && command === "pnpm" && args.includes("config")) {
+        return { exitCode: 0, stdout: JSON.stringify({ runtimeVersion: "wrong" }), stderr: "" };
+      }
+      return base.run(command, args, options);
+    } };
+    await expect(executeMobileOtaPublishWithContext({ staging: true, production: false, platform: "android" }, {
+      repoRoot, env: {}, runner, validateOtaCertificate: acceptOtaCertificate,
+    })).rejects.toThrow(failure === "config-runtime" ? "does not match publication runtime" : "injected failure");
+    expect(writes).toEqual(failure === "cp" ? ["rsync", "cp"] : failure === "rsync" ? ["rsync"] : []);
+  });
+
+  it("checks only Android pointers and emits Android manifest headers in status/doctor", async () => {
+    const repoRoot = await makeRepoFixture();
+    const calls: Array<{ command: string; args: string[] }> = [];
+    const runner: CommandRunner = { async run(command, args) {
+      calls.push({ command, args });
+      return { exitCode: 1, stdout: "", stderr: "missing" };
+    } };
+    for (const execute of [mobileOtaRuntime.executeMobileOtaStatusWithContext, executeMobileOtaDoctorWithContext]) {
+      const result = await execute({ staging: true, production: false, platform: "android" }, {
+        repoRoot, env: {}, runner, validateOtaCertificate: acceptOtaCertificate,
+      });
+      expect(result.ok).toBe(false);
+      expect(result.data).toMatchObject({ platform: "android" });
+    }
+    expect(calls.some(call => call.args.includes("expo-platform: android"))).toBe(true);
+    expect(calls.some(call => call.args.some(arg => arg.includes("ota/ios/")))).toBe(false);
+    expect(calls.some(call => call.args.some(arg => arg.includes("ota/android/")))).toBe(true);
+  });
+});
+
+describe("OTA staging lineage caller", () => {
+  const activeCommit = "a".repeat(40);
+  const targetCommit = "b".repeat(40);
+  const remoteTip = "c".repeat(40);
+  const rollbackId = "11111111-2222-3333-4444-555555555555";
+  const success = (stdout = "") => ({ exitCode: 0, stdout, stderr: "" });
+
+  async function fixture(options: {
+    relationship?: "same" | "descendant" | "behind" | "diverged";
+    activeBranch?: string; currentBranch?: string; unreadable?: boolean;
+    rollbackSource?: "valid" | "missing" | "unidentified";
+  } = {}) {
+    const repoRoot = await makeRepoFixture();
+    const calls: Array<{ command: string; args: string[] }> = [];
+    const base = publishRunner(repoRoot);
+    const proposed = options.rollbackSource ? targetCommit : HEAD_COMMIT;
+    const active = options.relationship === "same" ? proposed : activeCommit;
+    const runner: CommandRunner = { async run(command, args, runOptions) {
+      calls.push({ command, args });
+      if (command === "git") {
+        if (args[0] === "branch") return success(options.currentBranch ?? "main");
+        if (args[0] === "ls-remote") return success(args.includes("--tags") ? "" : `${remoteTip}\t${args.at(-1)}`);
+        if (args[0] === "merge-base") {
+          // Membership in the verified remote branch is separate from the
+          // proposal's relationship to the active desktop candidate.
+          if (args.at(-1) === remoteTip) return success();
+          const forward = args[2] === active;
+          const ancestor = forward ? options.relationship === "descendant" : options.relationship === "behind";
+          return { exitCode: ancestor ? 0 : 1, stdout: "", stderr: "" };
+        }
+      }
+      if (command === "gh") {
+        if (options.unreadable) return { exitCode: 1, stdout: "", stderr: "HTTP 503" };
+        if (args.includes("download")) {
+          await writeFile(join(args[args.indexOf("--dir") + 1], "latest-staging.json"), JSON.stringify({ version: "1.2.0-staging.1" }));
+          return success();
+        }
+        if (args.at(-1) === "assets") return success(JSON.stringify({ assets: [{ name: "latest-staging.json" }] }));
+        if (args.at(-1) === "body") return success(JSON.stringify({ body: "" }));
+        return success(JSON.stringify({ targetCommitish: active, body: `Source-Branch: ${options.activeBranch ?? "main"}`, publishedAt: "2026-09-10T00:00:00Z" }));
+      }
+      if (command === "gcloud" && args.at(-1)?.endsWith("kanna-source.json")) {
+        if (options.rollbackSource === "missing") return { exitCode: 1, stdout: "", stderr: "404" };
+        return success(JSON.stringify({ updateId: rollbackId, ref: options.rollbackSource === "unidentified" ? "HEAD" : "main", commit: targetCommit, shortCommit: targetCommit.slice(0, 12), releaseVersion: "1.0.0" }));
+      }
+      return base.run(command, args, runOptions);
+    } };
+    return { repoRoot, calls, runner, env: {}, validateOtaCertificate: acceptOtaCertificate };
+  }
+
+  it.each(["same", "descendant"] as const)("permits %s staging source through the real shared gate", async (relationship) => {
+    const context = await fixture({ relationship });
+    await expect(executeMobileOtaPublishWithContext({ staging: true, production: false, platform: "android", dryRun: true }, context)).resolves.toMatchObject({ ok: true });
+    const gateIndex = context.calls.findIndex(call => call.command === "gh");
+    const exportIndex = context.calls.findIndex(call => call.args.includes("export"));
+    expect(gateIndex).toBeGreaterThan(0);
+    expect(exportIndex).toBeGreaterThan(gateIndex);
+  });
+
+  it.each([
+    { relationship: "behind" as const, error: "roll the staging channel back" },
+    { relationship: "diverged" as const, error: "diverged" },
+    { unreadable: true, error: "Cannot verify staging lineage" },
+    { relationship: "descendant" as const, activeBranch: "release/1.2", error: "frozen to that branch" },
+    { currentBranch: "task-example", error: "Cannot establish staging OTA source lineage" },
+  ])("refuses unsafe staging source before exporting, including dry-run: %j", async ({ error, ...options }) => {
+    const context = await fixture(options);
+    await expect(executeMobileOtaPublishWithContext({ staging: true, production: false, platform: "android", dryRun: true }, context)).rejects.toThrow(error);
+    expect(context.calls.some(call => call.command === "pnpm" || call.command === "gcloud")).toBe(false);
+  });
+
+  it.each(["valid", "missing", "unidentified"] as const)("checks rollback target provenance (%s), never substitutes checkout HEAD", async (rollbackSource) => {
+    const context = await fixture({ relationship: "behind", rollbackSource });
+    await expect(executeMobileOtaPublishWithContext({ staging: true, production: false, platform: "android", rollbackTo: rollbackId, dryRun: true }, context)).rejects.toThrow(
+      rollbackSource === "valid" ? "roll the staging channel back" : rollbackSource === "missing" ? "missing or unverifiable" : "Cannot establish staging OTA source lineage"
+    );
+    expect(context.calls.some(call => call.args.includes("export") || call.args[1] === "cp")).toBe(false);
+    if (rollbackSource === "valid") {
+      expect(context.calls).toContainEqual({ command: "git", args: ["merge-base", "--is-ancestor", activeCommit, targetCommit] });
+      expect(context.calls.some(call => call.args[0] === "merge-base" && call.args.includes(HEAD_COMMIT))).toBe(false);
+    }
+  });
+
+  it("rolls back only the selected Android pointer when the durable target passes lineage", async () => {
+    const context = await fixture({ relationship: "same", rollbackSource: "valid" });
+    const result = await executeMobileOtaPublishWithContext({ staging: true, production: false, platform: "android", rollbackTo: rollbackId }, context);
+    expect(result.data).toMatchObject({ platform: "android" });
+    expect(context.calls.filter(call => call.args[1] === "cp").map(call => call.args.at(-1))).toEqual([
+      "gs://kanna-staging.firebasestorage.app/ota/android/1.0.0/channels/staging.json",
+    ]);
+  });
+});
+
+it("does not stage iOS metadata as an Android update", async () => {
+  const repoRoot = await makeRepoFixture();
+  await expect(buildMobileOtaPublishPlan({ repoRoot, environment: "staging", platform: "android" })).rejects.toThrow("fileMetadata.android.bundle");
 });
