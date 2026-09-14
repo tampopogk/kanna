@@ -109,6 +109,10 @@ vi.mock("react", async (importActual) => {
   };
 });
 
+const safeArea = vi.hoisted(() => ({ bottom: 0 }));
+const platform = vi.hoisted(() => ({ OS: "ios" }));
+vi.mock("react-native-safe-area-context", () => ({ useSafeAreaInsets: () => safeArea }));
+
 vi.mock("react-native", () => ({
   ActivityIndicator: "ActivityIndicator",
   Alert: { alert: componentMocks.alert },
@@ -117,7 +121,7 @@ vi.mock("react-native", () => ({
     addListener: componentMocks.keyboardAddListener,
     dismiss: componentMocks.keyboardDismiss
   },
-  Platform: { OS: "ios" },
+  Platform: platform,
   Pressable: "Pressable",
   ScrollView: "ScrollView",
   StyleSheet: {
@@ -178,6 +182,8 @@ beforeAll(async () => {
 });
 
 beforeEach(() => {
+  safeArea.bottom = 0;
+  platform.OS = "ios";
   hookHarness.callbackIndex = 0;
   hookHarness.callbacks.length = 0;
   hookHarness.effectDependencies = [];
@@ -1566,6 +1572,25 @@ describe("TaskScreen", () => {
       );
     }
   });
+
+  it.each([["android", 48, 62], ["android", 0, 14], ["ios", 34, 14]])(
+    "keeps detail controls clear on %s with a %i bottom inset",
+    (os, bottom, expected) => {
+      platform.OS = os;
+      safeArea.bottom = bottom;
+      let tree = renderTaskScreen();
+      expect(styleEntries(findByTestId(tree, MOBILE_E2E_IDS.taskComposerChrome)))
+        .toContainEqual({ bottom: expected });
+      const showListener = componentMocks.keyboardAddListener.mock.calls.find(
+        (call) => call[0] === (os === "android" ? "keyboardDidShow" : "keyboardWillShow")
+      )?.[1] as ((event: { endCoordinates: { height: number } }) => void) | undefined;
+      expect(showListener).toBeTypeOf("function");
+      showListener?.({ endCoordinates: { height: 300 } });
+      tree = renderTaskScreen();
+      expect(styleEntries(findByTestId(tree, MOBILE_E2E_IDS.taskComposerChrome)))
+        .toContainEqual({ bottom: 308 });
+    }
+  );
 
   it("does not let the software keyboard change what the phone proposes", () => {
     let tree = renderTaskScreen({ agentType: "pty" });

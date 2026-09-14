@@ -5,8 +5,14 @@ import { DEFAULT_TASK_QUICK_REPLIES } from "../screens/taskQuickReplies";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
+const platform = vi.hoisted(() => ({ OS: "ios" }));
+
 const alertMock = vi.hoisted(() => vi.fn());
 const viewport = vi.hoisted(() => ({ height: 768, width: 390 }));
+
+vi.mock("react-native-safe-area-context", () => ({
+  useSafeAreaInsets: () => ({ bottom: 48 })
+}));
 
 vi.mock("react-native", () => ({
   Alert: {
@@ -14,9 +20,7 @@ vi.mock("react-native", () => ({
   },
   KeyboardAvoidingView: "KeyboardAvoidingView",
   Modal: "Modal",
-  Platform: {
-    OS: "ios"
-  },
+  Platform: platform,
   Pressable: "Pressable",
   ScrollView: "ScrollView",
   StyleSheet: {
@@ -70,12 +74,17 @@ vi.mock("@react-navigation/bottom-tabs", () => ({
   })
 }));
 
-vi.mock("@react-navigation/native-stack", () => ({
-  createNativeStackNavigator: () => ({
-    Navigator: "NativeStackNavigator",
-    Screen: "NativeStackScreen"
-  })
-}));
+vi.mock("@react-navigation/native-stack", async () => {
+  const ReactModule = await import("react");
+  return {
+    createNativeStackNavigator: () => ({
+      Navigator: "NativeStackNavigator",
+      Screen: (props: { name: string; component: React.ComponentType }) =>
+        ReactModule.createElement("NativeStackScreen", props,
+          props.name === "MainTabs" ? ReactModule.createElement(props.component) : null)
+    })
+  };
+});
 
 vi.mock("../components/AccountBadge", () => ({ AccountBadge: "AccountBadge" }));
 vi.mock("../components/FloatingToolbar", () => ({
@@ -93,6 +102,7 @@ import RootNavigator from "./RootNavigator";
 let rendered: ReactTestRenderer | null = null;
 
 afterEach(async () => {
+  platform.OS = "ios";
   viewport.height = 768;
   viewport.width = 390;
   alertMock.mockReset();
@@ -168,7 +178,8 @@ describe("RootNavigator", () => {
     expect(controller.openTask).toHaveBeenCalledWith("task-1");
   });
 
-  it("enables edge-only swipe back for task detail", async () => {
+  it.each(["android", "ios"])("preserves detail navigation and tab scroll clearance on %s", async (os) => {
+    platform.OS = os;
     await act(async () => {
       rendered = create(
         <RootNavigator
@@ -208,6 +219,8 @@ describe("RootNavigator", () => {
       );
     });
 
+    expect(rendered.root.findByType("BottomTabNavigator").props.screenOptions.sceneStyle)
+      .toEqual(os === "android" ? { paddingBottom: 48 } : undefined);
     const taskDetailScreen = rendered.root
       .findAllByType("NativeStackScreen")
       .find((screen) => screen.props.name === "TaskDetail");

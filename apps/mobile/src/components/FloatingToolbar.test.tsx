@@ -12,7 +12,10 @@ vi.mock("@expo/vector-icons", () => ({
   Ionicons: "Ionicons"
 }));
 
+const platform = vi.hoisted(() => ({ OS: "ios" }));
+
 vi.mock("react-native", () => ({
+  Platform: platform,
   Pressable: "Pressable",
   StyleSheet: {
     create: <T extends Record<string, unknown>>(styles: T) => styles
@@ -44,6 +47,7 @@ beforeAll(async () => {
 });
 
 afterEach(async () => {
+  platform.OS = "ios";
   if (rendered) {
     await act(async () => rendered?.unmount());
     rendered = null;
@@ -72,6 +76,24 @@ describe("FloatingToolbar", () => {
       emit: vi.fn(() => ({ defaultPrevented: false })),
       navigate: vi.fn()
     }
+  });
+
+  it.each([
+    ["android", 0, 16],
+    ["android", 24, 40],
+    ["android", 48, 64],
+    ["ios", 34, 16]
+  ])("positions the toolbar on %s with a %i bottom inset", async (os, bottom, expected) => {
+    platform.OS = os;
+    if (!FloatingToolbar) throw new Error("FloatingToolbar was not loaded");
+    await act(async () => {
+      rendered = create(React.createElement(FloatingToolbar, {
+        ...createNavigatorProps(),
+        insets: { top: 0, right: 0, bottom, left: 0 },
+        onSelectUtilityAction: vi.fn()
+      } as never));
+    });
+    expect(flattenStyle(rendered!.root.findAllByType("View")[0].props.style).bottom).toBe(expected);
   });
 
   it("derives Activity from navigator state and navigates through the tab router", async () => {

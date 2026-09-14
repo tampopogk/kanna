@@ -27,12 +27,14 @@ import {
 } from "@react-navigation/native-stack";
 import {
   type LayoutChangeEvent,
+  Platform,
   Pressable,
   StyleSheet,
   Text,
   View,
   useWindowDimensions
 } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { MOBILE_E2E_IDS } from "../e2eTestIds";
 import type { ScrollView as NativeScrollView } from "react-native";
 import { AccountBadge } from "../components/AccountBadge";
@@ -346,13 +348,19 @@ export default function RootNavigator({
 }
 
 function MainTabsRoute() {
+  const insets = useSafeAreaInsets();
   const { isTabletWorkspace } = useNavigationContent();
   if (isTabletWorkspace) {
     return <TabletWorkspaceEmptyState />;
   }
   return (
     <MainTabs.Navigator
-      screenOptions={{ headerShown: false }}
+      screenOptions={{
+        headerShown: false,
+        // Match the toolbar lift while retaining each list's existing scroll
+        // clearance. The iOS shell already consumes its safe-area insets.
+        sceneStyle: Platform.OS === "android" ? { paddingBottom: insets.bottom } : undefined
+      }}
       tabBar={(props: BottomTabBarProps) => <NavigatorTabBar {...props} />}
     >
       <MainTabs.Screen component={TasksTabRoute} name="Tasks" />
