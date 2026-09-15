@@ -477,3 +477,23 @@ The earlier transferring state was transient; no persistent icon defect is
 established. This matches the existing sidebar contract: failure stays visible
 until acknowledged or superseded by a successful move. No UI code was changed.
 The fresh explicit-cloud pull remained pending same-source resume/readiness.
+
+## Fresh reverse cloud pull checkpoint (bd2c8bd2c)
+
+With the previous pull terminal and cleanup empty, Studio issued exactly one
+fresh explicit-cloud pull at 21:26:16Z. The response reported requested,
+`moved=false`, request ID `pull-peer-37088-18d58802092a4f00-1`, and cloud fallback
+false. Both endpoints remained on `bd2c8bd2c` with registry-only discovery and
+trusted cloud-ready catalogs. MBP created outgoing transfer
+`994d942eaa608bcc9b99c8aefd8cf809a8fc514863baa18bacc52be983c496cd`
+at 21:26:25Z, initially pending. Admission and completion remained under
+observation, with no duplicate request.
+
+The source was the same imported task and fixture, preserving head `7365949`
+and its prepared dirty bytes, but its native session recovery had a separate
+limitation. After cleanup, the latest run reported fallback because no Codex
+CLI transcript was available for the recorded session/previous working directory.
+The new run ended in `1789507422883329000` and had no `resumedFrom` linkage.
+Acceptance generated a fresh private nonce in that new session. Its recall can
+test continuity of this fresh session through the next move; it cannot establish
+recovery of the earlier native conversation. No nonce value is recorded here.
