@@ -5373,6 +5373,139 @@ describe("App", () => {
     expect(store.selectedItemId).toBe("slot:pr");
   });
 
+  it("navigates the real sidebar attention filters by their rendered membership and order", async () => {
+    store.selectedRepoId = "repo-1";
+    store.items = [
+      {
+        id: "task-pinned-unread",
+        repo_id: "repo-1",
+        prompt: "Pinned unread",
+        stage: "pr",
+        tags: "[]",
+        pinned: 1,
+        pin_order: 0,
+        read_state: "unread",
+        activity: "unread",
+        created_at: "2026-04-17T10:01:00.000Z",
+        updated_at: "2026-04-17T10:01:00.000Z",
+      },
+      {
+        id: "task-needs-new",
+        repo_id: "repo-1",
+        prompt: "Needs you newest",
+        stage: "in progress",
+        tags: "[]",
+        pinned: 0,
+        pin_order: null,
+        attention_reason: "Choose an approach",
+        activity: "idle",
+        created_at: "2026-04-17T10:05:00.000Z",
+        updated_at: "2026-04-17T10:05:00.000Z",
+      },
+      {
+        id: "task-idle",
+        repo_id: "repo-1",
+        prompt: "Selected idle task",
+        stage: "in progress",
+        tags: "[]",
+        pinned: 0,
+        pin_order: null,
+        activity: "idle",
+        created_at: "2026-04-17T10:04:00.000Z",
+        updated_at: "2026-04-17T10:04:00.000Z",
+      },
+      {
+        id: "task-stage-unread",
+        repo_id: "repo-1",
+        prompt: "Stage unread",
+        stage: "in progress",
+        tags: "[]",
+        pinned: 0,
+        pin_order: null,
+        read_state: "unread",
+        activity: "unread",
+        created_at: "2026-04-17T10:03:00.000Z",
+        updated_at: "2026-04-17T10:03:00.000Z",
+      },
+      {
+        id: "task-needs-pr",
+        repo_id: "repo-1",
+        prompt: "Needs you in PR",
+        stage: "pr",
+        tags: "[]",
+        pinned: 0,
+        pin_order: null,
+        runtime_state: "waiting",
+        activity: "idle",
+        created_at: "2026-04-17T10:02:00.000Z",
+        updated_at: "2026-04-17T10:02:00.000Z",
+      },
+    ];
+    store.taskUiSlots = store.items.map((task) => readyTaskSlot(`slot:${task.id}`, task));
+    store.selectedItemId = "slot:task-idle";
+    store.selectedTaskId = "task-idle";
+    store.currentTaskSlot = store.taskUiSlots[2];
+    store.currentItem = store.items[2];
+    const previousSelectItemImplementation = store.selectItem.getMockImplementation();
+    store.selectItem.mockImplementation(async (taskId: string) => {
+      const slot = store.taskUiSlots.find((candidate) => candidate.task_id === taskId) ?? null;
+      store.selectedItemId = slot?.slot_id ?? taskId;
+      store.selectedTaskId = slot?.task_id ?? taskId;
+      store.currentTaskSlot = slot;
+      store.currentItem = slot?.task ?? null;
+    });
+
+    const wrapper = await mountAppWithOverrides(SidebarWithRepoStub, { Sidebar: false });
+    const renderedTaskIds = () => wrapper.findAll(".workflow-item")
+      .map((row) => row.attributes("data-task-id"));
+    const filterButtons = wrapper.findAll(".attention-filters button");
+
+    expect(renderedTaskIds()).toEqual([
+      "task-pinned-unread",
+      "task-needs-new",
+      "task-idle",
+      "task-stage-unread",
+      "task-needs-pr",
+    ]);
+    await capturedKeyboardActions?.navigateUp();
+    expect(store.selectItem).toHaveBeenLastCalledWith("task-needs-new", {
+      previousItemId: "slot:task-idle",
+      recordNavigation: false,
+    });
+
+    await filterButtons[1].trigger("click");
+    expect(renderedTaskIds()).toEqual(["task-pinned-unread", "task-stage-unread"]);
+    await capturedKeyboardActions?.navigateDown();
+    expect(store.selectItem).toHaveBeenLastCalledWith("task-pinned-unread", {
+      previousItemId: "slot:task-needs-new",
+      recordNavigation: false,
+    });
+    await capturedKeyboardActions?.navigateDown();
+    expect(store.selectItem).toHaveBeenLastCalledWith("task-stage-unread", {
+      previousItemId: "slot:task-pinned-unread",
+      recordNavigation: false,
+    });
+
+    await filterButtons[2].trigger("click");
+    expect(renderedTaskIds()).toEqual(["task-needs-new", "task-needs-pr"]);
+    await capturedKeyboardActions?.navigateUp();
+    expect(store.selectItem).toHaveBeenLastCalledWith("task-needs-new", {
+      previousItemId: "slot:task-stage-unread",
+      recordNavigation: false,
+    });
+    await capturedKeyboardActions?.navigateDown();
+    expect(store.selectItem).toHaveBeenLastCalledWith("task-needs-pr", {
+      previousItemId: "slot:task-needs-new",
+      recordNavigation: false,
+    });
+    const callsAtEnd = store.selectItem.mock.calls.length;
+    await capturedKeyboardActions?.navigateDown();
+    expect(store.selectItem).toHaveBeenCalledTimes(callsAtEnd);
+
+    wrapper.unmount();
+    store.selectItem.mockImplementation(previousSelectItemImplementation ?? (() => undefined));
+  });
+
   it("navigates task shortcuts across repo boundaries in sidebar order", async () => {
     store.repos = [
       { id: "repo-1", path: "/tmp/repo-1", name: "repo 1" },
