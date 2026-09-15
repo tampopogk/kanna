@@ -407,7 +407,8 @@ function bazelTargetsFor(crateDir: string): BazelTarget[] | null {
 /**
  * Labels a target depends on, following `:local_target` edges inside the same
  * BUILD file. `//crates/task-transfer` reaches `//crates/runtime-defaults`
- * through `:kanna_task_transfer_lib`, and that counts.
+ * through `:kanna_task_transfer_lib`, which satisfies crate-level reachability.
+ * A direct use in main still needs its own edge (the transfer regression below).
  */
 function transitiveDepLabels(targets: BazelTarget[], root: BazelTarget): Set<string> {
   const byName = new Map(targets.map((target) => [target.name, target]));
@@ -510,6 +511,17 @@ function workspaceCrates(): WorkspaceCrate[] {
 }
 
 describe("Bazel workspace path dependencies", () => {
+  it("gives both transfer binaries the direct runtime-defaults dependency used by main", () => {
+    // Library reachability and variant parity both passed when BOTH binaries
+    // omitted this --extern. GetLocalIdentity's contract needs a direct edge.
+    const targets = parseBazelTargets("crates/task-transfer/BUILD.bazel");
+    for (const name of ["kanna_task_transfer", "kanna_task_transfer_x86_64"]) {
+      const target = targets.find(target => target.name === name);
+      expect(target, name).toBeDefined();
+      expect(target?.deps, name).toContain("//crates/runtime-defaults:kanna_runtime_defaults");
+    }
+  });
+
   it("gives every Bazel-built workspace crate a BUILD.bazel", () => {
     const missing = workspaceCrates()
       .map((crate) => crate.dir)

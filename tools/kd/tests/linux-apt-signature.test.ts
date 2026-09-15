@@ -197,7 +197,7 @@ it("uses the real signer at the final transaction boundary and preserves the old
   const storage: AptPublicationStorage = {
     withExclusivePublication: (work) => work(),
     read: async (path) => { operations.push(`read ${path}`); return objects.get(path) ?? null; },
-    create: async (path, bytes) => { if (objects.has(path)) return false; objects.set(path, Uint8Array.from(bytes)); return true; },
+    create: async (path, bytes) => { if (objects.has(path)) return false; operations.push(`create ${path}`); objects.set(path, Uint8Array.from(bytes)); return true; },
     replace: async (path, bytes) => { operations.push(`replace ${path}`); objects.set(path, Uint8Array.from(bytes)); },
   };
   const input = {
@@ -215,7 +215,8 @@ it("uses the real signer at the final transaction boundary and preserves the old
   const expected = objects.get("dists/staging/Release");
   if (!signed || !expected) throw new Error("Missing signed archive fixture");
   await verifyAptRelease({ signedRelease: signed, expectedRelease: expected, publicKey, fingerprint, now });
-  expect(operations.at(-1)).toBe(`replace ${path}`);
+  expect(operations.filter((op) => /^(create|replace) /.test(op)).at(-1)).toBe(`replace ${path}`);
+  expect(operations.slice(-2)).toEqual([`replace ${path}`, `read ${path}`]);
   const commits = operations.filter((op) => op === `replace ${path}`).length;
   time = new Date("2026-09-11T00:00:00Z");
   await expect(publishAptArchive(input, storage, signer)).rejects.toThrow(/expired/);

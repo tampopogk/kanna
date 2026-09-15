@@ -371,6 +371,7 @@ export function promotionAuthorizes(
 }
 
 export interface StagingPublishGateInput {
+  platform?: "macos" | "linux";
   /** `main` or `release/X.Y` — the branch the proposed RC is being built from. */
   proposedSourceBranch: string;
   proposedCommit: string;
@@ -415,7 +416,7 @@ export interface StagingFreezeDecision {
 export function evaluateStagingFreeze(
   input: Pick<
     StagingPublishGateInput,
-    "proposedSourceBranch" | "active" | "activeProductionTagExists" | "reset"
+    "proposedSourceBranch" | "active" | "activeProductionTagExists" | "reset" | "platform"
   >
 ): StagingFreezeDecision {
   const active = input.active;
@@ -428,7 +429,7 @@ export function evaluateStagingFreeze(
   const branch = active?.sourceBranch ?? null;
   const wouldFreeze =
     active !== null &&
-    isReleaseBranchName(branch) &&
+    (input.platform === "linux" ? /^release\/linux\/\d+\.\d+$/.test(branch ?? "") : isReleaseBranchName(branch)) &&
     !input.activeProductionTagExists &&
     input.proposedSourceBranch === "main";
 
@@ -493,6 +494,7 @@ export function evaluateStagingPublishGate(input: StagingPublishGateInput): Stag
   }
 
   const freeze = evaluateStagingFreeze({
+    platform: input.platform,
     proposedSourceBranch: input.proposedSourceBranch,
     active,
     activeProductionTagExists: input.activeProductionTagExists,

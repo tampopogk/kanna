@@ -36,6 +36,7 @@ rust_binary(
         ":kanna_task_transfer_lib",
         "//crates/daemon:kanna_daemon_lib_for_task_transfer",
         "//crates/kanna-agent-protocol:kanna_agent_protocol_for_task_transfer",
+        "//crates/runtime-defaults:kanna_runtime_defaults",
     ],
     proc_macro_deps = all_crate_deps(proc_macro = True),
 )
@@ -50,6 +51,7 @@ rust_binary(
         ":kanna_task_transfer_lib",
         "//crates/daemon:kanna_daemon_lib_for_task_transfer",
         "//crates/kanna-agent-protocol:kanna_agent_protocol_for_task_transfer",
+        "//crates/runtime-defaults:kanna_runtime_defaults",
     ],
     proc_macro_deps = all_crate_deps(proc_macro = True),
     platform = "//tools/bazel:macos_x86_64",

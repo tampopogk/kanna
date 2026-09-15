@@ -74,6 +74,7 @@ export function linuxPackageStagingDir(repoRoot: string, architecture: LinuxArch
  * up-to-date check, so an old Cargo staging directory can never satisfy it. */
 export async function buildLinuxPackageFromBazel(input: Omit<LinuxPackageBuildInput, "binariesDir"> & {
   skipBuild?: boolean;
+  source?: { revision: string; tree: string };
   stagingIteration?: number;
 }): Promise<LinuxPackageBuildResult> {
   if (input.allowAuditFindings) throw new Error("Bazel Linux packages require a clean audit; overrides are not supported.");
@@ -82,7 +83,9 @@ export async function buildLinuxPackageFromBazel(input: Omit<LinuxPackageBuildIn
   const iteration = input.channel === "staging" ? (input.stagingIteration ?? 1) : input.stagingIteration;
   const expectedVersion = debianVersion(input.version, input.channel, iteration);
   const label = `//packaging/linux:deb_${input.channel}_${input.architecture}`;
-  const options = ["-c", "opt", `--//packaging/linux:staging_iteration=${iteration ?? 1}`];
+  if (input.source && ![input.source.revision, input.source.tree].every(value => /^[a-f0-9]{40}$/.test(value))) throw new Error("Invalid Linux build stamp.");
+  const options = ["-c", "opt", `--//packaging/linux:staging_iteration=${iteration ?? 1}`,
+    ...(input.source ? [`--define=KANNA_LINUX_BUILD_REVISION=${input.source.revision}`, `--define=KANNA_LINUX_BUILD_TREE=${input.source.tree}`] : [])];
   const run = async (args: string[], streamOutput = false) => {
     const result = await input.runner.run("bazel", args, { cwd: input.repoRoot, env: input.env, streamOutput });
     if (result.exitCode !== 0) throw new Error(`Bazel Linux package failed: ${result.stderr || result.stdout}`);
@@ -98,11 +101,11 @@ export async function buildLinuxPackageFromBazel(input: Omit<LinuxPackageBuildIn
   const builtDeb = one(".deb");
   const reportPath = one(".json");
   const report = JSON.parse(readFileSync(reportPath, "utf8")) as {
-    builder: string; version: string; channel: string; architecture: string; debianVersion: string;
+    builder: string; buildRevision?: string; buildTree?: string; version: string; channel: string; architecture: string; debianVersion: string;
     sha256: string; depends: string[]; audit: AuditResult;
   };
   const sha256 = createHash("sha256").update(readFileSync(builtDeb)).digest("hex");
-  if (report.builder !== "bazel" || report.version !== sourceVersion || report.channel !== input.channel ||
+  if ((input.source && (report.buildRevision !== input.source.revision || report.buildTree !== input.source.tree)) || report.builder !== "bazel" || report.version !== sourceVersion || report.channel !== input.channel ||
       report.architecture !== input.architecture ||
       report.debianVersion !== expectedVersion ||
       report.sha256 !== sha256 || report.audit.findings.length) {

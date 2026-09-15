@@ -8,6 +8,8 @@ import { INSTALLED_EXECUTABLES, stageLinuxPackageTree, debianVersion, type Linux
 
 const [manifestPath] = process.argv.slice(2);
 interface PackageManifest {
+  buildRevision: string;
+  buildTree: string;
   architecture: LinuxArchitecture;
   channel: LinuxChannel;
   iteration: number;
@@ -66,7 +68,7 @@ try {
     control: { version, architecture: input.architecture, stagingIteration: input.channel === "staging" ? input.iteration : undefined, depends } });
   runTool(["deb", root, input.output]);
   const hash = (p: string) => createHash("sha256").update(readFileSync(p)).digest("hex");
-  writeFileSync(input.report, JSON.stringify({ builder: "bazel", version, channel: input.channel,
+  writeFileSync(input.report, JSON.stringify({ builder: "bazel", buildRevision: input.buildRevision, buildTree: input.buildTree, version, channel: input.channel,
     architecture: input.architecture, debianVersion: debianVersion(version, input.channel, input.channel === "staging" ? input.iteration : undefined),
     sha256: hash(input.output), depends, audit,
     executables: facts.map((fact, i) => ({ ...fact, path: INSTALLED_EXECUTABLES[i], sha256: hash(input.products[INSTALLED_EXECUTABLES[i]]) })),

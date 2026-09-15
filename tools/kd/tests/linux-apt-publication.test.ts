@@ -137,7 +137,7 @@ describe("apt publication with in-memory storage and test signing", () => {
     const signer = new TestSigner(store);
     await publishAptArchive(publication(), store, signer);
     expectReadable(store, store.objects.get(commitPath), "1.2.3-1");
-    expect(store.operations.slice(-2)).toEqual(["sign", `replace ${commitPath}`]);
+    expect(store.operations.slice(-3)).toEqual(["sign", `replace ${commitPath}`, `read ${commitPath}`]);
     const signIndex = store.operations.indexOf("sign");
     for (const path of store.objects.keys()) {
       if (path === commitPath) continue;

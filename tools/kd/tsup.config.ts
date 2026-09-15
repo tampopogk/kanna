@@ -10,7 +10,7 @@ export default defineConfig((options) => ({
   entry: {
     "bin/kd": "src/bin/kd.ts",
     "bin/kd-mcp": "src/bin/kd-mcp.ts",
-    // Independently testable distribution entry; release commands are not yet wired.
+    // Independently testable apt signer distribution entry.
     "runtime/linux-apt-signature": "src/runtime/linux-apt-signature.ts",
   },
   format: ["esm"],
