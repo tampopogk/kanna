@@ -49,7 +49,37 @@ from the failed source. No installed operator app was tested or changed.
    Mapping uses current documents and local options. No timer or retry was added.
    This establishes a product defect, **not** that it caused the old C incident.
 
-## Cloud investigation — cause remains open
+4. **Forced-cloud return traffic silently selected LAN.** The corrected-source
+   live run reached a real outgoing/incoming transfer, then MBP's import work
+   failed repeatedly with `No route to host (os error 65)` before source
+   finalization. Its selected source endpoint was the intended
+   `192.168.1.165:4465`, discovered over LAN. Source preflight pinned cloud only
+   in its outgoing reservation; the destination stored no route, and
+   finalization, artifact fetch, import acknowledgment, and refusal notification
+   selected `Auto`, which preferred LAN. The initial payload's clean-finalization
+   flag was a placeholder, not proof the source agent had stopped.
+
+   Preflight now carries the concrete route inside its authenticated payload.
+   The destination persists that route and uses it for return traffic with the
+   existing route-specific trust checks. Current cloud proxies are resolved at
+   use, allowing normal proxy/credential refresh. Removing cloud trust fails
+   closed instead of falling back to LAN. A real-runtime regression, with
+   runtime-produced LAN entries and a counted forwarding cloud proxy, fails
+   before this change and passes after: preflight/commit → destination restart →
+   finalization → artifact bytes → import acknowledgment all use cloud.
+   No intent IDs, attempt budgets, source ownership, or idempotency rules changed.
+
+   Legacy incoming reservations and older senders have no route field and keep
+   their existing automatic selection; a binary update cannot reconstruct their
+   original choice. Both endpoints must run corrected code for a newly signed
+   route to survive the full handoff. The retained fixture can use the supported
+   `KANNA_TRANSFER_DISCOVERY=registry` configuration with its distinct existing
+   per-instance roots to establish cloud with LAN unavailable, without seeding
+   registries or changing the intent. That is legacy recovery evidence, separate
+   from new-route persistence. The underlying LAN socket rejection has not been
+   attributed to a wrong address, Bonjour collision, or a specific OS policy.
+
+## Original cloud peer absence — cause remains open
 
 The retained MBP `/v1/cloud/desktops` result proves relay/LAN presence, **not**
 receipt of a Firestore desktop transfer identity by its renderer. That endpoint
@@ -99,6 +129,11 @@ this task.
   46 focused desktop tests pass after (`.tmp/cloud-emission-after.log`). Existing
   out-of-order completion coverage still prevents rollback by older results.
 - `cargo clippy -p kanna-task-transfer --all-targets -- -D warnings`: pass.
+- Return-route correction: 6 cloud-route tests, 4 finalization tests, 3 incoming
+  reservation tests, 2 destination acknowledgment/finalization tests, and replay
+  compatibility tests pass. The new full return-route regression failed before
+  the correction (`.tmp/cloud-return-before.log`) and passes after, including
+  trust withdrawal (`.tmp/cloud-return-final.log`). Final clippy passes.
 
 This is focused implementation evidence, not physical cross-machine or release
 acceptance. The same-host network test requires a usable physical interface.
@@ -156,3 +191,44 @@ original cloud cause remains open until the four-boundary checkpoint and live
 results establish it. No DB was opened or edited, and no installed operator
 app was tested. All local test/probe processes have exited; no stage advance or
 publication was performed.
+
+## Corrected-source live checkpoint (552d55faa)
+
+Acceptance restarted the verified MBP destination first, then Studio at
+19:45:38Z with the retained intent and identities. Attempt 6 failed at
+19:46:10.668Z because the **destination** peer was not yet in Studio's local
+catalog. This is distinct from old C's missing **source** peer at MBP.
+
+At 19:47:10.953Z MBP saw Studio through native LAN discovery, while its renderer
+cloud catalog still omitted Studio. By 19:47:46.843Z normal late delivery had
+added Studio to the renderer and external catalog: trusted, LAN and cloud
+available, cloud route ready. No reconnect, manual registration, or duplicate
+push caused that transition. This is positive physical cross-machine discovery
+and late cloud registration evidence at `552d55faa`.
+
+Authenticated server reads on Studio (19:49:08.020Z) and MBP
+(19:49:25.467Z) matched: `kanna-staging`, database `(default)`,
+`firestore.googleapis.com`, TLS, neither cache nor pending local writes. Both
+documents contained the expected public identities, protocol 1, and accepting
+state. Both renderer accounts had the same UID digest. Relay presence was
+recorded separately.
+
+Retained push attempt 7 created transfer
+`4bd2c7722756f387fc8cbc07ad57ac81bd04f4a69e476ff48eae35f0d537e2a5`
+at 19:56:15Z. MBP's exact owned server log attributed import attempts 1–5 to
+`No route to host (os error 65)` at 19:56:16.964894Z, 19:56:17.984148Z,
+19:56:23.003971Z, 19:56:53.022995Z, and 19:58:53.658622Z. The source remained
+open/live, with input ledger count 5 and no finalization input as of 20:03:19Z;
+destination remained claimed with no local task. The one approval returned 200,
+but its scheduled boolean was not retained and is unknown. A later empty log
+search does not negate the retained attributed errors. No completed move is
+claimed. These observations led to the return-route correction above.
+
+The later starvation correction is `af5cc056926f5566f3eb9c2173699d27c6651e2c`,
+tree `741f3890cc719610a102e17f4dc19f0479c5fbf7`. It has focused regression and
+typecheck evidence, but is not running in this live checkpoint. Native code is
+unchanged. Neither the transient absence in this run nor the deterministic
+starvation test establishes the cause of old C's cloud failure.
+
+Acceptance owns the timestamped endpoint/binary evidence in its worktree's
+`docs/testing/evidence/2026-09-15-corrected-transfer-641dbb6f.json`.

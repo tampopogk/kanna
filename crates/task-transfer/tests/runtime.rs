@@ -1760,6 +1760,178 @@ async fn task_pull_uses_requested_cloud_route_for_externally_trusted_peers() {
     assert_eq!(event.requester_peer_id, "peer-destination");
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn cloud_transfer_return_steps_keep_cloud_route_when_lan_is_discovered() {
+    let temp = tempfile::tempdir().unwrap();
+    let source = std::sync::Arc::new(
+        TransferRuntime::spawn(RuntimeConfig::for_tests(
+            "peer-source",
+            "Source",
+            temp.path(),
+            0,
+        ))
+        .await
+        .unwrap(),
+    );
+    let destination_config =
+        RuntimeConfig::for_tests("peer-destination", "Destination", temp.path(), 0);
+    let destination = TransferRuntime::spawn(destination_config.clone())
+        .await
+        .unwrap();
+    // Both LAN entries are produced by real runtimes, not injected registries.
+    // A forwarding cloud proxy proves which route each return step actually uses.
+    let source_endpoint = runtime_endpoint(temp.path(), "peer-source");
+    let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let cloud_endpoint = listener.local_addr().unwrap().to_string();
+    let connections = std::sync::Arc::new(AtomicU64::new(0));
+    let observed = connections.clone();
+    let proxy = tokio::spawn(async move {
+        let mut requests = tokio::task::JoinSet::new();
+        loop {
+            let (mut client, _) = listener.accept().await.unwrap();
+            observed.fetch_add(1, Ordering::SeqCst);
+            let endpoint = source_endpoint.clone();
+            requests.spawn(async move {
+                let mut server = TcpStream::connect(endpoint).await.unwrap();
+                tokio::io::copy_bidirectional(&mut client, &mut server)
+                    .await
+                    .unwrap();
+            });
+        }
+    });
+    let identity = source.local_identity();
+    let source_cloud = ExternalPeer {
+        peer_id: identity.peer_id,
+        display_name: identity.display_name,
+        endpoint: cloud_endpoint,
+        public_key: identity.public_key,
+        protocol_version: 1,
+        accepting_transfers: true,
+    };
+    destination
+        .upsert_external_peer(source_cloud.clone())
+        .await
+        .unwrap();
+    let identity = destination.local_identity();
+    source
+        .upsert_external_peer(ExternalPeer {
+            peer_id: identity.peer_id,
+            display_name: identity.display_name,
+            endpoint: runtime_endpoint(temp.path(), "peer-destination"),
+            public_key: identity.public_key,
+            protocol_version: 1,
+            accepting_transfers: true,
+        })
+        .await
+        .unwrap();
+    let preflight = source
+        .prepare_transfer_preflight_with_transport(
+            "peer-destination",
+            "task-source",
+            TransferTransport::Cloud,
+        )
+        .await
+        .unwrap();
+    source
+        .prepare_transfer_commit(
+            &preflight.transfer_id,
+            json!({
+                "task": { "source_task_id": "task-source" }
+            }),
+        )
+        .await
+        .unwrap();
+    let _ = next_incoming_transfer_request(&destination).await;
+    // The selected return transport must survive sidecar recovery too.
+    drop(destination);
+    let destination = TransferRuntime::spawn(destination_config).await.unwrap();
+    destination
+        .upsert_external_peer(source_cloud)
+        .await
+        .unwrap();
+    assert!(destination
+        .peer_routes("peer-source")
+        .await
+        .unwrap()
+        .lan_endpoint
+        .is_some());
+    let completing_source = source.clone();
+    let completion = tokio::spawn(async move {
+        let RuntimeEvent::OutgoingTransferFinalizationRequested(event) =
+            completing_source.next_event().await.unwrap()
+        else {
+            panic!("expected finalization request");
+        };
+        completing_source
+            .complete_outgoing_transfer_finalization(
+                &event.transfer_id,
+                Ok(kanna_task_transfer::runtime::FinalizedOutgoingTransfer {
+                    payload: json!({ "task": { "source_task_id": "task-source" } }),
+                    finalized_cleanly: true,
+                }),
+            )
+            .await
+            .unwrap();
+    });
+    let before = connections.load(Ordering::SeqCst);
+    destination
+        .finalize_outgoing_transfer(&preflight.transfer_id, "accepted-selection")
+        .await
+        .unwrap();
+    completion.await.unwrap();
+    assert!(
+        connections.load(Ordering::SeqCst) > before,
+        "forced-cloud finalization returned over LAN"
+    );
+
+    let artifact = temp.path().join("route-artifact");
+    std::fs::write(&artifact, b"cloud artifact").unwrap();
+    source
+        .stage_transfer_artifact(&preflight.transfer_id, "artifact", artifact, false)
+        .await
+        .unwrap();
+    let before = connections.load(Ordering::SeqCst);
+    let fetched = destination
+        .fetch_transfer_artifact(&preflight.transfer_id, "artifact")
+        .await
+        .unwrap();
+    assert_eq!(std::fs::read(fetched.path).unwrap(), b"cloud artifact");
+    assert!(
+        connections.load(Ordering::SeqCst) > before,
+        "forced-cloud artifact returned over LAN"
+    );
+    let before = connections.load(Ordering::SeqCst);
+    destination
+        .acknowledge_import_committed(
+            &preflight.transfer_id,
+            "task-source",
+            "task-destination",
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    assert!(
+        connections.load(Ordering::SeqCst) > before,
+        "forced-cloud acknowledgment returned over LAN"
+    );
+    destination
+        .remove_external_peer("peer-source")
+        .await
+        .unwrap();
+    assert!(
+        matches!(
+            destination
+                .finalize_outgoing_transfer(&preflight.transfer_id, "accepted-selection")
+                .await,
+            Err(RuntimeError::PeerNotFound(_))
+        ),
+        "a cloud reservation must not fall back to discovered LAN after cloud trust is removed"
+    );
+    proxy.abort();
+    let _ = proxy.await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn task_pull_rejects_unknown_peer_self_request_and_unsafe_task_ids() {
     let temp = tempfile::tempdir().unwrap();
