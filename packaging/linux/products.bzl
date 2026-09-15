@@ -68,6 +68,8 @@ def _linux_deb_impl(ctx):
     if sorted(products) != sorted(_EXECUTABLES.values()):
         fail("Linux package requires exactly the eight declared product executables")
     ctx.actions.write(manifest, json.encode({
+        "buildRevision": ctx.var.get("KANNA_LINUX_BUILD_REVISION", ""),
+        "buildTree": ctx.var.get("KANNA_LINUX_BUILD_TREE", ""),
         "architecture": ctx.attr.architecture,
         "channel": ctx.attr.channel,
         "iteration": ctx.attr._iteration[LinuxIterationInfo].value,

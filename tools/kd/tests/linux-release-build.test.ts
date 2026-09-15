@@ -84,6 +84,16 @@ describe("buildLinuxPackageFromBazel", () => {
     await expect(buildLinuxPackageFromBazel(input)).rejects.toThrow(/does not match/);
   });
 
+  it("binds release collection to declared build revision/tree stamps", async () => {
+    const { input, report, calls } = fixture();
+    const source = { revision: "a".repeat(40), tree: "b".repeat(40) };
+    await expect(buildLinuxPackageFromBazel({ ...input, source })).rejects.toThrow(/does not match/);
+    writeFileSync(join(input.repoRoot, "bazel-out/product.json"), JSON.stringify({ ...report, buildRevision: source.revision, buildTree: source.tree }));
+    await buildLinuxPackageFromBazel({ ...input, source });
+    expect(calls[0]).toContain(`--define=KANNA_LINUX_BUILD_REVISION=${source.revision}`);
+    expect(calls[0]).toContain(`--define=KANNA_LINUX_BUILD_TREE=${source.tree}`);
+  });
+
   it("never falls back to Cargo or a stale artifact after a build fails", async () => {
     const { input, calls } = fixture();
     input.runner.run = async (command, args) => { calls.push([command, ...args]); return { exitCode: 1, stdout: "", stderr: "missing target" }; };

@@ -18,6 +18,9 @@ vi.mock("../src/runtime/release", async (importOriginal) => {
   };
 });
 
+const linuxMocks = vi.hoisted(() => ({ shipLinuxRelease: vi.fn(), linuxReleaseStatus: vi.fn() }));
+vi.mock("../src/runtime/linux-release", () => linuxMocks);
+import { parseCliArgs } from "../src/cli";
 import { nodeCommandRunner } from "../src/runtime/process";
 import { loadReleaseEnvironment } from "../src/runtime/release-env";
 import { getTaskDefinition } from "../src/tasks/registry";
@@ -305,4 +308,28 @@ describe("release task environment integration", () => {
     );
   });
 
+});
+
+
+describe("Linux release CLI/schema/registry isolation", () => {
+  afterEach(() => { vi.restoreAllMocks(); vi.unstubAllEnvs(); vi.clearAllMocks(); });
+  it.each(["ship", "promote", "status"])("routes explicit Linux %s before all macOS preflights", async command => {
+    const fixture = await createFixture();
+    mockGitContext(fixture); // throws on every non-git command, including notarytool
+    linuxMocks.shipLinuxRelease.mockResolvedValue({ platform: "linux" });
+    linuxMocks.linuxReleaseStatus.mockResolvedValue({ platform: "linux" });
+    const args = ["release", command, ...(command === "promote" ? ["1.2.3-staging.1"] : []), "--platform", "linux", ...(command === "ship" ? ["--staging", "--release", "--staging-iteration", "2", "--skip-build"] : []), "--acceptance", "evidence.json"];
+    const parsed = parseCliArgs(args);
+    await getTaskDefinition(parsed.taskId).execute({ cwd: fixture.worktree, env: {} }, parsed.input);
+    const handler = command === "status" ? linuxMocks.linuxReleaseStatus : linuxMocks.shipLinuxRelease;
+    expect(handler).toHaveBeenCalledWith(expect.objectContaining({ acceptance: "evidence.json", env: expect.objectContaining({ RELEASE_DEFAULT: "file" }) }));
+    if (command === "ship") expect(handler).toHaveBeenCalledWith(expect.objectContaining({ stagingIteration: 2, skipBuild: true }));
+    expect(releaseMocks.shipRelease).not.toHaveBeenCalled();
+    expect(releaseMocks.releaseStatus).not.toHaveBeenCalled();
+  });
+  it.each(["release.ship", "release.promote", "release.status", "release.cut", "release.reset-staging", "release.setup-notarization"])("rejects unsupported selectors at the %s schema", id => {
+    const schema = getTaskDefinition(id).inputSchema;
+    expect(() => schema.parse({ version: "1.2.3-staging.1", platform: "windows" })).toThrow();
+    if (["release.cut", "release.reset-staging", "release.setup-notarization"].includes(id)) expect(() => schema.parse({ platform: "linux" })).toThrow();
+  });
 });

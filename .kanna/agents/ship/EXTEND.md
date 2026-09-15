@@ -46,15 +46,69 @@ its own soak window in `release-policy.json`. Nothing about a Linux operation
 touches the macOS channels, and a Linux failure is never a reason to change
 anything on them.
 
-**Linux is not releasable yet, and you must not treat it as if it were.**
-`./kd build linux-package` builds declared Bazel desktop/worker/sidecar outputs,
-audits them, and assembles a deterministic `.deb`. Historical Cargo prototype
-packages remain unpublishable. Canonical Linux status/ship/promote routing,
-archive storage, real-key custody and candidate acceptance remain separate
-integration gates. Refuse publication until those gates are implemented and
-verified; a successful package build grants no publication authority.
+The canonical Linux lifecycle is explicit. Select `--platform linux` on every
+status, ship and promotion command. For a Linux task, the programmatic default
+and interactive status above mean the Linux commands below. The macOS
+operations/preflight and version-bump procedure do not apply to Linux.
 
-When it is releasable, these rules hold and none is optional:
+- Status: `./kd release status --platform linux [--acceptance <path>]`.
+- Build/rehearse: `./kd release ship --platform linux --staging --dry-run
+  [--branch main|release/linux/X.Y] [--staging-iteration N]
+  [--acceptance <path>]`. This builds both architectures from clean committed
+  `VERSION` and reports exact hashes and publication blockers. It creates no
+  candidate, signature or channel pointer. Missing archive configuration is a
+  preflight refusal; do not substitute a macOS dry-run.
+- Authorized staging publication: the same ship command with `--release`
+  instead of `--dry-run`. After evidence preparation, `--skip-build` requires
+  Bazel's up-to-date check with the same source/tree/iteration stamps.
+- Named-human production promotion: `./kd release promote X.Y.Z-staging.N
+  --platform linux --acceptance <path> [--dry-run]`. Production rebuilds the
+  exact soaked source as `kanna`, verifies both debs and publishes suite `stable`.
+  It does not relabel `kanna-staging`. Production requires a full **24 hours**
+  (or a larger Linux policy value), without rounding up a partial hour.
+- Retry the same command/iteration/source after interruption. A pending
+  transaction blocks a new candidate. Its immutable artifacts, evidence,
+  configuration and existing verified publication receipt must match. Do not
+  delete the archive lock, journal or immutable objects. A missing public
+  readback/receipt proves no earlier soak; recovery records its first verified
+  public observation. Once a receipt exists, retries retain that timestamp.
+
+Linux does not implement cut/recut/reset/rollback or soak override; these
+selectors fail closed and must never be retried without `--platform linux`.
+An existing `release/linux/X.Y` branch must match `VERSION` and its remote tip.
+Changed source requires a fresh candidate and fresh acceptance/soak.
+
+Read `docs/dev/linux-release.md` for the exact configuration and acceptance
+format. `KANNA_LINUX_*` non-secret selectors use the existing owner-only
+`~/.kanna/.env.release.local`; no mobile bucket or macOS key is inherited as a
+Linux default. The concrete backend is an explicitly selected, dedicated local
+POSIX filesystem archive, served at the configured public HTTPS base URL.
+It needs `/usr/bin/python3` on the release host for the kernel-locked storage
+helper. This is a release-tool prerequisite, not an installed app dependency.
+No network filesystem/object-store mount is supported by this backend. Choosing
+another backend requires an adapter with equivalent atomic/ownership semantics;
+never use a copy/rsync job as a substitute for atomic publication.
+
+Before Linux builds/publication: verify the Kanna connection, clean source and
+remote base as above; configure the archive/public URL/explicit Valid-Until
+hours and public key fingerprint; and obtain exact candidate evidence. Before
+real publication, verify protected apt private-key/passphrase files on the
+trusted release host and authenticated GitHub access. No Apple certificate,
+notarization profile, updater key or Darwin target is a Linux prerequisite.
+Public readback verifies InRelease, package/index/report and candidate bytes
+before recording the soak timestamp. Read `publication.allowed` on a rehearsal
+and `promotion.allowed` plus every blocker on status; a built package is not
+release readiness.
+
+The real predecessor/candidate pair and installed upgrade acceptance are Ship's
+work. Task `641dbb6f` owns system/cross-machine acceptance. Install-only reports,
+macOS soak, disposable keys and synthetic test packages satisfy none of those
+gates. The PR-head native run `34935441089` failed both architectures in
+`kanna-task-transfer` (unresolved `kanna_runtime_defaults`); installed checks were
+skipped. Obtain a corrected product build and new exact-candidate evidence before
+shipping. The older `34930914452` PASS is only for its recorded pre-rebase source.
+
+These rules hold and none is optional:
 
 - **Both architectures or nothing.** `release-policy.json` declares
   `linux.requiredArchitectures`. Every required architecture must build, pass
@@ -79,7 +133,7 @@ When it is releasable, these rules hold and none is optional:
 - **Production publication and promotion stay named-human operations**, exactly
   as on macOS.
 
-## Preflight
+## macOS Preflight
 
 Release credentials — the Developer ID certificate, the Tauri updater private key, and the notarization Keychain profile in `~/.kanna/.env.release.local` — exist only on the owner's MacBook Pro. Ship tasks must run there; on any other machine the preflight below fails at the first credential check and no amount of retrying fixes it. If you are not on that machine, report it as the blocker and stop rather than working around it.
 
@@ -94,7 +148,7 @@ Before any ship, cut, promotion, rollback, or backport:
 
 Do not work around a failed `kd` preflight or publish with lower-level commands, host-only `notarytool` checks, manual notarization, or raw Bazel release targets. Before retrying a failed ship, inspect `git status` because version files may be left modified.
 
-## RC Contract
+## macOS RC Contract
 
 Each staging publish increments `N` from remote tags, creates an immutable `vX.Y.Z-staging.N` prerelease for one commit with DMGs, updater bundles, signatures, and `latest-staging.json`, restores temporary version-file changes, and repoints the manifest-only `desktop-staging` channel. On `release/X.Y`, the branch series determines `X.Y.Z`, `HEAD` must equal the branch's remote tip exactly, and provenance is recorded for promotion.
 

@@ -628,6 +628,18 @@ function parseFlagInput(
   const input: Record<string, unknown> = { ...defaults };
   for (let index = 0; index < rest.length; index += 1) {
     const arg = rest[index];
+    if (arg === "--acceptance" || arg === "--staging-iteration") {
+      const value = rest[++index];
+      if (!value || value.startsWith("--")) throw new Error(`${arg} requires a value`);
+      if (arg === "--acceptance") input.acceptance = value;
+      else {
+        const iteration = Number(value);
+        if (!Number.isSafeInteger(iteration) || iteration < 1) throw new Error("--staging-iteration must be a positive integer");
+        input.stagingIteration = iteration;
+      }
+      continue;
+    }
+    if (arg === "--skip-build") { input.skipBuild = true; continue; }
     if (arg === "--db") {
       const value = rest[index + 1];
       if (!value) {
@@ -1061,7 +1073,7 @@ export function parseCliArgs(args: string[]): ParsedCliCommand {
     return { taskId: "release.cut", input: parseFlagInput(rest, {}) };
   }
   if (group === "release" && command === "status") {
-    return { taskId: "release.status", input: {} };
+    return { taskId: "release.status", input: parseFlagInput(rest, {}) };
   }
   if (group === "cloud" && command === "deploy") {
     return {
@@ -1220,13 +1232,13 @@ const helpTopics: Record<string, string[]> = {
     "  build sidecars",
     "  build linux-package [--channel production|staging] [--architecture x86_64|arm64] [--version X.Y.Z] [--staging-iteration <n>] [--skip-build] [--allow-audit-findings]",
     "  rust-cache install|status",
-    "  release ship [--staging|--production] [--dry-run] [--release] [--major|--minor|--patch] [--arm64|--x86_64] [--rollback-to <version>] [--branch main|release/X.Y]",
-    "  release promote <staging-version> [--dry-run] [--arm64|--x86_64] [--override-soak <reason>]",
+    "  release ship [--platform macos|linux] [--staging|--production] [--dry-run] [--release] [--major|--minor|--patch] [--arm64|--x86_64] [--rollback-to <version>] [--branch main|release/X.Y]",
+    "  release promote <staging-version> [--platform macos|linux] [--dry-run] [--arm64|--x86_64] [--override-soak <reason>]",
     "  release setup-notarization [--profile <name>] [--keychain <absolute-path>]",
     "  release cut [--major|--minor|--patch] [--version X.Y.0] [--abandon-series X.Y[,X.Y]] [--reason <why>]",
     "  release cut --version X.Y.0 --recut --reason <why> --confirm-recut <staging-version|empty> --confirm-old-tip <sha> [--dry-run]",
     "  release reset-staging --to main|release/X.Y --reason <why> --confirm-abandon <staging-version> [--dry-run]",
-    "  release status",
+    "  release status [--platform macos|linux] [--acceptance <path>]",
     "  cloud deploy --staging|--production [--ref <branch|tag|sha>] [--functions] [--portal] [--relay] [--dry-run]",
     "  cloud relay-provision --staging|--production",
     "  relay stats --staging|--production [--open] [--dry-run]",
@@ -1657,17 +1669,22 @@ const helpTopics: Record<string, string[]> = {
     "Usage: kd release <command>",
     "",
     "Commands:",
-    "  release ship [--staging|--production] [--dry-run] [--release] [--major|--minor|--patch] [--arm64|--x86_64] [--rollback-to <version>] [--branch main|release/X.Y]",
-    "  release promote <staging-version> [--dry-run] [--arm64|--x86_64] [--override-soak <reason>]",
+    "  release ship [--platform macos|linux] [--staging|--production] [--dry-run] [--release] [--major|--minor|--patch] [--arm64|--x86_64] [--rollback-to <version>] [--branch main|release/X.Y]",
+    "  release promote <staging-version> [--platform macos|linux] [--dry-run] [--arm64|--x86_64] [--override-soak <reason>]",
     "  release setup-notarization [--profile <name>] [--keychain <absolute-path>]",
     "  release cut [--major|--minor|--patch] [--version X.Y.0] [--abandon-series X.Y[,X.Y]] [--reason <why>]",
     "  release cut --version X.Y.0 --recut --reason <why> --confirm-recut <staging-version|empty> --confirm-old-tip <sha> [--dry-run]",
     "  release reset-staging --to main|release/X.Y --reason <why> --confirm-abandon <staging-version> [--dry-run]",
-    "  release status"
+    "  release status [--platform macos|linux] [--acceptance <path>]"
   ],
   "release ship": [
-    "Usage: kd release ship [--staging|--production] [--dry-run] [--release] [--major|--minor|--patch] [--arm64|--x86_64] [--rollback-to <version>] [--branch main|release/X.Y]",
+    "Usage: kd release ship [--platform macos|linux] [--staging|--production] [--dry-run] [--release] [--major|--minor|--patch] [--arm64|--x86_64] [--rollback-to <version>] [--branch main|release/X.Y]",
     "",
+    "Select --platform linux for its independent apt archive; macOS remains the default.",
+    "Linux: --staging [--staging-iteration N] [--branch main|release/linux/X.Y] [--acceptance <path>] [--skip-build].",
+    "Linux reads committed VERSION, builds both architectures, and rejects bumps/rollback/architecture-only selectors.",
+    "Linux --dry-run builds and reports blockers without writing candidate/channel state; --release publishes.",
+    "The remaining updater/notarization description applies to macOS:",
     "Build, sign, notarize, and optionally publish a Kanna release.",
     "A staging publish must be a descendant of the candidate the channel already serves, except for a verified and recorded forward-main resumption after promotion; a release/X.Y RC must build that branch's remote tip exactly.",
     "A bare main staging ship continues an active unpromoted main RC; otherwise it starts the next minor series from the greater of VERSION and the greatest production semantic version. Pass a bump flag to override it.",
@@ -1676,8 +1693,9 @@ const helpTopics: Record<string, string[]> = {
     "Use --staging --rollback-to <version> to repoint the staging channel manifest without building."
   ],
   "release promote": [
-    "Usage: kd release promote <staging-version> [--dry-run] [--arm64|--x86_64] [--override-soak <reason>]",
+    "Usage: kd release promote <staging-version> [--platform macos|linux] [--dry-run] [--arm64|--x86_64] [--override-soak <reason>]",
     "",
+    "Linux: --platform linux --acceptance <path> [--skip-build] requires exact source and a full 24h Linux soak; no override.",
     "Promote a soaked staging prerelease (e.g. 1.2.4-staging.3) into the production release of the same commit.",
     "Rebuilds that exact commit with production identity, then tags, publishes, and repoints the updater manifest.",
     "Requires the checkout and the RC's resolved mechanical base (its exact release-branch tip, or main for a main RC) to still be at the staging build's commit, a valid staging lineage, and the",
@@ -1733,8 +1751,9 @@ const helpTopics: Record<string, string[]> = {
     "See docs/specs/release-candidates.md."
   ],
   "release status": [
-    "Usage: kd release status",
+    "Usage: kd release status [--platform macos|linux] [--acceptance <path>]",
     "",
+    "Linux status reads archive receipts, public bytes, GitHub projections and optional --acceptance evidence; missing configuration fails closed.",
     "Show the latest production release, the staging channel pointer, its release branch (if cut), and lag vs origin/main.",
     "Separates mechanical promotability (the RC still matches its promotion branch tip) from safety state: the candidate's",
     "lineage relationship to the previous candidate, whether it is valid or promotion-authorized, soak age against the policy window,",

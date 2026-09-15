@@ -159,6 +159,7 @@ export async function publishAptArchive(
         const signed = await signer.sign(Buffer.from(release));
         if (signed.byteLength === 0) throw new Error("The apt signer returned an empty InRelease.");
         await storage.replace(step.path, signed);
+        await verifyStored(storage, step.path, signed);
       } else {
         const bytes = payloads.get(step.path);
         if (!bytes) throw new Error(`Missing apt publication payload: ${step.path}.`);
