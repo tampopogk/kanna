@@ -1,0 +1,35 @@
+diff --git a/packaging/linux/products.bzl b/packaging/linux/products.bzl
+index 57c790e93..3e85ee264 100644
+--- a/packaging/linux/products.bzl
++++ b/packaging/linux/products.bzl
+@@ -68,6 +68,8 @@ def _linux_deb_impl(ctx):
+     if sorted(products) != sorted(_EXECUTABLES.values()):
+         fail("Linux package requires exactly the eight declared product executables")
+     ctx.actions.write(manifest, json.encode({
++        "buildRevision": ctx.var.get("KANNA_LINUX_BUILD_REVISION", ""),
++        "buildTree": ctx.var.get("KANNA_LINUX_BUILD_TREE", ""),
+         "architecture": ctx.attr.architecture,
+         "channel": ctx.attr.channel,
+         "iteration": ctx.attr._iteration[LinuxIterationInfo].value,
+diff --git a/tools/kd/src/runtime/linux-bazel-package.ts b/tools/kd/src/runtime/linux-bazel-package.ts
+index 8bc0c7c59..d2e3996b4 100644
+--- a/tools/kd/src/runtime/linux-bazel-package.ts
++++ b/tools/kd/src/runtime/linux-bazel-package.ts
+@@ -8,6 +8,8 @@ import { INSTALLED_EXECUTABLES, stageLinuxPackageTree, debianVersion, type Linux
+ 
+ const [manifestPath] = process.argv.slice(2);
+ interface PackageManifest {
++  buildRevision: string;
++  buildTree: string;
+   architecture: LinuxArchitecture;
+   channel: LinuxChannel;
+   iteration: number;
+@@ -66,7 +68,7 @@ try {
+     control: { version, architecture: input.architecture, stagingIteration: input.channel === "staging" ? input.iteration : undefined, depends } });
+   runTool(["deb", root, input.output]);
+   const hash = (p: string) => createHash("sha256").update(readFileSync(p)).digest("hex");
+-  writeFileSync(input.report, JSON.stringify({ builder: "bazel", version, channel: input.channel,
++  writeFileSync(input.report, JSON.stringify({ builder: "bazel", buildRevision: input.buildRevision, buildTree: input.buildTree, version, channel: input.channel,
+     architecture: input.architecture, debianVersion: debianVersion(version, input.channel, input.channel === "staging" ? input.iteration : undefined),
+     sha256: hash(input.output), depends, audit,
+     executables: facts.map((fact, i) => ({ ...fact, path: INSTALLED_EXECUTABLES[i], sha256: hash(input.products[INSTALLED_EXECUTABLES[i]]) })),
