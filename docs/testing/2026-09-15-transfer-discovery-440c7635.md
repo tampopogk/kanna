@@ -103,9 +103,9 @@ from the failed source. No installed operator app was tested or changed.
    authentication, then verifies every byte and the reverse acknowledgment. It
    failed before the fix with an incomplete WebSocket handshake, and passes
    after. The live reverse pull's stored payload measured 79,523 UTF-8 bytes,
-   already above the limit before encryption/base64. Combined with repeated
-   resets and absent later receiver tunnel dials, this supports the diagnosis;
-   no retained live proxy warning directly attributes the resets to that limit.
+   already above the limit before encryption/base64. The later recovered owned
+   MBP proxy logs directly attribute all five live resets to this limit, with
+   each rejection immediately preceding its corresponding engine error.
 
 ## Original cloud peer absence — cause remains open
 
@@ -410,9 +410,20 @@ An authenticated API-only read at 20:49:56Z measured the pending outgoing
 payload JSON at 79,523 UTF-8 bytes; no payload contents were emitted. The first
 completed push's final stored payload measured 41,562 bytes, but that final body
 is not proof of its earlier commit wire size. The proxy's setup-buffer defect
-above is deterministically reproduced and corrected; the live attribution still
-lacks its direct warning. The retained reverse reservation was created around
+above is deterministically reproduced and corrected. The retained reverse
+reservation was created around
 20:44:26Z and reaches the existing 900-second lifetime around 20:59:26Z. A later
 expiry must be attributed separately from any proxy or discovery result. Its
 normal next automatic attempt was due around 20:57:03Z; no queue/TTL changes or
 manual retries were introduced.
+
+At 20:54:25.256666Z the helper recovered the owned MBP proxy warnings from the
+same server log. Each says `local transfer request exceeded the pre-setup buffer
+limit`, at 20:44:26.940729Z, 20:44:27.981880Z, 20:44:33.022485Z,
+20:45:03.044961Z, and 20:47:03.104536Z. Each immediately precedes the matching
+engine reset above. This confirms the setup-buffer limit as the live reverse
+pull failure cause. The earlier empty warning search was an evidence gap,
+superseded by these retained records. The separate pull-route propagation defect
+remains regression-established, not the cause of these cloud-only resets.
+The corrected test candidate remains `bd2c8bd2c`; this attribution update changes
+documentation only.
