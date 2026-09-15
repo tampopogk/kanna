@@ -109,7 +109,7 @@ recall nonce; do not place it in any prompt. Keep results distinct from old C
 and Linux B. No production acceptance, publication, or soak waiver follows
 from this implementation.
 
-### Reconciliation gate traced after the source handoff
+### Retained-intent reconciliation and corrected owner direction
 
 The corrected code checkpoint is local commit `552d55faa58510dc556cd23f648f5e8d0f9cac6a`,
 tree `d1b51a1e623c0e0f09b1ae57daa0691579f931c2`. Acceptance verified its portable
@@ -123,11 +123,18 @@ caller can intervene. The retry budget in `db/transfer_work.rs` is eight, so
 five observed failures do not establish exhaustion. The public rejection and
 cleanup operations require a transfer ID, which this failed push never created.
 
-Acceptance acknowledged this gate and kept both allocations stopped. No DB was
-opened or edited, no old intent was retried, and no fixture was restarted.
-Adding a queue-maintenance feature would extend this task's scope; the owner
-must choose a separate task or an explicit scope extension. Until supported
-reconciliation enables the controlled rerun, the original cloud cause and
-cross-machine acceptance remain unresolved. All test/probe processes started
-by this implementation task have exited. No stage advance or publication was
-performed.
+The initial interpretation that reconciliation required a new offline queue
+control was incorrect. Root explicitly authorized **controlled continuation of
+this same disposable acceptance intent**: start and verify the corrected
+destination first, then start the corrected source and observe its remaining
+automatic attempts. Keep the existing intent ID and attempt trace; issue no
+duplicate push. This fulfills the reconciliation requirement without changing
+queue semantics or requiring another feature/task.
+
+Task `641dbb6f` coordinates `074f03cc` and owns that bounded rerun. The scope-choice
+attention was cleared. The earlier failure record and gate assertion describe
+the superseded interpretation, not a remaining authorization requirement. The
+original cloud cause remains open until the four-boundary checkpoint and live
+results establish it. No DB was opened or edited, and no installed operator
+app was tested. All local test/probe processes have exited; no stage advance or
+publication was performed.
