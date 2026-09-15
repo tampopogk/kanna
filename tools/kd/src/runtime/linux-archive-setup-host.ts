@@ -1,5 +1,28 @@
 /** Fixed existing-staging-host operation. Input arrives over pinned SSH stdin;
  * no arbitrary shell fragments, credentials, or relay environment are returned. */
+// Executed inside the existing relay container. The operator credential stays
+// in that process environment; neither it nor per-client rows cross SSH.
+export const linuxRelaySocketProbe = String.raw`
+(async () => {
+  const token = process.env.KANNA_RELAY_STATS_TOKEN?.trim();
+  const commit = process.env.KANNA_RELAY_COMMIT?.trim().toLowerCase();
+  if (!token || token.length < 16 || !/^[a-f0-9]{7,40}$/.test(commit ?? '')) throw Error();
+  const response = await fetch('http://127.0.0.1:8080/stats', {
+    headers: { Authorization: 'Bearer ' + token }, redirect: 'error',
+    signal: AbortSignal.timeout(5000),
+  });
+  if (!response.ok) throw Error();
+  const stats = await response.json();
+  const openSockets = stats.bytes?.connections?.open;
+  if (stats.status !== 'ok' || stats.commit !== commit ||
+      !Number.isSafeInteger(stats.connections) || stats.connections < 0 ||
+      !Number.isSafeInteger(openSockets) || openSockets < 0 ||
+      !Array.isArray(stats.liveConnections) || stats.liveConnections.length !== openSockets) throw Error();
+  console.log(JSON.stringify({ commit, pairedUsers: stats.connections,
+    openSockets, liveRows: stats.liveConnections.length }));
+})().catch(() => { console.error('Cannot verify authenticated relay socket stats'); process.exitCode = 1; });
+`;
+
 export const linuxArchiveSetupHost = String.raw`
 import os, sys, json, hashlib, stat, subprocess, pathlib, pwd, fcntl
 P=pathlib.Path
@@ -23,10 +46,12 @@ def container(service):
     if not v['State']['Running']: fail(service+' is not running')
     return {'id':v['Id'],'image':v['Image'],'startedAt':v['State']['StartedAt']}
 def connections(relay):
-    program="fetch('http://127.0.0.1:8080/health').then(r=>{if(!r.ok)throw Error();return r.json()}).then(j=>{if(!Number.isSafeInteger(j.connections)||j.connections<0)throw Error();console.log(j.connections)}).catch(()=>process.exit(1))"
-    count=run(['docker','exec',relay['id'],'node','-e',program])
-    if not count.isdigit(): fail('Cannot verify live relay connection count')
-    return int(count)
+    program=${JSON.stringify(linuxRelaySocketProbe)}
+    return json.loads(run(['docker','exec',relay['id'],'node','-e',program]))
+def idle(relay, expected):
+    current=connections(relay)
+    if current['commit']!=expected['commit']: fail('Relay stats commit changed since plan')
+    return current['openSockets']==0 and current['liveRows']==0 and current['pairedUsers']==0
 def snapshot():
     for path in [P('/opt'),base,P('/srv')]:
         if not stat.S_ISDIR(path.lstat().st_mode): fail('Non-directory setup ancestor')
@@ -59,7 +84,7 @@ request=json.load(sys.stdin)
 if os.getuid()!=0: fail('Setup requires the authenticated administrator sudo path')
 if request['mode']=='inspect':
     result=snapshot()
-    result['relayConnections']=connections(result['relay'])
+    result['relayTraffic']=connections(result['relay'])
     result['freeBytes']=os.statvfs('/srv').f_bavail*os.statvfs('/srv').f_frsize
     # Validate supported layout during read-only inspection.
     before=(regular(base/'docker-compose.yml').decode(),regular(base/'Caddyfile').decode())
@@ -74,7 +99,7 @@ else: owned.mkdir(mode=0o700)
 fd=os.open(owned/'setup.lock',os.O_CREAT|os.O_RDWR|os.O_NOFOLLOW,0o600)
 fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB)
 observed=snapshot()
-expected=request['expected'].copy(); expected.pop('freeBytes',None); expected.pop('relayConnections',None); expected.pop('proxyChange',None)
+expected=request['expected'].copy(); expected.pop('freeBytes',None); expected.pop('relayTraffic',None); expected.pop('proxyChange',None)
 if observed!=expected: fail('Host configuration changed since plan; inspect and plan again')
 if os.statvfs('/srv').f_bavail*os.statvfs('/srv').f_frsize < 1073741824: fail('Archive requires at least 1GiB available before setup')
 public=request['publisherPublicKey'].strip()
@@ -86,7 +111,7 @@ if (owned/'identity.json').exists() and json.loads(regular(owned/'identity.json'
 oldCompose=regular(base/'docker-compose.yml'); oldCaddy=regular(base/'Caddyfile')
 compose,caddy=render(oldCompose.decode(),oldCaddy.decode())
 changed=compose.encode()!=oldCompose or caddy.encode()!=oldCaddy
-if changed and (not request.get('proxyMaintenance') or connections(observed['relay'])!=0): fail('Caddy mount change requires explicit proxy maintenance and zero live relay connections')
+if changed and (not request.get('proxyMaintenance') or not idle(observed['relay'],request['expected']['relayTraffic'])): fail('Caddy mount change requires explicit proxy maintenance and zero live relay connections')
 # Recreating with an updated local floating tag would silently upgrade Caddy.
 resolved=json.loads(run(['docker','compose','config','--format','json']))
 image=resolved['services']['caddy']['image']
@@ -135,19 +160,22 @@ key=keys/'kanna-archive.asc'
 if key.exists() and regular(key)!=request['aptPublicKey'].encode(): fail('Public apt key rotation is not setup')
 if not key.exists(): write(key,request['aptPublicKey'].encode())
 changed=compose.encode()!=oldCompose or caddy.encode()!=oldCaddy
+proxyAttempted=False
 try:
     if changed:
-        if connections(observed['relay'])!=0: fail('Relay connections arrived before Caddy maintenance; no proxy change')
+        if not idle(observed['relay'],request['expected']['relayTraffic']): fail('Relay connections arrived before Caddy maintenance; no proxy change')
         if regular(base/'docker-compose.yml')!=oldCompose or regular(base/'Caddyfile')!=oldCaddy or digest(regular(base/'.env'))!=observed['files']['.env']: fail('Relay config changed before replacement')
         write(base/'docker-compose.yml',compose.encode()); write(base/'Caddyfile',caddy.encode())
         run(['docker','compose','config','--quiet'])
+        if not idle(observed['relay'],request['expected']['relayTraffic']): fail('Relay connections arrived at Caddy recreation boundary; no proxy change')
+        proxyAttempted=True
         run(['docker','compose','up','-d','--no-deps','--no-build','--pull','never','--force-recreate','caddy'])
     if digest(regular(base/'.env'))!=observed['files']['.env']: fail('Relay environment changed during setup')
     if container('relay')!=observed['relay']: fail('Relay identity moved during apt setup')
 except Exception:
     if changed and regular(base/'docker-compose.yml')==compose.encode() and regular(base/'Caddyfile')==caddy.encode():
         write(base/'docker-compose.yml',oldCompose); write(base/'Caddyfile',oldCaddy)
-        run(['docker','compose','up','-d','--no-deps','--no-build','--pull','never','--force-recreate','caddy'])
+        if proxyAttempted: run(['docker','compose','up','-d','--no-deps','--no-build','--pull','never','--force-recreate','caddy'])
     raise
 write(owned/'receipt.json',json.dumps(receipt,sort_keys=True).encode(),0o600)
 print(json.dumps({'configured':True,'relay':container('relay'),'caddy':container('caddy'),'receipt':receipt}))

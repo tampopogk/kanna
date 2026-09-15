@@ -150,7 +150,7 @@ export async function setupLinuxArchive(c: Context, raw: SetupInput) {
   if (hardware.SPHardwareDataType?.[0]?.machine_name !== 'MacBook Pro') throw new Error('Actual archive setup/signing custody requires the trusted MacBook Pro.');
   const answers = snapshot.dns;
   if (answers.a.length !== 1 || answers.a[0] !== target.address || answers.aaaa.length || answers.cname.length) throw new Error(`DNS action needed in the existing authoritative account: A apt.kanna.build = ${target.address}, TTL 300; no conflicting A/AAAA. No Cloud DNS API or zone will be enabled.`);
-  if (snapshot.hostState.proxyChange && (!input.proxyMaintenance || snapshot.hostState.relayConnections !== 0)) throw new Error('Apply requires a coordinated --proxy-maintenance window with zero live relay connections; no application disconnects or drain are performed.');
+  if (snapshot.hostState.proxyChange && (!input.proxyMaintenance || snapshot.hostState.relayTraffic?.openSockets !== 0 || snapshot.hostState.relayTraffic?.liveRows !== 0 || snapshot.hostState.relayTraffic?.pairedUsers !== 0)) throw new Error('Apply requires a coordinated --proxy-maintenance window with zero live relay connections; no application disconnects or drain are performed.');
   const custody = await keys(c, snapshot.pin);
   const applied = await host(c, input, snapshot.pin, { mode: 'apply', expected: snapshot.hostState, publisherPublicKey: custody.publisherPublicKey, aptPublicKey: custody.publicKey, helper: linuxAptStorageWorker, renderer: linuxArchiveConfigRenderer, proxyMaintenance: input.proxyMaintenance });
   const publicKeyUrl = `https://${target.domain}/keys/kanna-archive.asc`;
