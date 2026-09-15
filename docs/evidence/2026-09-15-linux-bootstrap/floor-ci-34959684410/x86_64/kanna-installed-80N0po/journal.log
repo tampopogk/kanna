@@ -1,0 +1,14 @@
+Sep 15 10:47:13 runnervmlun5p systemd[1007]: Started kanna-installed-test-6686.service - Kanna headless worker.
+Sep 15 10:47:13 runnervmlun5p kanna-worker[6763]: [worker] data_dir=/home/runner/work/kanna/kanna/.tmp/prepared-upgrade/tmp/kanna-installed-80N0po/worker daemon=/usr/lib/kanna-staging/kanna-daemon server=/usr/lib/kanna-staging/kanna-server lan_port=45887
+Sep 15 10:47:13 runnervmlun5p kanna-worker[6763]: [worker] daemon generation 6768 is serving
+Sep 15 10:47:13 runnervmlun5p kanna-worker[6763]: [worker] kanna-server 6778 is serving on http://127.0.0.1:45887
+Sep 15 10:47:14 runnervmlun5p systemd[1007]: Stopping kanna-installed-test-6686.service - Kanna headless worker...
+Sep 15 10:47:14 runnervmlun5p kanna-worker[6763]: [worker] stopping the server; the daemon and its sessions stay up
+Sep 15 10:47:14 runnervmlun5p systemd[1007]: kanna-installed-test-6686.service: Unit process 6768 (kanna-daemon) remains running after unit stopped.
+Sep 15 10:47:14 runnervmlun5p systemd[1007]: kanna-installed-test-6686.service: Unit process 6775 (kanna-terminal-) remains running after unit stopped.
+Sep 15 10:47:14 runnervmlun5p systemd[1007]: kanna-installed-test-6686.service: Unit process 6938 (claude-impl) remains running after unit stopped.
+Sep 15 10:47:14 runnervmlun5p systemd[1007]: kanna-installed-test-6686.service: Unit process 7052 (claude-impl) remains running after unit stopped.
+Sep 15 10:47:14 runnervmlun5p systemd[1007]: kanna-installed-test-6686.service: Unit process 7054 (sleep) remains running after unit stopped.
+Sep 15 10:47:14 runnervmlun5p systemd[1007]: kanna-installed-test-6686.service: Unit process 7059 (claude-impl) remains running after unit stopped.
+Sep 15 10:47:14 runnervmlun5p systemd[1007]: kanna-installed-test-6686.service: Unit process 7060 (dd) remains running after unit stopped.
+Sep 15 10:47:14 runnervmlun5p systemd[1007]: Stopped kanna-installed-test-6686.service - Kanna headless worker.

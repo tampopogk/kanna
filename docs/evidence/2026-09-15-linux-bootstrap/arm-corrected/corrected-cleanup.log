@@ -1,0 +1,5 @@
+inactive
+inactive
+dpkg-query: no packages found matching kanna-staging
+Filesystem       1B-blocks        Used  Available Use% Mounted on
+/dev/vda2      66205626368 60253786112 2555555840  96% /

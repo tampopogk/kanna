@@ -1,0 +1,46 @@
+actual-test-identity=uid=0(root) gid=0(root) groups=0(root)
+controller-base=a9df2f1d46fb08bcf53200b738e0fdc3c127b636
+controller-patch=b4f7ded3bb2d1507a5b1d8ad2350d42620cd2c0e8ef0d84e002a8163e8b144ac  /home/jeremy/.tmp/kanna-d3ce8dec/controller.patch
+actual-user-manager=running
+/home/jeremy/.tmp/kanna-d3ce8dec/artifacts/kanna-staging_0.2.0~staging.1-1_arm64.deb: OK
+/home/jeremy/.tmp/kanna-d3ce8dec/artifacts/kanna-staging_0.2.0~staging.2-1_arm64.deb: OK
+
+ RUN  v4.1.4 /home/jeremy/.tmp/kanna-d3ce8dec/source/tests/linux-installed
+
+ ✓ src/upgrade.e2e.test.ts (6 tests) 20923ms
+     ✓ installs version A and runs a task in it  3410ms
+     ✓ installs version B underneath the live session without disturbing it  2406ms
+     ✓ survives the operator's unit restart with the same agent process  11032ms
+     ✓ delivers input after the upgrade, whole, once, and durably  3513ms
+stdout | src/installed.e2e.test.ts > installing the package > records what host the evidence came from
+[installed-lane] Ubuntu 26.04.1 LTS kernel 7.0.0-31-generic glibc 2.43 arm64; developer tools on PATH: node, pnpm, npm, cc, gcc, zig, bazel
+
+ ✓ src/installed.e2e.test.ts (11 tests) 2958ms
+     ✓ installs with apt resolving its declared dependencies  397ms
+     ✓ starts under the user manager from its installed path  452ms
+     ✓ runs a real agent task through the installed binaries  365ms
+     ✓ removes the package's own files and nothing else  1673ms
+
+ Test Files  2 passed (2)
+      Tests  17 passed (17)
+   Start at  04:16:21
+   Duration  24.25s (transform 125ms, setup 30ms, import 163ms, tests 23.88s, environment 0ms)
+
+JSON report written to /home/jeremy/.tmp/kanna-d3ce8dec/corrected-evidence/vitest-result.json
+
+canonical-gate-exit=0
+remaining-test-unit-files:
+remaining-installed-processes:
+installed-package-after:
+root-user-active-services:
+  UNIT                                                             LOAD   ACTIVE SUB     DESCRIPTION
+  dbus.service                                                     loaded active running D-Bus User Message Bus
+  snap.snapd-desktop-integration.snapd-desktop-integration.service loaded active running Service for snap application snapd-desktop-integration.snapd-desktop-integration
+  xdg-document-portal.service                                      loaded active running flatpak document portal service
+  xdg-permission-store.service                                     loaded active running sandboxed app permission store
+
+Legend: LOAD   → Reflects whether the unit definition was properly loaded.
+        ACTIVE → The high-level unit activation state, i.e. generalization of SUB.
+        SUB    → The low-level unit activation state, values depend on unit type.
+
+4 loaded units listed.

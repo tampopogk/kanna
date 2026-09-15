@@ -1,0 +1,32 @@
+Sep 15 10:47:25 runnervmec22z systemd[1069]: Started kanna-installed-test-2978.service - Kanna headless worker.
+Sep 15 10:47:25 runnervmec22z kanna-worker[3764]: [worker] data_dir=/home/runner/work/kanna/kanna/.tmp/prepared-upgrade/tmp/kanna-installed-mXEdUN/worker daemon=/usr/lib/kanna-staging/kanna-daemon server=/usr/lib/kanna-staging/kanna-server lan_port=39019
+Sep 15 10:47:25 runnervmec22z kanna-worker[3764]: [worker] daemon generation 3769 is serving
+Sep 15 10:47:25 runnervmec22z kanna-worker[3764]: [worker] kanna-server 3779 is serving on http://127.0.0.1:39019
+Sep 15 10:47:31 runnervmec22z systemd[1069]: Stopping kanna-installed-test-2978.service - Kanna headless worker...
+Sep 15 10:47:31 runnervmec22z kanna-worker[3764]: [worker] stopping the server; the daemon and its sessions stay up
+Sep 15 10:47:31 runnervmec22z systemd[1069]: kanna-installed-test-2978.service: Unit process 3769 (kanna-daemon) remains running after unit stopped.
+Sep 15 10:47:31 runnervmec22z systemd[1069]: kanna-installed-test-2978.service: Unit process 3776 (kanna-terminal-) remains running after unit stopped.
+Sep 15 10:47:31 runnervmec22z systemd[1069]: kanna-installed-test-2978.service: Unit process 3863 (claude-impl) remains running after unit stopped.
+Sep 15 10:47:31 runnervmec22z systemd[1069]: kanna-installed-test-2978.service: Unit process 4050 (claude-impl) remains running after unit stopped.
+Sep 15 10:47:31 runnervmec22z systemd[1069]: kanna-installed-test-2978.service: Unit process 4057 (claude-impl) remains running after unit stopped.
+Sep 15 10:47:31 runnervmec22z systemd[1069]: kanna-installed-test-2978.service: Unit process 4058 (dd) remains running after unit stopped.
+Sep 15 10:47:31 runnervmec22z systemd[1069]: kanna-installed-test-2978.service: Unit process 4301 (sleep) remains running after unit stopped.
+Sep 15 10:47:31 runnervmec22z systemd[1069]: Stopped kanna-installed-test-2978.service - Kanna headless worker.
+Sep 15 10:47:31 runnervmec22z systemd[1069]: kanna-installed-test-2978.service: Found left-over process 3769 (kanna-daemon) in control group while starting unit. Ignoring.
+Sep 15 10:47:31 runnervmec22z systemd[1069]: kanna-installed-test-2978.service: This usually indicates unclean termination of a previous run, or service implementation deficiencies.
+Sep 15 10:47:31 runnervmec22z systemd[1069]: kanna-installed-test-2978.service: Found left-over process 3776 (kanna-terminal-) in control group while starting unit. Ignoring.
+Sep 15 10:47:31 runnervmec22z systemd[1069]: kanna-installed-test-2978.service: This usually indicates unclean termination of a previous run, or service implementation deficiencies.
+Sep 15 10:47:31 runnervmec22z systemd[1069]: kanna-installed-test-2978.service: Found left-over process 3863 (claude-impl) in control group while starting unit. Ignoring.
+Sep 15 10:47:31 runnervmec22z systemd[1069]: kanna-installed-test-2978.service: This usually indicates unclean termination of a previous run, or service implementation deficiencies.
+Sep 15 10:47:31 runnervmec22z systemd[1069]: kanna-installed-test-2978.service: Found left-over process 4050 (claude-impl) in control group while starting unit. Ignoring.
+Sep 15 10:47:31 runnervmec22z systemd[1069]: kanna-installed-test-2978.service: This usually indicates unclean termination of a previous run, or service implementation deficiencies.
+Sep 15 10:47:31 runnervmec22z systemd[1069]: kanna-installed-test-2978.service: Found left-over process 4057 (claude-impl) in control group while starting unit. Ignoring.
+Sep 15 10:47:31 runnervmec22z systemd[1069]: kanna-installed-test-2978.service: This usually indicates unclean termination of a previous run, or service implementation deficiencies.
+Sep 15 10:47:31 runnervmec22z systemd[1069]: kanna-installed-test-2978.service: Found left-over process 4058 (dd) in control group while starting unit. Ignoring.
+Sep 15 10:47:31 runnervmec22z systemd[1069]: kanna-installed-test-2978.service: This usually indicates unclean termination of a previous run, or service implementation deficiencies.
+Sep 15 10:47:31 runnervmec22z systemd[1069]: kanna-installed-test-2978.service: Found left-over process 4301 (sleep) in control group while starting unit. Ignoring.
+Sep 15 10:47:31 runnervmec22z systemd[1069]: kanna-installed-test-2978.service: This usually indicates unclean termination of a previous run, or service implementation deficiencies.
+Sep 15 10:47:31 runnervmec22z systemd[1069]: Started kanna-installed-test-2978.service - Kanna headless worker.
+Sep 15 10:47:31 runnervmec22z kanna-worker[4316]: [worker] data_dir=/home/runner/work/kanna/kanna/.tmp/prepared-upgrade/tmp/kanna-installed-mXEdUN/worker daemon=/usr/lib/kanna-staging/kanna-daemon server=/usr/lib/kanna-staging/kanna-server lan_port=39019
+Sep 15 10:47:32 runnervmec22z kanna-worker[4316]: [worker] daemon generation 4321 is serving
+Sep 15 10:47:32 runnervmec22z kanna-worker[4316]: [worker] kanna-server 4334 is serving on http://127.0.0.1:39019

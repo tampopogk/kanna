@@ -1,0 +1,24 @@
+[
+  {
+    "fixture": "/home/jeremy/.tmp/kanna-d3ce8dec/.tmp/kanna-headless-repo-QUCMQ2",
+    "worktrees": [
+      "/home/jeremy/.tmp/kanna-d3ce8dec/.tmp/kanna-headless-repo-QUCMQ2/repo/.kanna-worktrees/task-73b60dc4"
+    ],
+    "postUpgradeMessageCount": 1,
+    "postUpgradeMessageLengths": [
+      1048
+    ],
+    "postUpgradeMessageSha256": [
+      "5578445ea6176b8120705a10082aea8ba6926c306768691bc17d7363c7e008e5"
+    ]
+  },
+  {
+    "fixture": "/home/jeremy/.tmp/kanna-d3ce8dec/.tmp/kanna-headless-repo-8O4O68",
+    "worktrees": [
+      "/home/jeremy/.tmp/kanna-d3ce8dec/.tmp/kanna-headless-repo-8O4O68/repo/.kanna-worktrees/task-37679a5d"
+    ],
+    "postUpgradeMessageCount": 0,
+    "postUpgradeMessageLengths": [],
+    "postUpgradeMessageSha256": []
+  }
+]

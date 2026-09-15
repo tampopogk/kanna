@@ -1,0 +1,17 @@
+{
+  "kind": "unpublished-bootstrap-predecessor-proposal",
+  "assessmentStatus": "accepted-source-support-only",
+  "assessment": "Root bounded assessment accepted the exact two-file +5/-1 stamp-only patch. This is not native artifact or upgrade acceptance.",
+  "historicalProductBase": "79f1c8225f0302d1e8d59dacedc5c148a9438272",
+  "sourceRevision": "5cefcfdfec4ba35b400ff32ae7992639257211a6",
+  "sourceTree": "b9dc0f445cca4a4c9771c858c28b70f044df1d89",
+  "version": "0.2.0",
+  "iteration": 1,
+  "patch": "stamp-only.patch",
+  "changedFiles": ["packaging/linux/products.bzl", "tools/kd/src/runtime/linux-bazel-package.ts"],
+  "insertions": 5,
+  "deletions": 1,
+  "productBehaviorChanges": false,
+  "packageVersionChanges": false,
+  "description": "Adds only revision/tree manifest and report fields prescribed by the merged runbook. The new commit identifies all modified source truthfully. Earlier CI evidence retains the historical base identity; preparation/build/acceptance results for this new SHA are separate."
+}
