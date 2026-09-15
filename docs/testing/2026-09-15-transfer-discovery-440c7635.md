@@ -459,3 +459,12 @@ still showed source pending and destination absent; a helper's empty parsed
 object was not a transfer status. Acceptance is preserving automatic settlement,
 with final attempt 8 expected around 21:17:03Z, before any fresh request. No
 manual retry, queue control, or product semantics change was introduced.
+
+The retained pull settled at 21:17:03Z: source outgoing failed with `push gave
+up: missing target peer for transfer commit`, and Studio had no incoming record.
+At 21:17:20Z parent API readback showed no active outgoing transfer, empty cleanup
+candidate lists on both endpoints, and no pending Studio incoming transfer. The
+MBP source task remained open in review, with ledger count 9 and its last quit
+at 20:57:34Z. Acceptance is resuming that same source session and private recall
+fixture under `bd2c8bd2c` before a fresh request. The old TTL failure is retained
+separately; settlement used no manual retry or queue/code change.
