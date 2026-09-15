@@ -512,3 +512,34 @@ a fresh fallback session before the move. Acceptance is issuing exactly one
 blind recall of that fresh session's nonce; its outcome is pending. Transfer
 completion alone does not establish native-context preservation, and no session
 export change or new fixture was introduced at this checkpoint.
+
+Context failed: acceptance sent the single value-free blind recall at 21:27:55Z,
+and the destination answered `UNAVAILABLE` at 21:28:10Z. The helper had verified
+the fresh source assistant's 12-character nonce hash before the move; its value
+was never supplied in input. The destination's actual owned process launched
+Codex Luna with the original prompt and no resume argument. Transfer completion
+therefore passes the transport boundary but fails this fresh session's context
+continuity. The existing chain is held idle, with no additional model fixture.
+Allowlisted session identity/export metadata has been requested to distinguish
+an absent source export from destination materialization or launch loss.
+
+At 21:29:58Z both final transfer payloads matched on the allowlisted metadata:
+Codex/PTY, `resume_session_id=null`, `artifacts=[]`, `cleanly_finalized=true`,
+and source run
+`run-d0a5045cfdcbc37a95a36b9daec1fa8d6ce493221198e0b67525f62b84ec21e4-1789507422883329000`.
+This locates the context loss at source export, before destination
+materialization. `SourceSession::resolve` takes the latest run's provider session
+ID; `plan_session_artifacts` returns no plan when that ID is absent. The receiver
+then has no resume ID to materialize or launch. Clean finalization describes
+shutdown, not whether a conversation was exported.
+
+The task-detail API does not expose provider session ID, cwd, or start time;
+their absence in that response is not proof that the DB values are null. The
+remaining distinction is an uncaptured source session ID versus late exit-event
+persistence: finalization reloads the source after its own exit observer returns,
+while the terminal watcher independently persists the daemon's resume ID.
+Bounded source rollout-header and retained exit metadata were requested to
+resolve that distinction, without DB access or transcript contents. The current
+destination process is not required for this source-side diagnosis, so it does
+not block acceptance's same-fixture native-LAN preparation. No session-export
+code change has been made.
