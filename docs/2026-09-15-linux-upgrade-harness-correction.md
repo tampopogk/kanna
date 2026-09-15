@@ -185,3 +185,31 @@ Next action requires root disposition of a private CI input transport the job
 can actually read. The authorized draft + contents-read combination is now
 measured to fail; changing permissions or making the release public is outside
 this task's authorization. Ship remains open.
+
+### Scoped draft reader correction (prepared, awaiting root check)
+
+Root authorized one manual-only trusted fetch job with job-scoped
+`contents:write`. This is consistent with GitHub's documented push-access
+restriction for draft visibility:
+https://docs.github.com/en/rest/releases/releases#list-releases .
+No repository/global permission, long-lived credential or publication changes.
+
+`prepared-fetch` runs only for `workflow_dispatch` with the explicit asset ID.
+It has exactly three steps: checkout with `persist-credentials:false`; the
+unchanged fixed-origin download, tar hash and four-manifest verification; and
+upload of only verified `pair.tar` as an Actions artifact. No dependency
+installation, apt, product execution or explicit write API command runs there.
+Only the fetch step receives the job token.
+
+The dependent `prepared-upgrade` matrix explicitly has `contents:read`, disables
+persisted checkout credentials, downloads the same-run verified artifact, and
+rechecks tar hash/four manifests before apt installation. Neither upgrade job
+receives the privileged job's token. Native builds remain skipped for this mode.
+
+Checks: parsed-workflow assertions confirm global read scope, the sole write
+job's exact manual-only condition/step allow-list, token isolation, artifact
+handoff, revalidation order and both Ubuntu24.04 architectures. The five
+fixed-origin/redirect/failure tests pass unchanged. The source controller,
+product packages and draft asset are unchanged. No redispatch yet; root asked
+to check this small workflow diff first. The prior run remains an input-access
+failure, not an upgrade failure. Owner attention cleared: engineering-owned.
