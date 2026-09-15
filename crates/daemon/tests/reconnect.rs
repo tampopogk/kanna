@@ -4096,9 +4096,16 @@ fn test_terminal_geometry_changes_are_logged_by_a_running_daemon() {
     let daemon = DaemonHandle::start();
     let mut management = daemon.connect();
     spawn_echo_session(&mut management, "sess-geometry-log");
+    // API spawn connections are short-lived. Wait for EOF after half-close:
+    // cleanup has dropped the empty geometry registry before the first KSP
+    // viewer registers, so its fallback must come from the live PTY.
+    management
+        .writer
+        .shutdown(std::net::Shutdown::Write)
+        .unwrap();
+    assert_eq!(management.reader.read_line(&mut String::new()).unwrap(), 0);
 
     let mut wide = daemon.connect();
-    attach_snapshot_and_capture(&mut wide, "sess-geometry-log");
     wide.send(&Cmd::RegisterViewer {
         session_id: "sess-geometry-log".to_string(),
         viewer_id: "wide-viewer".to_string(),
@@ -4108,6 +4115,7 @@ fn test_terminal_geometry_changes_are_logged_by_a_running_daemon() {
         rows: 45,
         visible: true,
     });
+    attach_snapshot_and_capture(&mut wide, "sess-geometry-log");
     wide.send(&Cmd::ActiveViewer {
         session_id: "sess-geometry-log".to_string(),
     });
@@ -4140,6 +4148,16 @@ fn test_terminal_geometry_changes_are_logged_by_a_running_daemon() {
     assert!(
         !geometry.is_empty(),
         "a running daemon logged no terminal geometry at all: {log}"
+    );
+    let first_claim = geometry
+        .iter()
+        .find(|line| {
+            line.contains("cause=activate_viewer") && line.contains("applied=Some((150, 45))")
+        })
+        .expect("first viewer claim must be logged");
+    assert!(
+        first_claim.contains("previous=(80, 24)"),
+        "initial geometry must use (cols, rows): {first_claim}"
     );
     let handoff = geometry
         .iter()

@@ -39,6 +39,7 @@ export const unattendedRealE2eFiles = [
   "terminal-soft-newline.test.ts",
   "terminal-editor.test.ts",
   "terminal-viewer-gestures.test.ts",
+  "terminal-stage-geometry.test.ts",
 ] as const;
 
 export const operatorRealE2eFiles = [

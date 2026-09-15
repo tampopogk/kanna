@@ -125,3 +125,13 @@ describe("terminal viewer gesture runner plan", () => {
     expect(targetRequiresForegroundActivation(target)).toBe(false);
   });
 });
+
+// This one-instance native journey intentionally exercises foreground edges.
+it("isolates stage geometry without cloud or a second desktop", () => {
+  const target = "tests/e2e/real/terminal-stage-geometry.test.ts";
+  expect(targetNeedsIsolatedAgentProviders(target)).toBe(true);
+  expect(targetRequiresForegroundActivation(target)).toBe(true);
+  expect(targetNeedsSecondaryInstance(target)).toBe(false);
+  expect(targetNeedsEmulators(target)).toBe(false);
+  expect(targetNeedsRelay(target)).toBe(false);
+});
