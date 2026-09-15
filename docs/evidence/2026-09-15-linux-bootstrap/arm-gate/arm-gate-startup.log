@@ -1,0 +1,6 @@
+root-manager-before=inactive
+root-runtime-before=inactive
+Warning: The unit file, source configuration file or drop-ins of user@0.service changed on disk. Run 'systemctl daemon-reload' to reload units.
+actual-test-identity=uid=0(root) gid=0(root) groups=0(root)
+actual-user-manager=starting
+Real root user manager unavailable

@@ -1,0 +1,57 @@
+actual-test-identity=uid=0(root) gid=0(root) groups=0(root)
+actual-user-manager=degraded
+Installing kd: identity=60606ad8fb5ff9f0eed39586eee82e7315c569fdf6e262e0153d92742c1fbaaf cache=/home/jeremy/.tmp/kanna-d3ce8dec/.tmp/cache/kanna/tools/kd/60606ad8fb5ff9f0eed39586eee82e7315c569fdf6e262e0153d92742c1fbaaf phase=install
+$ vitest run --maxWorkers=1 src/installed.e2e.test.ts src/upgrade.e2e.test.ts
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 2 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/upgrade.e2e.test.ts > an installed upgrade with a live agent session > survives the operator's unit restart with the same agent process
+AssertionError: expected [ 'busy', 'idle', 'waiting' ] to include null
+ ❯ src/upgrade.e2e.test.ts:205:41
+    203|     expect(detail.branch).toBe(taskBranch);
+    204|     expect(detail.worktreePath).toBe(taskWorktree);
+    205|     expect(["busy", "idle", "waiting"]).toContain(detail.runtimeState);
+       |                                         ^
+    206|   });
+    207|
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/2]⎯
+
+ FAIL  src/upgrade.e2e.test.ts > an installed upgrade with a live agent session > re-adopts the surviving daemon rather than replacing it
+AssertionError: expected 131216 to be 130891 // Object.is equality
+
+- Expected
++ Received
+
+- 130891
++ 131216
+
+ ❯ src/upgrade.e2e.test.ts:210:39
+    208|   it("re-adopts the surviving daemon rather than replacing it", async …
+    209|     requireHost();
+    210|     expect(await worker!.daemonPid()).toBe(daemonBefore);
+       |                                       ^
+    211|     expect(processIsAlive(daemonBefore)).toBe(true);
+    212|   });
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/2]⎯
+
+
+canonical-gate-exit=1
+remaining-test-unit-files:
+remaining-installed-processes:
+ 135893  130151 /usr/lib/kanna-staging/kanna-daemon
+ 135904  135893 /usr/lib/kanna-staging/kanna-terminal-recovery
+installed-package-after:
+root-user-active-services:
+  UNIT                                                             LOAD   ACTIVE SUB     DESCRIPTION
+  dbus.service                                                     loaded active running D-Bus User Message Bus
+  snap.snapd-desktop-integration.snapd-desktop-integration.service loaded active running Service for snap application snapd-desktop-integration.snapd-desktop-integration
+  xdg-document-portal.service                                      loaded active running flatpak document portal service
+  xdg-permission-store.service                                     loaded active running sandboxed app permission store
+
+Legend: LOAD   → Reflects whether the unit definition was properly loaded.
+        ACTIVE → The high-level unit activation state, i.e. generalization of SUB.
+        SUB    → The low-level unit activation state, values depend on unit type.
+
+4 loaded units listed.

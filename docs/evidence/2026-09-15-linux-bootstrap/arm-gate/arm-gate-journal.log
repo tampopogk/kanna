@@ -1,0 +1,72 @@
+Sep 15 03:57:07 jeremy-QEMU-Virtual-Machine systemd[130151]: Started kanna-installed-test-130737.service - Kanna headless worker.
+Sep 15 03:57:07 jeremy-QEMU-Virtual-Machine kanna-worker[130882]: [worker] data_dir=/home/jeremy/.tmp/kanna-d3ce8dec/.tmp/kanna-installed-05wEVl/worker daemon=/usr/lib/kanna-staging/kanna-daemon server=/usr/lib/kanna-staging/kanna-server lan_port=45895
+Sep 15 03:57:07 jeremy-QEMU-Virtual-Machine kanna-worker[130882]: [worker] daemon generation 130891 is serving
+Sep 15 03:57:07 jeremy-QEMU-Virtual-Machine im-config[130999]: @ IM_CONFIG_ENTRY='profile' XDG_SESSION_TYPE ='' UID=0 PID=130919 PPID=130905
+Sep 15 03:57:07 jeremy-QEMU-Virtual-Machine im-config[131003]:   GTK_IM_MODULE='' QT_IM_MODULE='' CLUTTER_IM_MODULE='' SDL_IM_MODULE='' XMODIFIERS=''
+Sep 15 03:57:07 jeremy-QEMU-Virtual-Machine kanna-worker[130882]: [worker] kanna-server 130905 is serving on http://127.0.0.1:45895
+Sep 15 03:57:07 jeremy-QEMU-Virtual-Machine im-config[131085]: @ IM_CONFIG_ENTRY='profile' XDG_SESSION_TYPE ='' UID=0 PID=131023 PPID=130891
+Sep 15 03:57:07 jeremy-QEMU-Virtual-Machine im-config[131087]:   GTK_IM_MODULE='' QT_IM_MODULE='' CLUTTER_IM_MODULE='' SDL_IM_MODULE='' XMODIFIERS=''
+Sep 15 03:57:07 jeremy-QEMU-Virtual-Machine im-config[131089]:   Set IM_CONFIG_CURRENT_DESKTOP <- 'UNDEFINED'
+Sep 15 03:57:10 jeremy-QEMU-Virtual-Machine systemd[130151]: Stopping kanna-installed-test-130737.service - Kanna headless worker...
+Sep 15 03:57:10 jeremy-QEMU-Virtual-Machine kanna-worker[130882]: [worker] stopping the server; the daemon and its sessions stay up
+Sep 15 03:57:10 jeremy-QEMU-Virtual-Machine systemd[130151]: kanna-installed-test-130737.service: Unit process 130891 (kanna-daemon) remains running after unit stopped.
+Sep 15 03:57:10 jeremy-QEMU-Virtual-Machine systemd[130151]: kanna-installed-test-130737.service: Unit process 130902 (kanna-terminal-) remains running after unit stopped.
+Sep 15 03:57:10 jeremy-QEMU-Virtual-Machine systemd[130151]: kanna-installed-test-130737.service: Unit process 131023 (claude-impl) remains running after unit stopped.
+Sep 15 03:57:10 jeremy-QEMU-Virtual-Machine systemd[130151]: kanna-installed-test-130737.service: Unit process 131096 (claude-impl) remains running after unit stopped.
+Sep 15 03:57:10 jeremy-QEMU-Virtual-Machine systemd[130151]: kanna-installed-test-130737.service: Unit process 131103 (claude-impl) remains running after unit stopped.
+Sep 15 03:57:10 jeremy-QEMU-Virtual-Machine systemd[130151]: kanna-installed-test-130737.service: Unit process 131104 (dd) remains running after unit stopped.
+Sep 15 03:57:10 jeremy-QEMU-Virtual-Machine systemd[130151]: kanna-installed-test-130737.service: Unit process 131199 (sleep) remains running after unit stopped.
+Sep 15 03:57:10 jeremy-QEMU-Virtual-Machine systemd[130151]: Stopped kanna-installed-test-130737.service - Kanna headless worker.
+Sep 15 03:57:10 jeremy-QEMU-Virtual-Machine systemd[130151]: kanna-installed-test-130737.service: Consumed 476ms CPU time over 3.150s wall clock time, 96.8M memory peak.
+Sep 15 03:57:10 jeremy-QEMU-Virtual-Machine systemd[130151]: kanna-installed-test-130737.service: Found left-over process 130891 (kanna-daemon) in control group while starting unit. Ignoring.
+Sep 15 03:57:10 jeremy-QEMU-Virtual-Machine systemd[130151]: kanna-installed-test-130737.service: This usually indicates unclean termination of a previous run, or service implementation deficiencies.
+Sep 15 03:57:10 jeremy-QEMU-Virtual-Machine systemd[130151]: kanna-installed-test-130737.service: Found left-over process 130902 (kanna-terminal-) in control group while starting unit. Ignoring.
+Sep 15 03:57:10 jeremy-QEMU-Virtual-Machine systemd[130151]: kanna-installed-test-130737.service: This usually indicates unclean termination of a previous run, or service implementation deficiencies.
+Sep 15 03:57:10 jeremy-QEMU-Virtual-Machine systemd[130151]: kanna-installed-test-130737.service: Found left-over process 131023 (claude-impl) in control group while starting unit. Ignoring.
+Sep 15 03:57:10 jeremy-QEMU-Virtual-Machine systemd[130151]: kanna-installed-test-130737.service: This usually indicates unclean termination of a previous run, or service implementation deficiencies.
+Sep 15 03:57:10 jeremy-QEMU-Virtual-Machine systemd[130151]: kanna-installed-test-130737.service: Found left-over process 131096 (claude-impl) in control group while starting unit. Ignoring.
+Sep 15 03:57:10 jeremy-QEMU-Virtual-Machine systemd[130151]: kanna-installed-test-130737.service: This usually indicates unclean termination of a previous run, or service implementation deficiencies.
+Sep 15 03:57:10 jeremy-QEMU-Virtual-Machine systemd[130151]: kanna-installed-test-130737.service: Found left-over process 131103 (claude-impl) in control group while starting unit. Ignoring.
+Sep 15 03:57:10 jeremy-QEMU-Virtual-Machine systemd[130151]: kanna-installed-test-130737.service: This usually indicates unclean termination of a previous run, or service implementation deficiencies.
+Sep 15 03:57:10 jeremy-QEMU-Virtual-Machine systemd[130151]: kanna-installed-test-130737.service: Found left-over process 131104 (dd) in control group while starting unit. Ignoring.
+Sep 15 03:57:10 jeremy-QEMU-Virtual-Machine systemd[130151]: kanna-installed-test-130737.service: This usually indicates unclean termination of a previous run, or service implementation deficiencies.
+Sep 15 03:57:10 jeremy-QEMU-Virtual-Machine systemd[130151]: kanna-installed-test-130737.service: Found left-over process 131199 (sleep) in control group while starting unit. Ignoring.
+Sep 15 03:57:10 jeremy-QEMU-Virtual-Machine systemd[130151]: kanna-installed-test-130737.service: This usually indicates unclean termination of a previous run, or service implementation deficiencies.
+Sep 15 03:57:10 jeremy-QEMU-Virtual-Machine systemd[130151]: Started kanna-installed-test-130737.service - Kanna headless worker.
+Sep 15 03:57:10 jeremy-QEMU-Virtual-Machine kanna-worker[131207]: [worker] data_dir=/home/jeremy/.tmp/kanna-d3ce8dec/.tmp/kanna-installed-05wEVl/worker daemon=/usr/lib/kanna-staging/kanna-daemon server=/usr/lib/kanna-staging/kanna-server lan_port=45895
+Sep 15 03:57:10 jeremy-QEMU-Virtual-Machine kanna-worker[131207]: [worker] daemon generation 131216 is serving
+Sep 15 03:57:10 jeremy-QEMU-Virtual-Machine im-config[131311]: @ IM_CONFIG_ENTRY='profile' XDG_SESSION_TYPE ='' UID=0 PID=131248 PPID=131234
+Sep 15 03:57:10 jeremy-QEMU-Virtual-Machine im-config[131313]:   GTK_IM_MODULE='' QT_IM_MODULE='' CLUTTER_IM_MODULE='' SDL_IM_MODULE='' XMODIFIERS=''
+Sep 15 03:57:10 jeremy-QEMU-Virtual-Machine im-config[131316]:   Set IM_CONFIG_CURRENT_DESKTOP <- 'UNDEFINED'
+Sep 15 03:57:10 jeremy-QEMU-Virtual-Machine kanna-worker[131207]: [worker] kanna-server 131234 is serving on http://127.0.0.1:45895
+Sep 15 03:57:15 jeremy-QEMU-Virtual-Machine systemd[130151]: Stopping kanna-installed-test-130737.service - Kanna headless worker...
+Sep 15 03:57:15 jeremy-QEMU-Virtual-Machine kanna-worker[131207]: [worker] stopping the server; the daemon and its sessions stay up
+Sep 15 03:57:15 jeremy-QEMU-Virtual-Machine systemd[130151]: kanna-installed-test-130737.service: Unit process 131023 (claude-impl) remains running after unit stopped.
+Sep 15 03:57:15 jeremy-QEMU-Virtual-Machine systemd[130151]: kanna-installed-test-130737.service: Unit process 131096 (claude-impl) remains running after unit stopped.
+Sep 15 03:57:15 jeremy-QEMU-Virtual-Machine systemd[130151]: kanna-installed-test-130737.service: Unit process 131216 (kanna-daemon) remains running after unit stopped.
+Sep 15 03:57:15 jeremy-QEMU-Virtual-Machine systemd[130151]: kanna-installed-test-130737.service: Unit process 131230 (kanna-terminal-) remains running after unit stopped.
+Sep 15 03:57:15 jeremy-QEMU-Virtual-Machine systemd[130151]: kanna-installed-test-130737.service: Unit process 135763 (claude-impl) remains running after unit stopped.
+Sep 15 03:57:15 jeremy-QEMU-Virtual-Machine systemd[130151]: kanna-installed-test-130737.service: Unit process 135764 (dd) remains running after unit stopped.
+Sep 15 03:57:15 jeremy-QEMU-Virtual-Machine systemd[130151]: kanna-installed-test-130737.service: Unit process 135767 (sleep) remains running after unit stopped.
+Sep 15 03:57:15 jeremy-QEMU-Virtual-Machine systemd[130151]: Stopped kanna-installed-test-130737.service - Kanna headless worker.
+Sep 15 03:57:15 jeremy-QEMU-Virtual-Machine systemd[130151]: kanna-installed-test-130737.service: Consumed 4.120s CPU time over 4.824s wall clock time, 98.8M memory peak.
+Sep 15 03:57:15 jeremy-QEMU-Virtual-Machine systemd[130151]: Started kanna-installed-test-135810.service - Kanna headless worker.
+Sep 15 03:57:15 jeremy-QEMU-Virtual-Machine kanna-worker[135884]: [worker] data_dir=/home/jeremy/.tmp/kanna-d3ce8dec/.tmp/kanna-installed-AvtUiX/worker daemon=/usr/lib/kanna-staging/kanna-daemon server=/usr/lib/kanna-staging/kanna-server lan_port=40121
+Sep 15 03:57:16 jeremy-QEMU-Virtual-Machine kanna-worker[135884]: [worker] daemon generation 135893 is serving
+Sep 15 03:57:16 jeremy-QEMU-Virtual-Machine im-config[135994]: @ IM_CONFIG_ENTRY='profile' XDG_SESSION_TYPE ='' UID=0 PID=135921 PPID=135907
+Sep 15 03:57:16 jeremy-QEMU-Virtual-Machine im-config[135998]:   Set IM_CONFIG_CURRENT_DESKTOP <- 'UNDEFINED'
+Sep 15 03:57:16 jeremy-QEMU-Virtual-Machine kanna-worker[135884]: [worker] kanna-server 135907 is serving on http://127.0.0.1:40121
+Sep 15 03:57:16 jeremy-QEMU-Virtual-Machine im-config[136091]: @ IM_CONFIG_ENTRY='profile' XDG_SESSION_TYPE ='' UID=0 PID=136029 PPID=135893
+Sep 15 03:57:16 jeremy-QEMU-Virtual-Machine im-config[136093]:   GTK_IM_MODULE='' QT_IM_MODULE='' CLUTTER_IM_MODULE='' SDL_IM_MODULE='' XMODIFIERS=''
+Sep 15 03:57:16 jeremy-QEMU-Virtual-Machine im-config[136094]:   Set IM_CONFIG_CURRENT_DESKTOP <- 'UNDEFINED'
+Sep 15 03:57:16 jeremy-QEMU-Virtual-Machine systemd[130151]: Stopping kanna-installed-test-135810.service - Kanna headless worker...
+Sep 15 03:57:16 jeremy-QEMU-Virtual-Machine kanna-worker[135884]: [worker] stopping the server; the daemon and its sessions stay up
+Sep 15 03:57:16 jeremy-QEMU-Virtual-Machine systemd[130151]: kanna-installed-test-135810.service: Unit process 135893 (kanna-daemon) remains running after unit stopped.
+Sep 15 03:57:16 jeremy-QEMU-Virtual-Machine systemd[130151]: kanna-installed-test-135810.service: Unit process 135904 (kanna-terminal-) remains running after unit stopped.
+Sep 15 03:57:16 jeremy-QEMU-Virtual-Machine systemd[130151]: kanna-installed-test-135810.service: Unit process 136029 (claude-impl) remains running after unit stopped.
+Sep 15 03:57:16 jeremy-QEMU-Virtual-Machine systemd[130151]: kanna-installed-test-135810.service: Unit process 136102 (claude-impl) remains running after unit stopped.
+Sep 15 03:57:16 jeremy-QEMU-Virtual-Machine systemd[130151]: kanna-installed-test-135810.service: Unit process 136104 (sleep) remains running after unit stopped.
+Sep 15 03:57:16 jeremy-QEMU-Virtual-Machine systemd[130151]: kanna-installed-test-135810.service: Unit process 136109 (claude-impl) remains running after unit stopped.
+Sep 15 03:57:16 jeremy-QEMU-Virtual-Machine systemd[130151]: kanna-installed-test-135810.service: Unit process 136110 (dd) remains running after unit stopped.
+Sep 15 03:57:16 jeremy-QEMU-Virtual-Machine systemd[130151]: Stopped kanna-installed-test-135810.service - Kanna headless worker.
+Sep 15 03:57:16 jeremy-QEMU-Virtual-Machine systemd[130151]: kanna-installed-test-135810.service: Consumed 417ms CPU time over 703ms wall clock time, 94.3M memory peak.
