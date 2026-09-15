@@ -105,8 +105,10 @@ work. Task `641dbb6f` owns system/cross-machine acceptance. Install-only reports
 macOS soak, disposable keys and synthetic test packages satisfy none of those
 gates. The PR-head native run `34935441089` failed both architectures in
 `kanna-task-transfer` (unresolved `kanna_runtime_defaults`); installed checks were
-skipped. Obtain a corrected product build and new exact-candidate evidence before
-shipping. The older `34930914452` PASS is only for its recorded pre-rebase source.
+skipped. Task `e26eaa13` corrects the direct dependency on both binary targets;
+its durable completion result records the corrected SHA and actual native
+workflow outcome. Require successful exact-candidate evidence before shipping;
+the older `34930914452` PASS is only for its recorded pre-rebase source.
 
 These rules hold and none is optional:
 

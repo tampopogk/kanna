@@ -211,11 +211,28 @@ finished **failure**, exact head `5b3d5027096db9be3947877794da57fba4ef7b97`:
 both architectures fail compiling `kanna_task_transfer` at
 `crates/task-transfer/BUILD.bazel:29` with E0433, unresolved
 `kanna_runtime_defaults`. Installed checks are skipped. Apt interop and
-prerequisite jobs passed. This is an independent product graph defect, left
-outside this lifecycle implementation. Earlier native run `34930914452` remains
-PASS only for source `79f1c8225f0302d1e8d59dacedc5c148a9438272`.
+prerequisite jobs passed. The owner-authorized follow-up in this task corrects
+that graph defect: both `kanna_task_transfer` and
+`kanna_task_transfer_x86_64` now declare `runtime-defaults` directly, matching
+the direct use in `src/main.rs`. The library already had its dependency. No
+product behavior changes. The existing path-dependency guard now covers the
+case where both binary variants omit a dependency that only their library had.
 
-Ship `d3ce8dec` still needs the corrected final product build, real archive
+Local correction verification: `bazel --batch build -c opt
+//crates/task-transfer:kanna_task_transfer
+//crates/task-transfer:kanna_task_transfer_x86_64` completed successfully on
+Darwin ARM64, covering both executable variants; the batch process exited.
+The four focused `Bazel workspace path dependencies` tests also pass.
+
+The task's durable completion result records the exact corrected commit and its
+actual **Linux Release Check** run outcome, including both native builds and
+install-only jobs. Require that corrected-source result; neither the failed
+PR-head run nor older native run `34930914452` (PASS only for
+`79f1c8225f0302d1e8d59dacedc5c148a9438272`) establishes current-head success.
+This follow-up preserves the earlier 149 lifecycle tests/typecheck evidence;
+only the affected graph/parity checks and required native workflow are rerun.
+
+Ship `d3ce8dec` still needs verified exact release-candidate artifacts, real archive
 configuration/public serving topology, protected keys and public fingerprint /
 bootstrap URL, explicit metadata validity and renewal procedure, the chosen
 initial version/series, genuine two-version installed upgrade reports, exact
