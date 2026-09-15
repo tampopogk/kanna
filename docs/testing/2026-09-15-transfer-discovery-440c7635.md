@@ -543,3 +543,11 @@ resolve that distinction, without DB access or transcript contents. The current
 destination process is not required for this source-side diagnosis, so it does
 not block acceptance's same-fixture native-LAN preparation. No session-export
 code change has been made.
+
+The bounded 21:32:00Z source readback returned no owned-process witness and no
+matching rollout metadata, with resume session ID explicitly unobserved and no
+body read. These empty results do not prove that no rollout existed or that the
+daemon emitted no ID. The established failure boundary remains the source's
+empty context export; missing ID capture versus late persistence is unresolved.
+No broader model audit, DB access, synthetic fixture, or speculative export fix
+was introduced to fill that evidence gap.
