@@ -317,3 +317,13 @@ traffic, mDNS disabled, and a fresh signed-route reservation. The helper's
 destination native-session/head/history checks and one blind recall remained
 pending at this checkpoint. LAN and pull coverage also remained outstanding;
 this result is neither a full acceptance matrix nor a production/soak claim.
+
+Post-import native inspection found Codex resuming the original session at a
+fixture trust prompt, followed by its “Choose working directory to resume this
+session” menu. The default was “Use session directory”; acceptance authorized
+the normal trust response and “Current” selection for the exact imported
+worktree before the single blind recall. This is a manual resume UX requirement,
+not evidence of a model turn: the API's busy state alone did not establish one.
+The source provider was absent and only the destination provider was active;
+both transfer records remained completed. Recall remained pending. No product
+change was requested for this menu.
