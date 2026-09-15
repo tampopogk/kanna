@@ -182,13 +182,21 @@ pub(super) async fn handle(
                 .get("transfer_id")
                 .and_then(Value::as_str)
                 .ok_or_else(|| RuntimeError::Protocol("refusal missing transfer id".into()))?;
-            context.outgoing_transfers.lock().await.remove(transfer_id);
-            if let Some(source_task_id) = request.get("source_task_id").and_then(Value::as_str) {
-                context
-                    .pending_task_pull_requests
-                    .lock()
-                    .await
-                    .remove(&(requester_peer_id.to_string(), source_task_id.to_string()));
+            // A lost server ACK leaves the reservation available for cleanup.
+            // Once removed, replayed/delayed ACKs cannot acquire a newer pull's
+            // identity. Compare under the pull lock in case fresh work arrived
+            // between removing this reservation and acquiring that lock.
+            if let Some(reservation) = context.outgoing_transfers.lock().await.remove(transfer_id) {
+                if let Some(pull_request_id) = reservation.pull_request_id {
+                    let key = (reservation.target_peer_id, reservation.source_task_id);
+                    let mut pending = context.pending_task_pull_requests.lock().await;
+                    if pending
+                        .get(&key)
+                        .is_some_and(|pull| pull.request_id == pull_request_id)
+                    {
+                        pending.remove(&key);
+                    }
+                }
             }
             context
                 .replay_store

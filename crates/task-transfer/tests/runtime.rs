@@ -11963,7 +11963,12 @@ async fn transfer_protocol_refusal_lost_ack_retries_cleanup_and_allows_fresh_pul
     let port = listener.local_addr().unwrap().port();
     let decisions = std::sync::Arc::new(AtomicU64::new(0));
     let observed = decisions.clone();
+    let ack_delayed = std::sync::Arc::new(tokio::sync::Notify::new());
+    let release_ack = std::sync::Arc::new(tokio::sync::Notify::new());
+    let server_ack_delayed = ack_delayed.clone();
+    let server_release_ack = release_ack.clone();
     let server = tokio::spawn(async move {
+        let mut replies = tokio::task::JoinSet::new();
         loop {
             let (stream, _) = listener.accept().await.unwrap();
             let mut reader = BufReader::new(stream);
@@ -11981,27 +11986,41 @@ async fn transfer_protocol_refusal_lost_ack_retries_cleanup_and_allows_fresh_pul
             let mut body = vec![0; length];
             reader.read_exact(&mut body).await.unwrap();
             let request: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            let mut delay_ack = false;
             if request["operation"] == "refused" {
                 assert_eq!(request["requester_peer_id"], "peer-destination");
                 assert_eq!(request["source_task_id"], "task-safe");
                 // Simulate a durable source decision whose first HTTP ACK is
                 // lost. Retrying must still reach this idempotent boundary.
-                if observed.fetch_add(1, Ordering::SeqCst) == 0 {
-                    continue;
+                match observed.fetch_add(1, Ordering::SeqCst) {
+                    0 => continue,
+                    1 => delay_ack = true,
+                    _ => {}
                 }
             }
             let body = json!({ "transfer_protocol": "transfer-v2-reconciliation-v1" }).to_string();
-            reader
-                .get_mut()
-                .write_all(
-                    format!(
+            let ack_delayed = server_ack_delayed.clone();
+            let release_ack = server_release_ack.clone();
+            replies.spawn(async move {
+                if delay_ack {
+                    ack_delayed.notify_one();
+                    release_ack.notified().await;
+                }
+                reader
+                    .get_mut()
+                    .write_all(
+                        format!(
                         "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
                         body.len()
                     )
-                    .as_bytes(),
-                )
-                .await
-                .unwrap();
+                        .as_bytes(),
+                    )
+                    .await
+                    .unwrap();
+            });
+            while let Some(result) = replies.try_join_next() {
+                result.unwrap();
+            }
         }
     });
     let source = TransferRuntime::spawn(
@@ -12019,11 +12038,16 @@ async fn transfer_protocol_refusal_lost_ack_retries_cleanup_and_allows_fresh_pul
     .await
     .unwrap();
     pair_peers(&source, &dest, "peer-destination").await;
+    consume_pairing_completed(&dest).await;
     tokio::time::timeout(EVENTUAL_PROGRESS_GUARD, async {
         let old_pull = dest
             .request_task_pull("peer-source", "task-safe", TransferTransport::Auto)
             .await
             .unwrap();
+        let RuntimeEvent::TaskPullRequested(event) = source.next_event().await.unwrap() else {
+            panic!("expected original pull request");
+        };
+        assert_eq!(event.request_id, old_pull);
         let preflight = source
             .prepare_transfer_preflight("peer-destination", "task-safe")
             .await
@@ -12044,14 +12068,44 @@ async fn transfer_protocol_refusal_lost_ack_retries_cleanup_and_allows_fresh_pul
             .await
             .is_err());
         assert_eq!(decisions.load(Ordering::SeqCst), 1);
-        dest.notify_transfer_refused(
+        // Hold an older HTTP ACK while another retry finishes cleanup and
+        // admits B. Releasing that ACK must not let A clean up B afterward.
+        let delayed_refusal = dest.notify_transfer_refused(
             &preflight.transfer_id,
             "peer-source",
             "task-safe",
             "Rejected locally",
-        )
-        .await
-        .unwrap();
+        );
+        let (delayed_result, fresh_pull) = tokio::join!(delayed_refusal, async {
+            ack_delayed.notified().await;
+            dest.notify_transfer_refused(
+                &preflight.transfer_id,
+                "peer-source",
+                "task-safe",
+                "Rejected locally",
+            )
+            .await
+            .unwrap();
+            dest.mark_import_ack_completed(&preflight.transfer_id)
+                .await
+                .unwrap();
+            assert!(source
+                .prepare_transfer_commit(&preflight.transfer_id, json!({}))
+                .await
+                .is_err());
+            let fresh_pull = dest
+                .request_task_pull("peer-source", "task-safe", TransferTransport::Auto)
+                .await
+                .unwrap();
+            assert_ne!(fresh_pull, old_pull);
+            let RuntimeEvent::TaskPullRequested(event) = source.next_event().await.unwrap() else {
+                panic!("expected fresh pull request");
+            };
+            assert_eq!(event.request_id, fresh_pull);
+            release_ack.notify_one();
+            fresh_pull
+        });
+        delayed_result.unwrap();
         // A replay still succeeds after the source's reservation is gone.
         dest.notify_transfer_refused(
             &preflight.transfer_id,
@@ -12061,18 +12115,24 @@ async fn transfer_protocol_refusal_lost_ack_retries_cleanup_and_allows_fresh_pul
         )
         .await
         .unwrap();
-        dest.mark_import_ack_completed(&preflight.transfer_id)
+        let repeated_pull = dest
+            .request_task_pull("peer-source", "task-safe", TransferTransport::Auto)
             .await
             .unwrap();
+        assert_eq!(
+            repeated_pull, fresh_pull,
+            "old refusal must preserve fresh pull identity"
+        );
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), source.next_event())
+                .await
+                .is_err(),
+            "old refusal replay caused a duplicate TaskPullRequested"
+        );
         assert!(source
             .prepare_transfer_commit(&preflight.transfer_id, json!({}))
             .await
             .is_err());
-        let fresh_pull = dest
-            .request_task_pull("peer-source", "task-safe", TransferTransport::Auto)
-            .await
-            .unwrap();
-        assert_ne!(fresh_pull, old_pull);
         let fresh = source
             .prepare_transfer_preflight("peer-destination", "task-safe")
             .await

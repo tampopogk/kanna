@@ -47,6 +47,9 @@ pub(super) struct OutgoingTransferReservation {
     pub(super) source_task_id: String,
     pub(super) target_peer: Option<crate::protocol::PeerRegistryEntry>,
     pub(super) transport: Option<super::external_peers::TransferTransport>,
+    /// In-memory pull generation captured before preflight. Pending pulls do
+    /// not survive a restart, so this identity must not be restored either.
+    pub(super) pull_request_id: Option<String>,
     pub(super) created_at: Instant,
 }
 

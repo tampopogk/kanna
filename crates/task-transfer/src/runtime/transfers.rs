@@ -34,6 +34,14 @@ impl TransferRuntime {
         source_task_id: &str,
         transport: TransferTransport,
     ) -> Result<PreflightResult, RuntimeError> {
+        // Bind cleanup to the pull that existed when this attempt started,
+        // never to a newer request arriving while preflight is on the wire.
+        let pull_request_id = self
+            .pending_task_pull_requests
+            .lock()
+            .await
+            .get(&(target_peer_id.to_owned(), source_task_id.to_owned()))
+            .map(|request| request.request_id.clone());
         let (target_peer, resolved_transport) = self
             .resolve_peer_with_transport(target_peer_id, transport)
             .await?;
@@ -93,6 +101,7 @@ impl TransferRuntime {
                     source_task_id: source_task_id.to_owned(),
                     target_peer: Some(target_peer),
                     transport: Some(resolved_transport),
+                    pull_request_id,
                     created_at: Instant::now(),
                 };
                 self.replay_store
