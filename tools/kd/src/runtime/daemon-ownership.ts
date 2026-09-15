@@ -59,8 +59,8 @@ export async function cleanupUnrecordedDaemon(input: {
   try {
     const root = realpathSync(input.repoRoot);
     const dir = realpathSync(input.daemonDir);
-    if (!inside(root, dir) || dir !== join(root, ".kanna-daemon")) {
-      throw new Error("daemon directory is not this checkout's .kanna-daemon");
+    if (!inside(root, dir)) {
+      throw new Error("daemon directory is not inside this checkout");
     }
     const original = observe(input.pid);
     const owns = (o: DaemonObservation | undefined): o is DaemonObservation => !!o &&

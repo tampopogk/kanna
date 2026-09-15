@@ -1,0 +1,36 @@
+-----BEGIN PGP SIGNED MESSAGE-----
+Hash: SHA512
+
+Origin: Kanna
+Label: Kanna
+Suite: staging
+Codename: staging
+Architectures: amd64 arm64
+Components: main
+Date: Tue, 15 Sep 2026 15:28:14 GMT
+Valid-Until: Tue, 22 Sep 2026 15:28:14 GMT
+Acquire-By-Hash: yes
+Description: Kanna staging channel
+MD5Sum:
+ 8280b192a22ae0bde679d7f87a31a324 656 main/binary-amd64/Packages
+ cf1feb296387df4338473ffa8cf6903f 656 main/binary-arm64/Packages
+SHA256:
+ 0c80522634c08096ee06aaadb4f824e547adfe7668bb2de50a316e438217657a 656 main/binary-amd64/Packages
+ e2ecf43a0f5d5e5b196dcbb3f3b11223a7e661e8bed78e565246608ee6f30559 656 main/binary-arm64/Packages
+
+-----BEGIN PGP SIGNATURE-----
+
+wsE5BAEBCgBtBYJqqWQfCRBku8NhqdfsekUUAAAAAAAcACBzYWx0QG5vdGF0
+aW9ucy5vcGVucGdwanMub3JnfS6dJBAIbRU5U/3Cjr28xNOuQDJTj57ljALU
+syFk67IWIQROdqavzbg6UFDa67Nku8NhqdfsegAAsN8L/iZ73FSdUFNGdAr9
+s+sPbXpw6rEMgKHrfC2Mm1yHSuGSPIWBFXKH8w/3FekSln6pLb0luCs7PDnN
+bxk/lin/eThfA7fxTopkFNVyrbA7lJmF8AqE7cGwNpTjj21uUUzeYpN0GrXQ
+EevMgM8WLRJ2u59mwg9avmscb5ssBbVIjNaK1vZk5V+D6UPX+8TtmWwQ/3JU
+yN0YjI8/F7NW80kY1jmbRUWTJFiZ1lvNadbnwSa2OCOlqZs3DIMNu9JVwhrT
+xHRWU9o4yGoLeXJ8JMco2OWP0Ol794LY2jhWZVbDDZn33ctrIK6lWLf1nXhM
+OwPXJqTcsQdCXnsT1AU5OuXQ3bMJKot8vaboT2apD0qzeGQw1cyrq21hNM4l
+sZ/Ju/U9ninaenFkvdfdbSYdgQGl+T1AOvUr4Ovh74kawm4xiJIy2reCnhiW
+Djm0cW6tDwRcWimMPVeg5vF2eraJTNtMXanOYYWTgtKjSkwqu45DKtxm9ScR
+suXmSphcFboti3tjXA==
+=JJjf
+-----END PGP SIGNATURE-----

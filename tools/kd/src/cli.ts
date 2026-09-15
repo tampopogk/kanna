@@ -392,6 +392,20 @@ function parseMobileArchiveInput(rest: string[]): ParsedCliCommand {
   };
 }
 
+function parseDevDownInput(rest: string[]): ParsedCliCommand {
+  const input = parseFlagInput(rest, { killDaemon: false }, { "--kill-daemon": "killDaemon", "-k": "killDaemon" });
+  const allowed = new Set(["killDaemon", "db", "daemonDir", "transferRoot"]);
+  if (Object.keys(input).some(key => !allowed.has(key))) {
+    throw new Error("dev down only accepts --kill-daemon, --db, --daemon-dir, and --transfer-root");
+  }
+  for (const key of ["db", "daemonDir", "transferRoot"]) {
+    if (typeof input[key] === "string" && (input[key] as string).startsWith("-")) {
+      throw new Error(`dev down ${key} requires a path value`);
+    }
+  }
+  return { taskId: "dev.down", input };
+}
+
 function parseMobilePublishInput(rest: string[]): ParsedCliCommand {
   const input = parseFlagInput(
     rest,
@@ -1027,7 +1041,7 @@ export function parseCliArgs(args: string[]): ParsedCliCommand {
     return parseDevRestartInput(rest);
   }
   if (group === "dev" && command === "down") {
-    return { taskId: "dev.down", input: { killDaemon: rest.includes("--kill-daemon") || rest.includes("-k") } };
+    return parseDevDownInput(rest);
   }
   if (group === "dev" && command === "status") {
     return { taskId: "dev.status", input: {} };
@@ -1196,7 +1210,7 @@ export function parseCliArgs(args: string[]): ParsedCliCommand {
   }
   if (group === "stop") {
     const legacyRest = [command, ...rest].filter((arg): arg is string => Boolean(arg));
-    return { taskId: "dev.down", input: { killDaemon: legacyRest.includes("--kill-daemon") || legacyRest.includes("-k") } };
+    return parseDevDownInput(legacyRest);
   }
   if (group === "kill-daemon") {
     return { taskId: "daemon.kill", input: {} };
@@ -1334,7 +1348,8 @@ const helpTopics: Record<string, string[]> = {
     "Stop the Kanna dev environment.",
     "",
     "Options:",
-    "  --kill-daemon, -k  Kill workspace daemons after stopping tmux."
+    "  --kill-daemon, -k  Kill workspace daemons after stopping tmux.",
+    "  --db <path> --daemon-dir <path> --transfer-root <path>  Match the dev up isolation paths."
   ],
   "dev restart": [
     "Usage: kd dev restart [desktop|mobile|backend] [--staging|--production] [--with-credentials] [--mobile] [--emulators] [--seed] [--attach] [--delete-db]",

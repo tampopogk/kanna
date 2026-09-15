@@ -1,0 +1,23 @@
+[
+  {
+    "file": "candidate.json",
+    "url": "https://apt.kanna.build/linux/releases/linux-v0.2.0-staging.2/candidate.json",
+    "status": 200,
+    "sha256": "53d885b28afaf42dc223ea0946c5b1e3f14e5ecb6891b781824d25aeeafbdb46",
+    "sizeBytes": 6078
+  },
+  {
+    "file": "InRelease",
+    "url": "https://apt.kanna.build/dists/staging/InRelease",
+    "status": 200,
+    "sha256": "1cd85f57feacb12a225978f72c4308d9c132919cc63b05706b46081525f3d29d",
+    "sizeBytes": 1402
+  },
+  {
+    "file": "kanna-archive.asc",
+    "url": "https://apt.kanna.build/keys/kanna-archive.asc",
+    "status": 200,
+    "sha256": "0b11597589d7cc2b8523991f554384226bfa3948e629527838464cbd29fd1880",
+    "sizeBytes": 1393
+  }
+]

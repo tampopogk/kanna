@@ -1,6 +1,6 @@
 {
-  "publicationStatus": "unpublished",
-  "downloadLinksEnabled": false,
+  "publicationStatus": "published-staging",
+  "downloadLinksEnabled": true,
   "productSource": {
     "revision": "a9df2f1d46fb08bcf53200b738e0fdc3c127b636",
     "tree": "3415e82f8a273b6ff94494d367139038eb026a62"
@@ -11,10 +11,15 @@
   "packageName": "kanna-staging",
   "channel": "desktop-linux-staging",
   "suite": "staging",
-  "publicBaseUrl": null,
-  "publicKeyUrl": null,
-  "publicKeyFingerprint": null,
-  "publicationReceipt": null,
+  "publicBaseUrl": "https://apt.kanna.build",
+  "publicKeyUrl": "https://apt.kanna.build/keys/kanna-archive.asc",
+  "publicKeyFingerprint": "4e76a6afcdb83a5050daebb364bbc361a9d7ec7a",
+  "publicationReceipt": {
+    "tag": "linux-v0.2.0-staging.2",
+    "candidateSha256": "53d885b28afaf42dc223ea0946c5b1e3f14e5ecb6891b781824d25aeeafbdb46",
+    "inReleaseSha256": "1cd85f57feacb12a225978f72c4308d9c132919cc63b05706b46081525f3d29d",
+    "verifiedAt": "2026-09-15T15:28:43.942Z"
+  },
   "artifacts": [
     {
       "architecture": "x86_64",
@@ -29,7 +34,8 @@
       "sha256": "2dca964a748a2058c7b52fc453f6907788ba03e8e02f26836dfd8ee830aacee4",
       "sizeBytes": 44493092,
       "reportSha256": "d4300eac624f4295c920ef0936b670ec48dc933379c609f2545c67056b7cdfd2",
-      "downloadUrl": null
+      "downloadUrl": "https://apt.kanna.build/pool/main/k/kanna-staging/kanna-staging_0.2.0~staging.2-1_amd64.deb",
+      "reportUrl": "https://apt.kanna.build/linux/releases/linux-v0.2.0-staging.2/x86_64.report.json"
     },
     {
       "architecture": "arm64",
@@ -44,10 +50,56 @@
       "sha256": "ab5dec3dc5b4d6902449dad490a8d38bd3a1fa6d759682b7963c7dc4ea077c3d",
       "sizeBytes": 43811392,
       "reportSha256": "33172cf9e89d4df7d802207a4e2fd7ea2bf644d936c06912815ab48bfc304c5f",
-      "downloadUrl": null
+      "downloadUrl": "https://apt.kanna.build/pool/main/k/kanna-staging/kanna-staging_0.2.0~staging.2-1_arm64.deb",
+      "reportUrl": "https://apt.kanna.build/linux/releases/linux-v0.2.0-staging.2/arm64.report.json"
     }
   ],
   "acceptanceRun": "https://github.com/tampopogk/kanna/actions/runs/34959684410",
   "support": "Ubuntu 24.04 x86_64 and arm64; installed/upgrade synthetic-provider validation only; cross-machine acceptance pending",
-  "productionVersion": null
+  "productionVersion": null,
+  "publicKeySha256": "0b11597589d7cc2b8523991f554384226bfa3948e629527838464cbd29fd1880",
+  "archiveSetupStatus": "configured; canonical relay/key HTTPS and publisher RPC verified",
+  "releaseUrl": "https://github.com/tampopogk/kanna/releases/tag/linux-v0.2.0-staging.2",
+  "provenanceUrl": "https://apt.kanna.build/linux/releases/linux-v0.2.0-staging.2/candidate.json",
+  "publicationReceiptUrl": "https://apt.kanna.build/linux/releases/linux-v0.2.0-staging.2/publication.json",
+  "publicationReceiptSha256": "9160e01c4408ca81b00723d1672f96891ffdad65346c1fa10439ab01fe9d8ae9",
+  "candidateSha256": "53d885b28afaf42dc223ea0946c5b1e3f14e5ecb6891b781824d25aeeafbdb46",
+  "inReleaseSha256": "1cd85f57feacb12a225978f72c4308d9c132919cc63b05706b46081525f3d29d",
+  "earliestProductionSoakCompletion": "2026-09-16T15:28:43.942Z",
+  "metadataValidUntil": "2026-09-22T15:28:14Z",
+  "productionAllowed": false,
+  "productionBlockers": [
+    "Missing or duplicate system acceptance for both.",
+    "Linux final candidate requires 24h verified soak (0.008h)."
+  ],
+  "installInstructions": "Download the matching amd64 or arm64 .deb on Ubuntu 24.04, then run sudo apt install ./kanna-staging_0.2.0~staging.2-1_<architecture>.deb. Launch Kanna Staging. This is a staging release; production promotion and cross-machine acceptance are not claimed.",
+  "notification": {
+    "sentBy": "6a8d78d0",
+    "acceptedCount": 1,
+    "failedCount": 0,
+    "doNotRepeat": true
+  },
+  "websiteDelivery": {
+    "status": "deployed",
+    "reportedBy": "root",
+    "task": "76e93c62",
+    "pr": 9,
+    "commit": "89dd4e6",
+    "pagesRun": "34989482384",
+    "liveHttpAndLayoutChecks": "pass"
+  },
+  "systemAcceptanceReconciliation": {
+    "linuxB": "missing; C findings do not certify B",
+    "separateCandidate": "C / desktop staging.21",
+    "result": "fail",
+    "signIn": "same-account pass",
+    "completedTransfers": 0,
+    "pushFailure": "source-peer-not-found",
+    "pullFailure": "404",
+    "crossHostTransferMdns": "absent",
+    "allocations": "cleaned",
+    "transferFixTask": "440c7635",
+    "recoveryPromptFixTask": "110cdc20",
+    "devRestartTask": "a031920d"
+  }
 }

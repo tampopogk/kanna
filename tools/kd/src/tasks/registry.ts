@@ -197,6 +197,9 @@ export interface DevRestartInput extends DevUpInput {
 
 export interface DevDownInput {
   killDaemon: boolean;
+  db?: string;
+  daemonDir?: string;
+  transferRoot?: string;
 }
 
 export interface MobileUpInput {
@@ -281,6 +284,9 @@ const rustTestInputSchema = z.object({
 });
 
 const devDownInputSchema = z.object({
+  db: z.string().optional(),
+  daemonDir: z.string().optional(),
+  transferRoot: z.string().optional(),
   killDaemon: z.boolean().default(false)
 });
 
@@ -2652,7 +2658,11 @@ export async function executeDevDownWithContext(
 async function executeDevDown(input: DevDownInput): Promise<TaskResult> {
   return executeDevDownWithContext(
     input,
-    { runner: nodeCommandRunner, context: await resolveDefaultContext(process.env) }
+    { runner: nodeCommandRunner, context: await resolveDefaultContext(process.env, {
+      dbOverride: input.db,
+      daemonDirOverride: input.daemonDir,
+      transferRootOverride: input.transferRoot
+    }) }
   );
 }
 
@@ -2761,7 +2771,8 @@ export const taskDefinitions = [
     execute: async (_context, input) => {
       const parsed = devRestartInputSchema.parse(input);
       if (!parsed.component) {
-        await executeDevDown({ killDaemon: parsed.killDaemon });
+        const stopped = await executeDevDown(parsed);
+        if (!stopped.ok) return stopped;
         return executeDevUp(parsed);
       }
       const context = await resolveDefaultContext(process.env, {
