@@ -16,12 +16,10 @@ name: Linux Release Check
 # in the support matrix of
 # `docs/2026-09-09-linux-phase3-supported-distribution.md`.
 #
-# **This workflow builds and audits; it does not yet run the installed and
-# upgrade acceptance lane.** That lane needs two packages from two source
-# revisions to upgrade between, and wiring a second merge-base build has not
-# been done or exercised. It is follow-up item 2 in §7 of the evidence doc, and
-# the honest state is a build lane that works rather than an acceptance job
-# that cannot. Run the lane by hand meanwhile:
+# This workflow builds the declared Bazel packages and runs install-only checks.
+# Two-version upgrade acceptance still requires a real predecessor package from
+# another revision; no synthetic second version is manufactured here.
+# Run the existing upgrade lane with a real pair when it becomes available:
 # `./kd test linux-installed --old-artifact <deb> --new-artifact <deb>`.
 #
 # This workflow is deliberately independent of Pages deployment and holds no
@@ -38,6 +36,11 @@ on:
         default: false
   pull_request:
     paths:
+      - "BUILD.bazel"
+      - "MODULE.bazel*"
+      - "tools/bazel/**"
+      - "tools/kd/BUILD.bazel"
+      - "tools/kd/tests/linux-product-audit.ts"
       - "packaging/linux/**"
       - "tests/linux-installed/**"
       - "crates/**"
@@ -49,6 +52,11 @@ on:
     branches:
       - main
     paths:
+      - "BUILD.bazel"
+      - "MODULE.bazel*"
+      - "tools/bazel/**"
+      - "tools/kd/BUILD.bazel"
+      - "tools/kd/tests/linux-product-audit.ts"
       - "packaging/linux/**"
       - "tests/linux-installed/**"
       - ".github/workflows/linux-release-check.yml"
@@ -91,21 +99,15 @@ jobs:
 
   build:
     if: ${{ !inputs.apt_interop_only }}
-    # Both required architectures, each built natively. Cross-compiling the
-    # other would leave the linkage — which is what the audit is about —
-    # untested on the machine it has to run on.
+    # Native parity for the same Bazel graph used by the macOS cross builder.
     strategy:
       fail-fast: false
       matrix:
         include:
           - architecture: x86_64
             runner: ubuntu-24.04
-            zig_platform: x86_64-linux
-            zig_sha256: 02aa270f183da276e5b5920b1dac44a63f1a49e55050ebde3aecc9eb82f93239
           - architecture: arm64
             runner: ubuntu-24.04-arm
-            zig_platform: aarch64-linux
-            zig_sha256: 958ed7d1e00d0ea76590d27666efbf7a932281b3d7ba0c6b01b0ff26498f667f
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 90
     steps:
@@ -121,21 +123,12 @@ jobs:
           sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc "$AGENT_TOOLSDIRECTORY" || true
           df -h /
 
-      - name: Install build and packaging dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            libwebkit2gtk-4.1-dev libgtk-3-dev libsoup-3.0-dev \
-            build-essential pkg-config dpkg-dev \
-            libc++-dev libc++abi-dev
-          # libc++-dev/libc++abi-dev supply the link-time -lc++/-lc++abi that
-          # libghostty-vt-sys's build script emits on Linux (Zig's Ghostty
-          # build links libc++). This is a build-time linker input only: the
-          # dynamic runtime dependency it produces is already the declared,
-          # measured "conditional" exception in
-          # packaging/linux/runtime-policy.json, not a new one. Static linking
-          # against Zig's own libc++.a/libc++abi.a is the named follow-up
-          # recorded there.
+      # Bazel owns Rust, Zig, Node and the target sysroot. No host GTK/C++
+      # development packages participate in the product build.
+      - uses: bazel-contrib/setup-bazel@0.19.0
+        with:
+          bazelisk-cache: true
+          repository-cache: true
 
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
@@ -151,19 +144,6 @@ jobs:
           echo "glibc=$(getconf GNU_LIBC_VERSION)"
           echo "arch=$(dpkg --print-architecture)"
 
-      - name: Install Zig 0.15.2
-        env:
-          ZIG_PLATFORM: ${{ matrix.zig_platform }}
-          ZIG_SHA256: ${{ matrix.zig_sha256 }}
-        run: |
-          archive="zig-${ZIG_PLATFORM}-0.15.2.tar.xz"
-          curl --fail --location --retry 3 \
-            --output "$RUNNER_TEMP/$archive" \
-            "https://ziglang.org/download/0.15.2/$archive"
-          echo "$ZIG_SHA256  $RUNNER_TEMP/$archive" | sha256sum --check --strict -
-          tar --extract --file "$RUNNER_TEMP/$archive" --directory "$RUNNER_TEMP"
-          echo "$RUNNER_TEMP/zig-${ZIG_PLATFORM}-0.15.2" >> "$GITHUB_PATH"
-
       # One package per architecture, from this revision. The installed and
       # upgrade lane needs a second package built from another revision to
       # upgrade between; that is deliberately not wired here yet (see the header).
@@ -173,7 +153,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: kanna-linux-${{ matrix.architecture }}
-          path: .build/linux-package/out/*.deb
+          path: .build/linux-package/out/*
           if-no-files-found: error
           retention-days: 14
 
@@ -288,7 +268,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends "$deb"
 
-      - name: Confirm every declared runtime library is package-owned, and every installed executable resolves
+      - name: Confirm every installed executable resolves and its C++ closure is static
         run: |
           set -x
           fail=0
@@ -302,15 +282,14 @@ jobs:
               fail=1
             fi
           done
-          for lib in libc++.so.1 libc++abi.so.1 libunwind.so.1; do
-            path="$(ldconfig -p | awk -v l="$lib" '$1==l{print $NF; exit}')"
-            echo "== $lib -> ${path:-<not found by ldconfig>} =="
-            if [ -z "$path" ]; then echo "::error::$lib not resolvable by the dynamic linker"; fail=1; continue; fi
-            # Noble's merged-/usr layout makes /lib a symlink to /usr/lib;
-            # ldconfig reports the /lib form, but dpkg's file-list database
-            # is keyed on the canonical /usr/lib path. Resolve before asking.
-            realpath="$(readlink -f "$path")"
-            dpkg -S "$realpath" || { echo "::error::$realpath is not owned by any installed package"; fail=1; }
+          # Kanna's direct closure must no longer use the prototype's C++
+          # exceptions. GTK/WebKit may themselves use their distro runtimes.
+          for exe in "$tree"/*; do
+            [ -f "$exe" ] || continue
+            if readelf -d "$exe" 2>/dev/null | grep -E '\(NEEDED\).*(libc\+\+|libc\+\+abi|libunwind)\.so'; then
+              echo "::error::$exe directly links a non-static C++ runtime"
+              fail=1
+            fi
           done
           exit $fail
 
@@ -320,6 +299,9 @@ jobs:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+
+      - name: Compare the package audit with native readelf and installed bytes
+        run: pnpm --dir tools/kd exec tsx tests/linux-product-audit.ts "$GITHUB_WORKSPACE"/.build/linux-package/out/*.deb
 
       # Install-only: KANNA_INSTALLED_DEB alone drives installed.e2e.test.ts.
       # upgrade.e2e.test.ts needs KANNA_INSTALLED_DEB_OLD/_NEW from two distinct

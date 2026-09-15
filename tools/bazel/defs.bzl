@@ -538,6 +538,7 @@ PY
 
 "$tool" --config "$staged/tauri.conf.json" "$@"
 """,
+        env = {"KANNA_TAURI_TARGET_TRIPLE": ctx.attr.target_triple} if ctx.attr.target_triple else {},
         mnemonic = mnemonic,
         progress_message = progress_message,
     )
@@ -589,6 +590,7 @@ def _tauri_acl_prep_dir_impl(ctx):
 tauri_acl_prep_dir = rule(
     implementation = _tauri_acl_prep_dir_impl,
     attrs = {
+        "target_triple": attr.string(),
         "cargo_srcs": attr.label(mandatory = True),
         "config": attr.label(allow_single_file = True),
         "dep_env_targets": attr.label_list(),
@@ -686,6 +688,7 @@ def _tauri_context_support_dir_impl(ctx):
 tauri_context_support_dir = rule(
     implementation = _tauri_context_support_dir_impl,
     attrs = {
+        "target_triple": attr.string(),
         "acl_out_dir": attr.label(mandatory = True),
         "cargo_srcs": attr.label(mandatory = True),
         "config": attr.label(allow_single_file = True),
