@@ -25,6 +25,14 @@ No release branch/tag pin is created by preparation.
 
 - `pnpm --dir tools/kd exec vitest run tests/linux-release-prepare.test.ts tests/linux-release-commands.test.ts tests/linux-release-lifecycle.test.ts tests/release-tasks.test.ts`: 56 passes.
 - `pnpm --dir tools/kd typecheck`: pass.
+- After merging current main into this controller, the same four suites plus
+  `daemon-ownership.test.ts` and `daemon.test.ts` passed **69/69**; typecheck
+  passed again. The only conflict was the historical status document; its
+  newer superseded notice was retained.
+- The PR head carries `[skip ci]` to respect the explicit no-native-rebuild
+  instruction: the existing broad Linux PR path filter would rebuild products
+  for these controller-only changes. The local results above are the validation;
+  no new native CI result is claimed.
 - Disposable integration uses real Git snapshots, collector/Debian verifier,
   POSIX publication and disposable apt signing. Executables are synthetic;
   GitHub and public readback are intercepted. It covers prepare → retained
