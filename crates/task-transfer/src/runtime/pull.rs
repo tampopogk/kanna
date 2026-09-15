@@ -94,6 +94,7 @@ impl TransferRuntime {
             &target_peer.public_key,
             resolved_transport,
         )?;
+        self.negotiate_transfer_protocol(&target_peer).await?;
         let wire_request_id = self.next_request_id("task-pull");
         let sealed_payload = self
             .seal_authenticated_peer_request(
@@ -104,6 +105,7 @@ impl TransferRuntime {
                     "requester_peer_id": self.config.peer_id,
                     "source_task_id": source_task_id,
                     "reserved_target_peer_id": target_peer.peer_id,
+                    "transfer_protocol": super::transfer_protocol::CONTRACT,
                 }),
             )
             .await?;
@@ -140,6 +142,15 @@ impl TransferRuntime {
         transport: TransferTransport,
     ) -> Result<(), RuntimeError> {
         validate_source_task_id(source_task_id)?;
+        let key = (requester_peer_id.to_owned(), source_task_id.to_owned());
+        let mut pending = self.pending_task_pull_requests.lock().await;
+        if pending
+            .get(&key)
+            .is_some_and(|request| request.request_id == pull_request_id)
+        {
+            pending.remove(&key);
+        }
+        drop(pending);
         if requester_peer_id == self.config.peer_id {
             return Err(RuntimeError::Protocol(
                 "cannot report a task pull refusal to this runtime".into(),

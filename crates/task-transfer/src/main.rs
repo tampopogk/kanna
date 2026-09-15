@@ -898,6 +898,24 @@ async fn handle_request(
     request: ControlRequest,
 ) -> ControlResponse {
     match request {
+        ControlRequest::NotifyTransferRefused {
+            request_id,
+            transfer_id,
+            source_peer_id,
+            source_task_id,
+            reason,
+        } => {
+            match runtime
+                .notify_transfer_refused(&transfer_id, &source_peer_id, &source_task_id, &reason)
+                .await
+            {
+                Ok(()) => ControlResponse::NotifyTransferRefused { request_id },
+                Err(error) => ControlResponse::Error {
+                    request_id,
+                    message: error.to_string(),
+                },
+            }
+        }
         ControlRequest::GetLocalIdentity { request_id } => {
             let identity = runtime.local_identity();
             ControlResponse::GetLocalIdentity {
@@ -907,6 +925,7 @@ async fn handle_request(
                 public_key: identity.public_key,
                 protocol_version: identity.protocol_version,
                 accepting_transfers: identity.accepting_transfers,
+                transfer_protocol: Some(kanna_runtime_defaults::TRANSFER_PROTOCOL_CONTRACT.into()),
             }
         }
         ControlRequest::ListPeers { request_id } => match runtime.list_peers().await {

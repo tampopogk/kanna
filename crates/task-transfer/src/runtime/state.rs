@@ -47,6 +47,9 @@ pub(super) struct OutgoingTransferReservation {
     pub(super) source_task_id: String,
     pub(super) target_peer: Option<crate::protocol::PeerRegistryEntry>,
     pub(super) transport: Option<super::external_peers::TransferTransport>,
+    /// In-memory pull generation captured before preflight. Pending pulls do
+    /// not survive a restart, so this identity must not be restored either.
+    pub(super) pull_request_id: Option<String>,
     pub(super) created_at: Instant,
 }
 
@@ -616,6 +619,7 @@ pub(super) struct ListenerContext {
     pub(super) db_path: Option<PathBuf>,
     pub(super) daemon_dir: Option<PathBuf>,
     pub(super) kanna_server_port: Option<u16>,
+    pub(super) standalone_test_server: bool,
     pub(super) request_counter: Arc<AtomicU64>,
     pub(super) incoming_sender: RuntimeEventSender,
     pub(super) receipt_sender: mpsc::Sender<OutgoingTransferCommittedEvent>,
@@ -633,6 +637,7 @@ pub(super) struct ListenerContext {
 pub(super) type CompanionObserverGenerations = Arc<Mutex<HashMap<(String, String), (u64, String)>>>;
 
 pub struct TransferRuntime {
+    pub(super) pending_task_pull_requests: PendingTaskPullRequests,
     pub(super) config: RuntimeConfig,
     pub(super) discovery: PeerDiscovery,
     pub(super) external_peers: ExternalPeerRegistry,

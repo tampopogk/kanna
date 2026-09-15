@@ -34,6 +34,14 @@ impl TransferRuntime {
         source_task_id: &str,
         transport: TransferTransport,
     ) -> Result<PreflightResult, RuntimeError> {
+        // Bind cleanup to the pull that existed when this attempt started,
+        // never to a newer request arriving while preflight is on the wire.
+        let pull_request_id = self
+            .pending_task_pull_requests
+            .lock()
+            .await
+            .get(&(target_peer_id.to_owned(), source_task_id.to_owned()))
+            .map(|request| request.request_id.clone());
         let (target_peer, resolved_transport) = self
             .resolve_peer_with_transport(target_peer_id, transport)
             .await?;
@@ -42,6 +50,7 @@ impl TransferRuntime {
             &target_peer.public_key,
             resolved_transport,
         )?;
+        self.negotiate_transfer_protocol(&target_peer).await?;
         let request_id = self.next_request_id("preflight");
         let sealed_payload = self
             .seal_authenticated_peer_request(
@@ -52,6 +61,7 @@ impl TransferRuntime {
                     "source_peer_id": self.config.peer_id,
                     "source_task_id": source_task_id,
                     "reserved_target_peer_id": target_peer.peer_id,
+                    "transfer_protocol": super::transfer_protocol::CONTRACT,
                 }),
             )
             .await?;
@@ -91,6 +101,7 @@ impl TransferRuntime {
                     source_task_id: source_task_id.to_owned(),
                     target_peer: Some(target_peer),
                     transport: Some(resolved_transport),
+                    pull_request_id,
                     created_at: Instant::now(),
                 };
                 self.replay_store
@@ -129,7 +140,8 @@ impl TransferRuntime {
             PeerResponse::TaskSnapshot { .. } => Err(RuntimeError::Protocol(
                 "unexpected task-snapshot response during preflight".into(),
             )),
-            PeerResponse::AuthenticatedRequestEpoch { .. }
+            PeerResponse::TransferProtocol { .. }
+            | PeerResponse::AuthenticatedRequestEpoch { .. }
             | PeerResponse::ObserveSession { .. }
             | PeerResponse::ObserveCompanion { .. }
             | PeerResponse::SendCompanionEvent { .. }
@@ -258,7 +270,8 @@ impl TransferRuntime {
             PeerResponse::TaskSnapshot { .. } => Err(RuntimeError::Protocol(
                 "unexpected task-snapshot response during transfer commit".into(),
             )),
-            PeerResponse::AuthenticatedRequestEpoch { .. }
+            PeerResponse::TransferProtocol { .. }
+            | PeerResponse::AuthenticatedRequestEpoch { .. }
             | PeerResponse::ObserveSession { .. }
             | PeerResponse::ObserveCompanion { .. }
             | PeerResponse::SendCompanionEvent { .. }
@@ -302,6 +315,7 @@ impl TransferRuntime {
 
         let source_peer = self.find_peer(&source_peer_id).await?;
         self.ensure_peer_is_trusted(&source_peer.peer_id, &source_peer.public_key)?;
+        self.negotiate_transfer_protocol(&source_peer).await?;
         let request_id = self.next_request_id("finalize");
         let sealed_payload = self
             .seal_authenticated_peer_request(
@@ -371,7 +385,8 @@ impl TransferRuntime {
                     finalized_cleanly,
                 })
             }
-            PeerResponse::AuthenticatedRequestEpoch { .. }
+            PeerResponse::TransferProtocol { .. }
+            | PeerResponse::AuthenticatedRequestEpoch { .. }
             | PeerResponse::StartPairing { .. }
             | PeerResponse::RequestTaskPull { .. }
             | PeerResponse::ReportTaskPullRefused { .. }
@@ -671,7 +686,8 @@ impl TransferRuntime {
 
                 Ok(())
             }
-            PeerResponse::AuthenticatedRequestEpoch { .. }
+            PeerResponse::TransferProtocol { .. }
+            | PeerResponse::AuthenticatedRequestEpoch { .. }
             | PeerResponse::StartPairing { .. }
             | PeerResponse::RequestTaskPull { .. }
             | PeerResponse::ReportTaskPullRefused { .. }
@@ -773,6 +789,7 @@ impl TransferRuntime {
                     "source_peer_id": self.config.peer_id,
                     "transfer_id": transfer_id,
                     "reserved_target_peer_id": target_peer.peer_id,
+                    "transfer_protocol": super::transfer_protocol::CONTRACT,
                 }),
             )
             .await?;

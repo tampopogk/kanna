@@ -45,6 +45,27 @@ fn home_dir() -> Result<PathBuf, String> {
 pub async fn record_incoming(state: &Arc<AppState>, event: &Value) -> Result<(), String> {
     let transfer_id = string_field(event, "transfer_id")
         .ok_or_else(|| "incoming transfer event is missing a transfer id".to_string())?;
+    let queue = state.transfer_work();
+    let db = queue.open_db()?;
+    if db
+        .get_task_transfer(&transfer_id)
+        .map_err(|error| error.to_string())?
+        .is_some_and(|transfer| {
+            matches!(
+                transfer.status.as_str(),
+                "completed" | "rejected" | "failed"
+            )
+        })
+    {
+        // A delayed event cannot put a settled move back through admission.
+        queue.enqueue(
+            &format!("cleanup:{transfer_id}"),
+            super::queue::KIND_SIDECAR_CLEANUP,
+            Some(&transfer_id),
+            &serde_json::json!({ "transferId": transfer_id }),
+        )?;
+        return Ok(());
+    }
     let source_peer_id = string_field(event, "source_peer_id");
     let source_task_id = string_field(event, "source_task_id");
     let raw_payload = event
@@ -52,8 +73,6 @@ pub async fn record_incoming(state: &Arc<AppState>, event: &Value) -> Result<(),
         .ok_or_else(|| "incoming transfer event is missing a payload".to_string())?;
     let parsed = payload::parse_outgoing_transfer_payload(raw_payload)?;
 
-    let queue = state.transfer_work();
-    let db = queue.open_db()?;
     db.insert_task_transfer(&crate::db::NewTaskTransfer {
         id: transfer_id.clone(),
         direction: "incoming".into(),
@@ -164,6 +183,12 @@ pub async fn reject_transfer(state: &Arc<AppState>, work: &Value) -> Result<(), 
     if transfer.direction != "incoming" {
         return Err(format!("transfer is not incoming: {transfer_id}"));
     }
+    if transfer.local_task_id.is_some() || transfer.status == "completed" {
+        return Err(
+            "cannot reject a transfer after destination import; finish ownership reconciliation"
+                .into(),
+        );
+    }
     if !matches!(transfer.status.as_str(), "rejected") {
         db.mark_task_transfer_rejected(&transfer_id, "Rejected locally")
             .map_err(|error| format!("db error: {error}"))?;
@@ -192,6 +217,21 @@ async fn release_incoming_reservation(
     state: &Arc<AppState>,
     transfer_id: &str,
 ) -> Result<(), String> {
+    let db = state.transfer_work().open_db()?;
+    let transfer = db
+        .get_task_transfer(transfer_id)
+        .map_err(|error| format!("db error: {error}"))?
+        .ok_or_else(|| format!("transfer not found: {transfer_id}"))?;
+    if matches!(transfer.status.as_str(), "failed" | "rejected") && transfer.local_task_id.is_none()
+    {
+        // Keep the durable cleanup obligation until the source ACKs its DB
+        // decision. A lost reply retries this notification, never the import.
+        state.transfer_sidecar().control("notify-transfer-refused", serde_json::json!({
+            "transferId": transfer_id, "sourcePeerId": transfer.source_peer_id,
+            "sourceTaskId": transfer.source_task_id,
+            "reason": transfer.error.as_deref().unwrap_or("Transfer refused by destination"),
+        })).await?;
+    }
     control::mark_import_ack_completed(state, transfer_id).await?;
     state
         .transfer_work()
@@ -260,6 +300,14 @@ async fn run_import(
         transfer.status.as_str(),
         "completed" | "rejected" | "failed"
     ) {
+        if db
+            .list_terminal_incoming_transfer_ids()
+            .map_err(|error| error.to_string())?
+            .iter()
+            .any(|id| id == transfer_id)
+        {
+            release_incoming_reservation(state, transfer_id).await?;
+        }
         return Ok(());
     }
     db.claim_pending_incoming_transfer(transfer_id, ENGINE_CLAIM_TOKEN, true)
@@ -298,8 +346,15 @@ async fn run_import(
             .selection_commitment()
             .map_err(ImportFailure::Terminal)?;
         validate_transfer_launch_selection(&stored.task)?;
-        let finalized =
-            control::finalize_from_source(state, transfer_id, &accepted_selection).await?;
+        let finalized = control::finalize_from_source(state, transfer_id, &accepted_selection)
+            .await
+            .map_err(|reason| {
+                if reason.contains("incompatible-transfer-version:") {
+                    ImportFailure::Terminal(reason)
+                } else {
+                    ImportFailure::Retry(reason)
+                }
+            })?;
         let payload = payload::parse_outgoing_transfer_payload(&finalized.payload)
             .map_err(ImportFailure::Terminal)?;
         if payload.repo.mode != RepoAcquisitionMode::TaskBundle {
@@ -2097,7 +2152,10 @@ mod tests {
     /// spawn time. Capture this before the first mutation and hold it for
     /// the whole test, declared after `test_sidecar_guard`'s own guard so it
     /// drops (and restores) first, while that lock is still held.
+    static ITEM4_PROTOCOL_PORT: std::sync::atomic::AtomicU16 = std::sync::atomic::AtomicU16::new(0);
+
     struct Item4EnvVarGuard {
+        protocol_server: tokio::task::JoinHandle<()>,
         saved: Vec<(&'static str, Option<String>)>,
     }
 
@@ -2111,7 +2169,29 @@ mod tests {
         ];
 
         fn capture() -> Self {
+            // These standalone sidecar fixtures model the server event consumer.
+            // Give capability probes a disposable HTTP endpoint; never inherit
+            // the operator's server port (the previous fixture used 48120).
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            listener.set_nonblocking(true).unwrap();
+            ITEM4_PROTOCOL_PORT.store(
+                listener.local_addr().unwrap().port(),
+                std::sync::atomic::Ordering::SeqCst,
+            );
+            let listener = tokio::net::TcpListener::from_std(listener).unwrap();
+            let app = axum::Router::new().route(
+                "/v1/transfers/protocol",
+                axum::routing::post(|| async {
+                    axum::Json(
+                        serde_json::json!({ "transfer_protocol": "transfer-v2-reconciliation-v1" }),
+                    )
+                }),
+            );
+            let protocol_server = tokio::spawn(async move {
+                axum::serve(listener, app).await.unwrap();
+            });
             Self {
+                protocol_server,
                 saved: Self::NAMES
                     .iter()
                     .map(|&name| (name, std::env::var(name).ok()))
@@ -2122,6 +2202,8 @@ mod tests {
 
     impl Drop for Item4EnvVarGuard {
         fn drop(&mut self) {
+            self.protocol_server.abort();
+            ITEM4_PROTOCOL_PORT.store(0, std::sync::atomic::Ordering::SeqCst);
             for (name, value) in &self.saved {
                 match value {
                     Some(value) => std::env::set_var(name, value),
@@ -2193,8 +2275,14 @@ mod tests {
         std::env::set_var("KANNA_TRANSFER_PEER_ID", peer_id);
         std::env::set_var("KANNA_TRANSFER_DISPLAY_NAME", peer_id);
         std::env::set_var("KANNA_TRANSFER_DISCOVERY", "registry");
+        let mut config = config.clone();
+        config.lan_port = ITEM4_PROTOCOL_PORT.load(std::sync::atomic::Ordering::SeqCst);
+        assert_ne!(
+            config.lan_port, 0,
+            "hold Item4EnvVarGuard for the live protocol fixture"
+        );
         let supervisor = crate::transfer_sidecar::TransferSidecarSupervisor::with_binary_for_test(
-            config.clone(),
+            config,
             work,
             real_sidecar_binary_for_test(),
         );
@@ -3636,6 +3724,172 @@ mod tests {
         let _ = std::fs::remove_dir_all(source_repo);
         let _ = std::fs::remove_dir_all(source_remote);
     }
+    #[tokio::test]
+    async fn transfer_protocol_rejection_crosses_real_sidecars_and_source_server() {
+        let _sidecar_guard = crate::test_sidecar_guard().await;
+        let _env_guard = Item4EnvVarGuard::capture();
+        let source_state =
+            crate::http_api::test_state_with_seed("refusal-source", "Source", |db| {
+                db.insert_test_repo("repo-refusal", "Disposable").unwrap();
+                db.insert_test_pipeline_item(
+                    "safe-source",
+                    "repo-refusal",
+                    "keep this task",
+                    None,
+                    "in progress",
+                    "2026-09-14 00:00:00",
+                )
+                .unwrap();
+            });
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let server_port = listener.local_addr().unwrap().port();
+        let app = crate::http_api::router(Arc::clone(&source_state));
+        struct ServerGuard(tokio::task::JoinHandle<()>);
+        impl Drop for ServerGuard {
+            fn drop(&mut self) {
+                self.0.abort();
+            }
+        }
+        let server = ServerGuard(tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        }));
+        let root = crate::test_paths::unique_test_dir("protocol-rejection-sidecars");
+        let registry = root.join("registry");
+        let fixture_port =
+            ITEM4_PROTOCOL_PORT.swap(server_port, std::sync::atomic::Ordering::SeqCst);
+        let mut source_config = source_state.config().clone();
+        source_config.transfer_port = 0;
+        let source = spawn_test_sidecar(
+            &root.join("source"),
+            &registry,
+            "peer-refusal-source",
+            &source_config,
+            source_state.transfer_work(),
+        )
+        .await;
+        ITEM4_PROTOCOL_PORT.store(fixture_port, std::sync::atomic::Ordering::SeqCst);
+        let destination_config = item4_test_config("protocol-rejection-dest");
+        crate::db::Db::open_for_tests(&destination_config.db_path).unwrap();
+        let destination_work = crate::transfer_engine::queue::TransferWorkQueue::new(
+            destination_config.db_path.clone(),
+        );
+        let destination = spawn_test_sidecar(
+            &root.join("destination"),
+            &registry,
+            "peer-refusal-dest",
+            &destination_config,
+            destination_work,
+        )
+        .await;
+        pair_real_sidecars(&source, &destination, "peer-refusal-dest").await;
+        let transfer_id = commit_real_transfer(&source, "peer-refusal-dest", "safe-source").await;
+        let source_db = source_state.transfer_work().open_db().unwrap();
+        source_db
+            .insert_task_transfer(&crate::db::NewTaskTransfer {
+                id: transfer_id.clone(),
+                direction: "outgoing".into(),
+                status: "pending".into(),
+                source_peer_id: Some("peer-refusal-source".into()),
+                target_peer_id: Some("peer-refusal-dest".into()),
+                source_desktop_id: None,
+                target_desktop_id: None,
+                source_task_id: Some("safe-source".into()),
+                local_task_id: Some("safe-source".into()),
+                error: None,
+                payload_json: Some("source bytes remain".into()),
+            })
+            .unwrap();
+        source_db
+            .enqueue_transfer_work("old-push", "push", Some(&transfer_id), "{}")
+            .unwrap();
+        let old_work = source_db.claim_next_transfer_work(&[]).unwrap().unwrap();
+        let dest_state = Arc::new(AppState::with_transfer_sidecar_for_test(
+            destination_config,
+            destination,
+        ));
+        let dest_db = dest_state.transfer_work().open_db().unwrap();
+        dest_db
+            .insert_task_transfer(&crate::db::NewTaskTransfer {
+                id: transfer_id.clone(),
+                direction: "incoming".into(),
+                status: "pending".into(),
+                source_peer_id: Some("peer-refusal-source".into()),
+                target_peer_id: None,
+                source_desktop_id: None,
+                target_desktop_id: None,
+                source_task_id: Some("safe-source".into()),
+                local_task_id: None,
+                error: None,
+                payload_json: Some("destination placeholder".into()),
+            })
+            .unwrap();
+        let request = serde_json::json!({ "transferId": transfer_id });
+        tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            reject_transfer(&dest_state, &request),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            source_db
+                .get_task_transfer(&transfer_id)
+                .unwrap()
+                .unwrap()
+                .status,
+            "failed"
+        );
+        assert_eq!(
+            dest_db
+                .get_task_transfer(&transfer_id)
+                .unwrap()
+                .unwrap()
+                .status,
+            "rejected"
+        );
+        assert!(source_db
+            .get_pipeline_item("safe-source")
+            .unwrap()
+            .unwrap()
+            .closed_at
+            .is_none());
+        assert_eq!(
+            source_db
+                .get_task_transfer(&transfer_id)
+                .unwrap()
+                .unwrap()
+                .payload_json
+                .as_deref(),
+            Some("source bytes remain")
+        );
+        assert!(!dest_db
+            .list_terminal_incoming_transfer_ids()
+            .unwrap()
+            .contains(&transfer_id));
+        source_db
+            .fail_transfer_work_attempt(&old_work.id, old_work.attempts, "late network failure")
+            .unwrap();
+        assert_eq!(
+            source_db
+                .transfer_work_status(&old_work.id)
+                .unwrap()
+                .as_deref(),
+            Some("done")
+        );
+        // Lost acknowledgments/replayed cleanup still converge after both
+        // sidecar reservations have been released.
+        tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            reject_transfer(&dest_state, &request),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert!(source.control("prepare-outgoing-transfer", serde_json::json!({ "payload": { "phase": "commit", "transferId": transfer_id, "payload": {} } })).await.is_err());
+        drop(dest_state);
+        drop(source);
+        server.0.abort();
+    }
 }
 
 #[cfg(test)]
@@ -3770,5 +4024,32 @@ mod stored_workflow_tests {
             Some(&pinned(false)),
             Some(&pinned(false))
         ));
+    }
+    #[tokio::test]
+    async fn transfer_protocol_late_incoming_event_keeps_rejection_and_only_schedules_cleanup() {
+        let state = crate::http_api::test_state_with_seed("late-rejected-transfer", "Test", |db| {
+            db.insert_task_transfer(&crate::db::NewTaskTransfer {
+                id: "settled-transfer".into(),
+                direction: "incoming".into(),
+                status: "rejected".into(),
+                source_peer_id: Some("source".into()),
+                target_peer_id: None,
+                source_desktop_id: None,
+                target_desktop_id: None,
+                source_task_id: Some("safe-task".into()),
+                local_task_id: None,
+                error: Some("Rejected locally".into()),
+                payload_json: Some("original".into()),
+            })
+            .unwrap();
+        });
+        super::record_incoming(&state, &serde_json::json!({"transfer_id": "settled-transfer", "payload": "stale-invalid-payload"})).await.unwrap();
+        let db = state.transfer_work().open_db().unwrap();
+        let transfer = db.get_task_transfer("settled-transfer").unwrap().unwrap();
+        assert_eq!(transfer.status, "rejected");
+        assert_eq!(transfer.payload_json.as_deref(), Some("original"));
+        let work = db.claim_next_transfer_work(&[]).unwrap().unwrap();
+        assert_eq!(work.kind, super::super::queue::KIND_SIDECAR_CLEANUP);
+        assert!(db.claim_next_transfer_work(&[]).unwrap().is_none());
     }
 }

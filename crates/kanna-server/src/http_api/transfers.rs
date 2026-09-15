@@ -1087,6 +1087,15 @@ fn schedule_incoming_intent(
             format!("transfer is not incoming: {transfer_id}"),
         ));
     }
+    if kind == crate::transfer_engine::queue::KIND_REJECT
+        && (transfer.local_task_id.is_some() || transfer.status == "completed")
+    {
+        return Err((
+            axum::http::StatusCode::CONFLICT,
+            "cannot reject a transfer after destination import; finish ownership reconciliation"
+                .into(),
+        ));
+    }
     let scheduled = state
         .transfer_work()
         .enqueue(
@@ -1293,6 +1302,23 @@ pub(super) async fn reject_task_transfer(
     let updated = db
         .mark_task_transfer_rejected(&transfer_id, &payload.reason)
         .map_err(db_error)?;
+    if updated
+        || db
+            .get_task_transfer(&transfer_id)
+            .map_err(db_error)?
+            .is_some_and(|t| t.status == "rejected")
+    {
+        state
+            .transfer_work()
+            .enqueue(
+                &format!("cleanup:{transfer_id}"),
+                crate::transfer_engine::queue::KIND_SIDECAR_CLEANUP,
+                Some(&transfer_id),
+                &serde_json::json!({ "transferId": transfer_id }),
+            )
+            .map_err(|error| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, error))?;
+        state.publish_state_changed(kanna_agent_protocol::StateChangeScope::Tasks);
+    }
     Ok(Json(TransferUpdateResponse { updated }))
 }
 
@@ -1427,4 +1453,39 @@ fn json_error(
     (status, message): (axum::http::StatusCode, String),
 ) -> (axum::http::StatusCode, Json<serde_json::Value>) {
     (status, Json(serde_json::json!({ "error": message })))
+}
+
+/// Local sidecar bridge. Listener trust middleware applies exactly as it does
+/// to the other local transfer routes; the sidecar authenticates the peer and
+/// the DB independently checks its durable reservation identity.
+pub(super) async fn transfer_protocol(
+    State(state): State<Arc<AppState>>,
+    Json(request): Json<serde_json::Value>,
+) -> Result<Json<serde_json::Value>, (axum::http::StatusCode, String)> {
+    let bad = |reason: String| (axum::http::StatusCode::CONFLICT, reason);
+    let field = |key: &str| {
+        request
+            .get(key)
+            .and_then(serde_json::Value::as_str)
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| bad(format!("transfer protocol missing {key}")))
+    };
+    match field("operation")? {
+        "capabilities" => {}
+        "refused" => {
+            let db = open_db(&state)?;
+            db.record_peer_transfer_refusal(
+                field("transfer_id")?,
+                field("requester_peer_id")?,
+                field("source_task_id")?,
+                field("reason")?,
+            )
+            .map_err(bad)?;
+            state.publish_state_changed(kanna_agent_protocol::StateChangeScope::Tasks);
+        }
+        _ => return Err(bad("unknown transfer protocol operation".into())),
+    }
+    Ok(Json(
+        serde_json::json!({ "transfer_protocol": kanna_runtime_defaults::TRANSFER_PROTOCOL_CONTRACT }),
+    ))
 }

@@ -19,6 +19,13 @@ pub const MAX_LEGACY_SUBMIT_TRANSFER_LINE_BYTES: usize = 64 * 1024 * 1024;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ControlRequest {
+    NotifyTransferRefused {
+        request_id: String,
+        transfer_id: String,
+        source_peer_id: String,
+        source_task_id: String,
+        reason: String,
+    },
     GetLocalIdentity {
         request_id: String,
     },
@@ -266,6 +273,9 @@ pub enum ControlRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ControlResponse {
+    NotifyTransferRefused {
+        request_id: String,
+    },
     GetLocalIdentity {
         request_id: String,
         peer_id: String,
@@ -273,6 +283,8 @@ pub enum ControlResponse {
         public_key: String,
         protocol_version: u16,
         accepting_transfers: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        transfer_protocol: Option<String>,
     },
     ListPeers {
         request_id: String,
@@ -445,6 +457,11 @@ pub struct LocalTransferIdentity {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum PeerRequest {
+    TransferProtocol {
+        request_id: String,
+        requester_peer_id: String,
+        sealed_payload: String,
+    },
     GetAuthenticatedRequestEpoch {
         request_id: String,
     },
@@ -612,6 +629,10 @@ pub enum PeerRequest {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum PeerResponse {
+    TransferProtocol {
+        request_id: String,
+        sealed_payload: String,
+    },
     AuthenticatedRequestEpoch {
         request_id: String,
         epoch: String,

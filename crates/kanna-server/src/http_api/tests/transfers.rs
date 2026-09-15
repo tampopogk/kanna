@@ -198,6 +198,9 @@ while IFS= read -r line; do
     *'"type":"list_peers"'*)
       printf '{{"request_id":"%s","peers":[{{"peer_id":"peer-studio","display_name":"Studio Mac","endpoint":"{endpoint}","trusted":true,"accepting_transfers":true}}]}}\n' "$id"
       ;;
+    *'"type":"get_local_identity"'*)
+      printf '{{"request_id":"%s","transfer_protocol":"transfer-v2-reconciliation-v1"}}\n' "$id"
+      ;;
     *'"type":"request_task_pull"'*)
       printf '%s\n' "$line" >> "$KANNA_TRANSFER_ROOT/pull-requests"
       printf '{{"request_id":"%s","pull_request_id":"pull-request-1"}}\n' "$id"
@@ -1363,4 +1366,51 @@ async fn a_push_at_an_unknown_task_is_refused_with_nothing_queued() {
             .is_none(),
         "a refused push must leave the engine nothing to retry",
     );
+}
+
+#[tokio::test]
+async fn transfer_protocol_http_refusal_checks_identity_and_preserves_source() {
+    let app = test_router_with_tasks("protocol-http", &["task-source"]);
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/transfers")
+                .header("content-type", "application/json")
+                .body(Body::from(outgoing_transfer_body(
+                    "transfer-protocol",
+                    "task-source",
+                )))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert!(response.status().is_success());
+    for (peer, expected) in [
+        ("peer-intruder", StatusCode::CONFLICT),
+        ("peer-target", StatusCode::OK),
+        ("peer-target", StatusCode::OK),
+    ] {
+        let response = app.clone().oneshot(Request::builder().method("POST").uri("/v1/transfers/protocol")
+            .header("content-type", "application/json").body(Body::from(serde_json::json!({
+                "operation": "refused", "transfer_id": "transfer-protocol", "requester_peer_id": peer,
+                "source_task_id": "task-source", "reason": "Rejected by destination"
+            }).to_string())).unwrap()).await.unwrap();
+        assert_eq!(response.status(), expected);
+    }
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/v1/transfers/transfer-protocol")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let transfer: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(transfer["transfer"]["status"], "failed", "{transfer}");
 }

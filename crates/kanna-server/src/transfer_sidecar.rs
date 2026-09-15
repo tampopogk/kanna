@@ -1413,4 +1413,41 @@ done
         clear_identity_env();
         let _ = std::fs::remove_dir_all(&root);
     }
+    #[tokio::test]
+    async fn transfer_protocol_old_local_sidecar_refuses_both_intents_before_admission() {
+        let _guard = crate::test_sidecar_guard().await;
+        let root = crate::test_paths::unique_test_dir("old-sidecar-protocol");
+        std::fs::create_dir_all(&root).unwrap();
+        clear_identity_env();
+        std::env::set_var("KANNA_TRANSFER_ROOT", &root);
+        std::env::set_var("KANNA_TRANSFER_PEER_ID", "peer-test");
+        std::env::set_var("KANNA_TRANSFER_DISPLAY_NAME", "Same product version");
+        let stub = write_stub_sidecar(&root);
+        let work = crate::transfer_engine::queue::TransferWorkQueue::new(
+            root.join("work.db").to_string_lossy().into_owned(),
+        );
+        let supervisor =
+            TransferSidecarSupervisor::with_binary_for_test(test_config(0, 0), work, stub);
+        for (operation, params) in [
+            (
+                "prepare-outgoing-transfer",
+                json!({ "payload": { "phase": "preflight", "sourceTaskId": "safe-task", "targetPeerId": "peer-target" } }),
+            ),
+            (
+                "request-task-pull",
+                json!({ "sourceTaskId": "safe-task", "targetPeerId": "peer-target" }),
+            ),
+        ] {
+            let error = tokio::time::timeout(
+                std::time::Duration::from_secs(30),
+                supervisor.control(operation, params),
+            )
+            .await
+            .unwrap()
+            .unwrap_err();
+            assert!(error.contains("incompatible-transfer-version:"), "{error}");
+        }
+        drop(supervisor);
+        clear_identity_env();
+    }
 }

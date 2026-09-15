@@ -390,8 +390,17 @@ async fn report_exhausted_work(
         .map(|transfer| transfer.direction.as_str())
         == Some("incoming")
     {
-        let _ = control::mark_import_ack_completed(state, transfer_id).await;
-        let _ = db.mark_incoming_transfer_sidecar_cleanup_completed(transfer_id);
+        // Exhausting execution retries does not acknowledge a refusal to the
+        // source. Keep the durable cleanup obligation if that peer is offline;
+        // never delete the reservation and claim reconciliation succeeded.
+        if let Err(error) = import::release_settled_reservation(
+            state,
+            &serde_json::json!({ "transferId": transfer_id }),
+        )
+        .await
+        {
+            log::error!("transfer {transfer_id} ended with source reconciliation still outstanding: {error}");
+        }
     }
 }
 

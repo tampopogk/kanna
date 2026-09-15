@@ -412,6 +412,10 @@ pub fn router(state: Arc<AppState>) -> Router {
             "/v1/transfers/provenance",
             post(insert_task_transfer_provenance),
         )
+        .route(
+            "/v1/transfers/protocol",
+            post(super::transfers::transfer_protocol),
+        )
         .route("/v1/transfers/{transfer_id}", get(get_task_transfer))
         .route(
             "/v1/transfers/{transfer_id}/payload",
