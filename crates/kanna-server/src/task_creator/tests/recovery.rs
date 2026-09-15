@@ -560,11 +560,15 @@ async fn restart_recovery_reminds_the_agent_of_the_active_stage_not_the_original
                 {
                     "name": "in progress",
                     "prompt": "$TASK_PROMPT",
-                    "policy": { "transition": "manual" }
+                    "policy": { "transition": "manual" },
+                    "post": {
+                        "name": "commit",
+                        "prompt": "Record the implementation result."
+                    }
                 },
                 {
                     "name": "review",
-                    "prompt": "REVIEW-ONLY-REMINDER: inspect the existing result without tools or file changes.",
+                    "prompt": "REVIEW-ONLY-REMINDER: inspect the existing result without tools or file changes. PREDECESSOR-POST: $PREV_RESULT PREDECESSOR-MAIN: $PREV_MAIN_RESULT",
                     "policy": { "transition": "manual" }
                 }
             ]
@@ -583,20 +587,62 @@ async fn restart_recovery_reminds_the_agent_of_the_active_stage_not_the_original
                 SET pipeline = 'stage-reminder', stage = 'review',
                     prompt = 'BUILD-ONLY-ORIGINAL: run the build check and commit its output.'
               WHERE id = 'recovery-task';
-             UPDATE stage_run SET stage = 'review' WHERE id = 'run-killed-mid-turn';",
+             DELETE FROM stage_run WHERE id = 'run-killed-mid-turn';",
         )
         .unwrap();
-    Connection::open(&config.db_path)
-        .unwrap()
-        .execute(
-            "UPDATE stage_run
-                SET agent_provider = 'codex', provider_session_id = NULL, model = NULL
-              WHERE id = 'run-killed-mid-turn'",
-            [],
-        )
-        .unwrap();
-
     let worktree = repo_root.join(".kanna-worktrees/task-recovery");
+    for (id, stage, kind, result) in [
+        (
+            "run-build-predecessor",
+            "in progress",
+            "main",
+            r#"{"status":"success","summary":"BUILD-PREDECESSOR-SENTINEL"}"#,
+        ),
+        (
+            "run-commit-predecessor",
+            "commit",
+            "post",
+            r#"{"status":"success","summary":"POST-PREDECESSOR-SENTINEL"}"#,
+        ),
+    ] {
+        db.insert_stage_run(NewStageRun {
+            id,
+            task_id: "recovery-task",
+            stage,
+            kind,
+            agent: None,
+            agent_provider: Some("codex"),
+            model: None,
+            effort: None,
+            status: "succeeded",
+            result: Some(result),
+            feedback: None,
+            session_id: Some("recovery-task"),
+            provider_session_id: None,
+            cwd: Some(worktree.to_string_lossy().as_ref()),
+            resumed_from_run_id: None,
+        })
+        .unwrap();
+    }
+    db.insert_stage_run(NewStageRun {
+        id: "run-killed-mid-turn",
+        task_id: "recovery-task",
+        stage: "review",
+        kind: "main",
+        agent: None,
+        agent_provider: Some("codex"),
+        model: None,
+        effort: None,
+        status: "running",
+        result: None,
+        feedback: None,
+        session_id: Some("recovery-task"),
+        provider_session_id: None,
+        cwd: Some(worktree.to_string_lossy().as_ref()),
+        resumed_from_run_id: None,
+    })
+    .unwrap();
+
     let codex_home = repo_root.join("codex-home");
     let sessions_dir = codex_home.join("sessions/2026/09/15");
     std::fs::create_dir_all(&sessions_dir).unwrap();
@@ -658,6 +704,18 @@ async fn restart_recovery_reminds_the_agent_of_the_active_stage_not_the_original
     assert!(
         command_line.contains("REVIEW-ONLY-REMINDER"),
         "the recovery reminder must carry the active review stage: {command_line}"
+    );
+    assert!(
+        command_line.contains("POST-PREDECESSOR-SENTINEL"),
+        "recovery must preserve the predecessor post result in $PREV_RESULT: {command_line}"
+    );
+    assert!(
+        command_line.contains("BUILD-PREDECESSOR-SENTINEL"),
+        "recovery must preserve the predecessor main result in $PREV_MAIN_RESULT: {command_line}"
+    );
+    assert!(
+        !command_line.contains("task session was missing when the resume action began"),
+        "neither predecessor placeholder may bind the interrupted review result: {command_line}"
     );
     assert!(
         !command_line.contains("BUILD-ONLY-ORIGINAL"),
