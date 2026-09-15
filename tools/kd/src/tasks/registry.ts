@@ -2582,9 +2582,14 @@ export async function executeDevDownWithContext(
         cleanupOperations: options.cleanupOperations
       })
     : undefined;
+  const failures = [
+    ...(inventoryCleanup.failed.length ? ["Process inventory cleanup incomplete."] : []),
+    ...(androidReverseCleanup.failed.length ? ["Android reverse-route cleanup incomplete."] : []),
+    ...(daemonCleanup?.failure ? [daemonCleanup.failure] : [])
+  ];
   return {
-    ok: true,
-    message: stopped ? "Stopped." : "No session running.",
+    ok: failures.length === 0,
+    message: failures.length ? failures.join(" ") : stopped ? "Stopped." : "No session running.",
     data: { stopped, inventoryCleanup, androidReverseCleanup, daemonCleanup }
   };
 }
@@ -3815,8 +3820,8 @@ export const taskDefinitions = [
         runner: nodeCommandRunner
       });
       return {
-        ok: true,
-        message: formatJsonResult(result),
+        ok: !result.failure,
+        message: result.failure ?? formatJsonResult(result),
         data: result
       };
     }

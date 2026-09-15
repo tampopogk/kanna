@@ -18,7 +18,7 @@ describe("daemon cleanup", () => {
       readPidFile: () => 111,
       cleanupOperations: { identity: () => "new", signal: (_pid, signal) => signals.push(signal) }
     });
-    expect(result).toEqual({});
+    expect(result.failure).toContain("identity-mismatch");
     expect(signals).toEqual([]);
     expect(readProcessInventory(inventoryPath)).toHaveLength(1);
   });
@@ -60,7 +60,7 @@ describe("daemon cleanup", () => {
       readPidFile: () => 113,
       cleanupOperations: { identity: () => "spawn", signal: () => undefined, graceMs: 1, pollMs: 1 }
     });
-    expect(result).toEqual({});
+    expect(result.failure).toContain("failed");
     expect(readProcessInventory(inventoryPath)).toHaveLength(1);
   });
 
