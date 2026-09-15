@@ -10,8 +10,11 @@ Update: the owner subsequently authorized the bounded Copilot no-inference
 preflight. [Its result](0f417e4c-copilot-preflight.md) proves same-session
 extension attachment on the runtime actually launched, 1.0.64, and finds that
 both cached 1.0.64 and 1.0.83 high-level SDKs omit `source` from `send()`.
-The proposed native provenance contract is therefore not established. No send,
-inference, rollout or ordinary-input change occurred.
+This rules out claiming native system-role semantics through those serializers,
+not the composer-independent transport. The subsequent
+[offline adapter proof and recommendation](0f417e4c-copilot-engine-adapter.md)
+uses explicit engine wording plus Kanna's reserved durable source instead.
+No live send, inference, rollout or ordinary-input change occurred.
 
 ## Findings and evidence level
 
@@ -20,7 +23,7 @@ inference, rollout or ordinary-input change occurred.
 | Codex | Existing opt-in app-server adapter, targeting the live root thread with tool output | Existing Kanna implementation; these children did not revalidate its live behavior. It is not a generic adapter for another harness. |
 | Claude | Native MCP Channels | Isolated 2.1.270 / pinned Haiku test proved synthetic draft and middle-cursor preservation, native engine labelling, reconnect replay, and separate acknowledgement. A startup probe went unconfirmed; a busy notice reached the model without a mailbox read. The latter is not proof that Fable cannot supervise or that Kanna needs another scheduler. |
 | OpenCode | Direct `POST /session/{id}/prompt_async` on the **existing TUI worker** | Installed 1.4.3 plus tagged/embedded source support a composer-independent route. Current Kanna sessions lack a verified listening endpoint/native-session binding. Source predicts a password-authentication problem in default TUI external-HTTP mode; not yet reproduced. Live draft/cursor and uncertain-delivery behavior remain untested. |
-| Copilot | CLI-owned extension: `joinSession()` then `session.send({prompt, source: "system", mode: "enqueue"})` | Official SDK offers attachment over the host's private stdio without another agent runtime. Installed CLI is 1.0.83; exact bundled SDK support, provenance and experimental extension activation are not verified. The inspected newer public SDK is not proof of local runtime compatibility. No live composer test ran. |
+| Copilot | CLI-owned extension: `joinSession()` then `session.send({prompt: labelledEngineNotice, mode: "enqueue"})` | Same-session attachment passed on actual runtime 1.0.64. Both cached 1.0.64 and 1.0.83 SDKs passed the public API/fake-parent tests; neither serializes native `source`. Kanna must own engine provenance separately. Live draft/cursor, busy queue and recovery remain unproved. |
 | Antigravity | No verified unsolicited local route to the same live TUI | `agy` absent from bounded local discovery. Documented cloud Remote Control, headless input and official ACP do not establish attachment to an existing terminal session. An already-outstanding MCP call is a possible bounded experiment, not a proven unsolicited wake channel. |
 
 The source-cited child notes are [OpenCode](0f417e4c-opencode-wake.md),
@@ -63,50 +66,19 @@ invent a universal PTY fallback. OpenCode stays a credible follow-up once its
 authenticated listener topology is resolved. Antigravity stays explicitly
 unverified; that is not a decision to disable ordinary Antigravity input.
 
-The next experiment should answer exactly one unresolved question:
-**Does installed Copilot 1.0.83 load a disposable extension and let its bundled
-SDK join the same live TUI session over the parent connection?**
+The authorized no-inference preflight has now answered the attachment question
+for actual runtime 1.0.64, and the offline SDK tests establish the supported
+labelled enqueue contract for both cached SDKs. Native system-role semantics
+are not required for Kanna's reserved engine provenance.
 
-- Run one new task-tagged disposable PTY session using the existing bridge,
-  isolated `COPILOT_HOME`, task-local plugin/config, explicit new session UUID,
-  remote export and auto-update disabled, no initial prompt, and no other tools.
-  No installation, upgrade, account-policy change or global setting change.
-- The extension calls only `joinSession()`. Capture CLI and bundled SDK identity,
-  parent PID/connection framing, returned session UUID, and readiness. Compare
-  the UUID with the launched session; verify that no second agent runtime was
-  spawned. Inspect the actual bundled API/serialization for the `source` field;
-  do not substitute a downloaded newer SDK to make the result pass.
-- Bound the attempt to 90 seconds after launch. **No `session.send`, model
-  prompt, inference, owner session, cloud export or subscription mutation.**
-  Stop on missing extension support, unsupported SDK, unexpected permissions or
-  attempted inference. Stop all owned processes and remove temporary credentials
-  and account configuration afterward.
-- Pass means verified same-runtime attachment and exact local capability facts.
-  It does not establish draft/cursor safety, enqueue execution, source handling
-  by the model, or recovery. Failure means a concrete version/capability finding,
-  not permission to upgrade, use private RPCs, or inject terminal input.
-
-If that passes, propose one separate bounded cheap-model experiment for draft,
-busy enqueue, native provenance and uncertain-receipt recovery. OpenCode's
-password-protected startup is a later distinct question; do not run parallel
-live tests or repeat completed research while the Copilot question is unresolved.
-
-**Authorization boundary at initial synthesis:** the owner's prior live-session authorization
-was specifically for the completed Claude/Haiku experiment. The later request
-authorized investigation children, and the current request asks for synthesis
-and a proposed next experiment. Neither authorizes launching this Copilot
-preflight or inference. Obtain explicit authorization for the disposable
-no-inference preflight; any later inference test requires its own bounded scope.
-These are experiment boundaries, not blanket rollout gates. No human attention
-badge is added solely because a child recorded an advisory failure. The later
-owner authorization and completed preflight are recorded in the update above;
-there is no remaining permission gate for that completed check. Additional
-inference and rollout remain outside its scope.
-
-No proposed follow-up was executed during the initial reconciliation. The
-subsequent authorized no-inference preflight is the sole exception. No extra agents,
-provider inference, global configuration, rollout, push/PR, stage transition,
-or manager-terminal message was initiated.
+The [current adapter recommendation](0f417e4c-copilot-engine-adapter.md) specifies
+the server-owned durable receipt boundary and the next experiment: one disposable
+Copilot TUI using a scripted local provider, no paid inference, testing actual
+draft/cursor preservation, busy enqueue and uncertain-receipt reconciliation.
+That experiment requires live `session.send`, which the latest authorization
+excludes; it has not run. No rollout or ordinary-input change follows from the
+preflight or fake-parent tests. Antigravity's advisory evidence gap remains
+separate and creates no blanket human gate.
 
 ## Durable child provenance
 
