@@ -1,8 +1,10 @@
 import { readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import type { CommandRunner } from "./process";
+import { cleanupUnrecordedDaemon } from "./daemon-ownership";
 import {
   readProcessInventory,
+  processIdentity,
   removeInventoryResource,
   terminateInventoryProcess,
   type ProcessCleanupOperations
@@ -20,6 +22,7 @@ export interface KillWorkspaceDaemonsInput {
 
 export interface KillWorkspaceDaemonsResult {
   pidFileKilled?: number;
+  failure?: string;
 }
 
 function readPidFile(pidFile: string): number | undefined {
@@ -40,12 +43,17 @@ export async function killWorkspaceDaemons(input: KillWorkspaceDaemonsInput): Pr
   const resource = readProcessInventory(inventoryPath).find((candidate) =>
     candidate.kind === "process" && candidate.pid === pid && candidate.label === "kanna-daemon"
   );
-  if (resource?.kind !== "process") return {};
+  if (resource?.kind !== "process") {
+    if (!(input.cleanupOperations?.identity ?? processIdentity)(pid)) return {};
+    const result = await cleanupUnrecordedDaemon({ ...input, pid, operations: input.cleanupOperations });
+    if (result.pidFileKilled && (input.readPidFile ?? readPidFile)(pidFile) === pid) rmSync(pidFile, { force: true });
+    return result;
+  }
   const cleanupOperations = input.killProcess
     ? { ...input.cleanupOperations, signal: (target: number) => input.killProcess?.(target) }
     : input.cleanupOperations;
   const outcome = await terminateInventoryProcess(resource, cleanupOperations);
-  if (outcome !== "cleaned") return {};
+  if (outcome !== "cleaned") return { failure: `Daemon ${pid} cleanup incomplete: ${outcome}` };
   removeInventoryResource(inventoryPath, resource);
   rmSync(pidFile, { force: true });
   return { pidFileKilled: pid };
