@@ -716,6 +716,68 @@ pub(crate) fn previous_main_stage_result(
         .and_then(|context| context.3))
 }
 
+/// Reconstruct the predecessor values an active stage received when it was
+/// first spawned.
+///
+/// Recovery closes the interrupted run before preparing its replacement, so
+/// the ordinary "latest finished" lookups would select that bookkeeping
+/// result (or an earlier replacement from the same stage). Looking only at
+/// history before the first run in the replacement lineage reproduces the
+/// values that run originally saw while preserving a deliberate earlier
+/// rerun's inputs.
+fn recovery_predecessor_results(
+    db: &Db,
+    source_task_id: &str,
+    interrupted_run: &crate::db::StageRun,
+) -> Result<(Option<String>, Option<String>), String> {
+    let runs = db
+        .list_stage_runs_for_task(source_task_id)
+        .map_err(|error| format!("db error: {error}"))?;
+    let mut lineage_start = runs
+        .iter()
+        .position(|run| run.id == interrupted_run.id)
+        .ok_or_else(|| format!("interrupted stage run is missing: {}", interrupted_run.id))?;
+    let mut lineage_cursor = lineage_start;
+    let mut seen = std::collections::HashSet::new();
+    seen.insert(interrupted_run.id.clone());
+    for _ in 0..COMPLETED_STAGE_WALK_LIMIT {
+        let Some(previous_id) = runs[lineage_cursor].replaces_run_id.as_deref() else {
+            break;
+        };
+        if !seen.insert(previous_id.to_string()) {
+            break;
+        }
+        let Some(previous_index) = runs.iter().position(|run| run.id == previous_id) else {
+            break;
+        };
+        lineage_cursor = previous_index;
+        lineage_start = lineage_start.min(previous_index);
+    }
+
+    let predecessors = &runs[..lineage_start];
+    let finished_result = |kind: Option<&str>| {
+        predecessors.iter().rev().find_map(|run| {
+            (kind.is_none_or(|expected| run.kind == expected)
+                && matches!(run.status.as_str(), "succeeded" | "failed"))
+            .then(|| run.result.clone())
+            .flatten()
+        })
+    };
+    let previous = finished_result(None);
+    let previous_main = finished_result(Some("main"));
+    if previous.is_some() && previous_main.is_some() {
+        return Ok((previous, previous_main));
+    }
+
+    let transferred = db
+        .transferred_task_context(source_task_id)
+        .map_err(|error| format!("db error: {error}"))?;
+    Ok((
+        previous.or_else(|| transferred.as_ref().and_then(|context| context.2.clone())),
+        previous_main.or_else(|| transferred.and_then(|context| context.3)),
+    ))
+}
+
 /// The feedback a revision actually runs on.
 ///
 /// A revision whose reviewer-feedback section is empty is worse than no
@@ -1279,13 +1341,36 @@ fn prepare_stage_restart(
                     source_task.prompt.as_deref().unwrap_or("")
                 )
             } else {
+                // The reminder belongs to the run being recovered, not to the
+                // durable task that originally created the workflow. Compose
+                // the active stage just like a fresh recovery: this preserves
+                // its own instructions and only includes `$TASK_PROMPT` when
+                // that stage deliberately asks for it. Injecting the task
+                // prompt directly can turn a read-only review back into the
+                // build assignment.
+                let (prev_result, prev_main_result) =
+                    recovery_predecessor_results(db, task_id, &run)?;
+                let plan_result = stamped_plan_result(db, task_id);
+                let active_stage_prompt = build_target_stage_prompt(
+                    &loaded.definitions,
+                    &loaded.repo.path,
+                    &target_stage,
+                    source_task.prompt.as_deref().unwrap_or(""),
+                    prev_result.as_deref(),
+                    prev_main_result.as_deref(),
+                    plan_result.as_deref(),
+                    Some(branch),
+                    source_task.base_ref.as_deref(),
+                    source_task.branch.as_deref(),
+                    &run.trigger,
+                )?;
                 format!(
                     "Kanna recovered this task after its previous terminal session ended before a \
                      stage verdict was recorded. Continue the existing task from the preserved \
                      conversation and worktree context. Review the current state, finish the \
                      interrupted work, and follow the stage completion instructions. \
-                     Do not restart the task from scratch.\n\nTask reminder:\n{}",
-                    source_task.prompt.as_deref().unwrap_or("")
+                     Do not restart the task from scratch.\n\nActive stage instructions:\n{}",
+                    active_stage_prompt
                 )
             },
             None,
