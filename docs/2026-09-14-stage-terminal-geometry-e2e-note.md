@@ -112,4 +112,3 @@ executable. The orphaned setup reporter was identified by its exact fixture
 cwd and terminated; the native runner cleaned up its other resources.
 
 No release contains this new correction yet. Publishing is outside this task.
-
