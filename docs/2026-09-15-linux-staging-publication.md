@@ -61,7 +61,9 @@ Current apt metadata is valid until **2026-09-22T15:28:14Z**. If this candidate
 remains served, use the documented explicit canonical metadata-renewal procedure
 before expiry; no renewal scheduler was provisioned or assumed.
 
-Website76e93c62 received the verified artifact/installation handoff. Structured
+Website76e93c62 completed the Linux staging deployment: PR9, commit89dd4e6,
+Pages run34989482384, with live HTTP/layout checks reported complete by root.
+Structured
 [website handoff](evidence/2026-09-15-linux-bootstrap/publication-preparation/kanna-web-handoff.json)
 contains URLs, sizes, all hashes, receipt and limitations. Ship remains open.
 One publication mobile notification was accepted (1 accepted, 0 failed).
@@ -83,3 +85,18 @@ reconciliation verified original relay identity/image/start/env, restored public
 health and matching apt key. A fresh canonical no-proxy-change recovery reused
 keys and passed HTTPS/RPC before installing Linux selectors. No second network
 interruption occurred. See the [setup execution record](2026-09-15-linux-staging-setup-execution.md).
+
+## Subsequent acceptance reconciliation
+
+Root reports final acceptance641dbb6f for **C / desktop staging.21 FAILED**:
+same-account sign-in passed, but zero transfers completed. Forced cloud push
+returned `source-peer-not-found`, pull returned404, and cross-host transfer mDNS
+was absent. Both isolated allocations were cleaned. Root assigned targeted
+transfer repair440c7635 and recovery-prompt repair110cdc20; dev-restart task
+a031920d is separate.
+
+These C findings are not Linux B system acceptance. B remains pinned to the
+published a9df2f1d source and retains only its recorded installed/upgrade evidence.
+Elapsed24h alone cannot satisfy missing system acceptance or authorize production.
+No production promotion, repeat publication or additional mobile notification
+was performed. Ship remains open for subsequent explicitly coordinated work.

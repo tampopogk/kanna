@@ -78,5 +78,28 @@
     "acceptedCount": 1,
     "failedCount": 0,
     "doNotRepeat": true
+  },
+  "websiteDelivery": {
+    "status": "deployed",
+    "reportedBy": "root",
+    "task": "76e93c62",
+    "pr": 9,
+    "commit": "89dd4e6",
+    "pagesRun": "34989482384",
+    "liveHttpAndLayoutChecks": "pass"
+  },
+  "systemAcceptanceReconciliation": {
+    "linuxB": "missing; C findings do not certify B",
+    "separateCandidate": "C / desktop staging.21",
+    "result": "fail",
+    "signIn": "same-account pass",
+    "completedTransfers": 0,
+    "pushFailure": "source-peer-not-found",
+    "pullFailure": "404",
+    "crossHostTransferMdns": "absent",
+    "allocations": "cleaned",
+    "transferFixTask": "440c7635",
+    "recoveryPromptFixTask": "110cdc20",
+    "devRestartTask": "a031920d"
   }
 }
