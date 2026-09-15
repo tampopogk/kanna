@@ -433,13 +433,12 @@ export function parseLanTransferPeers(value: unknown): LanTransferPeer[] {
     const endpoint = readString(peer.endpoint);
     const trusted = peer.trusted;
     const acceptingTransfers = peer.accepting_transfers ?? peer.acceptingTransfers;
-    const pid = peer.pid;
     if (
       !id
       || !name
       || !publicKey
       || !endpoint
-      || pid === 0
+      || !isLanDiscovered(peer)
       || typeof trusted !== "boolean"
       || typeof acceptingTransfers !== "boolean"
     ) {
@@ -454,7 +453,14 @@ export function filterPairableTransferPeerPayload(value: unknown): unknown {
   return value.filter((entry) =>
     !entry
     || typeof entry !== "object"
-    || (entry as Record<string, unknown>).pid !== 0);
+    || isLanDiscovered(entry as Record<string, unknown>));
+}
+
+function isLanDiscovered(peer: Record<string, unknown>): boolean {
+  const discovered = peer.lan_discovered ?? peer.lanDiscovered;
+  // Older sidecars only identified registry peers. New sidecars distinguish
+  // mDNS (which has no remote process id) from their local cloud proxies.
+  return typeof discovered === "boolean" ? discovered : peer.pid !== 0;
 }
 
 function readString(value: unknown): string | null {

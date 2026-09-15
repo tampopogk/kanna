@@ -1676,14 +1676,6 @@ async fn task_pull_source_rejects_sustained_unique_requests_at_its_admission_cap
 async fn task_pull_uses_requested_cloud_route_for_externally_trusted_peers() {
     let source_root = tempfile::tempdir().unwrap();
     let destination_root = tempfile::tempdir().unwrap();
-    let source = TransferRuntime::spawn(RuntimeConfig::for_tests(
-        "peer-source",
-        "Source",
-        source_root.path(),
-        0,
-    ))
-    .await
-    .unwrap();
     let destination = TransferRuntime::spawn(RuntimeConfig::for_tests(
         "peer-destination",
         "Destination",
@@ -1692,20 +1684,19 @@ async fn task_pull_uses_requested_cloud_route_for_externally_trusted_peers() {
     ))
     .await
     .unwrap();
+    assert!(destination.list_peers().await.unwrap().is_empty());
+    // The destination listener is already running when the source arrives.
+    let source = TransferRuntime::spawn(RuntimeConfig::for_tests(
+        "peer-source",
+        "Source",
+        source_root.path(),
+        0,
+    ))
+    .await
+    .unwrap();
     let source_identity = source.local_identity();
     let destination_identity = destination.local_identity();
 
-    destination
-        .upsert_external_peer(ExternalPeer {
-            peer_id: source_identity.peer_id.clone(),
-            display_name: source_identity.display_name,
-            endpoint: runtime_endpoint(source_root.path(), "peer-source"),
-            public_key: source_identity.public_key,
-            protocol_version: 1,
-            accepting_transfers: true,
-        })
-        .await
-        .unwrap();
     source
         .upsert_external_peer(ExternalPeer {
             peer_id: destination_identity.peer_id.clone(),
@@ -1718,6 +1709,46 @@ async fn task_pull_uses_requested_cloud_route_for_externally_trusted_peers() {
         .await
         .unwrap();
 
+    let missing = source
+        .prepare_transfer_preflight_with_transport(
+            "peer-destination",
+            "late-source",
+            TransferTransport::Cloud,
+        )
+        .await
+        .expect_err("destination must not trust an unregistered source");
+    assert!(missing.to_string().contains("peer not found: peer-source"));
+    destination
+        .upsert_external_peer(ExternalPeer {
+            peer_id: source_identity.peer_id.clone(),
+            display_name: source_identity.display_name,
+            endpoint: runtime_endpoint(source_root.path(), "peer-source"),
+            public_key: source_identity.public_key,
+            protocol_version: 1,
+            accepting_transfers: true,
+        })
+        .await
+        .unwrap();
+    let listed = destination.list_peers().await.unwrap();
+    assert_eq!(listed.len(), 1);
+    assert!(listed[0].trusted);
+    assert!(!listed[0].lan_discovered);
+    assert!(destination
+        .peer_routes("peer-source")
+        .await
+        .unwrap()
+        .lan_endpoint
+        .is_none());
+    source
+        .prepare_transfer_preflight_with_transport(
+            "peer-destination",
+            "late-source",
+            TransferTransport::Cloud,
+        )
+        .await
+        .expect(
+            "live listener must observe newly registered external source without mDNS or restart",
+        );
     destination
         .request_task_pull("peer-source", "task-cloud", TransferTransport::Cloud)
         .await
@@ -4876,27 +4907,44 @@ async fn mdns_peers_can_discover_pair_and_transfer() {
     // Rust and desktop E2E infrastructure starts peers on one machine, so it
     // cannot prove cross-Mac link-local scope routing. See the focused
     // discovery test for the scoped ResolvedService endpoint conversion.
-    let temp = tempfile::tempdir().unwrap();
+    let source_root = tempfile::tempdir().unwrap();
+    let destination_root = tempfile::tempdir().unwrap();
 
     let secondary_id = unique_mdns_peer_id("peer-secondary-mdns");
     let primary_id = unique_mdns_peer_id("peer-primary-mdns");
 
     let secondary = TransferRuntime::spawn(
-        RuntimeConfig::for_tests(secondary_id.clone(), "Secondary", temp.path(), 0)
-            .with_discovery_mode(DiscoveryMode::Mdns),
+        RuntimeConfig::for_tests(
+            secondary_id.clone(),
+            "Secondary",
+            destination_root.path(),
+            0,
+        )
+        .with_discovery_mode(DiscoveryMode::Mdns),
     )
     .await
     .unwrap();
 
     let primary = TransferRuntime::spawn(
-        RuntimeConfig::for_tests(primary_id.clone(), "Primary", temp.path(), 0)
+        RuntimeConfig::for_tests(primary_id.clone(), "Primary", source_root.path(), 0)
             .with_discovery_mode(DiscoveryMode::Mdns),
     )
     .await
     .unwrap();
 
     let discovered = wait_for_peer(&primary, &secondary_id).await;
-    assert!(!discovered.endpoint.is_empty());
+    assert!(discovered.lan_discovered);
+    assert_eq!(discovered.pid, 0);
+    #[cfg(target_os = "macos")]
+    assert!(
+        !discovered
+            .endpoint
+            .parse::<std::net::SocketAddr>()
+            .unwrap()
+            .ip()
+            .is_loopback(),
+        "native DNS-SD must publish a physical-interface route, not pass through loopback alone"
+    );
     wait_for_peer(&secondary, &primary_id).await;
 
     pair_peers(&primary, &secondary, &secondary_id).await;
@@ -4923,6 +4971,23 @@ async fn mdns_peers_can_discover_pair_and_transfer() {
     let event = next_incoming_transfer_request(&secondary).await;
     assert_eq!(event.source_peer_id, primary_id);
     assert_eq!(event.source_task_id, "task-source");
+    drop(secondary);
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            if !primary
+                .list_peers()
+                .await
+                .unwrap()
+                .iter()
+                .any(|p| p.peer_id == secondary_id)
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("native withdrawal must remove every interface observation");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

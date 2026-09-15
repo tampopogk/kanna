@@ -811,6 +811,9 @@ pub struct PeerRegistryEntry {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DiscoveredPeer {
+    /// Whether the listed endpoint came from LAN discovery, rather than a cloud proxy.
+    #[serde(default)]
+    pub lan_discovered: bool,
     pub peer_id: String,
     pub display_name: String,
     pub endpoint: String,

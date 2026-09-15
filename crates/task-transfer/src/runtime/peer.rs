@@ -464,7 +464,10 @@ impl TransferRuntime {
             .unwrap_or(false)
             || external_key_is_trusted(&self.external_peers, &peer.peer_id, &peer.public_key);
 
+        let lan_discovered = external_peer(&self.external_peers, &peer.peer_id)
+            .is_none_or(|external| external.endpoint != peer.endpoint);
         Ok(DiscoveredPeer {
+            lan_discovered,
             peer_id: peer.peer_id,
             display_name: peer.display_name,
             endpoint: peer.endpoint,

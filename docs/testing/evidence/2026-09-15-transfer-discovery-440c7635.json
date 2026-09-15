@@ -1,0 +1,14 @@
+{
+  "task": "440c7635",
+  "baseSource": "5c1ca1b3b",
+  "library": "mdns-sd 0.19.0",
+  "probeService": "_kanna-xfer._tcp.local.",
+  "probeDurationSeconds": 6,
+  "observations": [
+    "[2026-09-15T19:21:58Z TRACE mdns_sd::service_daemon] Failed to send to 224.0.0.251:5353 via \"en0\": No route to host (os error 65)",
+    "[2026-09-15T19:21:58Z TRACE mdns_sd::service_daemon] Failed to send to 224.0.0.251:5353 via \"en1\": No route to host (os error 65)"
+  ],
+  "sameHostOriginalTransferTest": "pass; allowed loopback",
+  "strengthenedOriginalDiscoveryTest": "fails: non-loopback route assertion",
+  "installedOperatorProcessesChanged": false
+}
