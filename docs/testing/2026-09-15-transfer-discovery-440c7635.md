@@ -286,3 +286,34 @@ new signed route field. Acceptance is preparing a fresh explicit-cloud operation
 on the same corrected source, with fresh provider resume and identity proof;
 the terminal legacy ID is not being retried. That fresh operation is the
 remaining live test.
+
+## Fresh forced-cloud checkpoint (36b60d29f)
+
+After both legacy records were terminal and natural cleanup returned an empty
+list, acceptance scheduled exactly one fresh explicit-cloud push at 20:35:17Z,
+intent `C36-CLOUD-fresh1-641`. Transfer
+`4cee32ed929f8c7cca81d6a01093a055d2debd8ed75d4064734b3aff8724af42`
+was created at 20:35:21Z. Both endpoints remained on `36b60d29f`, using their
+unchanged distinct registry roots with registry discovery, cloud ready and LAN
+unavailable. The source resumed its same native Codex session with Luna low,
+review stage, existing branch, and head `7365949`; ledger count was 7. Private
+recall material is omitted. The helper observed automatic import without another
+approval or restart.
+
+This fresh reservation exercises the new authenticated selected-route field.
+The live setup can establish cloud-only completion; it cannot compare competing
+LAN and cloud routes. The focused runtime regression supplies that comparison.
+Paired API readback confirmed both transfer records completed at 20:35:46Z.
+Destination task
+`d0a5045cfdcbc37a95a36b9daec1fa8d6ce493221198e0b67525f62b84ec21e4`
+was open in review with Codex Luna and all 7 input-ledger entries; incoming
+cleanup candidates were empty. The source run finished at 20:35:32Z and its task
+closed at 20:35:46Z. Normal close removed its worktree and preserved its branch
+at WIP commit `768ce4f4`, parent `7365949`. Acceptance verified hashes of the
+original tracked and untracked bytes on that retained branch.
+
+This is the first completed live move, with cloud-only forward and return
+traffic, mDNS disabled, and a fresh signed-route reservation. The helper's
+destination native-session/head/history checks and one blind recall remained
+pending at this checkpoint. LAN and pull coverage also remained outstanding;
+this result is neither a full acceptance matrix nor a production/soak claim.
