@@ -326,8 +326,41 @@ jobs:
 
   # Controller source is this checkout. Product bytes are the independently
   # collected, stamped pair, pinned in the committed evidence manifests.
+  # Draft visibility requires push access. Only this manual trusted-input job
+  # gets a writable token; it never installs dependencies or executes packages.
+  prepared-fetch:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.prepared_pair_asset_id != '' }}
+    permissions:
+      contents: write
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Fetch and verify the exact prepared pair (no rebuild)
+        env:
+          PAIR_ASSET_ID: ${{ inputs.prepared_pair_asset_id }}
+          GH_TOKEN: ${{ github.token }}
+          PAIR_SHA256: ${{ inputs.prepared_pair_sha256 }}
+        run: |
+          mkdir -p .tmp/prepared-upgrade
+          [[ "$PAIR_SHA256" =~ ^[0-9a-f]{64}$ ]]
+          python3 tests/linux-installed/fetch-prepared-pair.py .tmp/prepared-upgrade/pair.tar
+          printf '%s  %s\n' "$PAIR_SHA256" .tmp/prepared-upgrade/pair.tar | sha256sum --check --strict
+          python3 tests/linux-installed/verify-prepared-pair.py .tmp/prepared-upgrade/pair.tar .tmp/prepared-upgrade/packages
+      - uses: actions/upload-artifact@v4
+        with:
+          name: verified-prepared-pair
+          path: .tmp/prepared-upgrade/pair.tar
+          if-no-files-found: error
+          retention-days: 7
+
   prepared-upgrade:
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.prepared_pair_asset_id != '' }}
+    needs: prepared-fetch
+    permissions:
+      contents: read
     strategy:
       fail-fast: false
       matrix:
@@ -340,20 +373,22 @@ jobs:
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: pnpm
-      - name: Fetch and verify the exact prepared pair (no rebuild)
+      - uses: actions/download-artifact@v4
+        with:
+          name: verified-prepared-pair
+          path: .tmp/prepared-upgrade
+      - name: Recheck exact tar and four manifests before installation
         env:
-          PAIR_ASSET_ID: ${{ inputs.prepared_pair_asset_id }}
-          GH_TOKEN: ${{ github.token }}
           PAIR_SHA256: ${{ inputs.prepared_pair_sha256 }}
         run: |
-          mkdir -p .tmp/prepared-upgrade
           [[ "$PAIR_SHA256" =~ ^[0-9a-f]{64}$ ]]
-          python3 tests/linux-installed/fetch-prepared-pair.py .tmp/prepared-upgrade/pair.tar
           printf '%s  %s\n' "$PAIR_SHA256" .tmp/prepared-upgrade/pair.tar | sha256sum --check --strict
           python3 tests/linux-installed/verify-prepared-pair.py .tmp/prepared-upgrade/pair.tar .tmp/prepared-upgrade/packages
       - name: Confirm real host prerequisites
