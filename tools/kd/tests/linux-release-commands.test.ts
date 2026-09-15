@@ -7,6 +7,7 @@ vi.mock("../src/runtime/linux-release-artifacts", async original => ({ ...await 
 import { shipLinuxRelease, linuxReleaseStatus } from "../src/runtime/linux-release";
 import { sha256, type CollectedLinuxArtifact } from "../src/runtime/linux-release-artifacts";
 import { FilesystemAptStorage } from "../src/runtime/linux-apt-storage";
+import { poolPath } from "../src/runtime/linux-apt";
 import { archiveState, jsonBytes, readJson, releasePath, type LinuxAcceptance } from "../src/runtime/linux-release-state";
 import type { CommandRunner } from "../src/runtime/process";
 
@@ -21,7 +22,7 @@ beforeAll(async () => {
   keys = { privateKey: k.privateKey.armor(), publicKey: k.publicKey.armor(), fingerprint: k.publicKey.getFingerprint() };
 }, 30000);
 afterAll(() => rmSync(root, { recursive: true, force: true }));
-afterEach(() => { vi.useRealTimers(); vi.clearAllMocks(); vi.unstubAllGlobals(); });
+afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); vi.clearAllMocks(); vi.unstubAllGlobals(); });
 function artifacts(channel: "staging" | "production", iteration?: number): CollectedLinuxArtifact[] {
   return (["x86_64", "arm64"] as const).map(architecture => {
     const arch = architecture === "x86_64" ? "amd64" : "arm64";
@@ -118,6 +119,107 @@ it("retains a committed candidate across channel projection interruption and ret
   await shipLinuxRelease({ ...f.context, staging: true, release: true, acceptance: f.acceptancePath });
   expect(await readJson(f.storage, releasePath("linux-v1.2.3-staging.1", "publication.json"))).toEqual(original);
   expect((await archiveState(f.storage)).pending).toBeNull();
+});
+it.each(["InRelease replacement", "public readback", "receipt write"] as const)("recovers a replacement staging candidate after interrupted %s through ship", async phase => {
+  const f = setup();
+  const command = { ...f.context, staging: true, release: true, acceptance: f.acceptancePath };
+  await shipLinuxRelease(command);
+  const predecessor = "linux-v1.2.3-staging.1";
+  const tag = "linux-v1.2.3-staging.2";
+  const priorSignature = await f.storage.read("dists/staging/InRelease");
+  const priorReceipt = await f.storage.read(releasePath(predecessor, "publication.json"));
+  const nextArtifacts = artifacts("staging", 2);
+  f.acceptance.iteration = 2;
+  f.acceptance.artifacts = { x86_64: nextArtifacts[0].identity.sha256, arm64: nextArtifacts[1].identity.sha256 };
+  writeFileSync(f.acceptancePath, jsonBytes(f.acceptance));
+  vi.setSystemTime(new Date(now.getTime() + 3600000));
+
+  const fetchPublic = globalThis.fetch;
+  const replace = FilesystemAptStorage.prototype.replace;
+  const create = FilesystemAptStorage.prototype.create;
+  if (phase === "InRelease replacement") {
+    vi.spyOn(FilesystemAptStorage.prototype, "replace").mockImplementation(async function (this: FilesystemAptStorage, path, bytes) {
+      await replace.call(this, path, bytes);
+      if (path === "dists/staging/InRelease") throw new Error("fixture lost InRelease acknowledgement");
+    });
+  } else if (phase === "public readback") {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("not served", { status: 503 })));
+  } else {
+    vi.spyOn(FilesystemAptStorage.prototype, "create").mockImplementation(async function (this: FilesystemAptStorage, path, bytes) {
+      const created = await create.call(this, path, bytes);
+      if (path === releasePath(tag, "publication.json")) throw new Error("fixture lost receipt acknowledgement");
+      return created;
+    });
+  }
+  await expect(shipLinuxRelease(command)).rejects.toThrow(/acknowledgement|public archive readback/);
+  vi.restoreAllMocks();
+  vi.stubGlobal("fetch", fetchPublic);
+  expect(await archiveState(f.storage)).toMatchObject({ staging: predecessor, pending: tag, production: null });
+  const intended = await f.storage.read(releasePath(tag, "InRelease"));
+  const candidate = await f.storage.read(releasePath(tag, "candidate.json"));
+  expect(intended).not.toBeNull();
+  expect(intended).not.toEqual(priorSignature);
+  expect(await f.storage.read("dists/staging/InRelease")).toEqual(intended);
+  const receipt = await f.storage.read(releasePath(tag, "publication.json"));
+  if (phase === "receipt write") expect(receipt).not.toBeNull();
+  else expect(receipt).toBeNull();
+
+  vi.setSystemTime(new Date(now.getTime() + 2 * 3600000));
+  const retried = await shipLinuxRelease(command);
+  expect(retried).toMatchObject({ published: true, tag, receipt: { verifiedAt: new Date(now.getTime() + (phase === "receipt write" ? 1 : 2) * 3600000).toISOString() } });
+  expect(await archiveState(f.storage)).toMatchObject({ staging: tag, pending: null, production: null });
+  expect(await f.storage.read("dists/staging/InRelease")).toEqual(intended);
+  expect(await f.storage.read(releasePath(tag, "InRelease"))).toEqual(intended);
+  expect(await f.storage.read(releasePath(tag, "candidate.json"))).toEqual(candidate);
+  if (receipt) expect(await f.storage.read(releasePath(tag, "publication.json"))).toEqual(receipt);
+  expect(await f.storage.read(releasePath(predecessor, "publication.json"))).toEqual(priorReceipt);
+  for (const artifact of [...artifacts("staging", 1), ...nextArtifacts]) {
+    expect(await f.storage.read(poolPath(artifact.publication.artifact))).toEqual(artifact.publication.bytes);
+  }
+  expect(await f.storage.read("dists/stable/InRelease")).toBeNull();
+  expect(JSON.parse(f.releases.get("desktop-linux-staging")?.body ?? "null").tag).toBe(tag);
+});
+it.each(["artifacts", "lineage", "foreign InRelease", "other iteration", "predecessor projection"] as const)("refuses changed %s during replacement recovery", async change => {
+  const f = setup();
+  const command = { ...f.context, staging: true, release: true, acceptance: f.acceptancePath };
+  await shipLinuxRelease(command);
+  const tag = "linux-v1.2.3-staging.2";
+  const nextArtifacts = artifacts("staging", 2);
+  f.acceptance.iteration = 2;
+  f.acceptance.artifacts = { x86_64: nextArtifacts[0].identity.sha256, arm64: nextArtifacts[1].identity.sha256 };
+  writeFileSync(f.acceptancePath, jsonBytes(f.acceptance));
+  const fetchPublic = globalThis.fetch;
+  vi.stubGlobal("fetch", vi.fn(async () => new Response("not served", { status: 503 })));
+  await expect(shipLinuxRelease(command)).rejects.toThrow(/public archive readback/);
+  vi.stubGlobal("fetch", fetchPublic);
+  let expected: RegExp;
+  if (change === "artifacts") {
+    nextArtifacts[0].identity.sha256 = "e".repeat(64);
+    build.collectLinuxRelease.mockResolvedValue(nextArtifacts);
+    expected = /immutable Linux candidate inputs/;
+  } else if (change === "lineage") {
+    build.cleanLinuxSource.mockResolvedValue({ ...source, revision: "f".repeat(40) });
+    const run = f.context.runner.run;
+    vi.spyOn(f.context.runner, "run").mockImplementation((command, args, options) => command === "git" && args[0] === "merge-base"
+      ? Promise.resolve({ exitCode: 1, stdout: "", stderr: "" }) : run(command, args, options));
+    expected = /lineage refuses/;
+  } else if (change === "foreign InRelease") {
+    await f.storage.withExclusivePublication(() => f.storage.replace("dists/staging/InRelease", Buffer.from("foreign")));
+    expected = /inconsistent verified Linux publication receipt/;
+  } else if (change === "other iteration") {
+    expected = /inconsistent verified Linux publication receipt|Recover pending/;
+  } else {
+    f.releases.delete("desktop-linux-staging");
+    expected = /projection is missing or inconsistent/;
+  }
+  const live = await f.storage.read("dists/staging/InRelease");
+  const candidate = await f.storage.read(releasePath(tag, "candidate.json"));
+  await expect(shipLinuxRelease({ ...command, ...(change === "other iteration" ? { stagingIteration: 3 } : {}) })).rejects.toThrow(expected);
+  expect(await archiveState(f.storage)).toMatchObject({ staging: "linux-v1.2.3-staging.1", pending: tag });
+  expect(await f.storage.read("dists/staging/InRelease")).toEqual(live);
+  expect(await f.storage.read(releasePath(tag, "candidate.json"))).toEqual(candidate);
+  expect(await f.storage.read(releasePath(tag, "publication.json"))).toBeNull();
+  expect(f.releases.has(tag)).toBe(false);
 });
 it("reports stale/missing acceptance and moved promotion base, and dry-run writes no publication", async () => {
   const f = setup();

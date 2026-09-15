@@ -210,7 +210,14 @@ export async function shipLinuxRelease(input: LinuxReleaseInput) {
       if (!Number.isSafeInteger(iteration) || iteration < 1) throw new Error("Linux staging iteration must be a positive integer.");
       tag = platform.stagingTag(version, iteration);
       if (staging && staging.tag !== tag) {
-        await verifyLinuxPublication(storage, staging, key, now);
+        // InRelease can commit before state.staging advances. Only the matching
+        // pending successor's exact cached signature may replace the predecessor
+        // here; publishLinuxCandidate revalidates its inputs, signature and archive
+        // closure before clearing pending. Public readback still owns the receipt.
+        const recovering = pending?.tag === tag && pending.previousTag === staging.tag;
+        const intended = recovering ? await storage.read(releasePath(tag, "InRelease")) : null;
+        const live = intended ? await storage.read(inReleasePath(staging.channel)) : null;
+        if (!intended || !live || sha256(intended) !== sha256(live)) await verifyLinuxPublication(storage, staging, key, now);
         await checkProjection(input, staging, await readJson<LinuxPublicationReceipt>(storage, releasePath(staging.tag, "publication.json")) as LinuxPublicationReceipt);
         const gate = evaluateStagingPublishGate({ platform: "linux", proposedSourceBranch: branch, proposedCommit: source.revision, active: { version: `${staging.version}-staging.${staging.iteration}`, tag: staging.tag, commit: staging.source.revision, sourceBranch: staging.promotionBase.branch, publishedAt: null }, relationship: await relationship(input, staging.source.revision, source.revision), activeProductionTagExists: !!await tagCommit(input, platform.productionTag(staging.version)), activeMetadataError: null, reset: null, postPromotion: null });
         if (!gate.allowed) throw new Error(gate.frozenBy
