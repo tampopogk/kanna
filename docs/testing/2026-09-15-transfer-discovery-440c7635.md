@@ -327,3 +327,17 @@ not evidence of a model turn: the API's busy state alone did not establish one.
 The source provider was absent and only the destination provider was active;
 both transfer records remained completed. Recall remained pending. No product
 change was requested for this menu.
+
+At 20:43:02Z the single blind recall passed: the destination's 12-character
+response hash exactly matched the private fresh source nonce, whose value was
+never supplied in model input. Native inspection confirmed the same Codex
+session resumed in the exact imported worktree after the normal trust and
+current-directory menu selections. The workflow definition was byte-equal,
+and hashes of all 7 source input messages matched the destination ledger prefix.
+The original successful build history retained its origin; cancelled resume
+history was omitted by the existing export filter. The source provider PID was
+gone and its task closed, with only the destination provider active.
+
+Acceptance is preparing a Studio-initiated reverse forced-cloud pull of the
+same fixture after MBP dirty-state preparation. No source or code changes were
+made for that next leg. Pull and LAN results remain outstanding.
