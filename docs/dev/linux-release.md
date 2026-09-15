@@ -473,14 +473,26 @@ rolled back only while the replaced files still match this invocation's bytes.
 Caddy recreation, even though the relay container remains unchanged. Caddy also
 closes WebSockets on ordinary config reload by default; see its
 [streaming contract](https://caddyserver.com/docs/caddyfile/directives/reverse_proxy#streaming).
-The tool never disconnects clients or drains traffic. It requires an explicit
-coordinated `--proxy-maintenance` window and zero relay connections at inspection
-and immediately before replacement; otherwise it refuses. This is not a
+By default the tool does not disconnect clients. It requires a coordinated
+`--proxy-maintenance` window and zero sockets at inspection and immediately
+before replacement. For an explicitly approved staging network interruption
+while owner apps/PTYs remain running, add `--disconnect-relay` to both the plan
+and apply commands. The plan binds this action, so an idle-only plan cannot be
+used to authorize it. This mode stops only Caddy with a five-second grace,
+checks the authenticated socket registry within a five-second drain window
+(each local stats request also has a five-second timeout) while public
+admission is closed, and still refuses unless sockets/live rows/users reach
+zero. It recreates only Caddy and always attempts to start that service in
+failure cleanup; config rollback remains guarded by ownership checks. Neither
+the relay container nor any owner app, task or PTY is stopped. Missing stats,
+undrained/direct sockets, changed source or config are refusals, not overrides.
+Do not invoke this mode without explicit human consent to the interruption. This is not a
 zero-downtime guarantee: connections can arrive between a count and recreation.
 If continuous admission must remain uninterrupted, do not apply this topology;
 a separate serving endpoint would require a separately assessed change.
 
-After host setup, exact HTTPS public-key readback must pass before the existing
+After host setup, public staging relay HTTPS health must report the same source,
+and exact HTTPS public-key readback must pass before the existing
 protected release-env writer merges only KANNA_LINUX_* selectors. Other lines,
 including desktop/mobile settings, remain intact and concurrent writes use the
 writer's existing compare-and-swap/lock contract. A readback refusal leaves keys
@@ -505,3 +517,23 @@ and immediately before Caddy recreation. A late connection refuses recreation;
 if configuration files were already staged, they are restored without restarting
 Caddy. This is still a coordinated maintenance window, not an atomic connection
 admission barrier: clients must stay paused until readback completes.
+
+Consented interruption example (use a new plan path and its returned digest):
+
+```sh
+./kd release setup-linux --staging --mode plan \
+  --admin-user jeremyhale --admin-identity /Users/jeremyhale/.ssh/google_compute_engine \
+  --host-key-file "$PWD/docs/evidence/2026-09-15-linux-bootstrap/publication-preparation/staging-host-key.pub" \
+  --proxy-maintenance --disconnect-relay --out .tmp/linux-disconnect-plan.json
+./kd release setup-linux --staging --mode apply \
+  --admin-user jeremyhale --admin-identity /Users/jeremyhale/.ssh/google_compute_engine \
+  --host-key-file "$PWD/docs/evidence/2026-09-15-linux-bootstrap/publication-preparation/staging-host-key.pub" \
+  --proxy-maintenance --disconnect-relay \
+  --plan .tmp/linux-disconnect-plan.json --confirm <returned-digest>
+```
+
+A network/host failure can prevent cleanup despite the guaranteed cleanup attempt
+on ordinary command refusals. Preserve diagnostics and inspect the existing
+service/config; never assume restored external reachability without HTTPS
+readback. Remote Kanna coordination itself uses this relay and may briefly be
+unavailable; the already-running MBP command must not be blindly repeated.

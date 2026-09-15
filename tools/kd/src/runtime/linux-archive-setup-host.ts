@@ -24,7 +24,7 @@ export const linuxRelaySocketProbe = String.raw`
 `;
 
 export const linuxArchiveSetupHost = String.raw`
-import os, sys, json, hashlib, stat, subprocess, pathlib, pwd, fcntl
+import os, sys, json, hashlib, stat, subprocess, pathlib, pwd, fcntl, time
 P=pathlib.Path
 base=P('/opt/kanna-relay')
 owned=P('/opt/kanna-apt-setup')
@@ -48,8 +48,10 @@ def container(service):
 def connections(relay):
     program=${JSON.stringify(linuxRelaySocketProbe)}
     return json.loads(run(['docker','exec',relay['id'],'node','-e',program]))
+socketChecks=[]
 def idle(relay, expected):
     current=connections(relay)
+    socketChecks.append(current)
     if current['commit']!=expected['commit']: fail('Relay stats commit changed since plan')
     return current['openSockets']==0 and current['liveRows']==0 and current['pairedUsers']==0
 def snapshot():
@@ -111,7 +113,8 @@ if (owned/'identity.json').exists() and json.loads(regular(owned/'identity.json'
 oldCompose=regular(base/'docker-compose.yml'); oldCaddy=regular(base/'Caddyfile')
 compose,caddy=render(oldCompose.decode(),oldCaddy.decode())
 changed=compose.encode()!=oldCompose or caddy.encode()!=oldCaddy
-if changed and (not request.get('proxyMaintenance') or not idle(observed['relay'],request['expected']['relayTraffic'])): fail('Caddy mount change requires explicit proxy maintenance and zero live relay connections')
+if request.get('disconnectRelay') and not request.get('proxyMaintenance'): fail('Disconnect requires explicit proxy maintenance')
+if changed and (not request.get('proxyMaintenance') or (not request.get('disconnectRelay') and not idle(observed['relay'],request['expected']['relayTraffic']))): fail('Caddy mount change requires explicit proxy maintenance and zero live relay connections')
 # Recreating with an updated local floating tag would silently upgrade Caddy.
 resolved=json.loads(run(['docker','compose','config','--format','json']))
 image=resolved['services']['caddy']['image']
@@ -161,7 +164,20 @@ if key.exists() and regular(key)!=request['aptPublicKey'].encode(): fail('Public
 if not key.exists(): write(key,request['aptPublicKey'].encode())
 changed=compose.encode()!=oldCompose or caddy.encode()!=oldCaddy
 proxyAttempted=False
+proxyStopAttempted=False
 try:
+    if changed and request.get('disconnectRelay'):
+        # Stop only the public proxy: PTYs/apps and relay stay running. Keeping
+        # admission closed makes zero sockets an observed gate, not a bypass.
+        proxyStopAttempted=True
+        run(['docker','compose','stop','--timeout','5','caddy'])
+        drainDeadline=time.monotonic()+5
+        for attempt in range(20):
+            if idle(observed['relay'],request['expected']['relayTraffic']): break
+            remaining=drainDeadline-time.monotonic()
+            if remaining<=0: fail('Relay socket drain deadline exceeded')
+            time.sleep(min(0.25,remaining))
+        else: fail('Relay sockets did not drain while staging proxy stopped')
     if changed:
         if not idle(observed['relay'],request['expected']['relayTraffic']): fail('Relay connections arrived before Caddy maintenance; no proxy change')
         if regular(base/'docker-compose.yml')!=oldCompose or regular(base/'Caddyfile')!=oldCaddy or digest(regular(base/'.env'))!=observed['files']['.env']: fail('Relay config changed before replacement')
@@ -177,8 +193,14 @@ except Exception:
         write(base/'docker-compose.yml',oldCompose); write(base/'Caddyfile',oldCaddy)
         if proxyAttempted: run(['docker','compose','up','-d','--no-deps','--no-build','--pull','never','--force-recreate','caddy'])
     raise
+finally:
+    # This also runs after stop/drain/config/recreation failures. Start is scoped
+    # to the existing service and neither pulls images nor starts dependencies.
+    if proxyStopAttempted:
+        run(['docker','compose','start','caddy'])
+        container('caddy')
 write(owned/'receipt.json',json.dumps(receipt,sort_keys=True).encode(),0o600)
-print(json.dumps({'configured':True,'relay':container('relay'),'caddy':container('caddy'),'receipt':receipt}))
+print(json.dumps({'configured':True,'relay':container('relay'),'caddy':container('caddy'),'receipt':receipt,'maintenance':{'disconnectRelay':bool(request.get('disconnectRelay')),'socketChecks':socketChecks}}))
 `;
 
 /** Used only by an explicitly authorized future staging relay deploy after it

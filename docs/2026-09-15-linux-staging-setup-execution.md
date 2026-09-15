@@ -88,3 +88,20 @@ publication receipt, package URL or soak was changed by inspect/plan. Hosting
 and DNS approvals are already granted; no repeated approval is requested.
 Ship remains open for actual setup, HTTPS/RPC readback and authorized B staging
 publication, followed by verified artifact delivery to website76e93c62.
+
+## Explicit interruption approval and canonical orchestration
+
+Root asked Jeremy, "Can we do the brief staging interruption now?" Jeremy
+replied "ok"; root directed Ship to proceed while leaving owner apps and PTYs
+running. Timing approval is resolved and must not be requested again.
+
+Fresh MBP inspect/plan at merged6a03281d5f1514c33f04e0a136f4152f389ceead
+exited0; authenticated deployed3ce0847d01af still has seven sockets/live rows.
+Plan digest94263575264d3943816662ab32e64c8a282e9bd3e9b47f94ebf1b09bb801c8ce.
+This controller cannot arrange disconnect/reconnect while apps remain open.
+The bounded correction adds explicit plan-bound `--disconnect-relay`, stopping
+only Caddy, observing actual socket drain with public admission closed, and
+restoring Caddy in success/failure cleanup. It preserves zero sockets, source,
+config ownership and rollback checks. Public staging relay health/source is
+verified before apt-key HTTPS/RPC/env-selector handoff. No actual stop/apply has
+occurred yet. Both C test endpoints remain paused; B bytes on MBP unchanged.
