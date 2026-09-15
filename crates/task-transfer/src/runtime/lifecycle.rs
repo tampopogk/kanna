@@ -417,6 +417,7 @@ impl TransferRuntime {
         let request_namespace = random_request_namespace();
         let listener_context = ListenerContext {
             self_peer_id: config.peer_id.clone(),
+            standalone_test_server: config.standalone_test_server,
             self_display_name: config.display_name.clone(),
             self_public_key: public_key,
             authenticated_request_epoch: random_request_namespace(),
@@ -486,6 +487,7 @@ impl TransferRuntime {
             external_peers,
             identity,
             pending_pairing_requests,
+            pending_task_pull_requests,
             outgoing_transfers,
             import_commit_receipts,
             replay_store,

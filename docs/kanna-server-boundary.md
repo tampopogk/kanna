@@ -1440,6 +1440,26 @@ have no V1 aliases. Both servers and sidecars must be updated; old requests or
 components cannot silently discard selection fields and finalize a source.
 The transfer transport version and artifact protocol are unchanged.
 
+Before creating a preflight reservation or a pull request, the initiator now
+negotiates `transfer-v2-reconciliation-v1` through the authenticated
+`transfer_protocol` peer operation. Each sidecar queries its live server at
+`POST /v1/transfers/protocol`; the server also checks the local sidecar's
+identity reply before initiating a move. Product version strings and discovery
+metadata cannot establish this capability. Missing support returns an explicit
+`incompatible-transfer-version` upgrade requirement, without a V1 fallback.
+Connection failures remain unresolved/retriable.
+
+An incoming rejection or terminal pre-import failure uses the same authenticated
+operation to notify the reserved source. The source server checks the durable
+transfer id, destination peer and source task, then atomically fails the move
+and retires its bound push/finalize work. Only this durable acknowledgment lets
+the destination release its reservation. Lost acknowledgments replay the
+idempotent decision; they cannot create another transfer. A late incoming event
+cannot re-admit a terminal row, and rejection cannot undo a completed import.
+Cleanup still has the existing bounded retry policy; exhaustion does not mark
+an unacknowledged source reconciliation complete or delete its reservation.
+
+
 The destination parses the complete workflow (including selector values) and
 validates the recorded launch selection before requesting finalization. Its
 required `selection_commitment` binds acceptance to the normalized workflow,

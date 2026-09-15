@@ -11,6 +11,7 @@ mod peer;
 mod pull;
 mod replay_store;
 mod state;
+mod transfer_protocol;
 mod transfers;
 mod utils;
 

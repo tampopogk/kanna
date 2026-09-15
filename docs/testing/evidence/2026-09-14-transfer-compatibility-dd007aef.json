@@ -1,0 +1,117 @@
+{
+  "taskId": "dd007aef",
+  "baseMain": "ac2604a6e092771968f7f9096d4c4b917ad036b1",
+  "scope": "Disposable protocol/lifecycle code verification; not installed release acceptance",
+  "acceptanceOwnerTaskId": "641dbb6f",
+  "runs": [
+    {
+      "command": "cargo test -p kanna-server --bin kanna-server transfer -- --skip real_daemon_tests --skip incoming_transfer_state_machine_is_durable_and_provenance_is_idempotent --skip a_stale_cloud_credential_refuses_the_route_instead_of_scheduling_it",
+      "exitCode": 0,
+      "rawLogSha256": "56ae0c88ab7826ecc1045e19685333322e41f41c9cdba8a989cb7a70f35a2999",
+      "results": [
+        "test result: ok. 279 passed; 0 failed; 0 ignored; 0 measured; 1617 filtered out; finished in 30.92s"
+      ],
+      "newProtocolTests": [
+        "test db::tests::transfer_protocol_rejection_cannot_undo_import_or_completed_ownership ... ok",
+        "test db::tests::transfer_protocol_refusal_is_durable_identity_bound_and_does_not_revive_retry ... ok",
+        "test http_api::tests::transfers::transfer_protocol_http_refusal_checks_identity_and_preserves_source ... ok",
+        "test transfer_engine::import::stored_workflow_tests::transfer_protocol_late_incoming_event_keeps_rejection_and_only_schedules_cleanup ... ok",
+        "test transfer_engine::import::tests::transfer_protocol_rejection_crosses_real_sidecars_and_source_server ... ok",
+        "test transfer_sidecar::tests::transfer_protocol_old_local_sidecar_refuses_both_intents_before_admission ... ok"
+      ]
+    },
+    {
+      "command": "cargo test -p kanna-task-transfer --test runtime transfer",
+      "exitCode": 0,
+      "rawLogSha256": "d30a4bf1a1266db2ed966be20a6dbf92820de52149e185b1d55cef3a44f403f2",
+      "results": [
+        "test result: ok. 23 passed; 0 failed; 0 ignored; 0 measured; 121 filtered out; finished in 6.45s"
+      ],
+      "newProtocolTests": [
+        "test transfer_protocol_legacy_peer_refuses_push_and_pull_before_reservation ... ok",
+        "test transfer_protocol_live_old_server_is_refused_even_with_new_sidecars ... ok",
+        "test transfer_protocol_old_initiator_is_refused_before_incoming_or_pull_event ... ok",
+        "test transfer_protocol_refusal_lost_ack_retries_cleanup_and_allows_fresh_pull ... ok"
+      ]
+    },
+    {
+      "command": "cargo test -p kanna-task-transfer --test runtime transfer_protocol_",
+      "exitCode": 0,
+      "rawLogSha256": "17b982f366f4f562f0f03faa5152d451e96de54d2ce066c0632c2e435e43ba06",
+      "results": [
+        "test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 140 filtered out; finished in 0.24s"
+      ],
+      "newProtocolTests": [
+        "test transfer_protocol_legacy_peer_refuses_push_and_pull_before_reservation ... ok",
+        "test transfer_protocol_live_old_server_is_refused_even_with_new_sidecars ... ok",
+        "test transfer_protocol_old_initiator_is_refused_before_incoming_or_pull_event ... ok",
+        "test transfer_protocol_refusal_lost_ack_retries_cleanup_and_allows_fresh_pull ... ok"
+      ]
+    },
+    {
+      "command": "cargo test -p kanna-task-transfer --test protocol --test sidecar_control",
+      "exitCode": 0,
+      "rawLogSha256": "314b21dbb01777b840cccf87150a220ab92f7ec24aa547d454c2b222525c7eeb",
+      "results": [
+        "test result: ok. 23 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s",
+        "test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.21s"
+      ],
+      "newProtocolTests": []
+    },
+    {
+      "command": "cargo test -p kanna-task-transfer --test runtime the_destination_refuses_to_release_a_committed_or_foreign_reservation",
+      "exitCode": 0,
+      "rawLogSha256": "1dd1af41f3d8a01af9a155a98099dd936a81eb6fc8afda5cb97a5f6cc931eeee",
+      "results": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 143 filtered out; finished in 0.21s"
+      ],
+      "newProtocolTests": []
+    },
+    {
+      "command": "cargo test -p kanna-task-transfer --test runtime a_refused_pull_is_reported_back_to_the_machine_that_asked",
+      "exitCode": 0,
+      "rawLogSha256": "f68189fd6333b23a3c4c09641635be487ae3abd214c41719281f7c1f8e94b3dd",
+      "results": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 143 filtered out; finished in 0.08s"
+      ],
+      "newProtocolTests": []
+    },
+    {
+      "command": "cargo clippy -p kanna-task-transfer --all-targets -- -D warnings",
+      "exitCode": 0,
+      "rawLogSha256": "8ca28b11c7ad341b4e1c451bf417096c06e438da3bd46c53cca4452c4d3c3562",
+      "results": [],
+      "newProtocolTests": []
+    },
+    {
+      "command": "cargo clippy -p kanna-server --all-targets",
+      "exitCode": 0,
+      "rawLogSha256": "b29f7fb015d36696212937da31bc16202c6d08ec75a718f656d5a3890ee56c44",
+      "warnings": "Existing warnings only in ksp.rs, db/pipeline_items.rs, http_api/desktop_views.rs; not a strict -D warnings pass."
+    }
+  ],
+  "broaderFirstRuns": {
+    "server": {
+      "passed": 273,
+      "failed": 11,
+      "note": "Nine unrelated/main or missing-artifact checks excluded explicitly from final lane; two regression/fixture failures corrected."
+    },
+    "runtime": {
+      "passed": 142,
+      "failed": 2,
+      "note": "Pull-refusal regression and admission fixture corrected; individual reruns pass. This is not a clean full-suite rerun."
+    }
+  },
+  "serverExclusions": [
+    "transfer_engine::finalize::real_daemon_tests (seven checks; daemon artifact not built at required test path)",
+    "incoming_transfer_state_machine_is_durable_and_provenance_is_idempotent (unchanged main fixture creates existing provenance table)",
+    "a_stale_cloud_credential_refuses_the_route_instead_of_scheduling_it (unchanged main diagnostic assertion)"
+  ],
+  "boundedNewWaits": "30-second outer progress guards, 15-second local protocol HTTP round trips; no finalization/backoff sleeps used to prove new behavior",
+  "unproven": [
+    "Installed compatible-candidate successful LAN push/pull in both directions",
+    "Installed compatible-candidate successful cloud push/pull in both directions",
+    "Real task bytes/conversation/PTY continuity and release soak acceptance"
+  ],
+  "cleanup": "All test commands finished; no test executable or sidecar process remained under this worktree build/temp paths at completion."
+}

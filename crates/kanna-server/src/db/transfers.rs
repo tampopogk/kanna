@@ -766,7 +766,7 @@ impl Db {
         error: &str,
     ) -> Result<bool, rusqlite::Error> {
         let rows_affected = self.conn.execute(
-            "UPDATE task_transfer SET status = 'rejected', completed_at = datetime('now'), error = ? WHERE id = ?",
+            "UPDATE task_transfer SET status = 'rejected', completed_at = datetime('now'), error = ? WHERE id = ? AND direction = 'incoming' AND local_task_id IS NULL AND status NOT IN ('completed', 'failed', 'rejected')",
             (error, transfer_id),
         )?;
         Ok(rows_affected == 1)
@@ -956,6 +956,51 @@ impl Db {
             (reason, transfer_id),
         )?;
         Ok(rows_affected == 1)
+    }
+
+    /// A peer refusal acknowledges a durable decision, not an in-memory event.
+    /// The peer and source identity come from the authenticated sidecar request.
+    pub fn record_peer_transfer_refusal(
+        &self,
+        id: &str,
+        peer_id: &str,
+        source_task_id: &str,
+        reason: &str,
+    ) -> Result<(), String> {
+        let tx = self
+            .conn
+            .unchecked_transaction()
+            .map_err(|e| e.to_string())?;
+        let transfer = self
+            .get_task_transfer(id)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| format!("unknown outgoing transfer: {id}"))?;
+        if transfer.direction != "outgoing"
+            || transfer.target_peer_id.as_deref() != Some(peer_id)
+            || transfer.source_task_id.as_deref() != Some(source_task_id)
+        {
+            return Err("refusal does not match the reserved destination and source task".into());
+        }
+        if transfer.status == "completed" {
+            return Err("cannot refuse a completed ownership transfer".into());
+        }
+        let newly_failed = self
+            .fail_outgoing_task_transfer(id, reason)
+            .map_err(|e| e.to_string())?;
+        // Pre-upgrade pushes have no transfer_id yet. At this first terminal
+        // edge, matching queued intents were aliases of the active move. A
+        // repeated ACK must not cancel a fresh intent created after that edge.
+        tx.execute(
+            "UPDATE transfer_work SET status = 'done', error = ?1, updated_at = datetime('now')
+             WHERE status IN ('pending', 'running') AND (
+                 (transfer_id = ?2 AND kind IN ('push', 'finalize')) OR
+                 (?3 AND transfer_id IS NULL AND kind = 'push' AND json_valid(payload_json)
+                  AND COALESCE(json_extract(payload_json, '$.source_task_id'), json_extract(payload_json, '$.sourceTaskId')) = ?4
+                  AND COALESCE(json_extract(payload_json, '$.requester_peer_id'), json_extract(payload_json, '$.peerId')) = ?5)
+             )",
+            rusqlite::params![reason, id, newly_failed, source_task_id, peer_id],
+        ).map_err(|e| e.to_string())?;
+        tx.commit().map_err(|e| e.to_string())
     }
 
     /// Drives an outgoing transfer to its terminal failed state.

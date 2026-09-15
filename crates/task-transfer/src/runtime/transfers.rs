@@ -42,6 +42,7 @@ impl TransferRuntime {
             &target_peer.public_key,
             resolved_transport,
         )?;
+        self.negotiate_transfer_protocol(&target_peer).await?;
         let request_id = self.next_request_id("preflight");
         let sealed_payload = self
             .seal_authenticated_peer_request(
@@ -52,6 +53,7 @@ impl TransferRuntime {
                     "source_peer_id": self.config.peer_id,
                     "source_task_id": source_task_id,
                     "reserved_target_peer_id": target_peer.peer_id,
+                    "transfer_protocol": super::transfer_protocol::CONTRACT,
                 }),
             )
             .await?;
@@ -129,7 +131,8 @@ impl TransferRuntime {
             PeerResponse::TaskSnapshot { .. } => Err(RuntimeError::Protocol(
                 "unexpected task-snapshot response during preflight".into(),
             )),
-            PeerResponse::AuthenticatedRequestEpoch { .. }
+            PeerResponse::TransferProtocol { .. }
+            | PeerResponse::AuthenticatedRequestEpoch { .. }
             | PeerResponse::ObserveSession { .. }
             | PeerResponse::ObserveCompanion { .. }
             | PeerResponse::SendCompanionEvent { .. }
@@ -258,7 +261,8 @@ impl TransferRuntime {
             PeerResponse::TaskSnapshot { .. } => Err(RuntimeError::Protocol(
                 "unexpected task-snapshot response during transfer commit".into(),
             )),
-            PeerResponse::AuthenticatedRequestEpoch { .. }
+            PeerResponse::TransferProtocol { .. }
+            | PeerResponse::AuthenticatedRequestEpoch { .. }
             | PeerResponse::ObserveSession { .. }
             | PeerResponse::ObserveCompanion { .. }
             | PeerResponse::SendCompanionEvent { .. }
@@ -302,6 +306,7 @@ impl TransferRuntime {
 
         let source_peer = self.find_peer(&source_peer_id).await?;
         self.ensure_peer_is_trusted(&source_peer.peer_id, &source_peer.public_key)?;
+        self.negotiate_transfer_protocol(&source_peer).await?;
         let request_id = self.next_request_id("finalize");
         let sealed_payload = self
             .seal_authenticated_peer_request(
@@ -371,7 +376,8 @@ impl TransferRuntime {
                     finalized_cleanly,
                 })
             }
-            PeerResponse::AuthenticatedRequestEpoch { .. }
+            PeerResponse::TransferProtocol { .. }
+            | PeerResponse::AuthenticatedRequestEpoch { .. }
             | PeerResponse::StartPairing { .. }
             | PeerResponse::RequestTaskPull { .. }
             | PeerResponse::ReportTaskPullRefused { .. }
@@ -671,7 +677,8 @@ impl TransferRuntime {
 
                 Ok(())
             }
-            PeerResponse::AuthenticatedRequestEpoch { .. }
+            PeerResponse::TransferProtocol { .. }
+            | PeerResponse::AuthenticatedRequestEpoch { .. }
             | PeerResponse::StartPairing { .. }
             | PeerResponse::RequestTaskPull { .. }
             | PeerResponse::ReportTaskPullRefused { .. }
@@ -773,6 +780,7 @@ impl TransferRuntime {
                     "source_peer_id": self.config.peer_id,
                     "transfer_id": transfer_id,
                     "reserved_target_peer_id": target_peer.peer_id,
+                    "transfer_protocol": super::transfer_protocol::CONTRACT,
                 }),
             )
             .await?;

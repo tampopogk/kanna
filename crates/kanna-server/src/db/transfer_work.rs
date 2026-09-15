@@ -180,6 +180,18 @@ impl Db {
             .map(Option::flatten)
     }
 
+    /// The intent now owns this reservation. Retrying that intent may never
+    /// create a second move after this transfer has ended.
+    pub fn bind_transfer_work(&self, id: &str, transfer_id: &str) -> Result<bool, rusqlite::Error> {
+        let updated = self.conn.execute(
+            "UPDATE transfer_work SET transfer_id = ?1
+             WHERE id = ?2 AND status IN ('pending', 'running')
+               AND (transfer_id IS NULL OR transfer_id = ?1)",
+            (transfer_id, id),
+        )?;
+        Ok(updated == 1)
+    }
+
     pub fn complete_transfer_work(&self, id: &str) -> Result<(), rusqlite::Error> {
         self.conn.execute(
             "UPDATE transfer_work
@@ -214,7 +226,7 @@ impl Db {
             self.conn.execute(
                 "UPDATE transfer_work
                  SET status = 'failed', error = ?, updated_at = datetime(?)
-                 WHERE id = ?",
+                 WHERE id = ? AND status NOT IN ('done', 'failed')",
                 (reason, now, id),
             )?;
             return Ok(false);
@@ -227,7 +239,7 @@ impl Db {
                  error = ?,
                  updated_at = datetime(?),
                  run_after = datetime(?, ?)
-             WHERE id = ?",
+             WHERE id = ? AND status NOT IN ('done', 'failed')",
             (reason, now, now, format!("+{backoff} seconds"), id),
         )?;
         Ok(true)
