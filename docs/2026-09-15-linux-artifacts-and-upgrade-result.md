@@ -35,9 +35,10 @@ Committed manifests/reports and independent verification are under
 Independent reading of all four actual Debian archives verified manifest/report
 hashes, revision/tree stamps, control version/architecture, all **32 executable
 hashes**, and zero reported audit findings. No unstamped CI package was imported.
-At the last live check, CI `34951214464` at `f88d1467b…` remained in progress:
-ARM build, both apt interoperability and prerequisite jobs passed; x86 build
-was running. It is separate validation, not these collected package bytes.
+Final live check: CI `34951214464` at
+`f88d1467b40a918952f3379b2b2b7796bf77cb5c` completed **success**, all eight jobs:
+both builds, apt interoperability, prerequisites and install-only jobs. It is
+separate validation, not these collected package bytes or two-version acceptance.
 
 ## Actual ARM installed/upgrade run
 
@@ -114,7 +115,9 @@ output directories were reclaimed; B deliverables and shared/other-task caches
 were preserved. Recovered 113 GiB enabled the successful A-only retry. Logs
 remain in `.tmp/linux-delivery/`. Preparation removes isolated source but leaves
 large Bazel output bases: this measured cleanup gap deserves a bounded tooling
-follow-up, not a publication bypass.
+follow-up, not a publication bypass. The successful A retry's verified output
+base was also reclaimed after preserving/hashing its deliverables. Final Studio
+free space is 113 GiB; no owned build or cleanup process remains.
 
 **Next:** root disposes the two upgrade-test findings and routes an instrumented
 canonical rerun; x86 installed/upgrade and exact-floor coverage remain absent.
