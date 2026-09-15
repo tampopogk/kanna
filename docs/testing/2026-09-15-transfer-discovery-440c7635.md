@@ -441,3 +441,21 @@ or human approval hold. Source cleanup/build remained incomplete as the
 20:59:26Z reservation deadline passed. No new transfer or duplicate intent was
 created. A subsequent missing-reservation result must remain TTL-attributed and
 cannot validate or invalidate the corrected proxy's byte delivery.
+
+Both endpoints were identity-verified on `bd2c8bd2c` by 21:04Z, and paired API
+readback at 21:04:34Z showed trusted/cloud-ready catalogs with LAN and fallback
+unavailable. The source's old server log was reconciled programmatically:
+20:57:03.298126Z was attempt 6 of the retained pull's push work, failing with
+reset 54, not the already-terminal legacy import. That attempt ran before the
+source upgrade. Its initial misattribution was withdrawn.
+
+The corrected MBP server log then recorded attempt 7 at 21:07:03.373333Z:
+`protocol error: missing target peer for transfer commit` for transfer
+`949973fa2701b189aa6b451edf1d9ab8103f6fdb91e8f656689a1adde414e333`.
+The outgoing reservation had expired before corrected source startup. This
+confirms the anticipated TTL boundary and does not test large-payload delivery
+through the corrected proxy. The authoritative parent API read at 21:07:44Z
+still showed source pending and destination absent; a helper's empty parsed
+object was not a transfer status. Acceptance is preserving automatic settlement,
+with final attempt 8 expected around 21:17:03Z, before any fresh request. No
+manual retry, queue control, or product semantics change was introduced.
