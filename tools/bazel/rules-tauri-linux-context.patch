@@ -96,3 +96,33 @@ diff --git a/tools/tauri_context_codegen/src/main.rs b/tools/tauri_context_codeg
      config_value.build.dev_url = None;
  
      let embedded_assets = parse_embedded_assets_expr(&embedded_assets_rust)?;
+diff --git a/MODULE.bazel b/MODULE.bazel
+--- a/MODULE.bazel
++++ b/MODULE.bazel
+@@ -79,6 +79,8 @@
+     supported_platform_triples = [
+         "aarch64-apple-darwin",
+         "x86_64-apple-darwin",
++        "aarch64-unknown-linux-gnu",
++        "x86_64-unknown-linux-gnu",
+     ],
+ )
+ crate.from_cargo(
+@@ -88,6 +90,8 @@
+     supported_platform_triples = [
+         "aarch64-apple-darwin",
+         "x86_64-apple-darwin",
++        "aarch64-unknown-linux-gnu",
++        "x86_64-unknown-linux-gnu",
+     ],
+ )
+ crate.from_cargo(
+@@ -97,6 +101,8 @@
+     supported_platform_triples = [
+         "aarch64-apple-darwin",
+         "x86_64-apple-darwin",
++        "aarch64-unknown-linux-gnu",
++        "x86_64-unknown-linux-gnu",
+     ],
+ )
+ crate.annotation(
