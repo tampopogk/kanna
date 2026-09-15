@@ -497,3 +497,18 @@ The new run ended in `1789507422883329000` and had no `resumedFrom` linkage.
 Acceptance generated a fresh private nonce in that new session. Its recall can
 test continuity of this fresh session through the next move; it cannot establish
 recovery of the earlier native conversation. No nonce value is recorded here.
+
+Both APIs reported the fresh pull completed at 21:26:42Z. MBP source task `d0a…`
+closed, with its provider run exiting at 21:26:38Z. Studio's imported task
+`02ff84c3…fe34dd` was open in review at head `7365949`, with a clean worktree and
+ledger count 10. This passes the cloud-only large-payload commit/admission
+boundary that previously reset before reaching the receiver, using a fresh pull
+on corrected source.
+
+Native context is assessed separately: the destination's actual Codex arguments
+were a new launch without `resume`, its latest run reported no fallback, and
+its terminal began with the original review prompt. The source had itself used
+a fresh fallback session before the move. Acceptance is issuing exactly one
+blind recall of that fresh session's nonce; its outcome is pending. Transfer
+completion alone does not establish native-context preservation, and no session
+export change or new fixture was introduced at this checkpoint.
