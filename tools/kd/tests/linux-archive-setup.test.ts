@@ -10,7 +10,7 @@ vi.mock('../src/runtime/linux-apt-storage', async original => ({
  linuxArchiveStorage: vi.fn(() => ({ withExclusivePublication: async (fn: () => Promise<void>) => fn(), read: async () => null })),
 }));
 import { setupLinuxArchive, setupPlan, linuxArchiveSetupInputSchema } from '../src/runtime/linux-archive-setup';
-import { linuxArchiveSetupHost, linuxArchiveConfigRenderer } from '../src/runtime/linux-archive-setup-host';
+import { linuxArchiveSetupHost, linuxArchiveConfigRenderer, linuxRelaySocketProbe } from '../src/runtime/linux-archive-setup-host';
 import { linuxAptStorageWorker } from '../src/runtime/linux-apt-storage';
 import { parseCliArgs } from '../src/cli';
 import type { CommandRunner } from '../src/runtime/process';
@@ -37,7 +37,7 @@ function fixture() {
   if(command==='/usr/bin/ssh'){
    expect(args).toContain('StrictHostKeyChecking=yes');expect(args).toContain('IdentityAgent=none');
    expect(JSON.parse(options!.stdin!).mode).toBe('inspect');
-   return {exitCode:0,stdout:JSON.stringify({files:{compose:changed?'changed':'same'},relay:{id:'relay123'},caddy:{id:'caddy123'},managed:false,accountUid:null,proxyChange:true,relayConnections:0,freeBytes:2**31}),stderr:''};
+   return {exitCode:0,stdout:JSON.stringify({files:{compose:changed?'changed':'same'},relay:{id:'relay123'},caddy:{id:'caddy123'},managed:false,accountUid:null,proxyChange:true,relayTraffic:{commit:"abcdef123",pairedUsers:0,openSockets:0,liveRows:0},freeBytes:2**31}),stderr:''};
   }
   throw Error('Unexpected mutation/tool '+command);
  }};
@@ -119,7 +119,11 @@ def command(args,**kw):
  elif args[0]=='useradd':
   (fixture/'account').write_text('created'); (fixture/'var/lib/kanna-apt').mkdir()
  elif args[:2]==['docker','exec']:
-  if 'node' in args: out='7' if (fixture/'busy').exists() else '0'
+  if 'node' in args:
+   arriving=fixture/'arriving'
+   busy=(fixture/'busy').exists() or (arriving.exists() and int(arriving.read_text())<=0)
+   if arriving.exists(): arriving.write_text(str(int(arriving.read_text())-1))
+   out=json.dumps({'commit':'abcdef123','pairedUsers':0,'openSockets':7 if busy else 0,'liveRows':7 if busy else 0})
  elif args==['docker','compose','config','--quiet']: pass
  elif args==['docker','compose','config','--format','json']: out=json.dumps({'services':{'caddy':{'image':'caddy:fixture'}}})
  elif args[:3]==['docker','image','inspect']: out='caddy-id-image'
@@ -136,7 +140,19 @@ subprocess.run=command
  const payload={mode:'apply',expected:first,publisherPublicKey:'ssh-ed25519 AAAATESTONLY fixture',aptPublicKey:'TEST PUBLIC APT KEY',helper:linuxAptStorageWorker,renderer:linuxArchiveConfigRenderer,proxyMaintenance:true};
  expect(()=>invoke({...payload,proxyMaintenance:false})).toThrow();
  writeFileSync(join(dir,'busy'),'busy');expect(()=>invoke(payload)).toThrow();rmSync(join(dir,'busy'));
- const applied=invoke(payload);expect(applied.configured).toBe(true);
+ writeFileSync(join(dir,'arriving'),'1');
+ expect(()=>invoke(payload)).toThrow();
+ expect(readFileSync(join(dir,'opt/kanna-relay/Caddyfile'),'utf8')).not.toContain('apt.kanna.build');
+ const callsBeforeRetry=readFileSync(join(dir,'commands.jsonl'),'utf8').trim().split('\n').map(l=>JSON.parse(l));
+ expect(callsBeforeRetry.filter(a=>a.includes('up'))).toHaveLength(0);
+ rmSync(join(dir,'arriving'));
+ const retryExpected=invoke({mode:'inspect'});
+ writeFileSync(join(dir,'arriving'),'2');
+ expect(()=>invoke({...payload,expected:retryExpected})).toThrow();
+ expect(readFileSync(join(dir,'opt/kanna-relay/Caddyfile'),'utf8')).not.toContain('apt.kanna.build');
+ expect(readFileSync(join(dir,'commands.jsonl'),'utf8').trim().split('\n').map(l=>JSON.parse(l)).filter(a=>a.includes('up'))).toHaveLength(0);
+ rmSync(join(dir,'arriving'));
+ const applied=invoke({...payload,expected:invoke({mode:'inspect'})});expect(applied.configured).toBe(true);
  const second=invoke({mode:'inspect'});expect(second.managed).toBe(true);
  const retry=invoke({...payload,expected:second});expect(retry.relay).toEqual(applied.relay);
  expect(()=>invoke({...payload,expected:second,publisherPublicKey:'ssh-ed25519 AAAADIFFERENT'})).toThrow();
@@ -187,3 +203,19 @@ it('applies orchestration with disposable protected keys and merges only Linux s
  await expect(setupLinuxArchive(context,{...f.input,mode:'apply',plan:path,confirm:plan.sha256,proxyMaintenance:true})).rejects.toThrow(/no implicit archive repointing/);
  expect(readFileSync(envPath,'utf8')).toContain('different.invalid');
 },30000);
+
+it('probes actual authenticated sockets, refusing absent/mismatched stats without leaking credentials or client rows',()=>{
+ const valid={status:'ok',commit:'abcdef123',connections:0,bytes:{connections:{open:1}},liveConnections:[{secret:'PRIVATE CLIENT ROW'}]};
+ const invoke=(stats:unknown,token='disposable-token-not-a-real-credential',status=200)=>{
+  const script=`global.fetch=async(url,options)=>{if(url!=='http://127.0.0.1:8080/stats'||options.redirect!=='error'||options.headers.Authorization!=='Bearer '+process.env.KANNA_RELAY_STATS_TOKEN)throw Error();return {ok:${status===200},json:async()=>(${JSON.stringify(stats)})}};\n`+linuxRelaySocketProbe;
+  return execFileSync(process.execPath,['-e',script],{encoding:'utf8',stdio:['pipe','pipe','pipe'],env:{...process.env,KANNA_RELAY_STATS_TOKEN:token,KANNA_RELAY_COMMIT:'abcdef123'}});
+ };
+ expect(JSON.parse(invoke(valid))).toEqual({commit:'abcdef123',pairedUsers:0,openSockets:1,liveRows:1});
+ expect(invoke(valid)).not.toContain('PRIVATE CLIENT ROW');
+ expect(JSON.parse(invoke({...valid,bytes:{connections:{open:0}},liveConnections:[]}))).toHaveProperty('openSockets',0);
+ for(const bad of [{...valid,liveConnections:undefined},{...valid,liveConnections:[]},{...valid,commit:'unknown'},{...valid,commit:'abcdef124'},{...valid,bytes:{}},{...valid,bytes:{connections:{open:-1}}}]) expect(()=>invoke(bad)).toThrow();
+ for(const [token,status] of [['',200],['disposable-token-not-a-real-credential',403]] as const) {
+  try { invoke(valid,token,status);throw Error('unexpected success'); }
+  catch(error) { const result=error as {stderr?:Buffer};expect(String(result.stderr)).toContain('Cannot verify authenticated relay socket stats');expect(String(result.stderr)).not.toContain('disposable-token'); }
+ }
+});

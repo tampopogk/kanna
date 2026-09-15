@@ -487,3 +487,21 @@ writer's existing compare-and-swap/lock contract. A readback refusal leaves keys
 and owned host setup available for inspection and a fresh plan/retry; it does
 not create a candidate or receipt. Then use normal Linux status and retained-B
 ship. Only actual publication closure/readback starts Linux's 24-hour soak.
+
+### Archive maintenance socket gate
+
+Setup reads authenticated `/stats` inside the existing relay container using
+its existing operator credential. No credential or per-client row is returned.
+`relayTraffic` records the deployed commit, paired users, open sockets, and live
+row count. `/health.connections` counts user buckets and cannot prove an empty
+relay: an unbound phone still owns a socket. Setup requires matching
+`bytes.connections.open` and `liveConnections.length`, both zero (and zero
+paired users), with a known commit matching the container build environment.
+Missing operator visibility, unknown commit, malformed data or disagreement is
+refused. Old count-only plans must be regenerated.
+
+Apply pins this commit and repeats the socket check before configuration writes
+and immediately before Caddy recreation. A late connection refuses recreation;
+if configuration files were already staged, they are restored without restarting
+Caddy. This is still a coordinated maintenance window, not an atomic connection
+admission barrier: clients must stay paused until readback completes.

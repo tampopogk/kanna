@@ -39,15 +39,30 @@ started2026-07-15T09:23:21.20464501Z.
 Acceptance641dbb6f confirms Studio C stopped14:45:23Z, source5d2e372c quit
 once/exit0, no in-flight transfers, canonical dev down exit0 and no owned
 listeners/processes. Private fixtures/DB/nonce/dirt are retained. MBP C cleanup
-by helper074f03cc remains pending. No operator clients were touched and no
+by helper074f03cc is confirmed complete; both endpoints remain paused. Its
+disclosed disposable transfer identity is retired and must not be reused. No operator clients were touched and no
 current global-zero claim is made. A fresh zero-count plan and immediate
 canonical pre-replacement recheck are required after cleanup confirmation.
 Acceptance stays paused until explicit release.
 
-Remote legs were recently stale. Fresh MBP info/task reads succeeded before
-coordination, but the subsequent retained-artifact preparation message is still
-awaiting tool completion; delivery is uncertain and was not blindly repeated.
-This is connectivity uncertainty, not proof of task failure or lost auth.
+The fresh post-pause plan at 14:50:31Z still reported count1 with the same
+plan digest. Private authenticated stats identify deployed commit3ce0847d01af,
+**seven open sockets and seven live rows**, with no disposable C IDs. The
+aggregate1 counts paired user buckets, not sockets. Source at that deployed
+commit confirms both socket fields use the same open-account registry.
+
+A bounded controller correction replaces the health user count with authenticated
+socket stats, records the deployed commit, refuses missing/mismatched operator
+visibility, and checks again immediately before proxy recreation. Late arrivals
+restore staged config without restarting Caddy. Ten focused setup tests pass,
+including unbound sockets with zero users, auth/malformed stats refusals and
+arrivals at both apply boundaries; kd typecheck passes. An accidentally broad
+initial test invocation was stopped; no full-suite result is claimed.
+
+Owner-controlled maintenance must pause the installed Studio/MBP and phone
+relay clients; Ship will never quit them to force zero. Hosting approval remains
+granted. No apply on the old controller or count-only plan, even if user count
+later reaches zero. A new corrected zero-socket plan is required.
 
 ## Retained bytes on the release host
 
@@ -60,7 +75,13 @@ inner pair.tar SHA256
 Read-only download plus the existing four-manifest verifier can recover B's
 original debs on the MBP without any rebuild/upload/private-key transfer.
 The committed B manifest and reports complete its local prepared input.
-MBP download completion is not yet established here.
+After explicit no-download reconciliation, a new bounded instruction completed
+one download and all four exact-package checks on the MBP. B manifest and two
+reports are byte-identical to committed evidence. Local manifest:
+`/Users/jeremyhale/.kanna/repos/kanna-7/.kanna-worktrees/task-6a8d78d0/.tmp/linux-controller/.tmp/prepared-pair-34959684410/B/manifest.json`.
+Manifest SHA256 `40c09771fe5b09f07436dc70966cfe16626ecdfd325675f0887a33914c64439b`.
+Portable preparation result is adjacent at `../preparation-result.json`.
+No package rebuild, upload or signing occurred.
 
 No real Linux key, release selector, host account, Caddy configuration,
 publication receipt, package URL or soak was changed by inspect/plan. Hosting
