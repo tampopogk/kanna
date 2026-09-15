@@ -219,6 +219,7 @@ export function subscribeDesktopCloudTasks(
     { documentId: string; snapshot: DesktopCloudDesktopSnapshot }
   >();
   let requestedEmission = 0;
+  let deliveredEmission = 0;
 
   const emit = async () => {
     const emission = ++requestedEmission;
@@ -229,11 +230,16 @@ export function subscribeDesktopCloudTasks(
         : Promise.resolve(base.activeDesktopIds),
       base.currentDesktopId === undefined ? resolveDesktopId() : Promise.resolve(base.currentDesktopId),
     ]);
-    if (cancelled || emission !== requestedEmission) return;
+    // A busy desktop can publish faster than relay presence reads complete.
+    // Only a newer delivered result supersedes this one; a pending read must
+    // not starve identity delivery. Read the current documents below, and
+    // never let an older presence result roll back a newer delivered result.
+    if (cancelled || emission <= deliveredEmission) return;
+    deliveredEmission = emission;
     const snapshots = [...tasksByDesktop.values()].flat();
     onUpdate(mapDesktopCloudTasks(
       snapshots,
-      { ...base, activeDesktopIds, currentDesktopId },
+      { ...options.getOptions(), activeDesktopIds, currentDesktopId },
       [...desktopsById.values()],
     ));
   };

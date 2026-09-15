@@ -81,13 +81,16 @@ beforeEach(() => {
 });
 
 describe("subscribeDesktopCloudTasks", () => {
-  it("registers a same-account desktop arriving after startup with LAN unavailable", async () => {
+  it("registers a late same-account desktop without LAN while newer presence reads are pending", async () => {
     const callbacks: Array<(snapshot: { docs: Array<Record<string, unknown>> }) => void> = [];
     vi.mocked(onSnapshot).mockImplementation(((_ref: unknown, callback: typeof callbacks[number]) => {
       callbacks.push(callback);
       return () => {};
     }) as never);
-    vi.mocked(listActiveDesktopIdsViaRelay).mockResolvedValue(new Set(["desktop-late"]));
+    const presenceResolvers: Array<(desktopIds: Set<string>) => void> = [];
+    vi.mocked(listActiveDesktopIdsViaRelay).mockImplementation(() => new Promise((resolve) => {
+      presenceResolvers.push(resolve);
+    }));
     const external = new Map<string, ExternalTransferPeerInput>();
     const ensureProxy = vi.fn(async () => ({ endpoint: "127.0.0.1:44551" }));
     const sync = createDesktopTransferMachineSync({
@@ -118,18 +121,27 @@ describe("subscribeDesktopCloudTasks", () => {
       await vi.waitFor(() => expect(callbacks).toHaveLength(1));
       callbacks[0]({ docs: [] });
       await vi.waitFor(() => expect(listActiveDesktopIdsViaRelay).toHaveBeenCalled());
+      presenceResolvers[0](new Set());
       await reconciliation;
       expect(external.size).toBe(0);
       callbacks[0]({ docs: [{ id: "desktop-late", ref: {}, data: () => ({
         desktopId: "desktop-late", displayName: "Late Studio",
         transfer: { peerId: "peer-late", publicKey: "late-key", protocolVersion: 1, acceptingTransfers: true },
       }) }] });
+      // Ordinary task updates can keep arriving faster than relay presence
+      // reads complete. A newer pending read must not suppress this completed
+      // read and strand the peer outside the live external registry.
+      callbacks[1]({ docs: [] });
+      expect(presenceResolvers).toHaveLength(3);
+      presenceResolvers[1](new Set(["desktop-late"]));
       await vi.waitFor(() => expect(external.has("peer-late")).toBe(true));
       await reconciliation;
       expect(ensureProxy).toHaveBeenCalledWith({ peerId: "peer-late", desktopId: "desktop-late", relayUrl: "wss://relay.test", idToken: "same-account-token" });
       expect(sync.getTransferMachines()).toEqual([expect.objectContaining({ peerId: "peer-late", preferredTransport: "cloud", lanEndpoint: null })]);
       callbacks[0]({ docs: [] });
+      presenceResolvers[3](new Set());
       await vi.waitFor(() => expect(external.size).toBe(0));
+      presenceResolvers[2](new Set(["desktop-late"]));
     } finally {
       unsubscribe();
       await sync.dispose();

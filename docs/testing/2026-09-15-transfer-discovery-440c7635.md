@@ -37,6 +37,18 @@ from the failed source. No installed operator app was tested or changed.
    desktop's LAN selection/pairing path. The server API already classified by
    proxy endpoint, so this is **not** the cause of the original API LAN refusal.
 
+3. **Overlapping presence reads can starve cloud identity delivery.** The
+   Firestore subscription previously discarded a completed relay-presence read
+   whenever a newer read was pending. With task updates arriving faster than
+   those reads finish, no snapshot reaches the transfer synchronizer. A
+   producer-callback → mapper → synchronizer regression now reproduces a late
+   same-account peer remaining unregistered despite a completed online-presence
+   result, with LAN unavailable. It fails before the correction and passes after.
+   Delivery now rejects only results older than an already-delivered result,
+   preserving ordering without waiting for the update stream to become quiet.
+   Mapping uses current documents and local options. No timer or retry was added.
+   This establishes a product defect, **not** that it caused the old C incident.
+
 ## Cloud investigation — cause remains open
 
 The retained MBP `/v1/cloud/desktops` result proves relay/LAN presence, **not**
@@ -49,7 +61,8 @@ The identity producer intentionally publishes cloud protocol **1** independently
 of direct peer protocol **5**. No version change is warranted. Listener contexts
 share the live external registry; they do not take a startup snapshot.
 
-Two focused regressions currently pass without changing cloud behavior:
+The initial checkpoint `552d55faa` passed two focused regressions without changing
+cloud behavior:
 
 - Authenticated desktop subscription callback → cloud mapping →
   `setCloudMachines` → proxy/external registration accepts a peer arriving after
@@ -81,6 +94,10 @@ this task.
 - Late cloud runtime registration and preflight/pull: pass.
 - Desktop cloud index, machine merge, and synchronization lifecycle: 46 passing
   tests. Desktop `vue-tsc --noEmit`: pass.
+- Overlapping presence reads added to the late-peer regression: expected failure
+  before the cloud delivery correction (`.tmp/cloud-emission-before.log`); all
+  46 focused desktop tests pass after (`.tmp/cloud-emission-after.log`). Existing
+  out-of-order completion coverage still prevents rollback by older results.
 - `cargo clippy -p kanna-task-transfer --all-targets -- -D warnings`: pass.
 
 This is focused implementation evidence, not physical cross-machine or release
@@ -92,7 +109,8 @@ Before any normal fixture startup, acceptance must reconcile the retained work
 `push:5d2e372c:C-CLOUD-leg1-641` through supported orchestration. Stopping did
 not cancel it. Keep task `5d2e372c`, its review workspace, committed head
 `7365949699b6fb5816ade47d6027760e87e3c144`, tracked/untracked bytes, DB, and
-provider history. Do not queue a duplicate intent or reuse old C identities.
+provider history. Do not queue a duplicate intent or attribute the corrected
+runtime to the old C source/build.
 
 Pin the corrected source/tree, binary hashes, ports, and exact native title
 containing `641dbb6f` on both isolated endpoints through canonical kd. Same
