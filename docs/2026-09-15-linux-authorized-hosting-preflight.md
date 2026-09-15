@@ -57,3 +57,51 @@ attempt. No package, key, DNS, Caddy, host, publication receipt or soak changed.
 B stays a9df2f1d46fb08bcf53200b738e0fdc3c127b636 / 0.2.0 staging.2. The four
 prepared A/B artifacts and floor acceptance stay intact. Ship remains open;
 website76e93c62 receives actual verified resources only after publication.
+
+## Update: trusted MBP authentication confirmed; Studio repair unnecessary
+
+Ship6a8d78d0 supplied successful authenticated MBP inventory:
+
+| Project / VM | State / zone | External IP | Disk |
+| --- | --- | --- | --- |
+| kanna-staging / kanna-relay-staging | RUNNING / us-central1-a | 34.133.43.193 | kanna-relay-staging, 30GB |
+| kanna-build / kanna-relay-vm | RUNNING / us-central1-a | 34.133.233.111 | kanna-relay-vm, 30GB |
+
+Both report internal 10.128.0.2 in their respective projects. Select the staging
+VM for the approved archive; there is no unresolved owner host choice.
+The Studio's failed credential refresh is historical and no longer blocks
+inventory. No login, credential transfer or Studio reauthentication is needed.
+The stale authentication attention badge has been cleared.
+
+MBP reports existing admin SSH public keys (RSA3072 and ED25519), but these
+are neither apt signing keys nor an approved dedicated publisher identity.
+No ~/.gnupg exists; this alone does not establish whether a suitable apt key
+exists elsewhere. No key was created/exported or selected. The shared release
+environment file remains untouched; MBP owns simultaneous desktop/mobile
+release work at dc75f7a3, independent of Linux B. Linux selector installation
+must be coordinated as a narrow merge preserving all existing selectors.
+
+The selected-host inert configuration is
+`docs/evidence/2026-09-15-linux-bootstrap/publication-preparation/staging-archive.env.example`.
+It deliberately fails configuration validation until a real apt fingerprint is
+supplied; approved URL and credential paths are desired configuration, not
+claims of provisioning. Do not install/source this template unchanged.
+
+### Exact remaining engineering boundary
+
+Provide a canonical existing-host apt setup operation covering the approved
+account/archive, authenticated SSH host-key pin, dedicated protected MBP keys,
+DNS ownership/readback and Caddy-only configuration. It must inventory and pin
+the current relay image/config first, refuse unexpected existing resources,
+retain rollback material, validate Caddy configuration and preserve the relay
+container/environment. It must not invoke the current full relay build/deploy,
+create a new VM/IAM role, access mobile signing secrets, or print private keys.
+DNS provider/account ownership and VM free space/current service configuration
+still need authenticated read-only inspection through the MBP before mutation.
+The static 30GB disk size is not available-capacity evidence.
+
+No further hosting approval is requested. This is a missing canonical setup
+implementation, not a missing owner decision or credential blocker. Current
+repo rules forbid inventing a raw release/provisioning workaround. Publication
+can use the already merged retained-B route once this boundary and real setup
+are complete. No verified public URLs/fingerprint/receipt are available yet.
