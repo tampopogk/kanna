@@ -1,3 +1,4 @@
+import { prepareLinuxRelease } from "../runtime/linux-release-prepare";
 import { spawn } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { connect } from "node:net";
@@ -127,7 +128,7 @@ import {
   resetStagingLineage,
   shipRelease
 } from "../runtime/release";
-import { linuxReleaseStatus, shipLinuxRelease } from "../runtime/linux-release";
+import { linuxReleaseStatus, shipLinuxRelease, renewLinuxRelease } from "../runtime/linux-release";
 import { loadReleaseEnvironment } from "../runtime/release-env";
 import {
   preflightNotarizationCredentials,
@@ -500,6 +501,8 @@ const releaseCutInputSchema = z.object({
   if (!parsed.confirmOldTip) ctx.addIssue({ code: z.ZodIssueCode.custom, message: "release cut --recut requires --confirm-old-tip." });
 });
 
+const releasePrepareInputSchema = z.object({ platform: z.literal("linux"), ref: z.string().regex(/^[a-f0-9]{40}$/), stagingIteration: z.number().int().positive(), outDir: z.string().optional() }).strict();
+const releaseRenewInputSchema = z.object({ platform: z.literal("linux"), candidate: z.string(), renewal: z.number().int().positive(), validForHours: z.number().finite().positive() }).strict();
 const releaseStatusInputSchema = z.object({ platform: z.enum(["macos", "linux"]).default("macos"), acceptance: z.string().optional() }).strict();
 
 const releaseSetupNotarizationInputSchema = z.object({
@@ -3192,6 +3195,29 @@ export const taskDefinitions = [
       const context = await resolveDefaultContext(process.env);
       const outputs = buildConfigSchemaPages({ repoRoot: context.repoRoot, outDir: resolve(context.repoRoot, parsed.outDir) });
       return { ok: true, message: outputs.join("\n"), data: { outputs } };
+    }
+  },
+  {
+    id: "release.prepare",
+    description: "Locally collect both Linux packages from an isolated exact commit, without release configuration, keys or publication.",
+    inputSchema: releasePrepareInputSchema,
+    execute: async (_context, input) => {
+      const parsed = releasePrepareInputSchema.parse(input);
+      const context = await resolveDefaultContext(process.env);
+      const result = await prepareLinuxRelease({ ...parsed, repoRoot: context.repoRoot, env: context.env, runner: nodeCommandRunner });
+      return { ok: true, message: formatJsonResult(result), data: result };
+    }
+  },
+  {
+    id: "release.renew",
+    description: "Explicitly publish signed Linux metadata renewal for the same candidate/artifacts, preserving its original receipt and soak.",
+    inputSchema: releaseRenewInputSchema,
+    execute: async (_context, input) => {
+      const parsed = releaseRenewInputSchema.parse(input);
+      const context = await resolveDefaultContext(process.env);
+      const env = await loadReleaseTaskEnvironment(context);
+      const result = await renewLinuxRelease({ ...parsed, repoRoot: context.repoRoot, env, runner: nodeCommandRunner });
+      return { ok: true, message: formatJsonResult(result), data: result };
     }
   },
   {

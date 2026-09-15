@@ -5,7 +5,11 @@ import { z } from "zod";
 /** Non-secret selectors use the existing owner-only ~/.kanna/.env.release.local
  * loader. No inherited mobile bucket, default archive, key or expiry policy. */
 export const linuxReleaseConfigSchema = z.object({
-  backend: z.literal("filesystem"),
+  backend: z.enum(["filesystem", "ssh"]),
+  ssh: z.object({
+    host: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9.-]*$/), user: z.string().regex(/^[a-z_][a-z0-9_-]*$/i),
+    port: z.number().int().min(1).max(65535), knownHostsPath: z.string().refine(isAbsolute), identityPath: z.string().refine(isAbsolute),
+  }).strict().optional(),
   root: z.string().refine(isAbsolute, "must be absolute"),
   baseUrl: z.url().refine(value => { const u = new URL(value); return u.protocol === "https:" && !u.username && !u.password && !u.search && !u.hash; }, "must be a public HTTPS archive base URL"),
   validForHours: z.number().finite().positive(),
@@ -13,10 +17,14 @@ export const linuxReleaseConfigSchema = z.object({
   fingerprint: z.string().regex(/^[a-f0-9]{40}$/i),
   privateKeyPath: z.string().refine(isAbsolute).optional(),
   passphrasePath: z.string().refine(isAbsolute).optional(),
-});
+}).refine(c => c.backend === "ssh" ? !!c.ssh : !c.ssh, "SSH selectors are required only for the ssh backend");
 export type LinuxReleaseConfig = z.infer<typeof linuxReleaseConfigSchema>;
 export function linuxReleaseConfig(env: NodeJS.ProcessEnv): LinuxReleaseConfig {
   const parsed = linuxReleaseConfigSchema.safeParse({
+    ssh: env.KANNA_LINUX_ARCHIVE_BACKEND === "ssh" ? {
+      host: env.KANNA_LINUX_SSH_HOST, user: env.KANNA_LINUX_SSH_USER, port: Number(env.KANNA_LINUX_SSH_PORT),
+      knownHostsPath: env.KANNA_LINUX_SSH_KNOWN_HOSTS_PATH, identityPath: env.KANNA_LINUX_SSH_IDENTITY_PATH,
+    } : undefined,
     backend: env.KANNA_LINUX_ARCHIVE_BACKEND, root: env.KANNA_LINUX_ARCHIVE_ROOT,
     baseUrl: env.KANNA_LINUX_ARCHIVE_BASE_URL, validForHours: Number(env.KANNA_LINUX_ARCHIVE_VALID_HOURS),
     publicKeyPath: env.KANNA_LINUX_APT_PUBLIC_KEY_PATH, fingerprint: env.KANNA_LINUX_APT_FINGERPRINT,

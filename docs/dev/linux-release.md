@@ -1,6 +1,6 @@
 # Linux release lifecycle
 
-`kd release status|ship|promote --platform linux` owns Linux only:
+`kd release prepare|status|ship|renew|promote --platform linux` owns Linux only:
 `desktop-linux-staging` / `desktop-linux`, `linux-vX.Y.Z[-staging.N]`,
 `release/linux/X.Y`, and apt suites `staging` / `stable`. Omitting the platform
 still selects macOS. Unsupported platforms and Linux cut, reset, rollback,
@@ -19,8 +19,8 @@ metadata lifetime is chosen for the owner:
 
 | Selector | Required value |
 | --- | --- |
-| `KANNA_LINUX_ARCHIVE_BACKEND` | `filesystem` |
-| `KANNA_LINUX_ARCHIVE_ROOT` | Absolute path to an existing dedicated local POSIX archive directory, without symlink components |
+| `KANNA_LINUX_ARCHIVE_BACKEND` | `filesystem` or opt-in `ssh` |
+| `KANNA_LINUX_ARCHIVE_ROOT` | Absolute path to an existing dedicated POSIX archive directory on the selected storage host, without symlink components |
 | `KANNA_LINUX_ARCHIVE_BASE_URL` | Public HTTPS URL serving that directory, without credentials, query or fragment |
 | `KANNA_LINUX_ARCHIVE_VALID_HOURS` | Explicit positive validity interval for apt metadata |
 | `KANNA_LINUX_APT_PUBLIC_KEY_PATH` | Absolute path to the armored public key |
@@ -28,7 +28,7 @@ metadata lifetime is chosen for the owner:
 | `KANNA_LINUX_APT_PRIVATE_KEY_PATH` | Absolute path to the owner-only private key on the trusted release host; required to publish |
 | `KANNA_LINUX_APT_PASSPHRASE_PATH` | Optional absolute owner-only file for an encrypted key's passphrase; one terminal newline is removed |
 
-The adapter needs `/usr/bin/python3` on the release host for `fcntl.flock` and
+The adapter needs `/usr/bin/python3` on the storage host for `fcntl.flock` and
 fd-relative filesystem operations. It holds one archive-wide kernel lock,
 including across suites, signing, public readback and GitHub projection. The
 helper owns both the lock and writes. EOF releases the lock when the publisher
@@ -37,13 +37,37 @@ explicit refusal, not a polling/retry loop. Writes use fsynced temporary files,
 hard-link create-if-absent, atomic rename and directory fsync. Reads use actual
 stored bytes. Symlinks, traversal and lost ownership are refused.
 
-Only a dedicated **local POSIX filesystem** is supported: not NFS, FUSE, an
-object-store mount, or an rsync mirror. The owner must choose a serving topology
-where that same archive is available from the trusted release host and public
-URL. The implementation creates no directory, server, bucket, credentials or
-billing resource. A different storage backend must implement the existing
-`AptPublicationStorage` contract and demonstrate its atomic ownership semantics.
-There is no implicit reuse of mobile Firebase/GCS storage.
+Both backends require a dedicated **local POSIX filesystem on the storage
+host**: not NFS, FUSE, an object-store mount, SSHFS or an rsync mirror. The local
+backend runs the helper directly. The SSH backend sends that **same helper**
+over one SSH exec channel; the remote process owns the lock and every read/write
+through signing, public readback and GitHub projection. Signing remains local.
+Transport failure poisons the scope, including its final ownership fence; a new
+explicit invocation acquires fresh ownership and resumes durable state. No
+connection pooling, secondary upload session or host-key discovery is used.
+
+SSH additionally requires these explicit selectors (no defaults):
+
+| Selector | Value |
+| --- | --- |
+| `KANNA_LINUX_SSH_HOST` | Direct hostname or IPv4 address of the storage host |
+| `KANNA_LINUX_SSH_USER` | Dedicated publisher account |
+| `KANNA_LINUX_SSH_PORT` | SSH port, 1–65535 |
+| `KANNA_LINUX_SSH_KNOWN_HOSTS_PATH` | Absolute owner-only regular file containing the independently pinned host key |
+| `KANNA_LINUX_SSH_IDENTITY_PATH` | Absolute owner-only regular file for the explicitly selected SSH identity |
+
+The client uses `/usr/bin/ssh`, no user SSH config, strict host-key checking,
+only the selected known-hosts file/identity, batch authentication, no agent or
+port forwarding, and no multiplexed connection. Connection establishment and
+unresponsive transports have bounded SSH timeouts. Host pin failure is a refusal,
+never a prompt or a reason to disable checking. SSH transport credentials are
+separate from apt signing keys. Only signed metadata, artifact bytes and storage
+operations cross the SSH channel.
+
+The implementation creates no archive directory, server, account, credentials,
+DNS or billing resource. There is no implicit reuse of mobile Firebase/GCS
+storage. See [the proposed deployment runbook](../2026-09-15-linux-release-operations-proposal.md)
+for the concrete topology awaiting later approval.
 
 The existing pinned OpenPGP adapter requires v4 RSA >=3072 bits and SHA512,
 verifies the selected public/private fingerprint pair, and refuses expired,
@@ -51,6 +75,48 @@ revoked, mismatched or malformed signatures/metadata. Real keys remain on the
 trusted release host; builders receive no private key material.
 
 ## Preparation and publication
+
+### Local exact-ref preparation (no archive or key configuration)
+
+```sh
+./kd release prepare --platform linux --ref <40-hex-commit> --staging-iteration N
+# Optional: --out-dir <new-directory>
+```
+
+Current kd fetches only the selected local commit into a private detached Git
+repository under the calling worktree's `.tmp/`. It never changes the calling
+branch, index or files; dirty controller files cannot enter the build source.
+It pins and checks revision/tree/cleanliness before and after the existing
+collector. Both architecture builds use batch Bazel, leaving no build daemon
+attached to the removed checkout. The source's own graph, package action and
+runtime policy own all build inputs. Preparation loads no release environment
+file, archive configuration, keys, public URL or remote-tip/lineage gates.
+
+The default result directory is `.build/linux-prepared/<sha>-staging.N/`:
+both canonical debs, their measured `.deb.json` reports, and `manifest.json`
+with source revision/tree, committed version, iteration, both artifact/report
+hashes and sizes. Outputs are flushed; the manifest is the atomic completion
+marker. An existing output directory is refused, never overwritten. An interrupted
+collection without a manifest is incomplete; keep it for diagnosis and use a new
+output directory. The isolated source is removed on success or failure.
+Preparation is evidence collection, not acceptance, publication or a soak start.
+Ship's publication path retains its configuration, key, lock and remote-tip gates.
+
+Historical compatibility is explicit and conservative: sources missing the
+known graph/report stamp support fail **before building**. In particular,
+`79f1c8225f0302d1e8d59dacedc5c148a9438272` is product-capable but unsupported
+as an exact stamped release source. The stamp-only difference from that commit
+to `188d118eea93cc99b8355f4f3ce5ecb1db34477d` is confined to
+`packaging/linux/products.bzl` (two manifest fields) and
+`tools/kd/src/runtime/linux-bazel-package.ts` (interface/report fields).
+A defensible predecessor path is a separately reviewed commit adding exactly
+that support to the historical product baseline, then preparing its **new SHA**.
+No checkout patching, historical-SHA stamping of modified source, renamed package
+or import of unstamped CI packages is supported. Ship selects the final genuine
+A/B pair and runs both installed-upgrade lanes. Earlier CI evidence retains its
+original source identity; no exact-ref native result is claimed by these tests.
+
+### Configured publication
 
 ```sh
 ./kd release status --platform linux
@@ -177,11 +243,62 @@ pending state, projection/readback errors, moved base, lineage, abandoned series
 keys, acceptance and soak. Promotion builds production identity at the exact
 soaked commit/tree; staging package bytes are never relabelled as `kanna`.
 
-`Valid-Until` expiry fails closed. This slice implements no renewal command and
-chooses no renewal schedule/owner. A pending transaction whose signed metadata
-expired cannot silently acquire a new date or signature. Before real publication,
-Ship must obtain an explicit validity/renewal operational plan; implementing a
-renewal procedure must preserve the candidate's receipt/soak identity.
+## Explicit metadata renewal
+
+```sh
+# Only after authorization to update this candidate's public apt metadata:
+./kd release renew --platform linux --candidate linux-vX.Y.Z-staging.N --renewal 1 --valid-for-hours <hours>
+# Stable metadata uses the exact production tag: --candidate linux-vX.Y.Z
+```
+
+`renew` signs locally and publishes new Date/Valid-Until metadata for the **same
+candidate and packages**. The tag, source/tree, artifacts/reports, acceptance,
+original candidate and original `publication.json` never change. GitHub still
+projects that original receipt; an existing soak timestamp survives renewal and
+every retry. No remote branch movement, native build, new version, channel switch
+or production promotion is part of renewal. Public metadata updates require the
+authorization for their target suite; a production renewal is a named-human
+production operation.
+
+Each explicit sequence stores immutable
+`linux/releases/<tag>/renewals/<sequence>/renewal.json`, containing the record
+and base64 clearsigned metadata together. The record binds the candidate digest,
+previous signature, exact metadata being replaced, original receipt digest (or
+null before any verified publication), date and selected lifetime. The signed
+Release includes `X-Kanna-Renewal-SHA256`, authenticating that record. The journal
+claims a `pendingRenewal` before changing canonical metadata. The helper atomically
+replaces Release and then InRelease; local closure/signature verification and
+public byte readback precede the immutable renewal `publication.json` receipt.
+That receipt has its own first-observation timestamp; it does not replace soak.
+
+Retry the **same sequence and validity** after interruption. An envelope whose
+write succeeded before its acknowledgement/journal is recovered intact. A lost
+public readback leaves pending state and blocks ship/promote or another candidate.
+The same sequence never gets a new date or signature. If its metadata expired,
+explicitly request the next sequence; it retains the earlier signed history and
+can supersede pending metadata. Unchanged artifact closure and exact live metadata
+are checked first; corruption or an out-of-band change is refused. The latest
+metadata must verify at the current time. Expired historical signatures are
+verified against their original authenticated contents within their own validity
+interval solely to establish history, never to make expired live metadata usable.
+
+A pending initial publication with a cached signed commit and complete uploaded
+closure can be renewed, including after expiration. If no original verified-public
+receipt exists, its first receipt names the renewed signature and the durable first
+verified public observation; it never backdates availability to the original
+preparation/signature date. If the original transaction has not even produced its
+cached signed commit or complete closure, renewal refuses: it cannot substitute
+for the original artifact collection/publication gates. Finish that original
+publication while valid; an expired unsigned/incomplete intent requires explicit
+repair through the original verified publication inputs, not hand-edited archive
+state or renewal of unverified inputs.
+
+No validity interval or renewal schedule is a production default. The command
+requires explicit hours and sequence. Ship's proposal of **168 hours validity /
+48 hours renewal** remains an operational proposal, with operator availability,
+expiry monitoring and backup custody still needing approval. No public scheduler
+is installed or invoked. Status reports expired metadata and pending renewal as
+promotion blockers; renewal never waives the full tested-candidate soak.
 
 ## Evidence and remaining needs (task e26eaa13)
 

@@ -1,5 +1,6 @@
 /** Durable Linux candidate transaction. Apt is authoritative; GitHub is a
  * recoverable projection. All state changes share the archive's writer lock. */
+import { linuxMetadataHistory, verifyLinuxRenewalReceipt } from "./linux-release-renewal";
 import { readFileSync } from "node:fs";
 import { z } from "zod";
 import { channelIdentity, debianArchitecture, debianVersion, debFileName } from "./linux-package";
@@ -78,7 +79,7 @@ export interface LinuxCandidate {
   acceptance: LinuxAcceptance | null;
 }
 export interface LinuxPublicationReceipt { tag: string; candidateSha256: string; inReleaseSha256: string; verifiedAt: string }
-export interface LinuxArchiveState { schemaVersion: 1; staging: string | null; production: string | null; pending: string | null }
+export interface LinuxArchiveState { schemaVersion: 1; staging: string | null; production: string | null; pending: string | null; renewals?: Record<string, number>; pendingRenewal?: { tag: string; sequence: number } | null }
 export const statePath = "linux/state.json";
 export const candidatePath = (tag: string) => {
   if (!/^linux-v\d+\.\d+\.\d+(?:-staging\.[1-9]\d*)?$/.test(tag)) throw new Error("Invalid Linux candidate tag.");
@@ -98,6 +99,14 @@ export async function archiveState(storage: AptPublicationStorage): Promise<Linu
   }
   if (state.schemaVersion !== 1 || !["staging", "production", "pending"].every(k => Object.hasOwn(state, k))) throw new Error("Invalid Linux archive state.");
   for (const tag of [state.staging, state.production, state.pending]) if (tag !== null) candidatePath(tag);
+  for (const [tag, sequence] of Object.entries(state.renewals ?? {})) {
+    candidatePath(tag);
+    if (!Number.isSafeInteger(sequence) || sequence < 1) throw new Error("Invalid Linux renewal state.");
+  }
+  if (state.pendingRenewal) {
+    candidatePath(state.pendingRenewal.tag);
+    if (!Number.isSafeInteger(state.pendingRenewal.sequence) || state.pendingRenewal.sequence < 1) throw new Error("Invalid pending Linux renewal.");
+  }
   return state;
 }
 export async function immutable(storage: AptPublicationStorage, path: string, bytes: Uint8Array): Promise<void> {
@@ -126,9 +135,14 @@ export async function readCandidate(storage: AptPublicationStorage, tag: string)
 export async function verifyLinuxPublication(storage: AptPublicationStorage, c: LinuxCandidate, key: AptVerificationKey, now: Date): Promise<LinuxPublicationReceipt> {
   const receipt = await readJson<LinuxPublicationReceipt>(storage, releasePath(c.tag, "publication.json"));
   const signed = await storage.read(inReleasePath(c.channel));
-  if (!receipt || receipt.tag !== c.tag || receipt.candidateSha256 !== sha256(jsonBytes(c)) || !signed || receipt.inReleaseSha256 !== sha256(signed) || !Number.isFinite(Date.parse(receipt.verifiedAt)) || Date.parse(receipt.verifiedAt) > now.getTime()) throw new Error("Missing or inconsistent verified Linux publication receipt.");
-  if (key.fingerprint.toLowerCase() !== c.fingerprint.toLowerCase()) throw new Error("Linux candidate key pin differs from configuration.");
-  await verifyAptRelease({ ...key, now, signedRelease: signed, expectedRelease: candidateRelease(c) });
+  const state = await archiveState(storage);
+  const metadata = await linuxMetadataHistory(storage, c, key, now, state.renewals?.[c.tag] ?? 0);
+  if (!receipt || receipt.tag !== c.tag || receipt.candidateSha256 !== sha256(jsonBytes(c)) || !signed || (!metadata.hashes.includes(receipt.inReleaseSha256) || sha256(metadata.signed) !== sha256(signed)) || !Number.isFinite(Date.parse(receipt.verifiedAt)) || Date.parse(receipt.verifiedAt) > now.getTime()) throw new Error("Missing or inconsistent verified Linux publication receipt.");
+  await verifyLinuxRenewalReceipt(storage, c, state.renewals?.[c.tag] ?? 0, now, metadata.signed);
+  await verifyLinuxClosure(storage, c);
+  return receipt;
+}
+export async function verifyLinuxClosure(storage: AptPublicationStorage, c: LinuxCandidate): Promise<void> {
   for (const a of c.aptArtifacts) {
     const bytes = await storage.read(poolPath(a));
     if (!bytes || sha256(bytes) !== a.sha256 || bytes.byteLength !== a.sizeBytes) throw new Error("Published Linux package is missing or changed.");
@@ -140,7 +154,6 @@ export async function verifyLinuxPublication(storage: AptPublicationStorage, c: 
     const report = await storage.read(releasePath(c.tag, `${a.architecture}.report.json`));
     if (!report || sha256(report) !== a.reportSha256) throw new Error("Published Linux report is missing or changed.");
   }
-  return receipt;
 }
 /** Caller holds archive ownership across gates, apt, receipt and projections.
  * The scoped wrapper lets the existing apt transaction share that ownership. */
@@ -153,6 +166,7 @@ export async function publishLinuxCandidate(input: {
   const { storage, candidate: c } = input;
   if (JSON.stringify(c.artifacts) !== JSON.stringify(input.artifacts.map(a => a.identity)) || JSON.stringify(c.aptArtifacts) !== JSON.stringify(input.artifacts.map(a => a.publication.artifact))) throw new Error("Linux publication artifacts differ from immutable candidate inputs.");
   const state = await archiveState(storage);
+  if (state.pendingRenewal) throw new Error("Recover pending Linux metadata renewal first.");
   if (state.pending && state.pending !== c.tag) throw new Error(`Recover pending Linux publication ${state.pending} first.`);
   await immutable(storage, candidatePath(c.tag), jsonBytes(c));
   await readCandidate(storage, c.tag);
@@ -160,6 +174,13 @@ export async function publishLinuxCandidate(input: {
   if (input.acceptance) for (const [hash, bytes] of Object.entries(input.acceptance.evidence)) await immutable(storage, `linux/evidence/${hash}`, bytes);
   const slot = c.channel === "desktop-linux" ? "production" : "staging";
   if (state[slot] !== c.previousTag && state[slot] !== c.tag) throw new Error("Linux channel changed since the candidate was prepared.");
+  if (state.renewals?.[c.tag]) {
+    const receipt = await verifyLinuxPublication(storage, c, input.key, input.now());
+    await input.observeCommit?.(c);
+    await input.project(c, receipt);
+    await storage.replace(statePath, jsonBytes({ ...state, [slot]: c.tag, pending: null }));
+    return receipt;
+  }
   await storage.replace(statePath, jsonBytes({ ...state, pending: c.tag }));
   let receipt = await readJson<LinuxPublicationReceipt>(storage, releasePath(c.tag, "publication.json"));
   const live = await storage.read(inReleasePath(c.channel));
