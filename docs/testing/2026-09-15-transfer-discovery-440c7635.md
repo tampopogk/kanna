@@ -108,3 +108,26 @@ coverage must remain valid without LAN discovery. Acceptance owns a fresh blind
 recall nonce; do not place it in any prompt. Keep results distinct from old C
 and Linux B. No production acceptance, publication, or soak waiver follows
 from this implementation.
+
+### Reconciliation gate traced after the source handoff
+
+The corrected code checkpoint is local commit `552d55faa58510dc556cd23f648f5e8d0f9cac6a`,
+tree `d1b51a1e623c0e0f09b1ae57daa0691579f931c2`. Acceptance verified its portable
+bundle with prerequisite `dc75f7a3`; SHA-256:
+`ed827692d4c595c22034bbbc895ec7779f86a0d6fc03d142b72de210ba543bc4`.
+
+Read-only source tracing found no supported offline inspect/cancel/pause control
+for the retained pre-record push. `runtime.rs` unconditionally starts
+`transfer_engine::run`, which recovers and drains pending work before an API
+caller can intervene. The retry budget in `db/transfer_work.rs` is eight, so
+five observed failures do not establish exhaustion. The public rejection and
+cleanup operations require a transfer ID, which this failed push never created.
+
+Acceptance acknowledged this gate and kept both allocations stopped. No DB was
+opened or edited, no old intent was retried, and no fixture was restarted.
+Adding a queue-maintenance feature would extend this task's scope; the owner
+must choose a separate task or an explicit scope extension. Until supported
+reconciliation enables the controlled rerun, the original cloud cause and
+cross-machine acceptance remain unresolved. All test/probe processes started
+by this implementation task have exited. No stage advance or publication was
+performed.
