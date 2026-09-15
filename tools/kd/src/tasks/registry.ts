@@ -841,9 +841,18 @@ export async function executeDevRestartWithContext(
     };
   }
 
-  const restarted = await respawnTmuxWindow(executor.runner, executor.context.tmux, window);
+  const restartResult = await respawnTmuxWindow(executor.runner, executor.context.tmux, window);
   let failure: string | undefined;
-  if (restarted && input.component === "desktop") {
+  if (restartResult.windowFound) {
+    const state = restartResult.state;
+    if (!state?.exists) {
+      failure = "tmux window disappeared during startup";
+    } else if (state.dead) {
+      const suffix = state.exitCode === undefined ? "" : ` with exit code ${state.exitCode}`;
+      failure = `tmux pane exited during startup${suffix}`;
+    }
+  }
+  if (restartResult.windowFound && !failure && input.component === "desktop") {
     const port = requireNumberPort(executor.context.ports, "KANNA_DEV_PORT");
     const startup = await waitForTmuxWindowReady(
       executor.runner,
@@ -863,8 +872,8 @@ export async function executeDevRestartWithContext(
     );
     if (!startup.ready) failure = startup.failure;
   }
-  if (!restarted || failure) {
-    const log = restarted
+  if (!restartResult.windowFound || failure) {
+    const log = restartResult.windowFound
       ? await captureTmuxLog(executor.runner, executor.context.tmux, window.name).catch(() => "")
       : "";
     return {

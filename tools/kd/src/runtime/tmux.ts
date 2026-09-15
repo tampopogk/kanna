@@ -26,6 +26,11 @@ export interface TmuxWindowState {
   exitCode?: number;
 }
 
+export interface RespawnTmuxWindowResult {
+  windowFound: boolean;
+  state?: TmuxWindowState;
+}
+
 export interface WaitForTmuxWindowReadyOptions {
   attempts?: number;
   delayMs?: number;
@@ -206,7 +211,7 @@ export async function startTmuxSession(
 
   if (hasTmuxWindowEnv(first.env)) {
     const respawned = await respawnTmuxWindow(runner, target, first);
-    if (!respawned) {
+    if (!respawned.windowFound || !respawned.state?.exists || respawned.state.dead) {
       throw new Error(`tmux failed to start ${target.session}:${first.name}: window was not created`);
     }
   }
@@ -479,10 +484,14 @@ export async function waitForTmuxWindowReady(
   return { ready: false, failure: "timed out waiting for startup readiness" };
 }
 
-export async function respawnTmuxWindow(runner: CommandRunner, target: TmuxTarget, window: DevWindow): Promise<boolean> {
+export async function respawnTmuxWindow(
+  runner: CommandRunner,
+  target: TmuxTarget,
+  window: DevWindow
+): Promise<RespawnTmuxWindowResult> {
   const list = await runner.run("tmux", ["-L", target.server, "list-windows", "-t", target.session, "-F", "#{window_name}"]);
   if (list.exitCode !== 0) {
-    return false;
+    return { windowFound: false };
   }
   const exists = list.stdout
     .split("\n")
@@ -490,7 +499,7 @@ export async function respawnTmuxWindow(runner: CommandRunner, target: TmuxTarge
     .filter(Boolean)
     .includes(window.name);
   if (!exists) {
-    return false;
+    return { windowFound: false };
   }
 
   await setRemainOnExit(runner, target);
@@ -517,7 +526,7 @@ export async function respawnTmuxWindow(runner: CommandRunner, target: TmuxTarge
     throw new Error(`tmux failed to respawn ${target.session}:${window.name}: ${result.stderr}`);
   }
   const after = await tmuxWindowState(runner, target, window.name);
-  return after.exists && !after.dead;
+  return { windowFound: true, state: after };
 }
 
 export async function captureTmuxLog(runner: CommandRunner, target: TmuxTarget, window: string): Promise<string> {

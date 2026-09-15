@@ -912,7 +912,6 @@ describe("task executors", () => {
   it("reports an exited replacement desktop pane as a restart failure", async () => {
     const repoRoot = await kdTestScratchDir("kanna-kd-restart-exit-");
     await mkdir(join(repoRoot, "apps", "desktop", "src-tauri"), { recursive: true });
-    let stateReads = 0;
     const runner: CommandRunner = {
       async run(_command, args) {
         if (args.includes("list-windows")) {
@@ -925,10 +924,7 @@ describe("task executors", () => {
           return { exitCode: 0, stdout: "", stderr: "" };
         }
         if (args.at(-1) === "#{pane_dead} #{pane_dead_status}") {
-          stateReads += 1;
-          return stateReads === 1
-            ? { exitCode: 0, stdout: "0 \n", stderr: "" }
-            : { exitCode: 0, stdout: "1 1\n", stderr: "" };
+          return { exitCode: 0, stdout: "1 1\n", stderr: "" };
         }
         return { exitCode: 0, stdout: "", stderr: "" };
       }

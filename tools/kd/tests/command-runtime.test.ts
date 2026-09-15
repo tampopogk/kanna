@@ -313,7 +313,10 @@ describe("command runtime helpers", () => {
           }
         }
       )
-    ).resolves.toBe(true);
+    ).resolves.toEqual({
+      windowFound: true,
+      state: { exists: true, dead: false, exitCode: undefined }
+    });
 
     expect(calls).toEqual([
       {
@@ -411,7 +414,10 @@ describe("command runtime helpers", () => {
         { attempts: 20, delayMs: 25 }
       );
 
-      expect(respawned).toBe(true);
+      expect(respawned).toEqual({
+        windowFound: true,
+        state: { exists: true, dead: false, exitCode: undefined }
+      });
       expect(startup).toEqual({ ready: true });
       expect(() => process.kill(oldPid, 0)).toThrow();
     } finally {
