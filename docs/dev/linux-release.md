@@ -224,6 +224,15 @@ Local correction verification: `bazel --batch build -c opt
 Darwin ARM64, covering both executable variants; the batch process exited.
 The four focused `Bazel workspace path dependencies` tests also pass.
 
+The first correction verification run, `34940014222` at `a6e3e11d0`, exposed
+an apt bundle smoke-test assumption before native builds finished: the signer
+now shares OpenPGP code with kd, so its license/source map live in a reachable
+chunk rather than next to the entry module. The smoke check now follows its
+already-verified emitted dependency closure for those artifacts. Local isolated
+bundle sign/verify, tamper/expiry, closure/license/source checks and disposable
+filesystem fixture preparation pass. That run was cancelled and superseded by
+the final full native verification, not counted as native acceptance.
+
 The task's durable completion result records the exact corrected commit and its
 actual **Linux Release Check** run outcome, including both native builds and
 install-only jobs. Require that corrected-source result; neither the failed
