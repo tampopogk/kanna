@@ -160,7 +160,13 @@ function itemsForRepo(repoId: string): SidebarTaskItem[] {
 function visibleTaskItems(): SidebarTaskItem[] {
   return props.repos
     .filter((repo) => !collapsedRepos.value.has(repo.id))
-    .flatMap((repo) => itemsForRepo(repo.id));
+    .flatMap((repo) => {
+      const rendered = renderedSlotIds(repo.id);
+      return [
+        ...itemsForRepo(repo.id).filter((item) => rendered.has(item.slot_id)),
+        ...fallbackGroups(repo.id).flatMap((group) => group.items),
+      ];
+    });
 }
 
 /** A top-level task plus its nested subtasks, depth-annotated for indented rendering. */

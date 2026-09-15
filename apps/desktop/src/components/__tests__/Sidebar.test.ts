@@ -347,6 +347,28 @@ describe("Sidebar", () => {
     expect(exposedOrder()).toEqual(["remote-needs-you"]);
   });
 
+  it("exposes cyclic fallback rows in the same cross-stage order it renders them", () => {
+    const tasks = [
+      item("in-progress-cycle", {
+        stage: "in progress",
+        parent_task_id: "review-cycle",
+      }),
+      item("review-cycle", {
+        stage: "review",
+        parent_task_id: "in-progress-cycle",
+      }),
+    ];
+    const wrapper = mountSidebar(tasks);
+    const exposedOrder = (wrapper.vm as unknown as {
+      visibleTaskItems: () => SidebarTaskItem[];
+    }).visibleTaskItems().map((task) => task.task_id);
+    const renderedOrder = wrapper.findAll(".workflow-item")
+      .map((node) => node.attributes("data-task-id"));
+
+    expect(exposedOrder).toEqual(renderedOrder);
+    expect(exposedOrder).toEqual(["review-cycle", "in-progress-cycle"]);
+  });
+
   it("renders settled server activity when runtime status has not been observed", () => {
     // runtime_status is nullable: a task no session has reported on yet has
     // no runtime dimension, so the row falls back to the blended activity
