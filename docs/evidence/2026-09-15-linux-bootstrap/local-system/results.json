@@ -646,7 +646,27 @@
       "title": "Kanna \u2014 task 6a8d78d0 \u00b7 B \u00b7 HEAD (0.0.68 @ a9df2f1d4)",
       "desktopSha256": "9a81a9454f47cb40f3ea72cfe28c14c173cca74d6fd26ab5f8f4bc631250209e",
       "cloudPeerReadiness": "executor reports 4 trusted cloudRoute.ready peers; Linux absent",
-      "cleanup": "requested from executor; confirmation pending"
+      "cleanup": {
+        "verifiedAt": "2026-09-15T22:28:45.491658Z",
+        "controllerBase": "5c1ca1b3",
+        "controllerPatchCommit": "3122236b32fd3d05ec26599575aa065b30a34a46",
+        "resolverIdentity": "733eb89f3f3f709f60df9fbdba5ed5082f07143ac97eaf000b3a8c64ea24ef90",
+        "exitCode": 0,
+        "output": "No session running.",
+        "absentPids": [
+          92349,
+          92376
+        ],
+        "ownedProcesses": [],
+        "listeners17410to17422": [],
+        "productBClean": true,
+        "evidenceRoot": "/Users/jeremyhale/.kanna/repos/kanna-7/.kanna-worktrees/task-6a8d78d0/.tmp/acceptance-641/B/.tmp",
+        "files": [
+          "exact-B-corrected-cleanup-before.json",
+          "exact-B-corrected-down.log",
+          "exact-B-corrected-cleanup-result.json"
+        ]
+      }
     },
     "accountDigestMatches": true,
     "mbpToLinux16613": "TCP timeout3s at2026-09-15T22:18:31.497386Z; no routes/proxies added",

@@ -129,3 +129,27 @@ and a future cloud pass must not be labeled LAN. VM cleaned to package absent,
 no Kanna processes, root manager/runtime inactive, jeremy manager active. MBP
 executor was asked to stop only its isolated B allocation. Existing641/074
 allocations and fixtures were untouched. Full system/both remains unaccepted.
+
+
+### Canonical custom-directory cleanup corrected and verified
+
+Initial MBP `dev down --kill-daemon` discarded the explicit isolation selectors
+and returned success while daemon92349/recovery92376 remained. Fix `3122236b3`
+preserves selectors through CLI, schema and context (including full restart),
+and allows an explicitly selected directory inside the checkout only when all
+existing kernel executable/cwd/open-log/PID-start/recovery-child checks pass.
+Symlink escapes still refuse; no inventory was fabricated.
+
+Validation: 16 focused tests and kd typecheck pass. The broader CLI run had
+53 passes and one unrelated cloud.deploy expectation mismatch (`dryRun:false`);
+that surface was not changed. An accidentally broad initial test invocation was
+interrupted; it is not reported as a passing suite.
+
+Executor6a applied only this controller patch to a separate5c1ca1b3 checkout,
+reverified original process identities and absence of agent children, then ran
+canonical down once with the original DB/daemon/transfer/tmux selectors. Exit0
+`No session running.`; actual22:28:45.491658Z verification found both retained
+PIDs absent, no B-owned processes and no17410–17422 listeners. Product B remains
+clean, DB/fixtures retained, no transfer attempted. Exact paths and resolver
+identity are recorded in the existing structured evidence. Both test endpoints
+are now cleaned; full B system acceptance remains incomplete.
