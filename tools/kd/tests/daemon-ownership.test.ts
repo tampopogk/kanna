@@ -1,8 +1,9 @@
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { parseCliArgs } from "../src/cli";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { cleanupUnrecordedDaemon, type DaemonObservation } from "../src/runtime/daemon-ownership";
-import { executeDevDownWithContext } from "../src/tasks/registry";
+import { executeDevDownWithContext, getTaskDefinition } from "../src/tasks/registry";
 
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
@@ -34,6 +35,37 @@ describe("missing-inventory daemon ownership", () => {
     const f = fixture();
     expect(await cleanupUnrecordedDaemon(f.input)).toEqual({ pidFileKilled: 111 });
     expect(f.signals).toEqual([111, 112]);
+  });
+  it("preserves explicit launch isolation selectors through the canonical down schema", () => {
+    const input = { killDaemon: true, db: "/checkout/.tmp/test.db", daemonDir: "/checkout/.tmp/daemon", transferRoot: "/checkout/.tmp/transfers" };
+    const flags = ["--kill-daemon", "--db", input.db, "--daemon-dir", input.daemonDir, "--transfer-root", input.transferRoot];
+    expect(parseCliArgs(["dev", "down", ...flags]).input).toEqual(input);
+    expect(parseCliArgs(["stop", ...flags]).input).toEqual(input);
+    const up = getTaskDefinition("dev.up").inputSchema.parse(parseCliArgs(["dev", "up", ...flags]).input) as typeof input;
+    const down = getTaskDefinition("dev.down").inputSchema.parse(parseCliArgs(["dev", "down", ...flags]).input) as typeof input;
+    expect(down).toEqual(input);
+    expect(down.daemonDir).toBe(up.daemonDir);
+    expect(down.db).toBe(up.db);
+    expect(down.transferRoot).toBe(up.transferRoot);
+  });
+  it("cleans a custom checkout-owned directory only with its exact open log", async () => {
+    const f = fixture();
+    const custom = join(f.root, ".tmp", "isolated-daemon");
+    mkdirSync(custom, { recursive: true });
+    f.input.daemonDir = custom;
+    expect((await cleanupUnrecordedDaemon(f.input)).failure).toContain("ownership");
+    expect(f.signals).toEqual([]);
+    f.processes.get(111)!.files = [join(custom, "kanna-daemon_111_rCURRENT.log")];
+    expect(await cleanupUnrecordedDaemon(f.input)).toEqual({ pidFileKilled: 111 });
+    expect(f.signals).toEqual([111, 112]);
+  });
+  it("refuses a custom directory symlink escaping the checkout", async () => {
+    const f = fixture(); const other = fixture();
+    const link = join(f.root, "external-daemon");
+    symlinkSync(other.daemonDir, link);
+    f.input.daemonDir = link;
+    expect((await cleanupUnrecordedDaemon(f.input)).failure).toContain("not inside this checkout");
+    expect(f.signals).toEqual([]);
   });
   it.each(["executable", "cwd", "log", "directory", "child"])("refuses wrong ownership: %s", async kind => {
     const f = fixture(); const other = fixture();
