@@ -209,7 +209,7 @@ receives the privileged job's token. Native builds remain skipped for this mode.
 Checks: parsed-workflow assertions confirm global read scope, the sole write
 job's exact manual-only condition/step allow-list, token isolation, artifact
 handoff, revalidation order and both Ubuntu24.04 architectures. The five
-fixed-origin/redirect/failure tests pass unchanged. The source controller,
+fixed-origin/redirect/failure tests pass unchanged. The installed-test harness,
 product packages and draft asset are unchanged. No redispatch yet; root asked
 to check this small workflow diff first. The prior run remains an input-access
 failure, not an upgrade failure. Owner attention cleared: engineering-owned.
