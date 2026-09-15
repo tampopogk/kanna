@@ -1,8 +1,10 @@
 # Linux Bazel product and package boundary
 
 Task `25c25a1b`, based on `ac2604a6e092771968f7f9096d4c4b917ad036b1`.
-Implementation commit: `bd5fa5a64c6e33bfe4b96f5a6b8a0392b8253ccd`.
-The evidence-only follow-up changes no product input.
+Initial implementation: `bd5fa5a64c6e33bfe4b96f5a6b8a0392b8253ccd`.
+Native execution correction and tested CI candidate:
+`79f1c8225f0302d1e8d59dacedc5c148a9438272`.
+The final evidence follow-up changes documentation only.
 
 This slice implements product/package ownership. It grants no publication
 permission and does not complete the Linux release.
@@ -10,8 +12,8 @@ permission and does not complete the Linux release.
 ## Build surface
 
 `./kd build linux-package --channel staging --architecture arm64` (or
-`x86_64`) builds the corresponding declared Bazel package. The graph declares execution support
-for Apple Silicon macOS, Linux ARM64 and Linux x86-64, using the existing
+`x86_64`) builds the corresponding declared Bazel package. Execution is verified
+on Apple Silicon macOS, Linux ARM64 and Linux x86-64, using the existing
 pinned Zig/Rust/Noble sysroot graph. No Cargo fallback is used.
 
 The labels are `//packaging/linux:products_{production,staging}_{arm64,x86_64}`
@@ -63,10 +65,10 @@ is explicitly marked `builder: prototype` and cannot certify Bazel provenance.
   the real systemd user manager and installed worker. C++ checks now assert
   static closure instead of requiring the old prototype's dynamic exceptions.
 
-## Verification
+## Local cross-build verification
 
 Executed locally on Darwin ARM64 with Bazel 9.0.1 and the repository's pinned
-Rust/Zig/sysroot graph. Both final artifacts were collected by the canonical
+Rust/Zig/sysroot graph. Both local artifacts were collected by the canonical
 commands below, including the worker's Cargo-compatible crate version:
 
 ```sh
@@ -75,7 +77,7 @@ commands below, including the worker's Cargo-compatible crate version:
 ```
 
 Both are `kanna-staging` version **`0.2.0~staging.1-1`**, built from the
-implementation commit above. These are local validation artifacts, not a
+initial implementation commit above. These are local validation artifacts, not a
 published release candidate. They remain in `.build/linux-package/out/` in this
 worktree, with adjacent `.deb.json` reports.
 
@@ -130,13 +132,63 @@ behavior, two-version upgrades or release eligibility.
 The older run 34878212138 remains valid **prototype** install-only evidence; it
 does not validate these new Bazel products.
 
-## Remaining integration
+## Native build and installed verification
 
-Ship task `d3ce8dec` retains canonical Linux status/ship/promote/channel/lineage
-routing, source/candidate provenance, archive storage and the final
-release/download handoff. The generic
-release `--platform` parser is not a Linux publisher; do not route Linux through
-the existing macOS release handler.
+The **Linux Release Check** workflow in `tampopogk/kanna`, run **34930914452**,
+completed **successfully** on exact candidate
+**`79f1c8225f0302d1e8d59dacedc5c148a9438272`**. Only this validation workflow was
+dispatched on the task branch. No PR, release, apt repository or website was
+published, and no release credentials were provisioned or changed.
+
+| Architecture / runner | Bazel package | Native ELF / installed hashes | Installed lifecycle suite |
+| --- | --- | --- | --- |
+| ARM64 / `ubuntu-24.04-arm` | Pass | All 8 match; all libraries resolve | 11 passed, 0 skipped |
+| x86-64 / `ubuntu-24.04` | Pass | All 8 match; all libraries resolve | 11 passed, 0 skipped |
+
+The unchanged installed suite covers apt dependency resolution, the installed
+layout and built-ins, execution with developer tools removed from PATH, the
+desktop entry, a real systemd user unit, worker/daemon/server parentage, a real
+scripted agent task, opt-in service ownership, and package removal preserving
+user data. This is installed **single-host, install-only** coverage. It is not
+GUI, cross-machine, transfer, two-version upgrade or soak acceptance. Hosted
+Ubuntu runners also do not establish a clean physical machine or the support
+matrix's exact kernel floor.
+
+The native reports have zero audit findings, zero conditional exceptions, and
+no RPATH/RUNPATH. Direct Ghostty/C++/OpenSSL dependencies remain static. Native
+`readelf` facts and every installed executable's SHA-256 match the package's
+report on each runner. Both probe logs independently report the user manager
+`running`, `Linger=yes`, and successful passwordless sudo; the installed jobs
+also enforce their prerequisites before installation.
+
+Both native packages use `kanna-staging` version `0.2.0~staging.1-1`:
+
+| Debian architecture | Bytes | Native package SHA-256 |
+| --- | ---: | --- |
+| arm64 | 43,733,876 | `25400b642d98add6b1aeb4d4b2d0c07db1cf2e63de57819c7fd29449404a1304` |
+| amd64 | 44,438,978 | `99f143e0fb1f7846c0f63570e65be01872913ac62a8b12b00c61ea6a4289e16b` |
+
+The downloaded bytes were checked against those hashes. Native builds are not
+byte-identical to the local cross builds; deterministic assembly from fixed
+inputs is the verified claim, not full-build reproducibility between hosts.
+
+Committed evidence:
+
+- [Native run, job and artifact identities](evidence/2026-09-14-linux-products/native-validation.json).
+- [Native ARM64 report](evidence/2026-09-14-linux-products/native-arm64.json).
+- [Native x86-64 report](evidence/2026-09-14-linux-products/native-x86_64.json).
+
+Both `.deb` files, reports, build/install logs, prerequisite logs and the API
+run record are preserved in this task's original worktree under
+`.tmp/linux-product/ci-34930914452/`; downloaded packages are in
+`artifacts/arm64/` and `artifacts/x86_64/` below it. The workflow's artifacts
+`kanna-linux-arm64` (ID `10382169292`) and `kanna-linux-x86_64` (ID `10383315328`)
+expire on 2026-09-29; this validation retention is not release archive storage.
+The installed harness stops its worker during cleanup, all CI jobs completed,
+and the owned local Bazel server was shut down. Local cross-build artifacts
+and passing typecheck/test evidence were retained.
+
+### Native CI correction
 
 The owner authorized a normal push of this task branch and dispatch of the
 existing validation workflow, including bounded fixes required by CI. This
@@ -151,14 +203,24 @@ No package or installed result came from that run. The focused follow-up adds
 both GNU Linux triples to the upstream ACL, context and Brotli helper dependency
 sets; all four helper executable targets now pass analysis for both Linux
 platforms, and macOS context generation still builds. The generated lock changes
-compatibility metadata without adding/removing repositories. A native rerun is
-required; local cross-built artifacts do not substitute for it.
+compatibility metadata without adding/removing repositories. The successful
+rerun below validates that correction on both native hosts.
+
+## Remaining integration
+
+Ship task `d3ce8dec` retains canonical Linux status/ship/promote/channel/lineage
+routing, source/candidate provenance, archive storage and the final
+release/download handoff. The generic
+release `--platform` parser is not a Linux publisher; do not route Linux through
+the existing macOS release handler.
 
 There is no real two-version Bazel package pair yet. This slice does not relabel
 one build as two versions or substitute the historical Cargo prototype as a
 supported predecessor. The existing `kd test linux-installed --old-artifact …
 --new-artifact … --channel staging` lane remains the upgrade/active-session
-boundary once distinct source/version packages exist. Updating the historical
+boundary once distinct source/version packages exist. The harness accepts local
+packages; a remote apt publication is not itself required to run it. This slice
+produced one version, not an authentic predecessor/candidate pair. Updating the historical
 previous-daemon fixture still requires a real Linux-capable release tag.
 
 Task `641dbb6f` owns system/cross-machine and transfer acceptance. Final Linux
