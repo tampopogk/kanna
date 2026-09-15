@@ -1,0 +1,20 @@
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -491,7 +491,16 @@
+                     ar.get_args().collect::<Vec<_>>().join(OsStr::new(" ")),
+                 );
+             }
+-            let ranlib = cc.get_ranlib();
++            // Bazel declares AR through the target C toolchain, but cc's
++            // independent ranlib discovery can fall back to the execution
++            // host. Apple's ranlib discards ELF members without failing.
++            let ranlib = if target.contains("linux") {
++                let mut command = Command::new(ar.get_program());
++                command.arg("s");
++                command
++            } else {
++                cc.get_ranlib()
++            };
+             // OpenSSL does not support RANLIBFLAGS. Jam the flags in RANLIB.
+             let mut args = vec![ranlib.get_program()];
+             args.extend(ranlib.get_args());

@@ -46,12 +46,13 @@ its own soak window in `release-policy.json`. Nothing about a Linux operation
 touches the macOS channels, and a Linux failure is never a reason to change
 anything on them.
 
-**Linux is not releasable yet, and you must not treat it as if it were.** The
-Bazel release graph is still Darwin-only, so the only way to produce a `.deb`
-today is `./kd build linux-package`, which uses Cargo and is explicitly a
-prototype path. Its artifacts must never be published. Refuse any Linux publish
-or promotion request and report this, with
-`docs/2026-09-09-linux-phase3-supported-distribution.md` §7 as the reason.
+**Linux is not releasable yet, and you must not treat it as if it were.**
+`./kd build linux-package` builds declared Bazel desktop/worker/sidecar outputs,
+audits them, and assembles a deterministic `.deb`. Historical Cargo prototype
+packages remain unpublishable. Canonical Linux status/ship/promote routing,
+archive storage, real-key custody and candidate acceptance remain separate
+integration gates. Refuse publication until those gates are implemented and
+verified; a successful package build grants no publication authority.
 
 When it is releasable, these rules hold and none is optional:
 
@@ -63,8 +64,8 @@ When it is releasable, these rules hold and none is optional:
   architecture.
 - **The audit is a gate, not a report.** `./kd build linux-package` refuses a
   package whose artifact closure is not in `packaging/linux/runtime-policy.json`.
-  `--allow-audit-findings` exists for local iteration and marks the result
-  `auditOverridden`; an artifact built that way is unpublishable, and adding an
+  The Bazel package path rejects `--allow-audit-findings`. Historical artifacts
+  marked `auditOverridden` remain unpublishable. Adding an
   entry to the policy to get past a finding is a change to the dependency
   contract that needs review, not a workaround.
 - **The signing key is the apt archive's, not the updater's**, and it lives on

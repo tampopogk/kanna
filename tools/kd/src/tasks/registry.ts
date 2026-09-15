@@ -6,10 +6,8 @@ import { join, resolve } from "node:path";
 import { z } from "zod";
 import { readKannaRepoConfig } from "../config";
 import {
-  assembleLinuxPackage,
-  buildLinuxBinariesCommands,
+  buildLinuxPackageFromBazel,
   formatLinuxPackageResult,
-  stageLinuxPackageBinaries
 } from "../runtime/linux-release-build";
 import { resolveKdContext, type KdContext } from "../context";
 import { cleanWorkspace } from "../runtime/clean";
@@ -3078,43 +3076,24 @@ export const taskDefinitions = [
   {
     id: "build.linux-package",
     description:
-      "Build one architecture's Linux .deb: compile, audit the artifact closure against packaging/linux/runtime-policy.json, derive Depends from it, and package. Linux only.",
+      "Build one architecture's Linux .deb: compile, audit the artifact closure against packaging/linux/runtime-policy.json, derive Depends from it, and deterministically package declared Bazel outputs.",
     inputSchema: linuxPackageInputSchema,
     execute: async (_context, input) => {
       const parsed = linuxPackageInputSchema.parse(input);
-      if (process.platform !== "linux") {
-        return {
-          ok: false,
-          message:
-            "build linux-package runs on a Linux host: it reads the artifacts' own ELF headers and calls dpkg-deb. Run it on a Linux builder."
-        };
-      }
       const context = await resolveDefaultContext(process.env);
       const architecture = parsed.architecture ?? (process.arch === "arm64" ? "arm64" : "x86_64");
-      const version =
-        parsed.version ??
-        (JSON.parse(
-          await readFile(join(context.repoRoot, "apps/desktop/src-tauri/tauri.conf.json"), "utf8")
-        ) as { version: string }).version;
+      const version = parsed.version ?? (await readFile(join(context.repoRoot, "VERSION"), "utf8")).trim();
       const stagingIteration =
         parsed.channel === "staging" ? (parsed.stagingIteration ?? 1) : undefined;
 
-      if (!parsed.skipBuild) {
-        for (const [command, args] of buildLinuxBinariesCommands(architecture)) {
-          const built = await runBuiltCommand(command, args, context.repoRoot, context.env);
-          if (!built.ok) return built;
-        }
-      }
-
       try {
-        const binariesDir = stageLinuxPackageBinaries({ repoRoot: context.repoRoot, architecture });
-        const result = await assembleLinuxPackage({
+        const result = await buildLinuxPackageFromBazel({
           repoRoot: context.repoRoot,
           channel: parsed.channel,
           architecture,
           version,
           stagingIteration,
-          binariesDir,
+          skipBuild: parsed.skipBuild,
           outputDir: join(context.repoRoot, ".build", "linux-package", "out"),
           env: context.env,
           runner: nodeCommandRunner,
@@ -3124,6 +3103,7 @@ export const taskDefinitions = [
           ok: true,
           message: formatLinuxPackageResult({ channel: parsed.channel, architecture, result }),
           data: {
+            builder: result.builder,
             debPath: result.debPath,
             sha256: result.sha256,
             depends: result.depends,

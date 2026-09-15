@@ -1617,11 +1617,11 @@ const helpTopics: Record<string, string[]> = {
     "",
     "Build one architecture's Linux .deb. Compiles, audits every shipped artifact's",
     "ELF closure against packaging/linux/runtime-policy.json, derives Depends from",
-    "what survives, then packages. Linux host only: it reads real ELF headers and",
-    "calls dpkg-deb.",
+    "what survives, then assembles a deterministic .deb using declared Bazel outputs.",
+    "Builds on supported macOS and Linux hosts. --version must match VERSION.",
     "",
-    "--allow-audit-findings is for local iteration only. It marks the result",
-    "auditOverridden, and such an artifact must never be published."
+    "--skip-build requires Bazel outputs to be up to date. The legacy",
+    "--allow-audit-findings option is rejected; package audits cannot be bypassed."
   ],
   "build desktop": [
     "Usage: kd build desktop",

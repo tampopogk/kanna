@@ -138,8 +138,16 @@ filegroup(
 
 tauri_acl_prep_dir(
     name = "desktop_build_script_acl_prep",
+    target_triple = select({
+        "//tools/bazel:linux_arm64_target": "aarch64-unknown-linux-gnu",
+        "//tools/bazel:linux_x86_64_target": "x86_64-unknown-linux-gnu",
+        "//conditions:default": "",
+    }),
     cargo_srcs = ":context_cargo_srcs",
-    config = ":tauri_updater_bazel_config",
+    config = select({
+        "@platforms//os:linux": ":tauri_linux_production_config",
+        "//conditions:default": ":tauri_updater_bazel_config",
+    }),
     dep_env_targets = [
         "@desktop_crates__tauri-2.10.3//:build_script_build",
         "@desktop_crates__tauri-plugin-dialog-2.7.0//:build_script_build",
@@ -155,8 +163,16 @@ tauri_acl_prep_dir(
 
 tauri_acl_prep_dir(
     name = "desktop_staging_build_script_acl_prep",
+    target_triple = select({
+        "//tools/bazel:linux_arm64_target": "aarch64-unknown-linux-gnu",
+        "//tools/bazel:linux_x86_64_target": "x86_64-unknown-linux-gnu",
+        "//conditions:default": "",
+    }),
     cargo_srcs = ":context_cargo_srcs",
-    config = ":tauri_staging_bazel_config",
+    config = select({
+        "@platforms//os:linux": ":tauri_linux_staging_config",
+        "//conditions:default": ":tauri_staging_bazel_config",
+    }),
     dep_env_targets = [
         "@desktop_crates__tauri-2.10.3//:build_script_build",
         "@desktop_crates__tauri-plugin-dialog-2.7.0//:build_script_build",
@@ -172,18 +188,34 @@ tauri_acl_prep_dir(
 
 tauri_context_support_dir(
     name = "full_context_rust_support",
+    target_triple = select({
+        "//tools/bazel:linux_arm64_target": "aarch64-unknown-linux-gnu",
+        "//tools/bazel:linux_x86_64_target": "x86_64-unknown-linux-gnu",
+        "//conditions:default": "",
+    }),
     acl_out_dir = ":desktop_build_script_acl_prep",
     cargo_srcs = ":context_cargo_srcs",
-    config = ":tauri_updater_bazel_config",
+    config = select({
+        "@platforms//os:linux": ":tauri_linux_production_config",
+        "//conditions:default": ":tauri_updater_bazel_config",
+    }),
     embedded_assets_rust = ":embedded_assets_rust",
     tauri_build_data = ":tauri_build_data",
 )
 
 tauri_context_support_dir(
     name = "full_staging_context_rust_support",
+    target_triple = select({
+        "//tools/bazel:linux_arm64_target": "aarch64-unknown-linux-gnu",
+        "//tools/bazel:linux_x86_64_target": "x86_64-unknown-linux-gnu",
+        "//conditions:default": "",
+    }),
     acl_out_dir = ":desktop_staging_build_script_acl_prep",
     cargo_srcs = ":context_cargo_srcs",
-    config = ":tauri_staging_bazel_config",
+    config = select({
+        "@platforms//os:linux": ":tauri_linux_staging_config",
+        "//conditions:default": ":tauri_staging_bazel_config",
+    }),
     embedded_assets_rust = ":embedded_assets_rust",
     tauri_build_data = ":tauri_staging_build_data",
 )
@@ -487,4 +519,32 @@ rust_binary(
         ":kanna_desktop_staging_lib_bazel",
     ],
     platform = "//tools/bazel:macos_x86_64",
+)
+
+genrule(
+    name = "tauri_linux_production_config",
+    srcs = [":tauri_updater_bazel_config", "//:VERSION"],
+    outs = ["tauri.linux.production.conf.json"],
+    cmd = """
+python3 - "$(location :tauri_updater_bazel_config)" "$(location //:VERSION)" "$@" <<'PYCODE'
+import json, pathlib, sys
+config = json.loads(pathlib.Path(sys.argv[1]).read_text())
+config["version"] = pathlib.Path(sys.argv[2]).read_text().strip()
+pathlib.Path(sys.argv[3]).write_text(json.dumps(config) + "\\n")
+PYCODE
+""",
+)
+
+genrule(
+    name = "tauri_linux_staging_config",
+    srcs = [":tauri_staging_bazel_config", "//:VERSION"],
+    outs = ["tauri.linux.staging.conf.json"],
+    cmd = """
+python3 - "$(location :tauri_staging_bazel_config)" "$(location //:VERSION)" "$@" <<'PYCODE'
+import json, pathlib, sys
+config = json.loads(pathlib.Path(sys.argv[1]).read_text())
+config["version"] = pathlib.Path(sys.argv[2]).read_text().strip()
+pathlib.Path(sys.argv[3]).write_text(json.dumps(config) + "\\n")
+PYCODE
+""",
 )
