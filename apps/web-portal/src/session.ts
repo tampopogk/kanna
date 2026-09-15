@@ -1,11 +1,13 @@
 import { computed, inject, onScopeDispose, provide, readonly, ref, shallowRef, triggerRef, watch, type ComputedRef, type InjectionKey, type Ref, type ShallowRef } from "vue";
 import type { User } from "firebase/auth";
 import { portalFirebase, type PortalFirebase } from "./firebase";
-import { cloudAccessState, graceDeadline, type CloudAccessState, type CloudEntitlement } from "./types";
+import { cloudAccessState, graceDeadline, type CloudAccessState, type CloudEntitlement, type BillingSource } from "./types";
 
 export interface PortalSession {
   user: ShallowRef<User | null>;
   entitlement: ShallowRef<CloudEntitlement | null>;
+  billing: ShallowRef<BillingSource[]>;
+  billingReady: Readonly<Ref<boolean>>;
   ready: Readonly<Ref<boolean>>;
   entitlementReady: Readonly<Ref<boolean>>;
   accessState: ComputedRef<CloudAccessState>;
@@ -20,6 +22,9 @@ const firebaseKey: InjectionKey<PortalFirebase> = Symbol("portal-firebase");
 export function providePortalSession(api: PortalFirebase = portalFirebase): PortalSession {
   const user = shallowRef<User | null>(null);
   const entitlement = shallowRef<CloudEntitlement | null>(null);
+  const billing = shallowRef<BillingSource[]>([]);
+  const billingReady = ref(false);
+  let stopBilling: (() => void) | undefined;
   const ready = ref(false);
   const entitlementReady = ref(false);
   const readFailed = ref(false);
@@ -48,6 +53,10 @@ export function providePortalSession(api: PortalFirebase = portalFirebase): Port
     const version = ++generation;
     stopEntitlement?.();
     stopEntitlement = undefined;
+    stopBilling?.();
+    stopBilling = undefined;
+    billing.value = [];
+    billingReady.value = false;
     clearDeadline();
     entitlement.value = null;
     entitlementReady.value = false;
@@ -63,6 +72,11 @@ export function providePortalSession(api: PortalFirebase = portalFirebase): Port
       clearDeadline();
     };
     try {
+      stopBilling = api.observeBilling(uid, (sources, fromCache = false) => {
+        if (!current()) return;
+        billing.value = sources;
+        billingReady.value = !fromCache;
+      }, () => { if (current()) { billing.value = []; billingReady.value = false; } });
       stopEntitlement = api.observeEntitlement(uid, (next, fromCache = false) => {
         if (!current()) return;
         entitlement.value = next;
@@ -87,6 +101,7 @@ export function providePortalSession(api: PortalFirebase = portalFirebase): Port
     disposed = true;
     ++generation;
     stopUser();
+    stopBilling?.();
     stopEntitlement?.();
     clearDeadline();
     window.removeEventListener("focus", updateDeadline);
@@ -94,12 +109,12 @@ export function providePortalSession(api: PortalFirebase = portalFirebase): Port
   const accessState = computed(() => readFailed.value ? "read-failure" : cloudAccessState(entitlement.value, now.value));
   const subscribed = computed(() => accessState.value === "active" || accessState.value === "grace");
   const canSubscribe = computed(() => {
-    if (!entitlementReady.value) return false;
-    const record = entitlement.value;
-    return !record || (record.source === "stripe" && (record.status === "expired" || record.status === "revoked"));
+    if (!entitlementReady.value || !billingReady.value || subscribed.value) return false;
+    return !billing.value.some(source => source.active || source.status === "active" || source.status === "grace"
+      || (source.source === "app_store" && source.paymentOutstanding));
   });
   const session: PortalSession = {
-    user, entitlement, ready: readonly(ready), entitlementReady: readonly(entitlementReady),
+    user, entitlement, billing, billingReady: readonly(billingReady), ready: readonly(ready), entitlementReady: readonly(entitlementReady),
     accessState, subscribed, canSubscribe, refreshEntitlement,
   };
   provide(sessionKey, session);

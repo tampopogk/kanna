@@ -14,7 +14,7 @@ describe("mobile app config", () => {
   it("produces the production identity from KANNA_APP_ENV", () => {
     const config = createExpoConfig({ KANNA_APP_ENV: "prod" });
 
-    expect(config.version).toBe("1.0.2");
+    expect(config.version).toBe(readRepoVersion());
     expect(config.name).toBe("Kanna");
     expect(config.scheme).toBe("kanna");
     expect(config.ios?.bundleIdentifier).toBe("build.kanna.app");
@@ -37,10 +37,10 @@ describe("mobile app config", () => {
         channel: "production",
         manifestUrl: "https://relay.kanna.build/ota/manifest"
       },
-      runtimeVersion: "2.2.5"
+      runtimeVersion: "2.2.7"
     });
-    expect(config.extra.kanna.releaseVersion).toBe("1.0.2");
-    expect(config.runtimeVersion).toBe("2.2.5");
+    expect(config.extra.kanna.releaseVersion).toBe(readRepoVersion());
+    expect(config.runtimeVersion).toBe("2.2.7");
     expect(config.icon).toBe("./assets/icon.png");
     expect(config.android.adaptiveIcon).toEqual({
       foregroundImage: "./assets/adaptive-icon-foreground.png",
@@ -105,9 +105,9 @@ describe("mobile app config", () => {
         channel: null,
         manifestUrl: null
       },
-      runtimeVersion: "2.2.6"
+      runtimeVersion: "2.2.8"
     });
-    expect(config.runtimeVersion).toBe("2.2.6");
+    expect(config.runtimeVersion).toBe("2.2.8");
     expect(config.updates).toBeUndefined();
   });
 
@@ -159,7 +159,7 @@ describe("mobile app config", () => {
       KANNA_APP_ENV: "staging"
     });
 
-    expect(config.version).toBe("1.0.2");
+    expect(config.version).toBe(readRepoVersion());
     expect(config.name).toBe("Kanna Staging");
     expect(config.scheme).toBe("kanna-staging");
     expect(config.ios?.bundleIdentifier).toBe("build.kanna.app.staging");
@@ -188,9 +188,9 @@ describe("mobile app config", () => {
         channel: "staging",
         manifestUrl: "https://relay-staging.kanna.build/ota/manifest"
       },
-      runtimeVersion: "2.2.5"
+      runtimeVersion: "2.2.7"
     });
-    expect(config.runtimeVersion).toBe("2.2.5");
+    expect(config.runtimeVersion).toBe("2.2.7");
     expect(config.updates).toMatchObject({
       url: "https://relay-staging.kanna.build/ota/manifest",
       requestHeaders: { "expo-channel-name": "staging" }
@@ -279,7 +279,7 @@ describe("mobile app config", () => {
   it("embeds the checked-in mobile VERSION for canonical builds", () => {
     const mobileVersion = readRepoVersion();
 
-    expect(mobileVersion).toBe("1.0.2");
+    expect(mobileVersion).toMatch(/^\d+\.\d+\.\d+$/);
     expect(createExpoConfig({ KANNA_APP_ENV: "prod" }).version).toBe(mobileVersion);
   });
 
@@ -348,7 +348,7 @@ describe("mobile app config", () => {
         recordAudioAndroid: false
       }
     ]);
-    expect(config.runtimeVersion).toBe("2.2.6");
+    expect(config.runtimeVersion).toBe("2.2.8");
   });
 
   it("declares the composer attachment permissions and captures no audio", () => {
@@ -401,5 +401,19 @@ describe("Android OTA native config transformation", () => {
     expect(metadata[prefix + "CODE_SIGNING_CERTIFICATE"]).toBe(await readFile(join(projectRoot, "certs/ota-codesign.pem"), "utf8"));
     const resources = await AndroidConfig.Updates.applyRuntimeVersionFromConfigForProjectRootAsync(projectRoot, config, { resources: {} });
     expect(resources.resources.string).toContainEqual(expect.objectContaining({ _: config.runtimeVersion, $: expect.objectContaining({ name: "expo_runtime_version" }) }));
+  });
+});
+
+
+describe("native Apple billing configuration", () => {
+  it("bundles the supported adapter in every new native runtime", () => {
+    for (const env of ["dev", "staging", "prod"]) {
+      expect(createExpoConfig({ KANNA_APP_ENV: env }).plugins).toContain("expo-iap");
+    }
+  });
+  it("requires explicit dev instrumentation for local StoreKit and refuses shipping identities", () => {
+    expect(createExpoConfig({ KANNA_APP_ENV: "dev", EXPO_PUBLIC_KANNA_STOREKIT_TEST: "1" }).plugins).toContain("./plugins/withKannaStoreKitTest");
+    expect(createExpoConfig({ KANNA_APP_ENV: "dev" }).plugins).not.toContain("./plugins/withKannaStoreKitTest");
+    for (const env of ["staging", "prod"]) expect(() => createExpoConfig({ KANNA_APP_ENV: env, EXPO_PUBLIC_KANNA_STOREKIT_TEST: "1" })).toThrow("dev environment");
   });
 });

@@ -32,7 +32,7 @@ interface DeployedFunction {
   __endpoint: { secretEnvironmentVariables?: { key: string }[] };
 }
 
-function boundSecrets(name: "createCheckoutSession" | "createPortalSession" | "deleteAccount" | "stripeWebhook"): string[] {
+function boundSecrets(name: keyof typeof functions): string[] {
   const endpoint = (functions[name] as unknown as DeployedFunction).__endpoint;
   return (endpoint.secretEnvironmentVariables ?? []).map((entry) => entry.key);
 }
@@ -47,7 +47,13 @@ describe("deployed function secret bindings", () => {
       .filter(([, value]) => typeof value === "function")
       .map(([name]) => name)
       .sort();
-    expect(deployed).toEqual(["createCheckoutSession", "createPortalSession", "deleteAccount", "stripeWebhook"]);
+    expect(deployed).toEqual(["appStoreNotifications", "beginAppStorePurchase", "createCheckoutSession", "createPortalSession", "deleteAccount", "registerAppStoreTransaction", "stripeWebhook"]);
+  });
+
+  it("scopes Apple and Stripe keys to their provider I/O", () => {
+    expect(boundSecrets("appStoreNotifications")).toEqual([]);
+    expect(boundSecrets("registerAppStoreTransaction")).toEqual(["APP_STORE_PRIVATE_KEY"]);
+    expect(boundSecrets("beginAppStorePurchase")).toEqual(["STRIPE_SECRET_KEY"]);
   });
 
   it("binds createCheckoutSession to its declared Secret Manager entries", () => {

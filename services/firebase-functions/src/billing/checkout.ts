@@ -200,12 +200,12 @@ interface CheckoutCoordination {
   attempt?: CheckoutAttempt;
 }
 
-function assertCanSubscribe(state: BillingState): void {
+export function assertCanSubscribe(state: BillingState): void {
   if (state.sources.comp?.active) {
     throw new BillingRequestError("failed-precondition", "comp_active",
       "This account has complimentary Kanna Cloud access and does not need a subscription.");
   }
-  if (isBlockingStatus(state.sources.app_store)) {
+  if (isBlockingStatus(state.sources.app_store) || state.sources.app_store?.paymentOutstanding) {
     throw new BillingRequestError("failed-precondition", "app_store_active",
       "This account is subscribed through the App Store. Manage it in Apple's subscription settings.");
   }
@@ -230,13 +230,13 @@ function assertReplayWindow(attempt: CheckoutAttempt, now: string): void {
   if (!Number.isFinite(age) || age < 0 || age >= 23 * 60 * 60 * 1000) throw reconciliationRequired();
 }
 
-function assertSessionOwner(session: StripeCheckoutSessionState, uid: string, customerId: string | null): void {
+export function assertSessionOwner(session: StripeCheckoutSessionState, uid: string, customerId: string | null): void {
   if (session.mode !== "subscription" || session.uid !== uid || !customerId || session.customerId !== customerId) {
     throw reconciliationRequired();
   }
 }
 
-function isRetired(session: StripeCheckoutSessionState): boolean {
+export function isRetired(session: StripeCheckoutSessionState): boolean {
   return session.status === "expired"
     || (session.status === "complete" && (session.subscriptionStatus === "canceled"
       || session.subscriptionStatus === "incomplete_expired"));

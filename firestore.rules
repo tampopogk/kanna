@@ -116,6 +116,14 @@ service cloud.firestore {
 
     // Stripe webhook dedupe ledger and the Stripe customer reverse map. Server
     // bookkeeping; no client has any business reading or writing either.
+    match /appStoreSubscriptions/{subscriptionId} {
+      allow read, write: if false;
+    }
+
+    match /appleNotifications/{notificationId} {
+      allow read, write: if false;
+    }
+
     match /stripeEvents/{eventId} {
       allow read, write: if false;
     }

@@ -27,7 +27,10 @@ export type BillingErrorReason =
   | "no_stripe_customer"
   | "customer_ownership_mismatch"
   | "not_configured"
-  | "stripe_error";
+  | "stripe_error"
+  | "invalid_apple_transaction"
+  | "apple_account_conflict"
+  | "apple_retry_required";
 
 export class BillingRequestError extends Error {
   constructor(

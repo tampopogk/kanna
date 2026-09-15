@@ -1,5 +1,52 @@
 # Accounts and Billing (Stripe + Apple IAP) — Architecture Spec
 
+## Current launch amendment — September 15, 2026
+
+Jeremy approved task `8140ed16`'s Apple implementation plan and explicitly
+required differentiation of Apple-purchased and web-purchased subscriptions.
+This is current authority under his request to buy “via the portal or via the
+app” and delegation “whatever doesn't piss off apple is fine by me”. It does
+not automatically revive the superseded August launch prose below.
+
+Production iPhone uses native monthly StoreKit purchase/restore; web retains
+Stripe Checkout. Both grant one Firebase account's `cloud_access`. The separate
+`billing/app_store` and `billing/stripe` records are the provider inventory;
+entitlement `source` only identifies honored access. Screens retain both
+relationships even when comp overrides access. Production iOS uses neutral
+“Managed outside the App Store” for web billing and no external purchase or
+portal link. Existing web and owner/reviewer comp access remain.
+
+One monthly product `build.kanna.cloud.monthly`: ¥500 / US$5 / CA$5 / AU$5 /
+€5 / £5, using the actual Apple storefront grid. No annual/trial/tier/offer or
+Family Sharing expansion. Do not infer Small Business Program enrollment or
+accept an unavailable price exception without the owner. Additional beta cap
+is ten excluding the existing two; no new grant mechanism is introduced.
+
+Signed Apple transactions and both nested notification payloads are verified
+with bundled Apple roots and online checks. Registration/restore also fetch
+current verified subscription status, so a signed old purchase is insufficient.
+The transactional writer dedupes and retains private records per environment
+and original transaction, then projects Apple state through the existing
+source reducer. Grace follows signed deadlines; renewal intent alone cannot
+activate an expired subscription. Deleted tokens never rebind. Admission
+checks existing comp, paid/retry Apple, Stripe and outstanding Checkout state;
+residual cross-provider races remain visible and never auto-cancel/refund.
+
+Deletion immediately removes cloud data and cancels Kanna web subscriptions;
+Apple billing continues until canceled with Apple. Apple refunds are Apple's
+process, independent of Kanna's direct Stripe 24-hour refund-request policy.
+
+Implementation pins `expo-iap` 5.6.2 (maintained in the OpenIAP monorepo) and
+`@apple/app-store-server-library` 3.1.0. `react-native-iap` remains a parallel
+Nitro library, not a retired predecessor. Native runtime bumps apply to every
+environment. Previously accepted staging delivery is not Apple acceptance.
+See [the operational handoff](../ops/apple-subscriptions.md) and
+[verification gaps](../2026-09-15-apple-billing-e2e-gap.md). Live ASC setup,
+agreements, secrets, deployment and real sandbox/TestFlight acceptance remain
+separately scoped work.
+
+## Historical decisions (read with the current amendment above)
+
 Status: architect consultation verdict (task `da6b6800`, 2026-08-20), amended
 2026-08-20 by task `72f6675f` on the owner's decision (verbatim): "Let's
 include iap from the start." Apple In-App Purchase is now a **launch channel**

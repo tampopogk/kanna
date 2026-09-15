@@ -135,6 +135,8 @@ export function firestoreAccountDeletionStore(db: Firestore): AccountDeletionSto
         db.collection("stripeCustomers").where("uid", "==", uid),
         db.collection("stripeEvents").where("uid", "==", uid),
         db.collection("appAccountTokens").where("uid", "==", uid),
+        db.collection("appStoreSubscriptions").where("uid", "==", uid),
+        db.collection("appleNotifications").where("uid", "==", uid),
       ]);
       await db.doc(accountCheckoutPath(uid)).delete();
     },

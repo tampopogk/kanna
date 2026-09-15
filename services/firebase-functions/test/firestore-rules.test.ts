@@ -562,6 +562,13 @@ describeWithEmulator("firestore security rules", () => {
     );
   });
 
+  it.each(["appStoreSubscriptions/sandbox_123", "appleNotifications/sandbox_test"])("keeps %s server-only", async path => {
+    await expectSucceeds(seedDoc(path, { uid: "alice" }));
+    await expectDenied(readDoc(mockUserToken("alice"), path));
+    await expectDenied(clientUpdate("alice", path, { uid: "alice" }));
+    await expectDenied(deleteDoc("alice", path));
+  });
+
   it("keeps appAccountToken bindings neither readable nor writable by clients", async () => {
     await expectSucceeds(
       seedDoc("appAccountTokens/2c9b4e64-6a1f-4d0f-9f4f-7b8f6a2a5f11", {

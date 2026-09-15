@@ -213,3 +213,15 @@ are known; no edits to kanna-web/marketing or legal effective dates were made.
 | Final release/device acceptance | **GAP**: compatible candidate artifacts/readbacks, fresh install/updater (#1217), conditional real cloud transfer (#1317), iOS native/runtime/OTA and device acceptance | Root/Ship + owner |
 | Operations / public copy | **HANDOFF READY**; recipient routing, provider settings, mail acceptance and public corrections not applied | Owner/support + website owner through root |
 | Publication authorization | **NOT GRANTED HERE**: no push/PR, deployment, payment, store, announcement or Ship | Root/operator's later workflow |
+
+
+## Apple launch track — 2026-09-15
+
+The approved native Apple channel is implemented alongside the existing web
+billing boundary in task `8140ed16`. See [Apple subscription operations](apple-subscriptions.md)
+for scoped ASC configuration, notification routing, source-aware support,
+reconciliation and pending real sandbox/TestFlight acceptance. The entitlement
+source is not the billing inventory: read both provider source records,
+including on comp accounts. Existing Stripe activation prerequisites and this
+runbook's hosted/payment/device limitations remain. Local signed-fixture
+Functions→Firestore→relay evidence does not establish live Apple readiness.

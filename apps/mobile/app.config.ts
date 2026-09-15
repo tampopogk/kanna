@@ -228,6 +228,7 @@ export function createExpoConfig(
     KANNA_IOS_BUILD_NUMBER?: string;
     KANNA_SOURCE_REF?: string;
     KANNA_SOURCE_COMMIT?: string;
+    EXPO_PUBLIC_KANNA_STOREKIT_TEST?: string;
   },
   readNativeVersionFallback: () => string = readRepoVersion
 ): ExpoConfig {
@@ -281,6 +282,10 @@ export function createExpoConfig(
       }
     },
     plugins: [
+      ...(env.EXPO_PUBLIC_KANNA_STOREKIT_TEST === "1" ? (() => {
+        if (appEnvironment.name !== "dev") throw new Error("StoreKit test builds must use the dev environment");
+        return ["./plugins/withKannaStoreKitTest"];
+      })() : []),
       // React Native Firebase native packages autolink in every environment,
       // so their Swift pods always require static frameworks. This Podfile
       // configuration is separate from environment-specific initialization.
@@ -291,6 +296,7 @@ export function createExpoConfig(
         ? []
         : ["./plugins/withKannaFirebaseMessaging"]),
       "expo-font",
+      "expo-iap",
       "expo-notifications",
       [
         "expo-camera",

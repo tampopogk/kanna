@@ -5,7 +5,7 @@ import { createMemoryHistory, createRouter } from "vue-router";
 import { defineComponent } from "vue";
 import { providePortalSession, type PortalSession } from "../src/session";
 import type { PortalFirebase } from "../src/firebase";
-import type { CloudEntitlement } from "../src/types";
+import type { CloudEntitlement, BillingSource } from "../src/types";
 import AccountPage from "../src/pages/AccountPage.vue";
 import CheckoutReturnPage from "../src/pages/CheckoutReturnPage.vue";
 import SignInPage from "../src/pages/SignInPage.vue";
@@ -19,9 +19,11 @@ afterEach(() => { wrappers.splice(0).forEach((w) => w.unmount()); vi.useRealTime
 function harness(template = '<CheckoutReturnPage result="success" session-id="untrusted" />') {
   let authNext!: (user: User | null) => void;
   const listeners: { uid: string; next: (value: CloudEntitlement | null) => void; error: (error: Error) => void; stop: ReturnType<typeof vi.fn> }[] = [];
+  const billingListeners: { uid: string; next: (sources: BillingSource[]) => void; stop: ReturnType<typeof vi.fn> }[] = [];
   const stopAuth = vi.fn();
   const api = {
     observeUser: vi.fn((next) => { authNext = next; next(owner); return stopAuth; }),
+    observeBilling: vi.fn((uid, next) => { const stop = vi.fn(); billingListeners.push({ uid, next, stop }); next([]); return stop; }),
     observeEntitlement: vi.fn((uid, next, error) => { const listener = { uid, next, error, stop: vi.fn() }; listeners.push(listener); return listener.stop; }),
     resetPassword: vi.fn(async () => undefined), resendVerification: vi.fn(async () => undefined),
     reloadUser: vi.fn(async (user) => user), createPortalSession: vi.fn(async () => ({ url: "https://billing.stripe.test/owner" })),
@@ -37,7 +39,7 @@ function harness(template = '<CheckoutReturnPage result="success" session-id="un
   const router = createRouter({ history: createMemoryHistory(), routes: ["/", "/subscribe", "/account", "/verify-email", "/register"].map((path) => ({ path, component: { template: "<div />" } })) });
   const wrapper = mount(host, { global: { plugins: [router] } });
   wrappers.push(wrapper);
-  return { wrapper, listeners, authNext, api, session, stopAuth, redirect, router };
+  return { wrapper, listeners, billingListeners, authNext, api, session, stopAuth, redirect, router };
 }
 
 describe("authoritative access lifecycle", () => {
@@ -126,6 +128,7 @@ describe("account billing guidance", () => {
   it.each(["comp", "app_store", "grandfathered"] as const)("does not direct %s access to a purchase", async (source) => {
     const h = harness("<AccountPage />");
     h.listeners[0].next({ ...active, source });
+    if (source === "app_store") h.billingListeners[0].next([{ source: "app_store", status: "active" }]);
     await flushPromises();
     expect(h.wrapper.text()).not.toContain("Choose a plan");
     expect(h.wrapper.text()).not.toContain("Manage billing");
@@ -137,6 +140,7 @@ describe("account billing guidance", () => {
   it("opens the hosted portal for expired Stripe billing without deleting the account", async () => {
     const h = harness('<AccountPage :redirect="redirect" />');
     h.listeners[0].next({ ...active, status: "expired" });
+    h.billingListeners[0].next([{ source: "stripe", status: "expired" }]);
     await flushPromises();
     await h.wrapper.findAll("button").find((button) => button.text() === "Manage billing")!.trigger("click");
     expect(h.api.createPortalSession).toHaveBeenCalledWith();
@@ -147,6 +151,7 @@ describe("account billing guidance", () => {
   it("allows comp with an existing Stripe relationship to manage that billing", async () => {
     const h = harness("<AccountPage />");
     h.listeners[0].next({ ...active, source: "comp", stripeCustomerId: "cus_owner" });
+    h.billingListeners[0].next([{ source: "comp", active: true }, { source: "stripe", status: "active" }]);
     await flushPromises();
     expect(h.wrapper.text()).toContain("Manage billing");
     expect(h.wrapper.text()).not.toContain("Choose a plan");
@@ -155,6 +160,7 @@ describe("account billing guidance", () => {
   it("does not redirect to an old account's portal after an account switch", async () => {
     const h = harness('<AccountPage :redirect="redirect" />');
     let finish!: (value: { url: string }) => void;
+    h.billingListeners[0].next([{ source: "stripe", status: "active" }]);
     h.api.createPortalSession.mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
     h.listeners[0].next(active);
     await flushPromises();
@@ -196,5 +202,32 @@ describe("SDK recovery actions", () => {
     h.wrapper.unmount(); wrappers.pop();
     window.dispatchEvent(new Event("focus"));
     expect(h.api.reloadUser).toHaveBeenCalledOnce();
+  });
+});
+
+
+describe("independent billing sources", () => {
+  it("keeps both providers visible when comp overrides the entitlement", async () => {
+    const h = harness("<AccountPage />");
+    h.listeners[0].next({ ...active, source: "comp", duplicateSources: false });
+    h.billingListeners[0].next([{ source: "comp", active: true }, { source: "stripe", status: "active" }, { source: "app_store", status: "active", environment: "production" }]);
+    await flushPromises();
+    expect(h.wrapper.text()).toContain("two paid subscriptions");
+    expect(h.wrapper.text()).toContain("Manage Apple subscription");
+    expect(h.wrapper.text()).toContain("Manage billing");
+    expect(h.wrapper.text()).not.toContain("Choose a plan");
+    h.authNext({ ...owner, uid: "second" } as User);
+    h.billingListeners[0].next([{ source: "app_store", status: "active" }]);
+    await flushPromises();
+    expect(h.session.billing.value).toEqual([]);
+    expect(h.billingListeners[0].stop).toHaveBeenCalledOnce();
+  });
+  it("allows retired Apple access to choose web, but not collectible billing retry", () => {
+    const h = harness();
+    h.listeners[0].next({ ...active, source: "app_store", status: "expired" });
+    h.billingListeners[0].next([{ source: "app_store", status: "expired", paymentOutstanding: false }]);
+    expect(h.session.canSubscribe.value).toBe(true);
+    h.billingListeners[0].next([{ source: "app_store", status: "expired", paymentOutstanding: true }]);
+    expect(h.session.canSubscribe.value).toBe(false);
   });
 });

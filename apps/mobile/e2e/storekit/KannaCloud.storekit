@@ -1,0 +1,47 @@
+{
+  "identifier": "D9D7182B-2514-41E5-9DDB-AE8E77511401",
+  "nonRenewingSubscriptions": [],
+  "products": [],
+  "settings": {
+    "_applicationInternalID": "",
+    "_developerTeamID": "",
+    "_failTransactionsEnabled": false,
+    "_locale": "en_US",
+    "_storefront": "USA",
+    "_timeRate": 0
+  },
+  "subscriptionGroups": [
+    {
+      "id": "12345",
+      "localizations": [],
+      "name": "Kanna Cloud",
+      "subscriptions": [
+        {
+          "adHocOffers": [],
+          "codeOffers": [],
+          "displayPrice": "5.00",
+          "familyShareable": false,
+          "groupNumber": 1,
+          "internalID": "123456789",
+          "introductoryOffer": null,
+          "localizations": [
+            {
+              "description": "Remote desktops and cloud tasks",
+              "displayName": "Kanna Cloud",
+              "locale": "en_US"
+            }
+          ],
+          "productID": "build.kanna.cloud.monthly",
+          "recurringSubscriptionPeriod": "P1M",
+          "referenceName": "Kanna Cloud monthly",
+          "subscriptionGroupID": "12345",
+          "type": "RecurringSubscription"
+        }
+      ]
+    }
+  ],
+  "version": {
+    "major": 3,
+    "minor": 0
+  }
+}

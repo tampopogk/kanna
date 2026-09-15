@@ -8,7 +8,7 @@
     "./billing-contract": "./src/billing/contract.ts"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.build.json",
+    "build": "tsc -p tsconfig.build.json && mkdir -p dist/resources && cp -R resources/. dist/resources/",
     "test": "pnpm exec vitest run --maxWorkers=2 --exclude 'dist/**'",
     "seed:billing": "pnpm build && node scripts/seed-billing-fixtures.mjs",
     "comp:grant": "pnpm build && node scripts/grant-comp-access.mjs",
@@ -20,6 +20,7 @@
     "vitest": "^4.1.4"
   },
   "dependencies": {
+    "@apple/app-store-server-library": "3.1.0",
     "firebase-admin": "^13.8.0",
     "firebase-functions": "^7.3.2",
     "stripe": "^22.5.0"

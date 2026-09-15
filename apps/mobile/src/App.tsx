@@ -1,3 +1,4 @@
+import { useAppleBilling } from "./lib/billing/useAppleBilling";
 import React, {
   useCallback,
   useEffect,
@@ -184,6 +185,8 @@ function AppContent() {
     });
     return refreshPromise;
   }, [controller]);
+
+  const appleBilling = useAppleBilling(Platform.OS === "ios" && mobileExtra?.appEnv === "prod", state.auth, refreshAccount);
 
   useEffect(() => {
     let cancelled = false;
@@ -477,7 +480,9 @@ function AppContent() {
           </View>
         ) : null}
         <AccountSheet
+          key={state.auth.status === "signedIn" ? state.auth.user.uid : "signed-out"}
           auth={state.auth}
+          appleBilling={appleBilling}
           customRelayUrl={activeCustomRelayUrl}
           customRelayControlEnabled={model.customRelayControlEnabled}
           defaultRelayUrl={model.defaultRelayUrl}
@@ -505,6 +510,7 @@ function AppContent() {
           }}
           onResetPassword={(email) => controller.sendPasswordResetEmail(email)}
           onRefreshAccount={() => {
+            appleBilling.refreshBilling();
             void refreshAccount();
           }}
           onSignOut={() => {

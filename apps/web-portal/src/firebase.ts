@@ -10,10 +10,10 @@ import {
   signOut,
   type User
 } from "firebase/auth";
-import { connectFirestoreEmulator, doc, getDoc, getFirestore, onSnapshot } from "firebase/firestore";
+import { collection, connectFirestoreEmulator, doc, getDoc, getFirestore, onSnapshot } from "firebase/firestore";
 import { connectFunctionsEmulator, getFunctions, httpsCallable } from "firebase/functions";
 import type { CheckoutSessionRequest, CheckoutSessionResponse, PortalSessionRequest, PortalSessionResponse } from "@kanna/firebase-functions/billing-contract";
-import type { CloudEntitlement } from "./types";
+import type { CloudEntitlement, BillingSource } from "./types";
 
 function required(name: keyof ImportMetaEnv): string {
   const value = import.meta.env[name]?.trim();
@@ -82,6 +82,10 @@ export const portalFirebase = {
         }
         next(snapshot.exists() ? snapshot.data() as CloudEntitlement : null);
       }, error);
+  },
+  observeBilling(uid: string, next: (sources: BillingSource[], fromCache?: boolean) => void, error: (error: Error) => void): () => void {
+    return onSnapshot(collection(db, "users", uid, "billing"), { includeMetadataChanges: true },
+      snapshot => next(snapshot.docs.map(doc => ({ ...doc.data(), source: doc.id } as BillingSource)), snapshot.metadata.fromCache), error);
   },
   async createPortalSession(): Promise<PortalSessionResponse> {
     const callable = httpsCallable<PortalSessionRequest, PortalSessionResponse>(functions, "createPortalSession");
