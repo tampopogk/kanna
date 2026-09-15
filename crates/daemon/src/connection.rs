@@ -1630,7 +1630,10 @@ pub(crate) async fn handle_command(
             let lifecycle = sessions.lock().await.lifecycle_lock(&session_id);
             let _lifecycle_guard = lifecycle.lock().await;
             let fallback = match session_handle(&sessions, &session_id).await {
-                Some(session) => session.rows_cols().await,
+                Some(session) => {
+                    let (rows, cols) = session.rows_cols().await;
+                    (cols, rows)
+                }
                 None => {
                     let evt = error_event(
                         Some(protocol::ErrorCode::SessionNotFound),

@@ -170,14 +170,10 @@ async fn seed_recovery_snapshot(
     }
 }
 
-/// Fetch the outgoing session's terminal and flatten it into the history seed
-/// for its replacement (`terminal_window::carryover_seed_snapshot`). `None` —
-/// a session without a terminal, a terminal with no primary-screen content, or
-/// any daemon error — means the replacement starts blank, exactly as before
-/// carryover existed. The daemon serves a live session's terminal directly and
-/// falls back to its persisted recovery snapshot for a dead one, so a post
-/// fallback whose session already exited still carries its history.
-async fn fetch_terminal_carryover(
+/// Read the outgoing terminal before replacement discards it. Its applied
+/// geometry survives even when there is no primary-screen history to carry.
+/// The daemon can also serve the persisted snapshot of an exited session.
+async fn fetch_outgoing_terminal_snapshot(
     daemon: &mut DaemonClient,
     session_id: &str,
 ) -> Option<TerminalSnapshot> {
@@ -196,9 +192,7 @@ async fn fetch_terminal_carryover(
         }
     };
     match event {
-        DaemonEvent::Snapshot { snapshot, .. } => {
-            crate::terminal_window::carryover_seed_snapshot(&snapshot)
-        }
+        DaemonEvent::Snapshot { snapshot, .. } => Some(snapshot),
         DaemonEvent::Error { message, .. } => {
             log::info!("[stage-carryover] no terminal to carry over for {session_id}: {message}");
             None
@@ -448,16 +442,28 @@ pub(crate) async fn spawn_prepared_stage_run_for_api(
         outgoing_run_id
     };
 
-    // Capture the outgoing session's terminal before the kill discards it, so
-    // the replacement session can be seeded with its primary-screen history
-    // and the user can scroll back past the stage boundary. Best-effort in
-    // both directions: a task must never fail to advance over terminal
-    // continuity, and a missing terminal simply means a blank start.
-    let terminal_carryover = if matches!(prepared.session, PreparedSessionSpawn::Pty { .. }) {
-        fetch_terminal_carryover(daemon, &session_id).await
+    // Keep the last daemon-applied geometry across PTY replacement, including
+    // when the desktop is backgrounded and passive reattachment cannot claim
+    // sizing. This carries dimensions, never viewer ownership; the next real
+    // active-view edge still wins. Missing geometry keeps the spawn fallback.
+    // Reuse this snapshot for scrollback, but do not depend on it having text.
+    let outgoing_terminal = if matches!(prepared.session, PreparedSessionSpawn::Pty { .. }) {
+        fetch_outgoing_terminal_snapshot(daemon, &session_id).await
     } else {
         None
     };
+
+    if let (PreparedSessionSpawn::Pty { cols, rows, .. }, Some(snapshot)) =
+        (&mut prepared.session, outgoing_terminal.as_ref())
+    {
+        if snapshot.cols > 0 && snapshot.rows > 0 {
+            *cols = snapshot.cols;
+            *rows = snapshot.rows;
+        }
+    }
+    let terminal_carryover = outgoing_terminal
+        .as_ref()
+        .and_then(crate::terminal_window::carryover_seed_snapshot);
 
     // Only a freshly forked workspace is rolled back on failure; a resumed
     // workspace pre-exists this spawn and must survive it.
@@ -2763,8 +2769,8 @@ fn uses_legacy_completion_context(daemon_dir: &str, task_id: &str, run_id: &str)
 #[cfg(test)]
 mod successor_retry_tests {
     use super::{
-        advance_server_completion_context, fetch_terminal_carryover, initialize_completion_context,
-        kill_session_replacing, legacy_shared_completion_directory,
+        advance_server_completion_context, fetch_outgoing_terminal_snapshot,
+        initialize_completion_context, kill_session_replacing, legacy_shared_completion_directory,
         prune_completion_contexts_on_startup, remove_completion_contexts,
         resolve_legacy_completion_retry_run, seed_terminal_carryover,
         uses_legacy_completion_context,
@@ -3168,8 +3174,10 @@ mod successor_retry_tests {
         daemon.set_connected_pid_for_test(41);
         let replacements = SessionReplacements::default();
 
-        let carryover = fetch_terminal_carryover(&mut daemon, "swap-me")
+        let snapshot = fetch_outgoing_terminal_snapshot(&mut daemon, "swap-me")
             .await
+            .expect("outgoing terminal must be captured");
+        let carryover = crate::terminal_window::carryover_seed_snapshot(&snapshot)
             .expect("primary-screen content must produce a carryover seed");
         kill_session_replacing(&mut daemon, &replacements, "swap-me")
             .await
