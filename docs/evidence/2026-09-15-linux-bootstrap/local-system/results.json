@@ -418,5 +418,190 @@
     "remove.mts": "3b1db150b7a2ed2d9478c571f0755d86b1cee98b05597a6ea87fb2f0eb5b219e",
     "live-restart.mts": "e3bc3c7e5461ea8c23191b0f3ed1161777d9a818edb7f0831740a6006245f722"
   },
-  "retainedRaw": "/home/jeremy/.tmp/kanna-d3ce8dec-system-1/evidence (private; no state databases or transfer secrets copied)"
+  "retainedRaw": "/home/jeremy/.tmp/kanna-d3ce8dec-system-1/evidence (private; no state databases or transfer secrets copied)",
+  "revisionCorrection": {
+    "cause": "Task-wide terminal history matched initial nonce while later provider displayed loading; run/workspace transition alone was insufficient readiness.",
+    "result": {
+      "passed": true,
+      "error": "",
+      "taskId": "65a78fb9",
+      "productSource": "a9df2f1d46fb08bcf53200b738e0fdc3c127b636",
+      "scope": "Installed ARM local forward stage/revision fork; not cross-machine"
+    },
+    "events": [
+      {
+        "at": "2026-09-15T22:07:43.333Z",
+        "label": "provider-response",
+        "value": {
+          "runId": "run-65a78fb9-1789510055269910221",
+          "stage": "in progress",
+          "nonce": "7c4e91a0b6d28f3a",
+          "runtimeState": "busy"
+        }
+      },
+      {
+        "at": "2026-09-15T22:07:49.314Z",
+        "label": "provider-response",
+        "value": {
+          "runId": "run-65a78fb9-1789510063450824552",
+          "stage": "review",
+          "nonce": "a3f91c7e2b6d084f",
+          "runtimeState": "busy"
+        }
+      },
+      {
+        "at": "2026-09-15T22:07:56.964Z",
+        "label": "provider-response",
+        "value": {
+          "runId": "run-65a78fb9-1789510069413608553",
+          "stage": "in progress",
+          "nonce": "a3f91c7e2b6d4a80",
+          "runtimeState": "busy"
+        }
+      },
+      {
+        "at": "2026-09-15T22:07:57.121Z",
+        "label": "before-quit",
+        "value": {
+          "task": {
+            "id": "65a78fb9",
+            "stage": "in progress",
+            "latestRun": {
+              "id": "run-65a78fb9-1789510069413608553",
+              "stage": "in progress",
+              "kind": "main",
+              "trigger": "unspecified",
+              "agent": "acceptance",
+              "agentProvider": "codex",
+              "model": "gpt-5.6-luna",
+              "status": "running",
+              "summary": null,
+              "resumedFromRunId": null,
+              "resumeFallbackReason": "no stage run recorded a provider session",
+              "finishedAt": null
+            },
+            "runtimeState": "busy",
+            "worktreePath": "/home/jeremy/.tmp/kanna-d3ce8dec-system-1/repo/.kanna-worktrees/task-65a78fb9-3",
+            "revisionRounds": 1
+          },
+          "inputs": {
+            "taskId": "65a78fb9",
+            "total": 0,
+            "inputs": []
+          }
+        }
+      },
+      {
+        "at": "2026-09-15T22:07:57.332Z",
+        "label": "quit-delivered",
+        "value": {
+          "task": {
+            "id": "65a78fb9",
+            "stage": "in progress",
+            "latestRun": {
+              "id": "run-65a78fb9-1789510069413608553",
+              "stage": "in progress",
+              "kind": "main",
+              "trigger": "unspecified",
+              "agent": "acceptance",
+              "agentProvider": "codex",
+              "model": "gpt-5.6-luna",
+              "status": "running",
+              "summary": null,
+              "resumedFromRunId": null,
+              "resumeFallbackReason": "no stage run recorded a provider session",
+              "finishedAt": null
+            },
+            "runtimeState": "busy",
+            "worktreePath": "/home/jeremy/.tmp/kanna-d3ce8dec-system-1/repo/.kanna-worktrees/task-65a78fb9-3",
+            "revisionRounds": 1
+          },
+          "inputs": {
+            "taskId": "65a78fb9",
+            "total": 1,
+            "inputs": [
+              {
+                "id": 1,
+                "taskId": "65a78fb9",
+                "runId": "run-65a78fb9-1789510069413608553",
+                "stage": "in progress",
+                "source": "unspecified",
+                "message": "/quit",
+                "deliveredAt": "2026-09-15 22:07:57"
+              }
+            ]
+          }
+        }
+      },
+      {
+        "at": "2026-09-15T22:07:57.627Z",
+        "label": "quit",
+        "value": {
+          "task": {
+            "id": "65a78fb9",
+            "stage": "in progress",
+            "latestRun": {
+              "id": "run-65a78fb9-1789510069413608553",
+              "stage": "in progress",
+              "kind": "main",
+              "trigger": "unspecified",
+              "agent": "acceptance",
+              "agentProvider": "codex",
+              "model": "gpt-5.6-luna",
+              "status": "cancelled",
+              "summary": "agent session exited before recording a stage verdict (exit code 0); use kanna_resume_task to recover provider context",
+              "resumedFromRunId": null,
+              "resumeFallbackReason": "no stage run recorded a provider session",
+              "finishedAt": "2026-09-15 22:07:57"
+            },
+            "runtimeState": "exited",
+            "worktreePath": "/home/jeremy/.tmp/kanna-d3ce8dec-system-1/repo/.kanna-worktrees/task-65a78fb9-3",
+            "revisionRounds": 1
+          },
+          "inputs": {
+            "taskId": "65a78fb9",
+            "total": 1,
+            "inputs": [
+              {
+                "id": 1,
+                "taskId": "65a78fb9",
+                "runId": "run-65a78fb9-1789510069413608553",
+                "stage": "in progress",
+                "source": "unspecified",
+                "message": "/quit",
+                "deliveredAt": "2026-09-15 22:07:57"
+              }
+            ]
+          }
+        }
+      },
+      {
+        "at": "2026-09-15T22:07:57.885Z",
+        "label": "cleanup",
+        "value": {
+          "unit": "kanna-installed-test-163599.service",
+          "status": "stopped; owned cgroup empty"
+        }
+      }
+    ],
+    "cleanup": {
+      "processes": [],
+      "units": [],
+      "user@0.service": "inactive",
+      "user-runtime-dir@0.service": "inactive",
+      "user@1000.service": "active",
+      "removal": {
+        "uid": 0,
+        "result": {
+          "code": 0,
+          "stdout": "Reading package lists...\nBuilding dependency tree...\nReading state information...\nSolving dependencies...\nThe following packages will be REMOVED:\n  kanna-staging\n0 upgraded, 0 newly installed, 1 to remove and 24 not upgraded.\nAfter this operation, 128 MB disk space will be freed.\n(Reading database ... \r(Reading database ... 5%\r(Reading database ... 10%\r(Reading database ... 15%\r(Reading database ... 20%\r(Reading database ... 25%\r(Reading database ... 30%\r(Reading database ... 35%\r(Reading database ... 40%\r(Reading database ... 45%\r(Reading database ... 50%\r(Reading database ... 55%\r(Reading database ... 60%\r(Reading database ... 65%\r(Reading database ... 70%\r(Reading database ... 75%\r(Reading database ... 80%\r(Reading database ... 85%\r(Reading database ... 90%\r(Reading database ... 95%\r(Reading database ... 100%\r(Reading database ... 171625 files and directories currently installed.)\r\nRemoving kanna-staging (0.2.0~staging.2-1) ...\r\nKanna Staging package files are being removed.\r\n\r\nYour tasks, worktrees and database are NOT removed. A running worker keeps\r\nrunning until you stop it:\r\n  systemctl --user disable --now kanna-staging-worker.service\r\nProcessing triggers for hicolor-icon-theme (0.18-2build1) ...\r\nProcessing triggers for gnome-menus (3.38.1-1ubuntu1) ...\r\nProcessing triggers for desktop-file-utils (0.28-1build1) ...\r\n",
+          "stderr": ""
+        },
+        "version": null
+      },
+      "dpkgExit": 1
+    },
+    "controllerSha256": "0d5ce698890c7da2fb7ae494b5e5713843121ae70c39d64ef39f9b540a617d2a",
+    "setupAttempt": "First launch preceded guest apt completion: ENOENT, no task created. Retained separately; launch repeated only after apt exit0/version/executable verification."
+  }
 }

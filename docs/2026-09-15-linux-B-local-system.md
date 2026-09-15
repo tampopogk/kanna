@@ -70,3 +70,28 @@ Raw private controller evidence and fixtures remain under
 copied into the repository. Local scripts remain `.tmp/linux-B-system` with
 hashes in the committed evidence. No promotion, release, build, notification,
 new cloud configuration or soak override occurred. Ship task remains open.
+
+### Bounded shutdown diagnosis and corrected result (Batch377)
+
+Retained review/revised terminal snapshots still contained the **initial** nonce
+while new Codex banners showed `loading`. The readiness expression searched the
+whole task transcript, so `/quit` was delivered before the revised provider was
+ready. This establishes a controller error, not evidence of provider shutdown
+failure. Corrected readiness requires a newly emitted response nonce after each
+new authoritative stage/run/workspace identity; old transcript responses cannot
+satisfy it.
+
+Only the failed local lifecycle check was repeated, using the same verified B
+package. Task `65a78fb9` produced distinct native responses in all three runs,
+passed the forward/revision commit/dirty preservation assertions, and processed
+exactly one `/quit`: sent22:07:57.332Z, exited observed22:07:57.627Z. Controller
+exit0; cleanup22:07:57.885Z. Prior failed attempts remain retained. A preliminary
+launch before guest apt completion failed ENOENT without creating a task; this
+was reconciled against actual apt exit0/version/executable before launch.
+
+Final package absent, no installed Kanna processes or owned units; root manager
+and runtime-dir inactive, jeremy manager active. VM released to641 again.
+Install/restart/floor passes were reused, not rerun. This resolves the local
+revision/shutdown controller failure only; full system/both still lacks exact-B
+cross-machine acceptance. Structured correction evidence is appended to the
+existing evidence file above; no product changes or publication occurred.
