@@ -106,6 +106,20 @@ implementation boundary required by its execution contract.
 
 ## kanna-web handoff
 
+### Latest owner acceptance requirement
+
+The owner requires “we need to have the 24 hours soak before we release to
+production” and vigorous system tests including task transfers. No soak override
+or reset is authorized. Linux must complete its own canonical staging candidate,
+tests and full 24-hour soak before production; the macOS `.20` candidate's age
+does not certify Linux or newer source. `release-policy.json` already declares
+Linux's 24-hour policy, but the platform-specific execution path is not wired.
+Acceptance task `641dbb6f` owns cross-machine/system tests. Its evidence must name
+the actual source, artifact hashes, architecture and installed version on both
+ends of each transfer. Development/prototype tests can establish bounded system
+behavior but cannot certify the missing supported release artifacts. Rebuilding
+a changed candidate requires acceptance and soak for that candidate.
+
 **Publishable Linux version, artifact URL and deb checksums: unavailable.**
 Required architectures remain x86_64/amd64 and arm64. Do not create a download
 button pointing at these CI archives or an inferred future release URL.
