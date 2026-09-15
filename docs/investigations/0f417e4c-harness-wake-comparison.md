@@ -6,6 +6,13 @@ compatibility evidence or necessary design changes; they do not authorize PTY
 injection, disabling ordinary input, rollout, or additional human attention
 badges. No product behavior changes are made by this reconciliation.
 
+Update: the owner subsequently authorized the bounded Copilot no-inference
+preflight. [Its result](0f417e4c-copilot-preflight.md) proves same-session
+extension attachment on the runtime actually launched, 1.0.64, and finds that
+both cached 1.0.64 and 1.0.83 high-level SDKs omit `source` from `send()`.
+The proposed native provenance contract is therefore not established. No send,
+inference, rollout or ordinary-input change occurred.
+
 ## Findings and evidence level
 
 | Harness | Best identified route | Evidence and remaining limitation |
@@ -84,16 +91,20 @@ busy enqueue, native provenance and uncertain-receipt recovery. OpenCode's
 password-protected startup is a later distinct question; do not run parallel
 live tests or repeat completed research while the Copilot question is unresolved.
 
-**Actual authorization boundary:** the owner's prior live-session authorization
+**Authorization boundary at initial synthesis:** the owner's prior live-session authorization
 was specifically for the completed Claude/Haiku experiment. The later request
 authorized investigation children, and the current request asks for synthesis
 and a proposed next experiment. Neither authorizes launching this Copilot
 preflight or inference. Obtain explicit authorization for the disposable
 no-inference preflight; any later inference test requires its own bounded scope.
 These are experiment boundaries, not blanket rollout gates. No human attention
-badge is added solely because a child recorded an advisory failure.
+badge is added solely because a child recorded an advisory failure. The later
+owner authorization and completed preflight are recorded in the update above;
+there is no remaining permission gate for that completed check. Additional
+inference and rollout remain outside its scope.
 
-No proposed follow-up was executed by this reconciliation. No extra agents,
+No proposed follow-up was executed during the initial reconciliation. The
+subsequent authorized no-inference preflight is the sole exception. No extra agents,
 provider inference, global configuration, rollout, push/PR, stage transition,
 or manager-terminal message was initiated.
 
