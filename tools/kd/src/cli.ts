@@ -1076,6 +1076,7 @@ export function parseCliArgs(args: string[]): ParsedCliCommand {
     for (let i = 0; i < rest.length; i++) {
       const flag = rest[i];
       if (flag === "--staging") { input.staging = true; continue; }
+      if (flag === "--disconnect-relay") { input.disconnectRelay = true; continue; }
       if (flag === "--proxy-maintenance") { input.proxyMaintenance = true; continue; }
       const field = fields[flag];
       if (!field || !rest[i + 1] || rest[i + 1].startsWith("--")) throw new Error("Invalid Linux setup flag or missing value: " + flag);

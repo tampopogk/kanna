@@ -219,7 +219,12 @@ staging VM, protected local key custody and a coordinated `--proxy-maintenance`
 window with no live relay connections. Caddy mount installation recreates only
 Caddy and can interrupt newly arriving connections; never describe it as
 zero downtime, stop owner clients, or use full relay deployment to bypass this
-refusal. Setup validates HTTPS public-key readback and publisher RPC before
+refusal. When a human explicitly approves a brief staging network interruption,
+`--proxy-maintenance --disconnect-relay` on a fresh plan and apply may stop only
+Caddy to close public admission, then verify actual socket drain before mount
+replacement. Owner apps/agent PTYs and the relay container remain running.
+Undrained sockets still refuse; cleanup restores Caddy admission, with public
+relay HTTPS health/source readback required. This mode is not a zero-gate override. Setup validates HTTPS public-key readback and publisher RPC before
 merging only matching/new Linux selectors. It creates no release, receipt or
 soak, and grants no production authority. Partial setup or changed identity
 requires inspection, not deletion or implicit rotation.

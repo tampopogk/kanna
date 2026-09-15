@@ -25,7 +25,8 @@ export const linuxArchiveSetupInputSchema = z.object({
   hostKeyFile: z.string().startsWith('/').optional(),
   plan: z.string().optional(), confirm: z.string().regex(/^[a-f0-9]{64}$/).optional(),
   out: z.string().optional(), proxyMaintenance: z.boolean().default(false),
-}).strict();
+  disconnectRelay: z.boolean().default(false),
+}).strict().refine(v => !v.disconnectRelay || v.proxyMaintenance, { message: '--disconnect-relay requires --proxy-maintenance' });
 export type SetupInput = z.infer<typeof linuxArchiveSetupInputSchema>;
 interface Context { repoRoot: string; env: NodeJS.ProcessEnv; runner: CommandRunner }
 const environment = resolveKdEnvironment('staging');
@@ -85,7 +86,7 @@ async function dns() {
 }
 export function setupPlan(snapshot: Record<string, unknown>) {
   const plan = { schemaVersion: 1, kind: 'linux-staging-archive-setup', target, snapshot,
-    changes: ['dedicated MBP apt and publisher keys', 'forced storage-helper-only kanna-apt account', 'dedicated POSIX archive and public apt key', 'Caddy read-only mount/vhost; recreate only caddy, preserve relay ID/image/start', 'merge only KANNA_LINUX_* machine selectors after HTTPS key readback'], dnsAction: dnsSetupAction };
+    changes: [...(snapshot.maintenance === 'disconnect-staging-proxy' ? ['briefly stop only staging Caddy; verify socket drain; always restore proxy admission'] : []), 'dedicated MBP apt and publisher keys', 'forced storage-helper-only kanna-apt account', 'dedicated POSIX archive and public apt key', 'Caddy read-only mount/vhost; recreate only caddy, preserve relay ID/image/start', 'merge only KANNA_LINUX_* machine selectors after HTTPS key readback'], dnsAction: dnsSetupAction };
   return { ...plan, sha256: sha256(JSON.stringify(plan)) };
 }
 async function inspect(c: Context, input: SetupInput) {
@@ -105,7 +106,7 @@ async function inspect(c: Context, input: SetupInput) {
   // Capacity is a minimum gate, not a changing identity in the plan digest.
   if (hostState.freeBytes < 1073741824) throw new Error('Staging VM has less than 1GiB free for archive setup.');
   delete hostState.freeBytes;
-  return { account: accounts[0].account, machine: hostname(), vmId: String(vm.id), pin, adminUser: input.adminUser, adminIdentity: input.adminIdentity, hostState, dns: await dns() };
+  return { account: accounts[0].account, machine: hostname(), vmId: String(vm.id), pin, adminUser: input.adminUser, adminIdentity: input.adminIdentity, hostState, maintenance: input.disconnectRelay ? 'disconnect-staging-proxy' : 'already-idle', dns: await dns() };
 }
 function ownedDirectory(path: string) {
   if (!existsSync(path)) mkdirSync(path, { mode: 0o700 });
@@ -150,9 +151,12 @@ export async function setupLinuxArchive(c: Context, raw: SetupInput) {
   if (hardware.SPHardwareDataType?.[0]?.machine_name !== 'MacBook Pro') throw new Error('Actual archive setup/signing custody requires the trusted MacBook Pro.');
   const answers = snapshot.dns;
   if (answers.a.length !== 1 || answers.a[0] !== target.address || answers.aaaa.length || answers.cname.length) throw new Error(`DNS action needed in the existing authoritative account: A apt.kanna.build = ${target.address}, TTL 300; no conflicting A/AAAA. No Cloud DNS API or zone will be enabled.`);
-  if (snapshot.hostState.proxyChange && (!input.proxyMaintenance || snapshot.hostState.relayTraffic?.openSockets !== 0 || snapshot.hostState.relayTraffic?.liveRows !== 0 || snapshot.hostState.relayTraffic?.pairedUsers !== 0)) throw new Error('Apply requires a coordinated --proxy-maintenance window with zero live relay connections; no application disconnects or drain are performed.');
+  if (snapshot.hostState.proxyChange && (!input.proxyMaintenance || (!input.disconnectRelay && (snapshot.hostState.relayTraffic?.openSockets !== 0 || snapshot.hostState.relayTraffic?.liveRows !== 0 || snapshot.hostState.relayTraffic?.pairedUsers !== 0)))) throw new Error('Apply requires a coordinated --proxy-maintenance window with zero live relay connections; no application disconnects or drain are performed.');
   const custody = await keys(c, snapshot.pin);
-  const applied = await host(c, input, snapshot.pin, { mode: 'apply', expected: snapshot.hostState, publisherPublicKey: custody.publisherPublicKey, aptPublicKey: custody.publicKey, helper: linuxAptStorageWorker, renderer: linuxArchiveConfigRenderer, proxyMaintenance: input.proxyMaintenance });
+  const applied = await host(c, input, snapshot.pin, { mode: 'apply', expected: snapshot.hostState, publisherPublicKey: custody.publisherPublicKey, aptPublicKey: custody.publicKey, helper: linuxAptStorageWorker, renderer: linuxArchiveConfigRenderer, proxyMaintenance: input.proxyMaintenance, disconnectRelay: input.disconnectRelay });
+  const relayHealthResponse = await fetch('https://relay-staging.kanna.build/health', { redirect: 'error', signal: AbortSignal.timeout(30000) });
+  const relayHealth = relayHealthResponse.ok ? await relayHealthResponse.json() as {status?: string; commit?: string} : null;
+  if (relayHealth?.status !== 'ok' || relayHealth.commit !== snapshot.hostState.relayTraffic.commit) throw new Error('Staging relay HTTPS health/source readback failed after setup; inspect retained state.');
   const publicKeyUrl = `https://${target.domain}/keys/kanna-archive.asc`;
   const response = await fetch(publicKeyUrl, { redirect: 'error', signal: AbortSignal.timeout(30000) });
   if (!response.ok || sha256(await response.text()) !== sha256(custody.publicKey)) throw new Error('Public HTTPS apt key readback failed; retain setup and retry from a fresh plan. No release selectors installed.');
@@ -165,5 +169,5 @@ export async function setupLinuxArchive(c: Context, raw: SetupInput) {
   const storage = linuxArchiveStorage(config);
   await storage.withExclusivePublication(async () => { await storage.read('linux/state.json'); });
   const configPath = writeMachineLinuxSelectors(homedir(), assignments);
-  return { configured: true, published: false, target, publicKeyUrl, fingerprint: custody.fingerprint, configPath, applied };
+  return { configured: true, published: false, target, publicKeyUrl, fingerprint: custody.fingerprint, configPath, relayHealth: { status: relayHealth.status, commit: relayHealth.commit }, applied };
 }

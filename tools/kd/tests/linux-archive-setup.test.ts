@@ -41,7 +41,7 @@ function fixture() {
   }
   throw Error('Unexpected mutation/tool '+command);
  }};
- return {context:{repoRoot:directory,env:{},runner},input:{mode:'plan' as const,staging:true as const,proxyMaintenance:false,adminUser:'jeremy',adminIdentity:identity,hostKeyFile:pin},calls,move:()=>{changed=true;},wrong:()=>{address='34.133.233.111';},fail:()=>{authFailure=true;}};
+ return {context:{repoRoot:directory,env:{},runner},input:{mode:'plan' as const,staging:true as const,proxyMaintenance:false,disconnectRelay:false,adminUser:'jeremy',adminIdentity:identity,hostKeyFile:pin},calls,move:()=>{changed=true;},wrong:()=>{address='34.133.233.111';},fail:()=>{authFailure=true;}};
 }
 it('plans authenticated fixed staging scope without any remote mutation or key generation',async()=>{
  const f=fixture(); const plan=await setupLinuxArchive(f.context,f.input);if (!("sha256" in plan)) throw Error("Expected plan");
@@ -69,9 +69,11 @@ it('refuses changed plan before any apply/key action',async()=>{
 });
 it('rejects production, duplicate/unrecognized selectors and malformed apply input',()=>{
  expect(()=>linuxArchiveSetupInputSchema.parse({mode:'apply',staging:false,production:true})).toThrow();
+ const f=fixture();expect(()=>linuxArchiveSetupInputSchema.parse({...f.input,disconnectRelay:true})).toThrow(/requires/);
  expect(()=>parseCliArgs(['release','setup-linux','--production'])).toThrow();
  expect(()=>parseCliArgs(['release','setup-linux','--mode','plan','--mode','apply'])).toThrow();
  expect(parseCliArgs(['release','setup-linux','--staging','--mode','inspect','--admin-user','jeremy','--admin-identity','/owned/key']).taskId).toBe('release.setup-linux');
+ expect(parseCliArgs(['release','setup-linux','--staging','--mode','plan','--admin-user','jeremy','--admin-identity','/owned/key','--proxy-maintenance','--disconnect-relay'])).toMatchObject({taskId:'release.setup-linux',input:{proxyMaintenance:true,disconnectRelay:true}});
 });
 it('executes host rendering in a disposable Python fixture: scoped/idempotent and refuses unrelated vhost/layout',()=>{
  const prefix=linuxArchiveSetupHost.split('request=json.load(sys.stdin)')[0];
@@ -93,7 +95,8 @@ it('executes scoped apply/retry in a disposable host filesystem without running 
  writeFileSync(join(dir,'opt/kanna-relay/Caddyfile'),readFileSync(join(repo,'services/relay/deploy/Caddyfile')));
  writeFileSync(join(dir,'opt/kanna-relay/.env'),'SECRET=fixture-never-returned\n');
  const shim=String.raw`
-import os, sys, json, pathlib, subprocess, pwd, types
+import os, sys, json, pathlib, subprocess, pwd, types, time
+time.sleep=lambda seconds:None
 fixture=pathlib.Path(os.environ['SETUP_FIXTURE'])
 commands=fixture/'commands.jsonl'
 os.getuid=lambda:0
@@ -124,10 +127,18 @@ def command(args,**kw):
    busy=(fixture/'busy').exists() or (arriving.exists() and int(arriving.read_text())<=0)
    if arriving.exists(): arriving.write_text(str(int(arriving.read_text())-1))
    out=json.dumps({'commit':'abcdef123','pairedUsers':0,'openSockets':7 if busy else 0,'liveRows':7 if busy else 0})
+ elif args==['docker','compose','stop','--timeout','5','caddy']:
+  (fixture/'proxy-stopped').write_text('stopped')
+  if (fixture/'busy').exists() and not (fixture/'undrainable').exists(): (fixture/'busy').unlink()
+ elif args==['docker','compose','start','caddy']:
+  if (fixture/'proxy-stopped').exists(): (fixture/'proxy-stopped').unlink()
  elif args==['docker','compose','config','--quiet']: pass
  elif args==['docker','compose','config','--format','json']: out=json.dumps({'services':{'caddy':{'image':'caddy:fixture'}}})
  elif args[:3]==['docker','image','inspect']: out='caddy-id-image'
- elif args==['docker','compose','up','-d','--no-deps','--no-build','--pull','never','--force-recreate','caddy']: pass
+ elif args==['docker','compose','up','-d','--no-deps','--no-build','--pull','never','--force-recreate','caddy']:
+  if (fixture/'fail-recreate-once').exists():
+   (fixture/'fail-recreate-once').unlink()
+   return types.SimpleNamespace(returncode=1,stdout='',stderr='fixture recreation failure')
  else: raise AssertionError('Unexpected system mutation: '+str(args))
  return types.SimpleNamespace(returncode=0,stdout=out,stderr='')
 subprocess.run=command
@@ -152,7 +163,16 @@ subprocess.run=command
  expect(readFileSync(join(dir,'opt/kanna-relay/Caddyfile'),'utf8')).not.toContain('apt.kanna.build');
  expect(readFileSync(join(dir,'commands.jsonl'),'utf8').trim().split('\n').map(l=>JSON.parse(l)).filter(a=>a.includes('up'))).toHaveLength(0);
  rmSync(join(dir,'arriving'));
- const applied=invoke({...payload,expected:invoke({mode:'inspect'})});expect(applied.configured).toBe(true);
+ writeFileSync(join(dir,'busy'),'operator sockets');writeFileSync(join(dir,'undrainable'),'direct socket remains');
+ expect(()=>invoke({...payload,disconnectRelay:true,expected:invoke({mode:'inspect'})})).toThrow();
+ expect(readFileSync(join(dir,'opt/kanna-relay/Caddyfile'),'utf8')).not.toContain('apt.kanna.build');
+ expect(()=>statSync(join(dir,'proxy-stopped'))).toThrow();
+ rmSync(join(dir,'undrainable'));
+ const applied=invoke({...payload,disconnectRelay:true,expected:invoke({mode:'inspect'})});expect(applied.configured).toBe(true);
+ expect(()=>statSync(join(dir,'proxy-stopped'))).toThrow();
+ expect(applied.maintenance.disconnectRelay).toBe(true);
+ expect(applied.maintenance.socketChecks.length).toBeGreaterThanOrEqual(3);
+ expect(applied.maintenance.socketChecks.every((v:{openSockets:number;liveRows:number})=>v.openSockets===0&&v.liveRows===0)).toBe(true);
  const second=invoke({mode:'inspect'});expect(second.managed).toBe(true);
  const retry=invoke({...payload,expected:second});expect(retry.relay).toEqual(applied.relay);
  expect(()=>invoke({...payload,expected:second,publisherPublicKey:'ssh-ed25519 AAAADIFFERENT'})).toThrow();
@@ -161,6 +181,8 @@ subprocess.run=command
  const calls=readFileSync(join(dir,'commands.jsonl'),'utf8').trim().split('\n').map(l=>JSON.parse(l));
  expect(calls.filter(a=>a[0]==='useradd')).toHaveLength(1);
  expect(calls.filter(a=>a.includes('up'))).toHaveLength(1);
+ expect(calls.filter(a=>a.includes('stop'))).toHaveLength(2);expect(calls.filter(a=>a.includes('start'))).toHaveLength(2);
+ expect(calls.filter(a=>a.includes('stop')||a.includes('start')).every(a=>a.at(-1)==='caddy')).toBe(true);
  const auth=readFileSync(join(dir,'var/lib/kanna-apt/.ssh/authorized_keys'),'utf8');expect(auth).toContain('restrict,command=');
  expect(readFileSync(join(dir,'opt/kanna-relay/.env'),'utf8')).toBe('SECRET=fixture-never-returned\n');
  // A later normal staging relay deploy uploads fresh base templates. The
@@ -171,6 +193,20 @@ subprocess.run=command
  execFileSync('/usr/bin/python3',['-c',shim+'\n'+renderer],{encoding:'utf8',env:{...process.env,SETUP_FIXTURE:dir}});
  expect(readFileSync(join(dir,'opt/kanna-relay/Caddyfile'),'utf8')).toContain('apt.kanna.build');
  expect(readFileSync(join(dir,'opt/kanna-relay/docker-compose.yml'),'utf8')).toContain(join(dir,'srv/kanna-apt/archive')+':'+join(dir,'srv/kanna-apt')+':ro');
+ // Failure after the consented disconnect restores the original config and
+ // restarts proxy admission; the relay process is never stopped/recreated.
+ const originalCompose=readFileSync(join(repo,'services/relay/deploy/docker-compose.yml'));
+ const originalCaddy=readFileSync(join(repo,'services/relay/deploy/Caddyfile'));
+ writeFileSync(join(dir,'opt/kanna-relay/docker-compose.yml'),originalCompose);
+ writeFileSync(join(dir,'opt/kanna-relay/Caddyfile'),originalCaddy);
+ const failedExpected=invoke({mode:'inspect'});
+ writeFileSync(join(dir,'fail-recreate-once'),'fail');
+ expect(()=>invoke({...payload,disconnectRelay:true,expected:failedExpected})).toThrow();
+ expect(readFileSync(join(dir,'opt/kanna-relay/docker-compose.yml'))).toEqual(originalCompose);
+ expect(readFileSync(join(dir,'opt/kanna-relay/Caddyfile'))).toEqual(originalCaddy);
+ expect(()=>statSync(join(dir,'proxy-stopped'))).toThrow();
+ expect(invoke({mode:'inspect'}).relay).toEqual(first.relay);
+
 
 });
 
@@ -189,10 +225,10 @@ it('applies orchestration with disposable protected keys and merges only Linux s
   return base.run(command,args,options);
  }};
  const context={...f.context,runner};const plan=await setupLinuxArchive(context,f.input);if (!("sha256" in plan)) throw Error("Expected plan");const path=join(f.context.repoRoot,'plan.json');writeFileSync(path,JSON.stringify(plan));
- vi.stubGlobal('fetch',async(url:string)=>{expect(url).toBe('https://apt.kanna.build/keys/kanna-archive.asc');return new Response(transferred!.aptPublicKey);});
+ vi.stubGlobal('fetch',async(url:string)=>{if(url==='https://relay-staging.kanna.build/health')return Response.json({status:'ok',commit:'abcdef123'});expect(url).toBe('https://apt.kanna.build/keys/kanna-archive.asc');return new Response(transferred!.aptPublicKey);});
  const result=await setupLinuxArchive(context,{...f.input,mode:'apply',plan:path,confirm:plan.sha256,proxyMaintenance:true});
  expect(result).toMatchObject({configured:true,published:false});
- expect(Object.keys(transferred!)).toEqual(['mode','expected','publisherPublicKey','aptPublicKey','helper','renderer','proxyMaintenance']);
+ expect(Object.keys(transferred!)).toEqual(['mode','expected','publisherPublicKey','aptPublicKey','helper','renderer','proxyMaintenance','disconnectRelay']);
  expect(JSON.stringify(transferred)).not.toContain('PRIVATE KEY');
  const updated=readFileSync(envPath,'utf8');expect(updated).toContain('APPLE_KEYCHAIN_PROFILE="keep-this"');expect(updated).toContain('KANNA_LINUX_SSH_HOST="34.133.43.193"');
  expect(JSON.stringify(result)).not.toContain('PRIVATE KEY');
@@ -218,4 +254,15 @@ it('probes actual authenticated sockets, refusing absent/mismatched stats withou
   try { invoke(valid,token,status);throw Error('unexpected success'); }
   catch(error) { const result=error as {stderr?:Buffer};expect(String(result.stderr)).toContain('Cannot verify authenticated relay socket stats');expect(String(result.stderr)).not.toContain('disposable-token'); }
  }
+});
+
+it('binds consented proxy disconnect to a fresh plan, refusing an idle-only plan before key or host mutation',async()=>{
+ const f=fixture();const plan=await setupLinuxArchive(f.context,f.input);if (!("sha256" in plan)) throw Error('Expected plan');
+ const path=join(f.context.repoRoot,'idle-plan.json');writeFileSync(path,JSON.stringify(plan));
+ const input={...f.input,proxyMaintenance:true,disconnectRelay:true};
+ const disconnectPlan=await setupLinuxArchive(f.context,input);
+ expect(disconnectPlan).toHaveProperty('snapshot.maintenance','disconnect-staging-proxy');
+ expect(disconnectPlan).not.toHaveProperty('sha256',plan.sha256);
+ await expect(setupLinuxArchive(f.context,{...input,mode:'apply',plan:path,confirm:plan.sha256})).rejects.toThrow(/changed/);
+ expect(f.calls.filter(c=>c.command==='/usr/bin/ssh').every(c=>JSON.parse(c.stdin!).mode==='inspect')).toBe(true);
 });
