@@ -628,6 +628,12 @@ function parseFlagInput(
   const input: Record<string, unknown> = { ...defaults };
   for (let index = 0; index < rest.length; index += 1) {
     const arg = rest[index];
+    if (arg === "--prepared-manifest" || arg === "--source-ref" || arg === "--promotion-base") {
+      const value = rest[++index];
+      if (!value || value.startsWith("--")) throw new Error(`${arg} requires a value`);
+      input[arg === "--prepared-manifest" ? "preparedManifest" : arg === "--source-ref" ? "sourceRef" : "promotionBase"] = value;
+      continue;
+    }
     if (arg === "--candidate" || arg === "--renewal" || arg === "--valid-for-hours") {
       const value = rest[++index];
       if (!value || value.startsWith("--")) throw new Error(`${arg} requires a value`);
@@ -1712,7 +1718,9 @@ const helpTopics: Record<string, string[]> = {
     "Select --platform linux for its independent apt archive; macOS remains the default.",
     "Linux: --staging [--staging-iteration N] [--branch main|release/linux/X.Y] [--acceptance <path>] [--skip-build].",
     "Linux reads committed VERSION, builds both architectures, and rejects bumps/rollback/architecture-only selectors.",
-    "Linux --dry-run builds and reports blockers without writing candidate/channel state; --release publishes.",
+    "Linux retained inputs: --prepared-manifest <path> --source-ref <40-hex-sha> --promotion-base <same-sha> --staging-iteration N.",
+    "Prepared mode verifies retained bytes without building; records an immutable commit base whose branch must contain it.",
+    "Linux --dry-run reports blockers without writing candidate/channel state; ordinary mode builds, --release publishes.",
     "The remaining updater/notarization description applies to macOS:",
     "Build, sign, notarize, and optionally publish a Kanna release.",
     "A staging publish must be a descendant of the candidate the channel already serves, except for a verified and recorded forward-main resumption after promotion; a release/X.Y RC must build that branch's remote tip exactly.",

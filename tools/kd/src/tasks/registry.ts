@@ -427,6 +427,9 @@ const pagesBuildSchemaInputSchema = z.object({
 });
 
 const releaseShipInputSchema = z.object({
+  preparedManifest: z.string().min(1).optional(),
+  sourceRef: z.string().regex(/^[a-f0-9]{40}$/).optional(),
+  promotionBase: z.string().regex(/^[a-f0-9]{40}$/).optional(),
   platform: z.enum(["macos", "linux"]).default("macos"),
   acceptance: z.string().optional(),
   stagingIteration: z.number().int().positive().optional(),
@@ -3247,7 +3250,7 @@ export const taskDefinitions = [
         const result = await shipLinuxRelease({ ...parsed, repoRoot: context.repoRoot, env: releaseEnv, runner: nodeCommandRunner });
         return { ok: true, message: formatJsonResult(result), data: result };
       }
-      if (parsed.acceptance || parsed.skipBuild || parsed.stagingIteration !== undefined) throw new Error("Linux release selectors require --platform linux.");
+      if (parsed.preparedManifest || parsed.sourceRef || parsed.promotionBase || parsed.acceptance || parsed.skipBuild || parsed.stagingIteration !== undefined) throw new Error("Linux release selectors require --platform linux.");
       if (!parsed.dryRun && !parsed.rollbackTo) {
         await preflightNotarizationCredentials({
           cwd: context.repoRoot,

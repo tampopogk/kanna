@@ -76,6 +76,14 @@ operations/preflight and version-bump procedure do not apply to Linux.
 - Authorized staging publication: the same ship command with `--release`
   instead of `--dry-run`. After evidence preparation, `--skip-build` requires
   Bazel's up-to-date check with the same source/tree/iteration stamps.
+- Retained preparation rehearsal/publication: add `--prepared-manifest <path>`
+  `--source-ref <40-hex-product-commit> --promotion-base <same-commit>` and
+  `--staging-iteration N` to Linux ship. This verifies retained bytes against an
+  isolated product snapshot without building; `--skip-build` is incompatible.
+  It records an immutable commit promotion base. The selected remote branch
+  must still contain that source; all channel/lineage/freeze/evidence gates
+  remain. The controller must be clean and is reported separately. This creates
+  no release branch or pin tag. Publication still needs explicit authorization.
 - Named-human production promotion: `./kd release promote X.Y.Z-staging.N
   --platform linux --acceptance <path> [--dry-run]`. Production rebuilds the
   exact soaked source as `kanna`, verifies both debs and publishes suite `stable`.
@@ -90,7 +98,10 @@ operations/preflight and version-bump procedure do not apply to Linux.
 
 Linux does not implement cut/recut/reset/rollback or soak override; these
 selectors fail closed and must never be retried without `--platform linux`.
-An existing `release/linux/X.Y` branch must match `VERSION` and its remote tip.
+An existing `release/linux/X.Y` branch must match `VERSION`. Ordinary ships
+require its exact remote tip; explicitly commit-pinned prepared candidates
+require the remote branch to contain the immutable product source. Promotion
+rebuilds that pinned source in isolation and refuses `--skip-build`.
 Changed source requires a fresh candidate and fresh acceptance/soak.
 
 Read `docs/dev/linux-release.md` for the exact configuration and acceptance

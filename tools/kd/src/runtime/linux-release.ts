@@ -1,3 +1,5 @@
+import { withLinuxSource } from "./linux-release-source";
+import { readLinuxPrepared } from "./linux-release-prepared";
 import { renewLinuxCandidate, renewalPath } from "./linux-release-renewal";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -17,6 +19,7 @@ import type { AptPublicationStorage } from "./linux-apt-publication";
 interface LinuxContext { repoRoot: string; env: NodeJS.ProcessEnv; runner: CommandRunner }
 export interface LinuxReleaseInput extends LinuxContext {
   staging?: boolean; production?: boolean; release?: boolean; dryRun?: boolean; skipBuild?: boolean;
+  preparedManifest?: string; sourceRef?: string; promotionBase?: string;
   branch?: string; stagingIteration?: number; acceptance?: string; promoteFrom?: string;
   major?: boolean; minor?: boolean; patch?: boolean; arm64?: boolean; x86_64?: boolean;
   rollbackTo?: string; overrideSoak?: string;
@@ -53,6 +56,15 @@ async function remoteBranch(c: LinuxContext, branch: string): Promise<string> {
   const sha = result.split(/\s+/)[0];
   if (!/^[a-f0-9]{40}$/.test(sha)) throw new Error(`Missing Linux promotion base ${branch}.`);
   return sha;
+}
+async function matchesPromotionBase(context: LinuxContext, base: LinuxCandidate["promotionBase"]): Promise<boolean> {
+  const tip = await remoteBranch(context, base.branch);
+  if (tip === base.revision) return true;
+  if (base.kind !== "commit") return false;
+  // Fetch the observed tip explicitly; never use a stale tracking ref to
+  // authorize a branch that has been rewritten away from the pinned source.
+  await run(context, "git", ["fetch", "--no-tags", "origin", tip]);
+  return await relationship(context, base.revision, tip) === "descendant";
 }
 function publicKey(config: LinuxReleaseConfig): AptVerificationKey {
   return { publicKey: readLinuxKeyFile(config.publicKeyPath), fingerprint: config.fingerprint };
@@ -141,7 +153,7 @@ async function promotionStatus(context: LinuxContext, storage: AptPublicationSto
     if (receipt) try { await publicReadback(storage, candidate); } catch (e) { blockers.push((e as Error).message); }
     if (receipt) try { await checkProjection(context, candidate, receipt); } catch (e) { blockers.push((e as Error).message); }
     if (candidate.baseUrl !== config.baseUrl || candidate.validForHours !== config.validForHours) blockers.push("Linux archive configuration differs from the candidate's immutable configuration.");
-    if (await remoteBranch(context, candidate.promotionBase.branch) !== candidate.promotionBase.revision || candidate.promotionBase.revision !== candidate.source.revision) blockers.push("Linux candidate no longer matches its exact promotion base.");
+    if (!(await matchesPromotionBase(context, candidate.promotionBase)) || candidate.promotionBase.revision !== candidate.source.revision) blockers.push("Linux candidate no longer matches its exact promotion base.");
     if (await tagCommit(context, `abandoned/${platform.seriesBranch(candidate.version)}`)) blockers.push("Linux release series is abandoned.");
     if (await tagCommit(context, platform.productionTag(candidate.version))) blockers.push("Linux production version already exists.");
     if (candidate.previousTag) {
@@ -171,6 +183,8 @@ export async function linuxReleaseStatus(input: LinuxContext & { acceptance?: st
 export async function shipLinuxRelease(input: LinuxReleaseInput) {
   if (input.major || input.minor || input.patch || input.arm64 || input.x86_64 || input.rollbackTo || input.overrideSoak || (input.promoteFrom && input.stagingIteration !== undefined)) throw new Error("Linux requires both architectures, committed VERSION and its own candidate; bump, architecture-only, rollback and soak override selectors are unsupported.");
   if (!input.promoteFrom && (!input.staging || input.production)) throw new Error("Linux ship requires --staging. Production requires release promote --platform linux <exact-staging-version>.");
+  const prepared = input.preparedManifest !== undefined || input.sourceRef !== undefined || input.promotionBase !== undefined;
+  if (prepared && (!input.preparedManifest || !/^[a-f0-9]{40}$/.test(input.sourceRef ?? "") || input.promotionBase !== input.sourceRef || !input.stagingIteration || input.skipBuild || input.promoteFrom)) throw new Error("Prepared Linux ship requires --prepared-manifest, exact --source-ref and matching --promotion-base, plus --staging-iteration; skip-build and promotion selectors are incompatible.");
   const config = linuxReleaseConfig(input.env);
   const key = publicKey(config);
   const acceptance = readLinuxAcceptance(input.acceptance);
@@ -181,98 +195,109 @@ export async function shipLinuxRelease(input: LinuxReleaseInput) {
     signer = await createAptPublicationSigner({ ...key, privateKey: readLinuxKeyFile(config.privateKeyPath, true), passphrase: config.passphrasePath ? readLinuxKeyFile(config.passphrasePath, true).replace(/\r?\n$/, "") : undefined, now: () => new Date() });
   } catch (error) { signerProblem = (error as Error).message; }
   if (input.release && !input.dryRun && signerProblem) throw new Error(`Linux apt preflight failed: ${signerProblem}`);
-  const source = await cleanLinuxSource(input.repoRoot, input.env, input.runner);
-  const version = readFileSync(join(input.repoRoot, "VERSION"), "utf8").trim();
-  if (!/^\d+\.\d+\.\d+$/.test(version)) throw new Error("Linux VERSION must be X.Y.Z.");
+  const controller = await cleanLinuxSource(input.repoRoot, input.env, input.runner);
   await fetchLinux(input);
   const storage = linuxArchiveStorage(config);
   return storage.withExclusivePublication(async () => {
     const state = await archiveState(storage);
     if (state.pendingRenewal) throw new Error("Recover pending Linux metadata renewal with release renew first.");
     let staging: LinuxCandidate | null = state.staging ? await readCandidate(storage, state.staging) : null;
-    let promoteFrom: string | null = null;
-    let branch = input.branch ?? "main";
-    let iteration: number | undefined;
-    let tag: string;
-    const now = new Date();
-    const pending = state.pending ? await readCandidate(storage, state.pending) : null;
-    if (input.promoteFrom) {
-      promoteFrom = input.promoteFrom.startsWith("linux-v") ? input.promoteFrom : `linux-v${input.promoteFrom}`;
-      if (!staging || promoteFrom !== staging.tag || source.revision !== staging.source.revision || source.tree !== staging.source.tree || version !== staging.version) throw new Error("Linux promotion must rebuild the exact active soaked source/tree/version.");
-      const status = await promotionStatus(input, storage, config, acceptance, now);
-      // A pending production retry may have already committed apt or its tag.
-      // Its immutable provenance is checked below; waive only recovery blockers.
-      const blockers = status.promotion.blockers.filter(b => !(pending?.promotedFrom === staging!.tag && (b.startsWith("Incomplete Linux publication") || b === "Linux production version already exists.")));
-      if (blockers.length) throw new Error(blockers.join("\n"));
-      branch = staging.promotionBase.branch;
-      tag = platform.productionTag(version);
-    } else {
-      if (input.branch && input.branch !== "main" && input.branch !== platform.seriesBranch(version)) throw new Error("Linux release branch series must match VERSION.");
-      const tags = (await run(input, "git", ["tag", "--list", `linux-v${version}-staging.*`])).split("\n");
-      const numbers = tags.map(t => Number(t.match(/-staging\.(\d+)$/)?.[1] ?? 0));
-      iteration = input.stagingIteration ?? (pending?.channel === platform.stagingChannelTag ? pending.iteration! : Math.max(0, ...numbers, staging?.version === version ? staging.iteration! : 0) + 1);
-      if (!Number.isSafeInteger(iteration) || iteration < 1) throw new Error("Linux staging iteration must be a positive integer.");
-      tag = platform.stagingTag(version, iteration);
-      if (staging && staging.tag !== tag) {
-        // InRelease can commit before state.staging advances. Only the matching
-        // pending successor's exact cached signature may replace the predecessor
-        // here; publishLinuxCandidate revalidates its inputs, signature and archive
-        // closure before clearing pending. Public readback still owns the receipt.
-        const recovering = pending?.tag === tag && pending.previousTag === staging.tag;
-        const intended = recovering ? await storage.read(releasePath(tag, "InRelease")) : null;
-        const live = intended ? await storage.read(inReleasePath(staging.channel)) : null;
-        if (!intended || !live || sha256(intended) !== sha256(live)) await verifyLinuxPublication(storage, staging, key, now);
-        await checkProjection(input, staging, await readJson<LinuxPublicationReceipt>(storage, releasePath(staging.tag, "publication.json")) as LinuxPublicationReceipt);
-        const gate = evaluateStagingPublishGate({ platform: "linux", proposedSourceBranch: branch, proposedCommit: source.revision, active: { version: `${staging.version}-staging.${staging.iteration}`, tag: staging.tag, commit: staging.source.revision, sourceBranch: staging.promotionBase.branch, publishedAt: null }, relationship: await relationship(input, staging.source.revision, source.revision), activeProductionTagExists: !!await tagCommit(input, platform.productionTag(staging.version)), activeMetadataError: null, reset: null, postPromotion: null });
-        if (!gate.allowed) throw new Error(gate.frozenBy
-          ? `Linux staging is frozen to unpromoted ${gate.frozenBy}; ship from that branch or, after acceptance and soak, use kd release promote ${staging.version}-staging.${staging.iteration} --platform linux.`
-          : `Linux staging lineage refuses ${source.revision}: it must contain active ${staging.tag} (${staging.source.revision}). No rollback/reset is supported.`);
-        if (compareVersions(version, staging.version) < 0 || (version === staging.version && iteration <= staging.iteration!)) throw new Error("Linux staging version/iteration must advance.");
+    const pinned = prepared || (!!input.promoteFrom && staging?.promotionBase.kind === "commit");
+    if (pinned && input.skipBuild) throw new Error("Pinned Linux promotion requires a fresh production build.");
+    const execute = async (product: LinuxContext & { source: typeof controller }) => {
+      const source = product.source;
+      const version = readFileSync(join(product.repoRoot, "VERSION"), "utf8").trim();
+      if (!/^\d+\.\d+\.\d+$/.test(version)) throw new Error("Linux VERSION must be X.Y.Z.");
+      let promoteFrom: string | null = null;
+      let branch = input.branch ?? "main";
+      let iteration: number | undefined;
+      let tag: string;
+      const now = new Date();
+      const pending = state.pending ? await readCandidate(storage, state.pending) : null;
+      if (input.promoteFrom) {
+        promoteFrom = input.promoteFrom.startsWith("linux-v") ? input.promoteFrom : `linux-v${input.promoteFrom}`;
+        if (!staging || promoteFrom !== staging.tag || source.revision !== staging.source.revision || source.tree !== staging.source.tree || version !== staging.version) throw new Error("Linux promotion must rebuild the exact active soaked source/tree/version.");
+        const status = await promotionStatus(input, storage, config, acceptance, now);
+        // A pending production retry may have already committed apt or its tag.
+        // Its immutable provenance is checked below; waive only recovery blockers.
+        const blockers = status.promotion.blockers.filter(b => !(pending?.promotedFrom === staging!.tag && (b.startsWith("Incomplete Linux publication") || b === "Linux production version already exists.")));
+        if (blockers.length) throw new Error(blockers.join("\n"));
+        branch = staging.promotionBase.branch;
+        tag = platform.productionTag(version);
+      } else {
+        if (input.branch && input.branch !== "main" && input.branch !== platform.seriesBranch(version)) throw new Error("Linux release branch series must match VERSION.");
+        const tags = (await run(input, "git", ["tag", "--list", `linux-v${version}-staging.*`])).split("\n");
+        const numbers = tags.map(t => Number(t.match(/-staging\.(\d+)$/)?.[1] ?? 0));
+        iteration = input.stagingIteration ?? (pending?.channel === platform.stagingChannelTag ? pending.iteration! : Math.max(0, ...numbers, staging?.version === version ? staging.iteration! : 0) + 1);
+        if (!Number.isSafeInteger(iteration) || iteration < 1) throw new Error("Linux staging iteration must be a positive integer.");
+        tag = platform.stagingTag(version, iteration);
+        if (staging && staging.tag !== tag) {
+          // InRelease can commit before state.staging advances. Only the matching
+          // pending successor's exact cached signature may replace the predecessor
+          // here; publishLinuxCandidate revalidates its inputs, signature and archive
+          // closure before clearing pending. Public readback still owns the receipt.
+          const recovering = pending?.tag === tag && pending.previousTag === staging.tag;
+          const intended = recovering ? await storage.read(releasePath(tag, "InRelease")) : null;
+          const live = intended ? await storage.read(inReleasePath(staging.channel)) : null;
+          if (!intended || !live || sha256(intended) !== sha256(live)) await verifyLinuxPublication(storage, staging, key, now);
+          await checkProjection(input, staging, await readJson<LinuxPublicationReceipt>(storage, releasePath(staging.tag, "publication.json")) as LinuxPublicationReceipt);
+          const gate = evaluateStagingPublishGate({ platform: "linux", proposedSourceBranch: branch, proposedCommit: source.revision, active: { version: `${staging.version}-staging.${staging.iteration}`, tag: staging.tag, commit: staging.source.revision, sourceBranch: staging.promotionBase.branch, publishedAt: null }, relationship: await relationship(input, staging.source.revision, source.revision), activeProductionTagExists: !!await tagCommit(input, platform.productionTag(staging.version)), activeMetadataError: null, reset: null, postPromotion: null });
+          if (!gate.allowed) throw new Error(gate.frozenBy
+            ? `Linux staging is frozen to unpromoted ${gate.frozenBy}; ship from that branch or, after acceptance and soak, use kd release promote ${staging.version}-staging.${staging.iteration} --platform linux.`
+            : `Linux staging lineage refuses ${source.revision}: it must contain active ${staging.tag} (${staging.source.revision}). No rollback/reset is supported.`);
+          if (compareVersions(version, staging.version) < 0 || (version === staging.version && iteration <= staging.iteration!)) throw new Error("Linux staging version/iteration must advance.");
+        }
+        const production = state.production ? await readCandidate(storage, state.production) : null;
+        if (production && compareVersions(version, production.version) <= 0) throw new Error("Linux candidate must advance beyond the Linux production version.");
       }
-      const production = state.production ? await readCandidate(storage, state.production) : null;
-      if (production && compareVersions(version, production.version) <= 0) throw new Error("Linux candidate must advance beyond the Linux production version.");
-    }
-    if (pending && pending.tag !== tag) throw new Error(`Recover pending Linux publication ${pending.tag} first.`);
-    if (await remoteBranch(input, branch) !== source.revision) throw new Error(`Linux HEAD must exactly match origin/${branch}.`);
-    if (await tagCommit(input, `abandoned/${platform.seriesBranch(version)}`)) throw new Error("Linux release series is abandoned.");
-    const slug = releaseRepoSlug(await run(input, "git", ["remote", "get-url", "origin"]));
-    const selectedChannel = input.promoteFrom ? platform.productionChannelTag : platform.stagingChannelTag;
-    const remoteChannel = await releaseView(input, slug, selectedChannel);
-    const expectedTag = input.promoteFrom ? state.production : state.staging;
-    if (remoteChannel) {
-      const projected = JSON.parse(remoteChannel.body);
-      if (projected.platform !== "linux" || ![expectedTag, pending?.tag].filter(Boolean).includes(projected.tag)) throw new Error("Linux GitHub channel does not match archive provenance.");
-    } else if (expectedTag && expectedTag !== pending?.tag) throw new Error("Linux GitHub channel projection is missing.");
-    if (!input.promoteFrom) {
-      const productionVersions = (await run(input, "git", ["tag", "--list", "linux-v*"])).split("\n").flatMap(t => /^linux-v(\d+\.\d+\.\d+)$/.exec(t)?.slice(1) ?? []);
-      if (productionVersions.some(v => compareVersions(version, v) <= 0)) throw new Error("Linux candidate must advance beyond existing Linux production tags.");
-    }
-    const channel = input.promoteFrom ? "production" : "staging";
-    const artifacts = await collectLinuxRelease({ ...input, source, version, channel, iteration });
-    const existingCandidate = await storage.read(candidatePath(tag));
-    const old = existingCandidate ? await readCandidate(storage, tag) : null;
-    const aptChannel = channel === "staging" ? "desktop-linux-staging" : "desktop-linux";
-    const live = await storage.read(inReleasePath(aptChannel));
-    const candidate: LinuxCandidate = old ?? {
-      schemaVersion: 1, platform: "linux", tag, channel: aptChannel, source, version, iteration: iteration ?? null,
-      promotionBase: { branch, revision: source.revision }, artifacts: artifacts.map(a => a.identity), aptArtifacts: artifacts.map(a => a.publication.artifact),
-      preparedAt: new Date().toISOString(), validForHours: config.validForHours, fingerprint: config.fingerprint, baseUrl: config.baseUrl,
-      previousTag: channel === "staging" ? state.staging : state.production, previousInReleaseSha256: live ? sha256(live) : null, promotedFrom: promoteFrom,
-      acceptance: acceptance?.acceptance ?? (input.promoteFrom ? staging!.acceptance : null),
+      if (pending && pending.tag !== tag) throw new Error(`Recover pending Linux publication ${pending.tag} first.`);
+      const promotionBase: LinuxCandidate["promotionBase"] = { branch, revision: source.revision, ...(pinned ? { kind: "commit" as const } : {}) };
+      if (!(await matchesPromotionBase(input, promotionBase))) throw new Error(`Linux source no longer matches origin/${branch} promotion base.`);
+      if (await tagCommit(input, `abandoned/${platform.seriesBranch(version)}`)) throw new Error("Linux release series is abandoned.");
+      const slug = releaseRepoSlug(await run(input, "git", ["remote", "get-url", "origin"]));
+      const selectedChannel = input.promoteFrom ? platform.productionChannelTag : platform.stagingChannelTag;
+      const remoteChannel = await releaseView(input, slug, selectedChannel);
+      const expectedTag = input.promoteFrom ? state.production : state.staging;
+      if (remoteChannel) {
+        const projected = JSON.parse(remoteChannel.body);
+        if (projected.platform !== "linux" || ![expectedTag, pending?.tag].filter(Boolean).includes(projected.tag)) throw new Error("Linux GitHub channel does not match archive provenance.");
+      } else if (expectedTag && expectedTag !== pending?.tag) throw new Error("Linux GitHub channel projection is missing.");
+      if (!input.promoteFrom) {
+        const productionVersions = (await run(input, "git", ["tag", "--list", "linux-v*"])).split("\n").flatMap(t => /^linux-v(\d+\.\d+\.\d+)$/.exec(t)?.slice(1) ?? []);
+        if (productionVersions.some(v => compareVersions(version, v) <= 0)) throw new Error("Linux candidate must advance beyond existing Linux production tags.");
+      }
+      const channel = input.promoteFrom ? "production" : "staging";
+      const artifacts = prepared
+        ? readLinuxPrepared(input.preparedManifest!, { repoRoot: product.repoRoot, source, version, iteration: iteration! })
+        : await collectLinuxRelease({ ...input, ...product, source, version, channel, iteration });
+      const existingCandidate = await storage.read(candidatePath(tag));
+      const old = existingCandidate ? await readCandidate(storage, tag) : null;
+      const aptChannel = channel === "staging" ? "desktop-linux-staging" : "desktop-linux";
+      const live = await storage.read(inReleasePath(aptChannel));
+      const candidate: LinuxCandidate = old ?? {
+        schemaVersion: 1, platform: "linux", tag, channel: aptChannel, source, version, iteration: iteration ?? null,
+        promotionBase, artifacts: artifacts.map(a => a.identity), aptArtifacts: artifacts.map(a => a.publication.artifact),
+        preparedAt: new Date().toISOString(), validForHours: config.validForHours, fingerprint: config.fingerprint, baseUrl: config.baseUrl,
+        previousTag: channel === "staging" ? state.staging : state.production, previousInReleaseSha256: live ? sha256(live) : null, promotedFrom: promoteFrom,
+        acceptance: acceptance?.acceptance ?? (input.promoteFrom ? staging!.acceptance : null),
+      };
+      if (JSON.stringify(candidate.source) !== JSON.stringify(source) || JSON.stringify(candidate.artifacts) !== JSON.stringify(artifacts.map(a => a.identity)) || candidate.baseUrl !== config.baseUrl || candidate.fingerprint !== config.fingerprint || candidate.validForHours !== config.validForHours || JSON.stringify(candidate.promotionBase) !== JSON.stringify(promotionBase) || candidate.promotedFrom !== promoteFrom || (acceptance && JSON.stringify(candidate.acceptance) !== JSON.stringify(acceptance.acceptance))) throw new Error("Retry differs from immutable Linux candidate inputs; refusing replacement.");
+      const subject = input.promoteFrom ? staging! : candidate;
+      await verifyEvidence(storage, subject, acceptance);
+      const blockers = acceptanceBlockers(acceptance?.acceptance ?? subject.acceptance, subject, !!input.promoteFrom, new Date());
+      if (signerProblem) blockers.push(signerProblem);
+      const plan = { platform: "linux", tag, controller, source, version, iteration, channel: aptChannel, artifacts: artifacts.map(a => a.identity), promotionBase: candidate.promotionBase, publication: { allowed: blockers.length === 0, blockers }, published: false };
+      if (input.dryRun || !input.release) return plan;
+      if (blockers.length) throw new Error(blockers.join("\n"));
+      if (!signer) throw new Error("Linux apt signer is unavailable.");
+      if (!(await matchesPromotionBase(input, promotionBase)) || JSON.stringify(await cleanLinuxSource(input.repoRoot, input.env, input.runner)) !== JSON.stringify(controller) || JSON.stringify(await cleanLinuxSource(product.repoRoot, product.env, product.runner)) !== JSON.stringify(source)) throw new Error("Linux promotion base/source moved during build.");
+      if (input.promoteFrom && acceptance) for (const [hash, bytes] of Object.entries(acceptance.evidence)) await immutable(storage, `linux/evidence/${hash}`, bytes);
+      const receipt = await publishLinuxCandidate({ candidate, artifacts, acceptance, storage, signer, key, observeCommit: c => publicReadback(storage, c), now: () => new Date(), project: (c, r) => projectGithub(input, c, r) });
+      return { ...plan, published: true, receipt };
     };
-    if (JSON.stringify(candidate.source) !== JSON.stringify(source) || JSON.stringify(candidate.artifacts) !== JSON.stringify(artifacts.map(a => a.identity)) || candidate.baseUrl !== config.baseUrl || candidate.fingerprint !== config.fingerprint || candidate.validForHours !== config.validForHours || candidate.promotionBase.branch !== branch || candidate.promotedFrom !== promoteFrom || (acceptance && JSON.stringify(candidate.acceptance) !== JSON.stringify(acceptance.acceptance))) throw new Error("Retry differs from immutable Linux candidate inputs; refusing replacement.");
-    const subject = input.promoteFrom ? staging! : candidate;
-    await verifyEvidence(storage, subject, acceptance);
-    const blockers = acceptanceBlockers(acceptance?.acceptance ?? subject.acceptance, subject, !!input.promoteFrom, new Date());
-    if (signerProblem) blockers.push(signerProblem);
-    const plan = { platform: "linux", tag, source, version, iteration, channel: aptChannel, artifacts: artifacts.map(a => a.identity), promotionBase: candidate.promotionBase, publication: { allowed: blockers.length === 0, blockers }, published: false };
-    if (input.dryRun || !input.release) return plan;
-    if (blockers.length) throw new Error(blockers.join("\n"));
-    if (!signer) throw new Error("Linux apt signer is unavailable.");
-    if (await remoteBranch(input, branch) !== source.revision || JSON.stringify(await cleanLinuxSource(input.repoRoot, input.env, input.runner)) !== JSON.stringify(source)) throw new Error("Linux promotion base/source moved during build.");
-    if (input.promoteFrom && acceptance) for (const [hash, bytes] of Object.entries(acceptance.evidence)) await immutable(storage, `linux/evidence/${hash}`, bytes);
-    const receipt = await publishLinuxCandidate({ candidate, artifacts, acceptance, storage, signer, key, observeCommit: c => publicReadback(storage, c), now: () => new Date(), project: (c, r) => projectGithub(input, c, r) });
-    return { ...plan, published: true, receipt };
+    return pinned
+      ? withLinuxSource({ ...input, ref: prepared ? input.sourceRef! : staging!.source.revision }, execute)
+      : execute({ ...input, source: controller });
   });
 }
 

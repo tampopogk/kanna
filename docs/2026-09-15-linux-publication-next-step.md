@@ -87,29 +87,20 @@ Fresh read-only `./kd release status --platform linux` on the connected Studio
 reports promotion.allowed=false: missing backend/root/baseUrl/validForHours/
 publicKeyPath/fingerprint. No dry-run/build was started.
 
-Separately, configured `ship` currently requires its clean HEAD to equal
-`origin/main` or the selected `release/linux/X.Y` tip, and always calls the
-collector. Fresh `ls-remote` returned main at the PR1513 merge above and **no
-release/linux/0.2 branch**. Thus B is not the supported current publication tip.
-The prepared manifest is not a ship input: `--skip-build` checks Bazel outputs
-under matching stamps; it does not import `.build/linux-prepared/...`. B's
-isolated build checkout/output cache was cleaned after collection, with the
-verified debs/reports/manifests preserved.
+The prepared-input/promotion-base correction is now implemented on the Ship
+controller branch, pending its focused PR/MM handoff. It imports the exact
+retained manifest/debs/reports, checks them against an isolated pinned product
+snapshot and records an immutable commit promotion base. Main may advance while
+still containing B; no release branch or pin tag is created. Ordinary ships
+retain their exact-tip rule. Production promotion rebuilds the recorded product
+source with production identity after the existing evidence and soak gates.
 
-**Consequently there is no currently executable canonical command that publishes
-these exact retained B bytes from the current controller.** Provisioning alone
-will not fix that. Do not run main's ship with B's acceptance, create a release
-branch with raw Git, recut/reset, rebuild B, or relabel the tested artifacts.
-
-Smallest engineering follow-up to route: add canonical consumption of the
-verified preparation manifest for existing `ship`, reusing artifact/report,
-source/tree, evidence and ownership checks, and establish an explicitly
-approved immutable promotion-base pin for B through supported release tooling.
-The current Linux cut operation is refused, so that pin cannot be silently
-created as a workaround. Keep remote lineage/promotion fences intact; publish
-and promotion must retain B's exact product identity. This is a bounded missing
-publication-input/pin path, not another missing product or testing dependency.
-No implementation change or release-branch action is performed here.
+Disposable integration exercises prepare → retained ship after controller/main
+advance, altered manifest/deb/report refusal, missing acceptance, branch
+ancestry refusal, soak refusal and production rebuild of the pinned source.
+Native compilation is replaced only inside those fixtures; none of this adds
+native acceptance or changes the four real prepared artifacts. Real archive,
+key and authenticated system setup remain separate external prerequisites.
 
 ## Command sequence once prerequisites are satisfied
 
@@ -119,16 +110,22 @@ The next existing read-only command on the configured trusted MBP is:
 ./kd release status --platform linux --acceptance "$PWD/docs/evidence/2026-09-15-linux-bootstrap/publication-preparation/B-acceptance.json"
 ```
 
-After the exact prepared-input/promotion-base route exists, rehearsal must name
-B/iteration2 and report its actual artifacts and blockers. Do not use today's
-build-oriented dry-run to rebuild unchanged packages. The existing publication
-command shape is below for review only; it is **not runnable for B yet**, because
-that branch/input route does not exist and publishing remains held:
+After this controller change merges and the archive is configured, the concrete
+rehearsal uses retained B without rebuilding. This is a reviewable command,
+not a command executed against real infrastructure:
 
 ```sh
-./kd release ship --platform linux --staging --branch release/linux/0.2 --staging-iteration 2 --release --skip-build --acceptance "$PWD/docs/evidence/2026-09-15-linux-bootstrap/publication-preparation/B-acceptance.json"
-./kd release status --platform linux --acceptance "$PWD/docs/evidence/2026-09-15-linux-bootstrap/publication-preparation/B-acceptance.json"
+./kd release ship --platform linux --staging --branch main \
+  --prepared-manifest "$PWD/.build/linux-prepared/a9df2f1d46fb08bcf53200b738e0fdc3c127b636-staging.2/manifest.json" \
+  --source-ref a9df2f1d46fb08bcf53200b738e0fdc3c127b636 \
+  --promotion-base a9df2f1d46fb08bcf53200b738e0fdc3c127b636 \
+  --staging-iteration 2 --dry-run \
+  --acceptance "$PWD/docs/evidence/2026-09-15-linux-bootstrap/publication-preparation/B-acceptance.json"
 ```
+
+A later explicitly authorized publish substitutes `--release` for `--dry-run`
+and is followed by the Linux status check. A missing or divergent remote base
+remains a refusal, never an instruction to create/reset a branch.
 
 Explicit publication authorization is still required. Only verified public
 InRelease/closure readback and the canonical publication receipt start the full
