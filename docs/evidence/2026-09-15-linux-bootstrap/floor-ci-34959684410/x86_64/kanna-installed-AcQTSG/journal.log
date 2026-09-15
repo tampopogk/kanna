@@ -1,0 +1,32 @@
+Sep 15 10:46:56 runnervmlun5p systemd[1007]: Started kanna-installed-test-2892.service - Kanna headless worker.
+Sep 15 10:46:56 runnervmlun5p kanna-worker[3670]: [worker] data_dir=/home/runner/work/kanna/kanna/.tmp/prepared-upgrade/tmp/kanna-installed-AcQTSG/worker daemon=/usr/lib/kanna-staging/kanna-daemon server=/usr/lib/kanna-staging/kanna-server lan_port=40559
+Sep 15 10:46:56 runnervmlun5p kanna-worker[3670]: [worker] daemon generation 3675 is serving
+Sep 15 10:46:57 runnervmlun5p kanna-worker[3670]: [worker] kanna-server 3685 is serving on http://127.0.0.1:40559
+Sep 15 10:47:00 runnervmlun5p systemd[1007]: Stopping kanna-installed-test-2892.service - Kanna headless worker...
+Sep 15 10:47:00 runnervmlun5p kanna-worker[3670]: [worker] stopping the server; the daemon and its sessions stay up
+Sep 15 10:47:00 runnervmlun5p systemd[1007]: kanna-installed-test-2892.service: Unit process 3675 (kanna-daemon) remains running after unit stopped.
+Sep 15 10:47:00 runnervmlun5p systemd[1007]: kanna-installed-test-2892.service: Unit process 3682 (kanna-terminal-) remains running after unit stopped.
+Sep 15 10:47:00 runnervmlun5p systemd[1007]: kanna-installed-test-2892.service: Unit process 3788 (claude-impl) remains running after unit stopped.
+Sep 15 10:47:00 runnervmlun5p systemd[1007]: kanna-installed-test-2892.service: Unit process 3955 (claude-impl) remains running after unit stopped.
+Sep 15 10:47:00 runnervmlun5p systemd[1007]: kanna-installed-test-2892.service: Unit process 3962 (claude-impl) remains running after unit stopped.
+Sep 15 10:47:00 runnervmlun5p systemd[1007]: kanna-installed-test-2892.service: Unit process 3963 (dd) remains running after unit stopped.
+Sep 15 10:47:00 runnervmlun5p systemd[1007]: kanna-installed-test-2892.service: Unit process 4128 (sleep) remains running after unit stopped.
+Sep 15 10:47:00 runnervmlun5p systemd[1007]: Stopped kanna-installed-test-2892.service - Kanna headless worker.
+Sep 15 10:47:00 runnervmlun5p systemd[1007]: kanna-installed-test-2892.service: Found left-over process 3675 (kanna-daemon) in control group while starting unit. Ignoring.
+Sep 15 10:47:00 runnervmlun5p systemd[1007]: kanna-installed-test-2892.service: This usually indicates unclean termination of a previous run, or service implementation deficiencies.
+Sep 15 10:47:00 runnervmlun5p systemd[1007]: kanna-installed-test-2892.service: Found left-over process 3682 (kanna-terminal-) in control group while starting unit. Ignoring.
+Sep 15 10:47:00 runnervmlun5p systemd[1007]: kanna-installed-test-2892.service: This usually indicates unclean termination of a previous run, or service implementation deficiencies.
+Sep 15 10:47:00 runnervmlun5p systemd[1007]: kanna-installed-test-2892.service: Found left-over process 3788 (claude-impl) in control group while starting unit. Ignoring.
+Sep 15 10:47:00 runnervmlun5p systemd[1007]: kanna-installed-test-2892.service: This usually indicates unclean termination of a previous run, or service implementation deficiencies.
+Sep 15 10:47:00 runnervmlun5p systemd[1007]: kanna-installed-test-2892.service: Found left-over process 3955 (claude-impl) in control group while starting unit. Ignoring.
+Sep 15 10:47:00 runnervmlun5p systemd[1007]: kanna-installed-test-2892.service: This usually indicates unclean termination of a previous run, or service implementation deficiencies.
+Sep 15 10:47:00 runnervmlun5p systemd[1007]: kanna-installed-test-2892.service: Found left-over process 3962 (claude-impl) in control group while starting unit. Ignoring.
+Sep 15 10:47:00 runnervmlun5p systemd[1007]: kanna-installed-test-2892.service: This usually indicates unclean termination of a previous run, or service implementation deficiencies.
+Sep 15 10:47:00 runnervmlun5p systemd[1007]: kanna-installed-test-2892.service: Found left-over process 3963 (dd) in control group while starting unit. Ignoring.
+Sep 15 10:47:00 runnervmlun5p systemd[1007]: kanna-installed-test-2892.service: This usually indicates unclean termination of a previous run, or service implementation deficiencies.
+Sep 15 10:47:00 runnervmlun5p systemd[1007]: kanna-installed-test-2892.service: Found left-over process 4128 (sleep) in control group while starting unit. Ignoring.
+Sep 15 10:47:00 runnervmlun5p systemd[1007]: kanna-installed-test-2892.service: This usually indicates unclean termination of a previous run, or service implementation deficiencies.
+Sep 15 10:47:00 runnervmlun5p systemd[1007]: Started kanna-installed-test-2892.service - Kanna headless worker.
+Sep 15 10:47:00 runnervmlun5p kanna-worker[4176]: [worker] data_dir=/home/runner/work/kanna/kanna/.tmp/prepared-upgrade/tmp/kanna-installed-AcQTSG/worker daemon=/usr/lib/kanna-staging/kanna-daemon server=/usr/lib/kanna-staging/kanna-server lan_port=40559
+Sep 15 10:47:01 runnervmlun5p kanna-worker[4176]: [worker] daemon generation 4181 is serving
+Sep 15 10:47:01 runnervmlun5p kanna-worker[4176]: [worker] kanna-server 4195 is serving on http://127.0.0.1:40559

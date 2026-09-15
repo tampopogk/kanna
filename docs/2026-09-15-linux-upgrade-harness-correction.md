@@ -1,5 +1,7 @@
 # Linux upgrade controller correction
 
+**Current result:** [both Ubuntu24.04 architectures passed17/17](2026-09-15-linux-floor-upgrade-result.md) against the unchanged exact A/B packages. The history below preserves each earlier result and transport correction.
+
 The original exact A/B ARM canonical run remains **FAILED**, retained in
 [the artifact report](2026-09-15-linux-artifacts-and-upgrade-result.md).
 The four collected packages are unchanged. This patch changes the controller

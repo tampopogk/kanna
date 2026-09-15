@@ -1,5 +1,7 @@
 # Linux A/B artifacts complete; ARM upgrade gate failed
 
+**Latest:** [exact A/B Ubuntu24.04 install/upgrade PASS on both architectures](2026-09-15-linux-floor-upgrade-result.md). No public release or soak.
+
 **Update:** the original failed run below is retained. The separately corrected
 controller passed canonical ARM acceptance (17/17) against these unchanged A/B
 artifacts. See [correction, exact identities and raw evidence](2026-09-15-linux-upgrade-harness-correction.md).
