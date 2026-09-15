@@ -30,6 +30,14 @@ on:
   workflow_call:
   workflow_dispatch:
     inputs:
+      prepared_pair_url:
+        description: HTTPS URL of the exact stamped bootstrap A/B tar (no build; manifests pinned in repo)
+        type: string
+        required: false
+      prepared_pair_sha256:
+        description: SHA256 of that tar; required with prepared_pair_url
+        type: string
+        required: false
       apt_interop_only:
         description: Run only test-key apt/GnuPG interoperability (no native builds)
         type: boolean
@@ -74,6 +82,7 @@ concurrency:
 
 jobs:
   apt-interop:
+    if: ${{ !inputs.prepared_pair_url }}
     strategy:
       fail-fast: false
       matrix:
@@ -98,7 +107,7 @@ jobs:
         run: pnpm --dir tools/kd exec tsx tests/linux-apt-interop.ts
 
   build:
-    if: ${{ !inputs.apt_interop_only }}
+    if: ${{ !inputs.apt_interop_only && !inputs.prepared_pair_url }}
     # Native parity for the same Bazel graph used by the macOS cross builder.
     strategy:
       fail-fast: false
@@ -167,7 +176,7 @@ jobs:
   # before any install is attempted. It does not run the installed lane itself
   # yet, and it changes nothing about the `build` job's own output.
   installed-check-prerequisites:
-    if: ${{ !inputs.apt_interop_only }}
+    if: ${{ !inputs.apt_interop_only && !inputs.prepared_pair_url }}
     strategy:
       fail-fast: false
       matrix:
@@ -314,3 +323,65 @@ jobs:
         run: |
           export KANNA_INSTALLED_DEB="$(ls "$GITHUB_WORKSPACE"/.build/linux-package/out/*.deb)"
           pnpm exec vitest run --maxWorkers=1 src/installed.e2e.test.ts
+
+  # Controller source is this checkout. Product bytes are the independently
+  # collected, stamped pair, pinned in the committed evidence manifests.
+  prepared-upgrade:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.prepared_pair_url != '' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - architecture: x86_64
+            runner: ubuntu-24.04
+          - architecture: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Fetch and verify the exact prepared pair (no rebuild)
+        env:
+          PAIR_URL: ${{ inputs.prepared_pair_url }}
+          PAIR_SHA256: ${{ inputs.prepared_pair_sha256 }}
+        run: |
+          mkdir -p .tmp/prepared-upgrade
+          [[ "$PAIR_SHA256" =~ ^[0-9a-f]{64}$ ]]
+          curl --fail --location --proto '=https' --proto-redir '=https' "$PAIR_URL" -o .tmp/prepared-upgrade/pair.tar
+          printf '%s  %s\n' "$PAIR_SHA256" .tmp/prepared-upgrade/pair.tar | sha256sum --check --strict
+          python3 tests/linux-installed/verify-prepared-pair.py .tmp/prepared-upgrade/pair.tar .tmp/prepared-upgrade/packages
+      - name: Confirm real host prerequisites
+        run: |
+          sudo -n true
+          state="$(systemctl --user is-system-running)" || true
+          case "$state" in running|degraded) ;; *) exit 1 ;; esac
+          . /etc/os-release
+          test "$VERSION_ID" = 24.04
+          getconf GNU_LIBC_VERSION
+          uname -a
+          sudo apt-get update
+      - run: pnpm --filter @kanna/linux-installed... --filter @kanna/kd... install --frozen-lockfile --ignore-scripts
+      - name: Canonical installed and two-version upgrade gate
+        env:
+          KANNA_INSTALLED_EVIDENCE_DIR: ${{ github.workspace }}/.tmp/prepared-upgrade/evidence
+          TEST_ARCH: ${{ matrix.architecture }}
+        run: |
+          export TMPDIR="$GITHUB_WORKSPACE/.tmp/prepared-upgrade/tmp"
+          mkdir -p "$TMPDIR"
+          deb_arch=amd64
+          if [ "$TEST_ARCH" = arm64 ]; then deb_arch=arm64; fi
+          ./kd test linux-installed --channel staging \
+            --old-artifact "$GITHUB_WORKSPACE/.tmp/prepared-upgrade/packages/kanna-staging_0.2.0~staging.1-1_${deb_arch}.deb" \
+            --new-artifact "$GITHUB_WORKSPACE/.tmp/prepared-upgrade/packages/kanna-staging_0.2.0~staging.2-1_${deb_arch}.deb"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: prepared-upgrade-${{ matrix.architecture }}-evidence
+          path: .tmp/prepared-upgrade/evidence
+          if-no-files-found: error
+          retention-days: 14

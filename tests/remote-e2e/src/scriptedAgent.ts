@@ -4,6 +4,8 @@ export interface ScriptedAgentOptions {
   /** Explicit fixture command invokes the real catalog tool from the PTY. */
   reviewedPrQueue?: { cliPath: string; serverUrl: string };
   continuousOutput?: boolean;
+  /** Opt-in measured Claude busy chrome for runtime reconciliation gates. */
+  observedRuntime?: boolean;
   inputTraceFile?: string;
   redactInput?: boolean;
   terminalKeyTraceFile?: string;
@@ -222,6 +224,7 @@ fi
     printf 'SCRIPT_HEARTBEAT %s\\n' "$heartbeat"
     printf '\\033[3;1HRELAY_GRID_CELL'
     printf '\\033[4;1H'
+    ${options.observedRuntime ? `printf '\\033[2J\\033[HClaude Code\\r\\nSCRIPT_READY\\r\\n✻ Working (1s · esc to interrupt)\\r\\n⏵⏵ bypass permissions on (shift+tab to cycle)\\r\\n'` : ':'}
   done
 ) &
 heartbeat_pid=$!`
