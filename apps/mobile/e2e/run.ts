@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { mkdir } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, rm } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { promisify } from "node:util";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -38,6 +38,7 @@ import {
 } from "./helpers/trust-seed";
 import {
   assertSimulatorAppInstalled,
+  buildSimulatorDevelopmentClientLaunchArgs,
   bootSimulator,
   disableSimulatorExpoDevMenuFab,
   openSimulatorDevelopmentClient,
@@ -70,6 +71,7 @@ export const smokeSpecPaths = [
 export const supportedSmokeTargets = ["simulator", "device"] as const;
 export const supportedSmokeModes = [
   "smoke",
+  "storekit",
   "search-focus",
   "tab-reselection",
   "shell-visual",
@@ -83,14 +85,14 @@ export function resolveSmokeModeAppEnv(
   mode: string,
   configuredAppEnv: string | undefined
 ): string | undefined {
-  return mode === "hybrid" || mode === "search-focus"
+  return mode === "storekit" || mode === "hybrid" || mode === "search-focus"
     ? "dev"
     : configuredAppEnv;
 }
 
 export function requiresExactExpoEnvironment(mode: string): boolean {
   return (
-    mode === "relay" || mode === "relay-terminal-control" ||
+    mode === "storekit" || mode === "relay" || mode === "relay-terminal-control" ||
     mode === "hybrid" ||
     mode === "profile-disconnected" ||
     mode === "search-focus"
@@ -200,12 +202,12 @@ async function main(): Promise<void> {
     mode === "relay" || mode === "relay-terminal-control" || mode === "hybrid" || mode === "profile-disconnected";
   const env = resolveRequiredMobileE2eEnv(
     process.env as Record<string, string | undefined>,
-    { requireDesktopServerUrl: !relayHarnessOwnsDesktopEndpoint },
+    { requireDesktopServerUrl: !relayHarnessOwnsDesktopEndpoint && mode !== "storekit" },
   );
-  const desktopServerUrl = relayHarnessOwnsDesktopEndpoint
+  const desktopServerUrl = relayHarnessOwnsDesktopEndpoint || mode === "storekit"
     ? ""
     : resolveDesktopServerUrlForTarget(env.desktopServerUrl, env.target);
-  if ((mode === "hybrid" || mode === "profile-disconnected") && env.target !== "simulator") {
+  if ((mode === "storekit" || mode === "hybrid" || mode === "profile-disconnected") && env.target !== "simulator") {
     throw new Error(
       `The mobile ${mode} E2E mode is simulator-only; it must not install or launch a physical device.`
     );
@@ -285,6 +287,9 @@ async function main(): Promise<void> {
         deviceName: device.name,
         reservedPorts: env.reservedPorts
       });
+      // Pin the simulator already selected and checked above. A custom name
+      // alone lets Appium try to create a different device on another runtime.
+      capabilities["appium:udid"] = device.udid;
     }
 
     const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -311,6 +316,7 @@ async function main(): Promise<void> {
 
     expoServer = await ensureExpoServer({
       env:
+        mode === "storekit" ? { KANNA_APP_ENV: "dev", EXPO_PUBLIC_KANNA_STOREKIT_TEST: "1" } :
         (mode === "hybrid" ||
           mode === "profile-disconnected" ||
           mode === "search-focus") &&
@@ -341,10 +347,45 @@ async function main(): Promise<void> {
         device: simulatorDevice,
         metroPort: env.metroPort
       });
-      await waitForExpoAppReady(driver);
+      if (mode === "storekit") await (await driver.$("~storekit-test-result")).waitForExist({ timeout: 90_000 });
+      else await waitForExpoAppReady(driver);
     }
 
-    if (mode === "shell-visual") {
+    if (mode === "storekit") {
+      const result = await driver.$("~storekit-test-result");
+      await driver.waitUntil(async () => /^(passed|failed):/.test(await result.getText()), { timeout: 180_000, timeoutMsg: "Native StoreKit test did not finish" });
+      const text = await result.getText();
+      if (!text.startsWith("passed:")) throw new Error(text);
+      process.stdout.write(`${text}\n`);
+      // Relaunch without another purchase. Reinstall is a separate opt-in
+      // diagnostic: local StoreKit history did not survive removal on iOS 18.4;
+      // real sandbox reinstall acceptance remains required.
+      const device = simulatorDevice!;
+      if (env.bundleId !== "build.kanna.app.dev") throw new Error("StoreKit reinstall is dev-only");
+      const reinstall = process.env.KANNA_STOREKIT_CHECK_REINSTALL === "1";
+      const { stdout: container } = await execFileAsync("xcrun", ["simctl", "get_app_container", device.udid, env.bundleId, "app"]);
+      const tempRoot = resolve(projectRoot, "../../.tmp");
+      await mkdir(tempRoot, { recursive: true });
+      const saved = await mkdtemp(join(tempRoot, "storekit-reinstall-"));
+      try {
+        const appPath = join(saved, "KannaDev.app");
+        if (reinstall) await cp(container.trim(), appPath, { recursive: true });
+        await execFileAsync("xcrun", ["simctl", "terminate", device.udid, env.bundleId]);
+        if (reinstall) {
+          await execFileAsync("xcrun", ["simctl", "uninstall", device.udid, env.bundleId]);
+          await execFileAsync("xcrun", ["simctl", "install", device.udid, appPath]);
+        }
+        await execFileAsync("xcrun", [...buildSimulatorDevelopmentClientLaunchArgs({
+          appScheme: env.appScheme, bundleId: env.bundleId, deviceUdid: device.udid, metroPort: env.metroPort,
+        }), "--storekit-restore"]);
+        await (await driver.$("~storekit-test-result")).waitForExist({ timeout: 90_000 });
+        const restored = await driver.$("~storekit-test-result");
+        await driver.waitUntil(async () => /^(passed|failed):/.test(await restored.getText()), { timeout: 90_000 });
+        const restoredText = await restored.getText();
+        if (restoredText !== "passed: relaunch restore") throw new Error(restoredText);
+        process.stdout.write(`passed: ${reinstall ? "reinstall" : "process restart"} restore\n`);
+      } finally { await rm(saved, { recursive: true, force: true }); }
+    } else if (mode === "shell-visual") {
       const desktopIdentity = await readDesktopIdentity(resolvedDesktopServerUrl);
       await seedTrustedDesktopThroughDeepLink({
         bundleId: env.bundleId,

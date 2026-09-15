@@ -10,7 +10,7 @@
  * paths, so an in-process test of the module alone would not show them wired.
  */
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { join, resolve } from "node:path";
@@ -21,7 +21,7 @@ import { getFirestore, type Firestore } from "firebase-admin/firestore";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import WebSocket from "ws";
 import { ENTITLEMENT_REQUIRED_CODE } from "../src/entitlement.js";
-import { billingFixture, startBillingHttpFixture } from "./support/billingHttpFixture.js";
+import { appleFixture, billingFixture, startBillingHttpFixture } from "./support/billingHttpFixture.js";
 import { signStripePayload } from "../../firebase-functions/src/billing/stripeSignature.js";
 import type { StripeEventEnvelope } from "../../firebase-functions/src/billing/stripeEvents.js";
 
@@ -30,6 +30,17 @@ vi.mock("../../firebase-functions/src/billing/stripeGateway.js", async () => {
   return billingGateways;
 });
 
+import { appleEnv, appleJws, fixtureVerifier, notificationJws, renewalClaims, transactionClaims } from "../../firebase-functions/test/support/appleFixtures.js";
+vi.mock("../../firebase-functions/src/billing/appStoreVerification.js", async importOriginal => {
+  const original = await importOriginal<typeof import("../../firebase-functions/src/billing/appStoreVerification.js")>();
+  return { ...original, createAppleVerifier: () => fixtureVerifier() };
+});
+vi.mock("../../firebase-functions/src/billing/appStoreGateway.js", async () => {
+  const { appleGatewayFixture } = await import("./support/billingHttpFixture.js");
+  return appleGatewayFixture;
+});
+
+const initialApps = new Set(getApps());
 const PASSWORD = "password123";
 
 /** Nonzero cache: live socket updates must not depend on TTL expiry. */
@@ -488,7 +499,7 @@ describe("Relay entitlement enforcement", () => {
     await terminateProcessTree(enforcingRelay);
     await terminateProcessTree(permissiveRelay);
     await terminateProcessTree(firebaseProcess);
-    if (adminApp) await deleteApp(adminApp);
+    await Promise.all(getApps().filter(app => !initialApps.has(app)).map(deleteApp));
     delete process.env.FIRESTORE_EMULATOR_HOST;
     delete process.env.FIREBASE_AUTH_EMULATOR_HOST;
     if (firebaseConfigDir) await rm(firebaseConfigDir, { recursive: true, force: true });
@@ -504,7 +515,6 @@ describe("Relay entitlement enforcement", () => {
     vi.stubEnv("STRIPE_WEBHOOK_SECRET", "whsec_launch_fixture_only");
     vi.stubEnv("STRIPE_PORTAL_CONFIGURATION_ID", "bpc_fixture_only");
     vi.stubEnv("KANNA_PORTAL_BASE_URL", "https://portal.example.test");
-    const priorApps = new Set(getApps());
     const billing = await startBillingHttpFixture(Number(process.env.KANNA_FIREBASE_FUNCTIONS_PORT) || await findFreePort());
     const sockets: WebSocket[] = [];
     const email = `launch-${Date.now()}@example.test`;
@@ -632,10 +642,89 @@ describe("Relay entitlement enforcement", () => {
     } finally {
       await Promise.all(sockets.map(closeAndWait));
       await billing.close();
-      await Promise.all(getApps().filter((app) => !priorApps.has(app)).map(deleteApp));
       vi.unstubAllEnvs();
     }
   }, 60_000);
+
+  it("joins native registration and signed Apple notifications to already-connected paid relay controls", async () => {
+    vi.stubEnv("GCLOUD_PROJECT", "kanna-local");
+    vi.stubEnv("FIREBASE_CONFIG", JSON.stringify({ projectId: "kanna-local" }));
+    vi.stubEnv("STRIPE_SECRET_KEY", "sk_fixture_only");
+    for (const [key, value] of Object.entries(appleEnv)) vi.stubEnv(key, value);
+    const billing = await startBillingHttpFixture(Number(process.env.KANNA_FIREBASE_FUNCTIONS_PORT) || await findFreePort());
+    const sockets: WebSocket[] = [];
+    const uid = `apple-${Date.now()}`, email = `${uid}@example.test`, desktopId = `desktop-${uid}`, desktopSecret = `test-${uid}`;
+    const call = async (name: string, token: string, data: Record<string, unknown> = {}) => {
+      const response = await fetch(`${billing.url}/${name}`, { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${token}` }, body: JSON.stringify({ data }) });
+      return { status: response.status, body: await response.json() as { result?: { appAccountToken: string; outcome: string } } };
+    };
+    try {
+      await getAuth(adminApp!).createUser({ uid, email, password: PASSWORD, emailVerified: true });
+      const token = await signIn(email);
+      const admission = await call("beginAppStorePurchase", token);
+      expect(admission.status).toBe(200);
+      const appAccountToken = admission.body.result!.appAccountToken;
+      await db.doc(`desktopCredentials/${desktopId}`).set({ uid, desktopId, desktopSecretHash: sha256Hex(desktopSecret), revokedAt: null });
+      const desktop = await connectAndAuth(enforcingPort, { desktop_id: desktopId, desktop_secret: desktopSecret }); sockets.push(desktop.ws);
+      const phone = await connectAndAuth(enforcingPort, { id_token: token }); sockets.push(phone.ws);
+      const access = (active: boolean, status: string) => [desktop.ws, phone.ws].map(ws => waitForMessage(ws, message => {
+        const entitlement = message.entitlement as { active?: boolean; status?: string } | undefined;
+        return message.type === "auth_ok" && entitlement?.active === active && entitlement.status === status;
+      }));
+      const check = async (id: string, active: boolean) => {
+        const ack = waitForMessage(desktop.ws, m => m.type === "task_snapshot_ack" && m.id === id);
+        desktop.ws.send(JSON.stringify({ type: "task_snapshot_publish", id, snapshot: snapshot(desktopId) }));
+        expect(await ack).toMatchObject(active ? { ok: true } : { ok: false, code: 4402 });
+        const response = waitForMessage(phone.ws, m => m.type === "response" && m.id === id);
+        phone.ws.send(JSON.stringify({ type: "invoke", id, command: "list_active_desktops", args: {} }));
+        expect(await response).toMatchObject(active ? { data: { desktopIds: [desktopId] } } : { code: 4402 });
+      };
+      let signedDate = Date.now();
+      const purchaseDate = signedDate - 60_000;
+      let tx = transactionClaims(appAccountToken, { purchaseDate, signedDate });
+      let renewal = renewalClaims({ signedDate });
+      const verifier = fixtureVerifier();
+      appleFixture.current = [{ ...await verifier.pair(appleJws(tx), appleJws(renewal), "sandbox"), status: 1, signedDate }];
+      await check("apple-before", false);
+      const purchased = access(true, "active");
+      expect(await call("registerAppStoreTransaction", token, { signedTransaction: appleJws(tx) })).toMatchObject({ status: 200, body: { result: { outcome: "accepted" } } });
+      await Promise.all(purchased); await check("apple-purchased", true);
+      const send = async (signedPayload: string) => {
+        const response = await fetch(`${billing.url}/appStoreNotifications`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ signedPayload }) });
+        expect(response.status).toBe(200); return await response.json();
+      };
+      let lastPayload = "";
+      const transition = async (notificationType: string, status: number, active: boolean, normalized: string,
+        txPatch: Record<string, unknown> = {}, renewalPatch: Record<string, unknown> = {}) => {
+        signedDate += 1000;
+        tx = transactionClaims(appAccountToken, { purchaseDate, signedDate, ...txPatch });
+        renewal = renewalClaims({ signedDate, ...renewalPatch });
+        lastPayload = notificationJws(tx, renewal, { notificationType, notificationUUID: randomUUID(), signedDate,
+          data: { bundleId: "build.kanna.app", appAppleId: 123456789, environment: "Sandbox", status,
+            signedTransactionInfo: appleJws(tx), signedRenewalInfo: appleJws(renewal) } });
+        const changed = access(active, normalized);
+        await send(lastPayload); await Promise.all(changed);
+        expect((await db.doc(`users/${uid}/billing/app_store`).get()).data()).toMatchObject({ source: "app_store", environment: "sandbox", status: normalized });
+      };
+      await transition("DID_RENEW", 1, true, "active"); await check("apple-renewed", true);
+      await transition("DID_CHANGE_RENEWAL_STATUS", 1, true, "active", {}, { autoRenewStatus: 0 });
+      await check("apple-renewal-off", true);
+      await transition("DID_FAIL_TO_RENEW", 4, true, "grace", {}, { isInBillingRetryPeriod: true, gracePeriodExpiresDate: Date.now() + 3000 });
+      const expired = access(false, "grace"); await check("apple-grace", true); await Promise.all(expired); await check("apple-grace-ended", false);
+      await transition("DID_RENEW", 1, true, "active");
+      await transition("REFUND", 5, false, "revoked", { revocationDate: Date.now() }); await check("apple-revoked", false);
+      await transition("REFUND_REVERSED", 1, true, "active"); await check("apple-recovered", true);
+      expect(await send(lastPayload)).toMatchObject({ code: "duplicate" });
+      const deleted = access(false, "none");
+      expect((await call("deleteAccount", token)).status).toBe(200); await Promise.all(deleted);
+      expect(await send(lastPayload)).toMatchObject({ code: "unresolved_account" });
+      expect((await entitlementRef(uid).get()).exists).toBe(false);
+      expect((await db.doc(`appAccountTokens/${appAccountToken}`).get()).exists).toBe(false);
+    } finally {
+      await Promise.all(sockets.map(closeAndWait)); await billing.close();
+      vi.unstubAllEnvs();
+    }
+  });
 
   it("advertises the full capability set to an entitled desktop and publishes", async () => {
     const { ack, auth } = await publishAs(enforcingPort, accounts.entitled, "entitled-publish");

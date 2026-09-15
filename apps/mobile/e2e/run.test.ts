@@ -12,6 +12,11 @@ import {
 import { shouldReuseExpoServer } from "./helpers/metro";
 
 describe("mobile smoke runner", () => {
+  it("isolates the StoreKit configuration lane to dev and exact Metro environment", () => {
+    expect(supportedSmokeModes).toContain("storekit");
+    expect(resolveSmokeModeAppEnv("storekit", "prod")).toBe("dev");
+    expect(requiresExactExpoEnvironment("storekit")).toBe(true);
+  });
   it("leaves relay and profile alerts manual while preserving other lane policies", () => {
     expect(resolveSimulatorAlertHandling("relay")).toBe("manual");
     expect(resolveSimulatorAlertHandling("profile-disconnected")).toBe("manual");

@@ -1,3 +1,6 @@
+import { APP_STORE_SECRET } from "./billing/appStoreConfig.js";
+import { beginAppStorePurchase as beginApple, registerAppStoreTransaction as registerApple } from "./billing/appStorePurchase.js";
+import { handleAppStoreNotification } from "./billing/appStoreNotifications.js";
 /**
  * Kanna Firebase Functions entry point.
  *
@@ -155,3 +158,26 @@ export const stripeWebhook = onRequest(
     });
   }
 );
+
+/** Native purchase admission uses only Stripe's read API; no Apple API call. */
+export const beginAppStorePurchase = onCall({ secrets: [...CHECKOUT_SECRET_ENVS] }, async request => {
+  try { return await beginApple(appleCaller(request.auth), { db: db(), env: process.env }); }
+  catch (error) { throw appleCallableError(error); }
+});
+export const registerAppStoreTransaction = onCall({ secrets: [APP_STORE_SECRET] }, async request => {
+  try { return await registerApple(request.data, appleCaller(request.auth), { db: db(), env: process.env }); }
+  catch (error) { throw appleCallableError(error); }
+});
+export const appStoreNotifications = onRequest(async (request, response) => {
+  if (request.method !== "POST") { response.status(405).end(); return; }
+  const result = await handleAppStoreNotification(request.body, { db: db(), env: process.env, logger });
+  response.status(result.httpStatus).json({ code: result.code });
+});
+function appleCaller(auth: { uid: string; token: Record<string, unknown> } | undefined) {
+  return auth ? { uid: auth.uid, email: typeof auth.token.email === "string" ? auth.token.email : null,
+    emailVerified: auth.token.email_verified === true } : null;
+}
+function appleCallableError(error: unknown) {
+  if (error instanceof BillingRequestError) return new HttpsError(error.code, error.message, { reason: error.reason });
+  return new HttpsError("internal", "Subscription verification is unavailable. Please try again.", { reason: "apple_retry_required" });
+}

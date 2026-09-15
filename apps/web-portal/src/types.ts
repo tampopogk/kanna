@@ -8,6 +8,8 @@ export interface CloudEntitlement {
   graceEndsAt: unknown | null;
   environment: string;
   stripeCustomerId?: string | null;
+  appStoreOriginalTransactionId?: string | null;
+  duplicateSources?: boolean;
 }
 
 export type CloudAccessState = "pending" | "active" | "grace" | "expired" | "revoked" | "read-failure";
@@ -26,4 +28,14 @@ export function cloudAccessState(entitlement: CloudEntitlement | null, now: numb
     return deadline !== null && deadline <= now ? "expired" : "grace";
   }
   return entitlement.status;
+}
+
+export interface BillingSource {
+  source: "stripe" | "app_store" | "comp";
+  status?: EntitlementStatus;
+  active?: boolean;
+  environment?: string;
+  currentPeriodEndsAt?: string | null;
+  cancelAtPeriodEnd?: boolean;
+  paymentOutstanding?: boolean;
 }

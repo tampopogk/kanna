@@ -1,3 +1,5 @@
+import { AppleBillingCard } from "./AppleBillingCard";
+import type { AppleBillingView } from "../lib/billing/useAppleBilling";
 import { cloudAccessAction } from "@kanna/stream-client";
 import React, { useState } from "react";
 import {
@@ -19,6 +21,7 @@ import { getAccountBadgePresentation } from "./accountBadgePresentation";
 
 interface AccountSheetProps {
   auth: AuthState;
+  appleBilling?: AppleBillingView;
   machineCount: number;
   availableMachineCount: number;
   customRelayUrl: string | null;
@@ -43,6 +46,7 @@ interface AccountSheetProps {
 
 export function AccountSheet({
   auth,
+  appleBilling,
   machineCount,
   availableMachineCount,
   customRelayUrl,
@@ -291,6 +295,8 @@ export function AccountSheet({
                       <Text style={styles.primaryLabel}>I verified my email</Text>
                     </Pressable>
                   </View>
+                ) : appleBilling?.enabled ? (
+                  <AppleBillingCard value={appleBilling} verified={auth.user.emailVerified === true} />
                 ) : auth.user.cloudAccess === "inactive" ? (
                   <View
                     style={styles.accountState}
@@ -456,8 +462,9 @@ export function AccountSheet({
         <View style={styles.confirmationBackdrop}>
           <View style={styles.confirmationCard} testID={MOBILE_E2E_IDS.accountDeleteConfirmation}>
             <Text style={styles.confirmationTitle}>Permanently delete account?</Text>
+            {appleBilling?.enabled ? <Pressable onPress={appleBilling.manage}><Text style={styles.secondaryLabel}>Manage Apple subscription</Text></Pressable> : null}
             <Text style={styles.confirmationCopy}>
-              This immediately cancels your subscription and permanently deletes your cloud data and
+              This cancels web subscriptions. Apple subscriptions continue until you cancel them in Apple subscription settings. It permanently deletes your cloud data and
               cloud desktop pairings. Local Kanna data and LAN pairings stay on your devices. This
               cannot be undone.
             </Text>

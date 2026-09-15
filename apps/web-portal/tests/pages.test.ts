@@ -12,6 +12,7 @@ import type { PortalFirebase } from "../src/firebase";
 function api(overrides: Partial<PortalFirebase> = {}): PortalFirebase {
   return {
     observeUser: vi.fn((callback) => { callback({ uid: "user-1", email: "owner@example.com", emailVerified: true } as User); return () => undefined; }),
+    observeBilling: vi.fn((_uid, next) => { next([]); return () => undefined; }),
     observeEntitlement: vi.fn((_uid, next) => { next(null); return () => undefined; }),
     resetPassword: vi.fn(async () => undefined),
     resendVerification: vi.fn(async () => undefined),
@@ -214,7 +215,7 @@ describe("account deletion", () => {
     const wrapper = mount(host);
 
     await wrapper.get(".danger-button").trigger("click");
-    expect(wrapper.text()).toContain("subscription is canceled immediately");
+    expect(wrapper.text()).toContain("Web subscriptions are canceled immediately");
     expect(wrapper.text()).toContain("cloud desktop pairings");
     expect(wrapper.get('button[type="submit"]').attributes("disabled")).toBeDefined();
 

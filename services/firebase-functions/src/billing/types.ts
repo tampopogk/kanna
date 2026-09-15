@@ -56,6 +56,10 @@ export interface BilledSourceState {
   lastEventAt: string;
   lastEventId: string | null;
   updatedAt: string;
+  /** Apple billing retry/renewal can collect even when access has expired. */
+  paymentOutstanding?: boolean;
+  /** Serializes provider reconciliation against intervening Apple writes. */
+  revision?: number;
 }
 
 /**

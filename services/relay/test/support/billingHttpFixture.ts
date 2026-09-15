@@ -1,3 +1,9 @@
+import type { AppleEvidence } from "../../../firebase-functions/src/billing/appStoreVerification.js";
+export const appleFixture = { current: [] as AppleEvidence[] };
+export const appleGatewayFixture = { createAppleGateway: () => ({
+  current: async () => appleFixture.current,
+  async *notificationHistory() {},
+}) };
 /** Local HTTP hosting for the actual exported Functions handlers, never Stripe. */
 import express from "express";
 import type { StripeCheckoutGateway, StripeCheckoutSessionInput, StripePortalGateway, StripeSubscriptionGateway } from "../../../firebase-functions/src/billing/stripeGateway.js";

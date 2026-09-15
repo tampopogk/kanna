@@ -19,7 +19,9 @@ const error = ref("");
 const billingPending = ref(false);
 const billingError = ref("");
 const source = computed(() => session.entitlement.value?.source);
-const hasStripe = computed(() => source.value === "stripe" || Boolean(session.entitlement.value?.stripeCustomerId));
+const hasStripe = computed(() => session.billing.value.some(s => s.source === "stripe"));
+const apple = computed(() => session.billing.value.find(s => s.source === "app_store"));
+const duplicate = computed(() => session.billing.value.filter(s => s.status === "active" || s.status === "grace").length > 1);
 let generation = 0;
 watch(() => session.user.value?.uid, () => {
   ++generation;
@@ -70,8 +72,14 @@ async function deleteAccount(): Promise<void> {
     <CloudAccessStatus />
     <template v-if="session.entitlementReady.value">
       <p v-if="source === 'comp'">This account has complimentary access. No purchase is needed. Contact support for questions about your grant.</p>
-      <p v-else-if="source === 'app_store'">This account’s access record is from the App Store. Manage that subscription in <a href="https://apps.apple.com/account/subscriptions">Apple’s subscription settings</a>.</p>
+
       <p v-else-if="source && source !== 'stripe'">Access source: {{ source }}. Contact support for questions about this access.</p>
+      <p v-if="!session.billingReady.value">Billing details are unavailable. Refresh your account to check again.</p>
+      <p v-if="duplicate" role="alert">You have two paid subscriptions. Manage each with its provider to avoid paying twice. Kanna does not automatically cancel either.</p>
+      <template v-if="apple">
+        <p>Apple App Store billing: {{ apple.status }} ({{ apple.environment }}). {{ apple.cancelAtPeriodEnd ? "Renewal is off." : "" }}</p>
+        <p><a href="https://apps.apple.com/account/subscriptions">Manage Apple subscription</a>. Apple handles <a href="https://reportaproblem.apple.com">App Store refund requests</a>; Kanna’s direct web refund-request policy does not apply.</p>
+      </template>
       <template v-if="hasStripe">
         <p>Manage your Stripe subscription, payment method and invoices securely on Stripe. Ordinary billing changes keep your Kanna account and data.</p>
         <button :disabled="billingPending" type="button" @click="manageBilling">{{ billingPending ? "Opening billing…" : "Manage billing" }}</button>
@@ -87,7 +95,8 @@ async function deleteAccount(): Promise<void> {
     <p>Permanently remove your Kanna Cloud account.</p>
     <button v-if="!deleting" class="danger-button" type="button" @click="deleting = true">Delete account</button>
     <form v-else class="delete-confirmation" @submit.prevent="deleteAccount">
-      <p>Your subscription is canceled immediately. Your cloud data and cloud desktop pairings are permanently deleted. Local Kanna data and LAN pairings remain. There is no undo.</p>
+      <p>Web subscriptions are canceled immediately. Apple billing continues until you cancel in Apple’s subscription settings. You can delete your account now without waiting for cancellation. Your cloud data and cloud desktop pairings are permanently deleted. Local Kanna data and LAN pairings remain. There is no undo.</p>
+      <p><a href="https://apps.apple.com/account/subscriptions">Manage Apple subscription</a></p>
       <label>Type DELETE to continue <input v-model="confirmation" autocomplete="off" /></label>
       <p v-if="error" class="error" role="alert">{{ error }}</p>
       <div class="confirmation-actions">
