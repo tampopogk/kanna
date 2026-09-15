@@ -407,3 +407,83 @@ system acceptance from `641dbb6f`, staging publication authorization, and the
 resulting full soak plus named-human production request. These gaps are not
 closed by the implementation tests. No archive provisioning, real publication,
 key changes, release reset/promotion, website link or billing change was made.
+
+## Scoped existing-staging-host setup
+
+`kd release setup-linux --staging` owns only the approved archive on
+`kanna-staging/kanna-relay-staging`, us-central1-a, `34.133.43.193`.
+It does not build/deploy the relay, create a VM/IAM grant, enable Cloud DNS,
+change production, rotate existing keys or publish a candidate.
+
+```sh
+./kd release setup-linux --staging --mode inspect \
+  --admin-user <existing-admin-user> --admin-identity <existing-admin-private-key> \
+  --host-key-file <independently-authenticated-public-host-key>
+./kd release setup-linux --staging --mode plan \
+  --admin-user <existing-admin-user> --admin-identity <existing-admin-private-key> \
+  --host-key-file <same-public-host-key> --out .tmp/linux-archive-plan.json
+# Only in a coordinated Caddy maintenance window after scoped setup review:
+./kd release setup-linux --staging --mode apply \
+  --admin-user <existing-admin-user> --admin-identity <existing-admin-private-key> \
+  --host-key-file <same-public-host-key> \
+  --plan .tmp/linux-archive-plan.json --confirm <printed-plan-sha256> \
+  --proxy-maintenance
+```
+
+Inspect/plan use authenticated gcloud inventory, then existing administrator
+SSH with strict pinned host verification and noninteractive sudo for read-only
+configuration/identity/capacity observation. They never install SSH metadata or
+retry credentials. Without a supplied host-key file, the command queries the
+read-only `hostkeys/` guest attribute; absence is a refusal, not permission to
+enable it. A supplied file contains one `algorithm base64` public host key,
+obtained through an authenticated existing trust path. Neither ssh-keyscan nor
+an unverified initial connection is such a path. Plans bind the account,
+execution machine, VM numeric ID, host pin, administrator identity path, DNS,
+relay/Caddy identities and configuration hashes; a changed plan is refused.
+No environment values/private keys are printed or stored in the plan.
+
+DNS belongs to the existing authoritative account, not a newly enabled Cloud
+DNS project. The plan supplies the single A-record action. Apply verifies the
+public answer is only `34.133.43.193` with no AAAA/CNAME conflict. DNS is not
+HTTPS/publication proof. Owner completed this record on 2026-09-15; Ship verified
+both DomainControl authoritative servers and public resolvers independently.
+
+Apply requires actual MacBook Pro hardware and protected owner-only custody.
+It generates an encrypted v4 RSA3072/SHA512 apt key and a separate ED25519 SSH
+publisher identity under `~/.kanna/linux-apt`, reusing a completed matching
+setup on retry. Partial/unowned directories and key/pin rotations are refused.
+Secrets stay on the MBP. The remote root-owned authorized_keys forces the
+existing storage RPC helper at the fixed archive root, with no general shell,
+PTY, forwarding or user-controlled authorized_keys. The publisher receives no
+cloud role, administrator privilege, signing key or mobile secret.
+
+The remote helper takes a dedicated setup lock, preserves root-owned rollback
+files, compares the observed config before replacement, validates the new
+Caddyfile, and applies only the read-only archive mount and apt vhost. It uses
+the existing Caddy image with no pull/build and explicitly does not recreate
+the relay service. Existing owned setup is idempotent; foreign accounts/paths,
+changed config and key identities fail closed. A floating local Caddy image
+that differs from the running image is refused, preventing an implicit proxy
+upgrade. Future authorized staging relay deploys run the root-owned setup
+renderer to retain the apt additions after uploading base templates; this
+preservation hook does not run on production. A failed Caddy replacement is
+rolled back only while the replaced files still match this invocation's bytes.
+
+**Caddy maintenance is a real traffic constraint.** Adding the bind mount needs
+Caddy recreation, even though the relay container remains unchanged. Caddy also
+closes WebSockets on ordinary config reload by default; see its
+[streaming contract](https://caddyserver.com/docs/caddyfile/directives/reverse_proxy#streaming).
+The tool never disconnects clients or drains traffic. It requires an explicit
+coordinated `--proxy-maintenance` window and zero relay connections at inspection
+and immediately before replacement; otherwise it refuses. This is not a
+zero-downtime guarantee: connections can arrive between a count and recreation.
+If continuous admission must remain uninterrupted, do not apply this topology;
+a separate serving endpoint would require a separately assessed change.
+
+After host setup, exact HTTPS public-key readback must pass before the existing
+protected release-env writer merges only KANNA_LINUX_* selectors. Other lines,
+including desktop/mobile settings, remain intact and concurrent writes use the
+writer's existing compare-and-swap/lock contract. A readback refusal leaves keys
+and owned host setup available for inspection and a fresh plan/retry; it does
+not create a candidate or receipt. Then use normal Linux status and retained-B
+ship. Only actual publication closure/readback starts Linux's 24-hour soak.

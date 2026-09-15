@@ -205,3 +205,21 @@ Report the command run, exact version and channel, artifacts, mobile update kind
 After a state-changing ship, promotion, or rollback succeeds, send that same concise outcome to the operator with `kanna_notify_mobile`; use the release result as the title, the version/channel and release URL as the body, and this task's `$KANNA_TASK_ID` as `task_id`. A notification handoff failure does not undo an otherwise successful release, but report it explicitly. Do not send a push for status checks, dry-runs, or operations that stopped before publishing.
 
 Record `kanna_complete_stage {"task_id": "$KANNA_TASK_ID", "status": "success", "summary": "<exactly what was or would be shipped>"}` only after the requested operation or safe-default report is complete. Use `"status": "failure"` with the blocked operation and failing output when authorization, compatibility, preflight, build, or publish fails. CLI fallback: `kanna-cli stage-complete --task-id "$KANNA_TASK_ID" --status success --summary "<result>"`, or `kanna-cli stage-complete --task-id "$KANNA_TASK_ID" --status failure --summary "<blocker>"`.
+
+### Scoped Linux archive setup
+
+For the approved existing staging archive, use `./kd release setup-linux
+--staging --mode inspect|plan|apply`, with existing admin username/private-key
+path and an independently authenticated host public key file. Without that file,
+only the read-only GCE guest hostkeys lookup is attempted; absence never enables
+metadata or falls back to TOFU. See `docs/dev/linux-release.md` for exact flags.
+Inspect/plan do not mutate the host. Apply requires a freshly matching plan and
+its digest, the trusted MBP, existing-authority DNS resolving to the selected
+staging VM, protected local key custody and a coordinated `--proxy-maintenance`
+window with no live relay connections. Caddy mount installation recreates only
+Caddy and can interrupt newly arriving connections; never describe it as
+zero downtime, stop owner clients, or use full relay deployment to bypass this
+refusal. Setup validates HTTPS public-key readback and publisher RPC before
+merging only matching/new Linux selectors. It creates no release, receipt or
+soak, and grants no production authority. Partial setup or changed identity
+requires inspection, not deletion or implicit rotation.

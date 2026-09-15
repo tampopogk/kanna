@@ -937,6 +937,9 @@ function buildRemoteRelayDeployCommand(input: {
     "fi",
     "sudo install -m 0644 .env.tmp /opt/kanna-relay/.env",
     "rm .env.tmp",
+    ...(input.projectId === "kanna-staging" ? [
+      "if [ -e /opt/kanna-apt-setup/receipt.json ]; then sudo /usr/bin/python3 /opt/kanna-apt-setup/render-config.py; fi"
+    ] : []),
     "docker compose pull",
     "docker compose up -d"
   ].join("\n");

@@ -1070,6 +1070,20 @@ export function parseCliArgs(args: string[]): ParsedCliCommand {
   if (group === "rust-cache" && command === "status") {
     return { taskId: "rust-cache.status", input: {} };
   }
+  if (group === "release" && command === "setup-linux") {
+    const input: Record<string, unknown> = {};
+    const fields: Record<string, string> = { "--mode": "mode", "--admin-user": "adminUser", "--admin-identity": "adminIdentity", "--host-key-file": "hostKeyFile", "--plan": "plan", "--confirm": "confirm", "--out": "out" };
+    for (let i = 0; i < rest.length; i++) {
+      const flag = rest[i];
+      if (flag === "--staging") { input.staging = true; continue; }
+      if (flag === "--proxy-maintenance") { input.proxyMaintenance = true; continue; }
+      const field = fields[flag];
+      if (!field || !rest[i + 1] || rest[i + 1].startsWith("--")) throw new Error("Invalid Linux setup flag or missing value: " + flag);
+      if (field in input) throw new Error("Duplicate Linux setup selector: " + flag);
+      input[field] = rest[++i];
+    }
+    return { taskId: "release.setup-linux", input };
+  }
   if (group === "release" && (command === "prepare" || command === "renew")) {
     return { taskId: `release.${command}`, input: parseFlagInput(rest, {}) };
   }
@@ -1700,6 +1714,12 @@ const helpTopics: Record<string, string[]> = {
     "  release cut --version X.Y.0 --recut --reason <why> --confirm-recut <staging-version|empty> --confirm-old-tip <sha> [--dry-run]",
     "  release reset-staging --to main|release/X.Y --reason <why> --confirm-abandon <staging-version> [--dry-run]",
     "  release status [--platform macos|linux] [--acceptance <path>]"
+  ],
+  "release setup-linux": [
+    "Usage: kd release setup-linux --staging --mode inspect|plan|apply --admin-user USER --admin-identity /absolute/key [--host-key-file /absolute/authenticated-public-host-key] [--out PLAN] [--plan PLAN --confirm SHA256]",
+    "Fixed staging relay only. Inspect/plan are remote read-only; apply requires exact fresh plan and trusted MBP custody.",
+    "DNS must already resolve apt.kanna.build to the verified staging VM; the plan specifies the existing-authority account action.",
+    "No VM/IAM, relay build/deploy, production, implicit key rotation or publication. Shared selectors change only after HTTPS key readback."
   ],
   "release prepare": [
     "Usage: kd release prepare --platform linux --ref <40-hex-sha> --staging-iteration N [--out-dir <dir>]",
