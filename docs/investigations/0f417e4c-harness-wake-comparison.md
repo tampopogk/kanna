@@ -23,7 +23,7 @@ No live send, inference, rollout or ordinary-input change occurred.
 | Codex | Existing opt-in app-server adapter, targeting the live root thread with tool output | Existing Kanna implementation; these children did not revalidate its live behavior. It is not a generic adapter for another harness. |
 | Claude | Native MCP Channels | Isolated 2.1.270 / pinned Haiku test proved synthetic draft and middle-cursor preservation, native engine labelling, reconnect replay, and separate acknowledgement. A startup probe went unconfirmed; a busy notice reached the model without a mailbox read. The latter is not proof that Fable cannot supervise or that Kanna needs another scheduler. |
 | OpenCode | Direct `POST /session/{id}/prompt_async` on the **existing TUI worker** | Installed 1.4.3 plus tagged/embedded source support a composer-independent route. Current Kanna sessions lack a verified listening endpoint/native-session binding. Source predicts a password-authentication problem in default TUI external-HTTP mode; not yet reproduced. Live draft/cursor and uncertain-delivery behavior remain untested. |
-| Copilot | CLI-owned extension: `joinSession()` then `session.send({prompt: labelledEngineNotice, mode: "enqueue"})` | Same-session attachment passed on actual runtime 1.0.64. Both cached 1.0.64 and 1.0.83 SDKs passed the public API/fake-parent tests; neither serializes native `source`. Kanna must own engine provenance separately. Live draft/cursor, busy queue and recovery remain unproved. |
+| Copilot | CLI-owned extension: `joinSession()` then `session.send({prompt: labelledEngineNotice, mode: "enqueue"})` | Actual 1.0.64 TUI passed synthetic draft/cursor, busy enqueue and positive-history receipt recovery with a scripted local provider. Native user role; Kanna owns engine provenance separately. Both cached SDKs passed offline wire tests. Process reconnect, durable product integration and real tool-read/ack remain unproved. |
 | Antigravity | No verified unsolicited local route to the same live TUI | `agy` absent from bounded local discovery. Documented cloud Remote Control, headless input and official ACP do not establish attachment to an existing terminal session. An already-outstanding MCP call is a possible bounded experiment, not a proven unsolicited wake channel. |
 
 The source-cited child notes are [OpenCode](0f417e4c-opencode-wake.md),
@@ -75,10 +75,12 @@ The [current adapter recommendation](0f417e4c-copilot-engine-adapter.md) specifi
 the server-owned durable receipt boundary and the next experiment: one disposable
 Copilot TUI using a scripted local provider, no paid inference, testing actual
 draft/cursor preservation, busy enqueue and uncertain-receipt reconciliation.
-That experiment requires live `session.send`, which the latest authorization
-excludes; it has not run. No rollout or ordinary-input change follows from the
-preflight or fake-parent tests. Antigravity's advisory evidence gap remains
-separate and creates no blanket human gate.
+The owner subsequently authorized that one synthetic live-send experiment;
+[it passed the exercised cases](0f417e4c-copilot-synthetic-tui.md) in 6.571 seconds.
+This is not process-reconnect or product-integration proof. No rollout or
+ordinary-input change follows. Antigravity's advisory evidence gap remains
+separate and creates no blanket human gate. The next scoped work is the Copilot
+adapter's durable server/extension boundary, not another broad provider survey.
 
 ## Durable child provenance
 

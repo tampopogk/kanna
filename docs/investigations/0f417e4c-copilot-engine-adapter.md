@@ -2,6 +2,13 @@
 
 2026-09-15, task `0f417e4c`, following preflight commit `500b47e1f`.
 
+Update: the owner authorized the single synthetic live-send test below. Its
+[completed result](0f417e4c-copilot-synthetic-tui.md) proves draft/cursor
+preservation, busy enqueue and positive-history receipt reconciliation on
+1.0.64 with a scripted local provider. No paid inference ran. Historical
+pending-authorization wording below is superseded for that experiment only;
+process-restart recovery and product integration remain unproved.
+
 **Choose Copilot's host-owned extension as the next adapter.** The installed
 SDK's missing `source` convenience field is not a blocker. Its public
 `joinSession()` / `session.send({prompt, mode: "enqueue"})` path carries explicit
