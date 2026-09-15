@@ -1,5 +1,7 @@
 # Linux delivery: concrete next preparation
 
+**Superseded historical preparation record.** Product/collector/SSH/renewal and both floor-test gaps below are closed. See [current publication prerequisites, exact B acceptance and website handoff](2026-09-15-linux-publication-next-step.md).
+
 Task `d3ce8dec`; supersedes the old missing-product/lifecycle disposition.
 PR1510 is merged at `188d118eea93cc99b8355f4f3ce5ecb1db34477d`, tree
 `e17791378d422f4d008d69b1201977c7ba5cb7d9`. This task merged that source into

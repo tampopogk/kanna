@@ -133,6 +133,47 @@ rewrite or renamed package. `--branch` defaults to `main`; either main or the
 matching `release/linux/X.Y` must have exactly the local HEAD as its remote tip.
 The source is checked before/after collection and again before publication.
 
+#### Retained prepared packages and an immutable product base
+
+When the controller or main advances after collection, explicitly select the
+retained product instead of rebuilding it:
+
+```sh
+./kd release ship --platform linux --staging --branch main \
+  --prepared-manifest /absolute/prepared/manifest.json \
+  --source-ref <40-hex-product-commit> --promotion-base <same-40-hex-commit> \
+  --staging-iteration N --acceptance /absolute/acceptance.json --dry-run
+```
+
+All three selectors and the iteration are required together; `--skip-build`
+and promotion selectors are refused in this mode. The controller must be clean.
+The manifest must name both architectures with the same source/tree, committed
+product VERSION and iteration. Canonical verification reads the actual retained
+debs and reports, verifies their hashes and source stamps, inspects control/data
+and executable bytes, and applies the **product commit's** runtime policy from
+an isolated source snapshot. No Bazel invocation or cache is needed. Files must
+be regular files; manifest filenames cannot escape the preparation directory.
+Acceptance still names the exact measured package hashes and retained evidence.
+A dry-run still needs archive configuration but writes no candidate/channel.
+
+The plan reports `controller` separately from `source`. Immutable candidate
+provenance records `promotionBase: {kind: "commit", branch, revision}`, with
+revision equal to the product source. This is a recorded commit selection, not
+a new Git branch/tag operation. The selected remote branch must contain that
+commit at rehearsal, publication, status and promotion; unreadable ancestry,
+rewinds excluding the source, and divergence fail closed. Ordinary candidates
+without this discriminator retain the exact-tip rule above. Existing Linux
+lineage, branch freeze, production floor, ownership and soak gates still apply.
+Retries must retain the complete promotion-base selection as well as artifacts.
+
+After separately authorized publication, promotion automatically checks out the
+recorded product commit with the current clean controller. It requires the full
+tested-candidate soak and upgrade/system evidence, then rebuilds **production**
+identity at that commit. Retained staging debs are never relabeled. Pinned
+promotion refuses `--skip-build`; it has a fresh isolated build directory.
+Changing the controller does not change or restart candidate soak; changing the
+product requires a new candidate with new evidence and soak.
+
 The collector runs the established Bazel package lane for **both** x86_64 and
 arm64. It supplies validated revision/tree build stamps to the declared package
 report; checks the report's source/version/iteration/channel/architecture and

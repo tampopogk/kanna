@@ -64,7 +64,7 @@ export interface LinuxCandidate {
   tag: string;
   channel: AptChannel;
   source: LinuxSource;
-  promotionBase: { branch: string; revision: string };
+  promotionBase: { branch: string; revision: string; kind?: "commit" };
   version: string;
   iteration: number | null;
   artifacts: LinuxArtifactIdentity[];
@@ -124,7 +124,7 @@ export async function readCandidate(storage: AptPublicationStorage, tag: string)
   if (!c || c.schemaVersion !== 1 || c.platform !== "linux" || c.tag !== tag || !["desktop-linux-staging", "desktop-linux"].includes(c.channel) || !/^[a-f0-9]{40}$/.test(c.source?.revision) || !/^[a-f0-9]{40}$/.test(c.source?.tree) || !Array.isArray(c.artifacts) || c.artifacts.length !== 2 || new Set(c.artifacts.map(a => a.architecture)).size !== 2 || !Array.isArray(c.aptArtifacts) || c.aptArtifacts.length !== 2) throw new Error("Missing or malformed Linux candidate provenance.");
   const channel = c.channel === "desktop-linux" ? "production" : "staging";
   const platform = releasePlatform("linux");
-  if ((channel === "staging" ? (!Number.isSafeInteger(c.iteration) || c.iteration! < 1 || tag !== platform.stagingTag(c.version, c.iteration!)) : (c.iteration !== null || tag !== platform.productionTag(c.version))) || !Number.isFinite(Date.parse(c.preparedAt)) || !Number.isFinite(c.validForHours) || c.validForHours <= 0 || c.promotionBase?.revision !== c.source.revision || (c.promotionBase.branch !== "main" && c.promotionBase.branch !== platform.seriesBranch(c.version))) throw new Error("Invalid Linux candidate version, date or promotion base.");
+  if ((channel === "staging" ? (!Number.isSafeInteger(c.iteration) || c.iteration! < 1 || tag !== platform.stagingTag(c.version, c.iteration!)) : (c.iteration !== null || tag !== platform.productionTag(c.version))) || !Number.isFinite(Date.parse(c.preparedAt)) || !Number.isFinite(c.validForHours) || c.validForHours <= 0 || (c.promotionBase?.kind !== undefined && c.promotionBase.kind !== "commit") || c.promotionBase?.revision !== c.source.revision || (c.promotionBase.branch !== "main" && c.promotionBase.branch !== platform.seriesBranch(c.version))) throw new Error("Invalid Linux candidate version, date or promotion base.");
   for (const a of c.artifacts) {
     if (!["arm64", "x86_64"].includes(a.architecture) || a.sourceRevision !== c.source.revision || a.buildRevision !== c.source.revision || a.buildTree !== c.source.tree || a.version !== c.version || a.channel !== channel || a.iteration !== c.iteration || a.label !== `//packaging/linux:deb_${channel}_${a.architecture}` || !digestSchema.safeParse(a.sha256).success || !digestSchema.safeParse(a.reportSha256).success || a.fileName !== debFileName({ architecture: a.architecture, version: c.version, channel, stagingIteration: c.iteration ?? undefined })) throw new Error("Incoherent Linux artifact/source provenance.");
     const apt = c.aptArtifacts.filter(p => p.architecture === debianArchitecture(a.architecture));
