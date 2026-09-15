@@ -1,6 +1,8 @@
 load("@rules_cc//cc:cc_binary.bzl", "cc_binary")
-load("@rules_python//python:defs.bzl", "py_test")
+load("@rules_python//python:defs.bzl", "py_binary", "py_test")
 load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_test")
+
+load(":products.bzl", "linux_iteration", "linux_package_targets", "linux_product_targets")
 
 package(default_visibility = ["//visibility:public"])
 
@@ -53,4 +55,22 @@ cc_binary(
     name = "sysroot_overlay_test_tool",
     srcs = ["sysroot_overlay.c"],
     testonly = True,
+)
+
+linux_product_targets()
+
+py_binary(
+    name = "artifact_tool",
+    srcs = ["artifact_tool.py"],
+    main = "artifact_tool.py",
+)
+
+linux_package_targets()
+
+linux_iteration(name = "staging_iteration", build_setting_default = 1)
+
+py_test(
+    name = "artifact_tool_test",
+    srcs = ["artifact_tool.py", "tests/test_artifact_tool.py"],
+    main = "tests/test_artifact_tool.py",
 )

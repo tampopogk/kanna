@@ -3564,6 +3564,103 @@ fn current_stage_spawn_fixture(
     (config, db, prepared)
 }
 
+// Exercise the real replacement lifecycle across its daemon socket, including
+// blank/alternate-only terminals: geometry must not depend on scrollback.
+#[tokio::test]
+async fn stage_spawn_inherits_last_applied_geometry_without_requiring_history() {
+    use kanna_daemon::protocol::{Command as WireCommand, Event, TerminalSnapshot};
+    for (label, size, vt) in [
+        ("history", Some((279, 78)), "setup output"),
+        ("blank", Some((151, 43)), ""),
+        ("alternate", Some((49, 31)), "\x1b[?1049hTUI"),
+        ("missing", None, ""),
+    ] {
+        let (config, db, prepared) = current_stage_spawn_fixture(&format!("stage-grid-{label}"));
+        let socket_path = test_daemon_socket_path(&config.daemon_dir);
+        let listener = UnixListener::bind(&socket_path).unwrap();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let (read_half, mut write_half) = stream.into_split();
+            let mut reader = BufReader::new(read_half);
+            let mut killed = false;
+            loop {
+                let command = read_fake_daemon_command(&mut reader, &mut write_half).await;
+                let finished = matches!(command, WireCommand::Spawn { .. });
+                let reply = match command {
+                    WireCommand::Snapshot { session_id } => {
+                        assert!(!killed, "measure before destroying the outgoing session");
+                        match size {
+                            Some((cols, rows)) => Event::Snapshot {
+                                session_id,
+                                snapshot: TerminalSnapshot {
+                                    version: 1,
+                                    cols,
+                                    rows,
+                                    cursor_row: 0,
+                                    cursor_col: 0,
+                                    cursor_visible: true,
+                                    saved_at: 0,
+                                    sequence: 0,
+                                    vt: vt.into(),
+                                },
+                                agent_provider: None,
+                            },
+                            None => Event::Error {
+                                code: Some(kanna_daemon::protocol::ErrorCode::SessionNotFound),
+                                message: "no outgoing terminal".into(),
+                            },
+                        }
+                    }
+                    WireCommand::Kill { .. } => {
+                        killed = true;
+                        Event::Ok
+                    }
+                    WireCommand::SeedSnapshot { .. } => {
+                        assert!(killed);
+                        Event::Ok
+                    }
+                    WireCommand::Spawn {
+                        session_id,
+                        cols,
+                        rows,
+                        ..
+                    } => {
+                        assert!(killed);
+                        assert_eq!((cols, rows), size.unwrap_or((80, 24)), "{label}");
+                        Event::SessionCreated { session_id }
+                    }
+                    other => panic!("unexpected command: {other:?}"),
+                };
+                write_half
+                    .write_all(format!("{}\n", serde_json::to_string(&reply).unwrap()).as_bytes())
+                    .await
+                    .unwrap();
+                if finished {
+                    break;
+                }
+            }
+        });
+        let mut daemon = DaemonClient::connect(&config.daemon_dir).await.unwrap();
+        spawn_prepared_stage_run_for_api(
+            &config.db_path,
+            &mut daemon,
+            &crate::session_replacements::SessionReplacements::default(),
+            prepared,
+        )
+        .await
+        .unwrap();
+        server.await.unwrap();
+        assert_eq!(
+            db.get_pipeline_item("task-1")
+                .unwrap()
+                .unwrap()
+                .stage
+                .as_deref(),
+            Some("review")
+        );
+    }
+}
+
 async fn run_stage_spawn_boundary_failure(label: &str, before_submission: bool) {
     let (config, db, prepared) = current_stage_spawn_fixture(label);
     let socket_path = test_daemon_socket_path(&config.daemon_dir);

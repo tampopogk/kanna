@@ -2,7 +2,7 @@
 // Disposable keys stay in memory and travel to the isolated worker over stdin.
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { readFileSync, realpathSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { createRequire, isBuiltin, registerHooks } from "node:module";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -69,9 +69,16 @@ if (worker) {
   assert(readFileSync(resolve(directory, "licenses/openpgp/NOTICE.md"), "utf8").includes("6.3.1"));
   const installedSource = resolve(dirname(createRequire(import.meta.url).resolve("openpgp")), "openpgp.mjs");
   assert.deepEqual(readFileSync(resolve(directory, "licenses/openpgp/openpgp-6.3.1.mjs")), readFileSync(installedSource));
-  assert(readFileSync(`${entry}.LEGAL.txt`, "utf8").includes("OpenPGP.js"));
-  const map = JSON.parse(readFileSync(`${entry}.map`, "utf8"));
-  assert(map.sourcesContent.some((source) => source?.includes("OpenPGP.js")));
+  // The signer is also imported by kd's release commands. tsup can therefore
+  // put OpenPGP in a shared chunk instead of the small signer entry module.
+  // Require its notices and source in this entry's verified closure, never in
+  // an unrelated output that merely happens to share the bundle directory.
+  assert([...visited].some(path => existsSync(`${path}.LEGAL.txt`) &&
+    readFileSync(`${path}.LEGAL.txt`, "utf8").includes("OpenPGP.js")));
+  assert([...visited].some(path => {
+    const map = JSON.parse(readFileSync(`${path}.map`, "utf8"));
+    return map.sourcesContent.some(source => source?.includes("OpenPGP.js"));
+  }));
   const pgp = await import("openpgp");
   const passphrase = "Disposable bundle test ONLY";
   const { privateKey, publicKey } = await pgp.generateKey({

@@ -131,6 +131,7 @@ impl TransferReplayStore {
                     source_task_id: stored.source_task_id,
                     target_peer: stored.target_peer,
                     transport: stored.transport,
+                    pull_request_id: None,
                     created_at: now.checked_sub(age).unwrap_or(now),
                 },
             );

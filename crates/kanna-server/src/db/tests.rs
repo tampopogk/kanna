@@ -5549,3 +5549,198 @@ fn main_and_archive_migrations_upgrade_either_branch_without_losing_data() {
         std::fs::remove_file(path).unwrap();
     }
 }
+
+#[test]
+fn transfer_protocol_refusal_is_durable_identity_bound_and_does_not_revive_retry() {
+    let path = temp_db_path();
+    let db = Db::open_for_tests(&path.to_string_lossy()).unwrap();
+    db.insert_test_repo("protocol-repo", "Protocol fixture")
+        .unwrap();
+    db.insert_test_pipeline_item(
+        "protocol-task",
+        "protocol-repo",
+        "keep source",
+        None,
+        "in progress",
+        "2026-09-14 00:00:00",
+    )
+    .unwrap();
+    db.insert_task_transfer(&NewTaskTransfer {
+        id: "protocol-transfer".into(),
+        direction: "outgoing".into(),
+        status: "pending".into(),
+        source_peer_id: Some("source".into()),
+        target_peer_id: Some("destination".into()),
+        source_desktop_id: None,
+        target_desktop_id: None,
+        source_task_id: Some("protocol-task".into()),
+        local_task_id: Some("protocol-task".into()),
+        error: None,
+        payload_json: Some("{\"sourceData\":\"unchanged\"}".into()),
+    })
+    .unwrap();
+    db.enqueue_transfer_work("protocol-push", "push", None, "{}")
+        .unwrap();
+    let work = db.claim_next_transfer_work(&[]).unwrap().unwrap();
+    db.bind_transfer_work(&work.id, "protocol-transfer")
+        .unwrap();
+    assert!(db
+        .record_peer_transfer_refusal("protocol-transfer", "intruder", "protocol-task", "forged")
+        .is_err());
+    assert!(db
+        .record_peer_transfer_refusal("protocol-transfer", "destination", "other-task", "forged")
+        .is_err());
+    assert_eq!(
+        db.get_task_transfer("protocol-transfer")
+            .unwrap()
+            .unwrap()
+            .status,
+        "pending"
+    );
+    // A legitimate transient error still retries before the terminal decision.
+    assert!(db
+        .fail_transfer_work_attempt(&work.id, 1, "connection reset")
+        .unwrap());
+    assert_eq!(
+        db.transfer_work_status(&work.id).unwrap().as_deref(),
+        Some("pending")
+    );
+    let late = db
+        .claim_next_transfer_work_as_of(&[], "2099-01-01")
+        .unwrap()
+        .unwrap();
+    for (id, payload) in [
+        (
+            "legacy-push",
+            r#"{"sourceTaskId":"protocol-task","peerId":"destination"}"#,
+        ),
+        (
+            "legacy-pull",
+            r#"{"source_task_id":"protocol-task","requester_peer_id":"destination"}"#,
+        ),
+    ] {
+        db.enqueue_transfer_work(id, "push", None, payload).unwrap();
+    }
+    db.record_peer_transfer_refusal(
+        "protocol-transfer",
+        "destination",
+        "protocol-task",
+        "Rejected locally",
+    )
+    .unwrap();
+    // Simulate an in-flight error arriving after the refusal committed.
+    db.fail_transfer_work_attempt(&late.id, late.attempts, "lost reply")
+        .unwrap();
+    assert_eq!(
+        db.transfer_work_status(&work.id).unwrap().as_deref(),
+        Some("done")
+    );
+    for id in ["legacy-push", "legacy-pull"] {
+        assert_eq!(
+            db.transfer_work_status(id).unwrap().as_deref(),
+            Some("done")
+        );
+        assert!(
+            !db.bind_transfer_work(id, "would-resurrect").unwrap(),
+            "cancelled in-flight work must not submit a new payload"
+        );
+    }
+    drop(db);
+    let db = Db::open(&path.to_string_lossy()).unwrap();
+    db.requeue_interrupted_transfer_work().unwrap();
+    assert!(db
+        .claim_next_transfer_work_as_of(&[], "2099-01-01")
+        .unwrap()
+        .is_none());
+    db.record_peer_transfer_refusal(
+        "protocol-transfer",
+        "destination",
+        "protocol-task",
+        "replayed",
+    )
+    .unwrap();
+    let transfer = db.get_task_transfer("protocol-transfer").unwrap().unwrap();
+    assert_eq!(transfer.status, "failed");
+    assert_eq!(transfer.error.as_deref(), Some("Rejected locally"));
+    assert_eq!(
+        transfer.payload_json.as_deref(),
+        Some("{\"sourceData\":\"unchanged\"}")
+    );
+    assert!(db
+        .get_pipeline_item("protocol-task")
+        .unwrap()
+        .unwrap()
+        .closed_at
+        .is_none());
+    assert!(db
+        .active_outgoing_transfer_for_source("protocol-task")
+        .unwrap()
+        .is_none());
+    // A separate explicit intent is still admissible.
+    db.enqueue_transfer_work(
+        "protocol-fresh-push",
+        "push",
+        None,
+        r#"{"sourceTaskId":"protocol-task","peerId":"destination"}"#,
+    )
+    .unwrap();
+    db.record_peer_transfer_refusal(
+        "protocol-transfer",
+        "destination",
+        "protocol-task",
+        "old ACK replay",
+    )
+    .unwrap();
+    assert_eq!(
+        db.claim_next_transfer_work(&[]).unwrap().unwrap().id,
+        "protocol-fresh-push"
+    );
+}
+
+#[test]
+fn transfer_protocol_rejection_cannot_undo_import_or_completed_ownership() {
+    let db = Db::open_for_tests(&Db::test_db_path("protocol-reject-guards")).unwrap();
+    for (id, direction, status, local_task_id) in [
+        ("pending", "incoming", "pending", None),
+        ("imported", "incoming", "importing", Some("imported-task")),
+        ("completed", "outgoing", "completed", Some("source-task")),
+    ] {
+        db.insert_task_transfer(&NewTaskTransfer {
+            id: id.into(),
+            direction: direction.into(),
+            status: status.into(),
+            source_peer_id: Some("source".into()),
+            target_peer_id: Some("destination".into()),
+            source_desktop_id: None,
+            target_desktop_id: None,
+            source_task_id: Some(id.into()),
+            local_task_id: local_task_id.map(str::to_owned),
+            error: None,
+            payload_json: None,
+        })
+        .unwrap();
+    }
+    assert!(db
+        .mark_task_transfer_rejected("pending", "Rejected locally")
+        .unwrap());
+    assert!(!db
+        .mark_task_transfer_rejected("pending", "later reason")
+        .unwrap());
+    assert!(!db
+        .mark_task_transfer_rejected("imported", "too late")
+        .unwrap());
+    assert!(!db
+        .mark_task_transfer_rejected("completed", "too late")
+        .unwrap());
+    assert!(db
+        .record_peer_transfer_refusal("completed", "destination", "completed", "too late")
+        .is_err());
+    assert_eq!(
+        db.get_task_transfer("imported").unwrap().unwrap().status,
+        "importing"
+    );
+    assert_eq!(
+        db.get_task_transfer("completed").unwrap().unwrap().status,
+        "completed"
+    );
+}

@@ -30,6 +30,7 @@ fn get_local_identity_control_messages_roundtrip() {
     assert_roundtrip(request);
 
     let response = ControlResponse::GetLocalIdentity {
+        transfer_protocol: None,
         request_id: "identity-1".into(),
         peer_id: "peer-a".into(),
         display_name: "Studio Mac".into(),

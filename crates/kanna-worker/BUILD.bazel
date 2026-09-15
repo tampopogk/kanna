@@ -1,0 +1,20 @@
+load("@kanna_server_crates//:defs.bzl", "all_crate_deps")
+load("@rules_rust//rust:defs.bzl", "rust_binary")
+
+package(default_visibility = ["//visibility:public"])
+
+rust_binary(
+    name = "kanna_worker",
+    srcs = glob(["src/**/*.rs"]),
+    crate_root = "src/main.rs",
+    crate_name = "kanna_worker",
+    binary_name = "kanna-worker",
+    edition = "2021",
+    version = "0.1.0",
+    deps = all_crate_deps(normal = True, package_name = "crates/kanna-worker") + [
+        "//crates/daemon:kanna_daemon_lib_for_server",
+        "//crates/runtime-defaults:kanna_runtime_defaults",
+        "//crates/server-process:kanna_server_process_for_worker",
+    ],
+    proc_macro_deps = all_crate_deps(proc_macro = True, package_name = "crates/kanna-worker"),
+)

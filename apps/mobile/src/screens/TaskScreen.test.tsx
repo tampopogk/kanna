@@ -1608,24 +1608,43 @@ describe("TaskScreen", () => {
     }
   });
 
-  it.each([["android", 48, 62], ["android", 0, 14], ["ios", 34, 14]])(
-    "keeps detail controls clear on %s with a %i bottom inset",
-    (os, bottom, expected) => {
+  it.each([
+    ["android", 48, 62, 308],
+    ["android", 0, 14, 308],
+    ["ios", 34, 14, 308]
+  ])(
+    "positions detail controls in the %s viewport with a %i bottom inset",
+    (os, bottom, restingOffset, keyboardOffset) => {
       platform.OS = os;
       safeArea.bottom = bottom;
       let tree = renderTaskScreen();
       expect(styleEntries(findByTestId(tree, MOBILE_E2E_IDS.taskComposerChrome)))
-        .toContainEqual({ bottom: expected });
+        .toContainEqual({ bottom: restingOffset });
       const showListener = componentMocks.keyboardAddListener.mock.calls.find(
         (call) => call[0] === (os === "android" ? "keyboardDidShow" : "keyboardWillShow")
-      )?.[1] as ((event: { endCoordinates: { height: number } }) => void) | undefined;
+      )?.[1] as ((event: { endCoordinates: { height: number; screenY: number } }) => void) | undefined;
       expect(showListener).toBeTypeOf("function");
-      showListener?.({ endCoordinates: { height: 300 } });
+      showListener?.({ endCoordinates: { height: 300, screenY: 500 } });
       tree = renderTaskScreen();
       expect(styleEntries(findByTestId(tree, MOBILE_E2E_IDS.taskComposerChrome)))
-        .toContainEqual({ bottom: 308 });
+        .toContainEqual({ bottom: keyboardOffset });
     }
   );
+
+  it("uses the full Android occlusion when an accessory row exceeds the reported height", () => {
+    platform.OS = "android";
+    safeArea.bottom = 48;
+    let tree = renderTaskScreen();
+    const showListener = componentMocks.keyboardAddListener.mock.calls.find(
+      (call) => call[0] === "keyboardDidShow"
+    )?.[1] as ((event: { endCoordinates: { height: number; screenY: number } }) => void) | undefined;
+
+    showListener?.({ endCoordinates: { height: 300, screenY: 360 } });
+    tree = renderTaskScreen();
+
+    expect(styleEntries(findByTestId(tree, MOBILE_E2E_IDS.taskComposerChrome)))
+      .toContainEqual({ bottom: 448 });
+  });
 
   it("does not let the software keyboard change what the phone proposes", () => {
     let tree = renderTaskScreen({ agentType: "pty" });

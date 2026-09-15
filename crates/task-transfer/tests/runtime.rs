@@ -95,6 +95,7 @@ fn seal_authenticated_task_pull(
         &source_public_key,
         &json!({
             "action": "request_task_pull",
+            "transfer_protocol": "transfer-v2-reconciliation-v1",
             "request_id": request_id,
             "owner_epoch": owner_epoch,
             "issued_at_unix_ms": issued_at_unix_ms,
@@ -515,6 +516,10 @@ fn seal_authenticated_transfer_request(
     arguments: serde_json::Value,
 ) -> String {
     let mut payload = arguments.as_object().cloned().expect("object arguments");
+    payload.insert(
+        "transfer_protocol".into(),
+        json!("transfer-v2-reconciliation-v1"),
+    );
     payload.insert("action".into(), json!(action));
     payload.insert("request_id".into(), json!(request_id));
     payload.insert("owner_epoch".into(), json!(owner_epoch));
@@ -851,7 +856,7 @@ async fn the_destination_refuses_to_release_a_committed_or_foreign_reservation()
     let temp = tempfile::tempdir().unwrap();
     let source = TransferRuntime::spawn(
         RuntimeConfig::for_tests("peer-source", "Source", temp.path(), 0)
-            .with_peer_request_timeout(Duration::from_millis(500)),
+            .with_peer_request_timeout(Duration::from_secs(15)),
     )
     .await
     .unwrap();
@@ -917,17 +922,18 @@ async fn the_destination_refuses_to_release_a_committed_or_foreign_reservation()
         1,
     );
 
-    source
-        .prepare_transfer_commit(
-            &preflight.transfer_id,
-            json!({
-                "target_peer_id": "peer-destination",
-                "task": { "source_task_id": "task-source" },
-            }),
-        )
-        .await
-        .unwrap();
-    let event = next_incoming_transfer_request(&destination).await;
+    let (committed, event) =
+        tokio::join!(
+        source.prepare_transfer_commit(&preflight.transfer_id, json!({
+            "target_peer_id": "peer-destination", "task": { "source_task_id": "task-source" },
+        })),
+        async {
+            let event = next_incoming_transfer_request(&destination).await;
+            destination.mark_incoming_event_recorded(&event.transfer_id).await.unwrap();
+            event
+        }
+    );
+    committed.unwrap();
     assert_eq!(event.transfer_id, preflight.transfer_id);
 
     let committed =
@@ -1299,7 +1305,12 @@ async fn external_peer_merges_lan_and_cloud_routes_and_selects_requested_transpo
     assert_eq!(routes.lan_endpoint, Some(lan_endpoint));
     assert_eq!(routes.cloud_endpoint, Some(cloud_endpoint));
 
-    let cloud_server = tokio::spawn(respond_to_preflight(cloud_listener, "transfer-cloud"));
+    let cloud_server = tokio::spawn(respond_to_preflight(
+        cloud_listener,
+        "transfer-cloud",
+        identity.clone(),
+        temp.path().to_path_buf(),
+    ));
     runtime
         .prepare_transfer_preflight_with_transport(
             "peer-target",
@@ -1310,7 +1321,12 @@ async fn external_peer_merges_lan_and_cloud_routes_and_selects_requested_transpo
         .unwrap();
     cloud_server.await.unwrap();
 
-    let lan_server = tokio::spawn(respond_to_preflight(lan_listener, "transfer-lan"));
+    let lan_server = tokio::spawn(respond_to_preflight(
+        lan_listener,
+        "transfer-lan",
+        identity,
+        temp.path().to_path_buf(),
+    ));
     runtime
         .prepare_transfer_preflight_with_transport(
             "peer-target",
@@ -1920,6 +1936,7 @@ async fn task_pull_listener_rejects_blank_and_control_character_task_ids() {
             &source_public_key,
             &json!({
                 "action": "request_task_pull",
+            "transfer_protocol": "transfer-v2-reconciliation-v1",
                 "request_id": request_id,
                 "owner_epoch": owner_epoch,
                 "issued_at_unix_ms": current_unix_ms(),
@@ -1976,7 +1993,9 @@ async fn outgoing_reservation_pins_cloud_route_across_external_peer_updates() {
         .await
         .unwrap();
 
+    let protocol_root = temp.path().to_path_buf();
     let pinned_server = tokio::spawn(async move {
+        answer_transfer_protocol(&pinned_listener, &identity, &protocol_root).await;
         let (reader, request) =
             accept_authenticated_request(&pinned_listener, "pinned-owner-epoch").await;
         let PeerRequest::PrepareTransfer { request_id, .. } = request else {
@@ -2302,7 +2321,12 @@ async fn rotated_external_key_rejects_all_pinned_transfer_continuations() {
         .await
         .unwrap();
 
-    let preflight_server = tokio::spawn(respond_to_preflight(old_route, "transfer-pinned-key"));
+    let preflight_server = tokio::spawn(respond_to_preflight(
+        old_route,
+        "transfer-pinned-key",
+        old_target,
+        temp.path().to_path_buf(),
+    ));
     source
         .prepare_transfer_preflight_with_transport(
             "peer-target",
@@ -2356,7 +2380,13 @@ async fn rotated_external_key_rejects_all_pinned_transfer_continuations() {
     }
 }
 
-async fn respond_to_preflight(listener: TcpListener, transfer_id: &str) {
+async fn respond_to_preflight(
+    listener: TcpListener,
+    transfer_id: &str,
+    identity: TransferIdentity,
+    root: std::path::PathBuf,
+) {
+    answer_transfer_protocol(&listener, &identity, &root).await;
     let (reader, request) = accept_authenticated_request(&listener, "fixture-owner-epoch").await;
     let PeerRequest::PrepareTransfer { request_id, .. } = request else {
         panic!("expected preflight request");
@@ -6299,6 +6329,10 @@ async fn every_privileged_request_rejects_a_hostile_replay_after_owner_restart()
     for (action, mut request, arguments) in cases {
         let request_id = request["request_id"].as_str().unwrap().to_owned();
         let mut payload = arguments.as_object().unwrap().clone();
+        payload.insert(
+            "transfer_protocol".into(),
+            json!("transfer-v2-reconciliation-v1"),
+        );
         payload.insert("action".into(), json!(action));
         payload.insert("request_id".into(), json!(request_id));
         payload.insert("owner_epoch".into(), json!(owner_epoch));
@@ -10646,7 +10680,9 @@ async fn prepare_transfer_preflight_does_not_leak_source_task_id_on_the_wire() {
         .unwrap();
 
     let (line_tx, line_rx) = oneshot::channel();
+    let protocol_root = temp.path().to_path_buf();
     let server = tokio::spawn(async move {
+        answer_transfer_protocol(&listener, &target_identity, &protocol_root).await;
         let (mut reader, request) =
             accept_authenticated_request(&listener, "fixture-owner-epoch").await;
         let line = serde_json::to_string(&request).unwrap();
@@ -10770,7 +10806,9 @@ async fn prepare_transfer_commit_does_not_leak_payload_on_the_wire() {
         .unwrap();
 
     let (commit_line_tx, commit_line_rx) = oneshot::channel();
+    let protocol_root = temp.path().to_path_buf();
     let server = tokio::spawn(async move {
+        answer_transfer_protocol(&listener, &target_identity, &protocol_root).await;
         let (mut preflight_reader, preflight_request) =
             accept_authenticated_request(&listener, "fixture-owner-epoch").await;
         let PeerRequest::PrepareTransfer {
@@ -11729,4 +11767,420 @@ async fn v1_receiver_cannot_request_source_finalization() {
             .is_err(),
         "legacy receiver reached source finalization"
     );
+}
+
+/// Both transfer initiation paths must negotiate before allocating anything.
+/// This peer speaks the deployed pre-V2 grammar: the epoch probe works but the
+/// new authenticated operation is an explicit unknown-variant response.
+#[tokio::test]
+async fn transfer_protocol_legacy_peer_refuses_push_and_pull_before_reservation() {
+    let temp = tempfile::tempdir().unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let runtime = runtime_with_trusted_hostile_peer(temp.path(), &listener).await;
+    let legacy = tokio::spawn(async move {
+        for _ in 0..4 {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut reader = BufReader::new(stream);
+            let mut line = String::new();
+            reader.read_line(&mut line).await.unwrap();
+            let request: serde_json::Value = serde_json::from_str(&line).unwrap();
+            let response = match request["type"].as_str().unwrap() {
+                "get_authenticated_request_epoch" => {
+                    json!({ "type": "authenticated_request_epoch", "request_id": request["request_id"], "epoch": "legacy-epoch" })
+                }
+                "transfer_protocol" => {
+                    json!({ "type": "error", "request_id": request["request_id"], "message": "unknown variant `transfer_protocol`, expected `finalize_transfer`" })
+                }
+                other => panic!("legacy peer received stateful request {other}"),
+            };
+            reader
+                .get_mut()
+                .write_all(format!("{response}\n").as_bytes())
+                .await
+                .unwrap();
+        }
+    });
+    tokio::time::timeout(EVENTUAL_PROGRESS_GUARD, async {
+        let push = runtime
+            .prepare_transfer_preflight("peer-hostile", "task-safe")
+            .await
+            .unwrap_err();
+        let pull = runtime
+            .request_task_pull("peer-hostile", "task-safe", TransferTransport::Auto)
+            .await
+            .unwrap_err();
+        for error in [push, pull] {
+            assert!(
+                error.to_string().contains("incompatible-transfer-version:"),
+                "{error}"
+            );
+            assert!(error.to_string().contains("upgrade"), "{error}");
+        }
+        legacy.await.unwrap();
+    })
+    .await
+    .expect("legacy protocol refusal must not wait for finalization or retry backoff");
+    assert_no_transfer_reservations(temp.path());
+    drop(runtime);
+}
+
+#[tokio::test]
+async fn transfer_protocol_live_old_server_is_refused_even_with_new_sidecars() {
+    let temp = tempfile::tempdir().unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let old_server = tokio::spawn(async move {
+        for _ in 0..4 {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut bytes = [0; 4096];
+            let n = stream.read(&mut bytes).await.unwrap();
+            assert!(
+                String::from_utf8_lossy(&bytes[..n]).starts_with("POST /v1/transfers/protocol ")
+            );
+            stream
+                .write_all(
+                    b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                )
+                .await
+                .unwrap();
+        }
+    });
+    let source = TransferRuntime::spawn(RuntimeConfig::for_tests(
+        "peer-source",
+        "same-version",
+        temp.path(),
+        0,
+    ))
+    .await
+    .unwrap();
+    let dest = TransferRuntime::spawn(
+        RuntimeConfig::for_tests("peer-destination", "same-version", temp.path(), 0)
+            .with_kanna_server_port(port),
+    )
+    .await
+    .unwrap();
+    pair_peers(&source, &dest, "peer-destination").await;
+    tokio::time::timeout(EVENTUAL_PROGRESS_GUARD, async {
+        for (sender, peer) in [(&source, "peer-destination"), (&dest, "peer-source")] {
+            let push = sender
+                .prepare_transfer_preflight(peer, "task-safe")
+                .await
+                .unwrap_err();
+            let pull = sender
+                .request_task_pull(peer, "task-safe", TransferTransport::Auto)
+                .await
+                .unwrap_err();
+            for error in [push, pull] {
+                assert!(
+                    error.to_string().contains("incompatible-transfer-version:"),
+                    "{error}"
+                );
+            }
+        }
+        old_server.await.unwrap();
+    })
+    .await
+    .expect("server capability refusal must be bounded");
+    // No source reservation can have been made: neither side received a
+    // PrepareTransfer request. Probe the persisted per-peer registry trees too.
+    assert_no_transfer_reservations(temp.path());
+    drop(source);
+    drop(dest);
+}
+
+#[tokio::test]
+async fn transfer_protocol_old_initiator_is_refused_before_incoming_or_pull_event() {
+    let temp = tempfile::tempdir().unwrap();
+    let source = TransferRuntime::spawn(RuntimeConfig::for_tests(
+        "peer-source",
+        "Source",
+        temp.path(),
+        0,
+    ))
+    .await
+    .unwrap();
+    let destination = TransferRuntime::spawn(RuntimeConfig::for_tests(
+        "peer-destination",
+        "Destination",
+        temp.path(),
+        0,
+    ))
+    .await
+    .unwrap();
+    pair_peers(&source, &destination, "peer-destination").await;
+    let endpoint = runtime_endpoint(temp.path(), "peer-destination");
+    let epoch = authenticated_request_epoch(&endpoint).await;
+    for (action, identity_field) in [
+        ("prepare_transfer", "source_peer_id"),
+        ("request_task_pull", "requester_peer_id"),
+    ] {
+        let request_id = format!("legacy-{action}");
+        let sealed = seal_json(&stored_runtime_identity(temp.path(), "peer-source"), &parse_public_key(&destination.local_identity().public_key).unwrap(), &json!({
+            "action": action, "request_id": request_id, "owner_epoch": epoch,
+            "issued_at_unix_ms": SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as u64,
+            identity_field: "peer-source", "source_task_id": "task-safe", "reserved_target_peer_id": "peer-destination",
+        })).unwrap();
+        let reply = send_raw_peer_value(&endpoint, &json!({"type": action, "request_id": request_id, identity_field: "peer-source", "sealed_payload": sealed})).await;
+        assert!(
+            matches!(reply, PeerResponse::Error { ref message, .. } if message.contains("incompatible-transfer-version:")),
+            "{reply:?}"
+        );
+    }
+    drop(source);
+    drop(destination);
+}
+
+fn assert_no_transfer_reservations(root: &Path) {
+    fn walk(path: &Path) {
+        if !path.is_dir() {
+            return;
+        }
+        for entry in std::fs::read_dir(path).unwrap() {
+            let path = entry.unwrap().path();
+            if path
+                .file_name()
+                .is_some_and(|name| name == "reservations" || name == "incoming-reservations")
+            {
+                assert_eq!(
+                    std::fs::read_dir(&path).unwrap().count(),
+                    0,
+                    "unexpected reservation in {}",
+                    path.display()
+                );
+            }
+            if path.is_dir() {
+                walk(&path);
+            }
+        }
+    }
+    walk(root);
+}
+
+#[tokio::test]
+async fn transfer_protocol_refusal_lost_ack_retries_cleanup_and_allows_fresh_pull() {
+    let temp = tempfile::tempdir().unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let decisions = std::sync::Arc::new(AtomicU64::new(0));
+    let observed = decisions.clone();
+    let ack_delayed = std::sync::Arc::new(tokio::sync::Notify::new());
+    let release_ack = std::sync::Arc::new(tokio::sync::Notify::new());
+    let server_ack_delayed = ack_delayed.clone();
+    let server_release_ack = release_ack.clone();
+    let server = tokio::spawn(async move {
+        let mut replies = tokio::task::JoinSet::new();
+        loop {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut reader = BufReader::new(stream);
+            let mut length = 0;
+            loop {
+                let mut line = String::new();
+                reader.read_line(&mut line).await.unwrap();
+                if line == "\r\n" {
+                    break;
+                }
+                if let Some(value) = line.to_lowercase().strip_prefix("content-length:") {
+                    length = value.trim().parse::<usize>().unwrap();
+                }
+            }
+            let mut body = vec![0; length];
+            reader.read_exact(&mut body).await.unwrap();
+            let request: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            let mut delay_ack = false;
+            if request["operation"] == "refused" {
+                assert_eq!(request["requester_peer_id"], "peer-destination");
+                assert_eq!(request["source_task_id"], "task-safe");
+                // Simulate a durable source decision whose first HTTP ACK is
+                // lost. Retrying must still reach this idempotent boundary.
+                match observed.fetch_add(1, Ordering::SeqCst) {
+                    0 => continue,
+                    1 => delay_ack = true,
+                    _ => {}
+                }
+            }
+            let body = json!({ "transfer_protocol": "transfer-v2-reconciliation-v1" }).to_string();
+            let ack_delayed = server_ack_delayed.clone();
+            let release_ack = server_release_ack.clone();
+            replies.spawn(async move {
+                if delay_ack {
+                    ack_delayed.notify_one();
+                    release_ack.notified().await;
+                }
+                reader
+                    .get_mut()
+                    .write_all(
+                        format!(
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    )
+                        .as_bytes(),
+                    )
+                    .await
+                    .unwrap();
+            });
+            while let Some(result) = replies.try_join_next() {
+                result.unwrap();
+            }
+        }
+    });
+    let source = TransferRuntime::spawn(
+        RuntimeConfig::for_tests("peer-source", "Source", temp.path(), 0)
+            .with_kanna_server_port(port),
+    )
+    .await
+    .unwrap();
+    let dest = TransferRuntime::spawn(RuntimeConfig::for_tests(
+        "peer-destination",
+        "Destination",
+        temp.path(),
+        0,
+    ))
+    .await
+    .unwrap();
+    pair_peers(&source, &dest, "peer-destination").await;
+    consume_pairing_completed(&dest).await;
+    tokio::time::timeout(EVENTUAL_PROGRESS_GUARD, async {
+        let old_pull = dest
+            .request_task_pull("peer-source", "task-safe", TransferTransport::Auto)
+            .await
+            .unwrap();
+        let RuntimeEvent::TaskPullRequested(event) = source.next_event().await.unwrap() else {
+            panic!("expected original pull request");
+        };
+        assert_eq!(event.request_id, old_pull);
+        let preflight = source
+            .prepare_transfer_preflight("peer-destination", "task-safe")
+            .await
+            .unwrap();
+        let owned = temp.path().join("artifact");
+        std::fs::write(&owned, "disposable transfer copy").unwrap();
+        source
+            .stage_transfer_artifact(&preflight.transfer_id, "fixture", owned, true)
+            .await
+            .unwrap();
+        assert!(dest
+            .notify_transfer_refused(
+                &preflight.transfer_id,
+                "peer-source",
+                "task-safe",
+                "Rejected locally"
+            )
+            .await
+            .is_err());
+        assert_eq!(decisions.load(Ordering::SeqCst), 1);
+        // Hold an older HTTP ACK while another retry finishes cleanup and
+        // admits B. Releasing that ACK must not let A clean up B afterward.
+        let delayed_refusal = dest.notify_transfer_refused(
+            &preflight.transfer_id,
+            "peer-source",
+            "task-safe",
+            "Rejected locally",
+        );
+        let (delayed_result, fresh_pull) = tokio::join!(delayed_refusal, async {
+            ack_delayed.notified().await;
+            dest.notify_transfer_refused(
+                &preflight.transfer_id,
+                "peer-source",
+                "task-safe",
+                "Rejected locally",
+            )
+            .await
+            .unwrap();
+            dest.mark_import_ack_completed(&preflight.transfer_id)
+                .await
+                .unwrap();
+            assert!(source
+                .prepare_transfer_commit(&preflight.transfer_id, json!({}))
+                .await
+                .is_err());
+            let fresh_pull = dest
+                .request_task_pull("peer-source", "task-safe", TransferTransport::Auto)
+                .await
+                .unwrap();
+            assert_ne!(fresh_pull, old_pull);
+            let RuntimeEvent::TaskPullRequested(event) = source.next_event().await.unwrap() else {
+                panic!("expected fresh pull request");
+            };
+            assert_eq!(event.request_id, fresh_pull);
+            release_ack.notify_one();
+            fresh_pull
+        });
+        delayed_result.unwrap();
+        // A replay still succeeds after the source's reservation is gone.
+        dest.notify_transfer_refused(
+            &preflight.transfer_id,
+            "peer-source",
+            "task-safe",
+            "Rejected locally",
+        )
+        .await
+        .unwrap();
+        let repeated_pull = dest
+            .request_task_pull("peer-source", "task-safe", TransferTransport::Auto)
+            .await
+            .unwrap();
+        assert_eq!(
+            repeated_pull, fresh_pull,
+            "old refusal must preserve fresh pull identity"
+        );
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), source.next_event())
+                .await
+                .is_err(),
+            "old refusal replay caused a duplicate TaskPullRequested"
+        );
+        assert!(source
+            .prepare_transfer_commit(&preflight.transfer_id, json!({}))
+            .await
+            .is_err());
+        let fresh = source
+            .prepare_transfer_preflight("peer-destination", "task-safe")
+            .await
+            .unwrap();
+        assert_ne!(fresh.transfer_id, preflight.transfer_id);
+        source
+            .abandon_outgoing_transfer(&fresh.transfer_id)
+            .await
+            .unwrap();
+        assert_no_transfer_reservations(temp.path());
+    })
+    .await
+    .expect("refusal reconciliation must not wait for TTL or retry backoff");
+    drop(source);
+    drop(dest);
+    server.abort();
+    let _ = server.await;
+}
+
+async fn answer_transfer_protocol(
+    listener: &TcpListener,
+    identity: &TransferIdentity,
+    root: &Path,
+) {
+    let (mut reader, request) = accept_authenticated_request(listener, "fixture-owner-epoch").await;
+    let PeerRequest::TransferProtocol {
+        request_id,
+        requester_peer_id,
+        sealed_payload,
+    } = request
+    else {
+        panic!("expected capability negotiation")
+    };
+    let requester = stored_runtime_identity(root, &requester_peer_id);
+    let request = open_json(identity, &requester.public_key, &sealed_payload).unwrap();
+    assert_eq!(request["operation"], "capabilities");
+    let sealed_payload = seal_json(
+        identity,
+        &requester.public_key,
+        &json!({ "request_id": request_id, "transfer_protocol": "transfer-v2-reconciliation-v1" }),
+    )
+    .unwrap();
+    write_peer_response(
+        reader.get_mut(),
+        &PeerResponse::TransferProtocol {
+            request_id,
+            sealed_payload,
+        },
+    )
+    .await;
 }

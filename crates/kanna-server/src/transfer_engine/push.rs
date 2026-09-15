@@ -194,7 +194,7 @@ pub async fn push_task(
     work: &crate::db::TransferWorkItem,
     request: &Value,
 ) -> Result<(), String> {
-    match run_push(state, request).await {
+    match run_push(state, work, request).await {
         Ok(()) => Ok(()),
         Err(Ok(reason)) => Err(reason),
         Err(Err(TerminalPush(reason))) => {
@@ -294,7 +294,11 @@ pub(super) async fn report_refusal_to_requester(
 }
 
 /// `Err(Ok(_))` is retriable; `Err(Err(_))` is terminal.
-async fn run_push(state: &Arc<AppState>, work: &Value) -> Result<(), Result<String, TerminalPush>> {
+async fn run_push(
+    state: &Arc<AppState>,
+    item: &TransferWorkItem,
+    work: &Value,
+) -> Result<(), Result<String, TerminalPush>> {
     let retriable = Ok::<String, TerminalPush>;
     let peer_id = string_field(work, "requester_peer_id")
         .or_else(|| string_field(work, "peerId"))
@@ -310,6 +314,15 @@ async fn run_push(state: &Arc<AppState>, work: &Value) -> Result<(), Result<Stri
     let target_desktop_id = string_field(work, "targetDesktopId");
 
     let db = state.transfer_work().open_db().map_err(retriable)?;
+    if let Some(id) = item.transfer_id.as_deref() {
+        if db
+            .get_task_transfer(id)
+            .map_err(|e| retriable(e.to_string()))?
+            .is_some_and(|t| matches!(t.status.as_str(), "completed" | "failed" | "rejected"))
+        {
+            return Ok(());
+        }
+    }
     let Some(source) = SourceTask::load(&db, &source_task_id).map_err(retriable)? else {
         return Err(retriable(format!("task not found: {source_task_id}")));
     };
@@ -379,6 +392,12 @@ async fn run_push(state: &Arc<AppState>, work: &Value) -> Result<(), Result<Stri
                 )));
             }
         };
+        if !db
+            .bind_transfer_work(&item.id, &existing.id)
+            .map_err(|e| retriable(e.to_string()))?
+        {
+            return Ok(());
+        }
         drop(db);
         let outcome = control::commit(state, &existing.id, &payload).await;
         return settle_commit_outcome(state, &existing.id, outcome).await;
@@ -415,7 +434,13 @@ async fn run_push(state: &Arc<AppState>, work: &Value) -> Result<(), Result<Stri
         cloud_fallback,
     )
     .await
-    .map_err(retriable)?;
+    .map_err(|reason| {
+        if reason.contains("incompatible-transfer-version:") {
+            Err(TerminalPush(reason))
+        } else {
+            retriable(reason)
+        }
+    })?;
 
     // Everything below owns durable sidecar state. A failure past this point
     // releases it rather than leaving a reservation and staged files behind.
@@ -429,6 +454,7 @@ async fn run_push(state: &Arc<AppState>, work: &Value) -> Result<(), Result<Stri
     drop(db);
     let result = stage_and_commit(
         state,
+        &item.id,
         &preflight,
         &source,
         &repo,
@@ -509,6 +535,7 @@ async fn release_reservation(state: &Arc<AppState>, transfer_id: &str) {
 #[allow(clippy::too_many_arguments)]
 async fn stage_and_commit(
     state: &Arc<AppState>,
+    work_id: &str,
     preflight: &control::PreflightResult,
     source: &SourceTask,
     repo: &crate::db::Repo,
@@ -591,6 +618,17 @@ async fn stage_and_commit(
         Err(error) => return Err(format!("db error: {error}")),
     }
 
+    if !db
+        .bind_transfer_work(work_id, transfer_id)
+        .map_err(|error| format!("db error: {error}"))?
+    {
+        // The intent was cancelled while artifacts were prepared. The peer
+        // still only has an uncommitted preflight; the caller releases it.
+        let reason = "transfer intent ended before payload submission";
+        db.fail_outgoing_task_transfer(transfer_id, reason)
+            .map_err(|error| error.to_string())?;
+        return Err(reason.into());
+    }
     Ok(control::commit(state, transfer_id, &encoded).await)
 }
 

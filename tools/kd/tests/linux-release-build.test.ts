@@ -1,11 +1,11 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   assembleLinuxPackage,
-  buildLinuxBinariesCommands,
-  stageLinuxPackageBinaries,
+  buildLinuxPackageFromBazel,
 } from "../src/runtime/linux-release-build";
 import { INSTALLED_EXECUTABLES } from "../src/runtime/linux-package";
 import type { CommandRunner } from "../src/runtime/process";
@@ -22,36 +22,84 @@ afterEach(() => {
   while (temporaries.length > 0) rmSync(temporaries.pop() as string, { recursive: true, force: true });
 });
 
-describe("buildLinuxBinariesCommands", () => {
-  /**
-   * The ordering defect this test exists for: `tauri-codegen` reads
-   * `frontendDist` at compile time and panics when `apps/desktop/dist` is
-   * absent — which it is on every fresh checkout and on both CI runners. A
-   * command list that built the desktop crate without building the frontend
-   * first could never produce a package, and nothing else would say so until a
-   * CI job failed inside cargo.
-   */
-  it("builds the frontend before the desktop crate", () => {
-    const commands = buildLinuxBinariesCommands("x86_64");
-    const frontend = commands.findIndex(
-      ([command, args]) => command === "pnpm" && args.join(" ") === "--dir apps/desktop build"
-    );
-    const desktop = commands.findIndex(([command, args]) => command === "cargo" && args.includes("kanna-desktop"));
-    expect(frontend, "the frontend build is missing from the command list").toBeGreaterThanOrEqual(0);
-    expect(desktop).toBeGreaterThanOrEqual(0);
-    expect(frontend).toBeLessThan(desktop);
+describe("buildLinuxPackageFromBazel", () => {
+  function fixture() {
+    const dir = scratch();
+    writeFileSync(join(dir, "VERSION"), "1.2.3\n");
+    mkdirSync(join(dir, "bazel-out"));
+    writeFileSync(join(dir, "bazel-out/product.deb"), "declared package");
+    const sha256 = createHash("sha256").update("declared package").digest("hex");
+    const report = { builder: "bazel", version: "1.2.3", debianVersion: "1.2.3~staging.4-1", channel: "staging", architecture: "arm64", sha256,
+      depends: ["libc6 (>= 2.39)"], audit: { findings: [], requiredPackages: ["libc6"], conditionalUses: [] } };
+    writeFileSync(join(dir, "bazel-out/product.json"), JSON.stringify(report));
+    const calls: string[][] = [];
+    const runner: CommandRunner = { run: async (command, args) => {
+      calls.push([command, ...args]);
+      return { exitCode: 0, stderr: "", stdout: args[0] === "cquery" ? "bazel-out/product.deb\nbazel-out/product.json\n" : "" };
+    } };
+    const input = { repoRoot: dir, channel: "staging" as const, architecture: "arm64" as const,
+      version: "1.2.3", stagingIteration: 4, outputDir: join(dir, "out"), env: {}, runner };
+    return { input, calls, report };
+  }
+
+  it("collects the selected declared package and preserves its audit", async () => {
+    const { input, calls } = fixture();
+    const result = await buildLinuxPackageFromBazel(input);
+    expect(calls[0]).toEqual(["bazel", "build", "-c", "opt", "--//packaging/linux:staging_iteration=4", "//packaging/linux:deb_staging_arm64"]);
+    expect(calls[1]).toContain("--output=files");
+    expect(readFileSync(result.debPath, "utf8")).toBe("declared package");
+    expect(readFileSync(`${result.debPath}.json`, "utf8")).toContain('"builder":"bazel"');
+    expect(result.auditOverridden).toBe(false);
   });
 
-  it("builds every packaged executable for the requested target", () => {
-    const commands = buildLinuxBinariesCommands("arm64");
-    const cargo = commands.filter(([command]) => command === "cargo");
-    expect(cargo.every(([, args]) => args.includes("aarch64-unknown-linux-gnu"))).toBe(true);
-    expect(cargo.every(([, args]) => args.includes("--release"))).toBe(true);
-    const built = cargo.flatMap(([, args]) => args).join(" ");
-    for (const crate of ["kanna-worker", "kanna-daemon", "kanna-cli", "kanna-mcp", "kanna-server", "kanna-task-transfer"]) {
-      expect(built, `${crate} is never built`).toContain(crate);
-    }
-    expect(built).toContain("packages/terminal-recovery/Cargo.toml");
+  it("can repeatedly collect read-only Bazel outputs and replace older read-only copies", async () => {
+    const { input } = fixture();
+    chmodSync(join(input.repoRoot, "bazel-out/product.deb"), 0o444);
+    chmodSync(join(input.repoRoot, "bazel-out/product.json"), 0o444);
+    const first = await buildLinuxPackageFromBazel(input);
+    chmodSync(first.debPath, 0o444);
+    chmodSync(`${first.debPath}.json`, 0o444);
+    const second = await buildLinuxPackageFromBazel({ ...input, skipBuild: true });
+    expect(readFileSync(second.debPath, "utf8")).toBe("declared package");
+    expect(second.sha256).toBe(first.sha256);
+  });
+
+  it("requires Bazel freshness even when compilation is skipped", async () => {
+    const { input, calls } = fixture();
+    await buildLinuxPackageFromBazel({ ...input, skipBuild: true });
+    expect(calls[0]).toContain("--check_up_to_date");
+    expect(calls.every(call => call[0] === "bazel")).toBe(true);
+  });
+
+  it("refuses relabelled versions and overridden audits before building", async () => {
+    const { input, calls } = fixture();
+    await expect(buildLinuxPackageFromBazel({ ...input, version: "9.9.9" })).rejects.toThrow(/match VERSION/);
+    await expect(buildLinuxPackageFromBazel({ ...input, allowAuditFindings: true })).rejects.toThrow(/clean audit/);
+    expect(calls).toEqual([]);
+  });
+
+  it("rejects a package whose bytes differ from the declared audit", async () => {
+    const { input } = fixture();
+    writeFileSync(join(input.repoRoot, "bazel-out/product.deb"), "different");
+    await expect(buildLinuxPackageFromBazel(input)).rejects.toThrow(/does not match/);
+  });
+
+  it("binds release collection to declared build revision/tree stamps", async () => {
+    const { input, report, calls } = fixture();
+    const source = { revision: "a".repeat(40), tree: "b".repeat(40) };
+    await expect(buildLinuxPackageFromBazel({ ...input, source })).rejects.toThrow(/does not match/);
+    writeFileSync(join(input.repoRoot, "bazel-out/product.json"), JSON.stringify({ ...report, buildRevision: source.revision, buildTree: source.tree }));
+    await buildLinuxPackageFromBazel({ ...input, source });
+    expect(calls[0]).toContain(`--define=KANNA_LINUX_BUILD_REVISION=${source.revision}`);
+    expect(calls[0]).toContain(`--define=KANNA_LINUX_BUILD_TREE=${source.tree}`);
+  });
+
+  it("never falls back to Cargo or a stale artifact after a build fails", async () => {
+    const { input, calls } = fixture();
+    input.runner.run = async (command, args) => { calls.push([command, ...args]); return { exitCode: 1, stdout: "", stderr: "missing target" }; };
+    await expect(buildLinuxPackageFromBazel(input)).rejects.toThrow(/missing target/);
+    expect(calls).toHaveLength(1);
+    expect(calls[0][0]).toBe("bazel");
   });
 });
 
@@ -198,14 +246,5 @@ Version needs section '.gnu.version_r' contains 1 entries:
     const { input } = fixture(CLEAN_READELF);
     rmSync(join(input.binariesDir as string, "kanna-worker"));
     await expect(assembleLinuxPackage(input)).rejects.toThrow(/kanna-worker is not staged/);
-  });
-});
-
-describe("stageLinuxPackageBinaries", () => {
-  it("names a missing build output rather than packaging around it", () => {
-    const dir = scratch();
-    expect(() =>
-      stageLinuxPackageBinaries({ repoRoot: dir, architecture: "x86_64", destination: join(dir, "staged") })
-    ).toThrow(/was not built for x86_64-unknown-linux-gnu/);
   });
 });

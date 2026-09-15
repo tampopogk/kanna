@@ -85,7 +85,8 @@ import {
   TASK_COMPOSER_TEXT_INPUT_PROPS
 } from "./taskComposerInput";
 import {
-  getComposerBottomOffset,
+  getTaskComposerBottomOffset,
+  getTaskKeyboardOccludedHeight,
   taskKeyboardEventNames
 } from "./taskComposerKeyboard";
 import { QuickReplySendControl } from "./QuickReplySendControl";
@@ -362,6 +363,8 @@ export function TaskScreen({
     companionLifecycleRef.current.onOpenChange = onCompanionOpenChange;
   }
   const { height: windowHeight, width: windowWidth } = useWindowDimensions();
+  const windowHeightRef = useRef(windowHeight);
+  windowHeightRef.current = windowHeight;
   const isAgentTask = task.agentType === "agent";
   const isBlocked = isTaskBlocked(task);
   // Callers pass resolved blocker summaries; fall back to bare ids so the
@@ -829,7 +832,13 @@ export function TaskScreen({
   useEffect(() => {
     const keyboardEvents = taskKeyboardEventNames(Platform.OS);
     const showSubscription = Keyboard.addListener(keyboardEvents.show, (event) => {
-      setKeyboardHeight(event.endCoordinates.height);
+      setKeyboardHeight(
+        getTaskKeyboardOccludedHeight(
+          event.endCoordinates,
+          Platform.OS,
+          windowHeightRef.current
+        )
+      );
     });
     const hideSubscription = Keyboard.addListener(keyboardEvents.hide, () => {
       setKeyboardHeight(0);
@@ -1251,10 +1260,13 @@ export function TaskScreen({
         }}
         style={[
           styles.bottomChrome,
-          { bottom: Math.max(
-            getComposerBottomOffset(keyboardHeight),
-            getComposerBottomOffset(0) + (Platform.OS === "android" ? insets.bottom : 0)
-          ) }
+          {
+            bottom: getTaskComposerBottomOffset(
+              keyboardHeight,
+              Platform.OS,
+              insets.bottom
+            )
+          }
         ]}
       >
         {activeInputFailure ? (

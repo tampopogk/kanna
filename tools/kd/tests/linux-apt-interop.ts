@@ -9,7 +9,8 @@ import { createServer } from "node:http";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import * as pgp from "openpgp";
-import { publishAptArchive, type AptPublicationStorage } from "../src/runtime/linux-apt-publication";
+import { FilesystemAptStorage } from "../src/runtime/linux-apt-storage";
+import { publishAptArchive } from "../src/runtime/linux-apt-publication";
 import type * as SignatureAdapter from "../src/runtime/linux-apt-signature";
 
 const prepareOnly = process.argv.includes("--prepare-only");
@@ -56,14 +57,22 @@ try {
   for (const [name, age] of [["valid", 0], ["expired", 3 * 86400_000]] as const) {
     const date = new Date(now.getTime() - age);
     const objects = new Map<string, Uint8Array>();
-    const storage: AptPublicationStorage = {
-      withExclusivePublication: (work) => work(),
-      read: async (path) => objects.get(path) ?? null,
-      create: async (path, bytes) => { if (objects.has(path)) return false; objects.set(path, Uint8Array.from(bytes)); return true; },
-      replace: async (path, bytes) => { objects.set(path, Uint8Array.from(bytes)); },
-    };
+    const archiveRoot = join(root, `${name}-archive`);
+    await mkdir(archiveRoot);
+    const storage = new FilesystemAptStorage(archiveRoot);
     const signer = await adapter.createAptPublicationSigner({ ...keys, now: () => date });
     await publishAptArchive({ channel: "desktop-linux-staging", date, validForHours: 24, artifacts }, storage, signer);
+    // Serve only bytes read back from the concrete filesystem adapter.
+    const { readdir } = await import("node:fs/promises");
+    async function collect(relative = ""): Promise<void> {
+      for (const entry of await readdir(join(archiveRoot, relative), { withFileTypes: true })) {
+        if (entry.name.startsWith(".")) continue;
+        const path = relative ? `${relative}/${entry.name}` : entry.name;
+        if (entry.isDirectory()) await collect(path);
+        else objects.set(path, (await storage.read(path))!);
+      }
+    }
+    await collect();
     const signedRelease = objects.get("dists/staging/InRelease")!;
     const expectedRelease = objects.get("dists/staging/Release")!;
     const verified = adapter.verifyAptRelease({ ...keys, signedRelease, expectedRelease, now });

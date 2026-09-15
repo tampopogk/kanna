@@ -32,7 +32,7 @@ export function targetNeedsRelayControl(testTarget: string): boolean {
 }
 
 export function targetNeedsIsolatedAgentProviders(testTarget: string): boolean {
-  return /real\/terminal-viewer-gestures\.test\.ts$/.test(testTarget) ||
+  return /real\/terminal-(?:viewer-gestures|stage-geometry)\.test\.ts$/.test(testTarget) ||
     /mock\/new-task-modal\.test\.ts$/.test(testTarget) ||
     /real\/remote-(?:visual-companion|active-view-restoration|task-graph-refusal)\.test\.ts$/.test(testTarget);
 }
@@ -47,7 +47,7 @@ export function targetNeedsPlaywrightChromium(testTarget: string): boolean {
  * non-activating app policy; other E2E targets remain non-activating.
  */
 export function targetRequiresForegroundActivation(testTarget: string): boolean {
-  return /real\/remote-active-view-restoration\.test\.ts$/.test(testTarget);
+  return /real\/(?:remote-active-view-restoration|terminal-stage-geometry)\.test\.ts$/.test(testTarget);
 }
 
 export function relayStartupReportedListening(

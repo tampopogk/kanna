@@ -8,11 +8,11 @@
  * happened to have it cannot become a silent runtime requirement — it fails
  * the audit instead.
  *
- * Everything that needs a Debian host (`readelf`, `dpkg-deb`) goes through the
- * injected runner, so the orchestration is testable anywhere.
+ * The canonical path consumes audited Bazel outputs on supported build hosts.
+ * The historical direct assembler remains an explicitly marked prototype.
  */
 
-import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { join } from "node:path";
 import type { CommandRunner } from "./process";
@@ -21,9 +21,9 @@ import {
   buildDebCommand,
   channelIdentity,
   debFileName,
+  debianVersion,
   debianArchitecture,
   packageLayout,
-  rustTripleFor,
   stageLinuxPackageTree,
   type LinuxArchitecture,
   type LinuxChannel,
@@ -44,8 +44,7 @@ export interface LinuxPackageBuildInput {
   architecture: LinuxArchitecture;
   version: string;
   stagingIteration?: number;
-  /** Where the built executables already are. Defaults to the staging
-   *  directory `buildLinuxBinariesCommands` writes into. */
+  /** Historical prototype input directory; unused by the Bazel path. */
   binariesDir?: string;
   outputDir: string;
   env: NodeJS.ProcessEnv;
@@ -56,6 +55,7 @@ export interface LinuxPackageBuildInput {
 }
 
 export interface LinuxPackageBuildResult {
+  builder: "bazel" | "prototype";
   debPath: string;
   sha256: string;
   depends: string[];
@@ -70,71 +70,64 @@ export function linuxPackageStagingDir(repoRoot: string, architecture: LinuxArch
   return join(repoRoot, ".build", "linux-package", architecture);
 }
 
-/**
- * The commands that produce the eight executables for one architecture.
- *
- * `kanna-worker` is built here alongside the six sidecars because it is
- * Kanna-owned: a package that expected the user to have one would not be an
- * installable product.
- *
- * The desktop binary comes last, and the **frontend build has to come before
- * it**. `tauri-codegen` reads `frontendDist` at compile time and panics —
- * "this path doesn't exist" — when `apps/desktop/dist` is absent, which it is
- * on every fresh checkout and on both CI runners. The repo's own Rust lane
- * orders it the same way for the same reason
- * (`rust-test.ts`'s `frontend` step).
- */
-export function buildLinuxBinariesCommands(architecture: LinuxArchitecture): Array<[string, string[]]> {
-  const target = rustTripleFor(architecture);
-  return [
-    [
-      "cargo",
-      [
-        "build", "--release", "--target", target,
-        "-p", "kanna-worker",
-        "-p", "kanna-daemon",
-        "-p", "kanna-cli",
-        "-p", "kanna-mcp",
-        "-p", "kanna-server",
-        "-p", "kanna-task-transfer",
-      ],
-    ],
-    ["cargo", ["build", "--release", "--target", target, "--manifest-path", "packages/terminal-recovery/Cargo.toml"]],
-    ["pnpm", ["--dir", "apps/desktop", "build"]],
-    ["cargo", ["build", "--release", "--target", target, "-p", "kanna-desktop"]],
-  ];
-}
-
-/**
- * Collect the built executables into one directory under their *installed*
- * names.
- *
- * Cargo scatters them across per-manifest target directories and calls the
- * desktop one `kanna-desktop` already; the package wants all eight side by
- * side. Doing the rename here rather than at package time means the staging
- * directory is exactly what gets installed, so an audit of it is an audit of
- * the product.
- */
-export function stageLinuxPackageBinaries(input: {
-  repoRoot: string;
-  architecture: LinuxArchitecture;
-  /** `.build` by default — the repo's artifact directory. */
-  buildDir?: string;
-  destination?: string;
-}): string {
-  const target = rustTripleFor(input.architecture);
-  const releaseDir = join(input.repoRoot, input.buildDir ?? ".build", target, "release");
-  const destination = input.destination ?? linuxPackageStagingDir(input.repoRoot, input.architecture);
-  mkdirSync(destination, { recursive: true });
-  for (const name of INSTALLED_EXECUTABLES) {
-    const source = join(releaseDir, name);
-    if (!existsSync(source)) {
-      throw new Error(`${name} was not built for ${target}: expected ${source}.`);
-    }
-    copyFileSync(source, join(destination, name));
-    chmodSync(join(destination, name), 0o755);
+/** Build and collect only declared Bazel package outputs. A skip is a Bazel
+ * up-to-date check, so an old Cargo staging directory can never satisfy it. */
+export async function buildLinuxPackageFromBazel(input: Omit<LinuxPackageBuildInput, "binariesDir"> & {
+  skipBuild?: boolean;
+  source?: { revision: string; tree: string };
+  stagingIteration?: number;
+}): Promise<LinuxPackageBuildResult> {
+  if (input.allowAuditFindings) throw new Error("Bazel Linux packages require a clean audit; overrides are not supported.");
+  const sourceVersion = readFileSync(join(input.repoRoot, "VERSION"), "utf8").trim();
+  if (input.version !== sourceVersion) throw new Error(`Package version must match VERSION (${sourceVersion}); stamp the source before building.`);
+  const iteration = input.channel === "staging" ? (input.stagingIteration ?? 1) : input.stagingIteration;
+  const expectedVersion = debianVersion(input.version, input.channel, iteration);
+  const label = `//packaging/linux:deb_${input.channel}_${input.architecture}`;
+  if (input.source && ![input.source.revision, input.source.tree].every(value => /^[a-f0-9]{40}$/.test(value))) throw new Error("Invalid Linux build stamp.");
+  const options = ["-c", "opt", `--//packaging/linux:staging_iteration=${iteration ?? 1}`,
+    ...(input.source ? [`--define=KANNA_LINUX_BUILD_REVISION=${input.source.revision}`, `--define=KANNA_LINUX_BUILD_TREE=${input.source.tree}`] : [])];
+  const run = async (args: string[], streamOutput = false) => {
+    const result = await input.runner.run("bazel", args, { cwd: input.repoRoot, env: input.env, streamOutput });
+    if (result.exitCode !== 0) throw new Error(`Bazel Linux package failed: ${result.stderr || result.stdout}`);
+    return result.stdout;
+  };
+  await run(["build", ...options, ...(input.skipBuild ? ["--check_up_to_date"] : []), label], true);
+  const outputs = (await run(["cquery", ...options, "--output=files", label])).trim().split(/\r?\n/);
+  const one = (suffix: string) => {
+    const matches = outputs.filter(p => p.endsWith(suffix));
+    if (matches.length !== 1) throw new Error(`Expected one declared ${suffix} output for ${label}.`);
+    return join(input.repoRoot, matches[0]);
+  };
+  const builtDeb = one(".deb");
+  const reportPath = one(".json");
+  const report = JSON.parse(readFileSync(reportPath, "utf8")) as {
+    builder: string; buildRevision?: string; buildTree?: string; version: string; channel: string; architecture: string; debianVersion: string;
+    sha256: string; depends: string[]; audit: AuditResult;
+  };
+  const sha256 = createHash("sha256").update(readFileSync(builtDeb)).digest("hex");
+  if ((input.source && (report.buildRevision !== input.source.revision || report.buildTree !== input.source.tree)) || report.builder !== "bazel" || report.version !== sourceVersion || report.channel !== input.channel ||
+      report.architecture !== input.architecture ||
+      report.debianVersion !== expectedVersion ||
+      report.sha256 !== sha256 || report.audit.findings.length) {
+    throw new Error("Declared Linux package output does not match its audit report.");
   }
-  return destination;
+  mkdirSync(input.outputDir, { recursive: true });
+  const debPath = join(input.outputDir, debFileName({ ...input, stagingIteration: iteration }));
+  // Bazel outputs are read-only. Replace collected files atomically rather
+  // than overwriting a previous copy that inherited that mode.
+  const collection = mkdtempSync(join(input.outputDir, ".collect-"));
+  try {
+    for (const [source, destination] of [[builtDeb, debPath], [reportPath, `${debPath}.json`]]) {
+      const staged = join(collection, "output");
+      copyFileSync(source, staged);
+      chmodSync(staged, 0o644);
+      renameSync(staged, destination);
+    }
+  } finally {
+    rmSync(collection, { recursive: true, force: true });
+  }
+  return { builder: "bazel", debPath, sha256, depends: report.depends, audit: report.audit,
+    auditReport: formatAuditReport(input.architecture, report.audit), auditOverridden: false };
 }
 
 /** Read one artifact's ELF facts through `readelf` on the build host. */
@@ -148,6 +141,7 @@ export async function readElfFacts(runner: CommandRunner, repoRoot: string, env:
 }
 
 /**
+ * Historical prototype assembler; never a publication input.
  * Stage, audit, package.
  *
  * The tree is staged twice on purpose: once to have real installed paths for
@@ -218,6 +212,7 @@ export async function assembleLinuxPackage(input: LinuxPackageBuildInput): Promi
   }
 
   return {
+    builder: "prototype",
     debPath,
     sha256: createHash("sha256").update(readFileSync(debPath)).digest("hex"),
     depends,
@@ -239,6 +234,9 @@ export function formatLinuxPackageResult(input: {
     `  Depends: ${input.result.depends.join(", ")}`,
     input.result.auditReport,
   ];
+  if (input.result.builder === "prototype") {
+    lines.push("  PROTOTYPE: these inputs have no Bazel product provenance and must not be published.");
+  }
   if (input.result.auditOverridden) {
     lines.push("  WARNING: audit findings were overridden. This artifact must not be published.");
   }

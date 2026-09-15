@@ -1,0 +1,36 @@
+{
+  "repository": "tampopogk/kanna",
+  "branch": "task-25c25a1b",
+  "workflow": "Linux Release Check",
+  "runId": 34930914452,
+  "candidateSha": "79f1c8225f0302d1e8d59dacedc5c148a9438272",
+  "conclusion": "success",
+  "architectures": {
+    "arm64": {
+      "buildJobId": 104258745294,
+      "installedJobId": 104268177454,
+      "installedTestsPassed": 11,
+      "nativeReadelfAndInstalledHashesMatch": true,
+      "artifactId": 10382169292,
+      "artifactName": "kanna-linux-arm64",
+      "artifactExpiresAt": "2026-09-29T05:38:57Z",
+      "fileName": "kanna-staging_0.2.0~staging.1-1_arm64.deb",
+      "bytes": 43733876,
+      "sha256": "25400b642d98add6b1aeb4d4b2d0c07db1cf2e63de57819c7fd29449404a1304",
+      "auditReport": "native-arm64.json"
+    },
+    "x86_64": {
+      "buildJobId": 104258745113,
+      "installedJobId": 104268177400,
+      "installedTestsPassed": 11,
+      "nativeReadelfAndInstalledHashesMatch": true,
+      "artifactId": 10383315328,
+      "artifactName": "kanna-linux-x86_64",
+      "artifactExpiresAt": "2026-09-29T05:46:06Z",
+      "fileName": "kanna-staging_0.2.0~staging.1-1_amd64.deb",
+      "bytes": 44438978,
+      "sha256": "99f143e0fb1f7846c0f63570e65be01872913ac62a8b12b00c61ea6a4289e16b",
+      "auditReport": "native-x86_64.json"
+    }
+  }
+}

@@ -321,6 +321,12 @@ async fn handle_connection(
     let request = serde_json::from_str::<PeerRequest>(line.trim());
     drop(line);
     let response = match request {
+        Ok(PeerRequest::TransferProtocol { request_id, requester_peer_id, sealed_payload }) => {
+            match super::transfer_protocol::handle(&context, &request_id, &requester_peer_id, &sealed_payload).await {
+                Ok(sealed_payload) => PeerResponse::TransferProtocol { request_id, sealed_payload },
+                Err(error) => PeerResponse::Error { request_id, message: error.to_string() },
+            }
+        }
         Ok(PeerRequest::GetAuthenticatedRequestEpoch { request_id }) => {
             PeerResponse::AuthenticatedRequestEpoch {
                 request_id,
@@ -468,6 +474,8 @@ async fn handle_connection(
                 "reserved_target_peer_id",
                 &context.self_peer_id,
             )?;
+            super::transfer_protocol::require_contract(&authenticated)?;
+            super::transfer_protocol::local_capabilities(context.kanna_server_port, context.standalone_test_server).await?;
             let source_task_id =
                 authenticated_argument::<String>(&authenticated, "source_task_id")?;
             let mut reservations = context.incoming_reservations.lock().await;
@@ -543,6 +551,8 @@ async fn handle_connection(
                 "reserved_target_peer_id",
                 &context.self_peer_id,
             )?;
+            super::transfer_protocol::require_contract(&authenticated)?;
+            super::transfer_protocol::local_capabilities(context.kanna_server_port, context.standalone_test_server).await?;
             let source_task_id =
                 authenticated_argument::<String>(&authenticated, "source_task_id")?;
             validate_source_task_id(&source_task_id)?;
@@ -1966,7 +1976,7 @@ async fn write_artifact_chunk(
     Ok(())
 }
 
-async fn authenticate_peer_request(
+pub(super) async fn authenticate_peer_request(
     context: &ListenerContext,
     requester_peer_id: &str,
     sealed_payload: Option<&str>,
@@ -2208,7 +2218,7 @@ where
     })
 }
 
-fn ensure_authenticated_argument<T>(
+pub(super) fn ensure_authenticated_argument<T>(
     payload: &Value,
     name: &str,
     outer: &T,

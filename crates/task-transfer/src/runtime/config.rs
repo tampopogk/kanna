@@ -84,6 +84,7 @@ pub struct RuntimeConfig {
     pub(super) daemon_dir: Option<PathBuf>,
     pub(super) db_path: Option<PathBuf>,
     pub(super) kanna_server_port: Option<u16>,
+    pub(super) standalone_test_server: bool,
     pub(super) discovery_mode: DiscoveryMode,
     pub(super) pending_transfer_ttl: Duration,
     pub(super) authenticated_request_freshness: Duration,
@@ -133,6 +134,7 @@ impl RuntimeConfig {
             daemon_dir: None,
             db_path: None,
             kanna_server_port: None,
+            standalone_test_server: true,
             discovery_mode: DiscoveryMode::Registry,
             pending_transfer_ttl: DEFAULT_PENDING_TRANSFER_TTL,
             authenticated_request_freshness: DEFAULT_AUTHENTICATED_REQUEST_FRESHNESS,
@@ -354,6 +356,7 @@ impl RuntimeConfig {
                     .unwrap_or_else(kanna_runtime_defaults::daemon_dir_for_current_runtime),
             ),
             db_path: Some(db_path),
+            standalone_test_server: false,
             kanna_server_port: std::env::var("KANNA_MOBILE_SERVER_PORT")
                 .ok()
                 .filter(|value| !value.trim().is_empty())

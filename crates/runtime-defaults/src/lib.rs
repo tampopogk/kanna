@@ -27,6 +27,9 @@ pub const PROTECTED_INPUT_PROTOCOL_VERSION: u32 = 3;
 /// either change fail the same test.
 pub const TRANSFER_FINALIZATION_REQUEST_TIMEOUT: Duration = Duration::from_secs(600);
 
+/// Live server/sidecar transfer contract: V2 selection proof and terminal refusal ACKs.
+pub const TRANSFER_PROTOCOL_CONTRACT: &str = "transfer-v2-reconciliation-v1";
+
 pub const DESKTOP_BUNDLE_IDENTIFIER: &str = "build.kanna";
 pub const STAGING_DESKTOP_BUNDLE_IDENTIFIER: &str = "build.kanna.staging";
 pub const LEGACY_DESKTOP_BUNDLE_IDENTIFIER: &str = "com.kanna.app";

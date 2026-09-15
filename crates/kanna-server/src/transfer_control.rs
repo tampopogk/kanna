@@ -37,6 +37,7 @@ const OPERATIONS: &[&str] = &[
     "start-pairing",
     "accept-pairing",
     "reject-pairing",
+    "notify-transfer-refused",
     "prepare-outgoing-transfer",
     "abandon-outgoing-transfer",
     "request-task-pull",
@@ -58,7 +59,33 @@ pub async fn dispatch(
     operation: &str,
     params: Value,
 ) -> Result<Value, String> {
+    if matches!(
+        operation,
+        "request-task-pull" | "finalize-outgoing-transfer-v2" | "notify-transfer-refused"
+    ) || (operation == "prepare-outgoing-transfer"
+        && params.pointer("/payload/phase").and_then(Value::as_str) == Some("preflight"))
+    {
+        let identity = client.request("get_local_identity", json!({})).await?;
+        if identity.get("transfer_protocol").and_then(Value::as_str)
+            != Some(kanna_runtime_defaults::TRANSFER_PROTOCOL_CONTRACT)
+        {
+            return Err("incompatible-transfer-version: upgrade the local Kanna transfer sidecar and server before retrying".into());
+        }
+    }
     match operation {
+        "notify-transfer-refused" => {
+            client
+                .request(
+                    "notify_transfer_refused",
+                    json!({
+                        "transfer_id": required_string(&params, &["transferId"])?,
+                        "source_peer_id": required_string(&params, &["sourcePeerId"])?,
+                        "source_task_id": required_string(&params, &["sourceTaskId"])?,
+                        "reason": required_string(&params, &["reason"])?,
+                    }),
+                )
+                .await
+        }
         "identity" => {
             let response = client.request("get_local_identity", json!({})).await?;
             Ok(json!({

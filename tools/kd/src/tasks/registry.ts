@@ -6,10 +6,8 @@ import { join, resolve } from "node:path";
 import { z } from "zod";
 import { readKannaRepoConfig } from "../config";
 import {
-  assembleLinuxPackage,
-  buildLinuxBinariesCommands,
+  buildLinuxPackageFromBazel,
   formatLinuxPackageResult,
-  stageLinuxPackageBinaries
 } from "../runtime/linux-release-build";
 import { resolveKdContext, type KdContext } from "../context";
 import { cleanWorkspace } from "../runtime/clean";
@@ -129,6 +127,7 @@ import {
   resetStagingLineage,
   shipRelease
 } from "../runtime/release";
+import { linuxReleaseStatus, shipLinuxRelease } from "../runtime/linux-release";
 import { loadReleaseEnvironment } from "../runtime/release-env";
 import {
   preflightNotarizationCredentials,
@@ -427,6 +426,10 @@ const pagesBuildSchemaInputSchema = z.object({
 });
 
 const releaseShipInputSchema = z.object({
+  platform: z.enum(["macos", "linux"]).default("macos"),
+  acceptance: z.string().optional(),
+  stagingIteration: z.number().int().positive().optional(),
+  skipBuild: z.boolean().default(false),
   major: z.boolean().default(false),
   minor: z.boolean().default(false),
   patch: z.boolean().default(false),
@@ -438,9 +441,13 @@ const releaseShipInputSchema = z.object({
   dryRun: z.boolean().default(false),
   rollbackTo: z.string().optional(),
   branch: z.string().optional()
-});
+}).strict();
 
 const releasePromoteInputSchema = z.object({
+  platform: z.enum(["macos", "linux"]).default("macos"),
+  acceptance: z.string().optional(),
+  stagingIteration: z.number().int().positive().optional(),
+  skipBuild: z.boolean().default(false),
   version: z.string(),
   arm64: z.boolean().default(false),
   x86_64: z.boolean().default(false),
@@ -451,9 +458,10 @@ const releasePromoteInputSchema = z.object({
       "Explicit human reason for promoting before the release-policy soak window elapses. Waives only the soak gate."
     )
     .optional()
-});
+}).strict();
 
 const releaseResetStagingInputSchema = z.object({
+  platform: z.literal("macos").default("macos"),
   to: z.string().describe("Branch the staging channel is handed to next: main or release/X.Y."),
   reason: z.string().describe("Why this staging lineage is being abandoned. Recorded on the desktop-staging release."),
   confirmAbandon: z
@@ -463,6 +471,7 @@ const releaseResetStagingInputSchema = z.object({
 });
 
 const releaseCutInputSchema = z.object({
+  platform: z.literal("macos").default("macos"),
   major: z.boolean().default(false),
   minor: z.boolean().default(false),
   patch: z.boolean().default(false),
@@ -491,9 +500,10 @@ const releaseCutInputSchema = z.object({
   if (!parsed.confirmOldTip) ctx.addIssue({ code: z.ZodIssueCode.custom, message: "release cut --recut requires --confirm-old-tip." });
 });
 
-const releaseStatusInputSchema = z.object({});
+const releaseStatusInputSchema = z.object({ platform: z.enum(["macos", "linux"]).default("macos"), acceptance: z.string().optional() }).strict();
 
 const releaseSetupNotarizationInputSchema = z.object({
+  platform: z.literal("macos").default("macos"),
   profile: z.string().optional(),
   keychain: z.string().optional()
 });
@@ -3078,43 +3088,24 @@ export const taskDefinitions = [
   {
     id: "build.linux-package",
     description:
-      "Build one architecture's Linux .deb: compile, audit the artifact closure against packaging/linux/runtime-policy.json, derive Depends from it, and package. Linux only.",
+      "Build one architecture's Linux .deb: compile, audit the artifact closure against packaging/linux/runtime-policy.json, derive Depends from it, and deterministically package declared Bazel outputs.",
     inputSchema: linuxPackageInputSchema,
     execute: async (_context, input) => {
       const parsed = linuxPackageInputSchema.parse(input);
-      if (process.platform !== "linux") {
-        return {
-          ok: false,
-          message:
-            "build linux-package runs on a Linux host: it reads the artifacts' own ELF headers and calls dpkg-deb. Run it on a Linux builder."
-        };
-      }
       const context = await resolveDefaultContext(process.env);
       const architecture = parsed.architecture ?? (process.arch === "arm64" ? "arm64" : "x86_64");
-      const version =
-        parsed.version ??
-        (JSON.parse(
-          await readFile(join(context.repoRoot, "apps/desktop/src-tauri/tauri.conf.json"), "utf8")
-        ) as { version: string }).version;
+      const version = parsed.version ?? (await readFile(join(context.repoRoot, "VERSION"), "utf8")).trim();
       const stagingIteration =
         parsed.channel === "staging" ? (parsed.stagingIteration ?? 1) : undefined;
 
-      if (!parsed.skipBuild) {
-        for (const [command, args] of buildLinuxBinariesCommands(architecture)) {
-          const built = await runBuiltCommand(command, args, context.repoRoot, context.env);
-          if (!built.ok) return built;
-        }
-      }
-
       try {
-        const binariesDir = stageLinuxPackageBinaries({ repoRoot: context.repoRoot, architecture });
-        const result = await assembleLinuxPackage({
+        const result = await buildLinuxPackageFromBazel({
           repoRoot: context.repoRoot,
           channel: parsed.channel,
           architecture,
           version,
           stagingIteration,
-          binariesDir,
+          skipBuild: parsed.skipBuild,
           outputDir: join(context.repoRoot, ".build", "linux-package", "out"),
           env: context.env,
           runner: nodeCommandRunner,
@@ -3124,6 +3115,7 @@ export const taskDefinitions = [
           ok: true,
           message: formatLinuxPackageResult({ channel: parsed.channel, architecture, result }),
           data: {
+            builder: result.builder,
             debPath: result.debPath,
             sha256: result.sha256,
             depends: result.depends,
@@ -3204,7 +3196,7 @@ export const taskDefinitions = [
   },
   {
     id: "release.ship",
-    description: "Build, sign, notarize, and optionally publish a Kanna release; bare main staging starts the next minor series from the production floor unless it continues an active RC.",
+    description: "Build and optionally publish a platform release. macOS signs/notarizes updater bundles; explicit Linux builds both Bazel debs and publishes its signed apt archive with immutable provenance.",
     inputSchema: releaseShipInputSchema,
     execute: async (_context, input) => {
       const parsed = releaseShipInputSchema.parse(input);
@@ -3225,6 +3217,11 @@ export const taskDefinitions = [
       const environment = parsed.staging ? "staging" : "production";
       const context = await resolveDefaultContext(process.env);
       const releaseEnv = await loadReleaseTaskEnvironment(context);
+      if (parsed.platform === "linux") {
+        const result = await shipLinuxRelease({ ...parsed, repoRoot: context.repoRoot, env: releaseEnv, runner: nodeCommandRunner });
+        return { ok: true, message: formatJsonResult(result), data: result };
+      }
+      if (parsed.acceptance || parsed.skipBuild || parsed.stagingIteration !== undefined) throw new Error("Linux release selectors require --platform linux.");
       if (!parsed.dryRun && !parsed.rollbackTo) {
         await preflightNotarizationCredentials({
           cwd: context.repoRoot,
@@ -3260,6 +3257,11 @@ export const taskDefinitions = [
       ];
       const context = await resolveDefaultContext(process.env);
       const releaseEnv = await loadReleaseTaskEnvironment(context);
+      if (parsed.platform === "linux") {
+        const result = await shipLinuxRelease({ ...parsed, promoteFrom: parsed.version, release: !parsed.dryRun, repoRoot: context.repoRoot, env: releaseEnv, runner: nodeCommandRunner });
+        return { ok: true, message: formatJsonResult(result), data: result };
+      }
+      if (parsed.acceptance || parsed.skipBuild || parsed.stagingIteration !== undefined) throw new Error("Linux release selectors require --platform linux.");
       if (!parsed.dryRun) {
         await preflightNotarizationCredentials({
           cwd: context.repoRoot,
@@ -3386,8 +3388,14 @@ export const taskDefinitions = [
       "Show the production release and staging pointer, including reset- or promotion-authorized lineage, soak age, release freeze, and promotion blockers.",
     inputSchema: releaseStatusInputSchema,
     execute: async (_context, input) => {
-      releaseStatusInputSchema.parse(input);
+      const parsed = releaseStatusInputSchema.parse(input);
       const context = await resolveDefaultContext(process.env);
+      if (parsed.platform === "linux") {
+        const env = await loadReleaseTaskEnvironment(context);
+        const result = await linuxReleaseStatus({ repoRoot: context.repoRoot, env, runner: nodeCommandRunner, acceptance: parsed.acceptance });
+        return { ok: true, message: formatJsonResult(result), data: result };
+      }
+      if (parsed.acceptance) throw new Error("--acceptance requires --platform linux.");
       const result = await releaseStatus({
         repoRoot: context.repoRoot,
         env: context.env,
