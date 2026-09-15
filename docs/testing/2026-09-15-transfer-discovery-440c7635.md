@@ -573,3 +573,21 @@ source natively resumed session `01a0a6f7-0925-79c2-adc2-f9ad4df42d4a`, and one
 new private nonce was generated after idle. This remains the existing fixture;
 no additional model fixture was created. Transfer and recall outcomes are
 pending, independently of the preceding LAN error.
+
+The LAN response was reconciled to `No route to host (os error 65)` before
+queueing. Native mDNS had discovered the expected peers and CLI TCP connected
+both directions; the owned transfer process's direct connection still failed.
+The platform/process-specific connection cause remains unresolved. This is not
+evidence that corrected mDNS discovery failed, and neither an OS policy nor a
+new product networking defect has been established for that direct connection.
+
+The independent forced-cloud pull was accepted at 21:38:42Z with both LAN
+catalogs present, creating source transfer `d3b6726d…a58b84` and destination task
+`19010f8b…c805f`. Destination was awaiting acknowledgment at 21:39:13Z. The owned
+Studio server recorded task-transfer relay tunnels from 21:38:56Z through
+21:39:13Z, and the source provider exited at 21:39:05Z. Its final payload correctly
+exported resume ID `01a0a6f7-0925-79c2-adc2-f9ad4df42d4a` and one Codex
+`session-rollout`/`copy-file` artifact, with clean finalization. This source had
+natively resumed that known session, providing a useful control against the
+earlier fresh run's null ID and empty artifacts. Final transfer acknowledgment
+and the helper's blind recall remained pending.
