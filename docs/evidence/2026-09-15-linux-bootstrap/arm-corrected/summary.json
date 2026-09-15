@@ -1,0 +1,381 @@
+{
+  "controllerCommit": "3b48f812f",
+  "controllerPatchSha256": "b4f7ded3bb2d1507a5b1d8ad2350d42620cd2c0e8ef0d84e002a8163e8b144ac",
+  "canonicalExit": 0,
+  "passed": 17,
+  "failed": 0,
+  "originalRun": "FAILED (retained separately)",
+  "host": "Ubuntu 26.04.1 arm64; not Ubuntu 24.04 floor",
+  "snapshots": [
+    {
+      "at": "2026-09-15T10:16:24.791Z",
+      "label": "installs version A and runs a task in it",
+      "supervisor": {
+        "pid": 144126,
+        "startTime": "8506744",
+        "executable": {
+          "code": 0,
+          "stdout": "/usr/lib/kanna-staging/kanna-worker\n",
+          "stderr": ""
+        },
+        "cgroup": "0::/user.slice/user-0.slice/user@0.service/app.slice/kanna-installed-test-143972.service\n"
+      },
+      "daemon": {
+        "pid": 144135,
+        "startTime": "8506746",
+        "executable": {
+          "code": 0,
+          "stdout": "/usr/lib/kanna-staging/kanna-daemon\n",
+          "stderr": ""
+        },
+        "cgroup": "0::/user.slice/user-0.slice/user@0.service/app.slice/kanna-installed-test-143972.service\n"
+      },
+      "agent": {
+        "pid": 144307,
+        "startTime": "8506803",
+        "alive": true
+      },
+      "taskId": "bc81424a",
+      "runId": "run-bc81424a-1789467384400632547",
+      "runStatus": "running",
+      "runtimeState": "busy",
+      "branch": "task-bc81424a",
+      "worktree": "/home/jeremy/.tmp/kanna-d3ce8dec/.tmp/kanna-headless-repo-VBtBxS/repo/.kanna-worktrees/task-bc81424a",
+      "inputTotal": 0,
+      "traceCount": 0
+    },
+    {
+      "at": "2026-09-15T10:16:24.848Z",
+      "label": "before-apt-B",
+      "supervisor": {
+        "pid": 144126,
+        "startTime": "8506744",
+        "executable": {
+          "code": 0,
+          "stdout": "/usr/lib/kanna-staging/kanna-worker\n",
+          "stderr": ""
+        },
+        "cgroup": "0::/user.slice/user-0.slice/user@0.service/app.slice/kanna-installed-test-143972.service\n"
+      },
+      "daemon": {
+        "pid": 144135,
+        "startTime": "8506746",
+        "executable": {
+          "code": 0,
+          "stdout": "/usr/lib/kanna-staging/kanna-daemon\n",
+          "stderr": ""
+        },
+        "cgroup": "0::/user.slice/user-0.slice/user@0.service/app.slice/kanna-installed-test-143972.service\n"
+      },
+      "agent": {
+        "pid": 144307,
+        "startTime": "8506803",
+        "alive": true
+      },
+      "taskId": "bc81424a",
+      "runId": "run-bc81424a-1789467384400632547",
+      "runStatus": "running",
+      "runtimeState": "busy",
+      "branch": "task-bc81424a",
+      "worktree": "/home/jeremy/.tmp/kanna-d3ce8dec/.tmp/kanna-headless-repo-VBtBxS/repo/.kanna-worktrees/task-bc81424a",
+      "inputTotal": 0,
+      "traceCount": 0
+    },
+    {
+      "at": "2026-09-15T10:16:27.198Z",
+      "label": "installs version B underneath the live session without disturbing it",
+      "supervisor": {
+        "pid": 144126,
+        "startTime": "8506744",
+        "executable": {
+          "code": 0,
+          "stdout": "/usr/lib/kanna-staging/kanna-worker (deleted)\n",
+          "stderr": ""
+        },
+        "cgroup": "0::/user.slice/user-0.slice/user@0.service/app.slice/kanna-installed-test-143972.service\n"
+      },
+      "daemon": {
+        "pid": 144135,
+        "startTime": "8506746",
+        "executable": {
+          "code": 0,
+          "stdout": "/usr/lib/kanna-staging/kanna-daemon (deleted)\n",
+          "stderr": ""
+        },
+        "cgroup": "0::/user.slice/user-0.slice/user@0.service/app.slice/kanna-installed-test-143972.service\n"
+      },
+      "agent": {
+        "pid": 144307,
+        "startTime": "8506803",
+        "alive": true
+      },
+      "taskId": "bc81424a",
+      "runId": "run-bc81424a-1789467384400632547",
+      "runStatus": "running",
+      "runtimeState": "busy",
+      "branch": "task-bc81424a",
+      "worktree": "/home/jeremy/.tmp/kanna-d3ce8dec/.tmp/kanna-headless-repo-VBtBxS/repo/.kanna-worktrees/task-bc81424a",
+      "inputTotal": 0,
+      "traceCount": 0
+    },
+    {
+      "at": "2026-09-15T10:16:27.261Z",
+      "label": "before-restart",
+      "supervisor": {
+        "pid": 144126,
+        "startTime": "8506744",
+        "executable": {
+          "code": 0,
+          "stdout": "/usr/lib/kanna-staging/kanna-worker (deleted)\n",
+          "stderr": ""
+        },
+        "cgroup": "0::/user.slice/user-0.slice/user@0.service/app.slice/kanna-installed-test-143972.service\n"
+      },
+      "daemon": {
+        "pid": 144135,
+        "startTime": "8506746",
+        "executable": {
+          "code": 0,
+          "stdout": "/usr/lib/kanna-staging/kanna-daemon (deleted)\n",
+          "stderr": ""
+        },
+        "cgroup": "0::/user.slice/user-0.slice/user@0.service/app.slice/kanna-installed-test-143972.service\n"
+      },
+      "agent": {
+        "pid": 144307,
+        "startTime": "8506803",
+        "alive": true
+      },
+      "taskId": "bc81424a",
+      "runId": "run-bc81424a-1789467384400632547",
+      "runStatus": "running",
+      "runtimeState": "busy",
+      "branch": "task-bc81424a",
+      "worktree": "/home/jeremy/.tmp/kanna-d3ce8dec/.tmp/kanna-headless-repo-VBtBxS/repo/.kanna-worktrees/task-bc81424a",
+      "inputTotal": 0,
+      "traceCount": 0
+    },
+    {
+      "at": "2026-09-15T10:16:28.120Z",
+      "label": "http-ready-after-restart",
+      "supervisor": {
+        "pid": 144575,
+        "startTime": "8507090",
+        "executable": {
+          "code": 0,
+          "stdout": "/usr/lib/kanna-staging/kanna-worker\n",
+          "stderr": ""
+        },
+        "cgroup": "0::/user.slice/user-0.slice/user@0.service/app.slice/kanna-installed-test-143972.service\n"
+      },
+      "daemon": {
+        "pid": 144584,
+        "startTime": "8507092",
+        "executable": {
+          "code": 0,
+          "stdout": "/usr/lib/kanna-staging/kanna-daemon\n",
+          "stderr": ""
+        },
+        "cgroup": "0::/user.slice/user-0.slice/user@0.service/app.slice/kanna-installed-test-143972.service\n"
+      },
+      "agent": {
+        "pid": 144307,
+        "startTime": "8506803",
+        "alive": true
+      },
+      "taskId": "bc81424a",
+      "runId": "run-bc81424a-1789467384400632547",
+      "runStatus": "running",
+      "runtimeState": "busy",
+      "branch": "task-bc81424a",
+      "worktree": "/home/jeremy/.tmp/kanna-d3ce8dec/.tmp/kanna-headless-repo-VBtBxS/repo/.kanna-worktrees/task-bc81424a",
+      "inputTotal": 0,
+      "traceCount": 0
+    },
+    {
+      "at": "2026-09-15T10:16:38.230Z",
+      "label": "survives the operator's unit restart with the same agent process",
+      "supervisor": {
+        "pid": 144575,
+        "startTime": "8507090",
+        "executable": {
+          "code": 0,
+          "stdout": "/usr/lib/kanna-staging/kanna-worker\n",
+          "stderr": ""
+        },
+        "cgroup": "0::/user.slice/user-0.slice/user@0.service/app.slice/kanna-installed-test-143972.service\n"
+      },
+      "daemon": {
+        "pid": 144584,
+        "startTime": "8507092",
+        "executable": {
+          "code": 0,
+          "stdout": "/usr/lib/kanna-staging/kanna-daemon\n",
+          "stderr": ""
+        },
+        "cgroup": "0::/user.slice/user-0.slice/user@0.service/app.slice/kanna-installed-test-143972.service\n"
+      },
+      "agent": {
+        "pid": 144307,
+        "startTime": "8506803",
+        "alive": true
+      },
+      "taskId": "bc81424a",
+      "runId": "run-bc81424a-1789467384400632547",
+      "runStatus": "running",
+      "runtimeState": "busy",
+      "branch": "task-bc81424a",
+      "worktree": "/home/jeremy/.tmp/kanna-d3ce8dec/.tmp/kanna-headless-repo-VBtBxS/repo/.kanna-worktrees/task-bc81424a",
+      "inputTotal": 0,
+      "traceCount": 0
+    },
+    {
+      "at": "2026-09-15T10:16:38.297Z",
+      "label": "hands the live PTY to a successor daemon generation",
+      "supervisor": {
+        "pid": 144575,
+        "startTime": "8507090",
+        "executable": {
+          "code": 0,
+          "stdout": "/usr/lib/kanna-staging/kanna-worker\n",
+          "stderr": ""
+        },
+        "cgroup": "0::/user.slice/user-0.slice/user@0.service/app.slice/kanna-installed-test-143972.service\n"
+      },
+      "daemon": {
+        "pid": 144584,
+        "startTime": "8507092",
+        "executable": {
+          "code": 0,
+          "stdout": "/usr/lib/kanna-staging/kanna-daemon\n",
+          "stderr": ""
+        },
+        "cgroup": "0::/user.slice/user-0.slice/user@0.service/app.slice/kanna-installed-test-143972.service\n"
+      },
+      "agent": {
+        "pid": 144307,
+        "startTime": "8506803",
+        "alive": true
+      },
+      "taskId": "bc81424a",
+      "runId": "run-bc81424a-1789467384400632547",
+      "runStatus": "running",
+      "runtimeState": "busy",
+      "branch": "task-bc81424a",
+      "worktree": "/home/jeremy/.tmp/kanna-d3ce8dec/.tmp/kanna-headless-repo-VBtBxS/repo/.kanna-worktrees/task-bc81424a",
+      "inputTotal": 0,
+      "traceCount": 0
+    },
+    {
+      "at": "2026-09-15T10:16:41.810Z",
+      "label": "delivers input after the upgrade, whole, once, and durably",
+      "supervisor": {
+        "pid": 144575,
+        "startTime": "8507090",
+        "executable": {
+          "code": 0,
+          "stdout": "/usr/lib/kanna-staging/kanna-worker\n",
+          "stderr": ""
+        },
+        "cgroup": "0::/user.slice/user-0.slice/user@0.service/app.slice/kanna-installed-test-143972.service\n"
+      },
+      "daemon": {
+        "pid": 144584,
+        "startTime": "8507092",
+        "executable": {
+          "code": 0,
+          "stdout": "/usr/lib/kanna-staging/kanna-daemon\n",
+          "stderr": ""
+        },
+        "cgroup": "0::/user.slice/user-0.slice/user@0.service/app.slice/kanna-installed-test-143972.service\n"
+      },
+      "agent": {
+        "pid": 144307,
+        "startTime": "8506803",
+        "alive": true
+      },
+      "taskId": "bc81424a",
+      "runId": "run-bc81424a-1789467384400632547",
+      "runStatus": "running",
+      "runtimeState": "busy",
+      "branch": "task-bc81424a",
+      "worktree": "/home/jeremy/.tmp/kanna-d3ce8dec/.tmp/kanna-headless-repo-VBtBxS/repo/.kanna-worktrees/task-bc81424a",
+      "inputTotal": 1,
+      "traceCount": 1
+    },
+    {
+      "at": "2026-09-15T10:16:41.933Z",
+      "label": "records completion on the upgraded runtime",
+      "supervisor": {
+        "pid": 144575,
+        "startTime": "8507090",
+        "executable": {
+          "code": 0,
+          "stdout": "/usr/lib/kanna-staging/kanna-worker\n",
+          "stderr": ""
+        },
+        "cgroup": "0::/user.slice/user-0.slice/user@0.service/app.slice/kanna-installed-test-143972.service\n"
+      },
+      "daemon": {
+        "pid": 144584,
+        "startTime": "8507092",
+        "executable": {
+          "code": 0,
+          "stdout": "/usr/lib/kanna-staging/kanna-daemon\n",
+          "stderr": ""
+        },
+        "cgroup": "0::/user.slice/user-0.slice/user@0.service/app.slice/kanna-installed-test-143972.service\n"
+      },
+      "agent": {
+        "pid": 144307,
+        "startTime": "8506803",
+        "alive": true
+      },
+      "taskId": "bc81424a",
+      "runId": "run-bc81424a-1789467384400632547",
+      "runStatus": "succeeded",
+      "runtimeState": "busy",
+      "branch": "task-bc81424a",
+      "worktree": "/home/jeremy/.tmp/kanna-d3ce8dec/.tmp/kanna-headless-repo-VBtBxS/repo/.kanna-worktrees/task-bc81424a",
+      "inputTotal": 1,
+      "traceCount": 1
+    },
+    {
+      "at": "2026-09-15T10:16:42.002Z",
+      "label": "before-cleanup",
+      "supervisor": {
+        "pid": 144575,
+        "startTime": "8507090",
+        "executable": {
+          "code": 0,
+          "stdout": "/usr/lib/kanna-staging/kanna-worker\n",
+          "stderr": ""
+        },
+        "cgroup": "0::/user.slice/user-0.slice/user@0.service/app.slice/kanna-installed-test-143972.service\n"
+      },
+      "daemon": {
+        "pid": 144584,
+        "startTime": "8507092",
+        "executable": {
+          "code": 0,
+          "stdout": "/usr/lib/kanna-staging/kanna-daemon\n",
+          "stderr": ""
+        },
+        "cgroup": "0::/user.slice/user-0.slice/user@0.service/app.slice/kanna-installed-test-143972.service\n"
+      },
+      "agent": {
+        "pid": 144307,
+        "startTime": "8506803",
+        "alive": true
+      },
+      "taskId": "bc81424a",
+      "runId": "run-bc81424a-1789467384400632547",
+      "runStatus": "succeeded",
+      "runtimeState": "busy",
+      "branch": "task-bc81424a",
+      "worktree": "/home/jeremy/.tmp/kanna-d3ce8dec/.tmp/kanna-headless-repo-VBtBxS/repo/.kanna-worktrees/task-bc81424a",
+      "inputTotal": 1,
+      "traceCount": 1
+    }
+  ]
+}

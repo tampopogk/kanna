@@ -382,6 +382,12 @@ jobs:
         if: always()
         with:
           name: prepared-upgrade-${{ matrix.architecture }}-evidence
-          path: .tmp/prepared-upgrade/evidence
+          # Keep private runtime files/DBs local: upload only structured API
+          # evidence, assertions and owned unit logs, never generated credentials.
+          path: |
+            .tmp/prepared-upgrade/evidence/*.jsonl
+            .tmp/prepared-upgrade/evidence/vitest-result.json
+            .tmp/prepared-upgrade/evidence/*/journal.log
+            .tmp/prepared-upgrade/evidence/*/unit.txt
           if-no-files-found: error
           retention-days: 14
