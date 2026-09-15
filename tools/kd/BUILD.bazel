@@ -1,0 +1,22 @@
+load("@kanna_npm//:defs.bzl", "npm_link_all_packages")
+load("@kanna_npm//tools/kd:tsx/package_json.bzl", tsx_bin = "bin")
+
+package(default_visibility = ["//visibility:public"])
+
+npm_link_all_packages(name = "node_modules")
+
+tsx_bin.tsx_binary(
+    name = "linux_package_tool",
+    data = [
+        "src/runtime/linux-bazel-package.ts",
+        "src/runtime/linux-package.ts",
+        "src/runtime/linux-elf-audit.ts",
+    ],
+)
+
+exports_files(["src/runtime/linux-bazel-package.ts"])
+
+filegroup(
+    name = "linux_package_sources",
+    srcs = ["src/runtime/linux-bazel-package.ts", "src/runtime/linux-package.ts", "src/runtime/linux-elf-audit.ts"],
+)

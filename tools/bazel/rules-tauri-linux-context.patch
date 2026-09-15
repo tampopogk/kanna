@@ -1,0 +1,98 @@
+diff --git a/tools/tauri_acl_prep/src/main.rs b/tools/tauri_acl_prep/src/main.rs
+--- a/tools/tauri_acl_prep/src/main.rs
++++ b/tools/tauri_acl_prep/src/main.rs
+@@ -18,11 +18,17 @@
+ const TARGET_TRIPLE: &str = "aarch64-apple-darwin";
+ #[cfg(all(target_arch = "x86_64", target_os = "macos"))]
+ const TARGET_TRIPLE: &str = "x86_64-apple-darwin";
++#[cfg(all(target_arch = "aarch64", target_os = "linux"))]
++const TARGET_TRIPLE: &str = "aarch64-unknown-linux-gnu";
++#[cfg(all(target_arch = "x86_64", target_os = "linux"))]
++const TARGET_TRIPLE: &str = "x86_64-unknown-linux-gnu";
+ #[cfg(not(any(
+     all(target_arch = "aarch64", target_os = "macos"),
+     all(target_arch = "x86_64", target_os = "macos"),
++    all(target_arch = "aarch64", target_os = "linux"),
++    all(target_arch = "x86_64", target_os = "linux"),
+ )))]
+-compile_error!("tauri_acl_prep only supports macOS x86_64 and aarch64 exec targets");
++compile_error!("tauri_acl_prep only supports macOS and Linux x86_64 and aarch64 exec targets");
+ 
+ struct Args {
+     config: PathBuf,
+@@ -34,6 +40,8 @@
+ 
+ fn main() -> Result<()> {
+     let args = parse_args()?;
++    let target_triple = std::env::var("KANNA_TAURI_TARGET_TRIPLE")
++        .unwrap_or_else(|_| TARGET_TRIPLE.to_owned());
+ 
+     let invocation_dir =
+         std::env::current_dir().context("failed to determine current directory")?;
+@@ -66,7 +74,7 @@
+     apply_dep_env_files(&dep_env_files, &invocation_dir)?;
+     apply_dep_out_dirs(&dep_out_dirs)?;
+     std::env::set_var("DEP_TAURI_DEV", "false");
+-    std::env::set_var("TARGET", TARGET_TRIPLE);
++    std::env::set_var("TARGET", &target_triple);
+-    std::env::set_var("CARGO_CFG_TARGET_OS", std::env::consts::OS);
++    std::env::set_var("CARGO_CFG_TARGET_OS", if target_triple.contains("linux") { "linux" } else { "macos" });
+-    std::env::set_var("CARGO_CFG_TARGET_ARCH", std::env::consts::ARCH);
++    std::env::set_var("CARGO_CFG_TARGET_ARCH", target_triple.split('-').next().unwrap());
+     std::env::set_var(
+@@ -86,7 +94,7 @@
+ }
+ 
+ fn generate_acl_outputs(config_dir: &Path, frontend_dist: &Path, out_dir: &Path) -> Result<()> {
+-    let target = Target::from_triple(TARGET_TRIPLE);
++    let target = Target::from_triple(&std::env::var("TARGET")?);
+     let (config_value, _config_paths) = config::parse::read_from(target, config_dir)
+         .context("failed to read Tauri configuration")?;
+ 
+diff --git a/tools/tauri_context_codegen/src/main.rs b/tools/tauri_context_codegen/src/main.rs
+--- a/tools/tauri_context_codegen/src/main.rs
++++ b/tools/tauri_context_codegen/src/main.rs
+@@ -26,11 +26,17 @@
+ const TARGET_TRIPLE: &str = "aarch64-apple-darwin";
+ #[cfg(all(target_arch = "x86_64", target_os = "macos"))]
+ const TARGET_TRIPLE: &str = "x86_64-apple-darwin";
++#[cfg(all(target_arch = "aarch64", target_os = "linux"))]
++const TARGET_TRIPLE: &str = "aarch64-unknown-linux-gnu";
++#[cfg(all(target_arch = "x86_64", target_os = "linux"))]
++const TARGET_TRIPLE: &str = "x86_64-unknown-linux-gnu";
+ #[cfg(not(any(
+     all(target_arch = "aarch64", target_os = "macos"),
+     all(target_arch = "x86_64", target_os = "macos"),
++    all(target_arch = "aarch64", target_os = "linux"),
++    all(target_arch = "x86_64", target_os = "linux"),
+ )))]
+-compile_error!("tauri_context_codegen only supports macOS x86_64 and aarch64 exec targets");
++compile_error!("tauri_context_codegen only supports macOS and Linux x86_64 and aarch64 exec targets");
+ 
+ struct Args {
+     config: PathBuf,
+@@ -41,6 +47,8 @@
+ 
+ fn main() -> Result<()> {
+     let args = parse_args()?;
++    let target_triple = std::env::var("KANNA_TAURI_TARGET_TRIPLE")
++        .unwrap_or_else(|_| TARGET_TRIPLE.to_owned());
+ 
+     let invocation_dir =
+         std::env::current_dir().context("failed to determine current directory")?;
+@@ -58,13 +66,13 @@
+     copy_acl_outputs(&acl_out_dir, &out_dir)?;
+ 
+     std::env::set_var("OUT_DIR", &out_dir);
+-    std::env::set_var("TAURI_ENV_TARGET_TRIPLE", TARGET_TRIPLE);
++    std::env::set_var("TAURI_ENV_TARGET_TRIPLE", &target_triple);
+ 
+     let config_parent = config
+         .parent()
+         .context("`--config` must include a parent directory")?
+         .to_path_buf();
+-    let mut config_value = load_config(&config, TARGET_TRIPLE)?;
++    let mut config_value = load_config(&config, &target_triple)?;
+     config_value.build.dev_url = None;
+ 
+     let embedded_assets = parse_embedded_assets_expr(&embedded_assets_rust)?;

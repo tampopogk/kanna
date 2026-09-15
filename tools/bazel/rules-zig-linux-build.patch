@@ -1,0 +1,12 @@
+--- a/zig/private/repo/zig_repository.bzl
++++ b/zig/private/repo/zig_repository.bzl
+@@ -137,6 +137,9 @@
+ for cache_dir in "${HOME:-}" "${XDG_CACHE_HOME:-}" "${ZIG_GLOBAL_CACHE_DIR:-}" "${ZIG_LOCAL_CACHE_DIR:-}"; do
+   [ -z "$cache_dir" ] || mkdir -p "$cache_dir"
+ done
++for arg in "$@"; do
++  case "$arg" in -Dtarget=*-linux-*) exec "$(dirname "$0")/zig" "$@" ;; esac
++done
+ exec "$(dirname "$0")/zig" "$@" --sysroot "$sdkroot"
+ """,
+             executable = True,

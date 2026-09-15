@@ -23,13 +23,18 @@ bazel_dep(name = "rules_nodejs", version = "6.7.3")
 single_version_override(
     module_name = "rules_zig",
     patch_strip = 1,
-    patches = ["//tools/bazel:rules-zig-0.15.2-macos-clt-sdk.patch"],
+    patches = [
+        "//tools/bazel:rules-zig-0.15.2-macos-clt-sdk.patch",
+        "//tools/bazel:rules-zig-linux-build.patch",
+    ],
     version = "0.12.3",
 )
 
 git_override(
     module_name = "rules_tauri",
     commit = "38064855850d88c1d7c579a58ffe6b9f95658461",
+    patch_strip = 1,
+    patches = ["//tools/bazel:rules-tauri-linux-context.patch"],
     remote = "https://github.com/jemdiggity/rules_tauri.git",
 )
 
@@ -61,6 +66,7 @@ filegroup(
     patches = [
         "//tools/bazel:ghostty-libvt-fast-path.patch",
         "//tools/bazel:ghostty-simdutf-include.patch",
+        "//tools/bazel:ghostty-zig-ar.patch",
     ],
     remote = "https://github.com/jemdiggity/ghostty.git",
 )
@@ -192,7 +198,10 @@ crate.annotation(
     crate = "libghostty-vt-sys",
     gen_build_script = "on",
     patch_args = ["-p1"],
-    patches = ["//tools/bazel:libghostty-vt-sys-zig-env.patch"],
+    patches = [
+        "//tools/bazel:libghostty-vt-sys-zig-env.patch",
+        "//tools/bazel:libghostty-vt-sys-zig-linux-static.patch",
+    ],
     repositories = [
         "daemon_crates",
         "kanna_server_crates",
@@ -278,7 +287,10 @@ crate.annotation(
     crate = "openssl-src",
     data_glob = ["openssl/**"],
     patch_args = ["-p1"],
-    patches = ["//tools/bazel:openssl-src-bazel-runfiles.patch"],
+    patches = [
+        "//tools/bazel:openssl-src-bazel-runfiles.patch",
+        "//tools/bazel:openssl-src-zig-ranlib.patch",
+    ],
     repositories = [
         "desktop_crates",
         "kanna_cli_crates",

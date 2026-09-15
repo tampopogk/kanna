@@ -1,0 +1,24 @@
+--- a/src/build/GhosttyLibVt.zig
++++ b/src/build/GhosttyLibVt.zig
+@@ -249,7 +249,7 @@
+     run.addArgs(&.{
+         "/bin/sh", "-c",
+         \\set -e
+-        \\out="$1"; shift
++        \\zig="$1"; out="$2"; shift 2
+         \\script="CREATE $out"
+         \\for a in "$@"; do
+         \\  script="$script
+@@ -258,10 +258,11 @@
+         \\script="$script
+         \\SAVE
+         \\END"
+-        \\echo "$script" | ar -M
++        \\echo "$script" | "$zig" ar -M
+         ,
+         "_",
+     });
++    run.addArg(b.graph.zig_exe);
+     const output = run.addOutputFileArg("libghostty-vt.a");
+     for (sources) |source| run.addFileArg(source);
+ 
