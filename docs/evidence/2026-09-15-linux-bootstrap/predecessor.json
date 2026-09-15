@@ -1,6 +1,7 @@
 {
   "kind": "unpublished-bootstrap-predecessor-proposal",
-  "assessmentStatus": "pending",
+  "assessmentStatus": "accepted-source-support-only",
+  "assessment": "Root bounded assessment accepted the exact two-file +5/-1 stamp-only patch. This is not native artifact or upgrade acceptance.",
   "historicalProductBase": "79f1c8225f0302d1e8d59dacedc5c148a9438272",
   "sourceRevision": "5cefcfdfec4ba35b400ff32ae7992639257211a6",
   "sourceTree": "b9dc0f445cca4a4c9771c858c28b70f044df1d89",
