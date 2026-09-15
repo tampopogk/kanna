@@ -603,5 +603,53 @@
     },
     "controllerSha256": "0d5ce698890c7da2fb7ae494b5e5713843121ae70c39d64ef39f9b540a617d2a",
     "setupAttempt": "First launch preceded guest apt completion: ENOENT, no task created. Retained separately; launch repeated only after apt exit0/version/executable verification."
+  },
+  "crossMachineSetup": {
+    "linux": {
+      "pid": 171017,
+      "windows": [
+        {
+          "name": "",
+          "role": "frame",
+          "attributes": {
+            "toolkit": "gtk",
+            "window-type": "normal"
+          },
+          "childCount": 2
+        }
+      ],
+      "status": {
+        "desktopId": "desktop-a3b3a16c-b731-454f-9dac-81e35737302b",
+        "version": "0.2.0",
+        "environment": "staging",
+        "serverVersion": "0.2.0",
+        "lanPort": 16613
+      },
+      "desktopSha256": "c8317e3041db6094f27be62de6ea297ad604b34da2d2f7d0598507939d931156",
+      "uiInteractionPerformed": false,
+      "credentialsEntered": false,
+      "transferQueued": false
+    },
+    "cleanup": {
+      "packageQueryExit": 1,
+      "kannaProcesses": [],
+      "user@0.service": "inactive",
+      "user-runtime-dir@0.service": "inactive",
+      "user@1000.service": "active"
+    },
+    "mbp": {
+      "source": "a9df2f1d46fb08bcf53200b738e0fdc3c127b636",
+      "controller": "5c1ca1b3",
+      "desktopId": "desktop-8991234d-d7e7-42f9-9065-e5a360ff5fef",
+      "apiPort": 17413,
+      "pid": 91844,
+      "title": "Kanna \u2014 task 6a8d78d0 \u00b7 B \u00b7 HEAD (0.0.68 @ a9df2f1d4)",
+      "desktopSha256": "9a81a9454f47cb40f3ea72cfe28c14c173cca74d6fd26ab5f8f4bc631250209e",
+      "cloudPeerReadiness": "executor reports 4 trusted cloudRoute.ready peers; Linux absent",
+      "cleanup": "requested from executor; confirmation pending"
+    },
+    "accountDigestMatches": true,
+    "mbpToLinux16613": "TCP timeout3s at2026-09-15T22:18:31.497386Z; no routes/proxies added",
+    "blocker": "Empty native title fails exact-task-title UI verification rule; no sign-in or transfer attempted. Auto sign-in disabled for published frontend."
   }
 }

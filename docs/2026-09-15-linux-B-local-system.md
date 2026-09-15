@@ -95,3 +95,37 @@ Install/restart/floor passes were reused, not rerun. This resolves the local
 revision/shutdown controller failure only; full system/both still lacks exact-B
 cross-machine acceptance. Structured correction evidence is appended to the
 existing evidence file above; no product changes or publication occurred.
+
+### Exact-B counterpart setup (subsequent bounded attempt)
+
+Existing executor6a successfully launched a separate exact-B macOS ARM64 dev
+counterpart via canonical `dev up --staging --with-credentials`, API17413,
+PID91844, native title `Kanna — task 6a8d78d0 · B · HEAD (0.0.68 @ a9df2f1d4)`.
+It reported trusted cloud peers; canonical test-account digest matches Studio.
+This removes the previously absent-counterpart/credential preparation blocker.
+No fixture or transfer was started. It remains dev provenance, not a Mac release.
+
+Published B Linux was installed into a new isolated allocation, API16613,
+`desktop-a3b3a16c-b731-454f-9dac-81e35737302b`. Exact desktop SHA matches prior B.
+However PID-scoped native GTK frame title is **empty**. B's Tauri config starts
+with `title:""`; its formatter returns null for ordinary main/no-worktree release
+metadata, and `get_app_build_info` task identity is compiled, not set by runtime
+`KANNA_TASK_ID`. Correct user-session Xauthority and documented Wayland-only /
+explicit software-renderer settings did not change that observation. Graphics
+warnings alone do not establish a renderer defect.
+
+AGENTS.md requires the exact task id in the native title before any UI action.
+Therefore no sign-in/UI interaction was performed; no test password entered or
+session token copied. Smallest next disposition: narrowly allow immutable
+installed-B GUI verification by exact package hash plus native PID/start/executable,
+private DB/root and API identity, instead of a task title this release does not
+expose. No artifact rebuild or fabricated title should be used to claim B proof.
+The ordinary installed GUI sign-in remains untested; dev-only auto-sign-in is
+explicitly disabled by `import.meta.env.DEV=false` in the published frontend.
+
+Separately, one MBP→VM192.168.64.2:16613 TCP probe timed out after3s; current UTM
+NAT routing cannot yet establish the LAN lane. No routes/proxies were changed,
+and a future cloud pass must not be labeled LAN. VM cleaned to package absent,
+no Kanna processes, root manager/runtime inactive, jeremy manager active. MBP
+executor was asked to stop only its isolated B allocation. Existing641/074
+allocations and fixtures were untouched. Full system/both remains unaccepted.
