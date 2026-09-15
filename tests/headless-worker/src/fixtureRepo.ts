@@ -24,7 +24,7 @@ export interface FixtureRepo {
 
 const AGENT_PROVIDERS = ["claude", "codex", "copilot", "opencode", "agy"];
 
-export async function createFixtureRepo(): Promise<FixtureRepo> {
+export async function createFixtureRepo(options: { observedRuntime?: boolean } = {}): Promise<FixtureRepo> {
   const root = await mkdtemp(join(tmpdir(), "kanna-headless-repo-"));
   const path = join(root, "repo");
   const providerBinDir = join(root, "provider-bin");
@@ -41,12 +41,15 @@ export async function createFixtureRepo(): Promise<FixtureRepo> {
     await writeScriptedAgentBinary(implementation, {
       inputTraceFile,
       terminalPasteSemantics: true,
+      observedRuntime: options.observedRuntime,
     });
     await writeExecutable(
       join(providerBinDir, provider),
       [
         "#!/bin/sh",
-        'if [ "$1" = "--version" ]; then printf \'1.0.0 (headless gate)\\n\'; exit 0; fi',
+        options.observedRuntime && provider === "claude"
+          ? 'if [ "$1" = "--version" ]; then printf \'2.1.259 (Claude Code)\\n\'; exit 0; fi'
+          : 'if [ "$1" = "--version" ]; then printf \'1.0.0 (headless gate)\\n\'; exit 0; fi',
         `exec ${implementation} "$@"`,
         "",
       ].join("\n"),

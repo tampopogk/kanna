@@ -24,10 +24,10 @@
  */
 
 import { spawn } from "node:child_process";
-import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile, cp } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve, basename } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { localProcessFetch } from "@kanna/local-process-fetch";
 import { installedPaths, type InstalledChannel, type InstalledPaths } from "./installedTree.ts";
@@ -104,7 +104,8 @@ export async function inspectHost(developerTools: readonly string[]): Promise<Ho
   }
 
   const root = process.getuid?.() === 0 || (await run("sudo", ["-n", "true"])).code === 0;
-  const userManager = (await run("systemctl", ["--user", "is-system-running"])).code !== null;
+  const managerState = (await run("systemctl", ["--user", "is-system-running"])).stdout.trim();
+  const userManager = ["running", "degraded"].includes(managerState);
   const osRelease = await readFile("/etc/os-release", "utf8").catch(() => "");
   const distribution = /^PRETTY_NAME="?([^"\n]+)"?/m.exec(osRelease)?.[1] ?? "unknown";
   const kernel = (await run("uname", ["-r"])).stdout.trim();
@@ -305,17 +306,47 @@ export class InstalledWorker {
     });
   }
 
-  /** Stop the instance and take the unit away again, so a lane leaves the
-   *  machine as it found it even when it failed part-way. */
-  async stop(): Promise<void> {
-    await this.systemctl(["stop", this.unitName]).catch(() => undefined);
-    await run(this.paths.executable("kanna-worker"), ["stop-daemon", "--data-dir", this.dataDir], this.env).catch(
-      () => undefined
-    );
-    await rm(this.unitPath, { force: true }).catch(() => undefined);
-    await this.systemctl(["daemon-reload"]).catch(() => undefined);
-    await rm(this.root, { recursive: true, force: true }).catch(() => undefined);
+  /** Preserve raw owned state before cleanup, including failure paths. */
+  async preserveEvidence(): Promise<void> {
+    const directory = resolve(process.env.KANNA_INSTALLED_EVIDENCE_DIR ?? join(tmpdir(), "kanna-installed-evidence"), basename(this.root));
+    await mkdir(directory, { recursive: true });
+    await writeFile(join(directory, "journal.log"), await this.journal());
+    await writeFile(join(directory, "unit.txt"), (await this.systemctl(["show", this.unitName])).stdout);
+    // This is only the unique synthetic instance, never an operator database.
+    await cp(this.root, join(directory, "state"), { recursive: true, filter: async (path) => {
+      const { lstat } = await import("node:fs/promises");
+      const stat = await lstat(path);
+      return stat.isDirectory() || stat.isFile();
+    } });
   }
+
+  /** The unit owns its daemon/agent cgroup even after package removal makes
+   * stop-daemon unavailable. Never use a process-name kill or another unit. */
+  async stop(): Promise<void> {
+    let evidenceError: unknown;
+    try { await this.preserveEvidence(); } catch (error) { evidenceError = error; }
+    const shown = await this.systemctl(["show", this.unitName, "-p", "FragmentPath", "--value"]);
+    if (shown.code !== 0 || shown.stdout.trim() !== this.unitPath ||
+        !/^kanna-installed-test-\d+\.service$/.test(this.unitName)) {
+      throw new Error(`refusing cleanup of unowned unit ${this.unitName}`);
+    }
+    const group = (await this.systemctl(["show", this.unitName, "-p", "ControlGroup", "--value"])).stdout.trim();
+    if (group && !group.endsWith(`/${this.unitName}`)) throw new Error(`unexpected owned cgroup: ${group}`);
+    const stopped = await this.systemctl(["stop", this.unitName]);
+    if (stopped.code !== 0) throw new Error(`unit stop failed: ${stopped.stderr}`);
+    // KillMode=process deliberately leaves PTYs alive on restart. At teardown
+    // systemd, not a reused PID, targets every remaining member of OUR cgroup.
+    await this.systemctl(["kill", "--kill-whom=all", "--signal=SIGKILL", this.unitName]);
+    if (group) await waitFor(async () => {
+      const populated = await readFile(`/sys/fs/cgroup${group}/cgroup.events`, "utf8").catch(() => "populated 0");
+      return /^populated 0$/m.test(populated);
+    }, `owned cgroup still populated: ${group}`, 10_000);
+    await rm(this.unitPath, { force: true });
+    await this.systemctl(["daemon-reload"]);
+    if (evidenceError) throw evidenceError; // retain state when preservation failed
+    await rm(this.root, { recursive: true, force: true });
+  }
+
 }
 
 /**
@@ -336,6 +367,7 @@ export async function processStartTime(pid: number): Promise<string | null> {
 }
 
 export function processIsAlive(pid: number): boolean {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
   try {
     process.kill(pid, 0);
     return true;

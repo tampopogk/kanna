@@ -1,4 +1,8 @@
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { appendFile, mkdir, readFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { join, resolve } from "node:path";
+import { tmpdir } from "node:os";
+import { afterEach, afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createFixtureRepo, type FixtureRepo } from "@kanna/headless-worker/src/fixtureRepo.ts";
 import { DEVELOPER_TOOLS, installedPaths } from "./installedTree.ts";
 import {
@@ -33,7 +37,7 @@ import {
  *    same processes — a package that killed them here would destroy an
  *    operator's work during an unattended `apt upgrade`.
  * 3. The operator restarts the unit. `KillMode=process` stops only the
- *    supervisor; the daemon survives and the new supervisor re-adopts it.
+ *    supervisor; the successor daemon receives the surviving PTYs through handoff.
  * 4. The agent is the *same process* — pid and start time both — the task and
  *    its session are the same, and an input delivered afterwards is submitted
  *    exactly once and recorded durably.
@@ -61,12 +65,16 @@ let taskWorktree: string | null = null;
 let agentPid = 0;
 let agentStart: string | null = null;
 let daemonBefore = 0;
+let daemonStart: string | null = null;
+let runtimeCursor: string | number | undefined;
+const evidenceDir = resolve(process.env.KANNA_INSTALLED_EVIDENCE_DIR ?? join(tmpdir(), "kanna-installed-evidence"));
+const evidenceFile = join(evidenceDir, `upgrade-${process.pid}.jsonl`);
 let versionA = "";
 const paths = installedPaths(CHANNEL);
 
 interface TaskDetail {
   id: string;
-  runtimeState: string;
+  runtimeState: string | null;
   branch: string | null;
   worktreePath: string | null;
   latestRun: { id: string; status: string; summary: string | null };
@@ -74,11 +82,67 @@ interface TaskDetail {
 
 beforeAll(async () => {
   host = await inspectHost(DEVELOPER_TOOLS);
+  await record("provenance", {
+    host,
+    controller: await run("git", ["rev-parse", "HEAD"]),
+    controllerDiff: await run("git", ["diff", "HEAD", "--", "tests/linux-installed", "tests/headless-worker", "tests/remote-e2e"]),
+    artifacts: await Promise.all([OLD_DEB, NEW_DEB].map(async path => path ? {
+      path, sha256: createHash("sha256").update(await readFile(path)).digest("hex"),
+    } : null)),
+  });
 }, 120_000);
 
-afterAll(async () => {
-  await worker?.stop();
+async function record(label: string, value: unknown): Promise<void> {
+  await mkdir(evidenceDir, { recursive: true });
+  await appendFile(evidenceFile, JSON.stringify({ at: new Date().toISOString(), label, value }) + "\n");
+}
+
+async function snapshot(label: string): Promise<void> {
+  if (!worker) return;
+  const capture = async (operation: () => Promise<unknown>) => {
+    try { return await operation(); } catch (error) { return { error: String(error) }; }
+  };
+  await record(label, {
+    supervisor: await capture(async () => { const pid = await worker!.supervisorPid(); return { pid, startTime: await processStartTime(pid), executable: await run("readlink", [`/proc/${pid}/exe`]), cgroup: await readFile(`/proc/${pid}/cgroup`, "utf8") }; }),
+    daemon: await capture(async () => { const pid = await worker!.daemonPid(); return { pid, startTime: await processStartTime(pid), executable: await run("readlink", [`/proc/${pid}/exe`]), cgroup: await readFile(`/proc/${pid}/cgroup`, "utf8") }; }),
+    agent: { pid: agentPid, startTime: await processStartTime(agentPid), alive: processIsAlive(agentPid) },
+    task: taskId ? await capture(() => worker!.json(`/v1/tasks/${taskId}`)) : null,
+    events: taskId ? await capture(() => worker!.json(`/v1/task-events?taskIds=${taskId}&localOnly=true&timeoutSecs=0`)) : null,
+    inputs: taskId ? await capture(() => worker!.json(`/v1/tasks/${taskId}/inputs`)) : null,
+    agentInput: repo ? await repo.agentInput() : null,
+    journal: await capture(() => worker!.journal()),
+  });
+}
+
+afterEach(async (context) => {
+  await snapshot(context.task.name);
+  await record("test-result", { name: context.task.name, result: context.task.result });
 });
+afterAll(async () => {
+  try { await snapshot("before-cleanup"); } finally { await worker?.stop(); }
+});
+
+/** HTTP status proves the listener, not classifier observation. The watcher
+ * intentionally clears unobserved status on handoff. Wait on the existing
+ * durable runtime feed; never interpret null as a successful reconciliation. */
+async function observedRuntime(): Promise<TaskDetail> {
+  const deadline = Date.now() + 60_000;
+  while (Date.now() < deadline) {
+    const cursor = runtimeCursor === undefined ? "" : `&cursor=${encodeURIComponent(runtimeCursor)}`;
+    const batch = await worker!.json<{ cursor: string | number; events: Array<{ type: string; payload: { runtimeState?: string } }> }>(
+      `/v1/task-events?taskIds=${taskId}&eventTypes=task.runtime_changed&localOnly=true&timeoutSecs=10${cursor}`
+    );
+    await record("runtime-events", batch);
+    runtimeCursor = batch.cursor;
+    const detail = await worker!.json<TaskDetail>(`/v1/tasks/${taskId}`);
+    await record("runtime-detail", detail);
+    // Reconciliation can retain an already-observed busy state without a new
+    // edge. The authoritative API must still be non-null; retain the batch
+    // even when empty rather than inventing an event that never occurred.
+    if (detail.runtimeState === "busy") return detail;
+  }
+  throw new Error("no observed busy task API within 60s of event-driven reconciliation; see raw evidence");
+}
 
 function requireHost(): void {
   if (!OLD_DEB || !NEW_DEB) {
@@ -117,11 +181,13 @@ async function agentPidForDaemon(daemonPid: number): Promise<number> {
 describe("an installed upgrade with a live agent session", () => {
   it("installs version A and runs a task in it", async () => {
     requireHost();
-    expect((await installPackage(OLD_DEB as string)).code).toBe(0);
+    const installed = await installPackage(OLD_DEB as string);
+    await record("apt-A", installed);
+    expect(installed.code).toBe(0);
     versionA = (await installedPackageVersion(paths.packageName)) as string;
     expect(versionA).toBeTruthy();
 
-    repo = await createFixtureRepo();
+    repo = await createFixtureRepo({ observedRuntime: true });
     worker = await InstalledWorker.start({ channel: CHANNEL, providerBinDir: repo.providerBinDir });
 
     const added = await worker.cli(["repo", "add", "--path", repo.path]);
@@ -146,10 +212,11 @@ describe("an installed upgrade with a live agent session", () => {
     );
 
     daemonBefore = await worker.daemonPid();
+    daemonStart = await processStartTime(daemonBefore);
     agentPid = await agentPidForDaemon(daemonBefore);
     agentStart = await processStartTime(agentPid);
     expect(agentStart).toBeTruthy();
-    const detail = await worker.json<TaskDetail>(`/v1/tasks/${taskId}`);
+    const detail = await observedRuntime();
     expect(detail.id).toBe(taskId);
     expect(detail.latestRun.status).toBe("running");
     runId = detail.latestRun.id;
@@ -168,11 +235,15 @@ describe("an installed upgrade with a live agent session", () => {
    */
   it("installs version B underneath the live session without disturbing it", async () => {
     requireHost();
-    expect((await installPackage(NEW_DEB as string)).code).toBe(0);
+    await snapshot("before-apt-B");
+    const installed = await installPackage(NEW_DEB as string);
+    await record("apt-B", installed);
+    expect(installed.code).toBe(0);
     const versionB = await installedPackageVersion(paths.packageName);
     expect(versionB).not.toBe(versionA);
 
     expect(processIsAlive(daemonBefore)).toBe(true);
+    expect(await processStartTime(daemonBefore)).toBe(daemonStart);
     expect(processIsAlive(agentPid)).toBe(true);
     expect(await processStartTime(agentPid)).toBe(agentStart);
     expect((await worker!.status())?.state).toBe("running");
@@ -187,16 +258,22 @@ describe("an installed upgrade with a live agent session", () => {
   it("survives the operator's unit restart with the same agent process", async () => {
     requireHost();
     const supervisorBefore = await worker!.supervisorPid();
+    const supervisorStart = await processStartTime(supervisorBefore);
+    expect(supervisorStart).toBeTruthy();
+    await snapshot("before-restart");
     await worker!.restartUnit();
+    await snapshot("http-ready-after-restart");
     const supervisorAfter = await worker!.supervisorPid();
     expect(supervisorAfter).not.toBe(supervisorBefore);
+    expect(await processStartTime(supervisorAfter)).toBeTruthy();
+    expect(await processStartTime(supervisorAfter)).not.toBe(supervisorStart);
 
     // A pid alone is not identity — pids are reused. The pair is, which is the
     // same pairing the daemon's own authorizer uses.
     expect(processIsAlive(agentPid)).toBe(true);
     expect(await processStartTime(agentPid)).toBe(agentStart);
 
-    const detail = await worker!.json<TaskDetail>(`/v1/tasks/${taskId}`);
+    const detail = await observedRuntime();
     expect(detail.id).toBe(taskId);
     expect(detail.latestRun.id).toBe(runId);
     expect(detail.latestRun.status).toBe("running");
@@ -205,10 +282,17 @@ describe("an installed upgrade with a live agent session", () => {
     expect(["busy", "idle", "waiting"]).toContain(detail.runtimeState);
   });
 
-  it("re-adopts the surviving daemon rather than replacing it", async () => {
+  it("hands the live PTY to a successor daemon generation", async () => {
     requireHost();
-    expect(await worker!.daemonPid()).toBe(daemonBefore);
-    expect(processIsAlive(daemonBefore)).toBe(true);
+    const successor = await worker!.daemonPid();
+    expect(successor).not.toBe(daemonBefore);
+    expect(await processStartTime(successor)).toBeTruthy();
+    expect(await processStartTime(successor)).not.toBe(daemonStart);
+    expect((await run("readlink", [`/proc/${successor}/exe`])).stdout.trim()).toBe(paths.executable("kanna-daemon"));
+    expect(processIsAlive(successor)).toBe(true);
+    await waitFor(async () => !processIsAlive(daemonBefore), "outgoing daemon did not exit after handoff");
+    expect(processIsAlive(agentPid)).toBe(true);
+    expect(await processStartTime(agentPid)).toBe(agentStart);
   });
 
   /**
