@@ -153,7 +153,14 @@ import { withRustGate } from "../runtime/rust-gate";
 import { checkSetupPrerequisites, installSetupDependencies } from "../runtime/setup";
 import { getDevStatus } from "../runtime/status";
 import { executeTestAll } from "../runtime/test-all";
-import { captureTmuxLog, respawnTmuxWindow, startTmuxSession, stopTmuxSession, stopTmuxWindow } from "../runtime/tmux";
+import {
+  captureTmuxLog,
+  respawnTmuxWindow,
+  startTmuxSession,
+  stopTmuxSession,
+  stopTmuxWindow,
+  waitForTmuxWindowReady
+} from "../runtime/tmux";
 import { readDesktopBundleIdentifier, writeTauriLocalConfig } from "../runtime/tauri";
 import type { KdPorts } from "../ports";
 import type { TaskDefinition, TaskResult } from "./types";
@@ -834,12 +841,56 @@ export async function executeDevRestartWithContext(
     };
   }
 
-  const restarted = await respawnTmuxWindow(executor.runner, executor.context.tmux, window);
+  const restartResult = await respawnTmuxWindow(executor.runner, executor.context.tmux, window);
+  let failure: string | undefined;
+  if (restartResult.windowFound) {
+    const state = restartResult.state;
+    if (!state?.exists) {
+      failure = "tmux window disappeared during startup";
+    } else if (state.dead) {
+      const suffix = state.exitCode === undefined ? "" : ` with exit code ${state.exitCode}`;
+      failure = `tmux pane exited during startup${suffix}`;
+    }
+  }
+  if (restartResult.windowFound && !failure && input.component === "desktop") {
+    const port = requireNumberPort(executor.context.ports, "KANNA_DEV_PORT");
+    const startup = await waitForTmuxWindowReady(
+      executor.runner,
+      executor.context.tmux,
+      window.name,
+      async () => {
+        const response = await executor.runner.run("curl", [
+          "--fail",
+          "--silent",
+          "--show-error",
+          "--max-time",
+          "1",
+          `http://127.0.0.1:${port}`
+        ]);
+        return response.exitCode === 0;
+      }
+    );
+    if (!startup.ready) failure = startup.failure;
+  }
+  if (!restartResult.windowFound || failure) {
+    const log = restartResult.windowFound
+      ? await captureTmuxLog(executor.runner, executor.context.tmux, window.name).catch(() => "")
+      : "";
+    return {
+      ok: false,
+      message: failure
+        ? `Failed to restart ${input.component}: ${failure}.${log.trim() ? `\n${log.trim()}` : ""}`
+        : `No running ${input.component} tmux window found in session '${executor.context.tmux.session}'.`,
+      data: {
+        component: input.component,
+        environment,
+        ...restart.data
+      }
+    };
+  }
   return {
-    ok: restarted,
-    message: restarted
-      ? `Restarted ${input.component} tmux window.`
-      : `No running ${input.component} tmux window found in session '${executor.context.tmux.session}'.`,
+    ok: true,
+    message: `Restarted ${input.component} tmux window.`,
     data: {
       component: input.component,
       environment,

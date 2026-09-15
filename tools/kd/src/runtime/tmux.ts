@@ -1,6 +1,12 @@
+import { execFileSync } from "node:child_process";
 import type { DevWindow } from "./dev-plan";
 import type { CommandRunner } from "./process";
-import { recordInventoryResource } from "./process-inventory";
+import {
+  processIdentity,
+  recordInventoryResource,
+  terminateInventoryProcess,
+  type InventoryProcess
+} from "./process-inventory";
 
 export interface TmuxTarget {
   server: string;
@@ -13,6 +19,22 @@ export interface StartTmuxSessionOptions {
 }
 
 const RECONCILE_OPTION = "@kanna_reconcile_key";
+
+export interface TmuxWindowState {
+  exists: boolean;
+  dead: boolean;
+  exitCode?: number;
+}
+
+export interface RespawnTmuxWindowResult {
+  windowFound: boolean;
+  state?: TmuxWindowState;
+}
+
+export interface WaitForTmuxWindowReadyOptions {
+  attempts?: number;
+  delayMs?: number;
+}
 
 const ALWAYS_FORWARDED_ENV_KEYS = [
   "KANNA_DESKTOP_AUTO_SIGN_IN_EMAIL",
@@ -189,7 +211,7 @@ export async function startTmuxSession(
 
   if (hasTmuxWindowEnv(first.env)) {
     const respawned = await respawnTmuxWindow(runner, target, first);
-    if (!respawned) {
+    if (!respawned.windowFound || !respawned.state?.exists || respawned.state.dead) {
       throw new Error(`tmux failed to start ${target.session}:${first.name}: window was not created`);
     }
   }
@@ -356,10 +378,120 @@ export async function stopTmuxWindow(runner: CommandRunner, target: TmuxTarget, 
   return true;
 }
 
-export async function respawnTmuxWindow(runner: CommandRunner, target: TmuxTarget, window: DevWindow): Promise<boolean> {
+function paneProcessGroup(panePid: number): InventoryProcess[] {
+  const group = Number(execFileSync("ps", ["-p", String(panePid), "-o", "pgid="], {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "ignore"]
+  }).trim());
+  // tmux creates an isolated session/process group for every pane. Refuse to
+  // signal anything unless that ownership boundary is still exactly the pane
+  // we inspected; this must never become a broad kill by inherited group id.
+  if (!Number.isInteger(group) || group !== panePid) return [];
+  const rows = execFileSync("ps", ["-axo", "pid=,pgid="], { encoding: "utf8" });
+  return rows
+    .split("\n")
+    .map((row) => row.trim().split(/\s+/).map(Number))
+    .filter(([pid, pgid]) => Number.isInteger(pid) && pid > 1 && pgid === group)
+    .flatMap(([pid]): InventoryProcess[] => {
+      const identity = processIdentity(pid);
+      return identity
+        ? [{ kind: "process", pid, label: `tmux-pane-group:${panePid}`, identity }]
+        : [];
+    });
+}
+
+async function stopTmuxPaneProcessGroup(
+  runner: CommandRunner,
+  target: TmuxTarget,
+  window: string
+): Promise<void> {
+  const pane = await runner.run("tmux", [
+    "-L", target.server, "display-message", "-p", "-t", `${target.session}:${window}`, "#{pane_pid} #{pane_dead}"
+  ]);
+  const [pidText, dead] = pane.stdout.trim().split(/\s+/, 2);
+  const panePid = Number(pidText);
+  if (pane.exitCode !== 0 || dead === "1" || !Number.isInteger(panePid) || panePid <= 1) return;
+
+  const owned = paneProcessGroup(panePid);
+  const paneResource = owned.find((resource) => resource.pid === panePid);
+  if (!paneResource) {
+    throw new Error(`tmux could not establish an isolated process group for ${target.session}:${window}`);
+  }
+  const recheck = await runner.run("tmux", [
+    "-L", target.server, "display-message", "-p", "-t", `${target.session}:${window}`, "#{pane_pid} #{pane_dead}"
+  ]);
+  const [recheckedPid, recheckedDead] = recheck.stdout.trim().split(/\s+/, 2);
+  if (recheck.exitCode !== 0 || recheckedDead === "1" || Number(recheckedPid) !== panePid ||
+      processIdentity(panePid) !== paneResource.identity) {
+    throw new Error(`tmux pane ownership changed while stopping ${target.session}:${window}`);
+  }
+
+  // Give the foreground command its normal terminal shutdown first. Any
+  // wrapper/listener left behind is then reaped by pinned PID/start identity.
+  // A Kanna daemon calls setsid() at spawn, so its live task sessions are not
+  // members of this pane-owned group and are deliberately untouched.
+  await runner.run("tmux", ["-L", target.server, "send-keys", "-t", `${target.session}:${window}`, "C-c"]);
+  await new Promise<void>((resolve) => setTimeout(resolve, 100));
+  for (const resource of owned) {
+    const outcome = await terminateInventoryProcess(resource, { graceMs: 500, pollMs: 25 });
+    if (outcome === "failed") {
+      throw new Error(`tmux could not stop owned process ${resource.pid} for ${target.session}:${window}`);
+    }
+  }
+}
+
+export async function tmuxWindowState(
+  runner: CommandRunner,
+  target: TmuxTarget,
+  window: string
+): Promise<TmuxWindowState> {
+  const result = await runner.run("tmux", [
+    "-L", target.server,
+    "display-message", "-p",
+    "-t", `${target.session}:${window}`,
+    "#{pane_dead} #{pane_dead_status}"
+  ]);
+  if (result.exitCode !== 0) return { exists: false, dead: false };
+  const [dead, status] = result.stdout.trim().split(/\s+/, 2);
+  return {
+    exists: true,
+    dead: dead === "1",
+    exitCode: /^\d+$/.test(status ?? "") ? Number(status) : undefined
+  };
+}
+
+export async function waitForTmuxWindowReady(
+  runner: CommandRunner,
+  target: TmuxTarget,
+  window: string,
+  ready: () => Promise<boolean>,
+  options: WaitForTmuxWindowReadyOptions = {}
+): Promise<{ ready: boolean; failure?: string }> {
+  const attempts = options.attempts ?? 240;
+  const delayMs = options.delayMs ?? 250;
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    const state = await tmuxWindowState(runner, target, window);
+    if (!state.exists) return { ready: false, failure: "tmux window disappeared during startup" };
+    if (state.dead) {
+      const suffix = state.exitCode === undefined ? "" : ` with exit code ${state.exitCode}`;
+      return { ready: false, failure: `tmux pane exited during startup${suffix}` };
+    }
+    if (await ready()) return { ready: true };
+    if (attempt + 1 < attempts) {
+      await new Promise<void>((resolve) => setTimeout(resolve, delayMs));
+    }
+  }
+  return { ready: false, failure: "timed out waiting for startup readiness" };
+}
+
+export async function respawnTmuxWindow(
+  runner: CommandRunner,
+  target: TmuxTarget,
+  window: DevWindow
+): Promise<RespawnTmuxWindowResult> {
   const list = await runner.run("tmux", ["-L", target.server, "list-windows", "-t", target.session, "-F", "#{window_name}"]);
   if (list.exitCode !== 0) {
-    return false;
+    return { windowFound: false };
   }
   const exists = list.stdout
     .split("\n")
@@ -367,10 +499,11 @@ export async function respawnTmuxWindow(runner: CommandRunner, target: TmuxTarge
     .filter(Boolean)
     .includes(window.name);
   if (!exists) {
-    return false;
+    return { windowFound: false };
   }
 
   await setRemainOnExit(runner, target);
+  await stopTmuxPaneProcessGroup(runner, target, window.name);
 
   const result = hasTmuxWindowEnv(window.env)
     ? await respawnTmuxWindowWithEnv(runner, target, window)
@@ -392,15 +525,8 @@ export async function respawnTmuxWindow(runner: CommandRunner, target: TmuxTarge
   if (result.exitCode !== 0) {
     throw new Error(`tmux failed to respawn ${target.session}:${window.name}: ${result.stderr}`);
   }
-  const after = await runner.run("tmux", ["-L", target.server, "list-windows", "-t", target.session, "-F", "#{window_name}"]);
-  if (after.exitCode !== 0) {
-    return false;
-  }
-  return after.stdout
-    .split("\n")
-    .map((line) => line.trim())
-    .filter(Boolean)
-    .includes(window.name);
+  const after = await tmuxWindowState(runner, target, window.name);
+  return { windowFound: true, state: after };
 }
 
 export async function captureTmuxLog(runner: CommandRunner, target: TmuxTarget, window: string): Promise<string> {

@@ -1,5 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -11,8 +12,14 @@ import {
   validateProductionMobileConfig
 } from "../src/runtime/mobile-qa";
 import { getPortStatuses } from "../src/runtime/port-status";
-import { respawnTmuxWindow, startTmuxSession, stopTmuxWindow } from "../src/runtime/tmux";
+import {
+  respawnTmuxWindow,
+  startTmuxSession,
+  stopTmuxWindow,
+  waitForTmuxWindowReady
+} from "../src/runtime/tmux";
 import { nodeCommandRunner, type CommandRunner } from "../src/runtime/process";
+import { kdTestScratchDir } from "./test-paths";
 
 const tmuxAvailable = spawnSync("tmux", ["-V"], { stdio: "ignore" }).status === 0;
 
@@ -28,6 +35,19 @@ async function waitForFile(path: string): Promise<string> {
     }
   }
   throw lastError;
+}
+
+async function unusedLoopbackPort(): Promise<number> {
+  const server = createServer();
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  const address = server.address();
+  const port = typeof address === "object" && address ? address.port : 0;
+  await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+  if (!port) throw new Error("could not reserve restart test port");
+  return port;
 }
 
 describe("command runtime helpers", () => {
@@ -293,7 +313,10 @@ describe("command runtime helpers", () => {
           }
         }
       )
-    ).resolves.toBe(true);
+    ).resolves.toEqual({
+      windowFound: true,
+      state: { exists: true, dead: false, exitCode: undefined }
+    });
 
     expect(calls).toEqual([
       {
@@ -304,6 +327,13 @@ describe("command runtime helpers", () => {
       {
         command: "tmux",
         args: ["-L", "kanna-task", "set-option", "-t", "kanna-task", "remain-on-exit", "on"],
+        env: undefined
+      },
+      {
+        command: "tmux",
+        args: [
+          "-L", "kanna-task", "display-message", "-p", "-t", "kanna-task:desktop", "#{pane_pid} #{pane_dead}"
+        ],
         env: undefined
       },
       {
@@ -323,11 +353,78 @@ describe("command runtime helpers", () => {
       },
       {
         command: "tmux",
-        args: ["-L", "kanna-task", "list-windows", "-t", "kanna-task", "-F", "#{window_name}"],
+        args: [
+          "-L", "kanna-task", "display-message", "-p", "-t", "kanna-task:desktop", "#{pane_dead} #{pane_dead_status}"
+        ],
         env: undefined
       }
     ]);
     expect(calls.map((call) => call.args.join(" ")).join("\n")).not.toContain("dev@example.com");
+  });
+
+  it.skipIf(!tmuxAvailable)("reaps a retained pane child listener and reports replacement readiness", async () => {
+    const root = await kdTestScratchDir("kanna-kd-restart-listener-");
+    const oldPidPath = join(root, "old.pid");
+    const replacementPidPath = join(root, "replacement.pid");
+    const listenerPath = join(root, "listener.cjs");
+    const wrapperPath = join(root, "wrapper.sh");
+    const port = await unusedLoopbackPort();
+    const tmuxName = `kanna-restart-${process.pid}-${Date.now()}`;
+    const target = { server: tmuxName, session: tmuxName };
+    await writeFile(
+      listenerPath,
+      [
+        'const fs = require("node:fs");',
+        'const net = require("node:net");',
+        'const server = net.createServer();',
+        'server.on("error", () => process.exit(17));',
+        'server.listen(Number(process.argv[2]), "127.0.0.1", () => fs.writeFileSync(process.argv[3], String(process.pid)));'
+      ].join("\n")
+    );
+    await writeFile(wrapperPath, '#!/bin/sh\nnode "$1" "$2" "$3" &\nwait\n', { mode: 0o755 });
+    const oldCommand = ["sh", wrapperPath, listenerPath, String(port), oldPidPath]
+      .map((part) => JSON.stringify(part)).join(" ");
+    const replacementCommand = ["node", listenerPath, String(port), replacementPidPath]
+      .map((part) => JSON.stringify(part)).join(" ");
+
+    try {
+      await startTmuxSession(nodeCommandRunner, target, [
+        { name: "desktop", cwd: root, command: oldCommand, env: { PATH: process.env.PATH } }
+      ]);
+      const oldPid = Number(await waitForFile(oldPidPath));
+
+      const respawned = await respawnTmuxWindow(nodeCommandRunner, target, {
+        name: "desktop",
+        cwd: root,
+        command: replacementCommand,
+        env: { PATH: process.env.PATH }
+      });
+      const startup = await waitForTmuxWindowReady(
+        nodeCommandRunner,
+        target,
+        "desktop",
+        async () => {
+          try {
+            await waitForFile(replacementPidPath);
+            return true;
+          } catch {
+            return false;
+          }
+        },
+        { attempts: 20, delayMs: 25 }
+      );
+
+      expect(respawned).toEqual({
+        windowFound: true,
+        state: { exists: true, dead: false, exitCode: undefined }
+      });
+      expect(startup).toEqual({ ready: true });
+      expect(() => process.kill(oldPid, 0)).toThrow();
+    } finally {
+      await nodeCommandRunner.run("tmux", ["-L", target.server, "kill-server"])
+        .catch(() => ({ exitCode: 1, stdout: "", stderr: "" }));
+      await rm(root, { recursive: true, force: true });
+    }
   });
 
   it("adds missing windows when the tmux dev session is already running", async () => {
