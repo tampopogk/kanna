@@ -88,3 +88,40 @@ Final ship handoff to `d3ce8dec`/kanna-web: immutable release and deb URLs,
 version/source, both SHA-256 values, audit/upgrade/system evidence, verified
 channel state and soak, public key fingerprint and tested Signed-By
 install/update instructions. Validation CI archives are not public downloads.
+
+## Operational follow-up at corrected head `7f3dd4f35`
+
+The preceding implementation brief is now historical: lifecycle/storage work
+is implemented and in single review in `e26eaa13`. Per the supplied confirmed
+result, CI `34940178572` passed all eight jobs at
+`7f3dd4f35ce3633144fb74aaf9b3302a96560092`, including both native builds and
+11 install-only tests per architecture. PR1509 CI `34935441089` failed; it is
+not current acceptance. The new CI packages have blank source stamps and cannot
+be reused as publishable collector inputs. No upgrade/system/soak is implied.
+This follow-up reads that commit's `docs/dev/linux-release.md`; it performs no
+new audit or build. Await reviewed merge before selecting the release source.
+
+Concrete operational choices remaining:
+
+| Choice | Implemented constraint / required next input |
+| --- | --- |
+| Archive location and public serving | Only `filesystem` backend is implemented. Choose an existing dedicated absolute local POSIX directory on the trusted release host, with no symlink components, and the public HTTPS URL serving **that same directory**. NFS/FUSE/object mounts and rsync mirrors do not qualify. If this topology is unsuitable for the owner's MacBook Pro, root must route a different storage adapter before provisioning; choosing a bucket URL alone cannot configure this backend. |
+| Host prerequisite | The owner-host procedure must verify `/usr/bin/python3`, required for the kernel lock and fd-relative writes; no alternate locking scheme is implied. |
+| Key selectors and public bootstrap | Choose armored public/private key paths on the trusted host, independently pinned full primary fingerprint, optional protected passphrase-file path, and public key bootstrap URL. Existing signer requires v4 RSA >=3072 bits. Keep secret material out of the handoff; creation/import is a separate owner operation. |
+| Expiry and renewal | Choose `KANNA_LINUX_ARCHIVE_VALID_HOURS`, renewal owner and a concrete renewal procedure. There is **no renewal command** yet; a schedule alone is insufficient. Route that missing procedure before relying on a persistent public archive. It must preserve receipt/soak identity and handle expired pending transactions explicitly. |
+| Initial candidate | After reviewed merge, choose committed `VERSION`, first staging iteration and exact remote-tip main or matching `release/linux/X.Y`. Linux bump/cut/reset/rollback/soak-override selectors are unsupported. Do not invent a version or branch operation in this task. |
+| Real execution authorization | Obtain explicit Linux staging publication authorization for the concrete candidate/configuration. Production remains a later named-human production request after exact acceptance and the full 24-hour soak. |
+
+All release selectors belong in the existing owner-only
+`~/.kanna/.env.release.local`; none have been written here. The runbook lists
+their exact names. Public HTTPS readback must verify all published bytes before
+the durable publication receipt starts soak; local preparation starts no clock.
+
+After those choices and merge, Ship collects both **stamped** candidate packages,
+obtains exact installed evidence, and retains genuine predecessor/candidate
+packages for two-version testing. The strict acceptance envelope binds
+source/tree/version/iteration and both deb hashes; staging needs installed checks
+for each architecture, production additionally needs upgrade checks for each
+and a `both` system check from `641dbb6f`. Later upgrade/system evidence may be
+added without resetting the same candidate's soak. No public artifact URL is
+available from the CI validation run.
