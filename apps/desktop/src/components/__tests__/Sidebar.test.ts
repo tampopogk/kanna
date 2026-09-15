@@ -295,6 +295,80 @@ describe("Sidebar", () => {
     wrapper.unmount();
   });
 
+  it("exposes the filtered task rows in exactly the order it renders them", async () => {
+    const tasks = [
+      item("stage-unread", {
+        stage: "in progress",
+        read_state: "unread",
+        created_at: "2026-01-01T00:00:03.000Z",
+      }),
+      item("pinned-unread", {
+        stage: "review",
+        read_state: "unread",
+        pinned: 1,
+        pin_order: 0,
+        created_at: "2026-01-01T00:00:01.000Z",
+      }),
+      item("remote-needs-you", {
+        stage: "pr",
+        read_state: "read",
+        attention_reason: "Choose an approach",
+        remote_task: true,
+        created_at: "2026-01-01T00:00:02.000Z",
+      }),
+      item("idle", {
+        stage: "in progress",
+        read_state: "read",
+        created_at: "2026-01-01T00:00:04.000Z",
+      }),
+    ];
+    const wrapper = mountSidebar(tasks);
+    const exposedOrder = () => (wrapper.vm as unknown as {
+      visibleTaskItems: () => SidebarTaskItem[];
+    }).visibleTaskItems().map((task) => task.task_id);
+    const renderedOrder = () => wrapper.findAll(".workflow-item")
+      .map((node) => node.attributes("data-task-id"));
+    const buttons = wrapper.findAll(".attention-filters button");
+
+    expect(exposedOrder()).toEqual(renderedOrder());
+    expect(exposedOrder()).toEqual([
+      "pinned-unread",
+      "remote-needs-you",
+      "idle",
+      "stage-unread",
+    ]);
+
+    await buttons[1].trigger("click");
+    expect(exposedOrder()).toEqual(renderedOrder());
+    expect(exposedOrder()).toEqual(["pinned-unread", "stage-unread"]);
+
+    await buttons[2].trigger("click");
+    expect(exposedOrder()).toEqual(renderedOrder());
+    expect(exposedOrder()).toEqual(["remote-needs-you"]);
+  });
+
+  it("exposes cyclic fallback rows in the same cross-stage order it renders them", () => {
+    const tasks = [
+      item("in-progress-cycle", {
+        stage: "in progress",
+        parent_task_id: "review-cycle",
+      }),
+      item("review-cycle", {
+        stage: "review",
+        parent_task_id: "in-progress-cycle",
+      }),
+    ];
+    const wrapper = mountSidebar(tasks);
+    const exposedOrder = (wrapper.vm as unknown as {
+      visibleTaskItems: () => SidebarTaskItem[];
+    }).visibleTaskItems().map((task) => task.task_id);
+    const renderedOrder = wrapper.findAll(".workflow-item")
+      .map((node) => node.attributes("data-task-id"));
+
+    expect(exposedOrder).toEqual(renderedOrder);
+    expect(exposedOrder).toEqual(["review-cycle", "in-progress-cycle"]);
+  });
+
   it("renders settled server activity when runtime status has not been observed", () => {
     // runtime_status is nullable: a task no session has reported on yet has
     // no runtime dimension, so the row falls back to the blended activity

@@ -156,6 +156,19 @@ function itemsForRepo(repoId: string): SidebarTaskItem[] {
   return sortSidebarTaskItemsForRepo(sidebarOrderingOptions(repoId));
 }
 
+/** The task rows currently rendered by the sidebar, in their visual order. */
+function visibleTaskItems(): SidebarTaskItem[] {
+  return props.repos
+    .filter((repo) => !collapsedRepos.value.has(repo.id))
+    .flatMap((repo) => {
+      const rendered = renderedSlotIds(repo.id);
+      return [
+        ...itemsForRepo(repo.id).filter((item) => rendered.has(item.slot_id)),
+        ...fallbackGroups(repo.id).flatMap((group) => group.items),
+      ];
+    });
+}
+
 /** A top-level task plus its nested subtasks, depth-annotated for indented rendering. */
 function subtreeRows(repoId: string, item: SidebarTaskItem): SidebarTaskTreeRow[] {
   return sidebarTaskSubtreeRows(sidebarOrderingOptions(repoId), item);
@@ -732,7 +745,7 @@ function focusSearch() {
 onBeforeUnmount(stopRepoDragListeners);
 onBeforeUnmount(stopTaskDragTracking);
 
-defineExpose({ renameSelectedItem, focusSearch, searchQuery, matchesSearch, emitRepoReorder });
+defineExpose({ renameSelectedItem, focusSearch, searchQuery, matchesSearch, visibleTaskItems, emitRepoReorder });
 </script>
 
 <template>
