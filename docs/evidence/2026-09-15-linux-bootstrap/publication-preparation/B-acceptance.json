@@ -1,0 +1,55 @@
+{
+  "schemaVersion": 1,
+  "sourceRevision": "a9df2f1d46fb08bcf53200b738e0fdc3c127b636",
+  "sourceTree": "3415e82f8a273b6ff94494d367139038eb026a62",
+  "version": "0.2.0",
+  "iteration": 2,
+  "artifacts": {
+    "x86_64": "2dca964a748a2058c7b52fc453f6907788ba03e8e02f26836dfd8ee830aacee4",
+    "arm64": "ab5dec3dc5b4d6902449dad490a8d38bd3a1fa6d759682b7963c7dc4ea077c3d"
+  },
+  "checks": [
+    {
+      "kind": "installed",
+      "architecture": "x86_64",
+      "status": "pass",
+      "testedAt": "2026-09-15T10:47:19Z",
+      "evidencePath": "docs/evidence/2026-09-15-linux-bootstrap/floor-ci-34959684410/x86_64/vitest-result.json",
+      "evidenceSha256": "89dfb5b99f3fdde84b8c3b6fec9152779c4d66ae40f8389f0f13abbaa96300bb"
+    },
+    {
+      "kind": "upgrade",
+      "architecture": "x86_64",
+      "status": "pass",
+      "testedAt": "2026-09-15T10:47:19Z",
+      "evidencePath": "docs/evidence/2026-09-15-linux-bootstrap/floor-ci-34959684410/x86_64/vitest-result.json",
+      "evidenceSha256": "89dfb5b99f3fdde84b8c3b6fec9152779c4d66ae40f8389f0f13abbaa96300bb",
+      "predecessor": {
+        "sourceRevision": "5cefcfdfec4ba35b400ff32ae7992639257211a6",
+        "version": "0.2.0~staging.1-1",
+        "sha256": "3c70fa85ecd2c5478896b85dfc918cbc194aa9968c7c12e9a775cfed1ab6b794"
+      }
+    },
+    {
+      "kind": "installed",
+      "architecture": "arm64",
+      "status": "pass",
+      "testedAt": "2026-09-15T10:47:51Z",
+      "evidencePath": "docs/evidence/2026-09-15-linux-bootstrap/floor-ci-34959684410/arm64/vitest-result.json",
+      "evidenceSha256": "3d94233ae9decc4d22bb726bfd58e235a4dbcb321130bf653280a144cb798f53"
+    },
+    {
+      "kind": "upgrade",
+      "architecture": "arm64",
+      "status": "pass",
+      "testedAt": "2026-09-15T10:47:51Z",
+      "evidencePath": "docs/evidence/2026-09-15-linux-bootstrap/floor-ci-34959684410/arm64/vitest-result.json",
+      "evidenceSha256": "3d94233ae9decc4d22bb726bfd58e235a4dbcb321130bf653280a144cb798f53",
+      "predecessor": {
+        "sourceRevision": "5cefcfdfec4ba35b400ff32ae7992639257211a6",
+        "version": "0.2.0~staging.1-1",
+        "sha256": "7948b9609928cf8ab35cb152fd6e61d58ed2059cd4dfa3f40efa922879a6e913"
+      }
+    }
+  ]
+}
