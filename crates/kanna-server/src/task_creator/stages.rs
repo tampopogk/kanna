@@ -1279,13 +1279,36 @@ fn prepare_stage_restart(
                     source_task.prompt.as_deref().unwrap_or("")
                 )
             } else {
+                // The reminder belongs to the run being recovered, not to the
+                // durable task that originally created the workflow. Compose
+                // the active stage just like a fresh recovery: this preserves
+                // its own instructions and only includes `$TASK_PROMPT` when
+                // that stage deliberately asks for it. Injecting the task
+                // prompt directly can turn a read-only review back into the
+                // build assignment.
+                let prev_result = previous_stage_result(db, task_id, source_task)?;
+                let prev_main_result = previous_main_stage_result(db, task_id)?;
+                let plan_result = stamped_plan_result(db, task_id);
+                let active_stage_prompt = build_target_stage_prompt(
+                    &loaded.definitions,
+                    &loaded.repo.path,
+                    &target_stage,
+                    source_task.prompt.as_deref().unwrap_or(""),
+                    prev_result.as_deref(),
+                    prev_main_result.as_deref(),
+                    plan_result.as_deref(),
+                    Some(branch),
+                    source_task.base_ref.as_deref(),
+                    source_task.branch.as_deref(),
+                    &run.trigger,
+                )?;
                 format!(
                     "Kanna recovered this task after its previous terminal session ended before a \
                      stage verdict was recorded. Continue the existing task from the preserved \
                      conversation and worktree context. Review the current state, finish the \
                      interrupted work, and follow the stage completion instructions. \
-                     Do not restart the task from scratch.\n\nTask reminder:\n{}",
-                    source_task.prompt.as_deref().unwrap_or("")
+                     Do not restart the task from scratch.\n\nActive stage instructions:\n{}",
+                    active_stage_prompt
                 )
             },
             None,

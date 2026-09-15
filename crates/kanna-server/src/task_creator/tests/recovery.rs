@@ -540,6 +540,144 @@ printf 'retained' > resume-proof.txt
     let _ = std::fs::remove_dir_all(&repo_root);
 }
 
+/// Recovery resumes the provider conversation for the run that was active,
+/// but its next user message is still constructed by Kanna. A task-level build
+/// prompt must not replace a later review stage's own read-only instructions.
+/// This drives the actual resume route and inspects the provider spawn rather
+/// than testing a detached prompt helper.
+#[tokio::test]
+#[allow(clippy::await_holding_lock)] // Provider transcript lookup uses process-global config.
+async fn restart_recovery_reminds_the_agent_of_the_active_stage_not_the_original_build() {
+    const CODEX_SESSION_ID: &str = "019d99a5-aa94-7c73-b786-644cc095c038";
+
+    let (repo_root, config, db) = init_recovery_fixture("task-recovery-stage-reminder");
+    std::fs::create_dir_all(repo_root.join(".kanna/workflows")).unwrap();
+    std::fs::write(
+        repo_root.join(".kanna/workflows/stage-reminder.json"),
+        serde_json::json!({
+            "name": "stage-reminder",
+            "stages": [
+                {
+                    "name": "in progress",
+                    "prompt": "$TASK_PROMPT",
+                    "policy": { "transition": "manual" }
+                },
+                {
+                    "name": "review",
+                    "prompt": "REVIEW-ONLY-REMINDER: inspect the existing result without tools or file changes.",
+                    "policy": { "transition": "manual" }
+                }
+            ]
+        })
+        .to_string(),
+    )
+    .unwrap();
+    publish_origin_main(
+        &repo_root,
+        "publish distinct build and review recovery prompts",
+    );
+    Connection::open(&config.db_path)
+        .unwrap()
+        .execute_batch(
+            "UPDATE pipeline_item
+                SET pipeline = 'stage-reminder', stage = 'review',
+                    prompt = 'BUILD-ONLY-ORIGINAL: run the build check and commit its output.'
+              WHERE id = 'recovery-task';
+             UPDATE stage_run SET stage = 'review' WHERE id = 'run-killed-mid-turn';",
+        )
+        .unwrap();
+    Connection::open(&config.db_path)
+        .unwrap()
+        .execute(
+            "UPDATE stage_run
+                SET agent_provider = 'codex', provider_session_id = NULL, model = NULL
+              WHERE id = 'run-killed-mid-turn'",
+            [],
+        )
+        .unwrap();
+
+    let worktree = repo_root.join(".kanna-worktrees/task-recovery");
+    let codex_home = repo_root.join("codex-home");
+    let sessions_dir = codex_home.join("sessions/2026/09/15");
+    std::fs::create_dir_all(&sessions_dir).unwrap();
+    std::fs::write(
+        sessions_dir.join(format!(
+            "rollout-2026-09-15T12-00-00-{CODEX_SESSION_ID}.jsonl"
+        )),
+        format!(
+            "{}\n",
+            serde_json::json!({
+                "type": "session_meta",
+                "payload": {
+                    "id": CODEX_SESSION_ID,
+                    "cwd": worktree.to_string_lossy(),
+                },
+            })
+        ),
+    )
+    .unwrap();
+
+    crate::http_api::handle_task_terminal_state(
+        &crate::http_api::AppState::new(config.clone()),
+        "recovery-task",
+        137,
+    )
+    .await
+    .unwrap();
+
+    let fake_daemon = spawn_recovery_fake_daemon(config.daemon_dir.clone()).await;
+    let (response, commands) = {
+        let _env_guard = super::CODEX_HOME_LOCK.lock().unwrap();
+        let previous_home = std::env::var_os("CODEX_HOME");
+        std::env::set_var("CODEX_HOME", &codex_home);
+        let app = crate::http_api::router(std::sync::Arc::new(crate::http_api::AppState::new(
+            config.clone(),
+        )));
+        let response = tower::ServiceExt::oneshot(
+            app,
+            axum::http::Request::post("/v1/tasks/recovery-task/actions/resume")
+                .body(axum::body::Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+        let commands = fake_daemon.await.unwrap();
+        match previous_home {
+            Some(previous) => std::env::set_var("CODEX_HOME", previous),
+            None => std::env::remove_var("CODEX_HOME"),
+        }
+        (response, commands)
+    };
+    assert_eq!(response.status(), axum::http::StatusCode::OK);
+
+    let command_line = spawned_command_line(&commands);
+    assert!(
+        command_line.contains(&format!("resume '{CODEX_SESSION_ID}'")),
+        "the recovery must preserve provider transcript provenance: {command_line}"
+    );
+    assert!(
+        command_line.contains("REVIEW-ONLY-REMINDER"),
+        "the recovery reminder must carry the active review stage: {command_line}"
+    );
+    assert!(
+        !command_line.contains("BUILD-ONLY-ORIGINAL"),
+        "the original build assignment is not the review run's reminder: {command_line}"
+    );
+
+    let replacement = wait_for_new_latest_run(&db, "run-killed-mid-turn").await;
+    assert_eq!(replacement.stage, "review");
+    assert_eq!(
+        replacement.resumed_from_run_id.as_deref(),
+        Some("run-killed-mid-turn")
+    );
+    assert_eq!(
+        replacement.replaces_run_id.as_deref(),
+        Some("run-killed-mid-turn")
+    );
+
+    let _ = std::fs::remove_dir_all(&repo_root);
+}
+
 /// Desktop Undo Close first reopens the durable task, then asks the same
 /// recovery endpoint used after a desktop restart to restore its agent. Keep
 /// that real two-route sequence pinned to the server-owned OpenCode command
