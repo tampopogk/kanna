@@ -468,3 +468,12 @@ MBP source task remained open in review, with ledger count 9 and its last quit
 at 20:57:34Z. Acceptance is resuming that same source session and private recall
 fixture under `bd2c8bd2c` before a fresh request. The old TTL failure is retained
 separately; settlement used no manual retry or queue/code change.
+
+Visible marker coverage: at 21:17:21Z the exact MBP native window still showed
+the source row as transferring after the terminal API result. The bounded
+recheck at 21:19:30Z showed `data-transfer-state=failed` and one failure marker
+whose tooltip identified the retained transfer and exhausted commit error.
+The earlier transferring state was transient; no persistent icon defect is
+established. This matches the existing sidebar contract: failure stays visible
+until acknowledged or superseded by a successful move. No UI code was changed.
+The fresh explicit-cloud pull remained pending same-source resume/readiness.
