@@ -123,3 +123,28 @@ The controller push uses `[skip ci]` to honor the explicit instruction not to
 rebuild unchanged packages. The new transport must be reviewed before the
 separate prepared-pair dispatch. This is validation transport, not a published
 Linux product, channel update or start of soak.
+
+### Concrete draft/PR handoff
+
+- PR: https://github.com/tampopogk/kanna/pull/1513 (draft).
+- Transport controller: `a3f962478fbf85854b0fe3559f83b526a70ee6d7`.
+- Temporary draft release ID: **389052859**; tag
+  `validation-d3ce8dec-linux-ab-20260915`; target is that controller SHA.
+- Its sole asset is `prepared-pair.tar`, asset ID **565472294**,
+  **176486400 bytes**, GitHub-reported SHA256
+  `cfa6edb45cc7bf72f6cc5fd581bd2e58ebfbf379649919836d53bf6f92527210`.
+- Readback metadata confirms `draft=true`, `prerelease=true`,
+  `published_at=null`. Creation used `--latest=false`. The first attempt with
+  an abbreviated target SHA was refused (HTTP422); the full40 target succeeded.
+- The actual new fetch helper downloaded the draft with the existing operator
+  credential and verified the tar digest. **This does not prove that a job's
+  contents-read token can read draft assets.** The reviewed workflow execution
+  must establish that; a403/404 must remain a limitation, never trigger draft
+  publication.
+- Pending transport review, dispatch the existing workflow at the reviewed
+  controller ref with `prepared_pair_asset_id=565472294` and the tar hash above.
+  Its prepared-upgrade matrix supplies both Ubuntu24.04 architectures and
+  skips native builds. No dispatch has occurred.
+- Retain validation logs/results before removing this temporary draft after
+  successful validation, if it is no longer needed. Nothing here grants a
+  public artifact URL, Linux channel state or soak time.
