@@ -3,6 +3,15 @@ import type { Purchase, PurchaseError } from "expo-iap";
 import { APPLE_MONTHLY_PRODUCT, createAppleController, type ApplePurchaseState, type AppleStore } from "./appleController";
 
 const transaction = { id: "1", productId: APPLE_MONTHLY_PRODUCT, purchaseState: "purchased", purchaseToken: "signed.jws.token" } as Purchase;
+function deferred() {
+  let resolve!: () => void;
+  let reject!: (error: Error) => void;
+  const promise = new Promise<void>((yes, no) => { resolve = yes; reject = no; });
+  return { promise, resolve, reject };
+}
+// Drain the controller's promise continuations after an explicitly ordered
+// event/settlement, without timing assertions or polling for unchanged state.
+const flush = () => new Promise<void>(resolve => setImmediate(resolve));
 function harness() {
   let update!: (p: Purchase) => void;
   let error!: (e: PurchaseError) => void;
@@ -67,6 +76,126 @@ describe("native Apple purchase lifecycle", () => {
     expect(h.store.finishTransaction).not.toHaveBeenCalled();
     expect(h.refresh).not.toHaveBeenCalled();
     expect(h.state.at(-1)?.message).toBe("");
+  });
+  it.each(["accepted", "rejected"])("recovers a purchase after account change during registration (%s)", async outcome => {
+    const h = harness(); await h.controller.start();
+    const registration = deferred();
+    h.client.register.mockImplementationOnce(() => registration.promise);
+    await h.controller.purchase(); h.update();
+    expect(h.client.register).toHaveBeenCalledWith("owner", transaction.purchaseToken);
+    expect(h.state.at(-1)?.busy).toBe(true);
+    h.controller.setAccount(null);
+    h.controller.setAccount({ uid: "other", verified: true });
+    await flush();
+    const beforeSettlement = [...h.state];
+    if (outcome === "accepted") registration.resolve();
+    else registration.reject(new Error("Old account registration failed"));
+    await flush();
+    expect(h.store.finishTransaction).not.toHaveBeenCalled();
+    expect(h.refresh).not.toHaveBeenCalled();
+    expect(h.state).toEqual(beforeSettlement);
+    expect(h.state.at(-1)).toMatchObject({ ready: true, busy: false, pending: false, message: "" });
+
+    h.controller.setAccount({ uid: "owner", verified: true });
+    await flush();
+    h.store.getPendingTransactionsIOS.mockResolvedValue([transaction]);
+    await h.controller.restore();
+    expect(h.store.restorePurchases).toHaveBeenCalledOnce();
+    expect(h.client.register.mock.calls.map(([uid]) => uid)).toEqual(["owner", "owner"]);
+    expect(h.store.finishTransaction).toHaveBeenCalledOnce();
+    expect(h.refresh).toHaveBeenCalledOnce();
+    expect(h.state.at(-1)).toMatchObject({ busy: false, pending: false });
+    expect(h.store.requestPurchase).toHaveBeenCalledOnce();
+    expect(h.store.purchaseUpdatedListener).toHaveBeenCalledOnce();
+    expect(h.store.purchaseErrorListener).toHaveBeenCalledOnce();
+    await h.controller.dispose();
+  });
+  it("does not let stale registration cleanup release a newer purchase lock", async () => {
+    const h = harness(); await h.controller.start();
+    const registration = deferred();
+    h.client.register.mockImplementationOnce(() => registration.promise);
+    await h.controller.purchase(); h.update();
+    h.controller.setAccount(null);
+    h.controller.setAccount({ uid: "other", verified: true });
+    await flush();
+    await h.controller.purchase();
+    expect(h.store.requestPurchase).toHaveBeenCalledTimes(2);
+    const beforeSettlement = [...h.state];
+    registration.resolve(); await flush();
+    expect(h.state).toEqual(beforeSettlement);
+    expect(h.state.at(-1)?.busy).toBe(true);
+    expect(h.store.finishTransaction).not.toHaveBeenCalled();
+    expect(h.refresh).not.toHaveBeenCalled();
+    await h.controller.purchase(); await h.controller.restore(); await h.controller.resume(); await h.controller.manage();
+    expect(h.store.requestPurchase).toHaveBeenCalledTimes(2);
+    expect(h.store.restorePurchases).not.toHaveBeenCalled();
+    expect(h.store.showManageSubscriptionsIOS).not.toHaveBeenCalled();
+    h.error("user-cancelled");
+    await h.controller.restore();
+    expect(h.store.restorePurchases).toHaveBeenCalledOnce();
+    expect(h.state.at(-1)?.busy).toBe(false);
+    await h.controller.dispose();
+  });
+  it("keeps an outstanding native request locked across account changes until its result", async () => {
+    const h = harness(); await h.controller.start(); await h.controller.purchase();
+    h.controller.setAccount(null);
+    h.controller.setAccount({ uid: "other", verified: true });
+    await h.controller.purchase(); await h.controller.restore(); await h.controller.start();
+    expect(h.state.at(-1)?.busy).toBe(true);
+    expect(h.store.requestPurchase).toHaveBeenCalledOnce();
+    expect(h.store.restorePurchases).not.toHaveBeenCalled();
+    expect(h.store.initConnection).toHaveBeenCalledOnce();
+    h.update({ ...transaction, productId: "unrelated.product" }); await flush();
+    expect(h.state.at(-1)?.busy).toBe(true);
+    h.error("user-cancelled");
+    expect(h.state.at(-1)).toMatchObject({ busy: false, message: "" });
+    await h.controller.restore();
+    expect(h.store.restorePurchases).toHaveBeenCalledOnce();
+    await h.controller.dispose();
+  });
+  it("keeps the original account's newer restore locked when its old verification settles", async () => {
+    const h = harness(); await h.controller.start();
+    const oldRegistration = deferred(), restoredRegistration = deferred();
+    h.client.register.mockImplementationOnce(() => oldRegistration.promise)
+      .mockImplementationOnce(() => restoredRegistration.promise);
+    await h.controller.purchase(); h.update();
+    h.controller.setAccount(null);
+    h.controller.setAccount({ uid: "owner", verified: true });
+    await flush();
+    h.store.getPendingTransactionsIOS.mockResolvedValue([transaction]);
+    const restore = h.controller.restore(); await flush();
+    expect(h.client.register).toHaveBeenCalledTimes(2);
+    const beforeSettlement = [...h.state];
+    oldRegistration.resolve(); await flush();
+    expect(h.state).toEqual(beforeSettlement);
+    expect(h.state.at(-1)?.busy).toBe(true);
+    expect(h.store.finishTransaction).not.toHaveBeenCalled();
+    expect(h.refresh).not.toHaveBeenCalled();
+    await h.controller.restore(); await h.controller.resume();
+    expect(h.store.restorePurchases).toHaveBeenCalledOnce();
+    expect(h.client.register).toHaveBeenCalledTimes(2);
+    restoredRegistration.resolve(); await restore;
+    expect(h.store.finishTransaction).toHaveBeenCalledOnce();
+    expect(h.refresh).toHaveBeenCalledOnce();
+    expect(h.state.at(-1)?.busy).toBe(false);
+    await h.controller.dispose();
+  });
+  it("keeps verification locked when the native request returns after its purchased event", async () => {
+    const h = harness(); await h.controller.start();
+    const request = deferred(), registration = deferred();
+    h.store.requestPurchase.mockImplementationOnce(() => request.promise);
+    h.client.register.mockImplementationOnce(() => registration.promise);
+    const purchase = h.controller.purchase(); await flush();
+    expect(h.store.requestPurchase).toHaveBeenCalledOnce();
+    h.update(); request.resolve(); await purchase;
+    await h.controller.purchase(); await h.controller.restore();
+    expect(h.state.at(-1)?.busy).toBe(true);
+    expect(h.store.requestPurchase).toHaveBeenCalledOnce();
+    expect(h.store.restorePurchases).not.toHaveBeenCalled();
+    registration.resolve(); await flush();
+    expect(h.store.finishTransaction).toHaveBeenCalledOnce();
+    expect(h.state.at(-1)?.busy).toBe(false);
+    await h.controller.dispose();
   });
   it("does not charge when existing purchases conflict with the Kanna account", async () => {
     const h = harness(); await h.controller.start();

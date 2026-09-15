@@ -21,9 +21,15 @@ export function createAppleController(store: AppleStore, client: AppleBillingCli
   let generation = 0;
   let disposed = false;
   let processing = new Map<string, Promise<void>>();
-  let inFlight = false;
-  let awaitingPurchase = false;
+  type Operation = { generation: number };
+  let inFlight: Operation | null = null;
+  // Only the native request survives account changes, until StoreKit delivers
+  // its result. Verification after that event belongs to the account generation.
+  let awaitingPurchase: Operation | null = null;
   const set = (patch: Partial<ApplePurchaseState>) => { if (!disposed) { state = { ...state, ...patch }; publish(state); } };
+  const release = (owner: Operation) => {
+    if (inFlight === owner && awaitingPurchase !== owner) { inFlight = null; set({ busy: false }); }
+  };
   const current = (version: number, uid: string) => !disposed && generation === version && account?.uid === uid;
   const errorMessage = (error: unknown) => {
     const reason = (error as { details?: { reason?: string } })?.details?.reason;
@@ -34,7 +40,7 @@ export function createAppleController(store: AppleStore, client: AppleBillingCli
   async function process(purchase: Purchase): Promise<void> {
     if (purchase.productId !== APPLE_MONTHLY_PRODUCT || !account?.verified) return;
     const uid = account.uid, version = generation;
-    if (purchase.purchaseState === "pending") { set({ pending: true, busy: false, message: "Purchase awaiting Apple approval. Access will update after confirmation." }); inFlight = false; awaitingPurchase = false; return; }
+    if (purchase.purchaseState === "pending") { set({ pending: true, message: "Purchase awaiting Apple approval. Access will update after confirmation." }); return; }
     if (purchase.purchaseState !== "purchased" || !purchase.purchaseToken) throw new Error("Apple transaction is unavailable. Restore purchases to retry.");
     const key = `${version}:${purchase.id}`;
     const existing = processing.get(key);
@@ -51,12 +57,21 @@ export function createAppleController(store: AppleStore, client: AppleBillingCli
     try { await work; } finally { processing.delete(key); }
   }
   const updates = store.purchaseUpdatedListener(purchase => {
+    if (purchase.productId !== APPLE_MONTHLY_PRODUCT) return;
     const version = generation;
+    // Hand off the native request to a distinct verification owner so neither
+    // the request's return nor stale listener cleanup can release another lock.
+    const owner = awaitingPurchase || !inFlight ? { generation: version } : null;
+    awaitingPurchase = null;
+    if (owner) { inFlight = owner; set({ busy: true }); }
     void process(purchase).catch(error => { if (version === generation) set({ message: errorMessage(error) }); })
-      .finally(() => { if (version === generation) { awaitingPurchase = false; inFlight = false; set({ busy: false }); } });
+      .finally(() => { if (owner) release(owner); });
   });
   const errors = store.purchaseErrorListener(error => {
-    inFlight = false; awaitingPurchase = false;
+    const owner = awaitingPurchase;
+    awaitingPurchase = null;
+    if (owner) release(owner);
+    if (inFlight || (owner && owner.generation !== generation)) return;
     if (error.code === "user-cancelled") set({ busy: false, pending: false, message: "Purchase canceled." });
     else if ((error.code === "deferred-payment" || error.code === "pending")) set({ busy: false, pending: true, message: "Purchase awaiting Apple approval." });
     else set({ busy: false, message: errorMessage(error) });
@@ -72,19 +87,24 @@ export function createAppleController(store: AppleStore, client: AppleBillingCli
       await process(purchase);
     }
   }
-  async function operation(run: () => Promise<void>, requiresVerifiedAccount = true) {
+  async function operation(run: (owner: Operation) => Promise<void>, requiresVerifiedAccount = true) {
     if (inFlight || !state.ready || (requiresVerifiedAccount && !account?.verified)) return;
     const version = generation;
-    inFlight = true; set({ busy: true, message: "" });
-    try { await run(); }
-    catch (error) { if (version === generation) { awaitingPurchase = false; set({ message: errorMessage(error) }); } }
-    finally { if (version === generation && !awaitingPurchase) { inFlight = false; set({ busy: false }); } }
+    const owner = { generation: version };
+    inFlight = owner; set({ busy: true, message: "" });
+    try { await run(owner); }
+    catch (error) {
+      if (awaitingPurchase === owner) awaitingPurchase = null;
+      if (inFlight === owner && version === generation) set({ message: errorMessage(error) });
+    }
+    finally { release(owner); }
   }
   return {
     async start() {
       if (inFlight || disposed) return;
-      inFlight = true;
       const version = generation;
+      const owner = { generation: version };
+      inFlight = owner;
       try {
         await store.initConnection();
         if (disposed) { await store.endConnection(); return; }
@@ -98,24 +118,24 @@ export function createAppleController(store: AppleStore, client: AppleBillingCli
           message: valid ? "" : "Subscriptions are unavailable in this storefront. You can still restore purchases." });
         await reconcile(false);
       } catch (error) { if (version === generation) set({ message: errorMessage(error) }); }
-      finally { if (!awaitingPurchase) { inFlight = false; set({ busy: false }); } }
+      finally { release(owner); }
     },
     setAccount(next: { uid: string; verified: boolean } | null) {
       if (next?.uid === account?.uid && next?.verified === account?.verified) return;
       generation++; account = next; processing = new Map(); inFlight = awaitingPurchase;
-      set({ busy: awaitingPurchase, pending: false, message: "" });
+      set({ busy: !!awaitingPurchase, pending: false, message: "" });
       if (state.ready) void operation(() => reconcile(false));
     },
     async purchase() {
       if (state.pending || !state.price) return;
-      await operation(async () => {
+      await operation(async owner => {
         const version = generation, uid = account!.uid;
         await reconcile(false); // Foreign/unknown purchases refuse a fresh charge.
         if (!current(version, uid)) return;
         const preflight = await client.begin(uid);
         if (!current(version, uid)) return;
         if (preflight.productId !== APPLE_MONTHLY_PRODUCT) throw new Error("Subscription product is unavailable.");
-        awaitingPurchase = true;
+        awaitingPurchase = owner;
         await store.requestPurchase({ type: "subs", request: { apple: { sku: preflight.productId,
           appAccountToken: preflight.appAccountToken, andDangerouslyFinishTransactionAutomatically: false } } });
       });
