@@ -8,7 +8,7 @@ import { isAbsolute } from "node:path";
 import { readLinuxKeyFile, type LinuxReleaseConfig } from "./linux-release-config";
 import type { AptPublicationStorage } from "./linux-apt-publication";
 
-const worker = String.raw`
+export const linuxAptStorageWorker = String.raw`
 import os, sys, json, base64, fcntl, stat, uuid
 root_path = sys.argv[1]
 flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
@@ -107,7 +107,7 @@ export class FilesystemAptStorage implements AptPublicationStorage {
   constructor(readonly root: string, readonly python = "/usr/bin/python3") {
     if (!isAbsolute(root) || root.includes("/../") || root.endsWith("/..")) throw new Error("Archive root must be an absolute canonical path.");
   }
-  protected helperCommand(): [string, string[]] { return [this.python, ["-u", "-c", worker, this.root]]; }
+  protected helperCommand(): [string, string[]] { return [this.python, ["-u", "-c", linuxAptStorageWorker, this.root]]; }
   async withExclusivePublication<T>(work: () => Promise<T>): Promise<T> {
     if (this.active) throw new Error("Archive publication is already owned by this adapter.");
     this.active = true;
@@ -179,25 +179,29 @@ export interface SshAptTransport {
   host: string; user: string; port: number; knownHostsPath: string; identityPath: string;
 }
 const quote = (value: string) => "'" + value.replace(/'/g, "'\"'\"'") + "'";
-/** One SSH exec channel carries the existing helper protocol for the entire
- * ownership scope. No secondary connection, copy job or remote signer. */
-export class SshAptStorage extends FilesystemAptStorage {
-  constructor(root: string, readonly transport: SshAptTransport) {
-    super(root);
+export function pinnedLinuxSshCommand(transport: SshAptTransport, remoteCommand: string): [string, string[]] {
     if (!/^[A-Za-z0-9][A-Za-z0-9.-]*$/.test(transport.host) || !/^[a-z_][a-z0-9_-]*$/i.test(transport.user) || !Number.isInteger(transport.port) || transport.port < 1 || transport.port > 65535) throw new Error("Invalid pinned SSH endpoint.");
     for (const path of [transport.knownHostsPath, transport.identityPath]) {
       if (!isAbsolute(path) || /[\r\n\0%$]/.test(path)) throw new Error("SSH pin and identity paths must be absolute literal paths without SSH expansion tokens.");
       readLinuxKeyFile(path, true);
     }
-  }
-  protected override helperCommand(): [string, string[]] {
-    const t = this.transport;
+    const t = transport;
     return ["/usr/bin/ssh", ["-F", "/dev/null", "-T", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes",
       "-o", `UserKnownHostsFile="${t.knownHostsPath.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`, "-o", "GlobalKnownHostsFile=/dev/null", "-o", "UpdateHostKeys=no",
       "-o", "IdentitiesOnly=yes", "-o", "IdentityAgent=none", "-o", "ForwardAgent=no", "-o", "ClearAllForwardings=yes",
       "-o", "ControlMaster=no", "-o", "ControlPath=none", "-o", "ConnectTimeout=15", "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=2",
       "-i", t.identityPath, "-p", String(t.port), "-l", t.user, "--", t.host,
-      ["/usr/bin/python3", "-u", "-c", worker, this.root].map(quote).join(" ")]];
+      remoteCommand]];
+}
+/** One SSH exec channel carries the existing helper protocol for the entire
+ * ownership scope. No secondary connection, copy job or remote signer. */
+export class SshAptStorage extends FilesystemAptStorage {
+  constructor(root: string, readonly transport: SshAptTransport) {
+    super(root);
+    pinnedLinuxSshCommand(transport, "");
+  }
+  protected override helperCommand(): [string, string[]] {
+    return pinnedLinuxSshCommand(this.transport, ["/usr/bin/python3", "-u", "-c", linuxAptStorageWorker, this.root].map(quote).join(" "));
   }
 }
 export function linuxArchiveStorage(config: LinuxReleaseConfig): FilesystemAptStorage {

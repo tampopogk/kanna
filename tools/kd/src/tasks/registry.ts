@@ -1,3 +1,4 @@
+import { setupLinuxArchive, linuxArchiveSetupInputSchema } from "../runtime/linux-archive-setup";
 import { prepareLinuxRelease } from "../runtime/linux-release-prepare";
 import { spawn } from "node:child_process";
 import { readFile } from "node:fs/promises";
@@ -3203,6 +3204,16 @@ export const taskDefinitions = [
       const context = await resolveDefaultContext(process.env);
       const outputs = buildConfigSchemaPages({ repoRoot: context.repoRoot, outDir: resolve(context.repoRoot, parsed.outDir) });
       return { ok: true, message: outputs.join("\n"), data: { outputs } };
+    }
+  },
+  {
+    id: "release.setup-linux",
+    description: "Inspect, plan or apply scoped apt hosting on the existing staging relay; no relay build, VM, IAM or production changes.",
+    inputSchema: linuxArchiveSetupInputSchema,
+    execute: async (_context, input) => {
+      const context = await resolveDefaultContext(process.env);
+      const result = await setupLinuxArchive({ repoRoot: context.repoRoot, env: context.env, runner: nodeCommandRunner }, linuxArchiveSetupInputSchema.parse(input));
+      return { ok: true, message: formatJsonResult(result), data: result };
     }
   },
   {

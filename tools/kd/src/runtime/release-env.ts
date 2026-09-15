@@ -189,6 +189,7 @@ function writeMachineSelectors(input: {
   homeDir: string;
   selectorKeys: Set<string>;
   selectorLabel: string;
+  refuseDifferentExisting?: boolean;
   assignments: [string, string][];
   /** @internal Test-only synchronization for deterministic filesystem races. */
   testSynchronization?: ReleaseEnvironmentTestSynchronization;
@@ -224,6 +225,7 @@ function writeMachineSelectors(input: {
   validateDotenv(source, envPath);
   const parsed = definedEnvironment(parseEnv(source));
   validateReleaseEnvironmentFile(parsed, envPath);
+  if (input.refuseDifferentExisting && input.assignments.some(([key, value]) => parsed[key] !== undefined && parsed[key] !== value)) throw new Error("Existing Linux selectors differ; no implicit archive repointing.");
   for (const key of input.selectorKeys) {
     if (parsed[key]?.includes("\n") || parsed[key]?.includes("\r")) {
       throw new Error(`Invalid multiline ${input.selectorLabel} selector ${key} in ${envPath}.`);
@@ -253,6 +255,13 @@ function writeMachineSelectors(input: {
     testSynchronization: input.testSynchronization
   });
   return envPath;
+}
+
+/** Linux setup writes only its own non-secret path/identity selectors. */
+export function writeMachineLinuxSelectors(homeDir: string, assignments: [string, string][]): string {
+  const allowed = new Set(["KANNA_LINUX_ARCHIVE_BACKEND", "KANNA_LINUX_ARCHIVE_ROOT", "KANNA_LINUX_ARCHIVE_BASE_URL", "KANNA_LINUX_ARCHIVE_VALID_HOURS", "KANNA_LINUX_SSH_HOST", "KANNA_LINUX_SSH_USER", "KANNA_LINUX_SSH_PORT", "KANNA_LINUX_SSH_KNOWN_HOSTS_PATH", "KANNA_LINUX_SSH_IDENTITY_PATH", "KANNA_LINUX_APT_PUBLIC_KEY_PATH", "KANNA_LINUX_APT_FINGERPRINT", "KANNA_LINUX_APT_PRIVATE_KEY_PATH", "KANNA_LINUX_APT_PASSPHRASE_PATH"]);
+  if (assignments.length !== allowed.size || new Set(assignments.map(([k]) => k)).size !== allowed.size || assignments.some(([k, v]) => !allowed.has(k) || /[\r\n\0]/.test(v))) throw new Error("Invalid Linux setup selectors.");
+  return writeMachineSelectors({ homeDir, selectorKeys: allowed, selectorLabel: "Linux", assignments, refuseDifferentExisting: true });
 }
 
 export function writeMachineNotarizationSelectors(input: {
