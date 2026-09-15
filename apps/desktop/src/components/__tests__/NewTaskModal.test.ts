@@ -508,6 +508,114 @@ describe("NewTaskModal", () => {
     expect(selectedAgentLabel(wrapper)).toBe("claude");
   });
 
+  it.each([
+    { key: "]", expectedProvider: "claude" },
+    { key: "}", expectedProvider: "claude" },
+    { key: "[", expectedProvider: "codex" },
+    { key: "{", expectedProvider: "codex" },
+  ])("cycles providers with Cmd+Shift+$key when the focused model input keydown is already cancelled", async ({ key, expectedProvider }) => {
+    const wrapper = mount(NewTaskModal, {
+      props: {
+        repoId: "repo-local",
+        defaultAgentProvider: "opencode",
+        availableAgentProviders: ["claude", "codex", "opencode"],
+      },
+      global: { mocks: { $t: (translationKey: string) => translationKey } },
+    });
+
+    await flushPromises();
+    const modelInput = wrapper.get('[aria-label="OpenCode model"]');
+    await modelInput.setValue("local/qwen-coder");
+    const blur = vi.spyOn(modelInput.element as HTMLInputElement, "blur");
+
+    for (const nativeKey of ["ArrowDown", "Enter", "Escape"]) {
+      const nativeKeydown = new KeyboardEvent("keydown", {
+        key: nativeKey,
+        bubbles: true,
+        cancelable: true,
+      });
+      nativeKeydown.preventDefault();
+      modelInput.element.dispatchEvent(nativeKeydown);
+    }
+    await flushPromises();
+    expect(selectedAgentLabel(wrapper)).toBe("opencode");
+    expect(wrapper.emitted("submit")).toBeUndefined();
+    expect(wrapper.emitted("cancel")).toBeUndefined();
+
+    const keydown = new KeyboardEvent("keydown", {
+      key,
+      metaKey: true,
+      shiftKey: true,
+      bubbles: true,
+      cancelable: true,
+    });
+    keydown.preventDefault();
+    modelInput.element.dispatchEvent(keydown);
+    await flushPromises();
+
+    expect(selectedAgentLabel(wrapper)).toBe(expectedProvider);
+    expect(blur).toHaveBeenCalledOnce();
+  });
+
+  it("keeps a cancelled Cmd+Enter from submitting through the focused model input", async () => {
+    const wrapper = mount(NewTaskModal, {
+      props: {
+        repoId: "repo-local",
+        defaultAgentProvider: "opencode",
+        availableAgentProviders: ["opencode"],
+        baseBranches: ["origin/main"],
+      },
+      global: { mocks: { $t: (key: string) => key } },
+    });
+
+    await flushPromises();
+    await wrapper.get("textarea").setValue("Keep the original submit guard");
+    const modelInput = wrapper.get('[aria-label="OpenCode model"]');
+    const keydown = new KeyboardEvent("keydown", {
+      key: "Enter",
+      metaKey: true,
+      bubbles: true,
+      cancelable: true,
+    });
+    keydown.preventDefault();
+    modelInput.element.dispatchEvent(keydown);
+    await flushPromises();
+
+    expect(wrapper.emitted("submit")).toBeUndefined();
+  });
+
+  it("retains the chosen OpenCode model after cycling through other providers", async () => {
+    const wrapper = mount(NewTaskModal, {
+      props: {
+        repoId: "repo-local",
+        defaultAgentProvider: "opencode",
+        availableAgentProviders: ["claude", "codex", "opencode"],
+        baseBranches: ["origin/main"],
+      },
+      global: { mocks: { $t: (key: string) => key } },
+    });
+
+    await flushPromises();
+    await wrapper.get('[aria-label="OpenCode model"]').setValue("custom/backend-model");
+    for (let cycle = 0; cycle < 3; cycle += 1) {
+      await wrapper.get(".modal").trigger("keydown", {
+        key: "]",
+        metaKey: true,
+        shiftKey: true,
+      });
+      await flushPromises();
+    }
+
+    expect(selectedAgentLabel(wrapper)).toBe("opencode");
+    expect((wrapper.get('[aria-label="OpenCode model"]').element as HTMLInputElement).value).toBe("custom/backend-model");
+
+    await wrapper.get("textarea").setValue("Keep the selected model");
+    await wrapper.get("textarea").trigger("keydown", { key: "Enter", metaKey: true });
+    expect(wrapper.emitted("submit")?.at(-1)).toEqual([
+      "Keep the selected model", "opencode", "no-review", "origin/main", "pty", [], "custom/backend-model",
+    ]);
+  });
+
   it("emits the selected base branch on submit", async () => {
     const wrapper = mount(NewTaskModal, {
       props: {

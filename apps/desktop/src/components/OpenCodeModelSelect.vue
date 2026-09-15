@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, useId, watch } from "vue";
+import { computed, onBeforeUnmount, ref, useId, watch } from "vue";
 import { fetchDesktopOpenCodeModels, type OpenCodeModelOption } from "../services/desktopServerClient";
 
 const props = defineProps<{ repoId?: string; modelValue: string }>();
@@ -7,6 +7,7 @@ const emit = defineEmits<{ "update:modelValue": [value: string] }>();
 const models = ref<OpenCodeModelOption[]>([]);
 const error = ref("");
 const loading = ref(false);
+const inputRef = ref<HTMLInputElement | null>(null);
 const listId = useId();
 const selected = computed(() => models.value.find(model => model.id === props.modelValue));
 let revision = 0;
@@ -30,7 +31,21 @@ async function load() {
   }
 }
 
+function handleInput(event: Event) {
+  emit("update:modelValue", (event.target as HTMLInputElement).value.trim());
+}
+
+function handleChange(event: Event) {
+  const input = event.currentTarget as HTMLInputElement;
+  if (models.value.some(model => model.id === input.value.trim())) input.blur();
+}
+
 watch(() => props.repoId, load, { immediate: true });
+
+// WebKit renders datalist suggestions in a native overlay. Dismiss it while
+// the input still exists so changing away from OpenCode cannot leave that
+// overlay composited over the next provider's form.
+onBeforeUnmount(() => inputRef.value?.blur());
 </script>
 
 <template>
@@ -38,12 +53,14 @@ watch(() => props.repoId, load, { immediate: true });
     <label :for="`${listId}-input`">OpenCode model</label>
     <div class="model-input">
       <input
+        ref="inputRef"
         :id="`${listId}-input`"
         :list="listId"
         :value="modelValue"
         placeholder="Native default, or backend/model"
         aria-label="OpenCode model"
-        @input="emit('update:modelValue', ($event.target as HTMLInputElement).value.trim())"
+        @input="handleInput"
+        @change="handleChange"
       />
       <button type="button" :disabled="loading || !repoId" @click="load">Refresh</button>
     </div>

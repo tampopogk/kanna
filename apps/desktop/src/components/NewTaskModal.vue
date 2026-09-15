@@ -41,7 +41,6 @@ const emit = defineEmits<{
 const prompt = ref("");
 const model = ref("");
 const agentProvider = ref<AgentProvider>(props.defaultAgentProvider ?? "claude");
-watch(() => agentProvider.value, () => { model.value = ""; });
 const workflowOptions = computed(() => {
   if (props.workflows && props.workflows.length > 0) return props.workflows;
   return ["no-review"];
@@ -358,16 +357,6 @@ function handleWorkflowOptionKeydown(e: KeyboardEvent, index: number) {
 }
 
 function handleKeydown(e: KeyboardEvent) {
-  if (e.defaultPrevented) {
-    return;
-  }
-
-  if (isSubmitShortcut(e)) {
-    e.preventDefault();
-    handleSubmit();
-    return;
-  }
-
   // The tab-cycle chord switches agent provider while this modal owns it.
   if (isShortcutAction("prevTab", e)) {
     e.preventDefault();
@@ -381,6 +370,20 @@ function handleKeydown(e: KeyboardEvent) {
     cycleAgentChoice(1);
     return;
   }
+
+  // Provider cycling belongs to this modal even when an input descendant has
+  // already cancelled the event. Preserve the existing guard for every other
+  // key, including submit and native input navigation.
+  if (e.defaultPrevented) {
+    return;
+  }
+
+  if (isSubmitShortcut(e)) {
+    e.preventDefault();
+    handleSubmit();
+    return;
+  }
+
   if (e.key === "Escape") {
     e.preventDefault();
     emit("cancel");
