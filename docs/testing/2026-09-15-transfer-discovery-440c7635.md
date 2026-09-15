@@ -551,3 +551,25 @@ daemon emitted no ID. The established failure boundary remains the source's
 empty context export; missing ID capture versus late persistence is unresolved.
 No broader model audit, DB access, synthetic fixture, or speculative export fix
 was introduced to fill that evidence gap.
+
+## Native LAN and competing-route checkpoint (bd2c8bd2c)
+
+Both endpoints became ready with native mDNS discovery on `bd2c8bd2c`. Public
+peer endpoints were Studio `192.168.1.165:4465` and MBP `192.168.1.207:4502`,
+both `lan_discovered=true`, protocol 5, pid 0, and trusted/transferable after
+ordinary cloud convergence. CLI TCP connected in both directions. These prove
+discovery and CLI connectivity, not successful transfer protocol execution by
+the owned sidecar.
+
+Acceptance issued one MBP-initiated explicit-LAN pull of Studio task `02ff…`.
+It returned HTTP 502 with a 41-byte body; the exact error text remained pending.
+No source outgoing transfer or new input appeared, and the source ledger stayed
+at 13. No LAN retry was made.
+
+Acceptance then prepared an independent fresh MBP-initiated forced-cloud pull
+with LAN present. This can test both signed pull-route propagation and the
+persisted return route against a real alternative route. The current Studio
+source natively resumed session `01a0a6f7-0925-79c2-adc2-f9ad4df42d4a`, and one
+new private nonce was generated after idle. This remains the existing fixture;
+no additional model fixture was created. Transfer and recall outcomes are
+pending, independently of the preceding LAN error.
