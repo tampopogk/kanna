@@ -843,8 +843,10 @@ describe("task executors", () => {
     expect(calls.filter((call) => call.command === "tmux").map((call) => call.args[2])).toEqual([
       "list-windows",
       "set-option",
+      "display-message",
       "respawn-window",
-      "list-windows"
+      "display-message",
+      "display-message"
     ]);
     expect(respawnCall).toMatchObject({
       command: "tmux",
@@ -905,6 +907,59 @@ describe("task executors", () => {
     expect(respawnCall?.env?.KANNA_DESKTOP_AUTO_SIGN_IN_PASSWORD).toBe("do-not-print");
     expect(respawnCall?.args.join(" ")).not.toContain("do-not-print");
     expect(respawnCall?.args.join(" ")).not.toContain("dev@example.com");
+  });
+
+  it("reports an exited replacement desktop pane as a restart failure", async () => {
+    const repoRoot = await kdTestScratchDir("kanna-kd-restart-exit-");
+    await mkdir(join(repoRoot, "apps", "desktop", "src-tauri"), { recursive: true });
+    let stateReads = 0;
+    const runner: CommandRunner = {
+      async run(_command, args) {
+        if (args.includes("list-windows")) {
+          return { exitCode: 0, stdout: "desktop\n", stderr: "" };
+        }
+        if (args.includes("capture-pane")) {
+          return { exitCode: 0, stdout: "error: address already in use 127.0.0.1:1421\n", stderr: "" };
+        }
+        if (args.at(-1) === "#{pane_pid} #{pane_dead}") {
+          return { exitCode: 0, stdout: "", stderr: "" };
+        }
+        if (args.at(-1) === "#{pane_dead} #{pane_dead_status}") {
+          stateReads += 1;
+          return stateReads === 1
+            ? { exitCode: 0, stdout: "0 \n", stderr: "" }
+            : { exitCode: 0, stdout: "1 1\n", stderr: "" };
+        }
+        return { exitCode: 0, stdout: "", stderr: "" };
+      }
+    };
+
+    const result = await executeDevRestartWithContext(
+      {
+        component: "desktop",
+        mobile: false,
+        emulators: false,
+        seed: false,
+        attach: false,
+        deleteDb: false,
+        killDaemon: false,
+        staging: false,
+        production: false
+      },
+      {
+        runner,
+        context: {
+          repoRoot,
+          tmux: { server: "kanna-task-abc", session: "kanna-task-abc" },
+          ports: { KANNA_DEV_PORT: 1421, KANNA_MOBILE_PORT: 8084 },
+          env: { KANNA_DEV_PORT: "1421", KANNA_MOBILE_PORT: "8084" }
+        }
+      }
+    );
+
+    expect(result).toMatchObject({ ok: false });
+    expect(result.message).toContain("tmux pane exited during startup with exit code 1");
+    expect(result.message).toContain("address already in use 127.0.0.1:1421");
   });
 
   it("injects dev emulator desktop credentials on dev desktop restart", async () => {
@@ -993,7 +1048,13 @@ describe("task executors", () => {
 
     expect(result.ok).toBe(true);
     const respawnCall = calls.find((call) => call.args.includes("respawn-window"));
-    expect(calls.map((call) => call.args[2])).toEqual(["list-windows", "set-option", "respawn-window", "list-windows"]);
+    expect(calls.map((call) => call.args[2])).toEqual([
+      "list-windows",
+      "set-option",
+      "display-message",
+      "respawn-window",
+      "display-message"
+    ]);
     expect(respawnCall?.args).toEqual(
       expect.arrayContaining(["respawn-window", "-t", "kanna-task-abc:mobile", "-c", "/repo/apps/mobile"])
     );
