@@ -1,5 +1,11 @@
 # Linux A/B artifacts complete; ARM upgrade gate failed
 
+**Update:** the original failed run below is retained. The separately corrected
+controller passed canonical ARM acceptance (17/17) against these unchanged A/B
+artifacts. See [correction, exact identities and raw evidence](2026-09-15-linux-upgrade-harness-correction.md).
+No x86/floor, system-transfer, publication or soak claim follows from that pass.
+
+
 Ship task `d3ce8dec`. No publication, public archive/key setup or soak started.
 Supersedes the earlier preparation/configuration blocker reports.
 

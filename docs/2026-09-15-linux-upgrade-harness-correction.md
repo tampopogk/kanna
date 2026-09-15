@@ -56,6 +56,53 @@ No product rebuild, release publication, promotion, or soak has occurred.
 
 ## Corrected ARM execution
 
-Pending explicit VM handoff from acceptance `641dbb6f`. Its live fixture must
-not be interrupted. Exact A/B artifacts already on the guest will be reused;
-controller changes will be applied and recorded independently of B source.
+**PASS: canonical exit 0, 17/17 assertions (11 installed + 6 upgrade).**
+Executed 2026-09-15T10:16Z after acceptance explicitly released the VM.
+Tested controller commit `3b48f812f`; the guest retains exact B as its Git base
+plus the independently recorded controller patch, SHA256
+`b4f7ded3bb2d1507a5b1d8ad2350d42620cd2c0e8ef0d84e002a8163e8b144ac`.
+Both existing ARM deb hashes were checked immediately before canonical `kd`.
+No product source or artifact changed.
+
+| Identity | A / before restart | B / after restart |
+|---|---|---|
+| Supervisor PID / start ticks | 144126 / 8506744 | 144575 / 8507090 |
+| Daemon PID / start ticks | 144135 / 8506746 | 144584 / 8507092 |
+| Agent PID / start ticks | 144307 / 8506803 | 144307 / 8506803 |
+| Task / run | bc81424a / run-bc81424a-1789467384400632547 | unchanged |
+| Branch | task-bc81424a | unchanged |
+
+The worktree remained the same task-owned fixture path. Apt replacement left
+the original daemon and agent alive; `/proc` showed the original binaries as
+`(deleted)` until operator restart. The successor then ran the new installed
+executable, the old daemon exited, and the agent remained the same process.
+One post-upgrade message appeared once in the agent trace and once in the
+input ledger, linked to the original run; completion retained that run and
+emitted `run.finished`.
+
+Runtime chronology: initial observed busy event at 10:16:24.718Z; API busy at
+24.728Z; after-restart HTTP snapshot already busy at 28.120Z. The subsequent
+10-second event wait returned an empty batch and the API remained busy at
+38.164Z. No fresh edge was fabricated, and no null occurred in this corrected
+fixture run. This proves observed-state continuity for the measured fixture;
+it does not retrospectively relabel the original generic-fixture failure.
+
+Raw timestamped API/events/ledger and process identities, final JSON assertion
+report, journals, exact controller patch and launcher are committed in
+`docs/evidence/2026-09-15-linux-bootstrap/arm-corrected/`. Full private synthetic
+runtime files are retained only under task-owned `.tmp` and on the guest.
+The workflow upload allow-list excludes those runtime files and generated
+credentials; this CI-only retention adjustment followed the ARM run.
+
+Cleanup passed in the harness: unique units removed and cgroups emptied even
+after package removal. The test-owned root manager and runtime directory are
+inactive again. `kanna-staging` is absent because the canonical removal test
+removed it; both verified debs remain on the guest. Free space 2,555,555,840
+bytes. VM explicitly released to acceptance `641dbb6f`, with its private data
+untouched. No owned process remains.
+
+This is ARM Ubuntu 26.04.1 synthetic-provider coverage, not Ubuntu 24.04 floor,
+x86 acceptance, live transfer, publication, or soak. Those gates remain open.
+Next bounded action: assess this controller patch/result, then make the exact
+validation bundle available to the prepared CI lane and dispatch the reviewed
+controller ref. Public release/archive setup stays held.
