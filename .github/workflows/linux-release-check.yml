@@ -30,12 +30,12 @@ on:
   workflow_call:
   workflow_dispatch:
     inputs:
-      prepared_pair_url:
-        description: HTTPS URL of the exact stamped bootstrap A/B tar (no build; manifests pinned in repo)
+      prepared_pair_asset_id:
+        description: GitHub draft validation asset ID for the exact stamped A/B tar (no build)
         type: string
         required: false
       prepared_pair_sha256:
-        description: SHA256 of that tar; required with prepared_pair_url
+        description: SHA256 of that tar; required with prepared_pair_asset_id
         type: string
         required: false
       apt_interop_only:
@@ -82,7 +82,7 @@ concurrency:
 
 jobs:
   apt-interop:
-    if: ${{ !inputs.prepared_pair_url }}
+    if: ${{ !inputs.prepared_pair_asset_id }}
     strategy:
       fail-fast: false
       matrix:
@@ -107,7 +107,7 @@ jobs:
         run: pnpm --dir tools/kd exec tsx tests/linux-apt-interop.ts
 
   build:
-    if: ${{ !inputs.apt_interop_only && !inputs.prepared_pair_url }}
+    if: ${{ !inputs.apt_interop_only && !inputs.prepared_pair_asset_id }}
     # Native parity for the same Bazel graph used by the macOS cross builder.
     strategy:
       fail-fast: false
@@ -176,7 +176,7 @@ jobs:
   # before any install is attempted. It does not run the installed lane itself
   # yet, and it changes nothing about the `build` job's own output.
   installed-check-prerequisites:
-    if: ${{ !inputs.apt_interop_only && !inputs.prepared_pair_url }}
+    if: ${{ !inputs.apt_interop_only && !inputs.prepared_pair_asset_id }}
     strategy:
       fail-fast: false
       matrix:
@@ -327,7 +327,7 @@ jobs:
   # Controller source is this checkout. Product bytes are the independently
   # collected, stamped pair, pinned in the committed evidence manifests.
   prepared-upgrade:
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.prepared_pair_url != '' }}
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.prepared_pair_asset_id != '' }}
     strategy:
       fail-fast: false
       matrix:
@@ -347,12 +347,13 @@ jobs:
           cache: pnpm
       - name: Fetch and verify the exact prepared pair (no rebuild)
         env:
-          PAIR_URL: ${{ inputs.prepared_pair_url }}
+          PAIR_ASSET_ID: ${{ inputs.prepared_pair_asset_id }}
+          GH_TOKEN: ${{ github.token }}
           PAIR_SHA256: ${{ inputs.prepared_pair_sha256 }}
         run: |
           mkdir -p .tmp/prepared-upgrade
           [[ "$PAIR_SHA256" =~ ^[0-9a-f]{64}$ ]]
-          curl --fail --location --proto '=https' --proto-redir '=https' "$PAIR_URL" -o .tmp/prepared-upgrade/pair.tar
+          python3 tests/linux-installed/fetch-prepared-pair.py .tmp/prepared-upgrade/pair.tar
           printf '%s  %s\n' "$PAIR_SHA256" .tmp/prepared-upgrade/pair.tar | sha256sum --check --strict
           python3 tests/linux-installed/verify-prepared-pair.py .tmp/prepared-upgrade/pair.tar .tmp/prepared-upgrade/packages
       - name: Confirm real host prerequisites

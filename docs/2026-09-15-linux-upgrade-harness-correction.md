@@ -106,3 +106,20 @@ x86 acceptance, live transfer, publication, or soak. Those gates remain open.
 Next bounded action: assess this controller patch/result, then make the exact
 validation bundle available to the prepared CI lane and dispatch the reviewed
 controller ref. Public release/archive setup stays held.
+
+
+## Authenticated validation transport
+
+The owner authorized a temporary **draft** GitHub validation release containing
+only the exact tar above. The prepared workflow now takes
+`prepared_pair_asset_id`, not an arbitrary URL. The job's contents-read token
+is sent only to the fixed `api.github.com/repos/tampopogk/kanna/releases/assets/`
+endpoint. Automatic redirects are disabled; only HTTPS GitHub asset-storage
+hosts are accepted, with a new unauthenticated request. Draft permission errors
+fail closed and never publish the draft. The tar digest and all four manifest
+checks remain mandatory. Five focused transport tests passed.
+
+The controller push uses `[skip ci]` to honor the explicit instruction not to
+rebuild unchanged packages. The new transport must be reviewed before the
+separate prepared-pair dispatch. This is validation transport, not a published
+Linux product, channel update or start of soak.
