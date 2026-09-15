@@ -1,0 +1,63 @@
+{
+  "artifacts": [
+    {
+      "label": "A",
+      "sourceRevision": "5cefcfdfec4ba35b400ff32ae7992639257211a6",
+      "sourceTree": "b9dc0f445cca4a4c9771c858c28b70f044df1d89",
+      "architecture": "x86_64",
+      "version": "0.2.0~staging.1-1",
+      "path": "/Users/jeremyhale/.kanna/repos/kanna-2/.kanna-worktrees/task-d3ce8dec/.build/linux-prepared/5cefcfdfec4ba35b400ff32ae7992639257211a6-staging.1/kanna-staging_0.2.0~staging.1-1_amd64.deb",
+      "bytes": 44438078,
+      "installedKiB": 137256,
+      "sha256": "3c70fa85ecd2c5478896b85dfc918cbc194aa9968c7c12e9a775cfed1ab6b794",
+      "reportSha256": "cd09fc0c4c85fb50fc7a4d9ea5af93fcdba9f223d6ac052d5d5df4adc78d9aee",
+      "verifiedExecutableHashes": 8
+    },
+    {
+      "label": "A",
+      "sourceRevision": "5cefcfdfec4ba35b400ff32ae7992639257211a6",
+      "sourceTree": "b9dc0f445cca4a4c9771c858c28b70f044df1d89",
+      "architecture": "arm64",
+      "version": "0.2.0~staging.1-1",
+      "path": "/Users/jeremyhale/.kanna/repos/kanna-2/.kanna-worktrees/task-d3ce8dec/.build/linux-prepared/5cefcfdfec4ba35b400ff32ae7992639257211a6-staging.1/kanna-staging_0.2.0~staging.1-1_arm64.deb",
+      "bytes": 43735536,
+      "installedKiB": 125220,
+      "sha256": "7948b9609928cf8ab35cb152fd6e61d58ed2059cd4dfa3f40efa922879a6e913",
+      "reportSha256": "dd32971121afcc790586ad8ca935f692a31996fcf7382f6e8d266309fc58eafd",
+      "verifiedExecutableHashes": 8
+    },
+    {
+      "label": "B",
+      "sourceRevision": "a9df2f1d46fb08bcf53200b738e0fdc3c127b636",
+      "sourceTree": "3415e82f8a273b6ff94494d367139038eb026a62",
+      "architecture": "x86_64",
+      "version": "0.2.0~staging.2-1",
+      "path": "/Users/jeremyhale/.kanna/repos/kanna-2/.kanna-worktrees/task-d3ce8dec/.build/linux-prepared/a9df2f1d46fb08bcf53200b738e0fdc3c127b636-staging.2/kanna-staging_0.2.0~staging.2-1_amd64.deb",
+      "bytes": 44493092,
+      "installedKiB": 137375,
+      "sha256": "2dca964a748a2058c7b52fc453f6907788ba03e8e02f26836dfd8ee830aacee4",
+      "reportSha256": "d4300eac624f4295c920ef0936b670ec48dc933379c609f2545c67056b7cdfd2",
+      "verifiedExecutableHashes": 8
+    },
+    {
+      "label": "B",
+      "sourceRevision": "a9df2f1d46fb08bcf53200b738e0fdc3c127b636",
+      "sourceTree": "3415e82f8a273b6ff94494d367139038eb026a62",
+      "architecture": "arm64",
+      "version": "0.2.0~staging.2-1",
+      "path": "/Users/jeremyhale/.kanna/repos/kanna-2/.kanna-worktrees/task-d3ce8dec/.build/linux-prepared/a9df2f1d46fb08bcf53200b738e0fdc3c127b636-staging.2/kanna-staging_0.2.0~staging.2-1_arm64.deb",
+      "bytes": 43811392,
+      "installedKiB": 125419,
+      "sha256": "ab5dec3dc5b4d6902449dad490a8d38bd3a1fa6d759682b7963c7dc4ea077c3d",
+      "reportSha256": "33172cf9e89d4df7d802207a4e2fd7ea2bf644d936c06912815ab48bfc304c5f",
+      "verifiedExecutableHashes": 8
+    }
+  ],
+  "vmSpaceBudget": {
+    "armDebBytes": 87546928,
+    "bothInstalledBytes": 256858112,
+    "sourceArchiveBytes": 28654028,
+    "dependencyHarnessTransientAllowanceBytes": 2147483648,
+    "requiredBytes": 2520542716
+  }
+}

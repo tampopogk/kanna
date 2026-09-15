@@ -1,0 +1,15 @@
+owned-test-daemon-cgroup
+0::/user.slice/user-0.slice/user@0.service/app.slice/kanna-installed-test-135810.service
+root-sessions
+  1 1000 jeremy -     1371   manager       -    no -
+123    0 root   -     130151 manager-early -    no -
+  6 1000 jeremy seat0 3490   user          tty2 no -
+stopping-owned-root-manager
+Warning: The unit file, source configuration file or drop-ins of user@0.service changed on disk. Run 'systemctl daemon-reload' to reload units.
+Warning: The unit file, source configuration file or drop-ins of user-runtime-dir@0.service changed on disk. Run 'systemctl daemon-reload' to reload units.
+after-manager
+inactive
+after-runtime
+inactive
+remaining-kanna
+remaining-unique-units
