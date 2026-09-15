@@ -91,6 +91,10 @@ where
             read = sidecar.read(&mut buffer) => {
                 let count = read?;
                 if count == 0 {
+                    // SecureTransport may accept plaintext while ciphertext is
+                    // still buffered. Closing the websocket drives that tail
+                    // out before its TLS stream is dropped.
+                    websocket.close(None).await?;
                     break;
                 }
                 websocket
@@ -335,6 +339,96 @@ mod tests {
             .expect("bridge task panicked")
             .expect_err("text data frame must fail");
         assert!(matches!(error, super::TunnelError::UnexpectedTextFrame));
+    }
+
+    #[tokio::test]
+    #[cfg(target_os = "macos")]
+    async fn source_eof_preserves_artifact_tail_over_native_tls_backpressure() {
+        let certificate = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
+        let key = rustls::pki_types::PrivatePkcs8KeyDer::from(certificate.key_pair.serialize_der());
+        let server_config = rustls::ServerConfig::builder_with_provider(std::sync::Arc::new(
+            rustls::crypto::ring::default_provider(),
+        ))
+        .with_safe_default_protocol_versions()
+        .unwrap()
+        .with_no_client_auth()
+        .with_single_cert(vec![certificate.cert.der().clone()], key.into())
+        .unwrap();
+        let connector = native_tls::TlsConnector::builder()
+            .add_root_certificate(
+                native_tls::Certificate::from_der(certificate.cert.der()).unwrap(),
+            )
+            .build()
+            .unwrap();
+        // A small transport buffer forces SecureTransport to retain ciphertext
+        // after accepting application bytes, as a real congested socket can.
+        let (client_io, server_io) = tokio::io::duplex(1024);
+        let (client, mut relay) = tokio::join!(
+            async {
+                tokio_tungstenite::client_async_tls_with_config(
+                    "wss://localhost/",
+                    client_io,
+                    None,
+                    Some(tokio_tungstenite::Connector::NativeTls(connector)),
+                )
+                .await
+                .unwrap()
+                .0
+            },
+            async {
+                let tls = tokio_rustls::TlsAcceptor::from(std::sync::Arc::new(server_config))
+                    .accept(server_io)
+                    .await
+                    .unwrap();
+                tokio_tungstenite::accept_async(tls).await.unwrap()
+            },
+        );
+        let (listener, port) = loopback_listener().await;
+        let bridge = tokio::spawn(super::bridge_task_transfer_tunnel(
+            client,
+            port,
+            "tls-tail".into(),
+        ));
+        relay
+            .send(Message::Text(
+                serde_json::json!({
+                    "type": "tunnel_ready", "desktopId": "source",
+                    "tunnelId": "tls-tail", "service": "task-transfer"
+                })
+                .to_string()
+                .into(),
+            ))
+            .await
+            .unwrap();
+        let mut producer = accept_sidecar(&listener).await;
+        let mut expected = vec![b'x'; 144 * 1024];
+        expected.push(b'\n');
+        let payload = expected.clone();
+        let writer = tokio::spawn(async move {
+            producer.write_all(&payload).await.unwrap();
+            producer.shutdown().await.unwrap();
+        });
+        let received = timeout(Duration::from_secs(5), async {
+            let mut bytes = Vec::new();
+            while let Some(Ok(frame)) = relay.next().await {
+                match frame {
+                    Message::Binary(chunk) => bytes.extend_from_slice(&chunk),
+                    Message::Close(_) => break,
+                    _ => {}
+                }
+            }
+            bytes
+        })
+        .await
+        .unwrap();
+        writer.await.unwrap();
+        bridge.await.unwrap().unwrap();
+        assert_eq!(
+            received.len(),
+            expected.len(),
+            "TLS close truncated the artifact tail"
+        );
+        assert_eq!(received, expected);
     }
 
     #[tokio::test]

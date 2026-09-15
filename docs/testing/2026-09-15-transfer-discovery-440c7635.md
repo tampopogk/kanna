@@ -3,8 +3,8 @@
 ## Result and attribution
 
 Implemented corrections for native macOS discovery, LAN provenance, cloud
-snapshot delivery, selected-route propagation, relay setup buffering, and fresh
-Codex session export. Focused regressions reproduce the defects and verify the
+snapshot delivery, selected-route propagation, relay setup buffering, fresh
+Codex session export, and native TLS response-tail delivery. Focused regressions reproduce the defects and verify the
 corrections. Acceptance task `641dbb6f` owns the preserved fixture and live
 readbacks; helper `074f03cc` owns MBP. Neither operator installation was tested.
 
@@ -24,7 +24,8 @@ Code checkpoints:
 | `36b60d29f` | Persist authenticated concrete return route | First cloud-only move and blind recall passed; reverse pull exposed setup-buffer rejection |
 | `bd2c8bd2c` | Cloud proxy backpressure and signed pull-route propagation | Cloud-only large-payload pull and cloud with LAN present completed; fresh-run context failed while known-session context passed |
 | `3169f78e0` | Discover fresh Codex rollout using existing recovery resolver; refuse unidentified empty export | Fresh native ID and artifact metadata appear in both payloads; import fails before destination task creation |
-| Diagnostic follow-up in this change | Distinguish artifact EOF from oversize and retain artifact/close-error attribution | Focused tests pass; underlying live closure is not yet explained |
+| `6d60544f8` | Distinguish artifact EOF from oversize and retain artifact/close-error attribution | Focused tests pass; not launched live |
+| TLS follow-up in this change | Close the source WebSocket before dropping its native TLS stream | Exact 131072-byte truncation reproduced locally and corrected; live rerun pending |
 
 The `bd2c8bd2c` tree is `0098dc14772796ad87614aa7e2fc652bda3b72f8`.
 Acceptance preserves endpoint-native titles, process paths, binary hashes,
@@ -176,8 +177,33 @@ available, and through both production Rust WebSocket bridges to source EOF.
 They do not exercise the deployed relay. Its public health reports commit
 `3ce0847d01af`; canonical local stats access required gcloud reauthentication,
 which was not performed. Acceptance coordinated existing read-only GCP access;
-bounded Cloud Logging and pinned-container searches found no matching tunnel
-entries. No underlying transport cause is claimed from this diagnostic gap.
+the first query incorrectly required tunnel UUIDs that this relay branch does not
+log. A corrected pinned-container query returned 22 connection-close rows for
+Studio's public desktop identity and the time window. Five server/phone pairs
+record exactly 131,072 response bytes. These records contain no close code and
+are not independently attributed per transfer. The sanitized packet is retained
+by acceptance as `docs/testing/evidence/2026-09-15-d96-relay-close-rows.json`.
+The initial empty query was a diagnostic setup fault, not evidence of no traffic.
+
+### 9. Native TLS loses the response tail when the source bridge drops it
+
+The source-side relay bridge broke out on sidecar EOF without closing its
+WebSocket. On macOS, SecureTransport can accept application bytes while retaining
+ciphertext internally; its stream flush delegates to the underlying transport.
+Dropping the stream at this point loses the buffered tail. The outbound proxy
+already closes its WebSocket on local EOF, but this source bridge did not.
+
+A regression runs the production source bridge through the actual native TLS
+backend, with a pinned local certificate, a local Rust TLS receiver, and a
+1,024-byte transport buffer to exercise backpressure. Before the correction,
+only 131,072 of 147,457 bytes arrived. The correction awaits WebSocket close on
+source EOF; the identical test then receives all bytes, including the final
+newline. This establishes a product defect independently of the live relay
+records and explains a mechanism consistent with their truncation boundary.
+It does not retrospectively turn those records into per-transfer attribution.
+The only added dependency declaration is macOS test-only `native-tls`, already
+used transitively by the production relay client. No relay deployment, trust,
+framing limit, retry or reservation lifetime changed.
 
 ## Live results and setup distinctions
 
@@ -191,7 +217,7 @@ entries. No underlying transport cause is claimed from this diagnostic gap.
 | bd2 fresh Studio cloud pull `994d942e…496cd` | Completed 21:26:42; large-payload transport passed | Fresh-session export/context FAILED; 3169 corrects payload contract but end-to-end recall remains untested |
 | bd2 MBP cloud pull `d3b6726d…a58b84`, LAN present | Completed 21:39:13; native known-session blind recall passed | Strongest new-nonce context evidence with competing routes |
 | bd2 MBP cloud push `59023c1d…8e351d`, LAN present | Completed 21:45:40; same session resumed | Return recall passed but Studio already held that session/nonce, so it cannot prove later MBP-only turns |
-| 3169 fresh Studio cloud push `d96ed586…0aa9` | Fresh ID/artifact contract correct; source exited; import attempts 1–6 failed before nominal expiry | Incoming claimed/local task absent as of 22:26:39; no destination resume/recall; artifact closure unresolved |
+| 3169 fresh Studio cloud push `d96ed586…0aa9` | Fresh ID/artifact contract correct; source exited; import attempts 1–6 failed before nominal expiry | Both records failed by 22:47:03; attempts 7–8 lacked the expired artifact reservation; no destination task or recall |
 | bd2 MBP explicit LAN pull | One prequeue HTTP502, NoRoute65 at 21:36:25.769683 | No move; no retry; LAN remains unaccepted |
 
 Completed known-session hops preserved workflow definitions, source input-ledger
@@ -213,10 +239,13 @@ preserved Studio fixture `c4f27c…3b3a5` was rerun through the supported API fo
 single 3169 fresh-session retest; no new model task was created. An initial MBP
 launch with the wrong task title and peer ID was stopped before any transfer or
 task input and is a setup fault, not a product result. The corrected destination
-registered Studio ordinarily by 22:13:26. The 3169 services remain available for
-the retained intent's natural settlement, with the source model already exited.
-Later TTL failures must not replace the six pre-expiry artifact errors. Acceptance
-owns final lifecycle/cleanup evidence; this fix task started no live allocations.
+registered Studio ordinarily by 22:13:26. The retained intent settled naturally: destination failed at 22:46:41 and source
+at 22:46:43, both cleanup lists empty and no imported task. The source remains
+open with its model exited and ledger 17 preserved. Attempts 7–8 failed the
+artifact reservation lookup after its nominal expiry; they do not replace the
+six pre-expiry response failures. Acceptance is stopping both allocations before
+one fresh same-fixture operation on the TLS candidate. This fix task started no
+live allocations.
 
 ## LAN diagnosis and precise next check
 
@@ -280,7 +309,12 @@ privacy reset, or operator-app test was used.
   paired Rust bridge EOF test pass. Logs are `.tmp/artifact-eof-{before,after}.log`,
   `.tmp/artifact-close-diagnostics.log`, `.tmp/cloud-only-artifact-128k.log`, and
   `.tmp/artifact-both-bridges.log`. These passing transport tests bound the
-  diagnosis; they are not a reproduction or correction of the live closure.
+  diagnosis; their plaintext transport did not exercise native TLS buffering.
+- Native TLS response-tail regression: red at exactly 131,072/147,457 bytes before,
+  green with complete bytes after. All seven source-tunnel tests and the paired
+  production-bridge EOF test pass. Logs: `.tmp/artifact-native-tls-before.log`,
+  `.tmp/artifact-native-tls-after.log`, `.tmp/artifact-native-tls-tunnel-suite.log`,
+  `.tmp/artifact-native-tls-paired-suite.log`.
 
 No broad build/visual matrix or production gate was substituted for these
 focused checks. Live fresh-session proof and LAN acceptance remain outstanding.

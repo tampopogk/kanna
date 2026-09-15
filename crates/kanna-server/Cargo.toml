@@ -66,3 +66,8 @@ tempfile = "3"
 # costs nothing takes minutes of the maintenance loop's time, not of the test
 # suite's. Same line as `crates/daemon`, which shares this bazel resolve.
 tokio = { version = "1", features = ["full", "test-util"] }
+
+[target.'cfg(target_os = "macos")'.dev-dependencies]
+# Exercise the production SecureTransport backend against a pinned local test
+# certificate; this is already the relay client's transitive TLS dependency.
+native-tls = "0.2"
