@@ -591,3 +591,18 @@ exported resume ID `01a0a6f7-0925-79c2-adc2-f9ad4df42d4a` and one Codex
 natively resumed that known session, providing a useful control against the
 earlier fresh run's null ID and empty artifacts. Final transfer acknowledgment
 and the helper's blind recall remained pending.
+
+Both transfer records completed at 21:39:13Z. Acceptance verified source task
+closure and absence of both source provider PIDs, matching WIP file bytes, equal
+workflow definitions, all 13 source input messages preserved as the destination
+ledger prefix, and empty cleanup candidates. At 21:43:50Z the parent read back
+the result of exactly one MBP blind recall after the normal current-directory
+chooser: its 12-character response hash matched the private Studio-generated
+nonce, with no value supplied in input. Known-session native context therefore
+passed this forced-cloud hop with LAN present.
+
+This success does not supersede the earlier fresh-run null-export/context
+failure. Explicit LAN remains unaccepted after its prequeue 502/NoRoute65.
+Acceptance delegated one final MBP-initiated forced-cloud push of task `19010…`
+back to Studio to complete initiation-direction coverage, followed by cleanup
+and reporting. No new model fixture or nonce generation was planned.
