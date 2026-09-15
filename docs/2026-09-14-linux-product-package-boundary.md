@@ -125,8 +125,8 @@ reassembled archives are preserved under `.tmp/linux-product/`. The canonical
 package outputs and reports remain under `.build/linux-package/out/`; the
 declared Bazel outputs remain under `bazel-bin/packaging/linux/`.
 
-No native Linux execution, installed result, new hosted CI run, two-version
-upgrade proof or release eligibility is claimed by these local cross builds.
+These local cross builds do not establish native Linux execution, installed
+behavior, two-version upgrades or release eligibility.
 The older run 34878212138 remains valid **prototype** install-only evidence; it
 does not validate these new Bazel products.
 
@@ -138,9 +138,21 @@ release/download handoff. The generic
 release `--platform` parser is not a Linux publisher; do not route Linux through
 the existing macOS release handler.
 
-The hosted install lane requires this reviewed source to reach GitHub CI.
-This task has no permission to push a branch or open a PR. A local cross-built
-artifact is not hosted native-build or installed evidence.
+The owner authorized a normal push of this task branch and dispatch of the
+existing validation workflow, including bounded fixes required by CI. This
+supersedes the initial no-push restriction for validation only; it grants no
+release publication, merge or promotion authority.
+
+CI run **34930328235**, exact candidate
+`1fea9a69103486e38c2bfb9f4b7bba3a18b40e73`, passed both prerequisite probes and
+its existing disposable apt interoperability jobs. **Both native builds failed
+in analysis**: Tauri's `acl_tool_crates` still excluded Linux execution hosts.
+No package or installed result came from that run. The focused follow-up adds
+both GNU Linux triples to the upstream ACL, context and Brotli helper dependency
+sets; all four helper executable targets now pass analysis for both Linux
+platforms, and macOS context generation still builds. The generated lock changes
+compatibility metadata without adding/removing repositories. A native rerun is
+required; local cross-built artifacts do not substitute for it.
 
 There is no real two-version Bazel package pair yet. This slice does not relabel
 one build as two versions or substitute the historical Cargo prototype as a
