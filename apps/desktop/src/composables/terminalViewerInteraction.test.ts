@@ -1,86 +1,85 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { describe, expect, it, vi } from "vitest"
 import { observeTerminalViewerInteraction } from "./terminalViewerInteraction"
 
 describe("terminal viewer interaction", () => {
-  beforeEach(() => {
-    vi.useFakeTimers()
-  })
-  afterEach(() => {
-    vi.useRealTimers()
-  })
-
   function harness(onActivate?: () => void) {
     const container = document.createElement("div")
     const child = document.createElement("div")
     container.appendChild(child)
     const activate = vi.fn(onActivate)
     const stop = observeTerminalViewerInteraction(container, activate)
-    const gesture = (name: string) => {
-      const event = new Event(name, { bubbles: true, cancelable: true })
+    const gesture = (event: Event, target: Element = child) => {
       Object.defineProperty(event, "isTrusted", { value: true })
-      child.dispatchEvent(event)
+      target.dispatchEvent(event)
       expect(event.defaultPrevented).toBe(false)
     }
-    return { child, activate, stop, gesture }
+    return { container, child, activate, stop, gesture }
   }
 
-  it("observes trusted gesture producers without consuming them, and removes listeners", () => {
-    const { child, activate, stop, gesture } = harness()
-    for (const name of ["wheel", "pointerdown", "touchstart", "keydown"]) gesture(name)
-    expect(activate).toHaveBeenCalledTimes(4)
-    vi.advanceTimersByTime(500)
-    expect(activate).toHaveBeenCalledTimes(4)
+  it("claims each trusted wheel or trackpad event without consuming it", () => {
+    const { activate, stop, gesture } = harness()
+    gesture(new WheelEvent("wheel", { bubbles: true, cancelable: true, deltaY: -20 }))
+    gesture(new WheelEvent("wheel", { bubbles: true, cancelable: true, deltaX: 12 }))
+    expect(activate).toHaveBeenCalledTimes(2)
 
-    activate.mockClear()
-    for (const name of ["scroll", "selectionchange", "mousemove", "focusin"]) gesture(name)
-    child.dispatchEvent(new Event("wheel", { bubbles: true }))
-    vi.advanceTimersByTime(500)
-    expect(activate).not.toHaveBeenCalled()
-
+    gesture(new WheelEvent("wheel", { bubbles: true, deltaX: 0, deltaY: 0 }))
+    expect(activate).toHaveBeenCalledTimes(2)
     stop()
-    gesture("wheel")
-    vi.advanceTimersByTime(500)
-    expect(activate).not.toHaveBeenCalled()
   })
 
-  it("claims on the leading edge so a handoff is not delayed", () => {
-    const { activate, gesture, stop } = harness()
-    gesture("wheel")
-    expect(activate).toHaveBeenCalledTimes(1)
+  it("claims scrollbar, touch-move and xterm keyboard scrollback paths", () => {
+    const { container, activate, stop, gesture } = harness()
+    const scrollbar = document.createElement("div")
+    scrollbar.className = "xterm-scrollbar"
+    const slider = document.createElement("div")
+    scrollbar.appendChild(slider)
+    container.appendChild(scrollbar)
+
+    gesture(new PointerEvent("pointerdown", { bubbles: true, cancelable: true, button: 0 }), slider)
+    gesture(new TouchEvent("touchmove", { bubbles: true, cancelable: true }))
+    gesture(new KeyboardEvent("keydown", { bubbles: true, key: "PageUp", shiftKey: true }))
+    gesture(new KeyboardEvent("keydown", { bubbles: true, key: "PageDown", shiftKey: true }))
+    expect(activate).toHaveBeenCalledTimes(4)
+    stop()
+  })
+
+  it("keeps focus, ordinary input, selection presses and passive scrolling inert", () => {
+    const { child, activate, stop, gesture } = harness()
+    for (const event of [
+      new FocusEvent("focusin", { bubbles: true }),
+      new Event("scroll", { bubbles: true }),
+      new Event("selectionchange", { bubbles: true }),
+      new PointerEvent("pointerdown", { bubbles: true, button: 0 }),
+      new KeyboardEvent("keydown", { bubbles: true, key: "x" }),
+      new KeyboardEvent("keydown", { bubbles: true, key: "PageUp" }),
+    ]) gesture(event)
+    child.dispatchEvent(new WheelEvent("wheel", { bubbles: true, deltaY: -20 }))
+    expect(activate).not.toHaveBeenCalled()
     stop()
   })
 
   it("preserves interleaved intent A@0, A@10, B@50 and a later handoff to A", () => {
-    vi.setSystemTime(0)
-    const claims: Array<[string, number]> = []
-    const a = harness(() => claims.push(["A", Date.now()]))
-    const b = harness(() => claims.push(["B", Date.now()]))
-    a.gesture("wheel")
-    vi.advanceTimersByTime(10)
-    a.gesture("wheel")
-    vi.advanceTimersByTime(40)
-    b.gesture("wheel")
-    expect(claims).toEqual([["A", 0], ["A", 10], ["B", 50]])
-    vi.advanceTimersByTime(50)
-    expect(claims.at(-1)).toEqual(["B", 50])
-    vi.advanceTimersByTime(5000)
+    const claims: string[] = []
+    const a = harness(() => claims.push("A"))
+    const b = harness(() => claims.push("B"))
+    const wheel = () => new WheelEvent("wheel", { bubbles: true, deltaY: -20 })
+    a.gesture(wheel())
+    a.gesture(wheel())
+    b.gesture(wheel())
+    expect(claims).toEqual(["A", "A", "B"])
+    expect(claims.at(-1)).toBe("B")
     expect(claims).toHaveLength(3)
-    a.gesture("wheel")
-    expect(claims.at(-1)).toEqual(["A", 5100])
-    vi.advanceTimersByTime(5000)
+    a.gesture(wheel())
+    expect(claims.at(-1)).toBe("A")
     expect(claims).toHaveLength(4)
     a.stop()
     b.stop()
   })
 
-  it("stops claiming once a gesture ends", () => {
+  it("stops observing immediately when disposed", () => {
     const { activate, gesture, stop } = harness()
-    gesture("wheel")
-    gesture("wheel")
-    vi.advanceTimersByTime(100)
-    const afterGesture = activate.mock.calls.length
-    vi.advanceTimersByTime(5000)
-    expect(activate.mock.calls.length).toBe(afterGesture)
     stop()
+    gesture(new WheelEvent("wheel", { bubbles: true, deltaY: -20 }))
+    expect(activate).not.toHaveBeenCalled()
   })
 })

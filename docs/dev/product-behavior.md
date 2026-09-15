@@ -201,14 +201,17 @@ not remotely transported or resumed by this integration.
 
 ### Viewing a terminal from more than one device
 
-The PTY has one authoritative grid. The terminal viewer that most recently
-became the actively viewed task terminal steals sizing: opening the task on a
-phone sizes the PTY to the phone's measured viewport, and bringing the desktop
-terminal back into view restores the desktop grid. Typing, scrolling, rotation,
-keyboard visibility, and resize alone do not change control. Hidden,
-backgrounded, or zero-size viewers cannot steal sizing. A reconnect
-re-registers and rehydrates from the authoritative snapshot without stealing
-control.
+The PTY has one authoritative grid. The first measured visible viewer seeds a
+session that has no active owner, without becoming an owner itself. After that,
+the terminal viewer with the most recent deliberate terminal activity owns
+sizing. Typing/direct input and active scrolling (wheel/trackpad, touch,
+scrollbar, or Shift+PageUp/PageDown) claim or refresh that viewer. Merely opening
+or focusing a task/window/app does not, and key-window blur does not withdraw a
+still-rendered desktop viewer. Output auto-scroll and replay never claim
+control. Rotation, keyboard visibility, resize, and layout also do not claim;
+they can only update the existing owner's grid. Hidden, inactive, or zero-size
+viewers cannot steal sizing. A reconnect re-registers and rehydrates from the
+authoritative snapshot without stealing control.
 
 **Multi-repo:** Import repos via sidebar. Each repo has its own task list. Cmd+Opt+Up/Down navigates tasks in sidebar order.
 

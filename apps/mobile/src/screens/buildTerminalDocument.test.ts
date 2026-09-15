@@ -592,15 +592,25 @@ function capacityMessages(messages: string[]): Array<{ cols: number; rows: numbe
 }
 
 describe("buildTerminalDocument", () => {
-  it("reports intentional viewing gestures but not replay, layout or synthetic scrolling", () => {
+  it("reports deliberate scrolling but not focus, ordinary input, replay or synthetic scrolling", () => {
     const { messages, viewport, window } = createExecutedTerminalDocument();
     const interactions = () => messages.filter(message => JSON.parse(message).type === "terminal-viewer-interaction");
     viewport.dispatchEvent(new window.Event("scroll"));
     viewport.dispatchEvent(new window.Event("wheel"));
+    viewport.dispatchEvent(new window.FocusEvent("focusin"));
     window.__replaceTerminalState({ text: "replayed content" });
     expect(interactions()).toHaveLength(0);
-    for (const name of ["pointerdown", "wheel", "keydown"]) {
-      const event = new window.Event(name, { cancelable: true });
+    const ordinaryKey = new window.KeyboardEvent("keydown", { key: "x" });
+    Object.defineProperty(ordinaryKey, "isTrusted", { value: true });
+    viewport.dispatchEvent(ordinaryKey);
+    expect(interactions()).toHaveLength(0);
+
+    const gestures = [
+      new window.WheelEvent("wheel", { cancelable: true, deltaY: -20 }),
+      new window.KeyboardEvent("keydown", { key: "PageUp", shiftKey: true }),
+      new window.Event("touchmove", { cancelable: true }),
+    ];
+    for (const event of gestures) {
       Object.defineProperty(event, "isTrusted", { value: true });
       viewport.dispatchEvent(event);
       expect(event.defaultPrevented).toBe(false);

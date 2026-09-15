@@ -374,37 +374,37 @@ when the terminal is actively viewed. The role is explicit: the owning desktop m
 LAN, relay, observer, and shared-tap clients are `remote` and cannot claim
 that role. An undeclared peer is legacy and is never implicitly local.
 
-The daemon elects one controller per PTY. A registered, visible, positive-size
-viewer that sends `term_viewer_active` because its terminal became the actively
-viewed task terminal steals controller sizing; its measured viewport is applied
-atomically. Opening the phone task therefore sizes the PTY to the phone, and
-bringing the desktop terminal back into view restores the desktop grid. Input,
-resize, scrolling, rotation, and background hydration are not ownership
-signals. Hidden, backgrounded, and zero-size viewers are ineligible. Commands
-are serialized, so active-view notifications are ordered by the daemon. A
-reconnect re-registers and rehydrates without an active-view notification and
-does not steal control.
+The daemon elects one controller per PTY. The first measured, visible viewer may
+seed an unowned session's grid, but registration never makes it the controller
+and cannot displace an existing active viewer. After that, a registered,
+visible, positive-size viewer sends `term_viewer_active` only for classified
+human terminal input or deliberate scrolling (wheel/trackpad, touch movement,
+scrollbar press, or xterm's Shift+PageUp/PageDown scrollback keys). Its measured
+viewport is then applied atomically. Window/app focus, task selection, ordinary
+pointer/selection presses, resize, output auto-scroll, replay, rotation and
+background hydration are not ownership signals. Key-window blur does not
+withdraw a still-rendered desktop viewer. Hidden, inactive, and zero-size
+viewers are ineligible. Commands are serialized, so active-view notifications
+are ordered by the daemon. A reconnect re-registers and rehydrates without an
+active-view notification and does not steal control.
 
-On a geometry-aware remote viewer's first render, the stream client holds its
-`attach` until it has a measured, visible registration and the genuine active
-view edge. It sends `register -> active -> attach`; before starting or joining
-the terminal tap, the server inserts a response-bearing command on that same
-daemon control connection and waits for it. Because the daemon processes that
-connection serially, the active resize and its headless snapshot publication
-are complete before the initial attachment captures a base. The first visible
-grid therefore arrives once at the active viewer's dimensions rather than as
-an old-owner snapshot followed by a resize snapshot. Socket reconnects skip
-the active edge and retain their passive resume behavior.
+On a current geometry-aware remote viewer's first render, the stream client
+holds `attach` until it has a measured, visible registration. It sends
+`register -> attach`; before starting or joining the terminal tap, the server
+inserts a response-bearing command on that same daemon control connection and
+waits for it. Because the daemon processes that connection serially, initial
+seeding (when there is no active owner) or retention of the existing owner's
+grid is complete before the attachment captures a base. A deliberate activity
+edge may later send `active`; socket reconnects never synthesize one.
 
-A local desktop can remain continuously focused while a remote viewer takes
-geometry, so focus alone is not a complete handback producer. Receipt of an
-authoritative terminal snapshot arms one local ownership confirmation: before
-the next DOM-classified human input is sent, the desktop reasserts its visible
-viewer and active edge on the shared KSP connection. The active command is
-therefore ordered before the input command and restores the registered desktop
-grid before the PTY consumes the key. Parser-generated terminal replies remain
-passive, and the confirmation is cleared after it is sent rather than repeated
-for every key.
+A local desktop can remain continuously focused while another viewer takes
+geometry, so focus is never a handback producer. Before every DOM-classified
+human input is sent, the desktop reasserts its visible viewer and active edge
+on the shared KSP connection. The active command is ordered before the input
+command and restores the registered desktop grid before the PTY consumes the
+key. Parser-generated terminal replies remain passive. Deliberate scroll
+producers send the same active edge without terminal input; raw scroll events
+are ignored because output, snapshot replay and layout also produce them.
 
 Only the elected viewer's measured proposal changes the PTY and headless
 terminal. Registration and election are serialized with resize and snapshot

@@ -7104,16 +7104,16 @@ describe("createMobileController", () => {
     expect(resize).toHaveBeenLastCalledWith(80, 48);
     expect(activate).not.toHaveBeenCalled();
 
-    // The opened, rendered phone terminal becomes the active viewer; a
-    // backgrounded screen withdraws that eligibility without a resize.
+    // Navigation and app foreground only maintain eligibility; neither is a
+    // viewing claim.
     controller.setTaskDetailVisible(true);
     expect(setViewerVisible).toHaveBeenLastCalledWith(true);
-    expect(activate).toHaveBeenCalledOnce();
+    expect(activate).not.toHaveBeenCalled();
     controller.setAppForeground(false);
     expect(setViewerVisible).toHaveBeenLastCalledWith(false);
     controller.setAppForeground(true);
     expect(setViewerVisible).toHaveBeenLastCalledWith(true);
-    expect(activate).toHaveBeenCalledTimes(2);
+    expect(activate).not.toHaveBeenCalled();
 
     client.__terminalStream.emit({
       type: "snapshot",
@@ -7163,7 +7163,7 @@ describe("createMobileController", () => {
     expect(activate).not.toHaveBeenCalled();
   });
 
-  it("restates visibility when the first measured grid arrives after the task becomes visible", async () => {
+  it("keeps a late first measurement passive until deliberate interaction", async () => {
     const store = createSessionStore();
     const client = createClientMock();
     const controller = createMobileController(client, store);
@@ -7182,13 +7182,36 @@ describe("createMobileController", () => {
 
     expect(resize).toHaveBeenLastCalledWith(42, 18);
     expect(setViewerVisible).toHaveBeenLastCalledWith(true);
+    expect(activate).not.toHaveBeenCalled();
+    controller.activateTaskTerminalViewer("task-1");
     expect(activate).toHaveBeenCalledOnce();
-    expect(resize.mock.invocationCallOrder[0]).toBeLessThan(
-      setViewerVisible.mock.invocationCallOrder.at(-1) ?? 0
-    );
     expect(setViewerVisible.mock.invocationCallOrder.at(-1) ?? 0).toBeLessThan(
       activate.mock.invocationCallOrder[0] ?? 0
     );
+  });
+
+  it("claims before deliberate terminal input but keeps control replies passive", async () => {
+    const store = createSessionStore();
+    const client = createClientMock();
+    const controller = createMobileController(client, store);
+    const subscription = client.__terminalStream.subscription;
+
+    await controller.bootstrap();
+    controller.openTask("task-1");
+    controller.setTaskDetailVisible(true);
+    controller.resizeTaskTerminal("task-1", 42, 18);
+    subscription.activate.mockClear();
+    subscription.sendInput.mockClear();
+
+    controller.sendTaskTerminalInput("task-1", "eA==", "draft");
+    expect(subscription.activate).toHaveBeenCalledOnce();
+    expect(subscription.activate.mock.invocationCallOrder[0]).toBeLessThan(
+      subscription.sendInput.mock.invocationCallOrder[0] ?? 0
+    );
+
+    subscription.activate.mockClear();
+    controller.sendTaskTerminalInput("task-1", "Gw==", "control");
+    expect(subscription.activate).not.toHaveBeenCalled();
   });
 
   it("replaces stale replay output with an authoritative reconnect snapshot", async () => {

@@ -161,7 +161,7 @@ $SIG{WINCH} = sub { draw(); }; draw(); while (1) { sleep 1; }
   await expect.poll(dimensions, { timeout: 30_000 }).toEqual(await measuredPane());
   evidence.reboundDimensions = await dimensions();
   // Now replace it while continuously foregrounded. The persistent terminal
-  // host must rebind without needing a new key, wheel, or pointer gesture.
+  // host must rebind at the retained grid without fabricating user activity.
   const activeClaims = () => client.executeSync<number>(`
     return (window.__KANNA_E2E__.activeViewTrace ?? []).filter(entry => entry.sessionId === ${JSON.stringify(taskId)} && entry.phase === "sent").length;
   `);
@@ -173,7 +173,7 @@ $SIG{WINCH} = sub { draw(); }; draw(); while (1) { sleep 1; }
   const visibleReports = () => readFile(join(repoPath, ".kanna-worktrees", `task-${taskId}-3`, "geometry-sizes.txt"), "utf8").catch(() => "");
   await expect.poll(visibleReports, { timeout: 30_000 }).not.toBe("");
   await expect.poll(dimensions, { timeout: 30_000 }).toEqual(pane);
-  await expect.poll(activeClaims, { timeout: 30_000 }).toBeGreaterThan(claimsBefore);
+  expect(await activeClaims()).toBe(claimsBefore);
   // One bounded quiet observation catches a resize trailing the successful
   // rebind; this is a test oracle, never an application retry or delay.
   await new Promise(resolve => setTimeout(resolve, 1_000));

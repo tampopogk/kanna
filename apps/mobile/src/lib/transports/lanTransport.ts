@@ -433,7 +433,7 @@ export function createLanTransport(
         onError(code, message) {
           listener({ type: "error", taskId, code, message });
         }
-      });
+      }, { passiveInitialAttach: true });
 
       return {
         close() {

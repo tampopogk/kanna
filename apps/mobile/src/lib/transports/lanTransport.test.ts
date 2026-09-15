@@ -1185,8 +1185,8 @@ describe("createLanTransport", () => {
         rows: 48,
         visible: true
       },
-      { type: "term_viewer_active", task_id: "task-1" },
-      { type: "attach", task_id: "task-1", kind: "terminal", from_seq: 0 }
+      { type: "attach", task_id: "task-1", kind: "terminal", from_seq: 0 },
+      { type: "term_viewer_active", task_id: "task-1" }
     ]);
   });
 

@@ -44,6 +44,7 @@ pub(crate) struct SessionSizeState {
     pub legacy_sizes: HashMap<usize, (u16, u16)>,
     pub controller: Option<usize>,
     pub(crate) active_sequence: u64,
+    pub(crate) viewer_geometry_initialized: bool,
 }
 
 impl SessionSizeState {
@@ -54,6 +55,7 @@ impl SessionSizeState {
             legacy_sizes: HashMap::new(),
             controller: None,
             active_sequence: 0,
+            viewer_geometry_initialized: false,
         }
     }
 
@@ -131,6 +133,11 @@ impl SessionSizeState {
         {
             return None;
         }
+        let seeds_unowned_geometry = !self.viewer_geometry_initialized
+            && self.controller.is_none()
+            && visible
+            && cols > 0
+            && rows > 0;
         let retained_active = self
             .viewers
             .get(&writer_id)
@@ -150,6 +157,16 @@ impl SessionSizeState {
             },
         );
         self.elect();
+        // A first measured viewer gives a never-owned session a useful grid,
+        // even when its real wire sequence registered it hidden first. This
+        // remains passive: it does not become controller and a later
+        // registration/reconnect cannot displace an existing active viewer.
+        if seeds_unowned_geometry {
+            self.viewer_geometry_initialized = true;
+        }
+        if seeds_unowned_geometry && self.last_applied != (cols, rows) {
+            return Some((cols, rows));
+        }
         self.pending_resize()
     }
 
@@ -406,14 +423,58 @@ mod tests {
     }
 
     #[test]
-    fn registration_alone_never_selects_a_controller() {
+    fn first_registration_seeds_geometry_without_selecting_a_controller() {
         let mut state = SessionSizeState::new((80, 24));
-        register(&mut state, 1, "phone", TerminalViewerRole::Remote, 40, 20);
+        assert_eq!(
+            state.register(
+                1,
+                "phone".to_string(),
+                TerminalViewerRole::Remote,
+                40,
+                20,
+                false,
+                1,
+            ),
+            None,
+        );
+        assert_eq!(
+            state.register(
+                1,
+                "phone".to_string(),
+                TerminalViewerRole::Remote,
+                40,
+                20,
+                true,
+                1,
+            ),
+            Some((40, 20)),
+        );
+        state.mark_applied((40, 20));
         register(&mut state, 2, "desktop", TerminalViewerRole::Local, 220, 48);
 
         assert_eq!(state.controller, None);
-        assert_eq!(state.proposed_size(), (80, 24));
+        assert_eq!(state.proposed_size(), (40, 20));
+        assert_eq!(state.last_applied, (40, 20));
         assert_eq!(state.activate(2), Some((220, 48)));
+    }
+
+    #[test]
+    fn passive_registration_cannot_displace_an_existing_active_viewer() {
+        let mut state = SessionSizeState::new((80, 24));
+        register(&mut state, 1, "owner", TerminalViewerRole::Local, 160, 50);
+        assert_eq!(state.activate(1), None);
+        register(
+            &mut state,
+            2,
+            "observer",
+            TerminalViewerRole::Remote,
+            42,
+            18,
+        );
+
+        assert_eq!(state.controller, Some(1));
+        assert_eq!(state.last_applied, (160, 50));
+        assert_eq!(state.proposed_size(), (160, 50));
     }
 
     #[test]
@@ -421,7 +482,7 @@ mod tests {
         let mut state = SessionSizeState::new((80, 24));
         register(&mut state, 2, "z", TerminalViewerRole::Remote, 200, 40);
         register(&mut state, 1, "a", TerminalViewerRole::Remote, 120, 30);
-        assert_eq!(state.activate(2), Some((200, 40)));
+        assert_eq!(state.activate(2), None);
         state.mark_applied((200, 40));
         assert_eq!(state.controller, Some(2));
         assert_eq!(state.proposed_size(), (200, 40));
@@ -442,7 +503,7 @@ mod tests {
             65,
         );
 
-        assert_eq!(state.activate(1), Some((203, 81)));
+        assert_eq!(state.activate(1), None);
         state.mark_applied((203, 81));
         assert_eq!(state.resize(2, 171, 65), None);
         assert_eq!(state.proposed_size(), (203, 81));
@@ -454,7 +515,7 @@ mod tests {
         let mut state = SessionSizeState::new((80, 24));
         register(&mut state, 1, "desktop", TerminalViewerRole::Local, 220, 48);
         register(&mut state, 2, "phone", TerminalViewerRole::Remote, 40, 20);
-        assert_eq!(state.activate(1), Some((220, 48)));
+        assert_eq!(state.activate(1), None);
         state.mark_applied((220, 48));
         assert_eq!(state.activate(2), Some((40, 20)));
         state.mark_applied((40, 20));
@@ -468,7 +529,7 @@ mod tests {
         let mut state = SessionSizeState::new((80, 24));
         register(&mut state, 1, "desktop", TerminalViewerRole::Local, 220, 48);
         register(&mut state, 2, "phone", TerminalViewerRole::Remote, 40, 20);
-        assert_eq!(state.activate(1), Some((220, 48)));
+        assert_eq!(state.activate(1), None);
         state.mark_applied((220, 48));
         assert_eq!(state.activate(2), Some((40, 20)));
         state.mark_applied((40, 20));
@@ -560,7 +621,7 @@ mod tests {
     fn hidden_or_zero_size_viewer_cannot_take_control() {
         let mut state = SessionSizeState::new((80, 24));
         register(&mut state, 1, "desktop", TerminalViewerRole::Local, 220, 48);
-        assert_eq!(state.activate(1), Some((220, 48)));
+        assert_eq!(state.activate(1), None);
         state.mark_applied((220, 48));
         assert_eq!(
             state.register(
@@ -583,7 +644,7 @@ mod tests {
     fn no_viewer_retains_last_geometry_and_stale_generation_is_ignored() {
         let mut state = SessionSizeState::new((100, 30));
         register(&mut state, 1, "desktop", TerminalViewerRole::Local, 220, 48);
-        assert_eq!(state.activate(1), Some((220, 48)));
+        assert_eq!(state.activate(1), None);
         state.mark_applied((220, 48));
         assert_eq!(state.remove(1), None);
         assert_eq!(state.proposed_size(), (220, 48));

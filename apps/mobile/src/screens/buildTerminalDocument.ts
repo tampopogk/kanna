@@ -1095,11 +1095,21 @@ export function buildTerminalDocument({
         }
       }
 
-      // Claim viewing from gesture producers, never from scroll callbacks:
-      // xterm replay, resize and scroll restoration generate those too.
-      for (const name of ["touchstart", "pointerdown", "wheel", "keydown"]) {
+      // Claim viewing from deliberate scroll producers, never from scroll
+      // callbacks: xterm replay, output, resize and restoration generate those
+      // too. Focus, taps/selections and ordinary keys are passive.
+      for (const name of ["touchmove", "pointerdown", "wheel", "keydown"]) {
         viewport.addEventListener(name, (event) => {
           if (!event.isTrusted) return;
+          if (event instanceof WheelEvent && event.deltaX === 0 && event.deltaY === 0) return;
+          if (event instanceof PointerEvent && (
+            event.button !== 0
+            || !(event.target instanceof Element)
+            || !event.target.closest(".xterm-scrollbar")
+          )) return;
+          if (event instanceof KeyboardEvent && !(
+            event.shiftKey && (event.key === "PageUp" || event.key === "PageDown")
+          )) return;
           window.ReactNativeWebView?.postMessage(JSON.stringify({
             type: "terminal-viewer-interaction"
           }));

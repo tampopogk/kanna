@@ -172,19 +172,22 @@ The selection table is:
 | Eligible candidates | Controller |
 |---|---|
 | actively viewed terminal | most recently active viewer |
-| no actively viewed terminal | retain last applied size |
+| first measured visible viewer, no active owner | no controller; seed its size once |
+| no actively viewed terminal after initial sizing | retain last applied size |
 
 The current eligible controller is retained across registration, resize, input,
 and reconnect hydration. `ActiveViewer` from an eligible registered viewer
 steals sizing for that viewer; command serialization is the tie break.
-Clients announce active viewing on foreground/task selection and deliberate
-terminal wheel, touch, pointer/selection press, or keyboard gestures. A trusted
-gesture in a visible non-key desktop window counts without moving keyboard
-focus. Programmatic scrolling, selection notifications, replay and layout are
-passive; they never announce activity. Hidden, passively backgrounded, and
-zero-size viewers are ineligible. Detaching a
-follower does nothing. Detaching, disconnecting, or backgrounding the
-controller elects once; a reconnect re-registers but does not steal control.
+Clients announce active viewing only for classified human terminal input or
+deliberate terminal scrolling: wheel/trackpad, touch movement, scrollbar press,
+or xterm's Shift+PageUp/PageDown scrollback keys. A trusted scroll in a visible
+non-key desktop window counts without moving keyboard focus. Focus, task/app
+foregrounding, ordinary pointer/selection presses, programmatic scrolling,
+output auto-scroll, replay, resize and layout are passive; they never announce
+activity. Key-window blur does not withdraw a still-rendered desktop viewer.
+Hidden, inactive, and zero-size viewers are ineligible. Detaching a follower
+does nothing. Detaching, disconnecting, or actually hiding the controller
+elects once; a reconnect re-registers but does not steal control.
 There is no heartbeat or timeout arbitration loop.
 
 Legacy undeclared resize requests retain the old minimum policy only while all
@@ -195,7 +198,7 @@ authoritative snapshot through fanout, so the snapshot/live tail cutover is
 the same boundary as lag recovery. A failed PTY/headless resize is not
 published as applied. Draft bytes and composer attestation are independent of
 geometry and survive reflow. Handoff preserves the
-last applied dimensions but never transfers pointer-based viewer ownership;
+last applied dimensions but never transfers active-view ownership;
 clients re-register after reconnect.
 
 The server probes daemon terminal-geometry protocol version 1 on each daemon

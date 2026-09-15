@@ -551,7 +551,7 @@ export function createRelayDesktopClient({
         onError(code, message) {
           listener({ type: "error", taskId, code, message });
         }
-      });
+      }, { passiveInitialAttach: true });
 
       return {
         close() {

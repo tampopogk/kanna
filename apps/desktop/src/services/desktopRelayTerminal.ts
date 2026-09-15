@@ -193,7 +193,7 @@ export function createDesktopRelayTerminalClient({
         onError(_code, message) {
           options.listener({ type: "error", taskId: options.taskId, message });
         },
-      });
+      }, { passiveInitialAttach: true });
       return {
         close() {
           client.detach(options.taskId, "terminal");

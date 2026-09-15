@@ -4043,11 +4043,11 @@ fn test_one_way_terminal_control_pipelines_without_success_replies() {
     );
 }
 
-/// A remote follower's control socket must not be constrained by a stale size
-/// written by an unattached management client when no rendered desktop owns
-/// the terminal geometry.
+/// The first measured viewer seeds a useful grid without becoming an active
+/// owner, and must not be constrained by a stale size written by an unattached
+/// management client.
 #[test]
-fn test_one_way_follower_resize_applies_without_attached_size_owner() {
+fn test_first_viewer_registration_seeds_unowned_terminal_geometry() {
     let daemon = DaemonHandle::start();
 
     let mut management = daemon.connect();
@@ -4067,14 +4067,20 @@ fn test_one_way_follower_resize_applies_without_attached_size_owner() {
         generation: 1,
         cols: 80,
         rows: 48,
+        visible: false,
+    });
+    follower.send(&Cmd::RegisterViewer {
+        session_id: "sess-follower-resize".to_string(),
+        viewer_id: "remote-follower".to_string(),
+        role: TerminalViewerRole::Remote,
+        generation: 1,
+        cols: 80,
+        rows: 48,
         visible: true,
     });
-    // Registration is passive: a viewer must explicitly become active before
-    // its measured viewport may control the PTY geometry.
-    follower.send(&Cmd::ActiveViewer {
-        session_id: "sess-follower-resize".to_string(),
-    });
-
+    // Production clients register hidden before their layout is eligible.
+    // The first visible update is passive ownership-wise, but with no active
+    // controller it provides the necessary initial grid by itself.
     let snapshot = recv_snapshot(&mut follower, "sess-follower-resize");
     assert_eq!((snapshot.cols, snapshot.rows), (80, 48));
 
@@ -4119,7 +4125,7 @@ fn test_terminal_geometry_changes_are_logged_by_a_running_daemon() {
     wide.send(&Cmd::ActiveViewer {
         session_id: "sess-geometry-log".to_string(),
     });
-    let snapshot = recv_snapshot(&mut wide, "sess-geometry-log");
+    let snapshot = recv_snapshot_for(&mut wide, "sess-geometry-log");
     assert_eq!((snapshot.cols, snapshot.rows), (150, 45));
 
     let mut narrow = daemon.connect();
@@ -4136,8 +4142,19 @@ fn test_terminal_geometry_changes_are_logged_by_a_running_daemon() {
     narrow.send(&Cmd::ActiveViewer {
         session_id: "sess-geometry-log".to_string(),
     });
-    let snapshot = recv_snapshot(&mut narrow, "sess-geometry-log");
+    let snapshot = recv_snapshot_for(&mut narrow, "sess-geometry-log");
     assert_eq!((snapshot.cols, snapshot.rows), (60, 30));
+
+    wide.send(&Cmd::ActiveViewer {
+        session_id: "sess-geometry-log".to_string(),
+    });
+    let mut snapshot = recv_snapshot_for(&mut wide, "sess-geometry-log");
+    if (snapshot.cols, snapshot.rows) != (150, 45) {
+        // The wide subscriber can still have the narrow handoff's broadcast
+        // snapshot queued ahead of its own handback response.
+        snapshot = recv_snapshot_for(&mut wide, "sess-geometry-log");
+    }
+    assert_eq!((snapshot.cols, snapshot.rows), (150, 45));
 
     thread::sleep(Duration::from_millis(200));
     let log = daemon.log_text();
@@ -4149,15 +4166,17 @@ fn test_terminal_geometry_changes_are_logged_by_a_running_daemon() {
         !geometry.is_empty(),
         "a running daemon logged no terminal geometry at all: {log}"
     );
-    let first_claim = geometry
+    let initial_seed = geometry
         .iter()
         .find(|line| {
-            line.contains("cause=activate_viewer") && line.contains("applied=Some((150, 45))")
+            line.contains("cause=register_viewer") && line.contains("applied=Some((150, 45))")
         })
-        .expect("first viewer claim must be logged");
+        .expect("first visible viewer seed must be logged");
     assert!(
-        first_claim.contains("previous=(80, 24)"),
-        "initial geometry must use (cols, rows): {first_claim}"
+        initial_seed.contains("previous=(80, 24)")
+            && initial_seed.contains("controller=None->None")
+            && initial_seed.contains("owner_changed=false"),
+        "initial geometry must seed without claiming ownership: {initial_seed}"
     );
     let handoff = geometry
         .iter()
@@ -4180,6 +4199,19 @@ fn test_terminal_geometry_changes_are_logged_by_a_running_daemon() {
     assert!(
         handoff.contains("viewer=Some(\"narrow-viewer\")"),
         "the handoff must name the viewer that claimed: {handoff}"
+    );
+    let handback = geometry
+        .iter()
+        .find(|line| {
+            line.contains("cause=activate_viewer")
+                && line.contains("applied=Some((150, 45))")
+                && line.contains("previous=(60, 30)")
+        })
+        .unwrap_or_else(|| panic!("no PTY handback to the wide viewer: {geometry:?}"));
+    assert!(
+        handback.contains("viewer=Some(\"wide-viewer\")")
+            && handback.contains("owner_changed=true"),
+        "the handback must name the viewer and ownership edge: {handback}"
     );
     assert!(
         !geometry.iter().any(|line| line.contains("outcome=failed")),

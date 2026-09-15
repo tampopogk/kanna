@@ -288,6 +288,8 @@ describe("CloudTerminalView remote visual companion links", () => {
 
   it("focuses the remote terminal when it becomes active", async () => {
     const client = createClient();
+    const activate = vi.fn();
+    client.observeTerminal.mockReturnValue({ close: client.terminalClose, activate });
     mocks.relayFactory.mockResolvedValue(client);
     const wrapper = mount(CloudTerminalView, {
       attachTo: document.body,
@@ -307,6 +309,7 @@ describe("CloudTerminalView remote visual companion links", () => {
     await flushAsync();
 
     expect(terminal?.focus).toHaveBeenCalledTimes(1);
+    expect(activate).not.toHaveBeenCalled();
     wrapper.unmount();
   });
 
@@ -342,7 +345,7 @@ describe("CloudTerminalView remote visual companion links", () => {
     Object.defineProperties(container, {
       offsetWidth: { value: 900 }, offsetHeight: { value: 600 },
     });
-    testState.nativeFocusHandler?.({ payload: false });
+    expect(testState.nativeFocusHandler).toBeNull();
     activate.mockClear();
     container.dispatchEvent(new Event("scroll"));
     container.dispatchEvent(new WheelEvent("wheel"));
@@ -360,7 +363,7 @@ describe("CloudTerminalView remote visual companion links", () => {
     expect(activate).toHaveBeenCalledOnce();
   });
 
-  it("withdraws a cached remote viewer on native blur even while WebKit still reports focus", async () => {
+  it("keeps native and document focus changes passive while component visibility withdraws", async () => {
     const client = createClient();
     const setViewerVisible = vi.fn();
     const activate = vi.fn();
@@ -378,11 +381,77 @@ describe("CloudTerminalView remote visual companion links", () => {
       props: { ownerDesktopId: "desktop-1", ownerTaskId: "task-1" },
     });
     await flushAsync();
-    expect(testState.nativeFocusHandler).not.toBeNull();
+    expect(testState.nativeFocusHandler).toBeNull();
+    const container = wrapper.get(".terminal-container").element;
+    Object.defineProperties(container, {
+      offsetWidth: { value: 900 }, offsetHeight: { value: 600 },
+    });
 
-    testState.nativeFocusHandler?.({ payload: false });
+    const visibilityCalls = setViewerVisible.mock.calls.length;
+    window.dispatchEvent(new Event("blur"));
+    window.dispatchEvent(new Event("focus"));
+    await flushAsync();
+    expect(setViewerVisible).toHaveBeenCalledTimes(visibilityCalls);
+    expect(activate).not.toHaveBeenCalled();
+    await wrapper.setProps({ active: false });
     await flushAsync();
     expect(setViewerVisible).toHaveBeenLastCalledWith(false);
+    expect(activate).not.toHaveBeenCalled();
+    wrapper.unmount();
+  });
+
+  it("claims before classified human input but not parser output or resize work", async () => {
+    const client = createClient();
+    const activate = vi.fn();
+    let terminalListener: ((event: DesktopRemoteTerminalEvent) => void) | undefined;
+    client.observeTerminal.mockImplementation((options) => {
+      terminalListener = options.listener;
+      return {
+        close: client.terminalClose,
+        setViewerVisible: vi.fn(),
+        activate,
+      };
+    });
+    mocks.relayFactory.mockResolvedValue(client);
+    const wrapper = mount(CloudTerminalView, {
+      attachTo: document.body,
+      props: { ownerDesktopId: "desktop-1", ownerTaskId: "task-1" },
+    });
+    await flushAsync();
+    const container = wrapper.get(".terminal-container").element;
+    Object.defineProperties(container, {
+      offsetWidth: { value: 900 }, offsetHeight: { value: 600 },
+    });
+    terminalListener?.({
+      type: "snapshot",
+      taskId: "task-1",
+      cols: 80,
+      rows: 24,
+      data: new TextEncoder().encode("snapshot"),
+    });
+    terminalListener?.({
+      type: "output",
+      taskId: "task-1",
+      data: new TextEncoder().encode("output"),
+    });
+    testState.resizeCallbacks[0]?.([], {} as ResizeObserver);
+    await flushAsync();
+    expect(activate).not.toHaveBeenCalled();
+
+    const terminal = testState.terminals[0];
+    terminal?.keyHandler?.(new KeyboardEvent("keydown", { key: "x" }));
+    terminal?.dataHandler?.("x");
+    await flushAsync();
+    expect(activate).toHaveBeenCalledOnce();
+    expect(client.sendInput).toHaveBeenCalledWith({
+      desktopId: "desktop-1",
+      taskId: "task-1",
+      data: "x",
+    });
+
+    activate.mockClear();
+    terminal?.dataHandler?.("\x1b[?1;2c");
+    await flushAsync();
     expect(activate).not.toHaveBeenCalled();
     wrapper.unmount();
   });

@@ -7,7 +7,6 @@ import { ImageAddon } from "@xterm/addon-image";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { WebglAddon } from "@xterm/addon-webgl";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useI18n } from "vue-i18n";
 import "@xterm/xterm/css/xterm.css";
 import {
@@ -39,7 +38,6 @@ import {
 } from "../composables/terminalSnapshotApply";
 import { useTerminalFocusWhenActive } from "../composables/useTerminalFocusWhenActive";
 import { nextFrameOrTimeout } from "../utils/animationFrame";
-import { isTauri } from "../tauri-mock";
 import {
   createTerminalDropBridge,
   type TerminalDropBridge,
@@ -94,11 +92,7 @@ const MAX_PENDING_REMOTE_INPUT_CHARS = 64 * 1024;
 const MAX_REMOTE_INPUT_FRAME_BYTES = 4 * 1024;
 let lifecycleGeneration = 0;
 let unmounted = false;
-let stopNativeWindowFocusTracking: (() => void) | null = null;
-let nativeWindowFocusTrackingGeneration = 0;
-// WebKit can still report document focus briefly after a native blur. Native
-// eligibility is authoritative until the corresponding key-window edge.
-let nativeWindowActive = true;
+let stopViewerVisibilityTracking: (() => void) | null = null;
 const inputProducer = createTerminalInputProducerClassifier();
 const controlInputEvents = ["mousedown", "mouseup", "mousemove", "wheel", "focus", "blur"];
 const draftInputEvents = ["beforeinput", "paste"];
@@ -251,65 +245,24 @@ function hasVisibleRemoteContainer(): boolean {
 }
 
 /** Keep the daemon's one viewer-election authority informed of this cached
- * component's real eligibility. Registration/fit remains passive; only an
- * active, visible view can announce an active-view edge on foregrounding or
- * a trusted gesture (macOS can scroll a non-key window). */
-function syncRemoteViewerEligibility(activate: boolean, intentionalInteraction = false): void {
+ * component's real eligibility. Registration/fit/focus remain passive; only
+ * deliberate scroll or classified human input announces an active-view edge
+ * (macOS can scroll a non-key window). */
+function syncRemoteViewerEligibility(activate: boolean): void {
   const visible = props.active
     && !unmounted
-    && (intentionalInteraction || nativeWindowActive)
     && !document.hidden
-    && (intentionalInteraction || document.hasFocus())
     && hasVisibleRemoteContainer();
   subscription?.setViewerVisible?.(visible);
   if (visible && activate) subscription?.activate?.();
 }
 
-function syncRemoteViewerEligibilityAfterDocumentFocus(activate: boolean): void {
-  if (document.hasFocus()) {
-    syncRemoteViewerEligibility(activate);
-    return;
-  }
-  window.addEventListener("focus", () => syncRemoteViewerEligibility(activate), { once: true });
-}
-
 function startForegroundTracking(): void {
-  const syncFromDocument = () => syncRemoteViewerEligibility(document.hasFocus());
-  window.addEventListener("focus", syncFromDocument);
-  window.addEventListener("blur", syncFromDocument);
+  const syncFromDocument = () => syncRemoteViewerEligibility(false);
   document.addEventListener("visibilitychange", syncFromDocument);
-  stopNativeWindowFocusTracking = () => {
-    window.removeEventListener("focus", syncFromDocument);
-    window.removeEventListener("blur", syncFromDocument);
+  stopViewerVisibilityTracking = () => {
     document.removeEventListener("visibilitychange", syncFromDocument);
   };
-  if (!isTauri) return;
-  const generation = ++nativeWindowFocusTrackingGeneration;
-  void getCurrentWindow().onFocusChanged((event) => {
-    if (unmounted || generation !== nativeWindowFocusTrackingGeneration) return;
-    if (!event.payload) {
-      nativeWindowActive = false;
-      // Do not recompute from WebKit here: it may still say focused on this
-      // native edge. A background cached viewer must withdraw immediately.
-      subscription?.setViewerVisible?.(false);
-      return;
-    }
-    nativeWindowActive = true;
-    // Tauri's native key-window edge can precede WebKit's document focus.
-    syncRemoteViewerEligibilityAfterDocumentFocus(true);
-  }).then((unlisten) => {
-    if (generation !== nativeWindowFocusTrackingGeneration) {
-      unlisten();
-      return;
-    }
-    const stopDomTracking = stopNativeWindowFocusTracking;
-    stopNativeWindowFocusTracking = () => {
-      stopDomTracking?.();
-      unlisten();
-    };
-  }).catch((error) => {
-    console.warn("[cloud-terminal] failed to track native window focus:", error);
-  });
 }
 
 function scheduleRemoteViewerRefresh() {
@@ -475,10 +428,9 @@ async function start() {
       },
     });
     refreshRemoteViewer();
-    // This component only starts for the selected, rendered remote task.
-    // Registration provides its measured viewport; active viewing transfers
-    // daemon-owned sizing without a separate UI action.
-    syncRemoteViewerEligibility(true);
+    // Registration and first render are passive. This view observes the
+    // current authoritative grid until deliberate scroll or input claims it.
+    syncRemoteViewerEligibility(false);
   } catch (error) {
     if (unmounted || generation !== lifecycleGeneration) {
       if (acquiredClient && !adopted) acquiredClient.close();
@@ -613,6 +565,9 @@ function initializeTerminal() {
   terminal.onData((data) => {
     if (unmounted || !relayClient || status.value !== "live") return;
     const classification = inputProducer.classifyData();
+    if (!classification.controlInput) {
+      syncRemoteViewerEligibility(true);
+    }
     enqueueRemoteInput(
       data,
       classification.submissionBoundary,
@@ -646,7 +601,7 @@ function initializeTerminal() {
   if (containerRef.value) {
     terminal.open(containerRef.value);
     inputEventContainer = containerRef.value;
-    stopViewerInteraction = observeTerminalViewerInteraction(inputEventContainer, () => syncRemoteViewerEligibility(true, true));
+    stopViewerInteraction = observeTerminalViewerInteraction(inputEventContainer, () => syncRemoteViewerEligibility(true));
     for (const eventName of controlInputEvents) {
       inputEventContainer.addEventListener(eventName, inputProducer.declareControlInput, true);
     }
@@ -734,7 +689,7 @@ watch(
     }
     await fitAndResizeRemoteAfterLayout(lifecycleGeneration);
     await focusWhenActive();
-    syncRemoteViewerEligibilityAfterDocumentFocus(true);
+    syncRemoteViewerEligibility(false);
   },
 );
 
@@ -747,9 +702,8 @@ watch(effectiveCodeTheme, (theme) => {
 onUnmounted(() => {
   cancelPendingFocus();
   unmounted = true;
-  nativeWindowFocusTrackingGeneration += 1;
-  stopNativeWindowFocusTracking?.();
-  stopNativeWindowFocusTracking = null;
+  stopViewerVisibilityTracking?.();
+  stopViewerVisibilityTracking = null;
   lifecycleGeneration += 1;
   pendingRemoteViewerProposal = null;
   remoteViewerRefreshScheduled = false;
