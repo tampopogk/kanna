@@ -194,3 +194,100 @@ describe("actual package bytes and stamped report", () => {
     expect(() => verifyLinuxArtifact({ ...input, report: jsonBytes(report) })).toThrow(/executable/);
   });
 });
+
+describe("explicit same-candidate renewal", () => {
+  async function renew(f: ReturnType<typeof fixture>, time: Date, sequence = 1, hours = 72, observeCommit = async () => {}) {
+    const { renewLinuxCandidate } = await import("../src/runtime/linux-release-renewal");
+    const signer = await createAptPublicationSigner({ ...key, now: () => time });
+    return f.storage.withExclusivePublication(() => renewLinuxCandidate({ ...f, sequence, validForHours: hours, signer, key, now: () => time, observeCommit, project: async () => {} }));
+  }
+  it("renews expired metadata while retaining original receipt, source, packages and soak timestamp", async () => {
+    const f = fixture();
+    const original = await publish(f);
+    const candidate = await f.storage.read(candidatePath(f.candidate.tag));
+    const signed = await f.storage.read(releasePath(f.candidate.tag, "InRelease"));
+    const later = new Date(now.getTime() + 80 * 3600000);
+    await expect(f.storage.withExclusivePublication(() => verifyLinuxPublication(f.storage, f.candidate, key, later))).rejects.toThrow(/expired/);
+    const result = await renew(f, later);
+    expect(result.receipt).toEqual(original);
+    expect(await f.storage.read(candidatePath(f.candidate.tag))).toEqual(candidate);
+    expect(await f.storage.read(releasePath(f.candidate.tag, "InRelease"))).toEqual(signed);
+    expect(await f.storage.read("dists/staging/InRelease")).not.toEqual(signed);
+    expect(await f.storage.withExclusivePublication(() => verifyLinuxPublication(f.storage, f.candidate, key, later))).toEqual(original);
+    expect(await f.storage.read("dists/stable/InRelease")).toBeNull();
+    const retry = await renew(f, new Date(later.getTime() + 3600000));
+    expect(retry).toEqual(result);
+    await expect(renew(f, later, 1, 96)).rejects.toThrow(/validity differs/);
+  });
+  it.each(["before", "after", "public"])("recovers renewal %s commit failure, including expired pending renewal", async phase => {
+    const f = fixture(); const original = await publish(f);
+    const later = new Date(now.getTime() + 80 * 3600000);
+    const replace = f.storage.replace.bind(f.storage);
+    if (phase !== "public") f.storage.replace = async (path, bytes) => {
+      if (path === "dists/staging/InRelease") {
+        if (phase === "after") await replace(path, bytes);
+        throw new Error("disconnect");
+      }
+      await replace(path, bytes);
+    };
+    await expect(renew(f, later, 1, 72, async () => { if (phase === "public") throw new Error("disconnect"); })).rejects.toThrow(/disconnect/);
+    f.storage.replace = replace;
+    expect((await archiveState(f.storage)).pendingRenewal).toEqual({ tag: f.candidate.tag, sequence: 1 });
+    const expired = new Date(later.getTime() + 80 * 3600000);
+    await expect(renew(f, expired)).rejects.toThrow(/expired/);
+    const result = await renew(f, expired, 2);
+    expect(result.receipt).toEqual(original);
+    expect((await archiveState(f.storage)).pendingRenewal).toBeNull();
+    expect(await f.storage.withExclusivePublication(() => verifyLinuxPublication(f.storage, f.candidate, key, expired))).toEqual(original);
+  });
+  it("recovers an expired publication with no public receipt conservatively", async () => {
+    const f = fixture();
+    const signer = await createAptPublicationSigner({ ...key, now: () => now });
+    await expect(f.storage.withExclusivePublication(() => publishLinuxCandidate({ ...f, acceptance: null, signer, key, now: () => now, observeCommit: async () => { throw new Error("public unavailable"); }, project: async () => {} }))).rejects.toThrow(/public unavailable/);
+    const later = new Date(now.getTime() + 80 * 3600000);
+    const result = await renew(f, later);
+    expect(result.receipt.verifiedAt).toBe(later.toISOString());
+    expect(result.receipt.inReleaseSha256).toBe(sha256((await f.storage.read("dists/staging/InRelease"))!));
+    expect((await archiveState(f.storage)).pending).toBeNull();
+    expect(await f.storage.withExclusivePublication(() => verifyLinuxPublication(f.storage, f.candidate, key, later))).toEqual(result.receipt);
+  });
+  it("retains a renewal's durable first observation when the initial receipt acknowledgement is lost", async () => {
+    const f = fixture();
+    const signer = await createAptPublicationSigner({ ...key, now: () => now });
+    await expect(f.storage.withExclusivePublication(() => publishLinuxCandidate({ ...f, acceptance: null, signer, key, now: () => now, observeCommit: async () => { throw new Error("not public"); }, project: async () => {} }))).rejects.toThrow(/not public/);
+    const later = new Date(now.getTime() + 80 * 3600000);
+    const create = f.storage.create.bind(f.storage);
+    f.storage.create = async (path, bytes) => {
+      if (path === releasePath(f.candidate.tag, "publication.json")) throw new Error("receipt interruption");
+      return create(path, bytes);
+    };
+    await expect(renew(f, later)).rejects.toThrow(/receipt interruption/);
+    f.storage.create = create;
+    const recovered = await renew(f, new Date(later.getTime() + 3600000));
+    expect(recovered.receipt.verifiedAt).toBe(later.toISOString());
+  });
+  it("adopts an immutable renewal envelope after lost journal acknowledgement, without silently changing its date", async () => {
+    const f = fixture(); const original = await publish(f);
+    const later = new Date(now.getTime() + 80 * 3600000);
+    const create = f.storage.create.bind(f.storage);
+    f.storage.create = async (path, bytes) => {
+      const result = await create(path, bytes);
+      if (path.endsWith("/renewal.json")) throw new Error("envelope acknowledgement lost");
+      return result;
+    };
+    await expect(renew(f, later)).rejects.toThrow(/envelope acknowledgement/);
+    expect((await archiveState(f.storage)).pendingRenewal).toBeUndefined();
+    f.storage.create = create;
+    const recovered = await renew(f, new Date(later.getTime() + 3600000));
+    expect(recovered.renewal.date).toBe(later.toISOString());
+    expect(recovered.receipt).toEqual(original);
+  });
+  it("rejects altered artifacts and out-of-band metadata before renewal", async () => {
+    const f = fixture(); await publish(f);
+    await f.storage.withExclusivePublication(() => f.storage.replace("dists/staging/InRelease", Buffer.from("foreign")));
+    await expect(renew(f, now)).rejects.toThrow(/outside/);
+    const g = fixture(); await publish(g);
+    writeFileSync(join(g.storage.root, releasePath(g.candidate.tag, "arm64.report.json")), "changed");
+    await expect(renew(g, now)).rejects.toThrow(/report/);
+  });
+});

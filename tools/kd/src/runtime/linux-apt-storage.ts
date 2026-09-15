@@ -5,6 +5,7 @@
 import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
 import { isAbsolute } from "node:path";
+import { readLinuxKeyFile, type LinuxReleaseConfig } from "./linux-release-config";
 import type { AptPublicationStorage } from "./linux-apt-publication";
 
 const worker = String.raw`
@@ -52,6 +53,9 @@ for line in sys.stdin:
         request = json.loads(line)
         owned()
         operation = request['op']
+        if operation == 'check':
+            print(json.dumps({'value': True}), flush=True)
+            continue
         try: fd, name = parent(request['path'], operation != 'read')
         except FileNotFoundError:
             if operation != 'read': raise
@@ -103,17 +107,20 @@ export class FilesystemAptStorage implements AptPublicationStorage {
   constructor(readonly root: string, readonly python = "/usr/bin/python3") {
     if (!isAbsolute(root) || root.includes("/../") || root.endsWith("/..")) throw new Error("Archive root must be an absolute canonical path.");
   }
+  protected helperCommand(): [string, string[]] { return [this.python, ["-u", "-c", worker, this.root]]; }
   async withExclusivePublication<T>(work: () => Promise<T>): Promise<T> {
     if (this.active) throw new Error("Archive publication is already owned by this adapter.");
     this.active = true;
-    const child = spawn(this.python, ["-u", "-c", worker, this.root], { stdio: ["pipe", "pipe", "pipe"] });
+    const [command, args] = this.helperCommand();
+    const child = spawn(command, args, { stdio: ["pipe", "pipe", "pipe"] });
     let failure: Error | undefined;
     let stderr = "";
     child.stderr.on("data", chunk => { stderr = (stderr + String(chunk)).slice(-2000); });
     let pending: { resolve: (value: unknown) => void; reject: (error: Error) => void } | undefined;
-    const closed = new Promise<void>(resolve => child.once("close", () => {
-      failure ??= new Error(`Archive storage helper stopped: ${stderr.trim()}`);
-      pending?.reject(failure); pending = undefined; resolve();
+    let closing = false;
+    const closed = new Promise<void>(resolve => child.once("close", code => {
+      if (!closing || code !== 0) failure ??= new Error(`Archive storage helper stopped: ${stderr.trim()}`);
+      if (failure) pending?.reject(failure); pending = undefined; resolve();
     }));
     child.on("error", error => { failure = error; pending?.reject(error); pending = undefined; });
     child.stdin.on("error", error => { failure = error; pending?.reject(error); pending = undefined; });
@@ -137,6 +144,12 @@ export class FilesystemAptStorage implements AptPublicationStorage {
         });
       };
       const value = await work();
+      // Fence completion after signing/readback/projection, even if no write followed.
+      await this.rpc("check", "");
+      if (failure) throw failure;
+      closing = true;
+      child.stdin.end();
+      await closed;
       if (failure) throw failure;
       return value;
     } finally {
@@ -160,4 +173,33 @@ export class FilesystemAptStorage implements AptPublicationStorage {
     if (!this.rpc) throw new Error("Archive write requires exclusive publication ownership.");
     await this.rpc("replace", path, bytes);
   }
+}
+
+export interface SshAptTransport {
+  host: string; user: string; port: number; knownHostsPath: string; identityPath: string;
+}
+const quote = (value: string) => "'" + value.replace(/'/g, "'\"'\"'") + "'";
+/** One SSH exec channel carries the existing helper protocol for the entire
+ * ownership scope. No secondary connection, copy job or remote signer. */
+export class SshAptStorage extends FilesystemAptStorage {
+  constructor(root: string, readonly transport: SshAptTransport) {
+    super(root);
+    if (!/^[A-Za-z0-9][A-Za-z0-9.-]*$/.test(transport.host) || !/^[a-z_][a-z0-9_-]*$/i.test(transport.user) || !Number.isInteger(transport.port) || transport.port < 1 || transport.port > 65535) throw new Error("Invalid pinned SSH endpoint.");
+    for (const path of [transport.knownHostsPath, transport.identityPath]) {
+      if (!isAbsolute(path) || /[\r\n\0%$]/.test(path)) throw new Error("SSH pin and identity paths must be absolute literal paths without SSH expansion tokens.");
+      readLinuxKeyFile(path, true);
+    }
+  }
+  protected override helperCommand(): [string, string[]] {
+    const t = this.transport;
+    return ["/usr/bin/ssh", ["-F", "/dev/null", "-T", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes",
+      "-o", `UserKnownHostsFile="${t.knownHostsPath.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`, "-o", "GlobalKnownHostsFile=/dev/null", "-o", "UpdateHostKeys=no",
+      "-o", "IdentitiesOnly=yes", "-o", "IdentityAgent=none", "-o", "ForwardAgent=no", "-o", "ClearAllForwardings=yes",
+      "-o", "ControlMaster=no", "-o", "ControlPath=none", "-o", "ConnectTimeout=15", "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=2",
+      "-i", t.identityPath, "-p", String(t.port), "-l", t.user, "--", t.host,
+      ["/usr/bin/python3", "-u", "-c", worker, this.root].map(quote).join(" ")]];
+  }
+}
+export function linuxArchiveStorage(config: LinuxReleaseConfig): FilesystemAptStorage {
+  return config.backend === "ssh" ? new SshAptStorage(config.root, config.ssh!) : new FilesystemAptStorage(config.root);
 }

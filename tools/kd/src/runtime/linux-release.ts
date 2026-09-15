@@ -1,3 +1,4 @@
+import { renewLinuxCandidate, renewalPath } from "./linux-release-renewal";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { CommandRunner } from "./process";
@@ -5,7 +6,7 @@ import { releasePlatform } from "./release-platform";
 import { compareVersions, releaseRepoSlug } from "./release";
 import { evaluateStagingPublishGate, type StagingLineageRelationship } from "./release-lineage";
 import { readReleasePolicy } from "./release-policy";
-import { FilesystemAptStorage } from "./linux-apt-storage";
+import { linuxArchiveStorage } from "./linux-apt-storage";
 import { linuxReleaseConfig, readLinuxKeyFile, type LinuxReleaseConfig } from "./linux-release-config";
 import { createAptPublicationSigner, type AptVerificationKey } from "./linux-apt-signature";
 import { cleanLinuxSource, collectLinuxRelease, sha256 } from "./linux-release-artifacts";
@@ -95,8 +96,9 @@ async function projectGithub(context: LinuxContext, candidate: LinuxCandidate, r
 }
 /** A local upload is not a published staging candidate until the configured
  * public archive serves those exact bytes. No credentials or provisioning here. */
-async function publicReadback(storage: AptPublicationStorage, c: LinuxCandidate): Promise<void> {
-  const paths = [inReleasePath(c.channel), candidatePath(c.tag), ...c.artifacts.map(a => releasePath(c.tag, `${a.architecture}.report.json`))];
+async function publicReadback(storage: AptPublicationStorage, c: LinuxCandidate, extraPaths: string[] = []): Promise<void> {
+  const renewal = (await archiveState(storage)).renewals?.[c.tag] ?? 0;
+  const paths = [...new Set([...extraPaths, ...Array.from({ length: renewal }, (_, n) => renewalPath(c.tag, n + 1, "renewal.json"))]), inReleasePath(c.channel), candidatePath(c.tag), ...c.artifacts.map(a => releasePath(c.tag, `${a.architecture}.report.json`))];
   for (const a of c.aptArtifacts) paths.push(poolPath(a), packagesByHashPath(c.channel, a.architecture, buildPackagesIndex([a])));
   for (const path of paths) {
     const expected = await storage.read(path);
@@ -130,6 +132,7 @@ async function promotionStatus(context: LinuxContext, storage: AptPublicationSto
   else try {
     await createAptPublicationSigner({ ...publicKey(config), privateKey: readLinuxKeyFile(config.privateKeyPath, true), passphrase: config.passphrasePath ? readLinuxKeyFile(config.passphrasePath, true).replace(/\r?\n$/, "") : undefined, now: () => now });
   } catch (error) { blockers.push(`Linux apt key preflight failed: ${(error as Error).message}`); }
+  if (state.pendingRenewal) blockers.push(`Incomplete Linux metadata renewal ${state.pendingRenewal.tag}/${state.pendingRenewal.sequence}; retry release renew.`);
   if (state.pending) blockers.push(`Incomplete Linux publication ${state.pending}; retry it before any new candidate.`);
   if (!state.staging) blockers.push("No verified Linux staging candidate.");
   else {
@@ -158,7 +161,7 @@ export async function linuxReleaseStatus(input: LinuxContext & { acceptance?: st
   try {
     const config = linuxReleaseConfig(input.env);
     const acceptance = readLinuxAcceptance(input.acceptance);
-    const storage = new FilesystemAptStorage(config.root);
+    const storage = linuxArchiveStorage(config);
     await fetchLinux(input);
     return await storage.withExclusivePublication(() => promotionStatus(input, storage, config, acceptance, new Date()));
   } catch (e) {
@@ -182,9 +185,10 @@ export async function shipLinuxRelease(input: LinuxReleaseInput) {
   const version = readFileSync(join(input.repoRoot, "VERSION"), "utf8").trim();
   if (!/^\d+\.\d+\.\d+$/.test(version)) throw new Error("Linux VERSION must be X.Y.Z.");
   await fetchLinux(input);
-  const storage = new FilesystemAptStorage(config.root);
+  const storage = linuxArchiveStorage(config);
   return storage.withExclusivePublication(async () => {
     const state = await archiveState(storage);
+    if (state.pendingRenewal) throw new Error("Recover pending Linux metadata renewal with release renew first.");
     let staging: LinuxCandidate | null = state.staging ? await readCandidate(storage, state.staging) : null;
     let promoteFrom: string | null = null;
     let branch = input.branch ?? "main";
@@ -269,5 +273,19 @@ export async function shipLinuxRelease(input: LinuxReleaseInput) {
     if (input.promoteFrom && acceptance) for (const [hash, bytes] of Object.entries(acceptance.evidence)) await immutable(storage, `linux/evidence/${hash}`, bytes);
     const receipt = await publishLinuxCandidate({ candidate, artifacts, acceptance, storage, signer, key, observeCommit: c => publicReadback(storage, c), now: () => new Date(), project: (c, r) => projectGithub(input, c, r) });
     return { ...plan, published: true, receipt };
+  });
+}
+
+/** Explicit metadata-only publication; no source checkout, build or tag change. */
+export async function renewLinuxRelease(input: LinuxContext & { candidate: string; renewal: number; validForHours: number }) {
+  const config = linuxReleaseConfig(input.env);
+  if (!config.privateKeyPath) throw new Error("Missing KANNA_LINUX_APT_PRIVATE_KEY_PATH on the trusted release host.");
+  const key = publicKey(config);
+  const signer = await createAptPublicationSigner({ ...key, privateKey: readLinuxKeyFile(config.privateKeyPath, true), passphrase: config.passphrasePath ? readLinuxKeyFile(config.passphrasePath, true).replace(/\r?\n$/, "") : undefined, now: () => new Date() });
+  const storage = linuxArchiveStorage(config);
+  return storage.withExclusivePublication(async () => {
+    const candidate = await readCandidate(storage, input.candidate);
+    if (candidate.baseUrl !== config.baseUrl || candidate.fingerprint.toLowerCase() !== config.fingerprint.toLowerCase()) throw new Error("Renewal archive URL/key differs from candidate configuration.");
+    return renewLinuxCandidate({ storage, candidate, sequence: input.renewal, validForHours: input.validForHours, signer, key, now: () => new Date(), observeCommit: (c, paths) => publicReadback(storage, c, [releasePath(c.tag, "InRelease"), ...paths]), project: (c, r) => projectGithub(input, c, r) });
   });
 }
