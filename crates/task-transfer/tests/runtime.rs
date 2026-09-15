@@ -1861,6 +1861,84 @@ async fn cloud_pull_event_keeps_source_push_on_cloud_with_lan_available() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn cloud_only_artifact_roundtrip_exceeds_one_bridge_frame() {
+    let source_root = tempfile::tempdir().unwrap();
+    let destination_root = tempfile::tempdir().unwrap();
+    let source = TransferRuntime::spawn(RuntimeConfig::for_tests(
+        "source",
+        "Source",
+        source_root.path(),
+        0,
+    ))
+    .await
+    .unwrap();
+    let destination = TransferRuntime::spawn(RuntimeConfig::for_tests(
+        "destination",
+        "Destination",
+        destination_root.path(),
+        0,
+    ))
+    .await
+    .unwrap();
+    for (receiver, identity, endpoint) in [
+        (
+            &source,
+            destination.local_identity(),
+            runtime_endpoint(destination_root.path(), "destination"),
+        ),
+        (
+            &destination,
+            source.local_identity(),
+            runtime_endpoint(source_root.path(), "source"),
+        ),
+    ] {
+        receiver
+            .upsert_external_peer(ExternalPeer {
+                peer_id: identity.peer_id,
+                display_name: identity.display_name,
+                public_key: identity.public_key,
+                endpoint,
+                protocol_version: 1,
+                accepting_transfers: true,
+            })
+            .await
+            .unwrap();
+    }
+    assert!(destination
+        .peer_routes("source")
+        .await
+        .unwrap()
+        .lan_endpoint
+        .is_none());
+    let preflight = source
+        .prepare_transfer_preflight_with_transport("destination", "task", TransferTransport::Cloud)
+        .await
+        .unwrap();
+    source
+        .prepare_transfer_commit(
+            &preflight.transfer_id,
+            json!({
+                "task": { "source_task_id": "task" }
+            }),
+        )
+        .await
+        .unwrap();
+    let _ = next_incoming_transfer_request(&destination).await;
+    let expected = vec![b'x'; 128 * 1024];
+    let artifact = source_root.path().join("rollout");
+    std::fs::write(&artifact, &expected).unwrap();
+    source
+        .stage_transfer_artifact(&preflight.transfer_id, "rollout", artifact, false)
+        .await
+        .unwrap();
+    let fetched = destination
+        .fetch_transfer_artifact(&preflight.transfer_id, "rollout")
+        .await
+        .unwrap();
+    assert_eq!(std::fs::read(fetched.path).unwrap(), expected);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn cloud_transfer_return_steps_keep_cloud_route_when_lan_is_discovered() {
     let temp = tempfile::tempdir().unwrap();
     let source = std::sync::Arc::new(
@@ -1985,7 +2063,8 @@ async fn cloud_transfer_return_steps_keep_cloud_route_when_lan_is_discovered() {
     );
 
     let artifact = temp.path().join("route-artifact");
-    std::fs::write(&artifact, b"cloud artifact").unwrap();
+    let artifact_bytes = vec![b'x'; 128 * 1024];
+    std::fs::write(&artifact, &artifact_bytes).unwrap();
     source
         .stage_transfer_artifact(&preflight.transfer_id, "artifact", artifact, false)
         .await
@@ -1995,7 +2074,7 @@ async fn cloud_transfer_return_steps_keep_cloud_route_when_lan_is_discovered() {
         .fetch_transfer_artifact(&preflight.transfer_id, "artifact")
         .await
         .unwrap();
-    assert_eq!(std::fs::read(fetched.path).unwrap(), b"cloud artifact");
+    assert_eq!(std::fs::read(fetched.path).unwrap(), artifact_bytes);
     assert!(
         connections.load(Ordering::SeqCst) > before,
         "forced-cloud artifact returned over LAN"

@@ -139,7 +139,8 @@ where
         let available = reader.fill_buf().await?;
         if available.is_empty() {
             return Err(RuntimeError::Protocol(format!(
-                "artifact response exceeded the negotiated framing limit of {maximum_bytes} bytes",
+                "artifact response ended before newline after {} bytes (negotiated limit {maximum_bytes} bytes)",
+                bytes.len(),
             )));
         }
         let take = available

@@ -17,6 +17,7 @@ pub(crate) enum TunnelError {
     UnexpectedService { actual: TunnelService },
     UnexpectedTextFrame,
     UnexpectedFrame,
+    RelayClosed { code: u16, reason: String },
 }
 
 impl fmt::Display for TunnelError {
@@ -46,6 +47,12 @@ impl fmt::Display for TunnelError {
             }
             Self::UnexpectedFrame => {
                 formatter.write_str("unexpected WebSocket frame in task-transfer tunnel")
+            }
+            Self::RelayClosed { code, reason } => {
+                write!(
+                    formatter,
+                    "task-transfer relay closed with code {code}: {reason}"
+                )
             }
         }
     }
@@ -93,6 +100,11 @@ where
             frame = websocket.next() => {
                 match frame.transpose()? {
                     Some(Message::Binary(bytes)) => sidecar.write_all(&bytes).await?,
+                    Some(Message::Close(Some(frame))) if u16::from(frame.code) != 1000 => {
+                        return Err(TunnelError::RelayClosed {
+                            code: frame.code.into(), reason: frame.reason.to_string(),
+                        });
+                    }
                     Some(Message::Close(_)) | None => break,
                     Some(Message::Ping(bytes)) => websocket.send(Message::Pong(bytes)).await?,
                     Some(Message::Pong(_)) => {}
@@ -323,6 +335,36 @@ mod tests {
             .expect("bridge task panicked")
             .expect_err("text data frame must fail");
         assert!(matches!(error, super::TunnelError::UnexpectedTextFrame));
+    }
+
+    #[tokio::test]
+    async fn task_transfer_tunnel_reports_abnormal_relay_close() {
+        use tokio_tungstenite::tungstenite::protocol::{frame::coding::CloseCode, CloseFrame};
+        let (listener, port) = loopback_listener().await;
+        let (mut peer, source) = websocket_pair().await;
+        let bridge = tokio::spawn(super::bridge_task_transfer_tunnel(
+            source,
+            port,
+            "close-test".into(),
+        ));
+        send_ready(&mut peer, "close-test", "task-transfer").await;
+        let _sidecar = accept_sidecar(&listener).await;
+        peer.close(Some(CloseFrame {
+            code: CloseCode::Again,
+            reason: "bounded backpressure".into(),
+        }))
+        .await
+        .unwrap();
+        let error = timeout(Duration::from_secs(2), bridge)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            super::TunnelError::RelayClosed { code: 1013, .. }
+        ));
+        assert!(error.to_string().contains("bounded backpressure"));
     }
 
     #[tokio::test]

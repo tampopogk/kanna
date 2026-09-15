@@ -11,7 +11,7 @@ readbacks; helper `074f03cc` owns MBP. Neither operator installation was tested.
 The original desktop.21 run at `dc75f7a3be20030009908e41f0d9a63b0366afa4`
 failed with **zero moves**. Corrected runs completed four cloud moves. They do
 not retroactively pass original C or Linux B. **LAN transfer remains failed,
-and the fresh-session export correction still needs its bounded live retest.**
+and the fresh-session retest is blocked at artifact reception.**
 No production acceptance, soak waiver, publication, PR, or stage advance is
 claimed. Source intent, retry budgets, idempotency, and ownership rules remain.
 
@@ -23,7 +23,8 @@ Code checkpoints:
 | `af5cc0569` | Prevent overlapping presence reads starving cloud snapshots | Deterministic producer-through-consumer regression; not proved as old C cause |
 | `36b60d29f` | Persist authenticated concrete return route | First cloud-only move and blind recall passed; reverse pull exposed setup-buffer rejection |
 | `bd2c8bd2c` | Cloud proxy backpressure and signed pull-route propagation | Cloud-only large-payload pull and cloud with LAN present completed; fresh-run context failed while known-session context passed |
-| Fresh-session follow-up in this change | Discover fresh Codex rollout using existing recovery resolver; refuse unidentified empty export | Local regression passes; same-fixture live retest pending |
+| `3169f78e0` | Discover fresh Codex rollout using existing recovery resolver; refuse unidentified empty export | Fresh native ID and artifact metadata appear in both payloads; import fails before destination task creation |
+| Diagnostic follow-up in this change | Distinguish artifact EOF from oversize and retain artifact/close-error attribution | Focused tests pass; underlying live closure is not yet explained |
 
 The `bd2c8bd2c` tree is `0098dc14772796ad87614aa7e2fc652bda3b72f8`.
 Acceptance preserves endpoint-native titles, process paths, binary hashes,
@@ -149,6 +150,35 @@ stages, validates and materializes the artifact on a separate destination home,
 verifying its bytes and resume eligibility. A wrong-worktree test refuses export.
 No live model fixture was added by this task.
 
+### 8. Artifact EOF mislabeled as an oversized response
+
+The same-fixture 3169 retest used a fresh native Codex launch, with rollout
+`01a0a71f-0f71-70a1-9e81-3185d26a22c2` created at 22:10:25.824Z. Both payloads
+for `d96ed5863993376a82a559b713f7686166653658fa6859f8abe7b5131b2a0aa9`
+carry that exact ID, source run ID and session-rollout/copy-file contract. This
+corrects the observed null-ID/empty-artifact export boundary; it does not prove
+artifact delivery or context recovery. The source provider exited at 22:13:49.
+
+Destination import attempts 1–6 failed with “artifact response exceeded the
+negotiated framing limit of 241057020 bytes,” including attempt 6 at 22:26:39,
+before the nominal 22:28:38 reservation expiry. The reader emitted that same
+error on EOF, even for zero received bytes. A real TCP regression reproduces
+this misleading diagnosis. EOF now reports the received byte count separately;
+actual oversize remains bounded and rejected. Fetch errors identify the artifact,
+source write failures are reported, and abnormal relay close codes/reasons reach
+the existing server error logs. No size cap, route, retry or ownership rule changes.
+
+A stat-only source read at 22:24:10 found the exact rollout was a regular file,
+80,358 bytes, last modified 22:13:46. This is not a measurement of the failed
+wire response, nor proof that this particular artifact was the failing fetch.
+Local 128 KiB tests pass with cloud-only protocol-1 external peers, with LAN also
+available, and through both production Rust WebSocket bridges to source EOF.
+They do not exercise the deployed relay. Its public health reports commit
+`3ce0847d01af`; canonical local stats access required gcloud reauthentication,
+which was not performed. Acceptance coordinated existing read-only GCP access;
+bounded Cloud Logging and pinned-container searches found no matching tunnel
+entries. No underlying transport cause is claimed from this diagnostic gap.
+
 ## Live results and setup distinctions
 
 | Live leg | Result | Limits |
@@ -158,9 +188,10 @@ No live model fixture was added by this task.
 | 36 legacy continuation of `4bd…` | Failed missing finalization reservation | Diagnostic/rebuild pause exceeded existing 900-second TTL; both records terminal, natural cleanup empty, source retained |
 | 36 fresh Studio cloud push `4cee32ed…af42` | Completed 20:35:46; known-session blind recall passed | Registry-only, no competing LAN route |
 | 36 reverse Studio cloud pull `949973fa…e333` | Proxy setup-limit resets | Helper bundle-parser delay crossed TTL before bd2 startup; attempts 7–8 failed expired commit reservation; terminal 21:17:03, source retained, cleanup empty |
-| bd2 fresh Studio cloud pull `994d942e…496cd` | Completed 21:26:42; large-payload transport passed | Fresh-session export/context FAILED; correction above awaits live retest |
+| bd2 fresh Studio cloud pull `994d942e…496cd` | Completed 21:26:42; large-payload transport passed | Fresh-session export/context FAILED; 3169 corrects payload contract but end-to-end recall remains untested |
 | bd2 MBP cloud pull `d3b6726d…a58b84`, LAN present | Completed 21:39:13; native known-session blind recall passed | Strongest new-nonce context evidence with competing routes |
 | bd2 MBP cloud push `59023c1d…8e351d`, LAN present | Completed 21:45:40; same session resumed | Return recall passed but Studio already held that session/nonce, so it cannot prove later MBP-only turns |
+| 3169 fresh Studio cloud push `d96ed586…0aa9` | Fresh ID/artifact contract correct; source exited; import attempts 1–6 failed before nominal expiry | Incoming claimed/local task absent as of 22:26:39; no destination resume/recall; artifact closure unresolved |
 | bd2 MBP explicit LAN pull | One prequeue HTTP502, NoRoute65 at 21:36:25.769683 | No move; no retry; LAN remains unaccepted |
 
 Completed known-session hops preserved workflow definitions, source input-ledger
@@ -177,11 +208,15 @@ artificial TTL extension was used. An earlier invented cancellation/approval
 gate was explicitly superseded by root's authorization to continue the retained
 disposable intent; that gate is not a remaining requirement.
 
-Both acceptance allocations are now stopped with owned listeners/processes
-cleared. The final Studio fixture `c4f27c…3b3a5` is retained for the already
-authorized bounded fresh-run retest; fixtures were not closed as cleanup.
-No further bd2 move or new model task is planned. Acceptance owns final binary
-and cleanup evidence; this fix task started no live allocations.
+Both bd2 allocations were stopped with owned listeners/processes cleared. The
+preserved Studio fixture `c4f27c…3b3a5` was rerun through the supported API for the
+single 3169 fresh-session retest; no new model task was created. An initial MBP
+launch with the wrong task title and peer ID was stopped before any transfer or
+task input and is a setup fault, not a product result. The corrected destination
+registered Studio ordinarily by 22:13:26. The 3169 services remain available for
+the retained intent's natural settlement, with the source model already exited.
+Later TTL failures must not replace the six pre-expiry artifact errors. Acceptance
+owns final lifecycle/cleanup evidence; this fix task started no live allocations.
 
 ## LAN diagnosis and precise next check
 
@@ -212,6 +247,10 @@ one LAN protocol request from its owned sidecar. Capture a policy/path diagnosti
 if the permitted app still fails. Do not toggle a generic installed Kanna entry,
 reset system privacy, bypass trust, or rewrite sockets based only on errno65.
 The current evidence cannot conclusively classify this as an environment fault.
+Bounded kd inspection found no signed isolated desktop-bundle launch option:
+`dev up` launches the task-scoped dev binary. Establishing an attributable isolated
+identity is therefore still needed for the permission check. No ad-hoc wrapper,
+privacy reset, or operator-app test was used.
 
 ## Focused verification
 
@@ -235,6 +274,13 @@ The current evidence cannot conclusively classify this as an environment fault.
   warnings in unchanged files: unused function in `ksp.rs`, argument count in
   `db/pipeline_items.rs`, and three boolean simplifications in
   `http_api/desktop_views.rs` (`.tmp/fresh-codex-clippy.log`). They were not changed.
+
+- Artifact diagnosis: EOF/oversize regression red before and green after; two
+  close-code propagation tests, the 128 KiB cloud-only runtime test, and the
+  paired Rust bridge EOF test pass. Logs are `.tmp/artifact-eof-{before,after}.log`,
+  `.tmp/artifact-close-diagnostics.log`, `.tmp/cloud-only-artifact-128k.log`, and
+  `.tmp/artifact-both-bridges.log`. These passing transport tests bound the
+  diagnosis; they are not a reproduction or correction of the live closure.
 
 No broad build/visual matrix or production gate was substituted for these
 focused checks. Live fresh-session proof and LAN acceptance remain outstanding.

@@ -1287,6 +1287,7 @@ async fn handle_connection(
                     if legacy_response_write_started
                         || matches!(&error, RuntimeError::PeerRequestTimeout { .. }) =>
                 {
+                    eprintln!("[transfer-artifact] response {request_id} failed: {error}");
                     return Err(error);
                 }
                 Err(error) => PeerResponse::Error {

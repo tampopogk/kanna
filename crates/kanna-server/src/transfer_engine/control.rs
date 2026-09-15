@@ -165,7 +165,8 @@ pub async fn fetch_artifact(
         "fetch-artifact",
         json!({ "transferId": transfer_id, "artifactId": artifact_id }),
     )
-    .await?;
+    .await
+    .map_err(|error| format!("artifact {artifact_id} for transfer {transfer_id}: {error}"))?;
     Ok(std::path::PathBuf::from(required_string(
         &response, "path",
     )?))

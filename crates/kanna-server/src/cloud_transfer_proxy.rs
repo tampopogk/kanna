@@ -723,6 +723,11 @@ where
             frame = relay.next() => {
                 match frame.transpose()? {
                     Some(Message::Binary(bytes)) => local.write_all(&bytes).await?,
+                    Some(Message::Close(Some(frame))) if u16::from(frame.code) != 1000 => {
+                        return Err(ProxyError::Relay(format!(
+                            "tunnel closed with code {}: {}", u16::from(frame.code), frame.reason,
+                        )));
+                    }
                     Some(Message::Close(_)) | None => {
                         let _ = local.shutdown().await;
                         break;
@@ -814,6 +819,97 @@ mod tests {
     };
 
     const TEST_TIMEOUT: Duration = Duration::from_secs(3);
+
+    #[tokio::test]
+    async fn abnormal_relay_close_preserves_its_code_and_reason() {
+        use tokio_tungstenite::{
+            tungstenite::protocol::{frame::coding::CloseCode, CloseFrame, Role},
+            WebSocketStream,
+        };
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let _client = TcpStream::connect(listener.local_addr().unwrap())
+            .await
+            .unwrap();
+        let (mut local, _) = listener.accept().await.unwrap();
+        let (peer_io, proxy_io) = tokio::io::duplex(1024);
+        let (mut peer, mut relay) = tokio::join!(
+            WebSocketStream::from_raw_socket(peer_io, Role::Server, None),
+            WebSocketStream::from_raw_socket(proxy_io, Role::Client, None),
+        );
+        peer.close(Some(CloseFrame {
+            code: CloseCode::Again,
+            reason: "bounded backpressure".into(),
+        }))
+        .await
+        .unwrap();
+        let (_cancel, cancel) = tokio::sync::watch::channel(false);
+        let error = timeout(TEST_TIMEOUT, super::bridge(&mut local, &mut relay, cancel))
+            .await
+            .unwrap()
+            .unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("code 1013: bounded backpressure"));
+    }
+
+    #[tokio::test]
+    async fn artifact_response_survives_both_bridges_when_source_closes() {
+        use tokio_tungstenite::{tungstenite::protocol::Role, WebSocketStream};
+        let source_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let proxy_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let (source_io, destination_io) = tokio::io::duplex(1024);
+        let (source_ws, mut destination_ws) = tokio::join!(
+            WebSocketStream::from_raw_socket(source_io, Role::Server, None),
+            WebSocketStream::from_raw_socket(destination_io, Role::Client, None),
+        );
+        destination_ws
+            .send(Message::Text(
+                json!({
+                    "type": "tunnel_ready", "desktopId": "source",
+                    "tunnelId": "artifact-eof", "service": "task-transfer"
+                })
+                .to_string()
+                .into(),
+            ))
+            .await
+            .unwrap();
+        let source_bridge = tokio::spawn(crate::task_transfer_tunnel::bridge_task_transfer_tunnel(
+            source_ws,
+            source_listener.local_addr().unwrap().port(),
+            "artifact-eof".into(),
+        ));
+        let mut consumer = TcpStream::connect(proxy_listener.local_addr().unwrap())
+            .await
+            .unwrap();
+        let (mut proxy_socket, _) = proxy_listener.accept().await.unwrap();
+        let (_cancel, cancel) = tokio::sync::watch::channel(false);
+        let proxy_bridge = tokio::spawn(async move {
+            super::bridge(&mut proxy_socket, &mut destination_ws, cancel).await
+        });
+        let mut expected = vec![b'x'; 128 * 1024];
+        expected.push(b'\n');
+        let response = expected.clone();
+        let source = tokio::spawn(async move {
+            let (mut socket, _) = source_listener.accept().await.unwrap();
+            let mut request = [0; 9];
+            socket.read_exact(&mut request).await.unwrap();
+            assert_eq!(&request, b"artifact\n");
+            socket.write_all(&response).await.unwrap();
+            socket.shutdown().await.unwrap();
+        });
+        consumer.write_all(b"artifact\n").await.unwrap();
+        let mut received = Vec::new();
+        timeout(TEST_TIMEOUT, consumer.read_to_end(&mut received))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(received, expected);
+        source.await.unwrap();
+        source_bridge.await.unwrap().unwrap();
+        // The direct test websocket has no relay to translate source TCP EOF
+        // into its ordinary close frame. All application bytes must arrive first.
+        let _ = proxy_bridge.await.unwrap();
+    }
 
     async fn test_relay() -> (String, TcpListener) {
         let listener = TcpListener::bind(("127.0.0.1", 0))
