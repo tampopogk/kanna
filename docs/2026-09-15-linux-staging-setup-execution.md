@@ -105,3 +105,80 @@ restoring Caddy in success/failure cleanup. It preserves zero sockets, source,
 config ownership and rollback checks. Public staging relay health/source is
 verified before apt-key HTTPS/RPC/env-selector handoff. No actual stop/apply has
 occurred yet. Both C test endpoints remain paused; B bytes on MBP unchanged.
+
+## Actual consented maintenance and readback failure
+
+PR1517 merged unchanged eac3c51b352c62b8ddd9b39aee7308cab35e489d as
+5c1ca1b3b904d364bb231d591daed63911200a68. Eleven focused tests and kd
+typecheck passed. MBP executed fresh explicit-disconnect plan
+1e531c7e02d5b31d5f73dab3a3ffc7852110b95b732df540df5376f0bbc1c87b.
+The canonical apply exited1 with exactly `fetch failed`; it was not blindly
+retried. The host phase changed state before the downstream readback failure.
+
+Canonical post-failure inspect exited0: managed=true, accountUid999,
+proxyChange=false. Relay ID/image/start and its .env hash remain exactly the
+original values above. New Caddy ID
+681e0c39296d94a6472d96619c2106feaa7b860c85c53c0eb71bba96b52363b9,
+original image5f5c8640aae01df9654968d946d8f1a56c497f1dd5c5cda4cf95ab7c14d58648,
+start2026-09-15T15:22:32.199081669Z. Post-recovery stats report four sockets,
+four live rows, one paired user at original deployed3ce0847d01af.
+
+Read-only external relay HTTPS health returned200/ok/original source. Public
+`https://apt.kanna.build/keys/kanna-archive.asc` returned200 and matches local
+public-key SHA256
+0b11597589d7cc2b8523991f554384226bfa3948e629527838464cbd29fd1880;
+fingerprint4e76a6afcdb83a5050daebb364bbc361a9d7ec7a. No private key left MBP.
+The failed CLI did not return the host socketChecks; no independently logged
+first-drain zero measurement is claimed. Host mutation follows the canonical
+zero gates, but this is not a substitute for a missing raw observation.
+
+Linux selectors remained absent and publisher RPC was unconfirmed. The
+supported next action is a fresh plan/apply **without disconnect flags**, with
+proxyChange=false required, to finish HTTPS/RPC/selector recovery. No second
+interruption is authorized by that recovery instruction. Both owner apps and
+agent PTYs remained running. Acceptance641 was explicitly released after
+identity/HTTPS reconciliation, using a new isolated transfer identity; this does
+not certify any transfer result. No Linux package publication or soak yet.
+
+MBP evidence under its controller `.tmp`: linux-apply-5c1ca1b3.log,
+post-failure-inspect-5c1ca1b3.log (actual filename prefixed linux-),
+post-failure-state.json, post-failure-https.json, public-key-evidence.json.
+
+## Canonical recovery completed
+
+Fresh no-disconnect plan709d4057b6f3ab1537699da17cf6af5b37895f1caa9e1a11286f532a6c44115f
+and apply on controller5c1ca1b3 exited0. proxyChange=false;
+configured=true/published=false. The existing relay/Caddy identities remained
+unchanged. Public relay HTTPS reported ok/source3ce0847d01af; apt public key
+and fingerprint match above. The publisher's exclusive RPC read gate passed
+before merging Linux selectors into `/Users/jeremyhale/.kanna/.env.release.local`.
+No key rotation, new proxy interruption or release occurred. Recovery reports
+disconnectRelay=false/socketChecks=[]; it does not recreate missing first-drain
+observations. Original fetch failure remains recorded, with original fetch
+phase/cause unknown. Linux status and original-B rehearsal follow separately.
+
+## Published Linux staging result
+
+The same retained-B command with `--release` exited0 on clean controller
+5c1ca1b3b904d364bb231d591daed63911200a68 (tree
+c42426df3338d78fc12977e1b739d1782bb15581). No rebuild or artifact relabeling.
+Canonical post-status verified staging moved from null to
+linux-v0.2.0-staging.2, production=null and pending=null. Public signed closure
+passed, and the receipt records 2026-09-15T15:28:43.942Z. Full Linux24h ends no
+earlier than 2026-09-16T15:28:43.942Z. Metadata expires2026-09-22T15:28:14Z.
+Promotion remains refused: `Missing or duplicate system acceptance for both.`
+and, at the recorded check, `Linux final candidate requires 24h verified soak
+(0.008h).` No production operation or override was performed.
+
+Authorizing sentence: "go ahead with your recommendations for staging release,
+linux apt hosting etc." Jeremy separately approved the brief network
+interruption in response to the explicit timing question. No repeated timing
+approval was needed after the canonical orchestration correction.
+
+[Release and installation handoff](2026-09-15-linux-staging-publication.md)
+contains the real URLs and hashes. Website76e93c62 received the actual verified
+handoff and can consume it while Ship remains open. Mobile notification sent
+once by MBP6a: accepted1/failed0; not duplicated here. Acceptance641 received
+maintenance release and publication identity; same-source C tests remain
+separate from B certification. All owned local validation and MBP publish/status
+processes exited. Intended archive/Caddy services remain running.
