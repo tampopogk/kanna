@@ -104,11 +104,29 @@ pub fn plan_session_artifacts(
     let Some(provider) = agent_provider else {
         return Ok(None);
     };
-    // OpenCode is the one provider whose session id the task row cannot carry,
-    // so its plan discovers the id instead of being handed one.
+    // Some providers assign the id themselves. OpenCode always discovers it;
+    // fresh Codex runs need discovery until the exit footer records the id.
     if provider == "opencode" {
         return plan_opencode_export(agent_type, worktree_path);
     }
+    let discovered_codex_id = if provider == "codex"
+        && agent_type == Some("pty")
+        && agent_session_id.is_none()
+    {
+        let discovered = worktree_path.and_then(|worktree| {
+            crate::task_creator::resolve_codex_session_id_in(
+                &home.join(".codex/sessions"),
+                &worktree.to_string_lossy(),
+                None,
+            )
+        });
+        Some(discovered.ok_or_else(|| MissingSessionArtifact(format!(
+            "task {task_id} has no recorded Codex session id and no Codex rollout could be identified for its worktree; refusing an empty conversation export"
+        )))?)
+    } else {
+        None
+    };
+    let agent_session_id = agent_session_id.or(discovered_codex_id.as_deref());
     let Some(session_id) = agent_session_id else {
         return Ok(None);
     };
@@ -955,6 +973,110 @@ mod tests {
             std::slice::from_ref(&export),
             &[],
         ));
+    }
+
+    #[test]
+    fn fresh_codex_rollout_without_recorded_id_reaches_destination_materialization() {
+        let source_home = tempfile::tempdir().unwrap();
+        let destination_home = tempfile::tempdir().unwrap();
+        let worktree = source_home.path().join("repo/task-fresh");
+        std::fs::create_dir_all(&worktree).unwrap();
+        let session_id = "364643cc-5e6d-48fc-86ca-ca7764380900";
+        let day = source_home.path().join(".codex/sessions/2026/08/07");
+        std::fs::create_dir_all(&day).unwrap();
+        let filename = format!("rollout-2026-08-07T10-11-12-{session_id}.jsonl");
+        let rollout = format!(
+            "{}\n{}\n",
+            serde_json::json!({
+                "type": "session_meta", "payload": { "id": session_id, "cwd": worktree }
+            }),
+            serde_json::json!({ "type": "response_item", "payload": { "text": "retained conversation" } })
+        );
+        std::fs::write(day.join(&filename), &rollout).unwrap();
+
+        // Fresh Codex runs do not have a recorded id until their exit footer.
+        // The real rollout producer has already written cwd-keyed metadata.
+        let plan = plan_session_artifacts(
+            source_home.path(),
+            None,
+            Some("codex"),
+            Some("pty"),
+            Some(&worktree),
+            "task-fresh",
+        )
+        .unwrap()
+        .expect("fresh Codex conversation must not become an empty export");
+        assert_eq!(plan.session_id, session_id);
+        let staged = stage_plan(&plan, "transfer-fresh", source_home.path()).unwrap();
+        let artifacts = staged
+            .iter()
+            .map(|item| item.payload.clone())
+            .collect::<Vec<_>>();
+        assert_importable(
+            "transfer-fresh",
+            Some("pty"),
+            Some("codex"),
+            Some(&plan.session_id),
+            &artifacts,
+        )
+        .unwrap();
+        let artifact = &staged[0];
+        let wrote = crate::transfer_artifact::materialize_transfer_artifact_at_home(
+            destination_home.path(),
+            &artifact.source_path,
+            crate::transfer_artifact::TransferArtifactContract {
+                provider: "codex",
+                resume_session_id: &plan.session_id,
+                filename: &artifact.payload.filename,
+                kind: artifact.payload.kind.as_str(),
+                materialization: artifact.payload.materialization.as_str(),
+                destination_worktree_path: None,
+            },
+        )
+        .unwrap();
+        assert!(wrote);
+        assert!(resume_survives_existing_destination(
+            &artifacts,
+            &[(artifact.payload.artifact_id.clone(), wrote)]
+        ));
+        assert_eq!(
+            std::fs::read_to_string(
+                destination_home
+                    .path()
+                    .join(&artifact.payload.home_rel_path)
+            )
+            .unwrap(),
+            rollout
+        );
+    }
+
+    #[test]
+    fn fresh_codex_export_cannot_borrow_another_worktrees_rollout() {
+        let home = tempfile::tempdir().unwrap();
+        let day = home.path().join(".codex/sessions/2026/08/07");
+        std::fs::create_dir_all(&day).unwrap();
+        std::fs::write(
+            day.join("other.jsonl"),
+            format!(
+                "{}\n",
+                serde_json::json!({
+                    "type": "session_meta", "payload": {
+                        "id": "364643cc-5e6d-48fc-86ca-ca7764380900", "cwd": "/other/task"
+                    }
+                })
+            ),
+        )
+        .unwrap();
+        let error = plan_session_artifacts(
+            home.path(),
+            None,
+            Some("codex"),
+            Some("pty"),
+            Some(&home.path().join("task-fresh")),
+            "task-fresh",
+        )
+        .expect_err("unidentified conversation must fail before source finalization");
+        assert!(error.0.contains("refusing an empty conversation export"));
     }
 
     #[test]
