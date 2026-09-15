@@ -148,3 +148,40 @@ Linux product, channel update or start of soak.
 - Retain validation logs/results before removing this temporary draft after
   successful validation, if it is no longer needed. Nothing here grants a
   public artifact URL, Linux channel state or soak time.
+
+### Ubuntu 24.04 dispatch result: draft access refused
+
+Root reviewed the transport at `5ba0d9a990b22a5e5ffeeece5335c43f21a6de17`
+and authorized dispatch. Actual run:
+https://github.com/tampopogk/kanna/actions/runs/34958441800
+records exactly that head. GitHub refused a raw SHA as a dispatch ref (HTTP422
+"No ref found"); after verifying `task-d3ce8dec` still pointed to the reviewed
+SHA, branch-name dispatch succeeded. Review attention was cleared.
+
+Both matrix jobs **FAILED before installation**:
+
+- arm64 Ubuntu24.04: job104346027024, fetch failed at10:32:18Z.
+- x86_64 Ubuntu24.04: job104346027267, fetch failed at10:32:14Z.
+- Exact diagnostic: `GitHub asset API returned HTTP 403; draft assets may
+  require permissions unavailable to contents:read. Keep the release draft.`
+
+This is the observed job-token refusal, not a proven explanation of GitHub's
+internal authorization decision. Owner-credential download had succeeded;
+that did not imply workflow contents-read access. No package was downloaded
+successfully, installed or tested by either floor job. Native builds and the
+ordinary install/interop jobs were skipped. The evidence upload steps also
+failed with "No files were found" because the installed harness never ran.
+Actual failed-step logs and full run/job/step outcomes are retained in
+`docs/evidence/2026-09-15-linux-bootstrap/floor-ci-34958441800/`.
+
+Post-run API verification still reports release389052859 `draft=true`,
+`published_at=null`, with only asset565472294 and the original tar digest.
+No permission expansion, publication, source rebuild or unchanged retry.
+Keep the draft pending disposition; the successful-validation cleanup condition
+has not been met. Both Ubuntu24.04 floor gates remain unfulfilled. The prior
+17/17 Ubuntu26.04 ARM synthetic-provider result remains separately valid.
+
+Next action requires root disposition of a private CI input transport the job
+can actually read. The authorized draft + contents-read combination is now
+measured to fail; changing permissions or making the release public is outside
+this task's authorization. Ship remains open.
