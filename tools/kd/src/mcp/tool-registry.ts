@@ -18,6 +18,8 @@ const exposedTools = [
   ["setup", "setup"],
   ["build_desktop", "build.desktop"],
   ["build_sidecars", "build.sidecars"],
+  ["release_prepare", "release.prepare"],
+  ["release_renew", "release.renew"],
   ["release_ship", "release.ship"],
   ["release_promote", "release.promote"],
   ["release_cut", "release.cut"],

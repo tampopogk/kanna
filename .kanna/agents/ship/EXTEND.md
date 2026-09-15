@@ -51,7 +51,22 @@ status, ship and promotion command. For a Linux task, the programmatic default
 and interactive status above mean the Linux commands below. The macOS
 operations/preflight and version-bump procedure do not apply to Linux.
 
+- Local exact-source collection: `./kd release prepare --platform linux
+  --ref <40-hex-commit> --staging-iteration N [--out-dir <new-directory>]`.
+  It needs no archive, key, public URL or remote-tip configuration and preserves
+  both architectures/reports/hashes in a durable manifest. It builds only an
+  isolated clean snapshot of that source. A historical graph without stamp
+  support is refused; review/commit the necessary stamp-only backport and record
+  its new SHA, never patch a checkout and claim its old identity.
 - Status: `./kd release status --platform linux [--acceptance <path>]`.
+- Authorized same-candidate metadata update: `./kd release renew --platform
+  linux --candidate <exact-linux-tag> --renewal N --valid-for-hours H`.
+  This publishes new signed Date/Valid-Until metadata without changing packages,
+  candidate, original publication receipt or soak timestamp. Require explicit
+  authorization for the target suite; production renewal requires a named-human
+  production request. Retry the same sequence/hours after interruption; choose
+  the next sequence explicitly if pending metadata expired. Never delete the
+  journal/lock or change the clock. No implicit schedule or validity default.
 - Build/rehearse: `./kd release ship --platform linux --staging --dry-run
   [--branch main|release/linux/X.Y] [--staging-iteration N]
   [--acceptance <path>]`. This builds both architectures from clean committed
@@ -81,15 +96,16 @@ Changed source requires a fresh candidate and fresh acceptance/soak.
 Read `docs/dev/linux-release.md` for the exact configuration and acceptance
 format. `KANNA_LINUX_*` non-secret selectors use the existing owner-only
 `~/.kanna/.env.release.local`; no mobile bucket or macOS key is inherited as a
-Linux default. The concrete backend is an explicitly selected, dedicated local
-POSIX filesystem archive, served at the configured public HTTPS base URL.
-It needs `/usr/bin/python3` on the release host for the kernel-locked storage
-helper. This is a release-tool prerequisite, not an installed app dependency.
+Linux default. The concrete backend is an explicitly selected, dedicated POSIX filesystem
+archive, either local (`filesystem`) or remote (`ssh`), served at the configured
+public HTTPS base URL. SSH uses an independently pinned host key and one remote
+ownership session running the same helper; apt signing stays on the trusted MBP.
+It needs `/usr/bin/python3` on the storage host for the kernel-locked helper. This is a release-tool prerequisite, not an installed app dependency.
 No network filesystem/object-store mount is supported by this backend. Choosing
 another backend requires an adapter with equivalent atomic/ownership semantics;
 never use a copy/rsync job as a substitute for atomic publication.
 
-Before Linux builds/publication: verify the Kanna connection, clean source and
+Before configured Linux ship/publication (local `prepare` is independent): verify the Kanna connection, clean source and
 remote base as above; configure the archive/public URL/explicit Valid-Until
 hours and public key fingerprint; and obtain exact candidate evidence. Before
 real publication, verify protected apt private-key/passphrase files on the

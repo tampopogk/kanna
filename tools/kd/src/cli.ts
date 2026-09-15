@@ -628,6 +628,17 @@ function parseFlagInput(
   const input: Record<string, unknown> = { ...defaults };
   for (let index = 0; index < rest.length; index += 1) {
     const arg = rest[index];
+    if (arg === "--candidate" || arg === "--renewal" || arg === "--valid-for-hours") {
+      const value = rest[++index];
+      if (!value || value.startsWith("--")) throw new Error(`${arg} requires a value`);
+      if (arg === "--candidate") input.candidate = value;
+      else {
+        const number = Number(value);
+        if (!Number.isFinite(number) || number <= 0 || (arg === "--renewal" && !Number.isSafeInteger(number))) throw new Error(`${arg} requires a positive ${arg === "--renewal" ? "integer" : "number"}`);
+        input[arg === "--renewal" ? "renewal" : "validForHours"] = number;
+      }
+      continue;
+    }
     if (arg === "--acceptance" || arg === "--staging-iteration") {
       const value = rest[++index];
       if (!value || value.startsWith("--")) throw new Error(`${arg} requires a value`);
@@ -1053,6 +1064,9 @@ export function parseCliArgs(args: string[]): ParsedCliCommand {
   if (group === "rust-cache" && command === "status") {
     return { taskId: "rust-cache.status", input: {} };
   }
+  if (group === "release" && (command === "prepare" || command === "renew")) {
+    return { taskId: `release.${command}`, input: parseFlagInput(rest, {}) };
+  }
   if (group === "release" && command === "ship") {
     return { taskId: "release.ship", input: parseFlagInput(rest, {}) };
   }
@@ -1232,6 +1246,8 @@ const helpTopics: Record<string, string[]> = {
     "  build sidecars",
     "  build linux-package [--channel production|staging] [--architecture x86_64|arm64] [--version X.Y.Z] [--staging-iteration <n>] [--skip-build] [--allow-audit-findings]",
     "  rust-cache install|status",
+    "  release prepare --platform linux --ref <40-hex-sha> --staging-iteration N [--out-dir <dir>]",
+    "  release renew --platform linux --candidate <linux-tag> --renewal N --valid-for-hours H",
     "  release ship [--platform macos|linux] [--staging|--production] [--dry-run] [--release] [--major|--minor|--patch] [--arm64|--x86_64] [--rollback-to <version>] [--branch main|release/X.Y]",
     "  release promote <staging-version> [--platform macos|linux] [--dry-run] [--arm64|--x86_64] [--override-soak <reason>]",
     "  release setup-notarization [--profile <name>] [--keychain <absolute-path>]",
@@ -1669,6 +1685,8 @@ const helpTopics: Record<string, string[]> = {
     "Usage: kd release <command>",
     "",
     "Commands:",
+    "  release prepare --platform linux --ref <40-hex-sha> --staging-iteration N [--out-dir <dir>]",
+    "  release renew --platform linux --candidate <linux-tag> --renewal N --valid-for-hours H",
     "  release ship [--platform macos|linux] [--staging|--production] [--dry-run] [--release] [--major|--minor|--patch] [--arm64|--x86_64] [--rollback-to <version>] [--branch main|release/X.Y]",
     "  release promote <staging-version> [--platform macos|linux] [--dry-run] [--arm64|--x86_64] [--override-soak <reason>]",
     "  release setup-notarization [--profile <name>] [--keychain <absolute-path>]",
@@ -1676,6 +1694,17 @@ const helpTopics: Record<string, string[]> = {
     "  release cut --version X.Y.0 --recut --reason <why> --confirm-recut <staging-version|empty> --confirm-old-tip <sha> [--dry-run]",
     "  release reset-staging --to main|release/X.Y --reason <why> --confirm-abandon <staging-version> [--dry-run]",
     "  release status [--platform macos|linux] [--acceptance <path>]"
+  ],
+  "release prepare": [
+    "Usage: kd release prepare --platform linux --ref <40-hex-sha> --staging-iteration N [--out-dir <dir>]",
+    "Collect both architectures from clean isolated exact source. No archive, keys, public URL or release mutation.",
+    "Unsupported historical stamp graphs fail honestly; use a reviewed source containing the required build support."
+  ],
+  "release renew": [
+    "Usage: kd release renew --platform linux --candidate <linux-tag> --renewal N --valid-for-hours H",
+    "Publish same-candidate signed metadata renewal. Requires authorization for that archive/suite.",
+    "Retry the same sequence and validity after interruption. Explicitly increment the sequence if pending metadata expired.",
+    "Original publication receipt/soak and packages remain immutable; no default validity or automatic scheduler."
   ],
   "release ship": [
     "Usage: kd release ship [--platform macos|linux] [--staging|--production] [--dry-run] [--release] [--major|--minor|--patch] [--arm64|--x86_64] [--rollback-to <version>] [--branch main|release/X.Y]",

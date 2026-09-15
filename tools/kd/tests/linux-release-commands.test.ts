@@ -249,3 +249,28 @@ it("does not start soak until the public archive serves the committed bytes", as
   await shipLinuxRelease({ ...f.context, staging: true, release: true, acceptance: f.acceptancePath });
   expect(await readJson(f.storage, releasePath("linux-v1.2.3-staging.1", "publication.json"))).toMatchObject({ verifiedAt: new Date(now.getTime() + 3600000).toISOString() });
 });
+
+it("renews metadata through the Linux command with public readback and unchanged soak/projection", async () => {
+  const { renewLinuxRelease } = await import("../src/runtime/linux-release");
+  const f = setup();
+  const published = await shipLinuxRelease({ ...f.context, staging: true, release: true, acceptance: f.acceptancePath });
+  const body = f.releases.get("desktop-linux-staging")!.body;
+  const receipt = await f.storage.read(releasePath(published.tag, "publication.json"));
+  const buildCount = build.collectLinuxRelease.mock.calls.length;
+  vi.setSystemTime(new Date(now.getTime() + 80 * 3600000));
+  const fetchPublic = globalThis.fetch;
+  vi.stubGlobal("fetch", vi.fn(async () => new Response("unavailable", { status: 503 })));
+  const command = { ...f.context, candidate: published.tag, renewal: 1, validForHours: 96 };
+  await expect(renewLinuxRelease(command)).rejects.toThrow(/public archive readback/);
+  expect((await archiveState(f.storage)).pendingRenewal).toEqual({ tag: published.tag, sequence: 1 });
+  await expect(shipLinuxRelease({ ...f.context, staging: true, release: true, acceptance: f.acceptancePath })).rejects.toThrow(/pending Linux metadata renewal/);
+  vi.stubGlobal("fetch", fetchPublic);
+  const renewed = await renewLinuxRelease(command);
+  expect(renewed.receipt).toEqual(JSON.parse(Buffer.from(receipt!).toString()));
+  expect(await f.storage.read(releasePath(published.tag, "publication.json"))).toEqual(receipt);
+  expect(f.releases.get("desktop-linux-staging")!.body).toBe(body);
+  expect(build.collectLinuxRelease.mock.calls.length).toBe(buildCount);
+  const status = await linuxReleaseStatus(f.context);
+  expect(status.promotion.blockers).toEqual([]);
+  expect(status).toMatchObject({ promotion: { soak: { publishedAt: now.toISOString(), elapsedHours: 80 } } });
+});
