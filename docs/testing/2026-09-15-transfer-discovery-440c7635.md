@@ -232,3 +232,57 @@ starvation test establishes the cause of old C's cloud failure.
 
 Acceptance owns the timestamped endpoint/binary evidence in its worktree's
 `docs/testing/evidence/2026-09-15-corrected-transfer-641dbb6f.json`.
+
+## Cloud-only legacy recovery checkpoint (36b60d29f)
+
+Both isolated endpoints were rebuilt at
+`36b60d29fd924e2bff6f25f0e744c02a2ceb092e`, tree
+`dd694e542370d6c32b6d171fce1ff2e8d64ecba2`. Acceptance verified the bundle
+SHA-256 `c2329ed8b7dbf931281cc6ca86cf6282eecc6586ad43cfe248437b2854f46734`.
+The source session was quit through its normal input path and its owned old
+allocation stopped before rebuilding; the retained task, transfer, session
+history, and existing registry roots were preserved. No reject, fail, abandon,
+cleanup override, duplicate push, or registry seed was used.
+
+Canonical startup used `KANNA_TRANSFER_DISCOVERY=registry` on the separate
+existing roots. MBP destination was verified first at 20:21:14Z; Studio started
+at 20:21:46Z and its native identity was verified at 20:22:40Z. Studio's MBP
+catalog entry was cloud ready with LAN unavailable. This run continues the
+same legacy reservation, whose original record contains no selected route;
+it tests cloud-only recovery rather than the new authenticated route field.
+
+The MBP peer catalog omitted Studio at 20:24:57Z. At 20:26:26Z, authenticated
+uncached documents and the MBP renderer contained both expected public transfer
+identities, protocol 1, on the same staging account. At 20:27:19.409Z its sidecar
+catalog also contained Studio: trusted/transferable, cloud ready, LAN false,
+cloud fallback false. These are readback bounds, not measured delivery latency.
+No reconnect or manual registration caused the convergence. Renderer warnings
+were not captured; their absence in the server log proves nothing about them.
+At 20:29:07Z the read-only invoke history confirmed ordinary proxy creation and
+external registration for Studio. No earlier rejected peer was established.
+
+Retained import attempt 8 failed at 20:28:57.172559Z with `missing target peer
+for outgoing transfer finalization`; destination had no local task. This error
+comes from the source's missing **outgoing transfer reservation**, after the
+cloud-only request reached it. It is not a missing discovery peer. The existing
+reservation lifetime is 900 seconds (`runtime/config.rs`), and source startup
+prunes expired outgoing reservations (`runtime/replay_store.rs`). The reservation
+created around 19:56:15Z was over 25 minutes old at the 20:21:46Z source restart.
+The diagnostic/rebuild pauses outlived the fixture's reservation. No expiry,
+intent, or queue semantics were changed to make the test pass.
+
+At 20:32:35Z acceptance read back both terminal records: incoming failed at
+20:28:57Z with no local task, and outgoing failed at 20:28:59Z with the same
+missing-target-finalization error. The destination's supported cleanup-candidates
+API returned an empty list after natural cleanup; no manual mutation was used.
+The source task remained open in review in `task-5d2e372c-2`. Its input ledger
+was still 6, unchanged since the operator-directed cleanup `/quit` at 20:14:57Z,
+and its latest run remained cancelled at that time. There was no new source
+finalization input. Helper-local cleanup/task-absence verification remained
+pending at this checkpoint.
+
+This failed legacy attempt does not establish a completed move or validate the
+new signed route field. Acceptance is preparing a fresh explicit-cloud operation
+on the same corrected source, with fresh provider resume and identity proof;
+the terminal legacy ID is not being retried. That fresh operation is the
+remaining live test.
