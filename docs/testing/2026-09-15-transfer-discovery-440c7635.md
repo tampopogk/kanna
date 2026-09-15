@@ -427,3 +427,17 @@ superseded by these retained records. The separate pull-route propagation defect
 remains regression-established, not the cause of these cloud-only resets.
 The corrected test candidate remains `bd2c8bd2c`; this attribution update changes
 documentation only.
+
+Studio destination was ready on `bd2c8bd2c`, tree
+`0098dc14772796ad87614aa7e2fc652bda3b72f8`, at 20:58:32Z, with exact native
+task641/C identity, the same account digest and peer/desktop IDs, and registry
+discovery. Acceptance retained its arm64 server and sidecar binary hashes.
+MBP source preparation was delayed by the helper searching for an older bundle
+message format. The already-delivered durable input was reconciled without a
+resend: 10,317 decoded bytes and SHA-256
+`0fb071a21d952fdf5503d97431d9cdbfd1c41971f03062748db08f39824582b6`
+matched the verified bundle. This is a helper setup fault, not a product defect
+or human approval hold. Source cleanup/build remained incomplete as the
+20:59:26Z reservation deadline passed. No new transfer or duplicate intent was
+created. A subsequent missing-reservation result must remain TTL-attributed and
+cannot validate or invalidate the corrected proxy's byte delivery.
