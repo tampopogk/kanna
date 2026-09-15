@@ -564,6 +564,13 @@ async fn handle_connection(
                 authenticated_argument::<String>(&authenticated, "source_task_id")?;
             validate_source_task_id(&source_task_id)?;
 
+            let transport = authenticated.get("transport")
+                .map(|value| serde_json::from_value::<TransferTransport>(value.clone()))
+                .transpose()?;
+            if transport == Some(TransferTransport::Auto) {
+                return Err(RuntimeError::Protocol("task pull transport must be concrete".into()));
+            }
+
             let key = (requester_peer_id.clone(), source_task_id.clone());
             let mut requests = context.pending_task_pull_requests.lock().await;
             prune_task_pull_requests(&mut requests);
@@ -597,6 +604,7 @@ async fn handle_connection(
                     request_id: pull_request_id.clone(),
                     requester_peer_id,
                     source_task_id,
+                    transport,
                 }))
                 .is_err()
             {

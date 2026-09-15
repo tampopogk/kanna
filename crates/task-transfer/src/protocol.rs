@@ -882,6 +882,8 @@ pub enum SidecarEvent {
         request_id: String,
         requester_peer_id: String,
         source_task_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        transport: Option<crate::runtime::TransferTransport>,
     },
     /// A pull this machine asked for will not be shipped.
     ///

@@ -194,6 +194,7 @@ fn task_pull_control_peer_and_event_messages_roundtrip() {
         request_id: "pull-1".into(),
         requester_peer_id: "peer-destination".into(),
         source_task_id: "task-source".into(),
+        transport: None,
     };
     assert_eq!(
         serde_json::to_value(&event).unwrap(),

@@ -533,21 +533,19 @@ async fn connect_and_bridge(
     let mut cancel = cancel;
     let mut buffer = [0_u8; 8192];
     let mut relay = loop {
+        // Bound memory while setup is pending, then let TCP backpressure hold
+        // the rest of a valid request. The setup buffer is not a message limit.
+        let available = (MAX_PRE_SETUP_LOCAL_BYTES - pending_local.len()).min(buffer.len());
         tokio::select! {
             changed = cancel.changed() => {
                 if changed.is_err() || *cancel.borrow() {
                     return Ok(());
                 }
             }
-            read = local.read(&mut buffer) => {
+            read = local.read(&mut buffer[..available]), if available > 0 => {
                 let count = read?;
                 if count == 0 {
                     return Ok(());
-                }
-                if pending_local.len().saturating_add(count) > MAX_PRE_SETUP_LOCAL_BYTES {
-                    return Err(ProxyError::Relay(
-                        "local transfer request exceeded the pre-setup buffer limit".into(),
-                    ));
                 }
                 pending_local.extend_from_slice(&buffer[..count]);
             }
@@ -1211,6 +1209,54 @@ mod tests {
                 "rejected secure or explicit loopback relay URL: {relay_url}",
             );
         }
+    }
+
+    #[tokio::test]
+    async fn request_larger_than_setup_buffer_waits_for_relay_without_losing_bytes() {
+        let (relay_url, relay_listener) = test_relay().await;
+        let state = state();
+        let endpoint = ensure_cloud_transfer_proxy_in_state(
+            &state,
+            "peer-b".into(),
+            "desktop-b".into(),
+            relay_url,
+            "token".into(),
+        )
+        .await
+        .unwrap();
+        let mut sidecar = TcpStream::connect(&endpoint.endpoint).await.unwrap();
+        // A committed transfer payload can exceed the bounded setup buffer.
+        // Send it before authentication completes, as the real sidecar does.
+        let payload = (0..super::MAX_PRE_SETUP_LOCAL_BYTES * 3)
+            .map(|index| (index % 251) as u8)
+            .collect::<Vec<_>>();
+        sidecar.write_all(&payload).await.unwrap();
+        let (relay_tcp, _) = relay_listener.accept().await.unwrap();
+        let mut relay = accept_async(relay_tcp).await.unwrap();
+        authenticate_and_ready(&mut relay, "token", "peer-b", "desktop-b", 1).await;
+        let mut received = Vec::new();
+        timeout(TEST_TIMEOUT, async {
+            while received.len() < payload.len() {
+                let Message::Binary(bytes) = relay.next().await.unwrap().unwrap() else {
+                    panic!("expected payload bytes");
+                };
+                received.extend_from_slice(&bytes);
+            }
+        })
+        .await
+        .expect("payload must drain after relay setup");
+        assert_eq!(received, payload);
+        relay
+            .send(Message::Binary(b"admitted".to_vec().into()))
+            .await
+            .unwrap();
+        let mut reply = [0; 8];
+        timeout(TEST_TIMEOUT, sidecar.read_exact(&mut reply))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(&reply, b"admitted");
+        clear_cloud_transfer_proxies_in_state(&state).await.unwrap();
     }
 
     #[tokio::test]

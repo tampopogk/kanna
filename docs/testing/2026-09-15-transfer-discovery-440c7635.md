@@ -79,6 +79,34 @@ from the failed source. No installed operator app was tested or changed.
    from new-route persistence. The underlying LAN socket rejection has not been
    attributed to a wrong address, Bonjour collision, or a specific OS policy.
 
+5. **A pull loses its selected route before the source sends the task.** The
+   request itself used the selected transport, but its authenticated payload and
+   emitted source work event omitted it. The source engine therefore chose
+   `Auto` for the resulting push. The request now signs its concrete selected
+   route and the listener carries it through the production sidecar event into
+   existing durable push work. Older requests/events without the field retain
+   their automatic behavior; explicit `Auto` on the signed wire is rejected.
+   A real requester → authenticated listener → production IPC conversion →
+   source-preflight regression with both routes available proves the resulting
+   push uses the counted cloud proxy. It failed before the change. This defect
+   is separate from the live registry-only pull reset: that run had no LAN route
+   for `Auto` to choose.
+
+6. **The cloud proxy rejects valid requests while relay setup is pending.**
+   The proxy treated its 64 KiB setup-buffer bound as a request-size limit,
+   closing the socket when another chunk arrived before authentication/tunnel
+   setup completed. The transfer protocol allows larger commit payloads. The
+   proxy now stops reading when that buffer is full, letting TCP backpressure
+   retain the remaining bytes until setup completes. The memory bound, setup
+   deadline, cancellation, authentication, and connection limit remain intact.
+   A deterministic real-TCP/WebSocket regression sends 192 KiB before relay
+   authentication, then verifies every byte and the reverse acknowledgment. It
+   failed before the fix with an incomplete WebSocket handshake, and passes
+   after. The live reverse pull's stored payload measured 79,523 UTF-8 bytes,
+   already above the limit before encryption/base64. Combined with repeated
+   resets and absent later receiver tunnel dials, this supports the diagnosis;
+   no retained live proxy warning directly attributes the resets to that limit.
+
 ## Original cloud peer absence — cause remains open
 
 The retained MBP `/v1/cloud/desktops` result proves relay/LAN presence, **not**
@@ -134,6 +162,15 @@ this task.
   compatibility tests pass. The new full return-route regression failed before
   the correction (`.tmp/cloud-return-before.log`) and passes after, including
   trust withdrawal (`.tmp/cloud-return-final.log`). Final clippy passes.
+- Reverse-pull follow-up: setup-buffer regression fails before the correction
+  (`.tmp/cloud-setup-buffer-before.log`); all 14 proxy tests pass after, including
+  timeout, cancellation, credential refresh, connection cap, and byte-preserving
+  large-request coverage (`.tmp/cloud-setup-buffer-after.log`).
+- Pull route regression fails before the correction
+  (`.tmp/cloud-pull-route-before.log`); 7 cloud runtime tests pass after
+  (`.tmp/cloud-pull-route-after.log`). Ten pull authentication/idempotency tests
+  and the pull wire roundtrip pass (`.tmp/cloud-pull-compatibility.log`). Updated
+  task-transfer clippy with warnings denied passes (`.tmp/cloud-pull-clippy.log`).
 
 This is focused implementation evidence, not physical cross-machine or release
 acceptance. The same-host network test requires a usable physical interface.
@@ -341,3 +378,41 @@ gone and its task closed, with only the destination provider active.
 Acceptance is preparing a Studio-initiated reverse forced-cloud pull of the
 same fixture after MBP dirty-state preparation. No source or code changes were
 made for that next leg. Pull and LAN results remain outstanding.
+
+## Reverse cloud pull checkpoint (36b60d29f)
+
+Studio sent one explicit-cloud pull at 20:44:23Z for the imported MBP task.
+A local response-save `NameError` lost the response body; this was an evidence
+capture fault, and acceptance reconciled state without repeating the request.
+MBP outgoing transfer
+`949973fa2701b189aa6b451edf1d9ab8103f6fdb91e8f656689a1adde414e333`
+was created at 20:44:26Z, source peer 37088 to target peer 31533. Its summary
+omitted machine IDs. The existing pull event does not carry `targetDesktopId`,
+which `push.rs` uses to populate those summary fields; omission alone does not
+establish incorrect routing.
+
+Owned MBP server logs attributed attempts 1–5 of the pull-triggered **push** work
+to `Connection reset by peer (os error 54)`, at 20:44:26.941456Z,
+20:44:27.983251Z, 20:44:33.023935Z, 20:45:03.045830Z, and 20:47:03.105995Z.
+The outgoing record remained pending, Studio had no incoming record, and the
+source remained open. Both catalogs were trusted/cloud-ready with LAN unavailable
+and future credential expiry at 20:46:42Z. No duplicate action, approval, or
+reconnect was used.
+
+The source inserts its outgoing record after staging and immediately before
+payload commit. This narrows the unresolved boundary to commit/admission rather
+than source finalization. Studio retained several early task-transfer tunnel
+dials/closes but none for the later attempts in the inspected window; neither
+endpoint retained a proxy/frame-size warning identifying the reset cause.
+This failure remains separate from the previous import return-route failure.
+
+An authenticated API-only read at 20:49:56Z measured the pending outgoing
+payload JSON at 79,523 UTF-8 bytes; no payload contents were emitted. The first
+completed push's final stored payload measured 41,562 bytes, but that final body
+is not proof of its earlier commit wire size. The proxy's setup-buffer defect
+above is deterministically reproduced and corrected; the live attribution still
+lacks its direct warning. The retained reverse reservation was created around
+20:44:26Z and reaches the existing 900-second lifetime around 20:59:26Z. A later
+expiry must be attributed separately from any proxy or discovery result. Its
+normal next automatic attempt was due around 20:57:03Z; no queue/TTL changes or
+manual retries were introduced.
