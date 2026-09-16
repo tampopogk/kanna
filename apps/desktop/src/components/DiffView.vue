@@ -740,13 +740,13 @@ useLessScroll(containerRef, {
       return true;
     }
 
-    // s — cycle working filter (only in working scope)
-    if (e.key === "s" && !e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey) {
-      if (scope.value === "working") {
-        e.preventDefault();
-        cycleWorkingFilter();
-        return true;
-      }
+    // s — cycle the filter that belongs to the current scope: the working-tree
+    // filter in working scope, the branch include mode in branch scope.
+    if (e.key === "s" && noMods) {
+      e.preventDefault();
+      if (scope.value === "working") cycleWorkingFilter();
+      else cycleBranchInclude();
+      return true;
     }
     if (e.key === "a" && noMods) {
       e.preventDefault();

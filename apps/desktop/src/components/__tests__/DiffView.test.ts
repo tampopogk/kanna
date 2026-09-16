@@ -867,6 +867,92 @@ describe("DiffView", () => {
     wrapper.unmount();
   });
 
+  it("cycles the branch include mode with the s shortcut in branch scope", async () => {
+    invokeMock.mockImplementation(async (command, args) => {
+      if (command === "git_branch_upstream") return null;
+      if (command === "git_merge_base") return "base-sha";
+      if (command === "git_diff_branch_range") {
+        return `diff --git a/${args?.mode}.txt b/${args?.mode}.txt`;
+      }
+      throw new Error(`unexpected command: ${command}`);
+    });
+
+    const wrapper = mount(DiffView, {
+      props: {
+        repoPath: "/repo",
+        initialScope: "branch",
+        baseRef: "origin/main",
+      },
+      attachTo: document.body,
+      global: { mocks: { $t: (key: string) => key } },
+    });
+
+    await flushPromises();
+    await flushPromises();
+
+    const includeButton = wrapper.get(".branch-include-toggle");
+    expect(includeButton.text()).toBe("Committed");
+
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "s", bubbles: true }));
+    await flushPromises();
+    await flushPromises();
+
+    expect(invokeMock).toHaveBeenCalledWith("git_diff_branch_range", {
+      repoPath: "/repo",
+      from: "base-sha",
+      mode: "staged",
+    });
+    expect(includeButton.text()).toBe("Staged");
+    expect(wrapper.emitted("branch-include-change")?.at(-1)).toEqual(["staged"]);
+
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "s", bubbles: true }));
+    await flushPromises();
+    await flushPromises();
+
+    expect(invokeMock).toHaveBeenCalledWith("git_diff_branch_range", {
+      repoPath: "/repo",
+      from: "base-sha",
+      mode: "all",
+    });
+    expect(includeButton.text()).toBe("Staged+Unstaged");
+
+    wrapper.unmount();
+  });
+
+  it("cycles the working filter with the s shortcut in working scope", async () => {
+    invokeMock.mockImplementation(async (command) => {
+      if (command === "git_diff") return "diff --git a/example.txt b/example.txt";
+      throw new Error(`unexpected command: ${command}`);
+    });
+
+    const wrapper = mount(DiffView, {
+      props: {
+        repoPath: "/repo",
+        initialScope: "working",
+      },
+      attachTo: document.body,
+      global: { mocks: { $t: (key: string) => key } },
+    });
+
+    await flushPromises();
+    await flushPromises();
+
+    const filterButton = wrapper.get(".staged-toggle");
+    expect(filterButton.text()).toBe("Staged+Unstaged");
+
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "s", bubbles: true }));
+    await flushPromises();
+    await flushPromises();
+
+    expect(invokeMock).toHaveBeenCalledWith("git_diff", {
+      repoPath: "/repo",
+      mode: "unstaged",
+    });
+    expect(filterButton.text()).toBe("Unstaged");
+
+    wrapper.unmount();
+  });
+
   it("refreshes an open branch diff when the view regains focus after history changes", async () => {
     let branchPatchName = "before-rebase.txt";
     invokeMock.mockImplementation(async (command) => {
