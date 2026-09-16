@@ -12,6 +12,8 @@ const stripeMocks = vi.hoisted(() => ({
   subscriptionsCancel: vi.fn(),
   subscriptionsRetrieve: vi.fn(),
   subscriptionItemsList: vi.fn(),
+  invoicesList: vi.fn(),
+  invoicesListLineItems: vi.fn(),
   portalCreate: vi.fn(),
 }));
 
@@ -25,6 +27,7 @@ vi.mock("stripe", () => {
       retrieve: stripeMocks.subscriptionsRetrieve,
     };
     subscriptionItems = { list: stripeMocks.subscriptionItemsList };
+    invoices = { list: stripeMocks.invoicesList, listLineItems: stripeMocks.invoicesListLineItems };
     prices = { list: stripeMocks.pricesList };
     checkout = {
       sessions: {
@@ -75,6 +78,8 @@ beforeEach(() => {
   stripeMocks.sessionsListLineItems.mockImplementation(() => asyncIterable([]));
   stripeMocks.subscriptionsRetrieve.mockResolvedValue({ customer: CONTEXT.customerId, metadata: { firebase_uid: CONTEXT.uid } });
   stripeMocks.sessionsRetrieve.mockResolvedValue({ customer: CONTEXT.customerId, client_reference_id: CONTEXT.uid, status: "open" });
+  stripeMocks.invoicesList.mockImplementation(() => asyncIterable([]));
+  stripeMocks.invoicesListLineItems.mockImplementation(() => asyncIterable([]));
 });
 
 describe("Stripe checkout gateway", () => {
@@ -268,6 +273,53 @@ describe("Stripe product-ownership lookups", () => {
     await expect(stripeOwnershipLookupGateway("sk_test_mocked").customerProductScan("cus_owner"))
       .resolves.toEqual({ productIds: [], unresolved: false });
   });
+
+  it("includes a foreign one-time invoice with no subscription of its own in the scan", async () => {
+    stripeMocks.subscriptionsList.mockImplementation(() => asyncIterable([]));
+    stripeMocks.invoicesList.mockImplementation(() => asyncIterable([{ id: "in_kongbu" }]));
+    stripeMocks.invoicesListLineItems.mockImplementation(() => asyncIterable([
+      { pricing: { price_details: { product: OTHER_PRODUCT_ID } } },
+    ]));
+    await expect(stripeOwnershipLookupGateway("sk_test_mocked").customerProductScan("cus_shared"))
+      .resolves.toEqual({ productIds: [OTHER_PRODUCT_ID], unresolved: false });
+  });
+
+  it("pages every invoice a customer holds, unioning their product ids with any subscription's", async () => {
+    stripeMocks.subscriptionsList.mockImplementation(() => asyncIterable([{ id: "sub_owned" }]));
+    stripeMocks.subscriptionItemsList.mockImplementation(() => asyncIterable([{ price: { product: PRODUCT_ID } }]));
+    stripeMocks.invoicesList.mockImplementation(() => asyncIterable([{ id: "in_first" }, { id: "in_second" }]));
+    stripeMocks.invoicesListLineItems.mockImplementation((id: string) => asyncIterable([
+      { pricing: { price_details: { product: id === "in_first" ? PRODUCT_ID : OTHER_PRODUCT_ID } } },
+    ]));
+    await expect(stripeOwnershipLookupGateway("sk_test_mocked").customerProductScan("cus_shared"))
+      .resolves.toEqual({ productIds: expect.arrayContaining([PRODUCT_ID, OTHER_PRODUCT_ID]), unresolved: false });
+    expect(stripeMocks.invoicesList).toHaveBeenCalledWith({ customer: "cus_shared", limit: 100 });
+  });
+
+  it("marks the scan unresolved when a listed invoice's line items cannot be resolved", async () => {
+    stripeMocks.subscriptionsList.mockImplementation(() => asyncIterable([]));
+    stripeMocks.invoicesList.mockImplementation(() => asyncIterable([{ id: "in_unclear" }]));
+    stripeMocks.invoicesListLineItems.mockImplementation(() => asyncIterable([]));
+    await expect(stripeOwnershipLookupGateway("sk_test_mocked").customerProductScan("cus_shared"))
+      .resolves.toEqual({ productIds: [], unresolved: true });
+  });
+
+  it("marks the scan unresolved when a listed invoice's line items lookup hits resource_missing", async () => {
+    stripeMocks.subscriptionsList.mockImplementation(() => asyncIterable([]));
+    stripeMocks.invoicesList.mockImplementation(() => asyncIterable([{ id: "in_gone" }]));
+    stripeMocks.invoicesListLineItems.mockImplementation(() => {
+      throw new Stripe.errors.StripeInvalidRequestError({ code: "resource_missing" } as never);
+    });
+    await expect(stripeOwnershipLookupGateway("sk_test_mocked").customerProductScan("cus_shared"))
+      .resolves.toEqual({ productIds: [], unresolved: true });
+  });
+
+  it("reports a customer with no subscriptions or invoices at all as clean", async () => {
+    stripeMocks.subscriptionsList.mockImplementation(() => asyncIterable([]));
+    stripeMocks.invoicesList.mockImplementation(() => asyncIterable([]));
+    await expect(stripeOwnershipLookupGateway("sk_test_mocked").customerProductScan("cus_owner"))
+      .resolves.toEqual({ productIds: [], unresolved: false });
+  });
 });
 
 describe("Stripe subscription gateway ownership gating", () => {
@@ -306,6 +358,20 @@ describe("Stripe subscription gateway ownership gating", () => {
     expect(stripeMocks.subscriptionsCancel).not.toHaveBeenCalled();
   });
 
+  it("treats a confirmed-vanished direct subscription reference as an idempotent no-op, not ambiguous", async () => {
+    // A deletion retry hitting a subscription Stripe already removed must
+    // succeed silently: resource_missing on the object itself confirms it is
+    // gone, which is a different fact from an existing object whose items
+    // could not be resolved.
+    stripeMocks.subscriptionsRetrieve.mockImplementation(() => {
+      throw new Stripe.errors.StripeInvalidRequestError({ code: "resource_missing" } as never);
+    });
+    await expect(stripeSubscriptionGateway("sk_test_mocked", PRODUCT_ID).cancelSubscription("sub_gone", CONTEXT))
+      .resolves.toBeUndefined();
+    expect(stripeMocks.subscriptionsCancel).not.toHaveBeenCalled();
+    expect(stripeMocks.subscriptionItemsList).not.toHaveBeenCalled();
+  });
+
   it("cancels without a customer check when no customer is known for the context", async () => {
     stripeMocks.subscriptionItemsList.mockImplementation(() => asyncIterable([{ price: { product: PRODUCT_ID } }]));
     stripeMocks.subscriptionsRetrieve.mockResolvedValue({ customer: "cus_any", metadata: { firebase_uid: CONTEXT.uid } });
@@ -321,6 +387,16 @@ describe("Stripe subscription gateway ownership gating", () => {
     await expect(stripeSubscriptionGateway("sk_test_mocked", PRODUCT_ID).closeCheckoutSession("cs_mixed", CONTEXT))
       .rejects.toThrow(/Cannot verify Stripe product ownership/);
     expect(stripeMocks.sessionsExpire).not.toHaveBeenCalled();
+  });
+
+  it("treats a confirmed-vanished direct checkout session reference as an idempotent no-op, not ambiguous", async () => {
+    stripeMocks.sessionsRetrieve.mockImplementation(() => {
+      throw new Stripe.errors.StripeInvalidRequestError({ code: "resource_missing" } as never);
+    });
+    await expect(stripeSubscriptionGateway("sk_test_mocked", PRODUCT_ID).closeCheckoutSession("cs_gone", CONTEXT))
+      .resolves.toBeUndefined();
+    expect(stripeMocks.sessionsExpire).not.toHaveBeenCalled();
+    expect(stripeMocks.sessionsListLineItems).not.toHaveBeenCalled();
   });
 
   it("throws rather than closes a Kanna-product session belonging to a different account", async () => {

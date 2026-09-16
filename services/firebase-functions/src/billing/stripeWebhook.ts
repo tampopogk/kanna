@@ -61,7 +61,8 @@ export type StripeWebhookOutcomeCode =
   | "ambiguous_ownership"
   | "ownership_unresolved"
   | "mapping_conflict"
-  | "subscription_replaced";
+  | "subscription_replaced"
+  | "replacement_pending";
 
 export interface StripeWebhookOutcome {
   httpStatus: number;
@@ -206,6 +207,12 @@ export async function handleStripeWebhook(
       eventType: event.type,
       uid: applied.uid,
     });
+  } else if (applied.code === "replacement_pending") {
+    logger.warn("Deferred a Stripe event whose subscription is not yet the recorded current one", {
+      eventId: event.id,
+      eventType: event.type,
+      uid: applied.uid,
+    });
   }
 
   logger.info("Handled Stripe webhook event", {
@@ -289,6 +296,34 @@ async function applyStripeEvent(
     };
   }
 
+  const existing = state.sources.stripe;
+  const incomingSubscriptionId = patch.stripeSubscriptionId ?? null;
+  const namesReplacementSubscription = Boolean(
+    existing?.stripeSubscriptionId
+    && incomingSubscriptionId
+    && existing.stripeSubscriptionId !== incomingSubscriptionId
+  );
+
+  if (namesReplacementSubscription && event.type !== "checkout.session.completed") {
+    // Only a checkout.session.completed event carries its own proof (a
+    // session id this account's checkout ledger actually recorded) that a
+    // new subscription was produced by an admitted checkout. Stripe does not
+    // guarantee delivery order, so a subscription/invoice event for that same
+    // new subscription can arrive first, while the old subscription id is
+    // still recorded as current. Deferring it — rather than recording it as
+    // processed — lets Stripe's own retry apply it cleanly once the checkout
+    // event has landed and promoted the new subscription to current; nothing
+    // is written here, so dedupe is untouched and the retry is not mistaken
+    // for a duplicate.
+    return {
+      httpStatus: 409,
+      code: "replacement_pending",
+      uid,
+      entitlement: state.previous,
+      entitlementWritten: false,
+    };
+  }
+
   const eventCreatedAt = stripeEventCreatedAt(event);
   transaction.set(eventRef, {
     eventId: event.id,
@@ -306,7 +341,6 @@ async function applyStripeEvent(
     );
   }
 
-  const existing = state.sources.stripe;
   if (existing && Date.parse(existing.lastEventAt) > Date.parse(eventCreatedAt)) {
     // An older event arriving late must not walk back newer state.
     return {
@@ -318,18 +352,14 @@ async function applyStripeEvent(
     };
   }
 
-  const incomingSubscriptionId = patch.stripeSubscriptionId ?? null;
-  if (
-    existing?.stripeSubscriptionId
-    && incomingSubscriptionId
-    && existing.stripeSubscriptionId !== incomingSubscriptionId
-  ) {
-    // This event names a subscription other than the one currently recorded
-    // as this account's current subscription. Only an admitted checkout — one
-    // this account's own checkout flow actually created — may replace it; a
-    // bare subscription/invoice event for an already-replaced subscription
-    // must never resurrect or expire the account's real current one.
-    const sessionId = event.type === "checkout.session.completed" ? readEventObjectId(event) : null;
+  if (namesReplacementSubscription) {
+    // Only a checkout.session.completed event reaches this point with a
+    // mismatch (the branch above already deferred every other event type).
+    // Its own recorded session id must actually be in this account's
+    // checkout ledger; a rogue or foreign session for this customer will
+    // never appear there no matter how many times Stripe retries, so this
+    // is refused permanently rather than deferred.
+    const sessionId = readEventObjectId(event);
     const admitted = sessionId !== null && isSessionAdmitted(checkoutLedgerDoc, sessionId);
     if (!admitted) {
       return {

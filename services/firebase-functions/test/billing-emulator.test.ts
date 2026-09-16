@@ -481,8 +481,12 @@ describeWithEmulator("billing backend against the Firestore emulator", () => {
       expect(current?.stripeSubscriptionId).toBe("sub_TestSlice1");
 
       // A late event for a different, already-superseded subscription — not
-      // tied to any admitted checkout — must not touch the current one, even
-      // though it is a genuinely newer event by timestamp.
+      // itself a checkout.session.completed event, and this account has no
+      // admitted checkout for it at all — is deferred rather than applied.
+      // Deferring is safe here precisely because nothing but a checkout
+      // event's own ledger-recorded session id can ever promote a new
+      // subscription to current, so retrying this event can never resurrect
+      // or expire the real one no matter how many times it is redelivered.
       const body = JSON.parse(fixtureBody("customer.subscription.deleted.json")) as {
         id: string; created: number;
         data: { object: { id: string; customer: string } };
@@ -496,10 +500,82 @@ describeWithEmulator("billing backend against the Firestore emulator", () => {
         { rawBody: raw, signature: signStripePayload(raw, WEBHOOK_SECRET) },
         { db, env: webhookEnv, logger: silentLogger, ownership: ownEverything() },
       );
-      expect(outcome).toMatchObject({ httpStatus: 200, code: "subscription_replaced" });
+      expect(outcome).toMatchObject({ httpStatus: 409, code: "replacement_pending" });
 
       const after = await readDoc<BilledSourceState>(db, billingSourcePath(CHECKOUT_UID, "stripe"));
       expect(after).toMatchObject({ stripeSubscriptionId: "sub_TestSlice1", status: "active" });
+      // Not recorded in the dedupe ledger: redelivering it must not be
+      // treated as a duplicate, and it must still refuse to apply.
+      expect(await readDoc(db, stripeEventPath("evt_replaced_subscription"))).toBeNull();
+    });
+
+    it("defers (rather than drops) a subscription/invoice event for a new subscription arriving before its checkout.session.completed, and applies it once retried", async () => {
+      await deliver(db, "checkout.session.completed.json", { now: "2026-08-19T00:00:00.000Z" });
+      expect((await readDoc<BilledSourceState>(db, billingSourcePath(CHECKOUT_UID, "stripe")))?.stripeSubscriptionId)
+        .toBe("sub_TestSlice1");
+
+      // The new checkout's own session is already recorded in this account's
+      // ledger, but Stripe delivers customer.subscription.created for the new
+      // subscription before the checkout.session.completed event.
+      await db.doc(accountCheckoutPath(CHECKOUT_UID)).set({
+        uid: CHECKOUT_UID, sessionIds: ["cs_resubscribe"], updatedAt: "2026-09-01T00:00:00.000Z",
+      });
+      const earlySubscriptionEvent = JSON.parse(fixtureBody("customer.subscription.created.json")) as {
+        id: string; created: number;
+        data: { object: { id: string; customer: string; current_period_end?: number; status?: string } };
+      };
+      earlySubscriptionEvent.id = "evt_resubscribed_subscription_created";
+      earlySubscriptionEvent.created = Math.floor(Date.parse("2026-10-01T00:00:05.000Z") / 1000);
+      earlySubscriptionEvent.data.object.id = "sub_resubscribed";
+      earlySubscriptionEvent.data.object.customer = "cus_TestSlice1";
+      earlySubscriptionEvent.data.object.status = "active";
+      earlySubscriptionEvent.data.object.current_period_end = Math.floor(Date.parse("2026-11-01T00:00:00.000Z") / 1000);
+      const earlyRaw = JSON.stringify(earlySubscriptionEvent);
+
+      const deferred = await handleStripeWebhook(
+        { rawBody: earlyRaw, signature: signStripePayload(earlyRaw, WEBHOOK_SECRET) },
+        { db, env: webhookEnv, logger: silentLogger, ownership: ownEverything() },
+      );
+      expect(deferred).toMatchObject({ httpStatus: 409, code: "replacement_pending" });
+      // Still the old subscription: the deferred event changed nothing.
+      expect((await readDoc<BilledSourceState>(db, billingSourcePath(CHECKOUT_UID, "stripe")))?.stripeSubscriptionId)
+        .toBe("sub_TestSlice1");
+      expect(await readDoc(db, stripeEventPath("evt_resubscribed_subscription_created"))).toBeNull();
+
+      // The checkout.session.completed event lands and promotes the new
+      // subscription to current, tied to the account's own admitted session.
+      const checkoutEvent = JSON.parse(fixtureBody("checkout.session.completed.json")) as {
+        id: string; created: number;
+        data: { object: { id: string; subscription: string } };
+      };
+      checkoutEvent.id = "evt_resubscribe_checkout";
+      checkoutEvent.created = Math.floor(Date.parse("2026-10-01T00:00:00.000Z") / 1000);
+      checkoutEvent.data.object.id = "cs_resubscribe";
+      checkoutEvent.data.object.subscription = "sub_resubscribed";
+      const checkoutRaw = JSON.stringify(checkoutEvent);
+      const applied = await handleStripeWebhook(
+        { rawBody: checkoutRaw, signature: signStripePayload(checkoutRaw, WEBHOOK_SECRET) },
+        { db, env: webhookEnv, logger: silentLogger, ownership: ownEverything() },
+      );
+      expect(applied).toMatchObject({ code: "applied" });
+
+      // Stripe retries the earlier, deferred event; dedupe was never marked
+      // for it, so this is not mistaken for a duplicate, and it now applies
+      // cleanly — carrying the period/status fields the checkout event alone
+      // does not know.
+      const retried = await handleStripeWebhook(
+        { rawBody: earlyRaw, signature: signStripePayload(earlyRaw, WEBHOOK_SECRET) },
+        { db, env: webhookEnv, logger: silentLogger, ownership: ownEverything() },
+      );
+      expect(retried).toMatchObject({ code: "applied", entitlementWritten: true });
+
+      const final = await readDoc<BilledSourceState>(db, billingSourcePath(CHECKOUT_UID, "stripe"));
+      expect(final).toMatchObject({
+        stripeSubscriptionId: "sub_resubscribed",
+        status: "active",
+        currentPeriodEndsAt: "2026-11-01T00:00:00.000Z",
+        lastEventId: "evt_resubscribed_subscription_created",
+      });
     });
 
     it("allows a genuine resubscription to promote a new subscription once its checkout is admitted", async () => {

@@ -96,6 +96,18 @@ describe.skipIf(!hasFirestoreEmulator)("Customer Portal ownership against Firest
     expect(gateway.createPortalSession).not.toHaveBeenCalled();
   });
 
+  it("refuses a Portal session for a customer whose only foreign-product history is a one-time invoice, not a subscription", async () => {
+    // The underlying scan enumerates invoices as well as subscriptions
+    // (stripe-gateway.test.ts covers that directly); this proves Portal
+    // still refuses when the mixed verdict comes from an invoice alone.
+    await db.doc(userDocPath("owner")).set({ stripeCustomerId: "cus_shared" });
+    await db.doc(stripeCustomerPath("cus_shared")).set({ uid: "owner" });
+    const foreignInvoiceOnly = { customerProductScan: vi.fn(async () => ({ productIds: ["prod_kanji_kongbu"], unresolved: false })) };
+    await expect(createPortalSession({}, { uid: "owner" }, { db, env, gateway, ownershipGateway: foreignInvoiceOnly }))
+      .rejects.toMatchObject({ code: "permission-denied", reason: "customer_ownership_mismatch" });
+    expect(gateway.createPortalSession).not.toHaveBeenCalled();
+  });
+
   it("allows a customer with genuinely no billing at all (comp, or a canceled subscription's own history)", async () => {
     await db.doc(userDocPath("owner")).set({ stripeCustomerId: "cus_owner" });
     await db.doc(stripeCustomerPath("cus_owner")).set({ uid: "owner" });
