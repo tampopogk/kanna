@@ -10,6 +10,7 @@ const stripeMocks = vi.hoisted(() => ({
   sessionsListLineItems: vi.fn(),
   subscriptionsList: vi.fn(),
   subscriptionsCancel: vi.fn(),
+  subscriptionsRetrieve: vi.fn(),
   subscriptionItemsList: vi.fn(),
   portalCreate: vi.fn(),
 }));
@@ -18,7 +19,11 @@ vi.mock("stripe", () => {
   class MockStripe {
     billingPortal = { sessions: { create: stripeMocks.portalCreate } };
     customers = { create: stripeMocks.customersCreate };
-    subscriptions = { list: stripeMocks.subscriptionsList, cancel: stripeMocks.subscriptionsCancel };
+    subscriptions = {
+      list: stripeMocks.subscriptionsList,
+      cancel: stripeMocks.subscriptionsCancel,
+      retrieve: stripeMocks.subscriptionsRetrieve,
+    };
     subscriptionItems = { list: stripeMocks.subscriptionItemsList };
     prices = { list: stripeMocks.pricesList };
     checkout = {
@@ -62,10 +67,14 @@ function asyncIterable<T>(items: T[]): AsyncIterable<T> {
   };
 }
 
+const CONTEXT = { uid: "owner", customerId: "cus_owned" };
+
 beforeEach(() => {
   vi.clearAllMocks();
   stripeMocks.subscriptionItemsList.mockImplementation(() => asyncIterable([]));
   stripeMocks.sessionsListLineItems.mockImplementation(() => asyncIterable([]));
+  stripeMocks.subscriptionsRetrieve.mockResolvedValue({ customer: CONTEXT.customerId, metadata: { firebase_uid: CONTEXT.uid } });
+  stripeMocks.sessionsRetrieve.mockResolvedValue({ customer: CONTEXT.customerId, client_reference_id: CONTEXT.uid, status: "open" });
 });
 
 describe("Stripe checkout gateway", () => {
@@ -119,45 +128,86 @@ describe("Stripe checkout gateway", () => {
       .resolves.toBeNull();
   });
 
-  it("retrieves session ownership and current expanded subscription status", async () => {
+  it("retrieves session ownership, current expanded subscription status and product verdict", async () => {
     stripeMocks.sessionsRetrieve.mockResolvedValue({
       id: "cs_owned", url: null, mode: "subscription", customer: { id: "cus_owned" }, client_reference_id: "owner",
       status: "complete", subscription: { id: "sub_owned", status: "incomplete" },
     });
+    stripeMocks.sessionsListLineItems.mockImplementation(() => asyncIterable([{ price: { product: PRODUCT_ID } }]));
     await expect(stripeCheckoutGateway("sk_test_mocked", PRODUCT_ID).retrieveCheckoutSession("cs_owned")).resolves.toEqual({
-      id: "cs_owned", url: null, mode: "subscription", customerId: "cus_owned", uid: "owner", status: "complete", subscriptionStatus: "incomplete",
+      id: "cs_owned", url: null, mode: "subscription", customerId: "cus_owned", uid: "owner", status: "complete",
+      subscriptionStatus: "incomplete", productVerdict: "owned",
     });
     expect(stripeMocks.sessionsRetrieve).toHaveBeenCalledWith("cs_owned", { expand: ["subscription"] });
   });
 
-  it("pages only the mapped customer's open sessions and preserves ownership", async () => {
+  it("marks a session naming a foreign product as not Kanna's, without changing ownership fields", async () => {
+    stripeMocks.sessionsRetrieve.mockResolvedValue({
+      id: "cs_kongbu", url: null, mode: "subscription", customer: { id: "cus_shared" }, client_reference_id: "owner",
+      status: "open", subscription: null,
+    });
+    stripeMocks.sessionsListLineItems.mockImplementation(() => asyncIterable([{ price: { product: OTHER_PRODUCT_ID } }]));
+    await expect(stripeCheckoutGateway("sk_test_mocked", PRODUCT_ID).retrieveCheckoutSession("cs_kongbu"))
+      .resolves.toMatchObject({ productVerdict: "foreign" });
+  });
+
+  it("marks a session with no resolvable line items as ambiguous, never as owned", async () => {
+    stripeMocks.sessionsRetrieve.mockResolvedValue({
+      id: "cs_unclear", url: null, mode: "subscription", customer: { id: "cus_shared" }, client_reference_id: "owner",
+      status: "open", subscription: null,
+    });
+    stripeMocks.sessionsListLineItems.mockImplementation(() => asyncIterable([]));
+    await expect(stripeCheckoutGateway("sk_test_mocked", PRODUCT_ID).retrieveCheckoutSession("cs_unclear"))
+      .resolves.toMatchObject({ productVerdict: "ambiguous" });
+  });
+
+  it("pages only the mapped customer's open sessions, each with its own product verdict", async () => {
     stripeMocks.sessionsList.mockImplementation(() => asyncIterable([
       { id: "cs_first", url: "https://checkout.example.test/first", mode: "subscription",
         status: "open", customer: "cus_owned", client_reference_id: "owner" },
       { id: "cs_later_page", url: "https://checkout.example.test/later", mode: "payment",
         status: "open", customer: "cus_owned", metadata: { firebase_uid: "other" } },
     ]));
+    stripeMocks.sessionsListLineItems.mockImplementation((id: string) =>
+      asyncIterable([{ price: { product: id === "cs_first" ? PRODUCT_ID : OTHER_PRODUCT_ID } }]));
     const sessions = await stripeCheckoutGateway("sk_test_mocked", PRODUCT_ID).listOpenCheckoutSessions("cus_owned");
-    expect(sessions).toMatchObject([{ id: "cs_first", uid: "owner" }, { id: "cs_later_page", uid: "other", mode: "payment" }]);
+    expect(sessions).toMatchObject([
+      { id: "cs_first", uid: "owner", productVerdict: "owned" },
+      { id: "cs_later_page", uid: "other", mode: "payment", productVerdict: "foreign" },
+    ]);
     expect(stripeMocks.sessionsList).toHaveBeenCalledWith({ customer: "cus_owned", status: "open", limit: 100 });
   });
 
-  it.each(["active", "trialing", "past_due", "unpaid", "incomplete", "paused"])("blocks %s billing even after terminal subscriptions on earlier pages", async (status) => {
+  it.each(["active", "trialing", "past_due", "unpaid", "incomplete", "paused"])("blocks %s billing on a Kanna-owned subscription, even after terminal subscriptions on earlier pages", async (status) => {
     stripeMocks.subscriptionsList.mockImplementation(() => asyncIterable([
-      { status: "canceled" },
-      { status: "incomplete_expired" },
-      { status },
+      { id: "sub_terminal_1", status: "canceled" },
+      { id: "sub_terminal_2", status: "incomplete_expired" },
+      { id: "sub_live", status },
     ]));
-    await expect(stripeCheckoutGateway("sk_test_mocked", PRODUCT_ID).hasBlockingSubscription("cus_owned")).resolves.toBe(true);
+    stripeMocks.subscriptionItemsList.mockImplementation(({ subscription }: { subscription: string }) =>
+      asyncIterable(subscription === "sub_live" ? [{ price: { product: PRODUCT_ID } }] : []));
+    await expect(stripeCheckoutGateway("sk_test_mocked", PRODUCT_ID).hasBlockingSubscription("cus_owned")).resolves.toBe("blocked");
     expect(stripeMocks.subscriptionsList).toHaveBeenCalledWith({ customer: "cus_owned", status: "all", limit: 100 });
   });
 
   it("permits replacement only when all subscriptions are terminal", async () => {
     stripeMocks.subscriptionsList.mockImplementation(() => asyncIterable([
-      { status: "canceled" },
-      { status: "incomplete_expired" },
+      { id: "sub_terminal_1", status: "canceled" },
+      { id: "sub_terminal_2", status: "incomplete_expired" },
     ]));
-    await expect(stripeCheckoutGateway("sk_test_mocked", PRODUCT_ID).hasBlockingSubscription("cus_owned")).resolves.toBe(false);
+    await expect(stripeCheckoutGateway("sk_test_mocked", PRODUCT_ID).hasBlockingSubscription("cus_owned")).resolves.toBe("clear");
+  });
+
+  it("does not block on a live subscription proven to belong to another product on the shared account", async () => {
+    stripeMocks.subscriptionsList.mockImplementation(() => asyncIterable([{ id: "sub_kongbu", status: "active" }]));
+    stripeMocks.subscriptionItemsList.mockImplementation(() => asyncIterable([{ price: { product: OTHER_PRODUCT_ID } }]));
+    await expect(stripeCheckoutGateway("sk_test_mocked", PRODUCT_ID).hasBlockingSubscription("cus_shared")).resolves.toBe("clear");
+  });
+
+  it("reports ambiguous rather than clear when a live subscription's items cannot be resolved", async () => {
+    stripeMocks.subscriptionsList.mockImplementation(() => asyncIterable([{ id: "sub_unclear", status: "active" }]));
+    stripeMocks.subscriptionItemsList.mockImplementation(() => asyncIterable([]));
+    await expect(stripeCheckoutGateway("sk_test_mocked", PRODUCT_ID).hasBlockingSubscription("cus_shared")).resolves.toBe("ambiguous");
   });
 });
 
@@ -193,31 +243,91 @@ describe("Stripe product-ownership lookups", () => {
     stripeMocks.subscriptionsList.mockImplementation(() => asyncIterable([{ id: "sub_a" }, { id: "sub_b" }]));
     stripeMocks.subscriptionItemsList.mockImplementation(({ subscription }: { subscription: string }) =>
       asyncIterable([{ price: { product: subscription === "sub_a" ? PRODUCT_ID : OTHER_PRODUCT_ID } }]));
-    await expect(stripeOwnershipLookupGateway("sk_test_mocked").customerProductIds("cus_shared"))
-      .resolves.toEqual(expect.arrayContaining([PRODUCT_ID, OTHER_PRODUCT_ID]));
+    await expect(stripeOwnershipLookupGateway("sk_test_mocked").customerProductScan("cus_shared"))
+      .resolves.toEqual({ productIds: expect.arrayContaining([PRODUCT_ID, OTHER_PRODUCT_ID]), unresolved: false });
+  });
+
+  it("marks the scan unresolved when a listed subscription's items cannot be resolved, distinct from a customer with none", async () => {
+    stripeMocks.subscriptionsList.mockImplementation(() => asyncIterable([{ id: "sub_unclear" }]));
+    stripeMocks.subscriptionItemsList.mockImplementation(() => asyncIterable([]));
+    await expect(stripeOwnershipLookupGateway("sk_test_mocked").customerProductScan("cus_shared"))
+      .resolves.toEqual({ productIds: [], unresolved: true });
+  });
+
+  it("marks the scan unresolved when a listed subscription's items lookup hits resource_missing", async () => {
+    stripeMocks.subscriptionsList.mockImplementation(() => asyncIterable([{ id: "sub_gone" }]));
+    stripeMocks.subscriptionItemsList.mockImplementation(() => {
+      throw new Stripe.errors.StripeInvalidRequestError({ code: "resource_missing" } as never);
+    });
+    await expect(stripeOwnershipLookupGateway("sk_test_mocked").customerProductScan("cus_shared"))
+      .resolves.toEqual({ productIds: [], unresolved: true });
+  });
+
+  it("reports a genuinely empty customer as clean, not unresolved", async () => {
+    stripeMocks.subscriptionsList.mockImplementation(() => asyncIterable([]));
+    await expect(stripeOwnershipLookupGateway("sk_test_mocked").customerProductScan("cus_owner"))
+      .resolves.toEqual({ productIds: [], unresolved: false });
   });
 });
 
 describe("Stripe subscription gateway ownership gating", () => {
-  it("cancels a subscription only when its items prove it belongs to the expected product", async () => {
+  it("cancels a subscription only when its items prove it belongs to the expected product and matches its context", async () => {
     stripeMocks.subscriptionItemsList.mockImplementation(() => asyncIterable([{ price: { product: PRODUCT_ID } }]));
-    await stripeSubscriptionGateway("sk_test_mocked", PRODUCT_ID).cancelSubscription("sub_owned");
+    await stripeSubscriptionGateway("sk_test_mocked", PRODUCT_ID).cancelSubscription("sub_owned", CONTEXT);
     expect(stripeMocks.subscriptionsCancel).toHaveBeenCalledWith("sub_owned");
   });
 
   it("never cancels a subscription that belongs to another product on the shared account", async () => {
     stripeMocks.subscriptionItemsList.mockImplementation(() => asyncIterable([{ price: { product: OTHER_PRODUCT_ID } }]));
-    await stripeSubscriptionGateway("sk_test_mocked", PRODUCT_ID).cancelSubscription("sub_kongbu");
+    await stripeSubscriptionGateway("sk_test_mocked", PRODUCT_ID).cancelSubscription("sub_kongbu", CONTEXT);
     expect(stripeMocks.subscriptionsCancel).not.toHaveBeenCalled();
   });
 
-  it("never closes a checkout session with mixed or unresolved line items", async () => {
+  it("throws rather than cancels a Kanna-product subscription belonging to a different account (wrong-user same-product)", async () => {
+    stripeMocks.subscriptionItemsList.mockImplementation(() => asyncIterable([{ price: { product: PRODUCT_ID } }]));
+    stripeMocks.subscriptionsRetrieve.mockResolvedValue({ customer: "cus_owned", metadata: { firebase_uid: "someone-else" } });
+    await expect(stripeSubscriptionGateway("sk_test_mocked", PRODUCT_ID).cancelSubscription("sub_owned", CONTEXT))
+      .rejects.toThrow(/does not match the expected account/);
+    expect(stripeMocks.subscriptionsCancel).not.toHaveBeenCalled();
+  });
+
+  it("throws rather than cancels a Kanna-product subscription belonging to a different Stripe customer", async () => {
+    stripeMocks.subscriptionItemsList.mockImplementation(() => asyncIterable([{ price: { product: PRODUCT_ID } }]));
+    stripeMocks.subscriptionsRetrieve.mockResolvedValue({ customer: "cus_different", metadata: { firebase_uid: CONTEXT.uid } });
+    await expect(stripeSubscriptionGateway("sk_test_mocked", PRODUCT_ID).cancelSubscription("sub_owned", CONTEXT))
+      .rejects.toThrow(/does not match the expected account/);
+    expect(stripeMocks.subscriptionsCancel).not.toHaveBeenCalled();
+  });
+
+  it("throws rather than silently skips an ambiguous (unresolvable) direct subscription reference", async () => {
+    stripeMocks.subscriptionItemsList.mockImplementation(() => asyncIterable([]));
+    await expect(stripeSubscriptionGateway("sk_test_mocked", PRODUCT_ID).cancelSubscription("sub_unclear", CONTEXT))
+      .rejects.toThrow(/Cannot verify Stripe product ownership/);
+    expect(stripeMocks.subscriptionsCancel).not.toHaveBeenCalled();
+  });
+
+  it("cancels without a customer check when no customer is known for the context", async () => {
+    stripeMocks.subscriptionItemsList.mockImplementation(() => asyncIterable([{ price: { product: PRODUCT_ID } }]));
+    stripeMocks.subscriptionsRetrieve.mockResolvedValue({ customer: "cus_any", metadata: { firebase_uid: CONTEXT.uid } });
+    await stripeSubscriptionGateway("sk_test_mocked", PRODUCT_ID).cancelSubscription("sub_owned", { uid: CONTEXT.uid, customerId: null });
+    expect(stripeMocks.subscriptionsCancel).toHaveBeenCalledWith("sub_owned");
+  });
+
+  it("never closes a checkout session with mixed line items", async () => {
     stripeMocks.sessionsListLineItems.mockImplementation(() => asyncIterable([
       { price: { product: PRODUCT_ID } },
       { price: { product: OTHER_PRODUCT_ID } },
     ]));
-    await stripeSubscriptionGateway("sk_test_mocked", PRODUCT_ID).closeCheckoutSession("cs_mixed");
-    expect(stripeMocks.sessionsRetrieve).not.toHaveBeenCalled();
+    await expect(stripeSubscriptionGateway("sk_test_mocked", PRODUCT_ID).closeCheckoutSession("cs_mixed", CONTEXT))
+      .rejects.toThrow(/Cannot verify Stripe product ownership/);
+    expect(stripeMocks.sessionsExpire).not.toHaveBeenCalled();
+  });
+
+  it("throws rather than closes a Kanna-product session belonging to a different account", async () => {
+    stripeMocks.sessionsListLineItems.mockImplementation(() => asyncIterable([{ price: { product: PRODUCT_ID } }]));
+    stripeMocks.sessionsRetrieve.mockResolvedValue({ customer: CONTEXT.customerId, client_reference_id: "someone-else", status: "open" });
+    await expect(stripeSubscriptionGateway("sk_test_mocked", PRODUCT_ID).closeCheckoutSession("cs_wrong_user", CONTEXT))
+      .rejects.toThrow(/does not match the expected account/);
     expect(stripeMocks.sessionsExpire).not.toHaveBeenCalled();
   });
 
@@ -228,20 +338,34 @@ describe("Stripe subscription gateway ownership gating", () => {
     ]));
     stripeMocks.sessionsListLineItems.mockImplementation((id: string) =>
       asyncIterable([{ price: { product: id === "cs_kanna" ? PRODUCT_ID : OTHER_PRODUCT_ID } }]));
-    stripeMocks.sessionsRetrieve.mockResolvedValue({ status: "open" });
+    stripeMocks.sessionsRetrieve.mockImplementation((id: string) =>
+      Promise.resolve({ status: "open", customer: "cus_shared", client_reference_id: id === "cs_kanna" ? CONTEXT.uid : "kongbu-user" }));
     stripeMocks.subscriptionsList.mockImplementation(() => asyncIterable([
       { id: "sub_kanna", status: "active" },
       { id: "sub_kongbu", status: "active" },
     ]));
     stripeMocks.subscriptionItemsList.mockImplementation(({ subscription }: { subscription: string }) =>
       asyncIterable([{ price: { product: subscription === "sub_kanna" ? PRODUCT_ID : OTHER_PRODUCT_ID } }]));
+    stripeMocks.subscriptionsRetrieve.mockImplementation((id: string) =>
+      Promise.resolve({ customer: "cus_shared", metadata: { firebase_uid: id === "sub_kanna" ? CONTEXT.uid : "kongbu-user" } }));
 
-    await stripeSubscriptionGateway("sk_test_mocked", PRODUCT_ID).closeCustomerBilling("cus_shared");
+    await stripeSubscriptionGateway("sk_test_mocked", PRODUCT_ID).closeCustomerBilling("cus_shared", { uid: CONTEXT.uid });
 
     expect(stripeMocks.sessionsExpire).toHaveBeenCalledExactlyOnceWith("cs_kanna");
     expect(stripeMocks.sessionsExpire).not.toHaveBeenCalledWith("cs_kongbu");
     expect(stripeMocks.subscriptionsCancel).toHaveBeenCalledExactlyOnceWith("sub_kanna");
     expect(stripeMocks.subscriptionsCancel).not.toHaveBeenCalledWith("sub_kongbu");
+  });
+
+  it("throws out of closeCustomerBilling on a Kanna-product object belonging to a different uid, rather than skipping it", async () => {
+    stripeMocks.sessionsList.mockImplementation(() => asyncIterable([]));
+    stripeMocks.subscriptionsList.mockImplementation(() => asyncIterable([{ id: "sub_wrong_user", status: "active" }]));
+    stripeMocks.subscriptionItemsList.mockImplementation(() => asyncIterable([{ price: { product: PRODUCT_ID } }]));
+    stripeMocks.subscriptionsRetrieve.mockResolvedValue({ customer: "cus_shared", metadata: { firebase_uid: "someone-else" } });
+
+    await expect(stripeSubscriptionGateway("sk_test_mocked", PRODUCT_ID).closeCustomerBilling("cus_shared", { uid: CONTEXT.uid }))
+      .rejects.toThrow(/does not match the expected account/);
+    expect(stripeMocks.subscriptionsCancel).not.toHaveBeenCalled();
   });
 });
 

@@ -26,9 +26,12 @@ function harness(options: {
     },
     async stripeBillingReferences() {
       calls.push("read-stripe-billing-references");
+      const customerIds = options.customerIds ?? [];
       return {
-        customerIds: options.customerIds ?? [],
-        subscriptionIds: subscriptionPresent ? ["sub_active"] : [],
+        customerIds,
+        subscriptions: subscriptionPresent
+          ? [{ subscriptionId: "sub_active", customerId: customerIds.length === 1 ? customerIds[0] : null }]
+          : [],
       };
     },
     async deleteUserTree() {
@@ -89,11 +92,13 @@ describe("deleteAccount", () => {
     });
   });
 
-  it("cancels Stripe first and deletes Auth last", async () => {
+  it("cancels Stripe first and deletes Auth last, passing the deleting uid to every gateway call", async () => {
     const { calls, dependencies } = harness({ checkoutSessionIds: ["cs_open"] });
     await expect(deleteAccount({ uid: "user-1" }, dependencies)).resolves.toEqual({
       deleted: true,
     });
+    expect(dependencies.stripe.cancelSubscription).toHaveBeenCalledWith("sub_active", { uid: "user-1", customerId: null });
+    expect(dependencies.stripe.closeCheckoutSession).toHaveBeenCalledWith("cs_open", { uid: "user-1", customerId: null });
     expect(calls).toEqual([
       "mark-account-deletion-started",
       "read-stripe-billing-references",
@@ -143,7 +148,7 @@ describe("deleteAccount", () => {
     const { dependencies } = harness();
     dependencies.store.stripeBillingReferences = vi.fn(async () => ({
       customerIds: [],
-      subscriptionIds: [],
+      subscriptions: [],
     }));
     const missing = Object.assign(new Error("missing"), { code: "auth/user-not-found" });
     dependencies.auth.revokeRefreshTokens = vi.fn(async () => { throw missing; });
@@ -166,7 +171,7 @@ describe("deleteAccount", () => {
       "injected index failure",
     );
     expect(state.dependencies.stripe.closeCheckoutSession).not.toHaveBeenCalled();
-    expect(state.dependencies.stripe.closeCustomerBilling).toHaveBeenCalledWith("cus_legacy");
+    expect(state.dependencies.stripe.closeCustomerBilling).toHaveBeenCalledWith("cus_legacy", { uid: "user-1" });
     expect(state.usableLegacySessions.size).toBe(0);
     expect(state.liveCustomerSubscriptions.size).toBe(0);
     expect(state.dependencies.auth.deleteUser).not.toHaveBeenCalled();
@@ -176,5 +181,26 @@ describe("deleteAccount", () => {
     });
     expect(state.dependencies.stripe.closeCustomerBilling).toHaveBeenCalledTimes(2);
     expect(state.dependencies.auth.deleteUser).toHaveBeenCalledWith("user-1");
+  });
+
+  it("stays retryable when the gateway refuses an inconsistent Kanna reference, and completes once it resolves", async () => {
+    const { calls, dependencies } = harness();
+    let throwOnce = true;
+    dependencies.stripe.cancelSubscription = vi.fn(async () => {
+      if (throwOnce) {
+        throwOnce = false;
+        throw new Error("Subscription sub_active does not match the expected account");
+      }
+      calls.push("cancel-stripe");
+    });
+
+    await expect(deleteAccount({ uid: "user-1" }, dependencies)).rejects.toThrow(
+      "does not match the expected account",
+    );
+    expect(dependencies.auth.deleteUser).not.toHaveBeenCalled();
+
+    await expect(deleteAccount({ uid: "user-1" }, dependencies)).resolves.toEqual({ deleted: true });
+    expect(calls).toContain("cancel-stripe");
+    expect(dependencies.auth.deleteUser).toHaveBeenCalledWith("user-1");
   });
 });

@@ -132,15 +132,15 @@ async function evidence(token: string, changes: Record<string, unknown> = {}, re
       createCustomer: vi.fn(), resolvePriceId: vi.fn(), createCheckoutSession: vi.fn(),
       retrieveCheckoutSession: vi.fn(), closeCheckoutSession: vi.fn(),
       listOpenCheckoutSessions: vi.fn(async () => { throw new Error("provider offline"); }),
-      hasBlockingSubscription: vi.fn(async () => false),
+      hasBlockingSubscription: vi.fn(async () => "clear" as const),
     };
     await expect(beginAppStorePurchase(caller, { ...deps, stripe })).rejects.toMatchObject({ reason: "stripe_error" });
     stripe.listOpenCheckoutSessions = vi.fn(async () => []);
-    stripe.hasBlockingSubscription = vi.fn(async () => true);
+    stripe.hasBlockingSubscription = vi.fn(async () => "blocked" as const);
     await expect(beginAppStorePurchase(caller, { ...deps, stripe })).rejects.toMatchObject({ reason: "already_subscribed" });
     stripe.hasBlockingSubscription = vi.fn(async () => {
       await db.doc(`accountCheckouts/${caller.uid}`).set({ creating: true });
-      return false;
+      return "clear" as const;
     });
     await expect(beginAppStorePurchase(caller, { ...deps, stripe })).rejects.toMatchObject({ reason: "already_subscribed" });
     expect(stripe.createCustomer).not.toHaveBeenCalled();

@@ -75,7 +75,7 @@ function ownEverything(): StripeOwnershipLookupGateway {
   return {
     async subscriptionProductIds() { return [KANNA_PRODUCT_ID]; },
     async sessionProductIds() { return [KANNA_PRODUCT_ID]; },
-    async customerProductIds() { return [KANNA_PRODUCT_ID]; },
+    async customerProductScan() { return { productIds: [KANNA_PRODUCT_ID], unresolved: false }; },
   };
 }
 
@@ -155,7 +155,7 @@ function stubGateway(): StubGateway {
         sessionKeys.set(input.idempotencyKey, id);
         sessions.set(id, {
           id, url: `https://checkout.stripe.com/c/pay/${id}`, status: "open", mode: "subscription",
-          uid: input.uid, customerId: input.customerId, subscriptionStatus: null,
+          uid: input.uid, customerId: input.customerId, subscriptionStatus: null, productVerdict: "owned",
         });
       }
       const session = sessions.get(id);
@@ -171,8 +171,9 @@ function stubGateway(): StubGateway {
       return [...sessions.values()].filter((session) => session.customerId === customerId && session.status === "open").map((session) => ({ ...session }));
     },
     async hasBlockingSubscription(customerId) {
-      return [...sessions.values()].some((session) => session.customerId === customerId
+      const blocked = [...sessions.values()].some((session) => session.customerId === customerId
         && session.subscriptionStatus && !["canceled", "incomplete_expired"].includes(session.subscriptionStatus));
+      return blocked ? "blocked" : "clear";
     },
     async closeCheckoutSession(sessionId) {
       calls.closedSessions.push(sessionId);
@@ -412,6 +413,121 @@ describeWithEmulator("billing backend against the Firestore emulator", () => {
       expect(await readDoc<EntitlementRecord>(db, entitlementPath(CHECKOUT_UID))).toMatchObject({
         status: "active",
         source: "app_store",
+      });
+    });
+  });
+
+  describe("stripeWebhook identity and replacement fencing", () => {
+    function foreignEverything(): StripeOwnershipLookupGateway {
+      return {
+        async subscriptionProductIds() { return ["prod_kanji_kongbu"]; },
+        async sessionProductIds() { return ["prod_kanji_kongbu"]; },
+        async customerProductScan() { return { productIds: ["prod_kanji_kongbu"], unresolved: false }; },
+      };
+    }
+
+    it.each([
+      "checkout.session.completed.json",
+      "customer.subscription.created.json",
+      "customer.subscription.updated.trialing.json",
+      "customer.subscription.deleted.json",
+      "invoice.paid.json",
+      "invoice.payment_failed.json",
+    ])("acknowledges %s for a foreign product without any write, even with a real account's own hints", async (fixture) => {
+      // Every fixture already carries this account's own customer/uid hints;
+      // proving the product foreign must still refuse the write.
+      await db.doc(stripeCustomerPath("cus_TestSlice1")).set({ uid: CHECKOUT_UID });
+      const outcome = await deliver(db, fixture, { ownership: foreignEverything() });
+      expect(outcome).toMatchObject({ httpStatus: 200, code: "foreign_product" });
+      expect(await readDoc(db, billingSourcePath(CHECKOUT_UID, "stripe"))).toBeNull();
+      expect(await readDoc(db, entitlementPath(CHECKOUT_UID))).toBeNull();
+    });
+
+    it("retries an unresolvable ownership lookup and applies exactly once it succeeds", async () => {
+      const failing: StripeOwnershipLookupGateway = {
+        async subscriptionProductIds() { throw new Error("Stripe is unavailable"); },
+        async sessionProductIds() { throw new Error("Stripe is unavailable"); },
+        async customerProductScan() { throw new Error("Stripe is unavailable"); },
+      };
+      const attempt = await deliver(db, "checkout.session.completed.json", { ownership: failing });
+      expect(attempt).toMatchObject({ httpStatus: 503, code: "ownership_unresolved" });
+      expect(await readDoc(db, billingSourcePath(CHECKOUT_UID, "stripe"))).toBeNull();
+
+      const retry = await deliver(db, "checkout.session.completed.json", { ownership: ownEverything() });
+      expect(retry).toMatchObject({ code: "applied", entitlementWritten: true });
+
+      const source = await readDoc<BilledSourceState>(db, billingSourcePath(CHECKOUT_UID, "stripe"));
+      expect(source?.lastEventId).toBe("evt_checkout_completed");
+    });
+
+    it("refuses to bind a customer to a claimed uid that conflicts with an existing server-owned mapping", async () => {
+      await db.doc(userDocPath("real-owner")).set({ createdAt: "2026-08-19T00:00:00.000Z" });
+      await db.doc(stripeCustomerPath("cus_TestSlice1")).set({ uid: "real-owner" });
+
+      // The fixture's own metadata names CHECKOUT_UID, not "real-owner": this
+      // is exactly the customer-B/uid-A shape a hijack attempt would take.
+      const outcome = await deliver(db, "customer.subscription.created.json");
+      expect(outcome).toMatchObject({ httpStatus: 200, code: "mapping_conflict" });
+
+      // The existing mapping and the real owner's records are untouched.
+      expect((await db.doc(stripeCustomerPath("cus_TestSlice1")).get()).data()).toEqual({ uid: "real-owner" });
+      expect(await readDoc(db, billingSourcePath("real-owner", "stripe"))).toBeNull();
+      expect(await readDoc(db, billingSourcePath(CHECKOUT_UID, "stripe"))).toBeNull();
+    });
+
+    it("never resurrects or expires the current subscription from a late event naming an already-replaced one", async () => {
+      await deliver(db, "checkout.session.completed.json", { now: "2026-08-19T00:00:00.000Z" });
+      const current = await readDoc<BilledSourceState>(db, billingSourcePath(CHECKOUT_UID, "stripe"));
+      expect(current?.stripeSubscriptionId).toBe("sub_TestSlice1");
+
+      // A late event for a different, already-superseded subscription — not
+      // tied to any admitted checkout — must not touch the current one, even
+      // though it is a genuinely newer event by timestamp.
+      const body = JSON.parse(fixtureBody("customer.subscription.deleted.json")) as {
+        id: string; created: number;
+        data: { object: { id: string; customer: string } };
+      };
+      body.id = "evt_replaced_subscription";
+      body.created = Math.floor(Date.parse("2026-08-19T00:00:10.000Z") / 1000);
+      body.data.object.id = "sub_replaced";
+      body.data.object.customer = "cus_TestSlice1";
+      const raw = JSON.stringify(body);
+      const outcome = await handleStripeWebhook(
+        { rawBody: raw, signature: signStripePayload(raw, WEBHOOK_SECRET) },
+        { db, env: webhookEnv, logger: silentLogger, ownership: ownEverything() },
+      );
+      expect(outcome).toMatchObject({ httpStatus: 200, code: "subscription_replaced" });
+
+      const after = await readDoc<BilledSourceState>(db, billingSourcePath(CHECKOUT_UID, "stripe"));
+      expect(after).toMatchObject({ stripeSubscriptionId: "sub_TestSlice1", status: "active" });
+    });
+
+    it("allows a genuine resubscription to promote a new subscription once its checkout is admitted", async () => {
+      await deliver(db, "checkout.session.completed.json", { now: "2026-08-19T00:00:00.000Z" });
+      await deliver(db, "customer.subscription.deleted.json", { now: "2026-08-19T00:00:05.000Z" });
+      expect((await readDoc<BilledSourceState>(db, billingSourcePath(CHECKOUT_UID, "stripe")))?.status).toBe("expired");
+
+      // The new checkout's own session is recorded in this account's ledger
+      // before Stripe could ever deliver its webhook.
+      await db.doc(accountCheckoutPath(CHECKOUT_UID)).set({
+        uid: CHECKOUT_UID, sessionIds: ["cs_resubscribe"], updatedAt: "2026-08-19T00:00:06.000Z",
+      });
+      const body = JSON.parse(fixtureBody("checkout.session.completed.json")) as {
+        id: string; created: number;
+        data: { object: { id: string; subscription: string } };
+      };
+      body.id = "evt_resubscribe";
+      body.created = Math.floor(Date.parse("2026-10-01T00:00:00.000Z") / 1000);
+      body.data.object.id = "cs_resubscribe";
+      body.data.object.subscription = "sub_resubscribed";
+      const raw = JSON.stringify(body);
+      const outcome = await handleStripeWebhook(
+        { rawBody: raw, signature: signStripePayload(raw, WEBHOOK_SECRET) },
+        { db, env: webhookEnv, logger: silentLogger, ownership: ownEverything() },
+      );
+      expect(outcome).toMatchObject({ code: "applied" });
+      expect((await readDoc<BilledSourceState>(db, billingSourcePath(CHECKOUT_UID, "stripe")))).toMatchObject({
+        stripeSubscriptionId: "sub_resubscribed", status: "active",
       });
     });
   });
@@ -745,7 +861,7 @@ describeWithEmulator("billing backend against the Firestore emulator", () => {
       const gateway = stubGateway();
       await createCheckoutSession({ plan: "monthly" }, verified, deps(gateway));
       await db.doc(accountCheckoutPath(CHECKOUT_UID)).delete();
-      gateway.hasBlockingSubscription = async () => true;
+      gateway.hasBlockingSubscription = async () => "blocked";
       await expect(createCheckoutSession({ plan: "monthly" }, verified, deps(gateway))).rejects.toMatchObject({ reason: "already_subscribed" });
       expect(gateway.calls.sessions).toHaveLength(1);
       expect(gateway.calls.closedSessions).toEqual([]);
@@ -757,6 +873,7 @@ describeWithEmulator("billing backend against the Firestore emulator", () => {
       gateway.sessions.set("cs_unrelated", {
         id: "cs_unrelated", customerId: "cus_TestSlice1", uid: "different-user",
         status: "open", mode: "payment", url: "https://checkout.example.test/unrelated", subscriptionStatus: null,
+        productVerdict: "owned",
       });
       await expect(createCheckoutSession({ plan: "monthly" }, verified, deps(gateway))).rejects.toMatchObject({ reason: "checkout_reconciliation_required" });
       expect(gateway.calls.sessions).toHaveLength(0);
@@ -766,7 +883,7 @@ describeWithEmulator("billing backend against the Firestore emulator", () => {
     it("does not confuse an expired entitlement with a subscription that can still collect payment", async () => {
       const gateway = stubGateway();
       await db.doc(billingSourcePath(CHECKOUT_UID, "stripe")).set(stripeSource({ status: "expired" }));
-      gateway.hasBlockingSubscription = async () => true;
+      gateway.hasBlockingSubscription = async () => "blocked";
       await expect(createCheckoutSession({ plan: "monthly" }, verified, deps(gateway))).rejects.toMatchObject({ reason: "already_subscribed" });
       expect(gateway.calls.sessions).toHaveLength(0);
       await expect(firestoreAccountDeletionStore(db).markAccountDeletionStarted(CHECKOUT_UID)).resolves.toEqual([]);
@@ -849,9 +966,9 @@ describeWithEmulator("billing backend against the Firestore emulator", () => {
       const gateway: StripeCheckoutGateway = {
         async retrieveCheckoutSession(id) {
           return { id, url: "https://checkout.stripe.test/cs_racing_delete", status: "open", mode: "subscription",
-            uid, customerId: "cus_racing_delete", subscriptionStatus: null };
+            uid, customerId: "cus_racing_delete", subscriptionStatus: null, productVerdict: "owned" };
         },
-        async hasBlockingSubscription() { return false; },
+        async hasBlockingSubscription() { return "clear"; },
         async listOpenCheckoutSessions() { return []; },
         async createCustomer() {
           return { id: "cus_racing_delete" };
@@ -906,7 +1023,7 @@ describeWithEmulator("billing backend against the Firestore emulator", () => {
 
       await expect(deleteAccount({ uid }, deletionDependencies)).resolves.toEqual({ deleted: true });
 
-      expect(closeCheckoutSession).toHaveBeenCalledWith("cs_racing_delete");
+      expect(closeCheckoutSession).toHaveBeenCalledWith("cs_racing_delete", { uid, customerId: "cus_racing_delete" });
       expect(usableSessions.size).toBe(0);
       expect((await db.doc(userDocPath(uid)).get()).exists).toBe(false);
       expect((await db.collection("stripeCustomers").where("uid", "==", uid).get()).empty)
@@ -988,7 +1105,7 @@ describeWithEmulator("billing backend against the Firestore emulator", () => {
         },
       );
 
-      expect(cancelSubscription).toHaveBeenCalledWith("sub_delete");
+      expect(cancelSubscription).toHaveBeenCalledWith("sub_delete", { uid, customerId: "cus_fixture" });
       for (const path of [
         `users/${uid}`,
         `users/${uid}/billing/stripe`,
