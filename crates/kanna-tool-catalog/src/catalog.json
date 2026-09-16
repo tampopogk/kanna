@@ -57,13 +57,14 @@
         },
         {
           "name": "delivery",
-          "description": "Harness wake adapter: input sends an engine-labelled supervisory nudge; codex_app_server uses native standalone tool output (explicit opt-in, needs a recorded or uniquely loaded root thread for the stage worktree); poll keeps a mailbox without automatic wake.",
+          "description": "Harness wake adapter: Copilot input automatically uses copilot_extension (host-owned native enqueue, never the composer); an unavailable extension retains the mailbox with a diagnostic. Other input sends an engine-labelled supervisory nudge; codex_app_server uses native standalone tool output (explicit opt-in, needs a recorded or uniquely loaded root thread for the stage worktree); poll keeps a mailbox without automatic wake.",
           "type": "string",
           "required": false,
           "location": "body",
           "enum": [
             "input",
             "codex_app_server",
+            "copilot_extension",
             "poll"
           ],
           "default": "input"

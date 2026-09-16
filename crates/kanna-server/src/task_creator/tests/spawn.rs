@@ -774,6 +774,25 @@ async fn prepared_non_claude_pty_task_spawn_prepends_kanna_context_to_prompt() {
         },
     )
     .unwrap();
+    let plugin = prepared
+        .env
+        .get("KANNA_COPILOT_WAKE_PLUGIN")
+        .unwrap()
+        .clone();
+    let manifest: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(std::path::Path::new(&plugin).join("plugin.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(manifest["extensions"][0], "./extensions");
+    let extension = std::fs::read_to_string(
+        std::path::Path::new(&plugin).join("extensions/kanna-supervisor/extension.mjs"),
+    )
+    .unwrap();
+    assert!(extension.contains("await joinSession()"));
+    assert!(extension.contains("KANNA_STAGE_RUN_ID"));
+    assert!(!std::path::Path::new(&prepared.cwd)
+        .join(".github/extensions/kanna-supervisor")
+        .exists());
     let task_id = prepared.created_task.task_id.clone();
     let expected_executable = std::path::Path::new(&prepared.cwd)
         .join(".kanna/test-provider-bin/copilot")
@@ -791,6 +810,7 @@ async fn prepared_non_claude_pty_task_spawn_prepends_kanna_context_to_prompt() {
         } => {
             assert_eq!(session_id, task_id);
             let shell_command = args.last().expect("shell command argument");
+            assert!(shell_command.contains(&format!("--experimental --plugin-dir '{plugin}'")));
             assert!(shell_command.contains(&format!("'{expected_executable}' ")));
             assert!(!shell_command.contains("--append-system-prompt"));
             let context_index = shell_command

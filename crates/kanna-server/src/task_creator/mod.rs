@@ -1964,6 +1964,18 @@ fn build_prepared_session(
                 Some(worktree_path),
                 provider_session.as_ref(),
             );
+            let agent_cmd = if provider == AgentProvider::Copilot {
+                let plugin = spawn_env
+                    .get("KANNA_COPILOT_WAKE_PLUGIN")
+                    .ok_or("Copilot wake plugin path missing from launch environment")?;
+                environment::write_copilot_wake_plugin(plugin)?;
+                format!(
+                    "{agent_cmd} --experimental --plugin-dir '{}'",
+                    plugin.replace('\'', "'\"'\"'")
+                )
+            } else {
+                agent_cmd
+            };
             let full_cmd = build_task_shell_command(
                 &agent_cmd,
                 setup,

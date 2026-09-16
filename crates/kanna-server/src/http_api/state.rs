@@ -55,6 +55,7 @@ pub struct AppState {
     pub(super) compact_machine_stats_cache:
         Arc<Mutex<Option<super::machine_stats::CachedCompactStats>>>,
     pub(super) event_subscriptions_changed: Arc<Notify>,
+    pub(super) copilot_wakes: Arc<StdMutex<super::copilot_wake::Registry>>,
     pub(super) config: Config,
     pub(super) forge_client: crate::forge_pull_requests::ForgeClient,
     pub(crate) local_task_events_token: Option<String>,
@@ -537,6 +538,7 @@ impl AppState {
             machine_stats_cache: Arc::new(Mutex::new(None)),
             compact_machine_stats_cache: Arc::new(Mutex::new(None)),
             event_subscriptions_changed: Arc::new(Notify::new()),
+            copilot_wakes: Arc::new(StdMutex::new(HashMap::new())),
             config,
             forge_client: crate::forge_pull_requests::ForgeClient::from_environment(),
             local_task_events_token,

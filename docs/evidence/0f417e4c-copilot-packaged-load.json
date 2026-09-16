@@ -1,0 +1,106 @@
+{
+  "taskId": "0f417e4c",
+  "baseHead": "27e08702524dbec3314071c0fd3a8bf6f3a083c4",
+  "scope": "Disposable packaged-plugin registration only; no wake frames, session.send or model requests.",
+  "command": {
+    "args": [
+      "/Users/jeremyhale/.local/bin/copilot",
+      "-C",
+      "/Users/jeremyhale/.kanna/repos/kanna-2/.kanna-worktrees/task-0f417e4c/.tmp/copilot-packaged-check-0f417e4c/workspace",
+      "--no-auto-update",
+      "--no-remote-export",
+      "--no-custom-instructions",
+      "--disable-builtin-mcps",
+      "--session-id",
+      "cbeb9ed7-452a-4247-ba5c-9a1b0d2f3c53",
+      "--model",
+      "kanna-synthetic-local",
+      "--log-dir",
+      "/Users/jeremyhale/.kanna/repos/kanna-2/.kanna-worktrees/task-0f417e4c/.tmp/copilot-packaged-check-0f417e4c/logs",
+      "--log-level",
+      "debug",
+      "--experimental",
+      "--plugin-dir",
+      "/Users/jeremyhale/.kanna/repos/kanna-2/.kanna-worktrees/task-0f417e4c/.tmp/copilot-packaged-check-0f417e4c/plugin"
+    ],
+    "sessionId": "cbeb9ed7-452a-4247-ba5c-9a1b0d2f3c53",
+    "environment": {
+      "TMPDIR": "/Users/jeremyhale/.kanna/repos/kanna-2/.kanna-worktrees/task-0f417e4c/.tmp/copilot-packaged-check-0f417e4c/runtime",
+      "KANNA_TASK_ID": "synthetic-0f417e4c",
+      "KANNA_STAGE_RUN_ID": "synthetic-packaged-run",
+      "KANNA_SERVER_BASE_URL": "http://127.0.0.1:50221",
+      "COPILOT_HOME": "/Users/jeremyhale/.kanna/repos/kanna-2/.kanna-worktrees/task-0f417e4c/.tmp/copilot-packaged-check-0f417e4c/home",
+      "COPILOT_OFFLINE": "true",
+      "COPILOT_PROVIDER_BASE_URL": "http://127.0.0.1:50221/v1",
+      "COPILOT_PROVIDER_TYPE": "openai",
+      "COPILOT_PROVIDER_WIRE_API": "completions",
+      "XDG_CONFIG_HOME": "/Users/jeremyhale/.kanna/repos/kanna-2/.kanna-worktrees/task-0f417e4c/.tmp/copilot-packaged-check-0f417e4c/xdg-config",
+      "XDG_CACHE_HOME": "/Users/jeremyhale/.kanna/repos/kanna-2/.kanna-worktrees/task-0f417e4c/.tmp/copilot-packaged-check-0f417e4c/xdg-cache",
+      "XDG_DATA_HOME": "/Users/jeremyhale/.kanna/repos/kanna-2/.kanna-worktrees/task-0f417e4c/.tmp/copilot-packaged-check-0f417e4c/xdg-data",
+      "GH_CONFIG_DIR": "/Users/jeremyhale/.kanna/repos/kanna-2/.kanna-worktrees/task-0f417e4c/.tmp/copilot-packaged-check-0f417e4c/gh-config"
+    }
+  },
+  "result": {
+    "status": "registered",
+    "elapsedSeconds": 1.419,
+    "sessionId": "cbeb9ed7-452a-4247-ba5c-9a1b0d2f3c53",
+    "requests": [
+      {
+        "method": "GET",
+        "path": "/v1/tasks/synthetic-0f417e4c/copilot-wake?runId=synthetic-packaged-run&sessionId=cbeb9ed7-452a-4247-ba5c-9a1b0d2f3c53"
+      }
+    ],
+    "runtimeVerified": true,
+    "ownedProcesses": [
+      [
+        "69153",
+        "69148",
+        "69148",
+        "/Applications/Xcode.app/Contents/Developer/Library/Frameworks/Python3.framework/Versions/3.9/Resources/Python.app/Contents/MacOS/Python /Users/jeremyhale/.kanna/repos/kanna-2/.kanna-worktrees/task-0f417e4c/tests/cli-contract/helpers/pty-bridge.py /usr/bin/sandbox-exec -f /Users/jeremyhale/.kanna/repos/kanna-2/.kanna-worktrees/task-0f417e4c/.tmp/copilot-packaged-check-0f417e4c/sandbox.sb /Users/jeremyhale/.local/bin/copilot -C /Users/jeremyhale/.kanna/repos/kanna-2/.kanna-worktrees/task-0f417e4c/.tmp/copilot-packaged-check-0f417e4c/workspace --no-auto-update --no-remote-export --no-custom-instructions --disable-builtin-mcps --session-id cbeb9ed7-452a-4247-ba5c-9a1b0d2f3c53 --model kanna-synthetic-local --log-dir /Users/jeremyhale/.kanna/repos/kanna-2/.kanna-worktrees/task-0f417e4c/.tmp/copilot-packaged-check-0f417e4c/logs --log-level debug --experimental --plugin-dir /Users/jeremyhale/.kanna/repos/kanna-2/.kanna-worktrees/task-0f417e4c/.tmp/copilot-packaged-check-0f417e4c/plugin"
+      ],
+      [
+        "69155",
+        "69153",
+        "69155",
+        "/Users/jeremyhale/.local/bin/copilot -C /Users/jeremyhale/.kanna/repos/kanna-2/.kanna-worktrees/task-0f417e4c/.tmp/copilot-packaged-check-0f417e4c/workspace --no-auto-update --no-remote-export --no-custom-instructions --disable-builtin-mcps --session-id cbeb9ed7-452a-4247-ba5c-9a1b0d2f3c53 --model kanna-synthetic-local --log-dir /Users/jeremyhale/.kanna/repos/kanna-2/.kanna-worktrees/task-0f417e4c/.tmp/copilot-packaged-check-0f417e4c/logs --log-level debug --experimental --plugin-dir /Users/jeremyhale/.kanna/repos/kanna-2/.kanna-worktrees/task-0f417e4c/.tmp/copilot-packaged-check-0f417e4c/plugin"
+      ],
+      [
+        "69524",
+        "69155",
+        "69155",
+        "/Users/jeremyhale/.local/bin/copilot /Users/jeremyhale/Library/Caches/copilot/pkg/darwin-arm64/1.0.64/preloads/extension_bootstrap.mjs"
+      ]
+    ],
+    "remainingOwnedPids": [],
+    "resourceHashes": {
+      "extension.mjs": "a1c1f18d1698e2f05e11ca53b515cbc73faae3ac2bf14ffbf53140e324931bd2",
+      "bridge.mjs": "77164345e32d932d4e522125bdcd16a406d7198f064cff1d35764d31e065d433"
+    },
+    "logEvidence": [
+      "2026-09-16T00:45:49.298Z [WARNING] Model \"kanna-synthetic-local\" is not in the built-in catalog. Using defaults for: prompt tokens (COPILOT_PROVIDER_MAX_PROMPT_TOKENS), output tokens (COPILOT_PROVIDER_MAX_OUTPUT_TOKENS). Run `copilot help providers` for configuration details.",
+      "2026-09-16T00:45:49.367Z [WARNING] could not load remote agents, no GitHub remote found",
+      "2026-09-16T00:45:49.375Z [INFO] Starting Copilot CLI: 1.0.64",
+      "2026-09-16T00:45:49.486Z [ERROR] permissions.resetSessionApprovals failed: Error: Permission service is unavailable for this session.",
+      "2026-09-16T00:45:49.653Z [INFO] Launching extension: /Users/jeremyhale/.kanna/repos/kanna-2/.kanna-worktrees/task-0f417e4c/.tmp/copilot-packaged-check-0f417e4c/plugin/extensions/kanna-supervisor/extension.mjs",
+      "2026-09-16T00:45:49.653Z [DEBUG] Preparing to fork extension bootstrap: bootstrapPath=/Users/jeremyhale/Library/Caches/copilot/pkg/darwin-arm64/1.0.64/preloads/extension_bootstrap.mjs, cliDistDir=/Users/jeremyhale/Library/Caches/copilot/pkg/darwin-arm64/1.0.64, sdkPath=/Users/jeremyhale/Library/Caches/copilot/pkg/darwin-arm64/1.0.64/copilot-sdk, modulePath=/Users/jeremyhale/.kanna/repos/kanna-2/.kanna-worktrees/task-0f417e4c/.tmp/copilot-packaged-check-0f417e4c/plugin/extensions/kanna-supervisor/extension.mjs",
+      "2026-09-16T00:45:49.712Z [INFO] [extension:/Users/jeremyhale/.kanna/repos/kanna-2/.kanna-worktrees/task-0f417e4c/.tmp/copilot-packaged-check-0f417e4c/plugin/extensions/kanna-supervisor/extension.mjs] [extension-fork] resolveBootstrapPath: __dir=/Users/jeremyhale/Library/Caches/copilot/pkg/darwin-arm64/1.0.64, argv-bootstrap=/Users/jeremyhale/Library/Caches/copilot/pkg/darwin-arm64/1.0.64/preloads/extension_bootstrap.mjs",
+      "2026-09-16T00:45:49.757Z [INFO] [extension:/Users/jeremyhale/.kanna/repos/kanna-2/.kanna-worktrees/task-0f417e4c/.tmp/copilot-packaged-check-0f417e4c/plugin/extensions/kanna-supervisor/extension.mjs] [extension-bootstrap] starting: pid=69524, COPILOT_SDK_PATH=/Users/jeremyhale/Library/Caches/copilot/pkg/darwin-arm64/1.0.64/copilot-sdk, EXTENSION_PATH=/Users/jeremyhale/.kanna/repos/kanna-2/.kanna-worktrees/task-0f417e4c/.tmp/copilot-packaged-check-0f417e4c/plugin/extensions/kanna-supervisor/extension.mjs, SESSION_ID=cbeb9ed7-452a-4247-ba5c-9a1b0d2f3c53",
+      "[extension-bootstrap] importing extension: /Users/jeremyhale/.kanna/repos/kanna-2/.kanna-worktrees/task-0f417e4c/.tmp/copilot-packaged-check-0f417e4c/plugin/extensions/kanna-supervisor/extension.mjs",
+      "2026-09-16T00:45:49.789Z [INFO] [extension:/Users/jeremyhale/.kanna/repos/kanna-2/.kanna-worktrees/task-0f417e4c/.tmp/copilot-packaged-check-0f417e4c/plugin/extensions/kanna-supervisor/extension.mjs] [extension-resolver] resolver hook loaded: pid=69524, COPILOT_SDK_PATH=/Users/jeremyhale/Library/Caches/copilot/pkg/darwin-arm64/1.0.64/copilot-sdk",
+      "2026-09-16T00:45:49.795Z [WARNING] No authentication info available",
+      "2026-09-16T00:45:49.797Z [INFO] Extension ready: /Users/jeremyhale/.kanna/repos/kanna-2/.kanna-worktrees/task-0f417e4c/.tmp/copilot-packaged-check-0f417e4c/plugin/extensions/kanna-supervisor/extension.mjs",
+      "2026-09-16T00:45:49.862Z [INFO] Extension exited: /Users/jeremyhale/.kanna/repos/kanna-2/.kanna-worktrees/task-0f417e4c/.tmp/copilot-packaged-check-0f417e4c/plugin/extensions/kanna-supervisor/extension.mjs (code=null, signal=SIGTERM)",
+      "2026-09-16T00:45:49.862Z [INFO] Extension stopped normally: /Users/jeremyhale/.kanna/repos/kanna-2/.kanna-worktrees/task-0f417e4c/.tmp/copilot-packaged-check-0f417e4c/plugin/extensions/kanna-supervisor/extension.mjs",
+      "2026-09-16T00:45:49.954Z [WARNING] could not load remote agents, no GitHub remote found"
+    ],
+    "configurationRemoved": true,
+    "listenerClosed": true
+  },
+  "sandboxProfile": "(version 1)\n(allow default)\n(deny network*)\n(allow network-outbound (remote ip \"localhost:50221\"))\n(deny file-write*)\n(allow file-write* (subpath \"/Users/jeremyhale/.kanna/repos/kanna-2/.kanna-worktrees/task-0f417e4c/.tmp/copilot-packaged-check-0f417e4c\") (subpath \"/dev\"))\n",
+  "limitations": [
+    "The native extension process was not restarted.",
+    "The parent-stdin EOF cleanup was added after this load check; the scripted process fixture covers that delta.",
+    "Permission-service initialization failed in the synthetic unauthenticated session; permission dialogs were not tested."
+  ],
+  "fixtureSource": "import hashlib,http.server,json,os,shutil,signal,socket,subprocess,threading,time,uuid\nfrom pathlib import Path\nroot=Path(__file__).resolve().parent;repo=root.parents[1]\nwork=root/'workspace';home=root/'home';plugin=root/'plugin';ext=plugin/'extensions/kanna-supervisor'\nfor p in [work,home,ext,root/'runtime',root/'logs',root/'xdg-config',root/'xdg-cache',root/'xdg-data',root/'gh-config']:p.mkdir(parents=True,exist_ok=True)\nsubprocess.run(['git','init','-q',str(work)],check=True)\nfor p in (repo/'crates/kanna-server/resources/copilot-wake').glob('*.mjs'):shutil.copy(p,ext/p.name)\n(plugin/'plugin.json').write_text(json.dumps({'name':'kanna-supervisor','version':'1.0.0','extensions':['./extensions']}))\n(home/'config.json').write_text(json.dumps({'banner':'never','autoUpdate':False,'trustedFolders':[str(work)],'memory':False,'experimental':True}))\nseen=[];connected=threading.Event();stop=threading.Event()\nsession=str(uuid.uuid4());task='synthetic-0f417e4c';run='synthetic-packaged-run'\nclass Handler(http.server.BaseHTTPRequestHandler):\n def do_GET(self):\n  seen.append({'method':'GET','path':self.path})\n  if self.path.startswith('/v1/tasks/'+task+'/copilot-wake?'):\n   self.send_response(200);self.send_header('Content-Type','text/event-stream');self.end_headers()\n   self.wfile.write(('data: '+json.dumps({'type':'registered','protocol':1,'binding':{'taskId':task,'runId':run,'sessionId':session,'connectionId':'synthetic-epoch'}})+'\\n\\n').encode());self.wfile.flush();connected.set();stop.wait(30)\n  else:self.send_error(404)\n def do_POST(self):\n  seen.append({'method':'POST','path':self.path});self.send_error(503,'No sends or model inference in loading check')\n def log_message(self,*a):pass\nserver=http.server.ThreadingHTTPServer(('127.0.0.1',0),Handler);server.daemon_threads=True\nthreading.Thread(target=server.serve_forever,daemon=True).start();port=server.server_address[1]\nprofile=root/'sandbox.sb';profile.write_text(f'(version 1)\\n(allow default)\\n(deny network*)\\n(allow network-outbound (remote ip \"localhost:{port}\"))\\n(deny file-write*)\\n(allow file-write* (subpath \"{root}\") (subpath \"/dev\"))\\n')\nenv={k:v for k,v in os.environ.items() if not k.startswith(('KANNA_','CLAUDE','ANTHROPIC','CODEX','COPILOT','GH_','GITHUB_','GOOGLE_','OPENAI_','NODE_','HTTP_PROXY','HTTPS_PROXY','ALL_PROXY'))}\nenv.update({'KANNA_TASK_ID':task,'KANNA_STAGE_RUN_ID':run,'KANNA_SERVER_BASE_URL':f'http://127.0.0.1:{port}','COPILOT_HOME':str(home),'COPILOT_OFFLINE':'true','COPILOT_PROVIDER_BASE_URL':f'http://127.0.0.1:{port}/v1','COPILOT_PROVIDER_TYPE':'openai','COPILOT_PROVIDER_WIRE_API':'completions','XDG_CONFIG_HOME':str(root/'xdg-config'),'XDG_CACHE_HOME':str(root/'xdg-cache'),'XDG_DATA_HOME':str(root/'xdg-data'),'GH_CONFIG_DIR':str(root/'gh-config'),'TMPDIR':str(root/'runtime'),'TERM':'xterm-256color'})\nargs=['/Users/jeremyhale/.local/bin/copilot','-C',str(work),'--no-auto-update','--no-remote-export','--no-custom-instructions','--disable-builtin-mcps','--session-id',session,'--model','kanna-synthetic-local','--log-dir',str(root/'logs'),'--log-level','debug','--experimental','--plugin-dir',str(plugin)]\n(root/'command.json').write_text(json.dumps({'args':args,'sessionId':session,'environment':{k:v for k,v in env.items() if k.startswith(('KANNA_','COPILOT_','XDG_','GH_CONFIG','TMPDIR'))}},indent=2))\np=subprocess.Popen(['/usr/bin/python3',str(repo/'tests/cli-contract/helpers/pty-bridge.py'),'/usr/bin/sandbox-exec','-f',str(profile),*args],env=env,cwd=work,stdin=subprocess.PIPE,stdout=open(root/'terminal.raw','wb'),stderr=subprocess.STDOUT)\nowned={};start=time.monotonic();status='timeout'\ntry:\n while time.monotonic()-start<30:\n  lines=subprocess.check_output(['ps','-axo','pid=,ppid=,pgid=,command='],text=True).splitlines();procs={int(s.split(None,3)[0]):s.split(None,3) for s in lines if len(s.split(None,3))==4};desc={p.pid}\n  for _ in range(6):desc.update(pid for pid,row in procs.items() if int(row[1]) in desc)\n  owned.update({pid:procs[pid] for pid in desc if pid in procs})\n  if connected.is_set():status='registered';break\n  if p.poll() is not None:status='exited';break\n  time.sleep(.1)\nfinally:\n elapsed=time.monotonic()-start;stop.set()\n for group in {int(row[2]) for pid,row in owned.items() if pid!=p.pid and int(row[2])!=os.getpgrp()}:\n  try:os.killpg(group,signal.SIGTERM)\n  except ProcessLookupError:pass\n try:p.wait(timeout=3)\n except subprocess.TimeoutExpired:p.kill();p.wait()\n for pid in owned:\n  try:os.kill(pid,signal.SIGKILL)\n  except ProcessLookupError:pass\n server.shutdown();server.server_close();time.sleep(.1)\n remaining=[]\n for pid in owned:\n  try:os.kill(pid,0);remaining.append(pid)\n  except ProcessLookupError:pass\n logs='\\n'.join(f.read_text() for f in (root/'logs').glob('*.log'))\n result={'status':status,'elapsedSeconds':round(elapsed,3),'sessionId':session,'requests':seen,'runtimeVerified':'Starting Copilot CLI: 1.0.64' in logs,'ownedProcesses':list(owned.values()),'remainingOwnedPids':remaining,'resourceHashes':{p.name:hashlib.sha256(p.read_bytes()).hexdigest() for p in ext.glob('*.mjs')},'logEvidence':[l for l in logs.splitlines() if any(s in l for s in ['Starting Copilot','Extension ready','kanna-supervisor','ERROR','WARNING'])]}\n for d in [work,home,plugin,root/'runtime',root/'xdg-config',root/'xdg-cache',root/'xdg-data',root/'gh-config']:shutil.rmtree(d,ignore_errors=True)\n result['configurationRemoved']=not home.exists();result['listenerClosed']=server.fileno()==-1\n (root/'result.json').write_text(json.dumps(result,indent=2));print(json.dumps(result,indent=2))\n"
+}

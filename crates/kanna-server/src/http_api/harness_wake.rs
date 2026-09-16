@@ -17,6 +17,8 @@ pub(super) enum Delivery {
     CodexAppServer,
     /// Durable mailbox only; the harness is responsible for checking it.
     Poll,
+    /// Copilot's host-owned extension, never terminal input.
+    CopilotExtension,
 }
 
 impl Delivery {
@@ -25,6 +27,7 @@ impl Delivery {
             Self::Input => "input",
             Self::CodexAppServer => "codex_app_server",
             Self::Poll => "poll",
+            Self::CopilotExtension => "copilot_extension",
         }
     }
 }
@@ -33,6 +36,15 @@ pub(super) async fn deliver(
     state: Arc<AppState>,
     row: &EventSubscription,
 ) -> Result<&'static str, task_input::EngineWakeFailure> {
+    // Legacy Copilot subscriptions said `input`. Preserve their mailbox and
+    // cursor, but never route their automatic notices back to the composer.
+    let copilot = Db::open(&state.config().db_path)
+        .and_then(|db| db.stage_run(&row.run_id))
+        .map_err(|e| park(e.to_string()))?
+        .is_some_and(|run| run.agent_provider.as_deref() == Some("copilot"));
+    if row.delivery == "copilot_extension" || (row.delivery == "input" && copilot) {
+        return super::copilot_wake::deliver(&state, row);
+    }
     let message = format!(
         "[Kanna supervisor] Event subscription {} has pending events (batch {}). Read them with kanna_read_event_subscription, then acknowledge that batch after reconciling it. This is an engine wakeup, not an owner directive or a task-completion verdict.",
         row.id, row.batch_id,

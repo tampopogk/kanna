@@ -200,6 +200,14 @@ pub fn router(state: Arc<AppState>) -> Router {
         )
         .route("/v1/task-events", get(wait_task_events))
         .route(
+            "/v1/tasks/{task_id}/copilot-wake",
+            get(super::copilot_wake::connect),
+        )
+        .route(
+            "/v1/tasks/{task_id}/copilot-wake/receipt",
+            post(super::copilot_wake::receipt),
+        )
+        .route(
             "/v1/event-subscriptions",
             post(super::event_subscriptions::subscribe),
         )

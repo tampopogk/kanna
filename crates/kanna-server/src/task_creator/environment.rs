@@ -134,6 +134,7 @@ pub(super) fn build_spawn_env(
         "KANNA_CLI_PATH",
         "KANNA_MCP_PATH",
         "KANNA_MCP_CONFIG",
+        "KANNA_COPILOT_WAKE_PLUGIN",
         kanna_tool_catalog::KANNA_STAGE_RUN_ID_ENV,
         kanna_tool_catalog::KANNA_COMPLETION_CONTEXT_ENV,
     ] {
@@ -163,6 +164,22 @@ pub(super) fn build_spawn_env(
     if let Some(path) = kanna_mcp_path {
         env.insert("KANNA_MCP_PATH".to_string(), path);
     }
+    use sha2::Digest;
+    let bundle = sha2::Sha256::digest(
+        concat!(
+            include_str!("../../resources/copilot-wake/extension.mjs"),
+            include_str!("../../resources/copilot-wake/bridge.mjs"),
+        )
+        .as_bytes(),
+    );
+    env.insert(
+        "KANNA_COPILOT_WAKE_PLUGIN".into(),
+        Path::new(&config.daemon_dir)
+            .join("runtime/copilot-wake")
+            .join(format!("{bundle:x}"))
+            .to_string_lossy()
+            .into_owned(),
+    );
     Ok(env)
 }
 
@@ -594,4 +611,41 @@ fn workflow_socket_path(daemon_dir: &str) -> String {
     kanna_runtime_defaults::socket_path(&dir)
         .to_string_lossy()
         .to_string()
+}
+
+/// Bundled source only: the provider supplies its own extension SDK. No package
+/// manager, global plugin install, or repository file mutation is required.
+pub(super) fn write_copilot_wake_plugin(path: &str) -> Result<(), String> {
+    let root = Path::new(path);
+    let extension = root.join("extensions/kanna-supervisor");
+    std::fs::create_dir_all(&extension).map_err(|e| e.to_string())?;
+    for (name, content) in [
+        (
+            "extension.mjs",
+            include_str!("../../resources/copilot-wake/extension.mjs"),
+        ),
+        (
+            "bridge.mjs",
+            include_str!("../../resources/copilot-wake/bridge.mjs"),
+        ),
+    ] {
+        // Atomic replacement: a new launch must not truncate a live extension's
+        // module while the provider is loading it.
+        let temporary = extension.join(format!(
+            ".{name}-{}",
+            super::worktree::generate_agent_session_uuid()?
+        ));
+        std::fs::write(&temporary, content).map_err(|e| e.to_string())?;
+        std::fs::rename(&temporary, extension.join(name)).map_err(|e| e.to_string())?;
+    }
+    let manifest = root.join(format!(
+        ".plugin-{}.json",
+        super::worktree::generate_agent_session_uuid()?
+    ));
+    std::fs::write(
+        &manifest,
+        r#"{"name":"kanna-supervisor","version":"1.0.0","extensions":["./extensions"]}"#,
+    )
+    .map_err(|e| e.to_string())?;
+    std::fs::rename(manifest, root.join("plugin.json")).map_err(|e| e.to_string())
 }

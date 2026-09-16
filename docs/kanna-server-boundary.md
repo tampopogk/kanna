@@ -2076,6 +2076,14 @@ the full message text, `delivered_at`, the `stage` the task was on, the
 `stage_run` that was running at the time (null when none was), and a `source`.
 The row is the record; `task.input_delivered` is only its announcement.
 
+Copilot subscription wakes have a separate native acceptance boundary:
+`copilot_wake_attempt` retains the server-authored notice and original run/stage,
+and a confirmed queue receipt or exact native-history reconciliation writes one
+`engine` row atomically with the receipt. Its `task.input_delivered` payload names
+`delivery: copilot_enqueue`, `attemptId`, and the available native message/event
+IDs. This proves native acceptance, not a model read or event acknowledgement.
+The PTY delivery rules below still govern ordinary explicit input.
+
 Raw terminal keys are deliberately outside this table. `POST
 /v1/tasks/{task_id}/raw-input` writes an arrow or an Escape, not a sentence, and
 a row here would let a reviewer read terminal control bytes as owner speech —
@@ -3342,7 +3350,12 @@ The first returned page is already observed by the registering caller. A later
 page receives one coalesced wake. Wakes contain only the subscription and batch
 identity; the mailbox contains the actual events. Delivery is a separate adapter:
 
-- `input` (default): a labelled Kanna supervisory message through the existing
+- `copilot_extension` (selected automatically for Copilot, including old rows
+  naming `input`): a host-owned extension joins the assigned native session and
+  calls public `session.send({prompt, mode: "enqueue"})`. The explicit engine
+  wording remains a native **user-role** message; reserved `engine` provenance
+  belongs to Kanna, not a claimed native system role. No PTY bytes are written.
+- `input` (other harnesses): a labelled Kanna supervisory message through the existing
   logical-input queue, task mutation guard, and daemon PID fence. Delivered
   messages carry the reserved `engine` input source, unavailable to public
   caller declarations. A daemon-held input reports `wakeState: queued`;
@@ -3357,6 +3370,39 @@ identity; the mailbox contains the actual events. Delivery is a separate adapter
   delivery does not silently fall back and risk a duplicate turn.
 - `poll`: retain the mailbox without waking; `wakeState: ready` explicitly
   reports this. It is for a harness that supplies its own scheduling.
+
+The internal Copilot extension stream is
+`GET /v1/tasks/{task_id}/copilot-wake?runId=...&sessionId=...` (SSE), with receipts
+at `POST /v1/tasks/{task_id}/copilot-wake/receipt`. Both require direct local
+process authority under the existing HTTP trust boundary. Registration validates
+the live task/run, provider and assigned native session and persists a connection
+epoch. A server-memory stream, not the persisted row, proves availability. The
+server reserves an attempt durably before sending; receipts must match that
+attempt and epoch and cannot supply arbitrary text, provenance or a mailbox ack.
+Native receipt IDs and history event IDs are distinct and are stored separately.
+
+`awaiting_receipt` means an attempt was durably prepared and awaits a native outcome;
+`uncertain` retains its diagnostic and readable batch after a lost receipt or
+disconnect. Reconnect sends **inspect**, never send, for existing unresolved
+attempts. The extension reuses its known queue receipt or reads native history;
+absent or ambiguous history remains uncertain. A later native user-message event
+can resolve a queued notice. Duplicate receipts are idempotent; a late receipt
+records the original run even if the batch was acknowledged or the stage changed,
+without restoring an old batch. No task-input lease spans native delivery.
+There is no PTY fallback and no new event-polling loop; only the disconnected
+extension transport reconnects with bounded backoff. An unavailable extension
+leaves the batch pending with an error and retries on the existing admission
+and registration notifications. Ordinary explicit input is unchanged.
+
+New Copilot PTY launches load the bundled, content-addressed local plugin through
+`--experimental --plugin-dir`. The provider supplies its own SDK; no runtime
+package installation or machine-global plugin registration is needed. Existing
+sessions without the extension require a future normal launch to gain it; no
+live session or subscription is retrofitted. The actual 1.0.64 synthetic TUI
+proved draft/cursor preservation and busy enqueue; process replacement is covered
+with a scripted SDK fixture, **not** a live native-extension restart. Other
+versions, permission dialogs and paid-model tool read/ack remain compatibility
+limits. See `docs/investigations/0f417e4c-copilot-synthetic-tui.md`.
 
 Server startup resumes active rows. A row left `sending` by a crash becomes
 `uncertain`; its page remains readable and the layer does not blindly submit
