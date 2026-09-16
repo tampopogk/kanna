@@ -166,6 +166,42 @@ describe("machine pairing over the secure channel", () => {
     expect(desktop.handshakes).toBe(1);
   });
 
+  it("refuses a typed-code claim the desktop accepts without SAS confirmation", async () => {
+    // A LAN impostor that answers status with its own key and 200s the
+    // claim would otherwise be pinned as the desktop.
+    const desktop = createFakeSecureDesktop({
+      desktopId: "DESKTOP-1",
+      route: (request) =>
+        request.path === "/v1/pairing/sessions/claim"
+          ? { status: 200, body: claimBody("DESKTOP-1") }
+          : { status: 404 },
+    });
+    const fetchImpl = vi.fn<FetchLike>(async () =>
+      response(200, { desktopId: "DESKTOP-1", channelPublicKey: desktop.publicKey }),
+    );
+    const shown: string[] = [];
+    const pairing = createMachinePairingService({
+      bonjourBrowser: createStaticBonjourBrowser([service("10.0.0.5", "DESKTOP-1")]),
+      fetchImpl,
+      getDeviceIdentity: () => ({ deviceId: "phone-1", deviceName: "Kanna Mobile" }),
+      secureChannel: {
+        getIdentity: () => generateKeypair(testRandomBytes),
+        randomBytes: testRandomBytes,
+        createLanSocket: () => desktop.createSocket(),
+      },
+    });
+    const outcome = await pairing
+      .claimCode("abc123", { onConfirmationRequired: (sas) => shown.push(sas) })
+      .then(
+        (record) => ({ record }),
+        (error: unknown) => ({ error }),
+      );
+    expect("record" in outcome).toBe(false);
+    expect((outcome as { error: MachinePairingError }).error).toBeInstanceOf(MachinePairingError);
+    expect((outcome as { error: MachinePairingError }).error.reason).toBe("not-verified");
+    expect(shown).toEqual([]);
+  });
+
   it("reports a rejection on the desktop and persists nothing", async () => {
     const desktop = createFakeSecureDesktop({
       desktopId: "DESKTOP-1",

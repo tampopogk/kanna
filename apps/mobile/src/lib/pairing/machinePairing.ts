@@ -178,6 +178,7 @@ export function createMachinePairingService(input: {
             socket: relaySocket,
             desktopId: payload.desktopId,
             desktopPublicKey: payload.channelPublicKey,
+            scannedKey: true,
             payload,
             deviceIdentity: input.getDeviceIdentity(),
             secureChannel: input.secureChannel,
@@ -252,6 +253,7 @@ async function claimCandidate(input: {
       socket,
       desktopId,
       desktopPublicKey,
+      scannedKey: scannedKey !== null,
       payload: input.payload,
       deviceIdentity: input.deviceIdentity,
       secureChannel: input.secureChannel,
@@ -308,6 +310,14 @@ async function claimSealed(input: {
   socket: SealedWebSocketLike;
   desktopId: string;
   desktopPublicKey: string;
+  /**
+   * Whether `desktopPublicKey` came from the scanned QR (anchored by the
+   * person's eyes) rather than from the network. An unscanned key is only
+   * authenticated by the person confirming the SAS on the desktop, so the
+   * claim must take the confirmation path; a desktop that skips it is not
+   * the desktop the person is looking at.
+   */
+  scannedKey: boolean;
   payload: MachinePairingPayload;
   deviceIdentity: MobileDeviceIdentity;
   secureChannel: MachinePairingSecureChannel;
@@ -389,6 +399,15 @@ async function claimSealed(input: {
       if (response.status !== 200) throw pairingError("confirmation-expired");
     } else if (response.status !== 200) {
       throw claimStatusError(response.status);
+    } else if (!input.scannedKey) {
+      // The key was trusted on first use from plaintext status; only a SAS
+      // confirmation on the desktop makes it the desktop's key. An
+      // immediate acceptance is what an impostor answering for the desktop
+      // would send. Persist nothing.
+      throw pairingError(
+        "not-verified",
+        "the desktop accepted a typed code without asking for confirmation"
+      );
     }
     const claim = response.body as PairingClaimResponse;
     if (

@@ -4,10 +4,12 @@
 
 use super::*;
 use crate::http_api::secure_channel::{
-    StreamOrigin, MOBILE_LEGACY_ACCESS_REFUSED, MOBILE_LEGACY_ACCESS_SETTING,
+    PairingConfirmationError, StreamOrigin, MOBILE_LEGACY_ACCESS_REFUSED,
+    MOBILE_LEGACY_ACCESS_SETTING,
 };
-use crate::http_api::test_state_with_seed;
+use crate::http_api::{test_state_with_seed, RelayAccess};
 use crate::pairing::{self as pairing_domain, PairingStore};
+use crate::relay_client::RelayEntitlement;
 use kanna_secure_channel::{HelloIntent, InitiatorHello, Keypair, PendingInitiator, Received};
 use std::pin::Pin;
 use std::task::{Context, Poll};
@@ -92,6 +94,14 @@ impl Phone {
             .expect("server frame within 10s")
     }
 
+    /// Whether any frame arrives within `window`; `None` when none does.
+    async fn recv_raw_within(&mut self, window: Duration) -> Option<String> {
+        tokio::time::timeout(window, self.from_server.recv())
+            .await
+            .ok()
+            .flatten()
+    }
+
     async fn ended(mut self) {
         self.disconnect();
         while self.recv_raw().await.is_some() {}
@@ -155,6 +165,16 @@ impl SealedPhone {
                 continue;
             }
             return Some(received.remove(0));
+        }
+    }
+
+    /// The next sealed JSON frame within `window`, or `None`.
+    async fn recv_json_within(&mut self, window: Duration) -> Option<serde_json::Value> {
+        let raw = self.phone.recv_raw_within(window).await?;
+        let received = self.receiver.open(&raw).expect("open server frame");
+        match received.into_iter().next() {
+            Some(Received::Message(bytes)) => serde_json::from_slice(&bytes).ok(),
+            _ => None,
         }
     }
 
@@ -224,7 +244,20 @@ fn pairing_hello() -> InitiatorHello {
 fn state(label: &str) -> Arc<AppState> {
     let state = test_state_with_seed(&format!("desktop-sealed-{label}"), "Sealed Desktop", |_| {});
     state.secure_channel_identity().expect("channel identity");
+    // A relay tunnel exists only for a desktop the relay authenticated; the
+    // harness models an enforcing relay that reported an active account.
+    state.set_relay_access(RelayAccess::Enforced(entitlement(true)));
     state
+}
+
+fn entitlement(active: bool) -> RelayEntitlement {
+    RelayEntitlement {
+        active,
+        status: if active { "active" } else { "grace" }.to_string(),
+        current_period_ends_at: None,
+        grace_ends_at: None,
+        reason: None,
+    }
 }
 
 fn desktop_key(state: &AppState) -> [u8; 32] {
@@ -418,7 +451,12 @@ async fn a_typed_code_sealed_claim_waits_for_the_desktop_sas_confirmation() {
     // The person confirms on the desktop; the phone's poll resolves.
     let confirmed = state
         .pairing_confirmation
-        .confirm(state.config(), &state.pairing_persistence_mutation)
+        .confirm(
+            state.config(),
+            &state.pairing_persistence_mutation,
+            &phone.handshake_hash,
+            "phone-typed",
+        )
         .await
         .unwrap();
     assert!(confirmed.secure_channel);
@@ -480,7 +518,11 @@ async fn a_rejected_or_abandoned_typed_code_pairing_persists_nothing() {
         )
         .await;
     assert_eq!(response["status"], 202, "{response}");
-    assert!(state.pairing_confirmation.reject().await);
+    state
+        .pairing_confirmation
+        .reject(&phone.handshake_hash, "p")
+        .await
+        .unwrap();
     let response = phone
         .request(
             2,
@@ -521,11 +563,18 @@ async fn a_rejected_or_abandoned_typed_code_pairing_persists_nothing() {
         state.pairing_confirmation.current().await.is_none(),
         "a confirmation bound to a dead session must not survive it"
     );
-    assert!(state
-        .pairing_confirmation
-        .confirm(state.config(), &state.pairing_persistence_mutation)
-        .await
-        .is_err());
+    assert_eq!(
+        state
+            .pairing_confirmation
+            .confirm(
+                state.config(),
+                &state.pairing_persistence_mutation,
+                &phone2.handshake_hash,
+                "q",
+            )
+            .await,
+        Err(PairingConfirmationError::NothingPending)
+    );
 }
 
 #[tokio::test]
@@ -928,7 +977,9 @@ async fn a_relay_tunnel_socket_waits_for_the_phone_and_admits_a_sealed_session()
 
     // The "relay": accepts the desktop's dial and then relays the phone's
     // frames, which the test writes by hand after a deliberate pause.
-    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
     let address = listener.local_addr().unwrap();
     let relay = tokio::spawn(async move {
         let (stream, _) = listener.accept().await.unwrap();
@@ -937,7 +988,9 @@ async fn a_relay_tunnel_socket_waits_for_the_phone_and_admits_a_sealed_session()
         tokio::time::sleep(Duration::from_millis(300)).await;
         socket
             .send(Message::Text(
-                serde_json::json!({ "type": "tunnel_ready" }).to_string().into(),
+                serde_json::json!({ "type": "tunnel_ready" })
+                    .to_string()
+                    .into(),
             ))
             .await
             .unwrap();
@@ -963,16 +1016,23 @@ async fn a_relay_tunnel_socket_waits_for_the_phone_and_admits_a_sealed_session()
         &session_hello("phone-tunnel"),
     )
     .unwrap();
-    relay_socket.send(Message::Text(message1.into())).await.unwrap();
+    relay_socket
+        .send(Message::Text(message1.into()))
+        .await
+        .unwrap();
     let reply = match relay_socket.next().await {
         Some(Ok(Message::Text(text))) => text.to_string(),
         other => panic!("expected the handshake reply, got {other:?}"),
     };
-    let (channel, _) = pending.finish(&reply).expect("desktop answered the handshake");
+    let (channel, _) = pending
+        .finish(&reply)
+        .expect("desktop answered the handshake");
     let (mut tx, mut rx) = channel.split();
     relay_socket
         .send(Message::Text(
-            tx.seal(br#"{"type":"auth","capabilities":[]}"#).unwrap().into(),
+            tx.seal(br#"{"type":"auth","capabilities":[]}"#)
+                .unwrap()
+                .into(),
         ))
         .await
         .unwrap();
@@ -981,7 +1041,359 @@ async fn a_relay_tunnel_socket_waits_for_the_phone_and_admits_a_sealed_session()
         other => panic!("expected a sealed frame, got {other:?}"),
     };
     let opened = rx.open(&raw).unwrap();
-    assert!(matches!(&opened[0], Received::Message(bytes) if bytes.starts_with(br#"{"type":"auth_ok""#)));
+    assert!(
+        matches!(&opened[0], Received::Message(bytes) if bytes.starts_with(br#"{"type":"auth_ok""#))
+    );
     drop(relay_socket);
     let _ = tokio::time::timeout(Duration::from_secs(10), session).await;
+}
+
+/// The plaintext LAN baseline never authenticated an unpaired peer, so it
+/// never received task-state broadcasts. A pairing-only sealed session must
+/// not either: the fan-out carries task ids, activity, read state and output
+/// previews, and anyone on the LAN can present a fresh key.
+#[tokio::test]
+async fn a_pairing_only_session_receives_no_state_change_broadcasts() {
+    let state = test_state_with_seed("desktop-sealed-no-fanout", "Sealed Desktop", |db| {
+        db.insert_test_repo("repo-fanout", "Fan-out Repo").unwrap();
+        db.insert_test_pipeline_item(
+            "task-fanout",
+            "repo-fanout",
+            "a prompt nobody unpaired may see",
+            Some("Fan-out Task"),
+            "in progress",
+            "2026-09-16 00:00:00",
+        )
+        .unwrap();
+    });
+    state.secure_channel_identity().expect("channel identity");
+    state.set_relay_access(RelayAccess::Enforced(entitlement(true)));
+
+    // A paired device, established in the same test, is the control: it
+    // does receive the broadcast.
+    let paired = Keypair::generate().unwrap();
+    pair_by_qr(&state, &paired, "phone-paired").await;
+    let mut device = SealedPhone::establish(
+        &state,
+        StreamOrigin::Lan,
+        &paired,
+        &desktop_key(&state),
+        session_hello("phone-paired"),
+    )
+    .await
+    .unwrap();
+    device.auth().await;
+
+    let stranger = Keypair::generate().unwrap();
+    let mut unpaired = SealedPhone::establish(
+        &state,
+        StreamOrigin::Lan,
+        &stranger,
+        &desktop_key(&state),
+        pairing_hello(),
+    )
+    .await
+    .unwrap();
+    unpaired.auth().await;
+
+    state.publish_task_state_changed("task-fanout");
+
+    let seen = device.recv_json_within(Duration::from_secs(5)).await;
+    assert_eq!(
+        seen.as_ref().map(|frame| frame["type"].clone()),
+        Some(serde_json::json!("state_changed")),
+        "the paired device must receive the broadcast: {seen:?}"
+    );
+    assert_eq!(seen.unwrap()["task_state"]["task_id"], "task-fanout");
+    let leaked = unpaired.recv_json_within(Duration::from_millis(750)).await;
+    assert!(
+        leaked.is_none(),
+        "a pairing-only session must receive nothing it did not ask for: {leaked:?}"
+    );
+    // It still answers its own pairing requests.
+    let response = unpaired
+        .request(
+            1,
+            "GET",
+            "/v1/pairing/confirmation",
+            serde_json::Value::Null,
+        )
+        .await;
+    assert_eq!(response["status"], 410, "{response}");
+}
+
+/// The pairing store is read once, at admission. A device removed after
+/// that read but before the session loop subscribed would have kept device
+/// authority for as long as the socket lived; the subscription is therefore
+/// taken *before* the read and the store re-read after admission.
+#[tokio::test]
+async fn a_device_removed_during_admission_is_not_admitted_with_device_authority() {
+    let state = state("revoke-during-admission");
+    let identity = Keypair::generate().unwrap();
+    pair_by_qr(&state, &identity, "phone-race").await;
+    let (_pending, message1) = PendingInitiator::start(
+        &identity,
+        &desktop_key(&state),
+        &state.config().desktop_id,
+        &session_hello("phone-race"),
+    )
+    .unwrap();
+
+    let mut admitted = admit_sealed_session(&state, StreamOrigin::Lan, &message1).unwrap();
+    assert!(
+        matches!(admitted.authority, SealedSessionAuthority::Device { .. }),
+        "the store lookup found the device"
+    );
+    // The person removes the device between the lookup and the loop.
+    assert!(state.remove_trusted_device("phone-race").await.unwrap());
+    // The subscription taken before the lookup carries the removal, so the
+    // session loop closes on it ...
+    assert_eq!(admitted.revocations.try_recv().unwrap(), "phone-race");
+    // ... and the post-admission re-read never lets the loop start with
+    // device authority in the first place.
+    let authority = recheck_sealed_authority(&state, admitted.authority);
+    assert!(
+        matches!(authority, SealedSessionAuthority::PairingOnly(_)),
+        "{authority:?}"
+    );
+    assert_eq!(authority.auth_mode(), AuthMode::SealedPairing);
+}
+
+/// The desktop's confirm/reject name the claim that was on screen. A claim
+/// that replaced it between render and click is refused, never confirmed
+/// by a decision meant for its predecessor; and a confirmation already
+/// given survives a later claim until its phone collects it.
+#[tokio::test]
+async fn a_desktop_confirmation_binds_the_rendered_claim() {
+    let state = state("confirmation-binding");
+    let desktop_id = state.config().desktop_id.clone();
+
+    async fn typed_claim(
+        state: &Arc<AppState>,
+        identity: &Keypair,
+        device_id: &str,
+    ) -> SealedPhone {
+        let (code, _) = start_pairing(state).await;
+        let mut phone = SealedPhone::establish(
+            state,
+            StreamOrigin::Lan,
+            identity,
+            &desktop_key(state),
+            pairing_hello(),
+        )
+        .await
+        .unwrap();
+        phone.auth().await;
+        let response = phone
+            .request(
+                1,
+                "POST",
+                "/v1/pairing/sessions/claim",
+                serde_json::json!({ "code": code, "deviceId": device_id, "deviceName": device_id }),
+            )
+            .await;
+        assert_eq!(response["status"], 202, "{response}");
+        phone
+    }
+
+    // Phone A claims; the desktop renders A.
+    let identity_a = Keypair::generate().unwrap();
+    let mut phone_a = typed_claim(&state, &identity_a, "phone-a").await;
+    let rendered_a = state.pairing_confirmation.current().await.unwrap();
+    assert_eq!(rendered_a.device_id, "phone-a");
+    assert_eq!(rendered_a.handshake_hash, phone_a.handshake_hash);
+
+    // Before the person clicks, phone B claims a new code and replaces the
+    // pending entry.
+    let identity_b = Keypair::generate().unwrap();
+    let mut phone_b = typed_claim(&state, &identity_b, "phone-b").await;
+    assert_eq!(
+        state
+            .pairing_confirmation
+            .current()
+            .await
+            .unwrap()
+            .device_id,
+        "phone-b"
+    );
+
+    // The click meant for A's render must not confirm B.
+    let stale = state
+        .pairing_confirmation
+        .confirm(
+            state.config(),
+            &state.pairing_persistence_mutation,
+            &rendered_a.handshake_hash,
+            &rendered_a.device_id,
+        )
+        .await;
+    assert_eq!(stale, Err(PairingConfirmationError::Stale));
+    // Nor may the right handshake with the wrong device name.
+    let stale = state
+        .pairing_confirmation
+        .reject(&phone_b.handshake_hash, "phone-a")
+        .await;
+    assert_eq!(stale, Err(PairingConfirmationError::Stale));
+    let store = PairingStore::load(Path::new(&state.config().pairing_store_path)).unwrap();
+    assert!(!store.is_trusted(&desktop_id, "phone-a"));
+    assert!(!store.is_trusted(&desktop_id, "phone-b"));
+    // Phone A's ceremony is over: its poll finds nothing.
+    let response = phone_a
+        .request(
+            2,
+            "GET",
+            "/v1/pairing/confirmation",
+            serde_json::Value::Null,
+        )
+        .await;
+    assert_eq!(response["status"], 410, "{response}");
+
+    // Confirming exactly what is rendered works.
+    let rendered_b = state.pairing_confirmation.current().await.unwrap();
+    state
+        .pairing_confirmation
+        .confirm(
+            state.config(),
+            &state.pairing_persistence_mutation,
+            &rendered_b.handshake_hash,
+            &rendered_b.device_id,
+        )
+        .await
+        .unwrap();
+    let store = PairingStore::load(Path::new(&state.config().pairing_store_path)).unwrap();
+    assert!(store.is_trusted(&desktop_id, "phone-b"));
+
+    // A third claim arrives before B collected: B's confirmation is kept.
+    let identity_c = Keypair::generate().unwrap();
+    let phone_c = typed_claim(&state, &identity_c, "phone-c").await;
+    assert_eq!(
+        state
+            .pairing_confirmation
+            .current()
+            .await
+            .unwrap()
+            .device_id,
+        "phone-c"
+    );
+    let response = phone_b
+        .request(
+            2,
+            "GET",
+            "/v1/pairing/confirmation",
+            serde_json::Value::Null,
+        )
+        .await;
+    assert_eq!(response["status"], 200, "{response}");
+    assert_eq!(response["body"]["secureChannel"], true);
+    // Handed out once; C is still pending and undecided.
+    let response = phone_b
+        .request(
+            3,
+            "GET",
+            "/v1/pairing/confirmation",
+            serde_json::Value::Null,
+        )
+        .await;
+    assert_eq!(response["status"], 410, "{response}");
+    assert_eq!(
+        state
+            .pairing_confirmation
+            .current()
+            .await
+            .unwrap()
+            .device_id,
+        "phone-c"
+    );
+    let store = PairingStore::load(Path::new(&state.config().pairing_store_path)).unwrap();
+    assert!(!store.is_trusted(&desktop_id, "phone-c"));
+    phone_c.phone.ended().await;
+}
+
+/// The relay admits a tunnel but cannot read it, so the desktop enforces
+/// the account access the relay last reported, on every frame that reaches
+/// a task. Access the relay never reported is refused, not assumed.
+#[tokio::test]
+async fn a_relay_tunnel_session_is_served_only_while_relay_access_allows_it() {
+    let state = state("relay-access");
+    let identity = Keypair::generate().unwrap();
+    pair_by_qr(&state, &identity, "phone-relay").await;
+
+    for (label, access) in [
+        ("unknown", RelayAccess::Unknown),
+        ("inactive", RelayAccess::Enforced(entitlement(false))),
+    ] {
+        state.set_relay_access(access);
+        let mut phone = SealedPhone::establish(
+            &state,
+            StreamOrigin::RelayTunnel,
+            &identity,
+            &desktop_key(&state),
+            session_hello("phone-relay"),
+        )
+        .await
+        .unwrap();
+        phone.auth().await;
+        // A request is answered 402 ...
+        let response = phone
+            .request(1, "GET", "/v1/status", serde_json::Value::Null)
+            .await;
+        assert_eq!(response["status"], 402, "{label}: {response}");
+        assert_eq!(response["body"]["reason"], "subscription_required");
+        // ... and so are attach and input, which never were requests.
+        phone.send_json(serde_json::json!({
+            "type": "attach", "task_id": "task-1", "kind": "terminal"
+        }));
+        let frame = phone.recv_json().await;
+        assert_eq!(frame["type"], "error", "{label}: {frame}");
+        assert_eq!(frame["code"], "subscription_required", "{label}: {frame}");
+        phone.send_json(serde_json::json!({
+            "type": "term_input", "task_id": "task-1", "data_b64": "bHMK"
+        }));
+        let frame = phone.recv_json().await;
+        assert_eq!(frame["type"], "error", "{label}: {frame}");
+        assert_eq!(frame["code"], "subscription_required", "{label}: {frame}");
+        assert_eq!(frame["task_id"], "task-1", "{label}: {frame}");
+        phone.phone.ended().await;
+    }
+
+    // The same tunnel with an active account, and with a relay that does
+    // not enforce entitlements, is served.
+    for access in [
+        RelayAccess::Enforced(entitlement(true)),
+        RelayAccess::Unenforced,
+    ] {
+        state.set_relay_access(access.clone());
+        let mut phone = SealedPhone::establish(
+            &state,
+            StreamOrigin::RelayTunnel,
+            &identity,
+            &desktop_key(&state),
+            session_hello("phone-relay"),
+        )
+        .await
+        .unwrap();
+        phone.auth().await;
+        let response = phone
+            .request(1, "GET", "/v1/status", serde_json::Value::Null)
+            .await;
+        assert_eq!(response["status"], 200, "{access:?}: {response}");
+        phone.phone.ended().await;
+    }
+
+    // LAN sessions have no relay in the path and need no entitlement.
+    state.set_relay_access(RelayAccess::Unknown);
+    let mut lan = SealedPhone::establish(
+        &state,
+        StreamOrigin::Lan,
+        &identity,
+        &desktop_key(&state),
+        session_hello("phone-relay"),
+    )
+    .await
+    .unwrap();
+    lan.auth().await;
+    let response = lan
+        .request(1, "GET", "/v1/status", serde_json::Value::Null)
+        .await;
+    assert_eq!(response["status"], 200, "{response}");
 }

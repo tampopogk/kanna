@@ -37,8 +37,8 @@ const emit = defineEmits<{
   (e: "refresh-status"): void;
   (e: "refresh-push-registration"): void;
   (e: "open-account"): void;
-  (e: "confirm-pairing"): void;
-  (e: "reject-pairing"): void;
+  (e: "confirm-pairing", confirmation: DesktopPendingPairingConfirmation): void;
+  (e: "reject-pairing", confirmation: DesktopPendingPairingConfirmation): void;
   (e: "set-legacy-access", allowed: boolean): void;
 }>();
 const sasGroups = computed(() => {
@@ -222,14 +222,14 @@ onBeforeUnmount(() => {
             class="primary-action"
             data-testid="mobile-access-pairing-confirm"
             :disabled="confirmationBusy"
-            @click="emit('confirm-pairing')"
+            @click="emit('confirm-pairing', pendingConfirmation)"
           >{{ t('mobileAccess.confirmMatch') }}</button>
           <button
             type="button"
             class="secondary-action"
             data-testid="mobile-access-pairing-reject"
             :disabled="confirmationBusy"
-            @click="emit('reject-pairing')"
+            @click="emit('reject-pairing', pendingConfirmation)"
           >{{ t('mobileAccess.confirmMismatch') }}</button>
         </div>
         <p v-if="confirmationError" class="error" role="alert">{{ confirmationError }}</p>

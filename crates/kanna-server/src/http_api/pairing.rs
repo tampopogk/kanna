@@ -1,7 +1,8 @@
 use super::lan_trust::{DesktopLocalAccess, TrustedLanDeviceAccess};
 use super::secure_channel::{
-    PairingConfirmationError, PairingConfirmationOutcome, PendingPairingConfirmation,
-    SealedPairingContext, StreamOrigin, PAIRING_CONFIRMATION_TTL,
+    decode_handshake_hash, encode_handshake_hash, PairingConfirmationError,
+    PairingConfirmationOutcome, PendingPairingConfirmation, SealedPairingContext, StreamOrigin,
+    PAIRING_CONFIRMATION_TTL,
 };
 use super::state::{AppState, TunneledHttpInvoke};
 use crate::pairing::{
@@ -245,6 +246,37 @@ pub(super) struct PendingPairingConfirmationView {
     device_id: String,
     sas: String,
     expires_at_unix_ms: u64,
+    /// Opaque token naming this exact claim; the confirm and reject calls
+    /// echo it back so the decision binds to what was rendered.
+    handshake_hash: String,
+}
+
+/// What the desktop UI decided about, exactly as it was shown.
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct PairingConfirmationDecisionRequest {
+    handshake_hash: String,
+    device_id: String,
+}
+
+impl PairingConfirmationDecisionRequest {
+    fn handshake_hash(&self) -> Result<[u8; 32], (StatusCode, String)> {
+        decode_handshake_hash(&self.handshake_hash).ok_or((
+            StatusCode::BAD_REQUEST,
+            "handshakeHash must name the pairing request shown".to_string(),
+        ))
+    }
+}
+
+fn confirmation_error_response(error: PairingConfirmationError) -> (StatusCode, String) {
+    match error {
+        PairingConfirmationError::NothingPending | PairingConfirmationError::Stale => {
+            (StatusCode::CONFLICT, error.to_string())
+        }
+        PairingConfirmationError::Persistence(message) => {
+            (StatusCode::INTERNAL_SERVER_ERROR, message)
+        }
+    }
 }
 
 /// What the desktop UI shows while a typed-code pairing waits.
@@ -262,25 +294,30 @@ pub(super) async fn pending_pairing_confirmation(
                 device_id: entry.device_id,
                 sas: entry.sas,
                 expires_at_unix_ms: entry.expires_at_unix_ms,
+                handshake_hash: encode_handshake_hash(&entry.handshake_hash),
             });
     Json(serde_json::json!({ "pending": pending }))
 }
 
-/// The person compared the two strings and they matched.
+/// The person compared the two strings and they matched. The body names
+/// the claim that was on screen; a claim that replaced it meanwhile gets a
+/// `409`, not the person's confirmation.
 pub(super) async fn confirm_pending_pairing(
     _desktop: DesktopLocalAccess,
     State(state): State<Arc<AppState>>,
+    Json(request): Json<PairingConfirmationDecisionRequest>,
 ) -> Result<Json<PairingClaimResponse>, (StatusCode, String)> {
+    let handshake_hash = request.handshake_hash()?;
     let response = state
         .pairing_confirmation
-        .confirm(&state.config, &state.pairing_persistence_mutation)
+        .confirm(
+            &state.config,
+            &state.pairing_persistence_mutation,
+            &handshake_hash,
+            request.device_id.trim(),
+        )
         .await
-        .map_err(|error| match error {
-            PairingConfirmationError::NothingPending => (StatusCode::CONFLICT, error.to_string()),
-            PairingConfirmationError::Persistence(message) => {
-                (StatusCode::INTERNAL_SERVER_ERROR, message)
-            }
-        })?;
+        .map_err(confirmation_error_response)?;
     state.publish_state_changed(kanna_agent_protocol::StateChangeScope::Settings);
     Ok(Json(response))
 }
@@ -288,16 +325,16 @@ pub(super) async fn confirm_pending_pairing(
 pub(super) async fn reject_pending_pairing(
     _desktop: DesktopLocalAccess,
     State(state): State<Arc<AppState>>,
+    Json(request): Json<PairingConfirmationDecisionRequest>,
 ) -> Result<StatusCode, (StatusCode, String)> {
-    if state.pairing_confirmation.reject().await {
-        state.publish_state_changed(kanna_agent_protocol::StateChangeScope::Settings);
-        Ok(StatusCode::NO_CONTENT)
-    } else {
-        Err((
-            StatusCode::CONFLICT,
-            "no pairing confirmation is pending".into(),
-        ))
-    }
+    let handshake_hash = request.handshake_hash()?;
+    state
+        .pairing_confirmation
+        .reject(&handshake_hash, request.device_id.trim())
+        .await
+        .map_err(confirmation_error_response)?;
+    state.publish_state_changed(kanna_agent_protocol::StateChangeScope::Settings);
+    Ok(StatusCode::NO_CONTENT)
 }
 
 fn unix_time_ms() -> Result<u64, (StatusCode, String)> {

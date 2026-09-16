@@ -42,8 +42,8 @@ export interface DesktopServerClientHandlersForTests {
   ensureMobileServer?: () => MaybePromise<void>;
   getSetting?: (key: string) => MaybePromise<string | null>;
   fetchPendingPairingConfirmation?: () => MaybePromise<DesktopPendingPairingConfirmation | null>;
-  confirmPendingPairing?: () => MaybePromise<void>;
-  rejectPendingPairing?: () => MaybePromise<void>;
+  confirmPendingPairing?: (confirmation: DesktopPendingPairingConfirmation) => MaybePromise<void>;
+  rejectPendingPairing?: (confirmation: DesktopPendingPairingConfirmation) => MaybePromise<void>;
   fetchMobileDevices?: () => MaybePromise<DesktopMobileDevices>;
   putSetting?: (key: string, value: string) => MaybePromise<DesktopSettingResponse | void>;
   mutateWindowWorkspace?: (
@@ -699,6 +699,9 @@ export interface DesktopPendingPairingConfirmation {
   deviceId: string;
   sas: string;
   expiresAtUnixMs: number;
+  /** Opaque token for this exact pairing request; echoed back on confirm
+   * and reject so the decision binds to what was on screen. */
+  handshakeHash: string;
 }
 
 export async function fetchPendingPairingConfirmation(): Promise<DesktopPendingPairingConfirmation | null> {
@@ -711,20 +714,28 @@ export async function fetchPendingPairingConfirmation(): Promise<DesktopPendingP
   return response.pending ?? null;
 }
 
-export async function confirmPendingPairing(): Promise<void> {
+/** Confirms the pairing request that was rendered, and only that one: the
+ * server refuses (409) if another claim has replaced it since. */
+export async function confirmPendingPairing(confirmation: DesktopPendingPairingConfirmation): Promise<void> {
   if (clientHandlersForTests?.confirmPendingPairing) {
-    await clientHandlersForTests.confirmPendingPairing();
+    await clientHandlersForTests.confirmPendingPairing(confirmation);
     return;
   }
-  await requestJson<unknown>("/v1/pairing/pending-confirmation/confirm", { method: "POST" });
+  await requestJson<unknown>("/v1/pairing/pending-confirmation/confirm", {
+    method: "POST",
+    body: { handshakeHash: confirmation.handshakeHash, deviceId: confirmation.deviceId },
+  });
 }
 
-export async function rejectPendingPairing(): Promise<void> {
+export async function rejectPendingPairing(confirmation: DesktopPendingPairingConfirmation): Promise<void> {
   if (clientHandlersForTests?.rejectPendingPairing) {
-    await clientHandlersForTests.rejectPendingPairing();
+    await clientHandlersForTests.rejectPendingPairing(confirmation);
     return;
   }
-  await requestJson<void>("/v1/pairing/pending-confirmation/reject", { method: "POST" });
+  await requestJson<void>("/v1/pairing/pending-confirmation/reject", {
+    method: "POST",
+    body: { handshakeHash: confirmation.handshakeHash, deviceId: confirmation.deviceId },
+  });
 }
 
 export interface DesktopMobileDevice {

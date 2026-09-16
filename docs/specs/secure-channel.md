@@ -112,9 +112,35 @@ match. Confirmation persists the phone's handshake key; rejection, expiry
 relay a typed code is refused: a typed code pins nothing, and the SAS
 comparison assumes both screens are in the room.
 
+The desktop's confirm and reject calls name the claim that was on screen
+(`handshakeHash` and `deviceId`, echoed from
+`GET /v1/pairing/pending-confirmation`). At most one claim is undecided at a
+time, and a new claim replaces the undecided one, so a click meant for a
+render that has since been replaced answers `409` and confirms nothing: the
+person can never authorize a peer other than the one whose code they
+compared. A decision already given is persisted at once and kept (up to
+60 s past its window) until the phone that claimed collects it, so a later
+claim cannot erase it.
+
 A wrong QR secret with the right code counts as a failed attempt. A
 key-bearing QR whose desktop advertises a different key on `/v1/status` is
-refused without opening a socket.
+refused without opening a socket. A typed-code claim that a desktop accepts
+*without* parking a confirmation (an immediate `200`) is refused by the
+phone and persists nothing: the confirmation step is the only thing that
+authenticates a key the phone took from the network.
+
+**Limitation of the typed-code path.** The phone cannot verify that a
+person actually confirmed anything on the real desktop; it only observes
+that *some* responder parked a confirmation and later answered it. A
+network impostor that advertises its own key on `/v1/status`, parks a
+confirmation of its own and answers the poll, without ever involving the
+real desktop, is not detected by the phone alone: the detection is the
+person noticing that the real desktop shows no matching code (or none at
+all) and rejecting or ignoring it, and the impostor learns only the
+six-character pairing code, which it cannot use against the real desktop
+because the sealed claim to the real desktop is what consumes it. The QR
+path is the recommended anchor because the key comes from the desktop's
+screen and the QR-only secret proves that to the desktop.
 
 The claim response's `deviceSecret` is still issued (legacy compatibility
 while old paths are on) but a sealed client never sends it.
@@ -128,22 +154,38 @@ Decided once per session, at the handshake, in `ksp::admit_sealed_session`:
   (task control, files, diffs) over LAN *and* relay — and never
   `AuthenticatedHttpInvoke`, the relay's account-level marker, which grants
   more. `DesktopLocalAccess` routes (pairing controls, settings) stay refused.
-  A device-authority session arriving through the relay is also refused
-  (`402 subscription_required`) while the relay's last reported entitlement
-  is inactive, because the relay can no longer meter the requests it cannot
-  read.
 - Unknown static key → **pairing-only authority**. The KSP layer admits only
   `auth` and `request` frames, and the dispatch layer routes only
   `POST /v1/pairing/sessions/claim` and `GET /v1/pairing/confirmation`,
-  inserting no task authority at all. Anything else ends the connection.
+  inserting no task authority at all. Anything else ends the connection, and
+  the session is never subscribed to the task-state broadcast, so it sees
+  no task id, activity, read state or output preview it did not ask for.
 - A `deviceId` in the hello that names a different paired device than the
   key does is refused.
 
+**Relay account access inside a tunnel.** The relay admits a tunnel but
+cannot read what rides in it, so the desktop enforces the account access
+the relay last reported (`RelayAccess`): `Enforced(entitlement)` from an
+enforcing relay's `auth_ok`, `Unenforced` when the relay authenticated
+without an entitlement snapshot (it does not enforce one), and `Unknown`
+before the first authentication, after sign-out or after the account
+changed. A session that arrived through a relay tunnel — sealed or legacy
+plaintext — is served only while that access allows it: `Enforced` with
+`active: false` and `Unknown` both refuse, and the refusal covers every
+frame that reaches a task, not only `request` (`402 subscription_required`
+on a request, an `error` frame with code `subscription_required` on attach
+and input). LAN sessions have no relay in the path and are not gated.
+
 Revocation: `remove_trusted_device` persists the removal, then broadcasts
-the device id; every live sealed session for that device closes with an
-authenticated `device revoked` close, and the next handshake with that key is
-pairing-only. A rotated desktop key fails every phone's handshake
-(`identity_mismatch` → "Desktop identity changed — remove and pair again").
+the device id. Admission subscribes to that broadcast *before* it reads the
+pairing store and re-reads the store after the handshake, so a removal
+that lands at any point — before the lookup, between the lookup and the
+session loop, or during the session — is seen: every live sealed session
+for that device closes with an authenticated `device revoked` close, a
+session admitted across the removal starts pairing-only, and the next
+handshake with that key is pairing-only. A rotated desktop key fails every
+phone's handshake (`identity_mismatch` → "Desktop identity changed — remove
+and pair again").
 
 Task inputs delivered over a sealed session are recorded exactly as
 LAN-paired inputs are today.
@@ -222,11 +264,15 @@ reports; it never falls back to a plaintext socket.
 - `pnpm --filter @kanna/secure-channel test`: the same vectors through the TS
   core as initiator and responder; sealed-socket refusal semantics.
 - `crates/kanna-server/src/ksp/sealed_session_tests.rs`: admission, pairing-
-  only authority, QR-anchored and typed-code claims, SAS binding and
-  abandonment, wrong QR secret, wrong desktop key, device-id mismatch,
-  tamper/replay ending the session, revocation closing live sessions, legacy
-  gating of the relay tunnel, the bearer credential, the plaintext claim and
-  account-only relay invokes, and the on-the-wire opacity of a sealed session.
+  only authority (including no task-state fan-out), QR-anchored and
+  typed-code claims, SAS binding to the rendered claim (stale render,
+  replaced claim, confirmed-but-uncollected decision kept), abandonment,
+  wrong QR secret, wrong desktop key, device-id mismatch, tamper/replay
+  ending the session, revocation closing live sessions and a removal that
+  lands during admission, relay account access gating request/attach/input
+  with unknown access refused, legacy gating of the relay tunnel, the bearer
+  credential, the plaintext claim and account-only relay invokes, and the
+  on-the-wire opacity of a sealed session.
 - Mobile: `machinePairing.secureChannel.test.ts`,
   `lanTransport.secureChannel.test.ts`, `security.test.ts`, payload v2
   parsing.

@@ -32,6 +32,30 @@ pub(crate) const MOBILE_LEGACY_ACCESS_REFUSED: &str = "refused";
 
 pub(crate) const PAIRING_CONFIRMATION_TTL: Duration = Duration::from_secs(180);
 
+/// How long a decided confirmation stays collectable by the phone that
+/// claimed, measured from the decision, so a person confirming near the
+/// end of the window does not strand a phone whose poll lands a moment
+/// later.
+const PAIRING_DECISION_COLLECTION_GRACE: Duration = Duration::from_secs(60);
+
+/// Hex form of a handshake hash, the token the desktop UI echoes back so a
+/// confirmation names exactly the claim it rendered.
+pub(crate) fn encode_handshake_hash(hash: &[u8; 32]) -> String {
+    hash.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+pub(crate) fn decode_handshake_hash(text: &str) -> Option<[u8; 32]> {
+    let text = text.trim();
+    if text.len() != 64 {
+        return None;
+    }
+    let mut hash = [0u8; 32];
+    for (index, byte) in hash.iter_mut().enumerate() {
+        *byte = u8::from_str_radix(text.get(index * 2..index * 2 + 2)?, 16).ok()?;
+    }
+    Some(hash)
+}
+
 /// Where a sealed session arrived. Relay-origin sessions are additionally
 /// subject to the account's cloud entitlement, which the relay can no
 /// longer check per request because it cannot read the requests.
@@ -95,44 +119,53 @@ pub(crate) enum PairingConfirmationOutcome {
     Gone,
 }
 
+/// At most one *undecided* entry exists at a time (one ceremony at a time,
+/// like the pairing session itself); decided entries stay until the phone
+/// that claimed collects them or they expire, so a new ceremony cannot
+/// erase a confirmation the person already gave.
 #[derive(Default)]
 pub(crate) struct PairingConfirmationState {
-    pending: Mutex<Option<PendingPairingConfirmation>>,
+    entries: Mutex<Vec<PendingPairingConfirmation>>,
     changed: Notify,
 }
 
 impl PairingConfirmationState {
-    /// Starts a confirmation, replacing any earlier one (only one pairing
-    /// ceremony runs at a time, like the pairing session itself).
+    /// Starts a confirmation, replacing the undecided one if any. A decided
+    /// entry is already persisted and is kept for its phone to collect.
     pub(crate) async fn begin(&self, confirmation: PendingPairingConfirmation) {
-        let mut pending = self.pending.lock().await;
-        *pending = Some(confirmation);
-        drop(pending);
+        let mut entries = self.entries.lock().await;
+        expire_in_place(&mut entries);
+        entries.retain(|entry| entry.decision.is_some());
+        entries.push(confirmation);
+        drop(entries);
         self.changed.notify_waiters();
     }
 
     /// The entry the desktop UI shows, if one is live and undecided.
     pub(crate) async fn current(&self) -> Option<PendingPairingConfirmation> {
-        let mut pending = self.pending.lock().await;
-        expire_in_place(&mut pending);
-        pending
-            .as_ref()
-            .filter(|entry| entry.decision.is_none())
+        let mut entries = self.entries.lock().await;
+        expire_in_place(&mut entries);
+        entries
+            .iter()
+            .find(|entry| entry.decision.is_none())
             .cloned()
     }
 
-    /// The person confirmed the SAS: persist the device with the key the
-    /// handshake authenticated and hand the response to the waiting phone.
+    /// The person confirmed the SAS they were shown: persist the device
+    /// with the key the handshake authenticated and hand the response to
+    /// the waiting phone. `handshake_hash` and `device_id` are what the UI
+    /// rendered; a click on a render the pending claim has since replaced
+    /// is `Stale`, never a confirmation of the newcomer.
     pub(crate) async fn confirm(
         &self,
         config: &crate::config::Config,
         persistence_mutation: &Mutex<()>,
+        handshake_hash: &[u8; 32],
+        device_id: &str,
     ) -> Result<PairingClaimResponse, PairingConfirmationError> {
-        let mut pending = self.pending.lock().await;
-        expire_in_place(&mut pending);
-        let Some(entry) = pending.as_mut().filter(|entry| entry.decision.is_none()) else {
-            return Err(PairingConfirmationError::NothingPending);
-        };
+        let mut entries = self.entries.lock().await;
+        expire_in_place(&mut entries);
+        let entry = undecided_entry_mut(&mut entries, handshake_hash, device_id)?;
         let now_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_err(|error| PairingConfirmationError::Persistence(error.to_string()))?
@@ -155,21 +188,31 @@ impl PairingConfirmationState {
         entry.decision = Some(PairingConfirmationDecision::Confirmed(Box::new(
             response.clone(),
         )));
-        drop(pending);
+        entry.expires_at = entry
+            .expires_at
+            .max(Instant::now() + PAIRING_DECISION_COLLECTION_GRACE);
+        drop(entries);
         self.changed.notify_waiters();
         Ok(response)
     }
 
-    pub(crate) async fn reject(&self) -> bool {
-        let mut pending = self.pending.lock().await;
-        expire_in_place(&mut pending);
-        let Some(entry) = pending.as_mut().filter(|entry| entry.decision.is_none()) else {
-            return false;
-        };
+    /// The person said the strings differ. Bound to the rendered claim
+    /// exactly like `confirm`.
+    pub(crate) async fn reject(
+        &self,
+        handshake_hash: &[u8; 32],
+        device_id: &str,
+    ) -> Result<(), PairingConfirmationError> {
+        let mut entries = self.entries.lock().await;
+        expire_in_place(&mut entries);
+        let entry = undecided_entry_mut(&mut entries, handshake_hash, device_id)?;
         entry.decision = Some(PairingConfirmationDecision::Rejected);
-        drop(pending);
+        entry.expires_at = entry
+            .expires_at
+            .max(Instant::now() + PAIRING_DECISION_COLLECTION_GRACE);
+        drop(entries);
         self.changed.notify_waiters();
-        true
+        Ok(())
     }
 
     /// The sealed session that claimed has gone away: whatever it was
@@ -177,12 +220,12 @@ impl PairingConfirmationState {
     /// persisted at confirm time and stays; only an undecided entry is
     /// dropped, so a phone that reconnects starts a fresh ceremony.
     pub(crate) async fn abandon(&self, handshake_hash: &[u8; 32]) {
-        let mut pending = self.pending.lock().await;
-        if pending.as_ref().is_some_and(|entry| {
-            &entry.handshake_hash == handshake_hash && entry.decision.is_none()
-        }) {
-            *pending = None;
-            drop(pending);
+        let mut entries = self.entries.lock().await;
+        let before = entries.len();
+        entries
+            .retain(|entry| !(&entry.handshake_hash == handshake_hash && entry.decision.is_none()));
+        if entries.len() != before {
+            drop(entries);
             self.changed.notify_waiters();
         }
     }
@@ -203,24 +246,25 @@ impl PairingConfirmationState {
             // landing between the two is not missed.
             notified.as_mut().enable();
             {
-                let mut pending = self.pending.lock().await;
-                expire_in_place(&mut pending);
-                match pending.as_ref() {
-                    Some(entry) if &entry.handshake_hash == handshake_hash => {
-                        match &entry.decision {
-                            None => {}
-                            Some(PairingConfirmationDecision::Confirmed(response)) => {
-                                let response = response.clone();
-                                *pending = None;
-                                return PairingConfirmationOutcome::Confirmed(response);
-                            }
-                            Some(PairingConfirmationDecision::Rejected) => {
-                                *pending = None;
-                                return PairingConfirmationOutcome::Rejected;
-                            }
-                        }
+                let mut entries = self.entries.lock().await;
+                expire_in_place(&mut entries);
+                let Some(index) = entries
+                    .iter()
+                    .position(|entry| &entry.handshake_hash == handshake_hash)
+                else {
+                    return PairingConfirmationOutcome::Gone;
+                };
+                match &entries[index].decision {
+                    None => {}
+                    Some(PairingConfirmationDecision::Confirmed(response)) => {
+                        let response = response.clone();
+                        entries.remove(index);
+                        return PairingConfirmationOutcome::Confirmed(response);
                     }
-                    _ => return PairingConfirmationOutcome::Gone,
+                    Some(PairingConfirmationDecision::Rejected) => {
+                        entries.remove(index);
+                        return PairingConfirmationOutcome::Rejected;
+                    }
                 }
             }
             let remaining = deadline.saturating_duration_since(Instant::now());
@@ -234,18 +278,32 @@ impl PairingConfirmationState {
     }
 }
 
-fn expire_in_place(pending: &mut Option<PendingPairingConfirmation>) {
-    if pending
-        .as_ref()
-        .is_some_and(|entry| entry.decision.is_none() && Instant::now() >= entry.expires_at)
-    {
-        *pending = None;
+fn expire_in_place(entries: &mut Vec<PendingPairingConfirmation>) {
+    let now = Instant::now();
+    entries.retain(|entry| now < entry.expires_at);
+}
+
+/// The one undecided entry, provided it is the claim the caller rendered.
+fn undecided_entry_mut<'a>(
+    entries: &'a mut [PendingPairingConfirmation],
+    handshake_hash: &[u8; 32],
+    device_id: &str,
+) -> Result<&'a mut PendingPairingConfirmation, PairingConfirmationError> {
+    let Some(entry) = entries.iter_mut().find(|entry| entry.decision.is_none()) else {
+        return Err(PairingConfirmationError::NothingPending);
+    };
+    if &entry.handshake_hash != handshake_hash || entry.device_id != device_id {
+        return Err(PairingConfirmationError::Stale);
     }
+    Ok(entry)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum PairingConfirmationError {
     NothingPending,
+    /// The claim pending now is not the one the caller rendered: a later
+    /// claim replaced it between the render and the click.
+    Stale,
     Persistence(String),
 }
 
@@ -253,6 +311,9 @@ impl std::fmt::Display for PairingConfirmationError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::NothingPending => formatter.write_str("no pairing confirmation is pending"),
+            Self::Stale => formatter.write_str(
+                "the pairing request changed since it was shown; check the code again before confirming",
+            ),
             Self::Persistence(message) => formatter.write_str(message),
         }
     }

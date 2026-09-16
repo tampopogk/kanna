@@ -49,6 +49,23 @@ pub(super) struct AuthenticatedHttpInvoke {
     pub(super) source_desktop_id: Option<String>,
 }
 
+/// What the relay last said about this account's cloud access, kept so the
+/// desktop can enforce it inside tunnels the relay cannot read.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub(crate) enum RelayAccess {
+    /// Nothing authoritative is known: before the first authentication,
+    /// after sign-out, or after the account changed. Relay tunnel sessions
+    /// are refused in this state; "unknown" is never "allowed".
+    #[default]
+    Unknown,
+    /// The relay authenticated without an entitlement snapshot: it does not
+    /// enforce entitlements (the field is absent, not false), so there is
+    /// nothing for the desktop to enforce either.
+    Unenforced,
+    /// The relay enforces entitlements and this is its latest snapshot.
+    Enforced(crate::relay_client::RelayEntitlement),
+}
+
 #[derive(Clone)]
 pub struct AppState {
     pub(super) machine_stats_cache: Arc<Mutex<Option<super::machine_stats::CachedStats>>>,
@@ -129,7 +146,7 @@ pub struct AppState {
     /// usable between an account transition and the next reconciliation
     /// pass.
     authenticated_account_uid: Arc<StdMutex<Option<String>>>,
-    relay_entitlement: Arc<StdMutex<Option<crate::relay_client::RelayEntitlement>>>,
+    relay_access: Arc<StdMutex<RelayAccess>>,
     /// Bumped by every call that changes `authenticated_account_uid` -
     /// a fresh relay `AuthOk`, an authoritative rejection, or an explicit
     /// local sign-out. `machine_trust` reconciliation is decided by whoever
@@ -600,7 +617,7 @@ impl AppState {
             ),
             device_revocations: broadcast::channel(64).0,
             authenticated_account_uid: Arc::new(StdMutex::new(None)),
-            relay_entitlement: Arc::new(StdMutex::new(None)),
+            relay_access: Arc::new(StdMutex::new(RelayAccess::Unknown)),
             account_state_generation: Arc::new(AtomicU64::new(0)),
             lan_candidates: Arc::new(StdMutex::new(HashMap::new())),
             lan_bootstrap_in_flight: Arc::new(StdMutex::new(HashSet::new())),
@@ -911,21 +928,39 @@ impl AppState {
         (uid.clone(), self.relay_entitlement())
     }
 
+    /// The relay's latest entitlement snapshot, when it enforces one.
     pub(crate) fn relay_entitlement(&self) -> Option<crate::relay_client::RelayEntitlement> {
-        self.relay_entitlement
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .clone()
+        match &*self.relay_access.lock().unwrap_or_else(|p| p.into_inner()) {
+            RelayAccess::Enforced(entitlement) => Some(entitlement.clone()),
+            RelayAccess::Unknown | RelayAccess::Unenforced => None,
+        }
     }
 
+    /// Whether a session that arrived through a relay tunnel may be served.
+    /// The relay cannot read what rides in a tunnel, so the desktop enforces
+    /// the account access the relay last reported. Unknown access is
+    /// refused: a tunnel cannot legitimately exist before the relay has
+    /// said who this desktop is signed in as, and after sign-out nothing
+    /// the relay once granted still applies.
+    pub(crate) fn relay_tunnel_access_allowed(&self) -> bool {
+        match &*self.relay_access.lock().unwrap_or_else(|p| p.into_inner()) {
+            RelayAccess::Unknown => false,
+            RelayAccess::Unenforced => true,
+            RelayAccess::Enforced(entitlement) => entitlement.active,
+        }
+    }
+
+    /// `Some` records an enforced snapshot; `None` forgets everything
+    /// (sign-out, account change), it never means "unenforced".
     pub(crate) fn set_relay_entitlement(
         &self,
         access: Option<crate::relay_client::RelayEntitlement>,
     ) {
-        let mut current = self
-            .relay_entitlement
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
+        self.set_relay_access(access.map_or(RelayAccess::Unknown, RelayAccess::Enforced));
+    }
+
+    pub(crate) fn set_relay_access(&self, access: RelayAccess) {
+        let mut current = self.relay_access.lock().unwrap_or_else(|p| p.into_inner());
         if *current == access {
             return;
         }

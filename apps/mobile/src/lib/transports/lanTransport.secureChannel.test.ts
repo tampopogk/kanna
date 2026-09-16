@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { generateKeypair, type SealedWebSocketLike } from "@kanna/secure-channel";
+import { encodeKey, generateKeypair, type SealedWebSocketLike } from "@kanna/secure-channel";
 import { createLanTransport, type FetchLike, type WebSocketLike } from "./lanTransport";
 import { ServerRefusalError } from "./serverRefusal";
 import type { SecureChannelPeer } from "../security/secureChannelPeer";
@@ -95,7 +95,9 @@ describe("LAN transport over the secure channel", () => {
     const refusals: string[] = [];
     const peer: SecureChannelPeer = {
       desktopId: "DESKTOP-1",
-      desktopPublicKey: desktop.publicKey.replace(/.$/, (last) => (last === "A" ? "B" : "A")),
+      // A different, valid key: the phone pinned a desktop that is not the
+      // one answering.
+      desktopPublicKey: encodeKey(generateKeypair(testRandomBytes).publicKey),
       identity,
       deviceId: "phone-1",
       intent: "session",

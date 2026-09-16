@@ -143,7 +143,12 @@ fn apply_relay_authentication(
             },
         );
     }
-    http_state.set_relay_entitlement(entitlement.clone());
+    // An absent entitlement is a relay that does not enforce one, not an
+    // inactive account; `Unknown` is reserved for "no authentication".
+    http_state.set_relay_access(match entitlement.clone() {
+        Some(access) => http_api::RelayAccess::Enforced(access),
+        None => http_api::RelayAccess::Unenforced,
+    });
     let publication_allowed =
         capabilities.access_updates.is_none() || capabilities.task_snapshot_publication.is_some();
     publisher.on_authenticated(

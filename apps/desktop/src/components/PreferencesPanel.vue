@@ -270,12 +270,14 @@ function stopPairingConfirmationPolling() {
   pairingConfirmationTimer = null
 }
 
-async function confirmPairing() {
+// The decision names the request that was on screen when the button was
+// pressed; the server refuses it if a later claim replaced that request.
+async function confirmPairing(confirmation: DesktopPendingPairingConfirmation) {
   if (pairingConfirmationBusy.value) return
   pairingConfirmationBusy.value = true
   pairingConfirmationError.value = null
   try {
-    await confirmPendingPairing()
+    await confirmPendingPairing(confirmation)
     pendingPairingConfirmation.value = null
     await refreshMobileDevices()
   } catch (error) {
@@ -286,12 +288,12 @@ async function confirmPairing() {
   }
 }
 
-async function rejectPairing() {
+async function rejectPairing(confirmation: DesktopPendingPairingConfirmation) {
   if (pairingConfirmationBusy.value) return
   pairingConfirmationBusy.value = true
   pairingConfirmationError.value = null
   try {
-    await rejectPendingPairing()
+    await rejectPendingPairing(confirmation)
     pendingPairingConfirmation.value = null
   } catch (error) {
     console.error("[PreferencesPanel] failed to reject pairing:", error)
