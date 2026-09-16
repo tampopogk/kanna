@@ -196,10 +196,12 @@ class StubTerminal {
     };
     const viewport = root.ownerDocument.createElement("div");
     viewport.className = "xterm-viewport";
+    const textarea = root.ownerDocument.createElement("textarea");
+    textarea.className = "xterm-helper-textarea";
     const scrollableElement = root.ownerDocument.createElement("div");
     scrollableElement.className = "xterm-scrollable-element";
     scrollableElement.append(screen);
-    xterm.append(viewport, scrollableElement);
+    xterm.append(viewport, textarea, scrollableElement);
     root.append(xterm);
     // Mirror real xterm: wheel events reaching the terminal element are
     // encoded as SGR mouse-wheel reports when the alternate buffer is active.
@@ -479,6 +481,54 @@ function createTouchEvent(
     }
   });
   return event;
+}
+
+function createInputProducerEvent(
+  window: Window,
+  type:
+    | "beforeinput"
+    | "input"
+    | "paste"
+    | "compositionstart"
+    | "compositionend"
+    | "keydown",
+  isTrusted: boolean,
+  data: string
+): Event {
+  const event = new window.Event(type, { bubbles: true, cancelable: true });
+  Object.defineProperties(event, {
+    isTrusted: {
+      configurable: true,
+      value: isTrusted
+    },
+    data: {
+      configurable: true,
+      value: data
+    },
+    inputType: {
+      configurable: true,
+      value: "insertText"
+    },
+    clipboardData: {
+      configurable: true,
+      value: {
+        getData: () => data
+      }
+    }
+  });
+  return event;
+}
+
+function dispatchInputProducer(
+  window: Window,
+  target: HTMLElement,
+  terminal: StubTerminal,
+  type: "input" | "paste" | "compositionend" | "keydown",
+  data: string,
+  isTrusted: boolean
+): void {
+  target.addEventListener(type, () => terminal.emitData(data), { once: true });
+  target.dispatchEvent(createInputProducerEvent(window, type, isTrusted, data));
 }
 
 function tapTerminal(
@@ -1757,6 +1807,112 @@ describe("buildTerminalDocument", () => {
         kind: "control",
         provenance: "passive"
       }
+    ]);
+  });
+
+  it("marks trusted paste and no-onKey text/composition producers as user input", () => {
+    const { terminal, window, root, messages } = createExecutedTerminalDocument();
+    const directInputWindow = window as unknown as {
+      __setTerminalDirectInput(enabled: boolean): void;
+    };
+    const textarea = root.querySelector<HTMLElement>(".xterm-helper-textarea");
+    if (!textarea) throw new Error("stub terminal did not render its textarea");
+    directInputWindow.__setTerminalDirectInput(true);
+    messages.length = 0;
+
+    dispatchInputProducer(window, textarea, terminal, "paste", "pasted text", true);
+    textarea.dispatchEvent(
+      createInputProducerEvent(window, "beforeinput", true, "😀")
+    );
+    dispatchInputProducer(window, textarea, terminal, "input", "😀", true);
+    textarea.dispatchEvent(
+      createInputProducerEvent(window, "compositionstart", true, "")
+    );
+    dispatchInputProducer(
+      window,
+      textarea,
+      terminal,
+      "keydown",
+      "語",
+      true
+    );
+    dispatchInputProducer(
+      window,
+      textarea,
+      terminal,
+      "compositionend",
+      "漢字",
+      true
+    );
+
+    expect(
+      messages.map((message) => JSON.parse(message)).filter(
+        (message) => message.type === "terminal-input"
+      )
+    ).toEqual([
+      {
+        type: "terminal-input",
+        dataB64: "cGFzdGVkIHRleHQ=",
+        kind: "draft",
+        provenance: "user"
+      },
+      {
+        type: "terminal-input",
+        dataB64: "8J+YgA==",
+        kind: "draft",
+        provenance: "user"
+      },
+      {
+        type: "terminal-input",
+        dataB64: "6Kqe",
+        kind: "draft",
+        provenance: "user"
+      },
+      {
+        type: "terminal-input",
+        dataB64: "5ryi5a2X",
+        kind: "draft",
+        provenance: "user"
+      }
+    ]);
+  });
+
+  it("keeps synthetic direct-input events and bare onData passive", () => {
+    const { terminal, window, root, messages } = createExecutedTerminalDocument();
+    const directInputWindow = window as unknown as {
+      __setTerminalDirectInput(enabled: boolean): void;
+    };
+    const textarea = root.querySelector<HTMLElement>(".xterm-helper-textarea");
+    if (!textarea) throw new Error("stub terminal did not render its textarea");
+    directInputWindow.__setTerminalDirectInput(true);
+    messages.length = 0;
+
+    terminal.emitData("programmatic reply");
+    dispatchInputProducer(window, textarea, terminal, "paste", "synthetic paste", false);
+    textarea.dispatchEvent(
+      createInputProducerEvent(window, "beforeinput", false, "synthetic text")
+    );
+    dispatchInputProducer(window, textarea, terminal, "input", "synthetic text", false);
+    textarea.dispatchEvent(
+      createInputProducerEvent(window, "compositionstart", false, "")
+    );
+    dispatchInputProducer(
+      window,
+      textarea,
+      terminal,
+      "compositionend",
+      "synthetic composition",
+      false
+    );
+
+    const inputs = messages.map((message) => JSON.parse(message)).filter(
+      (message) => message.type === "terminal-input"
+    );
+    expect(inputs.map((input) => input.provenance)).toEqual([
+      "passive",
+      "passive",
+      "passive",
+      "passive"
     ]);
   });
 
