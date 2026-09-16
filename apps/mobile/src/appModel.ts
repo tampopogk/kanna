@@ -43,6 +43,7 @@ import { readExpoConfig } from "./lib/expoConfig";
 import { installE2eTrustSeedHandler } from "./e2eTrustSeed";
 import {
   createMobileController,
+  type MobileCollectionSnapshot,
   type MobileController
 } from "./state/mobileController";
 import { createSessionStore, type SessionStore } from "./state/sessionStore";
@@ -62,6 +63,7 @@ import {
 import type {
   DesktopSummary,
   PushPairingMaterial,
+  RepoSummary,
   TaskSummary
 } from "./lib/api/types";
 import { ServerRefusalError } from "./lib/transports/serverRefusal";
@@ -114,9 +116,16 @@ interface AppModelOptions {
 
 interface ResolvedAppClient {
   client: KannaClient;
+  listTrustedLanTasks?: () => Promise<TaskSummary[]>;
   listRecentTasksWithSupplement?: (
     onSupplement: (tasks: TaskSummary[]) => void
   ) => Promise<TaskSummary[]>;
+  listReposWithSupplement?: (
+    onSupplement: (repos: RepoSummary[]) => void
+  ) => Promise<RepoSummary[]>;
+  listDesktopsWithSupplement?: (
+    onSupplement: (desktops: DesktopSummary[]) => void
+  ) => Promise<DesktopSummary[]>;
   dispose(): void;
   setForeground(foreground: boolean): void;
 }
@@ -207,6 +216,7 @@ export function createAppModel(input: CreateAppModelInput = {}): AppModel {
   let liveSubscriptionEpoch = 0;
   let clientGeneration = 0;
   let currentLiveTaskRepublish: (() => Promise<void>) | null = null;
+  let currentInitialLanTaskPublication: (() => void) | null = null;
   let currentLiveTaskRecoveryInvalidation: (() => void) | null = null;
   let currentLanInventoryRefresh: (() => Promise<void>) | null = null;
   let currentLanDiscoveryRefresh: (() => Promise<void>) | null = null;
@@ -299,6 +309,9 @@ export function createAppModel(input: CreateAppModelInput = {}): AppModel {
           return;
         }
         sessionStore.setMachineSourceDesktops(sources);
+        if (sources.local.length > 0) {
+          currentInitialLanTaskPublication?.();
+        }
       },
       onPushPairingMaterial: (desktopId, material) => {
         if (generation !== clientGeneration) return;
@@ -336,6 +349,7 @@ export function createAppModel(input: CreateAppModelInput = {}): AppModel {
     const previousClient = activeClient;
     currentLiveTaskRecoveryInvalidation?.();
     currentLiveTaskRepublish = null;
+    currentInitialLanTaskPublication = null;
     // The generation advances before the client is built: a client publishes
     // machine sources while it is being constructed, and those publications
     // belong to the incoming generation, not the one being replaced.
@@ -347,6 +361,65 @@ export function createAppModel(input: CreateAppModelInput = {}): AppModel {
     publishTaskRouteChange();
   };
   const client = createDelegatingClient(() => activeClient.client);
+  const listCollectionsWithSupplement = async (
+    onSupplement: (snapshot: MobileCollectionSnapshot) => void
+  ): Promise<MobileCollectionSnapshot> => {
+    const generation = clientGeneration;
+    const source = activeClient;
+    let initialized = false;
+    let latestDesktops: DesktopSummary[] | undefined;
+    let latestRepos: RepoSummary[] | undefined;
+    let latestTasks: TaskSummary[] | undefined;
+    const publish = () => {
+      if (
+        !initialized ||
+        generation !== clientGeneration ||
+        latestDesktops === undefined ||
+        latestRepos === undefined ||
+        latestTasks === undefined
+      ) {
+        return;
+      }
+      onSupplement({
+        desktops: latestDesktops,
+        repos: latestRepos,
+        recentTasks: latestTasks
+      });
+    };
+    // Start the authoritative task read before repositories. Repository
+    // canonicalization may consult the task inventory; if it starts that read
+    // first, the authoritative publication would see only a shared optional
+    // LAN probe and could remain parked on cloud after the LAN deadline.
+    const [recentTasks, desktops, repos] = await Promise.all([
+      source.listRecentTasksWithSupplement
+        ? source.listRecentTasksWithSupplement((next) => {
+            latestTasks = next;
+            publish();
+          })
+        : source.client.listRecentTasks(),
+      source.listDesktopsWithSupplement
+        ? source.listDesktopsWithSupplement((next) => {
+            latestDesktops = next;
+            publish();
+          })
+        : source.client.listDesktops(),
+      source.listReposWithSupplement
+        ? source.listReposWithSupplement((next) => {
+            latestRepos = next;
+            publish();
+          })
+        : source.client.listRepos(),
+    ]);
+    latestDesktops ??= desktops;
+    latestRepos ??= repos;
+    latestTasks ??= recentTasks;
+    initialized = true;
+    return {
+      desktops: latestDesktops,
+      repos: latestRepos,
+      recentTasks: latestTasks
+    };
+  };
   let persistencePromise: Promise<SessionPersistence> | null = persistence
     ? Promise.resolve(persistence)
     : null;
@@ -443,6 +516,7 @@ export function createAppModel(input: CreateAppModelInput = {}): AppModel {
       taskRouteListeners.add(listener);
       return () => taskRouteListeners.delete(listener);
     },
+    listCollectionsWithSupplement,
     subscribeCloudTasks: (uid, onUpdate, onError) => {
       const epoch = ++liveSubscriptionEpoch;
       let updateRevision = 0;
@@ -493,6 +567,48 @@ export function createAppModel(input: CreateAppModelInput = {}): AppModel {
         }
         return published;
       };
+      let initialLanPublicationStarted = false;
+      let initialLanPublicationScheduled = false;
+      const publishInitialLanTasks = () => {
+        if (
+          initialLanPublicationStarted ||
+          initialLanPublicationScheduled ||
+          liveCloudTasksReady
+        ) {
+          return;
+        }
+        initialLanPublicationScheduled = true;
+        setTimeout(() => {
+          initialLanPublicationScheduled = false;
+          const source = activeClient;
+          const listTrustedLanTasks = source.listTrustedLanTasks;
+          if (
+            initialLanPublicationStarted ||
+            liveCloudTasksReady ||
+            epoch !== liveSubscriptionEpoch ||
+            currentInitialLanTaskPublication !== publishInitialLanTasks ||
+            !listTrustedLanTasks
+          ) {
+            return;
+          }
+          initialLanPublicationStarted = true;
+          const generation = clientGeneration;
+          void listTrustedLanTasks().then((tasks) => {
+            // Cloud recovery has its own revision ownership. A listener error
+            // must not invalidate this independent cold-start LAN probe.
+            if (
+              epoch === liveSubscriptionEpoch &&
+              generation === clientGeneration &&
+              liveCloudTasksUid === uid &&
+              currentInitialLanTaskPublication === publishInitialLanTasks &&
+              !liveCloudTasksReady
+            ) {
+              onUpdate(tasks, { cloudAuthoritative: false });
+            }
+          }).catch(() => undefined);
+        }, 0);
+      };
+      currentInitialLanTaskPublication = publishInitialLanTasks;
       const drainLivePublicationQueue = (): Promise<void> => {
         if (livePublicationDrain) return livePublicationDrain;
         const drain = (async () => {
@@ -622,6 +738,14 @@ export function createAppModel(input: CreateAppModelInput = {}): AppModel {
             return false;
           }
           liveCloudTasksReadError = error;
+          // The independent probe owns usable LAN publication in this case;
+          // avoid sending the same snapshot through both recovery paths.
+          if (
+            initialLanPublicationScheduled ||
+            initialLanPublicationStarted
+          ) {
+            return false;
+          }
           return publishCurrentTasks(revision, false, false);
         }).then((published) => {
           if (!published || !isCurrentRecovery()) return;
@@ -681,6 +805,9 @@ export function createAppModel(input: CreateAppModelInput = {}): AppModel {
         }
         if (currentLiveTaskRepublish === republishCurrentLiveTasks) {
           currentLiveTaskRepublish = null;
+        }
+        if (currentInitialLanTaskPublication === publishInitialLanTasks) {
+          currentInitialLanTaskPublication = null;
         }
         if (epoch === liveSubscriptionEpoch) {
           invalidateLiveCloudState();
@@ -965,8 +1092,13 @@ function createClientForMode({
 
     return {
       client: composedClient,
+      listTrustedLanTasks: () => composedClient.listTrustedLanTasks(),
       listRecentTasksWithSupplement: (onSupplement) =>
         composedClient.listRecentTasksWithSupplement(onSupplement),
+      listReposWithSupplement: (onSupplement) =>
+        composedClient.listReposWithSupplement(onSupplement),
+      listDesktopsWithSupplement: (onSupplement) =>
+        composedClient.listDesktopsWithSupplement(onSupplement),
       dispose() {
         if (disposed) return;
         disposed = true;
@@ -1006,8 +1138,13 @@ function createClientForMode({
     );
     return {
       client: composedClient,
+      listTrustedLanTasks: () => composedClient.listTrustedLanTasks(),
       listRecentTasksWithSupplement: (onSupplement) =>
         composedClient.listRecentTasksWithSupplement(onSupplement),
+      listReposWithSupplement: (onSupplement) =>
+        composedClient.listReposWithSupplement(onSupplement),
+      listDesktopsWithSupplement: (onSupplement) =>
+        composedClient.listDesktopsWithSupplement(onSupplement),
       dispose() {},
       setForeground() {}
     };

@@ -1013,6 +1013,231 @@ describe("createCloudLanClient", () => {
     await expect(cloudFailureClient.listRecentTasks()).resolves.toEqual([lanTask]);
   });
 
+  it("publishes ready trusted-LAN tasks before cloud settles and merges late cloud success", async () => {
+    const pendingCloud = deferred<TaskSummary[]>();
+    const lanTask = task({
+      id: "local-duplicate",
+      repoId: "repo-lan",
+      title: "Fresh LAN task"
+    });
+    const cloudDuplicate = task({
+      id: "cloud-duplicate",
+      repoId: "repo-cloud",
+      title: "Cloud duplicate",
+      ownerDesktopId: "desktop-lan",
+      ownerLocalRepoId: "repo-lan",
+      ownerLocalTaskId: lanTask.id
+    });
+    const cloudOnly = task({ id: "cloud-only", repoId: "repo-cloud" });
+    const cloud = createClientMock({
+      listRecentTasks: vi.fn(() => pendingCloud.promise)
+    });
+    const lan = createClientMock({
+      listRecentTasks: vi.fn().mockResolvedValue([lanTask])
+    });
+    const client = createCloudLanClient(cloud, lan, {
+      isLanEnabled: () => true
+    });
+    const onSupplement = vi.fn();
+
+    await expect(
+      client.listRecentTasksWithSupplement(onSupplement)
+    ).resolves.toEqual([lanTask]);
+    expect(onSupplement).not.toHaveBeenCalled();
+
+    pendingCloud.resolve([cloudDuplicate, cloudOnly]);
+    await vi.waitFor(() => expect(onSupplement).toHaveBeenCalledOnce());
+    expect(onSupplement).toHaveBeenLastCalledWith([
+      expect.objectContaining({
+        id: cloudDuplicate.id,
+        title: lanTask.title,
+        ownerLocalTaskId: lanTask.id
+      }),
+      cloudOnly
+    ]);
+  });
+
+  it("retains a published LAN task snapshot when late cloud settlement fails", async () => {
+    const pendingCloud = deferred<TaskSummary[]>();
+    const lanTask = task({ id: "lan-only" });
+    const lan = createClientMock({
+      listRecentTasks: vi.fn().mockResolvedValue([lanTask])
+    });
+    const client = createCloudLanClient(
+      createClientMock({
+        listRecentTasks: vi.fn(() => pendingCloud.promise)
+      }),
+      lan,
+      { isLanEnabled: () => true }
+    );
+    const onSupplement = vi.fn();
+
+    await expect(
+      client.listRecentTasksWithSupplement(onSupplement)
+    ).resolves.toEqual([lanTask]);
+    pendingCloud.reject(new Error("cloud unavailable"));
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    await client.getTask(lanTask.id);
+    expect(lan.getTask).toHaveBeenCalledWith(lanTask.id);
+    expect(client.getTaskRouteIdentity?.(lanTask.id)).toBe(
+      JSON.stringify(["lan", "desktop-lan", lanTask.id])
+    );
+    expect(onSupplement).not.toHaveBeenCalled();
+  });
+
+  it("resolves from trusted LAN after the optional deadline while cloud remains pending", async () => {
+    vi.useFakeTimers();
+    try {
+      const pendingCloud = deferred<TaskSummary[]>();
+      const pendingLan = deferred<TaskSummary[]>();
+      const lanTask = task({ id: "lan-after-deadline" });
+      const cloudTask = task({ id: "cloud-after-lan" });
+      const client = createCloudLanClient(
+        createClientMock({
+          listRecentTasks: vi.fn(() => pendingCloud.promise)
+        }),
+        createClientMock({
+          listRecentTasks: vi.fn(() => pendingLan.promise)
+        }),
+        { isLanEnabled: () => true, optionalLanWaitMs: 25 }
+      );
+      const onSupplement = vi.fn();
+      let initialResolved = false;
+      const initial = client
+        .listRecentTasksWithSupplement(onSupplement)
+        .then((tasks) => {
+          initialResolved = true;
+          return tasks;
+        });
+
+      await vi.advanceTimersByTimeAsync(25);
+      expect(initialResolved).toBe(false);
+
+      pendingLan.resolve([lanTask]);
+      await expect(initial).resolves.toEqual([lanTask]);
+      expect(onSupplement).not.toHaveBeenCalled();
+
+      pendingCloud.resolve([cloudTask]);
+      await vi.waitFor(() => expect(onSupplement).toHaveBeenCalledOnce());
+      expect(onSupplement).toHaveBeenLastCalledWith([cloudTask, lanTask]);
+    } finally {
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
+
+  it("expires LAN routability when cloud succeeds after the optional deadline", async () => {
+    vi.useFakeTimers();
+    try {
+      const pendingCloud = deferred<TaskSummary[]>();
+      const pendingLan = deferred<TaskSummary[]>();
+      const cloudTask = task({ id: "cloud-after-deadline" });
+      const onLanReadUnavailable = vi.fn();
+      const client = createCloudLanClient(
+        createClientMock({
+          listRecentTasks: vi.fn(() => pendingCloud.promise)
+        }),
+        createClientMock({
+          listRecentTasks: vi.fn(() => pendingLan.promise)
+        }),
+        {
+          isLanEnabled: () => true,
+          optionalLanWaitMs: 25,
+          onLanReadUnavailable
+        }
+      );
+      const read = client.listRecentTasks();
+
+      await vi.advanceTimersByTimeAsync(25);
+      pendingCloud.resolve([cloudTask]);
+
+      await expect(read).resolves.toEqual([cloudTask]);
+      expect(onLanReadUnavailable).toHaveBeenCalledOnce();
+    } finally {
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps late trusted LAN as the initial snapshot when pending cloud fails", async () => {
+    vi.useFakeTimers();
+    try {
+      const pendingCloud = deferred<TaskSummary[]>();
+      const pendingLan = deferred<TaskSummary[]>();
+      const lanTask = task({ id: "lan-after-deadline" });
+      const lan = createClientMock({
+        listRecentTasks: vi.fn(() => pendingLan.promise)
+      });
+      const client = createCloudLanClient(
+        createClientMock({
+          listRecentTasks: vi.fn(() => pendingCloud.promise)
+        }),
+        lan,
+        { isLanEnabled: () => true, optionalLanWaitMs: 25 }
+      );
+      const onSupplement = vi.fn();
+      const initial = client.listRecentTasksWithSupplement(onSupplement);
+
+      await vi.advanceTimersByTimeAsync(25);
+      pendingCloud.reject(new Error("cloud unavailable"));
+      await vi.advanceTimersByTimeAsync(0);
+      pendingLan.resolve([lanTask]);
+
+      await expect(initial).resolves.toEqual([lanTask]);
+      expect(onSupplement).not.toHaveBeenCalled();
+      await client.getTask(lanTask.id);
+      expect(lan.getTask).toHaveBeenCalledWith(lanTask.id);
+    } finally {
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not publish a late LAN completion from a request superseded after the deadline", async () => {
+    vi.useFakeTimers();
+    try {
+      const staleCloud = deferred<TaskSummary[]>();
+      const currentCloud = deferred<TaskSummary[]>();
+      const staleLan = deferred<TaskSummary[]>();
+      const staleLanTask = task({ id: "stale-lan" });
+      const currentCloudTask = task({ id: "current-cloud" });
+      const cloud = createClientMock({
+        listRecentTasks: vi
+          .fn<KannaClient["listRecentTasks"]>()
+          .mockReturnValueOnce(staleCloud.promise)
+          .mockReturnValueOnce(currentCloud.promise)
+      });
+      const lan = createClientMock({
+        listRecentTasks: vi.fn(() => staleLan.promise)
+      });
+      const client = createCloudLanClient(cloud, lan, {
+        isLanEnabled: () => true,
+        optionalLanWaitMs: 25
+      });
+      const staleSupplement = vi.fn();
+      const currentSupplement = vi.fn();
+      const staleRead = client.listRecentTasksWithSupplement(staleSupplement);
+
+      await vi.advanceTimersByTimeAsync(25);
+      const currentRead = client.listRecentTasksWithSupplement(currentSupplement);
+      await vi.advanceTimersByTimeAsync(0);
+      currentCloud.resolve([currentCloudTask]);
+      await expect(currentRead).resolves.toEqual([currentCloudTask]);
+
+      staleLan.resolve([staleLanTask]);
+      await expect(staleRead).resolves.toEqual([currentCloudTask]);
+      expect(staleSupplement).not.toHaveBeenCalled();
+      expect(currentSupplement).not.toHaveBeenCalled();
+
+      staleCloud.resolve([]);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(staleSupplement).not.toHaveBeenCalled();
+    } finally {
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
+
   it("rejects a recent-task read when both cloud and LAN fail", async () => {
     const cloud = createClientMock({
       listRecentTasks: vi.fn().mockRejectedValue(new Error("cloud unavailable"))
@@ -1348,11 +1573,12 @@ describe("createCloudLanClient", () => {
       pendingLan.resolve([]);
       await vi.advanceTimersByTimeAsync(0);
 
+      await expect(read).resolves.toEqual([]);
       expect(onSupplement).not.toHaveBeenCalled();
 
       pendingCloud.resolve([staleCloudTask]);
-      await expect(read).resolves.toEqual([]);
-      expect(onSupplement).not.toHaveBeenCalled();
+      await vi.waitFor(() => expect(onSupplement).toHaveBeenCalledOnce());
+      expect(onSupplement).toHaveBeenLastCalledWith([]);
     } finally {
       vi.clearAllTimers();
       vi.useRealTimers();
@@ -3634,6 +3860,45 @@ describe("createCloudLanClient", () => {
     }
   });
 
+  it("resolves repositories from LAN after the optional deadline and supplements late cloud", async () => {
+    vi.useFakeTimers();
+    try {
+      const pendingCloud = deferred<Array<{ id: string; name: string }>>();
+      const pendingLan = deferred<Array<{ id: string; name: string }>>();
+      const cloudRepo = { id: "cloud-repo", name: "Cloud Repo" };
+      const lanRepo = { id: "lan-repo", name: "LAN Repo" };
+      const client = createCloudLanClient(
+        createClientMock({
+          listRepos: vi.fn(() => pendingCloud.promise),
+          listRecentTasks: vi.fn().mockResolvedValue([])
+        }),
+        createClientMock({
+          listRepos: vi.fn(() => pendingLan.promise),
+          listRecentTasks: vi.fn().mockResolvedValue([])
+        }),
+        { isLanEnabled: () => true, optionalLanWaitMs: 25 }
+      );
+      const onSupplement = vi.fn();
+      const initial = client.listReposWithSupplement(onSupplement);
+
+      await vi.advanceTimersByTimeAsync(25);
+      pendingLan.resolve([lanRepo]);
+      await expect(initial).resolves.toEqual([
+        { ...lanRepo, registeredDesktopIds: ["desktop-lan"] }
+      ]);
+
+      pendingCloud.resolve([cloudRepo]);
+      await vi.waitFor(() => expect(onSupplement).toHaveBeenCalledOnce());
+      expect(onSupplement).toHaveBeenLastCalledWith([
+        cloudRepo,
+        { ...lanRepo, registeredDesktopIds: ["desktop-lan"] }
+      ]);
+    } finally {
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
+
   it("shares an unresolved optional LAN repository probe across timeout reads and refreshes after settlement", async () => {
     vi.useFakeTimers();
     try {
@@ -3895,6 +4160,95 @@ describe("createCloudLanClient", () => {
 
       expect(readSettled).toBe(true);
       await expect(read).resolves.toEqual([cloudDesktop]);
+    } finally {
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
+
+  it("resolves desktops from LAN after the optional deadline and supplements late cloud", async () => {
+    vi.useFakeTimers();
+    try {
+      const pendingCloud = deferred<DesktopSummary[]>();
+      const pendingLan = deferred<DesktopSummary[]>();
+      const cloudDesktop: DesktopSummary = {
+        id: "desktop-cloud",
+        name: "Cloud Desktop",
+        online: true,
+        mode: "remote"
+      };
+      const lanDesktop: DesktopSummary = {
+        id: "desktop-lan",
+        name: "LAN Desktop",
+        online: true,
+        mode: "lan"
+      };
+      const client = createCloudLanClient(
+        createClientMock({
+          listDesktops: vi.fn(() => pendingCloud.promise)
+        }),
+        createClientMock({
+          listDesktops: vi.fn(() => pendingLan.promise)
+        }),
+        { isLanEnabled: () => true, optionalLanWaitMs: 25 }
+      );
+      const onSupplement = vi.fn();
+      const initial = client.listDesktopsWithSupplement(onSupplement);
+
+      await vi.advanceTimersByTimeAsync(25);
+      pendingLan.resolve([lanDesktop]);
+      await expect(initial).resolves.toEqual([lanDesktop]);
+
+      pendingCloud.resolve([cloudDesktop]);
+      await vi.waitFor(() => expect(onSupplement).toHaveBeenCalledOnce());
+      expect(onSupplement).toHaveBeenLastCalledWith([
+        cloudDesktop,
+        lanDesktop
+      ]);
+    } finally {
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps the LAN timeout warning when cloud desktops succeed after the deadline", async () => {
+    vi.useFakeTimers();
+    try {
+      const pendingCloud = deferred<DesktopSummary[]>();
+      const pendingLan = deferred<DesktopSummary[]>();
+      const cloudDesktop: DesktopSummary = {
+        id: "desktop-cloud",
+        name: "Cloud Desktop",
+        online: true,
+        mode: "remote"
+      };
+      const onDesktopSourceWarnings = vi.fn();
+      const onLanReadUnavailable = vi.fn();
+      const client = createCloudLanClient(
+        createClientMock({
+          listDesktops: vi.fn(() => pendingCloud.promise)
+        }),
+        createClientMock({
+          listDesktops: vi.fn(() => pendingLan.promise)
+        }),
+        {
+          isLanEnabled: () => true,
+          optionalLanWaitMs: 25,
+          onDesktopSourceWarnings,
+          onLanReadUnavailable
+        }
+      );
+      const read = client.listDesktops();
+
+      await vi.advanceTimersByTimeAsync(25);
+      pendingCloud.resolve([cloudDesktop]);
+
+      await expect(read).resolves.toEqual([cloudDesktop]);
+      expect(onLanReadUnavailable).toHaveBeenCalledOnce();
+      expect(onDesktopSourceWarnings).toHaveBeenLastCalledWith({
+        account: null,
+        local: "Optional LAN read timed out after 25ms."
+      });
     } finally {
       vi.clearAllTimers();
       vi.useRealTimers();
