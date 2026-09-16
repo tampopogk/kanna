@@ -30,6 +30,7 @@ import { mapCloudTaskSnapshot } from "../lib/firebase/taskIndex";
 import type { MachinePairingService } from "../lib/pairing/machinePairing";
 import { terminalOutputToString } from "./terminalOutputBuffer";
 import { visibleActivityTasks } from "../screens/activityTaskOrder";
+import { visibleNeedsYouTasks } from "../screens/needsYouTaskOrder";
 import {
   emptyLocalTaskListPreferences,
   localPinnedTaskIds,
@@ -323,6 +324,220 @@ function createAuthSessionMock(): MobileAuthSession {
 }
 
 describe("createMobileController", () => {
+  it.each([
+    ["success", true],
+    ["failure", false]
+  ] as const)(
+    "publishes the visible LAN task list after the optional deadline and preserves it through late cloud %s",
+    async (_outcome, cloudSucceeds) => {
+      vi.useFakeTimers();
+      try {
+        const cloudDesktops = createDeferred<Awaited<ReturnType<KannaClient["listDesktops"]>>>();
+        const cloudRepos = createDeferred<Awaited<ReturnType<KannaClient["listRepos"]>>>();
+        const cloudTasks = createDeferred<Awaited<ReturnType<KannaClient["listRecentTasks"]>>>();
+        const lanDesktops = createDeferred<Awaited<ReturnType<KannaClient["listDesktops"]>>>();
+        const lanRepos = createDeferred<Awaited<ReturnType<KannaClient["listRepos"]>>>();
+        const lanTasks = createDeferred<Awaited<ReturnType<KannaClient["listRecentTasks"]>>>();
+        const cloud = createClientMock();
+        const lan = createClientMock();
+        cloud.listDesktops.mockReturnValue(cloudDesktops.promise);
+        cloud.listRepos.mockReturnValue(cloudRepos.promise);
+        cloud.listRecentTasks.mockReturnValue(cloudTasks.promise);
+        lan.listDesktops.mockReturnValue(lanDesktops.promise);
+        lan.listRepos.mockReturnValue(lanRepos.promise);
+        lan.listRecentTasks.mockReturnValue(lanTasks.promise);
+        const client = createCloudLanClient(cloud, lan, {
+          isLanEnabled: () => true,
+          optionalLanWaitMs: 25
+        });
+        const store = createSessionStore();
+        store.setSearchResults("task", []);
+        const auth = createAuthSessionMock();
+        vi.mocked(auth.getState).mockReturnValue({
+          status: "signedIn",
+          user: {
+            uid: "user-1",
+            email: "user-1@example.com",
+            displayName: null
+          }
+        });
+        const listCollectionsWithSupplement = async (
+          onSupplement: (snapshot: {
+            desktops: Awaited<ReturnType<KannaClient["listDesktops"]>>;
+            repos: Awaited<ReturnType<KannaClient["listRepos"]>>;
+            recentTasks: Awaited<ReturnType<KannaClient["listRecentTasks"]>>;
+          }) => void
+        ) => {
+          let initialized = false;
+          let latestDesktops: Awaited<ReturnType<KannaClient["listDesktops"]>> | undefined;
+          let latestRepos: Awaited<ReturnType<KannaClient["listRepos"]>> | undefined;
+          let latestTasks: Awaited<ReturnType<KannaClient["listRecentTasks"]>> | undefined;
+          const publish = () => {
+            if (
+              initialized &&
+              latestDesktops &&
+              latestRepos &&
+              latestTasks
+            ) {
+              onSupplement({
+                desktops: latestDesktops,
+                repos: latestRepos,
+                recentTasks: latestTasks
+              });
+            }
+          };
+          const [recentTasks, desktops, repos] = await Promise.all([
+            client.listRecentTasksWithSupplement((next) => {
+              latestTasks = next;
+              publish();
+            }),
+            client.listDesktopsWithSupplement((next) => {
+              latestDesktops = next;
+              publish();
+            }),
+            client.listReposWithSupplement((next) => {
+              latestRepos = next;
+              publish();
+            })
+          ]);
+          latestDesktops ??= desktops;
+          latestRepos ??= repos;
+          latestTasks ??= recentTasks;
+          initialized = true;
+          return { desktops, repos, recentTasks };
+        };
+        const controller = createMobileController(
+          client,
+          store,
+          auth,
+          { listCollectionsWithSupplement }
+        );
+        const lanTask: TaskSummary = {
+          id: "lan-needs-you",
+          repoId: "repo-lan",
+          title: "LAN task needs input",
+          stage: "in progress",
+          runtimeState: "waiting"
+        };
+        const bootstrap = controller.bootstrap();
+
+        await flushMicrotasks(10);
+        expect(lan.listRecentTasks).toHaveBeenCalledOnce();
+        await vi.advanceTimersByTimeAsync(25);
+        expect(store.getState().recentTasks).toEqual([]);
+        lanDesktops.resolve([
+          { id: "desktop-1", name: "Studio Mac", online: true, mode: "lan" }
+        ]);
+        lanRepos.resolve([{ id: "repo-lan", name: "LAN Repo" }]);
+        lanTasks.resolve([lanTask]);
+        await bootstrap;
+
+        expect(store.getState()).toMatchObject({
+          taskCollectionStatus: "ready",
+          recentTasks: [lanTask]
+        });
+        expect(visibleNeedsYouTasks(store.getState().recentTasks)).toEqual([
+          lanTask
+        ]);
+        expect(store.getState().searchResults).toEqual([lanTask]);
+        expect(cloud.listRecentTasks).toHaveBeenCalledOnce();
+
+        if (cloudSucceeds) {
+          const cloudTask: TaskSummary = {
+            id: "cloud-task",
+            repoId: "repo-cloud",
+            title: "Cloud task",
+            stage: "review"
+          };
+          cloudDesktops.resolve([
+            { id: "desktop-cloud", name: "Cloud Mac", online: true, mode: "remote" }
+          ]);
+          cloudRepos.resolve([{ id: "repo-cloud", name: "Cloud Repo" }]);
+          cloudTasks.resolve([cloudTask]);
+          await flushMicrotasks(20);
+          expect(store.getState().recentTasks).toEqual([cloudTask, lanTask]);
+          expect(store.getState().searchResults).toEqual([cloudTask, lanTask]);
+        } else {
+          const error = new Error("cloud unavailable");
+          cloudDesktops.reject(error);
+          cloudRepos.reject(error);
+          cloudTasks.reject(error);
+          await vi.advanceTimersByTimeAsync(0);
+          expect(store.getState().recentTasks).toEqual([lanTask]);
+          expect(store.getState().searchResults).toEqual([lanTask]);
+        }
+        expect(visibleNeedsYouTasks(store.getState().recentTasks)).toEqual([
+          lanTask
+        ]);
+        controller.dispose();
+      } finally {
+        vi.clearAllTimers();
+        vi.useRealTimers();
+      }
+    }
+  );
+
+  it("ignores a collection supplement after a newer repository request takes ownership", async () => {
+    const client = createClientMock();
+    const store = createSessionStore();
+    const initialTask: TaskSummary = {
+      id: "initial-task",
+      repoId: "repo-1",
+      title: "Initial task",
+      stage: "in progress"
+    };
+    let publishSupplement:
+      | ((snapshot: {
+          desktops: Awaited<ReturnType<KannaClient["listDesktops"]>>;
+          repos: Awaited<ReturnType<KannaClient["listRepos"]>>;
+          recentTasks: Awaited<ReturnType<KannaClient["listRecentTasks"]>>;
+        }) => void)
+      | null = null;
+    const controller = createMobileController(
+      client,
+      store,
+      createAuthSessionMock(),
+      {
+        listCollectionsWithSupplement: async (onSupplement) => {
+          publishSupplement = onSupplement;
+          return {
+            desktops: await client.listDesktops(),
+            repos: await client.listRepos(),
+            recentTasks: [initialTask]
+          };
+        }
+      }
+    );
+
+    await controller.bootstrap();
+    await controller.selectRepo("repo-2");
+    const currentRepoTasks = store.getState().repoTasks;
+    expect(currentRepoTasks).toEqual([
+      expect.objectContaining({ id: "task-repo-2" })
+    ]);
+
+    publishSupplement?.({
+      desktops: [{ id: "stale-desktop", name: "Stale", online: true, mode: "lan" }],
+      repos: [{ id: "stale-repo", name: "Stale Repo" }],
+      recentTasks: [{
+        id: "stale-task",
+        repoId: "stale-repo",
+        title: "Stale task",
+        stage: "review"
+      }]
+    });
+
+    expect(store.getState()).toMatchObject({
+      selectedRepoId: "repo-2",
+      recentTasks: [initialTask],
+      repoTasks: currentRepoTasks
+    });
+    expect(store.getState().desktops).not.toEqual([
+      expect.objectContaining({ id: "stale-desktop" })
+    ]);
+    controller.dispose();
+  });
+
   it("scopes live task summaries to foreground list views", async () => {
     const client = createClientMock();
     const close = vi.fn();

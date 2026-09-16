@@ -386,7 +386,17 @@ export function createAppModel(input: CreateAppModelInput = {}): AppModel {
         recentTasks: latestTasks
       });
     };
-    const [desktops, repos, recentTasks] = await Promise.all([
+    // Start the authoritative task read before repositories. Repository
+    // canonicalization may consult the task inventory; if it starts that read
+    // first, the authoritative publication would see only a shared optional
+    // LAN probe and could remain parked on cloud after the LAN deadline.
+    const [recentTasks, desktops, repos] = await Promise.all([
+      source.listRecentTasksWithSupplement
+        ? source.listRecentTasksWithSupplement((next) => {
+            latestTasks = next;
+            publish();
+          })
+        : source.client.listRecentTasks(),
       source.listDesktopsWithSupplement
         ? source.listDesktopsWithSupplement((next) => {
             latestDesktops = next;
@@ -399,12 +409,6 @@ export function createAppModel(input: CreateAppModelInput = {}): AppModel {
             publish();
           })
         : source.client.listRepos(),
-      source.listRecentTasksWithSupplement
-        ? source.listRecentTasksWithSupplement((next) => {
-            latestTasks = next;
-            publish();
-          })
-        : source.client.listRecentTasks()
     ]);
     latestDesktops ??= desktops;
     latestRepos ??= repos;

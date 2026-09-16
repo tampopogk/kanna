@@ -1988,15 +1988,22 @@ export function createMobileController(
   const loadCollections = async () => {
     const publicationEpoch = ++collectionPublicationEpoch;
     const readRevision = taskCollectionsRevision;
+    let ownedRevision = readRevision;
     let initialSnapshotPublished = false;
     let pendingSupplement: MobileCollectionSnapshot | null = null;
     const onSupplement = (snapshot: MobileCollectionSnapshot) => {
-      if (publicationEpoch !== collectionPublicationEpoch) return;
+      if (
+        publicationEpoch !== collectionPublicationEpoch ||
+        taskCollectionsRevision !== ownedRevision
+      ) {
+        return;
+      }
       if (!initialSnapshotPublished) {
         pendingSupplement = snapshot;
         return;
       }
       applyCollectionSupplement(snapshot);
+      ownedRevision = taskCollectionsRevision;
     };
     const collectionSnapshot = options.listCollectionsWithSupplement
       ? options.listCollectionsWithSupplement(onSupplement)
@@ -2027,6 +2034,7 @@ export function createMobileController(
     const { desktops, repos, recentTasks } = snapshot;
 
     taskCollectionsRevision += 1;
+    ownedRevision = taskCollectionsRevision;
     store.setDesktops(desktops);
     reconcileComposerAgentProvider();
     desktopMetadataError = null;
@@ -2035,11 +2043,32 @@ export function createMobileController(
     store.setRepos(mergeReposWithTaskRepos(repos, recentTasks));
     store.setRecentTasks(recentTasks);
     reconcileLocalTaskListPreferences(recentTasks);
-    if (!(await loadRepoTasks(store.getState().selectedRepoId))) {
-      return;
+    if (options.listCollectionsWithSupplement) {
+      const selectedRepoId = store.getState().selectedRepoId;
+      taskCollectionsRevision += 1;
+      ownedRevision = taskCollectionsRevision;
+      store.setRepoTasks(
+        selectedRepoId
+          ? recentTasks.filter((task) => task.repoId === selectedRepoId)
+          : []
+      );
+    } else {
+      if (!(await loadRepoTasks(store.getState().selectedRepoId))) {
+        return;
+      }
+      ownedRevision = taskCollectionsRevision;
     }
-    if (!(await refreshSearchResults())) {
-      return;
+    if (options.listCollectionsWithSupplement) {
+      const searchQuery = store.getState().searchQuery;
+      store.setSearchResults(
+        searchQuery,
+        filterTasksForQuery(recentTasks, searchQuery)
+      );
+    } else {
+      if (!(await refreshSearchResults())) {
+        return;
+      }
+      ownedRevision = taskCollectionsRevision;
     }
     store.reconcileTaskUiSlots(
       uniqueTasksById([
@@ -2053,8 +2082,13 @@ export function createMobileController(
     store.setTaskCollectionStatus("ready");
     resolvePendingRepoCommandTaskFromCollections();
     initialSnapshotPublished = true;
-    if (pendingSupplement && publicationEpoch === collectionPublicationEpoch) {
+    if (
+      pendingSupplement &&
+      publicationEpoch === collectionPublicationEpoch &&
+      taskCollectionsRevision === ownedRevision
+    ) {
       applyCollectionSupplement(pendingSupplement);
+      ownedRevision = taskCollectionsRevision;
       pendingSupplement = null;
     }
   };

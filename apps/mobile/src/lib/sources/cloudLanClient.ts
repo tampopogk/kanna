@@ -109,6 +109,11 @@ interface TaskReadEntry {
 
 class OptionalLanReadInFlightError extends Error {}
 
+interface OptionalLanRead<T> {
+  deadline: Promise<SettledRead<T>>;
+  completion: Promise<SettledRead<T>> | null;
+}
+
 type ProvisionalTaskRoute = Extract<DisplayTaskRoute, { source: "lan" }> & {
   localRepoId?: string;
   displayRepoId?: string;
@@ -784,10 +789,26 @@ export function createCloudLanClient(
           }
         )
       : null;
-    const lanResult = lanRead ? await lanRead : null;
+    let lanResult: SettledRead<LanTaskSnapshot> | null | undefined = lanRead
+      ? await lanRead.deadline
+      : null;
     let cloudResult = cloudResultForRead;
+    if (
+      cloudResult === undefined &&
+      lanResult?.status !== "fulfilled" &&
+      lanRead?.completion
+    ) {
+      const firstUsable = await waitForFirstSuccessfulRead(
+        cloudRead,
+        lanRead.completion
+      );
+      cloudResult = firstUsable.first;
+      lanResult = firstUsable.second ?? lanResult;
+    }
+    const initialLanSnapshot =
+      lanResult?.status === "fulfilled" ? lanResult.value : undefined;
     const lanEstablishedInitialSnapshot =
-      lanResult?.status === "fulfilled" && cloudResult === undefined;
+      initialLanSnapshot !== undefined && cloudResult === undefined;
     if (!lanEstablishedInitialSnapshot) {
       cloudResult = await cloudRead;
     }
@@ -872,7 +893,7 @@ export function createCloudLanClient(
         if (lateCloudResult.status !== "fulfilled") return;
         lastCloudTasks = lateCloudResult.value;
         const lanSnapshot = options.isLanEnabled()
-          ? lateLanSnapshotForRead ?? lanResult.value
+          ? lateLanSnapshotForRead ?? initialLanSnapshot
           : null;
         const supplemented = acceptMergedTaskSnapshot(
           readEpoch,
@@ -1295,10 +1316,26 @@ export function createCloudLanClient(
         tasksResultForRead = result;
         return result;
       });
-    const lanResult = lanRead ? await lanRead : null;
+    let lanResult: SettledRead<LanRepoSnapshot> | null | undefined = lanRead
+      ? await lanRead.deadline
+      : null;
     let cloudResult = cloudResultForRead;
+    if (
+      cloudResult === undefined &&
+      lanResult?.status !== "fulfilled" &&
+      lanRead?.completion
+    ) {
+      const firstUsable = await waitForFirstSuccessfulRead(
+        cloudRead,
+        lanRead.completion
+      );
+      cloudResult = firstUsable.first;
+      lanResult = firstUsable.second ?? lanResult;
+    }
+    const initialLanSnapshot =
+      lanResult?.status === "fulfilled" ? lanResult.value : undefined;
     const lanEstablishedInitialSnapshot =
-      lanResult?.status === "fulfilled" && cloudResult === undefined;
+      initialLanSnapshot !== undefined && cloudResult === undefined;
     if (!lanEstablishedInitialSnapshot) {
       cloudResult = await cloudRead;
     }
@@ -1334,7 +1371,7 @@ export function createCloudLanClient(
         }
         const repos = mergeAvailableRepos(
           lateCloudResult,
-          options.isLanEnabled() ? lanResult.value : undefined,
+          options.isLanEnabled() ? initialLanSnapshot : undefined,
           tasksResultForRead
         );
         if (repos) onSupplement(repos);
@@ -1391,10 +1428,26 @@ export function createCloudLanClient(
           }
         )
       : null;
-    const lanResult = lanRead ? await lanRead : null;
+    let lanResult: SettledRead<DesktopSummary[]> | null | undefined = lanRead
+      ? await lanRead.deadline
+      : null;
     let cloudResult = cloudResultForRead;
+    if (
+      cloudResult === undefined &&
+      lanResult?.status !== "fulfilled" &&
+      lanRead?.completion
+    ) {
+      const firstUsable = await waitForFirstSuccessfulRead(
+        cloudRead,
+        lanRead.completion
+      );
+      cloudResult = firstUsable.first;
+      lanResult = firstUsable.second ?? lanResult;
+    }
+    const initialLanDesktops =
+      lanResult?.status === "fulfilled" ? lanResult.value : undefined;
     const lanEstablishedInitialSnapshot =
-      lanResult?.status === "fulfilled" && cloudResult === undefined;
+      initialLanDesktops !== undefined && cloudResult === undefined;
     if (!lanEstablishedInitialSnapshot) {
       cloudResult = await cloudRead;
     }
@@ -1472,7 +1525,7 @@ export function createCloudLanClient(
         onSupplement?.(
           mergedDesktops(
             lateCloudResult,
-            options.isLanEnabled() ? lanResult.value : undefined
+            options.isLanEnabled() ? initialLanDesktops : undefined
           )
         );
       });
@@ -1986,19 +2039,22 @@ function settleOptionalLanRead<T>(
   read: () => SharedPendingRead<T>,
   waitMs: number,
   onLateFulfilled: (value: T) => void
-): Promise<SettledRead<T>> {
+): OptionalLanRead<T> {
   const pendingRead = read();
   if (!pendingRead.started) {
-    return Promise.resolve({
-      status: "rejected",
-      reason: new OptionalLanReadInFlightError(
-        "Optional LAN read is already in flight."
-      )
-    });
+    return {
+      deadline: Promise.resolve({
+        status: "rejected",
+        reason: new OptionalLanReadInFlightError(
+          "Optional LAN read is already in flight."
+        )
+      }),
+      completion: null
+    };
   }
 
   const settledRead = settleRead(() => pendingRead.promise);
-  return new Promise((resolve) => {
+  const deadline = new Promise<SettledRead<T>>((resolve) => {
     let timedOut = false;
     const timeout = setTimeout(() => {
       timedOut = true;
@@ -2019,6 +2075,35 @@ function settleOptionalLanRead<T>(
       resolve(result);
     });
   });
+  return { deadline, completion: settledRead };
+}
+
+async function waitForFirstSuccessfulRead<A, B>(
+  firstRead: Promise<SettledRead<A>>,
+  secondRead: Promise<SettledRead<B>>
+): Promise<{
+  first: SettledRead<A> | undefined;
+  second: SettledRead<B> | undefined;
+}> {
+  const firstSettled = firstRead.then((result) => ({
+    source: "first" as const,
+    result
+  }));
+  const secondSettled = secondRead.then((result) => ({
+    source: "second" as const,
+    result
+  }));
+  const earliest = await Promise.race([firstSettled, secondSettled]);
+  if (earliest.result.status === "fulfilled") {
+    return earliest.source === "first"
+      ? { first: earliest.result, second: undefined }
+      : { first: undefined, second: earliest.result };
+  }
+
+  if (earliest.source === "first") {
+    return { first: earliest.result, second: await secondRead };
+  }
+  return { first: await firstRead, second: earliest.result };
 }
 
 function normalizeOptionalLanWaitMs(waitMs: number | undefined): number {
