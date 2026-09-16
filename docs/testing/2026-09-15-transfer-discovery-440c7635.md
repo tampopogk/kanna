@@ -9,9 +9,9 @@ corrections. Acceptance task `641dbb6f` owns the preserved fixture and live
 readbacks; helper `074f03cc` owns MBP. Neither operator installation was tested.
 
 The original desktop.21 run at `dc75f7a3be20030009908e41f0d9a63b0366afa4`
-failed with **zero moves**. Corrected runs completed four cloud moves. They do
-not retroactively pass original C or Linux B. **LAN transfer remains failed,
-and the fresh-session retest is blocked at artifact reception.**
+failed with **zero moves**. Corrected runs completed five cloud moves. They do
+not retroactively pass original C or Linux B. **The 92a cloud artifact/context
+retest passed; native LAN movement remains unresolved.**
 No production acceptance, soak waiver, publication, PR, or stage advance is
 claimed. Source intent, retry budgets, idempotency, and ownership rules remain.
 
@@ -25,7 +25,7 @@ Code checkpoints:
 | `bd2c8bd2c` | Cloud proxy backpressure and signed pull-route propagation | Cloud-only large-payload pull and cloud with LAN present completed; fresh-run context failed while known-session context passed |
 | `3169f78e0` | Discover fresh Codex rollout using existing recovery resolver; refuse unidentified empty export | Fresh native ID and artifact metadata appear in both payloads; import fails before destination task creation |
 | `6d60544f8` | Distinguish artifact EOF from oversize and retain artifact/close-error attribution | Focused tests pass; not launched live |
-| TLS follow-up in this change | Close the source WebSocket before dropping its native TLS stream | Exact 131072-byte truncation reproduced locally and corrected; live rerun pending |
+| `92a656fc9` | Close the source WebSocket before dropping its native TLS stream | Exact 131072-byte truncation reproduced and corrected; live artifact delivery/native resume/independent recall pass |
 
 The `bd2c8bd2c` tree is `0098dc14772796ad87614aa7e2fc652bda3b72f8`.
 Acceptance preserves endpoint-native titles, process paths, binary hashes,
@@ -214,10 +214,11 @@ framing limit, retry or reservation lifetime changed.
 | 36 legacy continuation of `4bd…` | Failed missing finalization reservation | Diagnostic/rebuild pause exceeded existing 900-second TTL; both records terminal, natural cleanup empty, source retained |
 | 36 fresh Studio cloud push `4cee32ed…af42` | Completed 20:35:46; known-session blind recall passed | Registry-only, no competing LAN route |
 | 36 reverse Studio cloud pull `949973fa…e333` | Proxy setup-limit resets | Helper bundle-parser delay crossed TTL before bd2 startup; attempts 7–8 failed expired commit reservation; terminal 21:17:03, source retained, cleanup empty |
-| bd2 fresh Studio cloud pull `994d942e…496cd` | Completed 21:26:42; large-payload transport passed | Fresh-session export/context FAILED; 3169 corrects payload contract but end-to-end recall remains untested |
+| bd2 fresh Studio cloud pull `994d942e…496cd` | Completed 21:26:42; large-payload transport passed | Fresh-session export/context FAILED here; 3169 corrects payload contract and 92a later passes end-to-end recall |
 | bd2 MBP cloud pull `d3b6726d…a58b84`, LAN present | Completed 21:39:13; native known-session blind recall passed | Strongest new-nonce context evidence with competing routes |
 | bd2 MBP cloud push `59023c1d…8e351d`, LAN present | Completed 21:45:40; same session resumed | Return recall passed but Studio already held that session/nonce, so it cannot prove later MBP-only turns |
 | 3169 fresh Studio cloud push `d96ed586…0aa9` | Fresh ID/artifact contract correct; source exited; import attempts 1–6 failed before nominal expiry | Both records failed by 22:47:03; attempts 7–8 lacked the expired artifact reservation; no destination task or recall |
+| 92a Studio cloud push `6b5eb021…ff2a` | Both completed 23:07:07; native exact-session resume and independent nonce recall pass | Registry-only/cloud, same preserved fresh session; both allocations stopped |
 | bd2 MBP explicit LAN pull | One prequeue HTTP502, NoRoute65 at 21:36:25.769683 | No move; no retry; LAN remains unaccepted |
 
 Completed known-session hops preserved workflow definitions, source input-ledger
@@ -243,9 +244,43 @@ registered Studio ordinarily by 22:13:26. The retained intent settled naturally:
 at 22:46:43, both cleanup lists empty and no imported task. The source remains
 open with its model exited and ledger 17 preserved. Attempts 7–8 failed the
 artifact reservation lookup after its nominal expiry; they do not replace the
-six pre-expiry response failures. Acceptance is stopping both allocations before
+six pre-expiry response failures. Acceptance stopped both allocations before
 one fresh same-fixture operation on the TLS candidate. This fix task started no
 live allocations.
+
+## Accepted 92a cloud handoff
+
+Acceptance641's durable report and sanitized evidence were reconciled after the
+coordination API outage. Both endpoints ran exact source
+`92a656fc972d86baf86d802d538bd79b0c1f5af6`, tree
+`6573958506a2a011dd4c8efff603ef366a9c603c`, with task641 native titles and the
+preserved account/peer identities. Ordinary late registration converged without
+injection or reconnect. ONE new `TLS92A-STUDIO-PUSH-641-1` operation completed
+both records at 23:07:07Z, transfer
+`6b5eb021e2c062681ad1a01c9ecad2172b19a148aa44f944f64325ce13a7ff2a`.
+
+Both payloads exported/materialized the fresh session first observed on3169,
+`01a0a71f-0f71-70a1-9e81-3185d26a22c2`. MBP actually invoked native Codex resume
+in the imported cwd. At 23:09:49Z one value-free blind recall matched the original
+fresh nonce independently. This closes the live artifact/context retest, while
+the earlier3169 producer checkpoint remains the evidence for discovery with no
+recorded session ID: the92a source itself resumed that preserved session.
+
+Review/workflow/Luna-low, all17 input-prefix hashes and clean HEAD7365949 match.
+The source closed, its provider PIDs were absent, and the destination was sole
+active owner. Both cleanup lists were empty; source row removed and destination
+marker count zero. Actual TaskTransfer relay tunnels and LAN-unavailable catalogs
+establish cloud provenance. Source rollout stat130,217 bytes is not a wire-size
+measurement. MBP cleanup23:11:44Z and Studio23:14:30Z left no owned processes or
+listeners, preserving fixtures, DBs, sessions and branches. No cloud checks need
+repeating for this implementation handoff.
+
+[Compact accepted evidence](evidence/2026-09-15-transfer-cloud-accepted-440c7635.json)
+pins the full acceptance packet by SHA-256 and retains its exact source path.
+The coordinator report is `docs/testing/2026-09-15-corrected-transfer-acceptance.md`
+in task641's worktree. Its overall release failure covers outstanding LAN,
+integrated-candidate/soak and Linux B counterpart coverage, not a failed92a cloud
+retest. No release acceptance or publication is implied here.
 
 ## LAN diagnosis and precise next check
 
@@ -280,6 +315,27 @@ Bounded kd inspection found no signed isolated desktop-bundle launch option:
 `dev up` launches the task-scoped dev binary. Establishing an attributable isolated
 identity is therefore still needed for the permission check. No ad-hoc wrapper,
 privacy reset, or operator-app test was used.
+
+The remaining reproducible boundary is native MBP explicit-LAN protocol setup,
+not discovery: `runtime/pull.rs::request_task_pull` resolves the chosen LAN peer,
+checks trust and negotiates; `runtime/peer.rs::send_peer_request` connects directly
+with Tokio to the selected endpoint. No wrong address or interface binding was
+observed. There is **no established additional LAN source defect** to fix from
+these observations, and no confirmed environment-only explanation.
+
+Read-only tooling reconciliation found a Developer ID signing primitive in
+`tools/bazel/build_macos_signed_app.py`, but existing root Bazel signed targets
+use shared `build.kanna` or `build.kanna.staging` release identities. Canonical
+`kd dev up` (`tools/kd/src/runtime/dev-plan.ts`) launches unbundled `tauri dev`;
+`build.desktop` only runs `pnpm turbo build`; the canonical full-bundle update
+E2E script explicitly uses `--no-sign`. None supplies a signed, task-attributed
+isolated desktop launch/cleanup contract preserving the fixture's ports, roots,
+account and native title. That is the exact missing tooling for the proposed
+responsible-app permission check. A distinct signed identity alone would still
+require observing its actual permission and owned-sidecar request; it would not
+retroactively prove the cause of the old errno65. Both allocations stay stopped
+until this bounded path exists. No speculative socket or packaging change was
+added to the transfer corrections.
 
 ## Focused verification
 
@@ -317,4 +373,5 @@ privacy reset, or operator-app test was used.
   `.tmp/artifact-native-tls-paired-suite.log`.
 
 No broad build/visual matrix or production gate was substituted for these
-focused checks. Live fresh-session proof and LAN acceptance remain outstanding.
+focused checks. Live fresh-session cloud proof now passes; LAN acceptance remains
+outstanding. Documentation reconciliation added no code changes or repeated tests.
