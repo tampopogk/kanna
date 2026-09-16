@@ -139,7 +139,11 @@ describe("deployed function secret bindings", () => {
       APP_STORE_KEY_ID: "",
       APP_STORE_ISSUER_ID: "",
     } as const;
-    const SHARED_STRIPE_PARAMS = { STRIPE_PORTAL_CONFIGURATION_ID: "", STRIPE_PRODUCT_ID: "" } as const;
+    const PRODUCTION_STRIPE_SELECTORS = {
+      STRIPE_PORTAL_CONFIGURATION_ID: "bpc_1UFztcRSDDrR2YPqWD56QAQe",
+      STRIPE_PRODUCT_ID: "prod_VGVe6A6eX7ekxS",
+    } as const;
+    const UNCONFIGURED_STRIPE_SELECTORS = { STRIPE_PORTAL_CONFIGURATION_ID: "", STRIPE_PRODUCT_ID: "" } as const;
 
     // Only the committed dotenv files: a developer's untracked `.env.local`
     // must not leak into the clean-emulator case.
@@ -158,11 +162,11 @@ describe("deployed function secret bindings", () => {
     it.each([
       ["by project id, as kd cloud deploy passes it", { projectId: "kanna-build" }],
       ["by the .firebaserc production alias", { projectId: "kanna-build", projectAlias: "production" }],
-    ])("resolves the production Apple selectors for kanna-build %s", (_label, opts) => {
+    ])("resolves the production Apple and Stripe selectors for kanna-build %s", (_label, opts) => {
       const env = effectiveEnv(opts);
       expect(env).toEqual({
         KANNA_PORTAL_BASE_URL: "https://kanna-build-account.web.app",
-        ...SHARED_STRIPE_PARAMS,
+        ...PRODUCTION_STRIPE_SELECTORS,
         ...APPLE_SELECTORS,
       });
       expect(appStoreConfig(env)).toEqual(expect.objectContaining({ appId: 6802176590, groupId: "22390376" }));
@@ -172,20 +176,28 @@ describe("deployed function secret bindings", () => {
       const env = effectiveEnv({ projectId: "kanna-staging" });
       expect(env).toEqual({
         KANNA_PORTAL_BASE_URL: "https://kanna-staging-account.web.app",
-        ...SHARED_STRIPE_PARAMS,
+        ...UNCONFIGURED_STRIPE_SELECTORS,
         ...UNCONFIGURED_APPLE_SELECTORS,
       });
       expect(() => appStoreConfig(env)).toThrow("APP_STORE_APP_ID");
+      expect(() => resolvePortalConfig({ ...env, STRIPE_SECRET_KEY: "sk_test_mocked" })).toThrow(
+        "STRIPE_PORTAL_CONFIGURATION_ID"
+      );
+      expect(() => resolveCheckoutConfig({ ...env, STRIPE_SECRET_KEY: "sk_test_mocked" })).toThrow("STRIPE_PRODUCT_ID");
     });
 
     it("does not let a clean kanna-local emulator inherit the production Apple selectors", () => {
       const env = effectiveEnv({ projectId: "kanna-local", isEmulator: true });
       expect(env).toEqual({
         KANNA_PORTAL_BASE_URL: "https://kanna-build-account.web.app",
-        ...SHARED_STRIPE_PARAMS,
+        ...UNCONFIGURED_STRIPE_SELECTORS,
         ...UNCONFIGURED_APPLE_SELECTORS,
       });
       expect(() => appStoreConfig(env)).toThrow("APP_STORE_APP_ID");
+      expect(() => resolvePortalConfig({ ...env, STRIPE_SECRET_KEY: "sk_test_mocked" })).toThrow(
+        "STRIPE_PORTAL_CONFIGURATION_ID"
+      );
+      expect(() => resolveCheckoutConfig({ ...env, STRIPE_SECRET_KEY: "sk_test_mocked" })).toThrow("STRIPE_PRODUCT_ID");
     });
   });
 
