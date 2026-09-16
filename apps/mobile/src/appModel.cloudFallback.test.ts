@@ -105,7 +105,7 @@ function createRelayClientMock(
   };
 }
 
-function createTrustedPersistence() {
+function createTrustedPersistence(includeLanEndpoint = true) {
   return {
     load: vi.fn().mockResolvedValue({
       selectedDesktopId: "desktop-lan",
@@ -116,12 +116,14 @@ function createTrustedPersistence() {
         {
           desktopId: "desktop-lan",
           displayName: "LAN Mac",
-          lanEndpoints: [
-            {
-              baseUrl: "http://desktop.lan:48120",
-              lastSeenAt: "2026-07-10T00:00:00.000Z"
-            }
-          ],
+          lanEndpoints: includeLanEndpoint
+            ? [
+                {
+                  baseUrl: "http://desktop.lan:48120",
+                  lastSeenAt: "2026-07-10T00:00:00.000Z"
+                }
+              ]
+            : [],
           lastSeenAt: "2026-07-10T00:00:00.000Z"
         }
       ]
@@ -427,6 +429,139 @@ async function rejectCloudRecovery(
 }
 
 describe("createAppModel cloud routing", () => {
+  it("publishes signed-out paired LAN tasks from the persisted address before Bonjour", async () => {
+    const promptTask: TaskSummary = {
+      id: "task-prompt",
+      repoId: "repo-lan",
+      title: "Prompt task",
+      stage: "in progress",
+      agentType: "pty"
+    };
+    const lan = createLanFixture(async () => [promptTask], "Jeremy's Mac Studio");
+    const { authSession } = createMutableAuthSession({ status: "signedOut" });
+    const app = createAppModel({
+      authSession,
+      fetchImpl: lan.fetchImpl,
+      persistence: createTrustedPersistence(),
+      options: {
+        forceCloud: false,
+        relayUrl: "wss://relay.test",
+        // Native discovery may publish after startup. The address retained
+        // by pairing must make the first trusted snapshot useful.
+        bonjourBrowser: createStaticBonjourBrowser([])
+      }
+    });
+
+    await app.initialize();
+    await flushAsyncWork(10);
+
+    expect(app.sessionStore.getState()).toMatchObject({
+      auth: { status: "signedOut" },
+      connectionState: "connected",
+      connectionMode: "lan",
+      desktopId: "desktop-lan",
+      desktopName: "Jeremy's Mac Studio",
+      taskCollectionStatus: "ready",
+      recentTasks: [{
+        id: "task-prompt",
+        repoId: "repo-lan",
+        title: "Prompt task"
+      }]
+    });
+    expect(lan.fetchImpl).toHaveBeenCalledWith(
+      "http://desktop.lan:48120/v1/status",
+      expect.objectContaining({ signal: expect.any(Object) })
+    );
+    app.controller.dispose();
+  });
+
+  it("publishes signed-out LAN identities before a stale saved address settles", async () => {
+    const promptTask: TaskSummary = {
+      id: "task-prompt",
+      repoId: "repo-lan",
+      title: "Prompt task",
+      stage: "in progress",
+      agentType: "pty"
+    };
+    const lan = createLanFixture(async () => [promptTask], "Jeremy's Mac Studio");
+    const staleProbe = deferred<Response>();
+    const staleProbeRequested = deferred<void>();
+    const fetchImpl = vi.fn<FetchLike>(async (input, init) => {
+      const url = typeof input === "string" ? input : input.toString();
+      if (url === "http://old.lan:48120/v1/status") {
+        staleProbeRequested.resolve();
+        return staleProbe.promise;
+      }
+      return lan.fetchImpl(input, init);
+    });
+    const persistence = createTrustedPersistence();
+    persistence.load.mockResolvedValue({
+      selectedDesktopId: "desktop-lan",
+      selectedRepoId: null,
+      selectedTaskId: null,
+      activeView: "tasks",
+      trustedDesktops: [{
+        desktopId: "desktop-lan",
+        displayName: "LAN Mac",
+        lanEndpoints: [
+          {
+            baseUrl: "http://desktop.lan:48120",
+            lastSeenAt: "2026-09-16T00:00:00.000Z"
+          },
+          {
+            baseUrl: "http://old.lan:48120",
+            lastSeenAt: "2026-09-15T00:00:00.000Z"
+          }
+        ],
+        lastSeenAt: "2026-09-16T00:00:00.000Z"
+      }]
+    });
+    const { authSession } = createMutableAuthSession({ status: "signedOut" });
+    const app = createAppModel({
+      authSession,
+      fetchImpl,
+      persistence,
+      options: {
+        forceCloud: false,
+        relayUrl: "wss://relay.test",
+        bonjourBrowser: lan.bonjourBrowser
+      }
+    });
+
+    const initialization = app.initialize();
+    await Promise.race([
+      initialization,
+      staleProbeRequested.promise
+    ]);
+    await flushAsyncWork(10);
+    const publishedBeforeStaleProbeSettled = app.sessionStore.getState();
+    staleProbe.resolve({ ok: false, status: 503 } as Response);
+    await initialization;
+
+    expect(publishedBeforeStaleProbeSettled).toMatchObject({
+      auth: { status: "signedOut" },
+      connectionState: "connected",
+      connectionMode: "lan",
+      desktopId: "desktop-lan",
+      desktops: [expect.objectContaining({
+        id: "desktop-lan",
+        name: "Jeremy's Mac Studio"
+      })],
+      repos: [expect.objectContaining({ id: "repo-lan", name: "LAN Repo" })],
+      taskCollectionStatus: "ready",
+      recentTasks: [expect.objectContaining({
+        id: "task-prompt",
+        repoId: "repo-lan",
+        title: "Prompt task"
+      })]
+    });
+    expect(fetchImpl).not.toHaveBeenCalledWith(
+      "http://old.lan:48120/v1/status",
+      expect.anything()
+    );
+    app.controller.dispose();
+  });
+
   it.each([
     ["clears it durably after success", true],
     ["keeps it durably queued after failure", false]
@@ -1697,7 +1832,7 @@ describe("createAppModel cloud routing", () => {
     const app = createAppModel({
       authSession,
       fetchImpl: lan.fetchImpl,
-      persistence: createTrustedPersistence(),
+      persistence: createTrustedPersistence(false),
       options: {
         bonjourBrowser: mutableBonjour.browser,
         forceCloud: false,
@@ -2954,7 +3089,7 @@ describe("createAppModel cloud routing", () => {
     const app = createAppModel({
       authSession,
       fetchImpl: lan.fetchImpl,
-      persistence: createTrustedPersistence(),
+      persistence: createTrustedPersistence(false),
       options: {
         forceCloud: false,
         relayUrl: "wss://relay.test",
