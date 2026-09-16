@@ -232,6 +232,34 @@ describe("cloud deploy runtime", () => {
     ]);
   });
 
+  it("creates the account hosting site for the current Firebase CLI missing-site diagnostic", async () => {
+    const calls: string[] = [];
+    const runner: CommandRunner = {
+      async run(command, args) {
+        calls.push(`${command} ${args.join(" ")}`);
+        if (args.includes("hosting:sites:get")) {
+          return {
+            exitCode: 1,
+            stdout: "",
+            stderr: "Error: could not find site kanna-build-account for project kanna-build."
+          };
+        }
+        return { exitCode: 0, stdout: "", stderr: "" };
+      }
+    };
+
+    await expect(ensureAccountHostingSite({
+      repoRoot: "/repo",
+      env: {},
+      runner,
+      projectId: "kanna-build"
+    })).resolves.toBe("kanna-build-account");
+    expect(calls).toEqual([
+      "pnpm exec firebase hosting:sites:get kanna-build-account --project kanna-build",
+      "pnpm exec firebase hosting:sites:create kanna-build-account --project kanna-build"
+    ]);
+  });
+
   it("leaves an existing account hosting site unchanged", async () => {
     const calls: string[] = [];
     const runner: CommandRunner = {
@@ -269,12 +297,16 @@ describe("cloud deploy runtime", () => {
     })).rejects.toThrow("site creation denied");
   });
 
-  it("propagates account hosting site lookup failures without attempting creation", async () => {
+  it.each([
+    "Permission denied while listing hosting sites",
+    "Error: Failed to authenticate. Please run firebase login.",
+    "Error: request to Firebase failed, reason: getaddrinfo ENOTFOUND firebase.googleapis.com"
+  ])("propagates non-absence account hosting lookup failures without attempting creation: %s", async (stderr) => {
     const calls: string[] = [];
     const runner: CommandRunner = {
       async run(command, args) {
         calls.push(`${command} ${args.join(" ")}`);
-        return { exitCode: 1, stdout: "", stderr: "Permission denied while listing hosting sites" };
+        return { exitCode: 1, stdout: "", stderr };
       }
     };
 
@@ -283,7 +315,7 @@ describe("cloud deploy runtime", () => {
       env: {},
       runner,
       projectId: "kanna-staging"
-    })).rejects.toThrow("Permission denied while listing hosting sites");
+    })).rejects.toThrow(stderr);
     expect(calls).toEqual([
       "pnpm exec firebase hosting:sites:get kanna-staging-account --project kanna-staging"
     ]);

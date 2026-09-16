@@ -349,6 +349,11 @@ export function resolveAccountHostingSite(repoRoot: string, projectId: string): 
   return `${projectId}-account`;
 }
 
+function isMissingHostingSiteDiagnostic(output: string, site: string, projectId: string): boolean {
+  return /\brequested entity was not found\b/i.test(output)
+    || output.trim() === `Error: could not find site ${site} for project ${projectId}.`;
+}
+
 export async function ensureAccountHostingSite(input: {
   repoRoot: string;
   env: NodeJS.ProcessEnv;
@@ -364,7 +369,7 @@ export async function ensureAccountHostingSite(input: {
   if (inspect.exitCode === 0) return site;
 
   const inspectError = inspect.stderr || inspect.stdout;
-  if (!/\brequested entity was not found\b/i.test(inspectError)) {
+  if (!isMissingHostingSiteDiagnostic(inspectError, site, input.projectId)) {
     throw new Error(inspectError || `Failed to inspect Firebase Hosting site ${site}.`);
   }
 
