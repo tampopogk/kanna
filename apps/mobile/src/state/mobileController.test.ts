@@ -1277,6 +1277,21 @@ describe("createMobileController", () => {
       mode: "remote" as const
     };
     store.setDesktops([accountDesktop]);
+    store.setMachineSourceDesktops({ account: [accountDesktop], local: [] });
+    const accountRepo: RepoSummary = {
+      id: "repo-account",
+      name: "Account Repo",
+      registeredDesktopIds: ["desktop-1"]
+    };
+    const accountTask: TaskSummary = {
+      id: "task-account",
+      repoId: accountRepo.id,
+      title: "Account task",
+      stage: "in progress",
+      ownerDesktopId: "desktop-1"
+    };
+    store.setRepos([accountRepo]);
+    store.setRecentTasks([accountTask]);
     const pairedDesktop = {
       ...trustedDesktop,
       desktopPushIdentity: {
@@ -1324,6 +1339,155 @@ describe("createMobileController", () => {
     await removal;
     expect(store.getState().trustedDesktops).toEqual([retainedDesktop]);
     expect(store.getState().desktops).toEqual([accountDesktop]);
+    expect(store.getState().repos).toEqual([accountRepo]);
+    expect(store.getState().recentTasks).toEqual([accountTask]);
+  });
+
+  it("removes a signed-out machine's repositories and tasks and clears the last selections", async () => {
+    const store = createSessionStore();
+    store.setTrustedDesktops([trustedDesktop]);
+    const client = createClientMock();
+    const removedRepo: RepoSummary = {
+      id: "repo-removed",
+      name: "Removed Repo",
+      registeredDesktopIds: ["desktop-1"]
+    };
+    const removedTask: TaskSummary = {
+      id: "task-removed",
+      repoId: removedRepo.id,
+      title: "Removed task",
+      stage: "in progress",
+      ownerDesktopId: "desktop-1"
+    };
+    client.listRepos.mockResolvedValue([removedRepo]);
+    client.listRecentTasks.mockResolvedValue([removedTask]);
+    client.listRepoTasks.mockResolvedValue([removedTask]);
+    client.listDesktops
+      .mockResolvedValueOnce([
+        { id: "desktop-1", name: "Studio Mac", online: true, mode: "lan" }
+      ])
+      .mockResolvedValueOnce([]);
+    const controller = createMobileController(client, store, undefined, {
+      persistSessionContext: vi.fn().mockResolvedValue(undefined),
+      replaceClientForTrustChange: vi.fn()
+    });
+
+    await controller.bootstrap();
+    controller.openTask(removedTask.id);
+    expect(store.getState()).toMatchObject({
+      selectedRepoId: removedRepo.id,
+      selectedTaskId: removedTask.id
+    });
+
+    await controller.removeManualMachine("desktop-1");
+
+    expect(store.getState()).toMatchObject({
+      trustedDesktops: [],
+      repos: [],
+      recentTasks: [],
+      repoTasks: [],
+      selectedRepoId: null,
+      selectedTaskId: null,
+      selectedDesktopId: null
+    });
+  });
+
+  it("keeps a shared repository from another paired machine when one is removed", async () => {
+    const store = createSessionStore();
+    const retainedDesktop = {
+      ...trustedDesktop,
+      desktopId: "desktop-2",
+      displayName: "Laptop"
+    };
+    store.setTrustedDesktops([trustedDesktop, retainedDesktop]);
+    const client = createClientMock();
+    const removedRepo: RepoSummary = {
+      id: "repo-removed",
+      name: "Removed Repo",
+      registeredDesktopIds: ["desktop-1"]
+    };
+    const sharedRepo: RepoSummary = {
+      id: "git:shared",
+      name: "Shared Repo",
+      remoteUrlHash: "shared",
+      registeredDesktopIds: ["desktop-1", "desktop-2"]
+    };
+    const retainedTask: TaskSummary = {
+      id: "task-retained",
+      repoId: sharedRepo.id,
+      title: "Retained task",
+      stage: "review",
+      ownerDesktopId: "desktop-2"
+    };
+    client.listRepos.mockResolvedValue([removedRepo, sharedRepo]);
+    client.listRecentTasks.mockResolvedValue([retainedTask]);
+    client.listRepoTasks.mockResolvedValue([]);
+    client.listDesktops.mockResolvedValue([
+      { id: "desktop-2", name: "Laptop", online: true, mode: "lan" }
+    ]);
+    const controller = createMobileController(client, store, undefined, {
+      persistSessionContext: vi.fn().mockResolvedValue(undefined),
+      replaceClientForTrustChange: vi.fn()
+    });
+
+    await controller.bootstrap();
+    await controller.removeManualMachine("desktop-1");
+
+    expect(store.getState().repos).toEqual([{
+      ...sharedRepo,
+      registeredDesktopIds: ["desktop-2"]
+    }]);
+    expect(store.getState().recentTasks).toEqual([retainedTask]);
+    expect(store.getState().selectedRepoId).toBe(sharedRepo.id);
+  });
+
+  it("refuses collection responses that finish after their machine is removed", async () => {
+    const store = createSessionStore();
+    store.setTrustedDesktops([trustedDesktop]);
+    const client = createClientMock();
+    client.listRepos.mockResolvedValue([{
+      id: "repo-current",
+      name: "Current Repo",
+      registeredDesktopIds: ["desktop-1"]
+    }]);
+    client.listRecentTasks.mockResolvedValue([{
+      id: "task-current",
+      repoId: "repo-current",
+      title: "Current task",
+      stage: "in progress",
+      ownerDesktopId: "desktop-1"
+    }]);
+    client.listRepoTasks.mockResolvedValue([]);
+    const controller = createMobileController(client, store, undefined, {
+      persistSessionContext: vi.fn().mockResolvedValue(undefined),
+      replaceClientForTrustChange: vi.fn()
+    });
+    await controller.bootstrap();
+
+    const staleRepos = createDeferred<RepoSummary[]>();
+    const staleTasks = createDeferred<TaskSummary[]>();
+    client.listRepos.mockReturnValueOnce(staleRepos.promise);
+    client.listRecentTasks.mockReturnValueOnce(staleTasks.promise);
+    const refresh = controller.refresh();
+    await flushMicrotasks();
+
+    await controller.removeManualMachine("desktop-1");
+    staleRepos.resolve([{
+      id: "repo-stale",
+      name: "Stale Repo",
+      registeredDesktopIds: ["desktop-1"]
+    }]);
+    staleTasks.resolve([{
+      id: "task-stale",
+      repoId: "repo-stale",
+      title: "Stale task",
+      stage: "in progress",
+      ownerDesktopId: "desktop-1"
+    }]);
+    await refresh;
+
+    expect(store.getState().repos).toEqual([]);
+    expect(store.getState().recentTasks).toEqual([]);
   });
 
   it("removes manual trust and durably queues revocation when the relay is unavailable", async () => {
