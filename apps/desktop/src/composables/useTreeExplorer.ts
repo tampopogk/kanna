@@ -1,6 +1,7 @@
 import { nextTick, ref, shallowRef, watch, type Ref, computed } from "vue";
 import { computedAsync, refDebounced } from "@vueuse/core";
 import { invoke } from "../invoke";
+import { isTaskFileUnreadableError } from "../services/taskFileRead";
 
 export interface TreeNode {
   name: string;
@@ -70,13 +71,23 @@ function hasBinaryExtension(name: string): boolean {
 }
 
 /**
- * A read that failed because the file is not UTF-8 is a verdict about the
- * file, not an outage: `read_text_file` decodes, so every binary the extension
- * list does not name arrives here. Reporting it as "task files unavailable"
- * would blame the worktree for a `.pack` file being a `.pack` file.
+ * Whether a failed read is a verdict about the *file* rather than an outage.
+ *
+ * Two shapes reach here, and both mean "there is nothing to preview":
+ *
+ * - A server-backed loader — the contained local one, LAN, or relay — refusing
+ *   the file for its size or for not being text. `kanna-server` bounds every
+ *   one of those reads at 1 MiB and decodes to UTF-8 before returning content,
+ *   so a big `.min.js` or an unlisted `.idx` never reaches the size guard
+ *   below; it arrives as a `TaskFileUnreadableError`.
+ * - The local worktree's own `read_text_file`, which decodes too, so every
+ *   binary the extension list does not name fails there.
+ *
+ * Reporting either as "task files unavailable" would blame the worktree for a
+ * `.pack` file being a `.pack` file.
  */
-function isNonTextReadFailure(message: string): boolean {
-  return message.includes("valid UTF-8");
+function isUnpreviewableFile(caught: unknown, message: string): boolean {
+  return isTaskFileUnreadableError(caught) || message.includes("valid UTF-8");
 }
 
 export interface MillerState {
@@ -257,7 +268,7 @@ export function useTreeExplorer(
         raw = await readFileContent(entry.path);
       } catch (caught) {
         const message = caught instanceof Error ? caught.message : String(caught);
-        if (isNonTextReadFailure(message)) return null;
+        if (isUnpreviewableFile(caught, message)) return null;
         error.value = `Task files unavailable: ${message}`;
         console.error("[tree-explorer] failed to load preview content:", message);
         return null;

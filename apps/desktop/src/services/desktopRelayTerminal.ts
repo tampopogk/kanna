@@ -2,6 +2,7 @@ import { getConfiguredDesktopAuthSession } from "./desktopAuthSdk";
 import { invoke } from "../invoke";
 import { type CloudAccessSnapshot, createRelayTunnelWebSocketFactory, StreamClient } from "@kanna/stream-client";
 import { createDesktopStreamFrameDecoder } from "./desktopStreamFrameDecoder";
+import { TaskFileUnreadableError, taskFileUnreadableReasonForStatus } from "./taskFileRead";
 import type {
   AgentTerminalArchive,
   AgentTerminalAttempt,
@@ -313,7 +314,12 @@ export function createDesktopRelayTerminalClient({
         null,
       );
       if (response.status < 200 || response.status >= 300) {
-        throw new Error(`Remote task file read failed with HTTP ${response.status}.`);
+        const message = `Remote task file read failed with HTTP ${response.status}.`;
+        // 413/415 is the server saying this file has no text to hand over, not
+        // that the tunnel or the task is unreachable. Same sentence either way;
+        // only the type tells a caller which one it got.
+        const reason = taskFileUnreadableReasonForStatus(response.status);
+        throw reason ? new TaskFileUnreadableError(reason, message) : new Error(message);
       }
       const body = response.body;
       if (!isRecord(body) || typeof body.path !== "string" || typeof body.content !== "string") {

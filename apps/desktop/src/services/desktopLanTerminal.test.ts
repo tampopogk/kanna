@@ -15,6 +15,10 @@ vi.mock("../listen", () => ({
 import { invoke } from "../invoke";
 import { listen } from "../listen";
 import { createDesktopLanTerminalClient } from "./desktopLanTerminal";
+import {
+  isTaskFileUnreadableError,
+  type TaskFileUnreadableError,
+} from "./taskFileRead";
 
 describe("createDesktopLanTerminalClient", () => {
   beforeEach(() => {
@@ -100,6 +104,43 @@ describe("createDesktopLanTerminalClient", () => {
     await expect(
       client.readTaskFile({ desktopId: "peer-primary", taskId: "task-1", path: "src/app.ts" }),
     ).rejects.toThrow("LAN task file response was malformed.");
+  });
+
+  /**
+   * The peer protocol carries an error as one string, and the owning desktop
+   * puts its own `kanna-server` status in that sentence
+   * (`get_local_kanna_task_file` in `crates/task-transfer`). A 413/415 there is
+   * the file saying it has no text to show, which a reader that only displays
+   * files must not report as the peer being unreachable.
+   */
+  it("classifies an oversized or non-text peer file separately from a failed read", async () => {
+    const client = createDesktopLanTerminalClient();
+
+    vi.mocked(invoke).mockRejectedValueOnce(new Error(
+      "Kanna server task file read failed with HTTP 413: file exceeds the 1 MiB limit",
+    ));
+    const oversized = await client
+      .readTaskFile({ desktopId: "peer-primary", taskId: "task-1", path: "huge.log" })
+      .catch((error: unknown) => error);
+
+    vi.mocked(invoke).mockRejectedValueOnce(new Error(
+      "Kanna server task file read failed with HTTP 415: file is not valid UTF-8 text",
+    ));
+    const nonText = await client
+      .readTaskFile({ desktopId: "peer-primary", taskId: "task-1", path: "objects/pack.idx" })
+      .catch((error: unknown) => error);
+
+    vi.mocked(invoke).mockRejectedValueOnce(new Error("peer is not durably trusted"));
+    const untrusted = await client
+      .readTaskFile({ desktopId: "peer-primary", taskId: "task-1", path: "src/app.ts" })
+      .catch((error: unknown) => error);
+
+    expect(isTaskFileUnreadableError(oversized)).toBe(true);
+    expect((oversized as TaskFileUnreadableError).reason).toBe("too-large");
+    expect(isTaskFileUnreadableError(nonText)).toBe(true);
+    expect((nonText as TaskFileUnreadableError).reason).toBe("not-text");
+    expect(isTaskFileUnreadableError(untrusted)).toBe(false);
+    expect((untrusted as Error).message).toBe("peer is not durably trusted");
   });
 
   it("reads agent attempts and an archive through the owning LAN peer", async () => {

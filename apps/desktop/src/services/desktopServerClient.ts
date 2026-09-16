@@ -7,6 +7,7 @@ import type { SessionRecoveryState } from "../composables/sessionRecoveryState";
 import type { TransferImportSummary } from "../stores/transferImportSummary";
 import { invoke } from "../invoke";
 import { localControlAuthHeaders } from "./localControlCredential";
+import { TaskFileUnreadableError, taskFileUnreadableReasonForStatus } from "./taskFileRead";
 import type { AgentTerminalArchive, AgentTerminalAttempt } from "./desktopRemoteTaskClient";
 
 export interface DesktopSnapshotEntry {
@@ -810,10 +811,21 @@ export interface DesktopOperatorEventInput {
  * that actually happens.
  */
 export async function readDesktopTaskFile(taskId: string, path: string): Promise<string> {
-  const body = await requestJson<{ path: string; content: string }>(
-    `/v1/tasks/${encodeURIComponent(taskId)}/files/content?path=${encodeURIComponent(path)}`,
-  );
-  return body.content;
+  try {
+    const body = await requestJson<{ path: string; content: string }>(
+      `/v1/tasks/${encodeURIComponent(taskId)}/files/content?path=${encodeURIComponent(path)}`,
+    );
+    return body.content;
+  } catch (error) {
+    // A file over the server's bound or one that is not text is a fact about
+    // that file, not a failure to reach the task. Callers that only display it
+    // need the distinction the server already drew; the message is unchanged.
+    if (error instanceof DesktopServerRequestError) {
+      const reason = taskFileUnreadableReasonForStatus(error.status);
+      if (reason) throw new TaskFileUnreadableError(reason, error.message, { cause: error });
+    }
+    throw error;
+  }
 }
 
 interface DesktopTaskDirectoryPage {

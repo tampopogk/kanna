@@ -4,6 +4,7 @@ import { mount } from "@vue/test-utils";
 import { nextTick } from "vue";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import TreeExplorerModal from "../TreeExplorerModal.vue";
+import { TaskFileUnreadableError } from "../../services/taskFileRead";
 
 const invokeMock = vi.hoisted(() => vi.fn());
 
@@ -370,6 +371,69 @@ describe("TreeExplorerModal preview column", () => {
     expect(remoteContentLoader).toHaveBeenCalledWith("notes.md");
     expect(wrapper.get('[data-testid="tree-preview-content"]').text()).toContain("remote head");
     expect(invokeMock).not.toHaveBeenCalled();
+    wrapper.unmount();
+  });
+
+  /**
+   * The server-backed loaders — the contained local one, LAN and relay — never
+   * hand over an oversized or non-text file's bytes: `kanna-server` refuses it
+   * first, so the explorer's own size guard is never reached and the refusal
+   * arrives as a rejected read. It still means "nothing to preview", and their
+   * own tests prove each adapter raises exactly this error for a 413/415.
+   */
+  it.each([
+    ["too-large" as const, "Remote task file read failed with HTTP 413.", "huge.log"],
+    ["not-text" as const, "Remote task file read failed with HTTP 415.", "pack.idx"],
+  ])("shows no preview for a %s file a server-backed loader refused", async (
+    reason,
+    message,
+    name,
+  ) => {
+    const remoteDirectoryLoader = vi.fn(async () => ({
+      entries: [{ name, path: name, isDir: false }],
+    }));
+    const remoteContentLoader = vi.fn(async () => {
+      throw new TaskFileUnreadableError(reason, message);
+    });
+    const wrapper = mount(TreeExplorerModal, {
+      props: {
+        worktreePath: "task-owner-branch",
+        repoRoot: "task-owner-branch",
+        remoteDirectoryLoader,
+        remoteContentLoader,
+      },
+    });
+    await settlePreview();
+
+    expect(remoteContentLoader).toHaveBeenCalledWith(name);
+    expect(wrapper.find('[data-testid="tree-preview-content"]').exists()).toBe(false);
+    expect(wrapper.find('[data-testid="tree-explorer-unavailable"]').exists()).toBe(false);
+    expect(wrapper.text()).toContain("(no preview)");
+    wrapper.unmount();
+  });
+
+  it("still reports a server-backed loader's genuine failure as unavailable", async () => {
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const remoteDirectoryLoader = vi.fn(async () => ({
+      entries: [{ name: "notes.md", path: "notes.md", isDir: false }],
+    }));
+    const remoteContentLoader = vi.fn(async () => {
+      throw new Error("Remote task file read failed with HTTP 503.");
+    });
+    const wrapper = mount(TreeExplorerModal, {
+      props: {
+        worktreePath: "task-owner-branch",
+        repoRoot: "task-owner-branch",
+        remoteDirectoryLoader,
+        remoteContentLoader,
+      },
+    });
+    await settlePreview();
+
+    expect(wrapper.get('[data-testid="tree-explorer-unavailable"]').text()).toContain(
+      "Task files unavailable: Remote task file read failed with HTTP 503.",
+    );
+    consoleError.mockRestore();
     wrapper.unmount();
   });
 
