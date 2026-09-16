@@ -337,7 +337,7 @@ export function useAppTaskNavigation({
   }
 
   async function navigateItems(direction: -1 | 1) {
-    const visibleItems = sidebarRef.value?.visibleTaskItems?.()
+    const visibleItems: SidebarTaskItem[] = sidebarRef.value?.visibleTaskItems?.()
       ?? visibleSidebarItemsAllRepos();
     if (visibleItems.length === 0) return;
     const selectedPresentationSlotId = presentationSlotIdForSelection(visibleItems);
