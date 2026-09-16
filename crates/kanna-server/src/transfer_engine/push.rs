@@ -834,15 +834,15 @@ async fn build_payload(
                 .as_ref()
                 .and_then(|context| context.3.clone())
         });
-    let revision_feedback = context_db
+    let latest_run = context_db
         .latest_stage_run(&source.item.id)
-        .map_err(|error| format!("db error: {error}"))?
-        .and_then(|run| run.feedback)
-        .or_else(|| {
-            inherited_context
-                .as_ref()
-                .and_then(|context| context.4.clone())
-        });
+        .map_err(|error| format!("db error: {error}"))?;
+    let revision_feedback = transferable_revision_feedback(
+        latest_run.as_ref(),
+        inherited_context
+            .as_ref()
+            .and_then(|context| context.4.clone()),
+    );
     let inherited_history = context_db
         .transferred_task_history(&source.item.id)
         .map_err(|error| format!("db error: {error}"))?;
@@ -979,6 +979,43 @@ async fn build_payload(
         artifacts: staged.artifacts,
         finalization,
     })
+}
+
+/// The reviewer directive, if the active transferred stage is a revision.
+///
+/// `stage_run.feedback` is deliberately overloaded: while a revision is
+/// running it contains the requested changes, but a completed ordinary run
+/// contains its verdict summary and an interrupted ordinary run historically
+/// contains [`crate::http_api::SESSION_INTERRUPTION_FEEDBACK`]. Exporting the
+/// latest string blindly relabels bookkeeping or a verdict as a new revision
+/// instruction on the destination.
+///
+/// Producer provenance makes the distinction without guessing from prose. A
+/// running run's pre-existing feedback is an active revision directive. The
+/// session-interruption producer retains that directive while marking the row
+/// with `no_work_termination`; its synthetic marker is explicitly excluded.
+/// If this hop has not started any run yet, the source-pinned inherited value
+/// remains the active context and is carried to the next hop unchanged.
+pub(crate) fn transferable_revision_feedback(
+    latest_run: Option<&crate::db::StageRun>,
+    inherited: Option<String>,
+) -> Option<String> {
+    let Some(run) = latest_run else {
+        return inherited;
+    };
+    let feedback = run.feedback.as_deref().map(str::trim).filter(|feedback| {
+        !feedback.is_empty() && *feedback != crate::http_api::SESSION_INTERRUPTION_FEEDBACK
+    })?;
+    let active_revision = run.status == "running"
+        || matches!(
+            run.no_work_termination.as_deref(),
+            Some(
+                crate::db::no_work_termination::SESSION_INTERRUPTED
+                    | crate::db::no_work_termination::REJECTED_RESUME_LAUNCH
+                    | crate::db::no_work_termination::QUOTA_REPLACEMENT
+            )
+        );
+    active_revision.then(|| feedback.to_string())
 }
 
 /// Builds the ordered history a payload's `task.history` carries: whatever

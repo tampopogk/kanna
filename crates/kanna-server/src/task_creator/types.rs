@@ -31,8 +31,9 @@ pub(super) struct TaskCreationRequest {
     pub(super) task_template: Option<crate::mobile_api::TaskTemplateLaunch>,
     pub(super) resume_session_id: Option<String>,
     pub(super) recovery_snapshot: Option<crate::mobile_api::CreateTaskRecoverySnapshot>,
-    /// Display-only import notice for a task arriving by cross-machine
-    /// transfer; printed once into the destination PTY before the agent runs.
+    /// Verified import context for a task arriving by cross-machine transfer.
+    /// It selects continuation versus fresh-session prompt semantics, seeds
+    /// source-pinned stage context, and prints the one-time destination notice.
     pub(super) transfer_import: Option<crate::mobile_api::TransferImportSummary>,
     /// Retired request compatibility field. Resolution reads and discards it;
     /// the public HTTP boundary rejects non-null values.

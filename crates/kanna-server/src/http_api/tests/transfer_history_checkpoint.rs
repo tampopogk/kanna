@@ -439,6 +439,15 @@ async fn a_transferred_task_persists_ordered_history_and_substitutes_its_own_bra
         context.4.as_deref(),
         Some("first review directive\nsecond review directive")
     );
+    assert_eq!(
+        db.latest_stage_run("abcd0001")
+            .unwrap()
+            .expect("destination run")
+            .feedback
+            .as_deref(),
+        Some("first review directive\nsecond review directive"),
+        "the active imported revision must retain its directive for a later fallback or hop"
+    );
 
     // The actual consumer: a reviewer, a manager, or a later hop reads the
     // full ordered history — not only the three latest scalars the prompt

@@ -2052,6 +2052,13 @@ fn record_spawned_stage_run(
 ) -> Result<(), String> {
     let db = Db::open(db_path).map_err(|e| format!("db error: {}", e))?;
     db.with_immediate_transaction(|db| {
+        // A transferred task can arrive while its active run is a revision.
+        // Keep the source-pinned reviewer directive on the destination run:
+        // the restored transcript must not be prompted with it again, but a
+        // later genuine fresh fallback or second transfer still needs it.
+        let transferred_revision_feedback = db
+            .transferred_task_context(&prepared.created_task.task_id)?
+            .and_then(|context| context.4);
         db.update_pipeline_item_agent_session_id(
             &prepared.created_task.task_id,
             prepared.provider_session_id.as_deref(),
@@ -2068,7 +2075,7 @@ fn record_spawned_stage_run(
                 effort: prepared.effort.as_deref(),
                 status: "running",
                 result: None,
-                feedback: None,
+                feedback: transferred_revision_feedback.as_deref(),
                 session_id: Some(&prepared.session_id),
                 provider_session_id: prepared.provider_session_id.as_deref(),
                 cwd: Some(&prepared.cwd),

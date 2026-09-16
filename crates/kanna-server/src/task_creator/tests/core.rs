@@ -8146,3 +8146,277 @@ fn structured_candidates_keep_fallback_tuning_and_omission_coherent() {
         Some("gpt-6-astra")
     );
 }
+
+const TRANSFER_NON_IDEMPOTENT_TASK: &str =
+    "GENERATE_NONCE_ONCE_7F31 and remember the generated value";
+const TRANSFER_PREVIOUS_RESULT: &str = "SOURCE_PREVIOUS_STAGE_RESULT_7F31";
+const TRANSFER_PREVIOUS_MAIN_RESULT: &str = "SOURCE_PREVIOUS_MAIN_RESULT_7F31";
+const TRANSFER_APPROVED_PLAN: &str = "SOURCE_APPROVED_PLAN_7F31";
+const TRANSFER_REVISION_DIRECTIVE: &str = "PRESERVE_GENUINE_REVISION_DIRECTIVE_7F31";
+const TRANSFER_CODEX_SESSION: &str = "019d99a5-aa94-7c73-b786-644cc095c037";
+
+fn transfer_source_stage_run() -> crate::db::StageRun {
+    crate::db::StageRun {
+        id: "run-source".to_string(),
+        task_id: "task-source".to_string(),
+        stage: "in progress".to_string(),
+        kind: "main".to_string(),
+        agent: None,
+        agent_provider: Some("codex".to_string()),
+        model: None,
+        effort: None,
+        status: "running".to_string(),
+        result: None,
+        feedback: None,
+        session_id: Some("task-source".to_string()),
+        provider_session_id: Some(TRANSFER_CODEX_SESSION.to_string()),
+        cwd: Some("/source/worktree".to_string()),
+        no_work_termination: None,
+        replaces_run_id: None,
+        resumed_from_run_id: None,
+        resume_fallback_reason: None,
+        completion_transition: Some("manual".to_string()),
+        trigger: "unspecified".to_string(),
+        provider_override: None,
+        started_at: "2026-09-16 00:00:00".to_string(),
+        finished_at: None,
+    }
+}
+
+fn transfer_continuation_payload(
+    repo_root: &std::path::Path,
+) -> crate::transfer_engine::payload::OutgoingTransferPayload {
+    let workflow_definition = serde_json::json!({
+        "name": "transfer-continuation",
+        "stages": [{
+            "name": "in progress",
+            "prompt": concat!(
+                "Execute $TASK_PROMPT\n",
+                "Previous: $PREV_RESULT\n",
+                "Previous main: $PREV_MAIN_RESULT\n",
+                "Approved plan: $PLAN_RESULT"
+            ),
+            "policy": { "transition": "manual" }
+        }],
+        "plan_context": {
+            "source_run_id": "run-plan",
+            "stage": "plan",
+            "result": TRANSFER_APPROVED_PLAN
+        }
+    })
+    .to_string();
+    crate::transfer_engine::payload::parse_outgoing_transfer_payload(&serde_json::json!({
+        "target_peer_id": "peer-destination",
+        "task": {
+            "source_peer_id": "peer-source",
+            "source_task_id": "task-source",
+            "resume_session_id": TRANSFER_CODEX_SESSION,
+            "prompt": TRANSFER_NON_IDEMPOTENT_TASK,
+            "stage": "in progress",
+            "workflow": "transfer-continuation",
+            "workflow_definition": workflow_definition,
+            "previous_stage_result": TRANSFER_PREVIOUS_RESULT,
+            "previous_main_result": TRANSFER_PREVIOUS_MAIN_RESULT,
+            "base_ref": "origin/main",
+            "agent_type": "pty",
+            "agent_provider": "codex"
+        },
+        "repo": {
+            "mode": "reuse-local",
+            "path": repo_root.to_string_lossy()
+        },
+        "artifacts": []
+    }))
+    .unwrap()
+}
+
+fn prepare_transfer_continuation(
+    label: &str,
+    resume_session_id: Option<&str>,
+    revision_feedback: Option<String>,
+) -> (std::path::PathBuf, Db, PreparedTaskSpawn) {
+    let repo_root = init_git_repo(label);
+    let config = test_config(label);
+    let db = Db::open_for_tests(&config.db_path).unwrap();
+    db.insert_test_repo_with_path("repo-1", &repo_root.to_string_lossy(), "Repo One")
+        .unwrap();
+    let mut payload = transfer_continuation_payload(&repo_root);
+    payload.task.revision_feedback = revision_feedback;
+    let request = crate::transfer_engine::import::build_create_request_for_test(
+        "transfer-continuation-test",
+        "repo-1",
+        &payload,
+        None,
+        resume_session_id.map(str::to_string),
+    );
+    let prepared = prepare_task_for_api(&db, &config, request).unwrap();
+    (repo_root, db, prepared)
+}
+
+fn prepared_pty_command(prepared: &PreparedTaskSpawn) -> &str {
+    match &prepared.session {
+        PreparedSessionSpawn::Pty { args, .. } => args.last().expect("PTY shell command"),
+        PreparedSessionSpawn::Agent { .. } => panic!("expected a PTY transfer session"),
+    }
+}
+
+/// Regression for the Linux B failure: the source producer classifies its
+/// terminal-loss marker, import records a restored native session, and the
+/// prepared Codex argv continues that transcript without submitting the
+/// already-executed nonce-generation stage prompt again.
+#[test]
+fn restored_transfer_continues_codex_without_replaying_the_active_task_prompt() {
+    let mut interrupted = transfer_source_stage_run();
+    interrupted.status = "cancelled".to_string();
+    interrupted.feedback = Some(crate::http_api::SESSION_INTERRUPTION_FEEDBACK.to_string());
+    interrupted.no_work_termination =
+        Some(crate::db::no_work_termination::SESSION_INTERRUPTED.to_string());
+    let produced_feedback =
+        crate::transfer_engine::push::transferable_revision_feedback(Some(&interrupted), None);
+    assert_eq!(produced_feedback, None);
+
+    let (repo_root, _db, prepared) = prepare_transfer_continuation(
+        "transfer-restored-continuation",
+        Some(TRANSFER_CODEX_SESSION),
+        produced_feedback,
+    );
+    let command = prepared_pty_command(&prepared);
+    assert!(
+        command.contains(&format!("resume '{TRANSFER_CODEX_SESSION}'")),
+        "{command}"
+    );
+    assert!(command.contains("Kanna Task Environment"), "{command}");
+    assert!(command.contains("restored this conversation"), "{command}");
+    for replayed in [
+        TRANSFER_NON_IDEMPOTENT_TASK,
+        TRANSFER_PREVIOUS_RESULT,
+        TRANSFER_PREVIOUS_MAIN_RESULT,
+        TRANSFER_APPROVED_PLAN,
+        "## Revision Feedback",
+    ] {
+        assert!(
+            !command.contains(replayed),
+            "restored transfer replayed {replayed:?}: {command}"
+        );
+    }
+    let task = _db.get_pipeline_item(prepared.task_id()).unwrap().unwrap();
+    assert_eq!(task.prompt.as_deref(), Some(TRANSFER_NON_IDEMPOTENT_TASK));
+    let expected_branch = format!("task-{}", prepared.task_id());
+    assert_eq!(task.branch.as_deref(), Some(expected_branch.as_str()));
+    let _ = std::fs::remove_dir_all(repo_root);
+}
+
+/// If session materialization did not succeed, there is no transcript to
+/// continue. The same import request must instead deliver every piece of the
+/// active source context, including the stamped plan and predecessor results.
+#[test]
+fn transfer_fresh_fallback_receives_the_complete_active_stage_context() {
+    let (repo_root, _db, prepared) =
+        prepare_transfer_continuation("transfer-fresh-context", None, None);
+    let command = prepared_pty_command(&prepared);
+    assert!(!command.contains(" resume '"), "{command}");
+    for required in [
+        TRANSFER_NON_IDEMPOTENT_TASK,
+        TRANSFER_PREVIOUS_RESULT,
+        TRANSFER_PREVIOUS_MAIN_RESULT,
+        TRANSFER_APPROVED_PLAN,
+    ] {
+        assert!(
+            command.contains(required),
+            "fresh transfer omitted {required:?}: {command}"
+        );
+    }
+    assert!(!command.contains("restored this conversation"), "{command}");
+    let _ = std::fs::remove_dir_all(repo_root);
+}
+
+/// Interruption bookkeeping must not erase a revision directive that was
+/// already on the active run. The producer exports that directive, import
+/// keeps it in the verified request, and a genuine fresh fallback labels it
+/// separately from predecessor results.
+#[test]
+fn transfer_preserves_genuine_revision_feedback_for_a_fresh_fallback() {
+    let repo_root = init_git_repo("transfer-revision-provenance");
+    let config = test_config("transfer-revision-provenance");
+    let db = Db::open_for_tests(&config.db_path).unwrap();
+    db.insert_test_repo_with_path("repo-1", &repo_root.to_string_lossy(), "Repo One")
+        .unwrap();
+    db.insert_test_pipeline_item(
+        "task-source-revision",
+        "repo-1",
+        TRANSFER_NON_IDEMPOTENT_TASK,
+        None,
+        "in progress",
+        "2026-09-16 00:00:00",
+    )
+    .unwrap();
+    db.insert_stage_run(NewStageRun {
+        id: "run-source-revision",
+        task_id: "task-source-revision",
+        stage: "in progress",
+        kind: "main",
+        agent: None,
+        agent_provider: Some("codex"),
+        model: None,
+        effort: None,
+        status: "running",
+        result: None,
+        feedback: Some(TRANSFER_REVISION_DIRECTIVE),
+        session_id: Some("task-source-revision"),
+        provider_session_id: Some(TRANSFER_CODEX_SESSION),
+        cwd: Some("/source/worktree"),
+        resumed_from_run_id: None,
+    })
+    .unwrap();
+    db.finish_latest_running_stage_run(
+        "task-source-revision",
+        "cancelled",
+        Some("source session exited during transfer finalization"),
+        Some(crate::http_api::SESSION_INTERRUPTION_FEEDBACK),
+    )
+    .unwrap();
+    let interrupted = db
+        .latest_stage_run("task-source-revision")
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        interrupted.feedback.as_deref(),
+        Some(TRANSFER_REVISION_DIRECTIVE)
+    );
+    assert_eq!(
+        interrupted.no_work_termination.as_deref(),
+        Some(crate::db::no_work_termination::SESSION_INTERRUPTED)
+    );
+    let produced_feedback =
+        crate::transfer_engine::push::transferable_revision_feedback(Some(&interrupted), None);
+    assert_eq!(
+        produced_feedback.as_deref(),
+        Some(TRANSFER_REVISION_DIRECTIVE)
+    );
+
+    let mut payload = transfer_continuation_payload(&repo_root);
+    payload.task.revision_feedback = produced_feedback;
+    let request = crate::transfer_engine::import::build_create_request_for_test(
+        "transfer-revision-test",
+        "repo-1",
+        &payload,
+        None,
+        None,
+    );
+    assert_eq!(
+        request
+            .transfer_import
+            .as_ref()
+            .and_then(|import| import.revision_feedback.as_deref()),
+        Some(TRANSFER_REVISION_DIRECTIVE)
+    );
+    let prepared = prepare_task_for_api(&db, &config, request).unwrap();
+    let command = prepared_pty_command(&prepared);
+    assert!(
+        command.contains(&format!(
+            "## Revision Feedback\n\n{TRANSFER_REVISION_DIRECTIVE}"
+        )),
+        "{command}"
+    );
+    let _ = std::fs::remove_dir_all(repo_root);
+}

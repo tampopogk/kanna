@@ -3355,13 +3355,15 @@ fn resolve_task_spawn(
         .requested_task_id
         .as_deref()
         .map(|task_id| format!("task-{task_id}"));
+    let restored_provider_session_will_resume = request
+        .transfer_import
+        .as_ref()
+        .is_some_and(|import| import.session_restored)
+        && request.resume_session_id.is_some()
+        && !matches!(request.agent_type.as_deref(), Some("agent" | "sdk"));
     let final_prompt = if request.stage_override.is_some() {
-        if let Some(import) = request.transfer_import.as_ref().filter(|import| {
-            import.previous_stage_result.is_some()
-                || import.previous_main_result.is_some()
-                || import.revision_feedback.is_some()
-        }) {
-            build_stage_prompt(
+        if let Some(import) = request.transfer_import.as_ref() {
+            let fresh_session_prompt = build_stage_prompt(
                 agent
                     .as_ref()
                     .map(|agent| agent.prompt.as_str())
@@ -3387,7 +3389,25 @@ fn resolve_task_spawn(
                     stage_trigger: "transfer",
                     vars: repo_config.vars.as_ref(),
                 },
-            )
+            );
+            if restored_provider_session_will_resume {
+                // The provider transcript already contains the active stage
+                // prompt and every revision message it acted on. Transfer is
+                // an ownership/worktree move, not a new stage entry: sending
+                // `$TASK_PROMPT` again can repeat a non-idempotent action.
+                // Keep the destination's Kanna runtime preamble (added by the
+                // provider command builder) and send only a continuation turn.
+                "Kanna transferred this task to a new machine and restored this conversation. \
+Continue from the preserved conversation and the destination worktree's current state. Do not \
+restart or repeat work solely because task ownership moved."
+                    .to_string()
+            } else {
+                // Session materialization genuinely fell back to a fresh
+                // conversation. It has no transcript, so it needs the full
+                // active-stage context, including the pinned plan and source
+                // predecessor/revision snapshots.
+                fresh_session_prompt
+            }
         } else {
             original_prompt.clone()
         }
