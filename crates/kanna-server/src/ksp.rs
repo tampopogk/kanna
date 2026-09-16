@@ -33,12 +33,15 @@ use kanna_daemon::terminal_perf::{self, TerminalPerfContext, TerminalPerfMonitor
 
 use crate::daemon_client::DaemonClient;
 use crate::db::Db;
+use crate::http_api::secure_channel::{SealedPairingContext, StreamOrigin};
 use crate::http_api::{dispatch_authenticated_http_invoke, AppState};
 use crate::terminal_window::{
     window_snapshot, HistoryChunk, OutputRing, TerminalHistory, TERMINAL_RING_MAX_BYTES,
 };
 
 mod auth;
+#[cfg(test)]
+mod sealed_session_tests;
 
 use auth::verify_firebase_id_token;
 
@@ -55,6 +58,202 @@ pub enum AuthMode {
     RequireLocalControlToken,
     #[allow(dead_code)]
     RequireCredential,
+    /// A secure-channel session whose initiator static key matched a paired
+    /// device. The handshake is the authentication; the `auth` frame only
+    /// negotiates capabilities.
+    SealedDevice,
+    /// A secure-channel session whose static key is not (yet) paired. It
+    /// may claim a pairing code and poll its confirmation, nothing else.
+    SealedPairing,
+}
+
+/// How long a connection may take to send its first frame (the secure
+/// channel handshake or the legacy `auth`) before it is dropped.
+const FIRST_FRAME_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Who a sealed session is, decided once at handshake time.
+#[derive(Debug, Clone)]
+pub(crate) enum SealedSessionAuthority {
+    Device {
+        device_id: String,
+        origin: StreamOrigin,
+        pairing: SealedPairingContext,
+    },
+    PairingOnly(SealedPairingContext),
+}
+
+impl SealedSessionAuthority {
+    fn auth_mode(&self) -> AuthMode {
+        match self {
+            Self::Device { .. } => AuthMode::SealedDevice,
+            Self::PairingOnly(_) => AuthMode::SealedPairing,
+        }
+    }
+
+    fn pairing_context(&self) -> &SealedPairingContext {
+        match self {
+            Self::Device { pairing, .. } => pairing,
+            Self::PairingOnly(context) => context,
+        }
+    }
+
+    fn device_id(&self) -> Option<&str> {
+        match self {
+            Self::Device { device_id, .. } => Some(device_id),
+            Self::PairingOnly(_) => None,
+        }
+    }
+}
+
+/// A sealed session admitted by the handshake: the reply to send, the
+/// transport halves, and the authority the session carries.
+pub(crate) struct AdmittedSealedSession {
+    pub(crate) reply: String,
+    pub(crate) sender: kanna_secure_channel::Sender,
+    pub(crate) receiver: kanna_secure_channel::Receiver,
+    pub(crate) authority: SealedSessionAuthority,
+    /// Subscribed *before* the pairing store was read, so a device removed
+    /// at any point after that read is announced here.
+    pub(crate) revocations: broadcast::Receiver<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum SealedAdmissionError {
+    /// This desktop has no usable channel identity; nothing sealed can be
+    /// served until that is fixed.
+    Unavailable(String),
+    /// The handshake failed to authenticate or was malformed.
+    Handshake(String),
+}
+
+impl std::fmt::Display for SealedAdmissionError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Unavailable(message) => {
+                write!(formatter, "secure channel unavailable: {message}")
+            }
+            Self::Handshake(message) => {
+                write!(formatter, "secure channel handshake refused: {message}")
+            }
+        }
+    }
+}
+
+/// Reads a secure-channel message 1, decides what the initiator may do, and
+/// produces message 2. Authentication of the phone is the handshake itself
+/// (possession of the private key behind the static it sent, encrypted to
+/// this desktop's key); *authorization* is the pairing-store lookup here.
+/// An unknown key is not refused - it is what a phone about to pair looks
+/// like - but it gets pairing-only authority and nothing more.
+pub(crate) fn admit_sealed_session(
+    state: &AppState,
+    origin: StreamOrigin,
+    first_frame: &str,
+) -> Result<AdmittedSealedSession, SealedAdmissionError> {
+    let identity = state
+        .secure_channel_identity()
+        .map_err(SealedAdmissionError::Unavailable)?;
+    let config = state.config();
+    let pending = kanna_secure_channel::PendingResponder::read_hello(
+        &identity,
+        &config.desktop_id,
+        first_frame,
+    )
+    .map_err(|error| SealedAdmissionError::Handshake(error.to_string()))?;
+    let remote_static = *pending.remote_static();
+    let encoded_remote = kanna_secure_channel::encode_key(&remote_static);
+    // Subscribe before the store is read. A device removed after this point
+    // is announced on `revocations` and ends the session in its loop; one
+    // removed before it is already gone from the store, because
+    // `remove_trusted_device` persists first and announces second. There is
+    // no ordering in which a removal goes unseen.
+    let revocations = state.subscribe_device_revocations();
+    let store = crate::pairing::PairingStore::load(Path::new(&config.pairing_store_path))
+        .map_err(SealedAdmissionError::Unavailable)?;
+    let paired_device = store
+        .device_by_channel_key(&config.desktop_id, &encoded_remote)
+        .cloned();
+    let hello_device_id = pending.initiator_hello().device_id.clone();
+    let hello = kanna_secure_channel::ResponderHello {
+        version: kanna_secure_channel::PROTOCOL_VERSION,
+        desktop_id: config.desktop_id.clone(),
+        capabilities: vec!["ksp".into(), "pairing".into()],
+    };
+    let (reply, channel) = pending
+        .accept(&hello)
+        .map_err(|error| SealedAdmissionError::Handshake(error.to_string()))?;
+    let pairing = SealedPairingContext {
+        remote_static,
+        handshake_hash: *channel.handshake_hash(),
+        origin,
+    };
+    let authority = match paired_device {
+        Some(device) => {
+            if hello_device_id
+                .as_deref()
+                .is_some_and(|declared| declared != device.device_id)
+            {
+                return Err(SealedAdmissionError::Handshake(
+                    "device id does not match the paired key".into(),
+                ));
+            }
+            SealedSessionAuthority::Device {
+                device_id: device.device_id,
+                origin,
+                pairing,
+            }
+        }
+        None => SealedSessionAuthority::PairingOnly(pairing),
+    };
+    let (sender, receiver) = channel.split();
+    Ok(AdmittedSealedSession {
+        reply,
+        sender,
+        receiver,
+        authority,
+        revocations,
+    })
+}
+
+/// Re-reads the pairing store after admission and downgrades a device
+/// authority the store no longer grants. The revocation subscription taken
+/// before the lookup already covers a removal in flight; this is the belt
+/// to that suspender, so a session never *starts* its loop holding device
+/// authority for a key that was unpaired meanwhile.
+pub(crate) fn recheck_sealed_authority(
+    state: &AppState,
+    authority: SealedSessionAuthority,
+) -> SealedSessionAuthority {
+    let SealedSessionAuthority::Device {
+        device_id,
+        origin,
+        pairing,
+    } = authority
+    else {
+        return authority;
+    };
+    let config = state.config();
+    let still_paired = crate::pairing::PairingStore::load(Path::new(&config.pairing_store_path))
+        .ok()
+        .and_then(|store| {
+            store
+                .device_by_channel_key(&config.desktop_id, &pairing.encoded_remote_static())
+                .map(|device| device.device_id.clone())
+        })
+        .is_some_and(|paired| paired == device_id);
+    if still_paired {
+        SealedSessionAuthority::Device {
+            device_id,
+            origin,
+            pairing,
+        }
+    } else {
+        log::info!(
+            "[ksp] device {device_id} was removed while its session was being admitted; \
+             the session is pairing-only"
+        );
+        SealedSessionAuthority::PairingOnly(pairing)
+    }
 }
 
 #[derive(serde::Deserialize)]
@@ -1559,117 +1758,324 @@ pub async fn handle_stream(
     auth_mode: AuthMode,
     companion_access: bool,
 ) {
-    let (mut ws_tx, mut ws_rx) = socket.split();
-    let (incoming_tx, incoming_rx) = mpsc::channel::<String>(256);
-    let (frame_tx, companion_tx, mut outbound_rx) = outbound_frame_channel_with_budget(
-        256,
-        Arc::clone(&state.companion_resources.pending_bytes),
-    );
-
-    let reader_task = tokio::spawn(async move {
-        while let Some(Ok(message)) = ws_rx.next().await {
-            match message {
-                WsMessage::Text(text) => {
-                    if incoming_tx.send(text.to_string()).await.is_err() {
-                        return;
-                    }
-                }
-                WsMessage::Close(_) => return,
-                _ => {}
-            }
-        }
-    });
-    let writer_task = tokio::spawn(async move {
-        while let Some(frame) = outbound_rx.recv().await {
-            let delivery_fence = outbound_rx.companion_delivery_fence();
-            let serialize_context = terminal_frame_context(&frame, None, "frame_serialize", None);
-            let send_context = terminal_frame_context(&frame, None, "websocket_send", None);
-            let Ok(Ok(json)) = monitored_terminal_future(
-                serialize_context,
-                terminal_perf::global_monitor().clone(),
-                tokio::task::spawn_blocking(move || serde_json::to_string(&frame)),
-            )
-            .await
-            else {
-                continue;
-            };
-            if delivery_fence
-                .as_ref()
-                .is_some_and(|fence| !fence.is_current())
-            {
-                continue;
-            }
-            let send = monitored_terminal_future(
-                send_context,
-                terminal_perf::global_monitor().clone(),
-                ws_tx.send(WsMessage::Text(json.into())),
-            );
-            if let Some(fence) = delivery_fence {
-                match await_fenced_companion_send(send, fence).await {
-                    Ok(Ok(())) => {}
-                    // A real transport failure ends the connection.
-                    Ok(Err(_)) => return,
-                    // The attachment epoch moved on while this companion frame
-                    // was blocked on backpressure: the frame is stale, not the
-                    // socket. Keep writing — clients fence by epoch, so a
-                    // half-buffered stale frame flushed later is harmless,
-                    // while returning here would leave the reader half of the
-                    // connection alive with no writer and no close frame.
-                    Err(()) => continue,
-                }
-            } else if send.await.is_err() {
-                return;
-            }
-        }
-    });
-
-    handle_stream_channels(
-        incoming_rx,
-        frame_tx,
-        companion_tx,
+    let budget = Arc::clone(&state.companion_resources.pending_bytes);
+    run_socket_session(
+        socket,
         state,
         auth_mode,
         companion_access,
+        StreamOrigin::Lan,
+        Some(budget),
+        |message| match message {
+            WsMessage::Text(text) => SocketInbound::Text(text.to_string()),
+            WsMessage::Close(_) => SocketInbound::Close,
+            _ => SocketInbound::Other,
+        },
+        |text| WsMessage::Text(text.into()),
     )
     .await;
-    reader_task.abort();
-    let _ = writer_task.await;
 }
 
+/// A relay tunnel or another `tokio-tungstenite` socket. The plaintext
+/// (legacy) authority for such a socket is decided here from the origin: a
+/// relay tunnel that does not open with a secure-channel handshake is
+/// admitted as `AlreadyAuthenticated` only while legacy mobile access is
+/// allowed, and refused otherwise.
 pub async fn handle_tungstenite_stream(
     socket: WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>,
     state: Arc<AppState>,
-    auth_mode: AuthMode,
+    origin: StreamOrigin,
 ) {
+    let auth_mode = match origin {
+        StreamOrigin::RelayTunnel => AuthMode::AlreadyAuthenticated,
+        StreamOrigin::Lan => AuthMode::RequirePairedDevice,
+    };
+    run_socket_session(
+        socket,
+        state,
+        auth_mode,
+        true,
+        origin,
+        None,
+        |message| match message {
+            TungsteniteMessage::Text(text) => SocketInbound::Text(text.to_string()),
+            TungsteniteMessage::Close(_) => SocketInbound::Close,
+            _ => SocketInbound::Other,
+        },
+        |text| TungsteniteMessage::Text(text.into()),
+    )
+    .await;
+}
+
+enum SocketInbound {
+    Text(String),
+    Close,
+    Other,
+}
+
+/// Test entry: the production runner over an in-memory text socket.
+#[cfg(test)]
+pub(crate) async fn handle_test_socket<S, E>(socket: S, state: Arc<AppState>, origin: StreamOrigin)
+where
+    S: futures_util::Stream<Item = Result<String, E>>
+        + futures_util::Sink<String>
+        + Unpin
+        + Send
+        + 'static,
+    E: Send + 'static,
+    <S as futures_util::Sink<String>>::Error: Send,
+{
+    let (auth_mode, companion_access) = match origin {
+        StreamOrigin::RelayTunnel => (AuthMode::AlreadyAuthenticated, true),
+        StreamOrigin::Lan => (AuthMode::RequirePairedDevice, false),
+    };
+    run_socket_session(
+        socket,
+        state,
+        auth_mode,
+        companion_access,
+        origin,
+        None,
+        SocketInbound::Text,
+        |text| text,
+    )
+    .await;
+}
+
+/// Session-level facts a sealed connection carries into the frame loop.
+pub(crate) struct SealedSessionInfo {
+    pub(crate) authority: Arc<SealedSessionAuthority>,
+}
+
+/// Runs one KSP connection over any WebSocket-shaped transport.
+///
+/// The first text frame decides the session's shape: a secure-channel
+/// handshake (`ksc1:` prefix) is answered and every later frame is opened
+/// and sealed by the transport halves; anything else is the legacy
+/// plaintext path, which is refused for a relay tunnel once legacy access
+/// is off. No frame is ever interpreted as KSP before that decision, and
+/// a sealed session that fails to open a frame ends immediately - nothing
+/// after a failure is delivered.
+#[allow(clippy::too_many_arguments)]
+async fn run_socket_session<S, M, E>(
+    socket: S,
+    state: Arc<AppState>,
+    plaintext_auth_mode: AuthMode,
+    plaintext_companion_access: bool,
+    origin: StreamOrigin,
+    companion_budget: Option<Arc<AtomicUsize>>,
+    inbound: fn(M) -> SocketInbound,
+    outbound: fn(String) -> M,
+) where
+    S: futures_util::Stream<Item = Result<M, E>> + futures_util::Sink<M> + Unpin + Send + 'static,
+    M: Send + 'static,
+    E: Send + 'static,
+    <S as futures_util::Sink<M>>::Error: Send,
+{
     let (mut ws_tx, mut ws_rx) = socket.split();
     let (incoming_tx, incoming_rx) = mpsc::channel::<String>(256);
-    let (frame_tx, companion_tx, mut outbound_rx) = outbound_frame_channel(256);
+    let (frame_tx, companion_tx, mut outbound_rx) = match companion_budget {
+        Some(budget) => outbound_frame_channel_with_budget(256, budget),
+        None => outbound_frame_channel(256),
+    };
+
+    // First frame, bounded: neither a silent peer nor one that sends only
+    // relay control chatter may hold a connection open unauthenticated.
+    let first = {
+        let deadline = tokio::time::sleep(FIRST_FRAME_TIMEOUT);
+        tokio::pin!(deadline);
+        loop {
+            tokio::select! {
+                _ = &mut deadline => {
+                    log::info!("[ksp] {origin:?} socket sent no first frame within {FIRST_FRAME_TIMEOUT:?}; closing");
+                    return;
+                }
+                message = ws_rx.next() => match message {
+                    Some(Ok(message)) => match inbound(message) {
+                        SocketInbound::Text(text) => {
+                            if is_relay_tunnel_control_message(&text) {
+                                continue;
+                            }
+                            break text;
+                        }
+                        SocketInbound::Close => {
+                            log::info!("[ksp] {origin:?} socket closed before its first frame");
+                            return;
+                        }
+                        SocketInbound::Other => continue,
+                    },
+                    Some(Err(_)) => {
+                        log::warn!("[ksp] {origin:?} socket failed before its first frame");
+                        return;
+                    }
+                    None => {
+                        log::info!("[ksp] {origin:?} socket ended before its first frame");
+                        return;
+                    }
+                },
+            }
+        }
+    };
+
+    let mut sealed_receiver = None;
+    let mut sealed_sender = None;
+    let mut sealed_revocations = None;
+    let (auth_mode, companion_access, sealed_info, initial_plaintext) =
+        if kanna_secure_channel::is_wire_frame(&first) {
+            match admit_sealed_session(&state, origin, &first) {
+                Ok(admitted) => {
+                    let AdmittedSealedSession {
+                        reply,
+                        sender,
+                        receiver,
+                        authority,
+                        revocations,
+                    } = admitted;
+                    let authority = recheck_sealed_authority(&state, authority);
+                    if ws_tx.send(outbound(reply)).await.is_err() {
+                        return;
+                    }
+                    let auth_mode = authority.auth_mode();
+                    let companion_access =
+                        matches!(authority, SealedSessionAuthority::Device { .. });
+                    sealed_receiver = Some(receiver);
+                    sealed_sender = Some(Arc::new(Mutex::new(sender)));
+                    sealed_revocations = authority
+                        .device_id()
+                        .map(|device_id| (device_id.to_string(), revocations));
+                    log::info!(
+                        "[ksp] sealed session admitted ({:?}, device={:?})",
+                        origin,
+                        authority.device_id()
+                    );
+                    (
+                        auth_mode,
+                        companion_access,
+                        Some(SealedSessionInfo {
+                            authority: Arc::new(authority),
+                        }),
+                        None,
+                    )
+                }
+                Err(error) => {
+                    log::warn!("[ksp] {error} ({origin:?})");
+                    // A refusal is answered in the clear: the peer has no
+                    // channel to read a sealed one, and the text carries
+                    // nothing an intermediary can use.
+                    let frame = ServerFrame::Error {
+                        task_id: None,
+                        code: match error {
+                            SealedAdmissionError::Unavailable(_) => {
+                                "secure_channel_unavailable".into()
+                            }
+                            SealedAdmissionError::Handshake(_) => "secure_channel_refused".into(),
+                        },
+                        message: error.to_string(),
+                    };
+                    if let Ok(json) = serde_json::to_string(&frame) {
+                        let _ = ws_tx.send(outbound(json)).await;
+                    }
+                    return;
+                }
+            }
+        } else {
+            if origin == StreamOrigin::RelayTunnel && !state.legacy_mobile_access_allowed() {
+                log::warn!("[ksp] refusing plaintext relay tunnel: legacy mobile access is off");
+                let frame = ServerFrame::Error {
+                    task_id: None,
+                    code: "legacy_access_refused".into(),
+                    message: "this desktop only accepts end-to-end encrypted mobile sessions; update Kanna Mobile and pair again".into(),
+                };
+                if let Ok(json) = serde_json::to_string(&frame) {
+                    let _ = ws_tx.send(outbound(json)).await;
+                }
+                return;
+            }
+            (
+                plaintext_auth_mode,
+                plaintext_companion_access,
+                None,
+                Some(first),
+            )
+        };
 
     let reader_task = tokio::spawn(async move {
+        if let Some(first) = initial_plaintext {
+            if incoming_tx.send(first).await.is_err() {
+                return;
+            }
+        }
         while let Some(Ok(message)) = ws_rx.next().await {
-            match message {
-                TungsteniteMessage::Text(text) => {
-                    if incoming_tx.send(text.to_string()).await.is_err() {
+            let text = match inbound(message) {
+                SocketInbound::Text(text) => text,
+                SocketInbound::Close => return,
+                SocketInbound::Other => continue,
+            };
+            match sealed_receiver.as_mut() {
+                None => {
+                    if incoming_tx.send(text).await.is_err() {
                         return;
                     }
                 }
-                TungsteniteMessage::Close(_) => return,
-                _ => {}
+                Some(receiver) => {
+                    let received = match receiver.open(&text) {
+                        Ok(received) => received,
+                        Err(error) => {
+                            log::warn!("[ksp] sealed session ended: {error}");
+                            return;
+                        }
+                    };
+                    for item in received {
+                        match item {
+                            kanna_secure_channel::Received::Message(bytes) => {
+                                let Ok(text) = String::from_utf8(bytes) else {
+                                    log::warn!("[ksp] sealed frame was not UTF-8; ending session");
+                                    return;
+                                };
+                                if incoming_tx.send(text).await.is_err() {
+                                    return;
+                                }
+                            }
+                            kanna_secure_channel::Received::Closed(reason) => {
+                                log::info!("[ksp] peer closed sealed session: {reason:?}");
+                                return;
+                            }
+                        }
+                    }
+                }
             }
         }
     });
+    let close_reason: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+    let writer_close_reason = Arc::clone(&close_reason);
+    let writer_sealed_sender = sealed_sender.clone();
     let writer_task = tokio::spawn(async move {
         while let Some(frame) = outbound_rx.recv().await {
             let delivery_fence = outbound_rx.companion_delivery_fence();
             let serialize_context = terminal_frame_context(&frame, None, "frame_serialize", None);
             let send_context = terminal_frame_context(&frame, None, "websocket_send", None);
-            let Ok(Ok(json)) = monitored_terminal_future(
+            let sealer = writer_sealed_sender.clone();
+            let Ok(Ok(text)) = monitored_terminal_future(
                 serialize_context,
                 terminal_perf::global_monitor().clone(),
-                tokio::task::spawn_blocking(move || serde_json::to_string(&frame)),
+                tokio::task::spawn_blocking(move || -> Result<String, String> {
+                    let json = serde_json::to_string(&frame).map_err(|error| error.to_string())?;
+                    match sealer {
+                        None => Ok(json),
+                        Some(sealer) => sealer
+                            .lock()
+                            .unwrap_or_else(|poisoned| poisoned.into_inner())
+                            .seal(json.as_bytes())
+                            .map_err(|error| error.to_string()),
+                    }
+                }),
             )
             .await
             else {
+                // A sealing failure (closed/exhausted channel) is terminal.
+                if writer_sealed_sender.is_some() {
+                    return;
+                }
                 continue;
             };
             if delivery_fence
@@ -1681,7 +2087,7 @@ pub async fn handle_tungstenite_stream(
             let send = monitored_terminal_future(
                 send_context,
                 terminal_perf::global_monitor().clone(),
-                ws_tx.send(TungsteniteMessage::Text(json.into())),
+                ws_tx.send(outbound(text)),
             );
             if let Some(fence) = delivery_fence {
                 match await_fenced_companion_send(send, fence).await {
@@ -1700,13 +2106,56 @@ pub async fn handle_tungstenite_stream(
                 return;
             }
         }
+        // The frame channel closed: the session is over. A sealed session
+        // says so in a way the peer can verify, so it can tell "the desktop
+        // hung up" from "someone cut the line".
+        if let Some(sealer) = writer_sealed_sender {
+            let reason = writer_close_reason
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .clone()
+                .unwrap_or_else(|| "server closed".to_string());
+            let close = sealer
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .seal_close(&reason);
+            if let Ok(close) = close {
+                let _ = ws_tx.send(outbound(close)).await;
+            }
+        }
     });
 
-    handle_stream_channels(incoming_rx, frame_tx, companion_tx, state, auth_mode, true).await;
+    let revocation = sealed_revocations;
+    let pairing_handshake = sealed_info
+        .as_ref()
+        .map(|info| info.authority.pairing_context().handshake_hash);
+    let closed_by_revocation = handle_stream_channels(
+        incoming_rx,
+        frame_tx,
+        companion_tx,
+        state.clone(),
+        auth_mode,
+        companion_access,
+        sealed_info,
+        revocation,
+        origin,
+    )
+    .await;
+    if closed_by_revocation {
+        *close_reason
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some("device revoked".to_string());
+    }
+    if let Some(handshake_hash) = pairing_handshake {
+        state.pairing_confirmation.abandon(&handshake_hash).await;
+    }
     reader_task.abort();
     let _ = writer_task.await;
 }
 
+/// Returns true when the loop ended because the session's device was
+/// revoked, so the transport can say so in its authenticated close.
+#[allow(clippy::too_many_arguments)]
 async fn handle_stream_channels(
     mut incoming_rx: mpsc::Receiver<String>,
     frame_tx: mpsc::Sender<ServerFrame>,
@@ -1714,9 +2163,17 @@ async fn handle_stream_channels(
     state: Arc<AppState>,
     auth_mode: AuthMode,
     companion_access: bool,
-) {
+    sealed: Option<SealedSessionInfo>,
+    revocation: Option<(String, broadcast::Receiver<String>)>,
+    origin: StreamOrigin,
+) -> bool {
     let mut terminal_geometry_changed = state.subscribe_terminal_geometry_changes();
     let mut state_change_task = None;
+    let (revoked_device_id, mut revocations) = match revocation {
+        Some((device_id, receiver)) => (Some(device_id), Some(receiver)),
+        None => (None, None),
+    };
+    let mut closed_by_revocation = false;
     let mut conn = StreamConn {
         state,
         frame_tx,
@@ -1738,11 +2195,42 @@ async fn handle_stream_channels(
         legacy_companion_tasks_on_connection: HashSet::new(),
         auth_mode,
         companion_access,
+        sealed_authority: sealed.map(|info| info.authority),
+        origin,
     };
 
     loop {
         let message = tokio::select! {
             biased;
+            revoked = async {
+                match revocations.as_mut() {
+                    Some(receiver) => receiver.recv().await,
+                    None => std::future::pending().await,
+                }
+            }, if revocations.is_some() => {
+                match revoked {
+                    Ok(device_id) if Some(&device_id) == revoked_device_id.as_ref() => {
+                        log::info!("[ksp] closing sealed session: device {device_id} was revoked");
+                        closed_by_revocation = true;
+                        break;
+                    }
+                    Ok(_) => continue,
+                    Err(broadcast::error::RecvError::Lagged(_)) => {
+                        // Re-check the store rather than guess what was missed.
+                        let config = conn.state.config();
+                        let still_trusted = revoked_device_id.as_deref().is_some_and(|device_id| {
+                            crate::pairing::PairingStore::load(Path::new(&config.pairing_store_path))
+                                .is_ok_and(|store| store.is_trusted(&config.desktop_id, device_id))
+                        });
+                        if !still_trusted {
+                            closed_by_revocation = true;
+                            break;
+                        }
+                        continue;
+                    }
+                    Err(broadcast::error::RecvError::Closed) => { revocations = None; continue; }
+                }
+            }
             changed = terminal_geometry_changed.changed(), if conn.authed => {
                 if changed.is_err() {
                     break;
@@ -1765,9 +2253,14 @@ async fn handle_stream_channels(
             Ok(frame) => {
                 // Subscribe before AuthOk can reach the client, but forward
                 // only after authentication succeeds. Failed or malformed
-                // handshakes must never receive task-state broadcasts.
-                let pending_state_changes =
-                    (!conn.authed).then(|| conn.state.subscribe_state_changes());
+                // handshakes must never receive task-state broadcasts, and
+                // neither may a pairing-only sealed session: its static key
+                // is not paired, so it gets responses to its own pairing
+                // requests and nothing that fans out (task ids, activity,
+                // output previews).
+                let pending_state_changes = (!conn.authed
+                    && conn.auth_mode != AuthMode::SealedPairing)
+                    .then(|| conn.state.subscribe_state_changes());
                 if !conn.handle(frame).await {
                     break;
                 }
@@ -1794,6 +2287,7 @@ async fn handle_stream_channels(
     if let Some(task) = state_change_task {
         task.abort();
     }
+    closed_by_revocation
 }
 
 fn is_relay_tunnel_control_message(message: &str) -> bool {
@@ -1834,6 +2328,12 @@ struct StreamConn {
     legacy_companion_tasks_on_connection: HashSet<String>,
     auth_mode: AuthMode,
     companion_access: bool,
+    /// Present for a secure-channel session; decides how `request` frames
+    /// are dispatched and what a pairing-only session may do.
+    sealed_authority: Option<Arc<SealedSessionAuthority>>,
+    /// Where the socket arrived. A relay tunnel is served only while the
+    /// account access the relay last reported allows it.
+    origin: StreamOrigin,
 }
 
 struct StreamAttachment {
@@ -2621,10 +3121,21 @@ async fn run_agent_commands(
     }
 }
 
+/// The two request paths a sealed pairing-only session may reach. Enforced
+/// here *and* by the dispatch layer inserting no other authority marker.
+fn pairing_only_request_allowed(method: &str, path: &str) -> bool {
+    let path = path.split('?').next().unwrap_or(path);
+    matches!(
+        (method.to_ascii_uppercase().as_str(), path),
+        ("POST", "/v1/pairing/sessions/claim") | ("GET", "/v1/pairing/confirmation")
+    )
+}
+
 async fn dispatch_ksp_request(
     state: Arc<AppState>,
     frame_tx: mpsc::Sender<ServerFrame>,
     request: KspRequest,
+    authority: Option<Arc<SealedSessionAuthority>>,
 ) {
     let KspRequest {
         id,
@@ -2632,14 +3143,58 @@ async fn dispatch_ksp_request(
         path,
         body,
     } = request;
+    let body = body.unwrap_or(serde_json::Value::Null);
+    let refused = match authority.as_deref() {
+        Some(SealedSessionAuthority::PairingOnly(_))
+            if !pairing_only_request_allowed(&method, &path) =>
+        {
+            Some((
+                401,
+                "this connection is not paired; only pairing requests are accepted",
+            ))
+        }
+        _ => None,
+    };
+    if let Some((status, error)) = refused {
+        let _ = frame_tx
+            .send(ServerFrame::Response {
+                id,
+                status,
+                body: Some(serde_json::json!({ "error": error, "reason": error })),
+            })
+            .await;
+        return;
+    }
     let runtime = tokio::runtime::Handle::current();
     let result = tokio::task::spawn_blocking(move || {
-        runtime.block_on(dispatch_authenticated_http_invoke(
-            state,
-            &method,
-            &path,
-            body.unwrap_or(serde_json::Value::Null),
-        ))
+        runtime.block_on(async move {
+            match authority.as_deref() {
+                None => dispatch_authenticated_http_invoke(state, &method, &path, body).await,
+                Some(SealedSessionAuthority::Device {
+                    device_id, pairing, ..
+                }) => {
+                    crate::http_api::dispatch_sealed_device_http_invoke(
+                        state,
+                        device_id.clone(),
+                        pairing.clone(),
+                        &method,
+                        &path,
+                        body,
+                    )
+                    .await
+                }
+                Some(SealedSessionAuthority::PairingOnly(context)) => {
+                    crate::http_api::dispatch_sealed_pairing_http_invoke(
+                        state,
+                        context.clone(),
+                        &method,
+                        &path,
+                        body,
+                    )
+                    .await
+                }
+            }
+        })
     })
     .await;
     let (status, body) = match result {
@@ -2662,16 +3217,26 @@ async fn dispatch_ksp_request(
         .await;
 }
 
+fn is_long_poll_request(path: &str) -> bool {
+    path.split('?').next() == Some("/v1/task-events")
+}
+
+/// Requests are budgeted in two classes so a client's task-event long polls
+/// cannot occupy every permit its short REST calls need - the same split
+/// `relay::RelayHttpInvokePermits` gives relay invokes.
 async fn run_request_worker(
     state: Arc<AppState>,
     frame_tx: mpsc::Sender<ServerFrame>,
     mut request_rx: mpsc::Receiver<KspRequest>,
+    authority: Option<Arc<SealedSessionAuthority>>,
 ) {
     let concurrency = request_concurrency();
+    let short = Arc::new(Semaphore::new(concurrency));
+    let long_poll = Arc::new(Semaphore::new(concurrency));
     let mut active = tokio::task::JoinSet::new();
 
     loop {
-        if active.len() >= concurrency {
+        if active.len() >= concurrency * 2 {
             let _ = active.join_next().await;
             continue;
         }
@@ -2681,11 +3246,20 @@ async fn run_request_worker(
                 let Some(request) = request else {
                     break;
                 };
-                active.spawn(dispatch_ksp_request(
-                    state.clone(),
-                    frame_tx.clone(),
-                    request,
-                ));
+                let permits = if is_long_poll_request(&request.path) {
+                    Arc::clone(&long_poll)
+                } else {
+                    Arc::clone(&short)
+                };
+                let state = state.clone();
+                let frame_tx = frame_tx.clone();
+                let authority = authority.clone();
+                active.spawn(async move {
+                    let Ok(_permit) = permits.acquire_owned().await else {
+                        return;
+                    };
+                    dispatch_ksp_request(state, frame_tx, request, authority).await;
+                });
             }
             completed = active.join_next(), if !active.is_empty() => {
                 let _ = completed;
@@ -2822,6 +3396,31 @@ async fn run_companion_event_worker(
             append_result,
         )
         .await;
+    }
+}
+
+/// The task a client frame addresses, for error frames that name one.
+fn client_frame_task_id(frame: &ClientFrame) -> Option<String> {
+    match frame {
+        ClientFrame::AgentInput { task_id, .. }
+        | ClientFrame::AgentPermission { task_id, .. }
+        | ClientFrame::AgentInterrupt { task_id }
+        | ClientFrame::AgentSetModel { task_id, .. }
+        | ClientFrame::TermInput { task_id, .. }
+        | ClientFrame::TermInputBoundary { task_id, .. }
+        | ClientFrame::TermInputControl { task_id, .. }
+        | ClientFrame::TermResize { task_id, .. }
+        | ClientFrame::TermViewerRegister { task_id, .. }
+        | ClientFrame::TermViewerActive { task_id }
+        | ClientFrame::TermViewerTakeover { task_id }
+        | ClientFrame::TermViewerRelease { task_id }
+        | ClientFrame::TermScrollbackRequest { task_id, .. }
+        | ClientFrame::AgentHistoryRequest { task_id, .. }
+        | ClientFrame::CompanionEvent { task_id, .. } => Some(task_id.clone()),
+        ClientFrame::Request { .. }
+        | ClientFrame::Auth { .. }
+        | ClientFrame::Attach { .. }
+        | ClientFrame::Detach { .. } => None,
     }
 }
 
@@ -3121,6 +3720,7 @@ impl StreamConn {
                 self.state.clone(),
                 self.frame_tx.clone(),
                 request_rx,
+                self.sealed_authority.clone(),
             ));
             self.requests = Some(RequestWorker { tx, task });
         }
@@ -3257,33 +3857,68 @@ impl StreamConn {
             };
         }
 
+        if self.auth_mode == AuthMode::SealedPairing
+            && !matches!(
+                &frame,
+                ClientFrame::Auth { .. } | ClientFrame::Request { .. }
+            )
+        {
+            // An unpaired phone gets exactly the pairing requests and no
+            // stream: the connection ends rather than answering an error a
+            // client could keep probing past.
+            self.error(
+                None,
+                "unauthorized",
+                "this connection is not paired; only pairing requests are accepted".into(),
+            )
+            .await;
+            return false;
+        }
+
+        if self.origin == StreamOrigin::RelayTunnel
+            && !matches!(
+                &frame,
+                ClientFrame::Auth { .. } | ClientFrame::Detach { .. }
+            )
+            && !self.state.relay_tunnel_access_allowed()
+        {
+            // The relay admitted this tunnel but cannot read what rides in
+            // it, so the account access it last reported is enforced here,
+            // for every frame that reaches a task - attach and input as much
+            // as a request - and unknown access is refused, never assumed.
+            match frame {
+                ClientFrame::Request { id, .. } => {
+                    self.send(ServerFrame::Response {
+                        id,
+                        status: 402,
+                        body: Some(serde_json::json!({
+                            "error": "subscription_required",
+                            "reason": "subscription_required",
+                        })),
+                    })
+                    .await;
+                }
+                other => {
+                    self.error(
+                        client_frame_task_id(&other),
+                        "subscription_required",
+                        "an active Kanna Cloud subscription is required to reach this desktop \
+                         through the relay"
+                            .into(),
+                    )
+                    .await;
+                }
+            }
+            return true;
+        }
+
         if self.auth_mode == AuthMode::LegacyReadOnlyOrPaired
             && !matches!(
                 &frame,
                 ClientFrame::Auth { .. } | ClientFrame::Attach { .. } | ClientFrame::Detach { .. }
             )
         {
-            let task_id = match &frame {
-                ClientFrame::AgentInput { task_id, .. }
-                | ClientFrame::AgentPermission { task_id, .. }
-                | ClientFrame::AgentInterrupt { task_id }
-                | ClientFrame::AgentSetModel { task_id, .. }
-                | ClientFrame::TermInput { task_id, .. }
-                | ClientFrame::TermInputBoundary { task_id, .. }
-                | ClientFrame::TermInputControl { task_id, .. }
-                | ClientFrame::TermResize { task_id, .. }
-                | ClientFrame::TermViewerRegister { task_id, .. }
-                | ClientFrame::TermViewerActive { task_id }
-                | ClientFrame::TermViewerTakeover { task_id }
-                | ClientFrame::TermViewerRelease { task_id }
-                | ClientFrame::TermScrollbackRequest { task_id, .. }
-                | ClientFrame::AgentHistoryRequest { task_id, .. }
-                | ClientFrame::CompanionEvent { task_id, .. } => Some(task_id.clone()),
-                ClientFrame::Request { .. }
-                | ClientFrame::Auth { .. }
-                | ClientFrame::Attach { .. }
-                | ClientFrame::Detach { .. } => None,
-            };
+            let task_id = client_frame_task_id(&frame);
             self.error(
                 task_id,
                 "unauthorized",
@@ -3660,6 +4295,10 @@ impl StreamConn {
     ) -> bool {
         let valid = match self.auth_mode {
             AuthMode::AllowEmpty | AuthMode::AlreadyAuthenticated => true,
+            // The handshake authenticated this session; a credential in the
+            // frame is neither needed nor trusted (a bearer inside a sealed
+            // channel would only be a secret to leak).
+            AuthMode::SealedDevice | AuthMode::SealedPairing => true,
             AuthMode::LegacyReadOnlyOrPaired => match credential.as_deref() {
                 Some(value) => self.paired_device_credential_matches(value),
                 None => true,
@@ -3723,6 +4362,11 @@ impl StreamConn {
         let Ok(credential) = serde_json::from_str::<PairedDeviceCredential>(credential) else {
             return false;
         };
+        // The bearer device secret is the legacy credential. Once legacy
+        // access is off, only a secure-channel handshake proves a device.
+        if !self.state.legacy_mobile_access_allowed() {
+            return false;
+        }
         let config = self.state.config();
         crate::pairing::PairingStore::load(Path::new(&config.pairing_store_path)).is_ok_and(
             |store| {
@@ -6070,6 +6714,11 @@ mod tests {
     const LIVENESS_WAIT: Duration = Duration::from_secs(10);
 
     fn test_config(desktop_id: &str, desktop_name: &str) -> crate::config::Config {
+        let db_path = crate::db::Db::test_db_path(desktop_id);
+        // The server migrates its database before serving; a stream test
+        // that reads settings (the legacy mobile access switch, which fails
+        // closed on an unreadable database) needs the same.
+        crate::db::Db::open_for_tests(&db_path).expect("open test db");
         crate::config::Config {
             relay_url: "wss://relay.example".to_string(),
             device_token: "device-token".to_string(),
@@ -6077,7 +6726,7 @@ mod tests {
             firebase_auth_emulator_url: Some("http://127.0.0.1:9099".to_string()),
             firebase_firestore_emulator_host: Some("127.0.0.1:8080".to_string()),
             daemon_dir: crate::test_paths::unique_test_path_string("kanna-daemon"),
-            db_path: crate::db::Db::test_db_path(desktop_id),
+            db_path,
             kanna_cli_path: None,
             desktop_id: desktop_id.to_string(),
             desktop_secret: Some("desktop-secret".to_string()),
@@ -6089,7 +6738,10 @@ mod tests {
             transfer_port: 4455,
             lan_routing_port: 4460,
             activity_event_debounce_seconds: 300,
-            pairing_store_path: crate::test_paths::unique_test_file("kanna-pairings", "json"),
+            pairing_store_path: crate::test_paths::unique_test_path("kanna-pairings")
+                .join("pairings.json")
+                .to_string_lossy()
+                .to_string(),
         }
     }
 
@@ -6820,6 +7472,8 @@ mod tests {
                 legacy_companion_tasks_on_connection: HashSet::new(),
                 auth_mode: AuthMode::AllowEmpty,
                 companion_access: true,
+                sealed_authority: None,
+                origin: StreamOrigin::Lan,
             },
             outbound_rx,
         )
@@ -8699,6 +9353,9 @@ mod tests {
             state,
             AuthMode::AllowEmpty,
             true,
+            None,
+            None,
+            StreamOrigin::Lan,
         ));
 
         // A future client may advertise capabilities this build has never
@@ -9868,6 +10525,8 @@ mod tests {
                 legacy_companion_tasks_on_connection: HashSet::new(),
                 auth_mode: AuthMode::AllowEmpty,
                 companion_access: true,
+                sealed_authority: None,
+                origin: StreamOrigin::Lan,
             },
             outbound_rx,
         )
@@ -9982,6 +10641,8 @@ mod tests {
             legacy_companion_tasks_on_connection: HashSet::new(),
             auth_mode: AuthMode::AllowEmpty,
             companion_access: true,
+            sealed_authority: None,
+            origin: StreamOrigin::Lan,
         };
 
         for index in 0..128 {
@@ -10198,6 +10859,7 @@ mod tests {
                     "expectedActivityRevision": 1,
                 })),
             },
+            None,
         )
         .await;
         dispatch_ksp_request(
@@ -10209,6 +10871,7 @@ mod tests {
                 path: "/v1/tasks/task-legacy/actions/mark-read".into(),
                 body: None,
             },
+            None,
         )
         .await;
 
@@ -10606,6 +11269,8 @@ mod tests {
             legacy_companion_tasks_on_connection: HashSet::new(),
             auth_mode: AuthMode::AllowEmpty,
             companion_access: true,
+            sealed_authority: None,
+            origin: StreamOrigin::Lan,
         };
 
         // Queue the complete sequence while the daemon is unavailable. The
@@ -10700,6 +11365,9 @@ mod tests {
             Arc::clone(&state),
             AuthMode::AllowEmpty,
             true,
+            None,
+            None,
+            StreamOrigin::Lan,
         ));
         incoming_tx
             .send(serde_json::to_string(&client_auth_frame()).unwrap())
@@ -10729,6 +11397,9 @@ mod tests {
             Arc::clone(&state),
             AuthMode::AllowEmpty,
             true,
+            None,
+            None,
+            StreamOrigin::Lan,
         ));
         incoming_tx
             .send(serde_json::to_string(&client_auth_frame()).unwrap())
@@ -11511,6 +12182,8 @@ mod tests {
             legacy_companion_tasks_on_connection: HashSet::new(),
             auth_mode: AuthMode::AllowEmpty,
             companion_access: true,
+            sealed_authority: None,
+            origin: StreamOrigin::Lan,
         };
 
         conn.replace_terminal_control_route("task-route", "daemon-session-old".into())
@@ -11597,6 +12270,8 @@ mod tests {
             legacy_companion_tasks_on_connection: HashSet::new(),
             auth_mode: AuthMode::AllowEmpty,
             companion_access: true,
+            sealed_authority: None,
+            origin: StreamOrigin::Lan,
         };
 
         conn.enqueue_terminal_control(
@@ -11649,6 +12324,8 @@ mod tests {
             legacy_companion_tasks_on_connection: HashSet::new(),
             auth_mode: AuthMode::AllowEmpty,
             companion_access: true,
+            sealed_authority: None,
+            origin: StreamOrigin::Lan,
         };
 
         conn.enqueue_terminal_control(
@@ -11718,6 +12395,8 @@ mod tests {
             legacy_companion_tasks_on_connection: HashSet::new(),
             auth_mode: AuthMode::AllowEmpty,
             companion_access: true,
+            sealed_authority: None,
+            origin: StreamOrigin::Lan,
         };
 
         conn.replace_terminal_control_route("task-route", "daemon-session-old".into())
@@ -11788,6 +12467,8 @@ mod tests {
             legacy_companion_tasks_on_connection: HashSet::new(),
             auth_mode: AuthMode::AllowEmpty,
             companion_access: true,
+            sealed_authority: None,
+            origin: StreamOrigin::Lan,
         };
         conn.replace_terminal_control_route("task-detach", "daemon-session-detach".into())
             .await;
@@ -11901,6 +12582,8 @@ mod tests {
             legacy_companion_tasks_on_connection: HashSet::new(),
             auth_mode: AuthMode::AllowEmpty,
             companion_access: true,
+            sealed_authority: None,
+            origin: StreamOrigin::Lan,
         };
 
         conn.attach(
@@ -13607,6 +14290,9 @@ mod tests {
             state,
             AuthMode::RequireCredential,
             true,
+            None,
+            None,
+            StreamOrigin::Lan,
         ));
 
         incoming_tx
@@ -13644,6 +14330,9 @@ mod tests {
             Arc::clone(&state),
             AuthMode::RequirePairedDevice,
             false,
+            None,
+            None,
+            StreamOrigin::Lan,
         ));
         // A malformed frame is a barrier: the connection has started, but
         // has not authenticated. A paused clock proves absence without a
@@ -13700,6 +14389,9 @@ mod tests {
             state,
             AuthMode::RequirePairedDevice,
             false,
+            None,
+            None,
+            StreamOrigin::Lan,
         ));
 
         incoming_tx
@@ -13757,6 +14449,9 @@ mod tests {
                 state,
                 AuthMode::RequirePairedDevice,
                 false,
+                None,
+                None,
+                StreamOrigin::Lan,
             ));
 
             incoming_tx
@@ -13923,6 +14618,9 @@ mod tests {
             state,
             AuthMode::AllowEmpty,
             false,
+            None,
+            None,
+            StreamOrigin::Lan,
         ));
 
         incoming_tx
@@ -14098,6 +14796,9 @@ mod tests {
                 state,
                 AuthMode::RequirePairedDevice,
                 false,
+                None,
+                None,
+                StreamOrigin::Lan,
             ));
 
             incoming_tx
@@ -14158,6 +14859,9 @@ mod tests {
             state,
             AuthMode::RequirePairedDevice,
             false,
+            None,
+            None,
+            StreamOrigin::Lan,
         ));
 
         incoming_tx
@@ -14219,6 +14923,9 @@ mod tests {
             state,
             AuthMode::AllowEmpty,
             false,
+            None,
+            None,
+            StreamOrigin::Lan,
         ));
         incoming_tx
             .send(serde_json::to_string(&client_auth_frame()).unwrap())
@@ -14280,6 +14987,9 @@ mod tests {
             state,
             AuthMode::RequireCredential,
             true,
+            None,
+            None,
+            StreamOrigin::Lan,
         ));
 
         incoming_tx
@@ -14314,6 +15024,9 @@ mod tests {
             state,
             AuthMode::RequireCredential,
             true,
+            None,
+            None,
+            StreamOrigin::Lan,
         ));
 
         incoming_tx

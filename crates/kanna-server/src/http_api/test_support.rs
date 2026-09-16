@@ -57,7 +57,10 @@ pub(crate) fn test_router(desktop_id: &str, desktop_name: &str) -> Router {
         transfer_port: 4455,
         lan_routing_port: 4460,
         activity_event_debounce_seconds: 300,
-        pairing_store_path: crate::test_paths::unique_test_file("kanna-pairings", "json"),
+        pairing_store_path: crate::test_paths::unique_test_path("kanna-pairings")
+            .join("pairings.json")
+            .to_string_lossy()
+            .to_string(),
     };
     let _ = Db::open_for_tests(&config.db_path).expect("open test db");
     router(Arc::new(AppState::new(config)))
@@ -87,7 +90,10 @@ pub(super) fn test_router_with_repo_checkout_root(
         transfer_port: 4455,
         lan_routing_port: 4460,
         activity_event_debounce_seconds: 300,
-        pairing_store_path: crate::test_paths::unique_test_file("kanna-pairings", "json"),
+        pairing_store_path: crate::test_paths::unique_test_path("kanna-pairings")
+            .join("pairings.json")
+            .to_string_lossy()
+            .to_string(),
     };
     let _ = Db::open_for_tests(&config.db_path).expect("open test db");
     let mut state = AppState::new(config);
@@ -119,7 +125,10 @@ pub(super) fn test_router_with_seed(
         transfer_port: 4455,
         lan_routing_port: 4460,
         activity_event_debounce_seconds: 300,
-        pairing_store_path: crate::test_paths::unique_test_file("kanna-pairings", "json"),
+        pairing_store_path: crate::test_paths::unique_test_path("kanna-pairings")
+            .join("pairings.json")
+            .to_string_lossy()
+            .to_string(),
     };
     let db = Db::open_for_tests(&config.db_path).expect("open test db");
     seed(&db);
@@ -151,7 +160,10 @@ pub(super) fn test_router_with_seed_and_forge(
         transfer_port: 4455,
         lan_routing_port: 4460,
         activity_event_debounce_seconds: 300,
-        pairing_store_path: crate::test_paths::unique_test_file("kanna-pairings", "json"),
+        pairing_store_path: crate::test_paths::unique_test_path("kanna-pairings")
+            .join("pairings.json")
+            .to_string_lossy()
+            .to_string(),
     };
     let db = Db::open_for_tests(&config.db_path).expect("open test db");
     seed(&db);
@@ -184,7 +196,10 @@ pub(crate) fn test_state_with_seed(
         transfer_port: 4455,
         lan_routing_port: 4460,
         activity_event_debounce_seconds: 300,
-        pairing_store_path: crate::test_paths::unique_test_file("kanna-pairings-invoke", "json"),
+        pairing_store_path: crate::test_paths::unique_test_path("kanna-pairings-invoke")
+            .join("pairings.json")
+            .to_string_lossy()
+            .to_string(),
     };
     let db = Db::open_for_tests(&config.db_path).expect("open test db");
     seed(&db);
@@ -228,7 +243,10 @@ pub(crate) fn test_state_with_daemon_dir_and_debounce(
         transfer_port: 4455,
         lan_routing_port: 4460,
         activity_event_debounce_seconds,
-        pairing_store_path: crate::test_paths::unique_test_file("kanna-pairings-daemon", "json"),
+        pairing_store_path: crate::test_paths::unique_test_path("kanna-pairings-daemon")
+            .join("pairings.json")
+            .to_string_lossy()
+            .to_string(),
     };
     let db = Db::open_for_tests(&config.db_path).expect("open test db");
     seed(&db);
@@ -259,10 +277,10 @@ pub(super) fn test_state_with_task_input_sender(
         transfer_port: 4455,
         lan_routing_port: 4460,
         activity_event_debounce_seconds: 300,
-        pairing_store_path: crate::test_paths::unique_test_file(
-            "kanna-pairings-invoke-input",
-            "json",
-        ),
+        pairing_store_path: crate::test_paths::unique_test_path("kanna-pairings-invoke-input")
+            .join("pairings.json")
+            .to_string_lossy()
+            .to_string(),
     };
     let _ = Db::open_for_tests(&config.db_path).expect("open test db");
     Arc::new(AppState::with_task_input_sender(config, task_input_sender))
@@ -293,10 +311,12 @@ pub(super) fn test_state_with_seed_and_task_input_sender(
         transfer_port: 4455,
         lan_routing_port: 4460,
         activity_event_debounce_seconds: 300,
-        pairing_store_path: crate::test_paths::unique_test_file(
+        pairing_store_path: crate::test_paths::unique_test_path(
             "kanna-pairings-invoke-input-seeded",
-            "json",
-        ),
+        )
+        .join("pairings.json")
+        .to_string_lossy()
+        .to_string(),
     };
     let db = Db::open_for_tests(&config.db_path).expect("open test db");
     seed(&db);
@@ -327,7 +347,10 @@ pub(super) fn test_router_with_task_creator(
         transfer_port: 4455,
         lan_routing_port: 4460,
         activity_event_debounce_seconds: 300,
-        pairing_store_path: crate::test_paths::unique_test_file("kanna-pairings", "json"),
+        pairing_store_path: crate::test_paths::unique_test_path("kanna-pairings")
+            .join("pairings.json")
+            .to_string_lossy()
+            .to_string(),
     };
     let _ = Db::open_for_tests(&config.db_path).expect("open test db");
     router(Arc::new(AppState::with_task_creator(config, task_creator)))
@@ -358,7 +381,10 @@ pub(super) fn test_router_with_seed_and_task_creator(
         transfer_port: 4455,
         lan_routing_port: 4460,
         activity_event_debounce_seconds: 300,
-        pairing_store_path: crate::test_paths::unique_test_file("kanna-pairings", "json"),
+        pairing_store_path: crate::test_paths::unique_test_path("kanna-pairings")
+            .join("pairings.json")
+            .to_string_lossy()
+            .to_string(),
     };
     let db = Db::open_for_tests(&config.db_path).expect("open test db");
     seed(&db);
@@ -389,7 +415,10 @@ pub(super) fn test_router_with_merge_agent_runner(
         transfer_port: 4455,
         lan_routing_port: 4460,
         activity_event_debounce_seconds: 300,
-        pairing_store_path: crate::test_paths::unique_test_file("kanna-pairings", "json"),
+        pairing_store_path: crate::test_paths::unique_test_path("kanna-pairings")
+            .join("pairings.json")
+            .to_string_lossy()
+            .to_string(),
     };
     let _ = Db::open_for_tests(&config.db_path).expect("open test db");
     router(Arc::new(AppState::with_merge_agent_runner(
@@ -422,7 +451,10 @@ pub(super) fn test_router_with_task_input_sender(
         transfer_port: 4455,
         lan_routing_port: 4460,
         activity_event_debounce_seconds: 300,
-        pairing_store_path: crate::test_paths::unique_test_file("kanna-pairings", "json"),
+        pairing_store_path: crate::test_paths::unique_test_path("kanna-pairings")
+            .join("pairings.json")
+            .to_string_lossy()
+            .to_string(),
     };
     let _ = Db::open_for_tests(&config.db_path).expect("open test db");
     router(Arc::new(AppState::with_task_input_sender(
@@ -455,7 +487,10 @@ pub(super) fn test_router_with_task_closer(
         transfer_port: 4455,
         lan_routing_port: 4460,
         activity_event_debounce_seconds: 300,
-        pairing_store_path: crate::test_paths::unique_test_file("kanna-pairings", "json"),
+        pairing_store_path: crate::test_paths::unique_test_path("kanna-pairings")
+            .join("pairings.json")
+            .to_string_lossy()
+            .to_string(),
     };
     seed_test_mutation_tasks(&config, &["task-1", "a1b2c3d4"]);
     router(Arc::new(AppState::with_task_closer(config, task_closer)))
@@ -485,7 +520,10 @@ pub(super) fn test_router_with_stage_advancer(
         transfer_port: 4455,
         lan_routing_port: 4460,
         activity_event_debounce_seconds: 300,
-        pairing_store_path: crate::test_paths::unique_test_file("kanna-pairings", "json"),
+        pairing_store_path: crate::test_paths::unique_test_path("kanna-pairings")
+            .join("pairings.json")
+            .to_string_lossy()
+            .to_string(),
     };
     seed_test_mutation_tasks(&config, &["task-1"]);
     router(Arc::new(AppState::with_stage_advancer(
@@ -518,7 +556,10 @@ pub(super) fn test_router_with_stage_rerunner(
         transfer_port: 4455,
         lan_routing_port: 4460,
         activity_event_debounce_seconds: 300,
-        pairing_store_path: crate::test_paths::unique_test_file("kanna-pairings-rerun", "json"),
+        pairing_store_path: crate::test_paths::unique_test_path("kanna-pairings-rerun")
+            .join("pairings.json")
+            .to_string_lossy()
+            .to_string(),
     };
     seed_test_mutation_tasks(&config, &["task-1"]);
     router(Arc::new(AppState::with_stage_rerunner(
@@ -551,7 +592,10 @@ pub(super) fn test_router_with_stage_completer(
         transfer_port: 4455,
         lan_routing_port: 4460,
         activity_event_debounce_seconds: 300,
-        pairing_store_path: crate::test_paths::unique_test_file("kanna-pairings", "json"),
+        pairing_store_path: crate::test_paths::unique_test_path("kanna-pairings")
+            .join("pairings.json")
+            .to_string_lossy()
+            .to_string(),
     };
     seed_test_mutation_tasks(&config, &["task-1"]);
     router(Arc::new(AppState::with_stage_completer(
@@ -584,7 +628,10 @@ pub(super) fn test_router_with_revision_requester(
         transfer_port: 4455,
         lan_routing_port: 4460,
         activity_event_debounce_seconds: 300,
-        pairing_store_path: crate::test_paths::unique_test_file("kanna-pairings", "json"),
+        pairing_store_path: crate::test_paths::unique_test_path("kanna-pairings")
+            .join("pairings.json")
+            .to_string_lossy()
+            .to_string(),
     };
     seed_test_mutation_tasks(&config, &["review-task"]);
     router(Arc::new(AppState::with_revision_requester(

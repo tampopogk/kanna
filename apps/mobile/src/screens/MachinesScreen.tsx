@@ -3,11 +3,14 @@ import { Alert, Pressable, ScrollView, StyleSheet, Text, View } from "react-nati
 import { MachinePairingSheet } from "../components/MachinePairingSheet";
 import { MOBILE_E2E_IDS } from "../e2eTestIds";
 import type { MobileMachine } from "../state/machineInventory";
+import { secureChannelStatusLabel } from "../lib/security/secureChannelPeer";
 
 interface MachinesScreenProps {
   machines: MobileMachine[];
   sourceWarnings: { account: string | null; local: string | null };
   pairingVisible: boolean;
+  /** Short authentication string a typed-code pairing is waiting on. */
+  pairingConfirmationSas?: string | null;
   onBack(): void;
   onOpenPairing(): void;
   onClosePairing(): void;
@@ -90,6 +93,7 @@ export function MachinesScreen(props: MachinesScreenProps) {
 
       <MachinePairingSheet
         visible={props.pairingVisible}
+        confirmationSas={props.pairingConfirmationSas ?? null}
         onClose={props.onClosePairing}
         onPairCode={props.onPairCode}
         onPairPayload={props.onPairPayload}
@@ -152,6 +156,20 @@ function MachineSection({
             ) : null}
           </View>
           <Text style={styles.availability}>{availabilityLabel(machine)}</Text>
+          {machine.secureChannel ? (
+            <Text
+              style={
+                machine.secureChannel.mode === "sealed"
+                  ? styles.securitySealed
+                  : machine.secureChannel.mode === "legacy"
+                    ? styles.securityLegacy
+                    : styles.securityRefused
+              }
+              testID={MOBILE_E2E_IDS.machineSecurity(machine.desktopId)}
+            >
+              {secureChannelStatusLabel(machine.secureChannel)}
+            </Text>
+          ) : null}
         </View>
       ))}
     </View>
@@ -205,6 +223,9 @@ const styles = StyleSheet.create({
   pill: { backgroundColor: "#172843", borderRadius: 999, paddingHorizontal: 9, paddingVertical: 4 },
   pillLabel: { color: "#9EB6DC", fontSize: 10, fontWeight: "800", textTransform: "uppercase" },
   availability: { color: "#AABAD1", fontSize: 13 },
+  securitySealed: { color: "#7FD1A8", fontSize: 12, fontWeight: "700", marginTop: 6 },
+  securityLegacy: { color: "#E3B34C", fontSize: 12, fontWeight: "700", marginTop: 6 },
+  securityRefused: { color: "#F08A8A", fontSize: 12, fontWeight: "700", marginTop: 6 },
   remove: { color: "#FFAAA6", fontSize: 13, fontWeight: "700" },
   warning: { backgroundColor: "#2A2315", borderColor: "#5C4A23", borderRadius: 14, borderWidth: 1, gap: 3, padding: 12 },
   warningLabel: { color: "#E7C978", fontSize: 11, fontWeight: "800", textTransform: "uppercase" },

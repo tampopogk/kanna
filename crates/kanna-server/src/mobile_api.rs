@@ -80,6 +80,17 @@ pub struct MobileServerStatus {
     /// attach control rather than sending into that silence.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub task_input_attachment_version: Option<u8>,
+    /// This desktop's secure-channel public key (unpadded base64url X25519),
+    /// present when the desktop can serve end-to-end encrypted sessions.
+    /// Read over plaintext LAN it is *not* a trust anchor - a typed-code
+    /// pairing that starts from it must confirm the short authentication
+    /// string - but its presence is the capability signal a phone uses to
+    /// decide that a sealed handshake is worth attempting.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub channel_public_key: Option<String>,
+    /// Version of the secure-channel wire protocol this build serves.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub secure_channel_version: Option<u16>,
     /// Agent-facing tool names this build serves, read from the bundled
     /// `kanna-tool-catalog` it was compiled against.
     ///
@@ -1945,6 +1956,8 @@ pub fn build_mobile_server_status(
         pairing_code,
         ksp_stream_version: Some(2),
         task_input_attachment_version: Some(TASK_INPUT_ATTACHMENT_VERSION),
+        channel_public_key: None,
+        secure_channel_version: None,
         agent_providers: Some(crate::agent_inventory::installed_agent_providers()),
         agent_api_tools: Some(
             kanna_tool_catalog::bundled_catalog()

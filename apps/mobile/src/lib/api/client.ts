@@ -15,6 +15,7 @@ import type {
   AbortTaskCreationRequest,
   CreateTaskRequest,
   CreateTaskResponse,
+  MobileBuildReport,
   RepoSummary,
   RepoCheckoutOperation,
   StartRepoCheckoutRequest,
@@ -193,6 +194,10 @@ export interface KannaTransport {
   getTaskRouteIdentity?(taskId: string): string;
   getStatus(): Promise<MobileServerStatus>;
   reissuePushPairingCertificate?(): Promise<PushPairingMaterial>;
+  /** Reports this installation's build to a paired desktop, over whatever
+   * authenticated path the transport uses (sealed request or legacy
+   * headers). Absent on transports with no paired identity. */
+  reportMobileBuild?(report: MobileBuildReport): Promise<void>;
   listDesktops(): Promise<DesktopSummary[]>;
   listRepos(): Promise<RepoSummary[]>;
   startRepoCheckout?(
@@ -268,6 +273,7 @@ export interface KannaTransport {
 }
 
 export interface KannaClient {
+  reportMobileBuild?(report: MobileBuildReport): Promise<void>;
   observeDesktopTaskSummaries?(
     desktopId: string,
     listener: (event: TaskSummaryStreamEvent) => void
@@ -386,6 +392,7 @@ export class RepoNotRegisteredError extends TaskCreationError {
 
 export function createKannaClient(transport: KannaTransport): KannaClient {
   const reissuePushPairingCertificate = transport.reissuePushPairingCertificate;
+  const reportMobileBuild = transport.reportMobileBuild;
   const resumeTask = transport.resumeTask;
   return {
     ...(transport.observeDesktopTaskSummaries
@@ -405,6 +412,12 @@ export function createKannaClient(transport: KannaTransport): KannaClient {
       ? {
           reissuePushPairingCertificate: () =>
             reissuePushPairingCertificate.call(transport)
+        }
+      : {}),
+    ...(reportMobileBuild
+      ? {
+          reportMobileBuild: (report: MobileBuildReport) =>
+            reportMobileBuild.call(transport, report)
         }
       : {}),
     listDesktops: () => transport.listDesktops(),

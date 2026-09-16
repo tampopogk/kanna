@@ -131,9 +131,10 @@ function AppContent() {
     () => buildMachineInventory({
       accountDesktops: state.accountDesktops,
       manualDesktops: state.trustedDesktops,
-      liveLanDesktops: state.liveLanDesktops
+      liveLanDesktops: state.liveLanDesktops,
+      secureChannelStates: state.secureChannelStates
     }),
-    [state.accountDesktops, state.liveLanDesktops, state.trustedDesktops]
+    [state.accountDesktops, state.liveLanDesktops, state.trustedDesktops, state.secureChannelStates]
   );
   const machineSummary = useMemo(() => summarizeMachines(machines), [machines]);
   const mobileExtra = readKannaExpoExtra(readExpoConfig());

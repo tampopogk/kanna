@@ -41,8 +41,7 @@ pub(crate) fn atomic_write_0600(path: &Path, contents: &str) -> Result<(), Strin
     // Belt and suspenders: reassert the mode explicitly rather than relying
     // solely on `create_new` + `mode()` having applied it to the file this
     // process just created.
-    if let Err(error) =
-        std::fs::set_permissions(&temp_path, std::fs::Permissions::from_mode(0o600))
+    if let Err(error) = std::fs::set_permissions(&temp_path, std::fs::Permissions::from_mode(0o600))
     {
         let _ = std::fs::remove_file(&temp_path);
         return Err(format!(
@@ -69,11 +68,19 @@ pub(crate) fn atomic_write_0600(path: &Path, contents: &str) -> Result<(), Strin
 /// collision (accidental or adversarial) fails the write rather than
 /// silently opening through whatever is already there.
 fn unique_temp_path(path: &Path) -> PathBuf {
+    // The clock alone is not unique: macOS reports `SystemTime` at
+    // microsecond resolution, so two concurrent writers in one process (the
+    // test suite does exactly this) can draw the same nanos and then race
+    // `create_new` for one name. A process-wide counter makes every temp
+    // name in this process distinct regardless of timing; the pid keeps
+    // processes apart.
+    static NEXT_TEMP_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|duration| duration.as_nanos())
         .unwrap_or(0);
-    path.with_extension(format!("tmp-{}-{nanos}", std::process::id()))
+    let sequence = NEXT_TEMP_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    path.with_extension(format!("tmp-{}-{nanos}-{sequence}", std::process::id()))
 }
 
 #[cfg(test)]

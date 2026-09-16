@@ -7252,10 +7252,27 @@ async fn create_pairing_session_route_returns_pairing_payload() {
     assert_eq!(pairing.desktop_name, "Studio Mac");
     assert_eq!(pairing.lan_port, 48120);
     assert_eq!(pairing.code.len(), 6);
+    // A desktop with a secure-channel identity offers the key-bearing QR:
+    // version, desktop, code, the channel key (base32) and the QR-only
+    // secret, all in QR alphanumeric mode.
+    let channel_key = pairing
+        .channel_public_key
+        .as_deref()
+        .expect("pairing session advertises the channel key");
+    let fields: Vec<&str> = pairing.pairing_payload.split(':').collect();
+    assert_eq!(fields.len(), 5, "{}", pairing.pairing_payload);
+    assert_eq!(fields[0], "KANNA2");
+    assert_eq!(fields[1], "DESKTOP-1");
+    assert_eq!(fields[2], pairing.code);
     assert_eq!(
-        pairing.pairing_payload,
-        format!("KANNA1:DESKTOP-1:{}", pairing.code)
+        fields[3],
+        crate::pairing::base32_encode(&kanna_secure_channel::decode_key(channel_key).unwrap())
     );
+    assert_eq!(fields[4].len(), 26);
+    assert!(pairing
+        .pairing_payload
+        .chars()
+        .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == ':' || c == '-'));
 }
 
 #[tokio::test]
@@ -8636,6 +8653,7 @@ async fn every_registered_http_route_denies_unpaired_lan_by_default() {
                 (method, pattern),
                 ("GET" | "HEAD", "/v1/status" | "/v1/stream" | "/v2/stream")
                     | ("POST", "/v1/pairing/sessions/claim")
+                    | ("GET", "/v1/pairing/confirmation")
             ) {
                 continue;
             }

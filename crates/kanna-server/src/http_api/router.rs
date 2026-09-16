@@ -12,6 +12,7 @@ use super::e2e_mobile_controls::{gate_direct_lan_http, update_e2e_mobile_machine
 use super::e2e_sql::{execute_e2e_server_work, execute_e2e_sql};
 use super::ksp::{ksp_stream, legacy_ksp_stream};
 use super::lan_bootstrap::bootstrap_lan_trust;
+use super::lan_trust::TrustedLanDeviceAccess;
 use super::lan_trust::{
     attach_trusted_lan_device, require_http_access, require_local_client_authority,
 };
@@ -19,8 +20,9 @@ use super::machine_stats::machine_stats;
 use super::mobile_notifications::{mobile_push_registration, notify_mobile};
 use super::operator_events::post_operator_events;
 use super::pairing::{
-    claim_pairing_session, create_pairing_session, mobile_builds, reissue_push_pairing_certificate,
-    remove_trusted_device, report_mobile_build,
+    claim_pairing_session, confirm_pending_pairing, create_pairing_session, mobile_builds,
+    pairing_confirmation, pending_pairing_confirmation, reissue_push_pairing_certificate,
+    reject_pending_pairing, remove_trusted_device, report_mobile_build,
 };
 use super::preview::{close_task_preview, open_task_preview};
 use super::repo_browser::{list_task_directory, read_task_file_range};
@@ -32,6 +34,7 @@ use super::repos::{
     list_repo_agents, list_repo_tasks, list_repos, patch_repo, reconcile_repo_metadata,
     refresh_repo_origin, reorder_repos, start_repo_checkout,
 };
+use super::secure_channel::SealedPairingContext;
 use super::settings::{delete_setting, get_setting, put_cloud_transfer_identity, put_setting};
 use super::signal_agent::{
     find_local_singletons, release_closed_singleton, signal_agent, signal_merge_handoff,
@@ -486,6 +489,19 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/v1/mobile/builds", get(mobile_builds))
         .route("/v1/pairing/sessions", post(create_pairing_session))
         .route("/v1/pairing/sessions/claim", post(claim_pairing_session))
+        .route("/v1/pairing/confirmation", get(pairing_confirmation))
+        .route(
+            "/v1/pairing/pending-confirmation",
+            get(pending_pairing_confirmation),
+        )
+        .route(
+            "/v1/pairing/pending-confirmation/confirm",
+            post(confirm_pending_pairing),
+        )
+        .route(
+            "/v1/pairing/pending-confirmation/reject",
+            post(reject_pending_pairing),
+        )
         .route(
             "/v1/pairing/push-certificate",
             post(reissue_push_pairing_certificate),
@@ -724,6 +740,45 @@ pub async fn dispatch_authenticated_lan_http_invoke(
     .await
 }
 
+/// Dispatches a request from a secure-channel session whose static key
+/// matched a paired device. The request carries exactly what a paired
+/// device's own LAN request carries - `TrustedLanDeviceAccess` - so the
+/// route set is the LAN-paired one over both transports: task control and
+/// files yes, desktop-local control (`DesktopLocalAccess`) no, relay-attested
+/// desktop-to-desktop routes no. Deliberately *not* `AuthenticatedHttpInvoke`,
+/// which is the relay's account-level marker and grants more.
+pub async fn dispatch_sealed_device_http_invoke(
+    state: Arc<AppState>,
+    device_id: String,
+    pairing: SealedPairingContext,
+    method: &str,
+    path: &str,
+    body: serde_json::Value,
+) -> HttpInvokeResponse {
+    dispatch_http_invoke_with_extensions(state, method, path, body, move |extensions| {
+        extensions.insert(TrustedLanDeviceAccess::new(device_id));
+        extensions.insert(pairing);
+    })
+    .await
+}
+
+/// Dispatches a request from a secure-channel session whose static key is
+/// not paired. Only the pairing claim/confirmation handlers read the
+/// context; every other route sees a tunneled request with no authority and
+/// refuses it.
+pub async fn dispatch_sealed_pairing_http_invoke(
+    state: Arc<AppState>,
+    context: SealedPairingContext,
+    method: &str,
+    path: &str,
+    body: serde_json::Value,
+) -> HttpInvokeResponse {
+    dispatch_http_invoke_with_extensions(state, method, path, body, move |extensions| {
+        extensions.insert(context);
+    })
+    .await
+}
+
 async fn dispatch_http_invoke_with_access(
     state: Arc<AppState>,
     method: &str,
@@ -732,6 +787,25 @@ async fn dispatch_http_invoke_with_access(
     authenticated_file_access: bool,
     authenticated_human_actor: Option<String>,
     source_desktop_id: Option<String>,
+) -> HttpInvokeResponse {
+    dispatch_http_invoke_with_extensions(state, method, path, body, move |extensions| {
+        if authenticated_file_access {
+            extensions.insert(AuthenticatedHttpInvoke {
+                account_uid: authenticated_human_actor,
+                source_desktop_id,
+            });
+            extensions.insert(super::task_files::AuthenticatedTaskFileAccess);
+        }
+    })
+    .await
+}
+
+async fn dispatch_http_invoke_with_extensions(
+    state: Arc<AppState>,
+    method: &str,
+    path: &str,
+    body: serde_json::Value,
+    install_authority: impl FnOnce(&mut axum::http::Extensions),
 ) -> HttpInvokeResponse {
     let method = match method.parse::<axum::http::Method>() {
         Ok(method) => method,
@@ -791,15 +865,7 @@ async fn dispatch_http_invoke_with_access(
         .extensions_mut()
         .insert(axum::extract::ConnectInfo(invoke_peer));
     request.extensions_mut().insert(TunneledHttpInvoke);
-    if authenticated_file_access {
-        request.extensions_mut().insert(AuthenticatedHttpInvoke {
-            account_uid: authenticated_human_actor,
-            source_desktop_id,
-        });
-        request
-            .extensions_mut()
-            .insert(super::task_files::AuthenticatedTaskFileAccess);
-    }
+    install_authority(request.extensions_mut());
 
     match router(state).oneshot(request).await {
         Ok(response) => response_to_http_invoke(response).await,

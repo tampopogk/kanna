@@ -70,6 +70,8 @@ export interface RemoteHarness {
   };
   relayUrl: string;
   serverLogs(): string;
+  /** The relay process's stdout/stderr so far (empty against staging). */
+  relayLogs(): string;
   getIdToken(): Promise<string>;
   restartServerWithIdentity(identity: { desktopId: string; desktopSecret?: string | null }): Promise<void>;
   restartDaemon(): Promise<void>;
@@ -386,7 +388,10 @@ export async function startRemoteHarness(options: RemoteHarnessOptions = {}): Pr
         FIREBASE_PROJECT_ID: "kanna-local",
         FIREBASE_AUTH_EMULATOR_HOST: `127.0.0.1:${ports.auth}`,
         FIRESTORE_EMULATOR_HOST: `127.0.0.1:${ports.firestore}`,
-        PORT: String(ports.relay)
+        PORT: String(ports.relay),
+        // Log every tunnel frame the relay forwards (type or byte count), so
+        // a test can assert that nothing readable crossed it.
+        KANNA_RELAY_DEBUG_TUNNEL: "1"
       }
     });
     processes.push(relayProcess);
@@ -677,6 +682,7 @@ export async function startRemoteHarness(options: RemoteHarnessOptions = {}): Pr
       ports,
       relayUrl,
       serverLogs: () => serverProcess?.logs() ?? "",
+      relayLogs: () => relayProcess?.logs() ?? "",
       getIdToken: async () => {
         if (!idToken) {
           throw new Error("remote harness id token is not available");

@@ -88,7 +88,17 @@
     "desktopStatus": "데스크톱 페어링 상태",
     "checkAgain": "다시 확인",
     "checkNotifications": "알림 다시 확인",
-    "probeScope": "로그인한 계정의 알림 등록을 확인합니다. 알림을 보내거나 페어링된 기기 목록을 표시하지는 않습니다."
+    "probeScope": "로그인한 계정의 알림 등록을 확인합니다. 알림을 보내거나 페어링된 기기 목록을 표시하지는 않습니다.",
+    "confirmTitle": "{device}과(와) 페어링 확인",
+    "confirmHint": "휴대폰에 정확히 같은 코드가 표시될 때만 확인하세요. 코드가 다르면 거부하세요. 둘 사이의 무언가가 이 데스크톱을 사칭하고 있습니다.",
+    "confirmMatch": "코드가 일치함",
+    "confirmMismatch": "거부",
+    "devicesTitle": "페어링된 기기",
+    "noDevices": "이 데스크톱에 페어링된 기기가 없습니다.",
+    "deviceEncrypted": "종단 간 암호화됨",
+    "deviceLegacy": "종단 간 암호화되지 않음 — 다시 페어링하여 업그레이드",
+    "legacyToggle": "레거시(암호화되지 않은) 모바일 연결 허용",
+    "legacyHint": "페어링된 모든 휴대폰이 종단 간 암호화로 페어링하는 Kanna Mobile 버전을 실행할 때까지 켜 두세요. 켜져 있는 동안 이전 휴대폰은 여전히 계정 수준 권한으로 릴레이를 통해 이 데스크톱에 접근합니다. 끄면 암호화되지 않은 모든 휴대폰 연결이 거부됩니다."
   },
   "shortcuts": {
     "title": "키보드 단축키",

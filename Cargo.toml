@@ -10,6 +10,7 @@ members = [
     "crates/kanna-worker",
     "crates/runtime-defaults",
     "crates/server-process",
+    "crates/kanna-secure-channel",
     "crates/kanna-server",
     "crates/visual-companion",
     "crates/task-transfer",

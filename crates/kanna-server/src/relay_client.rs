@@ -841,6 +841,7 @@ mod tests {
                 code,
                 device_id: "phone-dual-auth".to_string(),
                 device_name: "Kanna Mobile".to_string(),
+                qr_secret: None,
             },
         )
         .unwrap();
@@ -1103,6 +1104,18 @@ mod tests {
         assert!(
             inventory.is_some_and(|providers| providers.is_array()),
             "status must report which agent providers this machine can run"
+        );
+        // The secure-channel key is per desktop and random; its presence is
+        // what matters here, the exact value is covered by the KSP tests.
+        let channel_key = status_body
+            .as_object_mut()
+            .and_then(|body| body.remove("channelPublicKey"));
+        assert!(channel_key.is_some_and(|key| key.is_string()));
+        assert_eq!(
+            status_body
+                .as_object_mut()
+                .and_then(|body| body.remove("secureChannelVersion")),
+            Some(serde_json::json!(1))
         );
 
         let response = super::RelayMessage::Response {

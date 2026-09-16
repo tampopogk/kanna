@@ -56,6 +56,17 @@ export type WebSocketFactory = (
  */
 export const AUTH_FAILURE_CLOSE_CODE = 4005;
 
+/**
+ * WebSocket close code a sealed socket (`@kanna/secure-channel`'s
+ * `createSealedSocket`) reports when the secure channel itself refused the
+ * connection: the desktop did not answer the handshake, answered as a
+ * different identity, or a frame failed to authenticate. Unlike a network
+ * drop this is never retried: the client stops and surfaces the refusal, so
+ * a stripped or substituted handshake is a visible state rather than a
+ * reconnect loop. Must equal `SECURE_CHANNEL_CLOSE_CODE` in that package.
+ */
+export const SECURE_CHANNEL_REFUSED_CLOSE_CODE = 4910;
+
 export interface AgentStreamHandlers {
   /** Journal replay on (re)attach. `nextSeq` is where the live stream resumes. */
   onSnapshot(
@@ -240,6 +251,10 @@ export interface StreamClientOptions {
    * auth-expired state and require the user to sign in again. */
   onAuthError?(): void;
   onAccessRequired?(): void;
+  /** Invoked when the secure channel under this client refused the
+   * connection (close code `SECURE_CHANNEL_REFUSED_CLOSE_CODE`). The client
+   * has stopped; the caller decides what the person sees. */
+  onSecureChannelRefused?(reason: string): void;
   /** Injectable local monotonic clock for terminal dispatch diagnostics. */
   now?: () => number;
   /** Decode large inbound frames away from the UI thread. */
@@ -1015,6 +1030,20 @@ export class StreamClient {
       } else if (attachment.kind === "companion" || attachment.kind === "task_summary") {
         attachment.handlers.onConnectionChange?.(false);
       }
+    }
+    if (closeEventCode(closeEvent) === SECURE_CHANNEL_REFUSED_CLOSE_CODE) {
+      // Not a network condition: the channel could not be verified. Never
+      // reconnect (a retry would be the downgrade an attacker wants) and
+      // never let anything queued go out.
+      const reason = closeEventReason(closeEvent) ?? "secure channel refused";
+      this.closed = true;
+      this.sendQueue = [];
+      this.failPendingRequests(new Error(reason));
+      for (const attachment of this.attachments.values()) {
+        attachment.handlers.onError?.("secure_channel_refused", reason);
+      }
+      this.options.onSecureChannelRefused?.(reason);
+      return;
     }
     this.failPendingRequests(new Error(closeEventCode(closeEvent) === 4402
       ? "Manage your Kanna account to restore cloud access." : "stream disconnected"));
@@ -1910,6 +1939,14 @@ export class StreamClient {
 
 function isAuthFailureClose(event: unknown): boolean {
   return closeEventCode(event) === AUTH_FAILURE_CLOSE_CODE;
+}
+
+function closeEventReason(event: unknown): string | null {
+  if (typeof event === "object" && event !== null && "reason" in event) {
+    const reason = (event as { reason?: unknown }).reason;
+    return typeof reason === "string" && reason.trim() ? reason : null;
+  }
+  return null;
 }
 
 function closeEventCode(event: unknown): number | null {

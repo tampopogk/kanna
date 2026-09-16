@@ -1,4 +1,13 @@
-import { reportMobileBuild } from "./lib/updates/reportMobileBuild";
+import { reportMobileBuild, reportMobileBuildViaClient } from "./lib/updates/reportMobileBuild";
+import { nativeRandomBytes, randomHex, type RandomBytes } from "./lib/security/randomBytes";
+import { createExpoSecureKeyStore, type SecureKeyStore } from "./lib/security/secureKeyStore";
+import {
+  loadOrCreateChannelIdentity,
+  type DeviceChannelIdentity
+} from "./lib/security/channelIdentity";
+import type { SecureChannelRoute } from "./lib/transports/relayClient";
+import type { SealedWebSocketLike } from "@kanna/secure-channel";
+import { createRelayTunnelWebSocketFactory } from "@kanna/stream-client";
 import {
   createKannaClient,
   TaskCreationError,
@@ -111,7 +120,11 @@ interface AppModelOptions {
     getIdToken(forceRefresh?: boolean): Promise<string | null>;
     onAuthError(): void;
     onAccessChange?(userId: string, access: import("@kanna/stream-client").CloudAccessSnapshot): void;
+    getSecureChannelRoute?(desktopId: string): SecureChannelRoute;
   }) => RelayDesktopClient;
+  /** Raw LAN WebSocket for the pairing handshake; defaults to the runtime's
+   * `WebSocket`. */
+  createSecureChannelSocket?: (url: string) => SealedWebSocketLike;
 }
 
 interface ResolvedAppClient {
@@ -135,6 +148,11 @@ export interface CreateAppModelInput {
   persistence?: SessionPersistence;
   authSession?: MobileAuthSession;
   options?: AppModelOptions;
+  /** Where the phone's secure-channel private key lives; defaults to the
+   * platform keystore through `expo-secure-store`. */
+  secureKeyStore?: SecureKeyStore;
+  /** Cryptographic randomness; defaults to the platform CSPRNG. */
+  randomBytes?: RandomBytes;
 }
 
 function readExpoPublicEnv(): ExpoPublicEnv {
@@ -271,8 +289,59 @@ export function createAppModel(input: CreateAppModelInput = {}): AppModel {
   };
   const getCloudTaskIndex = () =>
     (cloudTaskIndex ??= options.taskIndex ?? createFirestoreTaskIndex());
+  // The phone's secure-channel identity loads from the keystore off the
+  // critical path. Until it has, a desktop with a pinned key is
+  // `unavailable` - never quietly `legacy` - and the clients are rebuilt
+  // once it arrives.
+  const randomBytes = input.randomBytes ?? nativeRandomBytes;
+  let channelIdentity: DeviceChannelIdentity | null = null;
+  let channelIdentityFailure: string | null = null;
+  let onChannelIdentityReady: (() => void) | null = null;
+  void (input.secureKeyStore
+    ? Promise.resolve(input.secureKeyStore)
+    : createExpoSecureKeyStore()
+  )
+    .then((store) => loadOrCreateChannelIdentity(store, randomBytes))
+    .then(
+      (identity) => {
+        channelIdentity = identity;
+      },
+      (error: unknown) => {
+        channelIdentityFailure = error instanceof Error ? error.message : String(error);
+        console.warn("Secure-channel identity unavailable:", channelIdentityFailure);
+      }
+    )
+    .then(() => onChannelIdentityReady?.());
+  const getSecureChannelRoute = (desktopId: string): SecureChannelRoute => {
+    const trusted = sessionStore
+      .getState()
+      .trustedDesktops.find((desktop) => desktop.desktopId === desktopId);
+    const pinned = trusted?.channelPublicKey;
+    if (!pinned) return { kind: "legacy" };
+    if (!channelIdentity) {
+      return {
+        kind: "unavailable",
+        reason: channelIdentityFailure ?? "this phone's secure identity is still loading"
+      };
+    }
+    return {
+      kind: "sealed",
+      peer: {
+        desktopId,
+        desktopPublicKey: pinned,
+        identity: channelIdentity.keypair,
+        deviceId: sessionStore.getState().mobileDeviceId ?? undefined,
+        intent: "session",
+        randomBytes,
+        onRefusal: (refusal, detail) =>
+          sessionStore.setSecureChannelState(desktopId, { mode: "refused", refusal, detail }),
+        onEstablished: () => sessionStore.setSecureChannelState(desktopId, { mode: "sealed" })
+      }
+    };
+  };
   const resolveClient = (generation: number) =>
     createClientForMode({
+      getSecureChannelRoute,
       authSession,
       bonjourBrowser,
       createRelayClient: options.createRelayClient ?? createRelayDesktopClient,
@@ -331,6 +400,11 @@ export function createAppModel(input: CreateAppModelInput = {}): AppModel {
     });
   let appForeground = true;
   let activeClient = resolveClient(clientGeneration);
+  onChannelIdentityReady = () => {
+    if (sessionStore.getState().trustedDesktops.some((desktop) => desktop.channelPublicKey)) {
+      replaceActiveClient();
+    }
+  };
   const replaceActiveClient = () => {
     const currentState = sessionStore.getState();
     const trustedIds = new Set([
@@ -496,12 +570,31 @@ export function createAppModel(input: CreateAppModelInput = {}): AppModel {
     getDeviceIdentity: () => ({
       deviceId:
         sessionStore.getState().mobileDeviceId ??
-        sessionStore.ensureMobileDeviceId(generateMobileDeviceId),
+        sessionStore.ensureMobileDeviceId(() => generateMobileDeviceId(randomBytes)),
       deviceName: "Kanna Mobile"
-    })
+    }),
+    secureChannel: {
+      getIdentity: () => channelIdentity?.keypair ?? null,
+      randomBytes,
+      createLanSocket: (url) =>
+        options.createSecureChannelSocket?.(url) ??
+        (new WebSocket(url) as unknown as SealedWebSocketLike),
+      createRelayTunnelSocket: (desktopId) => {
+        if (authSession.getState().status !== "signedIn") return null;
+        const relayUrl = activeCustomRelayUrl() ?? defaultRelayUrl;
+        if (!relayUrl) return null;
+        const factory = createRelayTunnelWebSocketFactory({
+          relayUrl,
+          desktopId,
+          getIdentityToken: (forceRefresh) => authSession.getIdToken(forceRefresh)
+        });
+        return factory(relayUrl) as unknown as SealedWebSocketLike;
+      }
+    }
   });
   const controller = createMobileController(client, sessionStore, authSession, {
     pairingService,
+    createTaskId: () => randomHex(4, randomBytes),
     persistSessionContext: persistContext,
     replaceClientForTrustChange: replaceActiveClient,
     revokeAnonymousPushPairing: async (desktop) => {
@@ -876,7 +969,7 @@ export function createAppModel(input: CreateAppModelInput = {}): AppModel {
       await hydratePersistedContext();
       await retryAnonymousPushRevocations();
       const hadMobileDeviceId = Boolean(sessionStore.getState().mobileDeviceId);
-      sessionStore.ensureMobileDeviceId(generateMobileDeviceId);
+      sessionStore.ensureMobileDeviceId(() => generateMobileDeviceId(randomBytes));
       if (!hadMobileDeviceId) {
         await persistContext();
       }
@@ -904,10 +997,10 @@ export function createAppModel(input: CreateAppModelInput = {}): AppModel {
   };
 }
 
-function generateMobileDeviceId(): string {
-  const uuid = globalThis.crypto?.randomUUID?.();
-  if (uuid) return `mobile-${uuid}`;
-  return `mobile-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+/** The device id is an identifier, not a secret, but it must still be
+ * unguessable and unique; it comes from the same CSPRNG as the keys. */
+function generateMobileDeviceId(randomBytes: RandomBytes): string {
+  return `mobile-${randomHex(16, randomBytes)}`;
 }
 
 function createClientForMode({
@@ -932,6 +1025,7 @@ function createClientForMode({
   relayUrl,
   taskIndex,
   desktopRepoWaitMs,
+  getSecureChannelRoute,
 }: {
   authSession: MobileAuthSession;
   bonjourBrowser: BonjourBrowser;
@@ -940,7 +1034,9 @@ function createClientForMode({
     getIdToken(forceRefresh?: boolean): Promise<string | null>;
     onAuthError(): void;
     onAccessChange?(userId: string, access: import("@kanna/stream-client").CloudAccessSnapshot): void;
+    getSecureChannelRoute?(desktopId: string): SecureChannelRoute;
   }): RelayDesktopClient;
+  getSecureChannelRoute(desktopId: string): SecureChannelRoute;
   fetchImpl: FetchLike;
   forceCloud: boolean;
   getSelectedDesktopId(): string | null;
@@ -986,6 +1082,7 @@ function createClientForMode({
       getIdToken: (forceRefresh) => authSession.getIdToken(forceRefresh),
       onAuthError: () => authSession.notifyAuthExpired(),
       onAccessChange: (userId, access) => authSession.observeRelayAccess(userId, access),
+      getSecureChannelRoute,
     });
     let disposed = false;
     let accountDesktopIds = new Set(
@@ -1073,6 +1170,7 @@ function createClientForMode({
       getTrustedLanEndpointHints,
       getLanDeviceCredentials: (desktopId) =>
         lanDeviceCredentialsForDesktop(getTrustedDesktops, getMobileDeviceId, desktopId),
+      getSecureChannelRoute,
       onValidatedRoutesChanged: onTaskRoutesChanged,
       onPushPairingMaterial
     });
@@ -1084,6 +1182,7 @@ function createClientForMode({
         isLanEnabled: () =>
           !forceCloud && getTrustedDesktopIds().length > 0,
         canUseLanTaskStreams: (desktopId) =>
+          getSecureChannelRoute(desktopId).kind === "sealed" ||
           lanDeviceCredentialsForDesktop(
             getTrustedDesktops,
             getMobileDeviceId,
@@ -1128,6 +1227,7 @@ function createClientForMode({
       getTrustedLanEndpointHints,
       getLanDeviceCredentials: (desktopId) =>
         lanDeviceCredentialsForDesktop(getTrustedDesktops, getMobileDeviceId, desktopId),
+      getSecureChannelRoute,
       onValidatedRoutesChanged: onTaskRoutesChanged,
       onPushPairingMaterial
     });
@@ -1260,6 +1360,7 @@ function createTrustedLanFallbackClient({
   getTrustedDesktopIds,
   getTrustedLanEndpointHints,
   getLanDeviceCredentials,
+  getSecureChannelRoute,
   onValidatedRoutesChanged,
   onPushPairingMaterial
 }: {
@@ -1272,6 +1373,7 @@ function createTrustedLanFallbackClient({
     desktopId: string;
   }[];
   getLanDeviceCredentials(desktopId: string): LanDeviceCredentials | null;
+  getSecureChannelRoute(desktopId: string): SecureChannelRoute;
   onValidatedRoutesChanged(): void;
   onPushPairingMaterial(desktopId: string, material: PushPairingMaterial): void;
 }): {
@@ -1285,6 +1387,8 @@ function createTrustedLanFallbackClient({
     baseUrl: string;
     deviceId: string | null;
     deviceSecret: string | null;
+    /** The pinned desktop key the client was sealed to, or null. */
+    sealedTo: string | null;
     client: KannaClient;
   }>();
   let lastValidatedDesktopId: string | null = null;
@@ -1330,24 +1434,35 @@ function createTrustedLanFallbackClient({
     if (pendingValidationCount > 0) invalidateValidatedRoutes();
   };
   const clientForBaseUrl = (resolvedBaseUrl: string, desktopId: string) => {
-    const credentials = getLanDeviceCredentials(desktopId);
+    const route = getSecureChannelRoute(desktopId);
+    if (route.kind === "unavailable") {
+      // A desktop that expects the secure channel is not reachable any
+      // other way; a disconnected client is the honest state until the
+      // phone's identity is ready.
+      return createDisconnectedClient();
+    }
+    const peer = route.kind === "sealed" ? route.peer : null;
+    const credentials = peer ? null : getLanDeviceCredentials(desktopId);
     const cached = validatedClients.get(desktopId);
     if (
       cached?.baseUrl === resolvedBaseUrl
       && cached.deviceId === (credentials?.deviceId ?? null)
       && cached.deviceSecret === (credentials?.deviceSecret ?? null)
+      && cached.sealedTo === (peer?.desktopPublicKey ?? null)
     ) {
       return cached.client;
     }
     const client = createKannaClient(
       createLanTransport(resolvedBaseUrl, fetchImpl, undefined, {
-        deviceCredentials: credentials
+        deviceCredentials: credentials,
+        secureChannel: peer
       })
     );
     validatedClients.set(desktopId, {
       baseUrl: resolvedBaseUrl,
       deviceId: credentials?.deviceId ?? null,
       deviceSecret: credentials?.deviceSecret ?? null,
+      sealedTo: peer?.desktopPublicKey ?? null,
       client
     });
     return client;
@@ -1357,12 +1472,15 @@ function createTrustedLanFallbackClient({
     baseUrl: string,
     client: KannaClient
   ) => {
-    const credentials = getLanDeviceCredentials(desktopId);
-    const refreshKey = credentials
-      ? `${desktopId}\0${baseUrl}\0${credentials.deviceId}\0${credentials.deviceSecret}`
-      : null;
+    const route = getSecureChannelRoute(desktopId);
+    const sealed = route.kind === "sealed" ? route.peer : null;
+    const credentials = sealed ? null : getLanDeviceCredentials(desktopId);
+    const refreshKey = sealed
+      ? `${desktopId}\0${baseUrl}\0sealed\0${sealed.desktopPublicKey}`
+      : credentials
+        ? `${desktopId}\0${baseUrl}\0${credentials.deviceId}\0${credentials.deviceSecret}`
+        : null;
     if (
-      !credentials ||
       !refreshKey ||
       refreshedPushPairingRoutes.has(refreshKey) ||
       !client.reissuePushPairingCertificate
@@ -1370,7 +1488,12 @@ function createTrustedLanFallbackClient({
       return;
     }
     refreshedPushPairingRoutes.add(refreshKey);
-    void reportMobileBuild(baseUrl, fetchImpl, credentials);
+    if (client.reportMobileBuild) {
+      const report = client.reportMobileBuild;
+      void reportMobileBuildViaClient((body) => report(body));
+    } else if (credentials) {
+      void reportMobileBuild(baseUrl, fetchImpl, credentials);
+    }
     void client
       .reissuePushPairingCertificate()
       .then((material) => {

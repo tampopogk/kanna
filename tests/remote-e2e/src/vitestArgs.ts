@@ -8,7 +8,8 @@ export function remoteHarnessSpecFiles(staging: boolean): string[] {
         "src/task-listing-actions.e2e.test.ts",
         "src/lan-layer.e2e.test.ts",
         "src/lan-desktop-routing.e2e.test.ts",
-        "src/task-image-attachment.e2e.test.ts"
+        "src/task-image-attachment.e2e.test.ts",
+        "src/secure-channel.e2e.test.ts"
       ];
 }
 

@@ -4,6 +4,7 @@ import type {
   TrustedDesktopLanEndpoint,
   TrustedDesktopRecord
 } from "./sessionPersistence";
+import type { SecureChannelStatus } from "../lib/security/secureChannelPeer";
 
 export interface MobileMachine {
   desktopId: string;
@@ -22,12 +23,22 @@ export interface MobileMachine {
    * pairing record — which callers read as "unknown", not "none". */
   agentProviders?: AgentProvider[];
   lanEndpoints: TrustedDesktopLanEndpoint[];
+  /**
+   * How this phone's connection to the machine is secured, for a manually
+   * paired machine: an observed sealed/refused outcome when one exists,
+   * otherwise `sealed` for a pairing with a pinned desktop key that has not
+   * yet been exercised, `legacy` for a pairing without one. Absent for a
+   * machine known only through the account (cloud-only: it is reached as
+   * legacy relay control until it is paired).
+   */
+  secureChannel?: SecureChannelStatus;
 }
 
 export function buildMachineInventory(input: {
   accountDesktops: readonly DesktopSummary[];
   manualDesktops: readonly TrustedDesktopRecord[];
   liveLanDesktops: readonly DesktopSummary[];
+  secureChannelStates?: Readonly<Record<string, SecureChannelStatus>>;
 }): MobileMachine[] {
   const accountById = new Map(
     input.accountDesktops.map((desktop) => [desktop.id, desktop] as const)
@@ -73,7 +84,14 @@ export function buildMachineInventory(input: {
         )
       },
       ...(agentProviders ? { agentProviders } : {}),
-      lanEndpoints: manual?.lanEndpoints ?? []
+      lanEndpoints: manual?.lanEndpoints ?? [],
+      ...(manual
+        ? {
+            secureChannel:
+              input.secureChannelStates?.[desktopId] ??
+              (manual.channelPublicKey ? { mode: "sealed" as const } : { mode: "legacy" as const })
+          }
+        : {})
     };
   });
 

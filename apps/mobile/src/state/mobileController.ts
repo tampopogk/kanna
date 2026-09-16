@@ -36,6 +36,7 @@ import {
   repoIsRegisteredOnDesktop
 } from "../lib/api/repoIdentity";
 import type { MachinePairingService } from "../lib/pairing/machinePairing";
+import { randomHex } from "../lib/security/randomBytes";
 import type { MobileAuthSession } from "../lib/firebase/auth";
 import {
   DEFAULT_MOBILE_TERMINAL_GEOMETRY,
@@ -239,38 +240,14 @@ export interface MobileControllerOptions {
   repoCheckoutPollIntervalMs?: number;
 }
 
-let fallbackTaskCreationCounter = 0;
-
+/**
+ * Task ids come from the platform CSPRNG (`expo-crypto` on device, WebCrypto
+ * in Node). There is deliberately no time/counter/`Math.random` fallback: a
+ * runtime without secure randomness fails loudly here, which is also what
+ * keeps the secure channel's key generation honest on the same runtime.
+ */
 function generateTaskCreationId(): string {
-  const cryptoObject = (globalThis as {
-    crypto?: {
-      randomUUID?: () => string;
-      getRandomValues?: (values: Uint8Array) => Uint8Array;
-    };
-  }).crypto;
-  try {
-    const uuid = cryptoObject?.randomUUID?.().replace(/-/g, "").toLowerCase();
-    if (uuid && /^[0-9a-f]{32}$/.test(uuid)) {
-      return uuid.slice(0, 8);
-    }
-  } catch {
-    // Some React Native runtimes expose a partial crypto shim. Try the next
-    // source before falling back to the time/counter identity below.
-  }
-
-  try {
-    if (cryptoObject?.getRandomValues) {
-      const bytes = cryptoObject.getRandomValues(new Uint8Array(4));
-      return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
-    }
-  } catch {
-    // Fall through to a process-local best-effort identity.
-  }
-
-  fallbackTaskCreationCounter = (fallbackTaskCreationCounter + 1) >>> 0;
-  const entropy = Math.floor(Math.random() * 0x100000000) >>> 0;
-  const mixed = ((Date.now() >>> 0) ^ fallbackTaskCreationCounter ^ entropy) >>> 0;
-  return mixed.toString(16).padStart(8, "0");
+  return randomHex(4);
 }
 
 function isStaleRepoCommandError(error: unknown): boolean {
@@ -2446,7 +2423,8 @@ export function createMobileController(
     const machine = buildMachineInventory({
       accountDesktops: state.accountDesktops,
       manualDesktops: state.trustedDesktops,
-      liveLanDesktops: state.liveLanDesktops
+      liveLanDesktops: state.liveLanDesktops,
+      secureChannelStates: state.secureChannelStates
     }).find((candidate) => candidate.desktopId === desktopId);
     const desktop = state.desktops.find(
       (candidate) => candidate.id === desktopId
@@ -2906,7 +2884,16 @@ export function createMobileController(
       if (!options.pairingService) {
         throw new Error("Machine pairing is not configured.");
       }
-      const trusted = await options.pairingService.claimCode(code);
+      store.setPairingConfirmationSas(null);
+      let trusted: TrustedDesktopRecord;
+      try {
+        trusted = await options.pairingService.claimCode(code, {
+          onConfirmationRequired: (sas) => store.setPairingConfirmationSas(sas)
+        });
+      } finally {
+        store.setPairingConfirmationSas(null);
+      }
+      store.clearSecureChannelState(trusted.desktopId);
       const previous = store.getState().trustedDesktops;
       store.upsertTrustedDesktop(trusted);
       try {
@@ -2924,7 +2911,16 @@ export function createMobileController(
       if (!options.pairingService) {
         throw new Error("Machine pairing is not configured.");
       }
-      const trusted = await options.pairingService.claimPayload(payload);
+      store.setPairingConfirmationSas(null);
+      let trusted: TrustedDesktopRecord;
+      try {
+        trusted = await options.pairingService.claimPayload(payload, {
+          onConfirmationRequired: (sas) => store.setPairingConfirmationSas(sas)
+        });
+      } finally {
+        store.setPairingConfirmationSas(null);
+      }
+      store.clearSecureChannelState(trusted.desktopId);
       const previous = store.getState().trustedDesktops;
       store.upsertTrustedDesktop(trusted);
       try {
