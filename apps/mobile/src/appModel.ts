@@ -588,10 +588,17 @@ export function createAppModel(input: CreateAppModelInput = {}): AppModel {
             return;
           }
           initialLanPublicationStarted = true;
-          const revision = ++updateRevision;
           const generation = clientGeneration;
           void listTrustedLanTasks().then((tasks) => {
-            if (isCurrent(revision, generation) && !liveCloudTasksReady) {
+            // Cloud recovery has its own revision ownership. A listener error
+            // must not invalidate this independent cold-start LAN probe.
+            if (
+              epoch === liveSubscriptionEpoch &&
+              generation === clientGeneration &&
+              liveCloudTasksUid === uid &&
+              currentInitialLanTaskPublication === publishInitialLanTasks &&
+              !liveCloudTasksReady
+            ) {
               onUpdate(tasks, { cloudAuthoritative: false });
             }
           }).catch(() => undefined);
@@ -700,10 +707,6 @@ export function createAppModel(input: CreateAppModelInput = {}): AppModel {
           return;
         }
         stopTaskIndexSubscription();
-        // Recovery republishes through the composed client and therefore
-        // already includes any trusted LAN snapshot. Do not race it with the
-        // cold-start LAN publication scheduled by machine discovery.
-        initialLanPublicationStarted = true;
         onError?.(formatCloudTaskIndexError(indexError));
         livePublicationPendingGeneration = null;
         const revision = ++updateRevision;
@@ -731,6 +734,14 @@ export function createAppModel(input: CreateAppModelInput = {}): AppModel {
             return false;
           }
           liveCloudTasksReadError = error;
+          // The independent probe owns usable LAN publication in this case;
+          // avoid sending the same snapshot through both recovery paths.
+          if (
+            initialLanPublicationScheduled ||
+            initialLanPublicationStarted
+          ) {
+            return false;
+          }
           return publishCurrentTasks(revision, false, false);
         }).then((published) => {
           if (!published || !isCurrentRecovery()) return;
