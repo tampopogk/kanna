@@ -34,6 +34,31 @@ function compareVersions(left: ParsedVersion, right: ParsedVersion): number {
   return left.major - right.major || left.minor - right.minor || left.patch - right.patch;
 }
 
+interface VersionRange {
+  lower: ParsedVersion;
+  upperExclusive?: ParsedVersion;
+}
+
+function parseRange(value: string): VersionRange | undefined {
+  const operator = value.startsWith("~") || value.startsWith("^") ? value[0] : "=";
+  const lower = parseVersion(operator === "=" ? value : value.slice(1));
+  if (!lower) return undefined;
+  if (operator === "=") return { lower };
+  if (operator === "~") {
+    return {
+      lower,
+      upperExclusive: { major: lower.major, minor: lower.minor + 1, patch: 0 }
+    };
+  }
+  if (lower.major > 0) {
+    return { lower, upperExclusive: { major: lower.major + 1, minor: 0, patch: 0 } };
+  }
+  if (lower.minor > 0) {
+    return { lower, upperExclusive: { major: 0, minor: lower.minor + 1, patch: 0 } };
+  }
+  return { lower, upperExclusive: { major: 0, minor: 0, patch: lower.patch + 1 } };
+}
+
 function satisfiesExpoRange(version: string, expectedRange: string): boolean {
   const actual = parseVersion(version);
   const operator = expectedRange.startsWith("~") || expectedRange.startsWith("^")
@@ -64,14 +89,29 @@ function matchesExpoRecommendation(
   declaredRange: string,
   expectedRange: string
 ): boolean {
-  return !usesNativeExpoRecommendation(packageName) || declaredRange === expectedRange;
+  if (!usesNativeExpoRecommendation(packageName)) return true;
+  const declared = parseRange(declaredRange);
+  const expected = parseRange(expectedRange);
+  if (!declared || !expected || compareVersions(declared.lower, expected.lower) < 0) {
+    return false;
+  }
+  if (!declared.upperExclusive) {
+    return satisfiesExpoRange(declaredRange, expectedRange);
+  }
+  return expected.upperExclusive !== undefined &&
+    compareVersions(declared.upperExclusive, expected.upperExclusive) <= 0;
 }
 
 describe("Expo native dependency compatibility", () => {
-  it("rejects the reported SDK 57.0.6 image-manipulator skew", () => {
+  it("rejects an image-manipulator range outside the SDK minor", () => {
     expect(
-      matchesExpoRecommendation("expo-image-manipulator", "~57.0.11", "~57.0.4")
+      matchesExpoRecommendation("expo-image-manipulator", "~57.1.0", "~57.0.4")
     ).toBe(false);
+  });
+
+  it("accepts a newer patch floor inside Expo's supported minor range", () => {
+    expect(matchesExpoRecommendation("expo-sharing", "~57.0.19", "~57.0.14")).toBe(true);
+    expect(matchesExpoRecommendation("expo-sharing", "^57.0.19", "~57.0.14")).toBe(false);
   });
 
   it("resolves every direct Expo-managed dependency inside the installed SDK matrix", () => {
