@@ -24,7 +24,10 @@ import {
   createSessionPersistence,
   type StorageAdapter
 } from "./state/sessionPersistence";
-import { buildCreatingTaskUiSlot } from "./state/taskUiSlots";
+import {
+  buildCreatingTaskUiSlot,
+  projectTaskUiSlots
+} from "./state/taskUiSlots";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -2030,6 +2033,183 @@ describe("createAppModel cloud routing", () => {
       expect(subscriptions).toHaveLength(1);
       await vi.advanceTimersByTimeAsync(1);
       expect(subscriptions).toHaveLength(2);
+    } finally {
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
+
+  it.each(["root", "desktop"] as const)(
+    "publishes ready trusted LAN tasks after an initial %s listener error while cloud recovery is unresolved",
+    async (scope) => {
+      vi.useFakeTimers();
+      try {
+        const { authSession } = createMutableAuthSession(signedInState());
+        const recovery = deferred<CloudTaskSummary[]>();
+        let pushCloudError: ((error: CloudTaskIndexError) => void) | null = null;
+        const cloudFailure = new Error(`${scope} cloud unavailable`);
+        const taskIndex: CloudTaskIndex = {
+          listDesktops: vi.fn().mockResolvedValue([]),
+          listRecentTasks: vi.fn(() => recovery.promise),
+          subscribeRecentTasks: vi.fn((_uid, _onUpdate, onError) => {
+            pushCloudError = onError ?? null;
+            return vi.fn();
+          })
+        };
+        const lanTask: TaskSummary = {
+          id: `lan-after-${scope}-error`,
+          repoId: "repo-lan",
+          repoName: "LAN Repo",
+          title: "Ready LAN task",
+          stage: "in progress"
+        };
+        const lanRead = vi.fn().mockResolvedValue([lanTask]);
+        const lan = createLanFixture(lanRead);
+        const app = createAppModel({
+          authSession,
+          fetchImpl: lan.fetchImpl,
+          persistence: createTrustedPersistence(),
+          options: {
+            relayUrl: "wss://relay.test",
+            taskIndex,
+            bonjourBrowser: lan.bonjourBrowser,
+            createRelayClient: () => createRelayClientMock()
+          }
+        });
+
+        await app.initialize();
+        expect(lanRead).not.toHaveBeenCalled();
+        expect(pushCloudError).not.toBeNull();
+
+        pushCloudError?.(
+          scope === "root"
+            ? { scope, error: cloudFailure }
+            : { scope, desktopId: "desktop-cloud", error: cloudFailure }
+        );
+        await vi.advanceTimersByTimeAsync(0);
+
+        await vi.waitFor(() => {
+          expect(app.sessionStore.getState().recentTasks).toEqual([lanTask]);
+        });
+        const taskSlots = projectTaskUiSlots(
+          app.sessionStore.getState().recentTasks,
+          app.sessionStore.getState().taskUiSlots
+        );
+        expect(taskSlots).toEqual([
+          expect.objectContaining({
+            state: "ready",
+            taskId: lanTask.id,
+            task: lanTask
+          })
+        ]);
+        expect(app.sessionStore.getState().errorMessage).toBe(
+          `Cloud task index ${
+            scope === "root" ? "root" : "desktop (desktop-cloud)"
+          }: ${cloudFailure.message}`
+        );
+        expect(taskIndex.listRecentTasks).toHaveBeenCalledWith("user-1");
+      } finally {
+        vi.clearAllTimers();
+        vi.useRealTimers();
+      }
+    }
+  );
+
+  it("fences an in-flight initial LAN publication and late recovery after account replacement", async () => {
+    vi.useFakeTimers();
+    try {
+      const auth = createMutableAuthSession(signedInState("user-a"));
+      const userARecovery = deferred<CloudTaskSummary[]>();
+      const subscriptions: Array<{
+        uid: string;
+        onUpdate: (tasks: CloudTaskSummary[]) => void;
+        onError: (error: CloudTaskIndexError) => void;
+      }> = [];
+      const taskIndex: CloudTaskIndex = {
+        listDesktops: vi.fn().mockResolvedValue([]),
+        listRecentTasks: vi.fn((uid) =>
+          uid === "user-a" ? userARecovery.promise : new Promise(() => undefined)
+        ),
+        subscribeRecentTasks: vi.fn((uid, onUpdate, onError) => {
+          subscriptions.push({
+            uid,
+            onUpdate,
+            onError: onError ?? (() => undefined)
+          });
+          return vi.fn();
+        })
+      };
+      const staleLanRead = deferred<TaskSummary[]>();
+      const staleLanTask: TaskSummary = {
+        id: "stale-user-a-lan",
+        repoId: "repo-lan",
+        repoName: "LAN Repo",
+        title: "Stale user A LAN task",
+        stage: "in progress"
+      };
+      const staleCloudTask = cloudTask({
+        id: "cloud:stale-user-a",
+        ownerDesktopId: "desktop-user-a",
+        ownerLocalTaskId: "stale-user-a"
+      });
+      const userBTask = cloudTask({
+        id: "cloud:user-b",
+        ownerDesktopId: "desktop-user-b",
+        ownerLocalTaskId: "user-b"
+      });
+      const lanRead = vi
+        .fn<() => Promise<TaskSummary[]>>()
+        .mockReturnValueOnce(staleLanRead.promise)
+        .mockResolvedValue([]);
+      const lan = createLanFixture(lanRead);
+      const app = createAppModel({
+        authSession: auth.authSession,
+        fetchImpl: lan.fetchImpl,
+        persistence: createTrustedPersistence(),
+        options: {
+          relayUrl: "wss://relay.test",
+          taskIndex,
+          bonjourBrowser: lan.bonjourBrowser,
+          createRelayClient: () => createRelayClientMock()
+        }
+      });
+
+      await app.initialize();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(lanRead).toHaveBeenCalledOnce();
+
+      subscriptions[0]!.onError({
+        scope: "desktop",
+        desktopId: "desktop-user-a",
+        error: new Error("user A listener failed")
+      });
+      expect(taskIndex.listRecentTasks).toHaveBeenCalledWith("user-a");
+
+      auth.setState(signedInState("user-b"));
+      await vi.waitFor(() => expect(subscriptions).toHaveLength(2));
+      expect(subscriptions[1]!.uid).toBe("user-b");
+      subscriptions[1]!.onUpdate([userBTask]);
+      await vi.advanceTimersByTimeAsync(0);
+      await vi.waitFor(() => {
+        expect(app.sessionStore.getState().recentTasks).toEqual([
+          expect.objectContaining({ id: userBTask.id })
+        ]);
+      });
+
+      staleLanRead.resolve([staleLanTask]);
+      userARecovery.resolve([staleCloudTask]);
+      await vi.advanceTimersByTimeAsync(0);
+      await flushAsyncWork(20);
+
+      expect(app.sessionStore.getState().recentTasks).toEqual([
+        expect.objectContaining({ id: userBTask.id })
+      ]);
+      expect(app.sessionStore.getState().recentTasks).not.toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ id: staleLanTask.id }),
+          expect.objectContaining({ id: staleCloudTask.id })
+        ])
+      );
     } finally {
       vi.clearAllTimers();
       vi.useRealTimers();
