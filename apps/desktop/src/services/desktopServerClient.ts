@@ -41,6 +41,10 @@ export interface DesktopServerClientHandlersForTests {
   ensureDesktopReady?: () => MaybePromise<void>;
   ensureMobileServer?: () => MaybePromise<void>;
   getSetting?: (key: string) => MaybePromise<string | null>;
+  fetchPendingPairingConfirmation?: () => MaybePromise<DesktopPendingPairingConfirmation | null>;
+  confirmPendingPairing?: () => MaybePromise<void>;
+  rejectPendingPairing?: () => MaybePromise<void>;
+  fetchMobileDevices?: () => MaybePromise<DesktopMobileDevices>;
   putSetting?: (key: string, value: string) => MaybePromise<DesktopSettingResponse | void>;
   mutateWindowWorkspace?: (
     mutation: DesktopWindowWorkspaceMutation,
@@ -679,6 +683,70 @@ export async function mutateDesktopWindowWorkspace(
     method: "POST",
     body: mutation,
   });
+}
+
+/** Settings-table key for legacy (unencrypted, bearer-secret) mobile
+ * access; `refused` turns it off, anything else leaves it on. Mirrors
+ * `http_api::secure_channel::MOBILE_LEGACY_ACCESS_SETTING`. */
+export const MOBILE_LEGACY_ACCESS_SETTING = "mobile_legacy_access";
+export const MOBILE_LEGACY_ACCESS_REFUSED = "refused";
+export const MOBILE_LEGACY_ACCESS_ALLOWED = "allowed";
+
+/** A typed-code phone pairing waiting for the person to compare short
+ * authentication strings and confirm on this desktop. */
+export interface DesktopPendingPairingConfirmation {
+  deviceName: string;
+  deviceId: string;
+  sas: string;
+  expiresAtUnixMs: number;
+}
+
+export async function fetchPendingPairingConfirmation(): Promise<DesktopPendingPairingConfirmation | null> {
+  if (clientHandlersForTests?.fetchPendingPairingConfirmation) {
+    return await clientHandlersForTests.fetchPendingPairingConfirmation();
+  }
+  const response = await requestJson<{ pending: DesktopPendingPairingConfirmation | null }>(
+    "/v1/pairing/pending-confirmation",
+  );
+  return response.pending ?? null;
+}
+
+export async function confirmPendingPairing(): Promise<void> {
+  if (clientHandlersForTests?.confirmPendingPairing) {
+    await clientHandlersForTests.confirmPendingPairing();
+    return;
+  }
+  await requestJson<unknown>("/v1/pairing/pending-confirmation/confirm", { method: "POST" });
+}
+
+export async function rejectPendingPairing(): Promise<void> {
+  if (clientHandlersForTests?.rejectPendingPairing) {
+    await clientHandlersForTests.rejectPendingPairing();
+    return;
+  }
+  await requestJson<void>("/v1/pairing/pending-confirmation/reject", { method: "POST" });
+}
+
+export interface DesktopMobileDevice {
+  deviceId: string;
+  deviceName: string;
+  /** True when the phone pairs through the secure channel; false for a
+   * legacy pairing that still relies on the bearer secret. */
+  secureChannel: boolean;
+  build?: unknown;
+}
+
+export interface DesktopMobileDevices {
+  desktopId: string;
+  devices: DesktopMobileDevice[];
+  legacyAccessAllowed: boolean;
+}
+
+export async function fetchMobileDevices(): Promise<DesktopMobileDevices> {
+  if (clientHandlersForTests?.fetchMobileDevices) {
+    return await clientHandlersForTests.fetchMobileDevices();
+  }
+  return await requestJson<DesktopMobileDevices>("/v1/mobile/builds");
 }
 
 export async function putDesktopSetting(key: string, value: string): Promise<DesktopSettingResponse> {

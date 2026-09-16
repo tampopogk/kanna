@@ -129,4 +129,42 @@ describe("MobileAccessPanel", () => {
     expect(w.get(selector("push-registration")).text()).toContain("Sign in");
     expect(w.text()).not.toContain("relay offline");
   });
+
+  it("shows a typed-code pairing confirmation with the SAS and routes confirm/reject", async () => {
+    const w = panel({
+      pendingConfirmation: { deviceName: "Jeremy's iPhone", deviceId: "phone-1", sas: "123456", expiresAtUnixMs: Date.now() + 60_000 },
+    });
+    await flushPromises();
+    expect(w.get(selector("pairing-confirmation")).text()).toContain("Jeremy's iPhone");
+    expect(w.get(selector("pairing-sas")).text()).toBe("123 456");
+    expect(w.text()).toContain("reject it");
+    await w.get(selector("pairing-confirm")).trigger("click");
+    expect(w.emitted("confirm-pairing")).toHaveLength(1);
+    await w.get(selector("pairing-reject")).trigger("click");
+    expect(w.emitted("reject-pairing")).toHaveLength(1);
+    await w.setProps({ confirmationBusy: true });
+    expect(w.get(selector("pairing-confirm")).attributes("disabled")).toBeDefined();
+    await w.setProps({ pendingConfirmation: null });
+    expect(w.find(selector("pairing-confirmation")).exists()).toBe(false);
+  });
+
+  it("labels each paired device's encryption honestly and exposes the legacy switch", async () => {
+    const w = panel({
+      devices: [
+        { deviceId: "sealed-1", deviceName: "New phone", secureChannel: true },
+        { deviceId: "legacy-1", deviceName: "Old phone", secureChannel: false },
+      ],
+      legacyAccessAllowed: true,
+    });
+    await flushPromises();
+    expect(w.get(selector("device-sealed-1")).text()).toContain("End-to-end encrypted");
+    expect(w.get(selector("device-legacy-1")).text()).toContain("Not end-to-end encrypted");
+    const toggle = w.get(selector("legacy-toggle"));
+    expect((toggle.element as HTMLInputElement).checked).toBe(true);
+    await toggle.setValue(false);
+    expect(w.emitted("set-legacy-access")).toEqual([[false]]);
+    expect(w.text()).toContain("account-level authority");
+    await w.setProps({ devices: [] });
+    expect(w.text()).toContain("No devices are paired");
+  });
 });

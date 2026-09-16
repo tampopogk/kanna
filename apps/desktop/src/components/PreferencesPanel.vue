@@ -17,6 +17,18 @@ import {
 } from '../composables/useEmbeddableView'
 import { isTopModal } from '../composables/useModalZIndex'
 import MobileAccessPanel from './MobileAccessPanel.vue'
+import {
+  MOBILE_LEGACY_ACCESS_ALLOWED,
+  MOBILE_LEGACY_ACCESS_REFUSED,
+  MOBILE_LEGACY_ACCESS_SETTING,
+  confirmPendingPairing,
+  fetchMobileDevices,
+  fetchPendingPairingConfirmation,
+  putDesktopSetting,
+  rejectPendingPairing,
+  type DesktopMobileDevice,
+  type DesktopPendingPairingConfirmation,
+} from '../services/desktopServerClient'
 import { macOsTextInputAttrs } from '../utils/textInput'
 import {
   getConfiguredDesktopAuthSession,
@@ -98,6 +110,13 @@ const pairingPayload = ref<string | null>(null)
 const pairingExpiresAtUnixMs = ref<number | null>(null)
 const pushRegistration = ref<MobilePushRegistrationStatus | null>(null)
 const pushRegistrationLoading = ref(false)
+const pendingPairingConfirmation = ref<DesktopPendingPairingConfirmation | null>(null)
+const pairingConfirmationBusy = ref(false)
+const pairingConfirmationError = ref<string | null>(null)
+const mobileDevices = ref<DesktopMobileDevice[]>([])
+const legacyAccessAllowed = ref(true)
+const legacyAccessBusy = ref(false)
+let pairingConfirmationTimer: ReturnType<typeof setInterval> | null = null
 const authSession = ref<DesktopAuthSession | null>(null)
 const authState = ref<DesktopAuthState>({ status: "signedOut" })
 const accountEmail = ref("")
@@ -169,6 +188,12 @@ async function refreshMobileAccess() {
     }
     mobileServerStatus.value = normalizeMobileServerStatus(status.state)
     // Status has no QR payload or expiry. Only a locally created session owns credentials.
+    // The pairing-confirmation poll and the device list need the server the
+    // status just proved reachable; they start after it, and only while
+    // the Mobile tab is showing.
+    if (activeTab.value === "mobile" && mobileServerStatus.value === "running") {
+      startPairingConfirmationPolling()
+    }
   } catch (error) {
     console.error("[PreferencesPanel] failed to load mobile access status:", error)
     if (generation === statusGeneration) {
@@ -208,6 +233,90 @@ async function refreshPushRegistration() {
   }
 }
 
+/**
+ * A typed-code pairing parks on the server until the person compares the
+ * short authentication strings; the desktop has no push from the server
+ * to this panel, so it polls while the Mobile tab is open.
+ */
+async function refreshPairingConfirmation() {
+  try {
+    pendingPairingConfirmation.value = await fetchPendingPairingConfirmation()
+  } catch (error) {
+    console.error("[PreferencesPanel] failed to read pending pairing confirmation:", error)
+  }
+}
+
+async function refreshMobileDevices() {
+  try {
+    const summary = await fetchMobileDevices()
+    mobileDevices.value = summary.devices
+    legacyAccessAllowed.value = summary.legacyAccessAllowed
+  } catch (error) {
+    console.error("[PreferencesPanel] failed to read paired mobile devices:", error)
+  }
+}
+
+function startPairingConfirmationPolling() {
+  stopPairingConfirmationPolling()
+  void refreshPairingConfirmation()
+  void refreshMobileDevices()
+  pairingConfirmationTimer = setInterval(() => {
+    void refreshPairingConfirmation()
+  }, 1500)
+}
+
+function stopPairingConfirmationPolling() {
+  if (pairingConfirmationTimer) clearInterval(pairingConfirmationTimer)
+  pairingConfirmationTimer = null
+}
+
+async function confirmPairing() {
+  if (pairingConfirmationBusy.value) return
+  pairingConfirmationBusy.value = true
+  pairingConfirmationError.value = null
+  try {
+    await confirmPendingPairing()
+    pendingPairingConfirmation.value = null
+    await refreshMobileDevices()
+  } catch (error) {
+    console.error("[PreferencesPanel] failed to confirm pairing:", error)
+    pairingConfirmationError.value = error instanceof Error ? error.message : String(error)
+  } finally {
+    pairingConfirmationBusy.value = false
+  }
+}
+
+async function rejectPairing() {
+  if (pairingConfirmationBusy.value) return
+  pairingConfirmationBusy.value = true
+  pairingConfirmationError.value = null
+  try {
+    await rejectPendingPairing()
+    pendingPairingConfirmation.value = null
+  } catch (error) {
+    console.error("[PreferencesPanel] failed to reject pairing:", error)
+    pairingConfirmationError.value = error instanceof Error ? error.message : String(error)
+  } finally {
+    pairingConfirmationBusy.value = false
+  }
+}
+
+async function setLegacyAccess(allowed: boolean) {
+  if (legacyAccessBusy.value) return
+  legacyAccessBusy.value = true
+  try {
+    await putDesktopSetting(
+      MOBILE_LEGACY_ACCESS_SETTING,
+      allowed ? MOBILE_LEGACY_ACCESS_ALLOWED : MOBILE_LEGACY_ACCESS_REFUSED,
+    )
+    legacyAccessAllowed.value = allowed
+  } catch (error) {
+    console.error("[PreferencesPanel] failed to update legacy mobile access:", error)
+  } finally {
+    legacyAccessBusy.value = false
+  }
+}
+
 const isSignedIn = computed(() => authState.value.status === "signedIn")
 watch(
   () => authState.value.status === "signedIn" ? authState.value.user.uid : null,
@@ -223,6 +332,8 @@ watch(activeTab, (tab) => {
   if (tab === "mobile") {
     void refreshMobileAccess()
     void refreshPushRegistration()
+  } else {
+    stopPairingConfirmationPolling()
   }
 })
 
@@ -328,6 +439,7 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   unsubscribeAuth?.()
+  stopPairingConfirmationPolling()
   ++pushGeneration
   ++statusGeneration
 })
@@ -579,10 +691,19 @@ defineExpose({ bringToFront, cycleTab, isOnTop })
           :account-signed-in="isSignedIn"
           :push-registration="pushRegistration"
           :push-registration-loading="pushRegistrationLoading"
+          :pending-confirmation="pendingPairingConfirmation"
+          :confirmation-busy="pairingConfirmationBusy"
+          :confirmation-error="pairingConfirmationError"
+          :devices="mobileDevices"
+          :legacy-access-allowed="legacyAccessAllowed"
+          :legacy-access-busy="legacyAccessBusy"
           @start-pairing="startPairing"
           @refresh-status="refreshMobileAccess"
           @open-account="openAccountSettings"
           @refresh-push-registration="refreshPushRegistration"
+          @confirm-pairing="confirmPairing"
+          @reject-pairing="rejectPairing"
+          @set-legacy-access="setLegacyAccess"
         />
       </div>
 

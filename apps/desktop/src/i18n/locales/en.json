@@ -88,7 +88,17 @@
     "desktopStatus": "Desktop pairing status",
     "checkAgain": "Check again",
     "checkNotifications": "Check notifications again",
-    "probeScope": "This checks registrations for the signed-in account; it does not send a notification or list paired devices."
+    "probeScope": "This checks registrations for the signed-in account; it does not send a notification or list paired devices.",
+    "confirmTitle": "Confirm pairing with {device}",
+    "confirmHint": "Only confirm if your phone shows exactly this code. If the codes differ, reject it — something between the two is answering for this desktop.",
+    "confirmMatch": "The codes match",
+    "confirmMismatch": "Reject",
+    "devicesTitle": "Paired devices",
+    "noDevices": "No devices are paired with this desktop.",
+    "deviceEncrypted": "End-to-end encrypted",
+    "deviceLegacy": "Not end-to-end encrypted — re-pair to upgrade",
+    "legacyToggle": "Allow legacy (unencrypted) mobile connections",
+    "legacyHint": "Keep this on until every paired phone runs a Kanna Mobile version that pairs end-to-end encrypted. While it is on, an older phone still reaches this desktop through the relay with account-level authority; turning it off refuses every unencrypted phone connection."
   },
   "shortcuts": {
     "title": "Keyboard Shortcuts",

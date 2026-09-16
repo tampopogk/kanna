@@ -4,6 +4,10 @@ import { useI18n } from "vue-i18n";
 import { renderPairingQr, renderQrCode } from "../utils/pairingQr";
 import { getMobileInstallLink } from "../utils/mobileInstallLinks";
 import type { MobilePushRegistrationStatus } from "../types/mobilePushRegistration";
+import type {
+  DesktopMobileDevice,
+  DesktopPendingPairingConfirmation,
+} from "../services/desktopServerClient";
 
 const { t, locale } = useI18n();
 const props = defineProps<{
@@ -20,13 +24,27 @@ const props = defineProps<{
   accountSignedIn?: boolean;
   pushRegistration?: MobilePushRegistrationStatus | null;
   pushRegistrationLoading?: boolean;
+  /** A typed-code pairing waiting for the SAS comparison on this desktop. */
+  pendingConfirmation?: DesktopPendingPairingConfirmation | null;
+  confirmationBusy?: boolean;
+  confirmationError?: string | null;
+  devices?: DesktopMobileDevice[];
+  legacyAccessAllowed?: boolean;
+  legacyAccessBusy?: boolean;
 }>();
 const emit = defineEmits<{
   (e: "start-pairing"): void;
   (e: "refresh-status"): void;
   (e: "refresh-push-registration"): void;
   (e: "open-account"): void;
+  (e: "confirm-pairing"): void;
+  (e: "reject-pairing"): void;
+  (e: "set-legacy-access", allowed: boolean): void;
 }>();
+const sasGroups = computed(() => {
+  const sas = props.pendingConfirmation?.sas ?? "";
+  return sas ? `${sas.slice(0, 3)} ${sas.slice(3)}` : "";
+});
 const disclosure = ref<"install" | "pairing" | null>(props.pairingCode ? "pairing" : null);
 const troubleshooting = ref(false);
 function toggleDisclosure(value: "install" | "pairing") {
@@ -188,6 +206,34 @@ onBeforeUnmount(() => {
         <p v-if="expiryLabel">{{ expiryLabel }}</p>
         <p>{{ t('mobileAccess.pairingSuccessHint') }}</p>
       </div>
+      <div
+        v-if="pendingConfirmation"
+        class="confirmation"
+        role="alertdialog"
+        aria-live="polite"
+        data-testid="mobile-access-pairing-confirmation"
+      >
+        <p><strong>{{ t('mobileAccess.confirmTitle', { device: pendingConfirmation.deviceName }) }}</strong></p>
+        <p>{{ t('mobileAccess.confirmHint') }}</p>
+        <p class="sas" data-testid="mobile-access-pairing-sas">{{ sasGroups }}</p>
+        <div class="confirmation-actions">
+          <button
+            type="button"
+            class="primary-action"
+            data-testid="mobile-access-pairing-confirm"
+            :disabled="confirmationBusy"
+            @click="emit('confirm-pairing')"
+          >{{ t('mobileAccess.confirmMatch') }}</button>
+          <button
+            type="button"
+            class="secondary-action"
+            data-testid="mobile-access-pairing-reject"
+            :disabled="confirmationBusy"
+            @click="emit('reject-pairing')"
+          >{{ t('mobileAccess.confirmMismatch') }}</button>
+        </div>
+        <p v-if="confirmationError" class="error" role="alert">{{ confirmationError }}</p>
+      </div>
       <p v-if="pairingExpired" role="status">{{ t('mobileAccess.expired') }}</p>
       <p v-if="pairingError" class="error" role="alert">{{ t('mobileAccess.pairingFailed') }}</p>
       <button
@@ -197,6 +243,35 @@ onBeforeUnmount(() => {
         :disabled="pairingPending"
         @click="emit('start-pairing')"
       >{{ t(pairingPending ? 'mobileAccess.creating' : pairingCode ? 'mobileAccess.generateCode' : 'mobileAccess.pairDevice') }}</button>
+    </section>
+
+    <section class="devices" data-testid="mobile-access-devices">
+      <h4>{{ t('mobileAccess.devicesTitle') }}</h4>
+      <p v-if="!devices || devices.length === 0">{{ t('mobileAccess.noDevices') }}</p>
+      <ul v-else class="device-list">
+        <li
+          v-for="device in devices"
+          :key="device.deviceId"
+          :data-testid="`mobile-access-device-${device.deviceId}`"
+          :data-secure-channel="device.secureChannel ? 'true' : 'false'"
+        >
+          <span>{{ device.deviceName }}</span>
+          <span class="badge" :class="device.secureChannel ? 'badge-secure' : 'badge-legacy'">
+            {{ t(device.secureChannel ? 'mobileAccess.deviceEncrypted' : 'mobileAccess.deviceLegacy') }}
+          </span>
+        </li>
+      </ul>
+      <label class="legacy-toggle">
+        <input
+          type="checkbox"
+          data-testid="mobile-access-legacy-toggle"
+          :checked="legacyAccessAllowed !== false"
+          :disabled="legacyAccessBusy"
+          @change="emit('set-legacy-access', ($event.target as HTMLInputElement).checked)"
+        />
+        <span>{{ t('mobileAccess.legacyToggle') }}</span>
+      </label>
+      <p class="diagnostic">{{ t('mobileAccess.legacyHint') }}</p>
     </section>
 
     <section
@@ -250,6 +325,53 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
+.confirmation {
+  margin: 10px 0;
+  padding: 10px 12px;
+  border: 1px solid var(--kn-border, #3a4a63);
+  border-radius: 8px;
+}
+.confirmation .sas {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 28px;
+  font-weight: 700;
+  letter-spacing: 4px;
+  margin: 6px 0;
+}
+.confirmation-actions {
+  display: flex;
+  gap: 8px;
+}
+.device-list {
+  list-style: none;
+  margin: 0 0 8px;
+  padding: 0;
+}
+.device-list li {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 2px 0;
+}
+.badge {
+  border-radius: 999px;
+  padding: 0 8px;
+  font-size: 11px;
+  font-weight: 600;
+}
+.badge-secure {
+  background: rgba(60, 170, 110, 0.18);
+  color: #6fd39c;
+}
+.badge-legacy {
+  background: rgba(220, 170, 60, 0.18);
+  color: #e3b34c;
+}
+.legacy-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
 .mobile-access-panel {
   color: var(--kn-text-primary);
   font-size: 12px;
