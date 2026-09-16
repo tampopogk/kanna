@@ -580,7 +580,10 @@ describe("Relay entitlement enforcement", () => {
       let eventNumber = 0;
       const deliver = async (file: string, patch: Record<string, unknown> = {}, signatureSecret = "whsec_launch_fixture_only") => {
         const source = await readFile(new URL(`../../firebase-functions/test/fixtures/stripe/${file}`, import.meta.url), "utf8");
-        const event = JSON.parse(source.replaceAll("fixture-checkout-user", uid).replaceAll("cus_TestSlice1", "cus_launch_fixture")) as StripeEventEnvelope;
+        const event = JSON.parse(source
+          .replaceAll("fixture-checkout-user", uid)
+          .replaceAll("cus_TestSlice1", "cus_launch_fixture")
+          .replaceAll("cs_test_TestSlice1", "cs_launch_fixture")) as StripeEventEnvelope;
         event.id = `evt_launch_${uid}_${++eventNumber}`;
         event.created = Math.floor(Date.now() / 1000) + eventNumber;
         Object.assign(event.data.object, patch);

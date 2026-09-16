@@ -117,6 +117,24 @@ async function readDoc<T>(db: Firestore, path: string): Promise<T | null> {
   return (snapshot.data() as T | undefined) ?? null;
 }
 
+async function seedAdmittedStripeCheckout(db: Firestore): Promise<void> {
+  await Promise.all([
+    db.doc(userDocPath(CHECKOUT_UID)).set({ stripeCustomerId: "cus_TestSlice1" }, { merge: true }),
+    db.doc(stripeCustomerPath("cus_TestSlice1")).set({
+      uid: CHECKOUT_UID,
+      stripeCustomerId: "cus_TestSlice1",
+      updatedAt: "2026-08-19T00:00:00.000Z",
+    }),
+    db.doc(accountCheckoutPath(CHECKOUT_UID)).set({
+      uid: CHECKOUT_UID,
+      creating: false,
+      sessionIds: ["cs_test_TestSlice1"],
+      attempt: { customerId: "cus_TestSlice1", sessionId: "cs_test_TestSlice1" },
+      updatedAt: "2026-08-19T00:00:00.000Z",
+    }),
+  ]);
+}
+
 interface StubGateway extends StripeCheckoutGateway {
   calls: { customers: number; sessions: StripeCheckoutSessionInput[]; closedSessions: string[] };
   sessions: Map<string, StripeCheckoutSessionState>;
@@ -214,6 +232,10 @@ describeWithEmulator("billing backend against the Firestore emulator", () => {
   });
 
   describe("stripeWebhook", () => {
+    beforeEach(async () => {
+      await seedAdmittedStripeCheckout(db);
+    });
+
     it("rejects a payload whose signature does not verify", async () => {
       const outcome = await deliver(db, "checkout.session.completed.json", {
         secret: "whsec_a_different_secret",
@@ -248,6 +270,7 @@ describeWithEmulator("billing backend against the Firestore emulator", () => {
     });
 
     it("acknowledges and drops an event that resolves to no account", async () => {
+      await db.doc(stripeCustomerPath("cus_TestSlice1")).delete();
       const body = JSON.parse(fixtureBody("customer.subscription.created.json")) as {
         data: { object: { metadata: Record<string, string> } };
       };
@@ -331,7 +354,7 @@ describeWithEmulator("billing backend against the Firestore emulator", () => {
       });
     });
 
-    it("carries a checkout session through to a granted entitlement", async () => {
+    it("carries a server-admitted first checkout session through to a granted entitlement", async () => {
       const checkout = await deliver(db, "checkout.session.completed.json");
       expect(checkout).toMatchObject({ code: "applied", uid: CHECKOUT_UID });
 
@@ -418,6 +441,10 @@ describeWithEmulator("billing backend against the Firestore emulator", () => {
   });
 
   describe("stripeWebhook identity and replacement fencing", () => {
+    beforeEach(async () => {
+      await seedAdmittedStripeCheckout(db);
+    });
+
     function foreignEverything(): StripeOwnershipLookupGateway {
       return {
         async subscriptionProductIds() { return ["prod_kanji_kongbu"]; },
@@ -473,6 +500,78 @@ describeWithEmulator("billing backend against the Firestore emulator", () => {
       expect((await db.doc(stripeCustomerPath("cus_TestSlice1")).get()).data()).toEqual({ uid: "real-owner" });
       expect(await readDoc(db, billingSourcePath("real-owner", "stripe"))).toBeNull();
       expect(await readDoc(db, billingSourcePath(CHECKOUT_UID, "stripe"))).toBeNull();
+    });
+
+    it("refuses metadata adoption when the user is already bound to a different customer, without any write", async () => {
+      await Promise.all([
+        db.doc(stripeCustomerPath("cus_TestSlice1")).delete(),
+        db.doc(accountCheckoutPath(CHECKOUT_UID)).delete(),
+        db.doc(userDocPath(CHECKOUT_UID)).set({ stripeCustomerId: "cus_actual_owner" }, { merge: true }),
+      ]);
+      const checkoutBefore = await readDoc(db, accountCheckoutPath(CHECKOUT_UID));
+      const userBefore = await readDoc(db, userDocPath(CHECKOUT_UID));
+
+      const outcome = await deliver(db, "customer.subscription.created.json");
+
+      expect(outcome).toMatchObject({ httpStatus: 200, code: "mapping_conflict" });
+      expect(await readDoc(db, userDocPath(CHECKOUT_UID))).toEqual(userBefore);
+      expect(await readDoc(db, accountCheckoutPath(CHECKOUT_UID))).toEqual(checkoutBefore);
+      expect(await readDoc(db, stripeEventPath("evt_subscription_created"))).toBeNull();
+      expect(await readDoc(db, stripeCustomerPath("cus_TestSlice1"))).toBeNull();
+      expect(await readDoc(db, billingSourcePath(CHECKOUT_UID, "stripe"))).toBeNull();
+      expect(await readDoc(db, entitlementPath(CHECKOUT_UID))).toBeNull();
+    });
+
+    it.each([
+      {
+        binding: "stripe source",
+        arrange: async () => {
+          await db.doc(billingSourcePath(CHECKOUT_UID, "stripe")).set(
+            stripeSource({ stripeCustomerId: "cus_other" })
+          );
+        },
+      },
+      {
+        binding: "checkout attempt",
+        arrange: async () => {
+          await db.doc(accountCheckoutPath(CHECKOUT_UID)).set({
+            uid: CHECKOUT_UID,
+            sessionIds: ["cs_test_TestSlice1"],
+            attempt: { customerId: "cus_other", sessionId: "cs_test_TestSlice1" },
+          });
+        },
+      },
+    ])("refuses an event that conflicts with its server-owned $binding customer binding", async ({ arrange }) => {
+      await arrange();
+      const sourceBefore = await readDoc(db, billingSourcePath(CHECKOUT_UID, "stripe"));
+      const checkoutBefore = await readDoc(db, accountCheckoutPath(CHECKOUT_UID));
+      const mappingBefore = await readDoc(db, stripeCustomerPath("cus_TestSlice1"));
+
+      const outcome = await deliver(db, "customer.subscription.created.json");
+
+      expect(outcome).toMatchObject({ httpStatus: 200, code: "mapping_conflict" });
+      expect(await readDoc(db, stripeEventPath("evt_subscription_created"))).toBeNull();
+      expect(await readDoc(db, billingSourcePath(CHECKOUT_UID, "stripe"))).toEqual(sourceBefore);
+      expect(await readDoc(db, accountCheckoutPath(CHECKOUT_UID))).toEqual(checkoutBefore);
+      expect(await readDoc(db, stripeCustomerPath("cus_TestSlice1"))).toEqual(mappingBefore);
+      expect(await readDoc(db, entitlementPath(CHECKOUT_UID))).toBeNull();
+    });
+
+    it("refuses a checkout session that was not admitted before writing its event or customer map", async () => {
+      await db.doc(accountCheckoutPath(CHECKOUT_UID)).set({
+        uid: CHECKOUT_UID,
+        sessionIds: [],
+        attempt: { customerId: "cus_TestSlice1", sessionId: null },
+      });
+      const mappingBefore = await readDoc(db, stripeCustomerPath("cus_TestSlice1"));
+
+      const outcome = await deliver(db, "checkout.session.completed.json");
+
+      expect(outcome).toMatchObject({ httpStatus: 200, code: "subscription_replaced" });
+      expect(await readDoc(db, stripeEventPath("evt_checkout_completed"))).toBeNull();
+      expect(await readDoc(db, stripeCustomerPath("cus_TestSlice1"))).toEqual(mappingBefore);
+      expect(await readDoc(db, billingSourcePath(CHECKOUT_UID, "stripe"))).toBeNull();
+      expect(await readDoc(db, entitlementPath(CHECKOUT_UID))).toBeNull();
     });
 
     it("never resurrects or expires the current subscription from a late event naming an already-replaced one", async () => {

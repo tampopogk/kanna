@@ -245,7 +245,9 @@ async function applyStripeEvent(
   const mappingDoc = customerRef ? await transaction.get(customerRef) : null;
   const mappingUid = readMappingUid(mappingDoc);
 
-  const uid = account.uid ?? mappingUid;
+  // The reverse map is server-owned; event metadata is only a hint used when
+  // no mapping exists yet. Conflicting metadata must never choose the account.
+  const uid = mappingUid ?? account.uid;
   if (!uid) {
     return { httpStatus: 200, code: "unresolved_account", uid: null, entitlement: null, entitlementWritten: false };
   }
@@ -256,17 +258,10 @@ async function applyStripeEvent(
     return { httpStatus: 200, code: "mapping_conflict", uid: null, entitlement: null, entitlementWritten: false };
   }
 
-  // A checkout-session event may be the one legitimate way to promote a
-  // different subscription to "current" (see the replacement fence below), so
-  // its own checkout ledger is read here, before any write, alongside
-  // everything else this transaction needs.
-  const checkoutLedgerDoc = event.type === "checkout.session.completed"
-    ? await transaction.get(db.doc(accountCheckoutPath(uid)))
-    : null;
-
   const eventRef = db.doc(stripeEventPath(event.id));
   const userRef = db.doc(userDocPath(uid));
   const deletionRef = db.doc(accountDeletionPath(uid));
+  const checkoutRef = db.doc(accountCheckoutPath(uid));
 
   // The durable top-level deletion tombstone is the synchronization boundary.
   // A webhook transaction already in flight conflicts with the tombstone write
@@ -274,6 +269,7 @@ async function applyStripeEvent(
   const deletionDoc = await transaction.get(deletionRef);
   const userDoc = await transaction.get(userRef);
   const eventDoc = await transaction.get(eventRef);
+  const checkoutLedgerDoc = await transaction.get(checkoutRef);
   const state = await readBillingState(db, uid, transaction);
 
   if (deletionDoc.exists || !userDoc.exists) {
@@ -297,6 +293,27 @@ async function applyStripeEvent(
   }
 
   const existing = state.sources.stripe;
+  if (!customerBindingMatches({
+    uid,
+    incomingCustomerId: account.customerId,
+    mappingUid,
+    userDoc,
+    existing,
+    checkoutLedgerDoc,
+  })) {
+    // Event metadata may identify a candidate account, but only a matching
+    // server-owned customer binding (reverse map, user profile, source state,
+    // or checkout attempt) can authorize adopting that customer. Any existing
+    // disagreement is likewise terminal: do not create a second binding.
+    return {
+      httpStatus: 200,
+      code: "mapping_conflict",
+      uid: null,
+      entitlement: null,
+      entitlementWritten: false,
+    };
+  }
+
   const incomingSubscriptionId = patch.stripeSubscriptionId ?? null;
   const namesReplacementSubscription = Boolean(
     existing?.stripeSubscriptionId
@@ -322,6 +339,29 @@ async function applyStripeEvent(
       entitlement: state.previous,
       entitlementWritten: false,
     };
+  }
+
+  if (event.type === "checkout.session.completed") {
+    // A checkout completion may establish the first subscription or promote a
+    // replacement. Its session must already be admitted by this account's
+    // checkout writer. Perform this check before the event ledger or customer
+    // reverse map is written.
+    const sessionId = readEventObjectId(event);
+    const admitted = sessionId !== null && isSessionAdmitted(
+      checkoutLedgerDoc,
+      sessionId,
+      uid,
+      account.customerId
+    );
+    if (!admitted) {
+      return {
+        httpStatus: 200,
+        code: "subscription_replaced",
+        uid,
+        entitlement: state.previous,
+        entitlementWritten: false,
+      };
+    }
   }
 
   const eventCreatedAt = stripeEventCreatedAt(event);
@@ -350,26 +390,6 @@ async function applyStripeEvent(
       entitlement: state.previous,
       entitlementWritten: false,
     };
-  }
-
-  if (namesReplacementSubscription) {
-    // Only a checkout.session.completed event reaches this point with a
-    // mismatch (the branch above already deferred every other event type).
-    // Its own recorded session id must actually be in this account's
-    // checkout ledger; a rogue or foreign session for this customer will
-    // never appear there no matter how many times Stripe retries, so this
-    // is refused permanently rather than deferred.
-    const sessionId = readEventObjectId(event);
-    const admitted = sessionId !== null && isSessionAdmitted(checkoutLedgerDoc, sessionId);
-    if (!admitted) {
-      return {
-        httpStatus: 200,
-        code: "subscription_replaced",
-        uid,
-        entitlement: state.previous,
-        entitlementWritten: false,
-      };
-    }
   }
 
   const next = mergeStripeSourceState({
@@ -407,17 +427,94 @@ function readMappingUid(mappingDoc: FirebaseFirestore.DocumentSnapshot | null): 
   return typeof uid === "string" && uid.length > 0 ? uid : null;
 }
 
+interface CustomerBindingInput {
+  uid: string;
+  incomingCustomerId: string | null;
+  mappingUid: string | null;
+  userDoc: FirebaseFirestore.DocumentSnapshot;
+  existing: BilledSourceState | null;
+  checkoutLedgerDoc: FirebaseFirestore.DocumentSnapshot;
+}
+
+/**
+ * Validate the event's customer against every durable binding owned by Kanna.
+ *
+ * Stripe metadata is not one of those bindings. When the reverse map is
+ * absent, at least one other persisted binding must already name the incoming
+ * customer; otherwise metadata alone could attach any shared-account customer
+ * to any Firebase uid.
+ */
+function customerBindingMatches(input: CustomerBindingInput): boolean {
+  const {
+    uid,
+    incomingCustomerId,
+    mappingUid,
+    userDoc,
+    existing,
+    checkoutLedgerDoc,
+  } = input;
+  if (!incomingCustomerId) return false;
+
+  const userCustomerId = readStringField(userDoc.data(), "stripeCustomerId");
+  const sourceCustomerId = existing?.stripeCustomerId ?? null;
+  const checkout = checkoutLedgerDoc.data() as {
+    uid?: unknown;
+    attempt?: { customerId?: unknown; checkoutInput?: { customerId?: unknown } };
+  } | undefined;
+  const checkoutUid = typeof checkout?.uid === "string" && checkout.uid.length > 0
+    ? checkout.uid
+    : null;
+  const checkoutCustomerId = readStringField(checkout?.attempt, "customerId")
+    ?? readStringField(checkout?.attempt?.checkoutInput, "customerId");
+
+  if (checkoutUid && checkoutUid !== uid) return false;
+  const persistedCustomerIds = [userCustomerId, sourceCustomerId, checkoutCustomerId]
+    .filter((value): value is string => value !== null);
+  if (persistedCustomerIds.some((customerId) => customerId !== incomingCustomerId)) return false;
+
+  return mappingUid === uid || persistedCustomerIds.includes(incomingCustomerId);
+}
+
+function readStringField(value: unknown, key: string): string | null {
+  if (!value || typeof value !== "object") return null;
+  const field = (value as Record<string, unknown>)[key];
+  return typeof field === "string" && field.length > 0 ? field : null;
+}
+
 function readEventObjectId(event: StripeEventEnvelope): string | null {
   const id = event.data.object.id;
   return typeof id === "string" && id.length > 0 ? id : null;
 }
 
 /** Whether a checkout session belongs to this account's own recorded checkout ledger. */
-function isSessionAdmitted(ledgerDoc: FirebaseFirestore.DocumentSnapshot | null, sessionId: string): boolean {
+function isSessionAdmitted(
+  ledgerDoc: FirebaseFirestore.DocumentSnapshot,
+  sessionId: string,
+  uid: string,
+  customerId: string | null
+): boolean {
   if (!ledgerDoc || !ledgerDoc.exists) return false;
-  const data = ledgerDoc.data() as { sessionIds?: unknown; attempt?: { sessionId?: unknown } } | undefined;
+  const data = ledgerDoc.data() as {
+    creating?: unknown;
+    sessionIds?: unknown;
+    attempt?: {
+      sessionId?: unknown;
+      checkoutInput?: { uid?: unknown; customerId?: unknown };
+    };
+  } | undefined;
   const sessionIds = Array.isArray(data?.sessionIds) ? data.sessionIds : [];
-  return sessionIds.includes(sessionId) || data?.attempt?.sessionId === sessionId;
+  if (sessionIds.includes(sessionId) || data?.attempt?.sessionId === sessionId) return true;
+
+  // Stripe can deliver completion after it created the idempotent session but
+  // before the HTTPS response reaches Kanna, so there may be no session id to
+  // record yet. The frozen checkout request is still a server-owned admission
+  // for exactly this uid/customer; the retry will recover the same Stripe
+  // session by idempotency key and record its id.
+  const pending = data?.attempt?.checkoutInput;
+  return data?.creating === true
+    && customerId !== null
+    && pending?.uid === uid
+    && pending.customerId === customerId;
 }
 
 interface MergeStripeSourceStateInput {
