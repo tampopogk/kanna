@@ -7,6 +7,7 @@
  */
 import Stripe from "stripe";
 import { classifyProductOwnership, type CustomerProductScan, type ProductOwnershipVerdict } from "./stripeOwnership.js";
+import { STRIPE_CHECKOUT_ATTEMPT_METADATA_KEY } from "./types.js";
 
 export interface StripePortalGateway {
   createPortalSession(input: {
@@ -39,6 +40,7 @@ export interface StripeCustomerInput {
 export interface StripeCheckoutSessionInput {
   uid: string;
   customerId: string;
+  checkoutAttemptId: string;
   priceId: string;
   successUrl: string;
   cancelUrl: string;
@@ -310,7 +312,10 @@ export function stripeCheckoutGateway(secretKey: string, expectedProductId: stri
           card: { request_three_d_secure: "any" },
         },
         subscription_data: { metadata: { firebase_uid: input.uid } },
-        metadata: { firebase_uid: input.uid },
+        metadata: {
+          firebase_uid: input.uid,
+          [STRIPE_CHECKOUT_ATTEMPT_METADATA_KEY]: input.checkoutAttemptId,
+        },
       }, { idempotencyKey: input.idempotencyKey });
       return { id: session.id, url: session.url };
     },

@@ -34,6 +34,7 @@ import {
   billingSourcePath,
   stripeCustomerPath,
   stripeEventPath,
+  STRIPE_CHECKOUT_ATTEMPT_METADATA_KEY,
   userDocPath,
   type BilledSourceState,
   type BillingEnvironment,
@@ -347,11 +348,16 @@ async function applyStripeEvent(
     // checkout writer. Perform this check before the event ledger or customer
     // reverse map is written.
     const sessionId = readEventObjectId(event);
+    const checkoutAttemptId = readStringField(
+      event.data.object.metadata,
+      STRIPE_CHECKOUT_ATTEMPT_METADATA_KEY
+    );
     const admitted = sessionId !== null && isSessionAdmitted(
       checkoutLedgerDoc,
       sessionId,
       uid,
-      account.customerId
+      account.customerId,
+      checkoutAttemptId
     );
     if (!admitted) {
       return {
@@ -491,7 +497,8 @@ function isSessionAdmitted(
   ledgerDoc: FirebaseFirestore.DocumentSnapshot,
   sessionId: string,
   uid: string,
-  customerId: string | null
+  customerId: string | null,
+  checkoutAttemptId: string | null
 ): boolean {
   if (!ledgerDoc || !ledgerDoc.exists) return false;
   const data = ledgerDoc.data() as {
@@ -499,7 +506,7 @@ function isSessionAdmitted(
     sessionIds?: unknown;
     attempt?: {
       sessionId?: unknown;
-      checkoutInput?: { uid?: unknown; customerId?: unknown };
+      checkoutInput?: { uid?: unknown; customerId?: unknown; checkoutAttemptId?: unknown };
     };
   } | undefined;
   const sessionIds = Array.isArray(data?.sessionIds) ? data.sessionIds : [];
@@ -507,14 +514,17 @@ function isSessionAdmitted(
 
   // Stripe can deliver completion after it created the idempotent session but
   // before the HTTPS response reaches Kanna, so there may be no session id to
-  // record yet. The frozen checkout request is still a server-owned admission
-  // for exactly this uid/customer; the retry will recover the same Stripe
-  // session by idempotency key and record its id.
+  // record yet. The frozen checkout request's unguessable attempt id is also
+  // stamped into the Stripe session's signed metadata. Matching that id binds
+  // this exact session to the server-owned attempt; uid/customer equality by
+  // itself would admit an unrelated checkout on the same customer.
   const pending = data?.attempt?.checkoutInput;
   return data?.creating === true
     && customerId !== null
+    && checkoutAttemptId !== null
     && pending?.uid === uid
-    && pending.customerId === customerId;
+    && pending.customerId === customerId
+    && pending.checkoutAttemptId === checkoutAttemptId;
 }
 
 interface MergeStripeSourceStateInput {

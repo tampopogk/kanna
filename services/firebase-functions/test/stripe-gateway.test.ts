@@ -90,11 +90,12 @@ describe("Stripe checkout gateway", () => {
     });
   });
 
-  it("explicitly requests 3D Secure on the Checkout Session", async () => {
+  it("requests 3D Secure and stamps the durable attempt on the Checkout Session", async () => {
     const gateway = stripeCheckoutGateway("sk_test_mocked", PRODUCT_ID);
 
     await gateway.createCheckoutSession({
       uid: "firebase-user",
+      checkoutAttemptId: "attempt-123",
       idempotencyKey: "checkout-attempt",
       expiresAt: 1800000000,
       customerId: "cus_test_3ds",
@@ -109,6 +110,10 @@ describe("Stripe checkout gateway", () => {
         card: { request_three_d_secure: "any" },
       },
       expires_at: 1800000000,
+      metadata: {
+        firebase_uid: "firebase-user",
+        kanna_checkout_attempt_id: "attempt-123",
+      },
     }), { idempotencyKey: "checkout-attempt" });
   });
   it("uses the durable customer idempotency key without putting it in metadata", async () => {

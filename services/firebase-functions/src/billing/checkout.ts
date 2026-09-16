@@ -157,7 +157,7 @@ export async function createCheckoutSession(
       attempt = await updateAttempt(deps.db, caller.uid, attempt.id, now(), (current) => {
         if (current.checkoutInput || current.sessionId) return current;
         return { ...current, checkoutInput: {
-          uid: caller.uid, customerId, priceId,
+          uid: caller.uid, customerId, checkoutAttemptId: current.id, priceId,
           successUrl: current.successUrl, cancelUrl: current.cancelUrl,
           idempotencyKey: `checkout-${current.id}`,
           expiresAt: Math.floor(Date.parse(now()) / 1000) + 24 * 60 * 60,
