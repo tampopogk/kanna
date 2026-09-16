@@ -236,6 +236,7 @@ export interface MobileUninstallInput {
 export interface MobileQaInput {
   production: boolean;
   ota: boolean;
+  keyPath?: string;
 }
 
 export const devUpInputSchema = z.object({
@@ -323,7 +324,8 @@ const mobileUninstallInputSchema = z.object({
 
 const mobileQaInputSchema = z.object({
   production: z.boolean().default(false),
-  ota: z.boolean().default(false)
+  ota: z.boolean().default(false),
+  keyPath: z.string().optional()
 });
 
 const mobileArchiveInputSchema = z.object({
@@ -2590,6 +2592,7 @@ async function executeMobileQa(input: MobileQaInput): Promise<TaskResult> {
   const qa = await executeProductionMobileQa({
     repoRoot: context.repoRoot,
     env: context.env,
+    keyPath: input.keyPath,
     runner: nodeCommandRunner
   });
   const localOk = isProductionMobileQaOk(qa);

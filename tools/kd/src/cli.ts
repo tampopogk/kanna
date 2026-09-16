@@ -344,12 +344,27 @@ function parseMobileDoctorInput(rest: string[]): ParsedCliCommand {
 }
 
 function parseMobileQaInput(rest: string[]): ParsedCliCommand {
-  const input = parseFlagInput(rest, { production: false, ota: false });
+  let keyPath: string | undefined;
+  const remainingArgs: string[] = [];
+  for (let index = 0; index < rest.length; index += 1) {
+    const arg = rest[index];
+    if (arg !== "--key-path") {
+      remainingArgs.push(arg);
+      continue;
+    }
+    const value = rest[index + 1];
+    if (!value || value.startsWith("--")) {
+      throw new Error("mobile qa --key-path requires a value");
+    }
+    keyPath = value;
+    index += 1;
+  }
+  const input = parseFlagInput(remainingArgs, { production: false, ota: false });
   const unsupportedFlags = Object.entries(input)
     .filter(([key, value]) => !["production", "ota"].includes(key) && value === true)
     .map(([key]) => key);
   if (unsupportedFlags.length > 0) {
-    throw new Error("mobile qa only accepts --production and --ota");
+    throw new Error("mobile qa only accepts --production, --ota, and --key-path <path>");
   }
   if (input.production !== true) {
     throw new Error("mobile qa requires --production");
@@ -358,7 +373,8 @@ function parseMobileQaInput(rest: string[]): ParsedCliCommand {
     taskId: "mobile.qa",
     input: {
       production: true,
-      ota: input.ota === true
+      ota: input.ota === true,
+      ...(keyPath ? { keyPath } : {})
     }
   };
 }
@@ -1263,7 +1279,7 @@ const helpTopics: Record<string, string[]> = {
     "  mobile version bump --major|--minor|--patch [--dry-run]",
     "  mobile verify --ipa <path> [--version <version>] [--build-number <number>]",
     "  mobile doctor (--device | --android-emulator [<avd>] | --android-device <serial>)",
-    "  mobile qa --production [--ota]",
+    "  mobile qa --production [--ota] [--key-path <absolute-path>]",
     "  mobile ota publish --staging|--production [--platform ios|android] [--ref <branch|tag|sha>] [--dry-run] [--rollback-to <updateId>]",
     "  mobile ota status --staging|--production [--platform ios|android]",
     "  mobile ota doctor|preflight --staging|--production [--platform ios|android]",
@@ -1412,7 +1428,7 @@ const helpTopics: Record<string, string[]> = {
     "  mobile archive --production --ref <branch|tag|sha> --build-number <number> [--version <version>] [--out-dir <dir>] [--upload] [--dry-run]",
     "  mobile version bump --major|--minor|--patch [--dry-run]",
     "  mobile doctor (--device | --android-emulator [<avd>] | --android-device <serial>)",
-    "  mobile qa --production [--ota]",
+    "  mobile qa --production [--ota] [--key-path <absolute-path>]",
     "  mobile ota <command>",
     "  mobile test",
     "  mobile device-smoke"
@@ -1529,7 +1545,7 @@ const helpTopics: Record<string, string[]> = {
     "Android doctor resolves SDK tools and an exact AVD or device, but never installs or boots anything."
   ],
   "mobile qa": [
-    "Usage: kd mobile qa --production [--ota]",
+    "Usage: kd mobile qa --production [--ota] [--key-path <absolute-path>]",
     "",
     "Run the repo-side production mobile QA gate for TestFlight/App Store candidates.",
     "",
@@ -1542,7 +1558,8 @@ const helpTopics: Record<string, string[]> = {
     "",
     "Options:",
     "  --production  Required. Validate the production mobile identity.",
-    "  --ota         Also run production OTA status and doctor checks."
+    "  --ota         Also run production OTA status and doctor checks.",
+    "  --key-path    Existing local OTA private key used only by Expo to sign the simulator manifest."
   ],
   "mobile ota": [
     "Usage: kd mobile ota <command>",

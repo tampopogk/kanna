@@ -195,6 +195,8 @@ describe("command runtime helpers", () => {
       })
     );
     const envs: Array<NodeJS.ProcessEnv | undefined> = [];
+    const keyPath = join(repoRoot, "fake key with spaces.pem");
+    await writeFile(keyPath, "not an actual private key", { mode: 0o600 });
     const runner: CommandRunner = {
       async run(_command, _args, options) {
         envs.push(options?.env);
@@ -206,12 +208,42 @@ describe("command runtime helpers", () => {
       const result = await executeProductionMobileQa({
         repoRoot,
         env: { KANNA_APPIUM_PORT: "4723", KANNA_MOBILE_PORT: "8081" },
+        keyPath,
         runner
       });
 
       expect(result.commands).toHaveLength(4);
       expect(envs.every((env) => env?.KANNA_APP_ENV === "prod")).toBe(true);
       expect(envs.every((env) => env?.KANNA_E2E_DESKTOP_SERVER_URL === "http://127.0.0.1:48120")).toBe(true);
+      expect(envs.every((env) => env?.KANNA_OTA_PRIVATE_KEY_PATH === keyPath)).toBe(true);
+    } finally {
+      await rm(repoRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("fails production mobile QA before commands when its signing key is unavailable", async () => {
+    const repoRoot = await mkdtemp(join(tmpdir(), "mobile-qa-missing-key-"));
+    await mkdir(join(repoRoot, "apps/mobile/src"), { recursive: true });
+    await writeFile(
+      join(repoRoot, "apps/mobile/src/mobileEnvironments.json"),
+      JSON.stringify({ prod: {} })
+    );
+    let commands = 0;
+    const runner: CommandRunner = {
+      async run() {
+        commands += 1;
+        return { exitCode: 0, stdout: "", stderr: "" };
+      }
+    };
+
+    try {
+      await expect(executeProductionMobileQa({
+        repoRoot,
+        env: {},
+        keyPath: "/missing/fake-mobile-ota-key.pem",
+        runner
+      })).rejects.toThrow(/does not exist/);
+      expect(commands).toBe(0);
     } finally {
       await rm(repoRoot, { recursive: true, force: true });
     }
