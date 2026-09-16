@@ -763,6 +763,48 @@ describe("createDesktopRelayTerminalClient", () => {
     await expect(malformedPromise).rejects.toThrow("Remote task file response was malformed.");
   });
 
+  it("routes agent attempts and archived output to the owning desktop", async () => {
+    const socket = new FakeSocket();
+    const client = createDesktopRelayTerminalClient({
+      createSocket: () => socket,
+      getIdToken: vi.fn(async () => "id-token"),
+      relayUrl: "ws://relay.test",
+    });
+
+    const attemptsPromise = client.listAgentTerminalAttempts({
+      desktopId: "desktop-owner", taskId: "owner-task",
+    });
+    const archivePromise = client.readAgentTerminalArchive({
+      desktopId: "desktop-owner", taskId: "owner-task", runId: "run-1",
+    });
+    await openRelayTunnel(socket);
+    socket.onmessage?.({ data: JSON.stringify({ type: "auth_ok" }) });
+    await vi.waitFor(() => expect(socket.sent.filter((entry) => entry.includes("terminal-attempts")).length).toBe(2));
+
+    const requests = socket.sent.map((entry) => JSON.parse(entry));
+    const attempts = requests.find((entry) => entry.path === "/v1/tasks/owner-task/terminal-attempts");
+    const archive = requests.find((entry) => entry.path === "/v1/tasks/owner-task/terminal-attempts/run-1");
+    expect(attempts).toMatchObject({ type: "request", method: "GET", body: null });
+    expect(archive).toMatchObject({ type: "request", method: "GET", body: null });
+    socket.onmessage?.({ data: JSON.stringify({
+      type: "response", id: attempts.id, status: 200, body: [{
+        id: "run-1", stage: "review", startedAt: "today", cwd: "/repo",
+        archived: true, recordedLaunch: true, observedExitCode: 7,
+      }],
+    }) });
+    socket.onmessage?.({ data: JSON.stringify({
+      type: "response", id: archive.id, status: 200, body: {
+        binding: { task_id: "owner-task", spawned_run_id: "run-1" },
+        session_id: "owner-task", cwd: "/repo",
+        snapshot: { vt: "captured", cols: 80, rows: 24 },
+        unavailable_reason: null, observed_exit_code: 7,
+      },
+    }) });
+
+    await expect(attemptsPromise).resolves.toHaveLength(1);
+    await expect(archivePromise).resolves.toMatchObject({ observed_exit_code: 7 });
+  });
+
   it("reads a paginated task directory and scoped diff from the owning desktop", async () => {
     const socket = new FakeSocket();
     const client = createDesktopRelayTerminalClient({

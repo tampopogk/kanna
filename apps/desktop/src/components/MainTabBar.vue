@@ -9,6 +9,7 @@ import type { MainTab } from "../composables/useMainTabs";
 const props = defineProps<{
   tabs: MainTab[];
   agentAttempts?: AgentTerminalAttempt[];
+  agentHistoryStatus?: string;
   selectedAttempt?: string;
   currentStage?: string;
   activeTabId: string;
@@ -182,7 +183,7 @@ onBeforeUnmount(() => closeMenu());
       @auxclick.middle.prevent="tab.closable && emit('close', tab.id)"
     >
       <span v-if="tab.id !== 'agent' || !agentAttempts" class="main-tab-label">{{ tab.label }}</span>
-      <AgentStageSelector v-if="tab.id === 'agent' && agentAttempts" :attempts="agentAttempts" :current-stage="currentStage" :selected="selectedAttempt ?? ''" @select="emit('selectAttempt', $event)" />
+      <AgentStageSelector v-if="tab.id === 'agent' && agentAttempts" :attempts="agentAttempts" :history-status="agentHistoryStatus" :current-stage="currentStage" :selected="selectedAttempt ?? ''" @select="emit('selectAttempt', $event)" />
       <button
         v-if="tab.closable"
         type="button"

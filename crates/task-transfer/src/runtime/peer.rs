@@ -577,7 +577,10 @@ impl TransferRuntime {
         request: PeerRequest,
         request_timeout: std::time::Duration,
     ) -> Result<PeerResponse, RuntimeError> {
-        if matches!(&request, PeerRequest::FetchTransferArtifact { .. }) {
+        if matches!(
+            &request,
+            PeerRequest::FetchTransferArtifact { .. } | PeerRequest::ReadTaskTerminalArchive { .. }
+        ) {
             self.send_peer_request_with_permits(
                 peer,
                 request,

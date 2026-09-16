@@ -475,6 +475,43 @@ pub async fn read_transfer_peer_task_graph(
 }
 
 #[tauri::command]
+pub async fn list_transfer_peer_task_terminal_attempts(
+    app: tauri::AppHandle,
+    peer_id: String,
+    task_id: String,
+) -> Result<Value, String> {
+    let response = transfer_control(
+        &app,
+        "list-peer-task-terminal-attempts",
+        json!({ "peerId": peer_id, "taskId": task_id }),
+    )
+    .await?;
+    response
+        .get("attempts")
+        .cloned()
+        .ok_or_else(|| "transfer control agent history response is missing attempts".to_string())
+}
+
+#[tauri::command]
+pub async fn read_transfer_peer_task_terminal_archive(
+    app: tauri::AppHandle,
+    peer_id: String,
+    task_id: String,
+    run_id: String,
+) -> Result<Value, String> {
+    let response = transfer_control(
+        &app,
+        "read-peer-task-terminal-archive",
+        json!({ "peerId": peer_id, "taskId": task_id, "runId": run_id }),
+    )
+    .await?;
+    response
+        .get("archive")
+        .cloned()
+        .ok_or_else(|| "transfer control agent history response is missing archive".to_string())
+}
+
+#[tauri::command]
 pub async fn mark_transfer_peer_task_read(
     app: tauri::AppHandle,
     peer_id: String,

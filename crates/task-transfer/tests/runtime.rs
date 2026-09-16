@@ -5698,6 +5698,81 @@ async fn trusted_peer_browse_and_diff_fetch_from_owner_kanna_server() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn trusted_peer_agent_history_fetches_canonical_owner_routes() {
+    let temp = tempfile::tempdir().unwrap();
+    let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let (request_tx, mut request_rx) = mpsc::channel(2);
+
+    let server = tokio::spawn(async move {
+        for body in [
+            r#"[{"id":"run-1","stage":"review","startedAt":"today","cwd":"/repo","archived":true,"recordedLaunch":true,"observedExitCode":7}]"#,
+            r#"{"binding":{"task_id":"owner-task-1","spawned_run_id":"run-1"},"session_id":"owner-task-1","cwd":"/repo","snapshot":{"vt":"captured","cols":80,"rows":24},"unavailable_reason":null,"observed_exit_code":7}"#,
+        ] {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut reader = BufReader::new(stream);
+            let mut request_line = String::new();
+            reader.read_line(&mut request_line).await.unwrap();
+            loop {
+                let mut header = String::new();
+                reader.read_line(&mut header).await.unwrap();
+                if header == "\r\n" {
+                    break;
+                }
+            }
+            request_tx.send(request_line).await.unwrap();
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            reader
+                .get_mut()
+                .write_all(response.as_bytes())
+                .await
+                .unwrap();
+        }
+    });
+
+    let owner = TransferRuntime::spawn(
+        RuntimeConfig::for_tests("peer-owner", "Owner", temp.path(), 0)
+            .with_kanna_server_port(port),
+    )
+    .await
+    .unwrap();
+    let secondary = TransferRuntime::spawn(RuntimeConfig::for_tests(
+        "peer-secondary",
+        "Secondary",
+        temp.path(),
+        0,
+    ))
+    .await
+    .unwrap();
+    pair_peers(&secondary, &owner, "peer-owner").await;
+
+    let attempts = secondary
+        .list_peer_task_terminal_attempts("peer-owner", "owner-task-1")
+        .await
+        .unwrap();
+    assert_eq!(attempts[0]["id"], "run-1");
+    let archive = secondary
+        .read_peer_task_terminal_archive("peer-owner", "owner-task-1", "run-1")
+        .await
+        .unwrap();
+    assert_eq!(archive["binding"]["task_id"], "owner-task-1");
+    assert_eq!(archive["observed_exit_code"], 7);
+
+    assert_eq!(
+        request_rx.recv().await.unwrap(),
+        "GET /v1/tasks/owner-task-1/terminal-attempts HTTP/1.1\r\n"
+    );
+    assert_eq!(
+        request_rx.recv().await.unwrap(),
+        "GET /v1/tasks/owner-task-1/terminal-attempts/run-1 HTTP/1.1\r\n"
+    );
+    server.await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn trusted_peer_mark_read_posts_to_owner_kanna_server() {
     let temp = tempfile::tempdir().unwrap();
     let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();

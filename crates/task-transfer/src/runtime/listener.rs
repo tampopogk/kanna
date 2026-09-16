@@ -5,9 +5,11 @@ use super::companion::{
     verify_observe_companion_proof, verify_send_companion_event_proof,
 };
 use super::daemon::{
-    advance_owner_task_stage, close_owner_task, mark_owner_task_read, prepare_session_observer,
-    read_owner_task_diff, read_owner_task_directory, read_owner_task_file, read_owner_task_graph,
-    resize_daemon_session, send_daemon_input, stream_daemon_session,
+    advance_owner_task_stage, close_owner_task, list_owner_task_terminal_attempts,
+    mark_owner_task_read, prepare_session_observer, read_owner_task_diff,
+    read_owner_task_directory, read_owner_task_file, read_owner_task_graph,
+    read_owner_task_terminal_archive, resize_daemon_session, send_daemon_input,
+    stream_daemon_session,
 };
 use super::events::{
     IncomingTransferEvent, OutgoingTransferFinalizationRequestedEvent, PairingCompletedEvent,
@@ -1932,6 +1934,64 @@ async fn handle_connection(
         }.await {
             Ok(graph) => PeerResponse::ReadTaskGraph { request_id, graph },
             Err(error) => PeerResponse::Error { request_id, message: error.to_string() },
+        },
+        Ok(PeerRequest::ListTaskTerminalAttempts {
+            request_id,
+            requester_peer_id,
+            task_id,
+            sealed_payload,
+        }) => match async {
+            let payload = authenticate_peer_request(
+                &context,
+                &requester_peer_id,
+                sealed_payload.as_deref(),
+                "list_task_terminal_attempts",
+                &request_id,
+            )
+            .await?;
+            ensure_authenticated_argument(&payload, "task_id", &task_id)?;
+            list_owner_task_terminal_attempts(&context, &task_id).await
+        }
+        .await
+        {
+            Ok(attempts) => PeerResponse::ListTaskTerminalAttempts {
+                request_id,
+                attempts,
+            },
+            Err(error) => PeerResponse::Error {
+                request_id,
+                message: error.to_string(),
+            },
+        },
+        Ok(PeerRequest::ReadTaskTerminalArchive {
+            request_id,
+            requester_peer_id,
+            task_id,
+            run_id,
+            sealed_payload,
+        }) => match async {
+            let payload = authenticate_peer_request(
+                &context,
+                &requester_peer_id,
+                sealed_payload.as_deref(),
+                "read_task_terminal_archive",
+                &request_id,
+            )
+            .await?;
+            ensure_authenticated_argument(&payload, "task_id", &task_id)?;
+            ensure_authenticated_argument(&payload, "run_id", &run_id)?;
+            read_owner_task_terminal_archive(&context, &task_id, &run_id).await
+        }
+        .await
+        {
+            Ok(archive) => PeerResponse::ReadTaskTerminalArchive {
+                request_id,
+                archive,
+            },
+            Err(error) => PeerResponse::Error {
+                request_id,
+                message: error.to_string(),
+            },
         },
         Ok(PeerRequest::MarkTaskRead {
             request_id,

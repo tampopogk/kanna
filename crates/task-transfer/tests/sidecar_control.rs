@@ -627,6 +627,8 @@ fn control_response_id(response: &ControlResponse) -> &str {
         | ControlResponse::ReadPeerTaskDirectory { request_id, .. }
         | ControlResponse::ReadPeerTaskDiff { request_id, .. }
         | ControlResponse::ReadPeerTaskGraph { request_id, .. }
+        | ControlResponse::ListPeerTaskTerminalAttempts { request_id, .. }
+        | ControlResponse::ReadPeerTaskTerminalArchive { request_id, .. }
         | ControlResponse::MarkPeerTaskRead { request_id }
         | ControlResponse::StartPairing { request_id, .. }
         | ControlResponse::AcceptPairing { request_id, .. }

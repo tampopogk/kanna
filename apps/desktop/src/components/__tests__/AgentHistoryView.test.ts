@@ -16,6 +16,13 @@ it.each([0,7,null])("shows recorded termination %s without inventing success",as
   read.mockResolvedValue(archive("task","a",code));const view=mount(AgentHistoryView,{props:{taskId:"task",attemptId:"a"}});await flushPromises();
   expect(view.text()).toContain(code===null?"Exit status unknown":`Exit ${code}`);expect(read).toHaveBeenCalledExactlyOnceWith("task","a");view.unmount();
 });
+it("renders remote captured scrollback and verifies its canonical task/run binding",async()=>{
+  const load=vi.fn().mockResolvedValue(archive("owner-task","remote-run",7));
+  const view=mount(AgentHistoryView,{props:{taskId:"owner-task",attemptId:"remote-run",sourceKey:"lan:owner:owner-task",loadArchive:load}});await flushPromises();
+  expect(load).toHaveBeenCalledExactlyOnceWith("remote-run");expect(view.get("pre").text()).toBe("remote-run");expect(view.text()).toContain("Exit 7");
+  await view.setProps({taskId:"different-owner",sourceKey:"lan:different:different-owner",loadArchive:vi.fn().mockResolvedValue(archive("owner-task","remote-run",7))});await flushPromises();
+  expect(view.text()).toContain("Archive identity mismatch");expect(view.get("pre").text()).toBe("");view.unmount();
+});
 it("ignores stale attempt and task responses and exposes missing history",async()=>{
   let resolveA!:(v:unknown)=>void;read.mockImplementationOnce(()=>new Promise(r=>resolveA=r)).mockResolvedValueOnce(archive("other","b",7)).mockResolvedValueOnce(null);
   const view=mount(AgentHistoryView,{props:{taskId:"task",attemptId:"a"}});await view.setProps({taskId:"other",attemptId:"b"});await flushPromises();resolveA(archive("task","a",0));await flushPromises();

@@ -1148,6 +1148,35 @@ async fn handle_request(
             Ok(graph) => ControlResponse::ReadPeerTaskGraph { request_id, graph },
             Err(error) => control_error(request_id, error),
         },
+        ControlRequest::ListPeerTaskTerminalAttempts {
+            request_id,
+            target_peer_id,
+            task_id,
+        } => match runtime
+            .list_peer_task_terminal_attempts(&target_peer_id, &task_id)
+            .await
+        {
+            Ok(attempts) => ControlResponse::ListPeerTaskTerminalAttempts {
+                request_id,
+                attempts,
+            },
+            Err(error) => control_error(request_id, error),
+        },
+        ControlRequest::ReadPeerTaskTerminalArchive {
+            request_id,
+            target_peer_id,
+            task_id,
+            run_id,
+        } => match runtime
+            .read_peer_task_terminal_archive(&target_peer_id, &task_id, &run_id)
+            .await
+        {
+            Ok(archive) => ControlResponse::ReadPeerTaskTerminalArchive {
+                request_id,
+                archive,
+            },
+            Err(error) => control_error(request_id, error),
+        },
         ControlRequest::MarkPeerTaskRead {
             request_id,
             target_peer_id,

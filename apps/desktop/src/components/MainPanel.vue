@@ -15,7 +15,11 @@ import type { TaskUiSlot } from "../types/taskUi";
 import {
   fetchDesktopTaskDetail,
   listDesktopTaskDirectory,
+  listAgentTerminalAttempts,
+  readAgentTerminalArchive,
   readDesktopTaskFile,
+  type AgentTerminalArchive,
+  type AgentTerminalAttempt,
   type DesktopTaskDetail,
 } from "../services/desktopServerClient";
 import { isBlockerResolved } from "../utils/blockerResolution";
@@ -25,7 +29,6 @@ import TaskPreviewCache from "./TaskPreviewCache.vue";
 import TaskHeader from "./TaskHeader.vue";
 import TerminalTabs from "./TerminalTabs.vue";
 import AgentHistoryView from "./AgentHistoryView.vue";
-import { listAgentTerminalAttempts, type AgentTerminalAttempt } from "../services/desktopServerClient";
 import MainTabBar from "./MainTabBar.vue";
 import { usePaneTabDrag } from "../composables/usePaneTabDrag";
 import DiffModal from "./DiffModal.vue";
@@ -85,13 +88,68 @@ const TERMINAL_EDITOR_NOTICE_SETTING_KEY = "hideTerminalEditorNotice";
 const item = computed(() => props.uiSlot?.task ?? null);
 const selectedAttempt = ref("");
 const agentAttempts = ref<AgentTerminalAttempt[]>([]);
+const agentHistoryStatus = ref("");
 let attemptsRequest = 0;
-async function loadAgentAttempts(taskId: string) {
+const agentHistoryRemoteRoute = computed(() => {
+  const ref = props.cloudTerminalRef;
+  if (!item.value || !ref || (!props.cloudTask && !isRemotePresentationTaskId(item.value.id))) return null;
+  return {
+    desktopId: ref.ownerDesktopId,
+    taskId: ref.ownerLocalTaskId,
+    transport: ref.transport ?? "cloud",
+  };
+});
+const agentHistoryBindingTaskId = computed(() =>
+  agentHistoryRemoteRoute.value?.taskId ?? item.value?.id ?? ""
+);
+const agentHistorySourceKey = computed(() => {
+  const task = item.value;
+  if (!task) return "none";
+  const route = agentHistoryRemoteRoute.value;
+  if (route) return `${route.transport}:${route.desktopId}:${route.taskId}`;
+  return taskDetailIsLocal.value ? `local:${task.id}` : `remote-unavailable:${task.id}`;
+});
+function historyError(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  return `History unavailable · ${message}`;
+}
+async function loadAgentAttempts(presentationTaskId: string, sourceKey: string) {
   const request = ++attemptsRequest;
+  agentHistoryStatus.value = "Loading history…";
   try {
-    const attempts = await listAgentTerminalAttempts(taskId);
-    if (request === attemptsRequest && item.value?.id === taskId) agentAttempts.value = attempts;
-  } catch (error) { console.debug("[agent-history] attempt list unavailable", error); }
+    const route = agentHistoryRemoteRoute.value;
+    const attempts = route
+      ? await props.views?.modals.listRemoteAgentTerminalAttempts(route)
+      : taskDetailIsLocal.value
+        ? await listAgentTerminalAttempts(presentationTaskId)
+        : undefined;
+    if (!attempts) throw new Error(route ? "remote task views unsupported" : "owner route unavailable");
+    if (
+      request === attemptsRequest
+      && item.value?.id === presentationTaskId
+      && agentHistorySourceKey.value === sourceKey
+    ) {
+      agentAttempts.value = attempts;
+      agentHistoryStatus.value = "";
+    }
+  } catch (error) {
+    if (
+      request === attemptsRequest
+      && item.value?.id === presentationTaskId
+      && agentHistorySourceKey.value === sourceKey
+    ) agentHistoryStatus.value = historyError(error);
+    console.debug("[agent-history] attempt list unavailable", error);
+  }
+}
+async function loadSelectedAgentArchive(runId: string): Promise<AgentTerminalArchive | null> {
+  const route = agentHistoryRemoteRoute.value;
+  if (route) {
+    const loader = props.views?.modals.readRemoteAgentTerminalArchive;
+    if (!loader) throw new Error("remote task views unsupported");
+    return loader(route, runId);
+  }
+  if (!taskDetailIsLocal.value) throw new Error("owner route unavailable");
+  return readAgentTerminalArchive(agentHistoryBindingTaskId.value, runId);
 }
 function selectAttempt(id: string) { selectedAttempt.value = id; selectTab(AGENT_TAB_ID); }
 
@@ -667,18 +725,29 @@ watch(
   ] as const,
   ([taskId], previous) => {
     if (taskId !== previous?.[0]) {
-      attemptsRequest++;
-      agentAttempts.value = [];
-      selectedAttempt.value = "";
       taskDetailRequest += 1;
       taskDetail.value = null;
     }
     if (taskId && taskDetailIsLocal.value) {
       void loadTaskDetail(taskId);
-      void loadAgentAttempts(taskId);
     } else if (taskDetail.value) {
       taskDetail.value = null;
     }
+  },
+  { immediate: true },
+);
+
+watch(
+  () => [item.value?.id ?? null, item.value?.stage ?? null, agentHistorySourceKey.value] as const,
+  ([taskId, _stage, sourceKey], previous) => {
+    const identityChanged = taskId !== previous?.[0] || sourceKey !== previous?.[2];
+    if (identityChanged) {
+      attemptsRequest += 1;
+      agentAttempts.value = [];
+      agentHistoryStatus.value = "";
+      selectedAttempt.value = "";
+    }
+    if (taskId) void loadAgentAttempts(taskId, sourceKey);
   },
   { immediate: true },
 );
@@ -893,7 +962,8 @@ function dismissCommandHint() {
           :pane-actions="paneActions"
           :can-close-pane="!narrowLayout && paneRects.length > 1"
           @close-pane="views?.tabs.closePane(rect.pane.id)"
-          :agent-attempts="taskDetailIsLocal ? agentAttempts : undefined"
+          :agent-attempts="item ? agentAttempts : undefined"
+          :agent-history-status="agentHistoryStatus"
           :selected-attempt="selectedAttempt"
           :current-stage="item?.stage"
           @select-attempt="selectAttempt"
@@ -961,7 +1031,14 @@ function dismissCommandHint() {
             </p>
           </div>
         </section>
-        <AgentHistoryView ref="agentHistoryRef" v-if="selectedAttempt && item" :task-id="item.id" :attempt-id="selectedAttempt" />
+        <AgentHistoryView
+          ref="agentHistoryRef"
+          v-if="selectedAttempt && item"
+          :task-id="agentHistoryBindingTaskId"
+          :attempt-id="selectedAttempt"
+          :source-key="agentHistorySourceKey"
+          :load-archive="loadSelectedAgentArchive"
+        />
         <div v-show="!selectedAttempt" class="agent-live-content">
         <CloudTerminalCache
           :active-terminal="activeCloudTerminal"

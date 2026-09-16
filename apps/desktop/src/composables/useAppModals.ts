@@ -342,6 +342,31 @@ export function useAppModals({
     return client.readTaskGraph({ desktopId: route.desktopId, taskId: route.taskId, request });
   }
 
+  async function listRemoteAgentTerminalAttempts(route: {
+    desktopId: string;
+    taskId: string;
+    transport: "lan" | "cloud";
+  }) {
+    const client = await getRemoteTaskViewClient(route.transport);
+    return client.listAgentTerminalAttempts({
+      desktopId: route.desktopId,
+      taskId: route.taskId,
+    });
+  }
+
+  async function readRemoteAgentTerminalArchive(route: {
+    desktopId: string;
+    taskId: string;
+    transport: "lan" | "cloud";
+  }, runId: string) {
+    const client = await getRemoteTaskViewClient(route.transport);
+    return client.readAgentTerminalArchive({
+      desktopId: route.desktopId,
+      taskId: route.taskId,
+      runId,
+    });
+  }
+
   onUnmounted(() => {
     void relayTaskViewClientPromise?.then((client) => client?.close());
     void lanTaskViewClientPromise?.then((client) => client.close());
@@ -564,6 +589,8 @@ export function useAppModals({
     readRemoteTaskFile,
     readRemoteTaskDiff,
     readRemoteTaskGraph,
+    listRemoteAgentTerminalAttempts,
+    readRemoteAgentTerminalArchive,
     currentWorktreePath,
     activeRepoPath,
     activeWorktreePath,

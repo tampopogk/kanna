@@ -116,6 +116,29 @@ export interface RemoteTaskGraphRequest {
   fromRef?: "HEAD";
 }
 
+export interface AgentTerminalAttempt {
+  id: string;
+  stage: string;
+  startedAt: string;
+  cwd: string | null;
+  archived: boolean;
+  recordedLaunch: boolean;
+  observedExitCode: number | null;
+}
+
+export interface AgentTerminalArchive {
+  binding: { task_id: string; spawned_run_id: string };
+  session_id: string;
+  cwd: string;
+  snapshot: { vt: string; cols: number; rows: number } | null;
+  unavailable_reason: string | null;
+  observed_exit_code: number | null;
+}
+
+export interface ReadRemoteAgentTerminalArchiveOptions extends RemoteTaskActionOptions {
+  runId: string;
+}
+
 export interface DesktopRemoteTerminalClient {
   close(): void;
   observeTerminal(
@@ -145,4 +168,10 @@ export interface DesktopRemoteTaskViewClient extends DesktopRemoteTaskClient {
   readTaskGraph(
     options: RemoteTaskActionOptions & { request: RemoteTaskGraphRequest },
   ): Promise<RemoteTaskGraphContent>;
+  listAgentTerminalAttempts(
+    options: RemoteTaskActionOptions,
+  ): Promise<AgentTerminalAttempt[]>;
+  readAgentTerminalArchive(
+    options: ReadRemoteAgentTerminalArchiveOptions,
+  ): Promise<AgentTerminalArchive | null>;
 }

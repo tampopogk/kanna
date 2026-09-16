@@ -129,6 +129,17 @@ pub enum ControlRequest {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         from_ref: Option<String>,
     },
+    ListPeerTaskTerminalAttempts {
+        request_id: String,
+        target_peer_id: String,
+        task_id: String,
+    },
+    ReadPeerTaskTerminalArchive {
+        request_id: String,
+        target_peer_id: String,
+        task_id: String,
+        run_id: String,
+    },
     MarkPeerTaskRead {
         request_id: String,
         target_peer_id: String,
@@ -345,6 +356,14 @@ pub enum ControlResponse {
     ReadPeerTaskGraph {
         request_id: String,
         graph: serde_json::Value,
+    },
+    ListPeerTaskTerminalAttempts {
+        request_id: String,
+        attempts: serde_json::Value,
+    },
+    ReadPeerTaskTerminalArchive {
+        request_id: String,
+        archive: serde_json::Value,
     },
     MarkPeerTaskRead {
         request_id: String,
@@ -619,6 +638,21 @@ pub enum PeerRequest {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         sealed_payload: Option<String>,
     },
+    ListTaskTerminalAttempts {
+        request_id: String,
+        requester_peer_id: String,
+        task_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        sealed_payload: Option<String>,
+    },
+    ReadTaskTerminalArchive {
+        request_id: String,
+        requester_peer_id: String,
+        task_id: String,
+        run_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        sealed_payload: Option<String>,
+    },
     MarkTaskRead {
         request_id: String,
         requester_peer_id: String,
@@ -738,6 +772,14 @@ pub enum PeerResponse {
     ReadTaskGraph {
         request_id: String,
         graph: serde_json::Value,
+    },
+    ListTaskTerminalAttempts {
+        request_id: String,
+        attempts: serde_json::Value,
+    },
+    ReadTaskTerminalArchive {
+        request_id: String,
+        archive: serde_json::Value,
     },
     MarkTaskRead {
         request_id: String,
