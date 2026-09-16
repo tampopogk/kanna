@@ -310,6 +310,22 @@ describe("release task environment integration", () => {
 
 });
 
+describe("macOS release status selection", () => {
+  it("passes an exact historical candidate from CLI through the task registry", async () => {
+    const fixture = await createFixture();
+    mockGitContext(fixture);
+    releaseMocks.releaseStatus.mockResolvedValue({ promotion: { allowed: true } });
+    const parsed = parseCliArgs(["release", "status", "--candidate", "1.2.4-staging.21"]);
+
+    await getTaskDefinition(parsed.taskId).execute({ cwd: fixture.worktree, env: {} }, parsed.input);
+
+    expect(releaseMocks.releaseStatus).toHaveBeenCalledWith(expect.objectContaining({
+      candidateVersion: "1.2.4-staging.21"
+    }));
+    releaseMocks.releaseStatus.mockClear();
+  });
+});
+
 
 describe("Linux release CLI/schema/registry isolation", () => {
   afterEach(() => { vi.restoreAllMocks(); vi.unstubAllEnvs(); vi.clearAllMocks(); });

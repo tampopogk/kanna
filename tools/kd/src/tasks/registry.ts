@@ -520,7 +520,15 @@ const releaseCutInputSchema = z.object({
 
 const releasePrepareInputSchema = z.object({ platform: z.literal("linux"), ref: z.string().regex(/^[a-f0-9]{40}$/), stagingIteration: z.number().int().positive(), outDir: z.string().optional() }).strict();
 const releaseRenewInputSchema = z.object({ platform: z.literal("linux"), candidate: z.string(), renewal: z.number().int().positive(), validForHours: z.number().finite().positive() }).strict();
-const releaseStatusInputSchema = z.object({ platform: z.enum(["macos", "linux"]).default("macos"), acceptance: z.string().optional() }).strict();
+const releaseStatusInputSchema = z.object({
+  platform: z.enum(["macos", "linux"]).default("macos"),
+  acceptance: z.string().optional(),
+  candidate: z
+    .string()
+    .regex(/^v?\d+\.\d+\.\d+-staging\.\d+$/)
+    .describe("Exact macOS staging version to assess historically; the live staging pointer is still reported separately.")
+    .optional()
+}).strict();
 
 const releaseSetupNotarizationInputSchema = z.object({
   platform: z.literal("macos").default("macos"),
@@ -3492,12 +3500,13 @@ export const taskDefinitions = [
   {
     id: "release.status",
     description:
-      "Show the production release and staging pointer, including reset- or promotion-authorized lineage, soak age, release freeze, and promotion blockers.",
+      "Show the production release and live staging pointer, plus promotion eligibility for the active or explicitly selected immutable candidate and that candidate's own lineage and soak history.",
     inputSchema: releaseStatusInputSchema,
     execute: async (_context, input) => {
       const parsed = releaseStatusInputSchema.parse(input);
       const context = await resolveDefaultContext(process.env);
       if (parsed.platform === "linux") {
+        if (parsed.candidate) throw new Error("--candidate is currently supported only for macOS release status.");
         const env = await loadReleaseTaskEnvironment(context);
         const result = await linuxReleaseStatus({ repoRoot: context.repoRoot, env, runner: nodeCommandRunner, acceptance: parsed.acceptance });
         return { ok: true, message: formatJsonResult(result), data: result };
@@ -3506,7 +3515,8 @@ export const taskDefinitions = [
       const result = await releaseStatus({
         repoRoot: context.repoRoot,
         env: context.env,
-        runner: nodeCommandRunner
+        runner: nodeCommandRunner,
+        candidateVersion: parsed.candidate
       });
       return { ok: true, message: formatJsonResult(result), data: result };
     }

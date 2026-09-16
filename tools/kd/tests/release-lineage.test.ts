@@ -103,11 +103,9 @@ describe("staging publish gate", () => {
     expect(gate({ relationship: "diverged" }).allowed).toBe(false);
   });
 
-  it("freezes main publishes while an unpromoted release-branch candidate is active", () => {
-    const frozen = gate({ active: { ...ACTIVE, sourceBranch: "release/0.1" } });
-    expect(frozen.allowed).toBe(false);
-    expect(frozen.frozenBy).toBe("release/0.1");
-    expect(frozen.reason).toMatch(/staging is frozen to that branch/);
+  it("keeps the macOS main train moving while an earlier release-branch candidate soaks", () => {
+    const decision = gate({ active: { ...ACTIVE, sourceBranch: "release/0.1" } });
+    expect(decision).toMatchObject({ allowed: true, frozenBy: null, reason: null });
   });
 
   it("waives that freeze when a recorded reset authorizes the next main publish", () => {
@@ -122,7 +120,7 @@ describe("staging publish gate", () => {
     });
     expect(waived).toMatchObject({
       allowed: true,
-      waivedByReset: true,
+      waivedByReset: false,
       frozenBy: null,
       reason: null
     });
@@ -459,7 +457,7 @@ describe("promotion gate", () => {
     const gateResult = evaluatePromotionGate({
       rcTag: "v1.2.4-staging.3",
       rcVersion: "1.2.4-staging.3",
-      mechanical: { pushBranch: "main", reason: null },
+      sourceIdentity: { commit: ACTIVE.commit, reason: null },
       lineage,
       soak
     });
@@ -470,13 +468,26 @@ describe("promotion gate", () => {
     const gateResult = evaluatePromotionGate({
       rcTag: "v1.2.4-staging.3",
       rcVersion: "1.2.4-staging.3",
-      mechanical: { pushBranch: null, reason: "origin/main has advanced past v1.2.4-staging.3." },
+      sourceIdentity: { commit: null, reason: "the immutable source identity is missing." },
       lineage: { ...lineage, valid: false, detail: "diverged" },
       soak: { ...soak, satisfied: false, elapsedHours: 3 }
     });
     expect(gateResult.allowed).toBe(false);
     expect(gateResult.blockers).toHaveLength(3);
     expect(gateResult.blockers[2]).toMatch(/--override-soak/);
+  });
+
+  it("rejects a candidate whose production version would not move forward", () => {
+    const gateResult = evaluatePromotionGate({
+      rcTag: "v1.2.4-staging.3",
+      rcVersion: "1.2.4-staging.3",
+      sourceIdentity: { commit: ACTIVE.commit, reason: null },
+      lineage,
+      soak,
+      productionVersion: { selected: "1.2.4", greatestPublished: "1.2.5", advances: false }
+    });
+    expect(gateResult.allowed).toBe(false);
+    expect(gateResult.blockers).toEqual([expect.stringMatching(/does not advance.*v1\.2\.5/s)]);
   });
 });
 

@@ -427,9 +427,23 @@ export function evaluateStagingFreeze(
       })
     : false;
   const branch = active?.sourceBranch ?? null;
+  // macOS staging is the continuously advancing release train. Each versioned
+  // prerelease keeps its own immutable identity and soak clock, so moving the
+  // pointer to a newer candidate must not freeze the train behind an older RC.
+  // Linux keeps its independent branch/channel freeze until its release model
+  // is changed explicitly.
+  if (input.platform !== "linux") {
+    return {
+      active: false,
+      branch: null,
+      reason: null,
+      waivedByReset: false,
+      resetAuthorizesPublish: false
+    };
+  }
   const wouldFreeze =
     active !== null &&
-    (input.platform === "linux" ? /^release\/linux\/\d+\.\d+$/.test(branch ?? "") : isReleaseBranchName(branch)) &&
+    /^release\/linux\/\d+\.\d+$/.test(branch ?? "") &&
     !input.activeProductionTagExists &&
     input.proposedSourceBranch === "main";
 
@@ -512,6 +526,25 @@ export function evaluateStagingPublishGate(input: StagingPublishGateInput): Stag
       authorizedByRecut: false,
       frozenBy: freeze.branch,
       reason: freeze.reason
+    };
+  }
+
+  // A reset still authorizes the one exceptional non-linear channel move it
+  // records. It is no longer needed merely to let the macOS train advance.
+  const resetAuthorizesNonLinearMove =
+    (input.relationship === "behind" || input.relationship === "diverged") &&
+    resetAuthorizes(input.reset, {
+      fromVersion: active.version,
+      toBranch: input.proposedSourceBranch
+    });
+  if (resetAuthorizesNonLinearMove) {
+    return {
+      allowed: true,
+      reason: null,
+      waivedByReset: true,
+      authorizedByPromotion: false,
+      authorizedByRecut: false,
+      frozenBy: null
     };
   }
 
@@ -782,11 +815,17 @@ export function evaluateSoak(args: {
 export interface PromotionGateInput {
   rcTag: string;
   rcVersion: string;
-  mechanical: { pushBranch: string | null; reason: string | null };
+  sourceIdentity: { commit: string | null; reason: string | null };
   lineage: CandidateLineage;
   soak: SoakEvaluation;
   /** Set when the candidate's series was deliberately abandoned. */
   abandonedSeries?: { branch: string; abandonedAt: string | null; reason: string | null } | null;
+  /** Production versions only move forward, even when an older RC remains eligible. */
+  productionVersion?: {
+    selected: string;
+    greatestPublished: string | null;
+    advances: boolean;
+  };
 }
 
 export interface PromotionGateDecision {
@@ -804,8 +843,15 @@ export function evaluatePromotionGate(input: PromotionGateInput): PromotionGateD
         "An abandoned series produces no production release; ship and promote the current series instead."
     );
   }
-  if (!input.mechanical.pushBranch) {
-    blockers.push(input.mechanical.reason ?? `${input.rcTag} is not at its promotion base.`);
+  if (!input.sourceIdentity.commit) {
+    blockers.push(input.sourceIdentity.reason ?? `${input.rcTag} has no verified immutable source commit.`);
+  }
+  if (input.productionVersion && !input.productionVersion.advances) {
+    blockers.push(
+      `v${input.productionVersion.selected} does not advance the greatest published production version` +
+        `${input.productionVersion.greatestPublished ? ` v${input.productionVersion.greatestPublished}` : ""}. ` +
+        "Production versions never move backward or publish twice; select a newer candidate."
+    );
   }
   if (!input.lineage.valid) {
     blockers.push(

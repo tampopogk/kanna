@@ -36,11 +36,14 @@ channel. Instead it names the pattern and closes the loop:
   different bundle identity (`build.kanna.staging`, "Kanna Staging.app") — so
   promotion rebuilds that exact commit with production identity, then runs the
   normal production publish: version-file commit, `vX.Y.Z` tag, GitHub release,
-  `latest.json` updater manifest.
+  `latest.json` updater manifest. The production tag is published from the
+  release commit directly atop the selected RC; promotion does not move
+  `main`, a release branch, or `desktop-staging` backward.
 - **The gap stays visible.** `kd release status` reports the latest production
-  release, the staging channel pointer, how many commits each lags `origin/main`,
-  and the exact promote command when — and only when — every promotion gate
-  passes. "How stale is production?" becomes one command instead of archaeology.
+  release and the staging channel pointer. Pass
+  `--candidate X.Y.Z-staging.N` to assess any retained historical RC while
+  leaving the live pointer visible separately. It prints the exact promote
+  command when — and only when — that selected candidate clears every gate.
 
 ## The channel is a state machine, not a pointer
 
@@ -124,22 +127,21 @@ git fetch origin release/1.3 && git checkout --detach FETCH_HEAD
 ./kd release ship --staging --release --branch release/1.3
 ```
 
-### 3. An active release soak freezes main staging publishes
+### 3. The macOS staging train keeps moving
 
-While the channel serves an *unpromoted* `release/X.Y` candidate — its production
-tag `vX.Y.Z` does not exist yet — a main staging publish is refused. It would
-repoint the one staging channel away from the RC mid-soak. Main resumes
-automatically after promotion only when `vX.Y.Z` is a real GitHub production
-release whose remote and freshly fetched tag resolve either to the active
-candidate's recorded commit or to kd's single-parent `release: vX.Y.Z` version
-bump directly atop it, and the proposed main commit descends from the merge-base
-of `origin/main` and the candidate's resolved source branch. (GitHub records
-`targetCommitish: "main"` for the existing-tag release, so the immutable proof
-comes from both git tag resolutions.) That verified hand-back records a
-`Post-Promotion-Trunk-Resumption:` audit block on `desktop-staging`.
-A merely present or mismatched tag does not lift the lineage gate. The explicit
-reset below remains available for an actual abandonment. Shipping the release
-branch itself is never frozen.
+`desktop-staging` serves only the newest published pointer, but it does not own
+an older RC's eligibility. Publishing B after A does not erase A's immutable
+tag, manifest, source, historical lineage, publication timestamp, or acceptance
+evidence, and it does not restart A's soak. Main staging therefore continues
+while A soaks. B starts and must satisfy its own soak; it cannot inherit A's.
+
+Promotion of A never repoints `desktop-staging`, rewinds `main`, or moves a
+release branch. The selected RC is rebuilt from its exact source commit, then a
+production release commit and tag are published without updating those moving
+pointers. A reset remains an exceptional authorization for an otherwise
+forbidden rollback or divergent channel move, not a prerequisite for keeping
+the ordinary train moving. Linux has an independent release model and retains
+its own channel/branch rules.
 
 ### 4. Every non-linear move is narrow and recorded
 
@@ -196,10 +198,9 @@ branch move also requires an exact old-SHA `--force-with-lease`, so a concurrent
 writer is detected and refused rather than overwritten. Older kd binaries do
 not understand these recut records, so operators must use a current binary.
 
-Bare main RCs remain supported and retain their existing freeze and provenance
-gates. This change deliberately rejects making every main ship an implicit
-recut: that would silently replace an active branch soak and would require a
-separate product decision about old main-RC promotion.
+Bare main RCs remain supported and retain their provenance and forward-version
+gates. Ordinary main-train movement is not an implicit recut: it does not move
+the release branch or change any earlier candidate's retained eligibility.
 
 ## The reset / abandon operation
 
@@ -254,24 +255,17 @@ This is the only automatic divergent move.
    be a full commit SHA, and both the remote tag and a freshly fetched tag must
    resolve to that SHA. The `Source-Branch:` trailer must be `main` or the
    matching `release/X.Y` branch.
-2. The production tag `vX.Y.Z` does not already exist (a candidate line is
-   promoted at most once).
+2. The production tag `vX.Y.Z` does not already exist, and `X.Y.Z` is strictly
+   greater than the greatest published production semantic version. A candidate
+   line is promoted at most once and production never regresses.
 3. `HEAD` equals the prerelease's recorded `targetCommitish` (you release what
    you validated, from a checkout of it).
-4. **Mechanical base.** The RC's promotion base still equals that commit. The
-   main arm of this guard is bookkeeping for where the promotion bump and
-   release-notes base land; it is not the soak-safety boundary. Guards 1 and 3
-   establish the immutable candidate identity and ensure the exact validated
-   commit is released. The base is resolved from the RC's recorded provenance:
-   - If `release/X.Y` exists on origin with its tip exactly at the RC commit,
-     the RC promotes to the branch and the version bump is pushed there. This
-     covers active branch stabilization and the cut-at-RC-commit escape below.
-   - Otherwise, an RC recorded as built from `release/X.Y` (the
-     `Source-Branch:` trailer in its prerelease notes) refuses — the branch
-     advanced or was deleted. It never silently falls back to main.
-   - Otherwise the RC is a main RC: `origin/main` must still equal the commit
-     and the bump is pushed to main. A dormant `release/X.Y` left behind by an
-     earlier release does **not** capture later main RCs in the same series.
+4. **Immutable source base.** The versioned RC tag, GitHub prerelease metadata,
+   versioned manifest, and freshly fetched tag must all identify one commit, and
+   `HEAD` must equal it. That commit remains the production build and
+   release-notes base even after `main`, `release/X.Y`, or `desktop-staging`
+   advances. The production version commit is a child of that exact source and
+   only its tag is pushed; no mutable branch is rewound or overwritten.
 5. **Lineage validity.** The candidate reached the channel legally: it is the
    first candidate, or a rebuild of, or a descendant of, the candidate published
    before it — or its divergence was authorized by a recorded reset. An
@@ -285,21 +279,14 @@ Failures are reported together, not one at a time, so a blocked promotion tells
 the operator everything standing between the candidate and production.
 
 `--dry-run` runs the same preflight and production-identity build without
-publishing, for rehearsing a promotion. Status, dry-run, and the real promotion
-call the same decision functions (`evaluateStagingPublishGate`,
-`evaluateCandidateLineage`, `evaluateSoak`, `evaluatePromotionGate` in
-`tools/kd/src/runtime/release-lineage.ts`), and both paths run the same immutable
-candidate identity checks, so they cannot disagree.
-
-When main has advanced past a main RC, the standard in-tool remedy is to run
-`kd release cut --minor` at current `origin/main`, ship a fresh RC from the new
-branch, soak it, and promote that branch RC. If the series branch already
-exists at another commit, use its existing tip for the fresh RC; never move it
-backward. Cutting `release/X.Y` at the old RC commit with a raw-git push remains
-a last-resort escape only when the branch does not exist and preserving that
-exact RC is necessary. `kd` deliberately provides no force/move operation for
-an existing branch. Do not weaken guard 3; promoting a commit nobody soaked
-recreates the original problem.
+publishing, for rehearsing a promotion. Status (including `--candidate`),
+dry-run, and the real promotion call the same candidate assessment: immutable
+identity, historical lineage, selected RC publication/soak, abandonment, and
+forward production version. Real and dry-run add the same exact-`HEAD` source
+pin before any production build. Advancing a branch or the live staging pointer
+is therefore ordinary train movement, not a remedy or a blocker. Do not weaken
+the exact-source check: substituting a newer checkout would promote a commit
+nobody soaked.
 
 ### Soak policy
 
@@ -325,8 +312,9 @@ The override is explicit and reasoned:
 ./kd release promote 1.2.4-staging.3 --override-soak "Grace asked for the crash fix today"
 ```
 
-It waives the soak window and nothing else — never the base check, never lineage
-validity. `kd release status` reports `promotion.soak` (required hours, elapsed
+It waives the soak window and nothing else — never source identity, forward
+production version, or lineage validity. `kd release status` reports
+`promotion.soak` (required hours, elapsed
 hours, satisfied) so the wait is visible before anyone reaches for the override.
 
 Note that `kd release ship --production --release` is a *direct* production ship,
@@ -341,6 +329,8 @@ Safety state is separate from mechanics. The result carries:
 - `production` — latest production release and its publication time.
 - `staging` — the active candidate: version, tag, commit, `sourceBranch`,
   commits behind `origin/main`, publication time, and age in hours.
+- `promotion.candidate` — the immutable RC being assessed. It equals `staging`
+  by default and may name an earlier RC selected with `--candidate`.
 - `lineage` — `relationship` (`initial` / `same-commit` / `descendant` /
   `behind` / `diverged` / `unknown`), the `previous` candidate it is compared
   against, `valid`, `authorizedByReset`, `authorizedByPromotion`,
@@ -348,16 +338,16 @@ Safety state is separate from mechanics. The result carries:
   records, and a human-readable `detail`.
 - `releaseBranch` — the series branch when one exists, plus `unmergedCommits` /
   `unmergedCommitCount` and archived `recuts` (below).
-- `freeze` — whether main staging publishes are currently frozen, by which
-  branch, and why.
+- `freeze` — retained for cross-platform response compatibility; macOS main
+  staging is not frozen by an older soaking RC.
 - `policy` — the resolved soak policy.
-- `promotion` — `mechanicallyPromotable` and its `base`, `soak`, `allowed`, and
-  the full `blockers` list.
+- `promotion` — immutable-source `mechanicallyPromotable`, its exact commit in
+  `base`, the selected RC's own `soak`, `allowed`, and the full `blockers` list.
 - `promoteCommand` — only when `promotion.allowed`.
 
-Nothing is labelled simply "promotable": the field that used to carry that name
-is now `promotion.mechanicallyPromotable`, and it is explicitly only the
-branch-tip alignment check.
+Nothing is labelled simply "promotable": immutable source identity is only one
+gate; `promotion.allowed` also includes lineage, soak, abandonment, and forward
+production-version checks.
 
 ## Release branches
 
@@ -372,7 +362,7 @@ bugfixes.
   `release/X.Y` at `origin/main`'s tip, so the branch name and its tip can
   never disagree. Cutting is the feature freeze — for that branch only. Because
   the branch is cut at `origin/main`'s tip, the first RC from it is a descendant
-  of the main RC the channel is already serving, so the freeze transition needs
+  of the main RC the channel is already serving, so the channel transition needs
   no reset. Only a *stale* branch — one cut long ago, like `release/0.1` in the
   incident — diverges, and that is exactly when the reset should be deliberate.
 - **RCs from the branch.** Ship staging from a clean checkout of `release/X.Y`
@@ -382,19 +372,18 @@ bugfixes.
   derives the RC base version from the branch series (`X.Y.0`, or one past the
   highest released `vX.Y.Z` tag) instead of `VERSION` bump flags, and records the
   provenance as a `Source-Branch:` trailer in the prerelease notes — RC names and
-  promotion bases can't drift from the branch the RC came from.
+  publication provenance can't drift from the branch the RC came from.
 - **Bugfixes flow forward, then back.** Fixes land on main first through the
   normal task workflow and merge master, then get cherry-picked onto
   `release/X.Y` (never fixed only on the branch, or the next release regresses).
   Each backport batch ends with a fresh RC.
-- **Promote from the branch.** Guard 4 pins the branch tip instead of main, so
-  main can run arbitrarily far ahead during the soak. The version bump commit
-  lands on the branch. Main does not need that bump commit merged back: the
-  verified post-promotion hand-back authorizes the channel's return to forward
-  main, and a main RC uses the greatest valid production semantic version
-  reported by GitHub as its version floor. A bare main ship then starts the next
-  minor series, while patch backports continue on the dormant release branch.
-  The ship result reports `versionFloor` when that floor overrides stale
+- **Promote from the immutable RC.** Guard 4 pins the selected versioned tag and
+  exact source commit, not the current branch tip. Main and the source branch
+  may run arbitrarily far ahead during the soak. The production bump commit is
+  tagged without moving either branch. A later main RC uses the greatest valid
+  production semantic version reported by GitHub as its version floor, so the
+  next candidate remains forward even though trunk did not receive that bump
+  commit. The ship result reports `versionFloor` when that floor overrides stale
   `VERSION`.
 - **The branch goes dormant after release.** Reuse it for `X.Y.1` hotfix RCs
   (the series versioning picks the next patch automatically); cut `release/X.(Y+1)`
@@ -489,10 +478,11 @@ owner: `origin/main:VERSION` (`0.0.68`) is what trunk last released;
 `release/0.2` is what is being stabilized, and its RCs version themselves
 `0.2.Z-staging.N` from the branch series rather than from `VERSION`; production
 is whatever `vX.Y.Z` was last tagged. Promotion pushes the `0.2.0` version-file
-bump to `release/0.2`; trunk's `VERSION` may remain stale because the production
-tag and release metadata are the authoritative floor. Before promotion, the
-freeze rule refuses main RCs. After promotion, a main ship compares `VERSION`
-with the greatest valid semantic version across all non-prerelease GitHub
+bump only as the parented production tag commit; neither the branch nor trunk is
+moved. Their `VERSION` files may remain stale because the production tag and
+release metadata are the authoritative floor. Main RCs continue before and
+after promotion. A main ship compares `VERSION` with the greatest valid semantic
+version across all non-prerelease GitHub
 releases, takes the greater version, and applies an implicit minor bump (or the
 explicitly requested bump). Thus
 stale `VERSION` at `0.0.68` with production at `v0.2.0` derives
@@ -505,8 +495,9 @@ stale `VERSION` at `0.0.68` with production at `v0.2.0` derives
 Two different claims are easy to conflate, so they are kept apart:
 
 - **Enforced (ancestry and provenance).** An RC's `Source-Branch:` trailer is
-  written by `ship`, its commit is the branch tip exactly, and promotion pins
-  that same base. A worktree cannot claim a branch it did not build.
+  written by `ship`, its commit is the branch tip exactly at publication, and
+  promotion later pins the immutable tag/manifest/source identity rather than
+  the now-mutable branch tip. A worktree cannot claim a branch it did not build.
 - **Reported, machine-checkable (patch-id).** `kd release status` runs
   `git log --no-merges --cherry-pick --right-only origin/main...origin/release/X.Y`
   and reports every branch commit with no patch-equivalent on main as
@@ -528,24 +519,13 @@ Two different claims are easy to conflate, so they are kept apart:
 
 ## Dogfooding
 
-Kanna is developed in Kanna, and the staging build is the daily driver. That
-stays true under this model — the meaning sharpens: **the staging channel serves
-whatever is being stabilized next.** Between releases, staging RCs come from main
-as they do today. While a release branch is active, staging ships come from the
-branch, so the daily driver *is* the release candidate — daily driving is the
-soak. Two rules keep the channel honest, and the first is now enforced rather
-than remembered:
-
-- While `release/X.Y` is being soaked, staging ships from main are refused; they
-  would repoint the single staging channel away from the RC mid-soak. Main
-  staging ships resume after promotion, or after an explicit
-  `kd release reset-staging --to main`.
-- Bugs found while daily-driving an RC are release bugs: fix on main, backport,
-  cut the next RC. That loop is the shipping agent's backport workflow.
-
-The cost is that main features are not dogfooded during a soak window. That is
-the point — those features are next release's problem — and the dev-worktree
-instance (`kd dev up`) still exercises main for day-to-day development work.
+Kanna is developed in Kanna, and the staging build is the daily driver. The main
+train remains the ordinary release pattern: new staging RCs keep shipping while
+earlier immutable RCs retain their own soak history and may still be selected
+for production. The installed staging app follows the newest pointer; retained
+acceptance evidence for an earlier RC belongs to that exact version and never
+transfers to a newer one. Bugs intended for a release branch still flow through
+main and are backported before a new branch RC is cut.
 
 ### Why there is no separate canary channel
 
@@ -589,10 +569,10 @@ five-minute decision about a build that already proved itself, not a project.
 
 ## Tooling surface
 
-- `kd release status` / MCP `release_status` — read-only channel state: the
-  production release, the staging pointer and its lineage, the series branch and
-  its un-backported commits, the soak policy and elapsed soak, the freeze state,
-  and every promotion blocker.
+- `kd release status [--candidate X.Y.Z-staging.N]` / MCP `release_status`
+  (`candidate`) — read-only state: the production release and live staging
+  pointer, plus the selected active or historical RC's immutable identity,
+  lineage, own soak, series state, and every promotion blocker.
 - `kd release cut [--major|--minor|--patch] [--version X.Y.0]
   [--abandon-series X.Y[,X.Y]] [--reason <why>]` / MCP `release_cut` — push
   `release/X.Y` at `origin/main`, naming the target series explicitly when a
@@ -635,9 +615,11 @@ Runtime behavior is covered in `tools/kd/tests/release.test.ts` at the
 command-runner seam (the boundary where kd invokes git/gh/bazel), and the pure
 state machine plus the policy file in `tools/kd/tests/release-lineage.test.ts`.
 Together they cover: the .7 → .8 divergent-history incident refused before any
-build and reported by status as mechanically promotable but lineage-invalid;
-same-branch fast-forward RCs; the main → release-branch freeze transition; a main
-publish refused during a release soak and resumed after promotion; rollback
+build and reported by status as identity-valid but lineage-invalid;
+same-branch fast-forward RCs; A published/soaked, B published and still soaking,
+historical A status/dry-run/real promotion at A's exact source without moving
+main or staging, B's independent soak, forward production-version enforcement,
+and valid subsequent staging numbering; rollback
 refusals; unreadable channel metadata failing closed — separately for an
 uninitialized channel, an unreachable one, a manifest that fails to download,
 and one that does not parse; the released-vs-prerelease series check that
