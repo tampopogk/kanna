@@ -351,7 +351,8 @@ export function resolveAccountHostingSite(repoRoot: string, projectId: string): 
 
 function isMissingHostingSiteDiagnostic(output: string, site: string, projectId: string): boolean {
   return /\brequested entity was not found\b/i.test(output)
-    || output.trim() === `Error: could not find site ${site} for project ${projectId}.`;
+    || output.trim() === `Error: could not find site ${site} for project ${projectId}.`
+    || output.trim() === `Error: could not find site "${site}" for project "${projectId}".`;
 }
 
 export async function ensureAccountHostingSite(input: {
