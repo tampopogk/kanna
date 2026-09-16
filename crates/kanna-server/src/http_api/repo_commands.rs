@@ -103,7 +103,7 @@ pub(super) async fn run_repo_command(
             repo_id: repo_id.clone(),
             prompt: launch.prompt,
             display_name: Some(launch.display_name),
-            workflow_name: None,
+            workflow_name: launch.workflow_name,
             stage: launch.stage,
             base_ref: None,
             diff_base_ref: None,
