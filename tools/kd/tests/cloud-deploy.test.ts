@@ -232,7 +232,7 @@ describe("cloud deploy runtime", () => {
     ]);
   });
 
-  it("creates the account hosting site for the current Firebase CLI missing-site diagnostic", async () => {
+  it("creates the account hosting site for the quoted current Firebase CLI missing-site diagnostic", async () => {
     const calls: string[] = [];
     const runner: CommandRunner = {
       async run(command, args) {
@@ -241,7 +241,7 @@ describe("cloud deploy runtime", () => {
           return {
             exitCode: 1,
             stdout: "",
-            stderr: "Error: could not find site kanna-build-account for project kanna-build."
+            stderr: "Error: could not find site \"kanna-build-account\" for project \"kanna-build\"."
           };
         }
         return { exitCode: 0, stdout: "", stderr: "" };
