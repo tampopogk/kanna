@@ -133,6 +133,14 @@ pub(crate) fn init(daemon_dir: &Path) -> Option<flexi_logger::LoggerHandle> {
         .format(flexi_logger::detailed_format)
         .rotate(criterion, naming, cleanup)
         .duplicate_to_stderr(flexi_logger::Duplicate::Info)
+        // The desktop deliberately leaves kanna-server running when it exits.
+        // Its stderr capture is a pipe drained by a desktop-owned thread, so
+        // that pipe has no reader after the desktop is gone. A later record
+        // (for example a daemon-generation change or supervisor warning) must
+        // keep reaching the durable file instead of letting flexi_logger's
+        // default broken-error-channel panic unwind service futures. Some of
+        // their cleanup paths also log, turning that unwind into SIGABRT.
+        .panic_if_error_channel_is_broken(false)
         .start()
     {
         Ok(handle) => {
@@ -159,6 +167,7 @@ pub(crate) fn init(daemon_dir: &Path) -> Option<flexi_logger::LoggerHandle> {
                     logger
                         .format(flexi_logger::detailed_format)
                         .log_to_stderr()
+                        .panic_if_error_channel_is_broken(false)
                         .start()
                         .ok()
                 })
