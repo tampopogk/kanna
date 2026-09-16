@@ -1,9 +1,19 @@
 # Kanna secure channel (mobile ↔ desktop end-to-end encryption)
 
-Status: implemented for mobile↔desktop sessions and control over LAN and
-relay (Slices 0–2 of task `f4493c65`, 2026-09-16). The Firestore task index
-(Slice 3), push bodies (Slice 4) and desktop↔desktop traffic (Slice 5) are
-**not** covered by this document and remain as described in §6.
+Status: **unreleased.** Implemented on this branch for mobile↔desktop
+sessions and control over LAN and relay (Slices 0–2 of task `f4493c65`,
+2026-09-16), and not present in any shipped Kanna build: no released desktop,
+macOS artifact or iOS build carries it, and legacy (unencrypted) mobile access
+still ships on by default (§6). Everything this document claims about
+encryption is a claim about this branch, not about what users have today. The
+published privacy policy (`docs/legal/privacy-policy.md`, effective
+August 9, 2026) describes the released behaviour and is deliberately left
+unchanged; §10 holds the draft policy language that replaces it only when an
+encrypted build actually ships.
+
+The Firestore task index (Slice 3), push bodies (Slice 4) and
+desktop↔desktop traffic (Slice 5) are **not** covered by this document and
+remain as described in §6.
 
 ## 1. What it is
 
@@ -278,3 +288,69 @@ reports; it never falls back to a plaintext socket.
   parsing.
 - `tests/remote-e2e/src/secure-channel.e2e.test.ts`: the real relay, server and
   daemon with the real mobile relay client — see that file.
+
+## 10. Draft privacy-policy language (not in force)
+
+The published policy, `docs/legal/privacy-policy.md`, is the released one:
+effective August 9, 2026, technical implementation reviewed August 9, 2026,
+and it still says that direct LAN traffic "is not represented by the source as
+end-to-end encrypted application traffic". That is correct for every build a
+user can install today, and **this branch does not change it**. A public
+policy states what the product does now, not what a merged branch does; the
+dates would also have to move, and moving them would republish the policy.
+
+The paragraphs below are the *draft* replacements. They are recorded here so
+the wording is reviewed with the protocol rather than written under release
+pressure. **None of them may be copied into `docs/legal/privacy-policy.md`
+until** an encrypted desktop build and an encrypted mobile build (runtime
+`2.3.0`, release 1.1.0) are both released to users, the "Allow legacy
+(unencrypted) mobile connections" default has been decided for that release
+(§6 — while legacy access is on, the deployment is not protected and no
+unqualified claim may be made), and the policy's effective and
+implementation-review dates are updated in the same edit.
+
+> **Direct LAN and cloud access** (replaces the paragraph at "When Kanna
+> Mobile connects directly to your Mac…"): For a phone paired with a current
+> desktop (a `KANNA2` pairing QR, or a typed code confirmed on the desktop),
+> mobile requests and live task traffic are end-to-end encrypted between the
+> phone and that desktop, over the local network and through the relay alike;
+> the cloud task index and push notification bodies are not covered by that
+> encryption.
+
+> **Content sent through cloud access**: For a phone paired with a current
+> desktop, the content the relay routes is end-to-end encrypted between the
+> phone and the desktop, and the relay carries only ciphertext plus connection
+> metadata (your account identity, the desktop id, frame sizes and timing, and
+> presence). For a phone paired before end-to-end encryption existed, or with
+> a desktop that still allows legacy mobile connections, the routed content is
+> readable by the relay in transit and can include full task prompts, text
+> sent to an agent, a photo you attach to a message, terminal keystrokes and
+> output, agent events and permission decisions, task details, repository
+> commands, task file and diff content requested in the app, and
+> visual-companion content and interactions.
+
+> **Local pairing and device information**: With a current desktop the pairing
+> happens inside an encrypted, mutually authenticated session: the phone pins
+> the desktop's public key from the pairing QR (or confirms a short code shown
+> on both screens), and the desktop records the phone's public key. The app
+> stores the desktop ID and name, local endpoint, last-seen time, mobile
+> device ID and the desktop's public key locally; the phone's own private key
+> is kept in the device keystore. The Mac also returns a device secret that
+> older desktops use to authenticate plaintext LAN requests; a phone paired
+> with a current desktop does not send it. Direct LAN requests to a current
+> desktop travel inside that end-to-end encrypted session over local WebSocket
+> connections; the desktop's unauthenticated status endpoint remains plain
+> HTTP and carries no secret. Requests to a desktop paired before end-to-end
+> encryption existed, or while that desktop allows legacy mobile connections,
+> are authenticated with the device credentials but are not encrypted beyond
+> the network itself.
+
+> **Security**: Mobile sessions with a current, secure-channel-paired desktop
+> are end-to-end encrypted and mutually authenticated over both the local
+> network and the relay; legacy pairings use a per-device ID and secret issued
+> during pairing and are not end-to-end encrypted. The cloud task index and
+> push notification bodies are not end-to-end encrypted.
+
+Slices 3–5 (task index, push bodies, desktop↔desktop) stay described as they
+are in the released policy until their own work ships; a policy edit that
+lands only this document's scope must not read as covering them.
