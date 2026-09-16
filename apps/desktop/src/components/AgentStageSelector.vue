@@ -3,8 +3,18 @@ import { computed } from "vue";
 import type { AgentTerminalAttempt } from "../services/desktopServerClient";
 const props = defineProps<{ attempts: AgentTerminalAttempt[]; selected: string; currentStage?: string; historyStatus?: string }>();
 const emit = defineEmits<{ select: [id: string] }>();
+// An attempt is archived once its terminal has ended, so the newest attempt
+// without an archive is the launch the live session belongs to — the one the
+// "Latest" option already shows. It is not history, and listing it would repeat
+// the live session as a permanently unavailable entry. A finished attempt whose
+// archive never arrived is still history and keeps its unavailable marker.
+const liveAttemptId = computed(() => {
+  const newest = props.attempts.at(-1);
+  return newest && !newest.archived ? newest.id : null;
+});
 const historicalAttempts = computed(() => props.attempts
   .map((attempt, index) => ({ attempt, ordinal: index + 1 }))
+  .filter(entry => entry.attempt.id !== liveAttemptId.value)
   .reverse());
 function selectorKey(event: KeyboardEvent) {
   // Native option navigation stays local; app shortcuts still cycle tabs.

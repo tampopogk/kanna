@@ -98,3 +98,20 @@ it('marks the append position, including empty panes, without retaining it on ot
   expect(wrapper.find('.drop-end').exists()).toBe(false);
   wrapper.unmount();
 });
+
+it('keeps the live attempt out of history while still listing finished attempts with no archive', async () => {
+  const attempt = (id: string, stage: string, archived: boolean) => ({ id, stage, startedAt: id, cwd: '/repo', archived, recordedLaunch: true, observedExitCode: archived ? 0 : null });
+  const wrapper = mount(MainTabBar, { props: { tabs:[{id:'agent',kind:'agent'}],activeTabId:'agent',currentStage:'build',agentAttempts:[
+    attempt('plan-run','plan',true), attempt('lost-run','plan',false), attempt('live-run','build',false),
+  ] } });
+  const options = wrapper.findAll('option');
+  expect(options.map(option => option.attributes('value'))).toEqual(['', 'lost-run', 'plan-run']);
+  expect(options[0].text()).toBe('Latest · build');
+  expect(options[1].text()).toContain('plan · attempt 2');
+  expect(options[1].text()).toContain('· history unavailable');
+  expect(options[2].text()).not.toContain('history unavailable');
+  // The live attempt exits and archives: it becomes ordinary history.
+  await wrapper.setProps({ agentAttempts: [attempt('plan-run','plan',true), attempt('lost-run','plan',false), attempt('live-run','build',true)] });
+  expect(wrapper.findAll('option').map(option => option.attributes('value'))).toEqual(['', 'live-run', 'lost-run', 'plan-run']);
+  wrapper.unmount();
+});
