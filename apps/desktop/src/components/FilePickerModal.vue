@@ -12,18 +12,31 @@ const props = defineProps<{
   worktreePath: string;
   repoRoot?: string;
   ideCommand?: string;
+  sourceKey: string;
+  taskDirectoryLoader?: (
+    path: string,
+    showAllFiles: boolean,
+  ) => Promise<{ entries: { path: string; isDir: boolean }[] }>;
 }>();
 
 const emit = defineEmits<{
   (e: "close"): void;
-  (e: "select", filePath: string): void;
+  (e: "select", filePath: string, sourceKey: string): void;
 }>();
 
 const query = ref("");
 const files = ref<string[]>([]);
+const loading = ref(false);
+const error = ref<string | null>(null);
 const selectedIndex = ref(0);
 const inputRef = ref<HTMLInputElement | null>(null);
 const mouseMoved = ref(false);
+let nextLoadId = 0;
+
+// Quick open needs names, never contents, but a hostile or accidental tree
+// still must not make the viewer download an unbounded remote index.
+const MAX_TASK_FILE_INDEX_ENTRIES = 50_000;
+const TASK_DIRECTORY_CONCURRENCY = 8;
 
 interface ScoredFile {
   path: string;
@@ -42,30 +55,80 @@ const filtered = computed((): ScoredFile[] => {
   return scored.slice(0, 100);
 });
 
+async function listTaskFiles(
+  loader: NonNullable<typeof props.taskDirectoryLoader>,
+  loadId: number,
+): Promise<string[]> {
+  const directories = [""];
+  const listedFiles: string[] = [];
+  let nextDirectory = 0;
+  let indexedEntries = 0;
+
+  while (nextDirectory < directories.length) {
+    if (loadId !== nextLoadId) return [];
+    const batch = directories.slice(
+      nextDirectory,
+      nextDirectory + TASK_DIRECTORY_CONCURRENCY,
+    );
+    nextDirectory += batch.length;
+    const listings = await Promise.all(batch.map((directory) => loader(directory, false)));
+    if (loadId !== nextLoadId) return [];
+
+    for (const listing of listings) {
+      for (const entry of listing.entries) {
+        indexedEntries += 1;
+        if (indexedEntries > MAX_TASK_FILE_INDEX_ENTRIES) {
+          throw new Error(
+            `workspace has more than ${MAX_TASK_FILE_INDEX_ENTRIES.toLocaleString()} visible entries`,
+          );
+        }
+        if (entry.isDir) directories.push(entry.path);
+        else listedFiles.push(entry.path);
+      }
+    }
+  }
+
+  return listedFiles.sort();
+}
+
 async function loadFiles() {
+  const loadId = ++nextLoadId;
+  loading.value = true;
+  error.value = null;
+  files.value = [];
   try {
-    files.value = await invoke<string[]>("list_files", {
-      path: props.worktreePath,
-    });
-  } catch (e) {
+    const listed = props.taskDirectoryLoader
+      ? await listTaskFiles(props.taskDirectoryLoader, loadId)
+      : await invoke<string[]>("list_files", { path: props.worktreePath });
+    if (loadId !== nextLoadId) return;
+    files.value = listed;
+  } catch (caught) {
+    if (loadId !== nextLoadId) return;
     // If worktree path doesn't exist, fall back to repo root
-    if (props.repoRoot && props.repoRoot !== props.worktreePath) {
+    if (!props.taskDirectoryLoader && props.repoRoot && props.repoRoot !== props.worktreePath) {
       try {
-        files.value = await invoke<string[]>("list_files", {
+        const listed = await invoke<string[]>("list_files", {
           path: props.repoRoot,
         });
+        if (loadId !== nextLoadId) return;
+        files.value = listed;
         useToast().warning("Worktree missing — showing repo root");
         return;
       } catch (_fallback) {
         // Fall through to original error
       }
     }
-    console.error("Failed to list files:", e);
+    const message = caught instanceof Error ? caught.message : String(caught);
+    error.value = message;
+    console.error("Failed to list files:", caught);
+  } finally {
+    if (loadId === nextLoadId) loading.value = false;
   }
 }
 
 function selectFile(filePath: string) {
-  emit("select", filePath);
+  if (loading.value || error.value) return;
+  emit("select", filePath, props.sourceKey);
 }
 
 function handleKeydown(e: KeyboardEvent) {
@@ -121,16 +184,16 @@ watch(query, () => { selectedIndex.value = 0; });
 // showing whatever it listed the first time it opened — another repo's files,
 // or nothing at all when that first load pointed at a path that had gone away.
 watch(
-  () => [props.worktreePath, props.repoRoot],
+  () => [props.sourceKey, props.worktreePath, props.repoRoot, props.taskDirectoryLoader],
   () => {
     query.value = "";
     selectedIndex.value = 0;
     void loadFiles();
   },
+  { immediate: true },
 );
 
 onMounted(async () => {
-  await loadFiles();
   await nextTick();
   inputRef.value?.focus();
 });
@@ -161,7 +224,11 @@ onMounted(async () => {
             <template v-else>{{ segment.text }}</template>
           </template>
         </div>
-        <div v-if="filtered.length === 0" class="empty">{{ $t('filePicker.noFiles') }}</div>
+        <div v-if="loading" class="empty" data-testid="file-picker-loading">{{ $t('filePicker.loading') }}</div>
+        <div v-else-if="error" class="empty error" data-testid="file-picker-unavailable">
+          {{ $t('filePicker.unavailable', { message: error }) }}
+        </div>
+        <div v-else-if="filtered.length === 0" class="empty">{{ $t('filePicker.noFiles') }}</div>
       </div>
     </div>
   </div>
@@ -228,5 +295,8 @@ onMounted(async () => {
   color: var(--kn-text-muted);
   text-align: center;
   font-size: 13px;
+}
+.empty.error {
+  color: var(--kn-danger);
 }
 </style>

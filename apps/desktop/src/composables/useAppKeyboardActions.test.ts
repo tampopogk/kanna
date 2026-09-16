@@ -232,7 +232,7 @@ describe("useAppKeyboardActions durable selection", () => {
     expect(invokeMock).not.toHaveBeenCalled();
   });
 
-  it("refuses file picker shortcuts for a task owned by another machine before a local file command", () => {
+  it("opens file picker shortcuts for a task owned by another machine", () => {
     const workspaceTask = remoteWorkspaceTask("cloud:repo:task-remote");
     workspaceTask.capabilities = { canOpenShell: false } as WorkspaceTask["capabilities"];
     const { keyboardActions, showFilePickerOnTop, toast } = createHarness({ workspaceTask });
@@ -240,8 +240,8 @@ describe("useAppKeyboardActions durable selection", () => {
     keyboardActions.openFile();
     keyboardActions.toggleFilePreview();
 
-    expect(toast.warning).toHaveBeenCalledWith("toasts.remoteTaskPathUnavailable");
-    expect(showFilePickerOnTop).not.toHaveBeenCalled();
+    expect(toast.warning).not.toHaveBeenCalled();
+    expect(showFilePickerOnTop).toHaveBeenCalledTimes(2);
     expect(invokeMock).not.toHaveBeenCalled();
   });
 

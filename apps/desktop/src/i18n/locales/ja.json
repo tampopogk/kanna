@@ -349,7 +349,9 @@
   },
   "filePicker": {
     "placeholder": "ファイルを検索...",
-    "noFiles": "ファイルが見つかりません"
+    "noFiles": "ファイルが見つかりません",
+    "loading": "ファイルを読み込み中…",
+    "unavailable": "タスクのファイルを利用できません: {message}"
   },
   "filePreview": {
     "rendered": "レンダリング",

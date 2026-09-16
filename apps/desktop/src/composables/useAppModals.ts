@@ -211,6 +211,24 @@ export function useAppModals({
   const readingWorkspace = computed(() => activeTaskViewIsRemote.value
     ? `remote:${activeRemoteTaskRoute.value?.desktopId}:${activeRemoteTaskRoute.value?.taskId}:${activeTask.value?.branch ?? ""}`
     : activeWorktreePath.value);
+  const filePickerSourceKey = computed(() => {
+    const task = activeTask.value;
+    if (activeTaskViewIsRemote.value) {
+      const route = activeRemoteTaskRoute.value;
+      return [
+        "remote",
+        route?.transport ?? "unavailable",
+        route?.desktopId ?? selectedWorkspaceTask?.value?.owner?.id ?? "unknown",
+        route?.taskId ?? task?.id ?? "unknown",
+        task?.branch ?? "",
+        task?.transition_revision ?? "",
+      ].join(":");
+    }
+    if (task) {
+      return `local:${task.id}:${currentWorktreePath.value ?? task.branch ?? ""}`;
+    }
+    return `repo:${store.selectedRepo?.id ?? "none"}:${activeRepoPath.value}`;
+  });
   const currentDiffViewState = computed(() => {
     const key = currentDiffViewKey.value;
     const state = key ? diffViewStates[key] : undefined;
@@ -312,6 +330,34 @@ export function useAppModals({
       showAllFiles,
     });
   }
+
+  /**
+   * Bind one picker load to the owner route that produced its source key.
+   * `listRemoteTaskDirectory` intentionally follows the active selection for
+   * long-lived tree tabs; quick open is different because an old recursive
+   * listing must never continue on a newly selected machine halfway through.
+   */
+  const filePickerTaskDirectoryLoader = computed(() => {
+    if (!activeTaskViewIsRemote.value) return undefined;
+    const route = activeRemoteTaskRoute.value;
+    // Make workspace/stage changes replace the closure even when the durable
+    // task and route stay the same.
+    void filePickerSourceKey.value;
+    if (!route) {
+      return async () => {
+        throw new Error("Remote task route is unavailable.");
+      };
+    }
+    return async (path: string, showAllFiles: boolean) => {
+      const client = await getRemoteTaskViewClient(route.transport);
+      return client.listTaskDirectory({
+        desktopId: route.desktopId,
+        taskId: route.taskId,
+        path,
+        showAllFiles,
+      });
+    };
+  });
 
   async function readRemoteTaskFile(path: string): Promise<string> {
     const route = activeRemoteTaskRoute.value;
@@ -504,6 +550,14 @@ export function useAppModals({
     closeFilePicker();
   });
 
+  // A stage transition keeps the durable task id but replaces its workspace.
+  // Close rather than letting a person select an entry from the old index;
+  // reopening resolves the durable id to the owner's new current worktree.
+  watch(filePickerSourceKey, (newKey, oldKey) => {
+    if (!oldKey || newKey === oldKey || !activeTaskViewIsRemote.value) return;
+    closeFilePicker();
+  });
+
   function closeFilePicker() {
     showFilePickerModal.value = false;
     filePickerHidden.value = false;
@@ -545,7 +599,11 @@ export function useAppModals({
     closeFilePicker();
   }
 
-  function selectFileFromPicker(filePath: string) {
+  function selectFileFromPicker(filePath: string, sourceKey?: string) {
+    if (sourceKey !== undefined && sourceKey !== filePickerSourceKey.value) {
+      closeFilePicker();
+      return;
+    }
     openFilePreview(filePath);
   }
 
@@ -585,6 +643,8 @@ export function useAppModals({
     activeTask,
     activeTaskViewIsRemote,
     activeRemoteTaskRoute,
+    filePickerSourceKey,
+    filePickerTaskDirectoryLoader,
     listRemoteTaskDirectory,
     readRemoteTaskFile,
     readRemoteTaskDiff,
