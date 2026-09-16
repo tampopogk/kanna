@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { Browser } from "webdriverio";
 import {
   requiresExactExpoEnvironment,
+  prepareSimulatorForLaunch,
   resolveSimulatorAlertHandling,
   resolveSmokeModeAppEnv,
   smokeSpecPaths,
@@ -9,9 +10,36 @@ import {
   supportedSmokeTargets,
   waitForExpoAppReady
 } from "./run";
+import type { AvailableSimulatorDevice } from "./helpers/simulator";
 import { shouldReuseExpoServer } from "./helpers/metro";
 
 describe("mobile smoke runner", () => {
+  it("configures the selected simulator and bundle after install validation", async () => {
+    const calls: string[] = [];
+    const device: AvailableSimulatorDevice = {
+      name: "iPhone 17 Pro",
+      runtime: "com.apple.CoreSimulator.SimRuntime.iOS-26-2",
+      state: "Booted",
+      udid: "selected-simulator-udid"
+    };
+
+    await prepareSimulatorForLaunch(device, "build.kanna.app.dev", {
+      boot: async (received) => { calls.push(`boot:${received.udid}`); },
+      assertInstalled: async (received, bundleId) => {
+        calls.push(`installed:${received.udid}:${bundleId}`);
+      },
+      configureExpoDevMenu: async (received, bundleId) => {
+        calls.push(`preferences:${received.udid}:${bundleId}`);
+      }
+    });
+
+    expect(calls).toEqual([
+      "boot:selected-simulator-udid",
+      "installed:selected-simulator-udid:build.kanna.app.dev",
+      "preferences:selected-simulator-udid:build.kanna.app.dev"
+    ]);
+  });
+
   it("isolates the StoreKit configuration lane to dev and exact Metro environment", () => {
     expect(supportedSmokeModes).toContain("storekit");
     expect(resolveSmokeModeAppEnv("storekit", "prod")).toBe("dev");
