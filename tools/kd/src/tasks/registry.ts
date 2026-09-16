@@ -97,9 +97,13 @@ import {
   type PhysicalDeviceMetroReadinessInput
 } from "../runtime/mobile-device";
 import {
+  executeProductionBillingReview,
   executeProductionMobileQa,
+  formatProductionBillingReviewResult,
   formatProductionMobileQaResult,
-  isProductionMobileQaOk
+  isProductionBillingReviewOk,
+  isProductionMobileQaOk,
+  readAppStoreReviewerAccount
 } from "../runtime/mobile-qa";
 import {
   executeMobileOtaDoctorWithContext,
@@ -239,6 +243,12 @@ export interface MobileQaInput {
   keyPath?: string;
 }
 
+export interface MobileBillingReviewInput {
+  production: boolean;
+  screenshotPath: string;
+  keyPath?: string;
+}
+
 export const devUpInputSchema = z.object({
   mobile: z.boolean().default(false),
   emulators: z.boolean().default(false),
@@ -325,6 +335,12 @@ const mobileUninstallInputSchema = z.object({
 const mobileQaInputSchema = z.object({
   production: z.boolean().default(false),
   ota: z.boolean().default(false),
+  keyPath: z.string().optional()
+});
+
+const mobileBillingReviewInputSchema = z.object({
+  production: z.boolean().default(false),
+  screenshotPath: z.string(),
   keyPath: z.string().optional()
 });
 
@@ -2627,6 +2643,37 @@ async function executeMobileQa(input: MobileQaInput): Promise<TaskResult> {
   };
 }
 
+async function executeMobileBillingReview(input: MobileBillingReviewInput): Promise<TaskResult> {
+  if (!input.production) {
+    return { ok: false, message: "mobile.billing-review requires --production." };
+  }
+  const context = await resolveDefaultContext(process.env);
+  const result = await executeProductionBillingReview({
+    repoRoot: context.repoRoot,
+    env: context.env,
+    keyPath: input.keyPath,
+    screenshotPath: input.screenshotPath,
+    runner: nodeCommandRunner,
+    resolveAppStoreReviewerAccount: () =>
+      readAppStoreReviewerAccount({ env: context.env, repoRoot: context.repoRoot })
+  });
+  return {
+    ok: isProductionBillingReviewOk(result),
+    message: formatProductionBillingReviewResult(result),
+    // The subprocess environment held the reviewer credential; the result
+    // data deliberately carries only the sanitized report and the command.
+    data: {
+      configChecks: result.configChecks,
+      credentialSource: result.credentialSource,
+      command: result.command
+        ? { name: result.command.name, exitCode: result.command.exitCode }
+        : null,
+      report: result.report,
+      screenshotPath: result.screenshotPath
+    }
+  };
+}
+
 export async function executeDevDownWithContext(
   input: DevDownInput,
   executor: ExecutorInput,
@@ -2910,6 +2957,12 @@ export const taskDefinitions = [
     description: "Run the repo-side production mobile QA gate.",
     inputSchema: mobileQaInputSchema,
     execute: async (_context, input) => executeMobileQa(mobileQaInputSchema.parse(input))
+  },
+  {
+    id: "mobile.billing-review",
+    description: "Capture the production-identity Apple billing review screenshot with the App Review account.",
+    inputSchema: mobileBillingReviewInputSchema,
+    execute: async (_context, input) => executeMobileBillingReview(mobileBillingReviewInputSchema.parse(input))
   },
   {
     id: "mobile.ota.publish",

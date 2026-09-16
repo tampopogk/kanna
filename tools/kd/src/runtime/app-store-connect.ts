@@ -63,6 +63,19 @@ export interface AscAppStoreVersion {
   releaseType?: string;
 }
 
+/**
+ * The App Review demo account App Store Connect holds for a version. This is
+ * the canonical home of the reviewer credential: whoever prepared the
+ * submission entered it there, so kd reads it back rather than asking for a
+ * second copy in an environment file.
+ */
+export interface AscAppStoreReviewDetail {
+  id: string;
+  demoAccountRequired?: boolean;
+  demoAccountName?: string;
+  demoAccountPassword?: string;
+}
+
 /** The `releaseType` values App Store Connect accepts on an appStoreVersion. */
 export const ASC_RELEASE_TYPES = ["MANUAL", "AFTER_APPROVAL", "SCHEDULED"] as const;
 export type AscReleaseType = (typeof ASC_RELEASE_TYPES)[number];
@@ -163,8 +176,13 @@ interface AscResource {
 }
 
 interface AscCollection {
-  data?: AscResource[];
+  data?: AscResource[] | AscResource;
   errors?: Array<{ title?: string; detail?: string; status?: string }>;
+}
+
+function collectionData(result: AscCollection): AscResource[] {
+  if (Array.isArray(result.data)) return result.data;
+  return result.data ? [result.data] : [];
 }
 
 function formatAscErrors(status: number, body: string): string {
@@ -245,7 +263,7 @@ export class AppStoreConnectClient {
       limit: "10"
     });
     // The bundleId filter is a prefix match on Apple's side, so pin it exactly.
-    const match = (result.data ?? []).find(
+    const match = collectionData(result).find(
       (app) => readStringAttribute(app, "bundleId") === bundleId
     );
     if (!match?.id) {
@@ -264,7 +282,7 @@ export class AppStoreConnectClient {
       "fields[builds]": "version,processingState,uploadedDate",
       limit: "200"
     });
-    return (result.data ?? [])
+    return collectionData(result)
       .filter((build): build is AscResource & { id: string } => typeof build.id === "string")
       .map((build) => ({
         id: build.id,
@@ -292,7 +310,7 @@ export class AppStoreConnectClient {
       "fields[appStoreVersions]": "versionString,appStoreState,releaseType",
       limit: "10"
     });
-    const match = (result.data ?? []).find(
+    const match = collectionData(result).find(
       (version) => readStringAttribute(version, "versionString") === input.version
     );
     if (!match?.id) return null;
@@ -301,6 +319,29 @@ export class AppStoreConnectClient {
       versionString: input.version,
       appStoreState: readStringAttribute(match, "appStoreState"),
       releaseType: readStringAttribute(match, "releaseType")
+    };
+  }
+
+  /** The review demo account recorded on an App Store version, if any. */
+  async findAppStoreReviewDetail(input: {
+    appStoreVersionId: string;
+  }): Promise<AscAppStoreReviewDetail | null> {
+    const result = await this.request(
+      "GET",
+      `/v1/appStoreVersions/${input.appStoreVersionId}/appStoreReviewDetail`,
+      {
+        "fields[appStoreReviewDetails]":
+          "demoAccountRequired,demoAccountName,demoAccountPassword"
+      }
+    );
+    const [detail] = collectionData(result);
+    if (!detail?.id) return null;
+    const required = detail.attributes?.demoAccountRequired;
+    return {
+      id: detail.id,
+      ...(typeof required === "boolean" ? { demoAccountRequired: required } : {}),
+      demoAccountName: readStringAttribute(detail, "demoAccountName"),
+      demoAccountPassword: readStringAttribute(detail, "demoAccountPassword")
     };
   }
 

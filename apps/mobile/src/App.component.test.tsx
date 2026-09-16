@@ -485,6 +485,66 @@ describe("App component wiring", () => {
       ]);
   });
 
+  it("renders sanitized connection diagnostics for the E2E runner without credentials", async () => {
+    const previous = process.env.EXPO_PUBLIC_KANNA_ENABLE_E2E_TRUST_SEED;
+    process.env.EXPO_PUBLIC_KANNA_ENABLE_E2E_TRUST_SEED = "1";
+    try {
+      const { model, sessionStore } = createModel();
+      sessionStore.setTrustedDesktops([
+        {
+          desktopId: "desktop-paired",
+          displayName: "Paired Mac",
+          lanEndpoints: [
+            { baseUrl: "http://127.0.0.1:48121", lastSeenAt: "2026-09-16T00:00:00.000Z" }
+          ],
+          lastSeenAt: "2026-09-16T00:00:00.000Z",
+          deviceSecret: "device-secret-must-never-render"
+        }
+      ]);
+
+      const renderer = await mountModel(model);
+      const marker = renderer.root.findAll(
+        (node) => node.props.testID === MOBILE_E2E_IDS.connectionDiagnostics
+      );
+      expect(marker).toHaveLength(1);
+      const label = String(marker[0].props.accessibilityLabel);
+      expect(label).not.toContain("device-secret-must-never-render");
+      expect(JSON.parse(label)).toMatchObject({
+        connectionState: expect.any(String),
+        taskCollectionStatus: expect.any(String),
+        trustedDesktops: [
+          {
+            desktopId: "desktop-paired",
+            lanEndpoints: ["http://127.0.0.1:48121"],
+            deviceSecretPresent: true
+          }
+        ]
+      });
+    } finally {
+      if (previous === undefined) {
+        delete process.env.EXPO_PUBLIC_KANNA_ENABLE_E2E_TRUST_SEED;
+      } else {
+        process.env.EXPO_PUBLIC_KANNA_ENABLE_E2E_TRUST_SEED = previous;
+      }
+    }
+  });
+
+  it("does not render connection diagnostics outside E2E", async () => {
+    const previous = process.env.EXPO_PUBLIC_KANNA_ENABLE_E2E_TRUST_SEED;
+    delete process.env.EXPO_PUBLIC_KANNA_ENABLE_E2E_TRUST_SEED;
+    try {
+      const { model } = createModel();
+      const renderer = await mountModel(model);
+      expect(renderer.root.findAll(
+        (node) => node.props.testID === MOBILE_E2E_IDS.connectionDiagnostics
+      )).toHaveLength(0);
+    } finally {
+      if (previous !== undefined) {
+        process.env.EXPO_PUBLIC_KANNA_ENABLE_E2E_TRUST_SEED = previous;
+      }
+    }
+  });
+
   it("forwards accepted task snapshots for detail synchronization", async () => {
     const previous = process.env.EXPO_PUBLIC_KANNA_ENABLE_E2E_TRUST_SEED;
     process.env.EXPO_PUBLIC_KANNA_ENABLE_E2E_TRUST_SEED = "1";

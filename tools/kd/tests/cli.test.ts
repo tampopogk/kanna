@@ -580,6 +580,10 @@ describe("kd CLI", () => {
     await expect(runCli(["mobile", "qa", "--help"])).resolves.toBe(0);
     expect(log).toHaveBeenLastCalledWith(expect.stringContaining("Usage: kd mobile qa --production"));
 
+    await expect(runCli(["mobile", "billing-review", "--help"])).resolves.toBe(0);
+    expect(log).toHaveBeenLastCalledWith(expect.stringContaining("Usage: kd mobile billing-review --production --screenshot-path"));
+    expect(log).toHaveBeenLastCalledWith(expect.stringContaining("Never taps Subscribe or Restore Purchases"));
+
     await expect(runCli(["mobile", "archive", "--help"])).resolves.toBe(0);
     expect(log).toHaveBeenLastCalledWith(expect.stringContaining("Usage: kd mobile archive --production"));
     expect(log).toHaveBeenLastCalledWith(expect.stringContaining("defaults to apps/mobile/VERSION"));
@@ -1434,6 +1438,35 @@ describe("kd CLI", () => {
     );
     expect(() => parseCliArgs(["mobile", "qa", "--production", "--key-path"]))
       .toThrow("mobile qa --key-path requires a value");
+  });
+
+  it("parses the production billing review capture command", () => {
+    expect(parseCliArgs([
+      "mobile", "billing-review", "--production", "--screenshot-path", "/repo/.tmp/app-review/billing.png"
+    ])).toEqual({
+      taskId: "mobile.billing-review",
+      input: { production: true, screenshotPath: "/repo/.tmp/app-review/billing.png" }
+    });
+    expect(parseCliArgs([
+      "mobile", "billing-review", "--production",
+      "--screenshot-path", "/repo/.tmp/app-review/billing.png",
+      "--key-path", "/fake secrets/key.pem"
+    ])).toEqual({
+      taskId: "mobile.billing-review",
+      input: {
+        production: true,
+        screenshotPath: "/repo/.tmp/app-review/billing.png",
+        keyPath: "/fake secrets/key.pem"
+      }
+    });
+    expect(() => parseCliArgs(["mobile", "billing-review", "--screenshot-path", "/x.png"]))
+      .toThrow("mobile billing-review requires --production");
+    expect(() => parseCliArgs(["mobile", "billing-review", "--production"]))
+      .toThrow("mobile billing-review requires --screenshot-path");
+    expect(() => parseCliArgs(["mobile", "billing-review", "--production", "--screenshot-path"]))
+      .toThrow("mobile billing-review --screenshot-path requires a value");
+    expect(() => parseCliArgs(["mobile", "billing-review", "--production", "--screenshot-path", "/x.png", "--ota"]))
+      .toThrow("mobile billing-review only accepts --production, --screenshot-path <path>, and --key-path <path>");
   });
 
   it("maps retired wrapper argument shapes to kd tasks", () => {

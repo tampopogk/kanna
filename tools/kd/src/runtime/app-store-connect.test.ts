@@ -227,6 +227,40 @@ describe("App Store Connect client", () => {
     });
   });
 
+  it("reads the review demo account recorded on a version, and null when Apple has none", async () => {
+    const calls: AppStoreConnectHttpRequest[] = [];
+    const asc = client(
+      {
+        "/v1/appStoreVersions/v9/appStoreReviewDetail": {
+          body: {
+            data: {
+              type: "appStoreReviewDetails",
+              id: "rd1",
+              attributes: {
+                demoAccountRequired: true,
+                demoAccountName: "review@example.com",
+                demoAccountPassword: "review-secret"
+              }
+            }
+          }
+        }
+      },
+      calls
+    );
+
+    expect(await asc.findAppStoreReviewDetail({ appStoreVersionId: "v9" })).toEqual({
+      id: "rd1",
+      demoAccountRequired: true,
+      demoAccountName: "review@example.com",
+      demoAccountPassword: "review-secret"
+    });
+    expect(new URL(calls[0]?.url ?? "").searchParams.get("fields[appStoreReviewDetails]"))
+      .toBe("demoAccountRequired,demoAccountName,demoAccountPassword");
+
+    const missing = client({ "/v1/appStoreVersions/v9/appStoreReviewDetail": { body: { data: null } } });
+    expect(await missing.findAppStoreReviewDetail({ appStoreVersionId: "v9" })).toBeNull();
+  });
+
   it("returns null when the App Store version does not exist yet", async () => {
     const asc = client({ "/v1/apps/222/appStoreVersions": { body: { data: [] } } });
 

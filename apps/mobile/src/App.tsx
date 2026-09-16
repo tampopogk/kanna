@@ -30,6 +30,10 @@ import { UpdateReadyBanner } from "./components/UpdateReadyBanner";
 import { LoadingText } from "./components/LoadingText";
 import { MOBILE_E2E_IDS } from "./e2eTestIds";
 import {
+  buildE2eConnectionDiagnostics,
+  serializeE2eConnectionDiagnostics
+} from "./e2eConnectionDiagnostics";
+import {
   checkAndFetchUpdate,
   reloadToApplyUpdate
 } from "./lib/updates/otaUpdates";
@@ -145,6 +149,12 @@ function AppContent() {
       ? state.recentTasks
           .map((task) => `${task.id}:${task.title ?? ""}`)
           .join("\n")
+      : undefined;
+  // Sanitized route/status/credential-presence picture for the E2E runner to
+  // retain when a task-list assertion fails. Never rendered outside E2E.
+  const e2eConnectionDiagnostics =
+    process.env.EXPO_PUBLIC_KANNA_ENABLE_E2E_TRUST_SEED === "1"
+      ? serializeE2eConnectionDiagnostics(buildE2eConnectionDiagnostics(state))
       : undefined;
   const resolvedNotificationTaskRequest = useMemo(() => {
     if (!notificationTaskRequest) return null;
@@ -462,6 +472,16 @@ function AppContent() {
             }}
           />
         ) : null}
+        {e2eConnectionDiagnostics ? (
+          <Text
+            accessibilityLabel={e2eConnectionDiagnostics}
+            pointerEvents="none"
+            style={styles.e2eConnectionDiagnostics}
+            testID={MOBILE_E2E_IDS.connectionDiagnostics}
+          >
+            {e2eConnectionDiagnostics}
+          </Text>
+        ) : null}
         {initializationError ? (
           <View style={styles.initializationError}>
             <Text style={styles.initializationErrorText}>
@@ -569,6 +589,16 @@ const styles = StyleSheet.create({
   startupLoadingText: {
     color: "#93A7C8",
     fontSize: 15
+  },
+  e2eConnectionDiagnostics: {
+    color: "transparent",
+    fontSize: 1,
+    height: 1,
+    left: 0,
+    opacity: 0.01,
+    position: "absolute",
+    top: 0,
+    width: 1
   },
   initializationError: {
     backgroundColor: "#612124",

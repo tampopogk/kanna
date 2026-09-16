@@ -858,7 +858,15 @@ pnpm --dir apps/mobile run test:e2e:device:smoke
 ```
 
 Device smoke reuses an existing kd-managed Metro on `KANNA_MOBILE_PORT` and only
-stops Metro when the smoke runner started that Metro itself. Set
+stops Metro when the smoke runner started that Metro itself. It pairs the phone
+with the exact `KANNA_E2E_DESKTOP_SERVER_URL` server through a real pairing
+session before any task-list assertion, so the phone holds that desktop's device
+secret and LAN endpoint rather than depending on whatever Bonjour resolves; the
+pairing session is created over loopback, so the smoke runs on the desktop's own
+Mac. The smoke expects Metro to carry that route as
+`EXPO_PUBLIC_KANNA_SERVER_URL` (kd sets it for physical-device Metro; for a
+simulator Metro export it before `kd dev up --mobile`), and otherwise starts its
+own Metro after `./kd dev down`. Set
 `KANNA_IOS_DEVICE_UDID` for an exact device, or `KANNA_IOS_PHYSICAL_DEVICE_NAME`
 to target the visible phone name — one of them is required when more than one
 iPhone is attached.

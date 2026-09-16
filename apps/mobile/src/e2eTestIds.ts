@@ -1,6 +1,9 @@
 export const MOBILE_E2E_IDS = {
   appShell: "mobile.app-shell",
   appStartupLoading: "mobile.app-startup-loading",
+  // E2E-only sanitized route/status/credential-presence marker; see
+  // e2eConnectionDiagnostics.ts. Rendered only with the E2E trust seed flag.
+  connectionDiagnostics: "mobile.connection-diagnostics",
   moreScreen: "mobile.more-screen",
   moreHeading: "mobile.more-heading",
   moreSearchInput: "mobile.more-search-input",
@@ -149,6 +152,22 @@ export const MOBILE_E2E_IDS = {
   accountSubscriptionState: "mobile.account-subscription",
   accountSubscribeLink: "mobile.account-subscribe",
   accountEntitledState: "mobile.account-entitled",
+  appleBillingCard: "mobile.apple-billing.card",
+  appleBillingUnconfirmed: "mobile.apple-billing.unconfirmed",
+  appleBillingSource(source: string): string {
+    return `mobile.apple-billing.source.${source}`;
+  },
+  appleBillingPrice: "mobile.apple-billing.price",
+  appleBillingTerms: "mobile.apple-billing.terms",
+  appleBillingSubscribeButton: "mobile.apple-billing.subscribe",
+  appleBillingRestoreButton: "mobile.apple-billing.restore",
+  appleBillingMessage: "mobile.apple-billing.message",
+  appleBillingEulaLink: "mobile.apple-billing.eula",
+  appleBillingPrivacyLink: "mobile.apple-billing.privacy",
+  // E2E-only signed-in identity marker; see AccountSheet.tsx. Rendered only
+  // with the E2E trust seed flag so the billing review lane can bind a retained
+  // session to the selected reviewer account instead of trusting "Sign Out".
+  accountIdentity: "mobile.account-identity",
   accountSignOutButton: "mobile.account-sign-out",
   accountDeleteButton: "mobile.account-delete",
   accountDeleteConfirmation: "mobile.account-delete-confirmation",

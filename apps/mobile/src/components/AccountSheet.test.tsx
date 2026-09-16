@@ -666,4 +666,78 @@ describe("AccountSheet", () => {
     await confirm?.props?.onPress?.();
     expect(onDeleteAccount).toHaveBeenCalledOnce();
   });
+
+  describe("E2E-only account identity marker", () => {
+    const signedInProps = (email: string | null) => ({
+      auth: {
+        status: "signedIn" as const,
+        user: {
+          uid: "reviewer-1",
+          email,
+          displayName: null,
+          emailVerified: true,
+          cloudAccess: "active" as const
+        }
+      },
+      machineCount: 0,
+      availableMachineCount: 0,
+      customRelayUrl: null,
+      customRelayControlEnabled: false,
+      defaultRelayUrl: null,
+      quickRepliesReady: true,
+      visible: true,
+      onClose: vi.fn(),
+      onOpenMachines: vi.fn(),
+      onOpenQuickReplies: vi.fn(),
+      onSignIn: vi.fn(),
+      onCreateAccount: vi.fn(),
+      onRefreshAccount: vi.fn(),
+      onSignOut: vi.fn(),
+      onSaveCustomRelayUrl: vi.fn().mockResolvedValue(undefined),
+      subscriptionUrl: "https://portal.example.test/subscribe"
+    });
+
+    const withE2eFlag = (value: string | undefined, run: () => void) => {
+      const previous = process.env.EXPO_PUBLIC_KANNA_ENABLE_E2E_TRUST_SEED;
+      if (value === undefined) delete process.env.EXPO_PUBLIC_KANNA_ENABLE_E2E_TRUST_SEED;
+      else process.env.EXPO_PUBLIC_KANNA_ENABLE_E2E_TRUST_SEED = value;
+      try {
+        run();
+      } finally {
+        if (previous === undefined) delete process.env.EXPO_PUBLIC_KANNA_ENABLE_E2E_TRUST_SEED;
+        else process.env.EXPO_PUBLIC_KANNA_ENABLE_E2E_TRUST_SEED = previous;
+      }
+    };
+
+    it("renders the normalized signed-in email only under the E2E trust seed flag", () => {
+      if (!AccountSheet) throw new Error("AccountSheet was not loaded");
+      withE2eFlag("1", () => {
+        if (!AccountSheet) throw new Error("AccountSheet was not loaded");
+        reactState.index = 0;
+        const tree = AccountSheet(signedInProps(" Review@Example.com ")) as ElementNode;
+        const marker = findNodeByTestId(tree, MOBILE_E2E_IDS.accountIdentity);
+        expect(marker?.props?.accessibilityLabel).toBe("review@example.com");
+        expect(textContent(marker)).toBe("review@example.com");
+        expect(marker?.props?.pointerEvents).toBe("none");
+      });
+    });
+
+    it("renders no marker outside E2E, when signed out, or without an email", () => {
+      if (!AccountSheet) throw new Error("AccountSheet was not loaded");
+      withE2eFlag(undefined, () => {
+        if (!AccountSheet) throw new Error("AccountSheet was not loaded");
+        reactState.index = 0;
+        const tree = AccountSheet(signedInProps("review@example.com")) as ElementNode;
+        expect(findNodeByTestId(tree, MOBILE_E2E_IDS.accountIdentity)).toBeNull();
+      });
+      withE2eFlag("1", () => {
+        if (!AccountSheet) throw new Error("AccountSheet was not loaded");
+        reactState.index = 0;
+        expect(findNodeByTestId(renderSignedOutSheet(), MOBILE_E2E_IDS.accountIdentity)).toBeNull();
+        reactState.index = 0;
+        const tree = AccountSheet(signedInProps(null)) as ElementNode;
+        expect(findNodeByTestId(tree, MOBILE_E2E_IDS.accountIdentity)).toBeNull();
+      });
+    });
+  });
 });
