@@ -111,6 +111,12 @@ export function stripeOwnershipLookupGateway(secretKey: string): StripeOwnership
   };
 }
 
+/**
+ * Every billing object a shared customer holds, not only subscriptions: a
+ * one-time or historical invoice for a foreign product, with no subscription
+ * of its own, would otherwise be invisible to this scan while still being
+ * exposed by a customer-wide Portal session with invoice history enabled.
+ */
 async function customerProductScan(stripe: Stripe, customerId: string): Promise<CustomerProductScan> {
   const ids = new Set<string>();
   let unresolved = false;
@@ -120,6 +126,14 @@ async function customerProductScan(stripe: Stripe, customerId: string): Promise<
       // Nothing resolvable on a listed subscription is not the same as no
       // subscription at all: it could be a foreign product this lookup
       // simply failed to identify.
+      unresolved = true;
+      continue;
+    }
+    for (const id of productIds) ids.add(id);
+  }
+  for await (const invoice of stripe.invoices.list({ customer: customerId, limit: 100 })) {
+    const productIds = await invoiceProductIds(stripe, invoice.id);
+    if (productIds.length === 0) {
       unresolved = true;
       continue;
     }
@@ -168,42 +182,70 @@ async function sessionProductIds(stripe: Stripe, sessionId: string): Promise<str
   }
 }
 
+/** Distinct product ids across an invoice's line items, paginated. */
+async function invoiceProductIds(stripe: Stripe, invoiceId: string): Promise<string[]> {
+  try {
+    const ids = new Set<string>();
+    for await (const item of stripe.invoices.listLineItems(invoiceId, { limit: 100 })) {
+      const id = productIdOf(item.pricing?.price_details?.product);
+      if (id) ids.add(id);
+    }
+    return [...ids];
+  } catch (error) {
+    if (isResourceMissing(error)) return [];
+    throw error;
+  }
+}
+
 /** A session's own line items plus its Stripe-recorded customer and claimed uid, read fresh from Stripe. */
 interface StripeObjectSnapshot {
   productIds: string[];
   customerId: string | null;
   metadataUid: string | null;
+  /** True when Stripe confirms the object itself no longer exists (resource_missing on the object, not just its items). */
+  missing: boolean;
+}
+
+function missingSnapshot(): StripeObjectSnapshot {
+  return { productIds: [], customerId: null, metadataUid: null, missing: true };
 }
 
 async function subscriptionSnapshot(stripe: Stripe, subscriptionId: string): Promise<StripeObjectSnapshot> {
+  let subscription: Stripe.Subscription;
   try {
-    const subscription = await stripe.subscriptions.retrieve(subscriptionId);
-    const productIds = await subscriptionProductIds(stripe, subscriptionId);
-    return {
-      productIds,
-      customerId: typeof subscription.customer === "string" ? subscription.customer : subscription.customer?.id ?? null,
-      metadataUid: typeof subscription.metadata?.firebase_uid === "string" ? subscription.metadata.firebase_uid : null,
-    };
+    subscription = await stripe.subscriptions.retrieve(subscriptionId);
   } catch (error) {
-    if (isResourceMissing(error)) return { productIds: [], customerId: null, metadataUid: null };
+    // Confirmed gone: distinct from an existing object whose ownership could
+    // not be resolved. A deletion retry hitting an already-canceled/removed
+    // object must be an idempotent no-op, not a thrown ambiguity.
+    if (isResourceMissing(error)) return missingSnapshot();
     throw error;
   }
+  const productIds = await subscriptionProductIds(stripe, subscriptionId);
+  return {
+    productIds,
+    customerId: typeof subscription.customer === "string" ? subscription.customer : subscription.customer?.id ?? null,
+    metadataUid: typeof subscription.metadata?.firebase_uid === "string" ? subscription.metadata.firebase_uid : null,
+    missing: false,
+  };
 }
 
 async function sessionSnapshot(stripe: Stripe, sessionId: string): Promise<StripeObjectSnapshot> {
-  const productIds = await sessionProductIds(stripe, sessionId);
+  let session: Stripe.Checkout.Session;
   try {
-    const session = await stripe.checkout.sessions.retrieve(sessionId);
-    return {
-      productIds,
-      customerId: typeof session.customer === "string" ? session.customer : session.customer?.id ?? null,
-      metadataUid: session.client_reference_id
-        ?? (typeof session.metadata?.firebase_uid === "string" ? session.metadata.firebase_uid : null),
-    };
+    session = await stripe.checkout.sessions.retrieve(sessionId);
   } catch (error) {
-    if (isResourceMissing(error)) return { productIds, customerId: null, metadataUid: null };
+    if (isResourceMissing(error)) return missingSnapshot();
     throw error;
   }
+  const productIds = await sessionProductIds(stripe, sessionId);
+  return {
+    productIds,
+    customerId: typeof session.customer === "string" ? session.customer : session.customer?.id ?? null,
+    metadataUid: session.client_reference_id
+      ?? (typeof session.metadata?.firebase_uid === "string" ? session.metadata.firebase_uid : null),
+    missing: false,
+  };
 }
 
 /**
@@ -298,11 +340,14 @@ function checkoutSessionState(session: Stripe.Checkout.Session, productVerdict: 
 /**
  * Cancels only when the subscription's own line items prove Kanna ownership.
  *
- * A `context` additionally requires the subscription's own metadata uid (and,
- * when known, its Stripe customer) to match before mutating: a proven-foreign
- * object is left untouched, but a proven-Kanna object that names a different
- * account is an inconsistency, not a foreign object, and must not be silently
- * skipped — it is thrown so the caller's retry contract stays intact.
+ * A confirmed-gone subscription (`missing`) is a no-op, not a thrown
+ * ambiguity: a deletion retry hitting an already-canceled/removed object must
+ * stay idempotent. A `context` additionally requires the subscription's own
+ * metadata uid (and, when known, its Stripe customer) to match before
+ * mutating: a proven-foreign object is left untouched, but a proven-Kanna
+ * object that names a different account is an inconsistency, not a foreign
+ * object, and must not be silently skipped — it is thrown so the caller's
+ * retry contract stays intact.
  */
 async function cancelStripeSubscription(
   stripe: Stripe,
@@ -311,6 +356,7 @@ async function cancelStripeSubscription(
   context: StripeBillingObjectContext | null
 ): Promise<void> {
   const snapshot = await subscriptionSnapshot(stripe, subscriptionId);
+  if (snapshot.missing) return;
   const verdict = classifyProductOwnership(snapshot.productIds, expectedProductId);
   if (verdict === "foreign") return;
   if (verdict === "ambiguous") {
@@ -381,6 +427,7 @@ async function closeStripeCheckoutSession(
   context: StripeBillingObjectContext | null
 ): Promise<void> {
   const snapshot = await sessionSnapshot(stripe, sessionId);
+  if (snapshot.missing) return;
   const verdict = classifyProductOwnership(snapshot.productIds, expectedProductId);
   if (verdict === "foreign") return;
   if (verdict === "ambiguous") {
