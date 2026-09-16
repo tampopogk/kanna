@@ -124,6 +124,21 @@ The prompt.
     expect((result as any).anotherUnknown).toBeUndefined();
   });
 
+  it("parses an explicit workflow for a palette task", () => {
+    const result = parseAgentMd(`---
+name: PR Review Manager
+workflow: pr-review
+---
+Review open pull requests.
+`, "pr-review-manager");
+
+    expect(result).toMatchObject({
+      name: "PR Review Manager",
+      workflow: "pr-review",
+      prompt: "Review open pull requests.",
+    });
+  });
+
   it("falls back on type mismatches (bad max_turns)", () => {
     const content = `---
 max_turns: not-a-number

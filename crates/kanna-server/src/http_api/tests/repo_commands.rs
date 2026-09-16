@@ -57,6 +57,15 @@ async fn lists_repo_commands_with_revision_and_groups() {
                 && command["label"] == "Task Manager"
                 && command["group"] == "automation"
         }));
+    assert!(body["commands"]
+        .as_array()
+        .expect("commands")
+        .iter()
+        .any(|command| {
+            command["id"] == "custom:pr-review-manager"
+                && command["label"] == "PR Review Manager"
+                && command["group"] == "automation"
+        }));
 }
 
 #[tokio::test]
@@ -274,4 +283,76 @@ async fn custom_command_passes_stable_template_identity_and_teardown_to_task_cre
             teardown: vec!["printf selected-cleanup".to_string()],
         })
     );
+}
+
+#[tokio::test]
+async fn custom_command_passes_its_workflow_to_task_creation() {
+    let temp = tempfile::tempdir().expect("temporary repo");
+    let task_dir = temp.path().join(".kanna/tasks/review-pull-requests");
+    std::fs::create_dir_all(&task_dir).expect("custom task directory");
+    std::fs::write(
+        task_dir.join("agent.md"),
+        "---\nname: PR Review Manager\nworkflow: pr-review\n---\nReview open pull requests.\n",
+    )
+    .expect("custom task definition");
+    let repo_path = temp.path().to_string_lossy().into_owned();
+    let captured = Arc::new(Mutex::new(None));
+    let captured_request = Arc::clone(&captured);
+    let app = test_router_with_seed_and_task_creator(
+        "repo-command-workflow",
+        "Studio Mac",
+        move |db| {
+            db.insert_repo(NewRepo {
+                id: "repo-1",
+                path: &repo_path,
+                name: "Kanna",
+                default_branch: Some("main"),
+            })
+            .expect("insert repo");
+        },
+        Arc::new(move |request| {
+            *captured_request.lock().expect("capture request") = Some(request);
+            Ok(CreateTaskResponse {
+                task_id: "created-custom-task".to_string(),
+                repo_id: "repo-1".to_string(),
+                title: "PR Review Manager".to_string(),
+                prompt: "Review open pull requests.".to_string(),
+                stage: "PR review".to_string(),
+                agent_type: "pty".to_string(),
+                worktree_path: Some("/tmp/worktree".to_string()),
+            })
+        }),
+    );
+    let catalog = app
+        .clone()
+        .oneshot(
+            Request::get("/v1/repos/repo-1/commands")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let revision = response_json(catalog).await["revision"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let response = app
+        .oneshot(
+            Request::post("/v1/repos/repo-1/commands/custom%3Areview-pull-requests/run")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({ "catalogRevision": revision }).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let request = captured
+        .lock()
+        .expect("captured request")
+        .take()
+        .expect("task request");
+    assert_eq!(request.workflow_name.as_deref(), Some("pr-review"));
 }

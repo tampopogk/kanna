@@ -13,6 +13,7 @@ export type Stage = "in_progress" | "pr" | "done";
 export interface CustomTaskConfig {
   name: string;
   description?: string;
+  workflow?: string;
   agent?: string;
   agentProvider?: AgentProvider;
   model?: string;
@@ -52,6 +53,7 @@ Guide the user through defining their custom task by asking about:
 Available frontmatter fields (all optional, defaults shown):
 - name: Display name (default: derived from directory name)
 - description: Short description for the command palette
+- workflow: Workflow definition to run (default: repository workflow)
 - agent: name of an existing \`.kanna/agents/<name>/AGENT.md\` to run
 - agent_provider: ${AGENT_PROVIDER_PROMPT_UNION} (optional)
 - model: null (uses Kanna default)
@@ -142,6 +144,10 @@ export function parseAgentMd(content: string, dirName: string): CustomTaskConfig
 
   if (typeof fm.description === "string") {
     config.description = fm.description;
+  }
+
+  if (typeof fm.workflow === "string" && fm.workflow.trim()) {
+    config.workflow = fm.workflow.trim();
   }
 
   if (referencedAgent) {

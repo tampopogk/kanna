@@ -43,6 +43,7 @@ impl RepoCommandGroup {
 struct CustomTaskDefinition {
     name: String,
     description: Option<String>,
+    workflow: Option<String>,
     agent: Option<String>,
     agent_provider: Option<String>,
     model: Option<String>,
@@ -63,6 +64,7 @@ struct CustomTaskDefinition {
 pub(crate) struct RepoCommandLaunch {
     pub(crate) display_name: String,
     pub(crate) prompt: String,
+    pub(crate) workflow_name: Option<String>,
     pub(crate) agent: Option<String>,
     pub(crate) agent_provider: Option<String>,
     pub(crate) agent_type: Option<String>,
@@ -185,6 +187,10 @@ fn resolve_custom_task_definitions(
             "task-manager",
             include_str!("../../../.kanna/tasks/task-manager/agent.md"),
         ),
+        (
+            "pr-review-manager",
+            include_str!("../../../.kanna/tasks/pr-review-manager/agent.md"),
+        ),
         ("ship", include_str!("../../../.kanna/tasks/ship/agent.md")),
     ] {
         if let Some(definition) = parse_custom_task(content, slug) {
@@ -229,7 +235,7 @@ fn resolve_custom_task_definitions(
 
 fn ordered_custom_task_slugs(definitions: &BTreeMap<String, CustomTaskDefinition>) -> Vec<String> {
     let mut slugs = Vec::new();
-    for builtin in ["merge-master", "task-manager", "ship"] {
+    for builtin in ["merge-master", "task-manager", "pr-review-manager", "ship"] {
         if definitions.contains_key(builtin) {
             slugs.push(builtin.to_string());
         }
@@ -240,6 +246,7 @@ fn ordered_custom_task_slugs(definitions: &BTreeMap<String, CustomTaskDefinition
             .filter(|slug| {
                 slug.as_str() != "merge-master"
                     && slug.as_str() != "task-manager"
+                    && slug.as_str() != "pr-review-manager"
                     && slug.as_str() != "ship"
             })
             .cloned(),
@@ -280,6 +287,7 @@ fn parse_custom_task(content: &str, slug: &str) -> Option<CustomTaskDefinition> 
     Some(CustomTaskDefinition {
         name: mapping_string(&fm, "name").unwrap_or_else(|| slug_to_display_name(slug)),
         description: mapping_string(&fm, "description"),
+        workflow: mapping_string(&fm, "workflow").filter(|value| !value.trim().is_empty()),
         agent,
         agent_provider: first_known_provider(mapping_value(&fm, "agent_provider")),
         model: mapping_string(&fm, "model"),
@@ -405,6 +413,7 @@ fn custom_task_launch(slug: &str, definition: &CustomTaskDefinition) -> RepoComm
     RepoCommandLaunch {
         display_name: definition.name.clone(),
         prompt,
+        workflow_name: definition.workflow.clone(),
         agent: definition.agent.clone(),
         agent_provider: definition.agent_provider.clone(),
         agent_type: definition.execution_mode.clone(),
@@ -460,6 +469,7 @@ fn factory_launch(command_id: &str) -> Option<RepoCommandLaunch> {
     Some(RepoCommandLaunch {
         display_name: display_name.to_string(),
         prompt: prompt.to_string(),
+        workflow_name: None,
         agent: agent.map(str::to_string),
         agent_provider: None,
         agent_type: Some("pty".to_string()),
@@ -491,6 +501,7 @@ Guide the user through defining their custom task by asking about:
 Available frontmatter fields (all optional, defaults shown):
 - name: Display name (default: derived from directory name)
 - description: Short description for the command palette
+- workflow: Workflow definition to run (default: repository workflow)
 - agent: name of an existing `.kanna/agents/<name>/AGENT.md` to run
 - agent_provider: "claude" | "copilot" | "codex" | "opencode" | "antigravity" (optional)
 - model: null (uses Kanna default)
@@ -552,6 +563,7 @@ mod tests {
             vec![
                 ("custom:merge-master", "automation"),
                 ("custom:task-manager", "automation"),
+                ("custom:pr-review-manager", "automation"),
                 ("custom:ship", "automation"),
                 ("factory:setup-repo", "configure"),
                 ("factory:create-agent", "configure"),
@@ -791,6 +803,34 @@ Deploy safely.
         assert_eq!(launch.agent_type.as_deref(), Some("pty"));
         assert_eq!(launch.singleton_agent.as_deref(), Some("task-manager"));
         assert!(launch.prompt.contains("long-running Kanna task manager"));
+    }
+
+    #[test]
+    fn builtin_pr_review_manager_launch_uses_pr_review_without_singleton_or_provider_override() {
+        let repo_dir = tempfile::tempdir().expect("temporary repository");
+        let repo = Repo {
+            id: "repo-1".to_string(),
+            path: repo_dir.path().to_string_lossy().into_owned(),
+            name: "Kanna".to_string(),
+            default_branch: Some("main".to_string()),
+            default_branch_source: None,
+            remote_url_hash: None,
+            hidden: None,
+            sort_order: None,
+            created_at: None,
+            last_opened_at: None,
+        };
+
+        let launch = resolve_repo_command_launch(&repo, "custom:pr-review-manager")
+            .expect("resolve command")
+            .1
+            .expect("PR review manager launch");
+
+        assert_eq!(launch.display_name, "PR Review Manager");
+        assert_eq!(launch.workflow_name.as_deref(), Some("pr-review"));
+        assert_eq!(launch.agent, None);
+        assert_eq!(launch.agent_provider, None);
+        assert_eq!(launch.singleton_agent, None);
     }
 
     #[test]
