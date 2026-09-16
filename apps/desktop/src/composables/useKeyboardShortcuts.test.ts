@@ -374,6 +374,67 @@ describe("useKeyboardShortcuts", () => {
     }
   });
 
+  it("dispatches and labels Linux Preferences from the physical shifted comma key", () => {
+    for (const nav of [globalThis.navigator, window.navigator]) {
+      Object.defineProperty(nav, "platform", { value: "Linux x86_64", configurable: true });
+    }
+    resetShortcutBindingsForTests();
+    const actions = buildActions();
+    const wrapper = mountShortcutHarness(actions, () => "main");
+
+    try {
+      const preferences = getShortcutGroups(identityTranslate)
+        .flatMap((group) => group.shortcuts)
+        .find((shortcut) => shortcut.action === "shortcuts.preferences");
+      expect(preferences?.keys).toBe("Ctrl+Shift+,");
+
+      window.dispatchEvent(new KeyboardEvent("keydown", {
+        key: "<",
+        code: "Comma",
+        ctrlKey: true,
+        shiftKey: true,
+        bubbles: true,
+        cancelable: true,
+      }));
+
+      expect(actions.openPreferences).toHaveBeenCalledOnce();
+    } finally {
+      wrapper.unmount();
+      for (const nav of [globalThis.navigator, window.navigator]) {
+        Object.defineProperty(nav, "platform", { value: "MacIntel", configurable: true });
+      }
+      resetShortcutBindingsForTests();
+    }
+  });
+
+  it("dispatches the working Linux Ctrl+Alt+P command palette binding", () => {
+    for (const nav of [globalThis.navigator, window.navigator]) {
+      Object.defineProperty(nav, "platform", { value: "Linux x86_64", configurable: true });
+    }
+    resetShortcutBindingsForTests();
+    const actions = buildActions();
+    const wrapper = mountShortcutHarness(actions, () => "main");
+
+    try {
+      window.dispatchEvent(new KeyboardEvent("keydown", {
+        key: "p",
+        code: "KeyP",
+        ctrlKey: true,
+        altKey: true,
+        bubbles: true,
+        cancelable: true,
+      }));
+
+      expect(actions.commandPalette).toHaveBeenCalledOnce();
+    } finally {
+      wrapper.unmount();
+      for (const nav of [globalThis.navigator, window.navigator]) {
+        Object.defineProperty(nav, "platform", { value: "MacIntel", configurable: true });
+      }
+      resetShortcutBindingsForTests();
+    }
+  });
+
   it("leaves WebKitGTK's inspector chord native and dispatches the Linux Create Repository chord", () => {
     for (const nav of [globalThis.navigator, window.navigator]) {
       Object.defineProperty(nav, "platform", { value: "Linux x86_64", configurable: true });

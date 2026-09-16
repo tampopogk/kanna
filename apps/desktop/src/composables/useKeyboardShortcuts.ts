@@ -136,7 +136,7 @@ export const shortcuts: ShortcutDef[] = [
   { action: "goToOldestRead", labelKey: "shortcuts.oldestRead", groupKey: "shortcuts.groupMoveAround", key: "r", meta: true, display: "⌘R", context: ["main"] },
   { action: "goToOldestReadAllRepos", labelKey: "shortcuts.oldestReadAllRepos", groupKey: "shortcuts.groupMoveAround", key: ["R", "r"], meta: true, shift: true, display: "⇧⌘R", context: ["main"] },
   // Help — global app controls and help entry points
-  { action: "openPreferences", labelKey: "shortcuts.preferences", groupKey: "shortcuts.groupAppHelp", key: ",",                            meta: true,               display: "⌘,",       context: ["main"] },
+  { action: "openPreferences", labelKey: "shortcuts.preferences", groupKey: "shortcuts.groupAppHelp", key: ",", code: "Comma",             meta: true,               display: "⌘,",       context: ["main"] },
   // Help — ⇧⌘/ must come before ⌘/ so the more specific shortcut matches first
   { action: "showAllShortcuts", labelKey: "shortcuts.allShortcuts",       groupKey: "shortcuts.groupAppHelp",   key: "/",                           meta: true, shift: true,  display: "⇧⌘/",     context: ["main", "file", "shell", "preview", "tree", "newTask"], hidden: true },
   { action: "showShortcuts",  labelKey: "shortcuts.keyboardShortcuts",  groupKey: "shortcuts.groupAppHelp",   key: "/",                           meta: true,               display: "⌘/",       context: ["main", "diff", "file", "shell", "preview", "tree", "graph", "newTask", "transfer"] },
