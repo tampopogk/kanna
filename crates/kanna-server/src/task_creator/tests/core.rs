@@ -8153,6 +8153,7 @@ const TRANSFER_PREVIOUS_RESULT: &str = "SOURCE_PREVIOUS_STAGE_RESULT_7F31";
 const TRANSFER_PREVIOUS_MAIN_RESULT: &str = "SOURCE_PREVIOUS_MAIN_RESULT_7F31";
 const TRANSFER_APPROVED_PLAN: &str = "SOURCE_APPROVED_PLAN_7F31";
 const TRANSFER_REVISION_DIRECTIVE: &str = "PRESERVE_GENUINE_REVISION_DIRECTIVE_7F31";
+const TRANSFER_CARRIED_TASK: &str = "CARRY_AGENTLESS_TASK_ONCE_7F31 with literal $PREV_RESULT";
 const TRANSFER_CODEX_SESSION: &str = "019d99a5-aa94-7c73-b786-644cc095c037";
 
 fn transfer_source_stage_run() -> crate::db::StageRun {
@@ -8326,6 +8327,55 @@ fn transfer_fresh_fallback_receives_the_complete_active_stage_context() {
             "fresh transfer omitted {required:?}: {command}"
         );
     }
+    assert!(!command.contains("restored this conversation"), "{command}");
+    let _ = std::fs::remove_dir_all(repo_root);
+}
+
+/// An agent-less stage with no prompt carries the original task into a fresh
+/// conversation. Transfer import must retain that fallback even when there is
+/// no predecessor or revision scalar to compose into the stage prompt.
+#[test]
+fn transfer_fresh_agentless_stage_carries_the_original_task_prompt() {
+    let repo_root = init_git_repo("transfer-fresh-agentless-carried-task");
+    let config = test_config("transfer-fresh-agentless-carried-task");
+    let db = Db::open_for_tests(&config.db_path).unwrap();
+    db.insert_test_repo_with_path("repo-1", &repo_root.to_string_lossy(), "Repo One")
+        .unwrap();
+    let mut payload = transfer_continuation_payload(&repo_root);
+    payload.task.prompt = Some(TRANSFER_CARRIED_TASK.to_string());
+    payload.task.workflow = "transfer-carried-task".to_string();
+    payload.task.workflow_definition = Some(
+        serde_json::json!({
+            "name": "transfer-carried-task",
+            "stages": [{
+                "name": "in progress",
+                "policy": { "transition": "manual" }
+            }]
+        })
+        .to_string(),
+    );
+    payload.task.previous_stage_result = None;
+    payload.task.previous_main_result = None;
+    payload.task.revision_feedback = None;
+
+    let request = crate::transfer_engine::import::build_create_request_for_test(
+        "transfer-carried-task-test",
+        "repo-1",
+        &payload,
+        None,
+        None,
+    );
+    let import = request.transfer_import.as_ref().unwrap();
+    assert!(!import.session_restored);
+    assert_eq!(import.previous_stage_result, None);
+    assert_eq!(import.previous_main_result, None);
+    assert_eq!(import.revision_feedback, None);
+
+    let prepared = prepare_task_for_api(&db, &config, request).unwrap();
+    let command = prepared_pty_command(&prepared);
+    assert!(!command.contains(" resume '"), "{command}");
+    assert!(command.contains(TRANSFER_CARRIED_TASK), "{command}");
+    assert_eq!(command.matches("CARRY_AGENTLESS_TASK_ONCE_7F31").count(), 1);
     assert!(!command.contains("restored this conversation"), "{command}");
     let _ = std::fs::remove_dir_all(repo_root);
 }

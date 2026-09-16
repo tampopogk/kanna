@@ -3363,12 +3363,17 @@ fn resolve_task_spawn(
         && !matches!(request.agent_type.as_deref(), Some("agent" | "sdk"));
     let final_prompt = if request.stage_override.is_some() {
         if let Some(import) = request.transfer_import.as_ref() {
+            let fresh_stage_prompt = if agent.is_none() && stage.prompt.is_none() {
+                Some("$TASK_PROMPT")
+            } else {
+                stage.prompt.as_deref()
+            };
             let fresh_session_prompt = build_stage_prompt(
                 agent
                     .as_ref()
                     .map(|agent| agent.prompt.as_str())
                     .unwrap_or(""),
-                stage.prompt.as_deref(),
+                fresh_stage_prompt,
                 &PromptContext {
                     task_prompt: Some(&request.task_prompt),
                     prev_result: import.previous_stage_result.as_deref(),
