@@ -1,4 +1,5 @@
 import { spawnSync } from "node:child_process";
+import { generateKeyPairSync } from "node:crypto";
 import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
@@ -8,7 +9,13 @@ import { checkRequiredCommands } from "../src/runtime/doctor";
 import { buildMobileDeviceSmokeCommand, buildMobileTestCommand } from "../src/runtime/mobile-commands";
 import {
   buildProductionMobileQaCommands,
+  executeProductionBillingReview,
   executeProductionMobileQa,
+  formatProductionBillingReviewResult,
+  isProductionBillingReviewOk,
+  parseBillingReviewReport,
+  readAppStoreReviewerAccount,
+  resolveReviewerCredentials,
   validateProductionMobileConfig
 } from "../src/runtime/mobile-qa";
 import { getPortStatuses } from "../src/runtime/port-status";
@@ -216,6 +223,196 @@ describe("command runtime helpers", () => {
       expect(envs.every((env) => env?.KANNA_APP_ENV === "prod")).toBe(true);
       expect(envs.every((env) => env?.KANNA_E2E_DESKTOP_SERVER_URL === "http://127.0.0.1:48120")).toBe(true);
       expect(envs.every((env) => env?.KANNA_OTA_PRIVATE_KEY_PATH === keyPath)).toBe(true);
+    } finally {
+      await rm(repoRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("runs the billing review capture with the reviewer credential only in the subprocess environment", async () => {
+    const repoRoot = await mkdtemp(join(tmpdir(), "mobile-billing-review-"));
+    await mkdir(join(repoRoot, "apps/mobile/src"), { recursive: true });
+    await writeFile(
+      join(repoRoot, "apps/mobile/src/mobileEnvironments.json"),
+      JSON.stringify({
+        prod: {
+          runtimeVersion: "1.0.0",
+          name: "prod",
+          displayName: "Kanna",
+          scheme: "kanna",
+          iosBundleId: "build.kanna.app",
+          iosGoogleServicesFile: "./firebase/GoogleService-Info.production.plist",
+          firebase: {
+            apiKey: "real-key",
+            projectId: "kanna-build",
+            storageBucket: "kanna-build.firebasestorage.app",
+            appId: "1:402613185450:ios:adcedeadcd241285d859d3"
+          },
+          relayUrl: "wss://relay.kanna.build",
+          otaChannel: "production"
+        }
+      })
+    );
+    const keyPath = join(repoRoot, "fake-ota-key.pem");
+    await writeFile(keyPath, "not an actual private key", { mode: 0o600 });
+    const screenshotPath = join(repoRoot, ".tmp", "app-review", "billing.png");
+    const report = {
+      signedIn: true,
+      emailVerified: true,
+      accountState: "apple-billing",
+      cardRendered: true,
+      billingConfirmed: false,
+      billingSources: [],
+      price: null,
+      priceAvailable: false,
+      subscribeEnabled: null,
+      restoreEnabled: false,
+      eulaPresent: true,
+      privacyPresent: true,
+      message: null,
+      screenshotPath,
+      ready: false,
+      blockers: ["billing-read-unconfirmed", "restore-disabled"]
+    };
+    const runs: Array<{ args: string[]; env: NodeJS.ProcessEnv | undefined }> = [];
+    const runner: CommandRunner = {
+      async run(_command, args, options) {
+        runs.push({ args, env: options?.env });
+        return { exitCode: 0, stdout: `noise\n${JSON.stringify({ billingReview: report })}\n`, stderr: "" };
+      }
+    };
+
+    try {
+      const fromAsc = async () => {
+        throw new Error("App Store Connect must not be consulted when the selectors are exported");
+      };
+      const result = await executeProductionBillingReview({
+        repoRoot,
+        env: {
+          KANNA_APPIUM_PORT: "4723",
+          KANNA_E2E_CLOUD_EMAIL: "review@example.com",
+          KANNA_E2E_CLOUD_PASSWORD: "review-secret"
+        },
+        keyPath,
+        screenshotPath,
+        runner,
+        resolveAppStoreReviewerAccount: fromAsc
+      });
+
+      expect(runs).toHaveLength(1);
+      expect(runs[0]?.args).toEqual(["--dir", join(repoRoot, "apps", "mobile"), "run", "test:e2e:billing-review"]);
+      expect(runs[0]?.env).toMatchObject({
+        KANNA_APP_ENV: "prod",
+        KANNA_E2E_CLOUD_EMAIL: "review@example.com",
+        KANNA_E2E_CLOUD_PASSWORD: "review-secret",
+        KANNA_E2E_BILLING_REVIEW_SCREENSHOT_PATH: screenshotPath,
+        KANNA_OTA_PRIVATE_KEY_PATH: keyPath
+      });
+      expect(result.credentialSource).toBe("environment");
+      expect(result.report).toEqual(report);
+      expect(isProductionBillingReviewOk(result)).toBe(false);
+      const formatted = formatProductionBillingReviewResult(result);
+      expect(formatted).toContain("PASS billing-review:");
+      expect(formatted).toContain("ready: no (blockers: billing-read-unconfirmed, restore-disabled)");
+      expect(formatted).toContain(`screenshot: ${screenshotPath}`);
+      expect(formatted).toContain("waives nothing");
+      expect(formatted).not.toContain("review-secret");
+      expect(formatted).not.toContain("review@example.com");
+
+      const ready = await executeProductionBillingReview({
+        repoRoot,
+        env: {},
+        keyPath,
+        screenshotPath,
+        runner: {
+          async run() {
+            return { exitCode: 0, stdout: JSON.stringify({ billingReview: { ...report, ready: true, blockers: [] } }), stderr: "" };
+          }
+        },
+        resolveAppStoreReviewerAccount: async () => ({ email: "asc-review@example.com", password: "asc-secret" })
+      });
+      expect(ready.credentialSource).toBe("app-store-connect");
+      expect(isProductionBillingReviewOk(ready)).toBe(true);
+
+      await expect(executeProductionBillingReview({
+        repoRoot,
+        env: {},
+        keyPath,
+        screenshotPath: ".tmp/relative.png",
+        runner,
+        resolveAppStoreReviewerAccount: fromAsc
+      })).rejects.toThrow("--screenshot-path must be an absolute .png path");
+    } finally {
+      await rm(repoRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("selects the reviewer account from exported selectors or the App Store Connect review detail, never a guess", async () => {
+    await expect(resolveReviewerCredentials({
+      env: { KANNA_E2E_CLOUD_EMAIL: "review@example.com", KANNA_E2E_CLOUD_PASSWORD: "pw" },
+      fromAppStoreConnect: async () => null
+    })).resolves.toEqual({ email: "review@example.com", password: "pw", source: "environment" });
+    await expect(resolveReviewerCredentials({
+      env: { KANNA_E2E_CLOUD_EMAIL: "review@example.com" },
+      fromAppStoreConnect: async () => null
+    })).rejects.toThrow("must be exported together");
+    await expect(resolveReviewerCredentials({
+      env: {},
+      fromAppStoreConnect: async () => ({ email: "asc@example.com", password: "asc-pw" })
+    })).resolves.toEqual({ email: "asc@example.com", password: "asc-pw", source: "app-store-connect" });
+    await expect(resolveReviewerCredentials({
+      env: {},
+      fromAppStoreConnect: async () => ({ email: "asc@example.com" })
+    })).rejects.toThrow("no review demo account recorded");
+    expect(parseBillingReviewReport("no report here")).toBeNull();
+    expect(parseBillingReviewReport('{"billingReview":{"ready":true,"blockers":[]}}')).toEqual({ ready: true, blockers: [] });
+  });
+
+  it("reads the App Store Connect review demo account for the current mobile version", async () => {
+    const repoRoot = await mkdtemp(join(tmpdir(), "mobile-billing-asc-"));
+    const home = join(repoRoot, "home");
+    await mkdir(join(repoRoot, "apps/mobile"), { recursive: true });
+    await writeFile(join(repoRoot, "apps/mobile/VERSION"), "1.0.4\n");
+    await mkdir(join(home, ".appstoreconnect/private_keys"), { recursive: true });
+    const { privateKey } = generateKeyPairSync("ec", {
+      namedCurve: "P-256",
+      privateKeyEncoding: { type: "pkcs8", format: "pem" },
+      publicKeyEncoding: { type: "spki", format: "pem" }
+    });
+    await writeFile(join(home, ".appstoreconnect/private_keys/AuthKey_KEY1.p8"), privateKey);
+    const responses: Record<string, unknown> = {
+      "/v1/apps": { data: [{ id: "app-1", attributes: { bundleId: "build.kanna.app" } }] },
+      "/v1/apps/app-1/appStoreVersions": { data: [{ id: "v-104", attributes: { versionString: "1.0.4" } }] },
+      "/v1/appStoreVersions/v-104/appStoreReviewDetail": {
+        data: { id: "rd-1", attributes: { demoAccountName: "asc-review@example.com", demoAccountPassword: "asc-secret" } }
+      }
+    };
+    const requested: string[] = [];
+    try {
+      const account = await readAppStoreReviewerAccount({
+        env: { APP_STORE_CONNECT_API_KEY_ID: "KEY1", APP_STORE_CONNECT_API_ISSUER_ID: "issuer-1" },
+        repoRoot,
+        home,
+        http: {
+          async request(input) {
+            const { pathname } = new URL(input.url);
+            requested.push(pathname);
+            return { status: 200, body: JSON.stringify(responses[pathname] ?? { data: [] }) };
+          }
+        }
+      });
+      expect(account).toEqual({ email: "asc-review@example.com", password: "asc-secret" });
+      expect(requested).toEqual([
+        "/v1/apps",
+        "/v1/apps/app-1/appStoreVersions",
+        "/v1/appStoreVersions/v-104/appStoreReviewDetail"
+      ]);
+
+      await expect(readAppStoreReviewerAccount({
+        env: {},
+        repoRoot,
+        home,
+        http: { async request() { return { status: 200, body: "{}" }; } }
+      })).rejects.toThrow("mobile billing-review requires APP_STORE_CONNECT_API_KEY_ID and APP_STORE_CONNECT_API_ISSUER_ID");
     } finally {
       await rm(repoRoot, { recursive: true, force: true });
     }

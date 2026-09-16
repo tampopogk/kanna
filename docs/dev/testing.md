@@ -54,7 +54,8 @@ Plus the static checks: `pnpm exec tsc --noEmit`,
 | Desktop real E2E (unattended) | `apps/desktop/tests/e2e/real/` | `./kd test desktop-e2e` | macOS; OpenCode free model configured by the runner |
 | Desktop real E2E (operator) | files listed in `apps/desktop/tests/e2e/realTiers.ts` | `./kd test desktop-e2e-operator` | credentials and/or an explicit human operator; see below |
 | Claude-CLI Rust integration | `apps/desktop/src-tauri/tests/` | `cargo test --test agent_cli_integration -- --ignored --nocapture` | `claude` in PATH |
-| Mobile Appium E2E | `apps/mobile` | `pnpm --dir apps/mobile run test:e2e:smoke` (+ `:preflight`) | local simulator; device variants are human-run |
+| Mobile Appium E2E | `apps/mobile` | `pnpm --dir apps/mobile run test:e2e:smoke` (+ `:preflight`) | local simulator; device variants are human-run; the smoke pairs the app with the exact `KANNA_E2E_DESKTOP_SERVER_URL` server through a real pairing session, so it runs on that desktop's own machine |
+| Mobile billing review capture | `apps/mobile` | `./kd mobile billing-review --production --screenshot-path <abs .png>` | production-identity simulator build, App Review account via `KANNA_E2E_CLOUD_EMAIL`/`_PASSWORD` or App Store Connect; see `docs/testing/mobile-production-qa-gate.md` |
 | Shell fixture tests | `scripts/*.test.sh` | run directly | — |
 
 ### Desktop E2E tiers

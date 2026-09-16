@@ -21,9 +21,14 @@ import {
 } from "./helpers/appium";
 import {
   assertDesktopServerReachable,
-  readDesktopIdentity,
   resolveDesktopServerUrlForTarget
 } from "./helpers/desktop";
+import {
+  pairExactDesktopThroughDeepLink,
+  resolveDesktopServerExpoEnv,
+  waitForExactDesktopPairing,
+  withConnectionDiagnostics
+} from "./helpers/desktop-pairing";
 import { ensureExpoServer } from "./helpers/metro";
 import {
   assertPhysicalDeviceAppInstalled,
@@ -32,10 +37,7 @@ import {
 import { resolveRequiredMobileE2eEnv } from "./helpers/env";
 import { createMobileSession } from "./helpers/session";
 import { selectors } from "./helpers/selectors";
-import {
-  seedPairedTrustedDesktopThroughDeepLink,
-  seedTrustedDesktopThroughDeepLink
-} from "./helpers/trust-seed";
+import { seedPairedTrustedDesktopThroughDeepLink } from "./helpers/trust-seed";
 import {
   assertSimulatorAppInstalled,
   buildSimulatorDevelopmentClientLaunchArgs,
@@ -45,6 +47,7 @@ import {
   resolveSimulatorDevice,
   type AvailableSimulatorDevice
 } from "./helpers/simulator";
+import { runBillingReviewCapture } from "./specs/billing-review/billing-review.e2e";
 import { runListDetailBackSmoke } from "./specs/smoke/list-detail-back.e2e";
 import {
   runProfileConnectionSmoke,
@@ -59,6 +62,7 @@ import { runRelayTaskFlow, runRelayTerminalControlJourney } from "./specs/relay/
 import { startMobileRelayHarness } from "./helpers/relay-harness";
 
 export const smokeSpecPaths = [
+  "specs/billing-review/billing-review.e2e.ts",
   "specs/cloud/cloud-task-flow.e2e.ts",
   "specs/hybrid/hybrid-task-flow.e2e.ts",
   "specs/relay/relay-task-flow.e2e.ts",
@@ -71,6 +75,7 @@ export const smokeSpecPaths = [
 export const supportedSmokeTargets = ["simulator", "device"] as const;
 export const supportedSmokeModes = [
   "smoke",
+  "billing-review",
   "storekit",
   "search-focus",
   "tab-reselection",
@@ -101,18 +106,63 @@ export async function prepareSimulatorForLaunch(
   await dependencies.configureExpoDevMenu(device, bundleId);
 }
 
+/**
+ * Modes that drive a real desktop `kanna-server` named by
+ * `KANNA_E2E_DESKTOP_SERVER_URL`. They pair the app with that exact server
+ * through the app's own pairing claim rather than seeding identity-only trust.
+ */
+export const desktopServerModes = ["smoke", "tab-reselection", "shell-visual"] as const;
+
+export function isDesktopServerMode(mode: string): boolean {
+  return (desktopServerModes as readonly string[]).includes(mode);
+}
+
 export function resolveSmokeModeAppEnv(
   mode: string,
   configuredAppEnv: string | undefined
 ): string | undefined {
+  if (mode === "billing-review") {
+    // The Apple billing card only exists under the production identity.
+    return "prod";
+  }
   return mode === "storekit" || mode === "hybrid" || mode === "search-focus"
     ? "dev"
     : configuredAppEnv;
 }
 
+/**
+ * The App Review screenshot lands where the caller says — a task's own `.tmp`
+ * — never in a runner-chosen or committed location.
+ */
+export function resolveBillingReviewScreenshotPath(
+  env: Record<string, string | undefined>
+): string {
+  const path = env.KANNA_E2E_BILLING_REVIEW_SCREENSHOT_PATH?.trim();
+  if (!path) {
+    throw new Error(
+      "KANNA_E2E_BILLING_REVIEW_SCREENSHOT_PATH is required: an absolute .png path under the calling task's .tmp directory."
+    );
+  }
+  if (!path.startsWith("/") || !path.toLowerCase().endsWith(".png")) {
+    throw new Error(
+      `KANNA_E2E_BILLING_REVIEW_SCREENSHOT_PATH must be an absolute .png path, got ${JSON.stringify(path)}.`
+    );
+  }
+  return path;
+}
+
 export function requiresExactExpoEnvironment(mode: string): boolean {
+  // Desktop-server modes pair the app with the exact server named by
+  // KANNA_E2E_DESKTOP_SERVER_URL through the app's existing explicit
+  // development endpoint (EXPO_PUBLIC_KANNA_SERVER_URL). A Metro that was
+  // started without that route would leave the claim to whatever Bonjour
+  // resolves, so such a Metro is never reused: export the same
+  // EXPO_PUBLIC_KANNA_SERVER_URL before `kd dev up --mobile`, or run
+  // `./kd dev down` and let the smoke start its own Metro.
   return (
-    mode === "storekit" || mode === "relay" || mode === "relay-terminal-control" ||
+    isDesktopServerMode(mode) ||
+    mode === "storekit" || mode === "billing-review" ||
+    mode === "relay" || mode === "relay-terminal-control" ||
     mode === "hybrid" ||
     mode === "profile-disconnected" ||
     mode === "search-focus"
@@ -220,14 +270,18 @@ async function main(): Promise<void> {
 
   const relayHarnessOwnsDesktopEndpoint =
     mode === "relay" || mode === "relay-terminal-control" || mode === "hybrid" || mode === "profile-disconnected";
+  const needsNoDesktopServer = mode === "storekit" || mode === "billing-review";
   const env = resolveRequiredMobileE2eEnv(
     process.env as Record<string, string | undefined>,
-    { requireDesktopServerUrl: !relayHarnessOwnsDesktopEndpoint && mode !== "storekit" },
+    { requireDesktopServerUrl: !relayHarnessOwnsDesktopEndpoint && !needsNoDesktopServer },
   );
-  const desktopServerUrl = relayHarnessOwnsDesktopEndpoint || mode === "storekit"
+  const desktopServerUrl = relayHarnessOwnsDesktopEndpoint || needsNoDesktopServer
     ? ""
     : resolveDesktopServerUrlForTarget(env.desktopServerUrl, env.target);
-  if ((mode === "storekit" || mode === "hybrid" || mode === "profile-disconnected") && env.target !== "simulator") {
+  const billingReviewScreenshotPath = mode === "billing-review"
+    ? resolveBillingReviewScreenshotPath(process.env as Record<string, string | undefined>)
+    : null;
+  if ((mode === "storekit" || mode === "billing-review" || mode === "hybrid" || mode === "profile-disconnected") && env.target !== "simulator") {
     throw new Error(
       `The mobile ${mode} E2E mode is simulator-only; it must not install or launch a physical device.`
     );
@@ -313,11 +367,7 @@ async function main(): Promise<void> {
     const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
     const resolvedDesktopServerUrl = desktopServerUrl;
 
-    if (
-      mode === "smoke" ||
-      mode === "tab-reselection" ||
-      mode === "shell-visual"
-    ) {
+    if (isDesktopServerMode(mode)) {
       await assertDesktopServerReachable(resolvedDesktopServerUrl);
     }
     if (
@@ -335,6 +385,13 @@ async function main(): Promise<void> {
     expoServer = await ensureExpoServer({
       env:
         mode === "storekit" ? { KANNA_APP_ENV: "dev", EXPO_PUBLIC_KANNA_STOREKIT_TEST: "1" } :
+        mode === "billing-review" ? { KANNA_APP_ENV: "prod" } :
+        isDesktopServerMode(mode)
+          ? resolveDesktopServerExpoEnv({
+              appEnv: env.appEnv,
+              appDesktopServerUrl: resolvedDesktopServerUrl
+            })
+          :
         (mode === "hybrid" ||
           mode === "profile-disconnected" ||
           mode === "search-focus") &&
@@ -404,17 +461,30 @@ async function main(): Promise<void> {
         if (restoredText !== "passed: relaunch restore") throw new Error(restoredText);
         process.stdout.write(`passed: ${reinstall ? "reinstall" : "process restart"} restore\n`);
       } finally { await rm(saved, { recursive: true, force: true }); }
-    } else if (mode === "shell-visual") {
-      const desktopIdentity = await readDesktopIdentity(resolvedDesktopServerUrl);
-      await seedTrustedDesktopThroughDeepLink({
-        bundleId: env.bundleId,
-        driver,
-        desktop: {
-          desktopId: desktopIdentity.desktopId,
-          displayName: desktopIdentity.desktopName
-        }
+    } else if (mode === "billing-review") {
+      if (!billingReviewScreenshotPath) {
+        throw new Error("The billing review screenshot path was not resolved before launch.");
+      }
+      const report = await runBillingReviewCapture(driver, {
+        credentials: { email: env.cloudEmail, password: env.cloudPassword },
+        screenshotPath: billingReviewScreenshotPath
       });
-      await runShellVisualSmoke(driver);
+      process.stdout.write(`${JSON.stringify({ billingReview: report })}\n`);
+    } else if (mode === "shell-visual") {
+      const smokeDriver = driver;
+      const identity = await pairExactDesktopThroughDeepLink({
+        bundleId: env.bundleId,
+        driver: smokeDriver,
+        configuredDesktopServerUrl: env.desktopServerUrl,
+        appDesktopServerUrl: resolvedDesktopServerUrl
+      });
+      await waitForExactDesktopPairing(smokeDriver, {
+        desktopId: identity.desktopId,
+        appDesktopServerUrl: resolvedDesktopServerUrl
+      });
+      await withConnectionDiagnostics(smokeDriver, "shell visual smoke", () =>
+        runShellVisualSmoke(smokeDriver)
+      );
     } else if (mode === "profile-disconnected" && relayHarness) {
       await runProfileDisconnectedConnectionSmoke(driver, {
         bundleId: env.bundleId,
@@ -539,30 +609,45 @@ async function main(): Promise<void> {
         password: env.cloudPassword
       });
     } else {
-      const desktopIdentity = await readDesktopIdentity(resolvedDesktopServerUrl);
-      await seedTrustedDesktopThroughDeepLink({
+      // Genuine pairing with the exact selected server before any task-list
+      // deadline starts: the app must hold this desktop's device secret and
+      // endpoint, or the row wait below could only ever prove "no rows".
+      const identity = await pairExactDesktopThroughDeepLink({
         bundleId: env.bundleId,
         driver,
-        desktop: {
-          desktopId: desktopIdentity.desktopId,
-          displayName: desktopIdentity.desktopName
-        }
+        configuredDesktopServerUrl: env.desktopServerUrl,
+        appDesktopServerUrl: resolvedDesktopServerUrl
       });
+      await waitForExactDesktopPairing(driver, {
+        desktopId: identity.desktopId,
+        appDesktopServerUrl: resolvedDesktopServerUrl
+      });
+      const smokeDriver = driver;
       if (mode === "tab-reselection") {
-        await runTabReselectionSmoke(driver);
+        await withConnectionDiagnostics(smokeDriver, "tab reselection smoke", () =>
+          runTabReselectionSmoke(smokeDriver)
+        );
       } else {
-        await runListDetailBackSmoke(driver, {
-          desktopServerUrl: resolvedDesktopServerUrl
-        });
-        await runSearchFocusSmoke(driver, {
-          screenshotPath: process.env.KANNA_E2E_SEARCH_SCREENSHOT_PATH?.trim(),
-          taskId: process.env.KANNA_E2E_PTY_TASK_ID?.trim()
-        });
-        await runTabReselectionSmoke(driver);
+        await withConnectionDiagnostics(smokeDriver, "list-detail-back smoke", () =>
+          runListDetailBackSmoke(smokeDriver, {
+            desktopServerUrl: resolvedDesktopServerUrl
+          })
+        );
+        await withConnectionDiagnostics(smokeDriver, "search focus smoke", () =>
+          runSearchFocusSmoke(smokeDriver, {
+            screenshotPath: process.env.KANNA_E2E_SEARCH_SCREENSHOT_PATH?.trim(),
+            taskId: process.env.KANNA_E2E_PTY_TASK_ID?.trim()
+          })
+        );
+        await withConnectionDiagnostics(smokeDriver, "tab reselection smoke", () =>
+          runTabReselectionSmoke(smokeDriver)
+        );
         if (env.target === "simulator") {
-          await runShellVisualSmoke(driver);
+          await runShellVisualSmoke(smokeDriver);
         }
-        await runProfileConnectionSmoke(driver);
+        await withConnectionDiagnostics(smokeDriver, "profile connection smoke", () =>
+          runProfileConnectionSmoke(smokeDriver)
+        );
       }
     }
   } finally {

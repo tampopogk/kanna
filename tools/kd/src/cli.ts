@@ -343,6 +343,49 @@ function parseMobileDoctorInput(rest: string[]): ParsedCliCommand {
   return { taskId: "mobile.doctor", input };
 }
 
+function parseMobileBillingReviewInput(rest: string[]): ParsedCliCommand {
+  let keyPath: string | undefined;
+  let screenshotPath: string | undefined;
+  const remainingArgs: string[] = [];
+  for (let index = 0; index < rest.length; index += 1) {
+    const arg = rest[index];
+    if (arg !== "--key-path" && arg !== "--screenshot-path") {
+      remainingArgs.push(arg);
+      continue;
+    }
+    const value = rest[index + 1];
+    if (!value || value.startsWith("--")) {
+      throw new Error(`mobile billing-review ${arg} requires a value`);
+    }
+    if (arg === "--key-path") keyPath = value;
+    else screenshotPath = value;
+    index += 1;
+  }
+  const input = parseFlagInput(remainingArgs, { production: false });
+  const unsupportedFlags = Object.entries(input)
+    .filter(([key, value]) => key !== "production" && value === true)
+    .map(([key]) => key);
+  if (unsupportedFlags.length > 0) {
+    throw new Error(
+      "mobile billing-review only accepts --production, --screenshot-path <path>, and --key-path <path>"
+    );
+  }
+  if (input.production !== true) {
+    throw new Error("mobile billing-review requires --production");
+  }
+  if (!screenshotPath) {
+    throw new Error("mobile billing-review requires --screenshot-path <absolute .png path>");
+  }
+  return {
+    taskId: "mobile.billing-review",
+    input: {
+      production: true,
+      screenshotPath,
+      ...(keyPath ? { keyPath } : {})
+    }
+  };
+}
+
 function parseMobileQaInput(rest: string[]): ParsedCliCommand {
   let keyPath: string | undefined;
   const remainingArgs: string[] = [];
@@ -998,6 +1041,9 @@ export function parseCliArgs(args: string[]): ParsedCliCommand {
   if (group === "mobile" && command === "qa") {
     return parseMobileQaInput(rest);
   }
+  if (group === "mobile" && command === "billing-review") {
+    return parseMobileBillingReviewInput(rest);
+  }
   if (group === "mobile" && command === "archive") {
     return parseMobileArchiveInput(rest);
   }
@@ -1280,6 +1326,7 @@ const helpTopics: Record<string, string[]> = {
     "  mobile verify --ipa <path> [--version <version>] [--build-number <number>]",
     "  mobile doctor (--device | --android-emulator [<avd>] | --android-device <serial>)",
     "  mobile qa --production [--ota] [--key-path <absolute-path>]",
+    "  mobile billing-review --production --screenshot-path <absolute-png-path> [--key-path <absolute-path>]",
     "  mobile ota publish --staging|--production [--platform ios|android] [--ref <branch|tag|sha>] [--dry-run] [--rollback-to <updateId>]",
     "  mobile ota status --staging|--production [--platform ios|android]",
     "  mobile ota doctor|preflight --staging|--production [--platform ios|android]",
@@ -1429,6 +1476,7 @@ const helpTopics: Record<string, string[]> = {
     "  mobile version bump --major|--minor|--patch [--dry-run]",
     "  mobile doctor (--device | --android-emulator [<avd>] | --android-device <serial>)",
     "  mobile qa --production [--ota] [--key-path <absolute-path>]",
+    "  mobile billing-review --production --screenshot-path <absolute-png-path> [--key-path <absolute-path>]",
     "  mobile ota <command>",
     "  mobile test",
     "  mobile device-smoke"
@@ -1560,6 +1608,26 @@ const helpTopics: Record<string, string[]> = {
     "  --production  Required. Validate the production mobile identity.",
     "  --ota         Also run production OTA status and doctor checks.",
     "  --key-path    Existing local OTA private key used only by Expo to sign the simulator manifest."
+  ],
+  "mobile billing-review": [
+    "Usage: kd mobile billing-review --production --screenshot-path <absolute-png-path> [--key-path <absolute-path>]",
+    "",
+    "Capture the App Store review screenshot of the real production Apple billing card.",
+    "Signs the App Review account into the production-identity simulator build (build.kanna.app),",
+    "opens the account sheet, reads the localized monthly price, Restore Purchases, EULA and privacy",
+    "state, and writes one screenshot. Never taps Subscribe or Restore Purchases.",
+    "",
+    "Reviewer account selectors (never printed): exported KANNA_E2E_CLOUD_EMAIL and",
+    "KANNA_E2E_CLOUD_PASSWORD, or otherwise the review demo account App Store Connect records for",
+    "apps/mobile/VERSION, read with APP_STORE_CONNECT_API_KEY_ID / APP_STORE_CONNECT_API_ISSUER_ID.",
+    "",
+    "Reports backend/catalog/entitlement readiness as observed; it is independent of the task-list",
+    "smoke and waives no part of the production QA gate or TestFlight purchase/restore acceptance.",
+    "",
+    "Options:",
+    "  --production       Required. Validate the production mobile identity.",
+    "  --screenshot-path  Required. Absolute .png path under the calling task's .tmp directory.",
+    "  --key-path         Existing local OTA private key used only by Expo to sign the simulator manifest."
   ],
   "mobile ota": [
     "Usage: kd mobile ota <command>",

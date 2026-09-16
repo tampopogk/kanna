@@ -1,8 +1,11 @@
 import { describe, expect, it } from "vitest";
 import type { Browser } from "webdriverio";
 import {
+  desktopServerModes,
+  isDesktopServerMode,
   requiresExactExpoEnvironment,
   prepareSimulatorForLaunch,
+  resolveBillingReviewScreenshotPath,
   resolveSimulatorAlertHandling,
   resolveSmokeModeAppEnv,
   smokeSpecPaths,
@@ -50,6 +53,64 @@ describe("mobile smoke runner", () => {
     expect(resolveSimulatorAlertHandling("profile-disconnected")).toBe("manual");
     expect(resolveSimulatorAlertHandling("hybrid")).toBe("accept");
     expect(resolveSimulatorAlertHandling("smoke")).toBe("dismiss");
+  });
+
+  it("pairs every desktop-server mode with the exact selected server, the default smoke included", () => {
+    expect(desktopServerModes).toEqual(["smoke", "tab-reselection", "shell-visual"]);
+    expect(isDesktopServerMode("smoke")).toBe(true);
+    expect(isDesktopServerMode("billing-review")).toBe(false);
+    expect(isDesktopServerMode("hybrid")).toBe(false);
+    // The claim must target the exact route through the app's explicit
+    // development endpoint, so a Metro started without it is not reused.
+    for (const mode of desktopServerModes) {
+      expect(requiresExactExpoEnvironment(mode)).toBe(true);
+    }
+    expect(shouldReuseExpoServer(
+      {
+        cwd: "/repo/apps/mobile",
+        commandLine: "KANNA_APP_ENV=dev expo start --dev-client"
+      },
+      {
+        projectRoot: "/repo/apps/mobile",
+        requireExactEnvironment: requiresExactExpoEnvironment("smoke"),
+        env: { KANNA_APP_ENV: "dev", EXPO_PUBLIC_KANNA_SERVER_URL: "http://127.0.0.1:48121" }
+      }
+    )).toBe(false);
+    expect(shouldReuseExpoServer(
+      {
+        cwd: "/repo/apps/mobile",
+        commandLine: "KANNA_APP_ENV=dev EXPO_PUBLIC_KANNA_SERVER_URL=http://127.0.0.1:48121 expo start --dev-client"
+      },
+      {
+        projectRoot: "/repo/apps/mobile",
+        requireExactEnvironment: requiresExactExpoEnvironment("smoke"),
+        env: { KANNA_APP_ENV: "dev", EXPO_PUBLIC_KANNA_SERVER_URL: "http://127.0.0.1:48121" }
+      }
+    )).toBe(true);
+  });
+
+  it("registers a production-identity billing review capture mode", () => {
+    expect(supportedSmokeModes).toContain("billing-review");
+    expect(smokeSpecPaths).toContain("specs/billing-review/billing-review.e2e.ts");
+    expect(resolveSmokeModeAppEnv("billing-review", "dev")).toBe("prod");
+    expect(resolveSmokeModeAppEnv("billing-review", undefined)).toBe("prod");
+    expect(requiresExactExpoEnvironment("billing-review")).toBe(true);
+    expect(resolveSimulatorAlertHandling("billing-review")).toBe("dismiss");
+  });
+
+  it("requires a caller-controlled absolute .png path for the App Review screenshot", () => {
+    expect(resolveBillingReviewScreenshotPath({
+      KANNA_E2E_BILLING_REVIEW_SCREENSHOT_PATH: "/repo/.tmp/app-review/billing.PNG"
+    })).toBe("/repo/.tmp/app-review/billing.PNG");
+    expect(() => resolveBillingReviewScreenshotPath({})).toThrow(
+      "KANNA_E2E_BILLING_REVIEW_SCREENSHOT_PATH is required"
+    );
+    expect(() => resolveBillingReviewScreenshotPath({
+      KANNA_E2E_BILLING_REVIEW_SCREENSHOT_PATH: ".tmp/billing.png"
+    })).toThrow("must be an absolute .png path");
+    expect(() => resolveBillingReviewScreenshotPath({
+      KANNA_E2E_BILLING_REVIEW_SCREENSHOT_PATH: "/repo/.tmp/billing.jpg"
+    })).toThrow("must be an absolute .png path");
   });
 
   it("registers the list-detail-back smoke spec", () => {
@@ -253,6 +314,6 @@ describe("mobile smoke runner", () => {
     expect(resolveSmokeModeAppEnv("hybrid", undefined)).toBe("dev");
     expect(resolveSmokeModeAppEnv("relay", "staging")).toBe("staging");
     expect(requiresExactExpoEnvironment("hybrid")).toBe(true);
-    expect(requiresExactExpoEnvironment("smoke")).toBe(false);
+    expect(requiresExactExpoEnvironment("cloud")).toBe(false);
   });
 });
