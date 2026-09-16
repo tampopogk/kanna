@@ -28,8 +28,18 @@ it("ignores stale attempt and task responses and exposes missing history",async(
   const view=mount(AgentHistoryView,{props:{taskId:"task",attemptId:"a"}});await view.setProps({taskId:"other",attemptId:"b"});await flushPromises();resolveA(archive("task","a",0));await flushPromises();
   expect(view.get("pre").text()).toBe("b");await view.setProps({attemptId:"missing"});await flushPromises();expect(view.text()).toContain("Historical output unavailable");expect(view.get("pre").text()).toBe("");view.unmount();
 });
-it("keeps repeated stages distinct and provides Latest",async()=>{
-  const view=mount(AgentStageSelector,{props:{selected:"",attempts:["a","b"].map(id=>({id,stage:"review",startedAt:"today",cwd:null,archived:true,recordedLaunch:true,observedExitCode:0}))}});
-  expect(view.findAll("option").map(o=>o.attributes("value"))).toEqual(["","a","b"]);
-  await view.get("select").setValue("a");await view.get("select").setValue("");expect(view.emitted("select")).toEqual([["a"],[""]]);view.unmount();
+it("shows Latest first and historical attempts newest to oldest without changing identity or ordinals",async()=>{
+  const attempts = [
+    { id: "run-build-1", stage: "build", startedAt: "older", cwd: null, archived: true, recordedLaunch: true, observedExitCode: 0 },
+    { id: "run-review-1", stage: "review", startedAt: "middle", cwd: null, archived: true, recordedLaunch: true, observedExitCode: 0 },
+    { id: "run-build-2", stage: "build", startedAt: "newer", cwd: null, archived: true, recordedLaunch: true, observedExitCode: 0 },
+  ];
+  const view=mount(AgentStageSelector,{props:{selected:"",attempts}});
+  expect(view.findAll("option").map(o=>o.attributes("value"))).toEqual(["","run-build-2","run-review-1","run-build-1"]);
+  expect(view.findAll("option").slice(1).map(o=>o.text())).toEqual([
+    "build · attempt 3 · newer",
+    "review · attempt 2 · middle",
+    "build · attempt 1 · older",
+  ]);
+  await view.get("select").setValue("run-build-2");await view.get("select").setValue("");expect(view.emitted("select")).toEqual([["run-build-2"],[""]]);view.unmount();
 });

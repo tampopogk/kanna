@@ -3,6 +3,9 @@ import { computed } from "vue";
 import type { AgentTerminalAttempt } from "../services/desktopServerClient";
 const props = defineProps<{ attempts: AgentTerminalAttempt[]; selected: string; currentStage?: string; historyStatus?: string }>();
 const emit = defineEmits<{ select: [id: string] }>();
+const historicalAttempts = computed(() => props.attempts
+  .map((attempt, index) => ({ attempt, ordinal: index + 1 }))
+  .reverse());
 function selectorKey(event: KeyboardEvent) {
   // Native option navigation stays local; app shortcuts still cycle tabs.
   if (!event.metaKey && !event.ctrlKey) event.stopPropagation();
@@ -19,8 +22,8 @@ const stage = computed(() => (props.selected ? props.attempts.find(attempt => at
     </span>
     <select aria-label="Agent stage output" :value="selected" @click.stop @keydown="selectorKey" @change="emit('select', ($event.target as HTMLSelectElement).value)">
       <option value="">Latest{{ currentStage ? ` · ${currentStage}` : '' }}</option>
-      <option v-for="(attempt, index) in attempts" :key="attempt.id" :value="attempt.id">
-        {{ attempt.stage }} · attempt {{ index + 1 }} · {{ attempt.startedAt }}{{ attempt.archived ? '' : ' · history unavailable' }}
+      <option v-for="entry in historicalAttempts" :key="entry.attempt.id" :value="entry.attempt.id">
+        {{ entry.attempt.stage }} · attempt {{ entry.ordinal }} · {{ entry.attempt.startedAt }}{{ entry.attempt.archived ? '' : ' · history unavailable' }}
       </option>
       <option v-if="historyStatus" value="" disabled>{{ historyStatus }}</option>
     </select>
