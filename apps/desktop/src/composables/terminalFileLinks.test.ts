@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest"
+import { Terminal } from "@xterm/xterm"
 import { createTerminalFileLinkProvider } from "./terminalFileLinks"
 
 const { invokeMock } = vi.hoisted(() => ({
@@ -9,6 +10,27 @@ vi.mock("../invoke", () => ({
   invoke: invokeMock,
 }))
 
+function createMockBufferCell() {
+  let chars = ""
+  return {
+    set(nextChars: string) { chars = nextChars },
+    getChars: () => chars,
+    getWidth: () => 1,
+  }
+}
+
+function createMockBufferLine(lineText: string, isWrapped = false) {
+  return {
+    isWrapped,
+    length: lineText.length,
+    translateToString: vi.fn(() => lineText),
+    getCell(index: number, cell: ReturnType<typeof createMockBufferCell>) {
+      cell.set(lineText[index] ?? "")
+      return cell
+    },
+  }
+}
+
 function createProviderForLines(lineTexts: string[]) {
   let registeredProvider: {
     provideLinks(bufferLineNumber: number, callback: (links: unknown[] | undefined) => void): void
@@ -18,11 +40,10 @@ function createProviderForLines(lineTexts: string[]) {
 
   const buffer = {
     length: lineTexts.length,
+    getNullCell: createMockBufferCell,
     getLine: vi.fn((index: number) => {
       const lineText = lineTexts[index]
-      return lineText === undefined ? undefined : {
-        translateToString: vi.fn(() => lineText),
-      }
+      return lineText === undefined ? undefined : createMockBufferLine(lineText)
     }),
   }
   const term = {
@@ -113,11 +134,11 @@ describe("terminalFileLinks", () => {
     } | null = null
     const getLine = vi.fn((lineNumber: number) =>
       lineNumber === 0
-        ? { translateToString: vi.fn(() => "README.md") }
+        ? createMockBufferLine("README.md")
         : null,
     )
     const term = {
-      buffer: { active: { getLine } },
+      buffer: { active: { getLine, getNullCell: createMockBufferCell, length: 1 } },
       registerLinkProvider: vi.fn((provider) => {
         registeredProvider = provider
       }),
@@ -250,6 +271,76 @@ describe("terminalFileLinks", () => {
     expect(await provideLinkTexts("See /worktree/apps/desktop/src/App.vue:31:7")).toEqual([
       "/worktree/apps/desktop/src/App.vue:31:7",
     ])
+  })
+
+  it("reconstructs the reported other-worktree path across real xterm soft wraps", async () => {
+    const path = "/Users/jeremyhale/.kanna/repos/kanna-web/.kanna-worktrees/task-5ddbef2c/privacy/index.html"
+    const term = new Terminal({ cols: 36, rows: 6, scrollback: 100 })
+    await new Promise<void>((resolve) => term.write(`See ${path}:17 after\r\n`, resolve))
+    expect(term.buffer.active.getLine(1)?.isWrapped).toBe(true)
+    expect(term.buffer.active.getLine(2)?.isWrapped).toBe(true)
+
+    let registeredProvider: {
+      provideLinks(bufferLineNumber: number, callback: (links: unknown[] | undefined) => void): void
+    } | null = null
+    const container = document.createElement("div")
+    term.registerLinkProvider = vi.fn((provider) => {
+      registeredProvider = provider
+      return { dispose: vi.fn() }
+    })
+    invokeMock.mockImplementation(async (_command: string, args: { path: string }) => args.path === path)
+    const provider = createTerminalFileLinkProvider({
+      term,
+      options: { worktreePath: "/current/worktree" },
+      getContainer: () => container,
+    })
+    provider.register()
+
+    const links = await new Promise<unknown[] | undefined>((resolve) => {
+      registeredProvider?.provideLinks(2, resolve)
+    })
+    const link = links?.[0] as {
+      text: string
+      range: { start: { y: number }, end: { y: number } }
+      activate(event: MouseEvent): void
+    }
+    expect(link.text).toBe(`${path}:17`)
+    expect(link.range.start.y).toBe(1)
+    expect(link.range.end.y).toBeGreaterThan(link.range.start.y)
+    await expect(provider.findLatest()).resolves.toMatchObject({
+      checkPath: path,
+      previewPath: path,
+      line: 17,
+      externalAbsolute: true,
+    })
+
+    const activation = new Promise<Record<string, unknown>>((resolve) => {
+      container.addEventListener("file-link-activate", (event) => {
+        resolve((event as CustomEvent).detail)
+      }, { once: true })
+    })
+    link.activate(new MouseEvent("click", { metaKey: true }))
+    await expect(activation).resolves.toEqual({
+      path,
+      line: 17,
+      localAbsolutePath: path,
+    })
+  })
+
+  it("does not link a missing absolute path from another worktree", async () => {
+    const path = "/other/repo/.kanna-worktrees/task-other/missing.html"
+    invokeMock.mockResolvedValue(false)
+
+    await expect(provideLinkTexts(`See ${path}`)).resolves.toEqual([])
+  })
+
+  it("detects an absolute destination emitted as Markdown", async () => {
+    const path = "/other/repo/.kanna-worktrees/task-other/privacy/index.html"
+    invokeMock.mockImplementation(async (_command: string, args: { path: string }) =>
+      args.path === path
+    )
+
+    await expect(provideLinkTexts(`[privacy/index.html](${path})`)).resolves.toEqual([path])
   })
 
   it("opens local image file links in the image preview instead of the text file preview", async () => {

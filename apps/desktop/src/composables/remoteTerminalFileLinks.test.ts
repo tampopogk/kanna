@@ -1,9 +1,31 @@
 import { describe, expect, it, vi } from "vitest"
+import { Terminal } from "@xterm/xterm"
 import {
   createRemoteTerminalFileLinkProvider,
   resolveRemoteTerminalFileLinkPath,
 } from "./remoteTerminalFileLinks"
 import type { ShortcutPlatform } from "./shortcutPlatform"
+
+function createMockBufferCell() {
+  let chars = ""
+  return {
+    set(nextChars: string) { chars = nextChars },
+    getChars: () => chars,
+    getWidth: () => 1,
+  }
+}
+
+function createMockBufferLine(lineText: string) {
+  return {
+    isWrapped: false,
+    length: lineText.length,
+    translateToString: vi.fn(() => lineText),
+    getCell(index: number, cell: ReturnType<typeof createMockBufferCell>) {
+      cell.set(lineText[index] ?? "")
+      return cell
+    },
+  }
+}
 
 function createProviderWithReadFile(
   lineText: string,
@@ -17,8 +39,9 @@ function createProviderWithReadFile(
 
   const buffer = {
     length: 1,
+    getNullCell: createMockBufferCell,
     getLine: vi.fn((index: number) =>
-      index === 0 ? { translateToString: vi.fn(() => lineText) } : undefined,
+      index === 0 ? createMockBufferLine(lineText) : undefined,
     ),
   }
   const term = {
@@ -79,8 +102,21 @@ describe("resolveRemoteTerminalFileLinkPath", () => {
   it("keeps relative paths and strips remote worktree roots from absolute paths", () => {
     expect(resolveRemoteTerminalFileLinkPath("src/main.ts")).toBe("src/main.ts")
     expect(
-      resolveRemoteTerminalFileLinkPath("/Users/peer/repo/.kanna-worktrees/task-1/src/main.ts"),
+      resolveRemoteTerminalFileLinkPath(
+        "/Users/peer/repo/.kanna-worktrees/task-1/src/main.ts",
+        "task-1",
+      ),
     ).toBe("src/main.ts")
+  })
+
+  it("rejects an absolute path belonging to another remote task worktree", () => {
+    expect(resolveRemoteTerminalFileLinkPath(
+      "/Users/peer/repo/.kanna-worktrees/task-2/src/main.ts",
+      "task-1",
+    )).toBeNull()
+    expect(resolveRemoteTerminalFileLinkPath(
+      "/Users/peer/repo/.kanna-worktrees/task-1/src/main.ts",
+    )).toBeNull()
   })
 
   it("rejects absolute paths outside a Kanna worktree, traversal, and images", () => {
@@ -94,6 +130,47 @@ describe("resolveRemoteTerminalFileLinkPath", () => {
 })
 
 describe("remoteTerminalFileLinks", () => {
+  it("links a wrapped absolute path only when it belongs to the viewed remote branch", async () => {
+    const path = "/Users/peer/repo/.kanna-worktrees/task-1/src/main.ts"
+    const term = new Terminal({ cols: 28, rows: 5, scrollback: 100 })
+    await new Promise<void>((resolve) => term.write(`See ${path}:9\r\n`, resolve))
+    let registeredProvider: {
+      provideLinks(bufferLineNumber: number, callback: (links: unknown[] | undefined) => void): void
+    } | null = null
+    term.registerLinkProvider = vi.fn((provider) => {
+      registeredProvider = provider
+      return { dispose: vi.fn() }
+    })
+    const readFile = vi.fn(async (relativePath: string) =>
+      relativePath === "src/main.ts" ? "remote body" : null
+    )
+    const container = document.createElement("div")
+    createRemoteTerminalFileLinkProvider({
+      term,
+      readFile,
+      getContainer: () => container,
+      worktreeBranch: "task-1",
+    }).register()
+
+    const links = await new Promise<unknown[] | undefined>((resolve) => {
+      registeredProvider?.provideLinks(2, resolve)
+    })
+    const link = links?.[0] as {
+      range: { start: { y: number }, end: { y: number } }
+      activate(event: MouseEvent): void
+    }
+    expect(link.range.end.y).toBeGreaterThan(link.range.start.y)
+    expect(readFile).toHaveBeenCalledWith("src/main.ts")
+
+    const activation = waitForFileLinkActivation(container)
+    link.activate(new MouseEvent("click", { metaKey: true }))
+    await expect(activation).resolves.toEqual({
+      path: "src/main.ts",
+      line: 9,
+      remoteContent: "remote body",
+    })
+  })
+
   it("links only paths that are readable on the remote task", async () => {
     const { links } = await provideLinks(
       "edited src/app.ts and missing.ts",

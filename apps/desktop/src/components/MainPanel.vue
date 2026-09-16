@@ -616,6 +616,7 @@ const activeCloudTerminal = computed<CloudTerminalCacheEntry | null>(() => {
     key: task.id,
     ownerDesktopId: terminalRef.ownerDesktopId,
     ownerTaskId: terminalRef.ownerLocalTaskId,
+    worktreeBranch: task.branch,
     transport: terminalRef.transport,
     sessionRevision: task.transition_revision ?? null,
   };

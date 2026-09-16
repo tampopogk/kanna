@@ -48,6 +48,7 @@ const props = withDefaults(defineProps<{
   focused?: boolean;
   ownerDesktopId: string;
   ownerTaskId: string;
+  worktreeBranch?: string | null;
   transport?: "cloud" | "lan";
 }>(), {
   active: true,
@@ -616,6 +617,7 @@ function initializeTerminal() {
       term: terminal,
       readFile: readRemoteTaskFile,
       getContainer: () => containerRef.value,
+      worktreeBranch: props.worktreeBranch,
     });
     fileLinkProvider.register();
     dropBridge = createTerminalDropBridge({

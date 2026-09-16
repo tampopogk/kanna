@@ -4,6 +4,7 @@ import {
   IMAGE_FILE_EXTENSION,
 } from "./terminalFileLinks"
 import { resolveShortcutPlatform, type ShortcutPlatform } from "./shortcutPlatform"
+import { readTerminalLogicalLine, terminalRangeForLogicalMatch } from "./terminalLogicalLines"
 
 const WORKTREE_DIR_SEGMENT = "/.kanna-worktrees/"
 
@@ -23,9 +24,14 @@ export interface RemoteTerminalFileLinkProvider {
  * Resolves a detected terminal path to a worktree-relative preview path for a
  * task running on another machine. The remote worktree root is unknown here,
  * so absolute paths are only accepted when they contain the well-known
- * `.kanna-worktrees/<branch>/` segment that every Kanna workspace uses.
+ * `.kanna-worktrees/<branch>/` segment and that branch is the viewed task's.
+ * The task-file endpoint is task-scoped; stripping another task's root would
+ * otherwise silently read the same relative path from the wrong workspace.
  */
-export function resolveRemoteTerminalFileLinkPath(path: string): string | null {
+export function resolveRemoteTerminalFileLinkPath(
+  path: string,
+  worktreeBranch?: string | null,
+): string | null {
   let previewPath = path
   if (path.startsWith("/")) {
     const segmentIndex = path.indexOf(WORKTREE_DIR_SEGMENT)
@@ -33,6 +39,7 @@ export function resolveRemoteTerminalFileLinkPath(path: string): string | null {
     const afterRoot = path.slice(segmentIndex + WORKTREE_DIR_SEGMENT.length)
     const slashIndex = afterRoot.indexOf("/")
     if (slashIndex === -1) return null
+    if (!worktreeBranch || afterRoot.slice(0, slashIndex) !== worktreeBranch) return null
     previewPath = afterRoot.slice(slashIndex + 1)
   }
   if (!previewPath || previewPath.split("/").includes("..")) return null
@@ -44,6 +51,7 @@ export function createRemoteTerminalFileLinkProvider(params: {
   term: Terminal
   readFile: (path: string) => Promise<string | null>
   getContainer: () => HTMLElement | null
+  worktreeBranch?: string | null
   platform?: ShortcutPlatform
 }): RemoteTerminalFileLinkProvider {
   const linkModifier = params.platform ?? resolveShortcutPlatform()
@@ -52,7 +60,7 @@ export function createRemoteTerminalFileLinkProvider(params: {
   function detectLineLinks(lineText: string): RemoteTerminalFileLink[] {
     const matches: RemoteTerminalFileLink[] = []
     for (const candidate of detectTerminalFileLinkCandidates(lineText)) {
-      const previewPath = resolveRemoteTerminalFileLinkPath(candidate.path)
+      const previewPath = resolveRemoteTerminalFileLinkPath(candidate.path, params.worktreeBranch)
       if (previewPath === null) continue
       matches.push({
         text: candidate.text,
@@ -102,18 +110,22 @@ export function createRemoteTerminalFileLinkProvider(params: {
 
     params.term.registerLinkProvider({
       provideLinks(bufferLineNumber: number, callback: (links: ILink[] | undefined) => void) {
-        const line = params.term.buffer.active.getLine(bufferLineNumber - 1)
-        if (!line) { callback(undefined); return }
-        const matches = detectLineLinks(line.translateToString(true))
+        const logicalLine = readTerminalLogicalLine(params.term, bufferLineNumber - 1)
+        if (!logicalLine) { callback(undefined); return }
+        const matches = detectLineLinks(logicalLine.text)
         if (matches.length === 0) { callback(undefined); return }
 
         Promise.all(matches.map(async (match) => {
           if (await fetchFileContent(match.previewPath) === null) return null
+          const range = terminalRangeForLogicalMatch(
+            params.term,
+            logicalLine,
+            match.start,
+            match.text.length,
+          )
+          if (!range) return null
           const link: ILink = {
-            range: {
-              start: { x: match.start + 1, y: bufferLineNumber },
-              end: { x: match.start + match.text.length, y: bufferLineNumber },
-            },
+            range,
             text: match.text,
             activate(event: MouseEvent) {
               if (linkModifier === "mac" ? event.metaKey : event.ctrlKey) void activateLink(match)

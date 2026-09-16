@@ -1,6 +1,7 @@
 import { Terminal, type ILink } from "@xterm/xterm"
 import { fileExistsSafe } from "../utils/invokeHelpers"
 import type { TerminalOptions } from "./terminalTypes"
+import { readTerminalLogicalLine, terminalRangeForLogicalMatch } from "./terminalLogicalLines"
 
 const FILE_PATH_RE = /(?:^|[\s"'`(<\[])(\/?[a-zA-Z0-9_.\-][\w.\-/]*\.[a-zA-Z][a-zA-Z0-9]*(?::\d+){0,2})/g
 export const IMAGE_FILE_EXTENSION = /\.(?:apng|avif|bmp|gif|jpe?g|png|svg|webp)$/i
@@ -140,13 +141,14 @@ export function createTerminalFileLinkProvider(params: {
     if (!worktreePath) return null
     const buffer = params.term.buffer.active
     for (let row = buffer.length - 1; row >= 0; row -= 1) {
-      const lineText = buffer.getLine(row)?.translateToString(true)
-      if (!lineText) continue
-      const matches = detectLineLinks(lineText, worktreePath)
+      const logicalLine = readTerminalLogicalLine(params.term, row)
+      if (!logicalLine) continue
+      const matches = detectLineLinks(logicalLine.text, worktreePath)
       for (let index = matches.length - 1; index >= 0; index -= 1) {
         const match = matches[index]
         if (match && await checkFileExists(match.checkPath)) return match
       }
+      row = logicalLine.startRow
     }
     return null
   }
@@ -159,18 +161,22 @@ export function createTerminalFileLinkProvider(params: {
 
     params.term.registerLinkProvider({
       provideLinks(bufferLineNumber: number, callback: (links: ILink[] | undefined) => void) {
-        const line = params.term.buffer.active.getLine(bufferLineNumber - 1)
-        if (!line) { callback(undefined); return }
-        const matches = detectLineLinks(line.translateToString(true), worktreePath)
+        const logicalLine = readTerminalLogicalLine(params.term, bufferLineNumber - 1)
+        if (!logicalLine) { callback(undefined); return }
+        const matches = detectLineLinks(logicalLine.text, worktreePath)
         if (matches.length === 0) { callback(undefined); return }
 
         Promise.all(matches.map(async (match) => {
           if (!await checkFileExists(match.checkPath)) return null
+          const range = terminalRangeForLogicalMatch(
+            params.term,
+            logicalLine,
+            match.start,
+            match.text.length,
+          )
+          if (!range) return null
           const link: ILink = {
-            range: {
-              start: { x: match.start + 1, y: bufferLineNumber },
-              end: { x: match.start + match.text.length, y: bufferLineNumber },
-            },
+            range,
             text: match.text,
             activate(event: MouseEvent) {
               if (event.metaKey) activateResolvedLink(match)

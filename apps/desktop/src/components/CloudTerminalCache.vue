@@ -8,6 +8,7 @@ export interface CloudTerminalCacheEntry {
   key: string;
   ownerDesktopId: string;
   ownerTaskId: string;
+  worktreeBranch?: string | null;
   transport?: "cloud" | "lan";
   /** Owner-side stage-run identity for the task's current PTY incarnation. */
   sessionRevision: string | null;
@@ -124,6 +125,7 @@ onBeforeUnmount(() => {
         :focused="focused !== false"
         :owner-desktop-id="entry.ownerDesktopId"
         :owner-task-id="entry.ownerTaskId"
+        :worktree-branch="entry.worktreeBranch"
         :transport="entry.transport"
       />
     </div>
