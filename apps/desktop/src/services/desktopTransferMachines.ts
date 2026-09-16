@@ -4,6 +4,7 @@ import type {
 } from "./desktopAuth";
 import type {
   DesktopCloudTransferIdentity,
+  DesktopTransferTarget,
 } from "./desktopServerClient";
 
 export interface LanTransferPeer {
@@ -15,6 +16,20 @@ export interface LanTransferPeer {
   acceptingTransfers: boolean;
 }
 
+/**
+ * A sibling desktop paired through the peer pairing ceremony, whose transfer
+ * route is a sealed peer tunnel the server binds (`GET /v1/transfers/peers`
+ * reports it as a `peer-tunnel` cloud route). Its transfer key was pinned
+ * from the sealed pairing claim, never read from Firestore or mDNS.
+ */
+export interface PairedTransferPeer {
+  peerId: string;
+  desktopId: string;
+  name: string;
+  transferable: boolean;
+  unavailableReason: string | null;
+}
+
 export interface TransferMachine {
   peerId: string;
   desktopId: string | null;
@@ -22,7 +37,13 @@ export interface TransferMachine {
   publicKey: string;
   lanEndpoint: string | null;
   relayDesktopId: string | null;
-  trustSource: "paired-lan" | "same-account-cloud";
+  /**
+   * `paired-peer`: end-to-end encrypted to a pinned sibling. `paired-lan`:
+   * the sidecar's own mDNS pairing. `same-account-cloud`: the legacy
+   * Firestore-keyed relay route, only while legacy desktop-to-desktop
+   * access is allowed.
+   */
+  trustSource: "paired-peer" | "paired-lan" | "same-account-cloud";
   preferredTransport: "lan" | "cloud";
   cloudFallback: boolean;
 }
@@ -31,6 +52,29 @@ export interface MergeTransferMachinesInput {
   currentDesktopId: string | null;
   lanPeers: LanTransferPeer[];
   cloudMachines: DesktopCloudTransferMachine[];
+  /** Sealed routes to paired siblings; absent means none are known yet. */
+  pairedPeers?: PairedTransferPeer[];
+  /**
+   * Whether legacy (Firestore-keyed, mDNS-paired) routes may be offered at
+   * all. Defaults to `true` for callers that predate the switch.
+   */
+  legacyAllowed?: boolean;
+}
+
+/** The sealed routes among the server's resolved transfer targets. */
+export function pairedTransferPeersFromTargets(
+  targets: readonly DesktopTransferTarget[],
+): PairedTransferPeer[] {
+  return targets.flatMap((target) => {
+    if (target.cloudRoute?.kind !== "peer-tunnel" || !target.machineId) return [];
+    return [{
+      peerId: target.peerId,
+      desktopId: target.machineId,
+      name: target.name,
+      transferable: target.transferable,
+      unavailableReason: target.unavailableReason,
+    }];
+  });
 }
 
 export interface ExternalTransferPeerInput {
@@ -65,6 +109,13 @@ export interface DesktopTransferMachineSync {
   refreshCloudRoute(peerId: string): Promise<void>;
   setCloudMachines(machines: DesktopCloudTransferMachine[]): Promise<boolean>;
   setLanPeers(peers: LanTransferPeer[]): void;
+  /** Sealed routes to paired siblings, as the server resolved them. */
+  setPairedPeers(peers: PairedTransferPeer[]): void;
+  /**
+   * Whether legacy routes may be provisioned. Turning it off drops every
+   * Firestore-keyed cloud registration this window made.
+   */
+  setLegacyAccess(allowed: boolean): Promise<void>;
   setSignedInSession(
     session: DesktopAuthSession,
     currentDesktopId: string | null,
@@ -89,6 +140,8 @@ export function createDesktopTransferMachineSync(
   let currentDesktopId: string | null = null;
   let cloudMachines: DesktopCloudTransferMachine[] = [];
   let lanPeers: LanTransferPeer[] = [];
+  let pairedPeers: PairedTransferPeer[] = [];
+  let legacyAllowed = true;
   let localIdentity: DesktopCloudTransferIdentity | null = null;
   let localIdentitySession = -1;
   let publishedIdentitySession = -1;
@@ -190,7 +243,9 @@ export function createDesktopTransferMachineSync(
       currentDesktopId,
       lanPeers: [],
       cloudMachines,
-    });
+      pairedPeers,
+      legacyAllowed,
+    }).filter((machine) => machine.trustSource === "same-account-cloud");
     const desiredCloudPeerIds = new Set(eligible.map((machine) => machine.peerId));
 
     for (const peerId of provisionedCloudPeerIds) {
@@ -257,9 +312,16 @@ export function createDesktopTransferMachineSync(
 
   return {
     getTransferMachines() {
-      return mergeTransferMachines({ currentDesktopId, lanPeers, cloudMachines })
+      return mergeTransferMachines({
+        currentDesktopId,
+        lanPeers,
+        cloudMachines,
+        pairedPeers,
+        legacyAllowed,
+      })
         .filter((machine) =>
-          machine.trustSource === "paired-lan"
+          machine.trustSource === "paired-peer"
+          || machine.trustSource === "paired-lan"
           || activeCloudPeerGenerations.get(machine.peerId) === generation);
     },
     async markSidecarReady() {
@@ -279,7 +341,13 @@ export function createDesktopTransferMachineSync(
           currentDesktopId,
           lanPeers: [],
           cloudMachines,
+          pairedPeers,
+          legacyAllowed,
         }).find((candidate) => candidate.peerId === peerId);
+        if (machine?.trustSource === "paired-peer") {
+          // A sealed route carries no credential to refresh.
+          return;
+        }
         if (!machine?.relayDesktopId) {
           throw new Error("Cloud transfer machine is no longer available.");
         }
@@ -316,6 +384,15 @@ export function createDesktopTransferMachineSync(
     },
     setLanPeers(peers) {
       lanPeers = peers;
+    },
+    setPairedPeers(peers) {
+      pairedPeers = peers;
+    },
+    async setLegacyAccess(allowed) {
+      if (legacyAllowed === allowed) return;
+      legacyAllowed = allowed;
+      const captured = ++generation;
+      await enqueueReconciliation(captured);
     },
     setSignedInSession(session, desktopId) {
       authSession = session;
@@ -366,22 +443,49 @@ export function mergeTransferMachines({
   currentDesktopId,
   lanPeers,
   cloudMachines,
+  pairedPeers = [],
+  legacyAllowed = true,
 }: MergeTransferMachinesInput): TransferMachine[] {
+  const machines: TransferMachine[] = [];
+  // A pinned sibling is reached only through its sealed route: the same
+  // machine seen through Firestore or the sidecar's LAN discovery is
+  // dropped rather than merged, so a key one of those sources reports can
+  // never be adopted over the pin - a Firestore key that disagrees is
+  // exactly the substitution the ceremony exists to prevent.
+  const pairedDesktopIds = new Set<string>();
+  const pairedPeerIds = new Set<string>();
+  for (const peer of pairedPeers) {
+    if (peer.desktopId === currentDesktopId || !peer.transferable) continue;
+    pairedDesktopIds.add(peer.desktopId);
+    pairedPeerIds.add(peer.peerId);
+    machines.push({
+      peerId: peer.peerId,
+      desktopId: peer.desktopId,
+      name: peer.name,
+      publicKey: "",
+      lanEndpoint: null,
+      relayDesktopId: peer.desktopId,
+      trustSource: "paired-peer",
+      preferredTransport: "cloud",
+      cloudFallback: false,
+    });
+  }
   const eligibleCloud = new Map(
-    cloudMachines
+    (legacyAllowed ? cloudMachines : [])
       .filter((machine) =>
         machine.desktopId !== currentDesktopId
+        && !pairedDesktopIds.has(machine.desktopId)
+        && !pairedPeerIds.has(machine.peerId)
         && machine.online
         && machine.protocolVersion === 1
         && machine.acceptingTransfers)
       .map((machine) => [machine.peerId, machine]),
   );
   const lanByPeer = new Map(
-    lanPeers
-      .filter((peer) => peer.acceptingTransfers)
+    (legacyAllowed ? lanPeers : [])
+      .filter((peer) => peer.acceptingTransfers && !pairedPeerIds.has(peer.id))
       .map((peer) => [peer.id, peer]),
   );
-  const machines: TransferMachine[] = [];
 
   for (const [peerId, cloud] of eligibleCloud) {
     const lan = lanByPeer.get(peerId);

@@ -42,11 +42,13 @@ export function useAppTaskTransfer({
   const transferPeerActionPending = ref(false);
   let transferPeerLoadRequestId = 0;
   function transferMachineOption(machine: TransferMachine): TransferPeerOption {
-    const subtitle = machine.trustSource === "same-account-cloud"
-      ? machine.preferredTransport === "lan"
-        ? "Nearby · Cloud"
-        : "Cloud"
-      : "Nearby";
+    const subtitle = machine.trustSource === "paired-peer"
+      ? "End-to-end encrypted"
+      : machine.trustSource === "same-account-cloud"
+        ? machine.preferredTransport === "lan"
+          ? "Nearby · Cloud"
+          : "Cloud"
+        : "Nearby";
     return {
       id: machine.peerId,
       name: machine.name,
@@ -144,7 +146,11 @@ export function useAppTaskTransfer({
     const selectedMachine = transferMachines?.value?.find((machine) => machine.peerId === peerId);
     try {
       transferPeerActionPending.value = true;
-      if (selectedMachine?.relayDesktopId && refreshCloudTransferRoute) {
+      if (
+        selectedMachine?.relayDesktopId
+        && selectedMachine.trustSource !== "paired-peer"
+        && refreshCloudTransferRoute
+      ) {
         await refreshCloudTransferRoute(peerId);
       }
       if (selectedMachine) {
