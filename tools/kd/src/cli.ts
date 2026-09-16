@@ -1289,7 +1289,7 @@ const helpTopics: Record<string, string[]> = {
     "  release cut [--major|--minor|--patch] [--version X.Y.0] [--abandon-series X.Y[,X.Y]] [--reason <why>]",
     "  release cut --version X.Y.0 --recut --reason <why> --confirm-recut <staging-version|empty> --confirm-old-tip <sha> [--dry-run]",
     "  release reset-staging --to main|release/X.Y --reason <why> --confirm-abandon <staging-version> [--dry-run]",
-    "  release status [--platform macos|linux] [--acceptance <path>]",
+    "  release status [--platform macos|linux] [--candidate <staging-version>] [--acceptance <path>]",
     "  cloud deploy --staging|--production [--ref <branch|tag|sha>] [--functions] [--portal] [--relay] [--dry-run]",
     "  cloud relay-provision --staging|--production",
     "  relay stats --staging|--production [--open] [--dry-run]",
@@ -1729,7 +1729,7 @@ const helpTopics: Record<string, string[]> = {
     "  release cut [--major|--minor|--patch] [--version X.Y.0] [--abandon-series X.Y[,X.Y]] [--reason <why>]",
     "  release cut --version X.Y.0 --recut --reason <why> --confirm-recut <staging-version|empty> --confirm-old-tip <sha> [--dry-run]",
     "  release reset-staging --to main|release/X.Y --reason <why> --confirm-abandon <staging-version> [--dry-run]",
-    "  release status [--platform macos|linux] [--acceptance <path>]"
+    "  release status [--platform macos|linux] [--candidate <staging-version>] [--acceptance <path>]"
   ],
   "release setup-linux": [
     "Usage: kd release setup-linux --staging --mode inspect|plan|apply --admin-user USER --admin-identity /absolute/key [--host-key-file /absolute/authenticated-public-host-key] [--out PLAN] [--plan PLAN --confirm SHA256]",
@@ -1762,7 +1762,7 @@ const helpTopics: Record<string, string[]> = {
     "A staging publish must be a descendant of the candidate the channel already serves, except for a verified and recorded forward-main resumption after promotion; a release/X.Y RC must build that branch's remote tip exactly.",
     "A bare main staging ship continues an active unpromoted main RC; otherwise it starts the next minor series from the greater of VERSION and the greatest production semantic version. Pass a bump flag to override it.",
     "Patch RCs in a production series are shipped from release/X.Y; the result reports versionFloor when stale VERSION was raised.",
-    "While an unpromoted release/X.Y candidate is soaking, main staging publishes are refused; a genuine matching promotion resumes forward main automatically, while abandonment requires kd release reset-staging.",
+    "Publishing a newer RC does not erase an older candidate's own soak or eligibility; rollback and unauthorized divergent lineage still refuse.",
     "Use --staging --rollback-to <version> to repoint the staging channel manifest without building."
   ],
   "release promote": [
@@ -1771,9 +1771,10 @@ const helpTopics: Record<string, string[]> = {
     "Linux: --platform linux --acceptance <path> [--skip-build] requires exact source and a full 24h Linux soak; no override.",
     "Promote a soaked staging prerelease (e.g. 1.2.4-staging.3) into the production release of the same commit.",
     "Rebuilds that exact commit with production identity, then tags, publishes, and repoints the updater manifest.",
-    "Requires the checkout and the RC's resolved mechanical base (its exact release-branch tip, or main for a main RC) to still be at the staging build's commit, a valid staging lineage, and the",
+    "Requires the checkout to be at the selected immutable RC commit, a valid historical staging lineage, a forward production version, and the",
     "release-policy.json soak window (default 24h) to have elapsed. --dry-run rehearses without publishing and runs the same gates.",
-    "--override-soak <reason> is the explicit human override for the soak window only; it never waives lineage or base checks."
+    "Branch tips and desktop-staging may advance while an RC soaks. Promotion publishes the production tag without rewinding either pointer.",
+    "--override-soak <reason> is the explicit human override for the soak window only; it never waives lineage, identity, or version checks."
   ],
   "release reset-staging": [
     "Usage: kd release reset-staging --to main|release/X.Y --reason <why> --confirm-abandon <staging-version> [--dry-run]",
@@ -1802,8 +1803,8 @@ const helpTopics: Record<string, string[]> = {
     "The abandoned branch is kept, never deleted or reused, and ship/promote then refuse that series.",
     "",
     "--recut moves the existing unreleased release/X.Y branch (named by --version X.Y.0) onto the current origin/main tip",
-    "instead of cutting a new series, so a staging RC for that series can include later main work while its freeze refuses",
-    "main publishes. It accepts --version, --reason, --dry-run, and the two confirmations only: no bump flag, no",
+    "instead of cutting a new series, so a staging RC for that series can include later main work. It accepts --version,",
+    "--reason, --dry-run, and the two confirmations only: no bump flag, no",
     "--abandon-series. Both confirmations are checked against what kd observes, and a mismatch refuses the operation:",
     "",
     "  --confirm-recut <version|empty>  The staging version desktop-staging currently serves, exactly as kd release status",
@@ -1824,13 +1825,12 @@ const helpTopics: Record<string, string[]> = {
     "See docs/specs/release-candidates.md."
   ],
   "release status": [
-    "Usage: kd release status [--platform macos|linux] [--acceptance <path>]",
+    "Usage: kd release status [--platform macos|linux] [--candidate <staging-version>] [--acceptance <path>]",
     "",
     "Linux status reads archive receipts, public bytes, GitHub projections and optional --acceptance evidence; missing configuration fails closed.",
-    "Show the latest production release, the staging channel pointer, its release branch (if cut), and lag vs origin/main.",
-    "Separates mechanical promotability (the RC still matches its promotion branch tip) from safety state: the candidate's",
-    "lineage relationship to the previous candidate, whether it is valid or promotion-authorized, soak age against the policy window,",
-    "any active release-branch freeze, release-branch commits not retained on main, and every blocker to production promotion.",
+    "Show the latest production release and live staging pointer. For macOS, --candidate assesses an earlier immutable RC without changing that pointer.",
+    "Reports the selected candidate's exact source identity, historical lineage, own publication/soak age, forward production-version gate,",
+    "abandonment state, release-branch commits not retained on main, and every blocker to production promotion.",
     "Prints the promote command only when all of those gates pass."
   ],
   cloud: [

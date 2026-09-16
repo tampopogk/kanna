@@ -1706,11 +1706,16 @@ describe("OTA staging lineage caller", () => {
     expect(exportIndex).toBeGreaterThan(gateIndex);
   });
 
+  it("permits a forward main OTA while an earlier release-branch desktop RC remains unpromoted", async () => {
+    const context = await fixture({ relationship: "descendant", activeBranch: "release/1.2" });
+    await expect(executeMobileOtaPublishWithContext({ staging: true, production: false, platform: "android", dryRun: true }, context)).resolves.toMatchObject({ ok: true });
+    expect(context.calls.some(call => call.args.includes("export"))).toBe(true);
+  });
+
   it.each([
     { relationship: "behind" as const, error: "roll the staging channel back" },
     { relationship: "diverged" as const, error: "diverged" },
     { unreadable: true, error: "Cannot verify staging lineage" },
-    { relationship: "descendant" as const, activeBranch: "release/1.2", error: "frozen to that branch" },
     { currentBranch: "task-example", error: "Cannot establish staging OTA source lineage" },
   ])("refuses unsafe staging source before exporting, including dry-run: %j", async ({ error, ...options }) => {
     const context = await fixture(options);

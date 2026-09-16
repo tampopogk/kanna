@@ -15,9 +15,13 @@ import {
   isReleaseBranchName,
   normalizeStagingVersion,
   parseLineageResetRecord,
-  parseLineageRecutApplicationRecord,
-  parseLineageRecutRecord,
-  parsePostPromotionTrunkRecord,
+  parseLineageResetRecords,
+  parseLineageRecutApplicationRecords,
+  parseLineageRecutRecords,
+  parsePostPromotionTrunkRecords,
+  promotionAuthorizes,
+  recutApplicationAuthorizes,
+  resetAuthorizes,
   type CandidateLineage,
   type LineageResetRecord,
   type LineageRecutRecord,
@@ -27,7 +31,7 @@ import {
   type StagingCandidate,
   type StagingLineageRelationship
 } from "./release-lineage";
-import { readReleasePolicy, type ReleasePolicy } from "./release-policy";
+import { DEFAULT_RELEASE_POLICY, parseReleasePolicy, readReleasePolicy, type ReleasePolicy } from "./release-policy";
 import {
   preflightUpdaterSigningKey,
   resolveUpdaterSigningKey,
@@ -80,7 +84,6 @@ export interface ReleaseShipResult {
 
 const STAGING_CHANNEL_TAG = "desktop-staging";
 const STAGING_MANIFEST_NAME = "latest-staging.json";
-const STAGING_RETENTION_COUNT = 5;
 
 export function bumpVersion(sourceVersion: string, bump: ReleaseBump): string {
   const [majorRaw, minorRaw, patchRaw] = sourceVersion.split(".");
@@ -667,16 +670,48 @@ async function readLineageReset(context: ReleaseCommandContext, repoSlug: string
   return parseLineageResetRecord(await readStagingChannelBody(context, repoSlug));
 }
 
+interface LineageAudit {
+  /** Newest records remain the live staging-publication state. */
+  reset: LineageResetRecord | null;
+  recut: LineageRecutRecord | null;
+  recutApplication: LineageRecutApplicationRecord | null;
+  postPromotion: PostPromotionTrunkRecord | null;
+  /** Full history is used only to assess an already-published immutable RC. */
+  resets: LineageResetRecord[];
+  recuts: LineageRecutRecord[];
+  recutApplications: LineageRecutApplicationRecord[];
+  postPromotions: PostPromotionTrunkRecord[];
+}
+
+const EMPTY_LINEAGE_AUDIT: LineageAudit = {
+  reset: null,
+  recut: null,
+  recutApplication: null,
+  postPromotion: null,
+  resets: [],
+  recuts: [],
+  recutApplications: [],
+  postPromotions: []
+};
+
 async function readLineageAudit(
   context: ReleaseCommandContext,
   repoSlug: string
-): Promise<{ reset: LineageResetRecord | null; recut: LineageRecutRecord | null; recutApplication: LineageRecutApplicationRecord | null; postPromotion: PostPromotionTrunkRecord | null }> {
+): Promise<LineageAudit> {
   const body = await readStagingChannelBody(context, repoSlug);
+  const resets = parseLineageResetRecords(body);
+  const recuts = parseLineageRecutRecords(body);
+  const recutApplications = parseLineageRecutApplicationRecords(body);
+  const postPromotions = parsePostPromotionTrunkRecords(body);
   return {
-    reset: parseLineageResetRecord(body),
-    recut: parseLineageRecutRecord(body),
-    recutApplication: parseLineageRecutApplicationRecord(body),
-    postPromotion: parsePostPromotionTrunkRecord(body)
+    reset: resets[0] ?? null,
+    recut: recuts[0] ?? null,
+    recutApplication: recutApplications[0] ?? null,
+    postPromotion: postPromotions[0] ?? null,
+    resets,
+    recuts,
+    recutApplications,
+    postPromotions
   };
 }
 
@@ -884,8 +919,7 @@ async function productionTagExists(context: ReleaseCommandContext, productionVer
 
 /**
  * Whether the production release a staging candidate is a candidate *for*
- * already exists. A malformed channel version has no production line to check,
- * and is reported as unpromoted so the freeze rule stays conservative.
+ * already exists. A malformed channel version has no production line to check.
  */
 async function activeProductionTagExists(context: ReleaseCommandContext, stagingVersion: string): Promise<boolean> {
   const productionVersion = productionVersionForStaging(stagingVersion);
@@ -1049,7 +1083,31 @@ async function listStagingCandidateTags(context: ReleaseCommandContext, repoSlug
     { cwd: context.repoRoot, env: context.env }
   );
   if (list.exitCode !== 0) return [];
-  return parseStagingReleaseList(list.stdout).sort(compareStagingReleasesDesc).map((release) => release.tag);
+  let raw = list.stdout;
+  // `gh release list` caps the first query at 100. Once that page is full,
+  // read the complete retained release history so an older immutable RC is not
+  // mistaken for an initial candidate merely because the train kept moving.
+  if (parseReleaseListEntryCount(raw) === 100) {
+    const firstPage = parseStagingReleaseList(raw);
+    const all = await context.runner.run(
+      "gh",
+      ["api", "--paginate", "--slurp", `repos/${repoSlug}/releases?per_page=100`],
+      { cwd: context.repoRoot, env: context.env }
+    );
+    if (all.exitCode !== 0) {
+      throw new Error(
+        "Could not read complete GitHub release history after the first 100 entries: " +
+          (all.stderr.trim() || all.stdout.trim() || "gh api --paginate failed")
+      );
+    }
+    const complete = parsePaginatedStagingReleaseList(all.stdout);
+    const completeTags = new Set(complete.map((release) => release.tag));
+    if (firstPage.some((release) => !completeTags.has(release.tag))) {
+      throw new Error("Could not verify complete GitHub release history: paginated output omitted entries from the first page.");
+    }
+    return complete.sort(compareStagingReleasesDesc).map((release) => release.tag);
+  }
+  return parseStagingReleaseList(raw).sort(compareStagingReleasesDesc).map((release) => release.tag);
 }
 
 async function findReusableStagingCandidate(
@@ -1100,14 +1158,27 @@ async function resolveCandidateLineage(
   context: ReleaseCommandContext,
   repoSlug: string,
   candidate: StagingCandidate,
-  reset: LineageResetRecord | null,
-  recut: LineageRecutRecord | null,
-  postPromotion: PostPromotionTrunkRecord | null = null,
-  recutApplication: LineageRecutApplicationRecord | null = null
+  audit: LineageAudit
 ): Promise<CandidateLineage> {
+  const candidateRecutApplication = audit.recutApplications.find((application) =>
+    normalizeStagingVersion(application.version) === normalizeStagingVersion(candidate.version) &&
+    Boolean(candidate.commit) && application.commit.toLowerCase() === candidate.commit?.toLowerCase()
+  ) ?? null;
+  const recut = candidateRecutApplication
+    ? audit.recuts.find((record) => record.recutId === candidateRecutApplication.recutId) ?? null
+    : audit.recut;
+  // Consumption belongs to the grant, not to whichever candidate is currently
+  // being assessed. Keep an exact application as durable evidence for its RC,
+  // but never let a later candidate reuse that grant after the branch advances.
+  const recutApplication = candidateRecutApplication ?? (recut
+    ? audit.recutApplications.find((application) => application.recutId === recut.recutId) ?? null
+    : null);
   let recutDestinationRelationship: StagingLineageRelationship | undefined;
   let recutDestinationIsBranchTip: boolean | undefined;
-  if (recut && candidate.sourceBranch === recut.branch && candidate.commit) {
+  // The unused publication grant remains bound to today's branch tip. Once
+  // applied, its exact candidate record is historical evidence and must not be
+  // invalidated merely because that branch has advanced to a newer RC.
+  if (!recutApplication && recut && candidate.sourceBranch === recut.branch && candidate.commit) {
     const branchRefs = await context.runner.run(
       "git",
       ["ls-remote", "origin", `refs/heads/${recut.branch}`],
@@ -1121,7 +1192,7 @@ async function resolveCandidateLineage(
   }
   const recutPrevious = recut && recut.fromVersion && candidate.version !== recut.fromVersion &&
       candidate.sourceBranch === recut.branch &&
-      recutDestinationIsBranchTip
+      (recutApplicationAuthorizes(recut, recutApplication, candidate) || (!recutApplication && recutDestinationIsBranchTip))
     ? {
         version: recut.fromVersion,
         tag: stagingTag(recut.fromVersion),
@@ -1134,12 +1205,12 @@ async function resolveCandidateLineage(
       candidate,
       previous: recutPrevious,
       relationship: recutRelationship,
-      reset,
+      reset: audit.reset,
       recut,
       recutApplication,
       recutDestinationRelationship,
       recutDestinationIsBranchTip,
-      postPromotion
+      postPromotion: audit.postPromotion
     });
   }
   const { previous, found } = await resolvePreviousCandidate(context, repoSlug, candidate.tag);
@@ -1151,17 +1222,35 @@ async function resolveCandidateLineage(
       authorizedByReset: false,
       authorizedByPromotion: false,
       authorizedByRecut: false,
-      reset,
+      reset: audit.reset,
       recut,
       recutApplication,
-      postPromotion,
+      postPromotion: audit.postPromotion,
       detail: `${candidate.tag} is not listed among this repository's staging prereleases, so its lineage cannot be established.`
     };
   }
   if (!previous) {
-    return evaluateCandidateLineage({ candidate, previous: null, relationship: "initial", reset, recut, recutApplication, postPromotion });
+    return evaluateCandidateLineage({
+      candidate,
+      previous: null,
+      relationship: "initial",
+      reset: audit.reset,
+      recut,
+      recutApplication,
+      postPromotion: audit.postPromotion
+    });
   }
   const relationship = await commitRelationship(context, previous.commit, candidate.commit);
+  const reset = audit.resets.find((record) => resetAuthorizes(record, {
+    fromVersion: previous.version,
+    toBranch: candidate.sourceBranch ?? ""
+  })) ?? audit.reset;
+  const postPromotion = audit.postPromotions.find((record) => promotionAuthorizes(record, {
+    fromVersion: previous.version,
+    fromCommit: previous.commit,
+    toCommit: candidate.commit,
+    toBranch: candidate.sourceBranch
+  })) ?? audit.postPromotion;
   return evaluateCandidateLineage({
     candidate,
     previous: { version: previous.version, tag: previous.tag, commit: previous.commit },
@@ -1176,8 +1265,8 @@ async function resolveCandidateLineage(
 }
 
 /**
- * Refuses a staging publish that would move the channel non-linearly, freeze an
- * active release soak, or ship against unverifiable channel metadata. Runs
+ * Refuses a staging publish that would move the channel non-linearly or ship
+ * against unverifiable channel metadata. Runs
  * before any build so a refusal costs seconds, not a signed build.
  */
 export async function assertStagingPublishAllowed(
@@ -1201,7 +1290,7 @@ export async function assertStagingPublishAllowed(
   const postPromotion = active.candidate && relationship === "diverged" && productionTagPresent
     ? await resolvePostPromotionTrunkRecord(input, repoSlug, active.candidate, proposed)
     : null;
-  const audit = active.candidate ? await readLineageAudit(input, repoSlug) : { reset: null, recut: null, recutApplication: null, postPromotion: null };
+  const audit = active.candidate ? await readLineageAudit(input, repoSlug) : EMPTY_LINEAGE_AUDIT;
   const recutDestinationRelationship = audit.recut && proposed.sourceBranch === audit.recut.branch
     ? await commitRelationship(input, audit.recut.newTip, proposed.commit)
     : undefined;
@@ -1242,62 +1331,92 @@ function assertStagingVersionAdvances(version: string, active: StagingCandidate 
 
 interface ResolvedPromotion {
   version: string;
-  pushBranch: string;
+  /** Exact immutable RC source used for notes, build provenance, and the release commit parent. */
+  sourceCommit: string;
 }
 
-// Shared promotion-base semantics for promote and status. An RC promotes to its
-// series branch only when the branch tip is exactly the RC commit (active
-// stabilization, or the cut-at-RC-commit escape). An RC recorded as built from
-// the series branch never falls back to main. Everything else — including a
-// dormant series branch left behind by an earlier release — is a main RC and
-// must match origin/main exactly.
-interface PromotionBaseDecision {
-  pushBranch: string | null;
-  reason: string | null;
+interface PromotionAssessment {
+  lineage: CandidateLineage;
+  soak: SoakEvaluation;
+  gate: ReturnType<typeof evaluatePromotionGate>;
+  policy: ReleasePolicy;
 }
 
-export function decidePromotionBase(args: {
-  rcLabel: string;
-  seriesBranch: string;
-  branchSha: string | null;
-  sourceBranch: string | null;
-  commit: string;
-  originMain: string | null;
-}): PromotionBaseDecision {
-  if (args.branchSha && args.branchSha === args.commit) {
-    return { pushBranch: args.seriesBranch, reason: null };
+async function readCandidateReleasePolicy(
+  input: ReleaseCommandContext,
+  candidate: StagingCandidate
+): Promise<ReleasePolicy> {
+  if (!candidate.commit) return readReleasePolicy(input.repoRoot);
+  const sourceLabel = `${candidate.tag}:release-policy.json`;
+  const present = await input.runner.run(
+    "git",
+    ["cat-file", "-e", `${candidate.commit}:release-policy.json`],
+    { cwd: input.repoRoot, env: input.env }
+  );
+  if (present.exitCode !== 0) {
+    return { ...DEFAULT_RELEASE_POLICY, linux: { ...DEFAULT_RELEASE_POLICY.linux } };
   }
-  if (args.sourceBranch && args.sourceBranch !== "main") {
-    if (!args.branchSha) {
-      return {
-        pushBranch: null,
-        reason:
-          `${args.rcLabel} was built from ${args.sourceBranch}, but the branch no longer exists on origin. ` +
-          `Push it back at the RC commit (git push origin ${args.commit}:refs/heads/${args.sourceBranch}) and rerun.`
-      };
+  const result = await input.runner.run(
+    "git",
+    ["show", `${candidate.commit}:release-policy.json`],
+    { cwd: input.repoRoot, env: input.env }
+  );
+  if (result.exitCode !== 0) {
+    throw new Error(`Could not read ${sourceLabel}: ${result.stderr.trim() || "git show failed"}`);
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(result.stdout) as unknown;
+  } catch (error) {
+    throw new Error(`${sourceLabel} is not valid JSON: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  return parseReleasePolicy(parsed, sourceLabel);
+}
+
+/**
+ * The one promotion decision used by status, dry-run, and a real publication.
+ * The selected versioned prerelease supplies identity, historical lineage and
+ * publication time; no mutable branch or channel pointer participates.
+ */
+async function assessPromotionCandidate(
+  input: ReleaseCommandContext & { now?: number; soakOverrideReason?: string },
+  repoSlug: string,
+  candidate: StagingCandidate
+): Promise<PromotionAssessment> {
+  const { productionVersion } = parsePromotionVersions(candidate.version);
+  await fetchStagingHistory(input);
+  const audit = await readLineageAudit(input, repoSlug);
+  const lineage = await resolveCandidateLineage(input, repoSlug, candidate, audit);
+  const policy = await readCandidateReleasePolicy(input, candidate);
+  const soak = evaluateSoak({
+    requiredHours: policy.productionSoakHours,
+    publishedAt: candidate.publishedAt,
+    nowMs: input.now ?? Date.now(),
+    overrideReason: input.soakOverrideReason ?? null
+  });
+  const greatestProductionVersion = await readGreatestProductionVersion(input);
+  const productionAdvances =
+    greatestProductionVersion === null || compareVersions(productionVersion, greatestProductionVersion) > 0;
+  const seriesBranch = releaseSeriesBranch(releaseSeriesFromVersion(productionVersion));
+  const abandonedRecord = await readAbandonedSeries(input, seriesBranch);
+  const abandonedSeries = abandonedRecord ? { branch: seriesBranch, ...abandonedRecord } : null;
+  const gate = evaluatePromotionGate({
+    rcTag: candidate.tag,
+    rcVersion: candidate.version,
+    sourceIdentity: {
+      commit: candidate.commit,
+      reason: candidate.commit ? null : `${candidate.tag} records no target commit, so its immutable source cannot be resolved.`
+    },
+    lineage,
+    soak,
+    abandonedSeries,
+    productionVersion: {
+      selected: productionVersion,
+      greatestPublished: greatestProductionVersion,
+      advances: productionAdvances
     }
-    return {
-      pushBranch: null,
-      reason:
-        `${args.sourceBranch} (${args.branchSha}) has advanced past ${args.rcLabel} (${args.commit}). ` +
-        `Ship a fresh staging RC from ${args.sourceBranch}, soak it, then promote that build.`
-    };
-  }
-  if (args.originMain !== args.commit) {
-    const remedy = args.branchSha
-      ? `${args.seriesBranch} already exists at ${args.branchSha} and does not match this RC; do not move it backward. ` +
-        `Ship a fresh staging RC from the existing ${args.seriesBranch} tip, soak it, then promote that build.`
-      : `Run kd release cut --minor from current origin/main, then ship a fresh staging RC from the new ${args.seriesBranch}, ` +
-        `soak it, and promote that build. As a last resort, if preserving this exact RC is necessary, cut ${args.seriesBranch} ` +
-        `at the RC commit with raw git (git push origin ${args.commit}:refs/heads/${args.seriesBranch}); kd never moves an existing branch.`;
-    return {
-      pushBranch: null,
-      reason:
-        `origin/main (${args.originMain ?? "unknown"}) has advanced past ${args.rcLabel} (${args.commit}). ` +
-        remedy
-    };
-  }
-  return { pushBranch: "main", reason: null };
+  });
+  return { lineage, soak, gate, policy };
 }
 
 async function resolvePromotion(input: ReleaseShipInput, promoteFrom: string): Promise<ResolvedPromotion> {
@@ -1326,57 +1445,18 @@ async function resolvePromotion(input: ReleaseShipInput, promoteFrom: string): P
     );
   }
 
-  const seriesBranch = releaseSeriesBranch(releaseSeriesFromVersion(productionVersion));
-  const branchRefs = await mustRun(input.runner, "git", ["ls-remote", "origin", `refs/heads/${seriesBranch}`], input.repoRoot, input.env);
-  const branchSha = branchRefs.trim().split(/\s+/)[0] || null;
-
-  let originMain: string | null = null;
-  if (!(branchSha && branchSha === commit) && !(sourceBranch && sourceBranch !== "main")) {
-    await mustRun(input.runner, "git", ["fetch", "origin", "main"], input.repoRoot, input.env);
-    originMain = await mustRun(input.runner, "git", ["rev-parse", "origin/main"], input.repoRoot, input.env);
-  }
-
-  const decision = decidePromotionBase({ rcLabel: stagingTag, seriesBranch, branchSha, sourceBranch, commit, originMain });
-
-  // Mechanical alignment is only one of the gates. Lineage validity and the
-  // soak window are evaluated here — the same code `kd release status` reports
-  // from — so a dry-run rehearsal, a status check, and the real promotion can
-  // never disagree about whether a candidate may ship.
-  await fetchStagingHistory(input);
-  const audit = await readLineageAudit(input, repoSlug);
-  const lineage = await resolveCandidateLineage(
+  // The versioned prerelease is the promotion base. Branch tips and the staging
+  // pointer are deliberately absent from this decision: both may advance while
+  // this immutable candidate accumulates its own soak history.
+  const assessment = await assessPromotionCandidate(
     input,
     repoSlug,
-    { version: stagingVersion, tag: stagingTag, commit, sourceBranch, publishedAt },
-    audit.reset,
-    audit.recut,
-    audit.postPromotion,
-    audit.recutApplication
+    { version: stagingVersion, tag: stagingTag, commit, sourceBranch, publishedAt }
   );
-  const soak = evaluateSoak({
-    requiredHours: readReleasePolicy(input.repoRoot).productionSoakHours,
-    publishedAt,
-    nowMs: input.now ?? Date.now(),
-    overrideReason: input.soakOverrideReason ?? null
-  });
-  const abandonedRecord = await readAbandonedSeries(input, seriesBranch);
-  const gate = evaluatePromotionGate({
-    rcTag: stagingTag,
-    rcVersion: stagingVersion,
-    mechanical: { pushBranch: decision.pushBranch, reason: decision.reason },
-    lineage,
-    soak,
-    abandonedSeries: abandonedRecord ? { branch: seriesBranch, ...abandonedRecord } : null
-  });
-  if (!gate.allowed) {
-    throw new Error(`Cannot promote ${stagingTag}:\n- ${gate.blockers.join("\n- ")}`);
+  if (!assessment.gate.allowed) {
+    throw new Error(`Cannot promote ${stagingTag}:\n- ${assessment.gate.blockers.join("\n- ")}`);
   }
-  // A passing gate already implies a resolved base; this narrows the type and
-  // keeps the promotion from proceeding if the two ever disagree.
-  if (!decision.pushBranch) {
-    throw new Error(decision.reason ?? `Cannot promote ${stagingTag}.`);
-  }
-  return { version: productionVersion, pushBranch: decision.pushBranch };
+  return { version: productionVersion, sourceCommit: commit };
 }
 
 interface GithubAsset {
@@ -1417,11 +1497,22 @@ interface StagingRelease {
   createdAt: string;
 }
 
+function parseReleaseListEntryCount(raw: string): number | null {
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed)) return null;
+    return parsed.length;
+  } catch {
+    return null;
+  }
+}
+
 function parseStagingReleaseList(raw: string): StagingRelease[] {
   try {
     const parsed = JSON.parse(raw) as unknown;
     if (Array.isArray(parsed)) {
-      return parsed.flatMap((item) => {
+      const entries = parsed.flatMap((item) => Array.isArray(item) ? item : [item]);
+      return entries.flatMap((item) => {
         if (typeof item !== "object" || item === null) return [];
         const record = item as { tagName?: unknown; tag_name?: unknown; createdAt?: unknown; created_at?: unknown };
         const tag = typeof record.tagName === "string"
@@ -1449,6 +1540,32 @@ function parseStagingReleaseList(raw: string): StagingRelease[] {
   });
 }
 
+function parsePaginatedStagingReleaseList(raw: string): StagingRelease[] {
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed) || parsed.length === 0 || !parsed.every((page) => Array.isArray(page))) {
+      throw new Error("expected an array of release pages");
+    }
+    const entries = parsed.flat();
+    if (entries.length < 100) throw new Error("paginated history omitted entries from the full first page");
+    return entries.flatMap((item) => {
+      if (typeof item !== "object" || item === null) throw new Error("release entry is not an object");
+      const record = item as { tag_name?: unknown; created_at?: unknown };
+      if (typeof record.tag_name !== "string" || typeof record.created_at !== "string") {
+        throw new Error("release entry is missing tag_name or created_at");
+      }
+      return /^v\d+\.\d+\.\d+-staging\.\d+$/.test(record.tag_name)
+        ? [{ tag: record.tag_name, createdAt: record.created_at }]
+        : [];
+    });
+  } catch (error) {
+    throw new Error(
+      "Could not parse complete GitHub release history from gh api --paginate: " +
+        (error instanceof Error ? error.message : String(error))
+    );
+  }
+}
+
 function compareStagingReleasesDesc(left: StagingRelease, right: StagingRelease): number {
   const leftTime = Date.parse(left.createdAt);
   const rightTime = Date.parse(right.createdAt);
@@ -1456,21 +1573,6 @@ function compareStagingReleasesDesc(left: StagingRelease, right: StagingRelease)
     return (Number.isNaN(rightTime) ? 0 : rightTime) - (Number.isNaN(leftTime) ? 0 : leftTime);
   }
   return right.tag.localeCompare(left.tag, undefined, { numeric: true });
-}
-
-async function pruneOldStagingPrereleases(input: ReleaseShipInput, repoSlug: string, protectedTag: string): Promise<void> {
-  const raw = await mustRun(input.runner, "gh", ["release", "list", "--repo", repoSlug, "--limit", "100", "--json", "tagName,createdAt"], input.repoRoot, input.env);
-  const byTag = new Map(parseStagingReleaseList(raw).map((release) => [release.tag, release]));
-  if (!byTag.has(protectedTag)) {
-    byTag.set(protectedTag, { tag: protectedTag, createdAt: new Date().toISOString() });
-  }
-  const releases = [...byTag.values()].sort(compareStagingReleasesDesc);
-  const keep = new Set(releases.slice(0, STAGING_RETENTION_COUNT).map((release) => release.tag));
-  keep.add(protectedTag);
-  for (const release of releases) {
-    if (keep.has(release.tag)) continue;
-    await mustRun(input.runner, "gh", ["release", "delete", release.tag, "--repo", repoSlug, "--cleanup-tag", "--yes"], input.repoRoot, input.env);
-  }
 }
 
 async function rollbackStagingRelease(input: ReleaseShipInput, version: string): Promise<ReleaseShipResult> {
@@ -1617,6 +1719,7 @@ export async function shipRelease(input: ReleaseShipInput): Promise<ReleaseShipR
 
   let version: string;
   let pushBranch = "main";
+  let promotionSourceCommit: string | null = null;
   let stagingSourceBranch = "main";
   let postPromotionTrunk: PostPromotionTrunkRecord | null = null;
   let recutAuthorization: LineageRecutRecord | null = null;
@@ -1624,7 +1727,7 @@ export async function shipRelease(input: ReleaseShipInput): Promise<ReleaseShipR
   if (input.promoteFrom) {
     const promotion = await resolvePromotion(input, input.promoteFrom);
     version = promotion.version;
-    pushBranch = promotion.pushBranch;
+    promotionSourceCommit = promotion.sourceCommit;
   } else if (environment === "staging") {
     const stagingContext = await resolveStagingContext(input);
     stagingSourceBranch = stagingContext.sourceBranch;
@@ -1716,7 +1819,7 @@ export async function shipRelease(input: ReleaseShipInput): Promise<ReleaseShipR
 
   const latestJson = join(releaseDir, environment === "staging" ? STAGING_MANIFEST_NAME : "latest.json");
   const notes = input.release && environment === "production"
-    ? await mustRun(input.runner, "gh", ["api", `repos/${repoSlug}/releases/generate-notes`, "-X", "POST", "-f", `tag_name=v${version}`, "-f", `target_commitish=${pushBranch}`, "--jq", ".body"], input.repoRoot, input.env)
+    ? await mustRun(input.runner, "gh", ["api", `repos/${repoSlug}/releases/generate-notes`, "-X", "POST", "-f", `tag_name=v${version}`, "-f", `target_commitish=${promotionSourceCommit ?? pushBranch}`, "--jq", ".body"], input.repoRoot, input.env)
     : environment === "staging"
       ? `Staging updater manifest for v${version}\n\n${SOURCE_BRANCH_TRAILER} ${stagingSourceBranch}${recutAuthorization ? `\nLineage-Recut-Authorization: ${recutAuthorization.recutId}` : ""}`
       : `Dry-run updater manifest for v${version}`;
@@ -1778,12 +1881,21 @@ export async function shipRelease(input: ReleaseShipInput): Promise<ReleaseShipR
       await mustRun(input.runner, "gh", ["release", "edit", STAGING_CHANNEL_TAG, "--repo", repoSlug, "--notes", appliedBody], input.repoRoot, input.env);
     }
     await pruneStagingChannelAssets(input, repoSlug);
-    await pruneOldStagingPrereleases(input, repoSlug, `v${version}`);
   } else if (input.release) {
     await mustRun(input.runner, "git", ["add", "-f", "VERSION", "apps/desktop/src-tauri/tauri.conf.json", "apps/desktop/src-tauri/Cargo.toml", "apps/desktop/src-tauri/Cargo.lock"], input.repoRoot, input.env);
     await mustRun(input.runner, "git", ["commit", "-m", `release: v${version}`], input.repoRoot, input.env);
     await mustRun(input.runner, "git", ["tag", `v${version}`], input.repoRoot, input.env);
-    await mustRun(input.runner, "git", ["push", "origin", `HEAD:${pushBranch}`, `v${version}`], input.repoRoot, input.env);
+    // A promotion may select a historical RC after main, its source branch, and
+    // desktop-staging have advanced. Publish the immutable production tag; do
+    // not rewind or overwrite any moving branch/channel pointer. Ordinary
+    // production ships still advance their selected branch as before.
+    await mustRun(
+      input.runner,
+      "git",
+      ["push", "origin", ...(promotionSourceCommit ? [] : [`HEAD:${pushBranch}`]), `v${version}`],
+      input.repoRoot,
+      input.env
+    );
     await mustRun(input.runner, "gh", ["release", "create", `v${version}`, ...dmgPaths, ...updaterPaths, "--title", `Kanna v${version}`, "--notes", notes], input.repoRoot, input.env);
     await mustRun(input.runner, "gh", ["release", "upload", `v${version}`, latestJson, "--clobber"], input.repoRoot, input.env);
   }
@@ -2478,6 +2590,8 @@ export interface ReleaseStatusInput {
   runner: CommandRunner;
   /** Fixed clock for soak arithmetic; defaults to `Date.now()`. */
   now?: number;
+  /** Exact historical RC to assess. The staging field still reports the live pointer. */
+  candidateVersion?: string;
 }
 
 export interface ReleaseBranchCommit {
@@ -2533,12 +2647,15 @@ export interface ReleaseStatusLineage {
 }
 
 export interface ReleaseStatusPromotion {
-  /** True when the RC commit still matches its promotion branch tip. Alignment only. */
+  /** The immutable candidate this decision assesses (live pointer by default). */
+  candidate: StagingCandidate | null;
+  /** True when the selected RC's immutable source identity is verified. */
   mechanicallyPromotable: boolean;
+  /** Exact immutable source commit; retained as `base` for response compatibility. */
   base: string | null;
   mechanicalReason: string | null;
   soak: SoakEvaluation;
-  /** True only when mechanical alignment, lineage validity, and the soak gate all hold. */
+  /** True only when identity, lineage, soak, abandonment, and production-version gates hold. */
   allowed: boolean;
   blockers: string[];
 }
@@ -2791,11 +2908,10 @@ function describeRecutTags(
 
 export async function releaseStatus(input: ReleaseStatusInput): Promise<ReleaseStatusResult> {
   const nowMs = input.now ?? Date.now();
-  const policy = readReleasePolicy(input.repoRoot);
+  let policy = readReleasePolicy(input.repoRoot);
   const remoteUrl = await mustRun(input.runner, "git", ["remote", "get-url", "origin"], input.repoRoot, input.env);
   const repoSlug = releaseRepoSlug(remoteUrl);
   await mustRun(input.runner, "git", ["fetch", "--tags", "origin", "main"], input.repoRoot, input.env);
-  const originMain = await mustRun(input.runner, "git", ["rev-parse", "origin/main"], input.repoRoot, input.env);
 
   let production: ReleaseStatusResult["production"] = null;
   const productionView = await input.runner.run("gh", ["release", "view", "--repo", repoSlug, "--json", "tagName,publishedAt"], {
@@ -2815,17 +2931,17 @@ export async function releaseStatus(input: ReleaseStatusInput): Promise<ReleaseS
   // An unreadable channel must never be reported as an empty one: "no candidate
   // is active" reads as a calm all-clear, and the operator would act on it.
   const channelError = channel.state === "unreadable" ? channel.error : null;
-  let candidateIntegrityError: string | null = channelError;
+  let activeCandidateIntegrityError: string | null = channelError;
   const version = channel.state === "active" ? channel.version : null;
   if (version) {
     const lookup = await readVerifiedStagingCandidate(input, repoSlug, version);
     activeCandidate = lookup.candidate;
-    candidateIntegrityError = lookup.error;
-    if (activeCandidate && !candidateIntegrityError) {
+    activeCandidateIntegrityError = lookup.error;
+    if (activeCandidate && !activeCandidateIntegrityError) {
       try {
         await verifyImmutableStagingCandidate(input, repoSlug, activeCandidate);
       } catch (error) {
-        candidateIntegrityError = error instanceof Error ? error.message : String(error);
+        activeCandidateIntegrityError = error instanceof Error ? error.message : String(error);
       }
     }
     const publishedAt = activeCandidate?.publishedAt ?? null;
@@ -2843,9 +2959,27 @@ export async function releaseStatus(input: ReleaseStatusInput): Promise<ReleaseS
     };
   }
 
+  const requestedCandidateVersion = input.candidateVersion
+    ? normalizeStagingVersion(input.candidateVersion)
+    : null;
+  let promotionCandidate = activeCandidate;
+  let promotionCandidateIntegrityError = activeCandidateIntegrityError;
+  if (requestedCandidateVersion && requestedCandidateVersion !== activeCandidate?.version) {
+    const lookup = await readVerifiedStagingCandidate(input, repoSlug, requestedCandidateVersion);
+    promotionCandidate = lookup.candidate;
+    promotionCandidateIntegrityError = lookup.error;
+    if (promotionCandidate && !promotionCandidateIntegrityError) {
+      try {
+        await verifyImmutableStagingCandidate(input, repoSlug, promotionCandidate);
+      } catch (error) {
+        promotionCandidateIntegrityError = error instanceof Error ? error.message : String(error);
+      }
+    }
+  }
+
   let releaseBranch: ReleaseStatusReleaseBranch | null = null;
-  if (staging) {
-    const branchName = releaseSeriesBranch(releaseSeriesFromVersion(staging.version));
+  if (promotionCandidate) {
+    const branchName = releaseSeriesBranch(releaseSeriesFromVersion(promotionCandidate.version));
     const branchRefs = await input.runner.run("git", ["ls-remote", "origin", `refs/heads/${branchName}`], {
       cwd: input.repoRoot,
       env: input.env
@@ -2853,7 +2987,7 @@ export async function releaseStatus(input: ReleaseStatusInput): Promise<ReleaseS
     const branchSha = branchRefs.exitCode === 0 ? branchRefs.stdout.trim().split(/\s+/)[0] ?? "" : "";
     if (branchSha) {
       const unmerged = await resolveUnmergedReleaseCommits(input, branchName);
-      const audit = staging && activeCandidate ? await readLineageAudit(input, repoSlug) : { reset: null, recut: null, recutApplication: null, postPromotion: null };
+      const audit = staging && activeCandidate ? await readLineageAudit(input, repoSlug) : EMPTY_LINEAGE_AUDIT;
       releaseBranch = {
         name: branchName,
         commit: branchSha,
@@ -2875,22 +3009,24 @@ export async function releaseStatus(input: ReleaseStatusInput): Promise<ReleaseS
     waivedByReset: false
   };
   const promotion: ReleaseStatusPromotion = {
+    candidate: promotionCandidate,
     mechanicallyPromotable: false,
     base: null,
     mechanicalReason: null,
     soak: evaluateSoak({ requiredHours: policy.productionSoakHours, publishedAt: null, nowMs }),
     allowed: false,
     blockers: [
-      channelError
+      !requestedCandidateVersion && channelError
         ? `The ${STAGING_CHANNEL_TAG} channel could not be read (${channelError}), so no promotion decision can be made.`
-        : candidateIntegrityError
-        ? `The active staging candidate failed immutable identity verification: ${candidateIntegrityError}`
+        : promotionCandidateIntegrityError
+        ? `The selected staging candidate failed immutable identity verification: ${promotionCandidateIntegrityError}`
+        : requestedCandidateVersion
+        ? `The selected staging candidate v${requestedCandidateVersion} could not be resolved.`
         : "No staging release candidate is active on the channel."
     ]
   };
 
-  if (staging && activeCandidate) {
-    await fetchStagingHistory(input);
+  if (promotionCandidate) {
     const audit = await readLineageAudit(input, repoSlug);
     if (releaseBranch?.recuts && audit.recut) {
       releaseBranch.recuts = releaseBranch.recuts.map((recut) =>
@@ -2899,9 +3035,30 @@ export async function releaseStatus(input: ReleaseStatusInput): Promise<ReleaseS
           : recut
       );
     }
-    lineage = await resolveCandidateLineage(input, repoSlug, activeCandidate, audit.reset, audit.recut, audit.postPromotion, audit.recutApplication);
+    const assessment = await assessPromotionCandidate(input, repoSlug, promotionCandidate);
+    policy = assessment.policy;
+    lineage = assessment.lineage;
 
-    const promoted = await activeProductionTagExists(input, staging.version);
+    promotion.mechanicallyPromotable = Boolean(promotionCandidate.commit) && !promotionCandidateIntegrityError;
+    promotion.base = promotion.mechanicallyPromotable ? promotionCandidate.commit : null;
+    promotion.mechanicalReason = promotionCandidateIntegrityError ?? (promotionCandidate.commit
+      ? null
+      : `${promotionCandidate.tag} records no target commit, so its immutable source cannot be resolved.`);
+    promotion.soak = assessment.soak;
+    promotion.allowed = assessment.gate.allowed;
+    promotion.blockers = assessment.gate.blockers;
+    if (promotionCandidateIntegrityError) {
+      promotion.allowed = false;
+      promotion.blockers = [
+        `The selected staging candidate failed immutable identity verification: ${promotionCandidateIntegrityError}`,
+        ...promotion.blockers
+      ];
+    }
+  }
+
+  if (activeCandidate) {
+    const audit = await readLineageAudit(input, repoSlug);
+    const promoted = await activeProductionTagExists(input, activeCandidate.version);
     const freezeDecision = evaluateStagingFreeze({
       proposedSourceBranch: "main",
       active: activeCandidate,
@@ -2914,42 +3071,6 @@ export async function releaseStatus(input: ReleaseStatusInput): Promise<ReleaseS
       reason: freezeDecision.reason,
       waivedByReset: freezeDecision.waivedByReset
     };
-
-    const decision = decidePromotionBase({
-      rcLabel: staging.tag,
-      seriesBranch: releaseSeriesBranch(releaseSeriesFromVersion(staging.version)),
-      branchSha: releaseBranch?.commit ?? null,
-      sourceBranch: staging.sourceBranch,
-      commit: staging.commit ?? "",
-      originMain
-    });
-    const soak = evaluateSoak({
-      requiredHours: policy.productionSoakHours,
-      publishedAt: staging.publishedAt,
-      nowMs
-    });
-    const seriesBranchName = releaseSeriesBranch(releaseSeriesFromVersion(staging.version));
-    const gate = evaluatePromotionGate({
-      rcTag: staging.tag,
-      rcVersion: staging.version,
-      mechanical: { pushBranch: staging.commit ? decision.pushBranch : null, reason: staging.commit ? decision.reason : `${staging.tag} records no target commit, so its promotion base cannot be resolved.` },
-      lineage,
-      soak,
-      abandonedSeries: releaseBranch?.abandoned ? { branch: seriesBranchName, ...releaseBranch.abandoned } : null
-    });
-    promotion.mechanicallyPromotable = Boolean(staging.commit) && decision.pushBranch !== null;
-    promotion.base = promotion.mechanicallyPromotable ? decision.pushBranch : null;
-    promotion.mechanicalReason = promotion.mechanicallyPromotable ? null : decision.reason;
-    promotion.soak = soak;
-    promotion.allowed = gate.allowed;
-    promotion.blockers = gate.blockers;
-    if (candidateIntegrityError) {
-      promotion.allowed = false;
-      promotion.blockers = [
-        `The active staging candidate failed immutable identity verification: ${candidateIntegrityError}`,
-        ...promotion.blockers
-      ];
-    }
   }
 
   return {
@@ -2961,6 +3082,6 @@ export async function releaseStatus(input: ReleaseStatusInput): Promise<ReleaseS
     lineage,
     freeze,
     promotion,
-    promoteCommand: promotion.allowed && staging ? `kd release promote ${staging.version}` : null
+    promoteCommand: promotion.allowed && promotionCandidate ? `kd release promote ${promotionCandidate.version}` : null
   };
 }

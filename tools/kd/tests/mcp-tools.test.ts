@@ -13,6 +13,8 @@ describe("MCP tool registry", () => {
       "setup",
       "build_desktop",
       "build_sidecars",
+      "release_prepare",
+      "release_renew",
       "release_ship",
       "release_promote",
       "release_cut",
@@ -43,6 +45,7 @@ describe("MCP tool registry", () => {
     expect(() => tool?.schema.parse({ to: "main", reason: "abandoned soak" })).toThrow();
     expect(() => tool?.schema.parse({ to: "main", confirmAbandon: "1.3.0-staging.2" })).toThrow();
     expect(tool?.schema.parse({ to: "main", reason: "abandoned soak", confirmAbandon: "1.3.0-staging.2" })).toEqual({
+      platform: "macos",
       to: "main",
       reason: "abandoned soak",
       confirmAbandon: "1.3.0-staging.2",
@@ -54,6 +57,14 @@ describe("MCP tool registry", () => {
     const tool = buildMcpToolDefinitions().find((definition) => definition.name === "release_promote");
     const parsed = tool?.schema.parse({ version: "1.2.4-staging.3" }) as { overrideSoak?: string };
     expect(parsed.overrideSoak).toBeUndefined();
+  });
+
+  it("exposes historical macOS candidate selection on release status", () => {
+    const tool = buildMcpToolDefinitions().find((definition) => definition.name === "release_status");
+    expect(tool?.schema.parse({ candidate: "1.2.4-staging.21" })).toEqual({
+      platform: "macos",
+      candidate: "1.2.4-staging.21"
+    });
   });
 
   it("requires the recut confirmations and reason in the MCP schema", () => {

@@ -217,12 +217,16 @@ acknowledging transferred descriptors.
   never bare `expo start` — it won't start the desktop-side `kanna-server`).
   If a `kd` workflow is broken, fix `kd` rather than working around it.
 - Production promotions and production mobile OTA publishes require an explicit
-  human request. Staging is free for agents — but the staging *channel* is a
-  lineage, not a scratch pad: `kd` refuses a staging publish that diverges from
-  or rolls back the candidate `desktop-staging` already serves, refuses main
-  publishes while an unpromoted `release/X.Y` candidate soaks, and gates
-  promotion on lineage validity plus the `release-policy.json` soak window
-  (default 24h). The three operations that discard that state —
+  human request. Staging is free for agents and the main staging train keeps
+  advancing: every immutable versioned RC retains its own source identity,
+  lineage, publication timestamp, and soak eligibility after `desktop-staging`,
+  `main`, or its source branch advances. Promoting a historical RC publishes
+  its production tag without rewinding any of those pointers. `kd` still
+  refuses staging rollback or unauthorized divergent lineage, and gates the
+  selected RC on immutable identity, historical lineage, its own
+  `release-policy.json` soak window (default 24h), a forward unused production
+  version, and explicit production authorization. The three operations that
+  discard or waive safety state —
   `kd release reset-staging`, `kd release cut --abandon-series`, and
   `kd release promote --override-soak` — need a named human request like
   production does. See `docs/specs/release-candidates.md`.

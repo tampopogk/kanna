@@ -156,7 +156,8 @@ short:
   audit block onto the `desktop-staging` release body.
 
 ```sh
-./kd release status                                   # channel state and every promotion blocker
+./kd release status                                   # live channel and active-candidate blockers
+./kd release status --candidate 1.2.4-staging.2       # assess a retained historical RC
 ./kd release cut --minor                              # cut release/X.Y at origin/main
                                                       # (--version must be strictly ahead of origin/main's VERSION)
 ./kd release cut --version 0.3.0 --recut \
@@ -169,13 +170,13 @@ short:
 ```
 
 `kd release status` deliberately does not print one "promotable" flag. It
-reports the active candidate and its source branch and commit, its lineage
+reports the live pointer separately from the active candidate, or from an exact
+historical RC selected with `--candidate`; its source branch and commit, lineage
 relationship to the previous candidate and whether that lineage is valid, its
-publication time and soak age, whether a release-branch freeze is active, any
-release-branch commits not retained on main, whether the candidate is
-*mechanically* promotable (its commit still matches its promotion branch tip),
-and the full list of blockers to production promotion. The promote command is
-printed only when every gate passes.
+own publication time and soak age, any release-branch commits not retained on
+main, immutable source identity, forward production-version state, and the full
+list of blockers to production promotion. The promote command is printed only
+when every gate passes.
 
 Candidate identity is verified independently of branch topology: the selected
 GitHub object must be the exact named prerelease, its notes and versioned
@@ -622,9 +623,9 @@ subsequent changed content subject to each pointer's increasing-version guard.
 
 Staging OTA now checks the shared desktop staging-lineage gate before export,
 including dry-run. It refuses behind/divergent or unreadable candidates under
-the existing policy and main publishes during an unpromoted release-branch soak.
-The source must be verifiably on origin/main or origin/release/X.Y; task branch
-names cannot evade that freeze. Rollback validates the target's durable source,
+the existing policy. The source must be verifiably on origin/main or
+origin/release/X.Y; task branch names cannot evade provenance checks. Rollback
+validates the target's durable source,
 not checkout HEAD, and refuses missing/unverifiable provenance. This is stricter
 than the former OTA publisher. No new lineage bypass is provided. Desktop
 promotion neither copies nor requires Android OTA objects; no OTA promotion
