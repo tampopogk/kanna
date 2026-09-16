@@ -1,4 +1,5 @@
-import { describe, expect, it, vi } from "vitest";
+import { createServer, type IncomingHttpHeaders, type Server } from "node:http";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import * as smokeModule from "./list-detail-back.e2e";
 import {
   assertPtyTerminalFixtureAvailable,
@@ -1010,5 +1011,237 @@ describe("waitForRenderedPtyTerminal", () => {
     await expect(waitForRenderedPtyTerminal(ui, expectation)).rejects.toThrow(
       "No WEBVIEW context was available"
     );
+  });
+});
+
+/**
+ * The smoke's own reads and actions against `kanna-server` must go out as a
+ * local process. `lan_trust.rs` classifies any request carrying `Origin` or a
+ * `Sec-Fetch-*` header as browser-originated and refuses it 403 without the
+ * desktop credential — and Node 24's global `fetch` (undici) stamps
+ * `Sec-Fetch-Mode` on every request it sends. The release-owned simulator
+ * smoke hit exactly that: `curl` got 200, the harness got 403.
+ *
+ * A mocked `fetchImpl` cannot see this, so these tests run the exported
+ * helpers with *no* injected client against a real loopback server that
+ * applies the same classification rule.
+ */
+describe("smoke local reads use local-process authority", () => {
+  const FIXTURE = {
+    taskId: "task-1",
+    sentinel: "Kanna PTY sentinel",
+    expectedCols: 80,
+    expectedRows: 48,
+    minDecodedBytes: PTY_SNAPSHOT_MIN_DECODED_BYTES
+  };
+  const BROWSER_HEADERS = [
+    "origin",
+    "sec-fetch-mode",
+    "sec-fetch-site",
+    "sec-fetch-dest",
+    "sec-fetch-user"
+  ];
+
+  interface ReceivedRequest {
+    method: string;
+    url: string;
+    headers: IncomingHttpHeaders;
+    classifiedAsBrowser: boolean;
+  }
+
+  let server: Server;
+  let baseUrl = "";
+  let received: ReceivedRequest[] = [];
+  let activity = "idle";
+
+  beforeAll(async () => {
+    server = createServer((request, response) => {
+      const chunks: Buffer[] = [];
+      request.on("data", (chunk: Buffer) => chunks.push(chunk));
+      request.on("end", () => {
+        const classifiedAsBrowser = BROWSER_HEADERS.some(
+          (header) => request.headers[header] !== undefined
+        );
+        received.push({
+          method: request.method ?? "",
+          url: request.url ?? "",
+          headers: request.headers,
+          classifiedAsBrowser
+        });
+        // The same rule as lan_trust.rs: a browser-classified request without
+        // the local control credential is refused, whatever its path.
+        if (classifiedAsBrowser) {
+          response.statusCode = 403;
+          response.end();
+          return;
+        }
+        response.setHeader("content-type", "application/json");
+        const url = request.url ?? "";
+        if (url === "/v1/tasks/task-1") {
+          response.end(
+            JSON.stringify({
+              id: "task-1",
+              repoId: "repo-1",
+              title: "Fixture task",
+              prompt: `${"Fixture prompt line. ".repeat(20)}\nMOBILE_PROMPT_END_SENTINEL`,
+              agentType: "pty",
+              closedAt: null
+            })
+          );
+        } else if (url === "/v1/repos/repo-1/tasks") {
+          response.end(
+            JSON.stringify([
+              { id: "task-1", repoId: "repo-1", pinned: false, pinOrder: null },
+              { id: "task-2", repoId: "repo-1", pinned: false, pinOrder: null }
+            ])
+          );
+        } else if (url === "/v1/tasks/task-1/actions/runtime-status") {
+          const body = JSON.parse(Buffer.concat(chunks).toString("utf8")) as {
+            status?: string;
+          };
+          if (body.status === "idle") activity = "unread";
+          response.statusCode = 204;
+          response.end();
+        } else if (url === "/v1/tasks/recent") {
+          response.end(JSON.stringify([{ id: "task-1", activity }]));
+        } else {
+          response.statusCode = 404;
+          response.end();
+        }
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("no test server port");
+    baseUrl = `http://127.0.0.1:${address.port}`;
+  });
+
+  afterAll(async () => {
+    await new Promise<void>((resolve, reject) => {
+      server.close((error) => (error ? reject(error) : resolve()));
+    });
+  });
+
+  function expectLocalProcessRequests(): void {
+    expect(received.length).toBeGreaterThan(0);
+    for (const call of received) {
+      expect(
+        call.classifiedAsBrowser,
+        `${call.method} ${call.url} carried fetch metadata and would be refused 403`
+      ).toBe(false);
+    }
+  }
+
+  it("reads the PTY fixture as a local process by default", async () => {
+    received = [];
+
+    await expect(assertPtyTerminalFixtureAvailable(baseUrl, FIXTURE)).resolves.toEqual({
+      expectedTitle: "Fixture task",
+      promptEndSentinel: "MOBILE_PROMPT_END_SENTINEL",
+      taskId: "task-1"
+    });
+
+    expect(received.map((call) => `${call.method} ${call.url}`)).toEqual([
+      "GET /v1/tasks/task-1"
+    ]);
+    expectLocalProcessRequests();
+  });
+
+  it("reproduces the refusal when the same read is made with Node's global fetch", async () => {
+    received = [];
+
+    await expect(
+      // local-fetch-exempt: deliberately the wrong client, to prove the server stand-in tells the two apart
+      assertPtyTerminalFixtureAvailable(baseUrl, FIXTURE, fetch)
+    ).rejects.toThrow("was not available from");
+
+    expect(received).toHaveLength(1);
+    expect(received[0].classifiedAsBrowser).toBe(true);
+    expect(received[0].headers).toHaveProperty("sec-fetch-mode");
+  });
+
+  it("drives the pin journey's desktop reads as a local process by default", async () => {
+    received = [];
+    let pinnedLocally = false;
+    const row = {
+      getLocation: vi.fn(async () => ({ x: 10, y: 100 })),
+      getSize: vi.fn(async () => ({ width: 360, height: 90 })),
+      waitForDisplayed: vi.fn(async () => undefined)
+    };
+    const repo = {
+      click: vi.fn(async () => undefined),
+      waitForDisplayed: vi.fn(async () => undefined)
+    };
+    const driver = {
+      $: vi.fn(async (selector: string) =>
+        selector === "~mobile.tasks.repo.repo-1" ? repo : row
+      ),
+      $$: vi.fn(async () =>
+        (pinnedLocally ? ["task-1", "task-2"] : ["task-2", "task-1"]).map((taskId) => ({
+          getAttribute: vi.fn(async (name: string) =>
+            name === "name" ? `mobile.task-row.${taskId}` : null
+          )
+        }))
+      ),
+      execute: vi.fn(async () => {
+        pinnedLocally = !pinnedLocally;
+      }),
+      waitUntil: vi.fn(async (condition: () => Promise<boolean>, options) => {
+        if (!(await condition())) throw new Error(options.timeoutMsg);
+      })
+    };
+
+    await exerciseTaskPinSwipe(driver as never, baseUrl, "task-1");
+
+    expect(received.map((call) => `${call.method} ${call.url}`)).toEqual([
+      "GET /v1/tasks/task-1",
+      "GET /v1/repos/repo-1/tasks",
+      "GET /v1/repos/repo-1/tasks"
+    ]);
+    expectLocalProcessRequests();
+  });
+
+  it("drives the Activity dismissal's desktop actions as a local process by default", async () => {
+    received = [];
+    activity = "idle";
+    let dismissedRevision: string | null = null;
+    let revision = 0;
+    const activityRevision = () => String(revision);
+    const row = {
+      getLocation: vi.fn(async () => ({ x: 10, y: 100 })),
+      getSize: vi.fn(async () => ({ width: 360, height: 90 })),
+      isExisting: vi.fn(async () => dismissedRevision !== activityRevision()),
+      waitForDisplayed: vi.fn(async () => {
+        // The later revision is what the row's return waits on; a POST that
+        // reached the server as a local process is what advances it.
+        if (dismissedRevision !== null) revision += 1;
+      })
+    };
+    const activityTab = { click: vi.fn(async () => undefined) };
+    const screen = { waitForDisplayed: vi.fn(async () => undefined) };
+    const driver = {
+      $: vi.fn(async (selector: string) => {
+        if (selector === selectors.recentTab) return activityTab;
+        if (selector === selectors.recentScreen) return screen;
+        return row;
+      }),
+      execute: vi.fn(async () => {
+        dismissedRevision = activityRevision();
+      }),
+      waitUntil: vi.fn(async (condition: () => Promise<boolean>, options) => {
+        if (!(await condition())) throw new Error(options.timeoutMsg);
+      })
+    };
+
+    await exerciseActivityDismissSwipe(driver as never, baseUrl, "task-1");
+
+    expect(received.map((call) => `${call.method} ${call.url}`)).toEqual([
+      "POST /v1/tasks/task-1/actions/runtime-status",
+      "POST /v1/tasks/task-1/actions/runtime-status",
+      "GET /v1/tasks/recent",
+      "POST /v1/tasks/task-1/actions/runtime-status",
+      "POST /v1/tasks/task-1/actions/runtime-status"
+    ]);
+    expectLocalProcessRequests();
   });
 });
