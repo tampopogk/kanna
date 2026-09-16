@@ -40,7 +40,7 @@ import {
   assertSimulatorAppInstalled,
   buildSimulatorDevelopmentClientLaunchArgs,
   bootSimulator,
-  disableSimulatorExpoDevMenuFab,
+  configureSimulatorExpoDevMenuPreferences,
   openSimulatorDevelopmentClient,
   resolveSimulatorDevice,
   type AvailableSimulatorDevice
@@ -80,6 +80,26 @@ export const supportedSmokeModes = [
   "relay", "relay-terminal-control",
   "hybrid"
 ] as const;
+
+interface SimulatorSetupDependencies {
+  boot: typeof bootSimulator;
+  assertInstalled: typeof assertSimulatorAppInstalled;
+  configureExpoDevMenu: typeof configureSimulatorExpoDevMenuPreferences;
+}
+
+export async function prepareSimulatorForLaunch(
+  device: AvailableSimulatorDevice,
+  bundleId: string,
+  dependencies: SimulatorSetupDependencies = {
+    boot: bootSimulator,
+    assertInstalled: assertSimulatorAppInstalled,
+    configureExpoDevMenu: configureSimulatorExpoDevMenuPreferences
+  }
+): Promise<void> {
+  await dependencies.boot(device);
+  await dependencies.assertInstalled(device, bundleId);
+  await dependencies.configureExpoDevMenu(device, bundleId);
+}
 
 export function resolveSmokeModeAppEnv(
   mode: string,
@@ -277,9 +297,7 @@ async function main(): Promise<void> {
     } else {
       const device = await resolveSimulatorDevice(env.deviceName);
       simulatorDevice = device;
-      await bootSimulator(device);
-      await assertSimulatorAppInstalled(device, env.bundleId);
-      await disableSimulatorExpoDevMenuFab(device, env.bundleId);
+      await prepareSimulatorForLaunch(device, env.bundleId);
       capabilities = createSimulatorCapabilities({
         appiumPort: env.appiumPort,
         alertHandling: resolveSimulatorAlertHandling(mode),

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  buildDisableExpoDevMenuFabArgs,
+  buildExpoDevMenuPreferenceArgs,
   buildExpoDevelopmentClientUrl,
   buildSimulatorDevelopmentClientLaunchArgs,
   selectSimulatorDevice,
@@ -70,18 +70,17 @@ describe("selectSimulatorDevice", () => {
     ]);
   });
 
-  it("builds the simulator command that disables Expo's overlapping dev-menu FAB", () => {
-    expect(buildDisableExpoDevMenuFabArgs("simulator-udid", "build.kanna.app.dev"))
+  it("builds commands that suppress Expo's startup dev menu and overlapping FAB", () => {
+    expect(buildExpoDevMenuPreferenceArgs("simulator-udid", "build.kanna.app.dev"))
       .toEqual([
-        "simctl",
-        "spawn",
-        "simulator-udid",
-        "defaults",
-        "write",
-        "build.kanna.app.dev",
-        "EXDevMenuShowFloatingActionButton",
-        "-bool",
-        "false"
+        [
+          "simctl", "spawn", "simulator-udid", "defaults", "write",
+          "build.kanna.app.dev", "EXDevMenuShowsAtLaunch", "-bool", "false"
+        ],
+        [
+          "simctl", "spawn", "simulator-udid", "defaults", "write",
+          "build.kanna.app.dev", "EXDevMenuShowFloatingActionButton", "-bool", "false"
+        ]
       ]);
   });
 });
