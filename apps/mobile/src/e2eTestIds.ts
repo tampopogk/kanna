@@ -164,6 +164,10 @@ export const MOBILE_E2E_IDS = {
   appleBillingMessage: "mobile.apple-billing.message",
   appleBillingEulaLink: "mobile.apple-billing.eula",
   appleBillingPrivacyLink: "mobile.apple-billing.privacy",
+  // E2E-only signed-in identity marker; see AccountSheet.tsx. Rendered only
+  // with the E2E trust seed flag so the billing review lane can bind a retained
+  // session to the selected reviewer account instead of trusting "Sign Out".
+  accountIdentity: "mobile.account-identity",
   accountSignOutButton: "mobile.account-sign-out",
   accountDeleteButton: "mobile.account-delete",
   accountDeleteConfirmation: "mobile.account-delete-confirmation",

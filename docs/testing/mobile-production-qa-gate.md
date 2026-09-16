@@ -67,9 +67,10 @@ JavaScript embedded in a separately archived IPA. The runner's own files
 (`apps/mobile/e2e/**`, `tools/kd/**`) are harness-only, but the pairing and
 billing lanes also read app-side instrumentation that lives in app source:
 the E2E-gated connection marker (`src/e2eConnectionDiagnostics.ts`,
-`src/App.tsx`, rendered only with `EXPO_PUBLIC_KANNA_ENABLE_E2E_TRUST_SEED=1`)
-and inert `testID` targets on the billing card (`src/components/AppleBillingCard.tsx`,
-`src/e2eTestIds.ts`). A candidate IPA archived before those files merged does
+`src/App.tsx`, rendered only with `EXPO_PUBLIC_KANNA_ENABLE_E2E_TRUST_SEED=1`),
+the E2E-gated signed-in identity marker on the account sheet
+(`src/components/AccountSheet.tsx`, same flag), and inert `testID` targets on
+the billing card (`src/components/AppleBillingCard.tsx`, `src/e2eTestIds.ts`). A candidate IPA archived before those files merged does
 not contain them, so a passing simulator run on this branch is evidence about
 the branch, not about that IPA. The release task decides whether that
 observation-only overlay is acceptable for the candidate or a rebuilt
@@ -121,10 +122,28 @@ the same `APP_STORE_CONNECT_API_KEY_ID` / `APP_STORE_CONNECT_API_ISSUER_ID`
 key `kd mobile publish` uses. The value reaches only the E2E subprocess
 environment and is never printed.
 
-The command succeeds only when the report is `ready`: signed in, email
-verified, card rendered, billing confirmed by the production read, a localized
-price or an already-covered source, Restore Purchases enabled, and both legal
-links present. Anything else is named as a blocker (for example
+The session is bound to the selected account before anything is credited. A
+session the simulator retained from an earlier run is kept only when the
+account sheet's E2E-gated identity marker names the selected reviewer account;
+a retained session for another account, or one whose identity cannot be read,
+is signed out and the selected account is signed in, and a session that cannot
+be signed out or still names another account after sign-in is a blocker
+(`reviewer-session-not-replaced`, `reviewer-account-mismatch`). "Sign Out is
+visible" is never taken as evidence of which account is signed in. The report
+records only how the binding happened (`accountBinding`, `identityCheck`);
+it never carries the reviewer email or password.
+
+The command succeeds only when the report is `ready`: bound to the selected
+account, email verified, card rendered, billing confirmed by the production
+read, either a localized price with Subscribe enabled or active coverage,
+Restore Purchases enabled, and both legal links present. Coverage follows the
+card's own rule, not the presence of a source row: `AppleBillingCard` lists
+Apple and Stripe rows for `expired` and `revoked` records too, and only an
+active complimentary grant or an `active`/`grace` paid subscription blocks the
+purchase path. An expired or revoked source with no localized price and a
+disabled Subscribe is therefore `storefront-price-unavailable`, not ready, and a
+hidden purchase path with no covering source (an outstanding Apple payment) is
+`purchase-path-missing`. Anything else is named as a blocker (for example
 `billing-read-unconfirmed` when the deployed Firestore rules deny the billing
 read, or `storefront-price-unavailable` when StoreKit returns no product) and
 the screenshot is still written as evidence. A ready capture does not replace

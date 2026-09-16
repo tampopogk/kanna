@@ -97,6 +97,7 @@ export const selectors = {
   appleBillingMessage: `~${MOBILE_E2E_IDS.appleBillingMessage}`,
   appleBillingEulaLink: `~${MOBILE_E2E_IDS.appleBillingEulaLink}`,
   appleBillingPrivacyLink: `~${MOBILE_E2E_IDS.appleBillingPrivacyLink}`,
+  accountIdentity: `~${MOBILE_E2E_IDS.accountIdentity}`,
   accountSignOutButton: `~${MOBILE_E2E_IDS.accountSignOutButton}`,
   moreScreen: `~${MOBILE_E2E_IDS.moreScreen}`,
   moreHeading: `~${MOBILE_E2E_IDS.moreHeading}`,

@@ -14,6 +14,7 @@ import {
   TextInput,
   View
 } from "react-native";
+import { normalizeAccountIdentity } from "../accountIdentity";
 import { MOBILE_E2E_IDS } from "../e2eTestIds";
 import { validateCustomRelayUrl } from "../relaySettings";
 import type { AuthState } from "../state/sessionStore";
@@ -107,6 +108,16 @@ export function AccountSheet({
     setIsPasswordVisible(false);
     onClose();
   };
+  // E2E-only: the normalized signed-in email, so the billing review lane can
+  // tell whether a retained session already belongs to the selected reviewer
+  // account. Never rendered outside E2E; the harness compares it in-process and
+  // never prints or stores it.
+  const e2eAccountIdentity =
+    process.env.EXPO_PUBLIC_KANNA_ENABLE_E2E_TRUST_SEED === "1" &&
+    auth.status === "signedIn" &&
+    auth.user.email
+      ? normalizeAccountIdentity(auth.user.email)
+      : undefined;
   const signOut = () => {
     setIsPasswordVisible(false);
     onSignOut();
@@ -277,6 +288,16 @@ export function AccountSheet({
 
             {auth.status === "signedIn" ? (
               <View style={styles.form}>
+                {e2eAccountIdentity ? (
+                  <Text
+                    accessibilityLabel={e2eAccountIdentity}
+                    pointerEvents="none"
+                    style={styles.e2eAccountIdentity}
+                    testID={MOBILE_E2E_IDS.accountIdentity}
+                  >
+                    {e2eAccountIdentity}
+                  </Text>
+                ) : null}
                 {(auth.user.emailVerified === false || auth.user.cloudEntitlement?.reason === "unverified_email") ? (
                   <View
                     style={styles.accountState}
@@ -614,6 +635,16 @@ const styles = StyleSheet.create({
     color: "#C3CEE0",
     fontSize: 13,
     lineHeight: 19
+  },
+  e2eAccountIdentity: {
+    color: "transparent",
+    fontSize: 1,
+    height: 1,
+    left: 0,
+    opacity: 0.01,
+    position: "absolute",
+    top: 0,
+    width: 1
   },
   relayCard: {
     backgroundColor: "#10192A",
