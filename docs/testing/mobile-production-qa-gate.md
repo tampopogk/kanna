@@ -10,7 +10,7 @@ install, launch, or run Appium against a physical iPhone.
 Run this from the repo root:
 
 ```bash
-./kd mobile qa --production
+./kd mobile qa --production --key-path <absolute-private-key-path>
 ```
 
 The command validates `apps/mobile/src/mobileEnvironments.json` production
@@ -22,6 +22,13 @@ pnpm --dir apps/mobile run test
 pnpm --dir apps/mobile run test:e2e:preflight
 pnpm --dir apps/mobile run test:e2e:smoke
 ```
+
+Production embeds the committed OTA signing certificate, so Expo must sign the
+development manifest served to the simulator. Select the existing matching
+local key with `--key-path`; this sets `KANNA_OTA_PRIVATE_KEY_PATH` only for the
+QA subprocesses. The environment variable can be set directly for standalone
+E2E runs. The path must be absolute and name a readable regular file. Local dev
+E2E remains unsigned and does not require this selector.
 
 The simulator checks use `KANNA_APP_ENV=prod` and default
 `KANNA_E2E_DESKTOP_SERVER_URL` to the installed production desktop server at
@@ -35,7 +42,7 @@ For releases that touch OTA, relay, Firebase production config, update signing,
 or `runtimeVersion`, run the OTA-inclusive gate:
 
 ```bash
-./kd mobile qa --production --ota
+./kd mobile qa --production --ota --key-path <absolute-private-key-path>
 ```
 
 That adds the existing read-only production OTA checks:
@@ -52,9 +59,9 @@ cloud and relay state but do not publish, roll back, or mutate devices.
 
 1. Build the production iOS candidate through the normal Expo/Xcode production
    release path.
-2. Run `./kd mobile qa --production`.
+2. Run `./kd mobile qa --production --key-path <absolute-private-key-path>`.
 3. If the release changes OTA, relay, Firebase production config, update
-   signing, or `runtimeVersion`, run `./kd mobile qa --production --ota`.
+   signing, or `runtimeVersion`, run `./kd mobile qa --production --ota --key-path <absolute-private-key-path>`.
 4. Human-only physical-device check on the TestFlight build:
    - Install the candidate from TestFlight on an iPhone.
    - Confirm Settings -> Privacy & Security -> Local Network -> Kanna is on.
@@ -73,9 +80,9 @@ human physical-device check has no release-blocking issues.
 
 1. Confirm the App Store candidate is the same build that passed external
    TestFlight, or rerun the full gate for the rebuilt candidate.
-2. Run `./kd mobile qa --production --ota` when any OTA, relay, production
+2. Run `./kd mobile qa --production --ota --key-path <absolute-private-key-path>` when any OTA, relay, production
    Firebase, signing, or runtime compatibility state is part of the release.
-   Otherwise rerun `./kd mobile qa --production`.
+   Otherwise rerun `./kd mobile qa --production --key-path <absolute-private-key-path>`.
 3. Repeat the human-only physical-device check on the exact TestFlight build
    selected for App Store submission.
 4. Confirm App Store metadata, privacy declarations, screenshots, and release

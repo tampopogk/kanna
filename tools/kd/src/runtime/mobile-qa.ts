@@ -1,6 +1,10 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { resolveKdEnvironment } from "./environment";
+import {
+  MOBILE_OTA_PRIVATE_KEY_ENV,
+  resolveMobileOtaPrivateKeyPath
+} from "./mobile-ota-private-key";
 import type { CommandRunner } from "./process";
 
 export interface MobileQaCheck {
@@ -57,21 +61,25 @@ export function buildProductionMobileQaCommands(repoRoot: string): MobileQaComma
 export async function executeProductionMobileQa(input: {
   repoRoot: string;
   env: NodeJS.ProcessEnv;
+  keyPath?: string;
   runner: CommandRunner;
 }): Promise<MobileQaResult> {
   const configPath = join(input.repoRoot, "apps", "mobile", "src", "mobileEnvironments.json");
   const configChecks = validateProductionMobileConfig(JSON.parse(await readFile(configPath, "utf8")));
   const commands: MobileQaCommandResult[] = [];
-
-  if (configChecks.some((check) => !check.ok)) {
-    return { configChecks, commands };
-  }
-
-  const commandEnv = {
+  const commandEnv: NodeJS.ProcessEnv = {
     ...input.env,
     KANNA_APP_ENV: "prod",
     KANNA_E2E_DESKTOP_SERVER_URL: input.env.KANNA_E2E_DESKTOP_SERVER_URL ?? "http://127.0.0.1:48120"
   };
+  if (input.keyPath !== undefined) {
+    commandEnv[MOBILE_OTA_PRIVATE_KEY_ENV] = input.keyPath;
+  }
+  resolveMobileOtaPrivateKeyPath(commandEnv, { required: true });
+
+  if (configChecks.some((check) => !check.ok)) {
+    return { configChecks, commands };
+  }
   for (const command of buildProductionMobileQaCommands(input.repoRoot)) {
     const result = await input.runner.run(command.command, command.args, {
       cwd: input.repoRoot,

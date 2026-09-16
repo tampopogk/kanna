@@ -1418,10 +1418,22 @@ describe("kd CLI", () => {
       taskId: "mobile.qa",
       input: { production: true, ota: true }
     });
+    expect(parseCliArgs([
+      "mobile", "qa", "--production", "--key-path", "/fake secrets/key.pem"
+    ])).toEqual({
+      taskId: "mobile.qa",
+      input: {
+        production: true,
+        ota: false,
+        keyPath: "/fake secrets/key.pem"
+      }
+    });
     expect(() => parseCliArgs(["mobile", "qa"])).toThrow("mobile qa requires --production");
     expect(() => parseCliArgs(["mobile", "qa", "--production", "--device"])).toThrow(
-      "mobile qa only accepts --production and --ota"
+      "mobile qa only accepts --production, --ota, and --key-path <path>"
     );
+    expect(() => parseCliArgs(["mobile", "qa", "--production", "--key-path"]))
+      .toThrow("mobile qa --key-path requires a value");
   });
 
   it("maps retired wrapper argument shapes to kd tasks", () => {

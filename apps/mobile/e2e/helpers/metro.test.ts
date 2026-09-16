@@ -92,6 +92,21 @@ describe("mobile Metro helpers", () => {
     ).toBe(false);
   });
 
+  it("does not infer ownership of a pre-existing server for a signed run", () => {
+    expect(
+      shouldReuseExpoServer(
+        {
+          commandLine: "node expo start --dev-client --private-key-path /fake/key.pem",
+          cwd: "/tmp/kanna/apps/mobile"
+        },
+        {
+          projectRoot: "/tmp/kanna/apps/mobile",
+          privateKeyPath: "/fake/key.pem"
+        }
+      )
+    ).toBe(false);
+  });
+
   it("builds a non-interactive Expo start command for the selected port", () => {
     expect(buildExpoStartCommand(1430)).toEqual([
       "pnpm",
@@ -101,6 +116,24 @@ describe("mobile Metro helpers", () => {
       "--port",
       "1430",
       "--dev-client"
+    ]);
+  });
+
+  it("passes a signed environment key path to Expo as one argument", () => {
+    expect(
+      buildExpoStartCommand(1430, {
+        privateKeyPath: "/fake secrets/mobile ota key.pem"
+      })
+    ).toEqual([
+      "pnpm",
+      "exec",
+      "expo",
+      "start",
+      "--port",
+      "1430",
+      "--dev-client",
+      "--private-key-path",
+      "/fake secrets/mobile ota key.pem"
     ]);
   });
 

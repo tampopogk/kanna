@@ -1,4 +1,8 @@
 import { createExpoConfig } from "../../app.config";
+import {
+  mobileAppEnvironmentRequiresOtaSigning,
+  resolveMobileOtaPrivateKeyPath
+} from "../../../../tools/kd/src/runtime/mobile-ota-private-key";
 
 export type MobileE2eTarget = "simulator" | "device";
 
@@ -11,6 +15,7 @@ export interface MobileE2eEnv {
   cloudPassword?: string;
   desktopServerUrl: string;
   metroPort: number;
+  otaPrivateKeyPath?: string;
   target: MobileE2eTarget;
   deviceName?: string;
   deviceUdid?: string;
@@ -75,6 +80,9 @@ export function resolveRequiredMobileE2eEnv(
 
   const target = env.KANNA_IOS_E2E_TARGET?.trim() === "device" ? "device" : "simulator";
   const appEnv = env.KANNA_APP_ENV?.trim() || "dev";
+  const otaPrivateKeyPath = resolveMobileOtaPrivateKeyPath(env, {
+    required: mobileAppEnvironmentRequiresOtaSigning(appEnv)
+  });
   const appConfig = createExpoConfig({ KANNA_APP_ENV: appEnv });
   const defaultBundleId =
     appConfig.ios.bundleIdentifier.trim() || "build.kanna.app";
@@ -102,6 +110,7 @@ export function resolveRequiredMobileE2eEnv(
     // this shared environment parser.
     desktopServerUrl: desktopServerUrl || "",
     metroPort,
+    otaPrivateKeyPath,
     target,
     deviceName: env.KANNA_IOS_SIMULATOR_NAME?.trim() || undefined,
     deviceUdid: env.KANNA_IOS_DEVICE_UDID?.trim() || undefined,

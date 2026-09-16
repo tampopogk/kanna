@@ -21,6 +21,7 @@ export interface ExpoServerHandle {
 interface EnsureExpoServerOptions {
   env?: Record<string, string>;
   metroPort: number;
+  privateKeyPath?: string;
   projectRoot: string;
   requireExactEnvironment?: boolean;
 }
@@ -44,6 +45,7 @@ export function shouldReuseExpoServer(
   existing: RunningExpoProcess,
   expected: {
     env?: Record<string, string>;
+    privateKeyPath?: string;
     projectRoot: string;
     requireExactEnvironment?: boolean;
   }
@@ -53,6 +55,14 @@ export function shouldReuseExpoServer(
   }
 
   if (!existing.commandLine.includes("expo")) {
+    return false;
+  }
+
+  // A signed manifest must come from the exact Expo process this run starts
+  // with its validated key selector. Process listings are not a safe way to
+  // reconstruct a path that may contain spaces, so never infer ownership of a
+  // pre-existing signed server.
+  if (expected.privateKeyPath) {
     return false;
   }
 
@@ -75,7 +85,7 @@ export function shouldReuseExpoServer(
 
 export function buildExpoStartCommand(
   port: number,
-  options: { clearCache?: boolean } = {}
+  options: { clearCache?: boolean; privateKeyPath?: string } = {}
 ): string[] {
   return [
     "pnpm",
@@ -85,6 +95,9 @@ export function buildExpoStartCommand(
     "--port",
     String(port),
     "--dev-client",
+    ...(options.privateKeyPath
+      ? ["--private-key-path", options.privateKeyPath]
+      : []),
     ...(options.clearCache ? ["--clear"] : [])
   ];
 }
@@ -103,6 +116,7 @@ export async function ensureExpoServer(
       existing &&
       shouldReuseExpoServer(existing, {
         env: expoEnv,
+        privateKeyPath: options.privateKeyPath,
         projectRoot: options.projectRoot,
         requireExactEnvironment: options.requireExactEnvironment
       })
@@ -124,7 +138,8 @@ export async function ensureExpoServer(
   const child = spawn(
     "pnpm",
     buildExpoStartCommand(options.metroPort, {
-      clearCache: options.requireExactEnvironment
+      clearCache: options.requireExactEnvironment,
+      privateKeyPath: options.privateKeyPath
     }),
     {
       cwd: options.projectRoot,

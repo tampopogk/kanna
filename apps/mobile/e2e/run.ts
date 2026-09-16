@@ -350,6 +350,7 @@ async function main(): Promise<void> {
             }
           : { KANNA_APP_ENV: env.appEnv },
       metroPort: env.metroPort,
+      privateKeyPath: env.otaPrivateKeyPath,
       projectRoot,
       requireExactEnvironment: requiresExactExpoEnvironment(mode)
     });
