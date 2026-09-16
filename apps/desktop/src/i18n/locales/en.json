@@ -352,7 +352,9 @@
   },
   "filePicker": {
     "placeholder": "Search files...",
-    "noFiles": "No files found"
+    "noFiles": "No files found",
+    "loading": "Loading files…",
+    "unavailable": "Task files unavailable: {message}"
   },
   "filePreview": {
     "rendered": "Rendered",

@@ -6520,7 +6520,7 @@ describe("App", () => {
     expect(wrapper.get('[data-testid="command-palette"]').text()).toContain("taskTransfer.pushToMachine");
   });
 
-  it("refuses local file and shell shortcuts for a selected remote task", async () => {
+  it("keeps shells local while allowing the task-aware picker for a selected remote task", async () => {
     store.repos = [];
     store.selectedRepoId = "cloud:repo-remote";
     store.selectedItemId = "cloud:repo-remote:task-1";
@@ -6593,9 +6593,8 @@ describe("App", () => {
     await flushPromises();
 
     expect(toastWarningMock).toHaveBeenCalledWith("toasts.remoteShellUnavailable");
-    expect(toastWarningMock).toHaveBeenCalledWith("toasts.remoteTaskPathUnavailable");
     expect(wrapper.findComponent({ name: "ShellModal" }).exists()).toBe(false);
-    expect(wrapper.find('[data-testid="file-picker-modal"]').exists()).toBe(false);
+    expect(wrapper.findComponent({ name: "FilePickerModal" }).exists()).toBe(true);
     expect(invokeMock.mock.calls.some(([command]) => command === "list_files")).toBe(false);
   });
 

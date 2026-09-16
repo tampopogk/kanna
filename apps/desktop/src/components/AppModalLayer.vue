@@ -84,14 +84,16 @@ function setPreferencesPanelRef(component: Element | ComponentPublicInstance | n
     @close="m.showPreferencesPanel.value = false"
   />
   <div
-    v-if="(m.showFilePickerModal.value || m.filePickerHidden.value) && !c.isMobile && !m.activeTaskViewIsRemote.value && c.store.selectedRepo?.path"
+    v-if="(m.showFilePickerModal.value || m.filePickerHidden.value) && !c.isMobile && (m.activeTaskViewIsRemote.value || c.store.selectedRepo?.path)"
     v-show="m.showFilePickerModal.value"
   >
     <FilePickerModal
       :ref="setFilePickerRef"
-      :key="m.activeWorktreePath.value"
+      :key="m.filePickerSourceKey.value"
       :worktree-path="m.activeWorktreePath.value"
       :repo-root="c.store.selectedRepo?.path ?? ''"
+      :source-key="m.filePickerSourceKey.value"
+      :task-directory-loader="m.filePickerTaskDirectoryLoader.value"
       @close="m.closeFilePicker"
       @select="m.selectFileFromPicker"
     />

@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 
-import { computed, defineComponent, h, nextTick, reactive } from "vue";
+import { computed, defineComponent, h, nextTick, reactive, shallowRef } from "vue";
 import { mount } from "@vue/test-utils";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { MarkdownPreviewMode } from "../stores/markdownPreviewMode";
@@ -56,6 +56,7 @@ function mountMarkdownModalHarness(options: {
     markdownPreviewMode: options.markdownPreviewMode ?? "rendered",
     savePreference,
   });
+  const workspaceTask = shallowRef<WorkspaceTask | null>(options.selectedWorkspaceTask ?? null);
   const clearTearOffContext = vi.fn(async () => {});
   const TestHarness = defineComponent({
     setup() {
@@ -83,7 +84,7 @@ function mountMarkdownModalHarness(options: {
           persistSidebarWidth: vi.fn(),
           clearTearOffContext,
         } as unknown as Parameters<typeof useAppModals>[0]["windowWorkspace"],
-        selectedWorkspaceTask: computed(() => options.selectedWorkspaceTask ?? null),
+        selectedWorkspaceTask: computed(() => workspaceTask.value),
       });
       return { modals, mainTabs };
     },
@@ -98,19 +99,21 @@ function mountMarkdownModalHarness(options: {
     mainTabs: wrapper.vm.mainTabs,
     savePreference,
     store,
+    workspaceTask,
     wrapper,
   };
 }
 
 describe("useAppModals", () => {
   beforeEach(() => {
-    taskViewMocks.relayFactory.mockReset();
-    taskViewMocks.lanFactory.mockReset().mockResolvedValue({
+    const client = {
       close: vi.fn(),
       listTaskDirectory: taskViewMocks.listTaskDirectory,
       readTaskFile: taskViewMocks.readTaskFile,
       readTaskDiff: taskViewMocks.readTaskDiff,
-    });
+    };
+    taskViewMocks.relayFactory.mockReset().mockResolvedValue(client);
+    taskViewMocks.lanFactory.mockReset().mockResolvedValue(client);
     taskViewMocks.listTaskDirectory.mockReset().mockResolvedValue({
       path: "",
       entries: [],
@@ -176,6 +179,74 @@ describe("useAppModals", () => {
     });
     expect(harness.modals.treeExplorerRoot.value).toBe("task-owner-branch");
 
+    harness.wrapper.unmount();
+  });
+
+  it("binds quick-open listing to one owner and closes it across a remote workspace transition", async () => {
+    taskViewMocks.listTaskDirectory.mockImplementation(async ({ desktopId, path }) => ({
+      path,
+      entries: [{ name: "README.md", path: "README.md", isDir: false }],
+      offset: 0,
+      nextOffset: null,
+      totalEntries: 1,
+      owner: desktopId,
+    }));
+    const remoteTask = (desktopId: string, branch: string): WorkspaceTask => ({
+      item: { id: "cloud-task", branch },
+      owner: { kind: "remote", id: desktopId },
+      terminal: {
+        kind: "cloud",
+        remoteRef: {
+          ownerDesktopId: desktopId,
+          ownerLocalTaskId: "owner-task",
+        },
+      },
+      sources: [],
+    } as unknown as WorkspaceTask);
+    const harness = mountMarkdownModalHarness({
+      selectedWorkspaceTask: remoteTask("machine-a", "task-owner"),
+    });
+    const machineASource = harness.modals.filePickerSourceKey.value;
+    const machineALoader = harness.modals.filePickerTaskDirectoryLoader.value;
+    expect(machineALoader).toBeTypeOf("function");
+    harness.modals.showFilePickerOnTop();
+
+    // A stage fork keeps the owner and durable task id but changes the
+    // workspace. The old picker must close on that branch identity alone.
+    harness.workspaceTask.value = remoteTask("machine-a", "task-owner-2");
+    await nextTick();
+
+    expect(harness.modals.showFilePickerModal.value).toBe(false);
+    expect(harness.modals.filePickerSourceKey.value).not.toBe(machineASource);
+    harness.modals.selectFileFromPicker("README.md", machineASource);
+    expect(harness.mainTabs.tabs.value.some((tab) => tab.kind === "file")).toBe(false);
+
+    harness.workspaceTask.value = remoteTask("machine-b", "task-owner-2");
+    await nextTick();
+    const machineBLoader = harness.modals.filePickerTaskDirectoryLoader.value;
+    expect(machineBLoader).toBeTypeOf("function");
+
+    await machineALoader?.("", false);
+    await machineBLoader?.("", false);
+    await harness.modals.readRemoteTaskFile("README.md");
+
+    expect(taskViewMocks.listTaskDirectory).toHaveBeenNthCalledWith(1, {
+      desktopId: "machine-a",
+      taskId: "owner-task",
+      path: "",
+      showAllFiles: false,
+    });
+    expect(taskViewMocks.listTaskDirectory).toHaveBeenNthCalledWith(2, {
+      desktopId: "machine-b",
+      taskId: "owner-task",
+      path: "",
+      showAllFiles: false,
+    });
+    expect(taskViewMocks.readTaskFile).toHaveBeenLastCalledWith({
+      desktopId: "machine-b",
+      taskId: "owner-task",
+      path: "README.md",
+    });
     harness.wrapper.unmount();
   });
 
