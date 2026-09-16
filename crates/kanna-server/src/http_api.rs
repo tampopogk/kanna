@@ -29,6 +29,7 @@ mod repos;
 mod resume_recovery;
 #[path = "http_api/router.rs"]
 mod routes;
+pub(crate) mod secure_channel;
 pub(crate) mod settings;
 mod signal_agent;
 mod snapshot;
@@ -113,6 +114,27 @@ pub(crate) async fn dispatch_authenticated_relay_http_invoke(
         body,
     )
     .await
+}
+
+pub(crate) async fn dispatch_sealed_device_http_invoke(
+    state: std::sync::Arc<AppState>,
+    device_id: String,
+    pairing: secure_channel::SealedPairingContext,
+    method: &str,
+    path: &str,
+    body: serde_json::Value,
+) -> HttpInvokeResponse {
+    routes::dispatch_sealed_device_http_invoke(state, device_id, pairing, method, path, body).await
+}
+
+pub(crate) async fn dispatch_sealed_pairing_http_invoke(
+    state: std::sync::Arc<AppState>,
+    context: secure_channel::SealedPairingContext,
+    method: &str,
+    path: &str,
+    body: serde_json::Value,
+) -> HttpInvokeResponse {
+    routes::dispatch_sealed_pairing_http_invoke(state, context, method, path, body).await
 }
 
 pub async fn serve_lan_machine_invoke_listener(

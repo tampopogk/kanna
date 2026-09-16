@@ -14,6 +14,7 @@ mod internal_ports;
 mod ksp;
 mod lan_discovery;
 mod lan_tls;
+mod channel_identity;
 mod lan_tls_identity;
 mod logging;
 mod opencode_models;

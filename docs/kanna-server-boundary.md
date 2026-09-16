@@ -565,6 +565,26 @@ and POST `/v1/pairing/sessions/claim` (requires the desktop-issued pairing code)
 Starting a pairing session and removing trust remain desktop-only. WebSocket
 GET upgrades at `/v1/stream` and `/v2/stream` are authentication bootstrap:
 both require proof of pairing for non-loopback peers before any task data.
+
+**Secure channel (end-to-end encryption).** A phone paired with a current
+desktop does none of the above in plaintext. Its first frame on `/v1/stream`,
+`/v2/stream` or a relay KSP tunnel is a Kanna secure-channel handshake
+(`ksc1:` prefix, Noise IK, `crates/kanna-secure-channel`), and the handshake —
+not a bearer secret — is the authentication: the desktop looks the phone's
+static key up in the pairing store (`TrustedDevice.channel_public_key`). A
+matched key dispatches every later `request` frame with
+`TrustedLanDeviceAccess` (the LAN-paired route set) over LAN and relay alike;
+an unknown key gets pairing-only authority (`POST /v1/pairing/sessions/claim`
+and `GET /v1/pairing/confirmation`, nothing else). `X-Kanna-Device-*` headers,
+the in-band paired credential, the plaintext claim route, plaintext relay
+tunnels and account-only relay `invoke`s are the **legacy** paths: they stay
+available while the `mobile_legacy_access` setting is not `refused` and are
+refused otherwise. `GET /v1/status` additionally reports `channelPublicKey`
+and `secureChannelVersion`, which a phone treats as a capability signal and a
+trust-on-first-use candidate, never as a trust anchor. The full protocol,
+pairing ceremony (QR-anchored and typed-code with a short authentication
+string) and the honest list of what remains visible to the relay are in
+`docs/specs/secure-channel.md`.
 The first KSP Auth frame verifies the device credential. Legacy v1 readers
 already verified through upgrade headers or the stream cookie retain their
 existing read-only empty-Auth behavior; unpaired empty-auth LAN reads are no
@@ -721,13 +741,20 @@ in `docs/task-specs/c9f5721b.md` and enforced by the router authorization tests.
 - `GET /v1/mobile/notifications/registration`
 - `POST /v1/pairing/sessions`
 - `POST /v1/pairing/sessions/claim`
+- `GET /v1/pairing/confirmation` (only inside the secure-channel session that claimed; long-polls the desktop's SAS decision)
+- `GET /v1/pairing/pending-confirmation` (desktop-only)
+- `POST /v1/pairing/pending-confirmation/confirm` (desktop-only)
+- `POST /v1/pairing/pending-confirmation/reject` (desktop-only)
 - `POST /v1/pairing/push-certificate` (paired-device authentication required)
 
 ### Anonymous push pairing certificate
 
 The pairing claim response keeps the compact `KANNA1:{DESKTOP-ID}:{CODE}` QR
-payload unchanged and additively returns `desktopPushIdentity` and
-`pushPairingCert`. The identity contains the raw 32-byte Ed25519 public key as
+payload for a desktop without a secure-channel identity; a desktop with one
+offers `KANNA2:{DESKTOP-ID}:{CODE}:{base32 channel key}:{base32 QR secret}`
+instead (see `docs/specs/secure-channel.md`). Both additively return
+`desktopPushIdentity` and `pushPairingCert`, and a sealed claim also returns
+`secureChannel: true`. The identity contains the raw 32-byte Ed25519 public key as
 unpadded base64url plus the desktop's relay URL and environment. The
 certificate contains `deviceId`, Unix-millisecond `issuedAt` and `expiresAt`
 (730 days apart), and the raw 64-byte Ed25519 signature as unpadded base64url.

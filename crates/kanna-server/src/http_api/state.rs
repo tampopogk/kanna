@@ -59,8 +59,8 @@ pub struct AppState {
     pub(super) config: Config,
     pub(super) forge_client: crate::forge_pull_requests::ForgeClient,
     pub(crate) local_task_events_token: Option<String>,
-    pub(super) pairing_session: Arc<Mutex<Option<ActivePairingSession>>>,
-    pub(super) pairing_persistence_mutation: Arc<Mutex<()>>,
+    pub(crate) pairing_session: Arc<Mutex<Option<ActivePairingSession>>>,
+    pub(crate) pairing_persistence_mutation: Arc<Mutex<()>>,
     #[cfg(debug_assertions)]
     pub(super) e2e_lan_http_enabled: Arc<AtomicBool>,
     pub(super) session_replacements: crate::session_replacements::SessionReplacements,
@@ -110,6 +110,15 @@ pub struct AppState {
     known_singleton_owners: Arc<StdMutex<SingletonOwnerObservations>>,
     relay_reconnect: Arc<Notify>,
     anonymous_push_revocations_changed: Arc<Notify>,
+    /// Lazily loaded secure-channel identity (`channel_identity`). A load
+    /// failure is remembered and refuses every sealed handshake rather than
+    /// regenerating a key paired phones have pinned.
+    secure_channel_identity: super::secure_channel::SecureChannelIdentity,
+    pub(crate) pairing_confirmation: Arc<super::secure_channel::PairingConfirmationState>,
+    /// Device ids whose pairing was just removed. Live sealed sessions for
+    /// that device subscribe and close themselves; the next handshake fails
+    /// on its own because the static key is no longer in the store.
+    device_revocations: broadcast::Sender<String>,
     /// The account UID this desktop's relay connection currently
     /// authenticates as, or `None` when signed out/rejected/not yet
     /// authenticated. This is the single current-account reference every
@@ -585,6 +594,11 @@ impl AppState {
             repo_checkout_root,
             known_singleton_owners: Arc::new(StdMutex::new(HashMap::new())),
             relay_reconnect: Arc::new(Notify::new()),
+            secure_channel_identity: Arc::new(std::sync::OnceLock::new()),
+            pairing_confirmation: Arc::new(
+                super::secure_channel::PairingConfirmationState::default(),
+            ),
+            device_revocations: broadcast::channel(64).0,
             authenticated_account_uid: Arc::new(StdMutex::new(None)),
             relay_entitlement: Arc::new(StdMutex::new(None)),
             account_state_generation: Arc::new(AtomicU64::new(0)),
@@ -637,7 +651,12 @@ impl AppState {
     }
 
     pub async fn mobile_server_status(&self) -> crate::mobile_api::MobileServerStatus {
-        crate::mobile_api::build_mobile_server_status(&self.config, None)
+        let mut status = crate::mobile_api::build_mobile_server_status(&self.config, None);
+        if let Ok(identity) = self.secure_channel_identity() {
+            status.channel_public_key = Some(identity.encoded_public_key());
+            status.secure_channel_version = Some(kanna_secure_channel::PROTOCOL_VERSION);
+        }
+        status
     }
 
     pub fn subscribe_state_changes(&self) -> broadcast::Receiver<ServerFrame> {
@@ -753,8 +772,41 @@ impl AppState {
         if removed {
             store.save(path)?;
             self.anonymous_push_revocations_changed.notify_one();
+            // Persisted first, then announced: a session that wakes on this
+            // and re-reads the store must already find the device gone.
+            let _ = self.device_revocations.send(device_id.to_string());
         }
         Ok(removed)
+    }
+
+    pub(crate) fn subscribe_device_revocations(&self) -> broadcast::Receiver<String> {
+        self.device_revocations.subscribe()
+    }
+
+    /// This desktop's secure-channel identity, loaded once and cached,
+    /// including a cached failure.
+    pub(crate) fn secure_channel_identity(
+        &self,
+    ) -> Result<Arc<kanna_secure_channel::Keypair>, String> {
+        self.secure_channel_identity
+            .get_or_init(|| {
+                let path = self
+                    .config
+                    .secure_channel_identity_path()
+                    .ok_or_else(|| "no pairing store is configured".to_string())?;
+                crate::channel_identity::load_or_create(&path)
+                    .map(Arc::new)
+                    .inspect_err(|error| {
+                        log::error!("secure channel unavailable: {error}");
+                    })
+            })
+            .clone()
+    }
+
+    /// Whether legacy (unencrypted, bearer-secret) mobile access is still
+    /// permitted. See `http_api::secure_channel`.
+    pub(crate) fn legacy_mobile_access_allowed(&self) -> bool {
+        super::secure_channel::legacy_mobile_access_allowed(&self.config.db_path)
     }
 
     pub(crate) async fn pending_anonymous_push_revocations(

@@ -43,6 +43,13 @@ pub(super) struct TrustedLanDeviceAccess {
 }
 
 impl TrustedLanDeviceAccess {
+    /// Only two places may mint this marker: the LAN header/cookie
+    /// verification below, and a secure-channel session whose handshake
+    /// matched a paired device (`router::dispatch_sealed_device_http_invoke`).
+    pub(super) fn new(device_id: String) -> Self {
+        Self { device_id }
+    }
+
     pub(super) fn device_id(&self) -> &str {
         &self.device_id
     }
@@ -553,7 +560,12 @@ pub(super) async fn attach_trusted_lan_device(
     // Tunneled (relay/KSP) dispatches synthesize their requests; device
     // headers are only meaningful on the real LAN listener.
     let mut compatibility_cookie = None;
-    if request.extensions().get::<TunneledHttpInvoke>().is_none() {
+    // The bearer device secret (headers, and the cookie derived from it) is
+    // the legacy LAN credential. Once legacy access is off, a device proves
+    // itself only through the secure-channel handshake.
+    if request.extensions().get::<TunneledHttpInvoke>().is_none()
+        && state.legacy_mobile_access_allowed()
+    {
         let device_id = header_value(&request, DEVICE_ID_HEADER);
         let device_secret = header_value(&request, DEVICE_SECRET_HEADER);
         if let (Some(device_id), Some(device_secret)) = (device_id, device_secret) {
@@ -592,6 +604,7 @@ pub(super) async fn require_http_access(request: Request<Body>, next: Next) -> R
         (request.method().as_str(), path),
         ("GET" | "HEAD", "/v1/status" | "/v1/stream" | "/v2/stream")
             | ("POST", "/v1/pairing/sessions/claim")
+            | ("GET", "/v1/pairing/confirmation")
     );
     if !bootstrap && privileged_task_access(request.extensions()).is_err() {
         return unauthorized_privileged_task().into_response();
@@ -603,9 +616,17 @@ fn privileged_task_access(
     extensions: &axum::http::Extensions,
 ) -> Result<PrivilegedTaskAccess, (StatusCode, String)> {
     if extensions.get::<TunneledHttpInvoke>().is_some() {
+        // A tunneled request is privileged by the relay's account marker or
+        // by a secure-channel session that matched a paired device; the
+        // tunnel itself confers nothing.
         return extensions
             .get::<AuthenticatedHttpInvoke>()
             .map(|_| PrivilegedTaskAccess)
+            .or_else(|| {
+                extensions
+                    .get::<TrustedLanDeviceAccess>()
+                    .map(|_| PrivilegedTaskAccess)
+            })
             .ok_or_else(unauthorized_privileged_task);
     }
     if extensions.get::<TrustedLanDeviceAccess>().is_some()

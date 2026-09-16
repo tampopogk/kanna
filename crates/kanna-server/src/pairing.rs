@@ -33,6 +33,12 @@ pub struct TrustedDevice {
     /// deliberately requires a new pairing ceremony.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub push_identity_public_key: Option<String>,
+    /// Unpadded base64url X25519 static key the device authenticates its
+    /// secure-channel sessions with (`kanna_secure_channel`). Absent for a
+    /// device paired over the legacy plaintext claim; such a device can only
+    /// use legacy (unencrypted, bearer-secret) access until it re-pairs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub channel_public_key: Option<String>,
 }
 
 /// Self-reported by an authenticated installation; never an authorization input.
@@ -80,12 +86,24 @@ pub struct PairingSession {
     pub lan_host: String,
     pub lan_port: u16,
     pub expires_at_unix_ms: u64,
+    /// This desktop's secure-channel public key, when the desktop has one.
+    /// The same key is inside the QR payload; it is repeated here so the
+    /// desktop UI can label the session as end-to-end-encrypted pairing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub channel_public_key: Option<String>,
 }
 
 #[derive(Debug, Clone)]
 pub struct ActivePairingSession {
     pub session: PairingSession,
     pub failed_claims: u8,
+    /// Random secret carried only in the QR payload (never on screen as the
+    /// typed code). A sealed claim that presents it proves the phone read
+    /// the QR - and therefore obtained the desktop key from it, not from an
+    /// unauthenticated status response - so no short-authentication-string
+    /// confirmation is needed. A claim without it is treated as typed-code
+    /// pairing and must be confirmed by the person on the desktop.
+    pub qr_secret: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
@@ -94,6 +112,10 @@ pub struct PairingClaimRequest {
     pub code: String,
     pub device_id: String,
     pub device_name: String,
+    /// The QR-only secret (see `ActivePairingSession::qr_secret`); only
+    /// meaningful on a sealed claim.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub qr_secret: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -106,6 +128,10 @@ pub struct PairingClaimResponse {
     pub device_secret: String,
     pub desktop_push_identity: DesktopPushIdentity,
     pub push_pairing_cert: PushPairingCertificate,
+    /// True when the device's secure-channel key was registered by this
+    /// claim: the phone may (and must) use sealed sessions from now on.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub secure_channel: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -265,8 +291,20 @@ impl PairingStore {
                 secret_hash: Some(secret_hash.to_string()),
                 push_identity_public_key: None,
                 mobile_build: None,
+                channel_public_key: None,
             });
         }
+    }
+
+    /// The trusted device whose secure-channel static key is `key`, if any.
+    /// This is the responder-side authentication decision of every sealed
+    /// session: the handshake proved possession of the matching private key,
+    /// and this lookup says whether that key belongs to a paired device.
+    pub fn device_by_channel_key(&self, desktop_id: &str, key: &str) -> Option<&TrustedDevice> {
+        self.trusted_devices
+            .get(desktop_id)?
+            .iter()
+            .find(|device| device.channel_public_key.as_deref() == Some(key))
     }
 
     /// Validates a device secret presented on a LAN request against the
@@ -378,9 +416,41 @@ pub fn create_active_pairing_session(config: &Config) -> Result<ActivePairingSes
     create_pairing_session_at(config, unix_time_ms()?)
 }
 
+/// A pairing session whose QR payload carries this desktop's secure-channel
+/// key (`KANNA2`), so the phone pins the desktop identity from something the
+/// person looked at rather than from the network.
+pub fn create_active_pairing_session_with_channel(
+    config: &Config,
+    channel_public_key: &[u8; 32],
+) -> Result<ActivePairingSession, String> {
+    create_pairing_session_with_channel_at(config, Some(channel_public_key), unix_time_ms()?)
+}
+
 fn create_pairing_session_at(config: &Config, now_ms: u64) -> Result<ActivePairingSession, String> {
+    create_pairing_session_with_channel_at(config, None, now_ms)
+}
+
+fn create_pairing_session_with_channel_at(
+    config: &Config,
+    channel_public_key: Option<&[u8; 32]>,
+    now_ms: u64,
+) -> Result<ActivePairingSession, String> {
     let code = generate_pairing_code()?;
-    let pairing_payload = format!("KANNA1:{}:{code}", config.desktop_id.to_ascii_uppercase());
+    let desktop_id = config.desktop_id.to_ascii_uppercase();
+    let (pairing_payload, qr_secret, encoded_channel_key) = match channel_public_key {
+        Some(key) => {
+            let qr_secret = generate_qr_secret()?;
+            (
+                format!(
+                    "KANNA2:{desktop_id}:{code}:{}:{qr_secret}",
+                    base32_encode(key)
+                ),
+                Some(qr_secret),
+                Some(kanna_secure_channel::encode_key(key)),
+            )
+        }
+        None => (format!("KANNA1:{desktop_id}:{code}"), None, None),
+    };
     if !pairing_payload.chars().all(is_qr_alphanumeric) {
         return Err("desktop identity cannot be encoded in a compact pairing QR".to_string());
     }
@@ -394,9 +464,41 @@ fn create_pairing_session_at(config: &Config, now_ms: u64) -> Result<ActivePairi
             lan_host: config.lan_host.clone(),
             lan_port: config.lan_port,
             expires_at_unix_ms: now_ms + PAIRING_TTL_MS,
+            channel_public_key: encoded_channel_key,
         },
         failed_claims: 0,
+        qr_secret,
     })
+}
+
+/// RFC 4648 base32 (uppercase, no padding): the QR alphanumeric mode can
+/// encode it, which keeps a key-bearing pairing QR compact and scannable.
+pub fn base32_encode(bytes: &[u8]) -> String {
+    const ALPHABET: &[u8; 32] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+    let mut out = String::new();
+    let mut buffer: u32 = 0;
+    let mut bits = 0;
+    for &byte in bytes {
+        buffer = (buffer << 8) | byte as u32;
+        bits += 8;
+        while bits >= 5 {
+            bits -= 5;
+            out.push(ALPHABET[((buffer >> bits) & 31) as usize] as char);
+        }
+    }
+    if bits > 0 {
+        out.push(ALPHABET[((buffer << (5 - bits)) & 31) as usize] as char);
+    }
+    out
+}
+
+fn generate_qr_secret() -> Result<String, String> {
+    let mut bytes = [0u8; 16];
+    std::fs::File::open("/dev/urandom")
+        .map_err(|e| format!("failed to open /dev/urandom: {}", e))?
+        .read_exact(&mut bytes)
+        .map_err(|e| format!("failed to read random bytes: {}", e))?;
+    Ok(base32_encode(&bytes))
 }
 
 fn is_qr_alphanumeric(character: char) -> bool {
@@ -423,6 +525,41 @@ fn claim_pairing_session_at(
     request: PairingClaimRequest,
     now_ms: u64,
 ) -> Result<PairingClaimResponse, PairingClaimError> {
+    let device_id = request.device_id.trim().to_string();
+    let device_name = request.device_name.trim().to_string();
+    let session = verify_pairing_claim_at(active, &request, now_ms)?;
+    register_trusted_device_at(config, &session, &device_id, &device_name, None, now_ms)
+}
+
+/// How a sealed claim proved which pairing path it came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PairingClaimProof {
+    /// The claim carried the QR-only secret: the phone read the QR, so it
+    /// pinned the desktop key from it and needs no SAS confirmation.
+    QrAnchored,
+    /// The claim carried only the code a person can type; the phone's view
+    /// of the desktop key came from the network and must be confirmed by
+    /// comparing short authentication strings.
+    TypedCode,
+}
+
+/// The session a successful claim consumed, kept for registration.
+#[derive(Debug, Clone)]
+pub struct ClaimedPairingSession {
+    pub desktop_id: String,
+    pub desktop_name: String,
+    pub proof: PairingClaimProof,
+}
+
+/// Verifies the code (and the optional QR secret) against the active
+/// session, counting failures and consuming the session on success. The
+/// code is what authorizes a claim on every path; the QR secret only
+/// upgrades the proof.
+pub fn verify_pairing_claim_at(
+    active: &mut Option<ActivePairingSession>,
+    request: &PairingClaimRequest,
+    now_ms: u64,
+) -> Result<ClaimedPairingSession, PairingClaimError> {
     let device_id = request.device_id.trim();
     let device_name = request.device_name.trim();
     if device_id.is_empty()
@@ -445,7 +582,7 @@ fn claim_pairing_session_at(
     }
 
     let normalized_code = request.code.trim().to_ascii_uppercase();
-    if normalized_code != current.session.code {
+    if !constant_time_eq(normalized_code.as_bytes(), current.session.code.as_bytes()) {
         current.failed_claims += 1;
         return if current.failed_claims >= MAX_FAILED_CLAIMS {
             Err(PairingClaimError::RateLimited)
@@ -453,16 +590,57 @@ fn claim_pairing_session_at(
             Err(PairingClaimError::InvalidCode)
         };
     }
+    let proof = match (request.qr_secret.as_deref(), current.qr_secret.as_deref()) {
+        (Some(presented), Some(expected))
+            if constant_time_eq(
+                presented.trim().to_ascii_uppercase().as_bytes(),
+                expected.as_bytes(),
+            ) =>
+        {
+            PairingClaimProof::QrAnchored
+        }
+        (Some(_), _) => {
+            // A wrong QR secret with the right code is not a typo a person
+            // made; count it like a wrong code rather than downgrading it.
+            current.failed_claims += 1;
+            return if current.failed_claims >= MAX_FAILED_CLAIMS {
+                Err(PairingClaimError::RateLimited)
+            } else {
+                Err(PairingClaimError::InvalidCode)
+            };
+        }
+        (None, _) => PairingClaimProof::TypedCode,
+    };
+    let claimed = ClaimedPairingSession {
+        desktop_id: current.session.desktop_id.clone(),
+        desktop_name: current.session.desktop_name.clone(),
+        proof,
+    };
+    *active = None;
+    Ok(claimed)
+}
 
+/// Persists a device the pairing ceremony has admitted and issues its
+/// credentials. `channel_public_key` is the static key the sealed session
+/// authenticated the phone with; a legacy plaintext claim passes `None`.
+pub fn register_trusted_device_at(
+    config: &Config,
+    session: &ClaimedPairingSession,
+    device_id: &str,
+    device_name: &str,
+    channel_public_key: Option<&str>,
+    now_ms: u64,
+) -> Result<PairingClaimResponse, PairingClaimError> {
     let device_secret = generate_device_secret().map_err(PairingClaimError::Persistence)?;
     let material = issue_push_pairing_material(config, device_id, now_ms)
         .map_err(PairingClaimError::Persistence)?;
     let response = PairingClaimResponse {
-        desktop_id: current.session.desktop_id.clone(),
-        desktop_name: current.session.desktop_name.clone(),
+        desktop_id: session.desktop_id.clone(),
+        desktop_name: session.desktop_name.clone(),
         device_secret: device_secret.clone(),
         desktop_push_identity: material.desktop_push_identity,
         push_pairing_cert: material.push_pairing_cert,
+        secure_channel: channel_public_key.is_some(),
     };
     let store_path = Path::new(&config.pairing_store_path);
     let mut store = PairingStore::load(store_path).map_err(PairingClaimError::Persistence)?;
@@ -474,11 +652,14 @@ fn claim_pairing_session_at(
     );
     if let Some(device) = store.trusted_device_mut(&response.desktop_id, device_id) {
         device.push_identity_public_key = Some(response.desktop_push_identity.public_key.clone());
+        // A re-pair replaces the key; a legacy re-pair clears it, because
+        // the phone that just paired in plaintext will not present the old
+        // one and must not be reachable through it.
+        device.channel_public_key = channel_public_key.map(str::to_string);
     }
     store
         .save(store_path)
         .map_err(PairingClaimError::Persistence)?;
-    *active = None;
     Ok(response)
 }
 
@@ -959,6 +1140,7 @@ mod tests {
                 code,
                 device_id: "phone-1".to_string(),
                 device_name: "Kanna Mobile".to_string(),
+                qr_secret: None,
             },
             2_000,
         )
@@ -1030,6 +1212,7 @@ mod tests {
                 code,
                 device_id: "phone-1".to_string(),
                 device_name: "Kanna Mobile".to_string(),
+                qr_secret: None,
             },
             2_000,
         )
@@ -1093,6 +1276,7 @@ mod tests {
                 code,
                 device_id: "phone-1".to_string(),
                 device_name: "Kanna Mobile".to_string(),
+                qr_secret: None,
             },
             2_000,
         )
@@ -1113,6 +1297,7 @@ mod tests {
                 code: replacement_code,
                 device_id: "phone-1".to_string(),
                 device_name: "Kanna Mobile".to_string(),
+                qr_secret: None,
             },
             5_000,
         )
@@ -1154,6 +1339,7 @@ mod tests {
                     code: "BAD000".to_string(),
                     device_id: "phone-1".to_string(),
                     device_name: "Kanna Mobile".to_string(),
+                    qr_secret: None,
                 },
                 2_000,
             )
@@ -1174,6 +1360,7 @@ mod tests {
                     code: "BAD000".to_string(),
                     device_id: "phone-1".to_string(),
                     device_name: "Kanna Mobile".to_string(),
+                    qr_secret: None,
                 },
                 2_000,
             ),
@@ -1195,6 +1382,7 @@ mod tests {
                     code,
                     device_id: "phone-1".to_string(),
                     device_name: "Kanna Mobile".to_string(),
+                    qr_secret: None,
                 },
                 1_000 + super::PAIRING_TTL_MS + 1,
             ),

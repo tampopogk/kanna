@@ -1094,7 +1094,7 @@ async fn run_relay_loop_with_timing(
                                             crate::ksp::handle_tungstenite_stream(
                                                 socket,
                                                 tunnel_state,
-                                                relay_tunnel_ksp_auth_mode(),
+                                                crate::http_api::secure_channel::StreamOrigin::RelayTunnel,
                                             )
                                             .await;
                                         }
@@ -1640,6 +1640,26 @@ pub(crate) async fn dispatch_relay_http_invoke(
         authenticated_user_id,
         source_desktop_id,
     } = request;
+    // An invoke that names no relay-attested source desktop is the mobile
+    // app's legacy control path: the relay's account session is the only
+    // authority behind it, and it hands the request body (task input text
+    // included) to the relay in the clear. Once legacy mobile access is
+    // off, only a secure-channel session may control this desktop from a
+    // phone; desktop-to-desktop invokes keep their relay-attested identity.
+    if source_desktop_id.is_none() && !http_state.legacy_mobile_access_allowed() {
+        log::warn!("Refusing account-only relay HTTP invoke #{id} {method} {path}: legacy mobile access is off");
+        let response = RelayMessage::Response {
+            id,
+            data: None,
+            error: Some(
+                "this desktop only accepts end-to-end encrypted mobile sessions; update Kanna Mobile and pair again"
+                    .to_string(),
+            ),
+            status: Some(401),
+            body: None,
+        };
+        return send_relay_response_message(&sink, response).await;
+    }
     let permit = match invoke_permits.for_path(&path).try_acquire_owned() {
         Ok(permit) => permit,
         Err(_) => {
@@ -1754,10 +1774,6 @@ fn relay_exit_event(session_id: &str, code: i32) -> RelayMessage {
             "code": code,
         }),
     }
-}
-
-fn relay_tunnel_ksp_auth_mode() -> crate::ksp::AuthMode {
-    crate::ksp::AuthMode::AlreadyAuthenticated
 }
 
 async fn send_relay_event(sink: &Arc<Mutex<relay_client::WsSink>>, event: RelayMessage) -> bool {
@@ -3223,6 +3239,7 @@ mod tests {
                 code,
                 device_id: "phone-anonymous".to_string(),
                 device_name: "Test Phone".to_string(),
+                qr_secret: None,
             },
         )
         .expect("claim pairing");
@@ -3541,6 +3558,7 @@ mod tests {
                 code,
                 device_id: "phone-dual-identity".to_string(),
                 device_name: "Test Phone".to_string(),
+                qr_secret: None,
             },
         )
         .expect("claim pairing");
@@ -3721,6 +3739,7 @@ mod tests {
                 code,
                 device_id: "phone-offline".to_string(),
                 device_name: "Offline Phone".to_string(),
+                qr_secret: None,
             },
         )
         .expect("claim pairing");
@@ -3884,6 +3903,7 @@ mod tests {
                     code,
                     device_id: device_id.to_string(),
                     device_name: format!("{device_id} Phone"),
+                    qr_secret: None,
                 },
             )
             .expect("claim pairing")
@@ -4755,14 +4775,6 @@ mod tests {
             "routine relay reconnect must retain the creator-process fence"
         );
         let _ = std::fs::remove_file(db_path);
-    }
-
-    #[test]
-    fn relay_tunnel_ksp_auth_is_already_satisfied_by_relay() {
-        assert_eq!(
-            relay_tunnel_ksp_auth_mode(),
-            crate::ksp::AuthMode::AlreadyAuthenticated
-        );
     }
 
     #[tokio::test]

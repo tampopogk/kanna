@@ -251,6 +251,20 @@ impl Config {
     /// `machine_trust_store_path`: a new required config field would break
     /// every literal `Config` test fixture in this crate for a value that
     /// has no independent reason to be configured separately.
+    /// Where `channel_identity` persists this desktop's secure-channel
+    /// identity: beside the pairing store, like the other identities.
+    pub(crate) fn secure_channel_identity_path(&self) -> Option<PathBuf> {
+        if self.pairing_store_path.is_empty() {
+            return None;
+        }
+        Some(
+            Path::new(&self.pairing_store_path)
+                .parent()
+                .unwrap_or_else(|| Path::new("."))
+                .join("secure-channel-identity.json"),
+        )
+    }
+
     pub(crate) fn lan_tls_identity_path(&self) -> Option<PathBuf> {
         if self.pairing_store_path.is_empty() {
             return None;

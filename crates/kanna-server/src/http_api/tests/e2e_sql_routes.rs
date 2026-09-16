@@ -230,6 +230,18 @@ async fn e2e_mobile_controls_gate_direct_lan_but_preserve_tunneled_transport() {
         inventory.is_some_and(|providers| providers.is_array()),
         "status must report which agent providers this machine can run"
     );
+    let channel_key = tunneled_body
+        .as_mut()
+        .and_then(|body| body.as_object_mut())
+        .and_then(|body| body.remove("channelPublicKey"));
+    assert!(channel_key.is_some_and(|key| key.is_string()));
+    assert_eq!(
+        tunneled_body
+            .as_mut()
+            .and_then(|body| body.as_object_mut())
+            .and_then(|body| body.remove("secureChannelVersion")),
+        Some(json!(1))
+    );
     assert_eq!(
         tunneled_body,
         Some(json!({
