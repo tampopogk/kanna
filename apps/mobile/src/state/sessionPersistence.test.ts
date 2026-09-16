@@ -450,4 +450,33 @@ describe("createSessionPersistence", () => {
 
     expect(loaded?.repoCreationProfiles?.map((profile) => profile.agentProvider)).toEqual(AGENT_PROVIDERS);
   });
+
+  it("round-trips the pinned desktop channel key on a trusted desktop record", async () => {
+    const storage = new Map<string, string>();
+    const persistence = createSessionPersistence({
+      getItem: async (key) => storage.get(key) ?? null,
+      setItem: async (key, value) => {
+        storage.set(key, value);
+      }
+    });
+    await persistence.save({
+      mobileDeviceId: "mobile-1",
+      selectedDesktopId: null,
+      selectedRepoId: null,
+      selectedTaskId: null,
+      activeView: "tasks",
+      trustedDesktops: [
+        {
+          desktopId: "desktop-1",
+          displayName: "Sealed",
+          lanEndpoints: [],
+          lastSeenAt: "2026-09-16T00:00:00.000Z",
+          channelPublicKey: "  pinned-key  "
+        }
+      ]
+    });
+    const loaded = await persistence.load();
+    expect(loaded?.trustedDesktops?.[0]).toMatchObject({ desktopId: "desktop-1", channelPublicKey: "pinned-key" });
+    expect("deviceSecret" in (loaded?.trustedDesktops?.[0] ?? {})).toBe(false);
+  });
 });

@@ -1153,7 +1153,10 @@ describe("createMobileController", () => {
 
     await expect(controller.pairMachineByCode("ABC123")).resolves.toBe("desktop-1");
 
-    expect(pairingService.claimCode).toHaveBeenCalledWith("ABC123");
+    expect(pairingService.claimCode).toHaveBeenCalledWith(
+      "ABC123",
+      expect.objectContaining({ onConfirmationRequired: expect.any(Function) })
+    );
     expect(store.getState().trustedDesktops).toContainEqual(trustedDesktop);
     expect(replaceClientForTrustChange).toHaveBeenCalledTimes(1);
     expect(client.listDesktops).toHaveBeenCalled();
@@ -5640,8 +5643,12 @@ describe("createMobileController", () => {
   });
 
   it("generates an eight-hex task id and reuses it for idempotent recovery", async () => {
+    // Task ids come from the CSPRNG (four bytes, hex): stub the bytes.
     vi.stubGlobal("crypto", {
-      randomUUID: () => "01234567-89ab-4cde-8f01-23456789abcd"
+      getRandomValues: <T extends Uint8Array>(array: T) => {
+        array.set([0x01, 0x23, 0x45, 0x67].slice(0, array.length));
+        return array;
+      }
     });
     const store = createSessionStore();
     const client = createClientMock();
@@ -5673,7 +5680,9 @@ describe("createMobileController", () => {
     }
   });
 
-  it("falls back to a valid short identity when native crypto is unavailable", async () => {
+  it("refuses to create a task when secure randomness is unavailable", async () => {
+    // A task id from a predictable source would be the same defect as a
+    // predictable key: the controller fails closed rather than inventing one.
     vi.stubGlobal("crypto", {
       randomUUID: () => {
         throw new Error("randomUUID unavailable");
@@ -5691,13 +5700,10 @@ describe("createMobileController", () => {
     controller.openComposer();
     controller.updateComposerPrompt("Use fallback identity");
 
-    await controller.createTask();
-
-    expect(client.createTask).toHaveBeenCalledWith(
-      expect.objectContaining({
-        taskId: expect.stringMatching(/^[0-9a-f]{8}$/)
-      })
-    );
+    await expect(
+      Promise.resolve().then(() => controller.createTask())
+    ).rejects.toThrow(/getRandomValues unavailable/);
+    expect(client.createTask).not.toHaveBeenCalled();
   });
 
   it("does not dispatch create when persisting the frozen attempt fails", async () => {

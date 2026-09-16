@@ -588,9 +588,10 @@ function DesktopsRoute({ navigation }: NativeStackScreenProps<RootStackParamList
     () => buildMachineInventory({
       accountDesktops: state.accountDesktops,
       manualDesktops: state.trustedDesktops,
-      liveLanDesktops: state.liveLanDesktops
+      liveLanDesktops: state.liveLanDesktops,
+      secureChannelStates: state.secureChannelStates
     }),
-    [state.accountDesktops, state.liveLanDesktops, state.trustedDesktops]
+    [state.accountDesktops, state.liveLanDesktops, state.trustedDesktops, state.secureChannelStates]
   );
   return (
     <UtilityScreen>
@@ -598,6 +599,7 @@ function DesktopsRoute({ navigation }: NativeStackScreenProps<RootStackParamList
         machines={machines}
         sourceWarnings={state.machineSourceWarnings}
         pairingVisible={pairingVisible}
+        pairingConfirmationSas={state.pairingConfirmationSas}
         onBack={() => navigation.goBack()}
         onOpenPairing={() => setPairingVisible(true)}
         onClosePairing={() => setPairingVisible(false)}
@@ -976,9 +978,10 @@ function ComposerOverlay() {
     () => buildMachineInventory({
       accountDesktops: state.accountDesktops,
       manualDesktops: state.trustedDesktops,
-      liveLanDesktops: state.liveLanDesktops
+      liveLanDesktops: state.liveLanDesktops,
+      secureChannelStates: state.secureChannelStates
     }),
-    [state.accountDesktops, state.liveLanDesktops, state.trustedDesktops]
+    [state.accountDesktops, state.liveLanDesktops, state.trustedDesktops, state.secureChannelStates]
   );
   const composerMachines = useMemo(
     () => machines.map((machine) => ({

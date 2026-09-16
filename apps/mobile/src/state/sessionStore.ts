@@ -35,6 +35,7 @@ import {
   type LocalTaskListPreferences
 } from "./taskListPreferences";
 import type { MobileAuthState } from "../lib/firebase/auth";
+import type { SecureChannelStatus } from "../lib/security/secureChannelPeer";
 import type {
   PersistedSessionContext,
   RepoCreationProfile,
@@ -169,6 +170,9 @@ export interface SessionState {
   accountDesktops: DesktopSummary[];
   liveLanDesktops: DesktopSummary[];
   trustedDesktops: TrustedDesktopRecord[];
+  /** Observed secure-channel outcome per desktop (not persisted). */
+  secureChannelStates: Record<string, SecureChannelStatus>;
+  pairingConfirmationSas: string | null;
   pendingAnonymousPushRevocations: TrustedDesktopRecord[];
   machineSourceWarnings: { account: string | null; local: string | null };
   repoCreationProfiles: RepoCreationProfile[];
@@ -340,6 +344,10 @@ export interface SessionStore {
     local: DesktopSummary[];
   }): void;
   setTrustedDesktops(desktops: TrustedDesktopRecord[]): void;
+  setSecureChannelState(desktopId: string, status: SecureChannelStatus): void;
+  clearSecureChannelState(desktopId: string): void;
+  /** The SAS a typed-code pairing is waiting on; null when none is. */
+  setPairingConfirmationSas(sas: string | null): void;
   setPendingAnonymousPushRevocations(desktops: TrustedDesktopRecord[]): void;
   upsertTrustedDesktop(desktop: TrustedDesktopRecord): void;
   removeTrustedDesktop(desktopId: string): void;
@@ -509,6 +517,8 @@ export function createSessionStore(): SessionStore {
     accountDesktops: [],
     liveLanDesktops: [],
     trustedDesktops: [],
+    secureChannelStates: {},
+    pairingConfirmationSas: null,
     pendingAnonymousPushRevocations: [],
     machineSourceWarnings: { account: null, local: null },
     repoCreationProfiles: [],
@@ -898,6 +908,26 @@ export function createSessionStore(): SessionStore {
     },
     setTrustedDesktops(trustedDesktops) {
       state = { ...state, trustedDesktops };
+      publish();
+    },
+    setSecureChannelState(desktopId, status) {
+      const current = state.secureChannelStates[desktopId];
+      if (current && JSON.stringify(current) === JSON.stringify(status)) return;
+      state = {
+        ...state,
+        secureChannelStates: { ...state.secureChannelStates, [desktopId]: status }
+      };
+      publish();
+    },
+    setPairingConfirmationSas(sas) {
+      if (state.pairingConfirmationSas === sas) return;
+      state = { ...state, pairingConfirmationSas: sas };
+      publish();
+    },
+    clearSecureChannelState(desktopId) {
+      if (!(desktopId in state.secureChannelStates)) return;
+      const { [desktopId]: _removed, ...secureChannelStates } = state.secureChannelStates;
+      state = { ...state, secureChannelStates };
       publish();
     },
     setPendingAnonymousPushRevocations(pendingAnonymousPushRevocations) {

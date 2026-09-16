@@ -18,7 +18,24 @@ import type {
   RemoteTaskCompanionObserver,
   RemoteTaskTerminalObserver
 } from "./remoteTransport";
-import { cloudAccessAction, readCloudAccess, type CloudAccessSnapshot, createRelayTunnelWebSocketFactory, StreamClient } from "@kanna/stream-client";
+import { cloudAccessAction, readCloudAccess, type CloudAccessSnapshot, createRelayTunnelWebSocketFactory, StreamClient, type WebSocketFactory as StreamWebSocketFactory } from "@kanna/stream-client";
+import type { SealedWebSocketLike } from "@kanna/secure-channel";
+import { sealSocket, type SecureChannelPeer } from "../security/secureChannelPeer";
+
+/**
+ * How this phone must talk to one desktop through the relay.
+ * - `sealed`: the desktop key is pinned; every tunnel is a secure channel
+ *   and every control call is a sealed request frame. Nothing plaintext.
+ * - `legacy`: no pinned key (an older desktop, or a pairing made before
+ *   E2EE); the relay carries plaintext control and tunnels as before.
+ * - `unavailable`: the key is pinned but this phone cannot open a secure
+ *   channel right now (its identity has not loaded / cannot be created).
+ *   Never downgraded to legacy: the desktop is unreachable until it can.
+ */
+export type SecureChannelRoute =
+  | { kind: "sealed"; peer: SecureChannelPeer }
+  | { kind: "legacy" }
+  | { kind: "unavailable"; reason: string };
 
 export interface RelaySocketLike {
   readyState: number;
@@ -56,6 +73,8 @@ export interface RelayDesktopClientDependencies {
   onAuthError?(): void;
   onAccessChange?(userId: string, access: CloudAccessSnapshot): void;
   reconnectDelaysMs?: readonly number[];
+  /** Absent means every desktop is legacy (the pre-E2EE behaviour). */
+  getSecureChannelRoute?(desktopId: string): SecureChannelRoute;
 }
 
 interface PendingInvoke {
@@ -89,7 +108,8 @@ export function createRelayDesktopClient({
   relayUrl,
   onAuthError,
   onAccessChange,
-  reconnectDelaysMs = [250, 500, 1000, 2000]
+  reconnectDelaysMs = [250, 500, 1000, 2000],
+  getSecureChannelRoute = () => ({ kind: "legacy" })
 }: RelayDesktopClientDependencies): RelayDesktopClient {
   let socket: RelaySocketLike | null = null;
   let readyPromise: Promise<void> | null = null;
@@ -108,6 +128,25 @@ export function createRelayDesktopClient({
   let access: CloudAccessSnapshot | null = null;
   let accessUserId: string | null = null;
 
+  /** The tunnel factory for a desktop, sealed when its key is pinned. An
+   * `unavailable` route yields sockets that refuse immediately, so nothing
+   * plaintext is ever attempted for a desktop that expects a channel. */
+  const tunnelFactoryForDesktop = (desktopId: string): StreamWebSocketFactory => {
+    const tunnelFactory = createRelayTunnelWebSocketFactory({
+      relayUrl,
+      desktopId,
+      getIdentityToken: (forceRefresh) => getIdToken(forceRefresh),
+      webSocketFactory: createSocket,
+    });
+    const route = getSecureChannelRoute(desktopId);
+    if (route.kind === "legacy") return tunnelFactory;
+    if (route.kind === "unavailable") {
+      return () => refusedSocket(`secure channel unavailable: ${route.reason}`);
+    }
+    return (url, options) =>
+      sealSocket(tunnelFactory(url, options) as unknown as SealedWebSocketLike, route.peer) as unknown as ReturnType<StreamWebSocketFactory>;
+  };
+
   const streamClientForDesktop = (desktopId: string) => {
     const existing = streamClients.get(desktopId);
     if (existing) {
@@ -116,12 +155,7 @@ export function createRelayDesktopClient({
 
     const client = new StreamClient({
       url: relayUrl,
-      webSocketFactory: createRelayTunnelWebSocketFactory({
-        relayUrl,
-        desktopId,
-        getIdentityToken: (forceRefresh) => getIdToken(forceRefresh),
-        webSocketFactory: createSocket,
-      }),
+      webSocketFactory: tunnelFactoryForDesktop(desktopId),
       reconnectDelaysMs: [250, 500, 1000, 2000],
       onAuthError,
       onAccessRequired: () => { ensureSocket(); },
@@ -261,6 +295,35 @@ export function createRelayDesktopClient({
     );
 
     return promise;
+  };
+
+  const sendSealedInvoke = async (
+    request: RemoteDesktopInvocationRequest
+  ): Promise<unknown> => {
+    const client = streamClientForDesktop(request.desktopId);
+    const response = await client.request(
+      request.method,
+      request.path,
+      request.body === null ? undefined : request.body
+    );
+    if (response.status >= 400) {
+      const body = response.body;
+      const errorText =
+        body && typeof body === "object" && "error" in body
+          ? (body as { error?: unknown }).error
+          : body;
+      const refusal =
+        typeof errorText === "string" ? readServerFailureBody(errorText) : readServerRefusal(body);
+      throw new ServerRefusalError(
+        `Remote desktop request failed with status ${response.status}.${
+          refusal.message ? ` ${refusal.message}` : ""
+        }`,
+        refusal.reason,
+        response.status,
+        refusal.message
+      );
+    }
+    return response.body ?? null;
   };
 
   const handleRelayMessage = (raw: unknown) => {
@@ -473,6 +536,17 @@ export function createRelayDesktopClient({
       if (hasOpenedControlSocket) ensureSocket();
     },
     invokeDesktop(request: RemoteDesktopInvocationRequest) {
+      const route = getSecureChannelRoute(request.desktopId);
+      if (route.kind === "unavailable") {
+        return Promise.reject(new Error(
+          `This desktop requires an end-to-end encrypted connection, which this phone cannot open right now (${route.reason}).`
+        ));
+      }
+      if (route.kind === "sealed") {
+        // The relay never sees the method, path or body: the request is a
+        // sealed KSP frame inside the tunnel, answered the same way.
+        return sendSealedInvoke(request);
+      }
       return sendInvoke(request.desktopId, {
         method: request.method,
         path: request.path,
@@ -603,12 +677,7 @@ export function createRelayDesktopClient({
     observeTaskAgent({ desktopId, taskId }, listener) {
       const client = new StreamClient({
         url: relayUrl,
-        webSocketFactory: createRelayTunnelWebSocketFactory({
-          relayUrl,
-          desktopId,
-          getIdentityToken: (forceRefresh) => getIdToken(forceRefresh),
-          webSocketFactory: createSocket,
-        }),
+        webSocketFactory: tunnelFactoryForDesktop(desktopId),
         reconnectDelaysMs: [250, 500, 1000, 2000],
         onAuthError,
         onAccessRequired: () => { ensureSocket(); },
@@ -710,6 +779,25 @@ export function createRelayDesktopClient({
       } satisfies TaskCompanionSubscription;
     }
   };
+}
+
+/** A socket that closes at once with the secure-channel refusal code. */
+function refusedSocket(reason: string): ReturnType<StreamWebSocketFactory> {
+  const socket: ReturnType<StreamWebSocketFactory> = {
+    onopen: null,
+    onmessage: null,
+    onclose: null,
+    onerror: null,
+    send() {},
+    close() {}
+  };
+  setTimeout(() => {
+    socket.onmessage?.({
+      data: JSON.stringify({ type: "error", code: "secure_channel_unavailable", message: reason })
+    });
+    socket.onclose?.({ code: 4910, reason });
+  }, 0);
+  return socket;
 }
 
 function createSequentialIdFactory(): () => string {

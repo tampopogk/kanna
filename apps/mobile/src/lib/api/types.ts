@@ -16,6 +16,13 @@ export interface MobileServerStatus {
   /** Optional direct-stream epoch. Absence identifies desktops that expose
    * only the legacy `/v1/stream` endpoint. */
   kspStreamVersion?: number;
+  /** The desktop's secure-channel public key (unpadded base64url X25519),
+   * present when it serves end-to-end encrypted sessions. Read over plain
+   * LAN this is a capability signal and a trust-on-first-use candidate, not
+   * a trust anchor: a typed-code pairing that starts from it must confirm
+   * the short authentication string on both screens. */
+  channelPublicKey?: string;
+  secureChannelVersion?: number;
   /** Absent from desktops that predate write-path health reporting; absence
    * means the health is unknown, not unhealthy. */
   writePathHealth?: WritePathHealth;
@@ -120,10 +127,24 @@ export interface RunRepoCommandResponse {
   ownerLocalTaskId?: string;
 }
 
+/** Body of `POST /v1/mobile/build`: what this installation runs. */
+export interface MobileBuildReport {
+  environment: string;
+  channel: string;
+  runtimeVersion: string | null;
+  nativeVersion: string | null;
+  nativeBuild: string | null;
+  updateId: string | null;
+  source: string;
+}
+
 export interface PairingClaimRequest {
   code: string;
   deviceId: string;
   deviceName: string;
+  /** The QR-only secret from a `KANNA2` payload; proves the desktop key
+   * was read from the screen rather than the network. */
+  qrSecret?: string;
 }
 
 export interface DesktopPushIdentity {
@@ -157,6 +178,8 @@ export interface PairingClaimResponse {
   /** Additive phase-2 fields; absent when pairing an older desktop. */
   desktopPushIdentity?: DesktopPushIdentity;
   pushPairingCert?: PushPairingCertificate;
+  /** True when the desktop registered this phone's secure-channel key. */
+  secureChannel?: boolean;
 }
 
 export interface CreateTaskRequest {

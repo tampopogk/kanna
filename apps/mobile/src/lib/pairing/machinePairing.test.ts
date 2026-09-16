@@ -114,7 +114,10 @@ describe("machine pairing", () => {
       }],
       lastSeenAt: "2026-07-17T00:00:00.000Z"
     });
-    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    // One status probe (does this desktop serve the secure channel?) and one
+    // legacy claim, both to the desktop the QR named.
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(fetchImpl).toHaveBeenCalledWith("http://10.0.0.3:48120/v1/status", expect.anything());
     expect(fetchImpl).toHaveBeenCalledWith(
       "http://10.0.0.3:48120/v1/pairing/sessions/claim",
       expect.objectContaining({
@@ -137,7 +140,7 @@ describe("machine pairing", () => {
     await expect(
       pairingService(fetchImpl).claimPayload("KANNA1:DESKTOP-2:ABC123")
     ).resolves.toMatchObject({ desktopId: "DeSkToP-2" });
-    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
     expect(fetchImpl).toHaveBeenCalledWith(
       "http://10.0.0.3:48120/v1/pairing/sessions/claim",
       expect.anything()
@@ -243,7 +246,8 @@ describe("machine pairing", () => {
       desktopId: "desktop-1",
       displayName: "Desk One"
     });
-    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    // A status probe plus a claim per advertised desktop.
+    expect(fetchImpl).toHaveBeenCalledTimes(4);
   });
 
   it.each([
@@ -367,8 +371,8 @@ describe("pairing against native discovery events", () => {
       }],
       lastSeenAt: "2026-09-11T00:00:00.000Z"
     });
-    // Only the desktop the QR named was claimed.
-    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    // Only the desktop the QR named was probed and claimed.
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
     expect(fetchImpl).toHaveBeenCalledWith(
       "http://Jeremys-Mac-Studio.local:48121/v1/pairing/sessions/claim",
       expect.anything()
@@ -390,7 +394,7 @@ describe("pairing against native discovery events", () => {
     }, 5);
 
     await expect(claimed).resolves.toMatchObject({ desktopId: "desktop-2" });
-    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(fetchImpl).toHaveBeenCalledTimes(4);
   });
 
   it("reports an unreachable machine when the device cannot discover at all", async () => {

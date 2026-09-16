@@ -25,6 +25,12 @@ const PairingCamera = CameraView as unknown as React.ComponentType<{
 
 interface MachinePairingSheetProps {
   visible: boolean;
+  /**
+   * The six-digit short authentication string a typed-code pairing is
+   * waiting on. The desktop shows its own; the person confirms there only
+   * if the two match. Null when no pairing is waiting.
+   */
+  confirmationSas?: string | null;
   onClose(): void;
   onPairCode(code: string): Promise<void>;
   onPairPayload(payload: string): Promise<void>;
@@ -32,6 +38,7 @@ interface MachinePairingSheetProps {
 
 export function MachinePairingSheet({
   visible,
+  confirmationSas = null,
   onClose,
   onPairCode,
   onPairPayload
@@ -131,7 +138,26 @@ export function MachinePairingSheet({
             </Pressable>
           </View>
 
-          {submitting ? (
+          {submitting && confirmationSas ? (
+            <View
+              style={styles.progressCard}
+              testID={MOBILE_E2E_IDS.machinePairingConfirmation}
+            >
+              <View style={styles.progressCopy}>
+                <Text style={styles.progressTitle}>Confirm on the desktop</Text>
+                <Text style={styles.progressDetail}>
+                  Make sure the desktop shows this same code, then confirm there. If the codes differ, reject it: someone may be in the middle.
+                </Text>
+                <Text
+                  style={styles.sasCode}
+                  accessibilityLabel={`Confirmation code ${confirmationSas.split("").join(" ")}`}
+                  testID={MOBILE_E2E_IDS.machinePairingConfirmationCode}
+                >
+                  {confirmationSas.slice(0, 3)} {confirmationSas.slice(3)}
+                </Text>
+              </View>
+            </View>
+          ) : submitting ? (
             <View
               style={styles.progressCard}
               testID={MOBILE_E2E_IDS.machinePairingProgress}
@@ -269,7 +295,11 @@ function pairingFailureMessage(failure: unknown): string {
       expired: "That pairing session expired. Start a new one on the desktop.",
       "not-found": "No matching machine was found. Check that both devices are on the same network.",
       "rate-limited": "Too many attempts. Start a new pairing session on the desktop.",
-      unreachable: "The machine could not be reached. Check that both apps are open and on the same network."
+      unreachable: "The machine could not be reached. Check that both apps are open and on the same network.",
+      "confirmation-rejected": "The pairing was rejected on the desktop. If you did not reject it, someone else answered for your desktop.",
+      "confirmation-expired": "The desktop stopped waiting. Start a new pairing session and confirm it there.",
+      "not-verified": "This desktop's encrypted connection could not be verified. Update Kanna on the desktop, then try again.",
+      "secure-identity-unavailable": "This phone cannot create a secure identity. Set a device passcode and try again."
     };
     return messages[failure.reason] ?? failure.message;
   }
@@ -310,6 +340,7 @@ const styles = StyleSheet.create({
   },
   progressCopy: { flex: 1, gap: 3 },
   progressTitle: { color: "#F5F7FB", fontSize: 15, fontWeight: "800" },
+  sasCode: { color: "#F5F7FB", fontSize: 30, fontWeight: "800", letterSpacing: 4, marginTop: 8 },
   progressDetail: { color: "#9FB0C8", fontSize: 13, lineHeight: 19 },
   permissionCard: { backgroundColor: "#111D30", borderRadius: 16, gap: 12, padding: 16 },
   permissionText: { color: "#B4C2D8", fontSize: 14, lineHeight: 20 },

@@ -136,4 +136,23 @@ describe("buildMachineInventory", () => {
     ]);
     expect(summarizeMachines(machines)).toEqual({ total: 3, available: 2 });
   });
+
+  it("reports how a manual pairing is secured, preferring an observed outcome", () => {
+    const machines = buildMachineInventory({
+      accountDesktops: [],
+      liveLanDesktops: [],
+      manualDesktops: [
+        { desktopId: "sealed", displayName: "Sealed", lanEndpoints: [], lastSeenAt: "2026-09-16T00:00:00.000Z", channelPublicKey: "k" },
+        { desktopId: "legacy", displayName: "Legacy", lanEndpoints: [], lastSeenAt: "2026-09-16T00:00:00.000Z", deviceSecret: "s" },
+        { desktopId: "refused", displayName: "Refused", lanEndpoints: [], lastSeenAt: "2026-09-16T00:00:00.000Z", channelPublicKey: "k" }
+      ],
+      secureChannelStates: {
+        refused: { mode: "refused", refusal: "unsupported", detail: "old desktop" }
+      }
+    });
+    const byId = new Map(machines.map((machine) => [machine.desktopId, machine.secureChannel]));
+    expect(byId.get("sealed")).toEqual({ mode: "sealed" });
+    expect(byId.get("legacy")).toEqual({ mode: "legacy" });
+    expect(byId.get("refused")).toEqual({ mode: "refused", refusal: "unsupported", detail: "old desktop" });
+  });
 });

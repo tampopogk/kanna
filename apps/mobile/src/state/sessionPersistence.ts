@@ -52,6 +52,15 @@ export interface TrustedDesktopRecord {
   /** Pair-scoped anonymous push material issued by this desktop. */
   desktopPushIdentity?: DesktopPushIdentity;
   pushPairingCert?: PushPairingCertificate;
+  /**
+   * The desktop's secure-channel public key, pinned at pairing (from the
+   * QR, or confirmed by the short authentication string). Present only for
+   * pairings made with an end-to-end-encrypting desktop; its absence marks a
+   * legacy (unencrypted, bearer-secret) pairing. It is a public key, so it
+   * lives beside the record; the phone's own private key is in the secure
+   * key store.
+   */
+  channelPublicKey?: string;
 }
 
 export interface SessionPersistence {
@@ -198,6 +207,9 @@ function parseTrustedDesktops(value: unknown): TrustedDesktopRecord[] {
             : lanEndpoints[0]?.lastSeenAt ?? new Date(0).toISOString(),
         ...(typeof candidate.deviceSecret === "string" && candidate.deviceSecret
           ? { deviceSecret: candidate.deviceSecret }
+          : {}),
+        ...(typeof candidate.channelPublicKey === "string" && candidate.channelPublicKey.trim()
+          ? { channelPublicKey: candidate.channelPublicKey.trim() }
           : {}),
         ...pushMaterial
       }

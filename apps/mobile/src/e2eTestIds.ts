@@ -182,6 +182,8 @@ export const MOBILE_E2E_IDS = {
   machinePairingCodeInput: "mobile.machine-pairing.code",
   machinePairingSubmitButton: "mobile.machine-pairing.submit",
   machinePairingProgress: "mobile.machine-pairing.progress",
+  machinePairingConfirmation: "mobile.machine-pairing.confirmation",
+  machinePairingConfirmationCode: "mobile.machine-pairing.confirmation-code",
   machinePairingError: "mobile.machine-pairing.error",
   machinePairingCloseButton: "mobile.machine-pairing.close",
   machinePairingOpenSettingsButton: "mobile.machine-pairing.open-settings",
@@ -194,6 +196,9 @@ export const MOBILE_E2E_IDS = {
   },
   machineOrigin(desktopId: string, origin: "account" | "manual"): string {
     return `mobile.machine.${desktopId}.origin.${origin}`;
+  },
+  machineSecurity(desktopId: string): string {
+    return `mobile.machine.${desktopId}.security`;
   },
   machineRemoveButton(desktopId: string): string {
     return `mobile.machine.${desktopId}.remove`;

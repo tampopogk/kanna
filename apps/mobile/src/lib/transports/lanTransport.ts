@@ -10,6 +10,8 @@ import type {
   TaskTerminalSubscription
 } from "../api/client";
 import { StreamClient, type WebSocketLike as StreamWebSocketLike } from "@kanna/stream-client";
+import type { SealedWebSocketLike } from "@kanna/secure-channel";
+import { sealSocket, type SecureChannelPeer } from "../security/secureChannelPeer";
 import type {
   CreateTaskRequest,
   CreateTaskResponse,
@@ -91,9 +93,21 @@ export function createLanTransport(
     ) => WebSocketLike;
     return new ReactNativeWebSocket(url, undefined, { headers });
   },
-  options: { deviceCredentials?: LanDeviceCredentials | null } = {}
+  options: {
+    deviceCredentials?: LanDeviceCredentials | null;
+    /**
+     * When set, every KSP socket to this desktop is wrapped in the Kanna
+     * secure channel and every REST call travels as a sealed KSP request
+     * frame. No bearer secret is sent in any form: the legacy
+     * `deviceCredentials` are ignored for transport, the handshake is the
+     * authentication.
+     */
+    secureChannel?: SecureChannelPeer | null;
+  } = {}
 ): KannaTransport {
-  const deviceCredentials = options.deviceCredentials ?? null;
+  const secureChannel = options.secureChannel ?? null;
+  const deviceCredentials = secureChannel ? null : (options.deviceCredentials ?? null);
+  const authenticated = Boolean(deviceCredentials) || Boolean(secureChannel);
   let kspStreamVersion: 1 | 2 = 1;
   const streamCredential = deviceCredentials
     ? JSON.stringify(deviceCredentials)
@@ -105,10 +119,65 @@ export function createLanTransport(
           "X-Kanna-Device-Secret": deviceCredentials.deviceSecret
         }
       : {};
-  const createKspSocket = (url: string): WebSocketLike =>
-    deviceCredentials
+  const createKspSocket = (url: string): WebSocketLike => {
+    if (secureChannel) {
+      const inner = createSocket(url) as unknown as SealedWebSocketLike;
+      return sealSocket(inner, secureChannel) as unknown as WebSocketLike;
+    }
+    return deviceCredentials
       ? createSocket(url, credentialHeaders())
       : createSocket(url);
+  };
+  // One sealed control session carries every REST-shaped call as a KSP
+  // request frame. Created on first use, replaced when it refuses (the
+  // StreamClient stops on a secure-channel refusal and reports it through
+  // the peer's `onRefusal`).
+  let controlClient: StreamClient | null = null;
+  const sealedControlClient = (): StreamClient => {
+    if (controlClient) return controlClient;
+    controlClient = new StreamClient({
+      url: buildKspWebSocketUrl(baseUrl, kspStreamVersion),
+      webSocketFactory: (url) => createKspSocket(url) as unknown as StreamWebSocketLike,
+      reconnectDelaysMs: [250, 500, 1000, 2000],
+      onSecureChannelRefused() {
+        controlClient = null;
+      }
+    });
+    return controlClient;
+  };
+  const sealedRequest = async <T>(
+    path: string,
+    init?: { method?: string; body?: string }
+  ): Promise<T> => {
+    let body: unknown;
+    if (init?.body !== undefined) {
+      try {
+        body = JSON.parse(init.body);
+      } catch {
+        throw new Error(`LAN request body for ${path} is not JSON`);
+      }
+    }
+    const response = await sealedControlClient().request(init?.method ?? "GET", path, body);
+    if (response.status >= 400) {
+      const responseBody = response.body;
+      const errorText =
+        responseBody && typeof responseBody === "object" && "error" in responseBody
+          ? (responseBody as { error?: unknown }).error
+          : responseBody;
+      const { reason, message } =
+        typeof errorText === "string" ? readServerFailureBody(errorText) : readServerRefusal(responseBody);
+      throw new ServerRefusalError(
+        `LAN request failed (${response.status}) for ${path}${message ? `: ${message}` : ""}`,
+        reason,
+        response.status,
+        message
+      );
+    }
+    if (response.status === 204 || response.body === undefined || response.body === null) {
+      return undefined as T;
+    }
+    return response.body as T;
+  };
   // The server's own explanation and machine-readable reason for a failed
   // request, when it sent them. Read from the raw body rather than as JSON:
   // the server's structured refusals are JSON, but most of its handlers refuse
@@ -136,6 +205,12 @@ export function createLanTransport(
       signal?: AbortSignal;
     }
   ): Promise<T> => {
+    if (secureChannel && path !== "/v1/status") {
+      // Status is the unauthenticated bootstrap read and stays plaintext
+      // (it carries the capability signal itself); everything else rides
+      // inside the sealed session.
+      return sealedRequest<T>(path, init);
+    }
     const response = await fetchImpl(
       `${baseUrl}${path}`,
       deviceCredentials
@@ -307,8 +382,14 @@ export function createLanTransport(
       const status = await request<MobileServerStatus>("/v1/status");
       return typeof status.taskInputAttachmentVersion === "number";
     },
+    reportMobileBuild: (report) =>
+      request<void>("/v1/mobile/build", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(report)
+      }),
     readTaskFile: async (taskId: string, path: string): Promise<TaskFileContent> => {
-      if (!deviceCredentials) {
+      if (!authenticated) {
         throw new Error(
           "Task file preview requires a paired device or an authenticated relay connection."
         );
@@ -318,7 +399,7 @@ export function createLanTransport(
       );
     },
     downloadTaskFile: async (taskId: string, path: string): Promise<TaskFileContent> => {
-      if (!deviceCredentials) {
+      if (!authenticated) {
         throw new Error(
           "Task file download requires a paired device or an authenticated relay connection."
         );
@@ -333,7 +414,7 @@ export function createLanTransport(
       taskId: string,
       mentions: readonly TaskFileMentionInput[]
     ): Promise<TaskFileMentionResolution> => {
-      if (!deviceCredentials) {
+      if (!authenticated) {
         throw new Error(
           "Task file resolution requires a paired device or an authenticated relay connection."
         );
@@ -351,7 +432,7 @@ export function createLanTransport(
       taskId: string,
       diffRequest?: TaskDiffRequest
     ): Promise<TaskDiffContent> => {
-      if (!deviceCredentials) {
+      if (!authenticated) {
         return Promise.reject(
           new Error(
             "Task diff requires a paired device or an authenticated relay connection. Re-pair this machine to view diffs over LAN."
@@ -423,7 +504,7 @@ export function createLanTransport(
             unavailableReason:
               availability === "disconnected"
                 ? "connecting"
-                : !deviceCredentials
+                : !authenticated
                   ? "authentication_required"
                   : availability === "unsupported"
                     ? "capability_required"
