@@ -153,3 +153,67 @@ PIDs absent, no B-owned processes and no17410–17422 listeners. Product B remai
 clean, DB/fixtures retained, no transfer attempted. Exact paths and resolver
 identity are recorded in the existing structured evidence. Both test endpoints
 are now cleaned; full B system acceptance remains incomplete.
+
+### Published B server abort diagnosis (task 1e957284)
+
+The private Apport report and core for server PID168574 were preserved without
+publishing process memory. The persistent owner installation was left on the
+exact published `kanna-staging 0.2.0~staging.2-1` package and was not used as a
+fixture. All diagnosis ran under the new isolated guest root
+`/home/jeremy/.tmp/kanna-1e957284`, with fresh ports, database, daemon and
+transfer state.
+
+The exact installed B binaries reproduced the SIGABRT after their owning
+desktop was terminated. A second reproduction deliberately kept the daemon
+running: the server aborted about three seconds before the canonical daemon
+stop was issued, and the daemon then shut down cleanly. This rules out daemon
+shutdown as the cause of the reproduction; its timing in the original report
+was incidental.
+
+The desktop starts the server with stderr connected to a pipe drained by a
+desktop-owned thread, while the server is deliberately allowed to outlive the
+desktop. Once the desktop exits, a subsequent duplicated log record writes to
+the pipe without a reader. `flexi_logger` defaults to panicking when that error
+cannot itself be reported through stderr, and the published release panic path
+aborts the process. The server's rotating log file remains a viable durable
+sink throughout.
+
+The fix disables `flexi_logger`'s broken-error-channel panic policy for both
+the rotating-file logger and its stderr-only fallback. A process-level
+regression launches the real server with a live stderr reader, confirms durable
+logging has initialized, then closes only that reader. It observes a later
+terminal-watcher record in the durable log and verifies that the server remains
+alive. The test fails against the old policy with server exit status 101 and
+passes with the fix. The focused logging tests also pass. No release artifact
+was rebuilt or republished, and the private core remains untracked.
+
+#### Corroborating macOS staging abort
+
+A separate real macOS staging incident establishes the same shared-server
+failure path. Server PID58807 had been adopted from an earlier desktop
+generation (launch08:38:39 local, PPID1) and aborted at17:06:18.539 with a
+symbolicated main-thread stack ending in
+`panic_in_cleanup -> kanna_server::runtime::run_server_services`. Daemon58790
+committed its handoff to13386 and the successor recorded adoption at
+17:06:18.538. The handoff preserved all47 sessions with no skipped dead
+sessions; it supplied a log trigger, not a daemon failure.
+
+The server's LAN-routing Bonjour worker had emitted a warning on a stable
+five-second cadence through17:06:08.304879. The expected17:06:13 warning is
+absent immediately before the successor daemon started at17:06:13.630, and the
+crash report's thread inventory no longer contains the
+`kanna-lan-routing-advertisement` worker (the distinct
+`kanna-mobile-bonjour` worker is still present). This is consistent with that
+worker being the first to encounter the dead desktop stderr pipe and panic.
+`flexi_logger` writes the duplicated stderr sink before the rotating file, so
+the triggering warning does not reach the durable log.
+
+Daemon adoption closes the old generation connection watched by
+`maintain_protected_input_generations`, whose next action is to log the
+generation change on the main server future. That second dead-stderr write
+starts unwinding `run_server_services`. Cleanup then drops the LAN-routing
+advertisement, joins the already-panicked worker, and attempts to log that its
+supervisor panicked. The resulting nested logger panic explains the observed
+`panic_in_cleanup` SIGABRT. The non-panicking error-channel policy fixes both
+the initial background-thread panic and this main-thread cleanup abort; no
+change to `runtime::run_server_services` is required.
