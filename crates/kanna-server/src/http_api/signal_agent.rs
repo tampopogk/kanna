@@ -1110,10 +1110,7 @@ pub(super) async fn signal_agent_request(
                             &repo_id,
                             &agent,
                             &claim.machine_id,
-                            format!(
-                                "reservation {} cannot be verified: {error}",
-                                claim.task_id
-                            ),
+                            format!("reservation {} cannot be verified: {error}", claim.task_id),
                         )
                     })?
                     .response;

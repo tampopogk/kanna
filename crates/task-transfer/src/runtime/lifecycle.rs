@@ -327,6 +327,7 @@ impl TransferRuntime {
                 )),
                 None,
             ),
+            DiscoveryMode::Disabled => (PeerDiscovery::Disabled, None),
         };
         #[cfg(test)]
         let discovery = config

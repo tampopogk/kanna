@@ -12,10 +12,10 @@ use super::e2e_mobile_controls::{gate_direct_lan_http, update_e2e_mobile_machine
 use super::e2e_sql::{execute_e2e_server_work, execute_e2e_sql};
 use super::ksp::{ksp_stream, legacy_ksp_stream};
 use super::lan_bootstrap::bootstrap_lan_trust;
-use super::lan_trust::TrustedLanDeviceAccess;
 use super::lan_trust::{
     attach_trusted_lan_device, require_http_access, require_local_client_authority,
 };
+use super::lan_trust::{TrustedLanDeviceAccess, TrustedPeerDesktopAccess};
 use super::machine_stats::machine_stats;
 use super::mobile_notifications::{mobile_push_registration, notify_mobile};
 use super::operator_events::post_operator_events;
@@ -35,6 +35,7 @@ use super::repos::{
     refresh_repo_origin, reorder_repos, start_repo_checkout,
 };
 use super::secure_channel::SealedPairingContext;
+use super::secure_channel::SealedPeerPairingContext;
 use super::settings::{delete_setting, get_setting, put_cloud_transfer_identity, put_setting};
 use super::signal_agent::{
     find_local_singletons, release_closed_singleton, signal_agent, signal_merge_handoff,
@@ -487,6 +488,29 @@ pub fn router(state: Arc<AppState>) -> Router {
         )
         .route("/v1/mobile/build", post(report_mobile_build))
         .route("/v1/mobile/builds", get(mobile_builds))
+        .route("/v1/peers", get(super::peers::list_peers))
+        .route("/v1/peers/channel", get(super::peers::peer_channel_stream))
+        .route(
+            "/v1/peers/pairing-offers",
+            post(super::peers::create_pairing_offer),
+        )
+        .route("/v1/peers/pair", post(super::peers::pair_with_string))
+        .route(
+            "/v1/peers/pairing/claim",
+            post(super::peers::claim_pairing_offer),
+        )
+        .route(
+            "/v1/peers/transfer-identity",
+            get(super::peers::transfer_identity),
+        )
+        .route(
+            "/v1/peers/{desktop_id}",
+            axum::routing::delete(super::peers::remove_peer),
+        )
+        .route(
+            "/v1/peers/{desktop_id}/ksp",
+            get(super::peers::peer_ksp_proxy_stream),
+        )
         .route("/v1/pairing/sessions", post(create_pairing_session))
         .route("/v1/pairing/sessions/claim", post(claim_pairing_session))
         .route("/v1/pairing/confirmation", get(pairing_confirmation))
@@ -758,6 +782,45 @@ pub async fn dispatch_sealed_device_http_invoke(
     dispatch_http_invoke_with_extensions(state, method, path, body, move |extensions| {
         extensions.insert(TrustedLanDeviceAccess::new(device_id));
         extensions.insert(pairing);
+    })
+    .await
+}
+
+/// Dispatches a request from a sealed *peer* session whose static key
+/// matched a paired sibling desktop. The request carries the sibling route
+/// set - `TrustedPeerDesktopAccess` plus authenticated task-file access -
+/// over LAN and relay alike: task control and files yes, desktop-local
+/// control (`DesktopLocalAccess`) no, and never `AuthenticatedHttpInvoke`
+/// or `RelayAttestedSource`, the relay's markers, so the legacy CA
+/// bootstrap cannot be reached this way either. Nor does it carry
+/// `SealedPeerPairingContext`: the peer pairing claim is for a key that is
+/// *not yet* paired, and a paired sibling must not be able to consume
+/// another desktop's pairing offer.
+pub async fn dispatch_sealed_peer_http_invoke(
+    state: Arc<AppState>,
+    desktop_id: String,
+    method: &str,
+    path: &str,
+    body: serde_json::Value,
+) -> HttpInvokeResponse {
+    dispatch_http_invoke_with_extensions(state, method, path, body, move |extensions| {
+        extensions.insert(TrustedPeerDesktopAccess::new(desktop_id));
+        extensions.insert(super::task_files::AuthenticatedTaskFileAccess);
+    })
+    .await
+}
+
+/// Dispatches a request from a sealed peer session whose static key is not
+/// a paired sibling. Only the peer pairing claim handler reads the context.
+pub async fn dispatch_sealed_peer_pairing_http_invoke(
+    state: Arc<AppState>,
+    context: SealedPeerPairingContext,
+    method: &str,
+    path: &str,
+    body: serde_json::Value,
+) -> HttpInvokeResponse {
+    dispatch_http_invoke_with_extensions(state, method, path, body, move |extensions| {
+        extensions.insert(context);
     })
     .await
 }

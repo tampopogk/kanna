@@ -30,6 +30,16 @@ use tokio::sync::{Mutex, Notify};
 pub(crate) const MOBILE_LEGACY_ACCESS_SETTING: &str = "mobile_legacy_access";
 pub(crate) const MOBILE_LEGACY_ACCESS_REFUSED: &str = "refused";
 
+/// Settings-table key for the desktop-to-desktop equivalent. `refused`
+/// turns off every legacy sibling path - the relay-attested `invoke`, the
+/// bearer-secret LAN machine-invoke listener and its relay-attested CA
+/// bootstrap, the Firestore transfer key and the sidecar's mDNS pairing -
+/// leaving only sealed peer sessions to pinned, human-paired siblings.
+/// Kept separate from the mobile switch because phones and desktops upgrade
+/// on different schedules.
+pub(crate) const DESKTOP_PEER_LEGACY_ACCESS_SETTING: &str = "desktop_peer_legacy_access";
+pub(crate) const DESKTOP_PEER_LEGACY_ACCESS_REFUSED: &str = "refused";
+
 pub(crate) const PAIRING_CONFIRMATION_TTL: Duration = Duration::from_secs(180);
 
 /// How long a decided confirmation stays collectable by the phone that
@@ -63,6 +73,40 @@ pub(crate) fn decode_handshake_hash(text: &str) -> Option<[u8; 32]> {
 pub(crate) enum StreamOrigin {
     Lan,
     RelayTunnel,
+}
+
+/// Which population a sealed endpoint admits: phones (the mobile domain and
+/// identity) or sibling desktops (the peer domain and identity). A relay
+/// KSP tunnel admits phones only; the peer endpoints admit siblings only.
+/// Deciding this per endpoint, rather than trying both identities on every
+/// first frame, keeps a phone's handshake and a sibling's handshake from
+/// ever being interpreted against the wrong trust store.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SealedPopulation {
+    Mobile,
+    Peer,
+}
+
+/// Extension inserted on requests dispatched from a sealed *peer* session
+/// whose static key is not (yet) a paired sibling. Only the peer pairing
+/// claim handler reads it. A distinct type from `SealedPairingContext` so
+/// the phone claim route can never be reached by a desktop and vice versa,
+/// whatever the route allowlists say.
+#[derive(Debug, Clone)]
+pub(crate) struct SealedPeerPairingContext {
+    pub(crate) remote_static: [u8; 32],
+    pub(crate) handshake_hash: [u8; 32],
+    pub(crate) origin: StreamOrigin,
+    /// The desktop id the initiator declared in its hello - a claim the
+    /// pairing handler checks against the pairing string's audience, not
+    /// an authentication.
+    pub(crate) declared_desktop_id: Option<String>,
+}
+
+impl SealedPeerPairingContext {
+    pub(crate) fn encoded_remote_static(&self) -> String {
+        kanna_secure_channel::encode_key(&self.remote_static)
+    }
 }
 
 /// Extension inserted on requests dispatched from a sealed *pairing-only*
@@ -335,6 +379,27 @@ pub(crate) fn legacy_mobile_access_allowed(db_path: &str) -> bool {
         Err(error) => {
             log::warn!(
                 "failed to open the settings database: {error}; refusing legacy mobile access"
+            );
+            false
+        }
+    }
+}
+
+/// Reads the desktop-peer legacy switch with the same fail-closed stance as
+/// `legacy_mobile_access_allowed`.
+pub(crate) fn legacy_peer_access_allowed(db_path: &str) -> bool {
+    match crate::db::Db::open(db_path) {
+        Ok(db) => match db.get_setting(DESKTOP_PEER_LEGACY_ACCESS_SETTING) {
+            Ok(Some(value)) => value.trim() != DESKTOP_PEER_LEGACY_ACCESS_REFUSED,
+            Ok(None) => true,
+            Err(error) => {
+                log::warn!("failed to read {DESKTOP_PEER_LEGACY_ACCESS_SETTING}: {error}; refusing legacy desktop-to-desktop access");
+                false
+            }
+        },
+        Err(error) => {
+            log::warn!(
+                "failed to open the settings database: {error}; refusing legacy desktop-to-desktop access"
             );
             false
         }

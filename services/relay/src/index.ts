@@ -30,6 +30,7 @@ import {
   forwardTunnelData,
   setPhoneConnection,
   setServerConnection,
+  routeDesktopTunnelRequest,
   routeMessage,
   routedMessageByteClass,
   sendDataResponse,
@@ -108,6 +109,14 @@ import {
   validateAnonymousPushPairing,
   verifyAnonymousSignature,
 } from "./anonymousPush.js";
+
+/** What a desktop tunnel client may send after `auth_ok`. */
+interface DesktopTunnelClientFrame {
+  type?: unknown;
+  id?: unknown;
+  desktopId?: unknown;
+  service?: unknown;
+}
 
 const PORT = parseInt(process.env.PORT || "8080", 10);
 const BUILD_COMMIT = resolveBuildCommit(process.env);
@@ -530,7 +539,13 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
   let authenticated = false;
   let accessUpdatesRequested = false;
   let userId: string | null = null;
-  let role: "phone" | "server" | null = null;
+  /**
+   * `desktopClient` is a desktop-secret socket that opens a `peer` tunnel to
+   * a sibling (`tunnel_client: true`): authenticated as the desktop, but
+   * never registered as its control connection, so it replaces nothing and
+   * receives nothing addressed to the desktop.
+   */
+  let role: "phone" | "server" | "desktopClient" | null = null;
   let desktopId: string | null = null;
   let serverAuthProof: ServerAuthProof | null = null;
   let principalKind: "account" | "anonymousDesktop" | null = null;
@@ -605,6 +620,7 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
         tunnel_id?: string;
         anon_pub_key?: string;
         signature?: string;
+        tunnel_client?: boolean;
       };
 
       try {
@@ -705,7 +721,7 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
           desktopId: msg.desktop_id,
           desktopSecret: msg.desktop_secret,
         } : null;
-        role = "server";
+        role = msg.tunnel_client === true ? "desktopClient" : "server";
         principalKind = "account";
       } else if (msg.device_token) {
         // Server (kanna-server) auth
@@ -739,6 +755,51 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
         : await resolveSessionEntitlement(
           entitlementSubject = { userId, emailVerified: phoneEmailVerified },
         );
+
+      if (role === "desktopClient") {
+        // A desktop opening a sealed tunnel to a sibling is remote control
+        // that crosses the relay (`remote_task_control`) riding a tunnel
+        // (`cloud_relay`): both are required, and refused as 4402 like any
+        // other unentitled tunnel, before the socket is admitted at all.
+        if (
+          !desktopId
+          || !sessionEntitlement?.grants("cloud_relay")
+          || !sessionEntitlement.grants("remote_task_control")
+        ) {
+          clearTimeout(authTimer);
+          ws.close(ENTITLEMENT_REQUIRED_CODE, ENTITLEMENT_REQUIRED_ERROR);
+          return;
+        }
+        authenticated = true;
+        releasePreAuthSlot();
+        clearTimeout(authTimer);
+        identifyByteAccount(ws, { uid: userId, desktopId, role: "server" });
+        const authOk = JSON.stringify({
+          type: "auth_ok",
+          userId,
+          capabilities: {
+            tunnelServices: ["peer"],
+            desktopTunnel: { version: 1 },
+          },
+          ...(sessionEntitlement.snapshot ? { entitlement: sessionEntitlement.snapshot } : {}),
+        });
+        ws.send(authOk);
+        recordBytesSent(ws, "control", Buffer.byteLength(authOk));
+        if (entitlementSubject && ws.readyState === WebSocket.OPEN) {
+          stopEntitlementObservation = observeSessionEntitlement(entitlementSubject, (access) => {
+            if (
+              (!access.grants("cloud_relay") || !access.grants("remote_task_control"))
+              && ws.readyState === WebSocket.OPEN
+            ) {
+              ws.close(ENTITLEMENT_REQUIRED_CODE, ENTITLEMENT_REQUIRED_ERROR);
+            }
+          });
+        }
+        console.log(
+          `[ws] Authenticated desktop tunnel client for ${userId}/${desktopId} from ${remoteAddr}`
+        );
+        return;
+      }
 
       if (role === "server" && desktopId && msg.tunnel_id) {
         // A tunnel socket carries the payload the phone's `tunnel_request`
@@ -855,6 +916,17 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
                   version: 2,
                 },
               } : {}),
+              ...(sessionEntitlement?.grants("remote_task_control")
+                && sessionEntitlement?.grants("cloud_relay") ? {
+                // v1: a second socket authenticated with this desktop's
+                // secret and `tunnel_client: true` may `tunnel_request` a
+                // `peer` tunnel to a sibling (`routeDesktopTunnelRequest`).
+                // The relay never parses what rides in it. A server that
+                // does not see this fails closed on its cloud peer route.
+                desktopTunnel: {
+                  version: 1,
+                },
+              } : {}),
             } : {}),
           },
           ...(sessionEntitlement?.snapshot
@@ -882,6 +954,30 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
 
     // --- Post-auth: route messages ---
     const data = raw.toString();
+    if (role === "desktopClient") {
+      let request: DesktopTunnelClientFrame | null = null;
+      try {
+        request = JSON.parse(data) as DesktopTunnelClientFrame;
+      } catch {
+        // A malformed frame is answered like an unsupported one below.
+      }
+      recordBytesReceived(ws, "control", receivedByteLength);
+      if (
+        !desktopId
+        || !serverAuthProof
+        || !await revalidateServerAuth(serverAuthProof, userId!, desktopId)
+      ) {
+        sendErrorResponse(ws, request?.id, "desktop credential is no longer authorized");
+        ws.close(4005, "Authentication revoked");
+        return;
+      }
+      if (!await sessionHasCapability(entitlementSubject!, "remote_task_control")) {
+        sendErrorResponse(ws, request?.id, ENTITLEMENT_REQUIRED_ERROR, ENTITLEMENT_REQUIRED_CODE);
+        return;
+      }
+      routeDesktopTunnelRequest(userId!, ws, request, desktopId, serverAuthProof);
+      return;
+    }
     if (role === "server") {
       let publication: {
         type?: unknown;

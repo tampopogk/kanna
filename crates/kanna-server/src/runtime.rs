@@ -244,6 +244,7 @@ async fn run_human_control_service(state: Arc<http_api::AppState>) {
 /// reason, matching the listener's own lifetime exactly.
 async fn run_lan_machine_invoke_listener(state: Arc<http_api::AppState>) {
     let port = state.config().lan_routing_port;
+    let api_port = state.config().lan_port;
     let desktop_id = state.config().desktop_id.clone();
     let environment = state.config().environment.clone();
     let advertisement: Arc<
@@ -251,10 +252,11 @@ async fn run_lan_machine_invoke_listener(state: Arc<http_api::AppState>) {
     > = Arc::new(std::sync::Mutex::new(None));
     let advertisement_slot = Arc::clone(&advertisement);
     let on_bound = move |addr: std::net::SocketAddr| {
-        match crate::lan_discovery::LanRoutingAdvertisement::start(
+        match crate::lan_discovery::LanRoutingAdvertisement::start_with_api_port(
             &desktop_id,
             &environment,
             addr.port(),
+            Some(api_port),
         ) {
             Ok(started) => {
                 *advertisement_slot
@@ -306,6 +308,13 @@ pub(crate) async fn run_server_services(
     // pings — and `RELAY_PONG_TIMEOUT` is 75s, so a long enough clone would tear
     // the relay down and take mobile offline.
     tokio::spawn(crate::transfer_engine::run(Arc::clone(&http_state)));
+    // Sealed transfer routes for every paired sibling, so the sidecar can
+    // reach them from its first control request onward.
+    {
+        let proxies = http_state.peer_transfer_proxies();
+        let state = Arc::clone(&http_state);
+        tokio::spawn(async move { proxies.sync_from_store(&state).await });
+    }
     let subscription_service = http_api::event_subscriptions::run(Arc::clone(&http_state));
     if config.relay_url.trim().is_empty() {
         tokio::select! {

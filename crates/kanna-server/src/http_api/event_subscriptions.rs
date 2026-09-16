@@ -801,7 +801,10 @@ async fn step(
                 }
                 if let Some(confirmed) = batch["confirmedMachines"].as_array() {
                     confirmed_machines.extend(
-                        confirmed.iter().filter_map(Value::as_str).map(str::to_owned),
+                        confirmed
+                            .iter()
+                            .filter_map(Value::as_str)
+                            .map(str::to_owned),
                     );
                 }
                 if batch["waitOutcome"] == "timeout" && !machine_errors_present {
@@ -1060,7 +1063,10 @@ mod outage_isolation_tests {
             false,
             "desktop-local",
         );
-        assert!(row.pending.is_some(), "a peer's confirmed recovery must wake once");
+        assert!(
+            row.pending.is_some(),
+            "a peer's confirmed recovery must wake once"
+        );
         assert_eq!(row.batch_id, 2);
         assert!(row.stale_machines.is_empty());
     }

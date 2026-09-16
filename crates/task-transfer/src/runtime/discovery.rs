@@ -23,6 +23,8 @@ use tokio::task::JoinHandle;
 pub(super) enum PeerDiscovery {
     Registry(PeerRegistry),
     Mdns(Arc<MdnsDiscovery>),
+    /// `DiscoveryMode::Disabled`: nothing is discovered or advertised.
+    Disabled,
     #[cfg(test)]
     MdnsFixture(Arc<Mutex<MdnsState>>),
 }
@@ -51,6 +53,7 @@ impl PeerDiscovery {
         match self {
             Self::Registry(registry) => Ok(registry.list_peers(self_peer_id)?),
             Self::Mdns(discovery) => discovery.list_peers(self_peer_id).await,
+            Self::Disabled => Ok(Vec::new()),
             #[cfg(test)]
             Self::MdnsFixture(state) => Ok(state.lock().await.list_peers(self_peer_id)),
         }

@@ -71,6 +71,11 @@ const DEFAULT_MAX_TERMINAL_OBSERVER_TOMBSTONES: usize = 1024;
 pub enum DiscoveryMode {
     Registry,
     Mdns,
+    /// No LAN discovery and no LAN advertisement: the listener binds
+    /// loopback only and the only peers are the external (loopback) ones
+    /// `kanna-server` registers - its sealed peer tunnels. This is what the
+    /// server selects once legacy desktop-to-desktop routing is off.
+    Disabled,
 }
 
 #[derive(Debug, Clone)]
@@ -325,6 +330,7 @@ impl RuntimeConfig {
             .map(|value| match value.as_str() {
                 "registry" => Ok(DiscoveryMode::Registry),
                 "mdns" | "bonjour" => Ok(DiscoveryMode::Mdns),
+                "disabled" | "none" => Ok(DiscoveryMode::Disabled),
                 other => Err(RuntimeError::InvalidConfig(format!(
                     "unsupported transfer discovery mode: {other}"
                 ))),
@@ -395,7 +401,7 @@ impl RuntimeConfig {
 
     pub(super) fn bind_host(&self) -> &'static str {
         match self.discovery_mode {
-            DiscoveryMode::Registry => "127.0.0.1",
+            DiscoveryMode::Registry | DiscoveryMode::Disabled => "127.0.0.1",
             DiscoveryMode::Mdns => "0.0.0.0",
         }
     }
@@ -404,6 +410,19 @@ impl RuntimeConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn disabled_discovery_binds_loopback_only() {
+        let config = RuntimeConfig::for_tests("peer", "Peer", "/tmp/registry", 4455)
+            .with_discovery_mode(DiscoveryMode::Disabled);
+        assert_eq!(config.bind_host(), "127.0.0.1");
+        assert_eq!(
+            RuntimeConfig::for_tests("peer", "Peer", "/tmp/registry", 4455)
+                .with_discovery_mode(DiscoveryMode::Mdns)
+                .bind_host(),
+            "0.0.0.0"
+        );
+    }
 
     /// A reservation must outlive the finalization the destination is allowed
     /// to wait for.

@@ -21,6 +21,7 @@ mod machine_stats;
 mod mobile_notifications;
 mod operator_events;
 mod pairing;
+pub(crate) mod peers;
 mod preview;
 mod quota_recovery;
 mod repo_browser;
@@ -56,6 +57,8 @@ mod transfer_sidecar;
 mod transfers;
 mod window_workspace;
 
+#[cfg(test)]
+mod peer_tests;
 #[cfg(test)]
 mod test_support;
 #[cfg(test)]
@@ -126,6 +129,26 @@ pub(crate) async fn dispatch_sealed_device_http_invoke(
     body: serde_json::Value,
 ) -> HttpInvokeResponse {
     routes::dispatch_sealed_device_http_invoke(state, device_id, pairing, method, path, body).await
+}
+
+pub(crate) async fn dispatch_sealed_peer_http_invoke(
+    state: std::sync::Arc<AppState>,
+    desktop_id: String,
+    method: &str,
+    path: &str,
+    body: serde_json::Value,
+) -> HttpInvokeResponse {
+    routes::dispatch_sealed_peer_http_invoke(state, desktop_id, method, path, body).await
+}
+
+pub(crate) async fn dispatch_sealed_peer_pairing_http_invoke(
+    state: std::sync::Arc<AppState>,
+    context: secure_channel::SealedPeerPairingContext,
+    method: &str,
+    path: &str,
+    body: serde_json::Value,
+) -> HttpInvokeResponse {
+    routes::dispatch_sealed_peer_pairing_http_invoke(state, context, method, path, body).await
 }
 
 pub(crate) async fn dispatch_sealed_pairing_http_invoke(

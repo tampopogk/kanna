@@ -131,11 +131,27 @@ pub struct AppState {
     /// failure is remembered and refuses every sealed handshake rather than
     /// regenerating a key paired phones have pinned.
     secure_channel_identity: super::secure_channel::SecureChannelIdentity,
+    /// The *peer* channel identity (`peer-channel-identity.json`): what a
+    /// sibling desktop pins from this desktop's pairing string. Separate
+    /// from the mobile one so the two populations rotate and revoke apart.
+    peer_channel_identity: super::secure_channel::SecureChannelIdentity,
     pub(crate) pairing_confirmation: Arc<super::secure_channel::PairingConfirmationState>,
+    /// The one live peer pairing offer (the string on this desktop's
+    /// screen), if any. One ceremony at a time, like the mobile session.
+    pub(crate) peer_pairing_offer: Arc<Mutex<Option<crate::peer_pairing::ActivePeerPairingOffer>>>,
     /// Device ids whose pairing was just removed. Live sealed sessions for
     /// that device subscribe and close themselves; the next handshake fails
     /// on its own because the static key is no longer in the store.
     device_revocations: broadcast::Sender<String>,
+    /// Desktop ids whose peer pairing was just removed; the peer-session
+    /// equivalent of `device_revocations`.
+    peer_revocations: broadcast::Sender<String>,
+    /// Outbound sealed sessions to paired siblings, pooled per desktop id
+    /// for server-originated invokes. See `peer_channel`.
+    peer_sessions: Arc<crate::peer_channel::PeerSessions>,
+    /// Loopback listeners the sidecar dials to reach a paired sibling's
+    /// sidecar through a sealed peer tunnel. See `peer_transfer_proxy`.
+    peer_transfer_proxies: Arc<crate::peer_transfer_proxy::PeerTransferProxies>,
     /// The account UID this desktop's relay connection currently
     /// authenticates as, or `None` when signed out/rejected/not yet
     /// authenticated. This is the single current-account reference every
@@ -172,6 +188,15 @@ pub struct AppState {
     /// entry, or a desktop no longer advertised, there is simply nothing to
     /// dial.
     lan_candidates: Arc<StdMutex<HashMap<String, std::net::SocketAddr>>>,
+    /// The sibling's general API listener (its `/v1/peers/channel`
+    /// endpoint), from the same discovery record's `lanPort` TXT key. The
+    /// same rule applies: an address hint only, never authority - the peer
+    /// handshake against the pinned key is what proves who answered.
+    lan_api_candidates: Arc<StdMutex<HashMap<String, std::net::SocketAddr>>>,
+    /// Whether the live relay session advertised `desktopTunnel`, the
+    /// capability behind the cloud peer route. `false` until a relay says
+    /// so, so the cloud route fails closed against an older relay.
+    desktop_tunnel_available: Arc<AtomicBool>,
     /// Targets with an outbound LAN bootstrap currently in flight - a
     /// de-duplication guard, not a scheduler: nothing here decides *when* to
     /// bootstrap, only that a burst of calls for the same target while one
@@ -554,6 +579,14 @@ impl AppState {
             config.clone(),
             Arc::clone(&transfer_work),
         ));
+        let peer_transfer_proxies_for_state =
+            Arc::new(crate::peer_transfer_proxy::PeerTransferProxies::default());
+        // Every sidecar (re)spawn starts with an empty external-peer
+        // registry; the proxies re-register the sealed peer routes on each.
+        transfer_sidecar.set_spawn_hook({
+            let proxies = Arc::clone(&peer_transfer_proxies_for_state);
+            Box::new(move |client| proxies.on_sidecar_spawned(client))
+        });
         let repo_checkout_root = std::env::var("HOME")
             .map(std::path::PathBuf::from)
             .unwrap_or_else(|_| std::path::PathBuf::from("."))
@@ -612,14 +645,21 @@ impl AppState {
             known_singleton_owners: Arc::new(StdMutex::new(HashMap::new())),
             relay_reconnect: Arc::new(Notify::new()),
             secure_channel_identity: Arc::new(std::sync::OnceLock::new()),
+            peer_channel_identity: Arc::new(std::sync::OnceLock::new()),
             pairing_confirmation: Arc::new(
                 super::secure_channel::PairingConfirmationState::default(),
             ),
+            peer_pairing_offer: Arc::new(Mutex::new(None)),
             device_revocations: broadcast::channel(64).0,
+            peer_revocations: broadcast::channel(64).0,
+            peer_sessions: Arc::new(crate::peer_channel::PeerSessions::default()),
+            peer_transfer_proxies: peer_transfer_proxies_for_state,
             authenticated_account_uid: Arc::new(StdMutex::new(None)),
             relay_access: Arc::new(StdMutex::new(RelayAccess::Unknown)),
             account_state_generation: Arc::new(AtomicU64::new(0)),
             lan_candidates: Arc::new(StdMutex::new(HashMap::new())),
+            lan_api_candidates: Arc::new(StdMutex::new(HashMap::new())),
+            desktop_tunnel_available: Arc::new(AtomicBool::new(false)),
             lan_bootstrap_in_flight: Arc::new(StdMutex::new(HashSet::new())),
             anonymous_push_revocations_changed: Arc::new(Notify::new()),
             relay_desktop_routing_available: Arc::new(AtomicBool::new(false)),
@@ -798,6 +838,74 @@ impl AppState {
 
     pub(crate) fn subscribe_device_revocations(&self) -> broadcast::Receiver<String> {
         self.device_revocations.subscribe()
+    }
+
+    pub(crate) fn subscribe_peer_revocations(&self) -> broadcast::Receiver<String> {
+        self.peer_revocations.subscribe()
+    }
+
+    /// Announces that `desktop_id` is no longer a paired peer: live sealed
+    /// peer sessions for it close, the pooled outbound session and the
+    /// transfer proxy are torn down. The caller has already persisted the
+    /// removal (persist first, announce second - see `remove_trusted_device`).
+    pub(crate) async fn announce_peer_revocation(&self, desktop_id: &str) {
+        let _ = self.peer_revocations.send(desktop_id.to_string());
+        self.peer_sessions.close(desktop_id).await;
+        self.peer_transfer_proxies.remove(desktop_id).await;
+    }
+
+    pub(crate) fn peer_sessions(&self) -> Arc<crate::peer_channel::PeerSessions> {
+        Arc::clone(&self.peer_sessions)
+    }
+
+    pub(crate) fn peer_transfer_proxies(
+        &self,
+    ) -> Arc<crate::peer_transfer_proxy::PeerTransferProxies> {
+        Arc::clone(&self.peer_transfer_proxies)
+    }
+
+    /// This desktop's peer-channel identity, loaded once and cached,
+    /// including a cached failure.
+    pub(crate) fn peer_channel_identity(
+        &self,
+    ) -> Result<Arc<kanna_secure_channel::Keypair>, String> {
+        self.peer_channel_identity
+            .get_or_init(|| {
+                let path = self
+                    .config
+                    .peer_channel_identity_path()
+                    .ok_or_else(|| "no pairing store is configured".to_string())?;
+                crate::channel_identity::load_or_create(&path)
+                    .map(Arc::new)
+                    .inspect_err(|error| {
+                        log::error!("peer secure channel unavailable: {error}");
+                    })
+            })
+            .clone()
+    }
+
+    /// Whether legacy (relay-attested, bearer-secret, Firestore-keyed)
+    /// desktop-to-desktop access is still permitted. See
+    /// `http_api::secure_channel::DESKTOP_PEER_LEGACY_ACCESS_SETTING`.
+    pub(crate) fn legacy_peer_access_allowed(&self) -> bool {
+        super::secure_channel::legacy_peer_access_allowed(&self.config.db_path)
+    }
+
+    /// Loads the peer trust store, fail-closed on an unusable file.
+    pub(crate) fn peer_trust_store(&self) -> Result<crate::peer_trust::PeerTrustStore, String> {
+        let path = self
+            .config
+            .peer_trust_store_path()
+            .ok_or_else(|| "no pairing store is configured".to_string())?;
+        crate::peer_trust::PeerTrustStore::load(&path)
+    }
+
+    /// The paired sibling with `desktop_id`, in this desktop's environment.
+    pub(crate) fn paired_peer(&self, desktop_id: &str) -> Option<crate::peer_trust::PeerDesktop> {
+        self.peer_trust_store()
+            .ok()?
+            .peer_by_desktop_id(desktop_id, &self.config.environment)
+            .cloned()
     }
 
     /// This desktop's secure-channel identity, loaded once and cached,
@@ -1030,6 +1138,36 @@ impl AppState {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .remove(desktop_id);
+        self.lan_api_candidates
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .remove(desktop_id);
+    }
+
+    /// Records where discovery last saw a sibling's general API listener.
+    pub(crate) fn set_lan_api_candidate(&self, desktop_id: String, address: std::net::SocketAddr) {
+        self.lan_api_candidates
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert(desktop_id, address);
+    }
+
+    /// The address to *attempt* a sealed peer connection at.
+    pub(crate) fn lan_api_candidate_for(&self, desktop_id: &str) -> Option<std::net::SocketAddr> {
+        self.lan_api_candidates
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(desktop_id)
+            .copied()
+    }
+
+    pub(crate) fn desktop_tunnel_available(&self) -> bool {
+        self.desktop_tunnel_available.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn set_desktop_tunnel_available(&self, available: bool) {
+        self.desktop_tunnel_available
+            .store(available, Ordering::Release);
     }
 
     /// The address to *attempt* dialing `desktop_id` at, if discovery has

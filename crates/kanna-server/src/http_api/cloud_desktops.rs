@@ -11,6 +11,11 @@ struct MachineDescriptor {
     id: String,
     name: Option<String>,
     is_local: bool,
+    /// How this desktop reaches the machine: `local` (itself), `e2ee` (a
+    /// paired sibling over its sealed peer session), `legacy` (an unpaired
+    /// sibling over the relay-attested or bearer-secret path, while that
+    /// is still allowed), or `pairingRequired` (unpaired, legacy off).
+    encryption: &'static str,
 }
 
 #[derive(Debug, Serialize)]
@@ -54,16 +59,47 @@ pub(super) async fn list_cloud_desktops(
     // unconditionally, alongside relay presence rather than instead of it,
     // and never affecting `relay_available`/`error`, which report relay's
     // own dimension exactly as before.
-    ids.extend(super::invoke_desktop::eligible_lan_desktop_ids(&state));
+    let legacy_allowed = state.legacy_peer_access_allowed();
+    if legacy_allowed {
+        ids.extend(super::invoke_desktop::eligible_lan_desktop_ids(&state));
+    }
+    // A paired sibling with a LAN candidate is reachable without the relay.
+    let paired: Vec<crate::peer_trust::PeerDesktop> = state
+        .peer_trust_store()
+        .map(|store| store.peers)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|peer| peer.environment == state.config().environment)
+        .collect();
+    ids.extend(
+        paired
+            .iter()
+            .filter(|peer| state.lan_api_candidate_for(&peer.desktop_id).is_some())
+            .map(|peer| peer.desktop_id.clone()),
+    );
     ids.sort();
     ids.dedup();
     let machines = ids
         .into_iter()
         .map(|id| {
             let is_local = id == current_id;
+            let peer = paired.iter().find(|peer| peer.desktop_id == id);
             MachineDescriptor {
+                name: if is_local {
+                    Some(state.config().desktop_name.clone())
+                } else {
+                    peer.map(|peer| peer.display_name.clone())
+                },
+                encryption: if is_local {
+                    "local"
+                } else if peer.is_some() {
+                    "e2ee"
+                } else if legacy_allowed {
+                    "legacy"
+                } else {
+                    "pairingRequired"
+                },
                 id,
-                name: is_local.then(|| state.config().desktop_name.clone()),
                 is_local,
             }
         })
@@ -165,6 +201,10 @@ mod tests {
     /// `lan_e2e_test_config` pattern, which does not share this bug.
     fn isolated_lan_test_config(desktop_id: &str) -> crate::config::Config {
         let dir = crate::test_paths::unique_test_dir(&format!("cloud-desktops-lan-{desktop_id}"));
+        // The legacy desktop-to-desktop switch fails closed without a
+        // settings database; the legacy LAN route under test needs one.
+        let db_path = crate::db::Db::test_db_path(&format!("cloud-desktops-lan-{desktop_id}"));
+        let _ = crate::db::Db::open_for_tests(&db_path).expect("open test db");
         crate::config::Config {
             relay_url: String::new(),
             device_token: "device-token".to_string(),
@@ -172,7 +212,7 @@ mod tests {
             firebase_auth_emulator_url: None,
             firebase_firestore_emulator_host: None,
             daemon_dir: dir.join("daemon").to_string_lossy().into_owned(),
-            db_path: crate::db::Db::test_db_path(&format!("cloud-desktops-lan-{desktop_id}")),
+            db_path,
             kanna_cli_path: None,
             desktop_id: desktop_id.to_string(),
             desktop_secret: Some("desktop-secret".to_string()),

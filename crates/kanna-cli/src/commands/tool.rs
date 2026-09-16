@@ -300,7 +300,8 @@ async fn invoke_machine_response(
         }),
     )
     .await?;
-    serde_json::from_value(response).map_err(|error| format!("invalid machine invoke response: {error}"))
+    serde_json::from_value(response)
+        .map_err(|error| format!("invalid machine invoke response: {error}"))
 }
 
 async fn invoke_machine(

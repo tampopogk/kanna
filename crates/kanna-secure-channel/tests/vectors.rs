@@ -197,6 +197,8 @@ fn generate_cross_language_vectors() -> CrossLanguageVectors {
         version: PROTOCOL_VERSION,
         intent: HelloIntent::Session,
         device_id: Some("mobile-vector-device".into()),
+        source_desktop_id: None,
+        service: None,
         capabilities: vec!["ksp".into()],
     };
     let responder_hello = ResponderHello {

@@ -865,8 +865,23 @@ async fn list_targets(
             "the transfer peer registry returned an unexpected payload".to_string(),
         )
     })?;
-    let cloud_routes =
+    let mut cloud_routes =
         crate::cloud_transfer_proxy::cloud_transfer_routes(state.cloud_transfer_proxies()).await;
+    // Sealed routes to paired siblings shadow a legacy relay proxy for the
+    // same transfer peer: once a machine is paired, its pin decides.
+    let sealed: Vec<_> = state
+        .peer_transfer_proxies()
+        .routes()
+        .await
+        .iter()
+        .map(crate::cloud_transfer_proxy::CloudTransferRoute::peer_tunnel)
+        .collect();
+    cloud_routes.retain(|route| {
+        !sealed
+            .iter()
+            .any(|candidate| candidate.peer_id == route.peer_id)
+    });
+    cloud_routes.extend(sealed);
     Ok(transfer_targets(&peers, &cloud_routes))
 }
 

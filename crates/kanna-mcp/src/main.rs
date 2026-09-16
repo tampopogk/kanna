@@ -588,8 +588,14 @@ async fn machine_status_with_route(
     machine_id: &str,
     path: &str,
 ) -> (Result<Value, String>, Option<String>) {
-    let response = match invoke_machine_response(base_url, machine_id, Method::Get, path, &Value::Null)
-        .await
+    let response = match invoke_machine_response(
+        base_url,
+        machine_id,
+        Method::Get,
+        path,
+        &Value::Null,
+    )
+    .await
     {
         Ok(response) => response,
         Err(error) => return (Err(error), None),

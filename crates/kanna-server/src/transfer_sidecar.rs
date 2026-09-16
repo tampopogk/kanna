@@ -476,7 +476,7 @@ pub fn build_transfer_sidecar_env(
                 .to_string_lossy()
                 .into_owned()
         });
-    Ok(vec![
+    let mut env = vec![
         (
             "KANNA_TRANSFER_PORT".to_string(),
             config.transfer_port.to_string(),
@@ -498,7 +498,20 @@ pub fn build_transfer_sidecar_env(
             "KANNA_MOBILE_SERVER_PORT".to_string(),
             config.lan_port.to_string(),
         ),
-    ])
+    ];
+    // With legacy desktop-to-desktop routing off, the sidecar neither
+    // advertises nor browses `_kanna-transfer` and binds loopback only:
+    // every sibling it can reach is a sealed peer tunnel the server
+    // registered. An explicit `KANNA_TRANSFER_DISCOVERY` in the server's
+    // own environment (the dev registry mode) still wins while the gate is
+    // on, exactly as before.
+    if !crate::http_api::secure_channel::legacy_peer_access_allowed(&config.db_path) {
+        env.push((
+            "KANNA_TRANSFER_DISCOVERY".to_string(),
+            "disabled".to_string(),
+        ));
+    }
+    Ok(env)
 }
 
 fn required_env(name: &str) -> Result<String, String> {
@@ -874,9 +887,15 @@ fn spawn_companion_reader(
 
 /// Lazy owner of the sidecar process: spawned on first control use or inbound
 /// tunnel demand, respawned transparently once the previous child is dead.
+/// Runs after every successful sidecar spawn with the new client. The peer
+/// transfer proxies use it to re-register their sealed routes, because a
+/// fresh sidecar starts with an empty external-peer registry.
+pub type SidecarSpawnHook = Box<dyn Fn(Arc<TransferSidecarClient>) + Send + Sync>;
+
 pub struct TransferSidecarSupervisor {
     config: crate::config::Config,
     client: Mutex<Option<Arc<TransferSidecarClient>>>,
+    spawn_hook: std::sync::Mutex<Option<SidecarSpawnHook>>,
     events: Arc<TransferEventLog>,
     companion_events: Arc<CompanionEventLog>,
     incarnations: AtomicU64,
@@ -900,6 +919,7 @@ impl TransferSidecarSupervisor {
         Self {
             config,
             client: Mutex::new(None),
+            spawn_hook: std::sync::Mutex::new(None),
             events: Arc::new(TransferEventLog::default()),
             companion_events: Arc::new(CompanionEventLog::default()),
             incarnations: AtomicU64::new(0),
@@ -954,6 +974,32 @@ impl TransferSidecarSupervisor {
         self.ensure_running().await.map(|_| ())
     }
 
+    pub fn set_spawn_hook(&self, hook: SidecarSpawnHook) {
+        *self
+            .spawn_hook
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(hook);
+    }
+
+    /// Retires the running sidecar so the next control request spawns a
+    /// fresh one under the current configuration - how a changed legacy
+    /// switch takes effect on the sidecar's discovery mode and bind
+    /// address. Dropping the last handle kills the child.
+    pub async fn restart(&self) {
+        let mut guard = self.client.lock().await;
+        *guard = None;
+    }
+
+    /// The live sidecar client, if one is running - without spawning one.
+    pub async fn running_client(&self) -> Option<Arc<TransferSidecarClient>> {
+        self.client
+            .lock()
+            .await
+            .as_ref()
+            .filter(|client| !client.is_dead())
+            .cloned()
+    }
+
     pub fn events(&self) -> Arc<TransferEventLog> {
         Arc::clone(&self.events)
     }
@@ -968,14 +1014,23 @@ impl TransferSidecarSupervisor {
             *guard = None;
         }
         if guard.is_none() {
-            *guard = Some(Arc::new(TransferSidecarClient::spawn(
+            let client = Arc::new(TransferSidecarClient::spawn(
                 &self.sidecar_binary()?,
                 build_transfer_sidecar_env(&self.config)?,
                 Arc::clone(&self.events),
                 Arc::clone(&self.companion_events),
                 Arc::clone(&self.work),
                 self.incarnations.fetch_add(1, Ordering::Relaxed) + 1,
-            )?));
+            )?);
+            *guard = Some(Arc::clone(&client));
+            if let Some(hook) = self
+                .spawn_hook
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .as_ref()
+            {
+                hook(client);
+            }
         }
         guard
             .as_ref()

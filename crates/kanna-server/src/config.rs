@@ -265,6 +265,37 @@ impl Config {
         )
     }
 
+    /// Where `channel_identity` persists this desktop's *peer* channel
+    /// identity: the X25519 key sibling desktops pin. A separate key from
+    /// the mobile one on purpose - a peer pairing string puts this key on a
+    /// clipboard, and rotating or revoking it must never touch phone pins.
+    pub(crate) fn peer_channel_identity_path(&self) -> Option<PathBuf> {
+        if self.pairing_store_path.is_empty() {
+            return None;
+        }
+        Some(
+            Path::new(&self.pairing_store_path)
+                .parent()
+                .unwrap_or_else(|| Path::new("."))
+                .join("peer-channel-identity.json"),
+        )
+    }
+
+    /// Where `peer_trust::PeerTrustStore` persists the sibling desktops a
+    /// person paired with this one. Same derivation rationale as
+    /// `machine_trust_store_path`.
+    pub(crate) fn peer_trust_store_path(&self) -> Option<PathBuf> {
+        if self.pairing_store_path.is_empty() {
+            return None;
+        }
+        Some(
+            Path::new(&self.pairing_store_path)
+                .parent()
+                .unwrap_or_else(|| Path::new("."))
+                .join("peer-desktops.json"),
+        )
+    }
+
     pub(crate) fn lan_tls_identity_path(&self) -> Option<PathBuf> {
         if self.pairing_store_path.is_empty() {
             return None;

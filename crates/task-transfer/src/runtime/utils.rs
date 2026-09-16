@@ -747,12 +747,51 @@ fn identity_path(root: &Path, self_peer_id: &str) -> PathBuf {
         .join(format!("{}.json", URL_SAFE_NO_PAD.encode(self_peer_id)))
 }
 
+/// This sidecar's task-transfer X25519 identity, persisted owner-only.
+///
+/// The file is written `0600` through the shared `secure_file` helper. A
+/// file that predates that rule and is still group/other-readable is
+/// tightened once on load (it is this process's own key, and nothing else
+/// legitimately reads it); if tightening fails, or the path is not a regular
+/// file, loading fails closed rather than using a key another account can
+/// read. A missing file creates a fresh identity; a corrupt one is an error,
+/// never silently replaced, because paired peers have pinned its public
+/// half.
 pub(super) fn load_or_create_identity(
     root: &Path,
     self_peer_id: &str,
 ) -> Result<TransferIdentity, RuntimeError> {
+    use kanna_runtime_defaults::secure_file::{load_owner_only, OwnerOnlyReadError};
+
     let path = identity_path(root, self_peer_id);
-    if let Ok(contents) = std::fs::read_to_string(&path) {
+    let contents = match load_owner_only(&path) {
+        Ok(contents) => Some(contents),
+        Err(OwnerOnlyReadError::NotFound) => None,
+        Err(OwnerOnlyReadError::LoosePermissions { mode }) => {
+            use std::os::unix::fs::PermissionsExt;
+            eprintln!(
+                "[task-transfer] transfer identity {} had mode {mode:o}; tightening to 0600",
+                path.display()
+            );
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
+            match load_owner_only(&path) {
+                Ok(contents) => Some(contents),
+                Err(error) => {
+                    return Err(RuntimeError::InvalidConfig(format!(
+                        "transfer identity {} is unusable after tightening: {error}",
+                        path.display()
+                    )))
+                }
+            }
+        }
+        Err(error) => {
+            return Err(RuntimeError::InvalidConfig(format!(
+                "transfer identity {} is unusable: {error}",
+                path.display()
+            )))
+        }
+    };
+    if let Some(contents) = contents {
         if !contents.trim().is_empty() {
             let stored: StoredIdentity = serde_json::from_str(&contents)?;
             return TransferIdentity::from_secret_string(&stored.secret_key)
@@ -760,14 +799,13 @@ pub(super) fn load_or_create_identity(
         }
     }
 
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
     let identity = TransferIdentity::generate();
     let stored = StoredIdentity {
         secret_key: identity.secret_key_string(),
     };
-    std::fs::write(path, serde_json::to_vec_pretty(&stored)?)?;
+    let body = serde_json::to_string_pretty(&stored)?;
+    kanna_runtime_defaults::secure_file::atomic_write_0600(&path, &body)
+        .map_err(RuntimeError::InvalidConfig)?;
     Ok(identity)
 }
 
@@ -1021,6 +1059,63 @@ fn truncate_on_char_boundary(value: &str, budget: usize) -> &str {
 mod tests {
     use super::*;
     use tokio::io::{AsyncWriteExt, BufReader};
+
+    fn identity_root(label: &str) -> PathBuf {
+        let dir = tempfile::Builder::new()
+            .prefix(&format!("kanna-transfer-identity-{label}-"))
+            .tempdir()
+            .expect("temp dir");
+        dir.keep()
+    }
+
+    #[test]
+    fn a_transfer_identity_is_written_owner_only_and_reloads_unchanged() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = identity_root("create");
+        let first = load_or_create_identity(&root, "peer-a").expect("create");
+        let path = identity_path(&root, "peer-a");
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600, "identity must be written 0600");
+        let second = load_or_create_identity(&root, "peer-a").expect("reload");
+        assert_eq!(first.public_key, second.public_key);
+    }
+
+    #[test]
+    fn a_loose_pre_existing_identity_is_tightened_once_and_then_kept() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = identity_root("tighten");
+        let first = load_or_create_identity(&root, "peer-b").expect("create");
+        let path = identity_path(&root, "peer-b");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let reloaded = load_or_create_identity(&root, "peer-b").expect("tighten and load");
+        assert_eq!(
+            first.public_key, reloaded.public_key,
+            "the key is never regenerated"
+        );
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600);
+    }
+
+    #[test]
+    fn a_symlinked_or_corrupt_identity_fails_closed() {
+        let root = identity_root("closed");
+        load_or_create_identity(&root, "peer-c").expect("create");
+        let path = identity_path(&root, "peer-c");
+        let real = path.with_extension("real");
+        std::fs::rename(&path, &real).unwrap();
+        std::os::unix::fs::symlink(&real, &path).unwrap();
+        let error = match load_or_create_identity(&root, "peer-c") {
+            Ok(_) => panic!("a symlinked identity must be refused"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("not a regular file"), "{error}");
+        std::fs::remove_file(&path).unwrap();
+        kanna_runtime_defaults::secure_file::atomic_write_0600(&path, "{ not json").unwrap();
+        assert!(load_or_create_identity(&root, "peer-c").is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "{ not json");
+    }
 
     #[test]
     fn duplex_terminal_controls_start_at_protocol_v4() {

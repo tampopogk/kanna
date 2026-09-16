@@ -33,11 +33,14 @@ use kanna_daemon::terminal_perf::{self, TerminalPerfContext, TerminalPerfMonitor
 
 use crate::daemon_client::DaemonClient;
 use crate::db::Db;
-use crate::http_api::secure_channel::{SealedPairingContext, StreamOrigin};
+use crate::http_api::secure_channel::{
+    SealedPairingContext, SealedPeerPairingContext, SealedPopulation, StreamOrigin,
+};
 use crate::http_api::{dispatch_authenticated_http_invoke, AppState};
 use crate::terminal_window::{
     window_snapshot, HistoryChunk, OutputRing, TerminalHistory, TERMINAL_RING_MAX_BYTES,
 };
+use kanna_secure_channel::HelloIntent;
 
 mod auth;
 #[cfg(test)]
@@ -65,6 +68,12 @@ pub enum AuthMode {
     /// A secure-channel session whose static key is not (yet) paired. It
     /// may claim a pairing code and poll its confirmation, nothing else.
     SealedPairing,
+    /// A peer-domain session whose static key matched a paired sibling
+    /// desktop. The handshake is the authentication.
+    SealedPeer,
+    /// A peer-domain session whose static key is not (yet) a paired
+    /// sibling. It may claim a peer pairing string, nothing else.
+    SealedPeerPairing,
 }
 
 /// How long a connection may take to send its first frame (the secure
@@ -80,6 +89,22 @@ pub(crate) enum SealedSessionAuthority {
         pairing: SealedPairingContext,
     },
     PairingOnly(SealedPairingContext),
+    /// A paired sibling desktop (`peer_trust`), over LAN or relay.
+    PeerDesktop {
+        desktop_id: String,
+        origin: StreamOrigin,
+        context: SealedPeerPairingContext,
+    },
+    /// An unknown desktop about to claim a peer pairing string.
+    PeerPairingOnly(SealedPeerPairingContext),
+}
+
+/// Whose removal ends a sealed session: a phone's device id or a sibling's
+/// desktop id, each announced on its own broadcast.
+#[derive(Debug, Clone)]
+enum SealedRevocationScope {
+    Device(String),
+    Peer(String),
 }
 
 impl SealedSessionAuthority {
@@ -87,20 +112,47 @@ impl SealedSessionAuthority {
         match self {
             Self::Device { .. } => AuthMode::SealedDevice,
             Self::PairingOnly(_) => AuthMode::SealedPairing,
+            Self::PeerDesktop { .. } => AuthMode::SealedPeer,
+            Self::PeerPairingOnly(_) => AuthMode::SealedPeerPairing,
         }
     }
 
-    fn pairing_context(&self) -> &SealedPairingContext {
+    /// The handshake hash of the session, whatever its population.
+    fn handshake_hash(&self) -> [u8; 32] {
         match self {
-            Self::Device { pairing, .. } => pairing,
-            Self::PairingOnly(context) => context,
+            Self::Device { pairing, .. } => pairing.handshake_hash,
+            Self::PairingOnly(context) => context.handshake_hash,
+            Self::PeerDesktop { context, .. } => context.handshake_hash,
+            Self::PeerPairingOnly(context) => context.handshake_hash,
         }
     }
 
-    fn device_id(&self) -> Option<&str> {
+    fn revocation_scope(&self) -> Option<SealedRevocationScope> {
         match self {
-            Self::Device { device_id, .. } => Some(device_id),
-            Self::PairingOnly(_) => None,
+            Self::Device { device_id, .. } => {
+                Some(SealedRevocationScope::Device(device_id.clone()))
+            }
+            Self::PeerDesktop { desktop_id, .. } => {
+                Some(SealedRevocationScope::Peer(desktop_id.clone()))
+            }
+            Self::PairingOnly(_) | Self::PeerPairingOnly(_) => None,
+        }
+    }
+
+    fn peer_desktop_id(&self) -> Option<&str> {
+        match self {
+            Self::PeerDesktop { desktop_id, .. } => Some(desktop_id),
+            _ => None,
+        }
+    }
+
+    /// A label for logs: never a key, never a secret.
+    fn describe(&self) -> String {
+        match self {
+            Self::Device { device_id, .. } => format!("device={device_id}"),
+            Self::PairingOnly(_) => "pairing-only phone".to_string(),
+            Self::PeerDesktop { desktop_id, .. } => format!("peer={desktop_id}"),
+            Self::PeerPairingOnly(_) => "pairing-only peer".to_string(),
         }
     }
 }
@@ -112,8 +164,12 @@ pub(crate) struct AdmittedSealedSession {
     pub(crate) sender: kanna_secure_channel::Sender,
     pub(crate) receiver: kanna_secure_channel::Receiver,
     pub(crate) authority: SealedSessionAuthority,
-    /// Subscribed *before* the pairing store was read, so a device removed
-    /// at any point after that read is announced here.
+    /// What the initiator said the session is for; a `peer_tunnel` carries
+    /// raw bytes for `tunnel_service` instead of KSP frames.
+    pub(crate) intent: HelloIntent,
+    pub(crate) tunnel_service: Option<String>,
+    /// Subscribed *before* the trust store was read, so a device or peer
+    /// removed at any point after that read is announced here.
     pub(crate) revocations: broadcast::Receiver<String>,
 }
 
@@ -148,6 +204,116 @@ impl std::fmt::Display for SealedAdmissionError {
 pub(crate) fn admit_sealed_session(
     state: &AppState,
     origin: StreamOrigin,
+    population: SealedPopulation,
+    first_frame: &str,
+) -> Result<AdmittedSealedSession, SealedAdmissionError> {
+    match population {
+        SealedPopulation::Mobile => admit_sealed_mobile_session(state, origin, first_frame),
+        SealedPopulation::Peer => admit_sealed_peer_session(state, origin, first_frame),
+    }
+}
+
+/// The peer-domain admission: message 1 is read with the *peer* identity
+/// and prologue, and authorization is the peer trust store lookup. An
+/// unknown key gets pairing-only authority (it may claim a pairing string
+/// and nothing else); a paired key gets sibling authority. A `peer_tunnel`
+/// intent from an unpaired key is refused outright - a tunnel carries raw
+/// bytes to the sidecar and there is no pairing-only shape of that.
+pub(crate) fn admit_sealed_peer_session(
+    state: &AppState,
+    origin: StreamOrigin,
+    first_frame: &str,
+) -> Result<AdmittedSealedSession, SealedAdmissionError> {
+    let identity = state
+        .peer_channel_identity()
+        .map_err(SealedAdmissionError::Unavailable)?;
+    let config = state.config();
+    let pending = kanna_secure_channel::PendingResponder::read_hello_in(
+        kanna_secure_channel::Domain::Peer,
+        &identity,
+        &config.desktop_id,
+        first_frame,
+    )
+    .map_err(|error| SealedAdmissionError::Handshake(error.to_string()))?;
+    let remote_static = *pending.remote_static();
+    let encoded_remote = kanna_secure_channel::encode_key(&remote_static);
+    let revocations = state.subscribe_peer_revocations();
+    let store = state
+        .peer_trust_store()
+        .map_err(SealedAdmissionError::Unavailable)?;
+    let paired = store
+        .peer_by_channel_key(&encoded_remote, &config.environment)
+        .cloned();
+    let hello = pending.initiator_hello().clone();
+    if let Some(declared) = hello.source_desktop_id.as_deref() {
+        if !crate::peer_pairing::desktop_id_is_pairable(declared) {
+            return Err(SealedAdmissionError::Handshake(
+                "invalid source desktop id".into(),
+            ));
+        }
+        if declared == config.desktop_id {
+            return Err(SealedAdmissionError::Handshake(
+                "a desktop cannot open a peer session to itself".into(),
+            ));
+        }
+        if paired
+            .as_ref()
+            .is_some_and(|peer| peer.desktop_id != declared)
+        {
+            return Err(SealedAdmissionError::Handshake(
+                "desktop id does not match the pinned key".into(),
+            ));
+        }
+    }
+    if hello.intent == HelloIntent::PeerTunnel {
+        if paired.is_none() {
+            return Err(SealedAdmissionError::Handshake(
+                "a peer tunnel requires a paired sibling".into(),
+            ));
+        }
+        if hello.service.as_deref() != Some("task-transfer") {
+            return Err(SealedAdmissionError::Handshake(
+                "unsupported peer tunnel service".into(),
+            ));
+        }
+    }
+    let responder_hello = kanna_secure_channel::ResponderHello {
+        version: kanna_secure_channel::PROTOCOL_VERSION,
+        desktop_id: config.desktop_id.clone(),
+        capabilities: vec!["ksp".into(), "peer-pairing".into(), "peer-tunnel".into()],
+    };
+    let (reply, channel) = pending
+        .accept(&responder_hello)
+        .map_err(|error| SealedAdmissionError::Handshake(error.to_string()))?;
+    let context = SealedPeerPairingContext {
+        remote_static,
+        handshake_hash: *channel.handshake_hash(),
+        origin,
+        declared_desktop_id: hello.source_desktop_id.clone(),
+    };
+    let authority = match paired {
+        Some(peer) => SealedSessionAuthority::PeerDesktop {
+            desktop_id: peer.desktop_id,
+            origin,
+            context,
+        },
+        None => SealedSessionAuthority::PeerPairingOnly(context),
+    };
+    let (sender, receiver) = channel.split();
+    Ok(AdmittedSealedSession {
+        reply,
+        sender,
+        receiver,
+        authority,
+        intent: hello.intent,
+        tunnel_service: hello.service,
+        revocations,
+    })
+}
+
+fn admit_sealed_mobile_session(
+    state: &AppState,
+    origin: StreamOrigin,
     first_frame: &str,
 ) -> Result<AdmittedSealedSession, SealedAdmissionError> {
     let identity = state
@@ -174,6 +340,7 @@ pub(crate) fn admit_sealed_session(
         .device_by_channel_key(&config.desktop_id, &encoded_remote)
         .cloned();
     let hello_device_id = pending.initiator_hello().device_id.clone();
+    let intent = pending.initiator_hello().intent;
     let hello = kanna_secure_channel::ResponderHello {
         version: kanna_secure_channel::PROTOCOL_VERSION,
         desktop_id: config.desktop_id.clone(),
@@ -211,6 +378,8 @@ pub(crate) fn admit_sealed_session(
         sender,
         receiver,
         authority,
+        intent,
+        tunnel_service: None,
         revocations,
     })
 }
@@ -224,6 +393,38 @@ pub(crate) fn recheck_sealed_authority(
     state: &AppState,
     authority: SealedSessionAuthority,
 ) -> SealedSessionAuthority {
+    if let SealedSessionAuthority::PeerDesktop {
+        desktop_id,
+        origin,
+        context,
+    } = authority
+    {
+        let still_paired = state
+            .peer_trust_store()
+            .ok()
+            .and_then(|store| {
+                store
+                    .peer_by_channel_key(
+                        &context.encoded_remote_static(),
+                        &state.config().environment,
+                    )
+                    .map(|peer| peer.desktop_id.clone())
+            })
+            .is_some_and(|paired| paired == desktop_id);
+        return if still_paired {
+            SealedSessionAuthority::PeerDesktop {
+                desktop_id,
+                origin,
+                context,
+            }
+        } else {
+            log::info!(
+                "[ksp] peer {desktop_id} was unpaired while its session was being admitted; \
+                 the session is pairing-only"
+            );
+            SealedSessionAuthority::PeerPairingOnly(context)
+        };
+    }
     let SealedSessionAuthority::Device {
         device_id,
         origin,
@@ -1758,6 +1959,25 @@ pub async fn handle_stream(
     auth_mode: AuthMode,
     companion_access: bool,
 ) {
+    handle_stream_for(
+        socket,
+        state,
+        auth_mode,
+        companion_access,
+        SealedPopulation::Mobile,
+    )
+    .await
+}
+
+/// `handle_stream` for a chosen sealed population: the `/v1/peers/channel`
+/// endpoint admits sibling desktops, every other endpoint phones.
+pub async fn handle_stream_for(
+    socket: WebSocket,
+    state: Arc<AppState>,
+    auth_mode: AuthMode,
+    companion_access: bool,
+    population: SealedPopulation,
+) {
     let budget = Arc::clone(&state.companion_resources.pending_bytes);
     run_socket_session(
         socket,
@@ -1765,6 +1985,7 @@ pub async fn handle_stream(
         auth_mode,
         companion_access,
         StreamOrigin::Lan,
+        population,
         Some(budget),
         |message| match message {
             WsMessage::Text(text) => SocketInbound::Text(text.to_string()),
@@ -1785,6 +2006,7 @@ pub async fn handle_tungstenite_stream(
     socket: WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>,
     state: Arc<AppState>,
     origin: StreamOrigin,
+    population: SealedPopulation,
 ) {
     let auth_mode = match origin {
         StreamOrigin::RelayTunnel => AuthMode::AlreadyAuthenticated,
@@ -1796,6 +2018,7 @@ pub async fn handle_tungstenite_stream(
         auth_mode,
         true,
         origin,
+        population,
         None,
         |message| match message {
             TungsteniteMessage::Text(text) => SocketInbound::Text(text.to_string()),
@@ -1807,7 +2030,7 @@ pub async fn handle_tungstenite_stream(
     .await;
 }
 
-enum SocketInbound {
+pub(crate) enum SocketInbound {
     Text(String),
     Close,
     Other,
@@ -1817,6 +2040,24 @@ enum SocketInbound {
 #[cfg(test)]
 pub(crate) async fn handle_test_socket<S, E>(socket: S, state: Arc<AppState>, origin: StreamOrigin)
 where
+    S: futures_util::Stream<Item = Result<String, E>>
+        + futures_util::Sink<String>
+        + Unpin
+        + Send
+        + 'static,
+    E: Send + 'static,
+    <S as futures_util::Sink<String>>::Error: Send,
+{
+    handle_test_socket_for(socket, state, origin, SealedPopulation::Mobile).await
+}
+
+#[cfg(test)]
+pub(crate) async fn handle_test_socket_for<S, E>(
+    socket: S,
+    state: Arc<AppState>,
+    origin: StreamOrigin,
+    population: SealedPopulation,
+) where
     S: futures_util::Stream<Item = Result<String, E>>
         + futures_util::Sink<String>
         + Unpin
@@ -1835,6 +2076,7 @@ where
         auth_mode,
         companion_access,
         origin,
+        population,
         None,
         SocketInbound::Text,
         |text| text,
@@ -1863,6 +2105,7 @@ async fn run_socket_session<S, M, E>(
     plaintext_auth_mode: AuthMode,
     plaintext_companion_access: bool,
     origin: StreamOrigin,
+    population: SealedPopulation,
     companion_budget: Option<Arc<AtomicUsize>>,
     inbound: fn(M) -> SocketInbound,
     outbound: fn(String) -> M,
@@ -1922,31 +2165,72 @@ async fn run_socket_session<S, M, E>(
     let mut sealed_revocations = None;
     let (auth_mode, companion_access, sealed_info, initial_plaintext) =
         if kanna_secure_channel::is_wire_frame(&first) {
-            match admit_sealed_session(&state, origin, &first) {
+            match admit_sealed_session(&state, origin, population, &first) {
                 Ok(admitted) => {
                     let AdmittedSealedSession {
                         reply,
                         sender,
                         receiver,
                         authority,
+                        intent,
+                        tunnel_service,
                         revocations,
                     } = admitted;
                     let authority = recheck_sealed_authority(&state, authority);
+                    if intent == HelloIntent::PeerTunnel {
+                        // Admitted above only for a paired sibling; the
+                        // recheck may have unpaired it meanwhile.
+                        let Some(peer_desktop_id) = authority.peer_desktop_id() else {
+                            log::warn!("[ksp] refusing peer tunnel: sibling is no longer paired");
+                            return;
+                        };
+                        if tunnel_service.as_deref() != Some("task-transfer") {
+                            return;
+                        }
+                        if ws_tx.send(outbound(reply)).await.is_err() {
+                            return;
+                        }
+                        if origin == StreamOrigin::RelayTunnel
+                            && !state.relay_tunnel_access_allowed()
+                        {
+                            log::warn!("[ksp] refusing peer tunnel from {peer_desktop_id}: relay account access is not allowed");
+                            return;
+                        }
+                        log::info!(
+                            "[ksp] sealed peer tunnel admitted ({origin:?}, peer={peer_desktop_id}, service=task-transfer)"
+                        );
+                        crate::peer_transfer_proxy::serve_inbound_transfer_tunnel(
+                            state,
+                            ws_tx,
+                            ws_rx,
+                            sender,
+                            receiver,
+                            inbound,
+                            outbound,
+                            revocations,
+                            peer_desktop_id.to_string(),
+                        )
+                        .await;
+                        return;
+                    }
                     if ws_tx.send(outbound(reply)).await.is_err() {
                         return;
                     }
                     let auth_mode = authority.auth_mode();
-                    let companion_access =
-                        matches!(authority, SealedSessionAuthority::Device { .. });
+                    let companion_access = matches!(
+                        authority,
+                        SealedSessionAuthority::Device { .. }
+                            | SealedSessionAuthority::PeerDesktop { .. }
+                    );
                     sealed_receiver = Some(receiver);
                     sealed_sender = Some(Arc::new(Mutex::new(sender)));
                     sealed_revocations = authority
-                        .device_id()
-                        .map(|device_id| (device_id.to_string(), revocations));
+                        .revocation_scope()
+                        .map(|scope| (scope, revocations));
                     log::info!(
-                        "[ksp] sealed session admitted ({:?}, device={:?})",
+                        "[ksp] sealed session admitted ({:?}, {})",
                         origin,
-                        authority.device_id()
+                        authority.describe()
                     );
                     (
                         auth_mode,
@@ -1979,6 +2263,21 @@ async fn run_socket_session<S, M, E>(
                 }
             }
         } else {
+            if population == SealedPopulation::Peer {
+                // The peer endpoints have no legacy shape: a sibling either
+                // completes the peer handshake against this desktop's pinned
+                // key or it is not a sibling.
+                log::warn!("[ksp] refusing plaintext frame on the peer endpoint ({origin:?})");
+                let frame = ServerFrame::Error {
+                    task_id: None,
+                    code: "peer_channel_refused".into(),
+                    message: "this endpoint only accepts sealed desktop-to-desktop sessions".into(),
+                };
+                if let Ok(json) = serde_json::to_string(&frame) {
+                    let _ = ws_tx.send(outbound(json)).await;
+                }
+                return;
+            }
             if origin == StreamOrigin::RelayTunnel && !state.legacy_mobile_access_allowed() {
                 log::warn!("[ksp] refusing plaintext relay tunnel: legacy mobile access is off");
                 let frame = ServerFrame::Error {
@@ -2128,7 +2427,7 @@ async fn run_socket_session<S, M, E>(
     let revocation = sealed_revocations;
     let pairing_handshake = sealed_info
         .as_ref()
-        .map(|info| info.authority.pairing_context().handshake_hash);
+        .map(|info| info.authority.handshake_hash());
     let closed_by_revocation = handle_stream_channels(
         incoming_rx,
         frame_tx,
@@ -2141,10 +2440,10 @@ async fn run_socket_session<S, M, E>(
         origin,
     )
     .await;
-    if closed_by_revocation {
+    if let Some(reason) = closed_by_revocation {
         *close_reason
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some("device revoked".to_string());
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(reason);
     }
     if let Some(handshake_hash) = pairing_handshake {
         state.pairing_confirmation.abandon(&handshake_hash).await;
@@ -2164,16 +2463,16 @@ async fn handle_stream_channels(
     auth_mode: AuthMode,
     companion_access: bool,
     sealed: Option<SealedSessionInfo>,
-    revocation: Option<(String, broadcast::Receiver<String>)>,
+    revocation: Option<(SealedRevocationScope, broadcast::Receiver<String>)>,
     origin: StreamOrigin,
-) -> bool {
+) -> Option<String> {
     let mut terminal_geometry_changed = state.subscribe_terminal_geometry_changes();
     let mut state_change_task = None;
-    let (revoked_device_id, mut revocations) = match revocation {
-        Some((device_id, receiver)) => (Some(device_id), Some(receiver)),
+    let (revocation_scope, mut revocations) = match revocation {
+        Some((scope, receiver)) => (Some(scope), Some(receiver)),
         None => (None, None),
     };
-    let mut closed_by_revocation = false;
+    let mut closed_by_revocation: Option<String> = None;
     let mut conn = StreamConn {
         state,
         frame_tx,
@@ -2208,22 +2507,33 @@ async fn handle_stream_channels(
                     None => std::future::pending().await,
                 }
             }, if revocations.is_some() => {
+                let (revoked_id, reason) = match &revocation_scope {
+                    Some(SealedRevocationScope::Device(device_id)) => (device_id.as_str(), "device revoked"),
+                    Some(SealedRevocationScope::Peer(desktop_id)) => (desktop_id.as_str(), "peer revoked"),
+                    None => { revocations = None; continue; }
+                };
                 match revoked {
-                    Ok(device_id) if Some(&device_id) == revoked_device_id.as_ref() => {
-                        log::info!("[ksp] closing sealed session: device {device_id} was revoked");
-                        closed_by_revocation = true;
+                    Ok(revoked) if revoked == revoked_id => {
+                        log::info!("[ksp] closing sealed session: {reason} ({revoked})");
+                        closed_by_revocation = Some(reason.to_string());
                         break;
                     }
                     Ok(_) => continue,
                     Err(broadcast::error::RecvError::Lagged(_)) => {
                         // Re-check the store rather than guess what was missed.
                         let config = conn.state.config();
-                        let still_trusted = revoked_device_id.as_deref().is_some_and(|device_id| {
-                            crate::pairing::PairingStore::load(Path::new(&config.pairing_store_path))
-                                .is_ok_and(|store| store.is_trusted(&config.desktop_id, device_id))
-                        });
+                        let still_trusted = match &revocation_scope {
+                            Some(SealedRevocationScope::Device(device_id)) => {
+                                crate::pairing::PairingStore::load(Path::new(&config.pairing_store_path))
+                                    .is_ok_and(|store| store.is_trusted(&config.desktop_id, device_id))
+                            }
+                            Some(SealedRevocationScope::Peer(desktop_id)) => {
+                                conn.state.paired_peer(desktop_id).is_some()
+                            }
+                            None => true,
+                        };
                         if !still_trusted {
-                            closed_by_revocation = true;
+                            closed_by_revocation = Some(reason.to_string());
                             break;
                         }
                         continue;
@@ -2259,8 +2569,11 @@ async fn handle_stream_channels(
                 // requests and nothing that fans out (task ids, activity,
                 // output previews).
                 let pending_state_changes = (!conn.authed
-                    && conn.auth_mode != AuthMode::SealedPairing)
-                    .then(|| conn.state.subscribe_state_changes());
+                    && !matches!(
+                        conn.auth_mode,
+                        AuthMode::SealedPairing | AuthMode::SealedPeerPairing
+                    ))
+                .then(|| conn.state.subscribe_state_changes());
                 if !conn.handle(frame).await {
                     break;
                 }
@@ -2290,7 +2603,7 @@ async fn handle_stream_channels(
     closed_by_revocation
 }
 
-fn is_relay_tunnel_control_message(message: &str) -> bool {
+pub(crate) fn is_relay_tunnel_control_message(message: &str) -> bool {
     serde_json::from_str::<serde_json::Value>(message)
         .ok()
         .and_then(|value| {
@@ -3131,6 +3444,15 @@ fn pairing_only_request_allowed(method: &str, path: &str) -> bool {
     )
 }
 
+/// The one request an unpaired sibling desktop may make.
+fn peer_pairing_only_request_allowed(method: &str, path: &str) -> bool {
+    let path = path.split('?').next().unwrap_or(path);
+    matches!(
+        (method.to_ascii_uppercase().as_str(), path),
+        ("POST", "/v1/peers/pairing/claim")
+    )
+}
+
 async fn dispatch_ksp_request(
     state: Arc<AppState>,
     frame_tx: mpsc::Sender<ServerFrame>,
@@ -3151,6 +3473,14 @@ async fn dispatch_ksp_request(
             Some((
                 401,
                 "this connection is not paired; only pairing requests are accepted",
+            ))
+        }
+        Some(SealedSessionAuthority::PeerPairingOnly(_))
+            if !peer_pairing_only_request_allowed(&method, &path) =>
+        {
+            Some((
+                401,
+                "this desktop is not a paired peer; only the peer pairing claim is accepted",
             ))
         }
         _ => None,
@@ -3185,6 +3515,26 @@ async fn dispatch_ksp_request(
                 }
                 Some(SealedSessionAuthority::PairingOnly(context)) => {
                     crate::http_api::dispatch_sealed_pairing_http_invoke(
+                        state,
+                        context.clone(),
+                        &method,
+                        &path,
+                        body,
+                    )
+                    .await
+                }
+                Some(SealedSessionAuthority::PeerDesktop { desktop_id, .. }) => {
+                    crate::http_api::dispatch_sealed_peer_http_invoke(
+                        state,
+                        desktop_id.clone(),
+                        &method,
+                        &path,
+                        body,
+                    )
+                    .await
+                }
+                Some(SealedSessionAuthority::PeerPairingOnly(context)) => {
+                    crate::http_api::dispatch_sealed_peer_pairing_http_invoke(
                         state,
                         context.clone(),
                         &method,
@@ -3857,12 +4207,13 @@ impl StreamConn {
             };
         }
 
-        if self.auth_mode == AuthMode::SealedPairing
-            && !matches!(
-                &frame,
-                ClientFrame::Auth { .. } | ClientFrame::Request { .. }
-            )
-        {
+        if matches!(
+            self.auth_mode,
+            AuthMode::SealedPairing | AuthMode::SealedPeerPairing
+        ) && !matches!(
+            &frame,
+            ClientFrame::Auth { .. } | ClientFrame::Request { .. }
+        ) {
             // An unpaired phone gets exactly the pairing requests and no
             // stream: the connection ends rather than answering an error a
             // client could keep probing past.
@@ -4298,7 +4649,10 @@ impl StreamConn {
             // The handshake authenticated this session; a credential in the
             // frame is neither needed nor trusted (a bearer inside a sealed
             // channel would only be a secret to leak).
-            AuthMode::SealedDevice | AuthMode::SealedPairing => true,
+            AuthMode::SealedDevice
+            | AuthMode::SealedPairing
+            | AuthMode::SealedPeer
+            | AuthMode::SealedPeerPairing => true,
             AuthMode::LegacyReadOnlyOrPaired => match credential.as_deref() {
                 Some(value) => self.paired_device_credential_matches(value),
                 None => true,

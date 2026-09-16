@@ -60,6 +60,14 @@ pub(super) async fn bootstrap_lan_trust(
             "candidate secret must not be empty".to_string(),
         ));
     }
+    if !state.legacy_peer_access_allowed() {
+        // The relay is the trust root of this bootstrap; with legacy
+        // desktop-to-desktop access off, no CA is handed out on its word.
+        return Err((
+            StatusCode::FORBIDDEN,
+            "peer_legacy_access_refused: LAN trust is established by pairing the machines from Preferences → Machines".to_string(),
+        ));
+    }
 
     let store_path = state.config().machine_trust_store_path().ok_or((
         StatusCode::INTERNAL_SERVER_ERROR,

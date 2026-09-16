@@ -240,8 +240,20 @@ async fn compact_legacy_remote_filters_detailed_diagnostics_but_detailed_retains
 async fn machine_stats_http_relay_keeps_native_peer_when_local_collection_fails() {
     let remote = test_state_with_seed("stats-native-peer", "Native peer", |_| {});
     let mut local = (*test_state_with_seed("stats-broken-local", "Broken local", |_| {})).clone();
-    let invalid_db = tempfile::tempdir().unwrap();
-    local.config.db_path = invalid_db.path().to_string_lossy().into_owned(); // a directory, not SQLite
+    // A database with no task tables, so the local collector's busy-task
+    // count fails and local collection is reported as an error. It still
+    // has a `settings` table: the desktop-to-desktop legacy switch is read
+    // from it fail-closed, and this test is about a broken *collector*,
+    // not a desktop that has lost the authority to reach its siblings.
+    let broken_db = tempfile::tempdir().unwrap();
+    let broken_db_path = broken_db.path().join("settings-only.sqlite3");
+    {
+        let connection = rusqlite::Connection::open(&broken_db_path).unwrap();
+        connection
+            .execute_batch("CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);")
+            .unwrap();
+    }
+    local.config.db_path = broken_db_path.to_string_lossy().into_owned();
     let local = Arc::new(local);
     let mut requests = local.take_desktop_relay_requests().unwrap();
     local.set_desktop_routing_available(true);
@@ -346,10 +358,13 @@ async fn machine_stats_http_relay_keeps_native_peer_when_local_collection_fails(
     }
     assert!(peer["processes"]["topProcesses"].as_array().unwrap().len() <= 10);
     assert_eq!(body["machineErrors"][0]["machineId"], "stats-broken-local");
-    assert!(body["machineErrors"][0]["error"]
-        .as_str()
-        .unwrap()
-        .contains("database"));
+    assert!(
+        body["machineErrors"][0]["error"]
+            .as_str()
+            .unwrap()
+            .contains("busy task count"),
+        "{body}"
+    );
 }
 
 #[tokio::test]

@@ -52,6 +52,7 @@ pub const PROTOCOL_VERSION: u16 = 1;
 pub const WIRE_PREFIX: &str = "ksc1:";
 const NOISE_PATTERN: &str = "Noise_IK_25519_ChaChaPoly_SHA256";
 const PROLOGUE_PREFIX: &[u8] = b"kanna-ksc/1\0";
+const PEER_PROLOGUE_PREFIX: &[u8] = b"kanna-ksc-peer/1\0";
 const SAS_DOMAIN: &[u8] = b"kanna-ksc/sas/1\0";
 /// Noise's hard limit on one transport or handshake message.
 pub const MAX_NOISE_MESSAGE_LEN: usize = 65_535;
@@ -198,16 +199,43 @@ pub fn decode_key(encoded: &str) -> Result<[u8; 32], Error> {
     bytes.as_slice().try_into().map_err(|_| Error::InvalidKey)
 }
 
-/// What the phone tells the desktop inside message 1 (encrypted).
+/// Which population of peers a handshake belongs to. The domain selects the
+/// prologue, so a message 1 minted in one domain can never complete a
+/// handshake in the other: a phone's session cannot be replayed at the
+/// desktop-peer endpoint and a sibling desktop's session cannot be replayed
+/// at the phone endpoint, even if the same static keys were somehow in play.
+/// Each domain has its own desktop identity as well (`secure-channel-identity`
+/// for phones, `peer-channel-identity` for sibling desktops), so a rotation
+/// or revocation on one side never invalidates pins on the other.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Domain {
+    /// Phone ↔ desktop: prologue `kanna-ksc/1\0<desktop_id>`.
+    Mobile,
+    /// Desktop ↔ desktop: prologue `kanna-ksc-peer/1\0<desktop_id>`.
+    Peer,
+}
+
+/// What the initiator tells the responder inside message 1 (encrypted).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct InitiatorHello {
     pub version: u16,
     /// `session` for an already-paired device; `pairing` when the phone is
     /// about to claim a pairing code and its static key is not yet trusted.
+    /// The `peer_*` intents are the desktop-peer domain's equivalents plus
+    /// the raw-byte tunnel a task transfer rides in.
     pub intent: HelloIntent,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub device_id: Option<String>,
+    /// The initiating desktop's own id, in the peer domain. A claim, never
+    /// an authentication: the responder trusts the static key, and only
+    /// refuses a hello whose declared id disagrees with the pinned one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_desktop_id: Option<String>,
+    /// For `peer_tunnel`: which service the raw bytes are for
+    /// (`task-transfer`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub service: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub capabilities: Vec<String>,
 }
@@ -217,6 +245,22 @@ pub struct InitiatorHello {
 pub enum HelloIntent {
     Session,
     Pairing,
+    /// A sibling desktop about to claim a peer pairing string.
+    PeerPairing,
+    /// A paired sibling desktop's KSP session (control, terminal streams).
+    PeerSession,
+    /// A paired sibling desktop's raw-byte tunnel for `service`.
+    PeerTunnel,
+}
+
+impl HelloIntent {
+    /// Whether this intent belongs to the desktop-peer domain.
+    pub fn is_peer(self) -> bool {
+        matches!(
+            self,
+            Self::PeerPairing | Self::PeerSession | Self::PeerTunnel
+        )
+    }
 }
 
 /// What the desktop tells the phone inside message 2 (encrypted).
@@ -236,8 +280,11 @@ fn builder() -> Result<snow::Builder<'static>, Error> {
     Ok(snow::Builder::new(params))
 }
 
-fn prologue(desktop_id: &str) -> Vec<u8> {
-    let mut prologue = PROLOGUE_PREFIX.to_vec();
+fn prologue(domain: Domain, desktop_id: &str) -> Vec<u8> {
+    let mut prologue = match domain {
+        Domain::Mobile => PROLOGUE_PREFIX.to_vec(),
+        Domain::Peer => PEER_PROLOGUE_PREFIX.to_vec(),
+    };
     prologue.extend_from_slice(desktop_id.as_bytes());
     prologue
 }
@@ -318,8 +365,43 @@ impl PendingResponder {
         Self::read_hello_with(local, desktop_id, wire, None, DEFAULT_MAX_MESSAGE_LEN)
     }
 
+    /// The desktop-peer domain's equivalent of [`Self::read_hello`].
+    pub fn read_hello_in(
+        domain: Domain,
+        local: &Keypair,
+        desktop_id: &str,
+        wire: &str,
+    ) -> Result<Self, Error> {
+        Self::read_hello_with_domain(
+            domain,
+            local,
+            desktop_id,
+            wire,
+            None,
+            DEFAULT_MAX_MESSAGE_LEN,
+        )
+    }
+
     /// `fixed_ephemeral` exists for deterministic test vectors only.
     pub fn read_hello_with(
+        local: &Keypair,
+        desktop_id: &str,
+        wire: &str,
+        fixed_ephemeral: Option<&[u8; 32]>,
+        max_message_len: usize,
+    ) -> Result<Self, Error> {
+        Self::read_hello_with_domain(
+            Domain::Mobile,
+            local,
+            desktop_id,
+            wire,
+            fixed_ephemeral,
+            max_message_len,
+        )
+    }
+
+    pub fn read_hello_with_domain(
+        domain: Domain,
         local: &Keypair,
         desktop_id: &str,
         wire: &str,
@@ -330,7 +412,7 @@ impl PendingResponder {
         if records.len() != 1 {
             return Err(Error::Wire("handshake frame must carry exactly one record"));
         }
-        let prologue = prologue(desktop_id);
+        let prologue = prologue(domain, desktop_id);
         let mut builder = builder()?
             .local_private_key(local.private_key())?
             .prologue(&prologue)?;
@@ -341,6 +423,9 @@ impl PendingResponder {
         let mut payload = vec![0_u8; MAX_NOISE_MESSAGE_LEN];
         let payload_len = handshake.read_message(&records[0], &mut payload)?;
         let hello = parse_initiator_hello(&payload[..payload_len])?;
+        if hello.intent.is_peer() != matches!(domain, Domain::Peer) {
+            return Err(Error::Hello("intent does not belong to this domain"));
+        }
         let remote_static: [u8; 32] = handshake
             .get_remote_static()
             .ok_or(Error::Noise("initiator static missing".into()))?
@@ -404,6 +489,25 @@ impl PendingInitiator {
         )
     }
 
+    /// The desktop-peer domain's equivalent of [`Self::start`].
+    pub fn start_in(
+        domain: Domain,
+        local: &Keypair,
+        remote_static: &[u8; 32],
+        desktop_id: &str,
+        hello: &InitiatorHello,
+    ) -> Result<(Self, String), Error> {
+        Self::start_with_domain(
+            domain,
+            local,
+            remote_static,
+            desktop_id,
+            hello,
+            None,
+            DEFAULT_MAX_MESSAGE_LEN,
+        )
+    }
+
     /// `fixed_ephemeral` exists for deterministic test vectors only.
     pub fn start_with(
         local: &Keypair,
@@ -413,7 +517,30 @@ impl PendingInitiator {
         fixed_ephemeral: Option<&[u8; 32]>,
         max_message_len: usize,
     ) -> Result<(Self, String), Error> {
-        let prologue = prologue(desktop_id);
+        Self::start_with_domain(
+            Domain::Mobile,
+            local,
+            remote_static,
+            desktop_id,
+            hello,
+            fixed_ephemeral,
+            max_message_len,
+        )
+    }
+
+    pub fn start_with_domain(
+        domain: Domain,
+        local: &Keypair,
+        remote_static: &[u8; 32],
+        desktop_id: &str,
+        hello: &InitiatorHello,
+        fixed_ephemeral: Option<&[u8; 32]>,
+        max_message_len: usize,
+    ) -> Result<(Self, String), Error> {
+        if hello.intent.is_peer() != matches!(domain, Domain::Peer) {
+            return Err(Error::Hello("intent does not belong to this domain"));
+        }
+        let prologue = prologue(domain, desktop_id);
         let mut builder = builder()?
             .local_private_key(local.private_key())?
             .remote_public_key(remote_static)?
@@ -698,7 +825,20 @@ mod tests {
             version: PROTOCOL_VERSION,
             intent: HelloIntent::Session,
             device_id: Some(device.to_string()),
+            source_desktop_id: None,
+            service: None,
             capabilities: vec!["ksp".into()],
+        }
+    }
+
+    fn peer_hello(intent: HelloIntent) -> InitiatorHello {
+        InitiatorHello {
+            version: PROTOCOL_VERSION,
+            intent,
+            device_id: None,
+            source_desktop_id: Some("DESKTOP-A".into()),
+            service: matches!(intent, HelloIntent::PeerTunnel).then(|| "task-transfer".into()),
+            capabilities: vec![],
         }
     }
 
@@ -959,6 +1099,110 @@ mod tests {
         assert_eq!(
             decode_key(&URL_SAFE_NO_PAD.encode([1_u8; 31])),
             Err(Error::InvalidKey)
+        );
+    }
+
+    #[test]
+    fn the_peer_domain_completes_a_handshake_of_its_own() {
+        let a = Keypair::generate().unwrap();
+        let b = Keypair::generate().unwrap();
+        let (pending, m1) = PendingInitiator::start_in(
+            Domain::Peer,
+            &a,
+            b.public_key(),
+            "DESKTOP-B",
+            &peer_hello(HelloIntent::PeerSession),
+        )
+        .unwrap();
+        let responder =
+            PendingResponder::read_hello_in(Domain::Peer, &b, "DESKTOP-B", &m1).unwrap();
+        assert_eq!(responder.remote_static(), a.public_key());
+        assert_eq!(
+            responder.initiator_hello().source_desktop_id.as_deref(),
+            Some("DESKTOP-A")
+        );
+        let (m2, b_channel) = responder
+            .accept(&ResponderHello {
+                version: PROTOCOL_VERSION,
+                desktop_id: "DESKTOP-B".into(),
+                capabilities: vec![],
+            })
+            .unwrap();
+        let (a_channel, _) = pending.finish(&m2).unwrap();
+        assert_eq!(a_channel.handshake_hash(), b_channel.handshake_hash());
+    }
+
+    #[test]
+    fn the_mobile_and_peer_domains_cannot_complete_a_handshake_with_each_other() {
+        let phone = Keypair::generate().unwrap();
+        let desktop = Keypair::generate().unwrap();
+        // A phone's message 1 at the peer endpoint...
+        let (_, m1) = PendingInitiator::start(
+            &phone,
+            desktop.public_key(),
+            "DESKTOP-1",
+            &hello_session("phone-1"),
+        )
+        .unwrap();
+        assert!(matches!(
+            PendingResponder::read_hello_in(Domain::Peer, &desktop, "DESKTOP-1", &m1),
+            Err(Error::Noise(_))
+        ));
+        // ...and a sibling's message 1 at the phone endpoint both fail the
+        // prologue, before any hello is parsed.
+        let sibling = Keypair::generate().unwrap();
+        let (_, m1) = PendingInitiator::start_in(
+            Domain::Peer,
+            &sibling,
+            desktop.public_key(),
+            "DESKTOP-1",
+            &peer_hello(HelloIntent::PeerSession),
+        )
+        .unwrap();
+        assert!(matches!(
+            PendingResponder::read_hello(&desktop, "DESKTOP-1", &m1),
+            Err(Error::Noise(_))
+        ));
+    }
+
+    #[test]
+    fn an_intent_from_the_other_domain_is_refused_on_both_sides() {
+        let a = Keypair::generate().unwrap();
+        let b = Keypair::generate().unwrap();
+        assert_eq!(
+            PendingInitiator::start_in(
+                Domain::Peer,
+                &a,
+                b.public_key(),
+                "D",
+                &hello_session("phone")
+            )
+            .err(),
+            Some(Error::Hello("intent does not belong to this domain"))
+        );
+        assert_eq!(
+            PendingInitiator::start(
+                &a,
+                b.public_key(),
+                "D",
+                &peer_hello(HelloIntent::PeerSession)
+            )
+            .err(),
+            Some(Error::Hello("intent does not belong to this domain"))
+        );
+    }
+
+    #[test]
+    fn the_existing_mobile_hello_wire_shape_is_unchanged() {
+        let hello = hello_session("phone-1");
+        assert_eq!(
+            serde_json::to_string(&hello).unwrap(),
+            r#"{"version":1,"intent":"session","deviceId":"phone-1","capabilities":["ksp"]}"#
+        );
+        let tunnel = peer_hello(HelloIntent::PeerTunnel);
+        assert_eq!(
+            serde_json::to_string(&tunnel).unwrap(),
+            r#"{"version":1,"intent":"peer_tunnel","sourceDesktopId":"DESKTOP-A","service":"task-transfer"}"#
         );
     }
 }

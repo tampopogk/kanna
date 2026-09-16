@@ -46,6 +46,9 @@ export interface DesktopServerClientHandlersForTests {
   confirmPendingPairing?: (confirmation: DesktopPendingPairingConfirmation) => MaybePromise<void>;
   rejectPendingPairing?: (confirmation: DesktopPendingPairingConfirmation) => MaybePromise<void>;
   fetchMobileDevices?: () => MaybePromise<DesktopMobileDevices>;
+  fetchDesktopPeers?: () => MaybePromise<DesktopPeerList>;
+  fetchDesktopMachines?: () => MaybePromise<DesktopMachineList>;
+  fetchTransferTargets?: () => MaybePromise<DesktopTransferTarget[]>;
   putSetting?: (key: string, value: string) => MaybePromise<DesktopSettingResponse | void>;
   mutateWindowWorkspace?: (
     mutation: DesktopWindowWorkspaceMutation,
@@ -759,6 +762,125 @@ export async function fetchMobileDevices(): Promise<DesktopMobileDevices> {
     return await clientHandlersForTests.fetchMobileDevices();
   }
   return await requestJson<DesktopMobileDevices>("/v1/mobile/builds");
+}
+
+/** Settings-table key for legacy (relay-attested, bearer-secret, Firestore-
+ * keyed) desktop-to-desktop routing. Mirrors
+ * `http_api::secure_channel::DESKTOP_PEER_LEGACY_ACCESS_SETTING`. */
+export const DESKTOP_PEER_LEGACY_ACCESS_SETTING = "desktop_peer_legacy_access";
+export const DESKTOP_PEER_LEGACY_ACCESS_REFUSED = "refused";
+export const DESKTOP_PEER_LEGACY_ACCESS_ALLOWED = "allowed";
+
+/** A sibling desktop this one pinned through the peer pairing ceremony. */
+export interface DesktopPeer {
+  desktopId: string;
+  displayName: string;
+  /** Always `e2ee`: a record here is a pinned peer. */
+  encryption: "e2ee";
+  pairedAtUnixMs: number;
+  lastSeenUnixMs: number | null;
+  transferIdentityPinned: boolean;
+  reachable: { lan: boolean; relay: boolean };
+}
+
+export interface DesktopPeerList {
+  desktopId: string;
+  desktopName: string;
+  peerChannelAvailable: boolean;
+  legacyAccessAllowed: boolean;
+  relayPeerTunnelsAvailable: boolean;
+  peers: DesktopPeer[];
+}
+
+export async function fetchDesktopPeers(): Promise<DesktopPeerList> {
+  if (clientHandlersForTests?.fetchDesktopPeers) {
+    return await clientHandlersForTests.fetchDesktopPeers();
+  }
+  return await requestJson<DesktopPeerList>("/v1/peers");
+}
+
+/** The one-time pairing string this desktop shows to be pasted into a sibling. */
+export interface DesktopPeerPairingOffer {
+  desktopId: string;
+  desktopName: string;
+  code: string;
+  pairingString: string;
+  expiresAtUnixMs: number;
+}
+
+export async function createDesktopPeerPairingOffer(): Promise<DesktopPeerPairingOffer> {
+  return await requestJson<DesktopPeerPairingOffer>("/v1/peers/pairing-offers", {
+    method: "POST",
+  });
+}
+
+export interface DesktopPeerPairResult {
+  desktopId: string;
+  displayName: string;
+  encryption: "e2ee";
+  route: string;
+  transferIdentityPinned: boolean;
+}
+
+/** Pastes a sibling's pairing string: the server pins the sibling's key from
+ * it and claims over a sealed session; nothing is pinned on failure. */
+export async function pairDesktopPeer(pairingString: string): Promise<DesktopPeerPairResult> {
+  return await requestJson<DesktopPeerPairResult>("/v1/peers/pair", {
+    method: "POST",
+    body: { pairingString },
+  });
+}
+
+export async function removeDesktopPeer(desktopId: string): Promise<void> {
+  await requestJson<void>(`/v1/peers/${encodeURIComponent(desktopId)}`, { method: "DELETE" });
+}
+
+/** A machine this desktop can reach, as `GET /v1/cloud/desktops` reports it. */
+export interface DesktopMachine {
+  id: string;
+  name: string | null;
+  isLocal: boolean;
+  /** `local`, `e2ee` (paired sibling), `legacy` (unpaired, legacy routing
+   * still allowed) or `pairingRequired`. */
+  encryption: "local" | "e2ee" | "legacy" | "pairingRequired";
+}
+
+export interface DesktopMachineList {
+  currentMachineId: string;
+  relayAvailable: boolean;
+  machines: DesktopMachine[];
+  error?: string;
+}
+
+export async function fetchDesktopMachines(): Promise<DesktopMachineList> {
+  if (clientHandlersForTests?.fetchDesktopMachines) {
+    return await clientHandlersForTests.fetchDesktopMachines();
+  }
+  return await requestJson<DesktopMachineList>("/v1/cloud/desktops");
+}
+
+/** A transfer destination as the server resolved it (`GET /v1/transfers/peers`). */
+export interface DesktopTransferTarget {
+  peerId: string;
+  name: string;
+  machineId: string | null;
+  trusted: boolean;
+  acceptingTransfers: boolean;
+  lanAvailable: boolean;
+  cloudAvailable: boolean;
+  preferredTransport: "lan" | "cloud";
+  cloudFallback: boolean;
+  cloudRoute: { peerId: string; machineId: string; status: string; kind: "relay-proxy" | "peer-tunnel" } | null;
+  transferable: boolean;
+  unavailableReason: string | null;
+}
+
+export async function fetchTransferTargets(): Promise<DesktopTransferTarget[]> {
+  if (clientHandlersForTests?.fetchTransferTargets) {
+    return await clientHandlersForTests.fetchTransferTargets();
+  }
+  const response = await requestJson<{ peers: DesktopTransferTarget[] }>("/v1/transfers/peers");
+  return response.peers ?? [];
 }
 
 export async function putDesktopSetting(key: string, value: string): Promise<DesktopSettingResponse> {
