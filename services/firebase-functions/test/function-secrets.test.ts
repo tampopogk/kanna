@@ -18,6 +18,7 @@ import {
   CHECKOUT_SECRET_ENVS,
   PORTAL_SECRET_ENVS,
   STRIPE_PORTAL_CONFIGURATION_PARAM,
+  STRIPE_PRODUCT_ID_PARAM,
   resolvePortalConfig,
   DELETE_ACCOUNT_SECRET_ENVS,
   PORTAL_BASE_URL_PARAM,
@@ -69,7 +70,18 @@ describe("deployed function secret bindings", () => {
     expect(readFileSync(join(import.meta.dirname, "..", ".env"), "utf8")).toContain("STRIPE_PORTAL_CONFIGURATION_ID=\n");
     expect(() => resolvePortalConfig({
       STRIPE_SECRET_KEY: "sk_test_mocked", KANNA_PORTAL_BASE_URL: "https://account.example.test",
+      STRIPE_PRODUCT_ID: "prod_test",
     })).toThrow("STRIPE_PORTAL_CONFIGURATION_ID");
+  });
+
+  it("declares the Kanna Cloud product id as an environment-specific parameter, unconfigured by default", () => {
+    expect(declaredParams.map((param) => param.name)).toContain("STRIPE_PRODUCT_ID");
+    expect(STRIPE_PRODUCT_ID_PARAM.options.default).toBe("");
+    expect(readFileSync(join(import.meta.dirname, "..", ".env"), "utf8")).toContain("STRIPE_PRODUCT_ID=\n");
+    expect(() => resolvePortalConfig({
+      STRIPE_SECRET_KEY: "sk_test_mocked", KANNA_PORTAL_BASE_URL: "https://account.example.test",
+      STRIPE_PORTAL_CONFIGURATION_ID: "bpc_test",
+    })).toThrow("STRIPE_PRODUCT_ID");
   });
 
   it("declares the portal URL as a required Firebase string parameter", () => {
@@ -88,9 +100,9 @@ describe("deployed function secret bindings", () => {
     expect(contents).toContain(`KANNA_PORTAL_BASE_URL=${expectedUrl}`);
   });
 
-  it("binds stripeWebhook to the signing secret and nothing else", () => {
+  it("binds stripeWebhook to its signing secret and the read-only ownership-lookup key", () => {
     expect(boundSecrets("stripeWebhook")).toEqual([...STRIPE_WEBHOOK_SECRET_ENVS]);
-    expect(boundSecrets("stripeWebhook")).toEqual(["STRIPE_WEBHOOK_SECRET"]);
+    expect(boundSecrets("stripeWebhook")).toEqual(["STRIPE_WEBHOOK_SECRET", "STRIPE_SECRET_KEY"]);
   });
 
   it("binds deleteAccount only to the Stripe API key", () => {
@@ -98,23 +110,25 @@ describe("deployed function secret bindings", () => {
     expect(boundSecrets("deleteAccount")).toEqual(["STRIPE_SECRET_KEY"]);
   });
 
-  it("never hands the webhook the Stripe API key", () => {
-    expect(boundSecrets("stripeWebhook")).not.toContain("STRIPE_SECRET_KEY");
+  it("never hands createCheckoutSession the webhook signing secret", () => {
     expect(boundSecrets("createCheckoutSession")).not.toContain("STRIPE_WEBHOOK_SECRET");
   });
 
   describe("each secret binding list plus parameter is exactly what its resolver requires", () => {
-    it("resolves the checkout config from its secret and parameter", () => {
+    it("resolves the checkout config from its secret and parameters", () => {
       expect(() =>
         resolveCheckoutConfig({
           ...envFor(CHECKOUT_SECRET_ENVS),
           KANNA_PORTAL_BASE_URL: "https://portal.example.test",
+          STRIPE_PRODUCT_ID: "prod_test",
         })
       ).not.toThrow();
     });
 
-    it("resolves the webhook config from its bound entries alone", () => {
-      expect(() => resolveWebhookConfig(envFor(STRIPE_WEBHOOK_SECRET_ENVS))).not.toThrow();
+    it("resolves the webhook config from its bound entries plus the product parameter", () => {
+      expect(() =>
+        resolveWebhookConfig({ ...envFor(STRIPE_WEBHOOK_SECRET_ENVS), STRIPE_PRODUCT_ID: "prod_test" })
+      ).not.toThrow();
     });
 
     it.each([...CHECKOUT_SECRET_ENVS])(
@@ -123,23 +137,37 @@ describe("deployed function secret bindings", () => {
         const env = {
           ...envFor(CHECKOUT_SECRET_ENVS.filter((name) => name !== missing)),
           KANNA_PORTAL_BASE_URL: "https://portal.example.test",
+          STRIPE_PRODUCT_ID: "prod_test",
         };
         expect(() => resolveCheckoutConfig(env)).toThrow(missing);
       }
     );
 
     it("fails checkout when the portal parameter is missing", () => {
-      expect(() => resolveCheckoutConfig(envFor(CHECKOUT_SECRET_ENVS))).toThrow(
+      expect(() => resolveCheckoutConfig({ ...envFor(CHECKOUT_SECRET_ENVS), STRIPE_PRODUCT_ID: "prod_test" })).toThrow(
         "KANNA_PORTAL_BASE_URL"
       );
+    });
+
+    it("fails checkout when the product parameter is missing", () => {
+      expect(() => resolveCheckoutConfig({
+        ...envFor(CHECKOUT_SECRET_ENVS), KANNA_PORTAL_BASE_URL: "https://portal.example.test",
+      })).toThrow("STRIPE_PRODUCT_ID");
     });
 
     it.each([...STRIPE_WEBHOOK_SECRET_ENVS])(
       "fails the webhook when %s is the one entry missing",
       (missing) => {
-        const env = envFor(STRIPE_WEBHOOK_SECRET_ENVS.filter((name) => name !== missing));
+        const env = {
+          ...envFor(STRIPE_WEBHOOK_SECRET_ENVS.filter((name) => name !== missing)),
+          STRIPE_PRODUCT_ID: "prod_test",
+        };
         expect(() => resolveWebhookConfig(env)).toThrow(missing);
       }
     );
+
+    it("fails the webhook when the product parameter is missing", () => {
+      expect(() => resolveWebhookConfig(envFor(STRIPE_WEBHOOK_SECRET_ENVS))).toThrow("STRIPE_PRODUCT_ID");
+    });
   });
 });

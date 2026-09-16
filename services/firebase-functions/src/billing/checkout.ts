@@ -94,7 +94,7 @@ export async function createCheckoutSession(
     throw new BillingRequestError("internal", "not_configured", message);
   }
 
-  const gateway = deps.gateway ?? (await liveGateway(config.secretKey));
+  const gateway = deps.gateway ?? (await liveGateway(config.secretKey, config.productId));
   const base = config.portalBaseUrl.replace(/\/+$/, "");
   try {
     let attempt = await admitCheckout(deps.db, caller, base, now());
@@ -133,7 +133,12 @@ export async function createCheckoutSession(
       // Older error paths released admission without recording an uncertain
       // response. Include open sessions on this customer, not just ledger ids.
       const open = await gateway.listOpenCheckoutSessions(customerId);
-      const candidates = [...new Map([...previous, ...open].map((session) => [session.id, session])).values()];
+      // A session proven to belong to another product on the shared account
+      // is simply not Kanna billing and is dropped before this account's own
+      // sessions are ever validated; one that could not be proven either way
+      // is not dropped, so it still fails into reconciliation below.
+      const candidates = [...new Map([...previous, ...open].map((session) => [session.id, session])).values()]
+        .filter((session) => session.productVerdict !== "foreign");
       for (const session of candidates) assertSessionOwner(session, caller.uid, customerId);
       const outstanding = candidates.filter((session) => !isRetired(session));
       if (outstanding.length > 1) throw reconciliationRequired();
@@ -144,13 +149,15 @@ export async function createCheckoutSession(
       }
       // Incomplete/unpaid/paused subscriptions can still collect money even
       // though they don't grant access. Entitlement expiry is not retirement.
-      if (await gateway.hasBlockingSubscription(customerId)) throw alreadySubscribed();
+      const blocking = await gateway.hasBlockingSubscription(customerId);
+      if (blocking === "ambiguous") throw reconciliationRequired();
+      if (blocking === "blocked") throw alreadySubscribed();
       const priceId = await gateway.resolvePriceId("cloud_monthly");
       if (!priceId) throw new Error("No active Stripe price has lookup_key cloud_monthly");
       attempt = await updateAttempt(deps.db, caller.uid, attempt.id, now(), (current) => {
         if (current.checkoutInput || current.sessionId) return current;
         return { ...current, checkoutInput: {
-          uid: caller.uid, customerId, priceId,
+          uid: caller.uid, customerId, checkoutAttemptId: current.id, priceId,
           successUrl: current.successUrl, cancelUrl: current.cancelUrl,
           idempotencyKey: `checkout-${current.id}`,
           expiresAt: Math.floor(Date.parse(now()) / 1000) + 24 * 60 * 60,
@@ -231,7 +238,16 @@ function assertReplayWindow(attempt: CheckoutAttempt, now: string): void {
 }
 
 export function assertSessionOwner(session: StripeCheckoutSessionState, uid: string, customerId: string | null): void {
-  if (session.mode !== "subscription" || session.uid !== uid || !customerId || session.customerId !== customerId) {
+  if (
+    session.mode !== "subscription"
+    || session.uid !== uid
+    || !customerId
+    || session.customerId !== customerId
+    || session.productVerdict !== "owned"
+  ) {
+    // A foreign session showing up where only this account's own session
+    // should be is exactly as unsafe as an ambiguous one: neither may be
+    // adopted, so both fail into the same reconciliation path.
     throw reconciliationRequired();
   }
 }
@@ -246,8 +262,10 @@ async function checkoutResponse(
   db: Firestore, gateway: StripeCheckoutGateway, uid: string, attempt: CheckoutAttempt,
   session: StripeCheckoutSessionState, plan: CheckoutSessionResponse["plan"], now: string,
 ): Promise<CheckoutSessionResponse> {
-  if (session.status === "open" && attempt.customerId && await gateway.hasBlockingSubscription(attempt.customerId)) {
-    throw alreadySubscribed();
+  if (session.status === "open" && attempt.customerId) {
+    const blocking = await gateway.hasBlockingSubscription(attempt.customerId);
+    if (blocking === "ambiguous") throw reconciliationRequired();
+    if (blocking === "blocked") throw alreadySubscribed();
   }
   await updateAttempt(db, uid, attempt.id, now, (current) => current, true);
   if (session.status === "complete") throw alreadySubscribed();
@@ -333,7 +351,7 @@ async function recordSession(db: Firestore, uid: string, id: string, sessionId: 
 }
 
 /** Imported lazily so a missing Stripe key never breaks module load or deploy. */
-async function liveGateway(secretKey: string): Promise<StripeCheckoutGateway> {
+async function liveGateway(secretKey: string, productId: string): Promise<StripeCheckoutGateway> {
   const { stripeCheckoutGateway } = await import("./stripeGateway.js");
-  return stripeCheckoutGateway(secretKey);
+  return stripeCheckoutGateway(secretKey, productId);
 }

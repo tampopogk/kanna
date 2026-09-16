@@ -122,7 +122,7 @@ async function evidence(token: string, changes: Record<string, unknown> = {}, re
   it("blocks both channels during Apple retry, unresolved Stripe creation and provider read failure", async () => {
     await db.doc(billingSourcePath(caller.uid, "app_store")).set({ ...appStoreSource(), status: "expired", paymentOutstanding: true });
     await expect(beginAppStorePurchase(caller, deps)).rejects.toMatchObject({ reason: "app_store_active" });
-    await expect(createCheckoutSession({ plan: "monthly" }, caller, { db, env: { STRIPE_SECRET_KEY: "test", KANNA_PORTAL_BASE_URL: "https://example.test" } })).rejects.toMatchObject({ reason: "app_store_active" });
+    await expect(createCheckoutSession({ plan: "monthly" }, caller, { db, env: { STRIPE_SECRET_KEY: "test", KANNA_PORTAL_BASE_URL: "https://example.test", STRIPE_PRODUCT_ID: "prod_test" } })).rejects.toMatchObject({ reason: "app_store_active" });
     await db.doc(billingSourcePath(caller.uid, "app_store")).delete();
     await db.doc(`accountCheckouts/${caller.uid}`).set({ creating: true });
     await expect(beginAppStorePurchase(caller, deps)).rejects.toMatchObject({ reason: "already_subscribed" });
@@ -132,15 +132,15 @@ async function evidence(token: string, changes: Record<string, unknown> = {}, re
       createCustomer: vi.fn(), resolvePriceId: vi.fn(), createCheckoutSession: vi.fn(),
       retrieveCheckoutSession: vi.fn(), closeCheckoutSession: vi.fn(),
       listOpenCheckoutSessions: vi.fn(async () => { throw new Error("provider offline"); }),
-      hasBlockingSubscription: vi.fn(async () => false),
+      hasBlockingSubscription: vi.fn(async () => "clear" as const),
     };
     await expect(beginAppStorePurchase(caller, { ...deps, stripe })).rejects.toMatchObject({ reason: "stripe_error" });
     stripe.listOpenCheckoutSessions = vi.fn(async () => []);
-    stripe.hasBlockingSubscription = vi.fn(async () => true);
+    stripe.hasBlockingSubscription = vi.fn(async () => "blocked" as const);
     await expect(beginAppStorePurchase(caller, { ...deps, stripe })).rejects.toMatchObject({ reason: "already_subscribed" });
     stripe.hasBlockingSubscription = vi.fn(async () => {
       await db.doc(`accountCheckouts/${caller.uid}`).set({ creating: true });
-      return false;
+      return "clear" as const;
     });
     await expect(beginAppStorePurchase(caller, { ...deps, stripe })).rejects.toMatchObject({ reason: "already_subscribed" });
     expect(stripe.createCustomer).not.toHaveBeenCalled();

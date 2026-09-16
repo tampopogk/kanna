@@ -6,7 +6,11 @@ export const appleGatewayFixture = { createAppleGateway: () => ({
 }) };
 /** Local HTTP hosting for the actual exported Functions handlers, never Stripe. */
 import express from "express";
-import type { StripeCheckoutGateway, StripeCheckoutSessionInput, StripePortalGateway, StripeSubscriptionGateway } from "../../../firebase-functions/src/billing/stripeGateway.js";
+import type { StripeCheckoutGateway, StripeCheckoutSessionInput, StripeOwnershipLookupGateway, StripePortalGateway, StripeSubscriptionGateway } from "../../../firebase-functions/src/billing/stripeGateway.js";
+
+/** Stub `STRIPE_PRODUCT_ID` to this value; the ownership fixture proves every object against it. */
+export const FIXTURE_PRODUCT_ID = "prod_launch_fixture";
+const FOREIGN_PRODUCT_ID = "prod_other_launch_fixture";
 
 export const billingFixture = {
   checkoutInput: null as StripeCheckoutSessionInput | null,
@@ -14,6 +18,8 @@ export const billingFixture = {
   portalCustomer: null as string | null,
   canceledSubscriptions: [] as string[],
   closedCustomers: [] as string[],
+  /** When true, ownership lookups prove every object belongs to a different product on the shared account. */
+  foreignProductEvent: false,
 };
 
 const checkout: StripeCheckoutGateway = {
@@ -33,10 +39,11 @@ const checkout: StripeCheckoutGateway = {
       id, url: "https://checkout.stripe.test/launch-fixture", mode: "subscription",
       uid: billingFixture.checkoutInput.uid, customerId: billingFixture.checkoutInput.customerId,
       status: "open", subscriptionStatus: null,
+      productVerdict: billingFixture.foreignProductEvent ? "foreign" : "owned",
     };
   },
   async listOpenCheckoutSessions() { return []; },
-  async hasBlockingSubscription() { return false; },
+  async hasBlockingSubscription() { return "clear"; },
   async closeCheckoutSession() {},
 };
 const portal: StripePortalGateway = {
@@ -50,6 +57,11 @@ const subscription: StripeSubscriptionGateway = {
   async closeCheckoutSession() {},
   async closeCustomerBilling(id) { billingFixture.closedCustomers.push(id); },
 };
+const ownership: StripeOwnershipLookupGateway = {
+  async subscriptionProductIds() { return [billingFixture.foreignProductEvent ? FOREIGN_PRODUCT_ID : FIXTURE_PRODUCT_ID]; },
+  async sessionProductIds() { return [billingFixture.foreignProductEvent ? FOREIGN_PRODUCT_ID : FIXTURE_PRODUCT_ID]; },
+  async customerProductScan() { return { productIds: [FIXTURE_PRODUCT_ID], unresolved: false }; },
+};
 
 // The suite replaces only these external I/O factories. Auth, callable error
 // encoding, checkout coordination, webhook signatures and Firestore stay real.
@@ -57,6 +69,7 @@ export const billingGateways = {
   stripeCheckoutGateway: () => checkout,
   stripePortalGateway: () => portal,
   stripeSubscriptionGateway: () => subscription,
+  stripeOwnershipLookupGateway: () => ownership,
 };
 
 export async function startBillingHttpFixture(port: number) {

@@ -28,6 +28,9 @@ export type SourceStatus = EntitlementStatus;
 
 export type BillingEnvironment = "production" | "sandbox" | "staging";
 
+/** Signed Checkout metadata that binds a completion event to Kanna's durable attempt. */
+export const STRIPE_CHECKOUT_ATTEMPT_METADATA_KEY = "kanna_checkout_attempt_id";
+
 export const CLOUD_ACCESS_CAPABILITIES = [
   "cloud_relay",
   "cloud_task_index",

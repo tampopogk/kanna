@@ -19,6 +19,8 @@ export interface StripeEventEnvelope {
   type: string;
   /** Stripe's own event timestamp, in unix seconds; resolves out-of-order delivery. */
   created: number;
+  /** Whether Stripe sent this from live or test mode; must match the deployed environment. */
+  livemode: boolean;
   data: { object: Record<string, unknown> };
 }
 
@@ -297,8 +299,9 @@ export function parseStripeEventEnvelope(value: unknown): StripeEventEnvelope | 
   const id = readString(record, "id");
   const type = readString(record, "type");
   const created = record.created;
+  const livemode = record.livemode;
   const data = readRecord(record.data);
   const object = data ? readRecord(data.object) : null;
-  if (!id || !type || typeof created !== "number" || !object) return null;
-  return { id, type, created, data: { object } };
+  if (!id || !type || typeof created !== "number" || typeof livemode !== "boolean" || !object) return null;
+  return { id, type, created, livemode, data: { object } };
 }

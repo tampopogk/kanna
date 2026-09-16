@@ -2,14 +2,20 @@ import type { Firestore } from "firebase-admin/firestore";
 import type { PortalSessionResponse } from "./contract.js";
 import { resolvePortalConfig } from "./config.js";
 import { BillingRequestError } from "./errors.js";
-import type { StripePortalGateway } from "./stripeGateway.js";
+import type { StripeOwnershipLookupGateway, StripePortalGateway } from "./stripeGateway.js";
+import { classifyCustomerScope } from "./stripeOwnership.js";
 import { accountDeletionPath, billingSourcePath, stripeCustomerPath, userDocPath } from "./types.js";
 
 /** Hosted account management only: no purchase, cancellation policy or account writes. */
 export async function createPortalSession(
   request: unknown,
   caller: { uid: string } | null,
-  deps: { db: Firestore; env: NodeJS.ProcessEnv; gateway?: StripePortalGateway },
+  deps: {
+    db: Firestore;
+    env: NodeJS.ProcessEnv;
+    gateway?: StripePortalGateway;
+    ownershipGateway?: Pick<StripeOwnershipLookupGateway, "customerProductScan">;
+  },
 ): Promise<PortalSessionResponse> {
   if (!caller) {
     throw new BillingRequestError("unauthenticated", "sign_in_required", "Sign in to manage billing.");
@@ -36,7 +42,11 @@ export async function createPortalSession(
       throw new BillingRequestError("failed-precondition", "no_stripe_customer", "This account has no Stripe billing to manage.");
     }
     const mapping = await transaction.get(deps.db.doc(stripeCustomerPath(id)));
-    if (ids.some((other) => other !== id) || (mapping.exists && mapping.data()?.uid !== caller.uid)) {
+    if (ids.some((other) => other !== id) || !mapping.exists || mapping.data()?.uid !== caller.uid) {
+      // The server-owned reverse mapping is the one record neither the client
+      // profile nor a stale billing source can forge; requiring it to exist
+      // and agree is what stops a customer this account never actually owns
+      // from ever reaching a customer-wide Portal session.
       throw new BillingRequestError("permission-denied", "customer_ownership_mismatch", "Could not verify billing ownership. Please contact support.");
     }
     return id;
@@ -48,6 +58,24 @@ export async function createPortalSession(
   } catch {
     throw new BillingRequestError("failed-precondition", "not_configured", "Billing management is not configured. Please contact support.");
   }
+
+  const ownershipGateway = deps.ownershipGateway
+    ?? (await import("./stripeGateway.js")).stripeOwnershipLookupGateway(config.secretKey);
+  let scan: { productIds: readonly string[]; unresolved: boolean };
+  try {
+    scan = await ownershipGateway.customerProductScan(customerId);
+  } catch {
+    throw new BillingRequestError("internal", "stripe_error", "Could not open billing management. Please try again.");
+  }
+  // A shared Stripe customer may also hold Kanji Kongbu subscriptions, or hold
+  // an item this scan could not resolve — either way, a customer-wide Portal
+  // session must never be handed out without proven-clean or proven-owned
+  // history. Only a genuinely empty or fully Kanna-owned history passes.
+  const scope = classifyCustomerScope(scan, config.productId);
+  if (scope === "mixed" || scope === "unresolved") {
+    throw new BillingRequestError("permission-denied", "customer_ownership_mismatch", "Could not verify billing ownership. Please contact support.");
+  }
+
   const gateway = deps.gateway ?? (await import("./stripeGateway.js")).stripePortalGateway(config.secretKey);
   try {
     return await gateway.createPortalSession({

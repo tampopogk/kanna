@@ -21,7 +21,7 @@ import { getFirestore, type Firestore } from "firebase-admin/firestore";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import WebSocket from "ws";
 import { ENTITLEMENT_REQUIRED_CODE } from "../src/entitlement.js";
-import { appleFixture, billingFixture, startBillingHttpFixture } from "./support/billingHttpFixture.js";
+import { appleFixture, billingFixture, FIXTURE_PRODUCT_ID, startBillingHttpFixture } from "./support/billingHttpFixture.js";
 import { signStripePayload } from "../../firebase-functions/src/billing/stripeSignature.js";
 import type { StripeEventEnvelope } from "../../firebase-functions/src/billing/stripeEvents.js";
 
@@ -514,6 +514,7 @@ describe("Relay entitlement enforcement", () => {
     vi.stubEnv("STRIPE_SECRET_KEY", "sk_test_injected_fixture_only");
     vi.stubEnv("STRIPE_WEBHOOK_SECRET", "whsec_launch_fixture_only");
     vi.stubEnv("STRIPE_PORTAL_CONFIGURATION_ID", "bpc_fixture_only");
+    vi.stubEnv("STRIPE_PRODUCT_ID", FIXTURE_PRODUCT_ID);
     vi.stubEnv("KANNA_PORTAL_BASE_URL", "https://portal.example.test");
     const billing = await startBillingHttpFixture(Number(process.env.KANNA_FIREBASE_FUNCTIONS_PORT) || await findFreePort());
     const sockets: WebSocket[] = [];
@@ -579,7 +580,10 @@ describe("Relay entitlement enforcement", () => {
       let eventNumber = 0;
       const deliver = async (file: string, patch: Record<string, unknown> = {}, signatureSecret = "whsec_launch_fixture_only") => {
         const source = await readFile(new URL(`../../firebase-functions/test/fixtures/stripe/${file}`, import.meta.url), "utf8");
-        const event = JSON.parse(source.replaceAll("fixture-checkout-user", uid).replaceAll("cus_TestSlice1", "cus_launch_fixture")) as StripeEventEnvelope;
+        const event = JSON.parse(source
+          .replaceAll("fixture-checkout-user", uid)
+          .replaceAll("cus_TestSlice1", "cus_launch_fixture")
+          .replaceAll("cs_test_TestSlice1", "cs_launch_fixture")) as StripeEventEnvelope;
         event.id = `evt_launch_${uid}_${++eventNumber}`;
         event.created = Math.floor(Date.now() / 1000) + eventNumber;
         Object.assign(event.data.object, patch);
@@ -600,6 +604,12 @@ describe("Relay entitlement enforcement", () => {
         .toMatchObject({ status: 400, body: { code: "invalid_signature" } });
       await checkAccess("bad-signature", false);
       await transition("checkout.session.completed.json", true, "active");
+      await checkAccess("purchased", true);
+      // The exported handler cannot alter relay access from another product's
+      // event on the shared Stripe account (e.g. Kanji Kongbu).
+      billingFixture.foreignProductEvent = true;
+      expect(await deliver("invoice.paid.json")).toMatchObject({ status: 200, body: { code: "foreign_product" } });
+      billingFixture.foreignProductEvent = false;
       await checkAccess("purchased", true);
       await transition("invoice.paid.json", true, "active");
       await checkAccess("renewed", true);
@@ -650,6 +660,7 @@ describe("Relay entitlement enforcement", () => {
     vi.stubEnv("GCLOUD_PROJECT", "kanna-local");
     vi.stubEnv("FIREBASE_CONFIG", JSON.stringify({ projectId: "kanna-local" }));
     vi.stubEnv("STRIPE_SECRET_KEY", "sk_fixture_only");
+    vi.stubEnv("STRIPE_PRODUCT_ID", FIXTURE_PRODUCT_ID);
     for (const [key, value] of Object.entries(appleEnv)) vi.stubEnv(key, value);
     const billing = await startBillingHttpFixture(Number(process.env.KANNA_FIREBASE_FUNCTIONS_PORT) || await findFreePort());
     const sockets: WebSocket[] = [];

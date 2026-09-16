@@ -5,7 +5,7 @@ import type {
   Query,
 } from "firebase-admin/firestore";
 import { BillingRequestError } from "./billing/errors.js";
-import { requireEnv, STRIPE_SECRET_KEY_ENV } from "./billing/config.js";
+import { requireEnv, STRIPE_PRODUCT_ID_ENV, STRIPE_SECRET_KEY_ENV } from "./billing/config.js";
 import { stripeSubscriptionGateway, type StripeSubscriptionGateway } from "./billing/stripeGateway.js";
 import {
   accountCheckoutPath,
@@ -23,7 +23,8 @@ export interface AccountDeletionStore {
   markAccountDeletionStarted(uid: string): Promise<string[]>;
   stripeBillingReferences(uid: string): Promise<{
     customerIds: string[];
-    subscriptionIds: string[];
+    /** Each subscription paired with the customer it was recorded against, when known. */
+    subscriptions: { subscriptionId: string; customerId: string | null }[];
   }>;
   deleteUserTree(uid: string): Promise<void>;
   deleteBillingIndexes(uid: string): Promise<void>;
@@ -65,14 +66,21 @@ export async function deleteAccount(
 
   const checkoutSessionIds = await dependencies.store.markAccountDeletionStarted(caller.uid);
   const billing = await dependencies.store.stripeBillingReferences(caller.uid);
-  for (const subscriptionId of billing.subscriptionIds) {
-    await dependencies.stripe.cancelSubscription(subscriptionId);
+  // A single unambiguous customer id is required before it disambiguates a
+  // direct reference; with more than one on record (a legacy/migration
+  // artifact), only the strong uid/product check below applies.
+  const soleCustomerId = billing.customerIds.length === 1 ? billing.customerIds[0] : null;
+  for (const { subscriptionId, customerId } of billing.subscriptions) {
+    await dependencies.stripe.cancelSubscription(subscriptionId, {
+      uid: caller.uid,
+      customerId: customerId ?? soleCustomerId,
+    });
   }
   for (const sessionId of checkoutSessionIds) {
-    await dependencies.stripe.closeCheckoutSession(sessionId);
+    await dependencies.stripe.closeCheckoutSession(sessionId, { uid: caller.uid, customerId: soleCustomerId });
   }
   for (const customerId of billing.customerIds) {
-    await dependencies.stripe.closeCustomerBilling(customerId);
+    await dependencies.stripe.closeCustomerBilling(customerId, { uid: caller.uid });
   }
   await dependencies.store.revokeDesktopPairings(caller.uid);
   await dependencies.store.deleteLegacyDevicePairings(caller.uid);
@@ -115,6 +123,7 @@ export function firestoreAccountDeletionStore(db: Firestore): AccountDeletionSto
       ]);
       const userData = user.data() as { stripeCustomerId?: unknown } | undefined;
       const source = sourceSnapshot.data() as Partial<BilledSourceState> | undefined;
+      const sourceCustomerId = typeof source?.stripeCustomerId === "string" ? source.stripeCustomerId : null;
       return {
         customerIds: uniqueNonEmptyStrings([
           userData?.stripeCustomerId,
@@ -124,7 +133,10 @@ export function firestoreAccountDeletionStore(db: Firestore): AccountDeletionSto
             return [document.id, data.stripeCustomerId];
           }),
         ]),
-        subscriptionIds: uniqueNonEmptyStrings([source?.stripeSubscriptionId]),
+        subscriptions: uniqueNonEmptyStrings([source?.stripeSubscriptionId]).map((subscriptionId) => ({
+          subscriptionId,
+          customerId: sourceCustomerId,
+        })),
       };
     },
     async deleteUserTree(uid) {
@@ -163,7 +175,10 @@ export function accountDeletionDependencies(
   return {
     store: firestoreAccountDeletionStore(db),
     auth,
-    stripe: stripeSubscriptionGateway(requireEnv(env, STRIPE_SECRET_KEY_ENV)),
+    stripe: stripeSubscriptionGateway(
+      requireEnv(env, STRIPE_SECRET_KEY_ENV),
+      requireEnv(env, STRIPE_PRODUCT_ID_ENV),
+    ),
   };
 }
 
