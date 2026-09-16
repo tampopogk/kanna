@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { Firestore } from "firebase-admin/firestore";
 import { appStoreConfig } from "./appStoreConfig.js";
-import { requireEnv, STRIPE_SECRET_KEY_ENV } from "./config.js";
+import { requireEnv, STRIPE_PRODUCT_ID_ENV, STRIPE_SECRET_KEY_ENV } from "./config.js";
 import { assertCanSubscribe, assertSessionOwner, isRetired, type CheckoutCaller } from "./checkout.js";
 import { readBillingState } from "./entitlement.js";
 import { BillingRequestError } from "./errors.js";
@@ -36,7 +36,10 @@ export async function beginAppStorePurchase(caller: CheckoutCaller | null, deps:
   const sessionIds: string[] = [...new Set<string>([...(coordination?.sessionIds ?? []),
     ...(coordination?.attempt?.sessionId ? [coordination.attempt.sessionId] : [])])];
   if (customerId || sessionIds.length) {
-    const stripe = deps.stripe ?? stripeCheckoutGateway(requireEnv(deps.env, STRIPE_SECRET_KEY_ENV));
+    const stripe = deps.stripe ?? stripeCheckoutGateway(
+      requireEnv(deps.env, STRIPE_SECRET_KEY_ENV),
+      requireEnv(deps.env, STRIPE_PRODUCT_ID_ENV),
+    );
     try {
       const sessions = [...await Promise.all(sessionIds.map(id => stripe.retrieveCheckoutSession(id))),
         ...(customerId ? await stripe.listOpenCheckoutSessions(customerId) : [])];

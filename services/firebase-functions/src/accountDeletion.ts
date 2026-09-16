@@ -5,7 +5,7 @@ import type {
   Query,
 } from "firebase-admin/firestore";
 import { BillingRequestError } from "./billing/errors.js";
-import { requireEnv, STRIPE_SECRET_KEY_ENV } from "./billing/config.js";
+import { requireEnv, STRIPE_PRODUCT_ID_ENV, STRIPE_SECRET_KEY_ENV } from "./billing/config.js";
 import { stripeSubscriptionGateway, type StripeSubscriptionGateway } from "./billing/stripeGateway.js";
 import {
   accountCheckoutPath,
@@ -163,7 +163,10 @@ export function accountDeletionDependencies(
   return {
     store: firestoreAccountDeletionStore(db),
     auth,
-    stripe: stripeSubscriptionGateway(requireEnv(env, STRIPE_SECRET_KEY_ENV)),
+    stripe: stripeSubscriptionGateway(
+      requireEnv(env, STRIPE_SECRET_KEY_ENV),
+      requireEnv(env, STRIPE_PRODUCT_ID_ENV),
+    ),
   };
 }
 

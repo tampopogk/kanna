@@ -23,7 +23,7 @@ import {
   FIXTURE_ENVIRONMENT,
 } from "../src/billing/fixtures.js";
 import { seedBillingFixtures } from "../src/billing/seed.js";
-import type { StripeCheckoutGateway, StripeCheckoutSessionInput, StripeCheckoutSessionState, StripeCustomerInput } from "../src/billing/stripeGateway.js";
+import type { StripeCheckoutGateway, StripeCheckoutSessionInput, StripeCheckoutSessionState, StripeCustomerInput, StripeOwnershipLookupGateway } from "../src/billing/stripeGateway.js";
 import { signStripePayload } from "../src/billing/stripeSignature.js";
 import { handleStripeWebhook } from "../src/billing/stripeWebhook.js";
 import {
@@ -50,17 +50,34 @@ const describeWithEmulator = hasFirestoreEmulator ? describe : describe.skip;
 const WEBHOOK_SECRET = "whsec_slice1_test_secret";
 const CHECKOUT_UID = "fixture-checkout-user";
 const FIXTURE_DIR = join(import.meta.dirname, "fixtures/stripe");
+const KANNA_PRODUCT_ID = "prod_test_kanna_cloud";
 
 const webhookEnv: NodeJS.ProcessEnv = {
   STRIPE_WEBHOOK_SECRET: WEBHOOK_SECRET,
+  STRIPE_SECRET_KEY: "sk_test_slice1",
+  STRIPE_PRODUCT_ID: KANNA_PRODUCT_ID,
   GCLOUD_PROJECT: "kanna-local",
 };
 
 const checkoutEnv: NodeJS.ProcessEnv = {
   STRIPE_SECRET_KEY: "sk_test_slice1",
   KANNA_PORTAL_BASE_URL: "https://portal.kanna.build/",
+  STRIPE_PRODUCT_ID: KANNA_PRODUCT_ID,
   GCLOUD_PROJECT: "kanna-local",
 };
+
+/**
+ * Every fixture in this suite predates product-ownership scoping and carries
+ * no line-item data, so the default ownership lookup proves every event and
+ * customer as Kanna's own. Dedicated ownership tests below override it.
+ */
+function ownEverything(): StripeOwnershipLookupGateway {
+  return {
+    async subscriptionProductIds() { return [KANNA_PRODUCT_ID]; },
+    async sessionProductIds() { return [KANNA_PRODUCT_ID]; },
+    async customerProductIds() { return [KANNA_PRODUCT_ID]; },
+  };
+}
 
 const silentLogger = { info: () => {}, warn: () => {}, error: () => {} };
 
@@ -79,7 +96,7 @@ function fixtureBody(name: string): string {
 async function deliver(
   db: Firestore,
   name: string,
-  options: { secret?: string; now?: string } = {}
+  options: { secret?: string; now?: string; ownership?: StripeOwnershipLookupGateway } = {}
 ) {
   const body = fixtureBody(name);
   const signature = signStripePayload(body, options.secret ?? WEBHOOK_SECRET);
@@ -89,6 +106,7 @@ async function deliver(
       db,
       env: webhookEnv,
       logger: silentLogger,
+      ownership: options.ownership ?? ownEverything(),
       ...(options.now ? { now: () => options.now as string } : {}),
     }
   );
@@ -207,7 +225,7 @@ describeWithEmulator("billing backend against the Firestore emulator", () => {
       const body = fixtureBody("checkout.session.completed.json");
       const outcome = await handleStripeWebhook(
         { rawBody: body, signature: undefined },
-        { db, env: webhookEnv, logger: silentLogger }
+        { db, env: webhookEnv, logger: silentLogger, ownership: ownEverything() }
       );
       expect(outcome).toMatchObject({ httpStatus: 400, code: "invalid_signature" });
     });
@@ -236,7 +254,7 @@ describeWithEmulator("billing backend against the Firestore emulator", () => {
       const raw = JSON.stringify(body);
       const outcome = await handleStripeWebhook(
         { rawBody: raw, signature: signStripePayload(raw, WEBHOOK_SECRET) },
-        { db, env: webhookEnv, logger: silentLogger }
+        { db, env: webhookEnv, logger: silentLogger, ownership: ownEverything() }
       );
       expect(outcome).toMatchObject({ httpStatus: 200, code: "unresolved_account" });
     });
@@ -253,7 +271,7 @@ describeWithEmulator("billing backend against the Firestore emulator", () => {
       const raw = JSON.stringify(body);
       const outcome = await handleStripeWebhook(
         { rawBody: raw, signature: signStripePayload(raw, WEBHOOK_SECRET) },
-        { db, env: webhookEnv, logger: silentLogger }
+        { db, env: webhookEnv, logger: silentLogger, ownership: ownEverything() }
       );
       expect(outcome).toMatchObject({ code: "applied", uid: CHECKOUT_UID });
     });

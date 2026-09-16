@@ -135,6 +135,16 @@ recurring monthly price, USD default, six currency options: JPY **500**;
 USD/CAD/AUD/EUR/GBP **500 minor units** (5.00). No currency picker; do not infer
 trials, annual pricing, proration, refund terms or beta eligibility.
 
+The Stripe business account behind `kanna-build` also bills Kanji Kongbu.
+Every Stripe object the backend writes from, mutates, or exposes through a
+customer-wide operation (checkout, the webhook, Customer Portal, account
+deletion) is now checked against a required `STRIPE_PRODUCT_ID` parameter
+before acting, proven by reading the object's own line items back from Stripe
+rather than trusting webhook/checkout payload contents. This is a source
+correction, not a completed production receiver: `STRIPE_PRODUCT_ID` is
+unconfigured by default (empty, fails closed) and setting it per environment
+is still part of the setup below, not something this change performs.
+
 | Later required record | Acceptance / approval |
 |---|---|
 | Project, account, mode | Owner confirms `kanna-build`, correct Stripe business account and **live** mode; keep staging account/test mode distinct. Record redacted account identifier and configuration evidence, never credentials |
@@ -142,7 +152,8 @@ trials, annual pricing, proration, refund terms or beta eligibility.
 | Webhook | Exact production `stripeWebhook` endpoint/region and selected endpoint API version. Six events: `checkout.session.completed`, `customer.subscription.created`, `.updated`, `.deleted`, `invoice.paid`, `invoice.payment_failed`. Fixtures declare `2026-06-30.preview` and exercise item period ends / invoice parent subscription fields; this is not an instruction to select that version. Validate actual authorized sandbox payloads at the chosen endpoint version before live acceptance |
 | Customer Portal | Owner selects cancellation timing, payment-method and invoice features, any plan-change/proration choices; record `STRIPE_PORTAL_CONFIGURATION_ID`. The code requires an explicit configuration and makes no feature-policy choice |
 | Receipts / dunning / fraud | Owner confirms Stripe receipt sender/settings, failed-payment mail/retry/terminal-state behavior, support/refund escalation, 3DS/Radar configuration. Existing Checkout requests 3DS `any`; existing grace fallback is 14 days from period end without a next retry. Preserve those technical defaults without declaring commercial terms |
-| Secret Manager | Required names only: `STRIPE_SECRET_KEY` bound to checkout, portal and deleteAccount; `STRIPE_WEBHOOK_SECRET` bound only to webhook. Record enabled version identifiers, project and binding/IAM evidence through authorized tooling; never values. No provisioning performed |
+| Secret Manager | Required names only: `STRIPE_SECRET_KEY` bound to checkout, portal, deleteAccount **and now the webhook** (read-only product-ownership lookups before any write); `STRIPE_WEBHOOK_SECRET` bound only to webhook. Record enabled version identifiers, project and binding/IAM evidence through authorized tooling; never values. No provisioning performed |
+| Product isolation | Record the environment's Kanna Cloud Stripe Product ID as `STRIPE_PRODUCT_ID` (a public Firebase Functions parameter, not a secret — same channel as `STRIPE_PORTAL_CONFIGURATION_ID`). Unconfigured until an operator sets it per environment; every affected function fails closed until it is. Confirm the id names the product `cloud_monthly` resolves to, not a name/price/lookup-key guess |
 | Auth / origin | Record actual allowed Auth domains, sender-domain acceptance, hosting account target and `KANNA_PORTAL_BASE_URL`; same-origin return routes and portal/Functions project must match. No tokens in browser handoff URLs |
 | Decisions and approvals | Owner decides beta cohort/comp cutoff, iOS model, commercial/legal/refund terms and support responder. Separate authorization for any sandbox transaction, production setup, enforcement enable, final candidate Ship and public payment CTA. Root routes later work; this sheet grants none |
 
