@@ -1836,6 +1836,94 @@ describe("release promotion", () => {
     }
   });
 
+  it("refuses promotion before building when a later RC tries to reuse a consumed recut grant", async () => {
+    const root = await mkdtemp(join(tmpdir(), "kd-release-consumed-recut-"));
+    try {
+      const { repoRoot, privateKeyPath } = createReleaseRepo(root);
+      const calls: CommandCall[] = [];
+      const recutTip = "cccccccccccccccccccccccccccccccccccccccc";
+      const appliedCommit = "dddddddddddddddddddddddddddddddddddddddd";
+      const body = [
+        "Pointer-only desktop staging updater channel.",
+        "",
+        "Lineage-Recut-Applied: 2026-07-01T01:00:00Z",
+        "Recut-Applied-Id: 1.2-1",
+        "Recut-Applied-Version: 1.2.4-staging.2",
+        `Recut-Applied-Commit: ${appliedCommit}`,
+        "Recut-Applied-Tag: recut-applied/1.2-1",
+        "",
+        "Lineage-Recut: 2026-07-01T00:00:00Z",
+        "Recut-Id: 1.2-1",
+        "Recut-Series: 1.2",
+        "Recut-Branch: release/1.2",
+        `Recut-Old-Tip: ${PREVIOUS_RC_COMMIT}`,
+        `Recut-New-Tip: ${recutTip}`,
+        "Recut-Archive-Tag: recut/release/1.2-1",
+        `Recut-From: 1.2.4-staging.1 (${PREVIOUS_RC_COMMIT}) source release/1.2`,
+        "Recut-Prior-Epoch: 1.2.4-staging.1",
+        "Recut-Requester: consumed-grant-test",
+        "Recut-Reason: authorize staging.2 only"
+      ].join("\n");
+      const runner = promoteRunner({
+        "gh release view v1.2.4-staging.3": {
+          exitCode: 0,
+          stdout: JSON.stringify({
+            tagName: "v1.2.4-staging.3",
+            targetCommitish: STAGING_COMMIT,
+            body: "Staging updater manifest for v1.2.4-staging.3\n\nSource-Branch: release/1.2",
+            publishedAt: RC_PUBLISHED_AT,
+            isPrerelease: true
+          }),
+          stderr: ""
+        },
+        "gh release list --repo jemdiggity/kanna": {
+          exitCode: 0,
+          stdout: JSON.stringify([
+            { tagName: "v1.2.4-staging.3", createdAt: RC_PUBLISHED_AT },
+            { tagName: "v1.2.4-staging.2", createdAt: "2026-06-30T00:00:00Z" },
+            { tagName: "v1.2.4-staging.1", createdAt: "2026-06-29T00:00:00Z" }
+          ]),
+          stderr: ""
+        },
+        "gh release view v1.2.4-staging.2": {
+          exitCode: 0,
+          stdout: JSON.stringify({
+            tagName: "v1.2.4-staging.2",
+            targetCommitish: appliedCommit,
+            body: "Staging updater manifest for v1.2.4-staging.2\n\nSource-Branch: release/1.2",
+            publishedAt: "2026-06-30T00:00:00Z",
+            isPrerelease: true
+          }),
+          stderr: ""
+        },
+        "gh release view desktop-staging": {
+          exitCode: 0,
+          stdout: JSON.stringify({ body }),
+          stderr: ""
+        },
+        [`git merge-base --is-ancestor ${appliedCommit} ${STAGING_COMMIT}`]: { exitCode: 1, stdout: "", stderr: "" },
+        [`git merge-base --is-ancestor ${STAGING_COMMIT} ${appliedCommit}`]: { exitCode: 1, stdout: "", stderr: "" },
+        [`git merge-base --is-ancestor ${recutTip} ${STAGING_COMMIT}`]: { exitCode: 0, stdout: "", stderr: "" },
+        "git ls-remote origin refs/heads/release/1.2": {
+          exitCode: 0,
+          stdout: `${STAGING_COMMIT}\trefs/heads/release/1.2\n`,
+          stderr: ""
+        }
+      }, repoRoot, new Map(), calls);
+
+      await expect(shipRelease(promoteInput(repoRoot, privateKeyPath, runner))).rejects.toThrow(
+        /share only an older merge base/
+      );
+      expect(calls.some((call) => call.command === "bazel")).toBe(false);
+      expect(calls).toContainEqual(expect.objectContaining({
+        command: "git",
+        args: ["merge-base", "--is-ancestor", appliedCommit, STAGING_COMMIT]
+      }));
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("refuses to promote when HEAD is not the staging build's commit", async () => {
     const root = await mkdtemp(join(tmpdir(), "kd-release-"));
     try {
@@ -1978,6 +2066,37 @@ describe("release promotion", () => {
 
       await expect(shipRelease(promoteInput(repoRoot, privateKeyPath, runner))).rejects.toThrow(
         /share only an older merge base/
+      );
+      expect(calls.some((call) => call.command === "bazel")).toBe(false);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses promotion before building when a full first page cannot load complete release history", async () => {
+    const root = await mkdtemp(join(tmpdir(), "kd-release-incomplete-history-promote-"));
+    try {
+      const { repoRoot, privateKeyPath } = createReleaseRepo(root);
+      const calls: CommandCall[] = [];
+      const firstPage = Array.from({ length: 100 }, (_, index) => ({
+        tagName: `v1.2.4-staging.${102 - index}`,
+        createdAt: new Date(PROMOTION_NOW - (index + 1) * 3_600_000).toISOString()
+      }));
+      const runner = promoteRunner({
+        "gh release list --repo jemdiggity/kanna": {
+          exitCode: 0,
+          stdout: JSON.stringify(firstPage),
+          stderr: ""
+        },
+        "gh api --paginate": {
+          exitCode: 1,
+          stdout: "",
+          stderr: "HTTP 503: Service unavailable"
+        }
+      }, repoRoot, new Map(), calls);
+
+      await expect(shipRelease(promoteInput(repoRoot, privateKeyPath, runner))).rejects.toThrow(
+        /Could not read complete GitHub release history.*HTTP 503/s
       );
       expect(calls.some((call) => call.command === "bazel")).toBe(false);
     } finally {
@@ -2912,6 +3031,67 @@ describe("release status", () => {
     }
   });
 
+  it.each([
+    { label: "rejects divergence", previousIsAncestor: 1, relationship: "diverged", allowed: false },
+    { label: "allows descendant progression", previousIsAncestor: 0, relationship: "descendant", allowed: true }
+  ])("checks the actual predecessor after a recut grant is consumed and $label", async ({ previousIsAncestor, relationship, allowed }) => {
+    const root = await mkdtemp(join(tmpdir(), "kd-release-status-consumed-recut-"));
+    try {
+      const oldTip = PREVIOUS_RC_COMMIT;
+      const recutTip = "cccccccccccccccccccccccccccccccccccccccc";
+      const appliedCommit = "dddddddddddddddddddddddddddddddddddddddd";
+      const currentCommit = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
+      const body = [
+        "Pointer-only desktop staging updater channel.",
+        "",
+        "Lineage-Recut-Applied: 2026-09-06T00:00:00.000Z",
+        "Recut-Applied-Id: 0.3-1",
+        "Recut-Applied-Version: 0.3.0-staging.2",
+        `Recut-Applied-Commit: ${appliedCommit}`,
+        "Recut-Applied-Tag: recut-applied/0.3-1",
+        "",
+        "Lineage-Recut: 2026-09-05T23:00:00.000Z",
+        "Recut-Id: 0.3-1",
+        "Recut-Series: 0.3",
+        "Recut-Branch: release/0.3",
+        `Recut-Old-Tip: ${oldTip}`,
+        `Recut-New-Tip: ${recutTip}`,
+        "Recut-Archive-Tag: recut/release/0.3-1",
+        `Recut-From: 0.3.0-staging.1 (${oldTip}) source release/0.3`,
+        "Recut-Prior-Epoch: 0.3.0-staging.1",
+        "Recut-Requester: consumed-grant-test",
+        "Recut-Reason: authorize staging.2 only"
+      ].join("\n");
+      const result = await releaseStatus({
+        repoRoot: root,
+        env: {},
+        now: NOW,
+        runner: statusRunner({
+          activeVersion: "0.3.0-staging.3",
+          activeCommit: currentCommit,
+          activeSourceBranch: "release/0.3",
+          candidateTags: ["v0.3.0-staging.3", "v0.3.0-staging.2", "v0.3.0-staging.1"],
+          previousCommit: appliedCommit,
+          previousIsAncestor,
+          activeIsAncestor: 1,
+          releaseBranchSha: currentCommit,
+          productionTag: "v0.2.0",
+          channelBody: body
+        })
+      });
+
+      expect(result.lineage).toMatchObject({
+        relationship,
+        previous: { version: "0.3.0-staging.2", commit: appliedCommit },
+        valid: allowed,
+        authorizedByRecut: false
+      });
+      expect(result.promotion.allowed).toBe(allowed);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   interface StatusFixture {
     activeVersion: string | null;
     activeCommit?: string | null;
@@ -2926,6 +3106,8 @@ describe("release status", () => {
     candidateTags?: string[];
     /** Complete paginated release history when the first 100-entry page fills. */
     allCandidateTags?: string[];
+    paginatedHistoryError?: string;
+    paginatedHistoryRaw?: string;
     previousCommit?: string | null;
     /** Result of `git merge-base --is-ancestor <previous> <active>`. */
     previousIsAncestor?: number;
@@ -3060,6 +3242,12 @@ describe("release status", () => {
           };
         }
         if (command === "gh" && args[0] === "api" && args.includes("--paginate")) {
+          if (fixture.paginatedHistoryError) {
+            return { exitCode: 1, stdout: "", stderr: fixture.paginatedHistoryError };
+          }
+          if (fixture.paginatedHistoryRaw !== undefined) {
+            return { exitCode: 0, stdout: fixture.paginatedHistoryRaw, stderr: "" };
+          }
           const tags = fixture.allCandidateTags ?? candidateTags;
           return {
             exitCode: 0,
@@ -3309,6 +3497,31 @@ describe("release status", () => {
         command: "gh",
         args: ["api", "--paginate", "--slurp", "repos/jemdiggity/kanna/releases?per_page=100"]
       }));
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    { label: "the paginated request fails", paginatedHistoryError: "HTTP 503: Service unavailable" },
+    { label: "the paginated response is malformed", paginatedHistoryRaw: '{"message":"not a page list"}' }
+  ])("fails status closed when the first release page is full and $label", async (pagination) => {
+    const root = await mkdtemp(join(tmpdir(), "kd-release-incomplete-history-status-"));
+    try {
+      const firstPage = Array.from({ length: 100 }, (_, index) => `v1.2.4-staging.${101 - index}`);
+      await expect(releaseStatus({
+        repoRoot: root,
+        env: {},
+        now: NOW,
+        runner: statusRunner({
+          activeVersion: "1.2.4-staging.2",
+          activeSourceBranch: "main",
+          candidateTags: firstPage,
+          productionTag: "v1.2.3",
+          existingProductionTags: ["1.2.3"],
+          ...pagination
+        })
+      })).rejects.toThrow(/complete GitHub release history|complete staging release history/i);
     } finally {
       await rm(root, { recursive: true, force: true });
     }

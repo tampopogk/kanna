@@ -1088,12 +1088,24 @@ async function listStagingCandidateTags(context: ReleaseCommandContext, repoSlug
   // read the complete retained release history so an older immutable RC is not
   // mistaken for an initial candidate merely because the train kept moving.
   if (parseReleaseListEntryCount(raw) === 100) {
+    const firstPage = parseStagingReleaseList(raw);
     const all = await context.runner.run(
       "gh",
       ["api", "--paginate", "--slurp", `repos/${repoSlug}/releases?per_page=100`],
       { cwd: context.repoRoot, env: context.env }
     );
-    if (all.exitCode === 0) raw = all.stdout;
+    if (all.exitCode !== 0) {
+      throw new Error(
+        "Could not read complete GitHub release history after the first 100 entries: " +
+          (all.stderr.trim() || all.stdout.trim() || "gh api --paginate failed")
+      );
+    }
+    const complete = parsePaginatedStagingReleaseList(all.stdout);
+    const completeTags = new Set(complete.map((release) => release.tag));
+    if (firstPage.some((release) => !completeTags.has(release.tag))) {
+      throw new Error("Could not verify complete GitHub release history: paginated output omitted entries from the first page.");
+    }
+    return complete.sort(compareStagingReleasesDesc).map((release) => release.tag);
   }
   return parseStagingReleaseList(raw).sort(compareStagingReleasesDesc).map((release) => release.tag);
 }
@@ -1148,13 +1160,19 @@ async function resolveCandidateLineage(
   candidate: StagingCandidate,
   audit: LineageAudit
 ): Promise<CandidateLineage> {
-  const recutApplication = audit.recutApplications.find((application) =>
+  const candidateRecutApplication = audit.recutApplications.find((application) =>
     normalizeStagingVersion(application.version) === normalizeStagingVersion(candidate.version) &&
     Boolean(candidate.commit) && application.commit.toLowerCase() === candidate.commit?.toLowerCase()
   ) ?? null;
-  const recut = recutApplication
-    ? audit.recuts.find((record) => record.recutId === recutApplication.recutId) ?? null
+  const recut = candidateRecutApplication
+    ? audit.recuts.find((record) => record.recutId === candidateRecutApplication.recutId) ?? null
     : audit.recut;
+  // Consumption belongs to the grant, not to whichever candidate is currently
+  // being assessed. Keep an exact application as durable evidence for its RC,
+  // but never let a later candidate reuse that grant after the branch advances.
+  const recutApplication = candidateRecutApplication ?? (recut
+    ? audit.recutApplications.find((application) => application.recutId === recut.recutId) ?? null
+    : null);
   let recutDestinationRelationship: StagingLineageRelationship | undefined;
   let recutDestinationIsBranchTip: boolean | undefined;
   // The unused publication grant remains bound to today's branch tip. Once
@@ -1174,7 +1192,7 @@ async function resolveCandidateLineage(
   }
   const recutPrevious = recut && recut.fromVersion && candidate.version !== recut.fromVersion &&
       candidate.sourceBranch === recut.branch &&
-      (recutApplicationAuthorizes(recut, recutApplication, candidate) || recutDestinationIsBranchTip)
+      (recutApplicationAuthorizes(recut, recutApplication, candidate) || (!recutApplication && recutDestinationIsBranchTip))
     ? {
         version: recut.fromVersion,
         tag: stagingTag(recut.fromVersion),
@@ -1520,6 +1538,32 @@ function parseStagingReleaseList(raw: string): StagingRelease[] {
     if (!tag) return [];
     return [{ tag, createdAt: columns.at(-1)?.trim() ?? "" }];
   });
+}
+
+function parsePaginatedStagingReleaseList(raw: string): StagingRelease[] {
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed) || parsed.length === 0 || !parsed.every((page) => Array.isArray(page))) {
+      throw new Error("expected an array of release pages");
+    }
+    const entries = parsed.flat();
+    if (entries.length < 100) throw new Error("paginated history omitted entries from the full first page");
+    return entries.flatMap((item) => {
+      if (typeof item !== "object" || item === null) throw new Error("release entry is not an object");
+      const record = item as { tag_name?: unknown; created_at?: unknown };
+      if (typeof record.tag_name !== "string" || typeof record.created_at !== "string") {
+        throw new Error("release entry is missing tag_name or created_at");
+      }
+      return /^v\d+\.\d+\.\d+-staging\.\d+$/.test(record.tag_name)
+        ? [{ tag: record.tag_name, createdAt: record.created_at }]
+        : [];
+    });
+  } catch (error) {
+    throw new Error(
+      "Could not parse complete GitHub release history from gh api --paginate: " +
+        (error instanceof Error ? error.message : String(error))
+    );
+  }
 }
 
 function compareStagingReleasesDesc(left: StagingRelease, right: StagingRelease): number {
