@@ -24,10 +24,12 @@ import {
   isHandledStripeEventType,
   parseStripeEventEnvelope,
   stripeEventCreatedAt,
+  type StripeAccountHint,
   type StripeEventEnvelope,
   type StripeSourcePatch,
 } from "./stripeEvents.js";
 import {
+  accountCheckoutPath,
   accountDeletionPath,
   billingSourcePath,
   stripeCustomerPath,
@@ -57,7 +59,9 @@ export type StripeWebhookOutcomeCode =
   | "mode_mismatch"
   | "foreign_product"
   | "ambiguous_ownership"
-  | "ownership_unresolved";
+  | "ownership_unresolved"
+  | "mapping_conflict"
+  | "subscription_replaced";
 
 export interface StripeWebhookOutcome {
   httpStatus: number;
@@ -172,59 +176,91 @@ export async function handleStripeWebhook(
     return outcome({ httpStatus: 200, code: "ambiguous_ownership", eventId: event.id });
   }
 
-  const uid = await resolveUid(deps.db, interpretation.account);
-  if (!uid) {
-    logger.warn("Dropped a Stripe event that resolves to no Kanna account", {
-      eventId: event.id,
-      eventType: event.type,
-      customerId: interpretation.account.customerId,
-    });
-    return outcome({ httpStatus: 200, code: "unresolved_account", eventId: event.id });
-  }
-
   const applied = await deps.db.runTransaction(async (transaction) =>
     applyStripeEvent({
       transaction,
       db: deps.db,
-      uid,
       event,
       patch: interpretation.patch,
-      customerId: interpretation.account.customerId,
+      account: interpretation.account,
       environment: config.environment,
       now: now(),
     })
   );
 
+  if (applied.code === "unresolved_account") {
+    logger.warn("Dropped a Stripe event that resolves to no Kanna account", {
+      eventId: event.id,
+      eventType: event.type,
+      customerId: interpretation.account.customerId,
+    });
+  } else if (applied.code === "mapping_conflict") {
+    logger.error("Dropped a Stripe event whose account mapping conflicts with an existing record", {
+      eventId: event.id,
+      eventType: event.type,
+      customerId: interpretation.account.customerId,
+    });
+  } else if (applied.code === "subscription_replaced") {
+    logger.warn("Dropped a Stripe event for a subscription no longer current on this account", {
+      eventId: event.id,
+      eventType: event.type,
+      uid: applied.uid,
+    });
+  }
+
   logger.info("Handled Stripe webhook event", {
     eventId: event.id,
     eventType: event.type,
-    uid,
+    uid: applied.uid,
     outcome: applied.code,
     entitlementWritten: applied.entitlementWritten,
   });
-  return { ...applied, eventId: event.id, uid };
+  return { ...applied, eventId: event.id };
 }
 
 interface ApplyStripeEventInput {
   transaction: Transaction;
   db: Firestore;
-  uid: string;
   event: StripeEventEnvelope;
   patch: StripeSourcePatch;
-  customerId: string | null;
+  account: StripeAccountHint;
   environment: BillingEnvironment;
   now: string;
 }
 
 async function applyStripeEvent(
   input: ApplyStripeEventInput
-): Promise<Omit<StripeWebhookOutcome, "eventId" | "uid">> {
-  const { transaction, db, uid, event, patch, customerId, environment, now } = input;
+): Promise<Omit<StripeWebhookOutcome, "eventId">> {
+  const { transaction, db, event, patch, account, environment, now } = input;
+
+  // Every read first: Firestore transactions forbid a read after a write.
+  const customerRef = account.customerId ? db.doc(stripeCustomerPath(account.customerId)) : null;
+  const mappingDoc = customerRef ? await transaction.get(customerRef) : null;
+  const mappingUid = readMappingUid(mappingDoc);
+
+  const uid = account.uid ?? mappingUid;
+  if (!uid) {
+    return { httpStatus: 200, code: "unresolved_account", uid: null, entitlement: null, entitlementWritten: false };
+  }
+  if (account.uid && mappingUid && mappingUid !== account.uid) {
+    // A server-owned mapping already names a different account for this
+    // customer. An event's own claimed uid must never overwrite it — that is
+    // exactly the account-hijack this check exists to refuse.
+    return { httpStatus: 200, code: "mapping_conflict", uid: null, entitlement: null, entitlementWritten: false };
+  }
+
+  // A checkout-session event may be the one legitimate way to promote a
+  // different subscription to "current" (see the replacement fence below), so
+  // its own checkout ledger is read here, before any write, alongside
+  // everything else this transaction needs.
+  const checkoutLedgerDoc = event.type === "checkout.session.completed"
+    ? await transaction.get(db.doc(accountCheckoutPath(uid)))
+    : null;
+
   const eventRef = db.doc(stripeEventPath(event.id));
   const userRef = db.doc(userDocPath(uid));
   const deletionRef = db.doc(accountDeletionPath(uid));
 
-  // Every read first: Firestore transactions forbid a read after a write.
   // The durable top-level deletion tombstone is the synchronization boundary.
   // A webhook transaction already in flight conflicts with the tombstone write
   // and retries; later events cannot race recursiveDelete into recreating data.
@@ -237,6 +273,7 @@ async function applyStripeEvent(
     return {
       httpStatus: 200,
       code: "deleted_account",
+      uid,
       entitlement: null,
       entitlementWritten: false,
     };
@@ -246,6 +283,7 @@ async function applyStripeEvent(
     return {
       httpStatus: 200,
       code: "duplicate",
+      uid,
       entitlement: state.previous,
       entitlementWritten: false,
     };
@@ -260,10 +298,10 @@ async function applyStripeEvent(
     receivedAt: now,
   });
 
-  if (customerId) {
+  if (customerRef && account.customerId) {
     transaction.set(
-      db.doc(stripeCustomerPath(customerId)),
-      { uid, stripeCustomerId: customerId, updatedAt: now },
+      customerRef,
+      { uid, stripeCustomerId: account.customerId, updatedAt: now },
       { merge: true }
     );
   }
@@ -274,9 +312,34 @@ async function applyStripeEvent(
     return {
       httpStatus: 200,
       code: "stale",
+      uid,
       entitlement: state.previous,
       entitlementWritten: false,
     };
+  }
+
+  const incomingSubscriptionId = patch.stripeSubscriptionId ?? null;
+  if (
+    existing?.stripeSubscriptionId
+    && incomingSubscriptionId
+    && existing.stripeSubscriptionId !== incomingSubscriptionId
+  ) {
+    // This event names a subscription other than the one currently recorded
+    // as this account's current subscription. Only an admitted checkout — one
+    // this account's own checkout flow actually created — may replace it; a
+    // bare subscription/invoice event for an already-replaced subscription
+    // must never resurrect or expire the account's real current one.
+    const sessionId = event.type === "checkout.session.completed" ? readEventObjectId(event) : null;
+    const admitted = sessionId !== null && isSessionAdmitted(checkoutLedgerDoc, sessionId);
+    if (!admitted) {
+      return {
+        httpStatus: 200,
+        code: "subscription_replaced",
+        uid,
+        entitlement: state.previous,
+        entitlementWritten: false,
+      };
+    }
   }
 
   const next = mergeStripeSourceState({
@@ -302,9 +365,29 @@ async function applyStripeEvent(
   return {
     httpStatus: 200,
     code: "applied",
+    uid,
     entitlement: written.entitlement,
     entitlementWritten: written.written,
   };
+}
+
+function readMappingUid(mappingDoc: FirebaseFirestore.DocumentSnapshot | null): string | null {
+  if (!mappingDoc || !mappingDoc.exists) return null;
+  const uid = (mappingDoc.data() as { uid?: unknown } | undefined)?.uid;
+  return typeof uid === "string" && uid.length > 0 ? uid : null;
+}
+
+function readEventObjectId(event: StripeEventEnvelope): string | null {
+  const id = event.data.object.id;
+  return typeof id === "string" && id.length > 0 ? id : null;
+}
+
+/** Whether a checkout session belongs to this account's own recorded checkout ledger. */
+function isSessionAdmitted(ledgerDoc: FirebaseFirestore.DocumentSnapshot | null, sessionId: string): boolean {
+  if (!ledgerDoc || !ledgerDoc.exists) return false;
+  const data = ledgerDoc.data() as { sessionIds?: unknown; attempt?: { sessionId?: unknown } } | undefined;
+  const sessionIds = Array.isArray(data?.sessionIds) ? data.sessionIds : [];
+  return sessionIds.includes(sessionId) || data?.attempt?.sessionId === sessionId;
 }
 
 interface MergeStripeSourceStateInput {
@@ -371,25 +454,6 @@ async function verifyEventOwnership(
     }
   }
   return "ambiguous";
-}
-
-/**
- * Resolve the account an event belongs to.
- *
- * Checkout carries `client_reference_id` and every object Kanna creates carries
- * `metadata.firebase_uid`, so the reverse-lookup doc is the fallback for objects
- * created outside that path (a subscription started from the Stripe dashboard).
- */
-async function resolveUid(
-  db: Firestore,
-  account: { uid: string | null; customerId: string | null }
-): Promise<string | null> {
-  if (account.uid) return account.uid;
-  if (!account.customerId) return null;
-
-  const mapping = await db.doc(stripeCustomerPath(account.customerId)).get();
-  const uid = (mapping.data() as { uid?: unknown } | undefined)?.uid;
-  return typeof uid === "string" && uid.length > 0 ? uid : null;
 }
 
 function outcome(

@@ -10,7 +10,7 @@ const env = {
   STRIPE_PORTAL_CONFIGURATION_ID: "bpc_test", STRIPE_PRODUCT_ID: KANNA_PRODUCT_ID,
 };
 const gateway = { createPortalSession: vi.fn(async () => ({ url: "https://billing.stripe.test/owned" })) };
-const ownershipGateway = { customerProductIds: vi.fn(async () => [KANNA_PRODUCT_ID]) };
+const ownershipGateway = { customerProductScan: vi.fn(async () => ({ productIds: [KANNA_PRODUCT_ID], unresolved: false })) };
 
 describe.skipIf(!hasFirestoreEmulator)("Customer Portal ownership against Firestore", () => {
   let db: Firestore;
@@ -55,6 +55,17 @@ describe.skipIf(!hasFirestoreEmulator)("Customer Portal ownership against Firest
     expect(gateway.createPortalSession).not.toHaveBeenCalled();
   });
 
+  it("refuses a customer with no server-owned reverse mapping at all", async () => {
+    // A client-writable-adjacent profile field naming a customer proves
+    // nothing on its own: the reverse mapping is the one record only Kanna's
+    // own backend writes, and its absence must never be treated as consent.
+    await db.doc(userDocPath("owner")).set({ stripeCustomerId: "cus_unmapped" });
+    await expect(createPortalSession({}, { uid: "owner" }, { db, env, gateway, ownershipGateway })).rejects.toMatchObject({
+      code: "permission-denied", reason: "customer_ownership_mismatch",
+    });
+    expect(gateway.createPortalSession).not.toHaveBeenCalled();
+  });
+
   it("refuses a deleted account even while its records remain", async () => {
     await db.doc(userDocPath("owner")).set({ stripeCustomerId: "cus_owner" });
     await db.doc(accountDeletionPath("owner")).set({ status: "deleting" });
@@ -64,34 +75,66 @@ describe.skipIf(!hasFirestoreEmulator)("Customer Portal ownership against Firest
 
   it.each(Object.keys(env))("fails safely with missing %s", async (key) => {
     await db.doc(userDocPath("owner")).set({ stripeCustomerId: "cus_owner" });
+    await db.doc(stripeCustomerPath("cus_owner")).set({ uid: "owner" });
     await expect(createPortalSession({}, { uid: "owner" }, { db, env: { ...env, [key]: "" }, gateway, ownershipGateway })).rejects.toMatchObject({ reason: "not_configured" });
     expect(gateway.createPortalSession).not.toHaveBeenCalled();
   });
 
   it("reports a retryable gateway failure without exposing provider internals", async () => {
     await db.doc(userDocPath("owner")).set({ stripeCustomerId: "cus_owner" });
+    await db.doc(stripeCustomerPath("cus_owner")).set({ uid: "owner" });
     const failing = { createPortalSession: vi.fn(async () => { throw new Error("private provider error"); }) };
     await expect(createPortalSession({}, { uid: "owner" }, { db, env, gateway: failing, ownershipGateway })).rejects.toMatchObject({ reason: "stripe_error", message: "Could not open billing management. Please try again." });
   });
 
   it("refuses a Portal session for a customer that also holds another product on the shared account", async () => {
     await db.doc(userDocPath("owner")).set({ stripeCustomerId: "cus_shared" });
-    const mixed = { customerProductIds: vi.fn(async () => [KANNA_PRODUCT_ID, "prod_kanji_kongbu"]) };
+    await db.doc(stripeCustomerPath("cus_shared")).set({ uid: "owner" });
+    const mixed = { customerProductScan: vi.fn(async () => ({ productIds: [KANNA_PRODUCT_ID, "prod_kanji_kongbu"], unresolved: false })) };
     await expect(createPortalSession({}, { uid: "owner" }, { db, env, gateway, ownershipGateway: mixed }))
       .rejects.toMatchObject({ code: "permission-denied", reason: "customer_ownership_mismatch" });
     expect(gateway.createPortalSession).not.toHaveBeenCalled();
   });
 
-  it("allows a customer with no billing at all (comp, or a canceled subscription)", async () => {
+  it("allows a customer with genuinely no billing at all (comp, or a canceled subscription's own history)", async () => {
     await db.doc(userDocPath("owner")).set({ stripeCustomerId: "cus_owner" });
-    const clean = { customerProductIds: vi.fn(async () => []) };
+    await db.doc(stripeCustomerPath("cus_owner")).set({ uid: "owner" });
+    const clean = { customerProductScan: vi.fn(async () => ({ productIds: [], unresolved: false })) };
     await expect(createPortalSession({}, { uid: "owner" }, { db, env, gateway, ownershipGateway: clean }))
       .resolves.toEqual({ url: "https://billing.stripe.test/owned" });
   });
 
+  it("allows a customer whose only history is a Kanna-owned (even canceled) subscription", async () => {
+    await db.doc(userDocPath("owner")).set({ stripeCustomerId: "cus_owner" });
+    await db.doc(stripeCustomerPath("cus_owner")).set({ uid: "owner" });
+    const owned = { customerProductScan: vi.fn(async () => ({ productIds: [KANNA_PRODUCT_ID], unresolved: false })) };
+    await expect(createPortalSession({}, { uid: "owner" }, { db, env, gateway, ownershipGateway: owned }))
+      .resolves.toEqual({ url: "https://billing.stripe.test/owned" });
+  });
+
+  it("refuses a customer whose scan lists a subscription it could not resolve to a product", async () => {
+    // Not the same as clean: something is there, it just could not be proven
+    // Kanna's, so it must never be treated as safe to expose.
+    await db.doc(userDocPath("owner")).set({ stripeCustomerId: "cus_owner" });
+    await db.doc(stripeCustomerPath("cus_owner")).set({ uid: "owner" });
+    const unresolved = { customerProductScan: vi.fn(async () => ({ productIds: [], unresolved: true })) };
+    await expect(createPortalSession({}, { uid: "owner" }, { db, env, gateway, ownershipGateway: unresolved }))
+      .rejects.toMatchObject({ code: "permission-denied", reason: "customer_ownership_mismatch" });
+    expect(gateway.createPortalSession).not.toHaveBeenCalled();
+  });
+
+  it("refuses a customer whose scan hit a resource-missing lookup rather than proving it clean", async () => {
+    await db.doc(userDocPath("owner")).set({ stripeCustomerId: "cus_owner" });
+    await db.doc(stripeCustomerPath("cus_owner")).set({ uid: "owner" });
+    const missingLookup = { customerProductScan: vi.fn(async () => ({ productIds: [], unresolved: true })) };
+    await expect(createPortalSession({}, { uid: "owner" }, { db, env, gateway, ownershipGateway: missingLookup }))
+      .rejects.toMatchObject({ code: "permission-denied", reason: "customer_ownership_mismatch" });
+  });
+
   it("reports a retryable failure when ownership cannot be verified", async () => {
     await db.doc(userDocPath("owner")).set({ stripeCustomerId: "cus_owner" });
-    const failing = { customerProductIds: vi.fn(async () => { throw new Error("private provider error"); }) };
+    await db.doc(stripeCustomerPath("cus_owner")).set({ uid: "owner" });
+    const failing = { customerProductScan: vi.fn(async () => { throw new Error("private provider error"); }) };
     await expect(createPortalSession({}, { uid: "owner" }, { db, env, gateway, ownershipGateway: failing }))
       .rejects.toMatchObject({ reason: "stripe_error" });
     expect(gateway.createPortalSession).not.toHaveBeenCalled();

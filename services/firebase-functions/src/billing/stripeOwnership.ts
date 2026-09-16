@@ -33,7 +33,20 @@ export function classifyProductOwnership(
 }
 
 /** Verdict for everything found on a shared Stripe customer. */
-export type CustomerScopeVerdict = "clean" | "owned" | "mixed";
+export type CustomerScopeVerdict = "clean" | "owned" | "mixed" | "unresolved";
+
+/** The result of scanning every billing object on a shared Stripe customer. */
+export interface CustomerProductScan {
+  /** Distinct product ids resolved across every item found. */
+  productIds: readonly string[];
+  /**
+   * True when at least one item on the customer could not be resolved to a
+   * product id — a paginated lookup failure, or an item whose price/product
+   * could not be read. This must never collapse into the same "nothing here"
+   * result as a customer with genuinely zero billing.
+   */
+  unresolved: boolean;
+}
 
 /**
  * Classify a customer-wide operation (Portal, deletion recovery) against the
@@ -43,12 +56,16 @@ export type CustomerScopeVerdict = "clean" | "owned" | "mixed";
  * comped account, a canceled subscription) — that is `clean`, not ambiguous,
  * because there is nothing here that isn't Kanna's to expose. Any foreign
  * product id anywhere on the customer makes the whole customer `mixed`, which
- * blocks a customer-wide action rather than trying to partition it.
+ * blocks a customer-wide action rather than trying to partition it. A scan
+ * that could not resolve every item is `unresolved` — never treated as clean,
+ * because an unresolved item might be a foreign product this scan simply
+ * failed to identify.
  */
 export function classifyCustomerScope(
-  productIds: readonly string[],
+  scan: CustomerProductScan,
   expectedProductId: string
 ): CustomerScopeVerdict {
-  if (productIds.some((id) => id !== expectedProductId)) return "mixed";
-  return productIds.length > 0 ? "owned" : "clean";
+  if (scan.productIds.some((id) => id !== expectedProductId)) return "mixed";
+  if (scan.unresolved) return "unresolved";
+  return scan.productIds.length > 0 ? "owned" : "clean";
 }

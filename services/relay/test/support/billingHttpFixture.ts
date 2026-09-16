@@ -39,10 +39,11 @@ const checkout: StripeCheckoutGateway = {
       id, url: "https://checkout.stripe.test/launch-fixture", mode: "subscription",
       uid: billingFixture.checkoutInput.uid, customerId: billingFixture.checkoutInput.customerId,
       status: "open", subscriptionStatus: null,
+      productVerdict: billingFixture.foreignProductEvent ? "foreign" : "owned",
     };
   },
   async listOpenCheckoutSessions() { return []; },
-  async hasBlockingSubscription() { return false; },
+  async hasBlockingSubscription() { return "clear"; },
   async closeCheckoutSession() {},
 };
 const portal: StripePortalGateway = {
@@ -59,7 +60,7 @@ const subscription: StripeSubscriptionGateway = {
 const ownership: StripeOwnershipLookupGateway = {
   async subscriptionProductIds() { return [billingFixture.foreignProductEvent ? FOREIGN_PRODUCT_ID : FIXTURE_PRODUCT_ID]; },
   async sessionProductIds() { return [billingFixture.foreignProductEvent ? FOREIGN_PRODUCT_ID : FIXTURE_PRODUCT_ID]; },
-  async customerProductIds() { return [FIXTURE_PRODUCT_ID]; },
+  async customerProductScan() { return { productIds: [FIXTURE_PRODUCT_ID], unresolved: false }; },
 };
 
 // The suite replaces only these external I/O factories. Auth, callable error
