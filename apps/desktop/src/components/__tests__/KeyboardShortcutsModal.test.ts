@@ -73,7 +73,16 @@ describe("KeyboardShortcutsModal", () => {
       props: { context: "file", startInFullMode: true },
     });
 
-    expect(wrapper.text()).toContain("shortcuts.filePickerCtrl+Shift+P");
+    const shortcutKeys = (action: string) => wrapper.findAll(".shortcut-entry--item")
+      .find((entry) => entry.get(".shortcut-action").text() === action)
+      ?.get(".shortcut-keys")
+      .text();
+
+    // These are distinct adjacent entries in the Tools group. Keep the
+    // labels in the assertion so File Picker's Ctrl+Shift+P cannot be mistaken
+    // for the Command Palette binding that actually dispatches on Ctrl+Alt+P.
+    expect(shortcutKeys("shortcuts.commandPalette")).toBe("Ctrl+Alt+P");
+    expect(shortcutKeys("shortcuts.filePicker")).toBe("Ctrl+Shift+P");
     expect(wrapper.text()).toContain("shortcuts.toggleSidebarCtrl+Shift+B");
     expect(wrapper.get(".toggle-hint").text()).toBe("CtrlAlt/");
     expect(wrapper.text()).not.toContain("⌘");
