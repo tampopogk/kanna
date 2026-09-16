@@ -15,10 +15,25 @@ export const STRIPE_SECRET_KEY_ENV = "STRIPE_SECRET_KEY";
 export const STRIPE_WEBHOOK_SECRET_ENV = "STRIPE_WEBHOOK_SECRET";
 export const PORTAL_BASE_URL_ENV = "KANNA_PORTAL_BASE_URL";
 export const STRIPE_PORTAL_CONFIGURATION_ENV = "STRIPE_PORTAL_CONFIGURATION_ID";
+export const STRIPE_PRODUCT_ID_ENV = "STRIPE_PRODUCT_ID";
 
 /** Operator-selected hosted Portal features; this code does not choose billing policy. */
 export const STRIPE_PORTAL_CONFIGURATION_PARAM = defineString(STRIPE_PORTAL_CONFIGURATION_ENV, {
   description: "Stripe Customer Portal configuration ID for this environment",
+  default: "",
+});
+
+/**
+ * The Stripe Product ID that identifies a Kanna Cloud subscription on the
+ * shared Stripe business account (also billing Kanji Kongbu). Every Stripe
+ * object this backend writes from, mutates, or exposes through a customer-wide
+ * operation is checked against this id first.
+ *
+ * Unconfigured until an operator sets it per environment. The empty default
+ * keeps local emulators non-interactive; every resolver below fails closed.
+ */
+export const STRIPE_PRODUCT_ID_PARAM = defineString(STRIPE_PRODUCT_ID_ENV, {
+  description: "Stripe Product ID that identifies Kanna Cloud subscriptions on the shared Stripe account",
   default: "",
 });
 
@@ -66,7 +81,13 @@ export const PORTAL_SECRET_ENVS = [STRIPE_SECRET_KEY_ENV] as const;
 /** Account deletion calls Stripe only to cancel an existing subscription. */
 export const DELETE_ACCOUNT_SECRET_ENVS = [STRIPE_SECRET_KEY_ENV] as const;
 
-export const STRIPE_WEBHOOK_SECRET_ENVS = [STRIPE_WEBHOOK_SECRET_ENV] as const;
+/**
+ * The webhook now also reads Stripe (never writes) to resolve the product ids
+ * on the subscription/session an event names, since a webhook payload cannot
+ * be trusted to carry complete line-item data. This is a deliberate widening
+ * of what the webhook's Secret Manager binding grants it.
+ */
+export const STRIPE_WEBHOOK_SECRET_ENVS = [STRIPE_WEBHOOK_SECRET_ENV, STRIPE_SECRET_KEY_ENV] as const;
 
 export class BillingConfigError extends Error {
   constructor(readonly variable: string) {
@@ -117,6 +138,8 @@ export interface StripeConfig {
   portalBaseUrl: string;
   graceFallbackDays: number;
   environment: BillingEnvironment;
+  /** The Stripe Product ID that identifies a Kanna Cloud subscription on the shared account. */
+  productId: string;
 }
 
 /** Everything `createCheckoutSession` needs; throws naming the missing variable. */
@@ -126,6 +149,7 @@ export function resolveCheckoutConfig(env: NodeJS.ProcessEnv): Omit<StripeConfig
     portalBaseUrl: requireEnv(env, PORTAL_BASE_URL_ENV),
     graceFallbackDays: stripeGraceFallbackDays(env),
     environment: resolveBillingEnvironment(env),
+    productId: requireEnv(env, STRIPE_PRODUCT_ID_ENV),
   };
 }
 
@@ -134,16 +158,19 @@ export function resolvePortalConfig(env: NodeJS.ProcessEnv) {
     secretKey: requireEnv(env, STRIPE_SECRET_KEY_ENV),
     portalBaseUrl: requireEnv(env, PORTAL_BASE_URL_ENV),
     configurationId: requireEnv(env, STRIPE_PORTAL_CONFIGURATION_ENV),
+    productId: requireEnv(env, STRIPE_PRODUCT_ID_ENV),
   };
 }
 
 /** Everything `stripeWebhook` needs; throws naming the missing variable. */
 export function resolveWebhookConfig(
   env: NodeJS.ProcessEnv
-): Pick<StripeConfig, "webhookSecret" | "graceFallbackDays" | "environment"> {
+): Pick<StripeConfig, "webhookSecret" | "secretKey" | "graceFallbackDays" | "environment" | "productId"> {
   return {
     webhookSecret: requireEnv(env, STRIPE_WEBHOOK_SECRET_ENV),
+    secretKey: requireEnv(env, STRIPE_SECRET_KEY_ENV),
     graceFallbackDays: stripeGraceFallbackDays(env),
     environment: resolveBillingEnvironment(env),
+    productId: requireEnv(env, STRIPE_PRODUCT_ID_ENV),
   };
 }

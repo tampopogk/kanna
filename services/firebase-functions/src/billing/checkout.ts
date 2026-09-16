@@ -94,7 +94,7 @@ export async function createCheckoutSession(
     throw new BillingRequestError("internal", "not_configured", message);
   }
 
-  const gateway = deps.gateway ?? (await liveGateway(config.secretKey));
+  const gateway = deps.gateway ?? (await liveGateway(config.secretKey, config.productId));
   const base = config.portalBaseUrl.replace(/\/+$/, "");
   try {
     let attempt = await admitCheckout(deps.db, caller, base, now());
@@ -333,7 +333,7 @@ async function recordSession(db: Firestore, uid: string, id: string, sessionId: 
 }
 
 /** Imported lazily so a missing Stripe key never breaks module load or deploy. */
-async function liveGateway(secretKey: string): Promise<StripeCheckoutGateway> {
+async function liveGateway(secretKey: string, productId: string): Promise<StripeCheckoutGateway> {
   const { stripeCheckoutGateway } = await import("./stripeGateway.js");
-  return stripeCheckoutGateway(secretKey);
+  return stripeCheckoutGateway(secretKey, productId);
 }

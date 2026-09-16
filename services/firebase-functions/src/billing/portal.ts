@@ -2,14 +2,20 @@ import type { Firestore } from "firebase-admin/firestore";
 import type { PortalSessionResponse } from "./contract.js";
 import { resolvePortalConfig } from "./config.js";
 import { BillingRequestError } from "./errors.js";
-import type { StripePortalGateway } from "./stripeGateway.js";
+import type { StripeOwnershipLookupGateway, StripePortalGateway } from "./stripeGateway.js";
+import { classifyCustomerScope } from "./stripeOwnership.js";
 import { accountDeletionPath, billingSourcePath, stripeCustomerPath, userDocPath } from "./types.js";
 
 /** Hosted account management only: no purchase, cancellation policy or account writes. */
 export async function createPortalSession(
   request: unknown,
   caller: { uid: string } | null,
-  deps: { db: Firestore; env: NodeJS.ProcessEnv; gateway?: StripePortalGateway },
+  deps: {
+    db: Firestore;
+    env: NodeJS.ProcessEnv;
+    gateway?: StripePortalGateway;
+    ownershipGateway?: Pick<StripeOwnershipLookupGateway, "customerProductIds">;
+  },
 ): Promise<PortalSessionResponse> {
   if (!caller) {
     throw new BillingRequestError("unauthenticated", "sign_in_required", "Sign in to manage billing.");
@@ -48,6 +54,21 @@ export async function createPortalSession(
   } catch {
     throw new BillingRequestError("failed-precondition", "not_configured", "Billing management is not configured. Please contact support.");
   }
+
+  const ownershipGateway = deps.ownershipGateway
+    ?? (await import("./stripeGateway.js")).stripeOwnershipLookupGateway(config.secretKey);
+  let customerProductIds: string[];
+  try {
+    customerProductIds = await ownershipGateway.customerProductIds(customerId);
+  } catch {
+    throw new BillingRequestError("internal", "stripe_error", "Could not open billing management. Please try again.");
+  }
+  // A shared Stripe customer may also hold Kanji Kongbu subscriptions; a
+  // customer-wide Portal session must never be handed out for one.
+  if (classifyCustomerScope(customerProductIds, config.productId) === "mixed") {
+    throw new BillingRequestError("permission-denied", "customer_ownership_mismatch", "Could not verify billing ownership. Please contact support.");
+  }
+
   const gateway = deps.gateway ?? (await import("./stripeGateway.js")).stripePortalGateway(config.secretKey);
   try {
     return await gateway.createPortalSession({

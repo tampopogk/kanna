@@ -17,6 +17,8 @@ import { resolveWebhookConfig } from "./config.js";
 import { applyEntitlement, readBillingState } from "./entitlement.js";
 import { consoleBillingLogger, type BillingLogger } from "./logger.js";
 import { StripeSignatureError, verifyStripeSignature } from "./stripeSignature.js";
+import type { StripeOwnershipLookupGateway } from "./stripeGateway.js";
+import { classifyProductOwnership, type ProductOwnershipVerdict } from "./stripeOwnership.js";
 import {
   interpretStripeEvent,
   isHandledStripeEventType,
@@ -51,7 +53,11 @@ export type StripeWebhookOutcomeCode =
   | "deleted_account"
   | "invalid_payload"
   | "invalid_signature"
-  | "not_configured";
+  | "not_configured"
+  | "mode_mismatch"
+  | "foreign_product"
+  | "ambiguous_ownership"
+  | "ownership_unresolved";
 
 export interface StripeWebhookOutcome {
   httpStatus: number;
@@ -69,6 +75,8 @@ export interface StripeWebhookDependencies {
   logger?: BillingLogger;
   /** Injectable clock so tests can pin `updatedAt`. */
   now?: () => string;
+  /** Read-only product-ownership lookups; defaults to the live Stripe client. */
+  ownership?: StripeOwnershipLookupGateway;
 }
 
 export async function handleStripeWebhook(
@@ -111,6 +119,20 @@ export async function handleStripeWebhook(
     return outcome({ httpStatus: 200, code: "ignored", eventId: event.id });
   }
 
+  const expectedLive = config.environment === "production";
+  if (event.livemode !== expectedLive) {
+    // A misrouted webhook (test events reaching a live endpoint, or the
+    // reverse) will never resolve on retry; drop and log rather than retry
+    // forever.
+    logger.error("Dropped a Stripe event delivered in the wrong mode for this environment", {
+      eventId: event.id,
+      eventType: event.type,
+      environment: config.environment,
+      livemode: event.livemode,
+    });
+    return outcome({ httpStatus: 200, code: "mode_mismatch", eventId: event.id });
+  }
+
   const interpretation = interpretStripeEvent(event, {
     graceFallbackDays: config.graceFallbackDays,
   });
@@ -121,6 +143,33 @@ export async function handleStripeWebhook(
       eventId: event.id,
       message: interpretation.reason,
     });
+  }
+
+  const ownership = deps.ownership
+    ?? (await import("./stripeGateway.js")).stripeOwnershipLookupGateway(config.secretKey);
+  let ownershipVerdict: ProductOwnershipVerdict;
+  try {
+    ownershipVerdict = await verifyEventOwnership(ownership, event, interpretation.patch, config.productId);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    logger.error("Could not verify Stripe product ownership; retrying", {
+      eventId: event.id,
+      eventType: event.type,
+      message,
+    });
+    return outcome({ httpStatus: 503, code: "ownership_unresolved", eventId: event.id, message });
+  }
+  if (ownershipVerdict === "foreign") {
+    // A proven event for another product on the shared account: acknowledge
+    // and touch nothing. This is the expected steady state for Kanji Kongbu.
+    return outcome({ httpStatus: 200, code: "foreign_product", eventId: event.id });
+  }
+  if (ownershipVerdict === "ambiguous") {
+    logger.warn("Dropped a Stripe event whose product ownership could not be proven", {
+      eventId: event.id,
+      eventType: event.type,
+    });
+    return outcome({ httpStatus: 200, code: "ambiguous_ownership", eventId: event.id });
   }
 
   const uid = await resolveUid(deps.db, interpretation.account);
@@ -295,6 +344,33 @@ export function mergeStripeSourceState(input: MergeStripeSourceStateInput): Bill
     lastEventId: eventId,
     updatedAt: now,
   };
+}
+
+/**
+ * Prove which product an event's subscription (or, before a subscription
+ * exists, its checkout session) belongs to.
+ *
+ * An event that names neither — malformed, or a shape this mapping has never
+ * seen — cannot be proven and comes back `ambiguous`.
+ */
+async function verifyEventOwnership(
+  ownership: StripeOwnershipLookupGateway,
+  event: StripeEventEnvelope,
+  patch: StripeSourcePatch,
+  expectedProductId: string
+): Promise<ProductOwnershipVerdict> {
+  if (patch.stripeSubscriptionId) {
+    const productIds = await ownership.subscriptionProductIds(patch.stripeSubscriptionId);
+    return classifyProductOwnership(productIds, expectedProductId);
+  }
+  if (event.type === "checkout.session.completed") {
+    const sessionId = event.data.object.id;
+    if (typeof sessionId === "string" && sessionId.length > 0) {
+      const productIds = await ownership.sessionProductIds(sessionId);
+      return classifyProductOwnership(productIds, expectedProductId);
+    }
+  }
+  return "ambiguous";
 }
 
 /**
