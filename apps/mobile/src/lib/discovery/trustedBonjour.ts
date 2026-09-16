@@ -48,22 +48,29 @@ export async function resolveTrustedBonjourEndpoints(input: {
   probeTimeoutMs?: number;
 }): Promise<TrustedBonjourEndpoint[]> {
   const trustedDesktopIds = new Set(input.trustedDesktopIds);
-  const candidates = await Promise.all(
-    endpointCandidates(input).map((candidate) =>
-      validateTrustedEndpoint(
-        candidate,
-        trustedDesktopIds,
-        input.fetchImpl,
-        input.probeTimeoutMs
-      )
-    )
+  const candidatesByDesktop = new Map<string, TrustedEndpointCandidate[]>();
+  for (const candidate of endpointCandidates(input)) {
+    const candidates = candidatesByDesktop.get(candidate.desktopId) ?? [];
+    candidates.push(candidate);
+    candidatesByDesktop.set(candidate.desktopId, candidates);
+  }
+  const endpoints = await Promise.all(
+    [...candidatesByDesktop.values()].map(async (candidates) => {
+      for (const candidate of candidates) {
+        const endpoint = await validateTrustedEndpoint(
+          candidate,
+          trustedDesktopIds,
+          input.fetchImpl,
+          input.probeTimeoutMs
+        );
+        if (endpoint) return endpoint;
+      }
+      return null;
+    })
   );
-  const seenDesktopIds = new Set<string>();
-  return candidates.filter((endpoint): endpoint is TrustedBonjourEndpoint => {
-    if (!endpoint || seenDesktopIds.has(endpoint.desktopId)) return false;
-    seenDesktopIds.add(endpoint.desktopId);
-    return true;
-  });
+  return endpoints.filter(
+    (endpoint): endpoint is TrustedBonjourEndpoint => endpoint !== null
+  );
 }
 
 interface TrustedEndpointCandidate {

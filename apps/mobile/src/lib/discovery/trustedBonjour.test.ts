@@ -309,6 +309,58 @@ describe("trusted Bonjour discovery", () => {
     ]);
   });
 
+  it("does not wait for a stale saved address after validating the live address", async () => {
+    let releaseStaleProbe!: () => void;
+    const staleProbe = new Promise<{ ok: boolean; status: number; json(): Promise<object> }>((resolve) => {
+      releaseStaleProbe = () => resolve({
+        ok: false,
+        status: 503,
+        json: async () => ({})
+      });
+    });
+    const fetchImpl = vi.fn(async (input: string) => {
+      if (input.startsWith("http://old.local:48120")) {
+        return staleProbe;
+      }
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          desktopId: "desktop-1",
+          desktopName: "Studio Mac"
+        })
+      };
+    });
+
+    const resolution = resolveTrustedBonjourEndpoints({
+      fetchImpl,
+      services: [{
+        name: "Studio Mac",
+        type: "_kanna-mobile._tcp.",
+        host: "current.local",
+        port: 48120,
+        txt: { desktopId: "desktop-1" }
+      }],
+      persistedEndpoints: [{
+        desktopId: "desktop-1",
+        baseUrl: "http://old.local:48120"
+      }],
+      trustedDesktopIds,
+      preferredDesktopId: "desktop-1"
+    });
+
+    await expect(resolution).resolves.toEqual([{
+      baseUrl: "http://current.local:48120",
+      desktopId: "desktop-1",
+      displayName: "Studio Mac"
+    }]);
+    expect(fetchImpl).not.toHaveBeenCalledWith(
+      "http://old.local:48120/v1/status",
+      expect.anything()
+    );
+    releaseStaleProbe();
+  });
+
   it("bounds status validation when a trusted service never responds", async () => {
     const fetchImpl = vi.fn(() => new Promise<never>(() => undefined));
 
