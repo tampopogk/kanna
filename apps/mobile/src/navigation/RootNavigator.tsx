@@ -531,7 +531,6 @@ function NeedsYouTabRoute() {
   return (
     <StandardScreen title="Needs you">
       <TasksScreen
-        heading="Needs you"
         listMode="needsYou"
         repos={state.repos}
         selectedRepoId={state.selectedRepoId}
