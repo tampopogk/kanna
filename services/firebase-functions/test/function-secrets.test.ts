@@ -26,6 +26,7 @@ import {
   resolveCheckoutConfig,
   resolveWebhookConfig,
 } from "../src/billing/config.js";
+import { appStoreConfig } from "../src/billing/appStoreConfig.js";
 import * as functions from "../src/index.js";
 
 /** The deployment manifest firebase-functions attaches to every v2 handler. */
@@ -98,6 +99,18 @@ describe("deployed function secret bindings", () => {
   ])("commits %s with the portal parameter", (filename, expectedUrl) => {
     const contents = readFileSync(join(import.meta.dirname, "..", filename), "utf8");
     expect(contents).toContain(`KANNA_PORTAL_BASE_URL=${expectedUrl}`);
+  });
+
+  it("commits production Apple selectors without configuring staging or local calls", () => {
+    const productionEnv = readFileSync(join(import.meta.dirname, "..", ".env"), "utf8");
+    expect(productionEnv).toContain("APP_STORE_APP_ID=6802176590\n");
+    expect(productionEnv).toContain("APP_STORE_GROUP_ID=22390376\n");
+    expect(productionEnv).toContain("APP_STORE_KEY_ID=L258DQNKB6\n");
+    expect(productionEnv).toContain("APP_STORE_ISSUER_ID=210ba685-e121-42fa-ad73-35e401031777\n");
+
+    const stagingEnv = readFileSync(join(import.meta.dirname, "..", ".env.kanna-staging"), "utf8");
+    expect(stagingEnv).not.toMatch(/^APP_STORE_(APP_ID|GROUP_ID|KEY_ID|ISSUER_ID)=/m);
+    expect(() => appStoreConfig({})).toThrow("APP_STORE_APP_ID");
   });
 
   it("binds stripeWebhook to its signing secret and the read-only ownership-lookup key", () => {
