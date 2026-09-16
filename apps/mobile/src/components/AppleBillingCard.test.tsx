@@ -1,6 +1,7 @@
 import React from "react";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import { describe, expect, it, vi } from "vitest";
+import { Linking } from "react-native";
 import type { AppleBillingView } from "../lib/billing/useAppleBilling";
 import type { BillingSource } from "../lib/billing/client";
 import { AppleBillingCard } from "./AppleBillingCard";
@@ -37,9 +38,14 @@ describe("native source-aware billing", () => {
     const text = JSON.stringify(tree.toJSON());
     expect(text).toContain("CA$5.00 per month");
     expect(text).toContain("Automatically renews monthly");
-    expect(text).toContain("Terms of Service");
+    expect(text).toContain("Apple Standard EULA");
     expect(text).not.toContain("View subscription");
     expect(text).not.toContain("stripe.com");
+    const eulaLink = tree.root.findAllByType("Pressable").find(node =>
+      node.findAllByType("Text").some(textNode => textNode.props.children === "Apple Standard EULA"));
+    expect(eulaLink).toBeDefined();
+    await act(async () => { eulaLink?.props.onPress(); });
+    expect(Linking.openURL).toHaveBeenCalledWith("https://www.apple.com/legal/internet-services/itunes/dev/stdeula/");
     await act(async () => tree.unmount());
   });
 });

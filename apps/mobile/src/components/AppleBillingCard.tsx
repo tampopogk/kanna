@@ -32,7 +32,7 @@ export function AppleBillingCard({ value, verified }: { value: AppleBillingView;
     </>}
     <Pressable accessibilityRole="button" disabled={!verified || !purchase.ready || purchase.busy} onPress={value.restore}><Text style={styles.link}>Restore Purchases</Text></Pressable>
     {purchase.message ? <Text accessibilityRole="alert" style={styles.text}>{purchase.message}</Text> : null}
-    <Pressable accessibilityRole="link" onPress={() => void Linking.openURL("https://kanna.build/terms")}><Text style={styles.link}>Terms of Service</Text></Pressable>
+    <Pressable accessibilityRole="link" onPress={() => void Linking.openURL("https://www.apple.com/legal/internet-services/itunes/dev/stdeula/")}><Text style={styles.link}>Apple Standard EULA</Text></Pressable>
     <Pressable accessibilityRole="link" onPress={() => void Linking.openURL("https://kanna.build/privacy")}><Text style={styles.link}>Privacy Policy</Text></Pressable>
   </View>;
 }
