@@ -3,6 +3,7 @@ members = [
     "crates/claude-agent-sdk",
     "crates/daemon",
     "crates/kanna-agent-protocol",
+    "crates/kanna-secure-channel",
     "crates/kanna-server",
     "crates/kanna-worker",
     "crates/kanna-tool-catalog",

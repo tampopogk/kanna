@@ -1,0 +1,23 @@
+[package]
+name = "kanna-secure-channel"
+version = "0.1.0"
+edition = "2021"
+description = "Kanna secure channel: Noise IK (25519/ChaChaPoly/SHA256) handshake and framing shared by the desktop server and its clients"
+
+[dependencies]
+base64 = "0.22"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+# Noise Protocol Framework implementation. The default resolver is the
+# RustCrypto/dalek family already vendored elsewhere in this workspace
+# (x25519-dalek, chacha20poly1305, sha2), so this adds a protocol, not a
+# second crypto backend. No hand-rolled handshake: every key schedule,
+# nonce and transcript hash comes from `snow`.
+snow = "0.10"
+# Only for deriving a keypair's public half to advertise it; the same dalek
+# arithmetic `snow` resolves to, already in this workspace via task-transfer.
+x25519-dalek = { version = "2", features = ["static_secrets"] }
+
+[dev-dependencies]
+hex = "0.4"
