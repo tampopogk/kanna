@@ -64,24 +64,22 @@ pub(crate) async fn ensure_desktop_ready(app: tauri::AppHandle) -> Result<(), St
         .state::<crate::commands::mobile::MobileServerManager>()
         .inner()
         .clone();
-    tokio::try_join!(
-        async {
-            tokio::time::timeout(DESKTOP_STARTUP_DAEMON_TIMEOUT, daemon.wait_for_daemon())
-                .await
-                .map_err(|_| {
-                    "daemon handoff/server authorization did not complete within 30 seconds; background recovery is still retrying"
-                        .to_string()
-                })?
-                .map_err(|error| format!("daemon handoff failed: {error}"))?;
-            Ok::<(), String>(())
-        },
-        async {
-            server
-                .ensure_responsive()
-                .await
-                .map_err(|error| format!("kanna-server startup/recovery failed: {error}"))
-        }
-    )?;
+    // Do not race these futures with try_join: if daemon readiness fails first,
+    // dropping an in-flight fresh-server start would skip its explicit child
+    // kill/wait and state/lock cleanup. The manager is already started in the
+    // app setup task, so this ordering does not delay sidecar startup; it only
+    // makes this readiness observer wait for handoff before it can own a retry.
+    tokio::time::timeout(DESKTOP_STARTUP_DAEMON_TIMEOUT, daemon.wait_for_daemon())
+        .await
+        .map_err(|_| {
+            "daemon handoff/server authorization did not complete within 30 seconds; background recovery is still retrying"
+                .to_string()
+        })?
+        .map_err(|error| format!("daemon handoff failed: {error}"))?;
+    server
+        .ensure_responsive()
+        .await
+        .map_err(|error| format!("kanna-server startup/recovery failed: {error}"))?;
     Ok(())
 }
 

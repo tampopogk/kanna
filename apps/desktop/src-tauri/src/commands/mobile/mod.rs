@@ -25,11 +25,15 @@ use process::find_sidecar;
 
 const LOCAL_SERVER_HOST: &str = "127.0.0.1";
 const DEFAULT_LOCAL_SERVER_PORT: u16 = kanna_runtime_defaults::PRODUCTION_MOBILE_SERVER_PORT;
+// Bound one complete /v1/status exchange, including response headers and body.
+// Without this, a listener that accepts the connection but never completes its
+// response can hold the desktop startup banner forever.
+const STATUS_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 // kanna-server can take a while to bind and register when the machine is under
-// heavy load (e.g. an in-progress iOS/Rust build during `kd mobile run`). Poll
-// generously and only give up early if the process actually exits — a healthy
-// server must never be killed for being slow to answer /v1/status.
-const STATUS_POLL_ATTEMPTS: usize = 240;
+// heavy load (e.g. an in-progress iOS/Rust build during `kd mobile run`). Keep
+// the existing generous startup budget while making it a wall-clock deadline:
+// each failed request must consume part of this budget instead of extending it.
+const STATUS_STARTUP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 const STATUS_POLL_DELAY_MS: u64 = 250;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -105,6 +109,8 @@ pub struct MobileServerManager {
     server_identity: Arc<Mutex<Option<ServerProcessIdentity>>>,
     server_pid_tx: watch::Sender<Option<u32>>,
     client: reqwest::Client,
+    status_request_timeout: std::time::Duration,
+    status_startup_timeout: std::time::Duration,
 }
 
 #[derive(Debug)]
@@ -186,6 +192,8 @@ impl MobileServerManager {
             server_identity: Arc::new(Mutex::new(None)),
             server_pid_tx,
             client: reqwest::Client::new(),
+            status_request_timeout: STATUS_REQUEST_TIMEOUT,
+            status_startup_timeout: STATUS_STARTUP_TIMEOUT,
         }
     }
 
@@ -228,7 +236,24 @@ impl MobileServerManager {
 
         let expected_desktop_id = desktop_id(&config_path)?;
         let server_bin = find_sidecar("kanna-server")?;
-        let existing_status = self.fetch_status(&api_base_url).await.ok();
+        let existing_status = match self.fetch_status(&api_base_url).await {
+            Ok(status) => Some(status),
+            Err(status_error) => {
+                let listener_pids =
+                    server_pids_on_port(local_server_port_for_cloud_env(cloud_env)).await?;
+                if !listener_pids.is_empty() {
+                    return Err(format!(
+                        "kanna-server listener pid(s) {} did not complete /v1/status; refusing to start a duplicate: {status_error}",
+                        listener_pids
+                            .iter()
+                            .map(ToString::to_string)
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ));
+                }
+                None
+            }
+        };
         if let Some(status) = existing_status {
             ensure_server_belongs_to_desktop(&status, &expected_desktop_id)?;
             let is_current =
@@ -584,39 +609,74 @@ impl MobileServerManager {
         child: &mut tokio::process::Child,
     ) -> Result<MobileServerStatus, String> {
         let mut last_error = "kanna-server did not become ready".to_string();
-        for _ in 0..STATUS_POLL_ATTEMPTS {
+        let deadline = tokio::time::Instant::now() + self.status_startup_timeout;
+        loop {
             // If the process already exited it genuinely failed to start; stop
             // polling instead of waiting out the full budget on a dead server.
             if let Ok(Some(exit)) = child.try_wait() {
                 return Err(format!("kanna-server exited during startup with {}", exit));
             }
-            match self.fetch_status(api_base_url).await {
+            let now = tokio::time::Instant::now();
+            if now >= deadline {
+                return Err(format!(
+                    "kanna-server did not complete startup status within {} seconds: {last_error}",
+                    self.status_startup_timeout.as_secs()
+                ));
+            }
+            let request_timeout = std::cmp::min(
+                self.status_request_timeout,
+                deadline.saturating_duration_since(now),
+            );
+            match self
+                .fetch_status_with_timeout(api_base_url, request_timeout)
+                .await
+            {
                 Ok(status) => return Ok(status),
                 Err(err) => {
                     last_error = err;
-                    tokio::time::sleep(std::time::Duration::from_millis(STATUS_POLL_DELAY_MS))
-                        .await;
+                    tokio::time::sleep_until(std::cmp::min(
+                        deadline,
+                        tokio::time::Instant::now()
+                            + std::time::Duration::from_millis(STATUS_POLL_DELAY_MS),
+                    ))
+                    .await;
                 }
             }
         }
-
-        Err(last_error)
     }
 
     async fn fetch_status(&self, api_base_url: &str) -> Result<MobileServerStatus, String> {
-        let response = self
-            .client
-            .get(format!("{}/v1/status", api_base_url))
-            .send()
+        self.fetch_status_with_timeout(api_base_url, self.status_request_timeout)
             .await
-            .map_err(|e| format!("failed to fetch mobile server status: {}", e))?;
-        let response = response
-            .error_for_status()
-            .map_err(|e| format!("mobile server status request failed: {}", e))?;
-        response
-            .json::<MobileServerStatus>()
-            .await
-            .map_err(|e| format!("failed to decode mobile server status: {}", e))
+    }
+
+    async fn fetch_status_with_timeout(
+        &self,
+        api_base_url: &str,
+        timeout: std::time::Duration,
+    ) -> Result<MobileServerStatus, String> {
+        tokio::time::timeout(timeout, async {
+            let response = self
+                .client
+                .get(format!("{}/v1/status", api_base_url))
+                .send()
+                .await
+                .map_err(|e| format!("failed to fetch mobile server status: {}", e))?;
+            let response = response
+                .error_for_status()
+                .map_err(|e| format!("mobile server status request failed: {}", e))?;
+            response
+                .json::<MobileServerStatus>()
+                .await
+                .map_err(|e| format!("failed to decode mobile server status: {}", e))
+        })
+        .await
+        .map_err(|_| {
+            format!(
+                "mobile server status response did not complete within {} ms",
+                timeout.as_millis()
+            )
+        })?
     }
 }
 
@@ -2683,6 +2743,132 @@ mod tests {
         assert!(error.contains("kanna-server exited during startup"));
         assert!(error.contains("exit status: 7"));
         let _ = child.wait().await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn readiness_reaps_a_child_with_a_stalled_status_body_after_daemon_is_ready() {
+        let _guard = env_lock().lock().expect("env lock should not be poisoned");
+        let root = unique_test_root("stalled-readiness-child");
+        let sidecar_dir = root.join("sidecars");
+        let app_data_dir = root.join("app-data");
+        let db_path = root.join("kanna-test.db");
+        let daemon_dir = root.join("daemon");
+        let child_pid_path = root.join("child.pid");
+        let headers_sent_path = root.join("headers-sent");
+        let port = free_loopback_port();
+        std::fs::create_dir_all(&sidecar_dir).expect("fake sidecar directory should be created");
+        let sidecar = sidecar_dir.join("kanna-server");
+        std::fs::write(
+            &sidecar,
+            r#"#!/usr/bin/env python3
+import os
+import socket
+import time
+
+port = int(os.environ["KANNA_MOBILE_SERVER_PORT"])
+with open(os.environ["KANNA_TEST_CHILD_PID_PATH"], "w") as file:
+    file.write(str(os.getpid()))
+server = socket.socket()
+server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+server.bind(("127.0.0.1", port))
+server.listen(4)
+connection, _ = server.accept()
+connection.recv(4096)
+connection.sendall(b"HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: 1024\r\nconnection: keep-alive\r\n\r\n{")
+with open(os.environ["KANNA_TEST_STALLED_HEADERS_PATH"], "w") as file:
+    file.write("sent")
+time.sleep(30)
+"#,
+        )
+        .expect("fake sidecar should be written");
+        std::fs::set_permissions(&sidecar, std::fs::Permissions::from_mode(0o755))
+            .expect("fake sidecar should be executable");
+        unsafe {
+            set_env_var("KANNA_MOBILE_SERVER_PORT", &port.to_string());
+            set_env_var("KANNA_TRANSFER_PORT", &port.to_string());
+            set_env_var("KANNA_DB_PATH", &db_path.to_string_lossy());
+            set_env_var("KANNA_DAEMON_DIR", &daemon_dir.to_string_lossy());
+            set_env_var("KANNA_TEST_SIDECAR_DIR", &sidecar_dir.to_string_lossy());
+            set_env_var(
+                "KANNA_TEST_CHILD_PID_PATH",
+                &child_pid_path.to_string_lossy(),
+            );
+            set_env_var(
+                "KANNA_TEST_STALLED_HEADERS_PATH",
+                &headers_sent_path.to_string_lossy(),
+            );
+            unset_env_var("KANNA_DB_NAME");
+            unset_env_var("KANNA_RELAY_URL");
+            unset_env_var("KANNA_RELAY_PORT");
+        }
+
+        let mut manager = MobileServerManager::new(app_data_dir);
+        manager.status_request_timeout = Duration::from_millis(150);
+        manager.status_startup_timeout = Duration::from_secs(1);
+        let server_pid_updates = manager.server_pid_receiver();
+
+        // Match ensure_desktop_ready's ordering: daemon handoff is complete
+        // before this call owns a fresh-server startup attempt.
+        let daemon_ready = async { Ok::<(), String>(()) }.await;
+        daemon_ready.expect("daemon should already be ready");
+        let started_at = tokio::time::Instant::now();
+        let error = manager
+            .ensure_responsive()
+            .await
+            .expect_err("stalled status body should fail readiness");
+
+        assert!(
+            started_at.elapsed() < Duration::from_secs(3),
+            "readiness must respect the complete-response deadline"
+        );
+        assert!(
+            error.contains("did not complete startup status within 1 seconds"),
+            "unexpected readiness error: {error}"
+        );
+        assert!(
+            headers_sent_path.exists(),
+            "regression must stall after headers so the body deadline is exercised"
+        );
+        let child_pid = std::fs::read_to_string(&child_pid_path)
+            .expect("fake sidecar should publish its pid")
+            .parse::<u32>()
+            .expect("fake sidecar pid should be numeric");
+        assert!(
+            !kanna_server_process::server_process_exists(child_pid),
+            "timed-out startup child {child_pid} must be killed and reaped"
+        );
+        assert!(
+            manager.start_gate.try_lock().is_ok(),
+            "readiness timeout must release the start lifecycle gate"
+        );
+        assert!(manager.inner.try_lock().is_ok());
+        assert!(manager.server_identity.try_lock().is_ok());
+        assert!(manager.server_lock.try_lock().is_ok());
+        assert!(manager.server_identity.lock().await.is_none());
+        assert!(manager.server_lock.lock().await.is_none());
+        assert_eq!(*server_pid_updates.borrow(), None);
+        assert!(
+            !server_pid_updates.has_changed().unwrap(),
+            "readiness timeout must not publish a replacement server"
+        );
+        let state = manager.inner.lock().await;
+        assert!(!state.started);
+        assert_eq!(state.status, "error");
+        drop(state);
+        assert!(
+            kanna_server_process::server_pids_on_port(port)
+                .await
+                .expect("test port ownership should be inspectable")
+                .is_empty(),
+            "timed-out startup must not leave a listener or duplicate server"
+        );
+
+        cleanup_process_test_env();
+        unsafe {
+            unset_env_var("KANNA_TEST_CHILD_PID_PATH");
+            unset_env_var("KANNA_TEST_STALLED_HEADERS_PATH");
+        }
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
