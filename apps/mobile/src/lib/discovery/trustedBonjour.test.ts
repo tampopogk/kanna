@@ -169,6 +169,110 @@ describe("trusted Bonjour discovery", () => {
     expect(endpoint?.desktopId).toBe("desktop-cloud");
   });
 
+  it("uses a persisted paired address when Bonjour has not published yet", async () => {
+    const fetchImpl = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        desktopId: "desktop-1",
+        desktopName: "Studio Mac"
+      })
+    }));
+
+    await expect(resolveTrustedBonjourEndpoint({
+      fetchImpl,
+      services: [],
+      persistedEndpoints: [{
+        desktopId: "desktop-1",
+        baseUrl: "http://192.168.1.42:48120"
+      }],
+      trustedDesktopIds,
+      preferredDesktopId: "desktop-1"
+    })).resolves.toEqual({
+      baseUrl: "http://192.168.1.42:48120",
+      desktopId: "desktop-1",
+      displayName: "Studio Mac"
+    });
+  });
+
+  it("tries live discovery before falling back to a persisted paired address", async () => {
+    const probes: string[] = [];
+    const fetchImpl = vi.fn(async (input: string) => {
+      probes.push(input);
+      const persisted = input.startsWith("http://192.168.1.42:48120");
+      return {
+        ok: persisted,
+        status: persisted ? 200 : 503,
+        json: async () => ({
+          desktopId: "desktop-1",
+          desktopName: "Studio Mac"
+        })
+      };
+    });
+
+    await expect(resolveTrustedBonjourEndpoint({
+      fetchImpl,
+      services: [{
+        name: "Studio Mac",
+        type: "_kanna-mobile._tcp.",
+        host: "studio.local",
+        port: 48120,
+        txt: { desktopId: "desktop-1" }
+      }],
+      persistedEndpoints: [{
+        desktopId: "desktop-1",
+        baseUrl: "http://192.168.1.42:48120"
+      }],
+      trustedDesktopIds,
+      preferredDesktopId: "desktop-1"
+    })).resolves.toMatchObject({
+      baseUrl: "http://192.168.1.42:48120",
+      desktopId: "desktop-1"
+    });
+    expect(probes).toEqual([
+      "http://studio.local:48120/v1/status",
+      "http://192.168.1.42:48120/v1/status"
+    ]);
+  });
+
+  it("rejects a persisted address that answers as a different desktop", async () => {
+    const fetchImpl = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        desktopId: "desktop-other",
+        desktopName: "Someone Else's Mac"
+      })
+    }));
+
+    await expect(resolveTrustedBonjourEndpoint({
+      fetchImpl,
+      services: [],
+      persistedEndpoints: [{
+        desktopId: "desktop-1",
+        baseUrl: "http://192.168.1.42:48120"
+      }],
+      trustedDesktopIds,
+      preferredDesktopId: "desktop-1"
+    })).resolves.toBeNull();
+  });
+
+  it("does not probe a persisted address outside the trusted desktop set", async () => {
+    const fetchImpl = vi.fn();
+
+    await expect(resolveTrustedBonjourEndpoint({
+      fetchImpl,
+      services: [],
+      persistedEndpoints: [{
+        desktopId: "desktop-2",
+        baseUrl: "http://192.168.1.42:48120"
+      }],
+      trustedDesktopIds,
+      preferredDesktopId: "desktop-2"
+    })).resolves.toBeNull();
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
   it("validates every reachable trusted desktop for inventory", async () => {
     const fetchImpl = vi.fn(async (input: string) => ({
       ok: true,

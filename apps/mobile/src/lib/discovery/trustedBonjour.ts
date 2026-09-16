@@ -12,17 +12,23 @@ export interface TrustedBonjourEndpoint {
   agentProviders?: AgentProvider[];
 }
 
+export interface TrustedLanEndpointHint {
+  baseUrl: string;
+  desktopId: string;
+}
+
 export async function resolveTrustedBonjourEndpoint(input: {
   fetchImpl: FetchLike;
   services: readonly BonjourService[];
+  persistedEndpoints?: readonly TrustedLanEndpointHint[];
   trustedDesktopIds: readonly string[];
   preferredDesktopId: string | null;
   probeTimeoutMs?: number;
 }): Promise<TrustedBonjourEndpoint | null> {
   const trustedDesktopIds = new Set(input.trustedDesktopIds);
-  for (const service of orderServices(input.services, input.preferredDesktopId)) {
-    const endpoint = await validateTrustedService(
-      service,
+  for (const candidate of endpointCandidates(input)) {
+    const endpoint = await validateTrustedEndpoint(
+      candidate,
       trustedDesktopIds,
       input.fetchImpl,
       input.probeTimeoutMs
@@ -36,15 +42,16 @@ export async function resolveTrustedBonjourEndpoint(input: {
 export async function resolveTrustedBonjourEndpoints(input: {
   fetchImpl: FetchLike;
   services: readonly BonjourService[];
+  persistedEndpoints?: readonly TrustedLanEndpointHint[];
   trustedDesktopIds: readonly string[];
   preferredDesktopId: string | null;
   probeTimeoutMs?: number;
 }): Promise<TrustedBonjourEndpoint[]> {
   const trustedDesktopIds = new Set(input.trustedDesktopIds);
   const candidates = await Promise.all(
-    orderServices(input.services, input.preferredDesktopId).map((service) =>
-      validateTrustedService(
-        service,
+    endpointCandidates(input).map((candidate) =>
+      validateTrustedEndpoint(
+        candidate,
         trustedDesktopIds,
         input.fetchImpl,
         input.probeTimeoutMs
@@ -59,16 +66,70 @@ export async function resolveTrustedBonjourEndpoints(input: {
   });
 }
 
-async function validateTrustedService(
-  service: BonjourService,
+interface TrustedEndpointCandidate {
+  baseUrl: string;
+  desktopId: string;
+}
+
+function endpointCandidates(input: {
+  services: readonly BonjourService[];
+  persistedEndpoints?: readonly TrustedLanEndpointHint[];
+  preferredDesktopId: string | null;
+}): TrustedEndpointCandidate[] {
+  const candidates: TrustedEndpointCandidate[] = [];
+  const seen = new Set<string>();
+  const add = (candidate: TrustedEndpointCandidate) => {
+    const key = `${candidate.desktopId}\0${candidate.baseUrl}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    candidates.push(candidate);
+  };
+
+  // A live advertisement is fresher than a saved address. The persisted
+  // address is the cold-start fallback: pairing already authenticated the
+  // desktop that supplied it, but status must still prove the same identity.
+  for (const service of orderServices(input.services, input.preferredDesktopId)) {
+    add({
+      baseUrl: `http://${service.host}:${service.port}`,
+      desktopId: service.txt.desktopId
+    });
+  }
+  for (const endpoint of orderPersistedEndpoints(
+    input.persistedEndpoints ?? [],
+    input.preferredDesktopId
+  )) {
+    try {
+      const url = new URL(endpoint.baseUrl);
+      if (
+        url.protocol !== "http:" ||
+        url.pathname !== "/" ||
+        url.username ||
+        url.password ||
+        url.search ||
+        url.hash
+      ) continue;
+      add({
+        baseUrl: url.origin,
+        desktopId: endpoint.desktopId
+      });
+    } catch {
+      // Persistence parsing is intentionally tolerant. A malformed old hint
+      // is unusable, not a reason to suppress current Bonjour discovery.
+    }
+  }
+  return candidates;
+}
+
+async function validateTrustedEndpoint(
+  candidate: TrustedEndpointCandidate,
   trustedDesktopIds: ReadonlySet<string>,
   fetchImpl: FetchLike,
   probeTimeoutMs?: number
 ): Promise<TrustedBonjourEndpoint | null> {
-  const desktopId = service.txt.desktopId;
+  const desktopId = candidate.desktopId;
   if (!trustedDesktopIds.has(desktopId)) return null;
 
-  const baseUrl = `http://${service.host}:${service.port}`;
+  const baseUrl = candidate.baseUrl;
   const status = await fetchDesktopStatus(baseUrl, fetchImpl, probeTimeoutMs);
   const displayName =
     typeof status?.desktopName === "string"
@@ -82,6 +143,17 @@ async function validateTrustedService(
     displayName,
     ...(agentProviders ? { agentProviders } : {})
   };
+}
+
+function orderPersistedEndpoints(
+  endpoints: readonly TrustedLanEndpointHint[],
+  selectedDesktopId: string | null
+): TrustedLanEndpointHint[] {
+  return [...endpoints].sort((left, right) => {
+    const leftSelected = left.desktopId === selectedDesktopId ? 0 : 1;
+    const rightSelected = right.desktopId === selectedDesktopId ? 0 : 1;
+    return leftSelected - rightSelected;
+  });
 }
 
 function orderServices(

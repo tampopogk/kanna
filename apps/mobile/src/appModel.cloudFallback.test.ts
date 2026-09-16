@@ -105,7 +105,7 @@ function createRelayClientMock(
   };
 }
 
-function createTrustedPersistence() {
+function createTrustedPersistence(includeLanEndpoint = true) {
   return {
     load: vi.fn().mockResolvedValue({
       selectedDesktopId: "desktop-lan",
@@ -116,12 +116,14 @@ function createTrustedPersistence() {
         {
           desktopId: "desktop-lan",
           displayName: "LAN Mac",
-          lanEndpoints: [
-            {
-              baseUrl: "http://desktop.lan:48120",
-              lastSeenAt: "2026-07-10T00:00:00.000Z"
-            }
-          ],
+          lanEndpoints: includeLanEndpoint
+            ? [
+                {
+                  baseUrl: "http://desktop.lan:48120",
+                  lastSeenAt: "2026-07-10T00:00:00.000Z"
+                }
+              ]
+            : [],
           lastSeenAt: "2026-07-10T00:00:00.000Z"
         }
       ]
@@ -427,6 +429,52 @@ async function rejectCloudRecovery(
 }
 
 describe("createAppModel cloud routing", () => {
+  it("publishes signed-out paired LAN tasks from the persisted address before Bonjour", async () => {
+    const promptTask: TaskSummary = {
+      id: "task-prompt",
+      repoId: "repo-lan",
+      title: "Prompt task",
+      stage: "in progress",
+      agentType: "pty"
+    };
+    const lan = createLanFixture(async () => [promptTask], "Jeremy's Mac Studio");
+    const { authSession } = createMutableAuthSession({ status: "signedOut" });
+    const app = createAppModel({
+      authSession,
+      fetchImpl: lan.fetchImpl,
+      persistence: createTrustedPersistence(),
+      options: {
+        forceCloud: false,
+        relayUrl: "wss://relay.test",
+        // Native discovery may publish after startup. The address retained
+        // by pairing must make the first trusted snapshot useful.
+        bonjourBrowser: createStaticBonjourBrowser([])
+      }
+    });
+
+    await app.initialize();
+    await flushAsyncWork(10);
+
+    expect(app.sessionStore.getState()).toMatchObject({
+      auth: { status: "signedOut" },
+      connectionState: "connected",
+      connectionMode: "lan",
+      desktopId: "desktop-lan",
+      desktopName: "Jeremy's Mac Studio",
+      taskCollectionStatus: "ready",
+      recentTasks: [{
+        id: "task-prompt",
+        repoId: "repo-lan",
+        title: "Prompt task"
+      }]
+    });
+    expect(lan.fetchImpl).toHaveBeenCalledWith(
+      "http://desktop.lan:48120/v1/status",
+      expect.objectContaining({ signal: expect.any(Object) })
+    );
+    app.controller.dispose();
+  });
+
   it.each([
     ["clears it durably after success", true],
     ["keeps it durably queued after failure", false]
@@ -1697,7 +1745,7 @@ describe("createAppModel cloud routing", () => {
     const app = createAppModel({
       authSession,
       fetchImpl: lan.fetchImpl,
-      persistence: createTrustedPersistence(),
+      persistence: createTrustedPersistence(false),
       options: {
         bonjourBrowser: mutableBonjour.browser,
         forceCloud: false,
@@ -2954,7 +3002,7 @@ describe("createAppModel cloud routing", () => {
     const app = createAppModel({
       authSession,
       fetchImpl: lan.fetchImpl,
-      persistence: createTrustedPersistence(),
+      persistence: createTrustedPersistence(false),
       options: {
         forceCloud: false,
         relayUrl: "wss://relay.test",

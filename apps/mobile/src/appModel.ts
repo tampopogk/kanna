@@ -973,6 +973,13 @@ function createClientForMode({
   desktopRepoWaitMs?: number;
 }): ResolvedAppClient {
   const authState = authSession.getState();
+  const getTrustedLanEndpointHints = () =>
+    getTrustedDesktops().flatMap((desktop) =>
+      desktop.lanEndpoints.map((endpoint) => ({
+        baseUrl: endpoint.baseUrl,
+        desktopId: desktop.desktopId
+      }))
+    );
   if (authState.status === "signedIn" && relayUrl) {
     const relayClient = createRelayClient({
       relayUrl,
@@ -1063,6 +1070,7 @@ function createClientForMode({
       fetchImpl,
       getSelectedDesktopId,
       getTrustedDesktopIds,
+      getTrustedLanEndpointHints,
       getLanDeviceCredentials: (desktopId) =>
         lanDeviceCredentialsForDesktop(getTrustedDesktops, getMobileDeviceId, desktopId),
       onValidatedRoutesChanged: onTaskRoutesChanged,
@@ -1117,6 +1125,7 @@ function createClientForMode({
       getSelectedDesktopId,
       getTrustedDesktopIds: () =>
         getTrustedDesktops().map((desktop) => desktop.desktopId),
+      getTrustedLanEndpointHints,
       getLanDeviceCredentials: (desktopId) =>
         lanDeviceCredentialsForDesktop(getTrustedDesktops, getMobileDeviceId, desktopId),
       onValidatedRoutesChanged: onTaskRoutesChanged,
@@ -1249,6 +1258,7 @@ function createTrustedLanFallbackClient({
   fetchImpl,
   getSelectedDesktopId,
   getTrustedDesktopIds,
+  getTrustedLanEndpointHints,
   getLanDeviceCredentials,
   onValidatedRoutesChanged,
   onPushPairingMaterial
@@ -1257,6 +1267,10 @@ function createTrustedLanFallbackClient({
   fetchImpl: FetchLike;
   getSelectedDesktopId(): string | null;
   getTrustedDesktopIds(): readonly string[];
+  getTrustedLanEndpointHints(): readonly {
+    baseUrl: string;
+    desktopId: string;
+  }[];
   getLanDeviceCredentials(desktopId: string): LanDeviceCredentials | null;
   onValidatedRoutesChanged(): void;
   onPushPairingMaterial(desktopId: string, material: PushPairingMaterial): void;
@@ -1383,6 +1397,7 @@ function createTrustedLanFallbackClient({
       resolveTrustedBonjourEndpoint({
         fetchImpl,
         services,
+        persistedEndpoints: getTrustedLanEndpointHints(),
         preferredDesktopId: desktopId ?? getSelectedDesktopId(),
         trustedDesktopIds
       })
@@ -1501,6 +1516,7 @@ function createTrustedLanFallbackClient({
         resolveTrustedBonjourEndpoints({
           fetchImpl,
           services: bonjourBrowser.getServices(),
+          persistedEndpoints: getTrustedLanEndpointHints(),
           preferredDesktopId: getSelectedDesktopId(),
           trustedDesktopIds: getTrustedDesktopIds()
         })
