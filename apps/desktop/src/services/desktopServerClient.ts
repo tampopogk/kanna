@@ -37,6 +37,7 @@ export function setDesktopSnapshotFetcherForTests(fetcher: (() => Promise<Deskto
 type MaybePromise<T> = T | Promise<T>;
 
 export interface DesktopServerClientHandlersForTests {
+  ensureDesktopReady?: () => MaybePromise<void>;
   ensureMobileServer?: () => MaybePromise<void>;
   getSetting?: (key: string) => MaybePromise<string | null>;
   putSetting?: (key: string, value: string) => MaybePromise<DesktopSettingResponse | void>;
@@ -110,17 +111,27 @@ export interface DesktopServerClientHandlersForTests {
 }
 
 let clientHandlersForTests: DesktopServerClientHandlersForTests | null = null;
+let desktopReadinessConfirmed = false;
 
 export function setDesktopServerClientHandlersForTests(
   handlers: DesktopServerClientHandlersForTests | null,
 ): void {
   clientHandlersForTests = handlers;
+  if (handlers === null) desktopReadinessConfirmed = false;
 }
 
 export function updateDesktopServerClientHandlersForTests(
   handlers: DesktopServerClientHandlersForTests,
 ): void {
   clientHandlersForTests = { ...(clientHandlersForTests ?? {}), ...handlers };
+}
+
+export function setDesktopReadinessConfirmedForTests(confirmed: boolean): void {
+  desktopReadinessConfirmed = confirmed;
+}
+
+export function hasConfirmedDesktopReadiness(): boolean {
+  return desktopReadinessConfirmed;
 }
 
 async function desktopServerBaseUrl(): Promise<string> {
@@ -138,6 +149,21 @@ async function ensureDesktopServerRunning(): Promise<void> {
     return;
   }
   await invoke("ensure_mobile_server");
+}
+
+/**
+ * Wait for the native startup boundary: the replacement daemon has completed
+ * handoff and the correctly owned kanna-server answers readiness checks.
+ * The caller still has to fetch its task snapshot before exposing workspace.
+ */
+export async function ensureDesktopReady(): Promise<void> {
+  if (desktopReadinessConfirmed) return;
+  if (clientHandlersForTests?.ensureDesktopReady) {
+    await clientHandlersForTests.ensureDesktopReady();
+  } else {
+    await invoke("ensure_desktop_ready");
+  }
+  desktopReadinessConfirmed = true;
 }
 
 /**

@@ -1,4 +1,4 @@
-use tauri::Emitter;
+use tauri::{Emitter, Manager};
 
 use serde::{Deserialize, Serialize};
 
@@ -6,10 +6,83 @@ use crate::commands::daemon::DaemonState;
 use crate::daemon_client::DaemonClient;
 use crate::{commands, daemon_data_dir, daemon_socket_path, subprocess_env};
 
+const DESKTOP_STARTUP_DAEMON_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
 #[derive(Clone, Copy)]
 enum PublishedPid {
     Exact(u32),
     SuccessorOf(u32),
+}
+
+#[derive(Clone, Debug)]
+pub(crate) enum DaemonStartupOutcome {
+    Pending,
+    Ready(u32),
+    Failed(String),
+}
+
+#[derive(Clone)]
+pub(crate) struct DesktopStartupReadiness {
+    daemon: tokio::sync::watch::Receiver<DaemonStartupOutcome>,
+}
+
+impl DesktopStartupReadiness {
+    pub(crate) fn new(daemon: tokio::sync::watch::Receiver<DaemonStartupOutcome>) -> Self {
+        Self { daemon }
+    }
+
+    async fn wait_for_daemon(&self) -> Result<u32, String> {
+        let mut daemon = self.daemon.clone();
+        loop {
+            match daemon.borrow_and_update().clone() {
+                DaemonStartupOutcome::Pending => {}
+                DaemonStartupOutcome::Ready(pid) => return Ok(pid),
+                DaemonStartupOutcome::Failed(error) => return Err(error),
+            }
+            daemon.changed().await.map_err(|_| {
+                "daemon startup readiness channel closed before handoff completed".to_string()
+            })?;
+        }
+    }
+}
+
+pub(crate) fn desktop_startup_readiness_channel() -> (
+    tokio::sync::watch::Sender<DaemonStartupOutcome>,
+    DesktopStartupReadiness,
+) {
+    let (sender, receiver) = tokio::sync::watch::channel(DaemonStartupOutcome::Pending);
+    (sender, DesktopStartupReadiness::new(receiver))
+}
+
+/// The renderer's startup banner crosses this boundary only after the new
+/// daemon generation has completed handoff and the correctly owned server is
+/// responsive. Its later task snapshot remains the final renderer-side gate.
+#[tauri::command]
+pub(crate) async fn ensure_desktop_ready(app: tauri::AppHandle) -> Result<(), String> {
+    let daemon = app.state::<DesktopStartupReadiness>().inner().clone();
+    let server = app
+        .state::<crate::commands::mobile::MobileServerManager>()
+        .inner()
+        .clone();
+    tokio::try_join!(
+        async {
+            tokio::time::timeout(DESKTOP_STARTUP_DAEMON_TIMEOUT, daemon.wait_for_daemon())
+                .await
+                .map_err(|_| {
+                    "daemon handoff/server authorization did not complete within 30 seconds; background recovery is still retrying"
+                        .to_string()
+                })?
+                .map_err(|error| format!("daemon handoff failed: {error}"))?;
+            Ok::<(), String>(())
+        },
+        async {
+            server
+                .ensure_responsive()
+                .await
+                .map_err(|error| format!("kanna-server startup/recovery failed: {error}"))
+        }
+    )?;
+    Ok(())
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -343,7 +416,7 @@ fn spawn_daemon_process() -> Result<(std::process::Child, std::path::PathBuf), S
 
 /// Always spawn a new daemon. If an old one is running, the new daemon
 /// performs a handoff (transfers sessions via SCM_RIGHTS) automatically.
-pub(crate) async fn ensure_daemon_running() {
+pub(crate) async fn ensure_daemon_running() -> Result<u32, String> {
     eprintln!("[daemon] spawning daemon...");
 
     match spawn_daemon_process() {
@@ -364,13 +437,13 @@ pub(crate) async fn ensure_daemon_running() {
             .is_some()
             {
                 eprintln!("[daemon] spawned and connected (pid={})", expected_pid);
-                return;
+                return Ok(expected_pid);
             }
-            eprintln!("[daemon] spawned but could not connect after retries");
+            Err(format!(
+                "spawned daemon pid {expected_pid} did not publish a connectable successor after handoff"
+            ))
         }
-        Err(e) => {
-            eprintln!("[daemon] {e} — PTY sessions will not work");
-        }
+        Err(e) => Err(format!("could not spawn replacement daemon: {e}")),
     }
 }
 
@@ -467,6 +540,7 @@ pub(crate) fn spawn_event_bridge(
     app: tauri::AppHandle,
     daemon_state: DaemonState,
     mut server_pid_receiver: tokio::sync::watch::Receiver<Option<u32>>,
+    mut startup_readiness: Option<tokio::sync::watch::Sender<DaemonStartupOutcome>>,
 ) {
     tauri::async_runtime::spawn(async move {
         let mut authorization_backoff = AuthorizationRetryBackoff::new();
@@ -479,7 +553,7 @@ pub(crate) fn spawn_event_bridge(
                     // The backoff itself prevents thundering herd — if another app instance
                     // spawned a replacement daemon, we'd have connected during backoff.
                     eprintln!("[event-bridge] backoff exhausted, attempting daemon spawn");
-                    ensure_daemon_running().await;
+                    let _ = ensure_daemon_running().await;
                     match connect_with_backoff().await {
                         Some(c) => c,
                         None => {
@@ -503,6 +577,14 @@ pub(crate) fn spawn_event_bridge(
                 continue;
             }
             authorization_backoff.reset();
+
+            // Startup is not ready at the handoff socket alone. The successor
+            // daemon must also accept the responsive server generation that
+            // will own task input before the renderer can expose a workspace.
+            if let Some(readiness) = startup_readiness.take() {
+                let _ = readiness
+                    .send_replace(DaemonStartupOutcome::Ready(event_client.connected_pid()));
+            }
 
             // Subscribe to hook event broadcasts
             let _ = event_client

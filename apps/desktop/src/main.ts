@@ -13,7 +13,7 @@ import {
 } from "./perf/taskSwitchPerf";
 import App from "./App.vue";
 import { createWindowWorkspace, parseWindowBootstrap, resolveWindowBootstrap } from "./windowWorkspace";
-import { createStartupScreen } from "./startup";
+import { createStartupScreen, describeStartupFailure } from "./startup";
 import { parseModalTearOffContext } from "./modalTearOff";
 import { e2eAppMetrics, e2eTerminalOutputPerf } from "./e2eAppMetrics";
 import { e2eInvokeHistory } from "./e2eInvokeHistory";
@@ -28,6 +28,7 @@ import {
   getSharedStreamClient,
   resetSharedStreamClientForTests,
 } from "./composables/desktopStreamClient";
+import { ensureDesktopReady } from "./services/desktopServerClient";
 
 interface AppWithSetupState {
   _instance?: {
@@ -244,6 +245,7 @@ try {
   startup.enterPhase("services");
   const startupHold = holdStartupForE2E();
   if (startupHold) await startupHold;
+  await ensureDesktopReady();
   const windowBootstrap = await resolveWindowBootstrap(db, parsedWindowBootstrap);
   startup.enterPhase("restoring");
   const tearOffContext = parseModalTearOffContext(window.location.search)
@@ -351,10 +353,8 @@ try {
   }
 } catch (e) {
   console.error("[init] fatal:", e);
-  startup.fail(
-    i18n.global.t(
-      startup.phase.value === "restoring" ? "startup.failedRestore" : "startup.failedServices",
-    ),
-    e,
+  const summary = i18n.global.t(
+    startup.phase.value === "restoring" ? "startup.failedRestore" : "startup.failedServices",
   );
+  startup.fail(describeStartupFailure(summary, e), e);
 }
