@@ -682,12 +682,18 @@ impl Db {
                    )
                    AND sr.status IN ('cancelled', 'failed')
                    AND (
+                     sr.no_work_termination = ?
+                     OR
                      sr.feedback = ?
                      OR (sr.status = 'cancelled' AND sr.result IS NULL AND sr.feedback IS NULL)
                    )
                  ORDER BY sr.rowid DESC
                  LIMIT 1",
-                (task_id, interruption_feedback),
+                (
+                    task_id,
+                    super::no_work_termination::SESSION_INTERRUPTED,
+                    interruption_feedback,
+                ),
                 |row| row.get::<_, String>(0),
             )
             .optional()?;
@@ -697,14 +703,23 @@ impl Db {
         };
         let rows_affected = transaction.execute(
             "UPDATE stage_run
-             SET status = 'running', result = NULL, feedback = NULL, finished_at = NULL
+             SET status = 'running', result = NULL,
+                 feedback = CASE WHEN feedback = ? THEN NULL ELSE feedback END,
+                 no_work_termination = NULL, finished_at = NULL
              WHERE id = ?
                AND status IN ('cancelled', 'failed')
                AND (
+                 no_work_termination = ?
+                 OR
                  feedback = ?
                  OR (status = 'cancelled' AND result IS NULL AND feedback IS NULL)
                )",
-            (&run_id, interruption_feedback),
+            (
+                interruption_feedback,
+                &run_id,
+                super::no_work_termination::SESSION_INTERRUPTED,
+                interruption_feedback,
+            ),
         )?;
         transaction.commit()?;
         Ok(rows_affected > 0)
@@ -731,7 +746,7 @@ impl Db {
         let run_result = self
             .conn
             .query_row(
-                "SELECT id, kind, completion_transition, COALESCE(trigger, 'unspecified')
+                "SELECT id, kind, completion_transition, COALESCE(trigger, 'unspecified'), feedback
                  FROM stage_run
                  WHERE task_id = ? AND status = 'running'
                  ORDER BY rowid DESC
@@ -743,6 +758,7 @@ impl Db {
                         row.get::<_, String>(1)?,
                         row.get::<_, Option<String>>(2)?,
                         row.get::<_, String>(3)?,
+                        row.get::<_, Option<String>>(4)?,
                     ))
                 },
             )
@@ -752,13 +768,19 @@ impl Db {
             Err(err) if is_missing_stage_run_table(&err) => return Ok(None),
             Err(err) => return Err(err),
         };
-        let Some((run_id, kind, completion_transition, trigger)) = run else {
+        let Some((run_id, kind, completion_transition, trigger, existing_feedback)) = run else {
             return Ok(None);
         };
-        // The session died mid-turn: no verdict was recorded here. The
-        // feedback marker stays exactly as it was so
-        // `restore_latest_interrupted_stage_run` still finds its undo, and the
-        // column carries the same fact in the form the walk reads.
+        // The session died mid-turn: no verdict was recorded here. A run with
+        // no pre-existing feedback keeps the legacy marker, while the
+        // dedicated producer provenance lets restore and lineage code find
+        // either shape without overloading the directive itself.
+        // A revision run already carries the reviewer's requested changes in
+        // `feedback`. Session loss is bookkeeping, not a new instruction, so
+        // retain that producer-authored directive and put the interruption
+        // provenance in its dedicated column. Runs without an existing
+        // directive keep the legacy marker for old readers and diagnostics.
+        let feedback = existing_feedback.as_deref().or(feedback);
         self.finish_stage_run_without_work(
             &run_id,
             status,

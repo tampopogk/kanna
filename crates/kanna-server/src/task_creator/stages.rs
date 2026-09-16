@@ -1271,12 +1271,26 @@ fn prepare_stage_restart(
             }
         }
     };
-    // Reviewer feedback is only readable from a run that is still running: an
-    // interrupted run's `feedback` has already been overwritten with the
-    // session-interruption marker, which is bookkeeping, not an instruction.
+    // A revision directive is authored when the revision run is created. The
+    // session-interruption producer preserves it and records the interruption
+    // separately in `no_work_termination`; an ordinary interrupted run keeps
+    // only the legacy synthetic marker. Carry a genuine directive onto every
+    // replacement run so a later fresh fallback or transfer cannot lose it,
+    // while never treating a completed run's verdict summary as new work.
     let requested_changes = match &intent {
         StageRestartIntent::FreshAfterRejectedResume { .. }
-        | StageRestartIntent::NextProviderAfterQuotaRejection { .. } => run.feedback.clone(),
+        | StageRestartIntent::NextProviderAfterQuotaRejection { .. } => run
+            .feedback
+            .clone()
+            .filter(|feedback| feedback != crate::http_api::SESSION_INTERRUPTION_FEEDBACK),
+        StageRestartIntent::ResumeProviderSession
+            if run.no_work_termination.as_deref()
+                == Some(crate::db::no_work_termination::SESSION_INTERRUPTED) =>
+        {
+            run.feedback
+                .clone()
+                .filter(|feedback| feedback != crate::http_api::SESSION_INTERRUPTION_FEEDBACK)
+        }
         StageRestartIntent::ResumeProviderSession => None,
     };
     // Does this restart follow a stage whose verdict is already recorded? One
@@ -1393,8 +1407,11 @@ fn prepare_stage_restart(
         }
         Err(reason) => {
             log::info!("task resume unavailable for {task_id}: {reason}; spawning fresh");
-            let prev_result = previous_stage_result(db, task_id, source_task)?;
-            let prev_main_result = previous_main_stage_result(db, task_id)?;
+            // The failed resume/recovery row is bookkeeping, not the active
+            // stage's predecessor. Reconstruct the values from before this
+            // replacement lineage; for a just-imported transfer, that falls
+            // back to the source-pinned snapshots persisted at import.
+            let (prev_result, prev_main_result) = recovery_predecessor_results(db, task_id, &run)?;
             let plan_result = stamped_plan_result(db, task_id);
             // A fresh conversation knows only what the prompt tells it. When
             // the interrupted run was a revision, its reviewer feedback is

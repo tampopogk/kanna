@@ -1635,6 +1635,25 @@ async fn build_create_request(
     imported_refs: Option<(String, String)>,
     resume_session_id: Option<String>,
 ) -> crate::mobile_api::CreateTaskRequest {
+    let source_machine = resolve_source_machine_name(state, &payload.task.source_peer_id).await;
+    build_create_request_from_payload(
+        transfer_id,
+        repo_id,
+        payload,
+        imported_refs,
+        resume_session_id,
+        source_machine,
+    )
+}
+
+fn build_create_request_from_payload(
+    transfer_id: &str,
+    repo_id: &str,
+    payload: &OutgoingTransferPayload,
+    imported_refs: Option<(String, String)>,
+    resume_session_id: Option<String>,
+    source_machine: Option<String>,
+) -> crate::mobile_api::CreateTaskRequest {
     crate::mobile_api::CreateTaskRequest {
         repo_id: repo_id.to_string(),
         prompt: payload.task.prompt.clone().unwrap_or_default(),
@@ -1677,7 +1696,7 @@ async fn build_create_request(
             attention_reason: payload.task.attention_reason.clone(),
             head_oid: payload.task.head_oid.clone(),
             transfer_id: Some(transfer_id.to_string()),
-            source_machine: resolve_source_machine_name(state, &payload.task.source_peer_id).await,
+            source_machine,
             repo_mode: Some(payload.repo.mode.as_str().to_string()),
             session_restored: resume_session_id.is_some(),
             workflow_definition: payload.task.workflow_definition.clone(),
@@ -1710,6 +1729,24 @@ async fn build_create_request(
         notify_task_id: None,
         parent_task_id: None,
     }
+}
+
+#[cfg(test)]
+pub(crate) fn build_create_request_for_test(
+    transfer_id: &str,
+    repo_id: &str,
+    payload: &OutgoingTransferPayload,
+    imported_refs: Option<(String, String)>,
+    resume_session_id: Option<String>,
+) -> crate::mobile_api::CreateTaskRequest {
+    build_create_request_from_payload(
+        transfer_id,
+        repo_id,
+        payload,
+        imported_refs,
+        resume_session_id,
+        Some("Source test machine".to_string()),
+    )
 }
 
 /// Peer display names live in the sidecar's registry, not in the payload.

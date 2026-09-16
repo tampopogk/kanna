@@ -482,9 +482,10 @@ impl CreateTaskRecoverySnapshot {
     }
 }
 
-/// Display-only provenance for a task imported by a cross-machine transfer.
-/// The destination terminal prints it once, before the agent starts, so the
-/// import is visible instead of a task that simply appeared.
+/// Verified context for a task imported by a cross-machine transfer. The
+/// destination uses it to preserve source stage context and select restored
+/// continuation versus fresh-session prompt semantics; the terminal also
+/// prints its display provenance once before the agent starts.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct TransferImportSummary {
