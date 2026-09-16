@@ -205,6 +205,12 @@ export interface CloudTaskPublication {
   cloudAuthoritative: boolean;
 }
 
+export interface MobileCollectionSnapshot {
+  desktops: DesktopSummary[];
+  repos: RepoSummary[];
+  recentTasks: TaskSummary[];
+}
+
 export interface MobileControllerOptions {
   // Live cloud task subscription (onSnapshot). When provided and signed in,
   // the controller reads tasks via this push stream instead of polling.
@@ -225,6 +231,9 @@ export interface MobileControllerOptions {
   subscribeTaskRouteChanges?: (
     listener: (clientGeneration: number) => void
   ) => () => void;
+  listCollectionsWithSupplement?: (
+    onSupplement: (snapshot: MobileCollectionSnapshot) => void
+  ) => Promise<MobileCollectionSnapshot>;
   /** Phone-local pin/dismiss record. Defaults to AsyncStorage. */
   taskListPreferencesStore?: TaskListPreferencesStore;
   repoCheckoutPollIntervalMs?: number;
@@ -432,6 +441,7 @@ export function createMobileController(
     | null = null;
   let unownedErrorMessage: string | null = null;
   let taskCollectionsRevision = 0;
+  let collectionPublicationEpoch = 0;
   let taskDetailVisible = false;
   let appForeground = true;
   const taskSummarySubscriptions = new Map<string, { close(): void }>();
@@ -1938,28 +1948,89 @@ export function createMobileController(
     }
   };
 
+  const applyCollectionSupplement = (snapshot: MobileCollectionSnapshot) => {
+    const recentTasks = preserveLoadedTaskPrompt(
+      uniqueTasksById(snapshot.recentTasks)
+    );
+    taskCollectionsRevision += 1;
+    lastExplicitRepos = snapshot.repos;
+    store.setDesktops(snapshot.desktops);
+    reconcileComposerAgentProvider();
+    desktopMetadataError = null;
+    publishOwnedErrorMessage();
+    store.setRepos(mergeReposWithTaskRepos(snapshot.repos, recentTasks));
+    store.setRecentTasks(recentTasks);
+    const selectedRepoId = store.getState().selectedRepoId;
+    store.setRepoTasks(
+      selectedRepoId
+        ? recentTasks.filter((task) => task.repoId === selectedRepoId)
+        : []
+    );
+    const searchQuery = store.getState().searchQuery;
+    store.setSearchResults(
+      searchQuery,
+      filterTasksForQuery(recentTasks, searchQuery)
+    );
+    reconcileLocalTaskListPreferences(recentTasks);
+    store.reconcileTaskUiSlots(
+      uniqueTasksById([
+        ...store.getState().repoTasks,
+        ...store.getState().recentTasks,
+        ...store.getState().searchResults
+      ]),
+      { authoritative: true }
+    );
+    reconcileSelectedTask(true);
+    store.setTaskCollectionStatus("ready");
+    resolvePendingRepoCommandTaskFromCollections();
+  };
+
   const loadCollections = async () => {
+    const publicationEpoch = ++collectionPublicationEpoch;
     const readRevision = taskCollectionsRevision;
-    const taskCollections = Promise.all([
-      client.listRepos(),
-      client.listRecentTasks()
-    ]).catch((error) => {
+    let initialSnapshotPublished = false;
+    let pendingSupplement: MobileCollectionSnapshot | null = null;
+    const onSupplement = (snapshot: MobileCollectionSnapshot) => {
+      if (publicationEpoch !== collectionPublicationEpoch) return;
+      if (!initialSnapshotPublished) {
+        pendingSupplement = snapshot;
+        return;
+      }
+      applyCollectionSupplement(snapshot);
+    };
+    const collectionSnapshot = options.listCollectionsWithSupplement
+      ? options.listCollectionsWithSupplement(onSupplement)
+      : Promise.all([
+          client.listDesktops(),
+          client.listRepos(),
+          client.listRecentTasks()
+        ]).then(([desktops, repos, recentTasks]) => ({
+          desktops,
+          repos,
+          recentTasks
+        }));
+    const guardedSnapshot = collectionSnapshot.catch((error) => {
       if (taskCollectionsRevision !== readRevision) {
         return null;
       }
       throw error;
     });
-    const [, collections] = await Promise.all([
-      refreshDesktops({ force: true }),
-      taskCollections
-    ]);
+    const snapshot = await guardedSnapshot;
 
-    if (!collections || taskCollectionsRevision !== readRevision) {
+    if (
+      !snapshot ||
+      taskCollectionsRevision !== readRevision ||
+      publicationEpoch !== collectionPublicationEpoch
+    ) {
       return;
     }
-    const [repos, recentTasks] = collections;
+    const { desktops, repos, recentTasks } = snapshot;
 
     taskCollectionsRevision += 1;
+    store.setDesktops(desktops);
+    reconcileComposerAgentProvider();
+    desktopMetadataError = null;
+    publishOwnedErrorMessage();
     lastExplicitRepos = repos;
     store.setRepos(mergeReposWithTaskRepos(repos, recentTasks));
     store.setRecentTasks(recentTasks);
@@ -1981,6 +2052,11 @@ export function createMobileController(
     reconcileSelectedTask(true);
     store.setTaskCollectionStatus("ready");
     resolvePendingRepoCommandTaskFromCollections();
+    initialSnapshotPublished = true;
+    if (pendingSupplement && publicationEpoch === collectionPublicationEpoch) {
+      applyCollectionSupplement(pendingSupplement);
+      pendingSupplement = null;
+    }
   };
 
   const refreshDesktops = async (options: { force?: boolean } = {}) => {
@@ -2348,6 +2424,7 @@ export function createMobileController(
 
   const startCloudTaskSubscription = (uid: string): boolean => {
     if (!options.subscribeCloudTasks) return false;
+    collectionPublicationEpoch += 1;
     taskCollectionsRevision += 1;
     desktopCollectionsRevision += 1;
     stopCloudTaskSubscription();
@@ -2396,6 +2473,7 @@ export function createMobileController(
   };
 
   const clearAccountScopedState = () => {
+    collectionPublicationEpoch += 1;
     taskCollectionsRevision += 1;
     desktopCollectionsRevision += 1;
     stopCloudTaskSubscription();
@@ -3978,6 +4056,7 @@ export function createMobileController(
     },
 
     dispose() {
+      collectionPublicationEpoch += 1;
       recoveringTaskSessionAttempts.clear();
       taskSummaryStoreUnsubscribe();
       for (const subscription of taskSummarySubscriptions.values()) subscription.close();

@@ -86,9 +86,16 @@ export interface MergedTaskSnapshot {
 }
 
 export interface CloudLanClient extends KannaClient {
+  listTrustedLanTasks(): Promise<TaskSummary[]>;
   listRecentTasksWithSupplement(
     onSupplement: (tasks: TaskSummary[]) => void
   ): Promise<TaskSummary[]>;
+  listReposWithSupplement(
+    onSupplement: (repos: RepoSummary[]) => void
+  ): Promise<RepoSummary[]>;
+  listDesktopsWithSupplement(
+    onSupplement: (desktops: DesktopSummary[]) => void
+  ): Promise<DesktopSummary[]>;
 }
 
 type SettledRead<T> =
@@ -745,9 +752,13 @@ export function createCloudLanClient(
   ): Promise<TaskSummary[]> => {
     const lanEnabled = options.isLanEnabled();
     let cloudTasksForRead: TaskSummary[] | undefined;
+    let cloudResultForRead: SettledRead<TaskSummary[]> | undefined;
     let lateLanSnapshotForRead: LanTaskSnapshot | undefined;
     let primarySnapshotReady = false;
-    const cloudRead = settleRead(() => cloud.listRecentTasks());
+    const cloudRead = settleRead(() => cloud.listRecentTasks()).then((result) => {
+      cloudResultForRead = result;
+      return result;
+    });
     const lanRead = lanEnabled
       ? settleOptionalLanRead(
           readLanTaskSnapshot,
@@ -773,12 +784,17 @@ export function createCloudLanClient(
           }
         )
       : null;
-    const cloudResult = await cloudRead;
+    const lanResult = lanRead ? await lanRead : null;
+    let cloudResult = cloudResultForRead;
+    const lanEstablishedInitialSnapshot =
+      lanResult?.status === "fulfilled" && cloudResult === undefined;
+    if (!lanEstablishedInitialSnapshot) {
+      cloudResult = await cloudRead;
+    }
     cloudTasksForRead =
-      cloudResult.status === "fulfilled"
+      cloudResult?.status === "fulfilled"
         ? cloudResult.value
         : lastCloudTasks;
-    const lanResult = lanRead ? await lanRead : null;
     const isLatestRead = readEpoch === latestReadEpoch;
     const canEstablishSnapshot =
       isLatestRead || acceptedTaskSnapshot === undefined;
@@ -792,7 +808,7 @@ export function createCloudLanClient(
       options.onLanReadUnavailable?.();
     }
 
-    if (canEstablishSnapshot && cloudResult.status === "fulfilled") {
+    if (canEstablishSnapshot && cloudResult?.status === "fulfilled") {
       lastCloudTasks = cloudResult.value;
     }
     if (
@@ -807,7 +823,7 @@ export function createCloudLanClient(
     }
 
     const cloudTasks =
-      cloudResult.status === "fulfilled"
+      cloudResult?.status === "fulfilled"
         ? cloudResult.value
         : lastCloudTasks;
     const currentLanSnapshot = lanStillEnabled
@@ -844,7 +860,34 @@ export function createCloudLanClient(
             });
 
     primarySnapshotReady = true;
-    return acceptMergedTaskSnapshot(readEpoch, merged).tasks;
+    const accepted = acceptMergedTaskSnapshot(readEpoch, merged);
+
+    if (lanEstablishedInitialSnapshot) {
+      void cloudRead.then((lateCloudResult) => {
+        if (readEpoch !== latestReadEpoch) return;
+        cloudTasksForRead =
+          lateCloudResult.status === "fulfilled"
+            ? lateCloudResult.value
+            : lastCloudTasks;
+        if (lateCloudResult.status !== "fulfilled") return;
+        lastCloudTasks = lateCloudResult.value;
+        const lanSnapshot = options.isLanEnabled()
+          ? lateLanSnapshotForRead ?? lanResult.value
+          : null;
+        const supplemented = acceptMergedTaskSnapshot(
+          readEpoch,
+          mergeCloudAndLanTasks({
+            cloudTasks: lateCloudResult.value,
+            lan: lanSnapshot
+          })
+        );
+        for (const publishSupplement of supplements) {
+          publishSupplement(supplemented.tasks);
+        }
+      });
+    }
+
+    return accepted.tasks;
   };
 
   const startTaskRead = (
@@ -889,6 +932,29 @@ export function createCloudLanClient(
     inFlight = { promise, supplements };
     authoritativeTaskReadInFlight = inFlight;
     return promise;
+  };
+
+  const listTrustedLanTasks = async (): Promise<TaskSummary[]> => {
+    if (!options.isLanEnabled()) {
+      throw new Error("Trusted LAN is not enabled.");
+    }
+    const readEpoch = ++latestReadEpoch;
+    // Keep the cold-start publication independent from the ordinary/shared
+    // merge read. A cloud callback may start an authoritative merge while this
+    // probe is in flight; sharing it would make that merge treat LAN as an
+    // already-owned optional read and publish cloud-only data.
+    const snapshot = await loadLanTaskSnapshot();
+    if (!options.isLanEnabled()) {
+      throw new Error("Trusted LAN was disabled during the task read.");
+    }
+    lastLanTaskSnapshot = snapshot;
+    const merged = mergeCloudAndLanTasks({
+      cloudTasks: lastCloudTasks ?? [],
+      lan: snapshot
+    });
+    return readEpoch === latestReadEpoch || acceptedTaskSnapshot === undefined
+      ? acceptMergedTaskSnapshot(readEpoch, merged).tasks
+      : merged.tasks;
   };
 
   type ResolvedTaskRoute =
@@ -1150,10 +1216,44 @@ export function createCloudLanClient(
     }
   };
 
-  const listRepos = async (): Promise<RepoSummary[]> => {
+  const performRepoRead = async (
+    onSupplement?: (repos: RepoSummary[]) => void
+  ): Promise<RepoSummary[]> => {
     const readEpoch = ++latestRepoReadEpoch;
     const lanEnabled = options.isLanEnabled();
-    const cloudRead = settleRead(() => cloud.listRepos());
+    let cloudResultForRead: SettledRead<RepoSummary[]> | undefined;
+    let tasksResultForRead: SettledRead<TaskSummary[]> | undefined;
+    let primarySnapshotReady = false;
+    const cloudRead = settleRead(() => cloud.listRepos()).then((result) => {
+      cloudResultForRead = result;
+      return result;
+    });
+    const mergeAvailableRepos = (
+      cloudResult: SettledRead<RepoSummary[]> | undefined,
+      lanSnapshot: LanRepoSnapshot | undefined,
+      tasksResult: SettledRead<TaskSummary[]> | undefined
+    ): RepoSummary[] | undefined => {
+      const cloudRepos =
+        cloudResult?.status === "fulfilled" ? cloudResult.value : lastCloudRepos;
+      const fallbackLanRepoSnapshot = lastLanRepoSnapshot;
+      const effectiveLanSnapshot = lanSnapshot ?? fallbackLanRepoSnapshot;
+      const lanRepos = lanEnabled && options.isLanEnabled() && effectiveLanSnapshot
+        ? effectiveLanSnapshot.repos.map((repo) => ({
+            ...repo,
+            registeredDesktopIds: [effectiveLanSnapshot.desktopId]
+          }))
+        : undefined;
+      const derivedRepos =
+        tasksResult?.status === "fulfilled"
+          ? reposFromTasks(tasksResult.value)
+          : undefined;
+      const availableRepos = [cloudRepos, lanRepos, derivedRepos].filter(
+        (repos): repos is RepoSummary[] => repos !== undefined
+      );
+      return availableRepos.length > 0
+        ? mergeRepoSummaries(availableRepos.flat())
+        : undefined;
+    };
     const lanRead = lanEnabled
       ? settleOptionalLanRead(
           readLanRepoSnapshot,
@@ -1164,6 +1264,14 @@ export function createCloudLanClient(
               options.isLanEnabled()
             ) {
               lastLanRepoSnapshot = lateSnapshot;
+              if (primarySnapshotReady && onSupplement) {
+                const repos = mergeAvailableRepos(
+                  cloudResultForRead,
+                  lateSnapshot,
+                  tasksResultForRead
+                );
+                if (repos) onSupplement(repos);
+              }
             }
           }
         )
@@ -1178,16 +1286,32 @@ export function createCloudLanClient(
             })
           ).tasks
         : null;
-    const tasksRead: Promise<SettledRead<TaskSummary[]>> = cachedTaskSnapshot
-      ? Promise.resolve({ status: "fulfilled", value: cachedTaskSnapshot })
-      : settleRead(() => listRecentTasks());
-    const cloudResult = await cloudRead;
+    const tasksRead: Promise<SettledRead<TaskSummary[]>> = (cachedTaskSnapshot
+      ? Promise.resolve({
+          status: "fulfilled" as const,
+          value: cachedTaskSnapshot
+        })
+      : settleRead(() => listRecentTasks())).then((result) => {
+        tasksResultForRead = result;
+        return result;
+      });
     const lanResult = lanRead ? await lanRead : null;
+    let cloudResult = cloudResultForRead;
+    const lanEstablishedInitialSnapshot =
+      lanResult?.status === "fulfilled" && cloudResult === undefined;
+    if (!lanEstablishedInitialSnapshot) {
+      cloudResult = await cloudRead;
+    }
     const tasksResult = await tasksRead;
+    const merged = mergeAvailableRepos(
+      cloudResult,
+      lanResult?.status === "fulfilled" ? lanResult.value : undefined,
+      tasksResult
+    );
     const isLatestRead = readEpoch === latestRepoReadEpoch;
     const lanStillEnabled = lanEnabled && options.isLanEnabled();
 
-    if (isLatestRead && cloudResult.status === "fulfilled") {
+    if (isLatestRead && cloudResult?.status === "fulfilled") {
       lastCloudRepos = cloudResult.value;
     }
     if (
@@ -1197,41 +1321,57 @@ export function createCloudLanClient(
     ) {
       lastLanRepoSnapshot = lanResult.value;
     }
-
-    const cloudRepos =
-      cloudResult.status === "fulfilled" ? cloudResult.value : lastCloudRepos;
-    const fallbackLanRepoSnapshot = lastLanRepoSnapshot;
-    const lanRepos = lanStillEnabled
-      ? lanResult?.status === "fulfilled"
-        ? lanResult.value.repos.map((repo) => ({
-            ...repo,
-            registeredDesktopIds: [lanResult.value.desktopId]
-          }))
-        : fallbackLanRepoSnapshot
-          ? fallbackLanRepoSnapshot.repos.map((repo) => ({
-              ...repo,
-              registeredDesktopIds: [fallbackLanRepoSnapshot.desktopId]
-            }))
-          : undefined
-      : undefined;
-    const derivedRepos =
-      tasksResult.status === "fulfilled"
-        ? reposFromTasks(tasksResult.value)
-        : undefined;
-    const availableRepos = [cloudRepos, lanRepos, derivedRepos].filter(
-      (repos): repos is RepoSummary[] => repos !== undefined
-    );
-    if (availableRepos.length === 0) {
+    if (!merged) {
       throw firstReadFailure(cloudResult, lanResult, tasksResult);
     }
 
-    return mergeRepoSummaries(availableRepos.flat());
+    primarySnapshotReady = true;
+    if (lanEstablishedInitialSnapshot && onSupplement) {
+      void cloudRead.then((lateCloudResult) => {
+        if (readEpoch !== latestRepoReadEpoch) return;
+        if (lateCloudResult.status === "fulfilled") {
+          lastCloudRepos = lateCloudResult.value;
+        }
+        const repos = mergeAvailableRepos(
+          lateCloudResult,
+          options.isLanEnabled() ? lanResult.value : undefined,
+          tasksResultForRead
+        );
+        if (repos) onSupplement(repos);
+      });
+    }
+
+    return merged;
   };
 
-  const listDesktops = async (): Promise<DesktopSummary[]> => {
+  const listRepos = (): Promise<RepoSummary[]> => performRepoRead();
+  const listReposWithSupplement = (
+    onSupplement: (repos: RepoSummary[]) => void
+  ): Promise<RepoSummary[]> => performRepoRead(onSupplement);
+
+  const performDesktopRead = async (
+    onSupplement?: (desktops: DesktopSummary[]) => void
+  ): Promise<DesktopSummary[]> => {
     const readEpoch = ++latestDesktopReadEpoch;
     const lanEnabled = options.isLanEnabled();
-    const cloudRead = settleRead(() => cloud.listDesktops());
+    let cloudResultForRead: SettledRead<DesktopSummary[]> | undefined;
+    let primarySnapshotReady = false;
+    const cloudRead = settleRead(() => cloud.listDesktops()).then((result) => {
+      cloudResultForRead = result;
+      return result;
+    });
+    const mergedDesktops = (
+      cloudResult: SettledRead<DesktopSummary[]> | undefined,
+      lanDesktops: DesktopSummary[] | undefined
+    ) =>
+      mergeDesktops(
+        cloudResult?.status === "fulfilled"
+          ? cloudResult.value
+          : lastCloudDesktops ?? [],
+        lanEnabled && options.isLanEnabled()
+          ? lanDesktops ?? lastLanDesktops ?? []
+          : []
+      );
     const lanRead = lanEnabled
       ? settleOptionalLanRead(
           readLanDesktops,
@@ -1244,12 +1384,20 @@ export function createCloudLanClient(
               lastLanDesktops = lateDesktops;
               reportDesktopSourceWarnings({ local: null });
               publishDesktopSources();
+              if (primarySnapshotReady && onSupplement) {
+                onSupplement(mergedDesktops(cloudResultForRead, lateDesktops));
+              }
             }
           }
         )
       : null;
-    const cloudResult = await cloudRead;
     const lanResult = lanRead ? await lanRead : null;
+    let cloudResult = cloudResultForRead;
+    const lanEstablishedInitialSnapshot =
+      lanResult?.status === "fulfilled" && cloudResult === undefined;
+    if (!lanEstablishedInitialSnapshot) {
+      cloudResult = await cloudRead;
+    }
     const isLatestRead = readEpoch === latestDesktopReadEpoch;
     const lanStillEnabled = lanEnabled && options.isLanEnabled();
 
@@ -1261,18 +1409,28 @@ export function createCloudLanClient(
       options.onLanReadUnavailable?.();
     }
 
-    reportDesktopSourceWarnings({
-      account: cloudResult.status === "fulfilled"
-        ? null
-        : readFailureMessage(cloudResult.reason),
-      local: !lanStillEnabled
-        ? null
-        : lanResult?.status === "fulfilled"
-          ? null
-          : readFailureMessage(lanResult?.reason)
-    });
+    reportDesktopSourceWarnings(
+      cloudResult
+        ? {
+            account: cloudResult.status === "fulfilled"
+              ? null
+              : readFailureMessage(cloudResult.reason),
+            local: !lanStillEnabled
+              ? null
+              : lanResult?.status === "fulfilled"
+                ? null
+                : readFailureMessage(lanResult?.reason)
+          }
+        : {
+            local: !lanStillEnabled
+              ? null
+              : lanResult?.status === "fulfilled"
+                ? null
+                : readFailureMessage(lanResult?.reason)
+          }
+    );
 
-    if (isLatestRead && cloudResult.status === "fulfilled") {
+    if (isLatestRead && cloudResult?.status === "fulfilled") {
       lastCloudDesktops = cloudResult.value;
     }
     if (
@@ -1285,7 +1443,7 @@ export function createCloudLanClient(
     if (isLatestRead) publishDesktopSources();
 
     const cloudDesktops =
-      cloudResult.status === "fulfilled"
+      cloudResult?.status === "fulfilled"
         ? cloudResult.value
         : lastCloudDesktops;
     const lanDesktops = lanStillEnabled
@@ -1297,8 +1455,36 @@ export function createCloudLanClient(
       throw firstReadFailure(cloudResult, lanResult);
     }
 
-    return mergeDesktops(cloudDesktops ?? [], lanDesktops ?? []);
+    primarySnapshotReady = true;
+    const initial = mergeDesktops(cloudDesktops ?? [], lanDesktops ?? []);
+    if (lanEstablishedInitialSnapshot) {
+      void cloudRead.then((lateCloudResult) => {
+        if (readEpoch !== latestDesktopReadEpoch) return;
+        reportDesktopSourceWarnings({
+          account: lateCloudResult.status === "fulfilled"
+            ? null
+            : readFailureMessage(lateCloudResult.reason)
+        });
+        if (lateCloudResult.status === "fulfilled") {
+          lastCloudDesktops = lateCloudResult.value;
+        }
+        publishDesktopSources();
+        onSupplement?.(
+          mergedDesktops(
+            lateCloudResult,
+            options.isLanEnabled() ? lanResult.value : undefined
+          )
+        );
+      });
+    }
+
+    return initial;
   };
+
+  const listDesktops = (): Promise<DesktopSummary[]> => performDesktopRead();
+  const listDesktopsWithSupplement = (
+    onSupplement: (desktops: DesktopSummary[]) => void
+  ): Promise<DesktopSummary[]> => performDesktopRead(onSupplement);
 
   const createTask = async (input: CreateTaskRequest) => {
     if (input.desktopId && options.isLanEnabled()) {
@@ -1426,7 +1612,9 @@ export function createCloudLanClient(
         ? lan.getStatus()
         : cloud.getStatus(),
     listDesktops,
+    listDesktopsWithSupplement,
     listRepos,
+    listReposWithSupplement,
     startRepoCheckout: async (input) => {
       const destinationLan = options.isLanEnabled()
         ? lanClientForDesktop(input.desktopId)
@@ -1510,6 +1698,7 @@ export function createCloudLanClient(
         ownerLocalTaskId
       };
     },
+    listTrustedLanTasks,
     listRecentTasks,
     listRecentTasksWithSupplement,
     getTask: async (taskId) => {
@@ -1844,7 +2033,7 @@ function readFailureMessage(reason: unknown): string {
 }
 
 function firstReadFailure(
-  ...results: Array<SettledRead<unknown> | null>
+  ...results: Array<SettledRead<unknown> | null | undefined>
 ): unknown {
   for (const result of results) {
     if (result?.status === "rejected") {

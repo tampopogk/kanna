@@ -1013,6 +1013,78 @@ describe("createCloudLanClient", () => {
     await expect(cloudFailureClient.listRecentTasks()).resolves.toEqual([lanTask]);
   });
 
+  it("publishes ready trusted-LAN tasks before cloud settles and merges late cloud success", async () => {
+    const pendingCloud = deferred<TaskSummary[]>();
+    const lanTask = task({
+      id: "local-duplicate",
+      repoId: "repo-lan",
+      title: "Fresh LAN task"
+    });
+    const cloudDuplicate = task({
+      id: "cloud-duplicate",
+      repoId: "repo-cloud",
+      title: "Cloud duplicate",
+      ownerDesktopId: "desktop-lan",
+      ownerLocalRepoId: "repo-lan",
+      ownerLocalTaskId: lanTask.id
+    });
+    const cloudOnly = task({ id: "cloud-only", repoId: "repo-cloud" });
+    const cloud = createClientMock({
+      listRecentTasks: vi.fn(() => pendingCloud.promise)
+    });
+    const lan = createClientMock({
+      listRecentTasks: vi.fn().mockResolvedValue([lanTask])
+    });
+    const client = createCloudLanClient(cloud, lan, {
+      isLanEnabled: () => true
+    });
+    const onSupplement = vi.fn();
+
+    await expect(
+      client.listRecentTasksWithSupplement(onSupplement)
+    ).resolves.toEqual([lanTask]);
+    expect(onSupplement).not.toHaveBeenCalled();
+
+    pendingCloud.resolve([cloudDuplicate, cloudOnly]);
+    await vi.waitFor(() => expect(onSupplement).toHaveBeenCalledOnce());
+    expect(onSupplement).toHaveBeenLastCalledWith([
+      expect.objectContaining({
+        id: cloudDuplicate.id,
+        title: lanTask.title,
+        ownerLocalTaskId: lanTask.id
+      }),
+      cloudOnly
+    ]);
+  });
+
+  it("retains a published LAN task snapshot when late cloud settlement fails", async () => {
+    const pendingCloud = deferred<TaskSummary[]>();
+    const lanTask = task({ id: "lan-only" });
+    const lan = createClientMock({
+      listRecentTasks: vi.fn().mockResolvedValue([lanTask])
+    });
+    const client = createCloudLanClient(
+      createClientMock({
+        listRecentTasks: vi.fn(() => pendingCloud.promise)
+      }),
+      lan,
+      { isLanEnabled: () => true }
+    );
+    const onSupplement = vi.fn();
+
+    await expect(
+      client.listRecentTasksWithSupplement(onSupplement)
+    ).resolves.toEqual([lanTask]);
+    pendingCloud.reject(new Error("cloud unavailable"));
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    await client.getTask(lanTask.id);
+    expect(lan.getTask).toHaveBeenCalledWith(lanTask.id);
+    expect(client.getTaskRouteIdentity?.(lanTask.id)).toBe(
+      JSON.stringify(["lan", "desktop-lan", lanTask.id])
+    );
+    expect(onSupplement).not.toHaveBeenCalled();
+  });
+
   it("rejects a recent-task read when both cloud and LAN fail", async () => {
     const cloud = createClientMock({
       listRecentTasks: vi.fn().mockRejectedValue(new Error("cloud unavailable"))
