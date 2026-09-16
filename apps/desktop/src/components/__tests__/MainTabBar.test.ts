@@ -2,6 +2,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { mount, flushPromises } from '@vue/test-utils';
 import MainTabBar from '../MainTabBar.vue';
+import type { AgentTerminalAttempt } from '../../services/desktopServerClient';
 vi.mock('vue-i18n', () => ({ useI18n: () => ({ t: (key: string) => key }) }));
 afterEach(() => { document.body.innerHTML = ''; });
 it('opens views from the plus menu with keyboard navigation and dismissal', async () => {
@@ -99,19 +100,65 @@ it('marks the append position, including empty panes, without retaining it on ot
   wrapper.unmount();
 });
 
-it('keeps the live attempt out of history while still listing finished attempts with no archive', async () => {
-  const attempt = (id: string, stage: string, archived: boolean) => ({ id, stage, startedAt: id, cwd: '/repo', archived, recordedLaunch: true, observedExitCode: archived ? 0 : null });
+// Liveness is the launching run's lifecycle, not whether a final frame exists,
+// so a finished attempt stays in history even when it is the newest one and its
+// archive never arrived. Both the local and the remote task path feed this same
+// list, so the option membership they produce is the same.
+const attempt = (id: string, stage: string, over: Partial<AgentTerminalAttempt> = {}): AgentTerminalAttempt =>
+  ({ id, stage, startedAt: id, cwd: '/repo', live: false, archived: false, recordedLaunch: true, observedExitCode: null, ...over });
+const optionValues = (wrapper: ReturnType<typeof mount>) =>
+  wrapper.findAll('option').map(option => option.attributes('value'));
+
+it('keeps a finished attempt in history when it is newest, unarchived and exited', async () => {
   const wrapper = mount(MainTabBar, { props: { tabs:[{id:'agent',kind:'agent'}],activeTabId:'agent',currentStage:'build',agentAttempts:[
-    attempt('plan-run','plan',true), attempt('lost-run','plan',false), attempt('live-run','build',false),
+    attempt('plan-run','plan',{ archived:true, observedExitCode:0 }),
+    attempt('build-run','build',{ observedExitCode:0 }),
   ] } });
-  const options = wrapper.findAll('option');
-  expect(options.map(option => option.attributes('value'))).toEqual(['', 'lost-run', 'plan-run']);
-  expect(options[0].text()).toBe('Latest · build');
-  expect(options[1].text()).toContain('plan · attempt 2');
-  expect(options[1].text()).toContain('· history unavailable');
-  expect(options[2].text()).not.toContain('history unavailable');
-  // The live attempt exits and archives: it becomes ordinary history.
-  await wrapper.setProps({ agentAttempts: [attempt('plan-run','plan',true), attempt('lost-run','plan',false), attempt('live-run','build',true)] });
-  expect(wrapper.findAll('option').map(option => option.attributes('value'))).toEqual(['', 'live-run', 'lost-run', 'plan-run']);
+  expect(optionValues(wrapper)).toEqual(['', 'build-run', 'plan-run']);
+  expect(wrapper.findAll('option')[1].text()).toBe('build · attempt 2 · build-run · history unavailable');
+  expect(wrapper.findAll('option')[2].text()).toBe('plan · attempt 1 · plan-run');
+  wrapper.unmount();
+});
+
+it('keeps the newest legacy attempt with no recorded launch in history', async () => {
+  const wrapper = mount(MainTabBar, { props: { tabs:[{id:'agent',kind:'agent'}],activeTabId:'agent',currentStage:'review',agentAttempts:[
+    attempt('review-run','review',{ archived:true, observedExitCode:0 }),
+    attempt('legacy-run','review',{ recordedLaunch:false }),
+  ] } });
+  expect(optionValues(wrapper)).toEqual(['', 'legacy-run', 'review-run']);
+  expect(wrapper.findAll('option')[1].text()).toContain('· history unavailable');
+  wrapper.unmount();
+});
+
+it('excludes only the live attempt, which Latest already shows', async () => {
+  const wrapper = mount(MainTabBar, { props: { tabs:[{id:'agent',kind:'agent'}],activeTabId:'agent',currentStage:'build',agentAttempts:[
+    attempt('plan-run','plan',{ archived:true, observedExitCode:0 }),
+    attempt('lost-run','plan',{ observedExitCode:1 }),
+    attempt('live-run','build',{ live:true }),
+  ] } });
+  expect(optionValues(wrapper)).toEqual(['', 'lost-run', 'plan-run']);
+  expect(wrapper.findAll('option')[0].text()).toBe('Latest · build');
+  expect(wrapper.findAll('option')[1].text()).toBe('plan · attempt 2 · lost-run · history unavailable');
+  expect(wrapper.findAll('option')[2].text()).toBe('plan · attempt 1 · plan-run');
+  // Selecting history keeps the attempt's own identity and stage name.
+  await wrapper.setProps({ selectedAttempt: 'lost-run' });
+  expect(wrapper.get('select').element.value).toBe('lost-run');
+  expect(wrapper.get('.stage-name').text()).toBe('plan');
+  // The live attempt ends: its run is no longer live, so it joins history.
+  await wrapper.setProps({ selectedAttempt: '', agentAttempts: [
+    attempt('plan-run','plan',{ archived:true, observedExitCode:0 }),
+    attempt('lost-run','plan',{ observedExitCode:1 }),
+    attempt('live-run','build',{ archived:true, observedExitCode:0 }),
+  ] });
+  expect(optionValues(wrapper)).toEqual(['', 'live-run', 'lost-run', 'plan-run']);
+  expect(wrapper.findAll('option')[1].text()).toBe('build · attempt 3 · live-run');
+  wrapper.unmount();
+});
+
+it('leaves an all-live list with nothing but Latest', async () => {
+  const wrapper = mount(MainTabBar, { props: { tabs:[{id:'agent',kind:'agent'}],activeTabId:'agent',currentStage:'build',agentAttempts:[
+    attempt('live-run','build',{ live:true }),
+  ] } });
+  expect(optionValues(wrapper)).toEqual(['']);
   wrapper.unmount();
 });

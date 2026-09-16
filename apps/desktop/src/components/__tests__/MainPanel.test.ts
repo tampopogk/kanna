@@ -1046,7 +1046,7 @@ describe("MainPanel", () => {
     const tabs = useMainTabs({ scopeKey: computed(() => "item:cloud:presentation") });
     const remoteList = vi.fn().mockResolvedValue([{
       id: "run-review-1", stage: "review", startedAt: "today", cwd: "/owner/repo",
-      archived: true, recordedLaunch: true, observedExitCode: 7,
+      live: false, archived: true, recordedLaunch: true, observedExitCode: 7,
     }]);
     const remoteRead = vi.fn().mockResolvedValue(null);
     const spawn = vi.fn();
@@ -1133,7 +1133,7 @@ describe("MainPanel", () => {
     const first = new Promise(resolve => { resolveFirst = resolve; });
     const remoteList = vi.fn((route: { taskId: string }) => route.taskId === "task-a" ? first : Promise.resolve([{
         id: "run-new", stage: "build", startedAt: "now", cwd: "/new",
-        archived: true, recordedLaunch: true, observedExitCode: 0,
+        live: false, archived: true, recordedLaunch: true, observedExitCode: 0,
       }]));
     const tabs = useMainTabs({ scopeKey: computed(() => "remote") });
     const { default: MainPanel } = await import("../MainPanel.vue");
@@ -1165,7 +1165,7 @@ describe("MainPanel", () => {
     await flushPromises();
     resolveFirst([{
       id: "run-stale", stage: "review", startedAt: "before", cwd: "/old",
-      archived: true, recordedLaunch: true, observedExitCode: 7,
+      live: false, archived: true, recordedLaunch: true, observedExitCode: 7,
     }]);
     await flushPromises();
 

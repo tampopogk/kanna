@@ -147,6 +147,47 @@ mod tests {
         let _ = std::fs::remove_file(socket);
     }
     #[tokio::test]
+    async fn attempt_list_reports_run_liveness_to_history_consumers() {
+        let app = crate::http_api::test_support::test_router_with_seed(
+            "attempt-live",
+            "attempt-live",
+            |db| {
+                crate::db::terminal_archives::tests::seed(db);
+                crate::db::terminal_archives::tests::finish_every_run_except(db, "run-task-a-2");
+            },
+        );
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/tasks/task-a/terminal-attempts")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let attempts: Vec<serde_json::Value> = serde_json::from_slice(
+            &axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            attempts
+                .iter()
+                .map(|attempt| (
+                    attempt["id"].as_str().unwrap(),
+                    attempt["live"].as_bool().unwrap()
+                ))
+                .collect::<Vec<_>>(),
+            [
+                ("run-task-a-1", false),
+                ("run-task-a-2", true),
+                ("legacy-task-a", false)
+            ]
+        );
+    }
+    #[tokio::test]
     async fn attempt_archive_routes_enforce_ownership_and_keep_missing_history_explicit() {
         let app =
             crate::http_api::test_support::test_router_with_seed("archives", "archives", |db| {

@@ -121,6 +121,13 @@ export interface AgentTerminalAttempt {
   stage: string;
   startedAt: string;
   cwd: string | null;
+  /**
+   * The launching run has not terminated, so this attempt owns the session the
+   * viewer sees live rather than history. It is the run lifecycle, never
+   * archive availability: a finished attempt with no usable final frame is
+   * still history and `archived` only says whether that frame exists.
+   */
+  live: boolean;
   archived: boolean;
   recordedLaunch: boolean;
   observedExitCode: number | null;
