@@ -2330,6 +2330,77 @@ export function createMobileController(
     tasks: TaskSummary[]
   ): RepoSummary[] => mergeRepoSummaries([...repos, ...reposFromTasks(tasks)]);
 
+  const withoutDesktopRepoSource = (
+    repos: readonly RepoSummary[],
+    desktopId: string
+  ): RepoSummary[] => repos.flatMap((repo) => {
+    if (!repo.registeredDesktopIds?.includes(desktopId)) {
+      return [repo];
+    }
+    const registeredDesktopIds = repo.registeredDesktopIds.filter(
+      (candidate) => candidate !== desktopId
+    );
+    return registeredDesktopIds.length > 0
+      ? [{ ...repo, registeredDesktopIds }]
+      : [];
+  });
+
+  /**
+   * Remove the phone-local projections whose only remaining authority was a
+   * manual pairing. The source client is replaced immediately afterwards, but
+   * its cancellation cannot retract data it already published into the store.
+   * Advancing every collection fence also prevents a read started by that old
+   * client from putting the removed machine back after persistence completes.
+   */
+  const invalidateManualMachineWork = (desktopId: string) => {
+    collectionPublicationEpoch += 1;
+    taskCollectionsRevision += 1;
+    desktopCollectionsRevision += 1;
+    liveRepositoryRevision += 1;
+
+    const previous = store.getState();
+    const removedOnlyRepoIds = new Set(
+      previous.repos
+        .filter((repo) =>
+          repo.registeredDesktopIds?.includes(desktopId) &&
+          repo.registeredDesktopIds.every((candidate) => candidate === desktopId)
+        )
+        .map((repo) => repo.id)
+    );
+    const keepTask = (task: TaskSummary) =>
+      task.ownerDesktopId !== desktopId && !removedOnlyRepoIds.has(task.repoId);
+    const recentTasks = previous.recentTasks.filter(keepTask);
+    const selectedTask = previous.selectedTaskId
+      ? findTask(previous.selectedTaskId)
+      : null;
+
+    if (selectedTask && !keepTask(selectedTask)) {
+      stopTaskSession();
+      store.setSelectedTask(null);
+    }
+
+    lastExplicitRepos = withoutDesktopRepoSource(lastExplicitRepos, desktopId);
+    store.setRecentTasks(recentTasks);
+    store.setSearchResults(
+      previous.searchQuery,
+      previous.searchResults.filter(keepTask)
+    );
+    store.setRepos(mergeReposWithTaskRepos(lastExplicitRepos, recentTasks));
+    const selectedRepoId = store.getState().selectedRepoId;
+    store.setRepoTasks(
+      selectedRepoId
+        ? recentTasks.filter((task) => task.repoId === selectedRepoId)
+        : []
+    );
+    for (const slot of previous.taskUiSlots) {
+      if (slot.state === "ready" && !keepTask(slot.task)) {
+        store.removeTaskUiSlot(slot.slotId);
+      }
+    }
+    store.reconcileTaskUiSlots(recentTasks, { authoritative: true });
+    reconcileSelectedTask(true);
+  };
+
   const uniqueTasksById = (tasks: TaskSummary[]): TaskSummary[] => {
     const seen = new Set<string>();
     return tasks.filter((task) => {
@@ -2894,6 +2965,12 @@ export function createMobileController(
       });
       store.setTrustedDesktops(nextTrustedDesktops);
       store.setPendingAnonymousPushRevocations(pendingRevocations);
+      const remainsAccountBacked = store.getState().accountDesktops.some(
+        (desktop) => desktop.id === desktopId
+      );
+      if (!remainsAccountBacked) {
+        invalidateManualMachineWork(desktopId);
+      }
       options.replaceClientForTrustChange?.();
       await refreshDesktops({ force: true });
       if (shouldRevoke) {
