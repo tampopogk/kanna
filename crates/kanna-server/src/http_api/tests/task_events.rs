@@ -5943,3 +5943,5 @@ async fn min_events_counts_events_across_every_machine_of_a_fan_out() {
 }
 
 mod subscription_relevance;
+
+mod copilot_wake;

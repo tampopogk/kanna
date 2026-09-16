@@ -301,6 +301,16 @@ pub(super) async fn subscribe(
     if task.closed_at.is_some() {
         return Err((StatusCode::CONFLICT, "subscriber is closed".into()));
     }
+    let copilot = run.agent_provider.as_deref() == Some("copilot");
+    if request.delivery == harness_wake::Delivery::CopilotExtension && !copilot {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "copilot_extension requires a Copilot manager run".into(),
+        ));
+    }
+    if copilot && request.delivery == harness_wake::Delivery::Input {
+        request.delivery = harness_wake::Delivery::CopilotExtension;
+    }
     if request.delivery == harness_wake::Delivery::CodexAppServer
         && run.agent_provider.as_deref() != Some("codex")
     {
@@ -400,7 +410,12 @@ pub(super) async fn subscribe(
         .into_iter()
         .find(|row| row.active && row.task_id == owner && row.run_id == run.id)
     {
-        if existing.query != query || existing.delivery != request.delivery.as_str() {
+        if existing.query != query
+            || (existing.delivery != request.delivery.as_str()
+                && !(copilot
+                    && existing.delivery == "input"
+                    && request.delivery == harness_wake::Delivery::CopilotExtension))
+        {
             return Err((StatusCode::CONFLICT, "subscriber already has a different subscription; unsubscribe it before changing scope or delivery".into()));
         }
         return Ok(Json(response(&existing, request.diagnostic)));
@@ -422,11 +437,18 @@ pub(super) async fn subscribe(
                 && row.stage == task.stage
                 && row.branch == task.branch
                 && row.query == query
-                && row.delivery == request.delivery.as_str()
+                && (row.delivery == request.delivery.as_str()
+                    || (copilot
+                        && row.delivery == "input"
+                        && request.delivery == harness_wake::Delivery::CopilotExtension))
         })
     {
         existing.active = true;
-        existing.error = None;
+        // Copilot's unresolved native/legacy outcome is still uncertain after
+        // resubscribe. Keep its diagnostic until receipt reconciliation or ack.
+        if !copilot {
+            existing.error = None;
+        }
         if !save(&state, &mut existing).map_err(failure)? {
             return Err((
                 StatusCode::CONFLICT,

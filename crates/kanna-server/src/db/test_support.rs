@@ -513,6 +513,7 @@ impl Db {
                 ON transferred_task_history(task_id, sequence);
             "#,
         )?;
+        super::copilot_wake::create_schema(&self.conn)?;
         create_blocker_revision_triggers(&self.conn)?;
         let mut stmt = self
             .conn

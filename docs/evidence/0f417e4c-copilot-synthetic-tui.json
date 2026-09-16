@@ -1,0 +1,879 @@
+{
+  "taskId": "0f417e4c",
+  "date": "2026-09-15",
+  "baseHead": "c1b6e0632846b99d6106c41fb0f10601c115e8fc",
+  "outcome": "PASS for exercised synthetic TUI composition, queue and positive-history recovery cases; not full restart or product integration proof",
+  "result": {
+    "status": "completed",
+    "elapsedSeconds": 6.571,
+    "sessionId": "91d56906-3b22-4fb5-a03c-4b8d3d4f6dcd",
+    "checks": {
+      "identity": {
+        "pass": true,
+        "ready": {
+          "pid": 76917,
+          "ppid": 76557,
+          "expectedSessionId": "91d56906-3b22-4fb5-a03c-4b8d3d4f6dcd",
+          "sessionId": "91d56906-3b22-4fb5-a03c-4b8d3d4f6dcd",
+          "sdkEntry": "/Users/jeremyhale/Library/Caches/copilot/pkg/darwin-arm64/1.0.64/copilot-sdk/extension.js",
+          "sdkHash": "c4d7588911b6feb44522489bb77712120a7bdedc44a82e32f58e280bfebdd9c1"
+        },
+        "bridgePid": 76555,
+        "tuiPid": 76557
+      },
+      "noDraftReceipt": {
+        "state": "accepted",
+        "messageId": "dcd1ead3-7b67-4d2d-ae20-362c7d91f9c1",
+        "epoch": 1
+      },
+      "draftReceipt": {
+        "state": "accepted",
+        "messageId": "9d3d242c-305b-46a5-9948-7000ad8fd3b7",
+        "epoch": 1
+      },
+      "draftPreserved": {
+        "text": true,
+        "cursorEqual": true,
+        "beforeCursor": [
+          29,
+          36
+        ],
+        "afterCursor": [
+          29,
+          36
+        ],
+        "notInRequests": true
+      },
+      "cursorInsertion": {
+        "expected": "KANNA_SYNTHETIC_DRAFT_LEFT_ZRIGHT",
+        "pass": true
+      },
+      "humanSubmission": {
+        "expected": "KANNA_SYNTHETIC_DRAFT_LEFT_ZRIGHT",
+        "seen": true,
+        "noConcatenation": true
+      },
+      "busyStart": {
+        "state": "accepted",
+        "messageId": "91e26b4d-4375-48b8-a19e-e43bd57be6e1",
+        "epoch": 1
+      },
+      "busyEnqueueReceipt": {
+        "state": "accepted",
+        "messageId": "01054f30-068e-4d11-aca9-b7950f1fe8fb",
+        "epoch": 1
+      },
+      "busyNotSentEarly": true,
+      "busyEventuallyServiced": true,
+      "lostReceipt": {
+        "state": "uncertain",
+        "reason": "receipt deliberately lost before Kanna",
+        "epoch": 1
+      },
+      "recovery": {
+        "epoch": 2,
+        "sessionId": "91d56906-3b22-4fb5-a03c-4b8d3d4f6dcd",
+        "exactMatches": 1,
+        "eventIds": [
+          "532e24e9-604c-4e9c-a668-840bdc7f3c39"
+        ],
+        "sendCount": 1,
+        "acknowledged": false
+      }
+    },
+    "providerRequestCount": 6,
+    "cleanup": {
+      "remainingOwnedPids": [],
+      "listenerClosed": true,
+      "configurationRemoved": true,
+      "workspaceRemoved": true
+    },
+    "externalInference": "blocked by sandbox, no account credentials supplied",
+    "ownedProcesses": [
+      [
+        "76555",
+        "76539",
+        "76539",
+        "/Applications/Xcode.app/Contents/Developer/Library/Frameworks/Python3.framework/Versions/3.9/Resources/Python.app/Contents/MacOS/Python /Users/jeremyhale/.kanna/repos/kanna-2/.kanna-worktrees/task-0f417e4c/tests/cli-contract/helpers/pty-bridge.py /usr/bin/sandbox-exec -f /Users/jeremyhale/.kanna/repos/kanna-2/.kanna-worktrees/task-0f417e4c/.tmp/copilot-live-synthetic-0f417e4c/sandbox.sb /Users/jeremyhale/.local/bin/copilot -C /Users/jeremyhale/.kanna/repos/kanna-2/.kanna-worktrees/task-0f417e4c/.tmp/copilot-live-synthetic-0f417e4c/workspace --no-auto-update --no-remote-export --no-custom-instructions --disable-builtin-mcps --experimental --session-id 91d56906-3b22-4fb5-a03c-4b8d3d4f6dcd --model kanna-synthetic-local --log-dir /Users/jeremyhale/.kanna/repos/kanna-2/.kanna-worktrees/task-0f417e4c/.tmp/copilot-live-synthetic-0f417e4c/logs --log-level debug"
+      ],
+      [
+        "76557",
+        "76555",
+        "76557",
+        "/Users/jeremyhale/.local/bin/copilot -C /Users/jeremyhale/.kanna/repos/kanna-2/.kanna-worktrees/task-0f417e4c/.tmp/copilot-live-synthetic-0f417e4c/workspace --no-auto-update --no-remote-export --no-custom-instructions --disable-builtin-mcps --experimental --session-id 91d56906-3b22-4fb5-a03c-4b8d3d4f6dcd --model kanna-synthetic-local --log-dir /Users/jeremyhale/.kanna/repos/kanna-2/.kanna-worktrees/task-0f417e4c/.tmp/copilot-live-synthetic-0f417e4c/logs --log-level debug"
+      ],
+      [
+        "76803",
+        "76557",
+        "76557",
+        "(git)"
+      ],
+      [
+        "76794",
+        "76557",
+        "76557",
+        "(git)"
+      ],
+      [
+        "76917",
+        "76557",
+        "76557",
+        "/Users/jeremyhale/.local/bin/copilot /Users/jeremyhale/Library/Caches/copilot/pkg/darwin-arm64/1.0.64/preloads/extension_bootstrap.mjs"
+      ]
+    ]
+  },
+  "command": {
+    "args": [
+      "/Users/jeremyhale/.local/bin/copilot",
+      "-C",
+      "/Users/jeremyhale/.kanna/repos/kanna-2/.kanna-worktrees/task-0f417e4c/.tmp/copilot-live-synthetic-0f417e4c/workspace",
+      "--no-auto-update",
+      "--no-remote-export",
+      "--no-custom-instructions",
+      "--disable-builtin-mcps",
+      "--experimental",
+      "--session-id",
+      "91d56906-3b22-4fb5-a03c-4b8d3d4f6dcd",
+      "--model",
+      "kanna-synthetic-local",
+      "--log-dir",
+      "/Users/jeremyhale/.kanna/repos/kanna-2/.kanna-worktrees/task-0f417e4c/.tmp/copilot-live-synthetic-0f417e4c/logs",
+      "--log-level",
+      "debug"
+    ],
+    "sandbox": "/Users/jeremyhale/.kanna/repos/kanna-2/.kanna-worktrees/task-0f417e4c/.tmp/copilot-live-synthetic-0f417e4c/sandbox.sb",
+    "sessionId": "91d56906-3b22-4fb5-a03c-4b8d3d4f6dcd",
+    "environment": {
+      "TERM": "xterm-256color",
+      "TERM_PROGRAM": "kanna",
+      "TMPDIR": "/Users/jeremyhale/.kanna/repos/kanna-2/.kanna-worktrees/task-0f417e4c/.tmp/copilot-live-synthetic-0f417e4c/runtime",
+      "COPILOT_HOME": "/Users/jeremyhale/.kanna/repos/kanna-2/.kanna-worktrees/task-0f417e4c/.tmp/copilot-live-synthetic-0f417e4c/copilot-home",
+      "COPILOT_OFFLINE": "true",
+      "COPILOT_PROVIDER_BASE_URL": "http://127.0.0.1:63282/v1",
+      "COPILOT_PROVIDER_TYPE": "openai",
+      "COPILOT_PROVIDER_WIRE_API": "completions",
+      "XDG_CONFIG_HOME": "/Users/jeremyhale/.kanna/repos/kanna-2/.kanna-worktrees/task-0f417e4c/.tmp/copilot-live-synthetic-0f417e4c/xdg-config",
+      "XDG_CACHE_HOME": "/Users/jeremyhale/.kanna/repos/kanna-2/.kanna-worktrees/task-0f417e4c/.tmp/copilot-live-synthetic-0f417e4c/xdg-cache",
+      "XDG_DATA_HOME": "/Users/jeremyhale/.kanna/repos/kanna-2/.kanna-worktrees/task-0f417e4c/.tmp/copilot-live-synthetic-0f417e4c/xdg-data",
+      "GH_CONFIG_DIR": "/Users/jeremyhale/.kanna/repos/kanna-2/.kanna-worktrees/task-0f417e4c/.tmp/copilot-live-synthetic-0f417e4c/gh-config",
+      "NO_PROXY": "127.0.0.1"
+    },
+    "binarySha256": "5d27ea2257d8056e0e8063845e5d41f4e8fc37ae52a4052b62347b746299ca7a",
+    "deadlineSeconds": 90
+  },
+  "sandboxPolicy": "(version 1)\n(allow default)\n(deny network*)\n(allow network-outbound (remote ip \"localhost:63282\"))\n(deny file-write*)\n(allow file-write* (subpath \"/Users/jeremyhale/.kanna/repos/kanna-2/.kanna-worktrees/task-0f417e4c/.tmp/copilot-live-synthetic-0f417e4c\") (subpath \"/dev\"))\n",
+  "sandboxProbe": {
+    "returncode": 0,
+    "stdout": "{\"allowed\": \"connected\", \"other_loopback\": {\"errno\": 1, \"error\": \"[Errno 1] Operation not permitted\"}, \"external\": {\"errno\": 1, \"error\": \"[Errno 1] Operation not permitted\"}}\n",
+    "stderr": ""
+  },
+  "preLaunchFailure": {
+    "returncode": 65,
+    "stdout": "",
+    "stderr": "sandbox-exec: host must be * or localhost in network address\n\nBacktrace: \n/Users/jeremyhale/.kanna/repos/kanna-2/.kanna-worktrees/task-0f417e4c/.tmp/copilot-live-synthetic-0f417e4c/sandbox.sb:4:26:\n\t(remote ip \"127.0.0.1:63237\")\n\n"
+  },
+  "logIdentityAndDiagnostics": [
+    "2026-09-15T22:28:51.633Z [INFO] [rust:session_locks] Failed to create in-use lock file /Users/jeremyhale/Library/Caches/copilot/pkg/darwin-arm64/1.0.64/inuse.76557.lock: Operation not permitted (os error 1)",
+    "2026-09-15T22:28:51.633Z [WARNING] Model \"kanna-synthetic-local\" is not in the built-in catalog. Using defaults for: prompt tokens (COPILOT_PROVIDER_MAX_PROMPT_TOKENS), output tokens (COPILOT_PROVIDER_MAX_OUTPUT_TOKENS). Run `copilot help providers` for configuration details.",
+    "2026-09-15T22:28:51.677Z [WARNING] could not load remote agents, no GitHub remote found",
+    "2026-09-15T22:28:51.684Z [INFO] Starting Copilot CLI: 1.0.64",
+    "2026-09-15T22:28:51.784Z [ERROR] permissions.resetSessionApprovals failed: Error: Permission service is unavailable for this session.",
+    "2026-09-15T22:28:52.057Z [WARNING] No authentication info available",
+    "2026-09-15T22:28:52.083Z [WARNING] could not load remote agents, no GitHub remote found"
+  ],
+  "screens": {
+    "02-draft-before": {
+      "screen": [
+        "  Session   Gists                                                                                                       ",
+        "                                                                                                                        ",
+        "  \u256d\u2500\u256e\u256d\u2500\u256e                                                                                                                ",
+        "  \u2570\u2500\u256f\u2570\u2500\u256f  Copilot v1.0.64 uses AI.                                                                                      ",
+        "  \u2588 \u2598\u259d \u2588  /experimental                                                                                                 ",
+        "   \u2594\u2594\u2594\u2594                                                                                                                 ",
+        "                                                                                                                        ",
+        "\u25cf Memory is disabled. Use /memory on to re-enable.                                                                      ",
+        "                                                                                                                        ",
+        "\u25cf No copilot-instructions.md found. Run /init to generate.                                                              ",
+        "                                                                                                                        ",
+        "\u25cf Tip: /app                                                                                                             ",
+        "  \u2514 Prefer a visual workspace? Try out the GitHub Copilot desktop app                                                   ",
+        "    https://github.com/features/ai/github-app                                                                           ",
+        "                                                                                                                        ",
+        "! Model \"kanna-synthetic-local\" is not in the built-in catalog. Using defaults for: prompt tokens                       ",
+        "  (COPILOT_PROVIDER_MAX_PROMPT_TOKENS), output tokens (COPILOT_PROVIDER_MAX_OUTPUT_TOKENS). Run copilot help providers  ",
+        "   for configuration details.                                                                                           ",
+        "                                                                                                                        ",
+        "\u276f [Kanna supervisor] Synthetic event batch 1 for 0f417e4c. This is an engine wakeup, not an owner directive. [Kanna     ",
+        "  wake 0f417e4c/synthetic-run/91d56906-3b22-4fb5-a03c-4b8d3d4f6dcd/synthetic-watch/1]                                   ",
+        "                                                                                                                        ",
+        "\u25cf SYNTHETIC_OK_1                                                                                                        ",
+        "                                                                                                                        ",
+        "                                                                                                                        ",
+        "                                                                                                                        ",
+        "                                                                                                                        ",
+        "                                                                                                                        ",
+        "                                                                                                                        ",
+        "                                                                                                                        ",
+        "                                                                                                                        ",
+        "                                                                                                                        ",
+        "                                                                                                                        ",
+        "                                                                                                                        ",
+        " ~/.kanna/repos/kanna-2/.kanna-worktrees/task-0f417e4c/.tmp/copilot-live-synthetic-0f417e4c/workspace [\u2387 main%]         ",
+        "\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500",
+        "\u276f KANNA_SYNTHETIC_DRAFT_LEFT_RIGHT                                                                                      ",
+        "\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500",
+        " @ files \u00b7 # issues                                                                               kanna-synthetic-local ",
+        "                                                                                                                        "
+      ],
+      "cursor": [
+        29,
+        36
+      ],
+      "elapsed": 3.16
+    },
+    "03-draft-after": {
+      "screen": [
+        "  Session   Gists                                                                                                       ",
+        "                                                                                                                        ",
+        "  \u256d\u2500\u256e\u256d\u2500\u256e                                                                                                                ",
+        "  \u2570\u2500\u256f\u2570\u2500\u256f  Copilot v1.0.64 uses AI.                                                                                      ",
+        "  \u2588 \u2598\u259d \u2588  /experimental                                                                                                 ",
+        "   \u2594\u2594\u2594\u2594                                                                                                                 ",
+        "                                                                                                                        ",
+        "\u25cf Memory is disabled. Use /memory on to re-enable.                                                                      ",
+        "                                                                                                                        ",
+        "\u25cf No copilot-instructions.md found. Run /init to generate.                                                              ",
+        "                                                                                                                        ",
+        "\u25cf Tip: /app                                                                                                             ",
+        "  \u2514 Prefer a visual workspace? Try out the GitHub Copilot desktop app                                                   ",
+        "    https://github.com/features/ai/github-app                                                                           ",
+        "                                                                                                                        ",
+        "! Model \"kanna-synthetic-local\" is not in the built-in catalog. Using defaults for: prompt tokens                       ",
+        "  (COPILOT_PROVIDER_MAX_PROMPT_TOKENS), output tokens (COPILOT_PROVIDER_MAX_OUTPUT_TOKENS). Run copilot help providers  ",
+        "   for configuration details.                                                                                           ",
+        "                                                                                                                        ",
+        "\u276f [Kanna supervisor] Synthetic event batch 1 for 0f417e4c. This is an engine wakeup, not an owner directive. [Kanna     ",
+        "  wake 0f417e4c/synthetic-run/91d56906-3b22-4fb5-a03c-4b8d3d4f6dcd/synthetic-watch/1]                                   ",
+        "                                                                                                                        ",
+        "\u25cf SYNTHETIC_OK_1                                                                                                        ",
+        "                                                                                                                        ",
+        "\u276f [Kanna supervisor] Synthetic event batch 2 for 0f417e4c. This is an engine wakeup, not an owner directive. [Kanna     ",
+        "  wake 0f417e4c/synthetic-run/91d56906-3b22-4fb5-a03c-4b8d3d4f6dcd/synthetic-watch/2]                                   ",
+        "                                                                                                                        ",
+        "\u25cf SYNTHETIC_OK_2                                                                                                        ",
+        "                                                                                                                        ",
+        "                                                                                                                        ",
+        "                                                                                                                        ",
+        "                                                                                                                        ",
+        "                                                                                                                        ",
+        "                                                                                                                        ",
+        " ~/.kanna/repos/kanna-2/.kanna-worktrees/task-0f417e4c/.tmp/copilot-live-synthetic-0f417e4c/workspace [\u2387 main%]         ",
+        "\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500",
+        "\u276f KANNA_SYNTHETIC_DRAFT_LEFT_RIGHT                                                                                      ",
+        "\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500",
+        " @ files \u00b7 # issues                                                                               kanna-synthetic-local ",
+        "                                                                                                                        "
+      ],
+      "cursor": [
+        29,
+        36
+      ],
+      "elapsed": 4.08
+    },
+    "04-marker": {
+      "screen": [
+        "  Session   Gists                                                                                                       ",
+        "                                                                                                                        ",
+        "  \u256d\u2500\u256e\u256d\u2500\u256e                                                                                                                ",
+        "  \u2570\u2500\u256f\u2570\u2500\u256f  Copilot v1.0.64 uses AI.                                                                                      ",
+        "  \u2588 \u2598\u259d \u2588  /experimental                                                                                                 ",
+        "   \u2594\u2594\u2594\u2594                                                                                                                 ",
+        "                                                                                                                        ",
+        "\u25cf Memory is disabled. Use /memory on to re-enable.                                                                      ",
+        "                                                                                                                        ",
+        "\u25cf No copilot-instructions.md found. Run /init to generate.                                                              ",
+        "                                                                                                                        ",
+        "\u25cf Tip: /app                                                                                                             ",
+        "  \u2514 Prefer a visual workspace? Try out the GitHub Copilot desktop app                                                   ",
+        "    https://github.com/features/ai/github-app                                                                           ",
+        "                                                                                                                        ",
+        "! Model \"kanna-synthetic-local\" is not in the built-in catalog. Using defaults for: prompt tokens                       ",
+        "  (COPILOT_PROVIDER_MAX_PROMPT_TOKENS), output tokens (COPILOT_PROVIDER_MAX_OUTPUT_TOKENS). Run copilot help providers  ",
+        "   for configuration details.                                                                                           ",
+        "                                                                                                                        ",
+        "\u276f [Kanna supervisor] Synthetic event batch 1 for 0f417e4c. This is an engine wakeup, not an owner directive. [Kanna     ",
+        "  wake 0f417e4c/synthetic-run/91d56906-3b22-4fb5-a03c-4b8d3d4f6dcd/synthetic-watch/1]                                   ",
+        "                                                                                                                        ",
+        "\u25cf SYNTHETIC_OK_1                                                                                                        ",
+        "                                                                                                                        ",
+        "\u276f [Kanna supervisor] Synthetic event batch 2 for 0f417e4c. This is an engine wakeup, not an owner directive. [Kanna     ",
+        "  wake 0f417e4c/synthetic-run/91d56906-3b22-4fb5-a03c-4b8d3d4f6dcd/synthetic-watch/2]                                   ",
+        "                                                                                                                        ",
+        "\u25cf SYNTHETIC_OK_2                                                                                                        ",
+        "                                                                                                                        ",
+        "                                                                                                                        ",
+        "                                                                                                                        ",
+        "                                                                                                                        ",
+        "                                                                                                                        ",
+        "                                                                                                                        ",
+        " ~/.kanna/repos/kanna-2/.kanna-worktrees/task-0f417e4c/.tmp/copilot-live-synthetic-0f417e4c/workspace [\u2387 main%]         ",
+        "\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500",
+        "\u276f KANNA_SYNTHETIC_DRAFT_LEFT_ZRIGHT                                                                                     ",
+        "\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500",
+        " @ files \u00b7 # issues                                                                               kanna-synthetic-local ",
+        "                                                                                                                        "
+      ],
+      "cursor": [
+        30,
+        36
+      ],
+      "elapsed": 4.39
+    },
+    "06-busy": {
+      "screen": [
+        "  Session   Gists                                                                                                       ",
+        "                                                                                                                        ",
+        "   \u2594\u2594\u2594\u2594                                                                                                                \u2503",
+        "                                                                                                                       \u2503",
+        "\u25cf Memory is disabled. Use /memory on to re-enable.                                                                     \u2503",
+        "                                                                                                                       \u2503",
+        "\u25cf No copilot-instructions.md found. Run /init to generate.                                                             \u2503",
+        "                                                                                                                       \u2503",
+        "\u25cf Tip: /app                                                                                                            \u2503",
+        "  \u2514 Prefer a visual workspace? Try out the GitHub Copilot desktop app                                                  \u2503",
+        "    https://github.com/features/ai/github-app                                                                          \u2503",
+        "                                                                                                                       \u2503",
+        "! Model \"kanna-synthetic-local\" is not in the built-in catalog. Using defaults for: prompt tokens                      \u2503",
+        "  (COPILOT_PROVIDER_MAX_PROMPT_TOKENS), output tokens (COPILOT_PROVIDER_MAX_OUTPUT_TOKENS). Run copilot help providers \u2503",
+        "   for configuration details.                                                                                          \u2503",
+        "                                                                                                                       \u2503",
+        "\u276f [Kanna supervisor] Synthetic event batch 1 for 0f417e4c. This is an engine wakeup, not an owner directive. [Kanna    \u2503",
+        "  wake 0f417e4c/synthetic-run/91d56906-3b22-4fb5-a03c-4b8d3d4f6dcd/synthetic-watch/1]                                  \u2503",
+        "                                                                                                                       \u2503",
+        "\u25cf SYNTHETIC_OK_1                                                                                                       \u2503",
+        "                                                                                                                       \u2503",
+        "\u276f [Kanna supervisor] Synthetic event batch 2 for 0f417e4c. This is an engine wakeup, not an owner directive. [Kanna    \u2503",
+        "  wake 0f417e4c/synthetic-run/91d56906-3b22-4fb5-a03c-4b8d3d4f6dcd/synthetic-watch/2]                                  \u2503",
+        "                                                                                                                       \u2503",
+        "\u25cf SYNTHETIC_OK_2                                                                                                       \u2503",
+        "                                                                                                                       \u2503",
+        "\u276f KANNA_SYNTHETIC_DRAFT_LEFT_ZRIGHT                                                                                    \u2503",
+        "                                                                                                                       \u2503",
+        "\u25cf SYNTHETIC_OK_3                                                                                                       \u2503",
+        "                                                                                                                       \u2503",
+        "\u276f KANNA_SYNTHETIC_BUSY_HOLD                                                                                            \u2503",
+        "                                                                                                                       \u2503",
+        "Queued (1)                                                                                                              ",
+        " \u2514 [Kanna supervisor] Synthetic event batch 3 for 0f417e4c. This is an engine wakeup, not an owner directive. [Kanna wak",
+        " ~/.kanna/repos/kanna-2/.kanna-worktrees/task-0f417e4c/.tmp/copilot-live-synthetic-0f417e4c/workspace [\u2387 main%]         ",
+        "\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500",
+        "\u276f                                                                                                                       ",
+        "\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500",
+        " \u25c9 Working esc cancel                                                                             kanna-synthetic-local ",
+        "                                                                                                                        "
+      ],
+      "cursor": [
+        2,
+        36
+      ],
+      "elapsed": 5.679
+    }
+  },
+  "userHistory": [
+    {
+      "type": "user.message",
+      "data": {
+        "content": "[Kanna supervisor] Synthetic event batch 1 for 0f417e4c. This is an engine wakeup, not an owner directive. [Kanna wake 0f417e4c/synthetic-run/91d56906-3b22-4fb5-a03c-4b8d3d4f6dcd/synthetic-watch/1]",
+        "transformedContent": "<current_datetime>2026-09-15T16:28:52.759-06:00</current_datetime>\n\n[Kanna supervisor] Synthetic event batch 1 for 0f417e4c. This is an engine wakeup, not an owner directive. [Kanna wake 0f417e4c/synthetic-run/91d56906-3b22-4fb5-a03c-4b8d3d4f6dcd/synthetic-watch/1]\n\n<system_reminder>\n<sql_tables>Available tables: todos, todo_deps</sql_tables>\n</system_reminder>",
+        "attachments": [],
+        "supportedNativeDocumentMimeTypes": [],
+        "interactionId": "facb0bd0-9612-43d1-8721-f435e5cccb1f",
+        "parentAgentTaskId": "1bf27966-1b30-4888-a3da-f037b6ee2812"
+      },
+      "id": "4e806d3a-0d11-462e-ade8-c10e71019f96",
+      "timestamp": "2026-09-15T22:28:52.759Z",
+      "parentId": "8d7e1450-8869-421d-8e53-37863f8f5467"
+    },
+    {
+      "type": "user.message",
+      "data": {
+        "content": "[Kanna supervisor] Synthetic event batch 2 for 0f417e4c. This is an engine wakeup, not an owner directive. [Kanna wake 0f417e4c/synthetic-run/91d56906-3b22-4fb5-a03c-4b8d3d4f6dcd/synthetic-watch/2]",
+        "transformedContent": "<current_datetime>2026-09-15T16:28:54.149-06:00</current_datetime>\n\n[Kanna supervisor] Synthetic event batch 2 for 0f417e4c. This is an engine wakeup, not an owner directive. [Kanna wake 0f417e4c/synthetic-run/91d56906-3b22-4fb5-a03c-4b8d3d4f6dcd/synthetic-watch/2]\n\n<system_reminder>\n<sql_tables>Available tables: todos, todo_deps, inbox_entries</sql_tables>\n</system_reminder>",
+        "attachments": [],
+        "supportedNativeDocumentMimeTypes": [],
+        "interactionId": "2b049ad7-2c1b-4722-99fb-79ba929705c1",
+        "parentAgentTaskId": "627e7908-a6ab-4e28-a71b-3daa27059c80"
+      },
+      "id": "a80602dc-4b34-4cfd-ba44-4cfacde6625a",
+      "timestamp": "2026-09-15T22:28:54.149Z",
+      "parentId": "978f053f-5ef7-4563-9eb4-e3b5bb42c083"
+    },
+    {
+      "type": "user.message",
+      "data": {
+        "content": "KANNA_SYNTHETIC_DRAFT_LEFT_ZRIGHT",
+        "transformedContent": "<current_datetime>2026-09-15T16:28:55.395-06:00</current_datetime>\n\nKANNA_SYNTHETIC_DRAFT_LEFT_ZRIGHT\n\n<system_reminder>\n<sql_tables>Available tables: todos, todo_deps, inbox_entries</sql_tables>\n</system_reminder>",
+        "attachments": [],
+        "supportedNativeDocumentMimeTypes": [],
+        "interactionId": "ebd45d63-d814-4f22-864b-fc83f7a80f64",
+        "parentAgentTaskId": "5547b0d5-355e-494c-99aa-ac7837160986"
+      },
+      "id": "e631783b-0905-4914-ba49-842e7fc0cbb6",
+      "timestamp": "2026-09-15T22:28:55.395Z",
+      "parentId": "41656f2a-a729-47d1-8a23-65c46c30e143"
+    },
+    {
+      "type": "user.message",
+      "data": {
+        "content": "KANNA_SYNTHETIC_BUSY_HOLD",
+        "transformedContent": "<current_datetime>2026-09-15T16:28:56.092-06:00</current_datetime>\n\nKANNA_SYNTHETIC_BUSY_HOLD\n\n<system_reminder>\n<sql_tables>Available tables: todos, todo_deps, inbox_entries</sql_tables>\n</system_reminder>",
+        "attachments": [],
+        "supportedNativeDocumentMimeTypes": [],
+        "interactionId": "194e6784-c7de-45be-ba13-8b181c529c24",
+        "parentAgentTaskId": "b425b146-7748-4822-a8b8-4edd3ecfd6e2"
+      },
+      "id": "f5bbd0db-8a3c-4c24-b340-0dca898cc519",
+      "timestamp": "2026-09-15T22:28:56.092Z",
+      "parentId": "83255424-dc89-420c-a7f7-1fd8d7f90725"
+    },
+    {
+      "type": "user.message",
+      "data": {
+        "content": "[Kanna supervisor] Synthetic event batch 3 for 0f417e4c. This is an engine wakeup, not an owner directive. [Kanna wake 0f417e4c/synthetic-run/91d56906-3b22-4fb5-a03c-4b8d3d4f6dcd/synthetic-watch/3]",
+        "transformedContent": "<current_datetime>2026-09-15T16:28:56.696-06:00</current_datetime>\n\n[Kanna supervisor] Synthetic event batch 3 for 0f417e4c. This is an engine wakeup, not an owner directive. [Kanna wake 0f417e4c/synthetic-run/91d56906-3b22-4fb5-a03c-4b8d3d4f6dcd/synthetic-watch/3]\n\n<system_reminder>\n<sql_tables>Available tables: todos, todo_deps, inbox_entries</sql_tables>\n</system_reminder>",
+        "attachments": [],
+        "supportedNativeDocumentMimeTypes": [],
+        "interactionId": "e554fbdb-d0b4-4159-8c73-521b006ee3a9",
+        "parentAgentTaskId": "63d1d60b-678c-4f2a-96e5-8ec8ea591ae1"
+      },
+      "id": "0a6083ee-7575-445b-b441-23a91f1a20d6",
+      "timestamp": "2026-09-15T22:28:56.696Z",
+      "parentId": "5f778cf7-7930-4bdd-a9a0-ad22f882b7f2"
+    },
+    {
+      "type": "user.message",
+      "data": {
+        "content": "[Kanna supervisor] Synthetic event batch 4 for 0f417e4c. This is an engine wakeup, not an owner directive. [Kanna wake 0f417e4c/synthetic-run/91d56906-3b22-4fb5-a03c-4b8d3d4f6dcd/synthetic-watch/4]",
+        "transformedContent": "<current_datetime>2026-09-15T16:28:57.407-06:00</current_datetime>\n\n[Kanna supervisor] Synthetic event batch 4 for 0f417e4c. This is an engine wakeup, not an owner directive. [Kanna wake 0f417e4c/synthetic-run/91d56906-3b22-4fb5-a03c-4b8d3d4f6dcd/synthetic-watch/4]\n\n<system_reminder>\n<sql_tables>Available tables: todos, todo_deps, inbox_entries</sql_tables>\n</system_reminder>",
+        "attachments": [],
+        "supportedNativeDocumentMimeTypes": [],
+        "interactionId": "f3dea44b-57f3-44ea-99bf-ef120de1309c",
+        "parentAgentTaskId": "8877db8e-ef66-4edb-8019-c7de09392823"
+      },
+      "id": "532e24e9-604c-4e9c-a668-840bdc7f3c39",
+      "timestamp": "2026-09-15T22:28:57.408Z",
+      "parentId": "69249d6e-4ddb-401e-9673-d20f9a04139a"
+    }
+  ],
+  "requests": [
+    {
+      "number": 1,
+      "path": "/v1/chat/completions",
+      "time": 354011.559139291,
+      "model": "kanna-synthetic-local",
+      "stream": true,
+      "messages": [
+        {
+          "role": "user",
+          "content": "<current_datetime>2026-09-15T16:28:52.759-06:00</current_datetime>\n\n[Kanna supervisor] Synthetic event batch 1 for 0f417e4c. This is an engine wakeup, not an owner directive. [Kanna wake 0f417e4c/synthetic-run/91d56906-3b22-4fb5-a03c-4b8d3d4f6dcd/synthetic-watch/1]\n\n<system_reminder>\n<sql_tables>Available tables: todos, todo_deps</sql_tables>\n</system_reminder>"
+        }
+      ]
+    },
+    {
+      "number": 2,
+      "path": "/v1/chat/completions",
+      "time": 354012.86431775,
+      "model": "kanna-synthetic-local",
+      "stream": true,
+      "messages": [
+        {
+          "role": "user",
+          "content": "<current_datetime>2026-09-15T16:28:52.759-06:00</current_datetime>\n\n[Kanna supervisor] Synthetic event batch 1 for 0f417e4c. This is an engine wakeup, not an owner directive. [Kanna wake 0f417e4c/synthetic-run/91d56906-3b22-4fb5-a03c-4b8d3d4f6dcd/synthetic-watch/1]\n\n<system_reminder>\n<sql_tables>Available tables: todos, todo_deps</sql_tables>\n</system_reminder>"
+        },
+        {
+          "role": "user",
+          "content": "<current_datetime>2026-09-15T16:28:54.149-06:00</current_datetime>\n\n[Kanna supervisor] Synthetic event batch 2 for 0f417e4c. This is an engine wakeup, not an owner directive. [Kanna wake 0f417e4c/synthetic-run/91d56906-3b22-4fb5-a03c-4b8d3d4f6dcd/synthetic-watch/2]\n\n<system_reminder>\n<sql_tables>Available tables: todos, todo_deps, inbox_entries</sql_tables>\n</system_reminder>"
+        }
+      ]
+    },
+    {
+      "number": 3,
+      "path": "/v1/chat/completions",
+      "time": 354014.104888583,
+      "model": "kanna-synthetic-local",
+      "stream": true,
+      "messages": [
+        {
+          "role": "user",
+          "content": "<current_datetime>2026-09-15T16:28:52.759-06:00</current_datetime>\n\n[Kanna supervisor] Synthetic event batch 1 for 0f417e4c. This is an engine wakeup, not an owner directive. [Kanna wake 0f417e4c/synthetic-run/91d56906-3b22-4fb5-a03c-4b8d3d4f6dcd/synthetic-watch/1]\n\n<system_reminder>\n<sql_tables>Available tables: todos, todo_deps</sql_tables>\n</system_reminder>"
+        },
+        {
+          "role": "user",
+          "content": "<current_datetime>2026-09-15T16:28:54.149-06:00</current_datetime>\n\n[Kanna supervisor] Synthetic event batch 2 for 0f417e4c. This is an engine wakeup, not an owner directive. [Kanna wake 0f417e4c/synthetic-run/91d56906-3b22-4fb5-a03c-4b8d3d4f6dcd/synthetic-watch/2]\n\n<system_reminder>\n<sql_tables>Available tables: todos, todo_deps, inbox_entries</sql_tables>\n</system_reminder>"
+        },
+        {
+          "role": "user",
+          "content": "<current_datetime>2026-09-15T16:28:55.395-06:00</current_datetime>\n\nKANNA_SYNTHETIC_DRAFT_LEFT_ZRIGHT\n\n<system_reminder>\n<sql_tables>Available tables: todos, todo_deps, inbox_entries</sql_tables>\n</system_reminder>"
+        }
+      ]
+    },
+    {
+      "number": 4,
+      "path": "/v1/chat/completions",
+      "time": 354014.797606041,
+      "model": "kanna-synthetic-local",
+      "stream": true,
+      "messages": [
+        {
+          "role": "user",
+          "content": "<current_datetime>2026-09-15T16:28:52.759-06:00</current_datetime>\n\n[Kanna supervisor] Synthetic event batch 1 for 0f417e4c. This is an engine wakeup, not an owner directive. [Kanna wake 0f417e4c/synthetic-run/91d56906-3b22-4fb5-a03c-4b8d3d4f6dcd/synthetic-watch/1]\n\n<system_reminder>\n<sql_tables>Available tables: todos, todo_deps</sql_tables>\n</system_reminder>"
+        },
+        {
+          "role": "user",
+          "content": "<current_datetime>2026-09-15T16:28:54.149-06:00</current_datetime>\n\n[Kanna supervisor] Synthetic event batch 2 for 0f417e4c. This is an engine wakeup, not an owner directive. [Kanna wake 0f417e4c/synthetic-run/91d56906-3b22-4fb5-a03c-4b8d3d4f6dcd/synthetic-watch/2]\n\n<system_reminder>\n<sql_tables>Available tables: todos, todo_deps, inbox_entries</sql_tables>\n</system_reminder>"
+        },
+        {
+          "role": "user",
+          "content": "<current_datetime>2026-09-15T16:28:55.395-06:00</current_datetime>\n\nKANNA_SYNTHETIC_DRAFT_LEFT_ZRIGHT\n\n<system_reminder>\n<sql_tables>Available tables: todos, todo_deps, inbox_entries</sql_tables>\n</system_reminder>"
+        },
+        {
+          "role": "user",
+          "content": "<current_datetime>2026-09-15T16:28:56.092-06:00</current_datetime>\n\nKANNA_SYNTHETIC_BUSY_HOLD\n\n<system_reminder>\n<sql_tables>Available tables: todos, todo_deps, inbox_entries</sql_tables>\n</system_reminder>"
+        }
+      ]
+    },
+    {
+      "number": 5,
+      "path": "/v1/chat/completions",
+      "time": 354015.403001958,
+      "model": "kanna-synthetic-local",
+      "stream": true,
+      "messages": [
+        {
+          "role": "user",
+          "content": "<current_datetime>2026-09-15T16:28:52.759-06:00</current_datetime>\n\n[Kanna supervisor] Synthetic event batch 1 for 0f417e4c. This is an engine wakeup, not an owner directive. [Kanna wake 0f417e4c/synthetic-run/91d56906-3b22-4fb5-a03c-4b8d3d4f6dcd/synthetic-watch/1]\n\n<system_reminder>\n<sql_tables>Available tables: todos, todo_deps</sql_tables>\n</system_reminder>"
+        },
+        {
+          "role": "user",
+          "content": "<current_datetime>2026-09-15T16:28:54.149-06:00</current_datetime>\n\n[Kanna supervisor] Synthetic event batch 2 for 0f417e4c. This is an engine wakeup, not an owner directive. [Kanna wake 0f417e4c/synthetic-run/91d56906-3b22-4fb5-a03c-4b8d3d4f6dcd/synthetic-watch/2]\n\n<system_reminder>\n<sql_tables>Available tables: todos, todo_deps, inbox_entries</sql_tables>\n</system_reminder>"
+        },
+        {
+          "role": "user",
+          "content": "<current_datetime>2026-09-15T16:28:55.395-06:00</current_datetime>\n\nKANNA_SYNTHETIC_DRAFT_LEFT_ZRIGHT\n\n<system_reminder>\n<sql_tables>Available tables: todos, todo_deps, inbox_entries</sql_tables>\n</system_reminder>"
+        },
+        {
+          "role": "user",
+          "content": "<current_datetime>2026-09-15T16:28:56.092-06:00</current_datetime>\n\nKANNA_SYNTHETIC_BUSY_HOLD\n\n<system_reminder>\n<sql_tables>Available tables: todos, todo_deps, inbox_entries</sql_tables>\n</system_reminder>"
+        },
+        {
+          "role": "user",
+          "content": "<current_datetime>2026-09-15T16:28:56.696-06:00</current_datetime>\n\n[Kanna supervisor] Synthetic event batch 3 for 0f417e4c. This is an engine wakeup, not an owner directive. [Kanna wake 0f417e4c/synthetic-run/91d56906-3b22-4fb5-a03c-4b8d3d4f6dcd/synthetic-watch/3]\n\n<system_reminder>\n<sql_tables>Available tables: todos, todo_deps, inbox_entries</sql_tables>\n</system_reminder>"
+        }
+      ]
+    },
+    {
+      "number": 6,
+      "path": "/v1/chat/completions",
+      "time": 354016.118073666,
+      "model": "kanna-synthetic-local",
+      "stream": true,
+      "messages": [
+        {
+          "role": "user",
+          "content": "<current_datetime>2026-09-15T16:28:52.759-06:00</current_datetime>\n\n[Kanna supervisor] Synthetic event batch 1 for 0f417e4c. This is an engine wakeup, not an owner directive. [Kanna wake 0f417e4c/synthetic-run/91d56906-3b22-4fb5-a03c-4b8d3d4f6dcd/synthetic-watch/1]\n\n<system_reminder>\n<sql_tables>Available tables: todos, todo_deps</sql_tables>\n</system_reminder>"
+        },
+        {
+          "role": "user",
+          "content": "<current_datetime>2026-09-15T16:28:54.149-06:00</current_datetime>\n\n[Kanna supervisor] Synthetic event batch 2 for 0f417e4c. This is an engine wakeup, not an owner directive. [Kanna wake 0f417e4c/synthetic-run/91d56906-3b22-4fb5-a03c-4b8d3d4f6dcd/synthetic-watch/2]\n\n<system_reminder>\n<sql_tables>Available tables: todos, todo_deps, inbox_entries</sql_tables>\n</system_reminder>"
+        },
+        {
+          "role": "user",
+          "content": "<current_datetime>2026-09-15T16:28:55.395-06:00</current_datetime>\n\nKANNA_SYNTHETIC_DRAFT_LEFT_ZRIGHT\n\n<system_reminder>\n<sql_tables>Available tables: todos, todo_deps, inbox_entries</sql_tables>\n</system_reminder>"
+        },
+        {
+          "role": "user",
+          "content": "<current_datetime>2026-09-15T16:28:56.092-06:00</current_datetime>\n\nKANNA_SYNTHETIC_BUSY_HOLD\n\n<system_reminder>\n<sql_tables>Available tables: todos, todo_deps, inbox_entries</sql_tables>\n</system_reminder>"
+        },
+        {
+          "role": "user",
+          "content": "<current_datetime>2026-09-15T16:28:56.696-06:00</current_datetime>\n\n[Kanna supervisor] Synthetic event batch 3 for 0f417e4c. This is an engine wakeup, not an owner directive. [Kanna wake 0f417e4c/synthetic-run/91d56906-3b22-4fb5-a03c-4b8d3d4f6dcd/synthetic-watch/3]\n\n<system_reminder>\n<sql_tables>Available tables: todos, todo_deps, inbox_entries</sql_tables>\n</system_reminder>"
+        },
+        {
+          "role": "user",
+          "content": "<current_datetime>2026-09-15T16:28:57.407-06:00</current_datetime>\n\n[Kanna supervisor] Synthetic event batch 4 for 0f417e4c. This is an engine wakeup, not an owner directive. [Kanna wake 0f417e4c/synthetic-run/91d56906-3b22-4fb5-a03c-4b8d3d4f6dcd/synthetic-watch/4]\n\n<system_reminder>\n<sql_tables>Available tables: todos, todo_deps, inbox_entries</sql_tables>\n</system_reminder>"
+        }
+      ]
+    }
+  ],
+  "actions": [
+    {
+      "id": "no-draft",
+      "operation": "send",
+      "sessionId": "91d56906-3b22-4fb5-a03c-4b8d3d4f6dcd",
+      "prompt": "[Kanna supervisor] Synthetic event batch 1 for 0f417e4c. This is an engine wakeup, not an owner directive. [Kanna wake 0f417e4c/synthetic-run/91d56906-3b22-4fb5-a03c-4b8d3d4f6dcd/synthetic-watch/1]"
+    },
+    {
+      "keysHex": "4b414e4e415f53594e5448455449435f44524146545f4c4546545f5249474854",
+      "elapsed": 2.5983764579868875
+    },
+    {
+      "keysHex": "1b5b441b5b441b5b441b5b441b5b44",
+      "elapsed": 2.853499290999025
+    },
+    {
+      "id": "with-draft",
+      "operation": "send",
+      "sessionId": "91d56906-3b22-4fb5-a03c-4b8d3d4f6dcd",
+      "prompt": "[Kanna supervisor] Synthetic event batch 2 for 0f417e4c. This is an engine wakeup, not an owner directive. [Kanna wake 0f417e4c/synthetic-run/91d56906-3b22-4fb5-a03c-4b8d3d4f6dcd/synthetic-watch/2]"
+    },
+    {
+      "keysHex": "5a",
+      "elapsed": 4.082414750009775
+    },
+    {
+      "keysHex": "0d",
+      "elapsed": 4.390524541027844
+    },
+    {
+      "id": "busy-start",
+      "operation": "send",
+      "sessionId": "91d56906-3b22-4fb5-a03c-4b8d3d4f6dcd",
+      "prompt": "KANNA_SYNTHETIC_BUSY_HOLD"
+    },
+    {
+      "id": "busy-notice",
+      "operation": "send",
+      "sessionId": "91d56906-3b22-4fb5-a03c-4b8d3d4f6dcd",
+      "prompt": "[Kanna supervisor] Synthetic event batch 3 for 0f417e4c. This is an engine wakeup, not an owner directive. [Kanna wake 0f417e4c/synthetic-run/91d56906-3b22-4fb5-a03c-4b8d3d4f6dcd/synthetic-watch/3]"
+    },
+    {
+      "id": "lost-receipt",
+      "operation": "send",
+      "sessionId": "91d56906-3b22-4fb5-a03c-4b8d3d4f6dcd",
+      "prompt": "[Kanna supervisor] Synthetic event batch 4 for 0f417e4c. This is an engine wakeup, not an owner directive. [Kanna wake 0f417e4c/synthetic-run/91d56906-3b22-4fb5-a03c-4b8d3d4f6dcd/synthetic-watch/4]",
+      "dropReceipt": true
+    },
+    {
+      "id": "recover",
+      "operation": "reconnect-history",
+      "sessionId": "91d56906-3b22-4fb5-a03c-4b8d3d4f6dcd"
+    }
+  ],
+  "suppressedReceipt": {
+    "id": "lost-receipt",
+    "messageId": "b585c28d-aa06-40a7-8cd2-deeef1854ffb",
+    "epoch": 1,
+    "sessionId": "91d56906-3b22-4fb5-a03c-4b8d3d4f6dcd"
+  },
+  "usageEvents": [
+    {
+      "type": "assistant.usage",
+      "data": {
+        "model": "kanna-synthetic-local",
+        "inputTokens": 0,
+        "outputTokens": 0,
+        "cacheReadTokens": 0,
+        "cacheWriteTokens": 0,
+        "reasoningTokens": 0,
+        "cost": 0,
+        "duration": 30,
+        "timeToFirstTokenMs": 19.092125,
+        "interTokenLatencyMs": 0.008791,
+        "initiator": "user",
+        "apiCallId": "fixture-1",
+        "apiEndpoint": "/chat/completions",
+        "quotaSnapshots": {},
+        "finishReason": "stop",
+        "contentFilterTriggered": false
+      },
+      "id": "0c5ef9e6-fb4f-4204-960e-290bf9d073ed",
+      "timestamp": "2026-09-15T22:28:52.909Z",
+      "parentId": "64c1b242-900c-4f22-bbe6-0eaeb98dc1f9",
+      "ephemeral": true
+    },
+    {
+      "type": "assistant.usage",
+      "data": {
+        "model": "kanna-synthetic-local",
+        "inputTokens": 0,
+        "outputTokens": 0,
+        "cacheReadTokens": 0,
+        "cacheWriteTokens": 0,
+        "reasoningTokens": 0,
+        "cost": 0,
+        "duration": 16,
+        "timeToFirstTokenMs": 15.026125,
+        "interTokenLatencyMs": 0.009125,
+        "initiator": "user",
+        "apiCallId": "fixture-2",
+        "apiEndpoint": "/chat/completions",
+        "quotaSnapshots": {},
+        "finishReason": "stop",
+        "contentFilterTriggered": false
+      },
+      "id": "8f6a0c34-0622-4e7e-953a-2cedc56d28c4",
+      "timestamp": "2026-09-15T22:28:54.203Z",
+      "parentId": "845fc8ab-2d63-4e81-be33-c2b391010f21",
+      "ephemeral": true
+    },
+    {
+      "type": "assistant.usage",
+      "data": {
+        "model": "kanna-synthetic-local",
+        "inputTokens": 0,
+        "outputTokens": 0,
+        "cacheReadTokens": 0,
+        "cacheWriteTokens": 0,
+        "reasoningTokens": 0,
+        "cost": 0,
+        "duration": 28,
+        "timeToFirstTokenMs": 17.02325,
+        "interTokenLatencyMs": 0.008957999999999999,
+        "initiator": "user",
+        "apiCallId": "fixture-3",
+        "apiEndpoint": "/chat/completions",
+        "quotaSnapshots": {},
+        "finishReason": "stop",
+        "contentFilterTriggered": false
+      },
+      "id": "f09aed3d-c000-4c1d-925d-41acdfbe5dfd",
+      "timestamp": "2026-09-15T22:28:55.456Z",
+      "parentId": "1c215c7b-8b6e-4114-9a97-70243a87ed5f",
+      "ephemeral": true
+    },
+    {
+      "type": "assistant.usage",
+      "data": {
+        "model": "kanna-synthetic-local",
+        "inputTokens": 0,
+        "outputTokens": 0,
+        "cacheReadTokens": 0,
+        "cacheWriteTokens": 0,
+        "reasoningTokens": 0,
+        "cost": 0,
+        "duration": 513,
+        "timeToFirstTokenMs": 513.030125,
+        "interTokenLatencyMs": 0.011041,
+        "initiator": "user",
+        "apiCallId": "fixture-4",
+        "apiEndpoint": "/chat/completions",
+        "quotaSnapshots": {},
+        "finishReason": "stop",
+        "contentFilterTriggered": false
+      },
+      "id": "38abcf01-ffb5-474f-992f-0836fae946b0",
+      "timestamp": "2026-09-15T22:28:56.635Z",
+      "parentId": "6b35423a-a710-4bc2-a602-676fc6288477",
+      "ephemeral": true
+    },
+    {
+      "type": "assistant.usage",
+      "data": {
+        "model": "kanna-synthetic-local",
+        "inputTokens": 0,
+        "outputTokens": 0,
+        "cacheReadTokens": 0,
+        "cacheWriteTokens": 0,
+        "reasoningTokens": 0,
+        "cost": 0,
+        "duration": 23,
+        "timeToFirstTokenMs": 15.024583,
+        "interTokenLatencyMs": 0.008917,
+        "initiator": "user",
+        "apiCallId": "fixture-5",
+        "apiEndpoint": "/chat/completions",
+        "quotaSnapshots": {},
+        "finishReason": "stop",
+        "contentFilterTriggered": false
+      },
+      "id": "eafa09d2-1c81-4c47-8b0d-3c1ca9d6b9eb",
+      "timestamp": "2026-09-15T22:28:56.749Z",
+      "parentId": "35ecefe0-5996-47b3-a8cf-761268886af9",
+      "ephemeral": true
+    },
+    {
+      "type": "assistant.usage",
+      "data": {
+        "model": "kanna-synthetic-local",
+        "inputTokens": 0,
+        "outputTokens": 0,
+        "cacheReadTokens": 0,
+        "cacheWriteTokens": 0,
+        "reasoningTokens": 0,
+        "cost": 0,
+        "duration": 16,
+        "timeToFirstTokenMs": 16.028375,
+        "interTokenLatencyMs": 0.008959,
+        "initiator": "user",
+        "apiCallId": "fixture-6",
+        "apiEndpoint": "/chat/completions",
+        "quotaSnapshots": {},
+        "finishReason": "stop",
+        "contentFilterTriggered": false
+      },
+      "id": "dd03a018-bd77-419d-9119-9a7023232ed6",
+      "timestamp": "2026-09-15T22:28:57.458Z",
+      "parentId": "0ca3a526-39c0-4079-8d4a-628a7f9c0308",
+      "ephemeral": true
+    }
+  ],
+  "limits": [
+    "No real model inference or tool read/ack. Usage zeros are synthetic provider telemetry, not a paid account check.",
+    "The receipt was lost at extension-to-Kanna boundary. Public SDK host receipt itself was not lost.",
+    "reconnect-history increments a fixture transport epoch; it does not restart the extension, reconnect its stdio, or restart Copilot.",
+    "No live disabled/unregistered extension or absent-history test in this one TUI run.",
+    "No product adapter, server receipt transaction, Kanna durable subscription, or daemon involved."
+  ],
+  "fixtureSources": {
+    "run.py": "import codecs, hashlib, http.server, json, os, shutil, signal, socket, subprocess, threading, time, uuid\nfrom pathlib import Path\nimport pyte\nroot=Path(__file__).resolve().parent\nrepo=root.parents[1]\nwork=root/'workspace'; home=root/'copilot-home'; runtime=root/'runtime'\nfor p in [work,home,runtime,root/'control',root/'logs',root/'xdg-config',root/'xdg-cache',root/'xdg-data',root/'gh-config']:p.mkdir(exist_ok=True)\next=work/'.github/extensions/kanna-synthetic';ext.mkdir(parents=True,exist_ok=True)\nshutil.copy(root/'extension.mjs',ext/'extension.mjs')\n(home/'config.json').write_text(json.dumps({'banner':'never','autoUpdate':False,'trustedFolders':[str(work)],'memory':False,'defaultMode':'interactive','experimental':True}))\nsubprocess.run(['git','init','-q',str(work)],check=True)\nrequests=[]; requests_lock=threading.Lock(); busy_release=threading.Event(); busy_entered=threading.Event()\nclass Provider(http.server.BaseHTTPRequestHandler):\n protocol_version='HTTP/1.1'\n def do_GET(self):\n  if self.path!='/v1/models': self.send_error(404);return\n  self.reply({'object':'list','data':[{'id':'kanna-synthetic-local','object':'model','owned_by':'fixture'}]})\n def reply(self,value):\n  body=json.dumps(value).encode();self.send_response(200);self.send_header('Content-Type','application/json');self.send_header('Content-Length',str(len(body)));self.end_headers();self.wfile.write(body)\n def do_POST(self):\n  body=json.loads(self.rfile.read(int(self.headers.get('Content-Length','0'))))\n  with requests_lock:\n   n=len(requests)+1;record={'number':n,'path':self.path,'time':time.monotonic(),'body':body};requests.append(record)\n   (root/'provider-requests.json').write_text(json.dumps(requests,indent=2))\n  if self.path!='/v1/chat/completions': self.send_error(404);return\n  users=[m.get('content') for m in body.get('messages',[]) if m.get('role')=='user']\n  latest=users[-1] if users else ''\n  if 'KANNA_SYNTHETIC_BUSY_HOLD' in str(latest): busy_entered.set();busy_release.wait(12)\n  content=f'SYNTHETIC_OK_{n}'\n  if body.get('stream'):\n   self.send_response(200);self.send_header('Content-Type','text/event-stream');self.send_header('Connection','close');self.end_headers()\n   for delta,finish in [({'role':'assistant','content':content},None),({},'stop')]:\n    chunk={'id':f'fixture-{n}','object':'chat.completion.chunk','created':int(time.time()),'model':'kanna-synthetic-local','choices':[{'index':0,'delta':delta,'finish_reason':finish}]}\n    self.wfile.write(('data: '+json.dumps(chunk)+'\\n\\n').encode());self.wfile.flush()\n   self.wfile.write(b'data: [DONE]\\n\\n');self.wfile.flush();self.close_connection=True\n  else:self.reply({'id':f'fixture-{n}','object':'chat.completion','created':int(time.time()),'model':'kanna-synthetic-local','choices':[{'index':0,'message':{'role':'assistant','content':content},'finish_reason':'stop'}],'usage':{'prompt_tokens':0,'completion_tokens':0,'total_tokens':0}})\n def log_message(self,*args): pass\nserver=http.server.ThreadingHTTPServer(('127.0.0.1',0),Provider);server.daemon_threads=True\nthreading.Thread(target=server.serve_forever,daemon=True).start();port=server.server_address[1]\nprofile=root/'sandbox.sb'\nprofile.write_text(f'''(version 1)\n(allow default)\n(deny network*)\n(allow network-outbound (remote ip \"localhost:{port}\"))\n(deny file-write*)\n(allow file-write* (subpath \"{root}\") (subpath \"/dev\"))\n''')\n# Validate network sandbox before launching the one allowed provider TUI.\nprobe_code='''import socket,json\nout={}\nfor name,address in [('allowed',('127.0.0.1',PORT)),('other_loopback',('127.0.0.1',OTHER)),('external',('192.0.2.1',443))]:\n s=socket.socket();s.settimeout(1)\n try:s.connect(address);out[name]='connected'\n except OSError as e:out[name]={'errno':e.errno,'error':str(e)}\n finally:s.close()\nprint(json.dumps(out))\n'''\nother=socket.socket();other.bind(('127.0.0.1',0));other.listen()\nprobe=subprocess.run(['/usr/bin/sandbox-exec','-f',str(profile),'/usr/bin/python3','-c',probe_code.replace('PORT',str(port)).replace('OTHER',str(other.getsockname()[1]))],text=True,capture_output=True,timeout=6)\nother.close()\n(root/'sandbox-probe.json').write_text(json.dumps({'returncode':probe.returncode,'stdout':probe.stdout,'stderr':probe.stderr},indent=2))\nassert probe.returncode==0, probe.stderr\nprobe_result=json.loads(probe.stdout)\nassert probe_result['allowed']=='connected' and probe_result['other_loopback'].get('errno')==1 and probe_result['external'].get('errno')==1,probe_result\nsession=str(uuid.uuid4());binary='/Users/jeremyhale/.local/bin/copilot'\nargs=[binary,'-C',str(work),'--no-auto-update','--no-remote-export','--no-custom-instructions','--disable-builtin-mcps','--experimental','--session-id',session,'--model','kanna-synthetic-local','--log-dir',str(root/'logs'),'--log-level','debug']\nenv={k:v for k,v in os.environ.items() if not k.startswith(('KANNA_','CLAUDE','ANTHROPIC','CODEX','COPILOT','GH_','GITHUB_','GOOGLE_','OPENAI_','NODE_','HTTP_PROXY','HTTPS_PROXY','ALL_PROXY'))}\nenv.update({'COPILOT_HOME':str(home),'COPILOT_OFFLINE':'true','COPILOT_PROVIDER_BASE_URL':f'http://127.0.0.1:{port}/v1','COPILOT_PROVIDER_TYPE':'openai','COPILOT_PROVIDER_WIRE_API':'completions','XDG_CONFIG_HOME':str(root/'xdg-config'),'XDG_CACHE_HOME':str(root/'xdg-cache'),'XDG_DATA_HOME':str(root/'xdg-data'),'GH_CONFIG_DIR':str(root/'gh-config'),'TMPDIR':str(runtime),'TERM':'xterm-256color','NO_PROXY':'127.0.0.1'})\n(root/'command.json').write_text(json.dumps({'args':args,'sandbox':str(profile),'sessionId':session,'environment':{k:v for k,v in env.items() if k.startswith(('COPILOT_','XDG_','GH_CONFIG','TMPDIR','TERM','NO_PROXY'))},'binarySha256':hashlib.sha256(Path(binary).read_bytes()).hexdigest(),'deadlineSeconds':90},indent=2))\np=subprocess.Popen(['/usr/bin/python3',str(repo/'tests/cli-contract/helpers/pty-bridge.py'),'/usr/bin/sandbox-exec','-f',str(profile),*args],cwd=work,env=env,stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.STDOUT)\nstart=time.monotonic();deadline=start+90;screen=pyte.Screen(120,40);stream=pyte.Stream(screen);decoder=codecs.getincrementaldecoder('utf8')('replace');screen_lock=threading.Lock();owned={};checks={};actions=[];stop_monitor=threading.Event()\ndef monitor():\n while not stop_monitor.is_set():\n  lines=subprocess.check_output(['ps','-axo','pid=,ppid=,pgid=,command='],text=True).splitlines()\n  procs={int(s.split(None,3)[0]):s.split(None,3) for s in lines if len(s.split(None,3))==4};desc={p.pid}\n  for _ in range(8):desc.update(pid for pid,row in procs.items() if int(row[1]) in desc)\n  owned.update({pid:procs[pid] for pid in desc if pid in procs});stop_monitor.wait(.2)\nthreading.Thread(target=monitor,daemon=True).start()\ndef reader():\n with open(root/'terminal.raw','wb') as raw:\n  while True:\n   data=os.read(p.stdout.fileno(),65536)\n   if not data:break\n   raw.write(data);raw.flush()\n   with screen_lock:stream.feed(decoder.decode(data))\nthreading.Thread(target=reader,daemon=True).start()\ndef snapshot(name):\n with screen_lock:r={'screen':screen.display[:],'cursor':[screen.cursor.x,screen.cursor.y],'elapsed':round(time.monotonic()-start,3)}\n (root/(name+'.json')).write_text(json.dumps(r,indent=2));return r\ndef wait(condition,seconds=8):\n end=min(deadline,time.monotonic()+seconds)\n while time.monotonic()<end:\n  if p.poll() is not None:raise RuntimeError('TUI exited')\n  result=condition()\n  if result:return result\n  time.sleep(.05)\n raise TimeoutError('condition timed out')\ndef read(name):\n try:return json.loads((root/name).read_text())\n except (FileNotFoundError,json.JSONDecodeError):return None\ndef command(id,operation='send',**kw):\n data={'id':id,'operation':operation,'sessionId':session,**kw};actions.append(data)\n tmp=root/'control'/f'{id}.tmp';tmp.write_text(json.dumps(data));tmp.rename(root/'control'/f'{id}.json')\n return wait(lambda:read('reply-'+id+'.json'),6)\ndef notice(batch):return f'[Kanna supervisor] Synthetic event batch {batch} for 0f417e4c. This is an engine wakeup, not an owner directive. [Kanna wake 0f417e4c/synthetic-run/{session}/synthetic-watch/{batch}]'\ndef send_keys(data):\n actions.append({'keysHex':data.hex(),'elapsed':time.monotonic()-start});p.stdin.write(data);p.stdin.flush()\ndef text():\n with screen_lock:return '\\n'.join(screen.display)\ndef history_content(event):return event.get('data',{}).get('content')\ndef history_has(content):\n path=root/'extension-events.jsonl'\n if not path.exists():return False\n for line in path.read_text().splitlines():\n  try:\n   e=json.loads(line).get('event',{})\n   if e.get('type')=='assistant.turn_end':pass\n  except:pass\n return any(content in json.dumps(r['body']) for r in requests)\nstatus='not-started'\ntry:\n ready=wait(lambda:read('ready.json'),20)\n assert ready['sessionId']==ready['expectedSessionId']==session,ready\n assert ready['sdkHash']=='c4d7588911b6feb44522489bb77712120a7bdedc44a82e32f58e280bfebdd9c1',ready\n wait(lambda:ready['pid'] in owned and ready['ppid'] in owned)\n assert int(owned[ready['pid']][1])==ready['ppid']\n assert int(owned[ready['ppid']][1])==p.pid,owned\n checks['identity']={'pass':True,'ready':ready,'bridgePid':p.pid,'tuiPid':ready['ppid']}\n wait(lambda:any('Starting Copilot CLI: 1.0.64' in f.read_text() for f in (root/'logs').glob('*.log')),8);time.sleep(.5);snapshot('00-ready')\n # No-draft send through native extension.\n r=command('no-draft',prompt=notice(1));checks['noDraftReceipt']=r\n wait(lambda:history_has(notice(1)),8);wait(lambda:'SYNTHETIC_OK_' in text(),8);time.sleep(.5);snapshot('01-no-draft')\n # Synthetic draft and middle cursor, no Enter.\n draft='KANNA_SYNTHETIC_DRAFT_LEFT_RIGHT'\n send_keys(draft.encode());time.sleep(.25);send_keys(b'\\x1b[D'*5);time.sleep(.3)\n before=snapshot('02-draft-before');assert draft in '\\n'.join(before['screen']),before\n r=command('with-draft',prompt=notice(2));checks['draftReceipt']=r\n wait(lambda:history_has(notice(2)),8);time.sleep(.8);after=snapshot('03-draft-after')\n checks['draftPreserved']={'text':draft in '\\n'.join(after['screen']),'cursorEqual':before['cursor']==after['cursor'],'beforeCursor':before['cursor'],'afterCursor':after['cursor'],'notInRequests':not history_has(draft)}\n # A marker proves actual edit insertion point, independently of terminal redraw.\n send_keys(b'Z');time.sleep(.3);marker=snapshot('04-marker');expected=draft[:-5]+'Z'+draft[-5:]\n checks['cursorInsertion']={'expected':expected,'pass':expected in '\\n'.join(marker['screen'])}\n send_keys(b'\\r');wait(lambda:history_has(expected),8);time.sleep(.6);snapshot('05-manual-submit')\n checks['humanSubmission']={'expected':expected,'seen':history_has(expected),'noConcatenation':all(not (expected in str(m.get('content')) and notice(2) in str(m.get('content'))) for req in requests for m in req['body'].get('messages',[]))}\n # Busy prompt uses SDK and scripted provider holds response.\n checks['busyStart']=command('busy-start',prompt='KANNA_SYNTHETIC_BUSY_HOLD')\n wait(lambda:busy_entered.is_set(),8)\n checks['busyEnqueueReceipt']=command('busy-notice',prompt=notice(3));time.sleep(.4)\n checks['busyNotSentEarly']=not history_has(notice(3));snapshot('06-busy')\n busy_release.set();wait(lambda:history_has(notice(3)),8);time.sleep(.6);snapshot('07-busy-released')\n checks['busyEventuallyServiced']=True\n # Drop only extension->Kanna receipt; no retry. Recover from history same UUID.\n checks['lostReceipt']=command('lost-receipt',prompt=notice(4),dropReceipt=True)\n wait(lambda:history_has(notice(4)),8)\n recovery=command('recover','reconnect-history');(root/'recovery-history.json').write_text(json.dumps(recovery,indent=2))\n matches=[e for e in recovery.get('events',[]) if e.get('type')=='user.message' and history_content(e)==notice(4)]\n checks['recovery']={'epoch':recovery.get('epoch'),'sessionId':recovery.get('sessionId'),'exactMatches':len(matches),'eventIds':[e.get('id') for e in matches],'sendCount':sum(a.get('prompt')==notice(4) for a in actions),'acknowledged':False}\n snapshot('08-recovery')\n status='completed'\nexcept Exception as error:\n status='failed';checks['exception']={'type':type(error).__name__,'message':str(error)};snapshot('failure-screen')\nfinally:\n elapsed=round(time.monotonic()-start,3);busy_release.set();stop_monitor.set();time.sleep(.25)\n (root/'owned-processes.json').write_text(json.dumps(list(owned.values()),indent=2))\n groups={int(row[2]) for pid,row in owned.items() if pid!=p.pid and int(row[2])!=os.getpgrp()}\n for group in groups:\n  try:os.killpg(group,signal.SIGTERM)\n  except ProcessLookupError:pass\n try:p.wait(timeout=3)\n except subprocess.TimeoutExpired:p.kill();p.wait()\n for pid,row in owned.items():\n  if pid==p.pid:continue\n  try:os.kill(pid,signal.SIGKILL)\n  except ProcessLookupError:pass\n server.shutdown();server.server_close();time.sleep(.2)\n remaining=[]\n for pid in owned:\n  try:os.kill(pid,0);remaining.append(pid)\n  except ProcessLookupError:pass\n (root/'provider-requests.json').write_text(json.dumps(requests,indent=2));(root/'actions.json').write_text(json.dumps(actions,indent=2))\n # Preserve disposable history/log evidence, then remove config/session/repo.\n for path in home.glob('session-state/*/events.jsonl'):\n  shutil.copy(path,root/('session-'+path.parent.name+'-events.jsonl'))\n for directory in [work,home,runtime,root/'control',root/'xdg-config',root/'xdg-cache',root/'xdg-data',root/'gh-config']:shutil.rmtree(directory,ignore_errors=True)\n result={'status':status,'elapsedSeconds':elapsed,'sessionId':session,'checks':checks,'providerRequestCount':len(requests),'cleanup':{'remainingOwnedPids':remaining,'listenerClosed':server.fileno()==-1,'configurationRemoved':not home.exists(),'workspaceRemoved':not work.exists()},'externalInference':'blocked by sandbox, no account credentials supplied','ownedProcesses':list(owned.values())}\n (root/'result.json').write_text(json.dumps(result,indent=2));print(json.dumps(result,indent=2))\n",
+    "extension.mjs": "import fs from 'node:fs';\nimport path from 'node:path';\nimport { fileURLToPath } from 'node:url';\nimport crypto from 'node:crypto';\nimport { joinSession } from '@github/copilot-sdk/extension';\nconst root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../../');\nconst write = (name, data) => fs.writeFileSync(path.join(root, name), JSON.stringify(data, null, 2));\nconst append = (data) => fs.appendFileSync(path.join(root, 'extension-events.jsonl'), JSON.stringify(data)+'\\n');\nconst sdkEntry = fileURLToPath(import.meta.resolve('@github/copilot-sdk/extension'));\nconst session = await joinSession();\nwrite('ready.json', { pid:process.pid, ppid:process.ppid, expectedSessionId:process.env.SESSION_ID, sessionId:session.sessionId, sdkEntry, sdkHash:crypto.createHash('sha256').update(fs.readFileSync(sdkEntry)).digest('hex') });\nsession.on(event => append({time:Date.now(), event}));\nlet queue=Promise.resolve(); const seen=new Set(); let epoch=1;\nfs.watch(path.join(root,'control'), (type,name) => {\n  if(!name?.endsWith('.json') || seen.has(name)) return;\n  seen.add(name);\n  queue=queue.then(async()=>{\n    const command=JSON.parse(fs.readFileSync(path.join(root,'control',name),'utf8'));\n    try {\n      if(command.sessionId!==session.sessionId) throw Error('session mismatch');\n      let result;\n      if(command.operation==='send') {\n        append({operation:'send',id:command.id,prompt:command.prompt,epoch});\n        const messageId=await session.send({prompt:command.prompt,mode:'enqueue'});\n        if(command.dropReceipt) {\n          // Evidence only: emulate loss at extension -> Kanna boundary.\n          write('suppressed-receipt.json',{id:command.id,messageId,epoch,sessionId:session.sessionId});\n          result={state:'uncertain',reason:'receipt deliberately lost before Kanna',epoch};\n        } else result={state:'accepted',messageId,epoch};\n      } else if(command.operation==='reconnect-history') {\n        // Reconnect Kanna-side transport, not a second provider runtime.\n        epoch++;\n        result={state:'history',epoch,sessionId:session.sessionId,events:await session.getEvents()};\n      } else if(command.operation==='history') result={state:'history',epoch,events:await session.getEvents()};\n      else throw Error('unsupported fixture command');\n      write('reply-'+command.id+'.json',result);\n    } catch(error) { write('reply-'+command.id+'.json',{state:'error',error:String(error)}); }\n  }).catch(error=>write('fatal.json',{error:String(error)}));\n});\n"
+  },
+  "artifactSha256": {
+    "extension-events.jsonl": "bf4189cbb81339761291050512d4142e58280a56b7acba0f3a023e563e69f57d",
+    "recovery-history.json": "039b331a66bff1775a5932c09b55bf54a3b79a4e52fe022f3c51acf7b08fd303",
+    "run.py": "4b642eb9fcf4257ddc845895b79239911aa3e46d7199dbb7809d1de323e5cd77",
+    "03-draft-after.json": "f80487d66f0dba0fcded870856798ed7e70a28322f2344ba0dcea1d25f325611",
+    "result.json": "0753c92973340fc39e6d23b69d97d2e6df8fd427766cb6a697550841543b9fc3",
+    "provider-requests.json": "d9eeb3083630560c77783ca59826f853d86868cb6decb56b917ec0ec74af3143",
+    "extension.mjs": "72e300bd689de712c9e83e65f204dd15c2208c0f7d1d1cfe3a47445b19bee3cc",
+    "06-busy.json": "168669a638e3221a67697e7101cb86da57ee659f9e9888f7173b565b23b7ff54",
+    "reply-with-draft.json": "d9fd8206463080af036dfb00b42d2a3ed16d84b57896a82178d6ef9864a10281",
+    "05-manual-submit.json": "ec2ed33a2e0b992c797aff6fd64952137f40e17186d3d4b9491cb3fc8d230ee2",
+    "sandbox-probe-initial-failure.json": "2141458f1417022c4030a1f6c254c1fa637c79fb18df7ba68bbf909ea6d025d8",
+    "reply-lost-receipt.json": "a471be16a9fe377c0e8b1882f7ba6818b440c099739acfdc61a91fa2105745dd",
+    "owned-processes.json": "fda36174f959c549eabdbf9b3d755865597fdbd6f30af506c6ad8c5df92c7e90",
+    "07-busy-released.json": "895c91c7af85c189a17f5d94042ba443b68db29b645dd3b0ea3d8fcc7045c679",
+    "04-marker.json": "952668626fe81dad2a16837c1e5b6be5551c89f3834b0bd0673b82d977592b7b",
+    "sandbox.sb": "71d31e2e377d7e31728e29b5c956a888b1754b0104933cd82fad4a48119c000c",
+    "02-draft-before.json": "84e25b9fafce816ad052501e9edb753c84c8da70ac4214dd1ec3b8c4c5084a9c",
+    "reply-busy-notice.json": "d2f8a205eff996db5c64fc340cb13311975136a0b7b6789303bcbb543ec6815a",
+    "command.json": "b7018fb001abd844bc3e482db4563fa8edceeebeabc7e3ded7b994bb857a14ba",
+    "suppressed-receipt.json": "597ac70ef7b57f5df2a04fa037e744f71603a6f104eebadc9b9524b796508ad0",
+    "00-ready.json": "84b63bad98d4293af738e95bae9a0367bcffc70f43f1bc2625f13a86ac981477",
+    "reply-recover.json": "3b9e97babca39f8d2a79c8f4c5d09a7ed5840cca922ddf8e7ee3e2a1d7ea446a",
+    "reply-busy-start.json": "a13b5a0e96f6807797cb503838e4db482e9cf737184f13df79bc33a79da0a1a9",
+    "reply-no-draft.json": "4ecf886488d20d8ec767720941201fa9485e6b2d23ca1b4b4b46e1a31ca32062",
+    "sandbox-probe.json": "89d2abd87b6c2214afff6c3bf281f5e9a0111dada57687b505dc50612d0897fd",
+    "terminal.raw": "237bfe9249884bcb15adbf406baa27f44f1eee5d19084d587131f1cb057389df",
+    "ready.json": "ea7a9dd2f94d884045d07987c6ed8f967b9403f6ad02cff103e8c864362874ec",
+    "actions.json": "d598ecfba054b6215a885547afd75f0413154546e648b90b74ae58e64b1b2417",
+    "session-91d56906-3b22-4fb5-a03c-4b8d3d4f6dcd-events.jsonl": "4270daf2b8cd65368e448a49b7be5ee80640d8457329200f3f4579da4e333dbe",
+    "08-recovery.json": "7f7518a386700707195c8069ea5855d857d0f04f882872445e7f2955dfbb7ae7",
+    "01-no-draft.json": "eb85731937d93333a2861cff1d83a59e0bf8c0789403d5397fbaa9ccd5086427",
+    "logs/process-1789511331632-76557.log": "3fbed1fa57f86dc83af3c6ae4aa2eed3efdc99f474f111ee64d2bc39242a952b"
+  },
+  "postRunValidation": {
+    "initialActionCountCheck": {
+      "status": "failure",
+      "incorrectExpected": 12,
+      "observed": 10
+    },
+    "correctedSemanticCheck": {
+      "status": "pass",
+      "sdkSends": 5,
+      "syntheticKeyWrites": 4,
+      "historyReads": 1
+    },
+    "jsonAndLocalLinks": "pass"
+  }
+}

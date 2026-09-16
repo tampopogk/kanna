@@ -19,6 +19,7 @@ use std::time::Duration;
 
 mod analytics;
 mod blockers;
+pub(crate) mod copilot_wake;
 mod create_intents;
 mod event_subscriptions;
 mod lifecycle_operations;
@@ -187,6 +188,7 @@ pub(crate) const CURRENT_SCHEMA_MIGRATIONS: &[&str] = &[
     "084_agent_terminal_attempt",
     "084_task_transfer_workflow_claim",
     "085_task_attention_reason",
+    "086_copilot_wake",
 ];
 
 #[derive(Debug, Serialize)]
@@ -2466,6 +2468,8 @@ fn run_schema_migrations(conn: &Connection) -> Result<(), rusqlite::Error> {
     run_migration(conn, "085_task_attention_reason", |conn| {
         add_column(conn, "pipeline_item", "attention_reason", "TEXT")
     })?;
+
+    run_migration(conn, "086_copilot_wake", copilot_wake::create_schema)?;
 
     Ok(())
 }

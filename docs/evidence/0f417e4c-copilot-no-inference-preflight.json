@@ -1,0 +1,124 @@
+{
+  "task": "0f417e4c",
+  "baseHead": "e0bb4b37ae31204d320bdf0e1f0401d8e3375198",
+  "outcome": "same-session join passed; proposed source=system send unsupported by inspected high-level SDK serializers",
+  "result": {
+    "status": "joined",
+    "elapsedSeconds": 2.43,
+    "expectedSessionId": "3cc8cdaf-94a3-4df9-921d-ce12c1c577ae",
+    "extension": {
+      "extensionPid": 25468,
+      "parentPid": 21288,
+      "expectedSessionId": "3cc8cdaf-94a3-4df9-921d-ce12c1c577ae",
+      "stdinIsTTY": false,
+      "stdoutIsTTY": false,
+      "calls": [
+        "joinSession"
+      ],
+      "phase": "joined",
+      "sdkEntry": "file:///Users/jeremyhale/Library/Caches/copilot/pkg/darwin-arm64/1.0.64/copilot-sdk/extension.js",
+      "sdkEntrySha256": "c4d7588911b6feb44522489bb77712120a7bdedc44a82e32f58e280bfebdd9c1",
+      "joinedSessionId": "3cc8cdaf-94a3-4df9-921d-ce12c1c577ae",
+      "sendImplementation": "async send(optionsOrPrompt) {\n    const options = typeof optionsOrPrompt === \"string\" ? { prompt: optionsOrPrompt } : optionsOrPrompt;\n    const response = await this.connection.sendRequest(\"session.send\", {\n      ...await getTraceContext(this.traceContextProvider),\n      sessionId: this.sessionId,\n      prompt: options.prompt,\n      displayPrompt: options.displayPrompt,\n      attachments: options.attachments,\n      mode: options.mode,\n      agentMode: options.agentMode,\n      requestHeaders: options.requestHeaders\n    });\n    return response.messageId;\n  }"
+    },
+    "providerRequests": [],
+    "bridgeExit": 0,
+    "ownedProcesses": [
+      [
+        "20974",
+        "20621",
+        "20621",
+        "/Applications/Xcode.app/Contents/Developer/Library/Frameworks/Python3.framework/Versions/3.9/Resources/Python.app/Contents/MacOS/Python /Users/jeremyhale/.kanna/repos/kanna-2/.kanna-worktrees/task-0f417e4c/tests/cli-contract/helpers/pty-bridge.py /Users/jeremyhale/.local/bin/copilot -C /Users/jeremyhale/.kanna/repos/kanna-2/.kanna-worktrees/task-0f417e4c/.tmp/copilot-preflight-0f417e4c/workspace --no-auto-update --no-remote-export --no-custom-instructions --disable-builtin-mcps --experimental --session-id 3cc8cdaf-94a3-4df9-921d-ce12c1c577ae --model mai-code-1.1-flash --log-dir /Users/jeremyhale/.kanna/repos/kanna-2/.kanna-worktrees/task-0f417e4c/.tmp/copilot-preflight-0f417e4c/logs --log-level debug"
+      ],
+      [
+        "21288",
+        "20974",
+        "21288",
+        "/Users/jeremyhale/.local/bin/copilot -C /Users/jeremyhale/.kanna/repos/kanna-2/.kanna-worktrees/task-0f417e4c/.tmp/copilot-preflight-0f417e4c/workspace --no-auto-update --no-remote-export --no-custom-instructions --disable-builtin-mcps --experimental --session-id 3cc8cdaf-94a3-4df9-921d-ce12c1c577ae --model mai-code-1.1-flash --log-dir /Users/jeremyhale/.kanna/repos/kanna-2/.kanna-worktrees/task-0f417e4c/.tmp/copilot-preflight-0f417e4c/logs --log-level debug"
+      ],
+      [
+        "25468",
+        "21288",
+        "21288",
+        "/Users/jeremyhale/.local/bin/copilot /Users/jeremyhale/Library/Caches/copilot/pkg/darwin-arm64/1.0.64/preloads/extension_bootstrap.mjs"
+      ]
+    ],
+    "cleanup": "owned groups terminated; local rejecting endpoint stopped"
+  },
+  "command": {
+    "args": [
+      "/Users/jeremyhale/.local/bin/copilot",
+      "-C",
+      "/Users/jeremyhale/.kanna/repos/kanna-2/.kanna-worktrees/task-0f417e4c/.tmp/copilot-preflight-0f417e4c/workspace",
+      "--no-auto-update",
+      "--no-remote-export",
+      "--no-custom-instructions",
+      "--disable-builtin-mcps",
+      "--experimental",
+      "--session-id",
+      "3cc8cdaf-94a3-4df9-921d-ce12c1c577ae",
+      "--model",
+      "mai-code-1.1-flash",
+      "--log-dir",
+      "/Users/jeremyhale/.kanna/repos/kanna-2/.kanna-worktrees/task-0f417e4c/.tmp/copilot-preflight-0f417e4c/logs",
+      "--log-level",
+      "debug"
+    ],
+    "environment": {
+      "COPILOT_HOME": "/Users/jeremyhale/.kanna/repos/kanna-2/.kanna-worktrees/task-0f417e4c/.tmp/copilot-preflight-0f417e4c/copilot-home",
+      "COPILOT_OFFLINE": "true",
+      "COPILOT_PROVIDER_BASE_URL": "http://127.0.0.1:49705/v1",
+      "COPILOT_PROVIDER_TYPE": "openai",
+      "COPILOT_PROVIDER_WIRE_API": "completions",
+      "XDG_CONFIG_HOME": "/Users/jeremyhale/.kanna/repos/kanna-2/.kanna-worktrees/task-0f417e4c/.tmp/copilot-preflight-0f417e4c/xdg-config",
+      "XDG_CACHE_HOME": "/Users/jeremyhale/.kanna/repos/kanna-2/.kanna-worktrees/task-0f417e4c/.tmp/copilot-preflight-0f417e4c/xdg-cache",
+      "XDG_DATA_HOME": "/Users/jeremyhale/.kanna/repos/kanna-2/.kanna-worktrees/task-0f417e4c/.tmp/copilot-preflight-0f417e4c/xdg-data",
+      "GH_CONFIG_DIR": "/Users/jeremyhale/.kanna/repos/kanna-2/.kanna-worktrees/task-0f417e4c/.tmp/copilot-preflight-0f417e4c/gh-config",
+      "TMPDIR": "/Users/jeremyhale/.kanna/repos/kanna-2/.kanna-worktrees/task-0f417e4c/.tmp/copilot-preflight-0f417e4c/runtime",
+      "TERM": "xterm-256color"
+    },
+    "expectedSessionId": "3cc8cdaf-94a3-4df9-921d-ce12c1c577ae",
+    "deadlineSeconds": 90
+  },
+  "installedSdks": {
+    "1.0.64": {
+      "entry": "/Users/jeremyhale/Library/Caches/copilot/pkg/darwin-arm64/1.0.64/copilot-sdk/extension.js",
+      "exists": true,
+      "sha256": "c4d7588911b6feb44522489bb77712120a7bdedc44a82e32f58e280bfebdd9c1",
+      "sendImplementation": "async send(optionsOrPrompt) {\n    const options = typeof optionsOrPrompt === \"string\" ? { prompt: optionsOrPrompt } : optionsOrPrompt;\n    const response = await this.connection.sendRequest(\"session.send\", {\n      ...await getTraceContext(this.traceContextProvider),\n      sessionId: this.sessionId,\n      prompt: options.prompt,\n      displayPrompt: options.displayPrompt,\n      attachments: options.attachments,\n      mode: options.mode,\n      agentMode: options.agentMode,\n      requestHeaders: options.requestHeaders\n    });\n    return response.messageId;\n  }",
+      "packageManifestExists": false,
+      "sdkProtocolDeclaration": "/**\n * The SDK protocol version.\n * This must match the version expected by the copilot-agent-runtime server.\n */\nexport declare const SDK_PROTOCOL_VERSION = 3;\n/**\n * Gets the SDK protocol version.\n * @returns The protocol version number\n */\nexport declare function getSdkProtocolVersion(): number;\n"
+    },
+    "1.0.83": {
+      "entry": "/Users/jeremyhale/Library/Caches/copilot/pkg/darwin-arm64/1.0.83/copilot-sdk/extension.js",
+      "exists": true,
+      "sha256": "7c6498e44e5e6d7718bdfb14ffa3b03b0eb07f51e2fc178c9a1771a6482b945d",
+      "sendImplementation": "async send(optionsOrPrompt) {\n    const options = typeof optionsOrPrompt === \"string\" ? { prompt: optionsOrPrompt } : optionsOrPrompt;\n    const response = await this.connection.sendRequest(\"session.send\", {\n      ...await getTraceContext(this.traceContextProvider),\n      sessionId: this.sessionId,\n      prompt: options.prompt,\n      displayPrompt: options.displayPrompt,\n      attachments: options.attachments,\n      mode: options.mode,\n      agentMode: options.agentMode,\n      requestHeaders: options.requestHeaders\n    });\n    return response.messageId;\n  }",
+      "packageManifestExists": false,
+      "sdkProtocolDeclaration": "/**\n * The SDK protocol version.\n * This must match the version expected by the copilot-agent-runtime server.\n */\nexport declare const SDK_PROTOCOL_VERSION = 3;\n/**\n * Gets the SDK protocol version.\n * @returns The protocol version number\n */\nexport declare function getSdkProtocolVersion(): number;\n"
+    }
+  },
+  "logExcerpts": [
+    "2026-09-15T21:49:19.304Z [INFO] Running in offline mode. GitHub features are unavailable.",
+    "2026-09-15T21:49:19.466Z [INFO] Starting Copilot CLI: 1.0.64",
+    "2026-09-15T21:49:19.470Z [DEBUG] Configuring ExtensionLoader for embedded server: cliDistDir=/Users/jeremyhale/Library/Caches/copilot/pkg/darwin-arm64/1.0.64, sdkPath=/Users/jeremyhale/Library/Caches/copilot/pkg/darwin-arm64/1.0.64/copilot-sdk",
+    "2026-09-15T21:49:20.058Z [DEBUG] Forked extension host: pid=25468",
+    "2026-09-15T21:49:20.235Z [DEBUG] Received session.resume request: {\"sessionId\":\"3cc8cdaf-94a3-4df9-921d-ce12c1c577ae\",\"toolFilterPrecedence\":\"excluded\",\"requestPermission\":false,\"requestUserInput\":false,\"requestElicitation\":false,\"requestExitPlanMode\":false,\"requestAutoModeSwitch\":false,\"hooks\":false,\"includeSubAgentStreamingEvents\":true,\"envValueMode\":\"direct\",\"disableResume\":true}",
+    "2026-09-15T21:49:20.241Z [INFO] Extension ready: /Users/jeremyhale/.kanna/repos/kanna-2/.kanna-worktrees/task-0f417e4c/.tmp/copilot-preflight-0f417e4c/workspace/.github/extensions/kanna-preflight/extension.mjs",
+    "2026-09-15T21:49:20.650Z [INFO] Extension stopped normally: /Users/jeremyhale/.kanna/repos/kanna-2/.kanna-worktrees/task-0f417e4c/.tmp/copilot-preflight-0f417e4c/workspace/.github/extensions/kanna-preflight/extension.mjs"
+  ],
+  "launcherSha256": "5d27ea2257d8056e0e8063845e5d41f4e8fc37ae52a4052b62347b746299ca7a",
+  "versionChecks": {
+    "plainVersion": "1.0.83",
+    "noAutoUpdateVersion": "1.0.64",
+    "offlineWithoutNoAutoUpdateVersion": "1.0.83"
+  },
+  "cleanup": {
+    "ownedProcessPidsAbsent": true,
+    "rejectingEndpointClosed": true,
+    "credentialsUsed": false,
+    "disposableConfigurationRemoved": true
+  },
+  "extensionFixture": "import fs from 'node:fs';\nimport path from 'node:path';\nimport { fileURLToPath } from 'node:url';\nimport crypto from 'node:crypto';\nconst output = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../../extension-result.json');\nconst result = { extensionPid:process.pid, parentPid:process.ppid, expectedSessionId:process.env.SESSION_ID ?? null, stdinIsTTY:!!process.stdin.isTTY, stdoutIsTTY:!!process.stdout.isTTY, calls:['joinSession'], phase:'loading' };\nfunction save(){ fs.writeFileSync(output, JSON.stringify(result,null,2)); }\nsave();\ntry {\n  result.sdkEntry = import.meta.resolve('@github/copilot-sdk/extension');\n  const entry = fileURLToPath(result.sdkEntry);\n  result.sdkEntrySha256 = crypto.createHash('sha256').update(fs.readFileSync(entry)).digest('hex');\n  let dir = path.dirname(entry);\n  while (dir !== path.dirname(dir)) {\n    const manifest = path.join(dir,'package.json');\n    if (fs.existsSync(manifest)) {\n      const pkg=JSON.parse(fs.readFileSync(manifest,'utf8'));\n      if(pkg.name==='@github/copilot-sdk'){result.sdkPackage={name:pkg.name,version:pkg.version,path:manifest};break;}\n    }\n    dir=path.dirname(dir);\n  }\n  result.phase='joining';save();\n  const {joinSession} = await import('@github/copilot-sdk/extension');\n  const session = await joinSession();\n  result.joinedSessionId=session.sessionId;\n  result.phase='joined';\n  // Static inspection only: never invoke send or any model API.\n  result.sendImplementation=typeof session.send==='function' ? Function.prototype.toString.call(session.send) : null;\n  save();\n} catch(error) {\n  result.phase='error';result.error=String(error);save();\n  process.exitCode=1;\n}\n",
+  "extensionFixtureSha256": "3805090e0bbba91cdb06e557edc896126fe803a288b119f4aa04dd26d90965a1"
+}

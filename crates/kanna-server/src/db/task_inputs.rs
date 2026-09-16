@@ -124,7 +124,7 @@ pub struct ImportedTaskInput {
     pub origin: TaskInputOrigin,
 }
 
-fn preview_of(message: &str) -> (String, bool) {
+pub(super) fn preview_of(message: &str) -> (String, bool) {
     match message.char_indices().nth(TASK_INPUT_EVENT_PREVIEW_CHARS) {
         Some((boundary, _)) => (message[..boundary].to_string(), true),
         None => (message.to_string(), false),

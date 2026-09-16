@@ -3,6 +3,7 @@ mod backup;
 mod blocking;
 mod cloud_desktops;
 pub(crate) mod cloud_relay;
+mod copilot_wake;
 mod desktop;
 mod desktop_views;
 #[cfg(debug_assertions)]

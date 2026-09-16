@@ -1,0 +1,27 @@
+{
+  "baseHead": "27e08702524dbec3314071c0fd3a8bf6f3a083c4",
+  "note": "Uncommitted implementation snapshot; workflow owns commit and independent review.",
+  "sha256": {
+    "crates/kanna-server/resources/copilot-wake/bridge.mjs": "77164345e32d932d4e522125bdcd16a406d7198f064cff1d35764d31e065d433",
+    "crates/kanna-server/resources/copilot-wake/extension.mjs": "cef72445c087cc7f5b341ad07056ae1330adcc2a13eda2168b2c74d6e9a4dc35",
+    "crates/kanna-server/src/db/copilot_wake.rs": "8407d3d2dfe712e53f40a7967a72d9958260eded235d40e32440ad8a2a59dfc0",
+    "crates/kanna-server/src/db/mod.rs": "775a007a180504a2bd9c5c84b69e522a85d493f805c57ac1285332141dcc26c2",
+    "crates/kanna-server/src/db/task_inputs.rs": "859a533ea082282294da2933a262dfbdf1a14b54c6af194404829bf295142417",
+    "crates/kanna-server/src/db/test_support.rs": "767f5f3c2290ab6ff3a9f6331000cf62e38e86bc4e1d314d13ab46b2f80d8e9a",
+    "crates/kanna-server/src/db/tests.rs": "439ac6d59fb030f5d86a40d08efdde47732a0c78a8f3967e46ecf816baa5ded1",
+    "crates/kanna-server/src/http_api.rs": "de58ee7a33b0592d44f7d09de0b14a3e6ebb3e3e61ff6df55eee74a70ca8a424",
+    "crates/kanna-server/src/http_api/copilot_wake.rs": "ae2910d129b21e9ca8305033643a3960f7d4aa6393c2d14267f7f11787dbc964",
+    "crates/kanna-server/src/http_api/event_subscriptions.rs": "0cd6e3433003e07ff8f84d828ce1eea9c33cbb9156cb7711859799f27f91f06d",
+    "crates/kanna-server/src/http_api/harness_wake.rs": "cdafd951b98af9b06d7e90d847c6467e82e62eb998ab99e7c87fa0aa6756d6bb",
+    "crates/kanna-server/src/http_api/router.rs": "d81009831173e2559e70204b18226e6766a56eb42fcb581fdc4f30521f3d6d5d",
+    "crates/kanna-server/src/http_api/state.rs": "d4d5c1993e1426579bba24777873bb9c954cab49e174ee3be2c5ac5028c2c7b9",
+    "crates/kanna-server/src/http_api/tests/task_events.rs": "3869db195fd2d6ea473be09c1d7f479bc7ecbfcf8f00896783a74662b6a968fb",
+    "crates/kanna-server/src/http_api/tests/task_events/copilot_wake.rs": "f42a222528acdc062615766e326dc7e44691926f1e5262179d0fd72d7aade6b0",
+    "crates/kanna-server/src/task_creator/environment.rs": "2a6cb58d6ec1b1c80ab466d3cefd8a9754a2294797855078ecf187ebcb491702",
+    "crates/kanna-server/src/task_creator/mod.rs": "b2d02884d50f77e8be4791819c041511a8eddff2983b0954805b95ca2528d62b",
+    "crates/kanna-server/src/task_creator/tests/spawn.rs": "654f90846267df5d2b99228ac8e32e403ae844fe7a46e7a11209e40868c79848",
+    "crates/kanna-tool-catalog/src/catalog.json": "cba7ec90cd23ce07027d569490434b2c7755f98a74bfb16a89d2d5f9a5ba6a44",
+    "tests/cli-contract/tests/offline/copilot-wake-bridge.test.ts": "b98d7bb0b027e76c1e7c0d4c91f272cddced175316fdf082cff054fbc8722300",
+    "tests/cli-contract/tests/offline/copilot-wake-wire.test.ts": "f7f3dd4cbb7d5496bb17ec385edddc137686353e224bb222833732f2a6638bbe"
+  }
+}

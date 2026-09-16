@@ -391,9 +391,11 @@ terminating `stage_run`, which appends the durable `run.finished` event.
 Managers observe completion through `kanna_wait_events` for fan-out or
 `kanna_wait_task` for one task. Task completion facts remain in the event feed. An event subscription may
 wake its manager through a harness adapter: native tool output or an explicitly
-labelled Kanna supervisory input. Supervisory input uses the shared fenced
-delivery path and the reserved `engine` source; it never claims owner speech
-or declares a worker complete. The durable mailbox, not the nudge, owns events.
+labelled Kanna supervisory input. Copilot supervisory input uses its host-owned
+extension's native enqueue API, never the composer; other input adapters use
+the shared fenced delivery path. Supervisory inputs use the reserved `engine`
+source; they never claim owner speech
+or declare a worker complete. The durable mailbox, not the nudge, owns events.
 The structured completion vocabulary remains exactly `success`, `failure`, or
 `closed` on stage-run results, task detail, and events.
 
@@ -469,7 +471,7 @@ conclude an owner directive was never issued — which is exactly how a review
 agent once ordered an owner's mid-task design decision reverted. Every delivery
 the daemon confirms reached the PTY is therefore appended to `task_input` with
 its full text, the stage and `stage_run` live at delivery, and the caller's
-declared, unverified `operator` / `manager` source, or `unspecified`. The subscription input adapter alone writes the reserved
+declared, unverified `operator` / `manager` source, or `unspecified`. The subscription wake adapters alone write the reserved
 `engine` source for Kanna supervisory nudges; API callers cannot claim it.
 Historical rows may carry the retired `notify` source; no new rows use it.
 Read it with `kanna_task_inputs`
@@ -479,6 +481,16 @@ delivery whose daemon round trip was lost is uncertain and deliberately not
 recorded, and recording never fails a delivery that already reached the PTY.
 Add a new injected-message kind to this record where it is delivered, not by
 diffing terminals. See `docs/kanna-server-boundary.md`.
+
+Automatic Copilot subscription wakes are separate from explicit `send_task_input`:
+`copilot_extension` (also selected for legacy Copilot `input` subscriptions)
+persists a run/session-bound attempt before native enqueue. A confirmed native
+queue receipt or exact history reconciliation records the server-authored text
+as `engine` on the original run, atomically and once. Neither that receipt nor
+reading the mailbox acknowledges its batch. Missing registration or uncertain
+delivery retains a visible pending batch without composer fallback, resend or
+an ordinary-input lock. New Copilot PTY launches load Kanna's bundled extension;
+persisted registration alone is never proof that it is currently connected.
 
 **A human's PR approval is a person's act, not an agent's report.** Kanna has
 two review paths and only the product one — `single-reviewer`,
