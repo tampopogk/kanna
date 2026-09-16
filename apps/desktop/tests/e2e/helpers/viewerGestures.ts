@@ -7,10 +7,10 @@ import { build } from "vite";
 import { fileURLToPath } from "node:url";
 import { buildTerminalDocument } from "../../../../mobile/src/screens/buildTerminalDocument";
 
-/** Real browser gesture producers -> shared KSP client -> isolated daemon/PTY.
- * The mobile document supplies rendering. The wide page hosts the desktop
- * gesture observer; native useTerminal rendering is checked by the caller.
- * This is not a physical iOS or native WKWebView wheel test. */
+/** Real desktop browser gesture producers -> shared KSP client -> isolated
+ * daemon/PTY. The embedded terminal document supplies rendering for two
+ * independently sized desktop viewers; native useTerminal rendering is
+ * checked by the caller. */
 export async function verifyViewerGestures(
   baseUrl: string,
   taskId: string,
@@ -46,9 +46,9 @@ export async function verifyViewerGestures(
   const clients: StreamClient[] = [];
   const errors: string[] = [];
   try {
-    const makeViewer = async (local: boolean) => {
-      const page = await browser.newPage({ viewport: { width: local ? 1200 : 390, height: 720 }, hasTouch: !local });
-      page.on("pageerror", error => errors.push(`browser ${local ? "desktop" : "mobile"}: ${error.stack ?? error.message}`));
+    const makeViewer = async (name: string, width: number) => {
+      const page = await browser.newPage({ viewport: { width, height: 720 } });
+      page.on("pageerror", error => errors.push(`browser ${name}: ${error.stack ?? error.message}`));
       let capacity = { cols: 0, rows: 0 };
       let client: StreamClient | null = null;
       let activations = 0;
@@ -66,19 +66,16 @@ export async function verifyViewerGestures(
           capacity = { cols: payload.cols, rows: payload.rows };
           client?.sendTermResize(taskId, payload.cols, payload.rows);
         }
-        if (!local && payload.type === "terminal-viewer-interaction") activate();
       });
       await page.setContent(buildTerminalDocument({ bottomInset: 0 }).replace(
         "<head>",
         '<head><script>window.ReactNativeWebView = { postMessage: message => window.terminalBridge(message) };</script>',
       ));
       await expect.poll(() => capacity.cols).toBeGreaterThan(0);
-      if (local) {
-        await page.evaluate('document.getElementById("viewport").addEventListener("wheel", event => { if (event.isTrusted) window.recordWheel(); }, { capture: true, passive: true });');
-        await page.addScriptTag({ content: observerBundle.code });
-        await page.evaluate('window.KannaViewerInteraction.observeTerminalViewerInteraction(document.getElementById("viewport"), () => window.claimViewer());');
-      }
-      client = new StreamClient({ url: baseUrl.replace(/^http/, "ws") + "/v1/stream", credential, terminalViewerRole: local ? "local" : "remote" });
+      await page.evaluate('document.getElementById("viewport").addEventListener("wheel", event => { if (event.isTrusted) window.recordWheel(); }, { capture: true, passive: true });');
+      await page.addScriptTag({ content: observerBundle.code });
+      await page.evaluate('window.KannaViewerInteraction.observeTerminalViewerInteraction(document.getElementById("viewport"), () => window.claimViewer());');
+      client = new StreamClient({ url: baseUrl.replace(/^http/, "ws") + "/v1/stream", credential, terminalViewerRole: "local" });
       clients.push(client);
       client.registerTerminalViewer(taskId, capacity.cols, capacity.rows);
       let paints = Promise.resolve();
@@ -95,8 +92,8 @@ export async function verifyViewerGestures(
       });
       return { page, client, get capacity() { return capacity; }, activations: () => activations, wheels: () => wheels, flush: async () => { await paints; if (paintError) throw paintError; } };
     };
-    const desktop = await makeViewer(true);
-    const mobile = await makeViewer(false);
+    const desktop = await makeViewer("primary desktop", 1200);
+    const secondary = await makeViewer("secondary desktop", 760);
     const assertGrid = async (grid: { cols: number; rows: number }) => {
       await expect.poll(async () => {
         if (errors.length) throw new Error(errors.join("; "));
@@ -136,11 +133,12 @@ export async function verifyViewerGestures(
       expect(after, `${phase}: PTY kept resizing after the viewer settled`).toEqual(settled);
     };
     let mark = (await readPtyHistory()).length;
-    await mobile.page.touchscreen.tap(100, 250);
-    await expect.poll(mobile.activations).toBeGreaterThan(0);
-    await assertGrid(mobile.capacity);
-    assertDirectTransition("mobile-claim", mark, await readPtyHistory(), mobile.capacity);
-    await assertNoFurtherResize("mobile-quiet-reading");
+    await secondary.page.mouse.move(100, 250);
+    await secondary.page.mouse.wheel(0, -80);
+    await expect.poll(secondary.activations).toBeGreaterThan(0);
+    await assertGrid(secondary.capacity);
+    assertDirectTransition("secondary-desktop-claim", mark, await readPtyHistory(), secondary.capacity);
+    await assertNoFurtherResize("secondary-desktop-quiet-reading");
 
     await desktop.page.evaluate('document.getElementById("viewport").dispatchEvent(new Event("scroll")); document.getElementById("viewport").dispatchEvent(new WheelEvent("wheel", { deltaY: -80 }));');
     expect(desktop.activations()).toBe(0);
@@ -180,14 +178,15 @@ export async function verifyViewerGestures(
     await assertGrid(desktop.capacity);
     expect((await readPtyHistory()).slice(mark)).toEqual([]);
     await desktop.page.clock.runFor(40);
-    await mobile.page.touchscreen.tap(100, 250); // B@50
-    await assertGrid(mobile.capacity);
-    assertDirectTransition("interleaved-newer-mobile", mark, await readPtyHistory(), mobile.capacity);
+    await secondary.page.mouse.move(100, 250);
+    await secondary.page.mouse.wheel(0, -20); // B@50
+    await assertGrid(secondary.capacity);
+    assertDirectTransition("interleaved-newer-secondary", mark, await readPtyHistory(), secondary.capacity);
     const newerViewerHistory = await readPtyHistory();
     await desktop.page.clock.runFor(50); // Former A trailing claim at 100
     await desktop.page.clock.runFor(5000);
     expect(desktop.activations()).toBe(beforeInterleave + 2);
-    await assertGrid(mobile.capacity);
+    await assertGrid(secondary.capacity);
     await assertNoFurtherResize("interleaved-no-stale-reclaim");
     expect(await readPtyHistory()).toEqual(newerViewerHistory);
     mark = newerViewerHistory.length;
@@ -201,33 +200,35 @@ export async function verifyViewerGestures(
     // direct transition. Anything more is the reported oscillation.
     for (let round = 0; round < 3; round += 1) {
       mark = (await readPtyHistory()).length;
-      await mobile.page.touchscreen.tap(100, 250);
-      await assertGrid(mobile.capacity);
-      assertDirectTransition(`alternation-${round}-mobile`, mark, await readPtyHistory(), mobile.capacity);
+      await secondary.page.mouse.move(100, 250);
+      await secondary.page.mouse.wheel(0, -20);
+      await assertGrid(secondary.capacity);
+      assertDirectTransition(`alternation-${round}-secondary`, mark, await readPtyHistory(), secondary.capacity);
       mark = (await readPtyHistory()).length;
       await desktop.page.mouse.wheel(0, -20);
       await assertGrid(desktop.capacity);
       assertDirectTransition(`alternation-${round}-desktop`, mark, await readPtyHistory(), desktop.capacity);
     }
     await assertNoFurtherResize("alternation-settled");
-    const mobileActivations = mobile.activations();
-    const initialMobileCols = mobile.capacity.cols;
-    await mobile.page.setViewportSize({ width: 410, height: 720 });
-    await expect.poll(() => mobile.capacity.cols).toBeGreaterThan(initialMobileCols);
-    await mobile.page.evaluate('document.getElementById("viewport").dispatchEvent(new Event("scroll"));');
-    expect(mobile.activations()).toBe(mobileActivations);
+    const secondaryActivations = secondary.activations();
+    const initialSecondaryCols = secondary.capacity.cols;
+    await secondary.page.setViewportSize({ width: 820, height: 720 });
+    await expect.poll(() => secondary.capacity.cols).toBeGreaterThan(initialSecondaryCols);
+    await secondary.page.evaluate('document.getElementById("viewport").dispatchEvent(new Event("scroll"));');
+    expect(secondary.activations()).toBe(secondaryActivations);
     await assertGrid(desktop.capacity);
     mark = (await readPtyHistory()).length;
-    await mobile.page.touchscreen.tap(100, 250);
-    await assertGrid(mobile.capacity);
-    assertDirectTransition("mobile-reclaim", mark, await readPtyHistory(), mobile.capacity);
-    await assertNoFurtherResize("mobile-reclaim-quiet");
-    await mobile.flush();
-    await expect.poll(() => mobile.page.locator(".xterm-rows").innerText()).toContain(`ACTIVE_VIEW:${mobile.capacity.cols}x${mobile.capacity.rows}`);
-    await verifyNativeRendering(mobile.capacity);
+    await secondary.page.mouse.move(100, 250);
+    await secondary.page.mouse.wheel(0, -20);
+    await assertGrid(secondary.capacity);
+    assertDirectTransition("secondary-reclaim", mark, await readPtyHistory(), secondary.capacity);
+    await assertNoFurtherResize("secondary-reclaim-quiet");
+    await secondary.flush();
+    await expect.poll(() => secondary.page.locator(".xterm-rows").innerText()).toContain(`ACTIVE_VIEW:${secondary.capacity.cols}x${secondary.capacity.rows}`);
+    await verifyNativeRendering(secondary.capacity);
     if (artifactDir) {
-      await mobile.page.screenshot({ path: join(artifactDir, "mobile-gesture-real-pty.png") });
-      await writeFile(join(artifactDir, "viewer-gestures.json"), JSON.stringify({ desktop: desktop.capacity, mobile: mobile.capacity, desktopGestures: desktop.activations(), mobileGestures: mobile.activations(), ptyReport: await readPtyOutput(), ptyHistory: await readPtyHistory(), stability }, null, 2));
+      await secondary.page.screenshot({ path: join(artifactDir, "secondary-desktop-gesture-real-pty.png") });
+      await writeFile(join(artifactDir, "viewer-gestures.json"), JSON.stringify({ desktop: desktop.capacity, secondaryDesktop: secondary.capacity, desktopGestures: desktop.activations(), secondaryDesktopGestures: secondary.activations(), ptyReport: await readPtyOutput(), ptyHistory: await readPtyHistory(), stability }, null, 2));
     }
     expect(errors, "browser handlers and KSP must complete without errors").toEqual([]);
   } finally {

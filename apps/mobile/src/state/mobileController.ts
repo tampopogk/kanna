@@ -21,6 +21,7 @@ import type {
   TaskAgentSubscription,
   TaskCompanionSubscription,
   TaskTerminalInputKind,
+  TaskTerminalInputProvenance,
   TaskTerminalStreamEvent,
   TaskTerminalSubscription
 } from "../lib/api/client";
@@ -138,7 +139,8 @@ export interface MobileController {
   sendTaskTerminalInput(
     taskId: string,
     dataB64: string,
-    kind: TaskTerminalInputKind
+    kind: TaskTerminalInputKind,
+    provenance: TaskTerminalInputProvenance
   ): void;
   activateTaskTerminalViewer(taskId: string): void;
   resizeTaskTerminal(taskId: string, cols: number, rows: number): void;
@@ -1147,6 +1149,7 @@ export function createMobileController(
     const current = activeTaskTerminal;
     const subscription = current?.subscription;
     activeTaskTerminal = null;
+    taskTerminalActivationPending = null;
     taskTerminalGeneration += 1;
     subscription?.close();
     if (current) {
@@ -1156,14 +1159,20 @@ export function createMobileController(
     }
   };
 
-  const setActiveTaskTerminalViewing = (visible: boolean) => {
+  const setActiveTaskTerminalVisibility = (visible: boolean) => {
     const current = activeTaskTerminal;
     if (!current) return;
     current.subscription.setViewerVisible?.(visible);
-    if (!visible) return;
+  };
+
+  const claimActiveTaskTerminal = () => {
+    const current = activeTaskTerminal;
+    if (!current) return;
+    current.subscription.setViewerVisible?.(true);
 
     // A terminal can be attached before React Native has measured it. Retain
-    // the active-view signal until that first non-zero viewport is available.
+    // deliberate scroll/input intent until that first non-zero viewport is
+    // available. Navigation and app foregrounding never set this latch.
     const geometry = requestedTaskTerminalGeometry;
     if (geometry?.taskId !== current.taskId) {
       taskTerminalActivationPending = current.taskId;
@@ -1645,13 +1654,11 @@ export function createMobileController(
           streamTaskId = nextTaskId;
         }
       };
-      taskTerminalActivationPending = taskId;
-      // The task-detail layout can be known before route resolution or stream
-      // authentication completes. The transport orders this control frame
-      // before attach, so the initial daemon snapshot cannot strand the PTY at
-      // its never-rendered 80x24 default.
+      taskTerminalActivationPending = null;
+      // Registration seeds a never-owned PTY from the first measured viewer,
+      // but remains passive when an active owner already exists.
       resizeToRequestedGeometry();
-      setActiveTaskTerminalViewing(appForeground && taskDetailVisible);
+      setActiveTaskTerminalVisibility(appForeground && taskDetailVisible);
     } catch (error) {
       if (generation !== taskTerminalGeneration) {
         return;
@@ -2880,7 +2887,7 @@ export function createMobileController(
     setTaskDetailVisible(visible) {
       if (taskDetailVisible === visible) return;
       taskDetailVisible = visible;
-      setActiveTaskTerminalViewing(visible && appForeground);
+      setActiveTaskTerminalVisibility(visible && appForeground);
       reconcileTaskSummarySubscriptions();
       reconcileSelectedTaskRead();
     },
@@ -2888,7 +2895,7 @@ export function createMobileController(
     setAppForeground(foreground) {
       if (appForeground === foreground) return;
       appForeground = foreground;
-      setActiveTaskTerminalViewing(foreground && taskDetailVisible);
+      setActiveTaskTerminalVisibility(foreground && taskDetailVisible);
       reconcileTaskSummarySubscriptions();
     },
 
@@ -3808,10 +3815,11 @@ export function createMobileController(
       }
     },
 
-    sendTaskTerminalInput(taskId, dataB64, kind) {
+    sendTaskTerminalInput(taskId, dataB64, kind, provenance) {
       if (!dataB64 || activeTaskTerminal?.taskId !== taskId) {
         return;
       }
+      if (provenance === "user") claimActiveTaskTerminal();
       activeTaskTerminal.subscription.sendInput?.(
         dataB64,
         kind === "submission",
@@ -3871,7 +3879,7 @@ export function createMobileController(
 
     activateTaskTerminalViewer(taskId) {
       if (activeTaskTerminal?.taskId !== taskId || !appForeground || !taskDetailVisible) return;
-      setActiveTaskTerminalViewing(true);
+      claimActiveTaskTerminal();
     },
 
     resizeTaskTerminal(taskId, cols, rows) {

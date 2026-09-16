@@ -198,6 +198,10 @@ export function buildTerminalDocument({
       let selectionMode = false;
       let altScreenScrollCapture = null;
       let directInputEnabled = false;
+      let pendingUserKeyData = null;
+      let pendingTrustedTextInput = null;
+      let pendingTrustedCompositionInput = null;
+      let trustedCompositionActive = false;
       let lastScrollbackRequestAt = 0;
       const terminalFileMentionHistory = new Map();
       const terminalFileMentionOccurrences = {
@@ -249,12 +253,81 @@ export function buildTerminalDocument({
           type: "terminal-scrollback-request"
         }));
       }
+      // onData also carries parser/programmatic replies. Mark only trusted DOM
+      // producers that xterm turns into input; paste and soft-keyboard input do
+      // not necessarily emit onKey. The marker is bounded to the producer's
+      // dispatch so an unrelated later onData remains passive.
+      function markTrustedTextInput(event) {
+        if (!directInputEnabled || !event.isTrusted) {
+          return;
+        }
+        const marker = {};
+        pendingTrustedTextInput = marker;
+        queueMicrotask(() => {
+          if (pendingTrustedTextInput === marker) {
+            pendingTrustedTextInput = null;
+          }
+        });
+      }
+      root.addEventListener("beforeinput", markTrustedTextInput, true);
+      root.addEventListener("input", markTrustedTextInput, true);
+      root.addEventListener("paste", markTrustedTextInput, true);
+
+      // A non-composition key can make xterm finalize an active IME session
+      // synchronously before it emits onKey for that key. Keep that composed
+      // text tied to the trusted keyboard event that caused the finalization.
+      root.addEventListener("compositionstart", (event) => {
+        trustedCompositionActive = directInputEnabled && event.isTrusted;
+      }, true);
+      root.addEventListener("keydown", (event) => {
+        if (trustedCompositionActive) {
+          markTrustedTextInput(event);
+        }
+      }, true);
+
+      // xterm finalizes composition text in a zero-delay callback after the
+      // trusted compositionend event. Its target listener is already installed,
+      // so this bubble listener queues cleanup after xterm's callback.
+      root.addEventListener("compositionend", (event) => {
+        trustedCompositionActive = false;
+        if (!directInputEnabled || !event.isTrusted) {
+          return;
+        }
+        pendingTrustedCompositionInput = {};
+      }, true);
+      root.addEventListener("compositionend", () => {
+        const marker = pendingTrustedCompositionInput;
+        if (!marker) {
+          return;
+        }
+        setTimeout(() => {
+          if (pendingTrustedCompositionInput === marker) {
+            pendingTrustedCompositionInput = null;
+          }
+        }, 0);
+      });
+
+      // Hardware keys do emit onKey, which lets their exact resulting data be
+      // correlated without treating every onData event as user activity.
+      term.onKey(({ key, domEvent }) => {
+        if (directInputEnabled && domEvent.isTrusted) {
+          pendingUserKeyData = key;
+        }
+      });
       term.onData((data) => {
         if (altScreenScrollCapture) {
           altScreenScrollCapture.push(new TextEncoder().encode(data));
           return;
         }
         if (directInputEnabled) {
+          const provenance = pendingUserKeyData === data ||
+            pendingTrustedTextInput ||
+            pendingTrustedCompositionInput
+            ? "user"
+            : "passive";
+          pendingUserKeyData = null;
+          pendingTrustedTextInput = null;
+          pendingTrustedCompositionInput = null;
           const cursorFinal = data.charAt(data.length - 1);
           const isHorizontalCursorControl =
             data.charCodeAt(0) === 27 && ["C", "D"].includes(cursorFinal);
@@ -263,7 +336,11 @@ export function buildTerminalDocument({
             : isHorizontalCursorControl
               ? "control"
               : "draft";
-          postTerminalInput([new TextEncoder().encode(data)], kind);
+          postTerminalInput(
+            [new TextEncoder().encode(data)],
+            kind,
+            provenance
+          );
         }
       });
       term.onBinary((data) => {
@@ -280,7 +357,7 @@ export function buildTerminalDocument({
           for (let index = 0; index < data.length; index += 1) {
             bytes[index] = data.charCodeAt(index) & 0xff;
           }
-          postTerminalInput([bytes], "draft");
+          postTerminalInput([bytes], "draft", "passive");
         }
       });
       term.onSelectionChange(() => {
@@ -1095,11 +1172,21 @@ export function buildTerminalDocument({
         }
       }
 
-      // Claim viewing from gesture producers, never from scroll callbacks:
-      // xterm replay, resize and scroll restoration generate those too.
-      for (const name of ["touchstart", "pointerdown", "wheel", "keydown"]) {
+      // Claim viewing from deliberate scroll producers, never from scroll
+      // callbacks: xterm replay, output, resize and restoration generate those
+      // too. Focus, taps/selections and ordinary keys are passive.
+      for (const name of ["touchmove", "pointerdown", "wheel", "keydown"]) {
         viewport.addEventListener(name, (event) => {
           if (!event.isTrusted) return;
+          if (event instanceof WheelEvent && event.deltaX === 0 && event.deltaY === 0) return;
+          if (event instanceof PointerEvent && (
+            event.button !== 0
+            || !(event.target instanceof Element)
+            || !event.target.closest(".xterm-scrollbar")
+          )) return;
+          if (event instanceof KeyboardEvent && !(
+            event.shiftKey && (event.key === "PageUp" || event.key === "PageDown")
+          )) return;
           window.ReactNativeWebView?.postMessage(JSON.stringify({
             type: "terminal-viewer-interaction"
           }));
@@ -1341,10 +1428,10 @@ export function buildTerminalDocument({
         } finally {
           altScreenScrollCapture = null;
         }
-        postTerminalInput(captured, "control");
+        postTerminalInput(captured, "control", "passive");
       }
 
-      function postTerminalInput(chunks, kind) {
+      function postTerminalInput(chunks, kind, provenance) {
         if (!window.ReactNativeWebView || !window.ReactNativeWebView.postMessage) {
           return;
         }
@@ -1364,12 +1451,19 @@ export function buildTerminalDocument({
         window.ReactNativeWebView.postMessage(JSON.stringify({
           type: "terminal-input",
           dataB64: btoa(binary),
-          kind
+          kind,
+          provenance
         }));
       }
 
       window.__setTerminalDirectInput = function setTerminalDirectInput(enabled) {
         directInputEnabled = enabled === true;
+        if (!directInputEnabled) {
+          pendingUserKeyData = null;
+          pendingTrustedTextInput = null;
+          pendingTrustedCompositionInput = null;
+          trustedCompositionActive = false;
+        }
         if (directInputEnabled) {
           term.focus();
         } else {

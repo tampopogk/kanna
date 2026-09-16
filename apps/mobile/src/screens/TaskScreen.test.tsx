@@ -1391,12 +1391,14 @@ describe("TaskScreen", () => {
     (
       terminal?.props?.onTerminalInput as (
         dataB64: string,
-        kind: "control"
+        kind: "control",
+        provenance: "user"
       ) => void
-    )("G1s8NjU7MTsxTQ==", "control");
+    )("G1s8NjU7MTsxTQ==", "control", "user");
     expect(onSendTerminalInput).toHaveBeenCalledWith(
       "G1s8NjU7MTsxTQ==",
-      "control"
+      "control",
+      "user"
     );
   });
 
@@ -1422,11 +1424,31 @@ describe("TaskScreen", () => {
     expect(findByTestId(tree, MOBILE_E2E_IDS.taskInput)).toBeNull();
     pressByTestId(tree, MOBILE_E2E_IDS.taskTerminalKey("escape"));
     pressByTestId(tree, MOBILE_E2E_IDS.taskTerminalKey("enter"));
-    expect(onSendTerminalInput).toHaveBeenNthCalledWith(1, "Gw==", "draft");
+    pressByTestId(tree, MOBILE_E2E_IDS.taskTerminalKey("left"));
+    pressByTestId(tree, MOBILE_E2E_IDS.taskTerminalKey("right"));
+    expect(onSendTerminalInput).toHaveBeenNthCalledWith(
+      1,
+      "Gw==",
+      "draft",
+      "user"
+    );
     expect(onSendTerminalInput).toHaveBeenNthCalledWith(
       2,
       "DQ==",
-      "submission"
+      "submission",
+      "user"
+    );
+    expect(onSendTerminalInput).toHaveBeenNthCalledWith(
+      3,
+      "G1tE",
+      "control",
+      "user"
+    );
+    expect(onSendTerminalInput).toHaveBeenNthCalledWith(
+      4,
+      "G1tD",
+      "control",
+      "user"
     );
 
     pressByTestId(tree, MOBILE_E2E_IDS.taskTerminalDirectInputToggle);

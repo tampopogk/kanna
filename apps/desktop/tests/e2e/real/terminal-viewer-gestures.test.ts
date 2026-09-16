@@ -37,7 +37,7 @@ afterAll(async () => {
   await client.deleteSession();
 });
 
-it("hands actual PTY geometry between mobile touch and desktop wheel while replay stays passive", async () => {
+it("hands actual PTY geometry between two desktop wheels while replay and layout stay passive", async () => {
   repoPath = await createFixtureRepo("viewer-gestures");
   const repoId = await importTestRepo(client, repoPath, "viewer-gestures");
   const { baseUrl } = await resolveAppKannaServer(client);

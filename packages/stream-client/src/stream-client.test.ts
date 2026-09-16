@@ -2934,6 +2934,57 @@ describe("StreamClient", () => {
     client.close();
   });
 
+  it("lets a passive desktop observer attach after measurement without claiming ownership", () => {
+    const client = new StreamClient({
+      url: "ws://test/v1/stream",
+      webSocketFactory: factory,
+      terminalViewerRole: "remote",
+    });
+    const socket = sockets[0];
+    socket.open();
+    socket.receive({
+      type: "auth_ok",
+      capabilities: ["terminal_geometry", "terminal_active_view"],
+    });
+    client.attachTerminal(
+      "task-pty",
+      { onOutput() {} },
+      { passiveInitialAttach: true },
+    );
+    expect(socket.sent).not.toContainEqual(
+      expect.objectContaining({ type: "attach", task_id: "task-pty" }),
+    );
+
+    client.registerTerminalViewer("task-pty", 132, 48);
+    expect(socket.sent).not.toContainEqual(
+      expect.objectContaining({ type: "attach", task_id: "task-pty" }),
+    );
+    client.setTerminalViewerVisibility("task-pty", true);
+
+    expect(socket.sent.slice(-3)).toEqual([
+      expect.objectContaining({
+        type: "term_viewer_register",
+        task_id: "task-pty",
+        cols: 132,
+        rows: 48,
+        visible: false,
+      }),
+      expect.objectContaining({
+        type: "term_viewer_register",
+        task_id: "task-pty",
+        cols: 132,
+        rows: 48,
+        visible: true,
+      }),
+      { type: "attach", task_id: "task-pty", kind: "terminal", from_seq: 0 },
+    ]);
+    expect(socket.sent).not.toContainEqual({
+      type: "term_viewer_active",
+      task_id: "task-pty",
+    });
+    client.close();
+  });
+
   it("holds auth replay until a geometry-aware remote viewer becomes active", () => {
     const client = new StreamClient({
       url: "ws://test/v1/stream",

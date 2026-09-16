@@ -460,7 +460,7 @@ describe("useTerminal", () => {
     expect(terminal).toBeDefined();
     expect(attachTerminal).toHaveBeenCalledWith("session-1", expect.objectContaining({
       onOutput: expect.any(Function),
-    }));
+    }), { passiveInitialAttach: true });
     expect(listenMock).not.toHaveBeenCalledWith("terminal_output", expect.any(Function));
     expect(invokeMock).not.toHaveBeenCalledWith("attach_session_with_snapshot", expect.anything());
 
@@ -622,7 +622,7 @@ describe("useTerminal", () => {
     wrapper.unmount();
   });
 
-  it("activates local geometry when a focused, visible terminal finishes attaching", async () => {
+  it("keeps attach completion and DOM focus passive", async () => {
     const attachTerminal = vi.fn((taskId: string, handlers: TerminalStreamHandlers) => {
       terminalStreamHandlers.set(taskId, handlers);
       handlers.onSnapshot?.(80, 24, btoa("focused local terminal"));
@@ -658,37 +658,32 @@ describe("useTerminal", () => {
     wrapper.vm.init(terminalElement);
     await wrapper.vm.startListening();
 
-    // The terminal was already foreground while its stream attached. The
-    // attachment completion reuses the real focus guard so the daemon does
-    // not retain a snapshot's seed grid merely because xterm focusin occurred
-    // before the stream became interactive.
-    expect(activateTerminalViewer).toHaveBeenCalledTimes(1);
-    expect(activateTerminalViewer).toHaveBeenLastCalledWith("session-1");
+    // Measurement and initial hydration establish a passive viewer only.
+    expect(setTerminalViewerVisibility).toHaveBeenCalledWith("session-1", true);
+    expect(activateTerminalViewer).not.toHaveBeenCalled();
     await wrapper.vm.ensureConnected();
-    expect(activateTerminalViewer).toHaveBeenCalledTimes(1);
+    expect(activateTerminalViewer).not.toHaveBeenCalled();
 
     terminalElement.dispatchEvent(new FocusEvent("focusin", { bubbles: true }));
     await flushAsyncWork();
-    expect(setTerminalViewerVisibility).toHaveBeenLastCalledWith("session-1", true);
-    expect(activateTerminalViewer).toHaveBeenCalledTimes(2);
-    expect(activateTerminalViewer).toHaveBeenLastCalledWith("session-1");
+    expect(activateTerminalViewer).not.toHaveBeenCalled();
 
     vi.spyOn(document, "hasFocus").mockReturnValue(false);
     terminalElement.dispatchEvent(new FocusEvent("focusin", { bubbles: true }));
     await flushAsyncWork();
-    expect(activateTerminalViewer).toHaveBeenCalledTimes(2);
+    expect(activateTerminalViewer).not.toHaveBeenCalled();
 
     vi.spyOn(document, "hasFocus").mockReturnValue(true);
     terminalElement.style.visibility = "hidden";
     terminalElement.dispatchEvent(new FocusEvent("focusin", { bubbles: true }));
     await flushAsyncWork();
-    expect(activateTerminalViewer).toHaveBeenCalledTimes(2);
+    expect(activateTerminalViewer).not.toHaveBeenCalled();
 
     terminalElement.style.visibility = "visible";
     Object.defineProperty(terminalElement, "offsetWidth", { configurable: true, value: 0 });
     terminalElement.dispatchEvent(new FocusEvent("focusin", { bubbles: true }));
     await flushAsyncWork();
-    expect(activateTerminalViewer).toHaveBeenCalledTimes(2);
+    expect(activateTerminalViewer).not.toHaveBeenCalled();
 
     terminalElement.remove();
     wrapper.unmount();
@@ -750,6 +745,8 @@ describe("useTerminal", () => {
     // Replay/API scroll and synthetic gestures must stay passive.
     terminalElement.dispatchEvent(new Event("scroll"));
     terminalElement.dispatchEvent(new WheelEvent("wheel", { deltaY: -100 }));
+    terminalStreamHandlers.get("session-1")?.onOutput(btoa("passive output"));
+    terminals[0]?.onResize.mock.calls[0]?.[0]?.({ cols: 44, rows: 20 });
     await flushAsyncWork();
     expect(activateTerminalViewer).not.toHaveBeenCalled();
 
@@ -808,7 +805,7 @@ describe("useTerminal", () => {
     wrapper.unmount();
   });
 
-  it("activates an eligible local viewer when its native window becomes foreground and tears down the listener", async () => {
+  it("keeps native window focus outside viewer eligibility and ownership", async () => {
     const attachTerminal = vi.fn((taskId: string, handlers: TerminalStreamHandlers) => {
       terminalStreamHandlers.set(taskId, handlers);
       handlers.onSnapshot?.(80, 24, btoa("native focused local terminal"));
@@ -845,46 +842,38 @@ describe("useTerminal", () => {
     await wrapper.vm.startListening();
     await flushAsyncWork();
 
-    expect(nativeWindowFocusHandler).not.toBeNull();
-    nativeWindowFocusHandler?.({ payload: false });
+    expect(nativeWindowFocusHandler).toBeNull();
+    const visibilityCalls = setTerminalViewerVisibility.mock.calls.length;
+    window.dispatchEvent(new Event("blur"));
+    window.dispatchEvent(new Event("focus"));
+    await flushAsyncWork();
+    expect(setTerminalViewerVisibility).toHaveBeenCalledTimes(visibilityCalls);
+    expect(activateTerminalViewer).not.toHaveBeenCalled();
+
+    wrapper.vm.pause();
     await flushAsyncWork();
     expect(setTerminalViewerVisibility).toHaveBeenLastCalledWith("session-1", false);
-    expect(activateTerminalViewer).toHaveBeenCalledTimes(1);
-
-    nativeWindowFocusHandler?.({ payload: true });
-    await flushAsyncWork();
-    expect(activateTerminalViewer).toHaveBeenCalledTimes(2);
-    expect(activateTerminalViewer).toHaveBeenLastCalledWith("session-1");
-
-    terminalElement.style.visibility = "hidden";
-    nativeWindowFocusHandler?.({ payload: true });
-    await flushAsyncWork();
-    expect(activateTerminalViewer).toHaveBeenCalledTimes(2);
-
-    terminalElement.style.visibility = "visible";
-    wrapper.vm.pause();
-    nativeWindowFocusHandler?.({ payload: true });
-    await flushAsyncWork();
-    expect(activateTerminalViewer).toHaveBeenCalledTimes(2);
+    expect(activateTerminalViewer).not.toHaveBeenCalled();
 
     wrapper.vm.dispose();
     expect(nativeWindowFocusHandler).toBeNull();
     wrapper.unmount();
   });
 
-  it("waits for the real document focus edge when macOS reports its key window first", async () => {
+  it("does not use document focus to gate or activate a visible viewer", async () => {
     const attachTerminal = vi.fn((taskId: string, handlers: TerminalStreamHandlers) => {
       terminalStreamHandlers.set(taskId, handlers);
       handlers.onSnapshot?.(80, 24, btoa("native focus ordering"));
     });
     const activateTerminalViewer = vi.fn();
+    const setTerminalViewerVisibility = vi.fn();
     streamClientMock.getSharedStreamClient.mockResolvedValue({
       attachTerminal,
       sendTermInput: vi.fn(),
       sendTermResize: vi.fn(),
       detach: vi.fn(),
       registerTerminalViewer: vi.fn(),
-      setTerminalViewerVisibility: vi.fn(),
+      setTerminalViewerVisibility,
       activateTerminalViewer,
     });
     isTauriMock = true;
@@ -906,14 +895,16 @@ describe("useTerminal", () => {
     await wrapper.vm.startListening();
     await flushAsyncWork();
 
-    nativeWindowFocusHandler?.({ payload: true });
-    await flushAsyncWork();
+    expect(nativeWindowFocusHandler).toBeNull();
     expect(activateTerminalViewer).not.toHaveBeenCalled();
+    expect(setTerminalViewerVisibility).toHaveBeenLastCalledWith("session-1", true);
 
+    const visibilityCalls = setTerminalViewerVisibility.mock.calls.length;
     hasFocus.mockReturnValue(true);
     window.dispatchEvent(new Event("focus"));
     await flushAsyncWork();
-    expect(activateTerminalViewer).toHaveBeenCalledWith("session-1");
+    expect(activateTerminalViewer).not.toHaveBeenCalled();
+    expect(setTerminalViewerVisibility).toHaveBeenCalledTimes(visibilityCalls);
 
     terminalElement.remove();
     wrapper.unmount();
@@ -967,7 +958,7 @@ describe("useTerminal", () => {
     expect(client.attachTerminal).toHaveBeenCalledWith("session-1", expect.objectContaining({
       onSnapshot: expect.any(Function),
       onOutput: expect.any(Function),
-    }));
+    }), { passiveInitialAttach: true });
     expect(client.sendTermResize).toHaveBeenCalledOnce();
     expect(client.sendTermResize).toHaveBeenCalledWith("session-1", 80, 24);
     expect(invokeMock).not.toHaveBeenCalledWith("attach_session_with_snapshot", expect.anything());
@@ -1617,7 +1608,7 @@ describe("useTerminal", () => {
     expect(errorToastMock).not.toHaveBeenCalled();
     expect(client.attachTerminal).toHaveBeenCalledWith("shell-wt-1", expect.objectContaining({
       onOutput: expect.any(Function),
-    }));
+    }), { passiveInitialAttach: true });
   });
 
   it("attaches a pre-warmed shell terminal when spawn reports the session already exists", async () => {
@@ -1660,7 +1651,7 @@ describe("useTerminal", () => {
     expect(errorToastMock).not.toHaveBeenCalled();
     expect(client.attachTerminal).toHaveBeenCalledWith("shell-wt-1", expect.objectContaining({
       onOutput: expect.any(Function),
-    }));
+    }), { passiveInitialAttach: true });
   });
 
   it("respawns once when a previously attached task session disappears from the KSP stream", async () => {
@@ -3517,7 +3508,7 @@ describe("useTerminal", () => {
 
     expect(client.attachTerminal).toHaveBeenCalledWith("session-1", expect.objectContaining({
       onOutput: expect.any(Function),
-    }));
+    }), { passiveInitialAttach: true });
 
     wrapper.vm.pause();
 

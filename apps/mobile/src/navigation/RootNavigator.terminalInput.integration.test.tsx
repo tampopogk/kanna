@@ -35,6 +35,7 @@ const TASK_ID = "task-1";
 const SCROLL_INPUT_B64 = "G1s8NjU7MTM7MTJN";
 const ESC_INPUT_B64 = "Gw==";
 const ENTER_INPUT_B64 = "DQ==";
+const LEFT_INPUT_B64 = "G1tE";
 
 vi.mock("react-native-safe-area-context", () => ({
   useSafeAreaInsets: () => ({ bottom: 48 })
@@ -147,17 +148,37 @@ vi.mock("../screens/TaskScreen", async () => {
   const ReactModule = await import("react");
   return {
     TaskScreen: (props: {
-      onSendTerminalInput?(dataB64: string, kind: "draft" | "submission" | "control"): void;
+      onSendTerminalInput?(
+        dataB64: string,
+        kind: "draft" | "submission" | "control",
+        provenance: "user" | "passive"
+      ): void;
     }) => ReactModule.createElement(
       "TaskScreen",
       props,
       ReactModule.createElement("Pressable", {
         testID: "mobile.task-terminal-key.escape",
-        onPress: () => props.onSendTerminalInput?.(ESC_INPUT_B64, "draft")
+        onPress: () => props.onSendTerminalInput?.(
+          ESC_INPUT_B64,
+          "draft",
+          "user"
+        )
       }),
       ReactModule.createElement("Pressable", {
         testID: "mobile.task-terminal-key.enter",
-        onPress: () => props.onSendTerminalInput?.(ENTER_INPUT_B64, "submission")
+        onPress: () => props.onSendTerminalInput?.(
+          ENTER_INPUT_B64,
+          "submission",
+          "user"
+        )
+      }),
+      ReactModule.createElement("Pressable", {
+        testID: "mobile.task-terminal-key.left",
+        onPress: () => props.onSendTerminalInput?.(
+          LEFT_INPUT_B64,
+          "control",
+          "user"
+        )
       })
     )
   };
@@ -380,12 +401,16 @@ describe("RootNavigator terminal scroll input integration", () => {
     expect(terminalSocket.sentFrames.slice(beforeViewing).some(frame => frame.type.startsWith("term_input"))).toBe(false);
 
     const onSendTerminalInput = taskScreen.props.onSendTerminalInput as
-      | ((dataB64: string, kind: "draft" | "submission" | "control") => void)
+      | ((
+          dataB64: string,
+          kind: "draft" | "submission" | "control",
+          provenance: "user" | "passive"
+        ) => void)
       | undefined;
     expect(onSendTerminalInput).toBeTypeOf("function");
 
     await act(async () => {
-      onSendTerminalInput?.(SCROLL_INPUT_B64, "control");
+      onSendTerminalInput?.(SCROLL_INPUT_B64, "control", "passive");
       await flushMicrotasks();
     });
 
@@ -403,7 +428,7 @@ describe("RootNavigator terminal scroll input integration", () => {
       terminalSocket.sentFrames.filter((frame) => frame.type === "term_input_control").length;
     const beforeEmptyPayload = termInputCount();
     await act(async () => {
-      onSendTerminalInput?.("", "control");
+      onSendTerminalInput?.("", "control", "passive");
       await flushMicrotasks();
     });
     expect(termInputCount()).toBe(beforeEmptyPayload);
@@ -414,11 +439,29 @@ describe("RootNavigator terminal scroll input integration", () => {
     const enterKey = rendered?.root.findByProps({
       testID: "mobile.task-terminal-key.enter"
     });
+    const leftKey = rendered?.root.findByProps({
+      testID: "mobile.task-terminal-key.left"
+    });
+    const beforeKeys = terminalSocket.sentFrames.length;
     await act(async () => {
       escapeKey?.props.onPress();
       enterKey?.props.onPress();
+      leftKey?.props.onPress();
       await flushMicrotasks();
     });
+    const keyFrames = terminalSocket.sentFrames.slice(beforeKeys);
+    expect(keyFrames).toEqual([
+      { type: "term_viewer_active", task_id: TASK_ID },
+      { type: "term_input", task_id: TASK_ID, data_b64: ESC_INPUT_B64 },
+      { type: "term_viewer_active", task_id: TASK_ID },
+      {
+        type: "term_input_boundary",
+        task_id: TASK_ID,
+        data_b64: ENTER_INPUT_B64
+      },
+      { type: "term_viewer_active", task_id: TASK_ID },
+      { type: "term_input_control", task_id: TASK_ID, data_b64: LEFT_INPUT_B64 }
+    ]);
     expect(terminalSocket.sentFrames).toContainEqual({
       type: "term_input",
       task_id: TASK_ID,

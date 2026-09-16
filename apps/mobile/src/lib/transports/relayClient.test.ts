@@ -586,17 +586,17 @@ describe("createRelayDesktopClient", () => {
     expect(socket.send).toHaveBeenNthCalledWith(
       6,
       JSON.stringify({
-        type: "term_viewer_active",
-        task_id: "task-1"
+        type: "attach",
+        task_id: "task-1",
+        kind: "terminal",
+        from_seq: 0
       })
     );
     expect(socket.send).toHaveBeenNthCalledWith(
       7,
       JSON.stringify({
-        type: "attach",
-        task_id: "task-1",
-        kind: "terminal",
-        from_seq: 0
+        type: "term_viewer_active",
+        task_id: "task-1"
       })
     );
 

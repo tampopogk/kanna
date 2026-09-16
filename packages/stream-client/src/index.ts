@@ -144,6 +144,13 @@ export interface TerminalStreamHandlers {
   onError?(code: string, message: string): void;
 }
 
+export interface TerminalAttachmentOptions {
+  /** Render the authoritative snapshot after registration without requiring
+   * this viewer to claim PTY geometry first. Desktop observers use this so
+   * opening or focusing a view remains passive. */
+  passiveInitialAttach?: boolean;
+}
+
 export interface TerminalOutputMetadata {
   /** Local monotonic time at which the WebSocket frame reached dispatch. */
   receivedAtMs: number;
@@ -265,15 +272,19 @@ interface TerminalAttachment {
    * snapshot names the starting offset and every output frame's own decoded
    * length advances it, so resuming costs nothing on the wire. */
   resume: TermResumePosition | null;
-  /** Whether this logical attachment has ever reached a socket. The first
-   * geometry-aware remote attach waits for its real active-view edge; later
-   * socket reconnects remain passive and rehydrate without stealing control. */
+  /** Whether this logical attachment has ever reached a socket. Legacy
+   * geometry-aware attachments may wait for an active edge; current passive
+   * observers wait only for visible measurement. Reconnects never synthesize
+   * activity. */
   hasAttached: boolean;
   /** Whether the attachment frame has reached the current socket. */
   attachedOnSocket: boolean;
   /** The first active-view edge happened before the first attach could be
    * sent. It is consumed exactly once, immediately before that attach. */
   initialActivationPending: boolean;
+  /** First render may observe the current owner's authoritative grid without
+   * becoming the geometry owner itself. */
+  passiveInitialAttach: boolean;
 }
 
 interface TerminalViewerRegistration {
@@ -481,7 +492,11 @@ export class StreamClient {
     });
   }
 
-  attachTerminal(taskId: string, handlers: TerminalStreamHandlers): void {
+  attachTerminal(
+    taskId: string,
+    handlers: TerminalStreamHandlers,
+    options: TerminalAttachmentOptions = {},
+  ): void {
     this.attachments.set(attachmentKey(taskId, "terminal"), {
       kind: "terminal",
       handlers,
@@ -489,6 +504,7 @@ export class StreamClient {
       hasAttached: false,
       attachedOnSocket: false,
       initialActivationPending: false,
+      passiveInitialAttach: options.passiveInitialAttach === true,
     });
     if (this.authed) {
       handlers.onInputAvailabilityChange?.(
@@ -804,11 +820,11 @@ export class StreamClient {
     }
   }
 
-  /** Send a terminal's first hydrate only after a geometry-aware remote view
-   * has both measured and become active. The server serializes the preceding
-   * registration/activation with snapshot capture, so the first visible grid
-   * is already at the active viewer's dimensions. Reconnects deliberately do
-   * not repeat the activation edge. */
+  /** A geometry-aware remote view always measures before its first hydrate.
+   * The legacy/default mode additionally waits for genuine activation. A
+   * passive current client attaches after visible registration and renders
+   * the authoritative grid seeded by that registration or retained from the
+   * current owner; focus/open/reconnect cannot masquerade as activity. */
   private sendTerminalAttachIfReady(taskId: string): void {
     const attachment = this.terminalAttachment(taskId);
     if (!attachment || attachment.attachedOnSocket) return;
@@ -823,10 +839,16 @@ export class StreamClient {
         || (
           !attachment.hasAttached
           && (
-            !attachment.initialActivationPending
+            (attachment.passiveInitialAttach && !registration.visible)
             || (
-              (!this.authed || this.supportsCapability("terminal_active_view"))
-              && !registration.visible
+              !attachment.passiveInitialAttach
+              && (
+                !attachment.initialActivationPending
+                || (
+                  (!this.authed || this.supportsCapability("terminal_active_view"))
+                  && !registration.visible
+                )
+              )
             )
           )
         )

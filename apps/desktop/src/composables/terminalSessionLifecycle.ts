@@ -51,7 +51,7 @@ export interface TerminalSessionLifecycleController {
   dispose(): void
   redraw(): Promise<void>
   ensureConnected(): Promise<void>
-  activateVisibleViewer(intentionalInteraction?: boolean): Promise<void>
+  activateVisibleViewer(): Promise<void>
   activateViewerForHumanInput(): Promise<void>
   setViewerVisibility(visible: boolean): Promise<void>
 }
@@ -73,34 +73,37 @@ export function createTerminalSessionLifecycle(params: {
     return getLiveTerminalFromState(params.state, params.terminal)
   }
 
-  // A resize snapshot can mean another viewer took geometry ownership while
-  // this terminal remained continuously focused. No DOM/native focus event
-  // follows in that case, so the next genuine human input must confirm local
-  // ownership once before its bytes reach the PTY.
-  let viewerOwnershipNeedsInputConfirmation = false
+  function hasVisibleSize(element: HTMLElement): boolean {
+    const style = window.getComputedStyle(element)
+    return element.isConnected
+      && element.offsetWidth > 0
+      && element.offsetHeight > 0
+      && style.display !== "none"
+      && style.visibility !== "hidden"
+  }
+
+  function isViewerEligible(visible: boolean): boolean {
+    const container = params.state.container
+    return visible
+      && !params.state.paused
+      && !params.state.disposed
+      && !!container
+      && hasVisibleSize(container)
+      && (document as Document & { visibilityState: string }).visibilityState !== "hidden"
+  }
 
   /**
-   * Geometry ownership is elected by the daemon, but a local terminal must
-   * explicitly report the foreground-focus edge that makes it eligible to
-   * take over. Registration and a measured resize are deliberately passive:
-   * a hidden tab, reconnect, or layout pass must not move another viewer's
-   * grid. A trusted gesture may target a visible non-key macOS window without
-   * moving keyboard focus; only that producer bypasses the focus check.
-   * The DOM checks keep synthetic focus from an occluded/zero-sized
-   * terminal from becoming that edge.
+   * Geometry ownership is elected by the daemon. Registration, reconnect,
+   * focus and measured resize are passive; only deliberate scroll and
+   * classified human-input producers call this method. A user may scroll a
+   * visible non-key macOS window, so document focus is intentionally not an
+   * eligibility requirement. DOM visibility still rejects cached and
+   * zero-sized terminals.
    */
-  async function activateVisibleViewer(intentionalInteraction = false): Promise<void> {
+  async function activateVisibleViewer(): Promise<void> {
     const container = params.state.container
     const terminal = getLiveTerminal()
     const documentHidden = (document as Document & { visibilityState: string }).visibilityState === "hidden"
-    const hasVisibleSize = (element: HTMLElement) => {
-      const style = window.getComputedStyle(element)
-      return element.isConnected
-        && element.offsetWidth > 0
-        && element.offsetHeight > 0
-        && style.display !== "none"
-        && style.visibility !== "hidden"
-    }
     const trace = (phase: "ineligible" | "eligible" | "stale" | "sent") => {
       if (!import.meta.env.DEV || !window.__KANNA_E2E__) return
       const visible = container ? hasVisibleSize(container) : false
@@ -128,7 +131,6 @@ export function createTerminalSessionLifecycle(params: {
       || terminal.cols <= 0
       || terminal.rows <= 0
       || documentHidden
-      || (!intentionalInteraction && !document.hasFocus())
     ) {
       trace("ineligible")
       return
@@ -142,25 +144,22 @@ export function createTerminalSessionLifecycle(params: {
       || !params.state.attached
       || !hasVisibleSize(container)
       || (document as Document & { visibilityState: string }).visibilityState === "hidden"
-      || (!intentionalInteraction && !document.hasFocus())
     ) {
       trace("stale")
       return
     }
     client.setTerminalViewerVisibility?.(params.sessionId, true)
     client.activateTerminalViewer?.(params.sessionId)
-    viewerOwnershipNeedsInputConfirmation = false
     trace("sent")
   }
 
   async function activateViewerForHumanInput(): Promise<void> {
-    if (!viewerOwnershipNeedsInputConfirmation) return
     await activateVisibleViewer()
   }
 
   async function setViewerVisibility(visible: boolean): Promise<void> {
     const client = await params.getTerminalStreamClient()
-    client.setTerminalViewerVisibility?.(params.sessionId, visible)
+    client.setTerminalViewerVisibility?.(params.sessionId, isViewerEligible(visible))
   }
   const disposal = createTerminalDisposalController({
     sessionId: params.sessionId,
@@ -288,15 +287,18 @@ export function createTerminalSessionLifecycle(params: {
         if (initialViewer) {
           // Establish the owning local role on the same KSP control path
           // before the attach can become interactive or emit a resize. This
-          // is passive: foreground focus is the only local takeover edge.
+          // is passive: deliberate scroll or classified human input is the
+          // only local takeover edge.
           client.registerTerminalViewer?.(params.sessionId, initialViewer.cols, initialViewer.rows)
-          client.setTerminalViewerVisibility?.(params.sessionId, true)
+          client.setTerminalViewerVisibility?.(
+            params.sessionId,
+            isViewerEligible(true),
+          )
         }
         client.attachTerminal(params.sessionId, {
           onSnapshot: (cols, rows, dataB64, agentProvider) => {
             const liveTerminal = getLiveTerminal()
             if (!liveTerminal) return
-            viewerOwnershipNeedsInputConfirmation = true
             const vt = new TextDecoder().decode(base64ToBytes(dataB64))
             traceStream("snapshot", vt, cols, rows)
             const replaceBuffer = shouldResetTerminalForSnapshot({
@@ -356,7 +358,7 @@ export function createTerminalSessionLifecycle(params: {
           onError: (code, message) => {
             void handleAttachError({ code, message })
           },
-        })
+        }, { passiveInitialAttach: true })
         params.state.terminalStreamAttached = true
       }
 
@@ -398,13 +400,6 @@ export function createTerminalSessionLifecycle(params: {
       params.state.attached = true
       params.state.hasAttachedOnce = true
       params.state.sessionExited = false
-      // A terminal can receive its real foreground focus while its stream is
-      // still attaching. The snapshot then restores the daemon's seed grid,
-      // but neither native-window focus nor xterm focusin will necessarily
-      // fire again once attachment completes. Re-evaluate the same guarded
-      // foreground edge here so an already-visible, focused owner registers
-      // as active without synthesizing a DOM event or accepting a hidden view.
-      await activateVisibleViewer()
       if (attachFailureSignal === failureSignalAtStart) {
         clearAttachRetry(true)
       }
@@ -837,7 +832,10 @@ export function createTerminalSessionLifecycle(params: {
       await params.layout.resizeLiveSession(cols, rows, false)
       const client = await params.getTerminalStreamClient()
       client.registerTerminalViewer(params.sessionId, cols, rows)
-      client.setTerminalViewerVisibility?.(params.sessionId, true)
+      client.setTerminalViewerVisibility?.(
+        params.sessionId,
+        isViewerEligible(true),
+      )
     } catch {
       params.state.attached = false
       await startListening()

@@ -177,7 +177,8 @@ async function renderTerminalWebView(input: {
   onOpenFile?: (path: string, line?: number) => void;
   onTerminalInput?: (
     dataB64: string,
-    kind: "draft" | "submission" | "control"
+    kind: "draft" | "submission" | "control",
+    provenance: "user" | "passive"
   ) => void;
   onCapacityChange?: (cols: number, rows: number) => void;
   onRequestScrollback?: () => void;
@@ -252,6 +253,10 @@ class BurstTerminal {
   writes: unknown[] = [];
   focused = false;
   private dataHandler: ((data: string) => void) | null = null;
+  private keyHandler: ((event: {
+    key: string;
+    domEvent: KeyboardEvent;
+  }) => void) | null = null;
   private readonly deferredWriteCallbacks: Array<() => void> = [];
   dimensions = {
     css: { cell: { width: 9, height: 18 } }
@@ -322,6 +327,14 @@ class BurstTerminal {
     return { dispose() {} };
   }
 
+  onKey(handler: (event: {
+    key: string;
+    domEvent: KeyboardEvent;
+  }) => void): { dispose(): void } {
+    this.keyHandler = handler;
+    return { dispose() {} };
+  }
+
   onBinary(): { dispose(): void } {
     return { dispose() {} };
   }
@@ -350,6 +363,11 @@ class BurstTerminal {
 
   emitData(data: string): void {
     this.dataHandler?.(data);
+  }
+
+  emitKey(data: string): void {
+    this.keyHandler?.({ key: data, domEvent: { isTrusted: true } as KeyboardEvent });
+    this.emitData(data);
   }
 
   resize(cols: number, rows: number): void {
@@ -584,16 +602,36 @@ describe("TerminalWebView", () => {
 
     directInputWindow.__setTerminalDirectInput(true);
     expect(bridge.terminal.focused).toBe(true);
-    bridge.terminal.emitData("a");
-    bridge.terminal.emitData("\u001b[B");
-    bridge.terminal.emitData("\u001b[C");
-    bridge.terminal.emitData("\r");
+    bridge.terminal.emitKey("a");
+    bridge.terminal.emitKey("\u001b[B");
+    bridge.terminal.emitKey("\u001b[C");
+    bridge.terminal.emitKey("\r");
 
     expect(bridge.messages).toEqual([
-      { type: "terminal-input", dataB64: "YQ==", kind: "draft" },
-      { type: "terminal-input", dataB64: "G1tC", kind: "draft" },
-      { type: "terminal-input", dataB64: "G1tD", kind: "control" },
-      { type: "terminal-input", dataB64: "DQ==", kind: "submission" }
+      {
+        type: "terminal-input",
+        dataB64: "YQ==",
+        kind: "draft",
+        provenance: "user"
+      },
+      {
+        type: "terminal-input",
+        dataB64: "G1tC",
+        kind: "draft",
+        provenance: "user"
+      },
+      {
+        type: "terminal-input",
+        dataB64: "G1tD",
+        kind: "control",
+        provenance: "user"
+      },
+      {
+        type: "terminal-input",
+        dataB64: "DQ==",
+        kind: "submission",
+        provenance: "user"
+      }
     ]);
 
     directInputWindow.__setTerminalDirectInput(false);
@@ -805,7 +843,8 @@ describe("TerminalWebView", () => {
     send({
       type: "terminal-input",
       dataB64: "G1s8NjU7MTsxTQ==",
-      kind: "control"
+      kind: "control",
+      provenance: "passive"
     });
     send({ type: "terminal-input", dataB64: "" });
     send({ type: "terminal-input", dataB64: 42 });
@@ -816,7 +855,8 @@ describe("TerminalWebView", () => {
     expect(onTerminalInput).toHaveBeenCalledOnce();
     expect(onTerminalInput).toHaveBeenCalledWith(
       "G1s8NjU7MTsxTQ==",
-      "control"
+      "control",
+      "passive"
     );
   });
 

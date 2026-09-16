@@ -337,6 +337,12 @@ async function focusTerminal(
   return focusState;
 }
 
+async function scrollFocusedTerminal(client: WebDriverClient): Promise<void> {
+  // W3C WebDriver's PageUp key. Keeping Shift held exercises xterm's
+  // keyboard-scrollback gesture without delivering terminal input bytes.
+  await client.pressShortcut(["Shift", "\uE00E"]);
+}
+
 async function installTerminalControlTrace(client: WebDriverClient): Promise<void> {
   await client.executeSync(`
     const traceKey = "__KANNA_E2E_ACTIVE_VIEW_CONTROL_TRACE__";
@@ -530,6 +536,7 @@ describe("remote active-view restoration", () => {
     await signIn(primary);
     await signIn(secondary);
     await installTerminalControlTrace(primary);
+    await installTerminalControlTrace(secondary);
     ownerDesktopId = await waitForOwnerDesktopId();
   }, 180_000);
 
@@ -544,7 +551,7 @@ describe("remote active-view restoration", () => {
     await secondary.deleteSession().catch(() => undefined);
   });
 
-  it("gives sizing to the foreground remote view and restores the owner view without input", async () => {
+  it("keeps focus passive and hands sizing between desktops on deliberate scroll", async () => {
     ownerTaskId = await createOwnerTask();
     const ownerInitial = await waitForOwnerAndRenderer(primary, ownerTaskId, "owner");
     expect(ownerInitial.cols).toBeGreaterThan(80);
@@ -556,16 +563,20 @@ describe("remote active-view restoration", () => {
     await selectRemoteTask(remoteItemId, ownerTaskId);
     await assertTestWindow(secondary, "secondary before remote focus");
     await focusTerminal(secondary, ownerTaskId, "remote");
+    expect(await ownerDimensions(ownerTaskId)).toEqual(ownerInitial);
+    await scrollFocusedTerminal(secondary);
     const remoteActive = await waitForOwnerAndRenderer(secondary, ownerTaskId, "remote");
     expect(remoteActive.cols).toBeLessThan(ownerInitial.cols);
     expect(remoteActive.rows).toBeLessThan(ownerInitial.rows);
     await assertTestWindow(secondary, "secondary before remote capture");
     await capture(secondary, "remote-active-view-controls-grid.png");
 
-    // This is the actual local desktop foreground handback. Do not send any
-    // terminal bytes: focus alone must restore its measured grid.
+    // Focus alone is passive: the remote viewer keeps ownership until the
+    // local desktop deliberately scrolls its terminal.
     await assertTestWindow(primary, "primary before owner handback focus");
     const ownerHandbackFocus = await focusTerminal(primary, ownerTaskId, "owner-handback");
+    expect(await ownerDimensions(ownerTaskId)).toEqual(remoteActive);
+    await scrollFocusedTerminal(primary);
     let ownerRestored: Dimensions;
     try {
       ownerRestored = await waitForOwnerAndRenderer(primary, ownerTaskId, "owner", ownerInitial);
@@ -576,20 +587,24 @@ describe("remote active-view restoration", () => {
     }
     expect(ownerRestored).toEqual(ownerInitial);
     await assertTestWindow(primary, "primary before owner-restored capture");
-    await capture(primary, "owner-restored-without-terminal-input.png");
+    await capture(primary, "owner-restored-by-terminal-scroll.png");
 
     // CloudTerminalCache keeps this remote component mounted with v-show. A
-    // cached re-selection must publish a fresh foreground edge, then release
-    // it again when the owner regains focus; it cannot rely on first start().
+    // cached re-selection and focus remain passive; a fresh deliberate scroll
+    // must still claim it, then yield only after an owner scroll.
     await assertTestWindow(secondary, "secondary before cached remote reselect");
     await selectRemoteTask(remoteItemId, ownerTaskId);
     await focusTerminal(secondary, ownerTaskId, "cached-remote");
+    expect(await ownerDimensions(ownerTaskId)).toEqual(ownerInitial);
+    await scrollFocusedTerminal(secondary);
     const cachedRemoteActive = await waitForOwnerAndRenderer(secondary, ownerTaskId, "cached-remote");
     expect(cachedRemoteActive.cols).toBeLessThan(ownerInitial.cols);
     expect(cachedRemoteActive.rows).toBeLessThan(ownerInitial.rows);
 
     await assertTestWindow(primary, "primary before cached owner handback focus");
     await focusTerminal(primary, ownerTaskId, "cached-owner-handback");
+    expect(await ownerDimensions(ownerTaskId)).toEqual(cachedRemoteActive);
+    await scrollFocusedTerminal(primary);
     const cachedOwnerRestored = await waitForOwnerAndRenderer(primary, ownerTaskId, "owner", ownerInitial);
     expect(cachedOwnerRestored).toEqual(ownerInitial);
   }, 180_000);

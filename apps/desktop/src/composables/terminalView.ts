@@ -55,7 +55,6 @@ export function initializeTerminalView(params: {
   maybeReadClipboardImage: () => Promise<void>
   sendDroppedPaths: (paths: string[]) => void
   onNativeDropCleanupReady: (cleanup: () => void) => void
-  onTerminalFocus: () => void
   onTerminalInteraction: () => void
   setTerminal: (term: Terminal) => void
 }): InitializedTerminalView {
@@ -138,15 +137,11 @@ export function initializeTerminalView(params: {
   params.el.addEventListener("compositionstart", inputProducer.handleCompositionStart, true)
   params.el.addEventListener("compositionupdate", inputProducer.handleCompositionUpdate, true)
   params.el.addEventListener("compositionend", inputProducer.handleCompositionEnd, true)
-  // xterm focuses its helper textarea rather than the container itself; the
-  // bubbling focus edge is the local viewer's active-view signal. It carries
-  // no resize proposal, and the lifecycle rejects hidden/background/zero-size
-  // containers before sending the daemon's existing activation command.
-  // Wheel/selection presses also count while the same textarea stays focused.
-  // The interaction callback permits a visible non-key window, while the
-  // ordinary focus callback keeps the foreground guard. Neither consumes input.
+  // Only deliberate scroll producers announce viewing. Focus, output-driven
+  // scroll, snapshot replay and layout are passive. The interaction callback
+  // permits a visible non-key window because macOS can scroll it without
+  // moving keyboard focus.
   const stopViewerInteraction = observeTerminalViewerInteraction(params.el, params.onTerminalInteraction)
-  params.el.addEventListener("focusin", params.onTerminalFocus)
   const cleanupContainerEvents = () => {
     stopViewerInteraction()
     cleanupDropEvents?.()
@@ -159,7 +154,6 @@ export function initializeTerminalView(params: {
     params.el.removeEventListener("compositionstart", inputProducer.handleCompositionStart, true)
     params.el.removeEventListener("compositionupdate", inputProducer.handleCompositionUpdate, true)
     params.el.removeEventListener("compositionend", inputProducer.handleCompositionEnd, true)
-    params.el.removeEventListener("focusin", params.onTerminalFocus)
   }
 
   if (params.el.offsetWidth > 0 && params.el.offsetHeight > 0) {
