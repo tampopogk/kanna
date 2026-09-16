@@ -906,6 +906,107 @@ describe("createAppModel cloud routing", () => {
     );
   });
 
+  it("publishes a cold trusted-LAN workspace before cloud and fences late account callbacks", async () => {
+    const auth = createMutableAuthSession(signedInState("user-a"));
+    const subscriptions: Array<{
+      uid: string;
+      onUpdate(tasks: CloudTaskSummary[]): void;
+      onError(error: CloudTaskIndexError): void;
+    }> = [];
+    const taskIndex: CloudTaskIndex = {
+      listDesktops: vi.fn(() => new Promise(() => undefined)),
+      listRecentTasks: vi.fn(() => new Promise(() => undefined)),
+      subscribeRecentTasks: vi.fn((uid, onUpdate, onError) => {
+        subscriptions.push({
+          uid,
+          onUpdate,
+          onError: onError ?? (() => undefined)
+        });
+        return vi.fn();
+      })
+    };
+    const lanTask: TaskSummary = {
+      id: "local-task",
+      repoId: "repo-lan",
+      repoName: "LAN Repo",
+      title: "Ready LAN task",
+      stage: "in progress"
+    };
+    const lan = createLanFixture(async () => [lanTask]);
+    const app = createAppModel({
+      authSession: auth.authSession,
+      fetchImpl: lan.fetchImpl,
+      persistence: createTrustedPersistence(),
+      options: {
+        forceCloud: false,
+        relayUrl: "wss://relay.test",
+        taskIndex,
+        bonjourBrowser: lan.bonjourBrowser,
+        createRelayClient: () => createRelayClientMock()
+      }
+    });
+
+    await app.initialize();
+    await vi.waitFor(() => {
+      expect(app.sessionStore.getState().recentTasks).toEqual([lanTask]);
+    });
+    expect(subscriptions.map(({ uid }) => uid)).toEqual(["user-a"]);
+    expect(app.sessionStore.getState()).toMatchObject({
+      desktops: [expect.objectContaining({ id: "desktop-lan" })],
+      repos: [expect.objectContaining({ id: "repo-lan" })],
+      taskCollectionStatus: "loading"
+    });
+
+    const userACloudTask = cloudTask({
+      id: "cloud:user-a",
+      ownerDesktopId: "desktop-cloud-a",
+      ownerLocalTaskId: "user-a-local"
+    });
+    subscriptions[0]!.onUpdate([userACloudTask]);
+    await vi.waitFor(() => {
+      expect(app.sessionStore.getState().recentTasks.map(({ id }) => id)).toEqual([
+        userACloudTask.id,
+        lanTask.id
+      ]);
+    });
+
+    subscriptions[0]!.onError({
+      scope: "document",
+      error: new Error("late cloud document failed")
+    });
+    expect(app.sessionStore.getState().recentTasks.map(({ id }) => id)).toEqual([
+      userACloudTask.id,
+      lanTask.id
+    ]);
+    expect(app.sessionStore.getState().errorMessage).toContain(
+      "late cloud document failed"
+    );
+
+    auth.setState(signedInState("user-b"));
+    await vi.waitFor(() => expect(subscriptions).toHaveLength(2));
+    subscriptions[0]!.onUpdate([
+      cloudTask({ id: "cloud:late-user-a", title: "Wrong account" })
+    ]);
+    const userBCloudTask = cloudTask({
+      id: "cloud:user-b",
+      ownerDesktopId: "desktop-cloud-b",
+      ownerLocalTaskId: "user-b-local"
+    });
+    subscriptions[1]!.onUpdate([userBCloudTask]);
+
+    await vi.waitFor(() => {
+      expect(app.sessionStore.getState().recentTasks.map(({ id }) => id)).toEqual([
+        userBCloudTask.id,
+        lanTask.id
+      ]);
+    });
+    expect(app.sessionStore.getState().recentTasks).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: "cloud:late-user-a" })
+      ])
+    );
+  });
+
   it("keeps a canonical merge action and agent stream stable through relay publication", async () => {
     const { authSession } = createMutableAuthSession(signedInState());
     let pushCloudTasks: ((tasks: CloudTaskSummary[]) => void) | null = null;
