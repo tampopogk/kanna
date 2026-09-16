@@ -108,7 +108,7 @@ function openLocalhostPort(port: number) {
         @mousedown.stop
         @click="previewSupported ? emit('preview', portInfo.envName) : openLocalhostPort(portInfo.port)"
       >
-        {{ previewSupported ? 'Preview ' : '' }}:{{ portInfo.port }}
+        :{{ portInfo.port }}
       </button>
       <a
         v-if="item.issue_number"
