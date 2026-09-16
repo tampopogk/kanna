@@ -38,6 +38,11 @@ on:
         description: SHA256 of that tar; required with prepared_pair_asset_id
         type: string
         required: false
+      prepared_pair_evidence_dir:
+        description: Committed repository-relative A/B manifest directory for the exact pair
+        type: string
+        required: false
+        default: docs/evidence/2026-09-15-linux-bootstrap
       apt_interop_only:
         description: Run only test-key apt/GnuPG interoperability (no native builds)
         type: boolean
@@ -343,12 +348,15 @@ jobs:
           PAIR_ASSET_ID: ${{ inputs.prepared_pair_asset_id }}
           GH_TOKEN: ${{ github.token }}
           PAIR_SHA256: ${{ inputs.prepared_pair_sha256 }}
+          PAIR_EVIDENCE_DIR: ${{ inputs.prepared_pair_evidence_dir }}
         run: |
           mkdir -p .tmp/prepared-upgrade
           [[ "$PAIR_SHA256" =~ ^[0-9a-f]{64}$ ]]
           python3 tests/linux-installed/fetch-prepared-pair.py .tmp/prepared-upgrade/pair.tar
           printf '%s  %s\n' "$PAIR_SHA256" .tmp/prepared-upgrade/pair.tar | sha256sum --check --strict
-          python3 tests/linux-installed/verify-prepared-pair.py .tmp/prepared-upgrade/pair.tar .tmp/prepared-upgrade/packages
+          python3 tests/linux-installed/verify-prepared-pair.py \
+            .tmp/prepared-upgrade/pair.tar .tmp/prepared-upgrade/packages \
+            --evidence-dir "$PAIR_EVIDENCE_DIR"
       - uses: actions/upload-artifact@v4
         with:
           name: verified-prepared-pair
@@ -384,13 +392,17 @@ jobs:
         with:
           name: verified-prepared-pair
           path: .tmp/prepared-upgrade
-      - name: Recheck exact tar and four manifests before installation
+      - name: Recheck exact tar and four manifest-pinned artifacts before installation
         env:
           PAIR_SHA256: ${{ inputs.prepared_pair_sha256 }}
+          PAIR_EVIDENCE_DIR: ${{ inputs.prepared_pair_evidence_dir }}
         run: |
           [[ "$PAIR_SHA256" =~ ^[0-9a-f]{64}$ ]]
           printf '%s  %s\n' "$PAIR_SHA256" .tmp/prepared-upgrade/pair.tar | sha256sum --check --strict
-          python3 tests/linux-installed/verify-prepared-pair.py .tmp/prepared-upgrade/pair.tar .tmp/prepared-upgrade/packages
+          python3 tests/linux-installed/verify-prepared-pair.py \
+            .tmp/prepared-upgrade/pair.tar .tmp/prepared-upgrade/packages \
+            --evidence-dir "$PAIR_EVIDENCE_DIR" \
+            --selection-output .tmp/prepared-upgrade/pair-selection.json
       - name: Confirm real host prerequisites
         run: |
           sudo -n true
@@ -409,11 +421,11 @@ jobs:
         run: |
           export TMPDIR="$GITHUB_WORKSPACE/.tmp/prepared-upgrade/tmp"
           mkdir -p "$TMPDIR"
-          deb_arch=amd64
-          if [ "$TEST_ARCH" = arm64 ]; then deb_arch=arm64; fi
+          old_name="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["old"][sys.argv[2]])' .tmp/prepared-upgrade/pair-selection.json "$TEST_ARCH")"
+          new_name="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["new"][sys.argv[2]])' .tmp/prepared-upgrade/pair-selection.json "$TEST_ARCH")"
           ./kd test linux-installed --channel staging \
-            --old-artifact "$GITHUB_WORKSPACE/.tmp/prepared-upgrade/packages/kanna-staging_0.2.0~staging.1-1_${deb_arch}.deb" \
-            --new-artifact "$GITHUB_WORKSPACE/.tmp/prepared-upgrade/packages/kanna-staging_0.2.0~staging.2-1_${deb_arch}.deb"
+            --old-artifact "$GITHUB_WORKSPACE/.tmp/prepared-upgrade/packages/$old_name" \
+            --new-artifact "$GITHUB_WORKSPACE/.tmp/prepared-upgrade/packages/$new_name"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
