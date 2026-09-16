@@ -8,13 +8,41 @@ use super::utils::{
 };
 use super::TransferTransport;
 use crate::crypto::{open_json, parse_public_key, seal_json};
-use crate::protocol::{PeerRequest, PeerResponse};
+use crate::protocol::{PeerRegistryEntry, PeerRequest, PeerResponse};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::Instant;
 
 impl TransferRuntime {
+    /// Return traffic belongs to the admitted transfer's route, not whichever
+    /// discovery route happens to rank first when import resumes. Resolve the
+    /// current proxy so a credential/proxy refresh does not strand the import.
+    pub(super) async fn incoming_source_peer(
+        &self,
+        transfer_id: &str,
+        source_peer_id: &str,
+    ) -> Result<PeerRegistryEntry, RuntimeError> {
+        let transport = {
+            let reservations = self.incoming_reservations.lock().await;
+            match reservations.get(transfer_id) {
+                Some(reservation) if reservation.source_peer_id != source_peer_id => {
+                    return Err(RuntimeError::Protocol(
+                        "incoming transfer source mismatch".into(),
+                    ));
+                }
+                Some(reservation) => reservation.transport.unwrap_or_default(),
+                // Legacy refusal recovery can outlive its sidecar reservation.
+                None => TransferTransport::Auto,
+            }
+        };
+        let (peer, resolved) = self
+            .resolve_peer_with_transport(source_peer_id, transport)
+            .await?;
+        self.ensure_peer_is_trusted_for_transport(&peer.peer_id, &peer.public_key, resolved)?;
+        Ok(peer)
+    }
+
     pub async fn prepare_transfer_preflight(
         &self,
         target_peer_id: &str,
@@ -62,6 +90,7 @@ impl TransferRuntime {
                     "source_task_id": source_task_id,
                     "reserved_target_peer_id": target_peer.peer_id,
                     "transfer_protocol": super::transfer_protocol::CONTRACT,
+                    "transport": resolved_transport,
                 }),
             )
             .await?;
@@ -313,8 +342,9 @@ impl TransferRuntime {
             ))
         })?;
 
-        let source_peer = self.find_peer(&source_peer_id).await?;
-        self.ensure_peer_is_trusted(&source_peer.peer_id, &source_peer.public_key)?;
+        let source_peer = self
+            .incoming_source_peer(transfer_id, &source_peer_id)
+            .await?;
         self.negotiate_transfer_protocol(&source_peer).await?;
         let request_id = self.next_request_id("finalize");
         let sealed_payload = self
@@ -570,8 +600,9 @@ impl TransferRuntime {
             ))
         })?;
 
-        let source_peer = self.find_peer(&source_peer_id).await?;
-        self.ensure_peer_is_trusted(&source_peer.peer_id, &source_peer.public_key)?;
+        let source_peer = self
+            .incoming_source_peer(transfer_id, &source_peer_id)
+            .await?;
         let source_public_key = parse_public_key(&source_peer.public_key)?;
         let request_id = self.next_request_id("fetch-artifact");
         let artifact_framing = ArtifactFraming::for_protocol(source_peer.protocol_version);
@@ -639,8 +670,9 @@ impl TransferRuntime {
                 source_task_id, transfer_id
             )));
         }
-        let source_peer = self.find_peer(&source_peer_id).await?;
-        self.ensure_peer_is_trusted(&source_peer.peer_id, &source_peer.public_key)?;
+        let source_peer = self
+            .incoming_source_peer(transfer_id, &source_peer_id)
+            .await?;
         let source_public_key = parse_public_key(&source_peer.public_key)?;
         let sealed_payload = seal_json(
             &self.identity,

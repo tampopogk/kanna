@@ -40,6 +40,9 @@ import {
   type DesktopCloudTaskSnapshot,
 } from "./desktopCloudTaskIndex";
 
+import { createDesktopTransferMachineSync, type ExternalTransferPeerInput } from "./desktopTransferMachines";
+import { createDesktopAuthSession } from "./desktopAuth";
+
 function remoteTaskSnapshot(overrides: Partial<DesktopCloudTaskSnapshot> = {}): DesktopCloudTaskSnapshot {
   return {
     cloudTaskId: "remote-repo-id:task-1",
@@ -78,6 +81,73 @@ beforeEach(() => {
 });
 
 describe("subscribeDesktopCloudTasks", () => {
+  it("registers a late same-account desktop without LAN while newer presence reads are pending", async () => {
+    const callbacks: Array<(snapshot: { docs: Array<Record<string, unknown>> }) => void> = [];
+    vi.mocked(onSnapshot).mockImplementation(((_ref: unknown, callback: typeof callbacks[number]) => {
+      callbacks.push(callback);
+      return () => {};
+    }) as never);
+    const presenceResolvers: Array<(desktopIds: Set<string>) => void> = [];
+    vi.mocked(listActiveDesktopIdsViaRelay).mockImplementation(() => new Promise((resolve) => {
+      presenceResolvers.push(resolve);
+    }));
+    const external = new Map<string, ExternalTransferPeerInput>();
+    const ensureProxy = vi.fn(async () => ({ endpoint: "127.0.0.1:44551" }));
+    const sync = createDesktopTransferMachineSync({
+      getTransferIdentity: async () => ({ peerId: "peer-local", displayName: "Local", publicKey: "local-key", protocolVersion: 1, acceptingTransfers: true }),
+      putLocalIdentity: async () => {},
+      resolveRelayUrl: async () => "wss://relay.test",
+      ensureProxy,
+      removeProxy: async () => {},
+      clearProxies: async () => {},
+      upsertExternalPeer: async ({ peer }) => { external.set(peer.peerId, peer); },
+      removeExternalPeer: async ({ peerId }) => { external.delete(peerId); },
+      clearExternalPeers: async () => { external.clear(); },
+    });
+    const auth = createDesktopAuthSession({ sdk: {
+      getCurrentUser: () => ({ uid: "same-account", email: null, displayName: null }),
+      onAuthStateChanged: () => () => {},
+      signInWithEmailPassword: vi.fn(), signOut: vi.fn(),
+      getIdToken: async () => "same-account-token",
+    } });
+    await sync.setSignedInSession(auth, "desktop-local");
+    await sync.markSidecarReady();
+    sync.setLanPeers([]);
+    let reconciliation = Promise.resolve(false);
+    const unsubscribe = subscribeDesktopCloudTasks("same-account", (snapshot) => {
+      reconciliation = sync.setCloudMachines(snapshot.transferMachines);
+    }, { getOptions: () => ({ currentDesktopId: "desktop-local" }) });
+    try {
+      await vi.waitFor(() => expect(callbacks).toHaveLength(1));
+      callbacks[0]({ docs: [] });
+      await vi.waitFor(() => expect(listActiveDesktopIdsViaRelay).toHaveBeenCalled());
+      presenceResolvers[0](new Set());
+      await reconciliation;
+      expect(external.size).toBe(0);
+      callbacks[0]({ docs: [{ id: "desktop-late", ref: {}, data: () => ({
+        desktopId: "desktop-late", displayName: "Late Studio",
+        transfer: { peerId: "peer-late", publicKey: "late-key", protocolVersion: 1, acceptingTransfers: true },
+      }) }] });
+      // Ordinary task updates can keep arriving faster than relay presence
+      // reads complete. A newer pending read must not suppress this completed
+      // read and strand the peer outside the live external registry.
+      callbacks[1]({ docs: [] });
+      expect(presenceResolvers).toHaveLength(3);
+      presenceResolvers[1](new Set(["desktop-late"]));
+      await vi.waitFor(() => expect(external.has("peer-late")).toBe(true));
+      await reconciliation;
+      expect(ensureProxy).toHaveBeenCalledWith({ peerId: "peer-late", desktopId: "desktop-late", relayUrl: "wss://relay.test", idToken: "same-account-token" });
+      expect(sync.getTransferMachines()).toEqual([expect.objectContaining({ peerId: "peer-late", preferredTransport: "cloud", lanEndpoint: null })]);
+      callbacks[0]({ docs: [] });
+      presenceResolvers[3](new Set());
+      await vi.waitFor(() => expect(external.size).toBe(0));
+      presenceResolvers[2](new Set(["desktop-late"]));
+    } finally {
+      unsubscribe();
+      await sync.dispose();
+    }
+  });
+
   it("discards an older async presence lookup that completes after a newer snapshot", async () => {
     const callbacks: Array<(snapshot: { docs: Array<Record<string, unknown>> }) => void> = [];
     vi.mocked(onSnapshot).mockImplementation(((_ref: unknown, callback: typeof callbacks[number]) => {

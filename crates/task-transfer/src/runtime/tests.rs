@@ -944,6 +944,41 @@ fn legacy_artifact_allocation_boundary_uses_retained_capacity() {
 }
 
 #[tokio::test]
+async fn artifact_response_eof_is_distinct_from_exceeding_the_wire_limit() {
+    use tokio::io::AsyncWriteExt;
+    for response in [b"".as_slice(), b"partial response".as_slice()] {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let mut writer = tokio::net::TcpStream::connect(listener.local_addr().unwrap())
+            .await
+            .unwrap();
+        let (reader, _) = listener.accept().await.unwrap();
+        writer.write_all(response).await.unwrap();
+        writer.shutdown().await.unwrap();
+        let error =
+            peer::read_bounded_artifact_response_line(&mut tokio::io::BufReader::new(reader), 1024)
+                .await
+                .unwrap_err();
+        assert!(
+            error.to_string().contains(&format!(
+                "ended before newline after {} bytes",
+                response.len()
+            )),
+            "unexpected error: {error}"
+        );
+        assert!(!error.to_string().contains("exceeded"));
+    }
+    let error = peer::read_bounded_artifact_response_line(
+        &mut tokio::io::BufReader::new(std::io::Cursor::new(b"too long\n")),
+        4,
+    )
+    .await
+    .unwrap_err();
+    assert!(error
+        .to_string()
+        .contains("exceeded the negotiated framing limit of 4 bytes"));
+}
+
+#[tokio::test]
 async fn legacy_artifact_line_growth_retains_no_capacity_above_its_wire_cap() {
     let maximum = 32 * 1024;
     let mut wire = vec![b'x'; maximum - 1];

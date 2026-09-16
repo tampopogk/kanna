@@ -1,0 +1,112 @@
+{
+  "acceptanceOwner": "641dbb6f",
+  "acceptedSource": "92a656fc972d86baf86d802d538bd79b0c1f5af6",
+  "acceptedTree": "6573958506a2a011dd4c8efff603ef366a9c603c",
+  "classification": "isolated development builds; not published .21 or Linux B certification",
+  "result": "PASS bounded cloud fresh-context transfer and independent nonce recall; both allocations stopped and evidence preserved",
+  "evidenceSource": "/Users/jeremyhale/.kanna/repos/kanna-2/.kanna-worktrees/task-641dbb6f/docs/testing/evidence/2026-09-15-native-tls-transfer-retest-641dbb6f.json",
+  "evidenceSha256": "4170449d4669fb5245e7079c2645475507ae7ad85b14c92d13d3ea9803cb5d76",
+  "pairedTransfer": {
+    "at": "2026-09-15T23:07:13.835295+00:00",
+    "transferId": "6b5eb021e2c062681ad1a01c9ecad2172b19a148aa44f944f64325ce13a7ff2a",
+    "pairs": [
+      {
+        "record": {
+          "id": "6b5eb021e2c062681ad1a01c9ecad2172b19a148aa44f944f64325ce13a7ff2a",
+          "direction": "outgoing",
+          "status": "completed",
+          "error": null,
+          "source_task_id": "c4f27c02397a4818b172ee9547c37243aa2f2642728beea9145f5a79bcb3b3a5",
+          "local_task_id": "c4f27c02397a4818b172ee9547c37243aa2f2642728beea9145f5a79bcb3b3a5",
+          "completed_at": "2026-09-15 23:07:07"
+        },
+        "context": {
+          "agent_provider": "codex",
+          "agent_type": "pty",
+          "resume_session_id": "01a0a71f-0f71-70a1-9e81-3185d26a22c2",
+          "source_run_id": "run-c4f27c02397a4818b172ee9547c37243aa2f2642728beea9145f5a79bcb3b3a5-1789513362100830000"
+        },
+        "artifacts": [
+          {
+            "kind": "session-rollout",
+            "provider": "codex",
+            "filename": "rollout-2026-09-15T16-10-25-01a0a71f-0f71-70a1-9e81-3185d26a22c2.jsonl",
+            "materialization": "copy-file"
+          }
+        ],
+        "finalization": {
+          "cleanly_finalized": true,
+          "degraded_reason": null
+        }
+      },
+      {
+        "record": {
+          "id": "6b5eb021e2c062681ad1a01c9ecad2172b19a148aa44f944f64325ce13a7ff2a",
+          "direction": "incoming",
+          "status": "completed",
+          "error": null,
+          "source_task_id": "c4f27c02397a4818b172ee9547c37243aa2f2642728beea9145f5a79bcb3b3a5",
+          "local_task_id": "a61876a82808bcc416b1ecebc00ab21c46160f47eae200a9d55897454e5a9d33",
+          "completed_at": "2026-09-15 23:07:07"
+        },
+        "context": {
+          "agent_provider": "codex",
+          "agent_type": "pty",
+          "resume_session_id": "01a0a71f-0f71-70a1-9e81-3185d26a22c2",
+          "source_run_id": "run-c4f27c02397a4818b172ee9547c37243aa2f2642728beea9145f5a79bcb3b3a5-1789513362100830000"
+        },
+        "artifacts": [
+          {
+            "kind": "session-rollout",
+            "provider": "codex",
+            "filename": "rollout-2026-09-15T16-10-25-01a0a71f-0f71-70a1-9e81-3185d26a22c2.jsonl",
+            "materialization": "copy-file"
+          }
+        ],
+        "finalization": {
+          "cleanly_finalized": true,
+          "degraded_reason": null
+        }
+      }
+    ]
+  },
+  "contract": {
+    "workflowEqual": true,
+    "ledgerPrefixEqual": true,
+    "inputCount": 17,
+    "sourceClosedAt": "2026-09-15 23:07:07",
+    "sourceProviderLivePids": [],
+    "cleanupSource": {
+      "transferIds": []
+    },
+    "cleanupDestination": {
+      "transferIds": []
+    }
+  },
+  "nativeContext": {
+    "at": "2026-09-15T23:09:49.069172Z",
+    "provenance": "helper reported in retained terminal log; attempted structured parent delivery failed Desktop offline; parent read log through supported cloud API",
+    "resumeSessionId": "01a0a71f-0f71-70a1-9e81-3185d26a22c2",
+    "blindRecallMatchesSource": true,
+    "valueInRecallPrompt": false
+  },
+  "destinationGit": {
+    "head": "7365949699b6fb5816ade47d6027760e87e3c144",
+    "tree": "c5d321d311debf950dbc86d89862cbd58e755611",
+    "status": []
+  },
+  "cleanup": {
+    "mbpAt": "2026-09-15T23:11:44.799040+00:00",
+    "mbpOwnedPidsRemaining": [],
+    "mbpListenersRemaining": [],
+    "studioAt": "2026-09-15T23:14:30.879009+00:00",
+    "studioOwnedProcessesRemaining": [],
+    "studioListeners": {}
+  },
+  "limits": [
+    "LAN protocol remains unresolved; no completed LAN move",
+    "Not certification of published macOS .21 or Linux B",
+    "New integrated release candidate and applicable full24h soak required",
+    "Explicit cancellation not tested"
+  ]
+}

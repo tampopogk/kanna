@@ -478,6 +478,12 @@ async fn handle_connection(
             super::transfer_protocol::local_capabilities(context.kanna_server_port, context.standalone_test_server).await?;
             let source_task_id =
                 authenticated_argument::<String>(&authenticated, "source_task_id")?;
+            let transport = authenticated.get("transport")
+                .map(|value| serde_json::from_value::<TransferTransport>(value.clone()))
+                .transpose()?;
+            if transport == Some(TransferTransport::Auto) {
+                return Err(RuntimeError::Protocol("preflight return transport must be concrete".into()));
+            }
             let mut reservations = context.incoming_reservations.lock().await;
             context
                 .replay_store
@@ -497,6 +503,7 @@ async fn handle_connection(
             let reservation = IncomingTransferReservation {
                 source_peer_id: source_peer_id.clone(),
                 source_task_id,
+                transport,
                 created_at_unix_ms: unix_ms(),
                 committed: false,
                 event: None,
@@ -557,6 +564,13 @@ async fn handle_connection(
                 authenticated_argument::<String>(&authenticated, "source_task_id")?;
             validate_source_task_id(&source_task_id)?;
 
+            let transport = authenticated.get("transport")
+                .map(|value| serde_json::from_value::<TransferTransport>(value.clone()))
+                .transpose()?;
+            if transport == Some(TransferTransport::Auto) {
+                return Err(RuntimeError::Protocol("task pull transport must be concrete".into()));
+            }
+
             let key = (requester_peer_id.clone(), source_task_id.clone());
             let mut requests = context.pending_task_pull_requests.lock().await;
             prune_task_pull_requests(&mut requests);
@@ -590,6 +604,7 @@ async fn handle_connection(
                     request_id: pull_request_id.clone(),
                     requester_peer_id,
                     source_task_id,
+                    transport,
                 }))
                 .is_err()
             {
@@ -1272,6 +1287,7 @@ async fn handle_connection(
                     if legacy_response_write_started
                         || matches!(&error, RuntimeError::PeerRequestTimeout { .. }) =>
                 {
+                    eprintln!("[transfer-artifact] response {request_id} failed: {error}");
                     return Err(error);
                 }
                 Err(error) => PeerResponse::Error {
@@ -2278,15 +2294,16 @@ async fn build_incoming_event(
         external_peers,
         self_peer_id,
         &reservation.source_peer_id,
-        TransferTransport::Auto,
+        reservation.transport.unwrap_or_default(),
     )
     .await?;
-    ensure_peer_is_trusted(
+    ensure_peer_is_trusted_for_transport(
         registry_root,
         self_peer_id,
         external_peers,
         &reservation.source_peer_id,
         &source_peer.public_key,
+        reservation.transport.unwrap_or_default(),
     )?;
     let source_public_key = parse_public_key(&source_peer.public_key)?;
     let identity = load_or_create_identity(registry_root, self_peer_id)?;

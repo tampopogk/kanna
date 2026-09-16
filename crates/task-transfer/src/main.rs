@@ -710,11 +710,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     display_name: event.display_name,
                     verification_code: event.verification_code,
                 },
-                RuntimeEvent::TaskPullRequested(event) => SidecarEvent::TaskPullRequested {
-                    request_id: event.request_id,
-                    requester_peer_id: event.requester_peer_id,
-                    source_task_id: event.source_task_id,
-                },
+                RuntimeEvent::TaskPullRequested(event) => event.into(),
                 RuntimeEvent::TaskPullRefused(event) => SidecarEvent::TaskPullRefused {
                     request_id: event.request_id,
                     source_peer_id: event.source_peer_id,

@@ -105,6 +105,7 @@ impl TransferRuntime {
                     "requester_peer_id": self.config.peer_id,
                     "source_task_id": source_task_id,
                     "reserved_target_peer_id": target_peer.peer_id,
+                    "transport": resolved_transport,
                     "transfer_protocol": super::transfer_protocol::CONTRACT,
                 }),
             )

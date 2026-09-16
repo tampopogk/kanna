@@ -1781,8 +1781,8 @@ mod tests {
     /// A provider and a session id are only ever read from the same row.
     ///
     /// A run that has not learned its provider session yet (Codex publishes
-    /// its id in the terminal footer, after the spawn) ships nothing rather
-    /// than reaching back to the task row for an id another CLI opened.
+    /// its id in the exit footer) leaves discovery to the session planner,
+    /// rather than borrowing a task-row id another CLI opened.
     #[test]
     fn a_run_without_a_provider_session_does_not_borrow_the_task_rows() {
         let resolved = SourceSession::resolve(

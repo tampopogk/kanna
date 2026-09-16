@@ -134,8 +134,9 @@ impl TransferRuntime {
         source_task_id: &str,
         reason: &str,
     ) -> Result<(), RuntimeError> {
-        let peer = self.find_peer(source_peer_id).await?;
-        self.ensure_peer_is_trusted(&peer.peer_id, &peer.public_key)?;
+        let peer = self
+            .incoming_source_peer(transfer_id, source_peer_id)
+            .await?;
         self.transfer_protocol_request(&peer, json!({
             "operation": "refused", "transfer_id": transfer_id,
             "source_task_id": source_task_id, "reason": super::pull::truncate_refusal_reason(reason.into()),

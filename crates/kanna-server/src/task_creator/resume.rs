@@ -84,12 +84,8 @@ fn codex_session_metadata(path: &Path) -> Option<(String, String)> {
     ))
 }
 
-fn codex_sessions() -> Vec<(std::time::SystemTime, String, String)> {
-    let Some(config_dir) = home_child("CODEX_HOME", ".codex") else {
-        return Vec::new();
-    };
-    let sessions_dir = config_dir.join("sessions");
-    let mut pending = vec![sessions_dir];
+fn codex_sessions(sessions_dir: &Path) -> Vec<(std::time::SystemTime, String, String)> {
+    let mut pending = vec![sessions_dir.to_path_buf()];
     let mut sessions = Vec::new();
     while let Some(dir) = pending.pop() {
         let Ok(entries) = std::fs::read_dir(dir) else {
@@ -114,7 +110,18 @@ fn codex_sessions() -> Vec<(std::time::SystemTime, String, String)> {
 }
 
 fn resolve_codex_session_id(cwd: &str, recorded: Option<&str>) -> Option<String> {
-    let mut sessions = codex_sessions();
+    let config_dir = home_child("CODEX_HOME", ".codex")?;
+    resolve_codex_session_id_in(&config_dir.join("sessions"), cwd, recorded)
+}
+
+/// Shared by local recovery and transfer export: a fresh Codex process writes
+/// its rollout before Kanna learns the provider id from the exit footer.
+pub(crate) fn resolve_codex_session_id_in(
+    sessions_dir: &Path,
+    cwd: &str,
+    recorded: Option<&str>,
+) -> Option<String> {
+    let mut sessions = codex_sessions(sessions_dir);
     sessions.sort_by(|left, right| right.0.cmp(&left.0));
     if let Some(recorded) = recorded {
         return sessions

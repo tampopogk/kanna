@@ -17,6 +17,7 @@ pub(crate) enum TunnelError {
     UnexpectedService { actual: TunnelService },
     UnexpectedTextFrame,
     UnexpectedFrame,
+    RelayClosed { code: u16, reason: String },
 }
 
 impl fmt::Display for TunnelError {
@@ -46,6 +47,12 @@ impl fmt::Display for TunnelError {
             }
             Self::UnexpectedFrame => {
                 formatter.write_str("unexpected WebSocket frame in task-transfer tunnel")
+            }
+            Self::RelayClosed { code, reason } => {
+                write!(
+                    formatter,
+                    "task-transfer relay closed with code {code}: {reason}"
+                )
             }
         }
     }
@@ -84,6 +91,10 @@ where
             read = sidecar.read(&mut buffer) => {
                 let count = read?;
                 if count == 0 {
+                    // SecureTransport may accept plaintext while ciphertext is
+                    // still buffered. Closing the websocket drives that tail
+                    // out before its TLS stream is dropped.
+                    websocket.close(None).await?;
                     break;
                 }
                 websocket
@@ -93,6 +104,11 @@ where
             frame = websocket.next() => {
                 match frame.transpose()? {
                     Some(Message::Binary(bytes)) => sidecar.write_all(&bytes).await?,
+                    Some(Message::Close(Some(frame))) if u16::from(frame.code) != 1000 => {
+                        return Err(TunnelError::RelayClosed {
+                            code: frame.code.into(), reason: frame.reason.to_string(),
+                        });
+                    }
                     Some(Message::Close(_)) | None => break,
                     Some(Message::Ping(bytes)) => websocket.send(Message::Pong(bytes)).await?,
                     Some(Message::Pong(_)) => {}
@@ -323,6 +339,126 @@ mod tests {
             .expect("bridge task panicked")
             .expect_err("text data frame must fail");
         assert!(matches!(error, super::TunnelError::UnexpectedTextFrame));
+    }
+
+    #[tokio::test]
+    #[cfg(target_os = "macos")]
+    async fn source_eof_preserves_artifact_tail_over_native_tls_backpressure() {
+        let certificate = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
+        let key = rustls::pki_types::PrivatePkcs8KeyDer::from(certificate.key_pair.serialize_der());
+        let server_config = rustls::ServerConfig::builder_with_provider(std::sync::Arc::new(
+            rustls::crypto::ring::default_provider(),
+        ))
+        .with_safe_default_protocol_versions()
+        .unwrap()
+        .with_no_client_auth()
+        .with_single_cert(vec![certificate.cert.der().clone()], key.into())
+        .unwrap();
+        let connector = native_tls::TlsConnector::builder()
+            .add_root_certificate(
+                native_tls::Certificate::from_der(certificate.cert.der()).unwrap(),
+            )
+            .build()
+            .unwrap();
+        // A small transport buffer forces SecureTransport to retain ciphertext
+        // after accepting application bytes, as a real congested socket can.
+        let (client_io, server_io) = tokio::io::duplex(1024);
+        let (client, mut relay) = tokio::join!(
+            async {
+                tokio_tungstenite::client_async_tls_with_config(
+                    "wss://localhost/",
+                    client_io,
+                    None,
+                    Some(tokio_tungstenite::Connector::NativeTls(connector)),
+                )
+                .await
+                .unwrap()
+                .0
+            },
+            async {
+                let tls = tokio_rustls::TlsAcceptor::from(std::sync::Arc::new(server_config))
+                    .accept(server_io)
+                    .await
+                    .unwrap();
+                tokio_tungstenite::accept_async(tls).await.unwrap()
+            },
+        );
+        let (listener, port) = loopback_listener().await;
+        let bridge = tokio::spawn(super::bridge_task_transfer_tunnel(
+            client,
+            port,
+            "tls-tail".into(),
+        ));
+        relay
+            .send(Message::Text(
+                serde_json::json!({
+                    "type": "tunnel_ready", "desktopId": "source",
+                    "tunnelId": "tls-tail", "service": "task-transfer"
+                })
+                .to_string()
+                .into(),
+            ))
+            .await
+            .unwrap();
+        let mut producer = accept_sidecar(&listener).await;
+        let mut expected = vec![b'x'; 144 * 1024];
+        expected.push(b'\n');
+        let payload = expected.clone();
+        let writer = tokio::spawn(async move {
+            producer.write_all(&payload).await.unwrap();
+            producer.shutdown().await.unwrap();
+        });
+        let received = timeout(Duration::from_secs(5), async {
+            let mut bytes = Vec::new();
+            while let Some(Ok(frame)) = relay.next().await {
+                match frame {
+                    Message::Binary(chunk) => bytes.extend_from_slice(&chunk),
+                    Message::Close(_) => break,
+                    _ => {}
+                }
+            }
+            bytes
+        })
+        .await
+        .unwrap();
+        writer.await.unwrap();
+        bridge.await.unwrap().unwrap();
+        assert_eq!(
+            received.len(),
+            expected.len(),
+            "TLS close truncated the artifact tail"
+        );
+        assert_eq!(received, expected);
+    }
+
+    #[tokio::test]
+    async fn task_transfer_tunnel_reports_abnormal_relay_close() {
+        use tokio_tungstenite::tungstenite::protocol::{frame::coding::CloseCode, CloseFrame};
+        let (listener, port) = loopback_listener().await;
+        let (mut peer, source) = websocket_pair().await;
+        let bridge = tokio::spawn(super::bridge_task_transfer_tunnel(
+            source,
+            port,
+            "close-test".into(),
+        ));
+        send_ready(&mut peer, "close-test", "task-transfer").await;
+        let _sidecar = accept_sidecar(&listener).await;
+        peer.close(Some(CloseFrame {
+            code: CloseCode::Again,
+            reason: "bounded backpressure".into(),
+        }))
+        .await
+        .unwrap();
+        let error = timeout(Duration::from_secs(2), bridge)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            super::TunnelError::RelayClosed { code: 1013, .. }
+        ));
+        assert!(error.to_string().contains("bounded backpressure"));
     }
 
     #[tokio::test]

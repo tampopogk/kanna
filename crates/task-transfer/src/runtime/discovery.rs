@@ -1,14 +1,22 @@
 use super::events::RuntimeError;
+#[cfg(not(target_os = "macos"))]
 use super::utils::CURRENT_PROTOCOL_VERSION;
-use crate::discovery::{
-    encode_txt_record, hostname_for_peer, resolved_service_to_peer_entry, SERVICE_TYPE,
-};
+#[cfg(not(target_os = "macos"))]
+use crate::discovery::{encode_txt_record, hostname_for_peer, SERVICE_TYPE};
 use crate::protocol::PeerRegistryEntry;
 use crate::registry::PeerRegistry;
-use mdns_sd::{ServiceDaemon, ServiceEvent, ServiceInfo};
+#[cfg(any(test, not(target_os = "macos")))]
+use mdns_sd::ServiceEvent;
+#[cfg(not(target_os = "macos"))]
+use mdns_sd::{ServiceDaemon, ServiceInfo};
+
+#[cfg(target_os = "macos")]
+mod macos;
 use std::collections::HashMap;
 use std::sync::Arc;
+#[cfg(any(test, not(target_os = "macos")))]
 use tokio::sync::Mutex;
+#[cfg(not(target_os = "macos"))]
 use tokio::task::JoinHandle;
 
 #[derive(Clone)]
@@ -21,10 +29,13 @@ pub(super) enum PeerDiscovery {
 
 #[derive(Debug, Default)]
 pub(super) struct MdnsState {
-    peers_by_id: HashMap<String, PeerRegistryEntry>,
-    peer_ids_by_fullname: HashMap<String, String>,
+    observations: HashMap<String, PeerRegistryEntry>,
 }
 
+#[cfg(target_os = "macos")]
+pub(super) use macos::MdnsDiscovery;
+
+#[cfg(not(target_os = "macos"))]
 pub(super) struct MdnsDiscovery {
     daemon: ServiceDaemon,
     state: Arc<Mutex<MdnsState>>,
@@ -52,6 +63,7 @@ impl PeerDiscovery {
     }
 }
 
+#[cfg(not(target_os = "macos"))]
 impl MdnsDiscovery {
     pub(super) async fn spawn(
         peer_id: &str,
@@ -123,40 +135,100 @@ impl MdnsDiscovery {
 
 impl MdnsState {
     fn list_peers(&self, self_peer_id: &str) -> Vec<PeerRegistryEntry> {
+        // A service can resolve on several interfaces. Removing one observation
+        // must not withdraw a still-live route from another interface.
         let mut peers = self
-            .peers_by_id
+            .observations
             .values()
             .filter(|peer| peer.peer_id != self_peer_id)
             .cloned()
             .collect::<Vec<_>>();
-        peers.sort_by(|left, right| left.peer_id.cmp(&right.peer_id));
+        peers.sort_by(|left, right| {
+            left.peer_id
+                .cmp(&right.peer_id)
+                .then_with(|| endpoint_rank(&left.endpoint).cmp(&endpoint_rank(&right.endpoint)))
+                .then_with(|| left.endpoint.cmp(&right.endpoint))
+        });
+        peers.dedup_by(|left, right| left.peer_id == right.peer_id);
         peers
     }
 }
 
+fn endpoint_rank(endpoint: &str) -> u8 {
+    match endpoint.parse::<std::net::SocketAddr>() {
+        Ok(address) if address.ip().is_loopback() => 4,
+        Ok(std::net::SocketAddr::V4(address)) if !address.ip().is_link_local() => 0,
+        Ok(std::net::SocketAddr::V6(address)) if !address.ip().is_unicast_link_local() => 1,
+        Ok(std::net::SocketAddr::V6(_)) => 2,
+        _ => 3,
+    }
+}
+
+#[cfg(any(test, not(target_os = "macos")))]
 pub(super) async fn handle_mdns_event(state: &Arc<Mutex<MdnsState>>, event: ServiceEvent) {
     match event {
         ServiceEvent::ServiceResolved(service) => {
-            let peer = match resolved_service_to_peer_entry(&service) {
+            let peer = match crate::discovery::resolved_service_to_peer_entry(&service) {
                 Ok(peer) => peer,
                 Err(_) => return,
             };
 
             let mut state = state.lock().await;
-            if let Some(previous_peer_id) = state
-                .peer_ids_by_fullname
-                .insert(service.get_fullname().to_owned(), peer.peer_id.clone())
-            {
-                state.peers_by_id.remove(&previous_peer_id);
-            }
-            state.peers_by_id.insert(peer.peer_id.clone(), peer);
+            state
+                .observations
+                .insert(service.get_fullname().to_owned(), peer);
         }
         ServiceEvent::ServiceRemoved(_, fullname) => {
-            let mut state = state.lock().await;
-            if let Some(peer_id) = state.peer_ids_by_fullname.remove(&fullname) {
-                state.peers_by_id.remove(&peer_id);
-            }
+            state.lock().await.observations.remove(&fullname);
         }
         _ => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::discovery::{encode_txt_record, SERVICE_TYPE};
+    use mdns_sd::ServiceInfo;
+
+    #[tokio::test]
+    async fn service_removal_retains_other_observations_and_prefers_a_routable_address() {
+        let state = Arc::new(Mutex::new(MdnsState::default()));
+        let txt = encode_txt_record("peer-multi", "Multi", "public-key", 5, true).unwrap();
+        let txt = txt.into_iter().collect::<Vec<_>>();
+        let mut fullnames = Vec::new();
+        for (name, address) in [
+            ("loopback", "127.0.0.1"),
+            ("link-local", "169.254.1.2"),
+            ("lan", "192.168.1.2"),
+        ] {
+            let service =
+                ServiceInfo::new(SERVICE_TYPE, name, "multi.local.", address, 4455, &txt[..])
+                    .unwrap()
+                    .as_resolved_service();
+            fullnames.push(service.get_fullname().to_owned());
+            handle_mdns_event(&state, ServiceEvent::ServiceResolved(Box::new(service))).await;
+        }
+        assert_eq!(
+            state.lock().await.list_peers("self")[0].endpoint,
+            "192.168.1.2:4455"
+        );
+        handle_mdns_event(
+            &state,
+            ServiceEvent::ServiceRemoved(SERVICE_TYPE.into(), fullnames[0].clone()),
+        )
+        .await;
+        assert_eq!(
+            state.lock().await.list_peers("self")[0].endpoint,
+            "192.168.1.2:4455"
+        );
+        for fullname in fullnames.into_iter().skip(1) {
+            handle_mdns_event(
+                &state,
+                ServiceEvent::ServiceRemoved(SERVICE_TYPE.into(), fullname),
+            )
+            .await;
+        }
+        assert!(state.lock().await.list_peers("self").is_empty());
     }
 }

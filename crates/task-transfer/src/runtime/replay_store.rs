@@ -56,6 +56,8 @@ struct StoredIncomingTransferReservation {
     transfer_id: String,
     source_peer_id: String,
     source_task_id: String,
+    #[serde(default)]
+    transport: Option<super::external_peers::TransferTransport>,
     created_at_unix_ms: u64,
     committed: bool,
     #[serde(default)]
@@ -160,6 +162,7 @@ impl TransferReplayStore {
                 IncomingTransferReservation {
                     source_peer_id: stored.source_peer_id,
                     source_task_id: stored.source_task_id,
+                    transport: stored.transport,
                     created_at_unix_ms: stored.created_at_unix_ms,
                     committed: stored.committed,
                     event: stored.event,
@@ -299,6 +302,7 @@ impl TransferReplayStore {
                 transfer_id: transfer_id.to_owned(),
                 source_peer_id: reservation.source_peer_id.clone(),
                 source_task_id: reservation.source_task_id.clone(),
+                transport: reservation.transport,
                 created_at_unix_ms: reservation.created_at_unix_ms,
                 committed: reservation.committed,
                 event: reservation.event.clone(),
@@ -529,7 +533,19 @@ fn transfer_key(transfer_id: &str) -> String {
 
 #[cfg(test)]
 mod restart_tests {
-    use super::{ImportCommitReceipt, StoredImportCommitReceipt};
+    use super::{
+        ImportCommitReceipt, StoredImportCommitReceipt, StoredIncomingTransferReservation,
+    };
+
+    #[test]
+    fn legacy_incoming_reservation_does_not_invent_a_selected_route() {
+        let stored: StoredIncomingTransferReservation = serde_json::from_value(serde_json::json!({
+            "transfer_id": "old-transfer", "source_peer_id": "source",
+            "source_task_id": "task", "created_at_unix_ms": 1, "committed": true
+        }))
+        .unwrap();
+        assert_eq!(stored.transport, None);
+    }
 
     #[test]
     fn persisted_unapplied_receipt_requeues_after_runtime_restart() {

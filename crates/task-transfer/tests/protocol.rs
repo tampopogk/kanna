@@ -194,6 +194,7 @@ fn task_pull_control_peer_and_event_messages_roundtrip() {
         request_id: "pull-1".into(),
         requester_peer_id: "peer-destination".into(),
         source_task_id: "task-source".into(),
+        transport: None,
     };
     assert_eq!(
         serde_json::to_value(&event).unwrap(),
@@ -929,6 +930,7 @@ fn remaining_protocol_variants_use_expected_json_shapes() {
     let list_peers_response = ControlResponse::ListPeers {
         request_id: "req-7".into(),
         peers: vec![kanna_task_transfer::protocol::DiscoveredPeer {
+            lan_discovered: true,
             peer_id: "peer-a".into(),
             display_name: "Alpha".into(),
             endpoint: "127.0.0.1:4455".into(),
@@ -949,6 +951,7 @@ fn remaining_protocol_variants_use_expected_json_shapes() {
                 "display_name": "Alpha",
                 "endpoint": "127.0.0.1:4455",
                 "pid": 1234,
+                "lan_discovered": true,
                 "public_key": "pub-a",
                 "protocol_version": 1,
                 "accepting_transfers": true,
@@ -960,6 +963,7 @@ fn remaining_protocol_variants_use_expected_json_shapes() {
     let pairing_response = ControlResponse::StartPairing {
         request_id: "req-7b".into(),
         peer: kanna_task_transfer::protocol::DiscoveredPeer {
+            lan_discovered: true,
             peer_id: "peer-b".into(),
             display_name: "Beta".into(),
             endpoint: "127.0.0.1:4456".into(),
@@ -981,6 +985,7 @@ fn remaining_protocol_variants_use_expected_json_shapes() {
                 "display_name": "Beta",
                 "endpoint": "127.0.0.1:4456",
                 "pid": 5678,
+                "lan_discovered": true,
                 "public_key": "pub-b",
                 "protocol_version": 1,
                 "accepting_transfers": true,

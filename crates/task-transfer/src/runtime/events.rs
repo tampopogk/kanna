@@ -89,6 +89,19 @@ pub struct TaskPullRequestedEvent {
     pub request_id: String,
     pub requester_peer_id: String,
     pub source_task_id: String,
+    /// Selected by the authenticated requester; absent on legacy requests.
+    pub transport: Option<super::TransferTransport>,
+}
+
+impl From<TaskPullRequestedEvent> for crate::protocol::SidecarEvent {
+    fn from(event: TaskPullRequestedEvent) -> Self {
+        Self::TaskPullRequested {
+            request_id: event.request_id,
+            requester_peer_id: event.requester_peer_id,
+            source_task_id: event.source_task_id,
+            transport: event.transport,
+        }
+    }
 }
 
 /// A pull this machine asked for that the source will not ship.

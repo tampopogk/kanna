@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   createDesktopTransferMachineSync,
   filterPairableTransferPeerPayload,
+  parseLanTransferPeers,
   mergeTransferMachines,
   type LanTransferPeer,
 } from "./desktopTransferMachines";
@@ -102,6 +103,16 @@ describe("mergeTransferMachines", () => {
       relayDesktopId: null,
       cloudFallback: false,
     })]);
+  });
+
+  it("keeps real mDNS peers with no process id and excludes explicit cloud proxies", () => {
+    const mdns = { peer_id: "peer-mdns", display_name: "LAN Mac", public_key: "key", endpoint: "192.168.1.20:4455", pid: 0, lan_discovered: true, trusted: true, accepting_transfers: true };
+    const cloud = { ...mdns, peer_id: "peer-cloud", endpoint: "127.0.0.1:55443", lan_discovered: false };
+    const peers = parseLanTransferPeers([mdns, cloud]);
+    expect(peers.map((peer) => peer.id)).toEqual(["peer-mdns"]);
+    expect(filterPairableTransferPeerPayload([mdns, cloud])).toEqual([mdns]);
+    expect(mergeTransferMachines({ currentDesktopId: null, cloudMachines: [], lanPeers: peers }))
+      .toEqual([expect.objectContaining({ peerId: "peer-mdns", preferredTransport: "lan", trustSource: "paired-lan" })]);
   });
 
   it("keeps session-scoped cloud peers out of Pair Machine", () => {

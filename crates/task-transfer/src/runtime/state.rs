@@ -25,6 +25,9 @@ use tokio::task::JoinHandle;
 pub(super) struct IncomingTransferReservation {
     pub(super) source_peer_id: String,
     pub(super) source_task_id: String,
+    /// Authenticated concrete route selected by the source preflight. Legacy
+    /// reservations omit it and retain their automatic route selection.
+    pub(super) transport: Option<super::external_peers::TransferTransport>,
     pub(super) created_at_unix_ms: u64,
     pub(super) committed: bool,
     pub(super) event: Option<IncomingTransferEvent>,

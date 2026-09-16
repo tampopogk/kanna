@@ -139,7 +139,8 @@ where
         let available = reader.fill_buf().await?;
         if available.is_empty() {
             return Err(RuntimeError::Protocol(format!(
-                "artifact response exceeded the negotiated framing limit of {maximum_bytes} bytes",
+                "artifact response ended before newline after {} bytes (negotiated limit {maximum_bytes} bytes)",
+                bytes.len(),
             )));
         }
         let take = available
@@ -464,7 +465,10 @@ impl TransferRuntime {
             .unwrap_or(false)
             || external_key_is_trusted(&self.external_peers, &peer.peer_id, &peer.public_key);
 
+        let lan_discovered = external_peer(&self.external_peers, &peer.peer_id)
+            .is_none_or(|external| external.endpoint != peer.endpoint);
         Ok(DiscoveredPeer {
+            lan_discovered,
             peer_id: peer.peer_id,
             display_name: peer.display_name,
             endpoint: peer.endpoint,
