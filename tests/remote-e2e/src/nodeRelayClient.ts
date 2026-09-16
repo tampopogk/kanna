@@ -2,7 +2,9 @@ import WebSocket, { type RawData } from "ws";
 import * as relayClientModule from "../../../apps/mobile/src/lib/transports/relayClient";
 import type {
   RelayDesktopClient,
-  RelaySocketLike
+  RelaySocketFactory,
+  RelaySocketLike,
+  SecureChannelRoute
 } from "../../../apps/mobile/src/lib/transports/relayClient";
 
 type RelayClientModule = typeof relayClientModule;
@@ -56,10 +58,47 @@ export class NodeRelaySocket implements RelaySocketLike {
 export function createNodeRelayDesktopClient(input: {
   getIdToken(forceRefresh?: boolean): Promise<string | null>;
   relayUrl: string;
+  /** Per-desktop secure-channel route, exactly as the phone supplies it. */
+  getSecureChannelRoute?(desktopId: string): SecureChannelRoute;
+  /** Socket factory override, e.g. to tap the raw relay frames. */
+  createSocket?: RelaySocketFactory;
 }): RelayDesktopClient {
   return createRelayDesktopClient({
-    createSocket: (url) => new NodeRelaySocket(url),
+    createSocket: input.createSocket ?? ((url) => new NodeRelaySocket(url)),
     getIdToken: input.getIdToken,
-    relayUrl: input.relayUrl
+    relayUrl: input.relayUrl,
+    ...(input.getSecureChannelRoute ? { getSecureChannelRoute: input.getSecureChannelRoute } : {})
   });
+}
+
+/** Every raw relay frame a socket carried, in both directions. */
+export interface RelayFrameTap {
+  sent: string[];
+  received: string[];
+}
+
+/** Wraps a relay socket so a test can read exactly what crossed the wire. */
+export function tapRelaySocket(socket: RelaySocketLike, tap: RelayFrameTap): RelaySocketLike {
+  const tapped: RelaySocketLike = {
+    get readyState() {
+      return socket.readyState;
+    },
+    close: () => socket.close(),
+    send: (data) => {
+      tap.sent.push(data);
+      socket.send(data);
+    },
+    onclose: null,
+    onerror: null,
+    onmessage: null,
+    onopen: null
+  };
+  socket.onopen = () => tapped.onopen?.();
+  socket.onclose = (event) => tapped.onclose?.(event);
+  socket.onerror = (event) => tapped.onerror?.(event);
+  socket.onmessage = (event) => {
+    if (typeof event.data === "string") tap.received.push(event.data);
+    tapped.onmessage?.(event);
+  };
+  return tapped;
 }
