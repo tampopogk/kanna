@@ -186,6 +186,22 @@ export function findBareKannaFetches(
     });
   }
 
+  // The global as the *default* for an injected client — `fetchImpl = fetch`
+  // in a parameter list, or `options.fetchImpl ?? fetch` at the call. This is
+  // how the class hid in `apps/mobile/e2e/specs/smoke/list-detail-back.e2e.ts`:
+  // every test injected a mock, so the default was never exercised until the
+  // release-owned simulator smoke ran it and was refused 403.
+  for (const match of source.matchAll(/(?:=|\?\?)\s*fetch\s*(?=[,)])/g)) {
+    const index = match.index + match[0].indexOf("fetch");
+    if (isExempt(source, index)) continue;
+    findings.push({
+      file,
+      line: lineNumberAt(source, index),
+      reason: "defaults an injected HTTP client to the global fetch",
+      snippet: source.slice(index - 60 < 0 ? 0 : index - 60, index + 20).replace(/\s+/g, " ").trim(),
+    });
+  }
+
   return findings;
 }
 
@@ -241,6 +257,28 @@ describe("Kanna server calls from test code", () => {
       expect.objectContaining({
         line: 1,
         reason: "hands the global fetch to another client as its HTTP transport",
+      }),
+    ]);
+  });
+
+  it("catches the global fetch as the default for an injected client", () => {
+    const source = [
+      "export async function readFixture(",
+      "  desktopServerUrl: string,",
+      "  fetchImpl: FetchLike = fetch",
+      "): Promise<void> {",
+      "  await prepare(desktopServerUrl, options.fetchImpl ?? fetch);",
+      "}",
+    ].join("\n");
+
+    expect(findBareKannaFetches("sample.e2e.ts", source, routeSegments)).toEqual([
+      expect.objectContaining({
+        line: 3,
+        reason: "defaults an injected HTTP client to the global fetch",
+      }),
+      expect.objectContaining({
+        line: 5,
+        reason: "defaults an injected HTTP client to the global fetch",
       }),
     ]);
   });

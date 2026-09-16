@@ -1,4 +1,5 @@
 import type { Browser } from "webdriverio";
+import { localProcessFetch } from "@kanna/local-process-fetch";
 import {
   extractTaskRowId,
   selectors,
@@ -164,6 +165,13 @@ interface WebViewContextDriver {
   switchContext?: (context: string) => Promise<unknown>;
 }
 
+/**
+ * The HTTP client the smoke uses for its own reads and actions against the
+ * desktop's `kanna-server`. Tests inject a mock; the smoke itself must default
+ * to `localProcessFetch`, never Node's global `fetch`: undici stamps
+ * `Sec-Fetch-Mode` on every request, `lan_trust.rs` then classifies this
+ * ordinary local process as a browser, and every fixture read answers 403.
+ */
 type FetchLike = (
   input: string,
   init?: {
@@ -346,7 +354,7 @@ function getStringProperty(value: unknown, key: string): string | null {
 export async function assertPtyTerminalFixtureAvailable(
   desktopServerUrl: string,
   fixture: PtyTerminalFixture,
-  fetchImpl: FetchLike = fetch
+  fetchImpl: FetchLike = localProcessFetch
 ): Promise<TaskPromptFixture> {
   const response = await fetchImpl(
     `${desktopServerUrl}/v1/tasks/${encodeURIComponent(fixture.taskId)}`
@@ -1043,7 +1051,7 @@ export async function exerciseTaskPinSwipe(
   driver: Browser,
   desktopServerUrl: string,
   taskId: string,
-  fetchImpl: FetchLike = fetch
+  fetchImpl: FetchLike = localProcessFetch
 ): Promise<void> {
   const detailResponse = await fetchImpl(
     `${desktopServerUrl}/v1/tasks/${encodeURIComponent(taskId)}`
@@ -1156,7 +1164,7 @@ export async function exerciseActivityDismissSwipe(
   driver: Browser,
   desktopServerUrl: string,
   taskId: string,
-  fetchImpl: FetchLike = fetch
+  fetchImpl: FetchLike = localProcessFetch
 ): Promise<void> {
   const readActivity = async (): Promise<string | null> => {
     const response = await fetchImpl(`${desktopServerUrl}/v1/tasks/recent`);
@@ -1220,27 +1228,25 @@ export async function runListDetailBackSmoke(
     );
   }
   const fixture = resolveRequiredPtyTerminalFixture(env);
+  // One client for every local read and action below: an injected mock in
+  // tests, the local-process client in the real smoke.
+  const fetchImpl = options.fetchImpl ?? localProcessFetch;
   const promptFixture = await assertPtyTerminalFixtureAvailable(
     desktopServerUrl,
     fixture,
-    options.fetchImpl
+    fetchImpl
   );
 
   const appShell = await driver.$(selectors.appShell);
   await appShell.waitForDisplayed({ timeout: SCREEN_TIMEOUT_MS });
 
   await ensureTaskListVisible(ui);
-  await exerciseTaskPinSwipe(
-    driver,
-    desktopServerUrl,
-    fixture.taskId,
-    options.fetchImpl
-  );
+  await exerciseTaskPinSwipe(driver, desktopServerUrl, fixture.taskId, fetchImpl);
   await exerciseActivityDismissSwipe(
     driver,
     desktopServerUrl,
     fixture.taskId,
-    options.fetchImpl
+    fetchImpl
   );
   await assertPtyFixtureTaskRow(ui, promptFixture);
   await openPtyFixtureTask(ui, fixture.taskId);
@@ -1301,11 +1307,7 @@ export async function runListDetailBackSmoke(
   await performTaskDetailEdgeSwipeBack(driver);
   await waitForTaskRows(ui);
 
-  await prepareTaskUnreadActivity(
-    desktopServerUrl,
-    fixture.taskId,
-    options.fetchImpl ?? fetch
-  );
+  await prepareTaskUnreadActivity(desktopServerUrl, fixture.taskId, fetchImpl);
 
   await exerciseListDetailBackFromOrigin(
     {
