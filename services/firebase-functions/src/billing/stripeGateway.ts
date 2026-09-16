@@ -132,12 +132,14 @@ async function customerProductScan(stripe: Stripe, customerId: string): Promise<
     for (const id of productIds) ids.add(id);
   }
   for await (const invoice of stripe.invoices.list({ customer: customerId, limit: 100 })) {
-    const productIds = await invoiceProductIds(stripe, invoice.id);
-    if (productIds.length === 0) {
-      unresolved = true;
-      continue;
-    }
-    for (const id of productIds) ids.add(id);
+    const invoiceScan = await invoiceProductIds(stripe, invoice.id);
+    // An invoice can have some lines that resolve and others that don't;
+    // the resolved ids are still real evidence (a foreign product must still
+    // be collected), but any unresolvable line means this invoice's history
+    // was not fully proven, and must not be lost by only checking whether
+    // the resolved set came back empty.
+    if (invoiceScan.unresolved) unresolved = true;
+    for (const id of invoiceScan.productIds) ids.add(id);
   }
   return { productIds: [...ids], unresolved };
 }
@@ -182,17 +184,32 @@ async function sessionProductIds(stripe: Stripe, sessionId: string): Promise<str
   }
 }
 
-/** Distinct product ids across an invoice's line items, paginated. */
-async function invoiceProductIds(stripe: Stripe, invoiceId: string): Promise<string[]> {
+/**
+ * Distinct product ids across an invoice's line items, paginated, plus
+ * whether every line's product could actually be resolved.
+ *
+ * A line whose `pricing.price_details.product` is absent or unresolvable is
+ * not the same as a line proven to be some other product: dropping it would
+ * silently lose that this invoice's full history was never actually proven,
+ * even when a different line on the same invoice did resolve to the expected
+ * product.
+ */
+async function invoiceProductIds(stripe: Stripe, invoiceId: string): Promise<{ productIds: string[]; unresolved: boolean }> {
   try {
     const ids = new Set<string>();
+    let unresolved = false;
     for await (const item of stripe.invoices.listLineItems(invoiceId, { limit: 100 })) {
       const id = productIdOf(item.pricing?.price_details?.product);
-      if (id) ids.add(id);
+      if (id) {
+        ids.add(id);
+      } else {
+        unresolved = true;
+      }
     }
-    return [...ids];
+    if (ids.size === 0) unresolved = true;
+    return { productIds: [...ids], unresolved };
   } catch (error) {
-    if (isResourceMissing(error)) return [];
+    if (isResourceMissing(error)) return { productIds: [], unresolved: true };
     throw error;
   }
 }

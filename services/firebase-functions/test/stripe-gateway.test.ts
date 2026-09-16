@@ -304,6 +304,20 @@ describe("Stripe product-ownership lookups", () => {
       .resolves.toEqual({ productIds: [], unresolved: true });
   });
 
+  it("marks the scan unresolved when an invoice has one resolved Kanna line and one unresolvable line, while still collecting the resolved id", async () => {
+    // A partially-resolved invoice must not look "clean" or "owned" just
+    // because one of its lines happened to resolve: the unresolved line
+    // could be a foreign product this scan simply failed to identify.
+    stripeMocks.subscriptionsList.mockImplementation(() => asyncIterable([]));
+    stripeMocks.invoicesList.mockImplementation(() => asyncIterable([{ id: "in_partial" }]));
+    stripeMocks.invoicesListLineItems.mockImplementation(() => asyncIterable([
+      { pricing: { price_details: { product: PRODUCT_ID } } },
+      { pricing: { price_details: { product: undefined } } },
+    ]));
+    await expect(stripeOwnershipLookupGateway("sk_test_mocked").customerProductScan("cus_shared"))
+      .resolves.toEqual({ productIds: [PRODUCT_ID], unresolved: true });
+  });
+
   it("marks the scan unresolved when a listed invoice's line items lookup hits resource_missing", async () => {
     stripeMocks.subscriptionsList.mockImplementation(() => asyncIterable([]));
     stripeMocks.invoicesList.mockImplementation(() => asyncIterable([{ id: "in_gone" }]));
