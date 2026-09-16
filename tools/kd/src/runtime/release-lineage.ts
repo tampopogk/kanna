@@ -152,109 +152,128 @@ export function formatPostPromotionTrunkBlock(record: PostPromotionTrunkRecord):
  * most recent reset and older blocks stay in the body as an audit trail.
  */
 export function parseLineageResetRecord(body: string): LineageResetRecord | null {
+  return parseLineageResetRecords(body)[0] ?? null;
+}
+
+/** Reads every reset block, newest first. */
+export function parseLineageResetRecords(body: string): LineageResetRecord[] {
   const lines = body.split(/\r?\n/);
-  const start = lines.findIndex((line) => line.trim().startsWith(LINEAGE_RESET_MARKER));
-  if (start < 0) return null;
-  const resetAt = lines[start]?.trim().slice(LINEAGE_RESET_MARKER.length).trim() ?? "";
-  const block = lines.slice(start + 1, start + 5).join("\n");
-  const from = /^Reset-From:[ \t]*(\S+)[ \t]*\(([^)]*)\)[ \t]*source[ \t]*(\S+)[ \t]*$/m.exec(block);
-  const to = /^Reset-To:[ \t]*(\S+)[ \t]*$/m.exec(block);
-  const reason = /^Reset-Reason:[ \t]*(.+?)[ \t]*$/m.exec(block);
-  if (!from || !to || !resetAt) return null;
-  const fromCommit = (from[2] ?? "").trim();
-  const fromSourceBranch = (from[3] ?? "").trim();
-  return {
-    resetAt,
-    fromVersion: normalizeStagingVersion(from[1] ?? ""),
-    fromCommit: fromCommit && fromCommit !== "unknown-commit" ? fromCommit : null,
-    fromSourceBranch: fromSourceBranch && fromSourceBranch !== "unknown" ? fromSourceBranch : null,
-    toBranch: (to[1] ?? "").trim(),
-    reason: reason?.[1]?.trim() ?? ""
-  };
+  return lines.flatMap((line, start) => {
+    if (!line.trim().startsWith(LINEAGE_RESET_MARKER)) return [];
+    const resetAt = line.trim().slice(LINEAGE_RESET_MARKER.length).trim();
+    const block = lines.slice(start + 1, start + 5).join("\n");
+    const from = /^Reset-From:[ \t]*(\S+)[ \t]*\(([^)]*)\)[ \t]*source[ \t]*(\S+)[ \t]*$/m.exec(block);
+    const to = /^Reset-To:[ \t]*(\S+)[ \t]*$/m.exec(block);
+    const reason = /^Reset-Reason:[ \t]*(.+?)[ \t]*$/m.exec(block);
+    if (!from || !to || !resetAt) return [];
+    const fromCommit = (from[2] ?? "").trim();
+    const fromSourceBranch = (from[3] ?? "").trim();
+    return [{
+      resetAt,
+      fromVersion: normalizeStagingVersion(from[1] ?? ""),
+      fromCommit: fromCommit && fromCommit !== "unknown-commit" ? fromCommit : null,
+      fromSourceBranch: fromSourceBranch && fromSourceBranch !== "unknown" ? fromSourceBranch : null,
+      toBranch: (to[1] ?? "").trim(),
+      reason: reason?.[1]?.trim() ?? ""
+    }];
+  });
 }
 
 /** Reads the newest recut block, preserving older blocks below it. */
 export function parseLineageRecutRecord(body: string): LineageRecutRecord | null {
+  return parseLineageRecutRecords(body)[0] ?? null;
+}
+
+/** Reads every recut block, newest first. */
+export function parseLineageRecutRecords(body: string): LineageRecutRecord[] {
   const lines = body.split(/\r?\n/);
-  const start = lines.findIndex((line) => line.trim().startsWith(LINEAGE_RECUT_MARKER));
-  if (start < 0) return null;
-  const recutAt = lines[start]?.trim().slice(LINEAGE_RECUT_MARKER.length).trim() ?? "";
-  const block = lines.slice(start + 1, start + 12).join("\n");
-  const id = /^Recut-Id:[ \t]*(\S+)[ \t]*$/m.exec(block);
-  const series = /^Recut-Series:[ \t]*(\d+\.\d+)[ \t]*$/m.exec(block);
-  const branch = /^Recut-Branch:[ \t]*(release\/\d+\.\d+)[ \t]*$/m.exec(block);
-  const oldTip = /^Recut-Old-Tip:[ \t]*([0-9a-f]{40})[ \t]*$/im.exec(block);
-  const newTip = /^Recut-New-Tip:[ \t]*([0-9a-f]{40})[ \t]*$/im.exec(block);
-  const archiveTag = /^Recut-Archive-Tag:[ \t]*(recut\/release\/\d+\.\d+-\d+)[ \t]*$/m.exec(block);
-  const from = /^Recut-From:[ \t]*(\S+)[ \t]*\(([^)]*)\)[ \t]*source[ \t]*(\S+)[ \t]*$/m.exec(block);
-  const priorEpoch = /^Recut-Prior-Epoch:[ \t]*(\S+)[ \t]*$/m.exec(block);
-  const requester = /^Recut-Requester:[ \t]*(.+?)[ \t]*$/m.exec(block);
-  const reason = /^Recut-Reason:[ \t]*(.+?)[ \t]*$/m.exec(block);
-  if (!recutAt || !id?.[1] || !series?.[1] || !branch?.[1] || !oldTip?.[1] || !newTip?.[1] || !archiveTag?.[1] || !from?.[1] || !priorEpoch?.[1] || !requester?.[1] || !reason?.[1]) {
-    return null;
-  }
-  const fromVersion = from[1] === "empty-channel" ? null : normalizeStagingVersion(from[1]);
-  const fromCommit = from[2] !== "unknown-commit" ? from[2] : null;
-  const fromSourceBranch = from[3] !== "unknown" ? from[3] : null;
-  return {
-    recutId: id[1],
-    recutAt,
-    series: series[1],
-    branch: branch[1],
-    oldTip: oldTip[1].toLowerCase(),
-    newTip: newTip[1].toLowerCase(),
-    archiveTag: archiveTag[1],
-    fromVersion,
-    fromCommit,
-    fromSourceBranch,
-    priorEpoch: priorEpoch[1].trim(),
-    requester: requester[1].trim(),
-    reason: reason[1].trim()
-  };
+  return lines.flatMap((line, start) => {
+    if (!line.trim().startsWith(LINEAGE_RECUT_MARKER)) return [];
+    const recutAt = line.trim().slice(LINEAGE_RECUT_MARKER.length).trim();
+    const block = lines.slice(start + 1, start + 12).join("\n");
+    const id = /^Recut-Id:[ \t]*(\S+)[ \t]*$/m.exec(block);
+    const series = /^Recut-Series:[ \t]*(\d+\.\d+)[ \t]*$/m.exec(block);
+    const branch = /^Recut-Branch:[ \t]*(release\/\d+\.\d+)[ \t]*$/m.exec(block);
+    const oldTip = /^Recut-Old-Tip:[ \t]*([0-9a-f]{40})[ \t]*$/im.exec(block);
+    const newTip = /^Recut-New-Tip:[ \t]*([0-9a-f]{40})[ \t]*$/im.exec(block);
+    const archiveTag = /^Recut-Archive-Tag:[ \t]*(recut\/release\/\d+\.\d+-\d+)[ \t]*$/m.exec(block);
+    const from = /^Recut-From:[ \t]*(\S+)[ \t]*\(([^)]*)\)[ \t]*source[ \t]*(\S+)[ \t]*$/m.exec(block);
+    const priorEpoch = /^Recut-Prior-Epoch:[ \t]*(\S+)[ \t]*$/m.exec(block);
+    const requester = /^Recut-Requester:[ \t]*(.+?)[ \t]*$/m.exec(block);
+    const reason = /^Recut-Reason:[ \t]*(.+?)[ \t]*$/m.exec(block);
+    if (!recutAt || !id?.[1] || !series?.[1] || !branch?.[1] || !oldTip?.[1] || !newTip?.[1] || !archiveTag?.[1] || !from?.[1] || !priorEpoch?.[1] || !requester?.[1] || !reason?.[1]) return [];
+    return [{
+      recutId: id[1],
+      recutAt,
+      series: series[1],
+      branch: branch[1],
+      oldTip: oldTip[1].toLowerCase(),
+      newTip: newTip[1].toLowerCase(),
+      archiveTag: archiveTag[1],
+      fromVersion: from[1] === "empty-channel" ? null : normalizeStagingVersion(from[1]),
+      fromCommit: from[2] !== "unknown-commit" ? from[2] : null,
+      fromSourceBranch: from[3] !== "unknown" ? from[3] : null,
+      priorEpoch: priorEpoch[1].trim(),
+      requester: requester[1].trim(),
+      reason: reason[1].trim()
+    }];
+  });
 }
 
 export function parseLineageRecutApplicationRecord(body: string): LineageRecutApplicationRecord | null {
+  return parseLineageRecutApplicationRecords(body)[0] ?? null;
+}
+
+/** Reads every durable recut application block, newest first. */
+export function parseLineageRecutApplicationRecords(body: string): LineageRecutApplicationRecord[] {
   const lines = body.split(/\r?\n/);
-  const start = lines.findIndex((line) => line.trim().startsWith(LINEAGE_RECUT_APPLIED_MARKER));
-  if (start < 0) return null;
-  const appliedAt = lines[start]?.trim().slice(LINEAGE_RECUT_APPLIED_MARKER.length).trim() ?? "";
-  const block = lines.slice(start + 1, start + 6).join("\n");
-  const id = /^Recut-Applied-Id:[ \t]*(\S+)[ \t]*$/m.exec(block);
-  const version = /^Recut-Applied-Version:[ \t]*(\S+)[ \t]*$/m.exec(block);
-  const commit = /^Recut-Applied-Commit:[ \t]*([0-9a-f]{40})[ \t]*$/im.exec(block);
-  const tag = /^Recut-Applied-Tag:[ \t]*(recut-applied\/\S+)[ \t]*$/m.exec(block);
-  if (!appliedAt || !id?.[1] || !version?.[1] || !commit?.[1] || !tag?.[1]) return null;
-  return {
-    recutId: id[1],
-    version: normalizeStagingVersion(version[1]),
-    commit: commit[1].toLowerCase(),
-    appliedAt,
-    tag: tag[1]
-  };
+  return lines.flatMap((line, start) => {
+    if (!line.trim().startsWith(LINEAGE_RECUT_APPLIED_MARKER)) return [];
+    const appliedAt = line.trim().slice(LINEAGE_RECUT_APPLIED_MARKER.length).trim();
+    const block = lines.slice(start + 1, start + 6).join("\n");
+    const id = /^Recut-Applied-Id:[ \t]*(\S+)[ \t]*$/m.exec(block);
+    const version = /^Recut-Applied-Version:[ \t]*(\S+)[ \t]*$/m.exec(block);
+    const commit = /^Recut-Applied-Commit:[ \t]*([0-9a-f]{40})[ \t]*$/im.exec(block);
+    const tag = /^Recut-Applied-Tag:[ \t]*(recut-applied\/\S+)[ \t]*$/m.exec(block);
+    if (!appliedAt || !id?.[1] || !version?.[1] || !commit?.[1] || !tag?.[1]) return [];
+    return [{
+      recutId: id[1],
+      version: normalizeStagingVersion(version[1]),
+      commit: commit[1].toLowerCase(),
+      appliedAt,
+      tag: tag[1]
+    }];
+  });
 }
 
 /** Reads the newest post-promotion trunk-resumption audit block. */
 export function parsePostPromotionTrunkRecord(body: string): PostPromotionTrunkRecord | null {
+  return parsePostPromotionTrunkRecords(body)[0] ?? null;
+}
+
+/** Reads every post-promotion trunk-resumption block, newest first. */
+export function parsePostPromotionTrunkRecords(body: string): PostPromotionTrunkRecord[] {
   const lines = body.split(/\r?\n/);
-  const start = lines.findIndex((line) => line.trim().startsWith(POST_PROMOTION_TRUNK_MARKER));
-  if (start < 0) return null;
-  const resumedAt = lines[start]?.trim().slice(POST_PROMOTION_TRUNK_MARKER.length).trim() ?? "";
-  const block = lines.slice(start + 1, start + 6).join("\n");
-  const version = /^Promoted-Version:[ \t]*(\S+)[ \t]*$/m.exec(block);
-  const tag = /^Promoted-Tag:[ \t]*(\S+)[ \t]*$/m.exec(block);
-  const commit = /^Promoted-Commit:[ \t]*([0-9a-f]{40})[ \t]*$/im.exec(block);
-  const tagCommit = /^Production-Tag-Commit:[ \t]*([0-9a-f]{40})[ \t]*$/im.exec(block);
-  const resumed = /^Resumed-To:[ \t]*([0-9a-f]{40})[ \t]*source[ \t]*(\S+)[ \t]*$/im.exec(block);
-  if (!resumedAt || !version?.[1] || !tag?.[1] || !commit?.[1] || !tagCommit?.[1] || !resumed?.[1] || !resumed[2]) return null;
-  return {
-    resumedAt,
-    promotedVersion: normalizeStagingVersion(version[1]),
-    promotedTag: tag[1],
-    promotedCommit: commit[1].toLowerCase(),
-    productionTagCommit: tagCommit[1].toLowerCase(),
-    newCommit: resumed[1].toLowerCase(),
-    newBranch: resumed[2]
-  };
+  return lines.flatMap((line, start) => {
+    if (!line.trim().startsWith(POST_PROMOTION_TRUNK_MARKER)) return [];
+    const resumedAt = line.trim().slice(POST_PROMOTION_TRUNK_MARKER.length).trim();
+    const block = lines.slice(start + 1, start + 6).join("\n");
+    const version = /^Promoted-Version:[ \t]*(\S+)[ \t]*$/m.exec(block);
+    const tag = /^Promoted-Tag:[ \t]*(\S+)[ \t]*$/m.exec(block);
+    const commit = /^Promoted-Commit:[ \t]*([0-9a-f]{40})[ \t]*$/im.exec(block);
+    const tagCommit = /^Production-Tag-Commit:[ \t]*([0-9a-f]{40})[ \t]*$/im.exec(block);
+    const resumed = /^Resumed-To:[ \t]*([0-9a-f]{40})[ \t]*source[ \t]*(\S+)[ \t]*$/im.exec(block);
+    if (!resumedAt || !version?.[1] || !tag?.[1] || !commit?.[1] || !tagCommit?.[1] || !resumed?.[1] || !resumed[2]) return [];
+    return [{
+      resumedAt,
+      promotedVersion: normalizeStagingVersion(version[1]),
+      promotedTag: tag[1],
+      promotedCommit: commit[1].toLowerCase(),
+      productionTagCommit: tagCommit[1].toLowerCase(),
+      newCommit: resumed[1].toLowerCase(),
+      newBranch: resumed[2]
+    }];
+  });
 }
 
 function composeStagingChannelAuditBlock(existingBody: string, block: string): string {
@@ -701,8 +720,18 @@ export function evaluateCandidateLineage(args: {
     toCommitRelationshipToNewTip: args.recutDestinationRelationship,
     toCommitIsBranchTip: args.recutDestinationIsBranchTip
   });
-  const recutApplicationAuthorized = recutApplicationAuthorizes(recut, args.recutApplication ?? null, candidate);
-  const authorizedByRecut = recutCandidateMatches && (recutPublishAuthorized || recutApplicationAuthorized);
+  const recutApplicationAuthorized =
+    recutApplicationAuthorizes(recut, args.recutApplication ?? null, candidate) &&
+    Boolean(recut?.fromVersion) &&
+    normalizeStagingVersion(recut?.fromVersion ?? "") === normalizeStagingVersion(previous.version) &&
+    Boolean(recut?.fromCommit) &&
+    recut?.fromCommit?.toLowerCase() === previous.commit?.toLowerCase() &&
+    recut?.branch === candidate.sourceBranch;
+  // A durable application is historical proof for that exact version+commit;
+  // unlike an unused publication grant, it must not stop matching when the
+  // release branch later advances. The unused grant remains branch-tip-bound
+  // and single-use through `recutAuthorizes`.
+  const authorizedByRecut = recutApplicationAuthorized || (recutCandidateMatches && recutPublishAuthorized);
 
   switch (relationship) {
     case "same-commit":

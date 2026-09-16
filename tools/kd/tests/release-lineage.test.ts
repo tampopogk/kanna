@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 import {
   composePostPromotionTrunkBody,
   composeStagingChannelBody,
+  composeStagingChannelRecutApplicationBody,
   composeStagingChannelRecutBody,
   evaluateCandidateLineage,
   evaluatePromotionGate,
@@ -16,6 +17,8 @@ import {
   isReleaseBranchName,
   parseLineageResetRecord,
   parseLineageRecutRecord,
+  parseLineageRecutApplicationRecords,
+  parseLineageRecutRecords,
   parsePostPromotionTrunkRecord,
   promotionAuthorizes,
   resetAuthorizes,
@@ -270,6 +273,68 @@ describe("staging publish gate", () => {
       postPromotion: null
     });
     expect(lineage).toMatchObject({ valid: true, authorizedByRecut: true });
+  });
+
+  it("keeps applied recut A authorized after its branch advances and a later recut audit is prepended", () => {
+    const candidate = {
+      ...ACTIVE,
+      version: "0.1.0-staging.8",
+      tag: "v0.1.0-staging.8",
+      commit: RECUT.newTip,
+      sourceBranch: RECUT.branch
+    };
+    const application = {
+      recutId: RECUT.recutId,
+      version: candidate.version,
+      commit: candidate.commit,
+      appliedAt: "2026-07-04T00:00:00Z",
+      tag: "recut-applied/0.1-1"
+    };
+    const laterRecut = {
+      ...RECUT,
+      recutId: "0.1-2",
+      recutAt: "2026-07-05T00:00:00Z",
+      oldTip: RECUT.newTip,
+      newTip: "9999999999999999999999999999999999999999",
+      archiveTag: "recut/release/0.1-2",
+      fromVersion: candidate.version,
+      fromCommit: candidate.commit,
+      priorEpoch: candidate.version
+    };
+    const body = composeStagingChannelRecutBody(
+      composeStagingChannelRecutApplicationBody(
+        composeStagingChannelRecutBody("Pointer-only desktop staging updater channel.", RECUT),
+        application
+      ),
+      laterRecut
+    );
+    expect(parseLineageRecutRecords(body).map((record) => record.recutId)).toEqual(["0.1-2", "0.1-1"]);
+    expect(parseLineageRecutApplicationRecords(body)).toEqual([application]);
+
+    const lineage = evaluateCandidateLineage({
+      candidate,
+      previous: { version: ACTIVE.version, tag: ACTIVE.tag, commit: ACTIVE.commit },
+      relationship: "diverged",
+      reset: null,
+      recut: RECUT,
+      recutApplication: application,
+      recutDestinationRelationship: undefined,
+      recutDestinationIsBranchTip: false,
+      postPromotion: null
+    });
+    expect(lineage).toMatchObject({ valid: true, authorizedByRecut: true });
+
+    const unauthorized = evaluateCandidateLineage({
+      candidate: { ...candidate, sourceBranch: "release/0.2" },
+      previous: { version: ACTIVE.version, tag: ACTIVE.tag, commit: ACTIVE.commit },
+      relationship: "diverged",
+      reset: null,
+      recut: RECUT,
+      recutApplication: application,
+      recutDestinationIsBranchTip: false,
+      postPromotion: null
+    });
+    expect(unauthorized).toMatchObject({ valid: false, authorizedByRecut: false });
   });
 });
 

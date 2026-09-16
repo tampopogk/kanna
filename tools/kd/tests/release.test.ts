@@ -837,7 +837,7 @@ describe("release shipping", () => {
     }
   });
 
-  it("keeps five newest staging prereleases without deleting the pointed release", async () => {
+  it("retains every immutable staging prerelease as the channel advances past five", async () => {
     const root = await mkdtemp(join(tmpdir(), "kd-release-"));
     try {
       const { repoRoot, privateKeyPath } = createReleaseRepo(root);
@@ -949,9 +949,7 @@ describe("release shipping", () => {
       const deleteTags = calls
         .filter((call) => call.command === "gh" && call.args[0] === "release" && call.args[1] === "delete")
         .map((call) => call.args[2]);
-      expect([...deleteTags].sort()).toEqual(["v1.2.4-staging.1", "v1.2.4-staging.2"]);
-      expect(deleteTags).not.toContain("v1.2.4-staging.6");
-      expect(deleteTags).not.toContain("v1.2.4-staging.7");
+      expect(deleteTags).toEqual([]);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -1434,6 +1432,12 @@ describe("release promotion", () => {
         if (command === "git" && args.join(" ") === "rev-parse HEAD") {
           return { exitCode: 0, stdout: `${STAGING_COMMIT}\n`, stderr: "" };
         }
+        if (command === "git" && args[0] === "cat-file" && args[1] === "-e") {
+          return { exitCode: 1, stdout: "", stderr: "path does not exist" };
+        }
+        if (command === "git" && args.join(" ") === `show ${STAGING_COMMIT}:release-policy.json`) {
+          return { exitCode: 1, stdout: "", stderr: "path does not exist" };
+        }
         if (command === "git" && args.join(" ") === "fetch origin main") {
           return { exitCode: 0, stdout: "", stderr: "" };
         }
@@ -1699,7 +1703,7 @@ describe("release promotion", () => {
     }
   });
 
-  it("promotes the exact soaked A after newer B publishes while leaving staging and main advanced", async () => {
+  it("promotes the exact soaked A after more than five newer RCs publish while leaving staging and main advanced", async () => {
     const root = await mkdtemp(join(tmpdir(), "kd-release-"));
     try {
       const { repoRoot, privateKeyPath } = createReleaseRepo(root);
@@ -1712,7 +1716,10 @@ describe("release promotion", () => {
         "gh release list --repo jemdiggity/kanna": {
           exitCode: 0,
           stdout: JSON.stringify([
-            { tagName: "v1.2.4-staging.4", createdAt: "2026-07-02T00:00:00Z" },
+            ...Array.from({ length: 6 }, (_, index) => ({
+              tagName: `v1.2.4-staging.${9 - index}`,
+              createdAt: `2026-07-${String(8 - index).padStart(2, "0")}T00:00:00Z`
+            })),
             { tagName: "v1.2.4-staging.3", createdAt: RC_PUBLISHED_AT },
             { tagName: "v1.2.4-staging.2", createdAt: "2026-06-28T00:00:00Z" }
           ]),
@@ -1734,6 +1741,96 @@ describe("release promotion", () => {
         call.args.includes("desktop-staging") &&
         ["edit", "upload"].includes(call.args[1] ?? "")
       )).toBe(false);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("promotes applied recut A after the release branch advances to B and newer audit records exist", async () => {
+    const root = await mkdtemp(join(tmpdir(), "kd-release-historical-recut-"));
+    try {
+      const { repoRoot, privateKeyPath } = createReleaseRepo(root);
+      const outputs = writeReleaseBuildOutputs(repoRoot, ["arm64", "x86_64"]);
+      const calls: CommandCall[] = [];
+      const candidateB = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+      const body = [
+        "Pointer-only desktop staging updater channel.",
+        "",
+        "Lineage-Recut-Applied: 2026-07-02T01:00:00Z",
+        "Recut-Applied-Id: 1.2-2",
+        "Recut-Applied-Version: 1.2.4-staging.4",
+        `Recut-Applied-Commit: ${candidateB}`,
+        "Recut-Applied-Tag: recut-applied/1.2-2",
+        "",
+        "Lineage-Recut: 2026-07-02T00:00:00Z",
+        "Recut-Id: 1.2-2",
+        "Recut-Series: 1.2",
+        "Recut-Branch: release/1.2",
+        `Recut-Old-Tip: ${STAGING_COMMIT}`,
+        `Recut-New-Tip: ${candidateB}`,
+        "Recut-Archive-Tag: recut/release/1.2-2",
+        `Recut-From: 1.2.4-staging.3 (${STAGING_COMMIT}) source release/1.2`,
+        "Recut-Prior-Epoch: 1.2.4-staging.3",
+        "Recut-Requester: later-test",
+        "Recut-Reason: advance to B",
+        "",
+        "Lineage-Recut-Applied: 2026-07-01T01:00:00Z",
+        "Recut-Applied-Id: 1.2-1",
+        "Recut-Applied-Version: 1.2.4-staging.3",
+        `Recut-Applied-Commit: ${STAGING_COMMIT}`,
+        "Recut-Applied-Tag: recut-applied/1.2-1",
+        "",
+        "Lineage-Recut: 2026-07-01T00:00:00Z",
+        "Recut-Id: 1.2-1",
+        "Recut-Series: 1.2",
+        "Recut-Branch: release/1.2",
+        `Recut-Old-Tip: ${PREVIOUS_RC_COMMIT}`,
+        `Recut-New-Tip: ${STAGING_COMMIT}`,
+        "Recut-Archive-Tag: recut/release/1.2-1",
+        `Recut-From: 1.2.4-staging.2 (${PREVIOUS_RC_COMMIT}) source release/1.2`,
+        "Recut-Prior-Epoch: 1.2.4-staging.2",
+        "Recut-Requester: promotion-test",
+        "Recut-Reason: authorize A"
+      ].join("\n");
+      const runner = promoteRunner({
+        "gh release view v1.2.4-staging.3": {
+          exitCode: 0,
+          stdout: JSON.stringify({
+            tagName: "v1.2.4-staging.3",
+            targetCommitish: STAGING_COMMIT,
+            body: "Staging updater manifest for v1.2.4-staging.3\n\nSource-Branch: release/1.2",
+            publishedAt: RC_PUBLISHED_AT,
+            isPrerelease: true
+          }),
+          stderr: ""
+        },
+        "gh release list --repo jemdiggity/kanna": {
+          exitCode: 0,
+          stdout: JSON.stringify([
+            { tagName: "v1.2.4-staging.4", createdAt: "2026-07-02T00:00:00Z" },
+            { tagName: "v1.2.4-staging.3", createdAt: RC_PUBLISHED_AT },
+            { tagName: "v1.2.4-staging.2", createdAt: "2026-06-28T00:00:00Z" }
+          ]),
+          stderr: ""
+        },
+        "gh release view desktop-staging": {
+          exitCode: 0,
+          stdout: JSON.stringify({ body }),
+          stderr: ""
+        },
+        [`git merge-base --is-ancestor ${PREVIOUS_RC_COMMIT} ${STAGING_COMMIT}`]: { exitCode: 1, stdout: "", stderr: "" },
+        [`git merge-base --is-ancestor ${STAGING_COMMIT} ${PREVIOUS_RC_COMMIT}`]: { exitCode: 1, stdout: "", stderr: "" },
+        "git ls-remote origin refs/heads/release/1.2": {
+          exitCode: 0,
+          stdout: `${candidateB}\trefs/heads/release/1.2\n`,
+          stderr: ""
+        }
+      }, repoRoot, outputs, calls);
+
+      await expect(shipRelease(promoteInput(repoRoot, privateKeyPath, runner))).resolves.toMatchObject({ version: "1.2.4" });
+      expect(calls.some((call) => call.command === "bazel" && call.args[0] === "build")).toBe(true);
+      expect(calls.some((call) => call.command === "git" && call.args.join(" ") === "push origin v1.2.4")).toBe(true);
+      expect(calls.some((call) => call.command === "git" && call.args.includes("refs/heads/release/1.2"))).toBe(false);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -1899,6 +1996,49 @@ describe("release promotion", () => {
         shipRelease({ ...promoteInput(repoRoot, privateKeyPath, runner), now: Date.parse("2026-07-01T05:00:00Z") })
       ).rejects.toThrow(/soaked 5\.0h of the required 24h/);
       expect(calls.some((call) => call.command === "bazel")).toBe(false);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    { checkoutHours: 1, candidateHours: 24, allowed: false },
+    { checkoutHours: 24, candidateHours: 1, allowed: true }
+  ])("promotion uses candidate policy $candidateHours hours when checkout policy is $checkoutHours hours", async ({ checkoutHours, candidateHours, allowed }) => {
+    const root = await mkdtemp(join(tmpdir(), "kd-release-policy-source-"));
+    try {
+      const { repoRoot, privateKeyPath } = createReleaseRepo(root);
+      writeFileSync(join(repoRoot, "release-policy.json"), JSON.stringify({ productionSoakHours: checkoutHours }));
+      const outputs = writeReleaseBuildOutputs(repoRoot, ["arm64", "x86_64"]);
+      for (const label of ["arm64", "x86_64"] as const) {
+        outputs.set(bazelTargetForLabel(label, true), outputs.get(bazelTargetForLabel(label, false)) ?? "");
+      }
+      const calls: CommandCall[] = [];
+      const runner = promoteRunner({
+        [`git cat-file -e ${STAGING_COMMIT}:release-policy.json`]: {
+          exitCode: 0,
+          stdout: "",
+          stderr: ""
+        },
+        [`git show ${STAGING_COMMIT}:release-policy.json`]: {
+          exitCode: 0,
+          stdout: JSON.stringify({ productionSoakHours: candidateHours }),
+          stderr: ""
+        }
+      }, repoRoot, outputs, calls);
+      const operation = shipRelease({
+        ...promoteInput(repoRoot, privateKeyPath, runner),
+        release: false,
+        dryRun: true,
+        now: Date.parse("2026-07-01T03:00:00Z")
+      });
+
+      if (allowed) {
+        await expect(operation).resolves.toMatchObject({ version: "1.2.4" });
+      } else {
+        await expect(operation).rejects.toThrow(/soaked 3\.0h of the required 24h/);
+        expect(calls.some((call) => call.command === "bazel")).toBe(false);
+      }
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -2689,6 +2829,89 @@ describe("release status", () => {
     }
   });
 
+  it("keeps applied recut A eligible after the branch advances to B and later audit blocks are recorded", async () => {
+    const root = await mkdtemp(join(tmpdir(), "kd-release-status-historical-recut-"));
+    try {
+      const oldTip = PREVIOUS_RC_COMMIT;
+      const candidateA = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+      const candidateB = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+      const body = [
+        "Pointer-only desktop staging updater channel.",
+        "",
+        "Lineage-Recut-Applied: 2026-09-07T00:00:00.000Z",
+        "Recut-Applied-Id: 0.3-2",
+        "Recut-Applied-Version: 0.3.0-staging.9",
+        `Recut-Applied-Commit: ${candidateB}`,
+        "Recut-Applied-Tag: recut-applied/0.3-2",
+        "",
+        "Lineage-Recut: 2026-09-06T23:00:00.000Z",
+        "Recut-Id: 0.3-2",
+        "Recut-Series: 0.3",
+        "Recut-Branch: release/0.3",
+        `Recut-Old-Tip: ${candidateA}`,
+        `Recut-New-Tip: ${candidateB}`,
+        "Recut-Archive-Tag: recut/release/0.3-2",
+        `Recut-From: 0.3.0-staging.8 (${candidateA}) source release/0.3`,
+        "Recut-Prior-Epoch: 0.3.0-staging.8",
+        "Recut-Requester: later-test",
+        "Recut-Reason: advance the train again",
+        "",
+        "Lineage-Recut-Applied: 2026-09-06T00:00:00.000Z",
+        "Recut-Applied-Id: 0.3-1",
+        "Recut-Applied-Version: 0.3.0-staging.8",
+        `Recut-Applied-Commit: ${candidateA}`,
+        "Recut-Applied-Tag: recut-applied/0.3-1",
+        "",
+        "Lineage-Recut: 2026-09-05T23:00:00.000Z",
+        "Recut-Id: 0.3-1",
+        "Recut-Series: 0.3",
+        "Recut-Branch: release/0.3",
+        `Recut-Old-Tip: ${oldTip}`,
+        `Recut-New-Tip: ${candidateA}`,
+        "Recut-Archive-Tag: recut/release/0.3-1",
+        `Recut-From: 0.3.0-staging.7 (${oldTip}) source release/0.3`,
+        "Recut-Prior-Epoch: 0.3.0-staging.7",
+        "Recut-Requester: promotion-test",
+        "Recut-Reason: authorize candidate A"
+      ].join("\n");
+      const result = await releaseStatus({
+        repoRoot: root,
+        env: {},
+        now: NOW,
+        candidateVersion: "0.3.0-staging.8",
+        runner: statusRunner({
+          activeVersion: "0.3.0-staging.9",
+          activeCommit: candidateB,
+          activeSourceBranch: "release/0.3",
+          candidateTags: ["v0.3.0-staging.9", "v0.3.0-staging.8", "v0.3.0-staging.7"],
+          previousCommit: oldTip,
+          previousIsAncestor: 1,
+          activeIsAncestor: 1,
+          releaseBranchSha: candidateB,
+          productionTag: "v0.2.0",
+          channelBody: body,
+          historicalCandidates: {
+            "0.3.0-staging.8": {
+              commit: candidateA,
+              sourceBranch: "release/0.3",
+              publishedAt: new Date(NOW - 48 * 3_600_000).toISOString()
+            }
+          }
+        })
+      });
+
+      expect(result.lineage).toMatchObject({
+        relationship: "diverged",
+        valid: true,
+        authorizedByRecut: true,
+        recut: { recutId: "0.3-1" }
+      });
+      expect(result.promotion).toMatchObject({ allowed: true, base: candidateA });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   interface StatusFixture {
     activeVersion: string | null;
     activeCommit?: string | null;
@@ -2701,6 +2924,8 @@ describe("release status", () => {
     productionPublishedAt?: string;
     /** Ordered newest-first list of staging prereleases on the repo. */
     candidateTags?: string[];
+    /** Complete paginated release history when the first 100-entry page fills. */
+    allCandidateTags?: string[];
     previousCommit?: string | null;
     /** Result of `git merge-base --is-ancestor <previous> <active>`. */
     previousIsAncestor?: number;
@@ -2727,7 +2952,10 @@ describe("release status", () => {
       commit: string;
       sourceBranch: string;
       publishedAt: string;
+      releasePolicy?: string | null;
     }>;
+    /** Policy file contents at the active candidate commit; null means absent. */
+    releasePolicy?: string | null;
   }
 
   function statusRunner(fixture: StatusFixture, calls: CommandCall[] = []): CommandRunner {
@@ -2831,6 +3059,17 @@ describe("release status", () => {
             stderr: ""
           };
         }
+        if (command === "gh" && args[0] === "api" && args.includes("--paginate")) {
+          const tags = fixture.allCandidateTags ?? candidateTags;
+          return {
+            exitCode: 0,
+            stdout: JSON.stringify([tags.map((tag, index) => ({
+              tag_name: tag,
+              created_at: new Date(NOW - (index + 1) * 86_400_000).toISOString()
+            }))]),
+            stderr: ""
+          };
+        }
         if (command === "gh" && args[0] === "release" && args[1] === "view" && args[2] === "desktop-staging") {
           return { exitCode: 0, stdout: JSON.stringify({ body: fixture.channelBody ?? "" }), stderr: "" };
         }
@@ -2914,6 +3153,14 @@ describe("release status", () => {
         }
         if (key === "git rev-parse FETCH_HEAD^{commit}") {
           return { exitCode: 0, stdout: `${fixture.activeTagCommit ?? fetchedCandidateCommit ?? ""}\n`, stderr: "" };
+        }
+        if (command === "git" && ["cat-file", "show"].includes(args[0] ?? "") && args.at(-1)?.endsWith(":release-policy.json")) {
+          const revision = args.at(-1) ?? "";
+          const commit = revision.slice(0, -":release-policy.json".length);
+          const historical = Object.values(fixture.historicalCandidates ?? {}).find((entry) => entry.commit === commit);
+          const policy = historical ? historical.releasePolicy : fixture.releasePolicy;
+          if (policy === undefined || policy === null) return { exitCode: 1, stdout: "", stderr: "path does not exist" };
+          return { exitCode: 0, stdout: args[0] === "show" ? policy : "", stderr: "" };
         }
         if (command === "git" && args[0] === "log") {
           expect(args).toContain("--no-merges");
@@ -3016,6 +3263,93 @@ describe("release status", () => {
       expect(live.promotion.candidate?.version).toBe("1.2.4-staging.22");
       expect(live.promotion.soak).toMatchObject({ elapsedHours: 3, satisfied: false });
       expect(live.promotion.allowed).toBe(false);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("finds a retained historical candidate and its predecessor beyond the first 100 releases", async () => {
+    const root = await mkdtemp(join(tmpdir(), "kd-release-paginated-history-"));
+    try {
+      const firstPage = Array.from({ length: 100 }, (_, index) => `v1.2.4-staging.${122 - index}`);
+      const allCandidateTags = [...firstPage, "v1.2.4-staging.22", "v1.2.4-staging.21"];
+      const candidateA = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+      const calls: CommandCall[] = [];
+      const result = await releaseStatus({
+        repoRoot: root,
+        env: {},
+        now: NOW,
+        candidateVersion: "1.2.4-staging.22",
+        runner: statusRunner({
+          activeVersion: "1.2.4-staging.122",
+          activeCommit: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          activeSourceBranch: "main",
+          candidateTags: firstPage,
+          allCandidateTags,
+          previousCommit: PREVIOUS_RC_COMMIT,
+          productionTag: "v1.2.3",
+          existingProductionTags: ["1.2.3"],
+          historicalCandidates: {
+            "1.2.4-staging.22": {
+              commit: candidateA,
+              sourceBranch: "main",
+              publishedAt: new Date(NOW - 48 * 3_600_000).toISOString()
+            }
+          }
+        }, calls)
+      });
+
+      expect(result.lineage).toMatchObject({
+        relationship: "descendant",
+        previous: { version: "1.2.4-staging.21", tag: "v1.2.4-staging.21" },
+        valid: true
+      });
+      expect(result.promotion).toMatchObject({ allowed: true, base: candidateA });
+      expect(calls).toContainEqual(expect.objectContaining({
+        command: "gh",
+        args: ["api", "--paginate", "--slurp", "repos/jemdiggity/kanna/releases?per_page=100"]
+      }));
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    { checkoutHours: 1, candidateHours: 24, allowed: false },
+    { checkoutHours: 24, candidateHours: 1, allowed: true }
+  ])("uses historical candidate A's $candidateHours-hour policy when checkout policy is $checkoutHours hours", async ({ checkoutHours, candidateHours, allowed }) => {
+    const root = await mkdtemp(join(tmpdir(), "kd-release-historical-policy-"));
+    try {
+      writeFileSync(join(root, "release-policy.json"), JSON.stringify({ productionSoakHours: checkoutHours }));
+      const candidateA = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+      const result = await releaseStatus({
+        repoRoot: root,
+        env: {},
+        now: NOW,
+        candidateVersion: "1.2.4-staging.21",
+        runner: statusRunner({
+          activeVersion: "1.2.4-staging.22",
+          activeCommit: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          activeSourceBranch: "main",
+          activePublishedAt: new Date(NOW - 1 * 3_600_000).toISOString(),
+          candidateTags: ["v1.2.4-staging.22", "v1.2.4-staging.21", "v1.2.4-staging.20"],
+          previousCommit: PREVIOUS_RC_COMMIT,
+          productionTag: "v1.2.3",
+          existingProductionTags: ["1.2.3"],
+          historicalCandidates: {
+            "1.2.4-staging.21": {
+              commit: candidateA,
+              sourceBranch: "main",
+              publishedAt: new Date(NOW - 3 * 3_600_000).toISOString(),
+              releasePolicy: JSON.stringify({ productionSoakHours: candidateHours })
+            }
+          }
+        })
+      });
+
+      expect(result.policy.productionSoakHours).toBe(candidateHours);
+      expect(result.promotion.soak).toMatchObject({ requiredHours: candidateHours, elapsedHours: 3, satisfied: allowed });
+      expect(result.promotion.allowed).toBe(allowed);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -3287,15 +3621,15 @@ describe("release status", () => {
     }
   });
 
-  it("reads the soak window from the repository release policy", async () => {
+  it("reads the soak window from the selected candidate's release policy", async () => {
     const root = await mkdtemp(join(tmpdir(), "kd-release-"));
     try {
-      writeFileSync(join(root, "release-policy.json"), '{"productionSoakHours": 1}\n');
       const runner = statusRunner({
         activeVersion: "1.2.4-staging.3",
         activeSourceBranch: "main",
         activePublishedAt: new Date(NOW - 3 * 3_600_000).toISOString(),
-        productionTag: "v1.2.3"
+        productionTag: "v1.2.3",
+        releasePolicy: '{"productionSoakHours": 1}\n'
       });
 
       const result = await releaseStatus({ repoRoot: root, env: {}, runner, now: NOW });
