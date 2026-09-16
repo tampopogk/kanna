@@ -3,6 +3,8 @@ import { invoke } from "../invoke";
 import { type CloudAccessSnapshot, createRelayTunnelWebSocketFactory, StreamClient } from "@kanna/stream-client";
 import { createDesktopStreamFrameDecoder } from "./desktopStreamFrameDecoder";
 import type {
+  AgentTerminalArchive,
+  AgentTerminalAttempt,
   DesktopRemoteTaskClient,
   DesktopRemoteTaskViewClient,
   RemoteTaskDiffContent,
@@ -370,6 +372,24 @@ export function createDesktopRelayTerminalClient({
       assertSuccessfulTaskAction(response, "task graph read");
       return parseTaskGraphContent(response.body);
     },
+    async listAgentTerminalAttempts(options) {
+      const response = await clientForDesktop(options.desktopId).request(
+        "GET",
+        `/v1/tasks/${encodeURIComponent(options.taskId)}/terminal-attempts`,
+        null,
+      );
+      assertSuccessfulTaskAction(response, "agent history list");
+      return parseAgentTerminalAttempts(response.body);
+    },
+    async readAgentTerminalArchive(options) {
+      const response = await clientForDesktop(options.desktopId).request(
+        "GET",
+        `/v1/tasks/${encodeURIComponent(options.taskId)}/terminal-attempts/${encodeURIComponent(options.runId)}`,
+        null,
+      );
+      assertSuccessfulTaskAction(response, "agent history read");
+      return parseAgentTerminalArchive(response.body);
+    },
     async markTaskRead(options) {
       const response = await clientForDesktop(options.desktopId).request(
         "POST",
@@ -413,6 +433,72 @@ export function parseTaskDirectoryListing(value: unknown): RemoteTaskDirectoryLi
     offset: value.offset,
     nextOffset: value.nextOffset,
     totalEntries: value.totalEntries,
+  };
+}
+
+export function parseAgentTerminalAttempts(value: unknown): AgentTerminalAttempt[] {
+  if (!Array.isArray(value)) {
+    throw new Error("Remote agent history list response was malformed.");
+  }
+  return value.map((attempt) => {
+    if (
+      !isRecord(attempt)
+      || typeof attempt.id !== "string"
+      || typeof attempt.stage !== "string"
+      || typeof attempt.startedAt !== "string"
+      || !(typeof attempt.cwd === "string" || attempt.cwd === null)
+      || typeof attempt.archived !== "boolean"
+      || typeof attempt.recordedLaunch !== "boolean"
+      || !(typeof attempt.observedExitCode === "number" || attempt.observedExitCode === null)
+    ) {
+      throw new Error("Remote agent history list response was malformed.");
+    }
+    return {
+      id: attempt.id,
+      stage: attempt.stage,
+      startedAt: attempt.startedAt,
+      cwd: attempt.cwd,
+      archived: attempt.archived,
+      recordedLaunch: attempt.recordedLaunch,
+      observedExitCode: attempt.observedExitCode,
+    };
+  });
+}
+
+export function parseAgentTerminalArchive(value: unknown): AgentTerminalArchive | null {
+  if (value === null) return null;
+  if (!isRecord(value) || !isRecord(value.binding)) {
+    throw new Error("Remote agent history response was malformed.");
+  }
+  const snapshot = value.snapshot;
+  if (
+    typeof value.binding.task_id !== "string"
+    || typeof value.binding.spawned_run_id !== "string"
+    || typeof value.session_id !== "string"
+    || typeof value.cwd !== "string"
+    || !(typeof value.unavailable_reason === "string" || value.unavailable_reason === null)
+    || !(typeof value.observed_exit_code === "number" || value.observed_exit_code === null)
+    || !(snapshot === null || (
+      isRecord(snapshot)
+      && typeof snapshot.vt === "string"
+      && typeof snapshot.cols === "number"
+      && typeof snapshot.rows === "number"
+    ))
+  ) {
+    throw new Error("Remote agent history response was malformed.");
+  }
+  return {
+    binding: {
+      task_id: value.binding.task_id,
+      spawned_run_id: value.binding.spawned_run_id,
+    },
+    session_id: value.session_id,
+    cwd: value.cwd,
+    snapshot: snapshot === null
+      ? null
+      : { vt: snapshot.vt as string, cols: snapshot.cols as number, rows: snapshot.rows as number },
+    unavailable_reason: value.unavailable_reason,
+    observed_exit_code: value.observed_exit_code,
   };
 }
 

@@ -13,7 +13,13 @@ import type {
   ObserveDesktopRemoteCompanionOptions,
   RemoteTaskDirectoryListing,
 } from "./desktopRemoteTaskClient";
-import { parseTaskDiffContent, parseTaskDirectoryListing, parseTaskGraphContent } from "./desktopRelayTerminal";
+import {
+  parseAgentTerminalArchive,
+  parseAgentTerminalAttempts,
+  parseTaskDiffContent,
+  parseTaskDirectoryListing,
+  parseTaskGraphContent,
+} from "./desktopRelayTerminal";
 
 const companionGenerationProcessNonce = createCompanionGenerationProcessNonce();
 let companionGenerationCounter = 0;
@@ -482,6 +488,21 @@ export function createDesktopLanTerminalClient(): DesktopRemoteTaskViewClient {
         fromRef: options.request.fromRef,
       });
       return parseTaskGraphContent(response);
+    },
+    async listAgentTerminalAttempts(options) {
+      const response = await invoke("list_transfer_peer_task_terminal_attempts", {
+        peerId: options.desktopId,
+        taskId: options.taskId,
+      });
+      return parseAgentTerminalAttempts(response);
+    },
+    async readAgentTerminalArchive(options) {
+      const response = await invoke("read_transfer_peer_task_terminal_archive", {
+        peerId: options.desktopId,
+        taskId: options.taskId,
+        runId: options.runId,
+      });
+      return parseAgentTerminalArchive(response);
     },
     async markTaskRead(options) {
       await invoke("mark_transfer_peer_task_read", {

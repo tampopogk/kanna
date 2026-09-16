@@ -426,6 +426,34 @@ pub(super) async fn read_owner_task_graph(
     get_local_kanna_task_json(port, task_id, &suffix, "task graph").await
 }
 
+pub(super) async fn list_owner_task_terminal_attempts(
+    context: &ListenerContext,
+    task_id: &str,
+) -> Result<serde_json::Value, RuntimeError> {
+    let port = context
+        .kanna_server_port
+        .ok_or_else(|| RuntimeError::Protocol("Kanna server port is not configured".into()))?;
+    get_local_kanna_task_json(port, task_id, "terminal-attempts", "agent history list").await
+}
+
+pub(super) async fn read_owner_task_terminal_archive(
+    context: &ListenerContext,
+    task_id: &str,
+    run_id: &str,
+) -> Result<serde_json::Value, RuntimeError> {
+    let port = context
+        .kanna_server_port
+        .ok_or_else(|| RuntimeError::Protocol("Kanna server port is not configured".into()))?;
+    let encoded_run_id = encode_task_id_path_segment(run_id)?;
+    get_local_kanna_task_json(
+        port,
+        task_id,
+        &format!("terminal-attempts/{encoded_run_id}"),
+        "agent history archive",
+    )
+    .await
+}
+
 fn percent_encode_query_value(value: &str) -> String {
     let mut encoded = String::with_capacity(value.len());
     for byte in value.bytes() {

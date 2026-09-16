@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed } from "vue";
 import type { AgentTerminalAttempt } from "../services/desktopServerClient";
-const props = defineProps<{ attempts: AgentTerminalAttempt[]; selected: string; currentStage?: string }>();
+const props = defineProps<{ attempts: AgentTerminalAttempt[]; selected: string; currentStage?: string; historyStatus?: string }>();
 const emit = defineEmits<{ select: [id: string] }>();
 function selectorKey(event: KeyboardEvent) {
   // Native option navigation stays local; app shortcuts still cycle tabs.
@@ -22,6 +22,7 @@ const stage = computed(() => (props.selected ? props.attempts.find(attempt => at
       <option v-for="(attempt, index) in attempts" :key="attempt.id" :value="attempt.id">
         {{ attempt.stage }} · attempt {{ index + 1 }} · {{ attempt.startedAt }}{{ attempt.archived ? '' : ' · history unavailable' }}
       </option>
+      <option v-if="historyStatus" value="" disabled>{{ historyStatus }}</option>
     </select>
   </span>
 </template>

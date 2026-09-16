@@ -1,19 +1,27 @@
 <script setup lang="ts">
 import { ref, watch, onBeforeUnmount, nextTick } from "vue";
 import { readAgentTerminalArchive } from "../services/desktopServerClient";
+import type { AgentTerminalArchive } from "../services/desktopServerClient";
 import { renderTerminalArchive } from "../composables/renderTerminalArchive";
-const props = defineProps<{ taskId: string; attemptId: string }>();
+const props = defineProps<{
+  taskId: string;
+  attemptId: string;
+  sourceKey?: string;
+  loadArchive?: (attemptId: string) => Promise<AgentTerminalArchive | null>;
+}>();
 const body = ref<HTMLElement | null>(null);
 const output = ref<HTMLElement | null>(null);
 const text = ref("");
 const status = ref("Loading historical output…");
 let request = 0;
-watch(() => [props.taskId, props.attemptId], async ([task, attempt]) => {
+watch(() => [props.taskId, props.attemptId, props.sourceKey ?? ""] as const, async ([task, attempt]) => {
   const token = ++request;
   text.value = "";
   status.value = "Loading historical output…";
   try {
-    const archive = await readAgentTerminalArchive(task, attempt);
+    const archive = props.loadArchive
+      ? await props.loadArchive(attempt)
+      : await readAgentTerminalArchive(task, attempt);
     if (token !== request) return;
     if (!archive) { status.value = "Historical output unavailable — this attempt has no captured archive."; return; }
     if (archive.binding.task_id !== task || archive.binding.spawned_run_id !== attempt) throw new Error("Archive identity mismatch");

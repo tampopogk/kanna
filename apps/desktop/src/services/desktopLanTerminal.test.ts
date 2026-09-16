@@ -102,6 +102,38 @@ describe("createDesktopLanTerminalClient", () => {
     ).rejects.toThrow("LAN task file response was malformed.");
   });
 
+  it("reads agent attempts and an archive through the owning LAN peer", async () => {
+    vi.mocked(invoke)
+      .mockResolvedValueOnce([{
+        id: "run-1", stage: "review", startedAt: "today", cwd: "/repo",
+        archived: true, recordedLaunch: true, observedExitCode: 7,
+      }])
+      .mockResolvedValueOnce({
+        binding: { task_id: "task-1", spawned_run_id: "run-1" },
+        session_id: "task-1", cwd: "/repo",
+        snapshot: { vt: "captured", cols: 80, rows: 24 },
+        unavailable_reason: null, observed_exit_code: 7,
+      });
+    const client = createDesktopLanTerminalClient();
+
+    await expect(client.listAgentTerminalAttempts({
+      desktopId: "peer-primary", taskId: "task-1",
+    })).resolves.toHaveLength(1);
+    await expect(client.readAgentTerminalArchive({
+      desktopId: "peer-primary", taskId: "task-1", runId: "run-1",
+    })).resolves.toMatchObject({
+      binding: { task_id: "task-1", spawned_run_id: "run-1" },
+      observed_exit_code: 7,
+    });
+
+    expect(invoke).toHaveBeenNthCalledWith(1, "list_transfer_peer_task_terminal_attempts", {
+      peerId: "peer-primary", taskId: "task-1",
+    });
+    expect(invoke).toHaveBeenNthCalledWith(2, "read_transfer_peer_task_terminal_archive", {
+      peerId: "peer-primary", taskId: "task-1", runId: "run-1",
+    });
+  });
+
   it("reads paginated task directories and diffs through transfer sidecar commands", async () => {
     vi.mocked(invoke)
       .mockResolvedValueOnce({

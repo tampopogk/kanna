@@ -19,6 +19,8 @@ const fetchTaskDetailMock = vi.fn();
 const openTerminalEditorMock = vi.fn();
 const readTaskFileMock = vi.fn();
 const listTaskDirectoryMock = vi.fn();
+const listAgentTerminalAttemptsMock = vi.fn().mockResolvedValue([]);
+const readAgentTerminalArchiveMock = vi.fn().mockResolvedValue(null);
 
 const draft = {
   repo_id: "repo-1",
@@ -95,11 +97,11 @@ vi.mock("../../invoke", () => ({
 
 vi.mock("../../services/desktopServerClient", () => ({
   fetchDesktopTaskDetail: fetchTaskDetailMock,
-  listAgentTerminalAttempts: vi.fn().mockResolvedValue([]),
+  listAgentTerminalAttempts: listAgentTerminalAttemptsMock,
   openTerminalEditor: openTerminalEditorMock,
   readDesktopTaskFile: readTaskFileMock,
   listDesktopTaskDirectory: listTaskDirectoryMock,
-  readAgentTerminalArchive: vi.fn().mockResolvedValue(null),
+  readAgentTerminalArchive: readAgentTerminalArchiveMock,
 }));
 
 describe("MainPanel", () => {
@@ -110,6 +112,10 @@ describe("MainPanel", () => {
     openTerminalEditorMock.mockReset();
     readTaskFileMock.mockReset();
     listTaskDirectoryMock.mockReset();
+    listAgentTerminalAttemptsMock.mockReset();
+    listAgentTerminalAttemptsMock.mockResolvedValue([]);
+    readAgentTerminalArchiveMock.mockReset();
+    readAgentTerminalArchiveMock.mockResolvedValue(null);
     fetchTaskDetailMock.mockImplementation(async (taskId: string) => ({
       id: taskId,
       stage: "in progress",
@@ -1033,6 +1039,141 @@ describe("MainPanel", () => {
     await flushPromises();
     expect(fetchTaskDetailMock).toHaveBeenCalledWith("61237c15");
 
+    wrapper.unmount();
+  });
+
+  it("shows remote agent history from the canonical owner and returns Latest to the same inert live view", async () => {
+    const tabs = useMainTabs({ scopeKey: computed(() => "item:cloud:presentation") });
+    const remoteList = vi.fn().mockResolvedValue([{
+      id: "run-review-1", stage: "review", startedAt: "today", cwd: "/owner/repo",
+      archived: true, recordedLaunch: true, observedExitCode: 7,
+    }]);
+    const remoteRead = vi.fn().mockResolvedValue(null);
+    const spawn = vi.fn();
+    const recover = vi.fn();
+    const { default: MainPanel } = await import("../MainPanel.vue");
+    const wrapper = mount(MainPanel, {
+      props: {
+        uiSlot: readySlot(durableTask({ id: "cloud:presentation", stage: "review" })),
+        cloudTask: true,
+        cloudTerminalRef: {
+          ownerDesktopId: "desktop-owner",
+          ownerLocalTaskId: "owner-task",
+          transport: "lan",
+        },
+        spawnPtySession: spawn,
+        recoverTaskSession: recover,
+        hasRepos: true,
+        views: {
+          tabs,
+          modals: {
+            activeTaskViewIsRemote: computed(() => true),
+            activeWorktreePath: computed(() => ""),
+            activeRemoteTaskRoute: computed(() => null),
+            listRemoteAgentTerminalAttempts: remoteList,
+            readRemoteAgentTerminalArchive: remoteRead,
+          },
+          store: { items: [], worktreePaths: {} },
+          preferences: {},
+        } as unknown as MainTabViewsController,
+      },
+      global: {
+        plugins: [createI18n({ legacy: false, locale: "en", messages: { en } })],
+        mocks: { $t: (key: string) => key },
+        stubs: {
+          TaskHeader: true,
+          AgentHistoryView: {
+            props: ["taskId", "attemptId", "sourceKey", "loadArchive"],
+            template: '<button data-testid="history-stub" :data-task-id="taskId" :data-attempt-id="attemptId" @click="loadArchive(attemptId)" />',
+          },
+          CloudTerminalCache: {
+            props: ["activeTerminal", "focused", "visible", "discardKey"],
+            template: '<div data-testid="remote-live" :data-visible="String(visible)" />',
+          },
+          TerminalTabs: true,
+        },
+      },
+    });
+    await flushPromises();
+
+    expect(remoteList).toHaveBeenCalledExactlyOnceWith({
+      desktopId: "desktop-owner", taskId: "owner-task", transport: "lan",
+    });
+    const selector = wrapper.get('select[aria-label="Agent stage output"]');
+    expect(selector.findAll("option").map(option => option.attributes("value")))
+      .toEqual(["", "run-review-1"]);
+    const live = wrapper.get('[data-testid="remote-live"]').element;
+
+    await selector.setValue("run-review-1");
+    expect(wrapper.get('[data-testid="history-stub"]').attributes("data-task-id")).toBe("owner-task");
+    expect(wrapper.get('[data-testid="remote-live"]').attributes("data-visible")).toBe("false");
+    await wrapper.get('[data-testid="history-stub"]').trigger("click");
+    expect(remoteRead).toHaveBeenCalledExactlyOnceWith({
+      desktopId: "desktop-owner", taskId: "owner-task", transport: "lan",
+    }, "run-review-1");
+
+    await wrapper.setProps({
+      uiSlot: readySlot(durableTask({ id: "cloud:presentation", stage: "pr" })),
+    });
+    await flushPromises();
+    expect(remoteList).toHaveBeenCalledTimes(2);
+    expect(wrapper.get('select[aria-label="Agent stage output"]').element)
+      .toHaveProperty("value", "run-review-1");
+
+    await wrapper.get('select[aria-label="Agent stage output"]').setValue("");
+    expect(wrapper.get('[data-testid="remote-live"]').element).toBe(live);
+    expect(wrapper.get('[data-testid="remote-live"]').attributes("data-visible")).toBe("true");
+    expect(spawn).not.toHaveBeenCalled();
+    expect(recover).not.toHaveBeenCalled();
+    wrapper.unmount();
+  });
+
+  it("discards stale remote attempt lists when task ownership changes", async () => {
+    let resolveFirst!: (value: unknown) => void;
+    const first = new Promise(resolve => { resolveFirst = resolve; });
+    const remoteList = vi.fn((route: { taskId: string }) => route.taskId === "task-a" ? first : Promise.resolve([{
+        id: "run-new", stage: "build", startedAt: "now", cwd: "/new",
+        archived: true, recordedLaunch: true, observedExitCode: 0,
+      }]));
+    const tabs = useMainTabs({ scopeKey: computed(() => "remote") });
+    const { default: MainPanel } = await import("../MainPanel.vue");
+    const wrapper = mount(MainPanel, {
+      props: {
+        uiSlot: readySlot(durableTask({ id: "cloud:first" })), cloudTask: true, hasRepos: true,
+        cloudTerminalRef: { ownerDesktopId: "owner-a", ownerLocalTaskId: "task-a", transport: "cloud" },
+        views: {
+          tabs,
+          modals: {
+            activeTaskViewIsRemote: computed(() => true), activeWorktreePath: computed(() => ""),
+            listRemoteAgentTerminalAttempts: remoteList,
+            readRemoteAgentTerminalArchive: vi.fn(),
+          },
+          store: { items: [], worktreePaths: {} }, preferences: {},
+        } as unknown as MainTabViewsController,
+      },
+      global: {
+        plugins: [createI18n({ legacy: false, locale: "en", messages: { en } })],
+        mocks: { $t: (key: string) => key },
+        stubs: { TaskHeader: true, TerminalTabs: true, CloudTerminalCache: true },
+      },
+    });
+    await flushPromises();
+    await wrapper.setProps({
+      uiSlot: readySlot(durableTask({ id: "cloud:second" })),
+      cloudTerminalRef: { ownerDesktopId: "owner-b", ownerLocalTaskId: "task-b", transport: "cloud" },
+    });
+    await flushPromises();
+    resolveFirst([{
+      id: "run-stale", stage: "review", startedAt: "before", cwd: "/old",
+      archived: true, recordedLaunch: true, observedExitCode: 7,
+    }]);
+    await flushPromises();
+
+    expect((wrapper.vm as unknown as { agentAttempts: Array<{ id: string }> }).agentAttempts)
+      .toEqual([expect.objectContaining({ id: "run-new" })]);
+    expect(remoteList).toHaveBeenLastCalledWith({
+      desktopId: "owner-b", taskId: "task-b", transport: "cloud",
+    });
     wrapper.unmount();
   });
 

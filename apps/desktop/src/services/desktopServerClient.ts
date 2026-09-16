@@ -7,6 +7,7 @@ import type { SessionRecoveryState } from "../composables/sessionRecoveryState";
 import type { TransferImportSummary } from "../stores/transferImportSummary";
 import { invoke } from "../invoke";
 import { localControlAuthHeaders } from "./localControlCredential";
+import type { AgentTerminalArchive, AgentTerminalAttempt } from "./desktopRemoteTaskClient";
 
 export interface DesktopSnapshotEntry {
   repo: Repo;
@@ -1419,23 +1420,7 @@ export async function replaceDesktopTaskWorkflow(
   return response.workflowDefinition;
 }
 
-export interface AgentTerminalAttempt {
-  id: string;
-  stage: string;
-  startedAt: string;
-  cwd: string | null;
-  archived: boolean;
-  recordedLaunch: boolean;
-  observedExitCode: number | null;
-}
-export interface AgentTerminalArchive {
-  binding: { task_id: string; spawned_run_id: string };
-  session_id: string;
-  cwd: string;
-  snapshot: { vt: string; cols: number; rows: number } | null;
-  unavailable_reason: string | null;
-  observed_exit_code: number | null;
-}
+export type { AgentTerminalArchive, AgentTerminalAttempt } from "./desktopRemoteTaskClient";
 export function listAgentTerminalAttempts(taskId: string): Promise<AgentTerminalAttempt[]> {
   return requestJson(`/v1/tasks/${encodeURIComponent(taskId)}/terminal-attempts`);
 }

@@ -660,6 +660,51 @@ fn remote_task_directory_and_diff_messages_roundtrip() {
 }
 
 #[test]
+fn remote_agent_history_messages_roundtrip_with_canonical_task_and_run_ids() {
+    assert_roundtrip(ControlRequest::ListPeerTaskTerminalAttempts {
+        request_id: "req-attempts-control".into(),
+        target_peer_id: "peer-owner".into(),
+        task_id: "task-owner".into(),
+    });
+    assert_roundtrip(ControlResponse::ListPeerTaskTerminalAttempts {
+        request_id: "req-attempts-control".into(),
+        attempts: json!([{ "id": "run-1", "stage": "review" }]),
+    });
+    assert_roundtrip(PeerRequest::ListTaskTerminalAttempts {
+        request_id: "req-attempts-peer".into(),
+        requester_peer_id: "peer-secondary".into(),
+        task_id: "task-owner".into(),
+        sealed_payload: Some("sealed-attempts".into()),
+    });
+    assert_roundtrip(PeerResponse::ListTaskTerminalAttempts {
+        request_id: "req-attempts-peer".into(),
+        attempts: json!([{ "id": "run-1", "stage": "review" }]),
+    });
+
+    assert_roundtrip(ControlRequest::ReadPeerTaskTerminalArchive {
+        request_id: "req-archive-control".into(),
+        target_peer_id: "peer-owner".into(),
+        task_id: "task-owner".into(),
+        run_id: "run-1".into(),
+    });
+    assert_roundtrip(ControlResponse::ReadPeerTaskTerminalArchive {
+        request_id: "req-archive-control".into(),
+        archive: json!({ "binding": { "task_id": "task-owner", "spawned_run_id": "run-1" } }),
+    });
+    assert_roundtrip(PeerRequest::ReadTaskTerminalArchive {
+        request_id: "req-archive-peer".into(),
+        requester_peer_id: "peer-secondary".into(),
+        task_id: "task-owner".into(),
+        run_id: "run-1".into(),
+        sealed_payload: Some("sealed-archive".into()),
+    });
+    assert_roundtrip(PeerResponse::ReadTaskTerminalArchive {
+        request_id: "req-archive-peer".into(),
+        archive: json!({ "binding": { "task_id": "task-owner", "spawned_run_id": "run-1" } }),
+    });
+}
+
+#[test]
 fn remote_task_mark_read_messages_use_expected_wire_names() {
     let control_request = ControlRequest::MarkPeerTaskRead {
         request_id: "req-mark-read-control".into(),

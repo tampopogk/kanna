@@ -1743,6 +1743,88 @@ impl TransferRuntime {
         }
     }
 
+    pub async fn list_peer_task_terminal_attempts(
+        &self,
+        target_peer_id: &str,
+        task_id: &str,
+    ) -> Result<Value, RuntimeError> {
+        let target_peer = self.find_peer(target_peer_id).await?;
+        self.ensure_peer_is_durably_trusted(&target_peer.peer_id, &target_peer.public_key)?;
+        let request_id = self.next_request_id("list-task-terminal-attempts");
+        let sealed_payload = self
+            .seal_authenticated_peer_request(
+                &target_peer,
+                "list_task_terminal_attempts",
+                &request_id,
+                serde_json::json!({ "task_id": task_id }),
+            )
+            .await?;
+        let response = self
+            .send_peer_request(
+                &target_peer,
+                PeerRequest::ListTaskTerminalAttempts {
+                    request_id: request_id.clone(),
+                    requester_peer_id: self.config.peer_id.clone(),
+                    task_id: task_id.to_owned(),
+                    sealed_payload: Some(sealed_payload),
+                },
+            )
+            .await?;
+        match response {
+            PeerResponse::ListTaskTerminalAttempts {
+                request_id: response_request_id,
+                attempts,
+            } if response_request_id == request_id => Ok(attempts),
+            PeerResponse::Error { message, .. } => Err(RuntimeError::Protocol(message)),
+            other => Err(unexpected_peer_response(
+                "list-task-terminal-attempts",
+                &other,
+            )),
+        }
+    }
+
+    pub async fn read_peer_task_terminal_archive(
+        &self,
+        target_peer_id: &str,
+        task_id: &str,
+        run_id: &str,
+    ) -> Result<Value, RuntimeError> {
+        let target_peer = self.find_peer(target_peer_id).await?;
+        self.ensure_peer_is_durably_trusted(&target_peer.peer_id, &target_peer.public_key)?;
+        let request_id = self.next_request_id("read-task-terminal-archive");
+        let sealed_payload = self
+            .seal_authenticated_peer_request(
+                &target_peer,
+                "read_task_terminal_archive",
+                &request_id,
+                serde_json::json!({ "task_id": task_id, "run_id": run_id }),
+            )
+            .await?;
+        let response = self
+            .send_peer_request(
+                &target_peer,
+                PeerRequest::ReadTaskTerminalArchive {
+                    request_id: request_id.clone(),
+                    requester_peer_id: self.config.peer_id.clone(),
+                    task_id: task_id.to_owned(),
+                    run_id: run_id.to_owned(),
+                    sealed_payload: Some(sealed_payload),
+                },
+            )
+            .await?;
+        match response {
+            PeerResponse::ReadTaskTerminalArchive {
+                request_id: response_request_id,
+                archive,
+            } if response_request_id == request_id => Ok(archive),
+            PeerResponse::Error { message, .. } => Err(RuntimeError::Protocol(message)),
+            other => Err(unexpected_peer_response(
+                "read-task-terminal-archive",
+                &other,
+            )),
+        }
+    }
+
     pub async fn mark_peer_task_read(
         &self,
         target_peer_id: &str,
