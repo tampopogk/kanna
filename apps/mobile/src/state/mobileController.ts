@@ -21,6 +21,7 @@ import type {
   TaskAgentSubscription,
   TaskCompanionSubscription,
   TaskTerminalInputKind,
+  TaskTerminalInputProvenance,
   TaskTerminalStreamEvent,
   TaskTerminalSubscription
 } from "../lib/api/client";
@@ -138,7 +139,8 @@ export interface MobileController {
   sendTaskTerminalInput(
     taskId: string,
     dataB64: string,
-    kind: TaskTerminalInputKind
+    kind: TaskTerminalInputKind,
+    provenance: TaskTerminalInputProvenance
   ): void;
   activateTaskTerminalViewer(taskId: string): void;
   resizeTaskTerminal(taskId: string, cols: number, rows: number): void;
@@ -3813,11 +3815,11 @@ export function createMobileController(
       }
     },
 
-    sendTaskTerminalInput(taskId, dataB64, kind) {
+    sendTaskTerminalInput(taskId, dataB64, kind, provenance) {
       if (!dataB64 || activeTaskTerminal?.taskId !== taskId) {
         return;
       }
-      if (kind !== "control") claimActiveTaskTerminal();
+      if (provenance === "user") claimActiveTaskTerminal();
       activeTaskTerminal.subscription.sendInput?.(
         dataB64,
         kind === "submission",

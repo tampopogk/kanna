@@ -890,10 +890,15 @@ function TaskDetailRoute({
           ? controller.sendTaskInput(durableTaskId, input, attachment)
           : controller.sendTaskInput(durableTaskId, input);
       }}
-      onSendTerminalInput={(dataB64, kind) => {
+      onSendTerminalInput={(dataB64, kind, provenance) => {
         const durableTaskId = resolveDurableTaskId(state, routeTaskId);
         if (durableTaskId) {
-          controller.sendTaskTerminalInput(durableTaskId, dataB64, kind);
+          controller.sendTaskTerminalInput(
+            durableTaskId,
+            dataB64,
+            kind,
+            provenance
+          );
         }
       }}
       onTerminalViewerInteraction={() => {

@@ -54,6 +54,7 @@ import type { TaskInputSendOutcome } from "../state/mobileController";
 import type { TerminalOutputLike } from "../state/terminalOutputBuffer";
 import type {
   TaskTerminalInputKind,
+  TaskTerminalInputProvenance,
   TaskTerminalInputUnavailableReason,
 } from "../lib/api/client";
 import type {
@@ -167,7 +168,11 @@ interface TaskScreenProps {
   ): Promise<TaskInputSendOutcome> | void;
   /** Injected by the attachment tests; production uses the Expo picker. */
   pickAttachment?(source: ImageAttachmentSource): Promise<PreparedImageAttachment | null>;
-  onSendTerminalInput?(dataB64: string, kind: TaskTerminalInputKind): void;
+  onSendTerminalInput?(
+    dataB64: string,
+    kind: TaskTerminalInputKind,
+    provenance: TaskTerminalInputProvenance
+  ): void;
   /** The terminal view scrolled near the top of its loaded buffer. */
   onRequestTerminalScrollback?(): void;
   onTerminalViewerInteraction?(): void;
@@ -870,8 +875,11 @@ export function TaskScreen({
   ]);
 
   const sendTerminalInput = useCallback(
-    (dataB64: string, kind: TaskTerminalInputKind) =>
-      onSendTerminalInput?.(dataB64, kind),
+    (
+      dataB64: string,
+      kind: TaskTerminalInputKind,
+      provenance: TaskTerminalInputProvenance
+    ) => onSendTerminalInput?.(dataB64, kind, provenance),
     [onSendTerminalInput]
   );
   const handleTerminalCapacityChange = useCallback(
@@ -1446,7 +1454,9 @@ export function TaskScreen({
                   accessibilityRole="button"
                   accessibilityState={{ disabled: terminalKeysDisabledReason !== null }}
                   disabled={terminalKeysDisabledReason !== null}
-                  onPress={() => onSendTerminalInput?.(key.dataB64, key.kind)}
+                  onPress={() =>
+                    onSendTerminalInput?.(key.dataB64, key.kind, "user")
+                  }
                   style={({ pressed }) => [
                     styles.terminalKey,
                     terminalKeysDisabledReason ? styles.terminalKeyDisabled : null,

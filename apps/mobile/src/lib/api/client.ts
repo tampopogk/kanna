@@ -41,6 +41,8 @@ import type {
 } from "./types";
 
 export type TaskTerminalInputKind = "draft" | "submission" | "control";
+/** Positive user intent is separate from how the daemon classifies the bytes. */
+export type TaskTerminalInputProvenance = "user" | "passive";
 
 export type TaskTerminalInputUnavailableReason =
   | "connecting"

@@ -7190,7 +7190,7 @@ describe("createMobileController", () => {
     );
   });
 
-  it("claims before deliberate terminal input but keeps control replies passive", async () => {
+  it("claims before deliberate terminal input regardless of its wire kind", async () => {
     const store = createSessionStore();
     const client = createClientMock();
     const controller = createMobileController(client, store);
@@ -7203,15 +7203,42 @@ describe("createMobileController", () => {
     subscription.activate.mockClear();
     subscription.sendInput.mockClear();
 
-    controller.sendTaskTerminalInput("task-1", "eA==", "draft");
+    controller.sendTaskTerminalInput("task-1", "eA==", "draft", "user");
     expect(subscription.activate).toHaveBeenCalledOnce();
     expect(subscription.activate.mock.invocationCallOrder[0]).toBeLessThan(
       subscription.sendInput.mock.invocationCallOrder[0] ?? 0
     );
 
     subscription.activate.mockClear();
-    controller.sendTaskTerminalInput("task-1", "Gw==", "control");
+    subscription.sendInput.mockClear();
+    controller.sendTaskTerminalInput("task-1", "G1tE", "control", "user");
+    expect(subscription.activate).toHaveBeenCalledOnce();
+    expect(subscription.activate.mock.invocationCallOrder[0]).toBeLessThan(
+      subscription.sendInput.mock.invocationCallOrder[0] ?? 0
+    );
+  });
+
+  it("keeps parser-generated control replies passive", async () => {
+    const store = createSessionStore();
+    const client = createClientMock();
+    const controller = createMobileController(client, store);
+    const subscription = client.__terminalStream.subscription;
+
+    await controller.bootstrap();
+    controller.openTask("task-1");
+    controller.setTaskDetailVisible(true);
+    controller.resizeTaskTerminal("task-1", 42, 18);
+    subscription.activate.mockClear();
+    subscription.sendInput.mockClear();
+
+    controller.sendTaskTerminalInput(
+      "task-1",
+      "G1tE",
+      "control",
+      "passive"
+    );
     expect(subscription.activate).not.toHaveBeenCalled();
+    expect(subscription.sendInput).toHaveBeenCalledWith("G1tE", false, true);
   });
 
   it("replaces stale replay output with an authoritative reconnect snapshot", async () => {
@@ -9182,7 +9209,12 @@ describe("createMobileController", () => {
 
     await controller.bootstrap();
     controller.openTask("task-1");
-    controller.sendTaskTerminalInput("task-1", "G1s8NjU7MTsxTQ==", "control");
+    controller.sendTaskTerminalInput(
+      "task-1",
+      "G1s8NjU7MTsxTQ==",
+      "control",
+      "passive"
+    );
 
     expect(client.__terminalStream.subscription.sendInput).toHaveBeenCalledWith(
       "G1s8NjU7MTsxTQ==",
@@ -9198,8 +9230,13 @@ describe("createMobileController", () => {
 
     await controller.bootstrap();
     controller.openTask("task-1");
-    controller.sendTaskTerminalInput("task-other", "G1s8NjU7MTsxTQ==", "control");
-    controller.sendTaskTerminalInput("task-1", "", "control");
+    controller.sendTaskTerminalInput(
+      "task-other",
+      "G1s8NjU7MTsxTQ==",
+      "control",
+      "passive"
+    );
+    controller.sendTaskTerminalInput("task-1", "", "control", "passive");
 
     expect(client.__terminalStream.subscription.sendInput).not.toHaveBeenCalled();
   });

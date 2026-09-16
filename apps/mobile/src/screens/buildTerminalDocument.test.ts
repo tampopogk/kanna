@@ -115,6 +115,9 @@ class StubTerminal {
   private selectionListeners: Array<() => void> = [];
   private dataListeners: Array<(data: string) => void> = [];
   private binaryListeners: Array<(data: string) => void> = [];
+  private keyListeners: Array<(
+    event: { key: string; domEvent: KeyboardEvent }
+  ) => void> = [];
 
   private createBuffer(
     type: "normal" | "alternate",
@@ -235,6 +238,19 @@ class StubTerminal {
     };
   }
 
+  onKey(
+    listener: (event: { key: string; domEvent: KeyboardEvent }) => void
+  ): { dispose(): void } {
+    this.keyListeners.push(listener);
+    return {
+      dispose: () => {
+        this.keyListeners = this.keyListeners.filter(
+          (candidate) => candidate !== listener
+        );
+      }
+    };
+  }
+
   onBinary(listener: (data: string) => void): { dispose(): void } {
     this.binaryListeners.push(listener);
     return {
@@ -248,6 +264,14 @@ class StubTerminal {
 
   emitData(data: string): void {
     for (const listener of this.dataListeners) listener(data);
+  }
+
+  emitKey(data: string, isTrusted = true): void {
+    const domEvent = { isTrusted } as KeyboardEvent;
+    for (const listener of this.keyListeners) {
+      listener({ key: data, domEvent });
+    }
+    this.emitData(data);
   }
 
   emitBinary(data: string): void {
@@ -301,6 +325,10 @@ class StubTerminal {
     this.selection = "";
     for (const listener of this.selectionListeners) listener();
   }
+
+  focus(): void {}
+
+  blur(): void {}
 
   resize(cols: number, rows: number): void {
     this.cols = cols;
@@ -1685,6 +1713,51 @@ describe("buildTerminalDocument", () => {
     window.__replaceTerminalState({ chunksB64: [b64("fresh session")] });
 
     expect(viewport.scrollTop).toBe(156);
+  });
+
+  it("marks accepted direct cursor keys as user input but keeps control replies passive", () => {
+    const { terminal, window, messages } = createExecutedTerminalDocument();
+    const directInputWindow = window as unknown as {
+      __setTerminalDirectInput(enabled: boolean): void;
+    };
+    directInputWindow.__setTerminalDirectInput(true);
+    messages.length = 0;
+
+    terminal.emitKey("\u001b[D");
+    terminal.emitKey("\u001b[C");
+    terminal.emitData("\u001b[D");
+    terminal.emitKey("\u001b[C", false);
+
+    expect(
+      messages.map((message) => JSON.parse(message)).filter(
+        (message) => message.type === "terminal-input"
+      )
+    ).toEqual([
+      {
+        type: "terminal-input",
+        dataB64: "G1tE",
+        kind: "control",
+        provenance: "user"
+      },
+      {
+        type: "terminal-input",
+        dataB64: "G1tD",
+        kind: "control",
+        provenance: "user"
+      },
+      {
+        type: "terminal-input",
+        dataB64: "G1tE",
+        kind: "control",
+        provenance: "passive"
+      },
+      {
+        type: "terminal-input",
+        dataB64: "G1tD",
+        kind: "control",
+        provenance: "passive"
+      }
+    ]);
   });
 
   it("ignores terminal data emitted outside an alt-screen scroll dispatch", () => {

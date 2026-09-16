@@ -17,7 +17,10 @@ import type {
   TaskTerminalOutputSource,
   TaskTerminalStatus
 } from "../state/sessionStore";
-import type { TaskTerminalInputKind } from "../lib/api/client";
+import type {
+  TaskTerminalInputKind,
+  TaskTerminalInputProvenance
+} from "../lib/api/client";
 import {
   createTerminalOutput,
   EMPTY_TERMINAL_OUTPUT,
@@ -72,7 +75,11 @@ interface TerminalWebViewProps {
   onConsolePress?: () => void;
   onMentionedFilesChange?: (history: TerminalFileMentionHistory) => void;
   onOpenFile?: (path: string, line?: number) => void;
-  onTerminalInput?: (dataB64: string, kind: TaskTerminalInputKind) => void;
+  onTerminalInput?: (
+    dataB64: string,
+    kind: TaskTerminalInputKind,
+    provenance: TaskTerminalInputProvenance
+  ) => void;
   /** What this phone can display at its current zoom, measured inside the
    * page. The daemon owns the grid; this is only what the viewer proposes. */
   onCapacityChange?: (cols: number, rows: number) => void;
@@ -521,6 +528,7 @@ export function TerminalWebViewComponent({
       text?: unknown;
       dataB64?: unknown;
       kind?: unknown;
+      provenance?: unknown;
       contentRevision?: unknown;
       cols?: unknown;
       rows?: unknown;
@@ -587,9 +595,14 @@ export function TerminalWebViewComponent({
         payload.dataB64.length <= MAX_TERMINAL_INPUT_LENGTH &&
         (payload.kind === "draft" ||
           payload.kind === "submission" ||
-          payload.kind === "control")
+          payload.kind === "control") &&
+        (payload.provenance === "user" || payload.provenance === "passive")
       ) {
-        onTerminalInput?.(payload.dataB64, payload.kind);
+        onTerminalInput?.(
+          payload.dataB64,
+          payload.kind,
+          payload.provenance
+        );
       }
       return;
     }

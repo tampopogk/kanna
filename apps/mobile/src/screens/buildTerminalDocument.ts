@@ -198,6 +198,7 @@ export function buildTerminalDocument({
       let selectionMode = false;
       let altScreenScrollCapture = null;
       let directInputEnabled = false;
+      let pendingUserKeyData = null;
       let lastScrollbackRequestAt = 0;
       const terminalFileMentionHistory = new Map();
       const terminalFileMentionOccurrences = {
@@ -249,12 +250,24 @@ export function buildTerminalDocument({
           type: "terminal-scrollback-request"
         }));
       }
+      // onData also carries parser/programmatic replies. onKey is the xterm
+      // signal that the matching data came from an accepted keyboard event,
+      // so keep that provenance separate from the PTY wire kind.
+      term.onKey(({ key, domEvent }) => {
+        if (directInputEnabled && domEvent.isTrusted) {
+          pendingUserKeyData = key;
+        }
+      });
       term.onData((data) => {
         if (altScreenScrollCapture) {
           altScreenScrollCapture.push(new TextEncoder().encode(data));
           return;
         }
         if (directInputEnabled) {
+          const provenance = pendingUserKeyData === data
+            ? "user"
+            : "passive";
+          pendingUserKeyData = null;
           const cursorFinal = data.charAt(data.length - 1);
           const isHorizontalCursorControl =
             data.charCodeAt(0) === 27 && ["C", "D"].includes(cursorFinal);
@@ -263,7 +276,11 @@ export function buildTerminalDocument({
             : isHorizontalCursorControl
               ? "control"
               : "draft";
-          postTerminalInput([new TextEncoder().encode(data)], kind);
+          postTerminalInput(
+            [new TextEncoder().encode(data)],
+            kind,
+            provenance
+          );
         }
       });
       term.onBinary((data) => {
@@ -280,7 +297,7 @@ export function buildTerminalDocument({
           for (let index = 0; index < data.length; index += 1) {
             bytes[index] = data.charCodeAt(index) & 0xff;
           }
-          postTerminalInput([bytes], "draft");
+          postTerminalInput([bytes], "draft", "passive");
         }
       });
       term.onSelectionChange(() => {
@@ -1351,10 +1368,10 @@ export function buildTerminalDocument({
         } finally {
           altScreenScrollCapture = null;
         }
-        postTerminalInput(captured, "control");
+        postTerminalInput(captured, "control", "passive");
       }
 
-      function postTerminalInput(chunks, kind) {
+      function postTerminalInput(chunks, kind, provenance) {
         if (!window.ReactNativeWebView || !window.ReactNativeWebView.postMessage) {
           return;
         }
@@ -1374,12 +1391,16 @@ export function buildTerminalDocument({
         window.ReactNativeWebView.postMessage(JSON.stringify({
           type: "terminal-input",
           dataB64: btoa(binary),
-          kind
+          kind,
+          provenance
         }));
       }
 
       window.__setTerminalDirectInput = function setTerminalDirectInput(enabled) {
         directInputEnabled = enabled === true;
+        if (!directInputEnabled) {
+          pendingUserKeyData = null;
+        }
         if (directInputEnabled) {
           term.focus();
         } else {
