@@ -2,6 +2,15 @@
 
 ## Result and attribution
 
+**Implementation verdict: success; ready for the existing single-reviewer
+workflow.** The demonstrated production defects are corrected with focused
+regressions and the bounded92a cloud acceptance pass. No concrete remaining
+original-scope source obligation is established. Native LAN live acceptance
+remains unresolved, not passed. It does not make a new signed dev launcher an
+implementation prerequisite; release/final-candidate acceptance remains separate.
+The earlier stage-failure classification based on that inferred prerequisite is
+superseded by this verdict.
+
 Implemented corrections for native macOS discovery, LAN provenance, cloud
 snapshot delivery, selected-route propagation, relay setup buffering, fresh
 Codex session export, and native TLS response-tail delivery. Focused regressions reproduce the defects and verify the
@@ -304,16 +313,17 @@ proved permission denial or a proved socket implementation defect.
 [Apple TN3179](https://developer.apple.com/documentation/technotes/tn3179-understanding-local-network-privacy)
 explains that helper access follows the responsible app, Terminal/SSH tools are
 exempt, and reliable identity tracking requires Apple-issued signing. Therefore
-CLI TCP success is not a native-app permission check. **Next:** acceptance must
-identify the exact isolated app's responsible code and Local Network permission,
-preferably with an attributable signed isolated development bundle, then make
-one LAN protocol request from its owned sidecar. Capture a policy/path diagnostic
+CLI TCP success is not a native-app permission check. One possible bounded
+follow-up is to identify the exact isolated app's responsible code and Local
+Network permission, then make one LAN protocol request from its owned sidecar.
+An attributable signed isolated development bundle is a diagnostic option, not
+a demonstrated requirement for fixing this incident. Capture a policy/path diagnostic
 if the permitted app still fails. Do not toggle a generic installed Kanna entry,
 reset system privacy, bypass trust, or rewrite sockets based only on errno65.
 The current evidence cannot conclusively classify this as an environment fault.
 Bounded kd inspection found no signed isolated desktop-bundle launch option:
 `dev up` launches the task-scoped dev binary. Establishing an attributable isolated
-identity is therefore still needed for the permission check. No ad-hoc wrapper,
+identity attribution remains unestablished for that proposed permission check. No ad-hoc wrapper,
 privacy reset, or operator-app test was used.
 
 The remaining reproducible boundary is native MBP explicit-LAN protocol setup,
@@ -330,12 +340,14 @@ use shared `build.kanna` or `build.kanna.staging` release identities. Canonical
 `build.desktop` only runs `pnpm turbo build`; the canonical full-bundle update
 E2E script explicitly uses `--no-sign`. None supplies a signed, task-attributed
 isolated desktop launch/cleanup contract preserving the fixture's ports, roots,
-account and native title. That is the exact missing tooling for the proposed
-responsible-app permission check. A distinct signed identity alone would still
-require observing its actual permission and owned-sidecar request; it would not
-retroactively prove the cause of the old errno65. Both allocations stay stopped
-until this bounded path exists. No speculative socket or packaging change was
-added to the transfer corrections.
+account and native title. This limits that particular proposed diagnostic path;
+it does not establish a missing production feature or a new implementation gate.
+A distinct signed identity alone would still require observing its actual
+permission and owned-sidecar request; it would not retroactively prove the cause
+of the old errno65. Both allocations are stopped after completed cleanup. No new
+launcher, speculative socket or packaging change is part of this task. Review
+should assess the actual corrections and evidence; release acceptance retains
+the unresolved LAN case.
 
 ## Focused verification
 
