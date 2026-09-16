@@ -17,16 +17,23 @@ use config::{
     server_config_matches_runtime, server_config_path_for_app_data_dir,
     server_lock_path_for_config, try_claim_server_lock, write_server_config,
 };
-use kanna_server_process::stop_server_on_port;
+use kanna_server_process::{
+    server_pids_on_port, server_process_exists, stop_server_on_port, ServerProcessExitWatcher,
+    ServerProcessIdentity,
+};
 use process::find_sidecar;
 
 const LOCAL_SERVER_HOST: &str = "127.0.0.1";
 const DEFAULT_LOCAL_SERVER_PORT: u16 = kanna_runtime_defaults::PRODUCTION_MOBILE_SERVER_PORT;
+// Bound one complete /v1/status exchange, including response headers and body.
+// Without this, a listener that accepts the connection but never completes its
+// response can hold the desktop startup banner forever.
+const STATUS_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 // kanna-server can take a while to bind and register when the machine is under
-// heavy load (e.g. an in-progress iOS/Rust build during `kd mobile run`). Poll
-// generously and only give up early if the process actually exits — a healthy
-// server must never be killed for being slow to answer /v1/status.
-const STATUS_POLL_ATTEMPTS: usize = 240;
+// heavy load (e.g. an in-progress iOS/Rust build during `kd mobile run`). Keep
+// the existing generous startup budget while making it a wall-clock deadline:
+// each failed request must consume part of this budget instead of extending it.
+const STATUS_STARTUP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 const STATUS_POLL_DELAY_MS: u64 = 250;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -99,8 +106,11 @@ pub struct MobileServerManager {
     /// server took longer to come up than the frontend's fetch budget.
     start_gate: Arc<Mutex<()>>,
     server_lock: Arc<Mutex<Option<File>>>,
+    server_identity: Arc<Mutex<Option<ServerProcessIdentity>>>,
     server_pid_tx: watch::Sender<Option<u32>>,
     client: reqwest::Client,
+    status_request_timeout: std::time::Duration,
+    status_startup_timeout: std::time::Duration,
 }
 
 #[derive(Debug)]
@@ -179,8 +189,11 @@ impl MobileServerManager {
             })),
             start_gate: Arc::new(Mutex::new(())),
             server_lock: Arc::new(Mutex::new(None)),
+            server_identity: Arc::new(Mutex::new(None)),
             server_pid_tx,
             client: reqwest::Client::new(),
+            status_request_timeout: STATUS_REQUEST_TIMEOUT,
+            status_startup_timeout: STATUS_STARTUP_TIMEOUT,
         }
     }
 
@@ -222,26 +235,86 @@ impl MobileServerManager {
         };
 
         let expected_desktop_id = desktop_id(&config_path)?;
-        let existing_status = self.fetch_status(&api_base_url).await.ok();
+        let server_bin = find_sidecar("kanna-server")?;
+        let existing_status = match self.fetch_status(&api_base_url).await {
+            Ok(status) => Some(status),
+            Err(status_error) => {
+                let listener_pids =
+                    server_pids_on_port(local_server_port_for_cloud_env(cloud_env)).await?;
+                if !listener_pids.is_empty() {
+                    return Err(format!(
+                        "kanna-server listener pid(s) {} did not complete /v1/status; refusing to start a duplicate: {status_error}",
+                        listener_pids
+                            .iter()
+                            .map(ToString::to_string)
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ));
+                }
+                None
+            }
+        };
         if let Some(status) = existing_status {
             ensure_server_belongs_to_desktop(&status, &expected_desktop_id)?;
-            if is_current_server_status(
-                &status,
-                &expected_desktop_id,
-                current_server_version(),
-                server_environment(cloud_env),
-            ) && server_config_matches_runtime(&config_path, &expected_desktop_id, cloud_env)
-            {
-                adopt_native_desktop(&native_control_daemon_dir()).await?;
-                let server_pid = listening_server_pid(cloud_env).await?;
-                let mut state = self.inner.lock().await;
-                state.started = true;
-                state.status = status.state;
-                state.desktop_name = status.desktop_name;
-                self.server_pid_tx.send_replace(Some(server_pid));
-                return Ok(());
+            let is_current =
+                is_current_server_status(
+                    &status,
+                    &expected_desktop_id,
+                    current_server_version(),
+                    server_environment(cloud_env),
+                ) && server_config_matches_runtime(&config_path, &expected_desktop_id, cloud_env);
+            if is_current {
+                match listening_server_pid(cloud_env).await {
+                    Ok(server_pid) => match ServerProcessIdentity::pin(server_pid) {
+                        Ok(identity) => {
+                            identity.require_executable(&server_bin)?;
+                            // Register before adoption. Adoption can immediately trigger
+                            // server work against the new daemon generation, so the old
+                            // desktop's server must already have an exit observer here.
+                            let exit_watcher =
+                                ServerProcessExitWatcher::register(identity.clone())?;
+                            match adopt_native_desktop(&native_control_daemon_dir()).await {
+                                Ok(()) if identity.is_alive() => {
+                                    *self.server_identity.lock().await = Some(identity.clone());
+                                    let mut state = self.inner.lock().await;
+                                    state.started = true;
+                                    state.status = status.state;
+                                    state.desktop_name = status.desktop_name;
+                                    self.server_pid_tx.send_replace(Some(server_pid));
+                                    drop(state);
+                                    self.observe_adopted_server(
+                                        exit_watcher,
+                                        identity,
+                                        desktop_name,
+                                    );
+                                    return Ok(());
+                                }
+                                Err(error) if identity.is_alive() => return Err(error),
+                                _ => {}
+                            }
+                            eprintln!(
+                                "[mobile] adopted kanna-server pid {server_pid} exited during desktop handoff; starting a replacement"
+                            );
+                        }
+                        Err(error) if server_process_exists(server_pid) => return Err(error),
+                        Err(_) => {
+                            eprintln!(
+                                "[mobile] kanna-server exited while its adopted process identity was being pinned; starting a replacement"
+                            );
+                        }
+                    },
+                    Err(error) => {
+                        let listener_pids =
+                            server_pids_on_port(local_server_port_for_cloud_env(cloud_env)).await?;
+                        if !listener_pids.is_empty() {
+                            return Err(error);
+                        }
+                        eprintln!("[mobile] kanna-server listener exited before desktop adoption; starting a replacement");
+                    }
+                }
+            } else {
+                stop_server_on_port(local_server_port_for_cloud_env(cloud_env)).await?;
             }
-            stop_server_on_port(local_server_port_for_cloud_env(cloud_env)).await?;
         }
 
         let lock_path = server_lock_path_for_config(&config_path)?;
@@ -252,32 +325,19 @@ impl MobileServerManager {
             write_server_config(&state)?;
             state.started = true;
         }
+        *self.server_identity.lock().await = None;
         *self.server_lock.lock().await = Some(claimed_lock);
-
-        let server_bin = match find_sidecar("kanna-server") {
-            Ok(path) => path,
-            Err(err) => {
-                let mut state = self.inner.lock().await;
-                state.started = false;
-                state.status = "error".to_string();
-                *self.server_lock.lock().await = None;
-                return Err(err);
-            }
-        };
 
         let desktop_executable = std::env::current_exe()
             .map_err(|error| format!("failed to resolve desktop executable: {error}"))?;
         let transfer_identity_env = match resolve_transfer_identity_env(&config_path) {
             Ok(env) => env,
             Err(error) => {
-                let mut state = self.inner.lock().await;
-                state.started = false;
-                state.status = "error".to_string();
-                *self.server_lock.lock().await = None;
+                self.record_start_failure().await;
                 return Err(error);
             }
         };
-        let mut child = match Command::new(server_bin)
+        let mut child = match Command::new(&server_bin)
             .envs(server_spawn_env(
                 &config_path,
                 &desktop_executable,
@@ -289,12 +349,9 @@ impl MobileServerManager {
             .spawn()
         {
             Ok(child) => child,
-            Err(err) => {
-                let mut state = self.inner.lock().await;
-                state.started = false;
-                state.status = "error".to_string();
-                *self.server_lock.lock().await = None;
-                return Err(format!("failed to spawn kanna-server: {}", err));
+            Err(error) => {
+                self.record_start_failure().await;
+                return Err(format!("failed to spawn kanna-server: {error}"));
             }
         };
 
@@ -303,59 +360,176 @@ impl MobileServerManager {
             .ok_or_else(|| "spawned kanna-server has no process id".to_string())?;
         let status = match self.wait_for_status(&api_base_url, &mut child).await {
             Ok(status) => status,
-            Err(err) => {
+            Err(error) => {
                 let _ = child.kill().await;
                 let _ = child.wait().await;
-                let mut state = self.inner.lock().await;
-                state.started = false;
-                state.status = "error".to_string();
-                *self.server_lock.lock().await = None;
-                return Err(err);
+                self.record_start_failure().await;
+                return Err(error);
             }
         };
         if let Err(error) = adopt_native_desktop(&native_control_daemon_dir()).await {
             let _ = child.kill().await;
             let _ = child.wait().await;
-            let mut state = self.inner.lock().await;
-            state.started = false;
-            state.status = "error".to_string();
-            *self.server_lock.lock().await = None;
+            self.record_start_failure().await;
             return Err(error);
         }
 
+        let listening_pid = match listening_server_pid(cloud_env).await {
+            Ok(pid) => pid,
+            Err(error) => {
+                let _ = child.kill().await;
+                let _ = child.wait().await;
+                self.record_start_failure().await;
+                return Err(error);
+            }
+        };
+        if listening_pid != server_pid {
+            let _ = child.kill().await;
+            let _ = child.wait().await;
+            self.record_start_failure().await;
+            return Err(format!(
+                "spawned kanna-server pid {server_pid} answered through unexpected listener pid {listening_pid}"
+            ));
+        }
+        let identity = match ServerProcessIdentity::pin(server_pid) {
+            Ok(identity) => identity,
+            Err(error) => {
+                let _ = child.kill().await;
+                let _ = child.wait().await;
+                self.record_start_failure().await;
+                return Err(error);
+            }
+        };
         {
             let mut state = self.inner.lock().await;
             state.status = status.state.clone();
             state.desktop_name = status.desktop_name.clone();
         }
+        *self.server_identity.lock().await = Some(identity.clone());
         self.server_pid_tx.send_replace(Some(server_pid));
+        self.observe_owned_server(child, identity, desktop_name);
 
-        let state_handle = self.inner.clone();
-        let lock_handle = self.server_lock.clone();
-        let server_pid_tx = self.server_pid_tx.clone();
+        Ok(())
+    }
+
+    async fn record_start_failure(&self) {
+        *self.server_identity.lock().await = None;
+        let mut state = self.inner.lock().await;
+        state.started = false;
+        state.status = "error".to_string();
+        *self.server_lock.lock().await = None;
+    }
+
+    fn observe_adopted_server(
+        &self,
+        watcher: ServerProcessExitWatcher,
+        identity: ServerProcessIdentity,
+        desktop_name: String,
+    ) {
+        let manager = self.clone();
         tauri::async_runtime::spawn(async move {
-            let exit = child.wait().await;
-            server_pid_tx.send_replace(None);
-            let mut state = state_handle.lock().await;
-            state.started = false;
-            state.desktop_name = desktop_name;
-            *lock_handle.lock().await = None;
-            match exit {
-                Ok(status) if status.success() => {
-                    state.status = "stopped".to_string();
+            match watcher.wait().await {
+                Ok(_) => {
+                    manager
+                        .recover_after_server_exit(
+                            identity,
+                            desktop_name,
+                            "adopted kanna-server exited".to_string(),
+                        )
+                        .await;
                 }
-                Ok(status) => {
-                    state.status = "error".to_string();
-                    eprintln!("[mobile] kanna-server exited with {}", status);
-                }
-                Err(err) => {
-                    state.status = "error".to_string();
-                    eprintln!("[mobile] failed to wait for kanna-server: {}", err);
+                Err(error) => {
+                    eprintln!("[mobile] adopted kanna-server exit observer failed: {error}");
                 }
             }
         });
+    }
 
-        Ok(())
+    fn observe_owned_server(
+        &self,
+        mut child: tokio::process::Child,
+        identity: ServerProcessIdentity,
+        desktop_name: String,
+    ) {
+        let manager = self.clone();
+        tauri::async_runtime::spawn(async move {
+            let description = match child.wait().await {
+                Ok(status) => format!("kanna-server exited with {status}"),
+                Err(error) => format!("failed to reap kanna-server: {error}"),
+            };
+            manager
+                .record_owned_server_exit(identity, desktop_name, description)
+                .await;
+        });
+    }
+
+    async fn record_owned_server_exit(
+        &self,
+        identity: ServerProcessIdentity,
+        desktop_name: String,
+        description: String,
+    ) {
+        let is_current = {
+            let mut current_identity = self.server_identity.lock().await;
+            if current_identity.as_ref() != Some(&identity) {
+                false
+            } else {
+                *current_identity = None;
+                true
+            }
+        };
+        if !is_current {
+            return;
+        }
+        let mut state = self.inner.lock().await;
+        state.started = false;
+        state.status = "error".to_string();
+        state.desktop_name = desktop_name;
+        self.server_pid_tx.send_replace(None);
+        drop(state);
+        *self.server_lock.lock().await = None;
+        eprintln!("[mobile] {description}");
+    }
+
+    async fn recover_after_server_exit(
+        &self,
+        identity: ServerProcessIdentity,
+        desktop_name: String,
+        description: String,
+    ) {
+        let should_recover = {
+            let mut current_identity = self.server_identity.lock().await;
+            if current_identity.as_ref() != Some(&identity) {
+                false
+            } else {
+                *current_identity = None;
+                true
+            }
+        };
+        if should_recover {
+            let mut state = self.inner.lock().await;
+            state.started = false;
+            state.status = "recovering".to_string();
+            state.desktop_name = desktop_name;
+            self.server_pid_tx.send_replace(None);
+        }
+        if !should_recover {
+            return;
+        }
+        *self.server_lock.lock().await = None;
+        eprintln!("[mobile] {description}; starting a verified replacement");
+        if let Err(error) = self.start().await {
+            let mut state = self.inner.lock().await;
+            state.status = "error".to_string();
+            eprintln!("[mobile] kanna-server recovery failed after {description}: {error}");
+        }
+    }
+
+    pub(crate) async fn ensure_responsive(&self) -> Result<(), String> {
+        self.start().await?;
+        self.snapshot().await.map(|_| ()).map_err(|error| {
+            format!("kanna-server readiness check failed after startup/adoption: {error}")
+        })
     }
 
     pub async fn snapshot(&self) -> Result<MobileServerStatus, String> {
@@ -435,39 +609,74 @@ impl MobileServerManager {
         child: &mut tokio::process::Child,
     ) -> Result<MobileServerStatus, String> {
         let mut last_error = "kanna-server did not become ready".to_string();
-        for _ in 0..STATUS_POLL_ATTEMPTS {
+        let deadline = tokio::time::Instant::now() + self.status_startup_timeout;
+        loop {
             // If the process already exited it genuinely failed to start; stop
             // polling instead of waiting out the full budget on a dead server.
             if let Ok(Some(exit)) = child.try_wait() {
                 return Err(format!("kanna-server exited during startup with {}", exit));
             }
-            match self.fetch_status(api_base_url).await {
+            let now = tokio::time::Instant::now();
+            if now >= deadline {
+                return Err(format!(
+                    "kanna-server did not complete startup status within {} seconds: {last_error}",
+                    self.status_startup_timeout.as_secs()
+                ));
+            }
+            let request_timeout = std::cmp::min(
+                self.status_request_timeout,
+                deadline.saturating_duration_since(now),
+            );
+            match self
+                .fetch_status_with_timeout(api_base_url, request_timeout)
+                .await
+            {
                 Ok(status) => return Ok(status),
                 Err(err) => {
                     last_error = err;
-                    tokio::time::sleep(std::time::Duration::from_millis(STATUS_POLL_DELAY_MS))
-                        .await;
+                    tokio::time::sleep_until(std::cmp::min(
+                        deadline,
+                        tokio::time::Instant::now()
+                            + std::time::Duration::from_millis(STATUS_POLL_DELAY_MS),
+                    ))
+                    .await;
                 }
             }
         }
-
-        Err(last_error)
     }
 
     async fn fetch_status(&self, api_base_url: &str) -> Result<MobileServerStatus, String> {
-        let response = self
-            .client
-            .get(format!("{}/v1/status", api_base_url))
-            .send()
+        self.fetch_status_with_timeout(api_base_url, self.status_request_timeout)
             .await
-            .map_err(|e| format!("failed to fetch mobile server status: {}", e))?;
-        let response = response
-            .error_for_status()
-            .map_err(|e| format!("mobile server status request failed: {}", e))?;
-        response
-            .json::<MobileServerStatus>()
-            .await
-            .map_err(|e| format!("failed to decode mobile server status: {}", e))
+    }
+
+    async fn fetch_status_with_timeout(
+        &self,
+        api_base_url: &str,
+        timeout: std::time::Duration,
+    ) -> Result<MobileServerStatus, String> {
+        tokio::time::timeout(timeout, async {
+            let response = self
+                .client
+                .get(format!("{}/v1/status", api_base_url))
+                .send()
+                .await
+                .map_err(|e| format!("failed to fetch mobile server status: {}", e))?;
+            let response = response
+                .error_for_status()
+                .map_err(|e| format!("mobile server status request failed: {}", e))?;
+            response
+                .json::<MobileServerStatus>()
+                .await
+                .map_err(|e| format!("failed to decode mobile server status: {}", e))
+        })
+        .await
+        .map_err(|_| {
+            format!(
+                "mobile server status response did not complete within {} ms",
+                timeout.as_millis()
+            )
+        })?
     }
 }
 
@@ -1979,7 +2188,7 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     #[allow(clippy::await_holding_lock)]
-    async fn manager_reuses_current_server_with_same_desktop_id() {
+    async fn manager_recovers_when_an_adopted_current_server_exits() {
         let _guard = env_lock().lock().expect("env lock should not be poisoned");
         let root = unique_test_root("reuse-current");
         let port = free_loopback_port();
@@ -2007,6 +2216,9 @@ mod tests {
             .expect("current server config should be written");
         let mut daemon = start_test_kanna_daemon(&daemon_dir).await;
         let mut existing_server = start_test_kanna_server(&existing_config_path, port).await;
+        let adopted_pid = existing_server
+            .id()
+            .expect("adopted server should have a process id");
 
         manager
             .start()
@@ -2035,8 +2247,33 @@ mod tests {
         existing_server
             .kill()
             .await
-            .expect("cleanup should stop server");
+            .expect("fixture should stop the adopted server");
         let _ = existing_server.wait().await;
+        let mut server_pid = manager.server_pid_receiver();
+        let replacement_pid = tokio::time::timeout(Duration::from_secs(15), async {
+            loop {
+                if let Some(pid) = *server_pid.borrow_and_update() {
+                    if pid != adopted_pid {
+                        break pid;
+                    }
+                }
+                server_pid
+                    .changed()
+                    .await
+                    .expect("server identity channel should stay open");
+            }
+        })
+        .await
+        .expect("manager should recover an adopted server exit without another desktop restart");
+        assert_ne!(replacement_pid, adopted_pid);
+        manager
+            .snapshot()
+            .await
+            .expect("recovered server should answer the status API");
+
+        stop_server_on_port(port)
+            .await
+            .expect("cleanup should stop replacement server");
         daemon
             .kill()
             .await
@@ -2046,7 +2283,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(root);
     }
 
-    /// Subprocess fixture for `manager_adopts_server_after_original_desktop_exits`.
+    /// Subprocess fixture for
+    /// `manager_preserves_sessions_and_recovers_server_after_desktop_restart`.
     /// It makes the server's pinned parent a short-lived process with the same
     /// executable path as the replacement test process.
     #[tokio::test(flavor = "current_thread")]
@@ -2085,7 +2323,7 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     #[allow(clippy::await_holding_lock)]
-    async fn manager_adopts_server_after_original_desktop_exits() {
+    async fn manager_preserves_sessions_and_recovers_server_after_desktop_restart() {
         let _guard = env_lock().lock().expect("env lock should not be poisoned");
         let root = unique_test_root("adopt-after-desktop-restart");
         let port = free_loopback_port();
@@ -2198,9 +2436,41 @@ mod tests {
             }),
         )
         .await;
+
+        // The inherited server remains authoritative across both the desktop
+        // restart and daemon handoff above. If it then exits, this desktop's
+        // adopted-process observer must replace that exact process without
+        // requiring another desktop restart or disturbing the transferred
+        // sessions.
+        let mut server_pid_updates = manager.server_pid_receiver();
+        assert_eq!(
+            unsafe { libc::kill(server_pid as libc::pid_t, libc::SIGTERM) },
+            0
+        );
+        let recovered_server_pid = tokio::time::timeout(Duration::from_secs(15), async {
+            loop {
+                if let Some(pid) = *server_pid_updates.borrow_and_update() {
+                    if pid != server_pid {
+                        break pid;
+                    }
+                }
+                server_pid_updates
+                    .changed()
+                    .await
+                    .expect("server identity channel should stay open");
+            }
+        })
+        .await
+        .expect("desktop should replace the adopted server after daemon handoff");
+        assert_ne!(recovered_server_pid, server_pid);
+        manager
+            .snapshot()
+            .await
+            .expect("replacement server should answer after adopted-server recovery");
+
         stop_server_on_port(port)
             .await
-            .expect("cleanup should stop server");
+            .expect("cleanup should stop replacement server");
         replacement_daemon
             .kill()
             .await
@@ -2473,6 +2743,132 @@ mod tests {
         assert!(error.contains("kanna-server exited during startup"));
         assert!(error.contains("exit status: 7"));
         let _ = child.wait().await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn readiness_reaps_a_child_with_a_stalled_status_body_after_daemon_is_ready() {
+        let _guard = env_lock().lock().expect("env lock should not be poisoned");
+        let root = unique_test_root("stalled-readiness-child");
+        let sidecar_dir = root.join("sidecars");
+        let app_data_dir = root.join("app-data");
+        let db_path = root.join("kanna-test.db");
+        let daemon_dir = root.join("daemon");
+        let child_pid_path = root.join("child.pid");
+        let headers_sent_path = root.join("headers-sent");
+        let port = free_loopback_port();
+        std::fs::create_dir_all(&sidecar_dir).expect("fake sidecar directory should be created");
+        let sidecar = sidecar_dir.join("kanna-server");
+        std::fs::write(
+            &sidecar,
+            r#"#!/usr/bin/env python3
+import os
+import socket
+import time
+
+port = int(os.environ["KANNA_MOBILE_SERVER_PORT"])
+with open(os.environ["KANNA_TEST_CHILD_PID_PATH"], "w") as file:
+    file.write(str(os.getpid()))
+server = socket.socket()
+server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+server.bind(("127.0.0.1", port))
+server.listen(4)
+connection, _ = server.accept()
+connection.recv(4096)
+connection.sendall(b"HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: 1024\r\nconnection: keep-alive\r\n\r\n{")
+with open(os.environ["KANNA_TEST_STALLED_HEADERS_PATH"], "w") as file:
+    file.write("sent")
+time.sleep(30)
+"#,
+        )
+        .expect("fake sidecar should be written");
+        std::fs::set_permissions(&sidecar, std::fs::Permissions::from_mode(0o755))
+            .expect("fake sidecar should be executable");
+        unsafe {
+            set_env_var("KANNA_MOBILE_SERVER_PORT", &port.to_string());
+            set_env_var("KANNA_TRANSFER_PORT", &port.to_string());
+            set_env_var("KANNA_DB_PATH", &db_path.to_string_lossy());
+            set_env_var("KANNA_DAEMON_DIR", &daemon_dir.to_string_lossy());
+            set_env_var("KANNA_TEST_SIDECAR_DIR", &sidecar_dir.to_string_lossy());
+            set_env_var(
+                "KANNA_TEST_CHILD_PID_PATH",
+                &child_pid_path.to_string_lossy(),
+            );
+            set_env_var(
+                "KANNA_TEST_STALLED_HEADERS_PATH",
+                &headers_sent_path.to_string_lossy(),
+            );
+            unset_env_var("KANNA_DB_NAME");
+            unset_env_var("KANNA_RELAY_URL");
+            unset_env_var("KANNA_RELAY_PORT");
+        }
+
+        let mut manager = MobileServerManager::new(app_data_dir);
+        manager.status_request_timeout = Duration::from_millis(150);
+        manager.status_startup_timeout = Duration::from_secs(1);
+        let server_pid_updates = manager.server_pid_receiver();
+
+        // Match ensure_desktop_ready's ordering: daemon handoff is complete
+        // before this call owns a fresh-server startup attempt.
+        let daemon_ready = async { Ok::<(), String>(()) }.await;
+        daemon_ready.expect("daemon should already be ready");
+        let started_at = tokio::time::Instant::now();
+        let error = manager
+            .ensure_responsive()
+            .await
+            .expect_err("stalled status body should fail readiness");
+
+        assert!(
+            started_at.elapsed() < Duration::from_secs(3),
+            "readiness must respect the complete-response deadline"
+        );
+        assert!(
+            error.contains("did not complete startup status within 1 seconds"),
+            "unexpected readiness error: {error}"
+        );
+        assert!(
+            headers_sent_path.exists(),
+            "regression must stall after headers so the body deadline is exercised"
+        );
+        let child_pid = std::fs::read_to_string(&child_pid_path)
+            .expect("fake sidecar should publish its pid")
+            .parse::<u32>()
+            .expect("fake sidecar pid should be numeric");
+        assert!(
+            !kanna_server_process::server_process_exists(child_pid),
+            "timed-out startup child {child_pid} must be killed and reaped"
+        );
+        assert!(
+            manager.start_gate.try_lock().is_ok(),
+            "readiness timeout must release the start lifecycle gate"
+        );
+        assert!(manager.inner.try_lock().is_ok());
+        assert!(manager.server_identity.try_lock().is_ok());
+        assert!(manager.server_lock.try_lock().is_ok());
+        assert!(manager.server_identity.lock().await.is_none());
+        assert!(manager.server_lock.lock().await.is_none());
+        assert_eq!(*server_pid_updates.borrow(), None);
+        assert!(
+            !server_pid_updates.has_changed().unwrap(),
+            "readiness timeout must not publish a replacement server"
+        );
+        let state = manager.inner.lock().await;
+        assert!(!state.started);
+        assert_eq!(state.status, "error");
+        drop(state);
+        assert!(
+            kanna_server_process::server_pids_on_port(port)
+                .await
+                .expect("test port ownership should be inspectable")
+                .is_empty(),
+            "timed-out startup must not leave a listener or duplicate server"
+        );
+
+        cleanup_process_test_env();
+        unsafe {
+            unset_env_var("KANNA_TEST_CHILD_PID_PATH");
+            unset_env_var("KANNA_TEST_STALLED_HEADERS_PATH");
+        }
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

@@ -8,10 +8,9 @@ import StartupScreen from "./components/StartupScreen.vue";
  * server-backed read this window performs — its saved window settings —
  * happens inside `main.ts` while nothing is on screen yet.
  *
- * Its phases name only work this window is actually waiting on. Nothing here
- * observes the daemon, migrations, authentication or the relay: those neither
- * define nor gate local workspace readiness, and claiming them would be
- * describing a boot sequence rather than reporting one.
+ * Its phases name only work this window is actually waiting on. Native
+ * readiness covers daemon handoff plus the responsive, authorized local
+ * server; authentication and relay work remain outside this gate.
  */
 export type StartupPhase = "preparing" | "services" | "restoring" | "ready" | "failed";
 
@@ -58,6 +57,18 @@ export interface CreateStartupScreenOptions {
   /** Where to mount the screen. Omitted in tests and in any window that has no
    * startup host element, which leaves the controller headless. */
   target?: Element | null;
+}
+
+/** Keep a fatal startup screen actionable by naming the failed native phase
+ * or recovery action, while retaining the localized summary first. */
+export function describeStartupFailure(summary: string, cause: unknown): string {
+  const detail = cause instanceof Error
+    ? cause.message.trim()
+    : typeof cause === "string"
+      ? cause.trim()
+      : "";
+  if (!detail || detail === summary || summary.includes(detail)) return summary;
+  return `${summary} ${detail}`;
 }
 
 export function createStartupScreen(

@@ -6,14 +6,18 @@ import i18n from "../i18n";
 import { invoke } from "../invoke";
 import { listen, listenCurrentWebviewWindow } from "../listen";
 import type { useKannaStore } from "../stores/kanna";
-import type { StartupController } from "../startup";
+import { describeStartupFailure, type StartupController } from "../startup";
 import { isTauri } from "../tauri-mock";
 import {
   normalizeAppThemePreference,
   normalizeCodeThemePreference,
 } from "../theme/theme";
 import { normalizeAgentExecutionType } from "../stores/agentExecutionType";
-import { getDesktopSetting } from "../services/desktopServerClient";
+import {
+  ensureDesktopReady,
+  getDesktopSetting,
+  hasConfirmedDesktopReadiness,
+} from "../services/desktopServerClient";
 import {
   parsePairingCompletedEvent,
   parsePairingRequestedEvent,
@@ -332,7 +336,8 @@ export function useAppLifecycle({
         finishWindowMembershipInitialization();
         fatalInitializationError.value =
           "Native window-close protection is unavailable. Restart Kanna and try again.";
-        startup.fail(i18n.global.t("startup.failedCloseProtection"), e);
+        const summary = i18n.global.t("startup.failedCloseProtection");
+        startup.fail(describeStartupFailure(summary, e), e);
         console.error("[App] native window close-request listener registration failed:", e);
         return;
       }
@@ -347,6 +352,11 @@ export function useAppLifecycle({
     // usable" actually means. A rejection anywhere in it is a visible startup
     // failure rather than an unhandled rejection behind a blank window.
     try {
+      if (!hasConfirmedDesktopReadiness()) {
+        startup.enterPhase("services");
+        await ensureDesktopReady();
+      }
+      startup.enterPhase("restoring");
       try {
         await windowWorkspace.initialize();
       } finally {
@@ -555,7 +565,10 @@ export function useAppLifecycle({
       initializeDesktopLanTaskSync();
     } catch (error: unknown) {
       console.error("[App] startup initialization failed:", error);
-      startup.fail(i18n.global.t("startup.failedRestore"), error);
+      const summary = i18n.global.t(
+        startup.phase.value === "services" ? "startup.failedServices" : "startup.failedRestore",
+      );
+      startup.fail(describeStartupFailure(summary, error), error);
       return;
     }
 

@@ -25,7 +25,10 @@ import {
 } from "./windowWorkspace";
 import type { DesktopCloudSnapshot } from "./services/desktopCloudTaskIndex";
 import { DesktopCloudCredentialConflictError } from "./services/desktopCloudCredentialConflict";
-import { updateDesktopServerClientHandlersForTests } from "./services/desktopServerClient";
+import {
+  setDesktopReadinessConfirmedForTests,
+  updateDesktopServerClientHandlersForTests,
+} from "./services/desktopServerClient";
 import { createStartupScreen, type StartupController } from "./startup";
 
 /**
@@ -1280,6 +1283,7 @@ describe("App", () => {
     dbMock.execute.mockReset();
     dbMock.execute.mockResolvedValue({ rowsAffected: 0 });
     updateDesktopServerClientHandlersForTests({
+      ensureDesktopReady: async () => {},
       ensureMobileServer: async () => {},
       fetchRepoKannaDefinitions: async () => ({
         revision: "remote-rev",
@@ -1325,6 +1329,9 @@ describe("App", () => {
         return true;
       },
     });
+    // `main.ts` crosses native readiness before mounting App.vue. Tests that
+    // exercise that gate explicitly reset this to false below.
+    setDesktopReadinessConfirmedForTests(true);
     invokeMock.mockClear();
     toastInfoMock.mockClear();
     toastWarningMock.mockClear();
@@ -1490,7 +1497,7 @@ describe("App", () => {
     const wrapper = await mountApp(SidebarWithRepoStub);
 
     expect(startup.active.value).toBe(true);
-    expect(startup.phase.value).toBe("preparing");
+    expect(startup.phase.value).toBe("restoring");
     expect(wrapper.get(".app").attributes("inert")).toBeDefined();
     expect(wrapper.get(".app").attributes("aria-hidden")).toBe("true");
     // `inert` does not stop the window-level capture listener, so the shortcut
@@ -1504,6 +1511,60 @@ describe("App", () => {
     expect(wrapper.get(".app").attributes("inert")).toBeUndefined();
     expect(capturedShortcutsEnabled?.()).toBe(true);
 
+    wrapper.unmount();
+  });
+
+  it("keeps the startup screen until daemon/server readiness and the task snapshot are both ready", async () => {
+    const runtimeReady = createDeferred<void>();
+    const snapshotReady = createDeferred<void>();
+    updateDesktopServerClientHandlersForTests({
+      ensureDesktopReady: () => runtimeReady.promise,
+    });
+    setDesktopReadinessConfirmedForTests(false);
+    store.init.mockImplementationOnce(async () => snapshotReady.promise);
+
+    const wrapper = await mountApp(SidebarWithRepoStub);
+
+    expect(startup.phase.value).toBe("services");
+    expect(startup.active.value).toBe(true);
+    expect(store.init).not.toHaveBeenCalled();
+    expect(wrapper.get(".app").attributes("inert")).toBeDefined();
+
+    runtimeReady.resolve(undefined);
+    await waitForCondition(() => store.init.mock.calls.length === 1, 40);
+
+    expect(startup.phase.value).toBe("restoring");
+    expect(startup.active.value).toBe(true);
+    expect(wrapper.get(".app").attributes("inert")).toBeDefined();
+
+    snapshotReady.resolve(undefined);
+    await waitForCondition(() => !startup.active.value, 40);
+
+    expect(startup.phase.value).toBe("ready");
+    expect(wrapper.get(".app").attributes("inert")).toBeUndefined();
+
+    wrapper.unmount();
+  });
+
+  it("leaves the failed service phase and recovery action visible", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    updateDesktopServerClientHandlersForTests({
+      ensureDesktopReady: async () => {
+        throw new Error("kanna-server recovery failed after adopted server exit");
+      },
+    });
+    setDesktopReadinessConfirmedForTests(false);
+
+    const wrapper = await mountApp(SidebarWithRepoStub);
+
+    expect(startup.phase.value).toBe("failed");
+    expect(startup.state.failureDetail.value).toBe(
+      "startup.failedServices kanna-server recovery failed after adopted server exit",
+    );
+    expect(startup.active.value).toBe(true);
+    expect(store.init).not.toHaveBeenCalled();
+
+    errorSpy.mockRestore();
     wrapper.unmount();
   });
 
@@ -1575,20 +1636,20 @@ describe("App", () => {
   });
 
   it.each([
-    ["window membership initialization", () => {
+    ["window membership initialization", "membership unavailable", () => {
       mockWindowWorkspace.initialize.mockRejectedValueOnce(new Error("membership unavailable"));
     }],
-    ["the task store", () => {
+    ["the task store", "store unavailable", () => {
       store.init.mockRejectedValueOnce(new Error("store unavailable"));
     }],
-  ])("fails visibly when %s cannot be restored", async (_label, breakIt) => {
+  ])("fails visibly when %s cannot be restored", async (_label, message, breakIt) => {
     const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
     breakIt();
 
     const wrapper = await mountApp(SidebarWithRepoStub);
 
     expect(startup.phase.value).toBe("failed");
-    expect(startup.state.failureDetail.value).toBe("startup.failedRestore");
+    expect(startup.state.failureDetail.value).toBe(`startup.failedRestore ${message}`);
     // The workspace behind the failure stays unreachable rather than looking
     // usable while it is half-restored.
     expect(startup.active.value).toBe(true);
@@ -1663,7 +1724,9 @@ describe("App", () => {
       "Native window-close protection is unavailable",
     );
     expect(startup.phase.value).toBe("failed");
-    expect(startup.state.failureDetail.value).toBe("startup.failedCloseProtection");
+    expect(startup.state.failureDetail.value).toBe(
+      "startup.failedCloseProtection listener unavailable",
+    );
     expect(mockWindowWorkspace.initialize).not.toHaveBeenCalled();
     expect(store.init).not.toHaveBeenCalled();
     expect(associateDesktopCloudCredentialMock).not.toHaveBeenCalled();

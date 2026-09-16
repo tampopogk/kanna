@@ -16,7 +16,9 @@ mod workflow_listener;
 use commands::daemon::{
     ActiveAttachedStream, ActiveAttachedStreams, AttachedSessions, DaemonState, WindowSessionSizes,
 };
-use daemon_lifecycle::{ensure_daemon_running, spawn_event_bridge};
+use daemon_lifecycle::{
+    desktop_startup_readiness_channel, ensure_daemon_running, spawn_event_bridge,
+};
 use menu::{
     handle_native_workspace_menu_event, MENU_ID_CLOSE_WINDOW, MENU_ID_NAVIGATE_REPO_DOWN,
     MENU_ID_NAVIGATE_REPO_UP, MENU_ID_NAVIGATE_TASK_DOWN, MENU_ID_NAVIGATE_TASK_UP,
@@ -301,11 +303,27 @@ pub fn run() {
             let handle = app.handle().clone();
             let daemon_state: DaemonState = app.handle().state::<DaemonState>().inner().clone();
             let daemon_state_bridge = daemon_state.clone();
+            let (daemon_startup_tx, desktop_startup_readiness) =
+                desktop_startup_readiness_channel();
+            app.manage(desktop_startup_readiness);
             tauri::async_runtime::spawn(async move {
-                ensure_daemon_running().await;
+                let startup_readiness = match ensure_daemon_running().await {
+                    Ok(_) => Some(daemon_startup_tx),
+                    Err(error) => {
+                        eprintln!("[daemon] {error} — PTY sessions will not work");
+                        let _ = daemon_startup_tx
+                            .send_replace(daemon_lifecycle::DaemonStartupOutcome::Failed(error));
+                        None
+                    }
+                };
                 // Clear stale connection so commands reconnect to the new daemon
                 *daemon_state.lock().await = None;
-                spawn_event_bridge(handle, daemon_state_bridge, server_pid_receiver);
+                spawn_event_bridge(
+                    handle,
+                    daemon_state_bridge,
+                    server_pid_receiver,
+                    startup_readiness,
+                );
             });
             Ok(())
         })
@@ -327,6 +345,7 @@ pub fn run() {
             commands::daemon::detach_session,
             #[cfg(debug_assertions)]
             daemon_lifecycle::spawn_replacement_daemon_for_e2e,
+            daemon_lifecycle::ensure_desktop_ready,
             // Git commands
             commands::git::diff::git_diff,
             commands::git::diff::git_diff_branch_range,

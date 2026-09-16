@@ -20,9 +20,11 @@ import {
   setDesktopTaskWorkflow,
   replaceDesktopTaskWorkflow,
   fetchDesktopOpenCodeModels,
+  ensureDesktopReady,
   approveIncomingTaskTransfer,
   pushTaskToPeer,
   rejectIncomingTaskTransfer,
+  setDesktopReadinessConfirmedForTests,
   setDesktopServerClientHandlersForTests,
   setDesktopSnapshotFetcherForTests,
 } from "./desktopServerClient";
@@ -37,6 +39,7 @@ const JSON_REQUEST_HEADERS = { ...LOCAL_CREDENTIAL_HEADERS, "content-type": "app
 
 const mocks = vi.hoisted(() => {
   const invoke = vi.fn(async (command: string, args?: { name?: string }) => {
+    if (command === "ensure_desktop_ready") return undefined;
     if (command === "ensure_mobile_server") return undefined;
     if (command === "mobile_server_status") return { state: "running", lanPort: 48121 };
     if (command === "read_env_var" && args?.name === "KANNA_MOBILE_SERVER_PORT") {
@@ -91,6 +94,16 @@ describe("desktopServerClient", () => {
     setDesktopServerClientHandlersForTests(null);
     setDesktopSnapshotFetcherForTests(null);
     vi.unstubAllGlobals();
+  });
+
+  it("shares one confirmed native readiness edge across bootstrap and App mount", async () => {
+    const readiness = vi.fn(async () => {});
+    setDesktopServerClientHandlersForTests({ ensureDesktopReady: readiness });
+    setDesktopReadinessConfirmedForTests(false);
+    await ensureDesktopReady();
+    await ensureDesktopReady();
+
+    expect(readiness).toHaveBeenCalledTimes(1);
   });
 
   it("ensures the desktop server is running and uses its current port when fetching the snapshot", async () => {
