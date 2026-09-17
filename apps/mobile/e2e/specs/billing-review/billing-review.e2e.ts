@@ -30,11 +30,32 @@ import { selectors } from "../../helpers/selectors";
  * denied billing read or a missing storefront price shows up as a named
  * blocker in the report rather than as a fabricated "ready". The report never
  * carries the reviewer email or password.
+ *
+ * The screenshot is the deliverable, and the report reads the accessibility
+ * tree, which sees straight through anything iOS paints over the app. The
+ * lane's own sign-in raises the system "Save Password?" sheet, which once
+ * covered the card heading, price, terms and Subscribe in a capture that the
+ * tree-derived report still credited as ready. So before capturing, the lane
+ * declines every system alert it can (`Not Now`, never `Save`), and a capture
+ * taken under an alert it could not clear is reported as `screenshot-obscured`
+ * rather than as ready.
  */
 
 const SCREEN_TIMEOUT_MS = 30_000;
 const POLL_INTERVAL_MS = 250;
 const PRICE_UNAVAILABLE_TEXT = "Monthly price unavailable";
+/** How long a tapped system alert gets to leave the screen. */
+const SYSTEM_ALERT_SETTLE_TIMEOUT_MS = 5_000;
+/** Upper bound on stacked system alerts cleared before one capture. */
+const MAX_SYSTEM_ALERTS_PER_CAPTURE = 3;
+/**
+ * Alert buttons that decline whatever the alert offers, in preference order.
+ * `Not Now` is the Save Password sheet's own decline. An alert offering none
+ * of these is never tapped blindly: it is reported as obscuring the capture.
+ */
+export const SYSTEM_ALERT_DECLINE_LABELS: readonly string[] = ["Not Now", "Don't Allow", "Cancel"];
+/** Where iOS hosts the Save Password sheet and other system prompts. */
+const SPRINGBOARD_BUNDLE_ID = "com.apple.springboard";
 
 export interface BillingReviewCredentials {
   email?: string;
@@ -71,11 +92,21 @@ export interface BillingReviewUi {
   getBillingEulaLink(): Promise<BillingReviewElement>;
   getBillingPrivacyLink(): Promise<BillingReviewElement>;
   getBillingMessage(): Promise<BillingReviewElement>;
+  /** The iOS system alert or sheet currently painted over the app, or `null` when none is. */
+  getSystemAlert(): Promise<BillingReviewSystemAlert | null>;
+  /** Taps the button of the current system alert whose label is `label`. */
+  tapSystemAlertButton(label: string): Promise<void>;
   captureScreenshot(path: string): Promise<void>;
   waitUntil(
     condition: () => Promise<boolean>,
     options: { interval: number; timeout: number; timeoutMsg: string }
   ): Promise<unknown>;
+}
+
+/** An iOS system alert as observed over the app: its text and the buttons it offers. */
+export interface BillingReviewSystemAlert {
+  text: string;
+  buttons: string[];
 }
 
 export type BillingReviewSourceKind = "comp" | "stripe" | "app_store";
@@ -115,7 +146,9 @@ export type BillingReviewBlocker =
   | "storefront-price-unavailable"
   | "subscribe-disabled"
   | "restore-disabled"
-  | "legal-links-missing";
+  | "legal-links-missing"
+  /** A system alert still covered the app when the screenshot was taken. */
+  | "screenshot-obscured";
 
 export interface BillingReviewReport {
   signedIn: boolean;
@@ -138,6 +171,10 @@ export interface BillingReviewReport {
   eulaPresent: boolean;
   privacyPresent: boolean;
   message: string | null;
+  /** Text of each system alert declined before the capture, in order. */
+  systemAlertsDismissed: string[];
+  /** Text of the system alert still covering the app at capture time, or `null` for a clean capture. */
+  screenshotObscuredBy: string | null;
   screenshotPath: string;
   ready: boolean;
   blockers: BillingReviewBlocker[];
@@ -166,12 +203,77 @@ export function createBillingReviewUi(driver: Browser): BillingReviewUi {
     getBillingEulaLink: async () => element(selectors.appleBillingEulaLink),
     getBillingPrivacyLink: async () => element(selectors.appleBillingPrivacyLink),
     getBillingMessage: async () => element(selectors.appleBillingMessage),
+    getSystemAlert: async () => readSystemAlert(driver),
+    async tapSystemAlertButton(label) {
+      const alertText = await driver.getAlertText().catch(() => null);
+      if (alertText !== null) {
+        await driver.execute("mobile: alert", { action: "accept", buttonLabel: label });
+        return;
+      }
+      await inSpringboard(driver, async () => {
+        await driver.$(springboardButtonSelector(label)).click();
+      });
+    },
     async captureScreenshot(path) {
       await mkdir(dirname(path), { recursive: true });
       await driver.saveScreenshot(path);
     },
     waitUntil: async (condition, options) => driver.waitUntil(condition, options)
   };
+}
+
+function springboardButtonSelector(label: string): string {
+  return `-ios predicate string:type == "XCUIElementTypeButton" AND visible == 1 AND label == ${JSON.stringify(label)}`;
+}
+
+/**
+ * Runs `action` with WebDriverAgent's element queries pointed at SpringBoard,
+ * then points them back at the app. WDA resolves its active application from
+ * a point near the top-left corner, which a centred system sheet never covers,
+ * so a plain query keeps answering from the app while SpringBoard paints the
+ * sheet over it.
+ */
+async function inSpringboard<T>(driver: Browser, action: () => Promise<T>): Promise<T> {
+  await driver.updateSettings({ defaultActiveApplication: SPRINGBOARD_BUNDLE_ID });
+  try {
+    return await action();
+  } finally {
+    await driver.updateSettings({ defaultActiveApplication: "auto" });
+  }
+}
+
+/**
+ * Observes the system alert over the app, if any. A WebDriver alert is asked
+ * first; the Save Password sheet is not one to WebDriverAgent (its alert
+ * classification, and so `autoDismissAlerts`, never fired on it), so the
+ * fallback reads SpringBoard's visible buttons and static texts directly.
+ */
+async function readSystemAlert(driver: Browser): Promise<BillingReviewSystemAlert | null> {
+  const alertText = await driver.getAlertText().catch(() => null);
+  if (alertText !== null) {
+    const buttons = await driver
+      .execute("mobile: alert", { action: "getButtons" })
+      .catch(() => []);
+    return { text: alertText, buttons: labelsOf(buttons) };
+  }
+  return inSpringboard(driver, async () => {
+    const buttons = labelsOf(
+      await driver.$$(
+        '-ios predicate string:type == "XCUIElementTypeButton" AND visible == 1'
+      ).map((button) => button.getAttribute("label"))
+    );
+    if (buttons.length === 0) return null;
+    const texts = await driver.$$(
+      '-ios predicate string:type == "XCUIElementTypeStaticText" AND visible == 1'
+    ).map((text) => text.getText());
+    return { text: texts.filter((text) => text.trim().length > 0).join("\n"), buttons };
+  });
+}
+
+function labelsOf(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.filter((label) => label !== null && label !== undefined).map((label) => String(label))
+    : [];
 }
 
 export function requireBillingReviewCredentials(
@@ -324,6 +426,45 @@ async function bindReviewerSession(
   };
 }
 
+interface ClearedSystemAlerts {
+  /** Text of each alert declined, in order. */
+  dismissed: string[];
+  /** The alert still present after clearing, which will obscure the capture. */
+  remaining: BillingReviewSystemAlert | null;
+}
+
+/**
+ * Declines the system alerts painted over the app so the capture shows the
+ * card. Only a decline button is ever tapped — the Save Password sheet's
+ * `Save` would store the reviewer password in the simulator keychain — and
+ * an alert offering none, or one that survives its tap, is left in place and
+ * reported so the capture is not credited.
+ */
+async function clearSystemAlerts(ui: BillingReviewUi): Promise<ClearedSystemAlerts> {
+  const dismissed: string[] = [];
+  for (let cleared = 0; cleared < MAX_SYSTEM_ALERTS_PER_CAPTURE; cleared += 1) {
+    const alert = await ui.getSystemAlert();
+    if (alert === null) return { dismissed, remaining: null };
+    const decline = SYSTEM_ALERT_DECLINE_LABELS.find((label) => alert.buttons.includes(label));
+    if (decline === undefined) return { dismissed, remaining: alert };
+    await ui.tapSystemAlertButton(decline).catch(() => undefined);
+    const gone = await ui.waitUntil(
+      async () => {
+        const current = await ui.getSystemAlert();
+        return current === null || current.text !== alert.text;
+      },
+      {
+        interval: POLL_INTERVAL_MS,
+        timeout: SYSTEM_ALERT_SETTLE_TIMEOUT_MS,
+        timeoutMsg: `Expected the system alert ${JSON.stringify(alert.text)} to leave after ${decline}`
+      }
+    ).then(() => true, () => false);
+    if (!gone) return { dismissed, remaining: alert };
+    dismissed.push(alert.text);
+  }
+  return { dismissed, remaining: await ui.getSystemAlert() };
+}
+
 async function resolveAccountState(
   ui: BillingReviewUi
 ): Promise<BillingReviewReport["accountState"]> {
@@ -424,6 +565,12 @@ export async function runBillingReviewJourney(
   const activeCoverage =
     billingConfirmed && !purchasePathRendered && billingSources.some((source) => source.covering);
 
+  // The tree reads above see through anything painted over the app; the
+  // screenshot does not. Clear the system alerts the sign-in raised, then
+  // re-observe at capture time so an obscured capture is named, not credited.
+  const cleared = await clearSystemAlerts(ui);
+  const obscuringAlert = cleared.remaining ?? (await ui.getSystemAlert());
+  const screenshotObscuredBy = obscuringAlert === null ? null : obscuringAlert.text;
   await ui.captureScreenshot(options.screenshotPath);
 
   const blockers: BillingReviewBlocker[] = [];
@@ -438,6 +585,7 @@ export async function runBillingReviewJourney(
   }
   if (cardRendered && restoreEnabled !== true) blockers.push("restore-disabled");
   if (cardRendered && (!eulaPresent || !privacyPresent)) blockers.push("legal-links-missing");
+  if (screenshotObscuredBy !== null) blockers.push("screenshot-obscured");
 
   return {
     signedIn,
@@ -457,6 +605,8 @@ export async function runBillingReviewJourney(
     eulaPresent,
     privacyPresent,
     message,
+    systemAlertsDismissed: cleared.dismissed,
+    screenshotObscuredBy,
     screenshotPath: options.screenshotPath,
     ready: blockers.length === 0,
     blockers
