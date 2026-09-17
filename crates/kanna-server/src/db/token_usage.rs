@@ -14,6 +14,7 @@
 //! by the collector from the non-overlapping parts, so summing a column here
 //! never double counts.
 
+use super::stage_runs::AGENT_RUN_KINDS;
 use super::{AnalyticsRange, Db};
 
 /// One task run's worktree and time window — what attribution needs to decide
@@ -94,15 +95,17 @@ impl Db {
         &self,
         repo_id: &str,
     ) -> Result<Vec<RepoRunWindow>, rusqlite::Error> {
-        let mut statement = self.conn.prepare(
+        let mut statement = self.conn.prepare(&format!(
             "SELECT stage_run.task_id, stage_run.id, stage_run.agent_provider,
                     stage_run.provider_session_id, stage_run.cwd,
                     stage_run.started_at, stage_run.finished_at
              FROM stage_run
              JOIN pipeline_item ON pipeline_item.id = stage_run.task_id
-             WHERE pipeline_item.repo_id = ? AND stage_run.cwd IS NOT NULL
-             ORDER BY stage_run.started_at ASC",
-        )?;
+             WHERE pipeline_item.repo_id = ?
+               AND stage_run.kind IN {AGENT_RUN_KINDS}
+               AND stage_run.cwd IS NOT NULL
+             ORDER BY stage_run.started_at ASC"
+        ))?;
         let runs = statement
             .query_map([repo_id], |row| {
                 Ok(RepoRunWindow {

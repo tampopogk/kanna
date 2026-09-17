@@ -24,6 +24,7 @@
 //! without a single revision; leaving those out would turn a clean week into
 //! a bad one.
 
+use super::stage_runs::AGENT_RUN_KINDS;
 use super::Db;
 use serde::Serialize;
 use std::collections::HashMap;
@@ -567,23 +568,29 @@ impl Db {
     ) -> Result<(i64, i64), rusqlite::Error> {
         let (start, end) = (range.start(), range.end());
         let runs_in_range = self.conn.query_row(
-            "SELECT COUNT(*) FROM stage_run
+            &format!(
+                "SELECT COUNT(*) FROM stage_run
              JOIN pipeline_item ON pipeline_item.id = stage_run.task_id
              WHERE pipeline_item.repo_id = ?
+               AND stage_run.kind IN {AGENT_RUN_KINDS}
                AND stage_run.started_at <= ?
-               AND (stage_run.finished_at IS NULL OR stage_run.finished_at >= ?)",
+               AND (stage_run.finished_at IS NULL OR stage_run.finished_at >= ?)"
+            ),
             (repo_id, &end, &start),
             |row| row.get(0),
         )?;
         let runs_with_usage = self.conn.query_row(
-            "SELECT COUNT(DISTINCT stage_run.id) FROM stage_run
+            &format!(
+                "SELECT COUNT(DISTINCT stage_run.id) FROM stage_run
              JOIN pipeline_item ON pipeline_item.id = stage_run.task_id
              JOIN provider_token_usage ON provider_token_usage.run_id = stage_run.id
              WHERE pipeline_item.repo_id = ?
+               AND stage_run.kind IN {AGENT_RUN_KINDS}
                AND stage_run.started_at <= ?
                AND (stage_run.finished_at IS NULL OR stage_run.finished_at >= ?)
                AND provider_token_usage.occurred_at >= ?
-               AND provider_token_usage.occurred_at <= ?",
+               AND provider_token_usage.occurred_at <= ?"
+            ),
             (repo_id, &end, &start, &start, &end),
             |row| row.get(0),
         )?;

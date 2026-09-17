@@ -57,6 +57,7 @@ mod terminal_editor;
 mod transfer_sidecar;
 mod transfers;
 mod window_workspace;
+mod workspace_setup_logs;
 
 #[cfg(test)]
 mod peer_tests;

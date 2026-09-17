@@ -56,6 +56,36 @@ pub struct WritePathHealth {
     pub oldest_workspace_command_seconds: Option<u64>,
 }
 
+/// What a supervised workspace command actually did.
+///
+/// The runner always buffered stdout and stderr (capped at
+/// [`MAX_OUTPUT_BYTES`]); it just folded them into an error string on failure
+/// and dropped them on success. Returning them lets a caller keep the stream
+/// as a record in its own right, with the real exit status beside it, instead
+/// of a sentence describing it.
+#[derive(Debug, Clone)]
+pub(crate) struct WorkspaceCommandOutcome {
+    /// `None` when the command was killed at its hard timeout or the direct
+    /// child produced no status.
+    pub(crate) exit_code: Option<i32>,
+    pub(crate) timed_out: bool,
+    /// The output cap was reached and the tail was dropped.
+    pub(crate) truncated: bool,
+    /// stdout then stderr, trimmed, as `format_output` renders them.
+    pub(crate) output: String,
+    /// The sentence this command used to return as its entire result when it
+    /// failed, composed here so it keeps naming the policy the run actually
+    /// used. `None` means the command succeeded.
+    pub(crate) failure: Option<String>,
+}
+
+impl WorkspaceCommandOutcome {
+    #[cfg(test)]
+    fn succeeded(&self) -> bool {
+        self.failure.is_none()
+    }
+}
+
 struct SupervisorState {
     next_id: u64,
     active: HashMap<u64, Instant>,
@@ -121,7 +151,7 @@ impl WorkspaceCommandSupervisor {
         cwd: &Path,
         env: &HashMap<String, String>,
         armed_timeout: Option<&AtomicBool>,
-    ) -> Result<(), String> {
+    ) -> Result<WorkspaceCommandOutcome, String> {
         let _active = self.acquire(label)?;
         run_process(label, shell_command, cwd, env, self.policy, armed_timeout)
     }
@@ -170,12 +200,18 @@ fn global_supervisor() -> &'static Arc<WorkspaceCommandSupervisor> {
     })
 }
 
-pub(crate) fn run_workspace_command(
+/// Run a workspace command and keep what it produced, whatever it did.
+///
+/// `Err` here means the command could not be run or supervised at all (no
+/// capacity, spawn failed, a pipe could not be read). A command that ran and
+/// failed is an `Ok` outcome carrying its exit status and output: its stream
+/// is exactly as worth recording as a successful one.
+pub(crate) fn run_workspace_command_captured(
     label: &str,
     command: &str,
     cwd: &Path,
     env: &HashMap<String, String>,
-) -> Result<(), String> {
+) -> Result<WorkspaceCommandOutcome, String> {
     global_supervisor().run(label, command, cwd, env, None)
 }
 
@@ -199,7 +235,7 @@ pub(crate) fn run_workspace_command_with_armed_timeout_for_test(
     cwd: &Path,
     env: &HashMap<String, String>,
     armed_timeout: &AtomicBool,
-) -> Result<(), String> {
+) -> Result<WorkspaceCommandOutcome, String> {
     let supervisor = Arc::new(WorkspaceCommandSupervisor::new(WorkspaceCommandPolicy {
         soft_timeout: TEST_ARMED_TIMEOUT_GUARD,
         hard_timeout: TEST_ARMED_TIMEOUT_GUARD,
@@ -452,7 +488,7 @@ fn run_process(
     env: &HashMap<String, String>,
     policy: WorkspaceCommandPolicy,
     armed_timeout: Option<&AtomicBool>,
-) -> Result<(), String> {
+) -> Result<WorkspaceCommandOutcome, String> {
     let mut child = spawn_workspace_process(label, shell_command, cwd, env)?;
     let process_group = child.process_group;
     let (mut stdout, mut stderr) = take_nonblocking_output(&mut child, label)?;
@@ -516,23 +552,34 @@ fn run_process(
         &mut truncated,
         policy,
     );
-    let details = format_output(&stdout_buffer, &stderr_buffer, truncated);
-    if timed_out {
-        return Err(format!(
-            "{label} timed out after {}s{}",
-            policy.hard_timeout.as_secs(),
-            details
-        ));
-    }
-    if status.is_some_and(|status| status.success()) {
-        return Ok(());
-    }
-    Err(format!(
-        "{label} failed with {}{details}",
-        status
-            .map(|status| status.to_string())
-            .unwrap_or_else(|| "unknown status".to_string())
-    ))
+    let output = format_output(&stdout_buffer, &stderr_buffer, truncated);
+    let details = if output.is_empty() {
+        String::new()
+    } else {
+        format!(": {output}")
+    };
+    let failure = if timed_out {
+        Some(format!(
+            "{label} timed out after {}s{details}",
+            policy.hard_timeout.as_secs()
+        ))
+    } else if status.is_some_and(|status| status.success()) {
+        None
+    } else {
+        Some(format!(
+            "{label} failed with {}{details}",
+            status
+                .map(|status| status.to_string())
+                .unwrap_or_else(|| "unknown status".to_string())
+        ))
+    };
+    Ok(WorkspaceCommandOutcome {
+        exit_code: status.and_then(|status| status.code()),
+        timed_out,
+        truncated,
+        output,
+        failure,
+    })
 }
 
 fn set_nonblocking<T: AsRawFd>(pipe: &T) -> io::Result<()> {
@@ -614,11 +661,7 @@ fn format_output(stdout: &[u8], stderr: &[u8], truncated: bool) -> String {
         }
         details.push_str("[output truncated]");
     }
-    if details.is_empty() {
-        String::new()
-    } else {
-        format!(": {details}")
-    }
+    details
 }
 
 #[cfg(test)]
@@ -690,7 +733,7 @@ mod tests {
             4,
         )));
 
-        let error = supervisor
+        let outcome = supervisor
             .run(
                 "workspace setup",
                 &command,
@@ -698,11 +741,78 @@ mod tests {
                 &HashMap::new(),
                 None,
             )
-            .unwrap_err();
+            .unwrap();
 
+        let error = outcome.failure.as_deref().expect("a timeout is a failure");
         assert!(error.contains("timed out"), "{error}");
         assert!(error.contains("setup-started"), "{error}");
+        assert!(outcome.timed_out);
+        assert_eq!(outcome.exit_code, None);
+        assert!(outcome.output.contains("setup-started"), "{outcome:?}");
         assert_process_exits(wait_for_pid_file(&pid_file));
+    }
+
+    /// A command that succeeds keeps its output.
+    ///
+    /// It used to be buffered and then dropped on the floor, which is why a
+    /// stage advance's setup left nothing behind at all unless it failed.
+    #[test]
+    fn a_successful_command_returns_the_output_it_buffered() {
+        let root = tempfile::tempdir().unwrap();
+        let supervisor = Arc::new(WorkspaceCommandSupervisor::new(test_policy(
+            Duration::from_secs(10),
+            4,
+        )));
+
+        let outcome = supervisor
+            .run(
+                "workspace setup",
+                "printf 'INSTALLED\n'; printf 'WARNED\n' >&2",
+                root.path(),
+                &HashMap::new(),
+                None,
+            )
+            .unwrap();
+
+        assert!(outcome.succeeded());
+        assert_eq!(outcome.failure, None);
+        assert_eq!(outcome.exit_code, Some(0));
+        assert!(!outcome.timed_out);
+        assert!(!outcome.truncated);
+        assert!(outcome.output.contains("INSTALLED"), "{outcome:?}");
+        assert!(outcome.output.contains("WARNED"), "{outcome:?}");
+    }
+
+    /// A command that ran and failed is an outcome, not a transport error:
+    /// its stream is as worth recording as a successful one, and the sentence
+    /// the caller surfaces is unchanged.
+    #[test]
+    fn a_failed_command_keeps_both_its_stream_and_its_message() {
+        let root = tempfile::tempdir().unwrap();
+        let supervisor = Arc::new(WorkspaceCommandSupervisor::new(test_policy(
+            Duration::from_secs(10),
+            4,
+        )));
+
+        let outcome = supervisor
+            .run(
+                "workspace setup",
+                "printf 'BROKE\n'; exit 23",
+                root.path(),
+                &HashMap::new(),
+                None,
+            )
+            .unwrap();
+
+        assert!(!outcome.succeeded());
+        assert_eq!(outcome.exit_code, Some(23));
+        assert!(outcome.output.contains("BROKE"), "{outcome:?}");
+        let failure = outcome.failure.as_deref().expect("a non-zero exit fails");
+        assert!(
+            failure.starts_with("workspace setup failed with "),
+            "{failure}"
+        );
+        assert!(failure.contains("BROKE"), "{failure}");
     }
 
     #[test]

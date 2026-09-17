@@ -1,3 +1,4 @@
+use super::stage_runs::AGENT_RUN_KINDS;
 use super::{
     Db, SnapshotBlockerTaskState, SnapshotEntry, SnapshotPipelineItem, SnapshotRepo,
     SnapshotTaskBlocker, SnapshotTransferAlert, UiSnapshot,
@@ -97,7 +98,7 @@ impl Db {
         &self,
         repo_id: &str,
     ) -> Result<Vec<SnapshotPipelineItem>, rusqlite::Error> {
-        let mut stmt = self.conn.prepare(
+        let mut stmt = self.conn.prepare(&format!(
             "SELECT pipeline_item.id, pipeline_item.repo_id, pipeline_item.issue_number,
                     pipeline_item.issue_title, pipeline_item.prompt, pipeline_item.pipeline,
                     pipeline_item.pipeline_def, pipeline_item.stage, pipeline_item.pr_number,
@@ -108,6 +109,7 @@ impl Db {
                         SELECT stage_run.agent_provider
                         FROM stage_run
                         WHERE stage_run.task_id = pipeline_item.id
+                          AND stage_run.kind IN {AGENT_RUN_KINDS}
                           AND stage_run.agent_provider IS NOT NULL
                         ORDER BY stage_run.rowid DESC
                         LIMIT 1
@@ -135,6 +137,7 @@ impl Db {
                       SELECT stage_run.id
                       FROM stage_run
                       WHERE stage_run.task_id = pipeline_item.id
+                        AND stage_run.kind IN {AGENT_RUN_KINDS}
                       ORDER BY stage_run.rowid DESC
                       LIMIT 1
                     ) AS transition_revision,
@@ -210,8 +213,8 @@ impl Db {
                LIMIT 1
              )
              WHERE pipeline_item.repo_id = ? AND pipeline_item.closed_at IS NULL
-             ORDER BY created_at DESC",
-        )?;
+             ORDER BY created_at DESC"
+        ))?;
         let rows = stmt.query_map([repo_id], |row| {
             Ok(SnapshotPipelineItem {
                 id: row.get(0)?,

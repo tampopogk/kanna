@@ -932,7 +932,6 @@ async fn requested_task_retry_repairs_prepare_before_daemon_spawn() {
                     assert_eq!((cols, rows), (132, 43));
                     let command = args.join(" ");
                     for expected in [
-                        "prepared-intent-setup",
                         "--resume '364643cc-5e6d-48fc-86ca-ca7764380900'",
                         "--model 'claude-repair-model'",
                         "--allowedTools Read,Bash",
@@ -947,8 +946,7 @@ async fn requested_task_retry_repairs_prepare_before_daemon_spawn() {
                         );
                     }
                     assert!(
-                        !command.contains("MUTATED-DEFINITION")
-                            && !command.contains("mutated-definition-setup"),
+                        !command.contains("MUTATED-DEFINITION"),
                         "repaired spawn re-read mutated repo definitions: {command}"
                     );
                     write_half
@@ -1005,6 +1003,19 @@ async fn requested_task_retry_repairs_prepare_before_daemon_spawn() {
         db.get_create_task_intent(task_id).unwrap().is_none(),
         "running stage run should clear the prepared create intent"
     );
+    // The repair's setup runs on the server-side workspace runner, so the
+    // retained intent's commands are read from the Setup record it wrote
+    // rather than from the agent's own command line.
+    let setup = db.workspace_setup_runs(task_id).unwrap();
+    assert_eq!(setup.len(), 1);
+    assert_eq!(setup[0].run_id, runs[0].id);
+    assert_eq!(
+        setup[0].commands,
+        vec!["printf 'prepared-intent-setup\\n'".to_string()],
+        "the repair must use the retained intent's setup, not the mutated definitions"
+    );
+    assert!(setup[0].output.contains("prepared-intent-setup"));
+    assert!(!setup[0].output.contains("mutated-definition-setup"));
 
     let _ = std::fs::remove_file(&socket_path);
     let _ = std::fs::remove_dir_all(&daemon_dir);

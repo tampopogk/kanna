@@ -1,3 +1,4 @@
+use super::stage_runs::AGENT_RUN_KINDS;
 use super::{
     CloudTaskIdentityWrite, Db, NewPipelineItem, OpenAgentTask, PipelineItem, PipelineItemChild,
     ReopenPipelineItemError, TaskEventKind, TaskListOrder, TaskListSort, TaskStageSource,
@@ -170,15 +171,15 @@ impl Db {
     pub fn list_task_completion_runs(
         &self,
     ) -> Result<Vec<(String, bool, Option<String>)>, rusqlite::Error> {
-        let mut statement = self.conn.prepare(
+        let mut statement = self.conn.prepare(&format!(
             "SELECT p.id, p.closed_at IS NULL,
                         (SELECT s.id
                          FROM stage_run s
-                         WHERE s.task_id = p.id
+                         WHERE s.task_id = p.id AND s.kind IN {AGENT_RUN_KINDS}
                          ORDER BY s.rowid DESC
                          LIMIT 1)
-                 FROM pipeline_item p",
-        )?;
+                 FROM pipeline_item p"
+        ))?;
         let runs = statement
             .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
             .collect::<Result<Vec<_>, _>>()?;
@@ -749,14 +750,17 @@ impl Db {
         let stage_run_session_id = self
             .conn
             .query_row(
-                "SELECT session_id
+                &format!(
+                    "SELECT session_id
                  FROM stage_run
                  WHERE task_id = ?
+                   AND kind IN {AGENT_RUN_KINDS}
                    AND status = 'running'
                    AND session_id IS NOT NULL
                    AND session_id != ''
                  ORDER BY rowid DESC
-                 LIMIT 1",
+                 LIMIT 1"
+                ),
                 [&pipeline_item_id],
                 |row| row.get(0),
             )
@@ -1091,15 +1095,16 @@ impl Db {
     ) -> Result<usize, rusqlite::Error> {
         self.with_immediate_transaction(|db| {
             let modifier = format!("-{debounce_seconds} seconds");
-            let mut stmt = db.conn.prepare(
+            let mut stmt = db.conn.prepare(&format!(
                 "SELECT pi.id, pi.activity_event_baseline, pi.activity, pi.runtime_status,
-                        (SELECT sr.status FROM stage_run sr WHERE sr.task_id = pi.id
+                        (SELECT sr.status FROM stage_run sr
+                         WHERE sr.task_id = pi.id AND sr.kind IN {AGENT_RUN_KINDS}
                          ORDER BY sr.rowid DESC LIMIT 1)
                  FROM pipeline_item pi
                  WHERE pi.closed_at IS NULL
                    AND pi.activity_event_pending_at IS NOT NULL
-                   AND pi.activity_event_pending_at <= datetime('now', ?)",
-            )?;
+                   AND pi.activity_event_pending_at <= datetime('now', ?)"
+            ))?;
             let rows = stmt
                 .query_map([modifier], |row| {
                     Ok((
@@ -1152,16 +1157,17 @@ impl Db {
             // equals the published baseline is a flicker that cleared itself
             // and emits nothing.
             let runtime_modifier = format!("-{MANAGER_ACTIVITY_DEBOUNCE_SECONDS} seconds");
-            let mut runtime_stmt = db.conn.prepare(
+            let mut runtime_stmt = db.conn.prepare(&format!(
                 "SELECT pi.id, pi.runtime_event_baseline, pi.runtime_status,
-                        (SELECT sr.status FROM stage_run sr WHERE sr.task_id = pi.id
+                        (SELECT sr.status FROM stage_run sr
+                         WHERE sr.task_id = pi.id AND sr.kind IN {AGENT_RUN_KINDS}
                          ORDER BY sr.rowid DESC LIMIT 1)
                  FROM pipeline_item pi
                  WHERE pi.closed_at IS NULL
                    AND pi.runtime_status IS NOT NULL
                    AND pi.runtime_event_pending_at IS NOT NULL
-                   AND pi.runtime_event_pending_at <= datetime('now', ?)",
-            )?;
+                   AND pi.runtime_event_pending_at <= datetime('now', ?)"
+            ))?;
             let runtime_rows = runtime_stmt
                 .query_map([runtime_modifier], |row| {
                     Ok((

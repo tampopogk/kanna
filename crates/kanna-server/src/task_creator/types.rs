@@ -106,6 +106,14 @@ pub(crate) struct PreparedTaskSpawn {
     pub(super) provider_session_id: Option<String>,
     pub(super) recovery_snapshot: Option<crate::mobile_api::CreateTaskRecoverySnapshot>,
     pub(super) session: PreparedSessionSpawn,
+    /// A PTY spawn's workspace setup, run by the spawn path rather than
+    /// inlined into the agent's shell command, so its stream is a record of
+    /// its own instead of the head of the agent's scrollback. Empty when the
+    /// workspace declares no setup or a headless spawn already ran it.
+    pub(super) deferred_setup: Vec<String>,
+    /// The setup stream this spawn produced, bound to its stage run once that
+    /// row exists.
+    pub(super) setup_record: Option<crate::db::WorkspaceSetupOutcome>,
 }
 
 impl PreparedTaskSpawn {
@@ -192,9 +200,12 @@ pub(crate) struct PreparedStageRerun {
     pub(super) provider_session_id: Option<String>,
     pub(super) cwd: String,
     pub(super) env: HashMap<String, String>,
-    /// Headless reruns execute setup only after the prior session is killed,
-    /// then resolve their executable from the initialized workspace.
+    /// Reruns execute setup only after the prior session is killed; a
+    /// headless one then resolves its executable from the initialized
+    /// workspace.
     pub(super) deferred_setup: Vec<String>,
+    /// The setup stream this rerun produced, bound to its stage run.
+    pub(super) setup_record: Option<crate::db::WorkspaceSetupOutcome>,
     pub(super) recovery_snapshot: Option<crate::mobile_api::CreateTaskRecoverySnapshot>,
     pub(super) session: PreparedSessionSpawn,
 }
@@ -323,6 +334,9 @@ pub(crate) struct PreparedStageRunSpawn {
     /// worker. The provisional provider/session above are never spawned while
     /// this is present.
     pub(super) deferred_setup: Option<DeferredStageSetup>,
+    /// The setup stream this run's workspace produced, kept whether setup
+    /// succeeded or failed and bound to the run row the spawn records.
+    pub(super) setup_record: Option<crate::db::WorkspaceSetupOutcome>,
     /// Test seam: when armed, workspace setup reports its hard timeout. See
     /// `workspace_commands::run_workspace_command_with_armed_timeout_for_test`.
     #[cfg(test)]
@@ -348,6 +362,14 @@ pub(super) struct DeferredStageSetup {
 /// that worktree's branch so it does not collide with future task workspaces.
 pub(crate) struct PreparedWorkspaceTeardown {
     pub(crate) session_id: String,
+    /// The `stage_run` this teardown is recorded as, written just before the
+    /// session is spawned. It exists so the detached cleanup has a durable
+    /// identity: the terminal archive is keyed by run id, and the attempt
+    /// table is foreign-keyed to `stage_run`. Its kind is
+    /// [`crate::db::stage_runs::TEARDOWN_RUN_KIND`], never an agent run.
+    pub(super) run_id: String,
+    /// The stage that owned the workspace being torn down.
+    pub(super) stage: String,
     pub(super) daemon_dir: String,
     pub(super) db_path: String,
     pub(super) task_id: String,

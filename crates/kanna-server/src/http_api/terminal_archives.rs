@@ -600,4 +600,164 @@ mod real_daemon_tests {
             bytes
         );
     }
+
+    /// A workspace teardown is archived by exactly the same daemon path an
+    /// agent session is: it has a `stage_run` of its own written before the
+    /// session exists, so `KANNA_STAGE_RUN_ID` can be bound into the detached
+    /// `td-{branch}` session's environment, and the attempt list and read
+    /// route carry it beside the stage's agent attempt.
+    ///
+    /// Liveness is the same question for a cleanup as for an agent session and
+    /// has the same single answer — the daemon's session registry. A teardown
+    /// binds its attempt through the identical `run-{task}-…` env rule, so
+    /// while its `td-` session is still running it lists as the live terminal,
+    /// which is the truth: that PTY exists and a viewer can attach to it. It
+    /// becomes history the moment it exits. No kind is special-cased, because
+    /// the registry is answering about a terminal, not about an agent.
+    #[tokio::test]
+    async fn workspace_teardown_session_archives_and_lists_with_its_exit_status() {
+        let cwd = std::env::current_dir()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        let state = crate::http_api::test_support::test_state_with_seed(
+            "archive-teardown",
+            "archive-teardown",
+            |db| {
+                crate::db::terminal_archives::tests::seed_at(db, &cwd);
+                db.insert_stage_run(crate::db::NewStageRun {
+                    id: "run-task-a-teardown",
+                    task_id: "task-a",
+                    stage: "review",
+                    kind: crate::db::stage_runs::TEARDOWN_RUN_KIND,
+                    agent: None,
+                    agent_provider: None,
+                    model: None,
+                    effort: None,
+                    status: "running",
+                    result: None,
+                    feedback: None,
+                    session_id: Some("td-task-a-2"),
+                    provider_session_id: None,
+                    cwd: Some(&cwd),
+                    resumed_from_run_id: None,
+                })
+                .unwrap();
+                db.bind_agent_terminal_attempt("run-task-a-teardown")
+                    .unwrap();
+            },
+        );
+        let (_owned, mut daemon) = start_owned_daemon(&state.config.daemon_dir).await;
+        let stop = std::path::Path::new(&state.config.daemon_dir).join("stop-teardown");
+        // Exactly the spawn the server builds for a teardown: the departed
+        // workspace's session id, and the teardown run bound into its
+        // environment. No completion context — a cleanup records no verdict.
+        let spawn = serde_json::from_value::<Command>(serde_json::json!({
+            "type": "Spawn",
+            "session_id": "td-task-a-2",
+            "executable": "/bin/sh",
+            "args": ["-c", format!("printf 'TEARDOWN_RAN\r\n'; while [ ! -f {} ]; do sleep 0.1; done; exit 5", stop.display())],
+            "cwd": cwd,
+            "env": {"KANNA_TASK_ID": "task-a", "KANNA_STAGE_RUN_ID": "run-task-a-teardown"},
+            "cols": 120,
+            "rows": 24
+        }))
+        .unwrap();
+        assert!(matches!(
+            daemon.send_command(&spawn).await.unwrap(),
+            Event::SessionCreated { .. }
+        ));
+
+        let app = crate::http_api::router(state.clone());
+        // The cleanup is still running, so its terminal is the live one. The
+        // stage's own agent attempts are history, and stay history.
+        assert_eq!(
+            listed_attempts(&app).await,
+            vec![
+                ("run-task-a-1".to_string(), false, false),
+                ("run-task-a-2".to_string(), false, false),
+                ("legacy-task-a".to_string(), false, false),
+                ("run-task-a-teardown".to_string(), true, false),
+            ]
+        );
+
+        std::fs::write(&stop, b"").unwrap();
+        tokio::time::timeout(Duration::from_secs(20), async {
+            loop {
+                if matches!(
+                    daemon
+                        .send_command(&Command::ReadAttemptArchive {
+                            attempt_id: "run-task-a-teardown".into()
+                        })
+                        .await
+                        .unwrap(),
+                    Event::AttemptArchive { archive: Some(_) }
+                ) {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .unwrap();
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/tasks/task-a/terminal-attempts")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let attempts: Vec<serde_json::Value> = serde_json::from_slice(
+            &axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        let teardown = attempts
+            .iter()
+            .find(|attempt| attempt["id"] == "run-task-a-teardown")
+            .expect("the teardown attempt is listed");
+        assert_eq!(teardown["kind"], "teardown");
+        // Labelled by the stage whose workspace it tore down.
+        assert_eq!(teardown["stage"], "review");
+        assert_eq!(teardown["archived"], true);
+        assert_eq!(teardown["observedExitCode"], 5);
+        // The terminal is gone, so the cleanup is history like any other
+        // finished attempt.
+        assert_eq!(teardown["live"], false);
+        assert!(
+            attempts.iter().any(|attempt| attempt["kind"] == "main"),
+            "the stage's own agent attempts are still listed"
+        );
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/tasks/task-a/terminal-attempts/run-task-a-teardown")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let archive: TerminalAttemptArchive = serde_json::from_slice(
+            &axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(archive.binding.spawned_run_id, "run-task-a-teardown");
+        assert!(archive
+            .snapshot
+            .as_ref()
+            .unwrap()
+            .vt
+            .contains("TEARDOWN_RAN"));
+        assert_eq!(archive.observed_exit_code, Some(5));
+    }
 }

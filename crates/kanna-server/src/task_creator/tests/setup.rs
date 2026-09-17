@@ -105,6 +105,7 @@ fn pty_setup_keeps_sidecar_provider_directory_as_path_fallback() {
         workspace.to_string_lossy().as_ref(),
         &["true".to_string()],
         false,
+        &mut None,
         None,
         None,
         None,
@@ -179,8 +180,15 @@ fn seed_source_task(
     source_worktree
 }
 
+/// The first spawn's setup runs where every later stage's setup runs: on the
+/// server-side workspace command runner, before the daemon spawn, with its
+/// stream recorded against the stage run it prepared.
+///
+/// It used to be a prefix inside the agent's own PTY command, which is why a
+/// task's first attempt had setup at the head of its agent scrollback with no
+/// stored boundary and every stage after it had no setup stream at all.
 #[tokio::test]
-async fn initial_pty_task_streams_setup_before_starting_setup_created_provider() {
+async fn initial_pty_task_records_setup_on_the_server_runner_before_the_daemon_spawn() {
     let _sidecar_guard = crate::test_sidecar_guard().await;
     let kanna_cli = ensure_test_sidecar("kanna-cli");
     let _kanna_mcp = ensure_test_sidecar("kanna-mcp");
@@ -191,133 +199,155 @@ async fn initial_pty_task_streams_setup_before_starting_setup_created_provider()
     db.insert_test_repo_with_path("repo-1", &repo_root.to_string_lossy(), "Repo One")
         .unwrap();
 
-    let prepared = prepare_task_for_api(
-        &db,
-        &config,
-        CreateTaskRequest {
-            repo_id: "repo-1".to_string(),
-            prompt: "Use the setup-provisioned Codex".to_string(),
-            display_name: None,
-            workflow_name: None,
-            stage: None,
-            base_ref: None,
-            diff_base_ref: None,
-            agent: None,
-            agent_provider: Some("codex".to_string()),
-            agent_type: Some("pty".to_string()),
-            terminal_cols: None,
-            terminal_rows: None,
-            model: None,
-            effort: None,
-            permission_mode: None,
-            allowed_tools: None,
-            disallowed_tools: None,
-            max_turns: None,
-            max_budget_usd: None,
-            setup_cmds: None,
-            task_template: None,
-            resume_session_id: None,
-            recovery_snapshot: None,
-            transfer_import: None,
-            notify_task_id: None,
-            review_context: None,
-            parent_task_id: None,
-            blocker_task_ids: None,
-        },
-    )
-    .unwrap();
+    let prepared = prepare_task_for_api(&db, &config, setup_create_request("codex")).unwrap();
 
-    let expected = std::path::Path::new(&prepared.cwd).join(".kanna/setup-bin/codex");
+    let task_id = prepared.created_task.task_id.clone();
+    let installed = std::path::Path::new(&prepared.cwd).join(".kanna/setup-bin/codex");
     assert!(
-        !expected.exists(),
-        "PTY setup must wait for the daemon terminal bootstrap"
+        !installed.exists(),
+        "preparation must not run the workspace setup"
     );
-    let (pty_executable, pty_args) = match &prepared.session {
+    match &prepared.session {
         PreparedSessionSpawn::Pty {
-            executable,
             args,
             agent_provider,
             ..
         } => {
             assert_eq!(*agent_provider, DaemonAgentProvider::Codex);
             let command = args.last().expect("PTY command");
-            assert!(command.contains("Running startup..."), "command: {command}");
             assert!(
-                command.contains(INSTALL_STREAMING_CODEX),
-                "setup must run in the PTY command: {command}"
+                !command.contains("Running startup..."),
+                "setup must not be inlined into the agent command: {command}"
             );
-            (executable.clone(), args.clone())
+            assert!(
+                !command.contains(INSTALL_STREAMING_CODEX),
+                "setup must not be inlined into the agent command: {command}"
+            );
         }
         _ => panic!("expected PTY session"),
-    };
-
-    let zdotdir = std::path::Path::new(&prepared.cwd).join(".kanna/test-zdotdir");
-    std::fs::create_dir_all(&zdotdir).unwrap();
-    let mut pty_env = prepared.env.clone();
-    pty_env.insert("ZDOTDIR".to_string(), zdotdir.to_string_lossy().to_string());
-    let mut process = kanna_daemon::pty::PtySession::spawn(
-        &pty_executable,
-        &pty_args,
-        &prepared.cwd,
-        &pty_env,
-        80,
-        24,
-    )
-    .unwrap();
-    let mut output_reader = std::fs::File::from(process.try_clone_io_fd().unwrap());
-    let mut output = Vec::new();
-    let provider_ran = expected.parent().unwrap().join("codex-ran");
-    // The assertions below are about the *order* of the bootstrap's output, and
-    // the loop exits on the two events that prove it completed. How long a
-    // login shell plus setup plus provider takes is a property of the machine,
-    // so this deadline only contains a wedged PTY.
-    let deadline = tokio::time::Instant::now() + EVENTUAL_PROGRESS_GUARD;
-    loop {
-        let mut buffer = [0_u8; 4096];
-        loop {
-            match output_reader.read(&mut buffer) {
-                // A PTY master whose last slave has closed is a hangup, not
-                // an error: macOS spells it EOF and Linux spells it EIO.
-                Ok(0) => break,
-                Ok(count) => output.extend_from_slice(&buffer[..count]),
-                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
-                Err(error) if error.raw_os_error() == Some(libc::EIO) => break,
-                Err(error) => panic!("failed to read PTY output: {error}"),
-            }
-        }
-        let text = String::from_utf8_lossy(&output);
-        let provider_output_seen = text
-            .match_indices("PROVIDER_OUTPUT_SENTINEL")
-            .nth(1)
-            .is_some();
-        if provider_ran.is_file() && provider_output_seen {
-            break;
-        }
-        if tokio::time::Instant::now() >= deadline {
-            let _ = process.kill();
-            panic!("PTY bootstrap did not finish: {text}");
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     }
-    let _ = process.kill();
-    let _ = process.try_wait();
+    assert_eq!(
+        prepared.deferred_setup,
+        vec![INSTALL_STREAMING_CODEX.to_string()],
+        "the spawn path owns the setup commands"
+    );
 
-    let output = String::from_utf8_lossy(&output);
-    let startup_index = output.find("Running startup...").expect("startup banner");
-    let setup_output_index = output
-        .match_indices("SETUP_OUTPUT_SENTINEL")
-        .nth(1)
-        .map(|(index, _)| index)
-        .expect("setup output after the echoed setup command");
-    let provider_index = output
-        .match_indices("PROVIDER_OUTPUT_SENTINEL")
-        .nth(1)
-        .map(|(index, _)| index)
-        .expect("provider output after the echoed setup command");
-    assert!(startup_index < setup_output_index, "output: {output}");
-    assert!(setup_output_index < provider_index, "output: {output}");
+    let daemon_task = spawn_fake_daemon_session_created_once(config.daemon_dir.clone()).await;
+    let mut daemon = DaemonClient::connect(&config.daemon_dir).await.unwrap();
+    super::super::spawn_prepared_task_for_api_recording_stage_run_detailed(
+        &config.db_path,
+        &mut daemon,
+        prepared,
+    )
+    .await
+    .map_err(|error| error.into_message())
+    .unwrap();
+    daemon_task.await.unwrap();
+
+    assert!(
+        installed.is_file(),
+        "setup must run before the daemon spawn"
+    );
+    let run = db.latest_stage_run(&task_id).unwrap().unwrap();
+    let records = db.workspace_setup_runs(&task_id).unwrap();
+    assert_eq!(records.len(), 1, "one Setup record per stage run");
+    let record = &records[0];
+    assert_eq!(record.run_id, run.id);
+    assert_eq!(record.status, "succeeded");
+    assert_eq!(record.exit_code, Some(0));
+    assert!(!record.timed_out);
+    assert_eq!(record.commands, vec![INSTALL_STREAMING_CODEX.to_string()]);
+    assert!(
+        record.output.contains("SETUP_OUTPUT_SENTINEL"),
+        "a successful setup keeps its output: {}",
+        record.output
+    );
 
     let _ = std::fs::remove_dir_all(&repo_root);
+}
+
+/// A first spawn whose setup fails keeps the stream too, on the run it just
+/// recorded — the failing case is the one somebody opens the Setup item for.
+#[tokio::test]
+async fn failed_initial_pty_setup_records_its_stream_against_the_failed_run() {
+    let _sidecar_guard = crate::test_sidecar_guard().await;
+    let kanna_cli = ensure_test_sidecar("kanna-cli");
+    let _kanna_mcp = ensure_test_sidecar("kanna-mcp");
+    let repo_root = write_setup_repo(
+        "setup-provider-initial-failure",
+        "printf 'SETUP_FAILURE_SENTINEL\\n'; exit 23",
+        false,
+    );
+    let mut config = test_config("setup-provider-initial-failure");
+    config.kanna_cli_path = Some(kanna_cli.path().to_string_lossy().to_string());
+    let db = Db::open_for_tests(&config.db_path).unwrap();
+    db.insert_test_repo_with_path("repo-1", &repo_root.to_string_lossy(), "Repo One")
+        .unwrap();
+
+    let prepared = prepare_task_for_api(&db, &config, setup_create_request("claude")).unwrap();
+    let task_id = prepared.created_task.task_id.clone();
+
+    let daemon_task = spawn_fake_daemon_session_created_once(config.daemon_dir.clone()).await;
+    let mut daemon = DaemonClient::connect(&config.daemon_dir).await.unwrap();
+    let error = super::super::spawn_prepared_task_for_api_recording_stage_run_detailed(
+        &config.db_path,
+        &mut daemon,
+        prepared,
+    )
+    .await
+    .map_err(|error| error.into_message())
+    .unwrap_err();
+    daemon_task.abort();
+
+    assert!(error.contains("workspace setup failed"), "error: {error}");
+    assert!(error.contains("SETUP_FAILURE_SENTINEL"), "error: {error}");
+    let run = db.latest_stage_run(&task_id).unwrap().unwrap();
+    assert_eq!(run.status, "failed");
+    let records = db.workspace_setup_runs(&task_id).unwrap();
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].run_id, run.id);
+    assert_eq!(records[0].status, "failed");
+    assert_eq!(records[0].exit_code, Some(23));
+    assert!(
+        records[0].output.contains("SETUP_FAILURE_SENTINEL"),
+        "output: {}",
+        records[0].output
+    );
+
+    let _ = std::fs::remove_dir_all(&repo_root);
+}
+
+fn setup_create_request(agent_provider: &str) -> CreateTaskRequest {
+    CreateTaskRequest {
+        repo_id: "repo-1".to_string(),
+        prompt: "Use the setup-provisioned provider".to_string(),
+        display_name: None,
+        workflow_name: None,
+        stage: None,
+        base_ref: None,
+        diff_base_ref: None,
+        agent: None,
+        agent_provider: Some(agent_provider.to_string()),
+        agent_type: Some("pty".to_string()),
+        terminal_cols: None,
+        terminal_rows: None,
+        model: None,
+        effort: None,
+        permission_mode: None,
+        allowed_tools: None,
+        disallowed_tools: None,
+        max_turns: None,
+        max_budget_usd: None,
+        setup_cmds: None,
+        task_template: None,
+        resume_session_id: None,
+        recovery_snapshot: None,
+        transfer_import: None,
+        notify_task_id: None,
+        review_context: None,
+        parent_task_id: None,
+        blocker_task_ids: None,
+    }
 }
 
 #[test]
@@ -405,6 +435,7 @@ fn initial_pty_task_binds_first_provider_before_setup() {
     .unwrap();
 
     assert_eq!(prepared.agent_provider, "claude");
+    let deferred_setup = prepared.deferred_setup.clone();
     let installed = std::path::Path::new(&prepared.cwd).join(".kanna/setup-bin/codex");
     assert!(
         !installed.exists(),
@@ -418,10 +449,14 @@ fn initial_pty_task_binds_first_provider_before_setup() {
         } => {
             assert_eq!(agent_provider, DaemonAgentProvider::Claude);
             let command = args.last().expect("PTY command");
-            assert!(command.contains(INSTALL_CODEX), "command: {command}");
+            assert!(
+                !command.contains(INSTALL_CODEX),
+                "setup runs on the server-side runner, not in the agent command: {command}"
+            );
         }
         _ => panic!("expected PTY session"),
     }
+    assert_eq!(deferred_setup, vec![INSTALL_CODEX.to_string()]);
 
     let _ = std::fs::remove_dir_all(&repo_root);
 }
@@ -641,6 +676,18 @@ async fn stage_fork_runs_repo_setup_before_resolving_pty_provider() {
         _ => unreachable!(),
     }
 
+    // The stream the runner buffered is kept on success too, bound to the run
+    // the fork spawned.
+    let run = db.latest_stage_run("task-1").unwrap().unwrap();
+    assert_eq!(run.stage, "review");
+    let records = db.workspace_setup_runs("task-1").unwrap();
+    let record = records
+        .iter()
+        .find(|record| record.run_id == run.id)
+        .expect("the forked stage run has a Setup record");
+    assert_eq!(record.status, "succeeded");
+    assert_eq!(record.exit_code, Some(0));
+
     let _ = std::fs::remove_dir_all(&repo_root);
 }
 
@@ -787,6 +834,18 @@ async fn timed_out_stage_fork_setup_kills_group_records_failure_and_removes_fork
     assert!(
         failed.result.unwrap().contains("workspace setup timed out"),
         "failed run should preserve setup diagnostics"
+    );
+    let records = db.workspace_setup_runs("task-1").unwrap();
+    let record = records
+        .iter()
+        .find(|record| record.run_id == failed.id)
+        .expect("a timed-out setup still records its stream");
+    assert_eq!(record.status, "failed");
+    assert!(record.timed_out);
+    assert!(
+        record.output.contains("setup-started"),
+        "output: {}",
+        record.output
     );
     assert_eq!(
         db.get_pipeline_item("task-1")

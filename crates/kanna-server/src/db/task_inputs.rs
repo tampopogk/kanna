@@ -22,6 +22,7 @@
 //! revision feedback are already durable on `stage_run` and are not duplicated
 //! here.
 
+use super::stage_runs::AGENT_RUN_KINDS;
 use super::{Db, TaskEventKind};
 use rusqlite::{params, OptionalExtension};
 use serde::Serialize;
@@ -177,10 +178,12 @@ impl Db {
         let run_id: Option<String> = self
             .conn
             .query_row(
-                "SELECT id FROM stage_run
-                 WHERE task_id = ? AND status = 'running'
+                &format!(
+                    "SELECT id FROM stage_run
+                 WHERE task_id = ? AND kind IN {AGENT_RUN_KINDS} AND status = 'running'
                  ORDER BY rowid DESC
-                 LIMIT 1",
+                 LIMIT 1"
+                ),
                 [task_id],
                 |row| row.get(0),
             )
@@ -231,10 +234,12 @@ impl Db {
         let run_id: Option<String> = self
             .conn
             .query_row(
-                "SELECT id FROM stage_run
-                 WHERE task_id = ? AND status = 'running'
+                &format!(
+                    "SELECT id FROM stage_run
+                 WHERE task_id = ? AND kind IN {AGENT_RUN_KINDS} AND status = 'running'
                  ORDER BY rowid DESC
-                 LIMIT 1",
+                 LIMIT 1"
+                ),
                 [task_id],
                 |row| row.get(0),
             )

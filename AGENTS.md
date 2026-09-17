@@ -202,6 +202,19 @@ acknowledging transferred descriptors.
 - Task stage lives in `pipeline_item.stage`. **Visibility is governed by
   `closed_at`, not stage** — closed tasks keep their last stage. Blocked
   display state derives from `task_blocker`, not tags.
+- **Not every `stage_run` row is an agent run.** `kind` is `main` or `post` for
+  a task's agent runs and `teardown` for the detached `td-{branch}` workspace
+  cleanup, which exists only so that cleanup has a durable identity to bind its
+  terminal archive to: the archive is keyed by run id and
+  `agent_terminal_attempt` is foreign-keyed to `stage_run`. A teardown run
+  carries no agent, no verdict and no `run.finished`, is labelled with the
+  stage whose workspace it tore down, and is never the task's latest run — so a
+  query meaning "this task's runs" scopes itself with
+  `db::stage_runs::AGENT_RUN_KINDS`, and one meaning "this task's launched
+  terminals" does not. A repo's `setup` runs on the server-side workspace
+  command runner for every spawn, and its buffered output is kept per run in
+  `workspace_setup_run` whether it succeeded or failed; it is never inlined
+  into the agent's own PTY command, where it had no stored boundary.
 - Worktrees at `{repoPath}/.kanna-worktrees/task-{uuid}`; branches `task-{id}`,
   with stage forks appending a counter (`task-{id}-2`, …).
 - GitHub labels: `kn:wip`, `kn:pr-ready`, `kn:claimed`.

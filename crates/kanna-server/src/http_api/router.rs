@@ -286,6 +286,14 @@ pub fn router(state: Arc<AppState>) -> Router {
             "/v1/tasks/{task_id}/terminal-attempts/{run_id}",
             get(super::terminal_archives::read),
         )
+        .route(
+            "/v1/tasks/{task_id}/setup-logs",
+            get(super::workspace_setup_logs::list),
+        )
+        .route(
+            "/v1/tasks/{task_id}/setup-logs/{run_id}",
+            get(super::workspace_setup_logs::read),
+        )
         // Photo attachments ride in this route's JSON body, so it alone opts
         // out of axum's default 2 MiB limit. See
         // `task_input_attachments::MAX_TASK_INPUT_BODY_BYTES` for the budget.

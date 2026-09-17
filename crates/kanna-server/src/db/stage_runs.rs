@@ -3,6 +3,19 @@ use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
+/// The `stage_run.kind` values a task's agent sessions produce.
+///
+/// The table also carries workspace lifecycle runs (`teardown`), which exist
+/// only to give a detached `td-{branch}` cleanup session a durable identity for
+/// its terminal archive. Such a run is not the task's latest run, carries no
+/// stage verdict, answers no `$PREV_RESULT`, and must never be resolved as the
+/// run an agent action applies to — so every query that means "this task's
+/// runs" scopes itself with this list.
+pub(crate) const AGENT_RUN_KINDS: &str = "('main', 'post')";
+
+/// `stage_run.kind` for a workspace teardown session.
+pub(crate) const TEARDOWN_RUN_KIND: &str = "teardown";
+
 /// Identity of a run closed by `finish_latest_running_stage_run`.
 pub struct FinishedStageRun {
     pub kind: String,
@@ -133,17 +146,20 @@ impl StageProviderOverride {
 impl Db {
     pub fn has_durable_running_task_session(&self, task_id: &str) -> Result<bool, rusqlite::Error> {
         self.conn.query_row(
-            "SELECT EXISTS(
+            &format!(
+                "SELECT EXISTS(
                 SELECT 1
                 FROM stage_run sr
                 JOIN terminal_session ts
                   ON ts.pipeline_item_id = sr.task_id
                  AND ts.daemon_session_id = sr.session_id
                 WHERE sr.task_id = ?
+                  AND sr.kind IN {AGENT_RUN_KINDS}
                   AND sr.status = 'running'
                   AND sr.session_id IS NOT NULL
                   AND sr.session_id != ''
-            )",
+            )"
+            ),
             [task_id],
             |row| row.get(0),
         )
@@ -238,8 +254,12 @@ impl Db {
             ],
         )?;
         // A pending run has not started anything yet; the watcher wants the
-        // moment an agent is actually working.
-        if run.status == "running" {
+        // moment an agent is actually working. A workspace teardown is not an
+        // agent: announcing `run.started` for one would report work nobody is
+        // doing, and clearing the task's runtime verdict below would erase the
+        // `exited` its agent session just earned — a teardown is spawned
+        // immediately after that session was killed.
+        if run.status == "running" && run.kind != TEARDOWN_RUN_KIND {
             // A previous session's `exited` verdict describes a session that
             // no longer exists, and a run that is starting proves this task has
             // one again. A post run is injected into the same live session,
@@ -294,15 +314,15 @@ impl Db {
         &self,
         task_id: &str,
     ) -> Result<Vec<StageRun>, rusqlite::Error> {
-        let mut stmt = self.conn.prepare(
+        let mut stmt = self.conn.prepare(&format!(
             "SELECT id, task_id, stage, kind, agent, agent_provider, model, effort, status, result, feedback,
                     session_id, provider_session_id, cwd, resumed_from_run_id,
                     resume_fallback_reason, completion_transition,
                     COALESCE(trigger, 'unspecified'), provider_override, started_at, finished_at, replaces_run_id, no_work_termination
              FROM stage_run
-             WHERE task_id = ?
-             ORDER BY rowid ASC",
-        )?;
+             WHERE task_id = ? AND kind IN {AGENT_RUN_KINDS}
+             ORDER BY rowid ASC"
+        ))?;
         let rows = stmt.query_map([task_id], stage_run_from_row)?;
         rows.collect()
     }
@@ -311,13 +331,15 @@ impl Db {
         &self,
         task_id: &str,
     ) -> Result<Vec<StageRun>, rusqlite::Error> {
-        let mut stmt = self.conn.prepare(
+        let mut stmt = self.conn.prepare(&format!(
             "SELECT id, task_id, stage, kind, agent, agent_provider, model, effort, status, result, feedback,
                     session_id, provider_session_id, cwd, resumed_from_run_id,
                     resume_fallback_reason, completion_transition,
                     COALESCE(trigger, 'unspecified'), provider_override, started_at, finished_at, replaces_run_id, no_work_termination
-             FROM stage_run WHERE task_id = ? AND status = 'running' ORDER BY rowid ASC",
-        )?;
+             FROM stage_run
+             WHERE task_id = ? AND kind IN {AGENT_RUN_KINDS} AND status = 'running'
+             ORDER BY rowid ASC"
+        ))?;
         let rows = stmt.query_map([task_id], stage_run_from_row)?;
         rows.collect()
     }
@@ -328,12 +350,12 @@ impl Db {
     /// `task_creator::work_tip` enumerates the branches that might hold the
     /// task's committed tip.
     pub fn task_stage_run_cwds(&self, task_id: &str) -> Result<Vec<String>, rusqlite::Error> {
-        let mut stmt = match self.conn.prepare(
+        let mut stmt = match self.conn.prepare(&format!(
             "SELECT cwd FROM stage_run
-             WHERE task_id = ? AND cwd IS NOT NULL
+             WHERE task_id = ? AND kind IN {AGENT_RUN_KINDS} AND cwd IS NOT NULL
              GROUP BY cwd
-             ORDER BY MAX(rowid) DESC",
-        ) {
+             ORDER BY MAX(rowid) DESC"
+        )) {
             Ok(stmt) => stmt,
             Err(err) if is_missing_stage_run_table(&err) => return Ok(Vec::new()),
             Err(err) => return Err(err),
@@ -347,14 +369,16 @@ impl Db {
         let run = self
             .conn
             .query_row(
+                &format!(
                 "SELECT id, task_id, stage, kind, agent, agent_provider, model, effort, status, result,
                         feedback, session_id, provider_session_id, cwd, resumed_from_run_id,
                         resume_fallback_reason, completion_transition,
                         COALESCE(trigger, 'unspecified'), provider_override, started_at, finished_at, replaces_run_id, no_work_termination
                  FROM stage_run
-                 WHERE task_id = ?
+                 WHERE task_id = ? AND kind IN {AGENT_RUN_KINDS}
                  ORDER BY rowid DESC
-                 LIMIT 1",
+                 LIMIT 1"
+                ),
                 [task_id],
                 stage_run_from_row,
             )
@@ -548,7 +572,14 @@ impl Db {
         if rows_affected == 0 {
             return Err(rusqlite::Error::QueryReturnedNoRows);
         }
-        if let Some((task_id, stage, kind)) = identity {
+        // `run.finished` is a fact about a task's agent: subscribers treat a
+        // non-succeeded one as urgent and enrich it with the task's latest
+        // run. A workspace teardown has neither an agent nor a verdict, so
+        // closing one publishes nothing — its record is the run row and the
+        // terminal archive bound to it.
+        if let Some((task_id, stage, kind)) =
+            identity.filter(|(_, _, kind)| kind != TEARDOWN_RUN_KIND)
+        {
             self.append_task_event(
                 &task_id,
                 TaskEventKind::RunFinished,
@@ -589,14 +620,16 @@ impl Db {
         provider_session_id: &str,
     ) -> Result<(), rusqlite::Error> {
         self.conn.execute(
-            "UPDATE stage_run
+            &format!(
+                "UPDATE stage_run
              SET provider_session_id = ?
              WHERE id = (
                SELECT id FROM stage_run
-               WHERE task_id = ?
+               WHERE task_id = ? AND kind IN {AGENT_RUN_KINDS}
                ORDER BY rowid DESC
                LIMIT 1
-             )",
+             )"
+            ),
             (provider_session_id, task_id),
         )?;
         self.update_pipeline_item_agent_session_id(task_id, Some(provider_session_id))
@@ -668,15 +701,18 @@ impl Db {
         let transaction = self.conn.unchecked_transaction()?;
         let run_id = transaction
             .query_row(
-                "SELECT sr.id
+                &format!(
+                    "SELECT sr.id
                  FROM stage_run sr
                  JOIN pipeline_item p ON p.id = sr.task_id
                  WHERE sr.task_id = ?
                    AND p.closed_at IS NULL
+                   AND sr.kind IN {AGENT_RUN_KINDS}
                    AND sr.id = (
                      SELECT latest.id
                      FROM stage_run latest
                      WHERE latest.task_id = sr.task_id
+                       AND latest.kind IN {AGENT_RUN_KINDS}
                      ORDER BY latest.rowid DESC
                      LIMIT 1
                    )
@@ -688,7 +724,8 @@ impl Db {
                      OR (sr.status = 'cancelled' AND sr.result IS NULL AND sr.feedback IS NULL)
                    )
                  ORDER BY sr.rowid DESC
-                 LIMIT 1",
+                 LIMIT 1"
+                ),
                 (
                     task_id,
                     super::no_work_termination::SESSION_INTERRUPTED,
@@ -725,6 +762,27 @@ impl Db {
         Ok(rows_affected > 0)
     }
 
+    /// The running workspace-teardown run a daemon session is serving, if any.
+    ///
+    /// A `td-{branch}` session id resolves to no task, so the exit handler
+    /// cannot reach this run the way it reaches an agent's. Looked up by
+    /// session id and kind, which together name exactly one live cleanup.
+    pub fn running_teardown_stage_run_for_session(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<String>, rusqlite::Error> {
+        self.conn
+            .query_row(
+                "SELECT id FROM stage_run
+                 WHERE session_id = ? AND kind = ? AND status = 'running'
+                 ORDER BY rowid DESC
+                 LIMIT 1",
+                (session_id, TEARDOWN_RUN_KIND),
+                |row| row.get(0),
+            )
+            .optional()
+    }
+
     pub fn stage_run_completion_bound(&self, run_id: &str) -> Result<bool, rusqlite::Error> {
         self.conn.query_row(
             "SELECT completion_bound != 0 FROM stage_run WHERE id = ?",
@@ -746,11 +804,13 @@ impl Db {
         let run_result = self
             .conn
             .query_row(
-                "SELECT id, kind, completion_transition, COALESCE(trigger, 'unspecified'), feedback
+                &format!(
+                    "SELECT id, kind, completion_transition, COALESCE(trigger, 'unspecified'), feedback
                  FROM stage_run
-                 WHERE task_id = ? AND status = 'running'
+                 WHERE task_id = ? AND kind IN {AGENT_RUN_KINDS} AND status = 'running'
                  ORDER BY rowid DESC
-                 LIMIT 1",
+                 LIMIT 1"
+                ),
                 [task_id],
                 |row| {
                     Ok((
@@ -853,16 +913,17 @@ impl Db {
     /// ordered stage/main/post/revision history, appended after whatever it
     /// itself inherited from an earlier hop.
     pub fn finished_stage_runs(&self, task_id: &str) -> Result<Vec<StageRun>, rusqlite::Error> {
-        let mut stmt = match self.conn.prepare(
+        let mut stmt = match self.conn.prepare(&format!(
             "SELECT id, task_id, stage, kind, agent, agent_provider, model, effort, status, result,
                     feedback, session_id, provider_session_id, cwd, resumed_from_run_id,
                     resume_fallback_reason, completion_transition,
                     COALESCE(trigger, 'unspecified'), provider_override, started_at, finished_at,
                     replaces_run_id, no_work_termination
              FROM stage_run
-             WHERE task_id = ? AND status IN ('succeeded', 'failed')
-             ORDER BY rowid ASC",
-        ) {
+             WHERE task_id = ? AND kind IN {AGENT_RUN_KINDS}
+               AND status IN ('succeeded', 'failed')
+             ORDER BY rowid ASC"
+        )) {
             Ok(stmt) => stmt,
             Err(err) if is_missing_stage_run_table(&err) => return Ok(Vec::new()),
             Err(err) => return Err(err),
@@ -879,14 +940,17 @@ impl Db {
         let result = self
             .conn
             .query_row(
-                "SELECT result
+                &format!(
+                    "SELECT result
                  FROM stage_run
                  WHERE task_id = ?
+                   AND kind IN {AGENT_RUN_KINDS}
                    AND status IN ('succeeded', 'failed')
                    AND result IS NOT NULL
                    AND (?2 IS NULL OR kind = ?2)
                  ORDER BY rowid DESC
-                 LIMIT 1",
+                 LIMIT 1"
+                ),
                 rusqlite::params![task_id, kind],
                 |row| row.get(0),
             )
