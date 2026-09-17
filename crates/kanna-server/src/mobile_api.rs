@@ -304,6 +304,17 @@ pub struct TaskDetail {
     /// `activity` nor `runtimeState` can say what happened.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider_rejection: Option<TaskProviderRejection>,
+    /// The most recent time a provider refused this task's turn for capacity
+    /// at the stage it currently occupies, when one did.
+    ///
+    /// Its own field beside [`Self::provider_rejection`], never folded into
+    /// it: a spent allowance burns a candidate and may have started a
+    /// fallback, while this is transient and changed nothing — the session is
+    /// alive, the run is still running, and the recovery is to retry the turn.
+    /// A reader that could not tell them apart would either wait for a reset
+    /// that is not coming or treat a live session as parked.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_capacity_notice: Option<TaskProviderCapacityNotice>,
 }
 
 /// A provider's own refusal of a turn, as task detail reports it.
@@ -339,6 +350,41 @@ pub struct TaskProviderRejection {
     /// re-resolves the stage's candidate list around exactly this set.
     #[serde(default)]
     pub rejected_providers: Vec<String>,
+    pub observed_at: String,
+}
+
+/// A provider's own refusal of a turn for capacity, as task detail reports it.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskProviderCapacityNotice {
+    pub provider: String,
+    /// The model the run selected — what the provider refused. The measured
+    /// chrome scopes itself to the selected model without naming it, so this
+    /// is the run's own recorded model rather than anything parsed out of the
+    /// sentence.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort: Option<String>,
+    /// Any scope the CLI itself named. Absent means it named none, which is
+    /// never the same claim as "this provider is unavailable".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<String>,
+    pub stage: String,
+    pub stage_run_id: String,
+    /// `pty` (matched against the CLI's rendered refusal by a
+    /// version-measured rule) or `sdk`.
+    pub source: String,
+    /// The rule that decided it and the sentence it matched, so the claim can
+    /// be checked rather than believed.
+    pub rule_id: String,
+    pub matched_text: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cli_version: Option<String>,
+    /// What a person or a manager can do about it, in words. Capacity has one
+    /// recovery — retry the turn — so this is a sentence rather than a verdict
+    /// vocabulary.
+    pub action: String,
     pub observed_at: String,
 }
 
@@ -1140,6 +1186,7 @@ impl MobileApi {
             .count_task_inputs(&item.id)
             .map_err(|e| format!("db error: {}", e))?;
         let provider_rejection = self.task_provider_rejection(&item)?;
+        let provider_capacity_notice = self.task_provider_capacity_notice(&item)?;
         let review_context = self
             ._db
             .read_task_review_context(&item.id)
@@ -1175,6 +1222,7 @@ impl MobileApi {
                 delivered_input_count,
                 ports,
                 provider_rejection,
+                provider_capacity_notice,
                 review_context,
                 human_review_decision,
             },
@@ -1222,6 +1270,41 @@ impl MobileApi {
             replacement_run_id: rejection.replacement_run_id,
             rejected_providers,
             observed_at: rejection.observed_at,
+        }))
+    }
+
+    /// The latest capacity refusal at the stage the task currently occupies.
+    ///
+    /// Stage-scoped for the same reason the rejection reader is: a refusal at
+    /// a stage the task has already left is history, and a transient one most
+    /// of all — the turn it refused was retried or abandoned rounds ago.
+    fn task_provider_capacity_notice(
+        &self,
+        item: &crate::db::PipelineItem,
+    ) -> Result<Option<TaskProviderCapacityNotice>, String> {
+        let Some(stage) = item.stage.as_deref() else {
+            return Ok(None);
+        };
+        let Some(notice) = self
+            ._db
+            .latest_provider_capacity_notice_at_stage(&item.id, stage)
+            .map_err(|error| format!("db error: {error}"))?
+        else {
+            return Ok(None);
+        };
+        Ok(Some(TaskProviderCapacityNotice {
+            provider: notice.provider,
+            model: notice.model,
+            effort: notice.effort,
+            scope: notice.scope,
+            stage: notice.stage,
+            stage_run_id: notice.stage_run_id,
+            source: notice.source,
+            rule_id: notice.rule_id,
+            matched_text: notice.matched_text,
+            cli_version: notice.cli_version,
+            action: crate::http_api::CAPACITY_ACTION.to_string(),
+            observed_at: notice.observed_at,
         }))
     }
 
@@ -1480,6 +1563,7 @@ struct TaskDetailRelations {
     delivered_input_count: i64,
     ports: Vec<TaskPort>,
     provider_rejection: Option<TaskProviderRejection>,
+    provider_capacity_notice: Option<TaskProviderCapacityNotice>,
     review_context: Option<crate::db::TaskReviewContext>,
     human_review_decision: Option<crate::db::HumanReviewDecision>,
 }
@@ -1499,6 +1583,7 @@ fn map_task_detail(
         delivered_input_count,
         mut ports,
         provider_rejection,
+        provider_capacity_notice,
         review_context,
         human_review_decision,
     } = relations;
@@ -1623,6 +1708,7 @@ fn map_task_detail(
         blocked_by_task_ids,
         ports: (!ports.is_empty()).then_some(ports),
         provider_rejection,
+        provider_capacity_notice,
     }
 }
 

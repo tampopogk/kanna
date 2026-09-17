@@ -1,6 +1,7 @@
 mod analytics;
 mod backup;
 mod blocking;
+mod capacity_notice;
 mod cloud_desktops;
 pub(crate) mod cloud_relay;
 mod copilot_wake;
@@ -149,6 +150,9 @@ pub async fn serve_lan_machine_invoke_listener(
 pub async fn serve(state: std::sync::Arc<AppState>) -> Result<(), String> {
     routes::serve(state).await
 }
+pub(crate) use capacity_notice::{
+    handle_provider_capacity_notice, ProviderCapacityNotice, CAPACITY_ACTION,
+};
 /// In-process entry points the transfer engine calls.
 ///
 /// The engine performs the same task lifecycle actions the LAN routes serve —

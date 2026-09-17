@@ -548,6 +548,37 @@ pub(crate) async fn terminal_state_watcher_once(
                     )
                     .await;
                 }
+                // Capacity is transient and the session is alive, so this
+                // deliberately shares nothing with quota recovery but the
+                // precondition: no candidate is burned, no fallback is
+                // started, and the run is left exactly as it is.
+                kanna_daemon::protocol::ProviderNoticeKind::CapacityRefusal => {
+                    let Some(provider) = agent_provider else {
+                        log::warn!(
+                            "[capacity] ignoring a refusal for {session_id} with no provider"
+                        );
+                        continue;
+                    };
+                    http_api::handle_provider_capacity_notice(
+                        state,
+                        http_api::ProviderCapacityNotice {
+                            session_id,
+                            provider: provider.as_str().to_string(),
+                            scope,
+                            rule_id,
+                            text,
+                            cli_version,
+                            source: match session_kind {
+                                kanna_daemon::protocol::SessionKind::Pty => {
+                                    crate::db::QuotaRejectionSource::Pty
+                                }
+                                kanna_daemon::protocol::SessionKind::Agent => {
+                                    crate::db::QuotaRejectionSource::Sdk
+                                }
+                            },
+                        },
+                    );
+                }
             },
             DaemonEvent::ComposerChanged {
                 session_id,

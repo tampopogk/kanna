@@ -89,16 +89,20 @@ struct RejectionOutcome {
 }
 
 /// The still-running attempt a refusal belongs to.
-struct RefusedAttempt {
-    task_id: String,
-    stage: String,
-    run_id: String,
-    run_kind: String,
-    model: Option<String>,
-    effort: Option<String>,
-    feedback: Option<String>,
-    worktree_path: Option<String>,
-    override_binding: bool,
+///
+/// Shared with [`super::capacity_notice`]: both kinds of refusal are only ever
+/// acted on against an open task's own still-running attempt on the provider
+/// that refused, and that precondition must not drift between them.
+pub(super) struct RefusedAttempt {
+    pub(super) task_id: String,
+    pub(super) stage: String,
+    pub(super) run_id: String,
+    pub(super) run_kind: String,
+    pub(super) model: Option<String>,
+    pub(super) effort: Option<String>,
+    pub(super) feedback: Option<String>,
+    pub(super) worktree_path: Option<String>,
+    pub(super) override_binding: bool,
 }
 
 async fn apply_quota_rejection(
@@ -112,7 +116,7 @@ async fn apply_quota_rejection(
     // over an await cannot be sent to the runtime that drives this watcher.
     let Some((attempt, mutation, plan, rejection)) = ({
         let db = Db::open(&config.db_path).map_err(|error| format!("db error: {error}"))?;
-        let Some(attempt) = refused_attempt(&db, notice)? else {
+        let Some(attempt) = refused_attempt(&db, &notice.session_id, &notice.provider)? else {
             return Ok(None);
         };
         // Everything below replaces a session or closes a run, so it takes the
@@ -182,12 +186,13 @@ struct RecoveryPlan {
 ///
 /// A refusal against anything but an open task's own still-running attempt is
 /// recorded nowhere and acted on not at all: there is no attempt to replace.
-fn refused_attempt(
+pub(super) fn refused_attempt(
     db: &Db,
-    notice: &QuotaRejectionNotice,
+    session_id: &str,
+    provider: &str,
 ) -> Result<Option<RefusedAttempt>, String> {
     let Some(task_id) = db
-        .resolve_pipeline_item_id(&notice.session_id)
+        .resolve_pipeline_item_id(session_id)
         .map_err(|error| format!("db error: {error}"))?
     else {
         return Ok(None);
@@ -207,13 +212,13 @@ fn refused_attempt(
     else {
         return Ok(None);
     };
-    if run.status != "running" || run.session_id.as_deref() != Some(notice.session_id.as_str()) {
+    if run.status != "running" || run.session_id.as_deref() != Some(session_id) {
         return Ok(None);
     }
     // The provider that refused must be the one this run is actually using.
     // A stale announcement arriving after a replacement has already swapped
     // the session onto another CLI describes a run that no longer exists.
-    if run.agent_provider.as_deref() != Some(notice.provider.as_str()) {
+    if run.agent_provider.as_deref() != Some(provider) {
         return Ok(None);
     }
     Ok(Some(RefusedAttempt {

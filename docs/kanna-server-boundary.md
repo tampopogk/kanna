@@ -1857,6 +1857,17 @@ cursor-based, not snapshot-diffed:
   and `payload.action` says what a human can do about it. Emitted once per
   refusal that parks — there is no retry loop behind it. See
   [`docs/specs/provider-quota-recovery.md`](specs/provider-quota-recovery.md).
+- `task.provider_capacity_refused` is a provider refusing a turn because the
+  model the run selected is at capacity — transient, and deliberately not a
+  quota rejection: nothing is spent, no candidate is burned, no fallback is
+  started, and the run stays `running` with its session alive at the composer.
+  It is actionable when appended, so there is no parked event behind it.
+  `payload.provider`, `model`, `effort`, `stage` and `stageRunId` identify the
+  refused attempt; `payload.scope` is any scope the CLI itself named (`null`
+  where it named none); `payload.source`, `ruleId`, `matchedText` and
+  `cliVersion` are the evidence; `payload.action` says what to do, which is to
+  retry the turn. See
+  [`docs/specs/provider-quota-recovery.md`](specs/provider-quota-recovery.md).
 - `task.input_delivered` announces a message delivered into a task's agent
   session from outside it. `payload.source` is the caller-declared author
   (`operator`, `manager`, `unspecified`); historical retained events may carry
@@ -2374,6 +2385,34 @@ contract allows it, walks the stage's ordered candidate list once:
   should be considered.
 
 Full contract: [`docs/specs/provider-quota-recovery.md`](specs/provider-quota-recovery.md).
+
+### A capacity refusal is not a spent allowance
+
+The same channel carries a second, deliberately separate kind. A CLI that
+refuses a turn because the model it is pointed at has no capacity right now
+prints one line and goes back to its composer: no runtime edge fires, because
+nothing sustained a busy classification, and nothing is spent, so nothing has to
+reset. On 2026-09-16 that made a Ship task invisible to its manager.
+
+`ProviderNoticeKind::CapacityRefusal` therefore travels beside the rejection
+and shares none of its machinery:
+
+- It is recorded in `task_provider_capacity_notice`, not
+  `task_provider_rejection`. Nothing in quota recovery reads that table, so a
+  transient refusal can never retire one of a stage's ordered candidates. Same
+  `(stage_run, provider, stated scope)` uniqueness, so a replayed announcement
+  wakes nobody twice.
+- **The run is left exactly as it is** — still `running`, never closed as
+  failed, never replaced, no fallback prepared or spawned. The recovery is to
+  retry the turn, and it exists because none of that happened.
+- The task is marked `unread` and `task.provider_capacity_refused` is appended.
+  It is relevant to a subscription on its own: there is no recovery verdict to
+  interpret and no parked event to wait for.
+- `kanna_get_task` reports `providerCapacityNotice` for the stage the task
+  currently occupies, beside — never merged into — `providerRejection`. The
+  claim is exactly as wide as the sentence that proved it: the measured chrome
+  names the *selected* model without identifying it, so `scope` is null and
+  `model` is the model Kanna recorded for that run.
 
 ## Analytics Statistics
 

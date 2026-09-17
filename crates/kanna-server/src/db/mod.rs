@@ -26,6 +26,7 @@ mod lifecycle_operations;
 mod operator_events;
 mod pipeline_items;
 mod ports;
+mod provider_capacity_notices;
 mod provider_rejections;
 mod pull_requests;
 mod repos;
@@ -57,6 +58,8 @@ pub(crate) use pipeline_items::normalize_attention_reason;
 pub use pipeline_items::MergeSignalSource;
 #[allow(unused_imports)]
 pub use pipeline_items::WorkflowReplacement;
+#[allow(unused_imports)]
+pub use provider_capacity_notices::{NewProviderCapacityNotice, ProviderCapacityNotice};
 #[allow(unused_imports)]
 pub use provider_rejections::{
     NewProviderRejection, ProviderRejection, QuotaRecovery, QuotaRejectionSource,
@@ -2470,6 +2473,37 @@ fn run_schema_migrations(conn: &Connection) -> Result<(), rusqlite::Error> {
     })?;
 
     run_migration(conn, "086_copilot_wake", copilot_wake::create_schema)?;
+
+    // A capacity refusal is not a spent allowance, so it gets its own log
+    // rather than a `kind` column on `task_provider_rejection`: everything
+    // that reads that table is quota recovery deciding which of a stage's
+    // ordered candidates are burned, and a transient refusal must never retire
+    // one. Same uniqueness, for the same reason — a replayed announcement
+    // lands on the row that already exists.
+    run_migration(conn, "087_provider_capacity_notice_log", |conn| {
+        conn.execute_batch(
+            r#"
+            CREATE TABLE IF NOT EXISTS task_provider_capacity_notice (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                task_id TEXT NOT NULL REFERENCES pipeline_item(id) ON DELETE CASCADE,
+                stage_run_id TEXT NOT NULL,
+                stage TEXT NOT NULL,
+                provider TEXT NOT NULL,
+                model TEXT,
+                effort TEXT,
+                source TEXT NOT NULL CHECK (source IN ('pty', 'sdk')),
+                rule_id TEXT NOT NULL,
+                matched_text TEXT NOT NULL,
+                scope TEXT NOT NULL DEFAULT '',
+                cli_version TEXT,
+                observed_at TEXT NOT NULL DEFAULT (datetime('now')),
+                UNIQUE (stage_run_id, provider, scope)
+            );
+            CREATE INDEX IF NOT EXISTS idx_task_provider_capacity_notice_task_stage
+            ON task_provider_capacity_notice(task_id, stage);
+            "#,
+        )
+    })?;
 
     Ok(())
 }

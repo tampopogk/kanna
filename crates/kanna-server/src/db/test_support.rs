@@ -258,6 +258,25 @@ impl Db {
             CREATE INDEX idx_task_provider_rejection_task_stage
             ON task_provider_rejection(task_id, stage);
 
+            CREATE TABLE task_provider_capacity_notice (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                task_id TEXT NOT NULL,
+                stage_run_id TEXT NOT NULL,
+                stage TEXT NOT NULL,
+                provider TEXT NOT NULL,
+                model TEXT,
+                effort TEXT,
+                source TEXT NOT NULL CHECK (source IN ('pty', 'sdk')),
+                rule_id TEXT NOT NULL,
+                matched_text TEXT NOT NULL,
+                scope TEXT NOT NULL DEFAULT '',
+                cli_version TEXT,
+                observed_at TEXT NOT NULL DEFAULT (datetime('now')),
+                UNIQUE (stage_run_id, provider, scope)
+            );
+            CREATE INDEX idx_task_provider_capacity_notice_task_stage
+            ON task_provider_capacity_notice(task_id, stage);
+
             CREATE TABLE settings (
                 key TEXT PRIMARY KEY,
                 value TEXT NOT NULL

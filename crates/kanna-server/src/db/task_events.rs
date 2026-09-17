@@ -168,6 +168,25 @@ pub enum TaskEventKind {
     /// `payload.rejectedProviders` lists what has been refused at this stage,
     /// and `payload.action` says in words what a human can do about it.
     ProviderQuotaParked,
+    /// A provider refused this task's turn because the model the run selected
+    /// is at capacity — a transient condition, not a spent allowance.
+    ///
+    /// Deliberately its own kind rather than a `task.provider_quota_*` event:
+    /// nothing is spent, no candidate has been burned, no fallback was
+    /// started, and the run is still running with its session alive at the
+    /// composer. It is actionable the moment it is appended — the recovery is
+    /// to try the turn again — so there is no second "parked" event behind it.
+    ///
+    /// A *positive* match on the provider's own refusal chrome at a CLI
+    /// version this repository has measured, never inferred from a quiet
+    /// session. The claim is exactly as wide as the sentence: `payload.model`
+    /// is the model the run selected and the CLI refused, `payload.scope` is
+    /// any scope the CLI itself named (null where it named none), and neither
+    /// is ever a claim that the provider or the account is unavailable.
+    /// `payload.ruleId` and `payload.matchedText` are the pattern and the
+    /// sentence, so the claim can be checked; `payload.action` says in words
+    /// what a person or a manager can do about it.
+    ProviderCapacityRefused,
     /// A review task's structured pull-request context was published or
     /// refreshed. This is *candidate information* an agent supplied about the
     /// forge — which PR, which head commit, which base — and never an
@@ -221,6 +240,7 @@ impl TaskEventKind {
             Self::TaskUnblocked => "task.unblocked",
             Self::ProviderQuotaRejected => "task.provider_quota_rejected",
             Self::ProviderQuotaParked => "task.provider_quota_parked",
+            Self::ProviderCapacityRefused => "task.provider_capacity_refused",
             Self::ReviewContextChanged => "task.review_context_changed",
             Self::HumanReviewDecisionRecorded => "task.human_review_decision",
             Self::HumanReviewDecisionDelivery => "task.human_review_decision_delivery",
@@ -254,6 +274,7 @@ impl TaskEventKind {
         Self::TaskUnblocked,
         Self::ProviderQuotaRejected,
         Self::ProviderQuotaParked,
+        Self::ProviderCapacityRefused,
         Self::ReviewContextChanged,
         Self::HumanReviewDecisionRecorded,
         Self::HumanReviewDecisionDelivery,
