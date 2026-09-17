@@ -138,8 +138,8 @@ export const shortcuts: ShortcutDef[] = [
   // Help — global app controls and help entry points
   { action: "openPreferences", labelKey: "shortcuts.preferences", groupKey: "shortcuts.groupAppHelp", key: ",", code: "Comma",             meta: true,               display: "⌘,",       context: ["main"] },
   // Help — ⇧⌘/ must come before ⌘/ so the more specific shortcut matches first
-  { action: "showAllShortcuts", labelKey: "shortcuts.allShortcuts",       groupKey: "shortcuts.groupAppHelp",   key: "/",                           meta: true, shift: true,  display: "⇧⌘/",     context: ["main", "file", "shell", "preview", "tree", "newTask"], hidden: true },
-  { action: "showShortcuts",  labelKey: "shortcuts.keyboardShortcuts",  groupKey: "shortcuts.groupAppHelp",   key: "/",                           meta: true,               display: "⌘/",       context: ["main", "diff", "file", "shell", "preview", "tree", "graph", "newTask", "transfer"] },
+  { action: "showAllShortcuts", labelKey: "shortcuts.allShortcuts",       groupKey: "shortcuts.groupAppHelp",   key: "/", code: "Slash",             meta: true, shift: true,  display: "⇧⌘/",     context: ["main", "file", "shell", "preview", "tree", "newTask"], hidden: true },
+  { action: "showShortcuts",  labelKey: "shortcuts.keyboardShortcuts",  groupKey: "shortcuts.groupAppHelp",   key: "/", code: "Slash",             meta: true,               display: "⌘/",       context: ["main", "diff", "file", "shell", "preview", "tree", "graph", "newTask", "transfer"] },
   // Tab cycling — main-area tabs, delegated to Preferences sections while its dialog is open
   { action: "prevTab",    labelKey: "shortcuts.prevTab",       groupKey: "shortcuts.groupMoveAround", key: ["[", "{"],                     meta: true, shift: true,  display: "⇧⌘[",     hidden: true },
   { action: "nextTab",    labelKey: "shortcuts.nextTab",       groupKey: "shortcuts.groupMoveAround", key: ["]", "}"],                     meta: true, shift: true,  display: "⇧⌘]",     hidden: true },

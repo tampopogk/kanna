@@ -435,6 +435,64 @@ describe("useKeyboardShortcuts", () => {
     }
   });
 
+  it("dispatches the Linux Ctrl+Shift+/ shortcuts chord by physical code, even though Shift rewrites the key to '?'", () => {
+    for (const nav of [globalThis.navigator, window.navigator]) {
+      Object.defineProperty(nav, "platform", { value: "Linux x86_64", configurable: true });
+    }
+    resetShortcutBindingsForTests();
+    const actions = buildActions();
+    const wrapper = mountShortcutHarness(actions, () => "main");
+
+    try {
+      window.dispatchEvent(new KeyboardEvent("keydown", {
+        key: "?",
+        code: "Slash",
+        ctrlKey: true,
+        shiftKey: true,
+        bubbles: true,
+        cancelable: true,
+      }));
+
+      expect(actions.showShortcuts).toHaveBeenCalledOnce();
+      expect(actions.showAllShortcuts).not.toHaveBeenCalled();
+    } finally {
+      wrapper.unmount();
+      for (const nav of [globalThis.navigator, window.navigator]) {
+        Object.defineProperty(nav, "platform", { value: "MacIntel", configurable: true });
+      }
+      resetShortcutBindingsForTests();
+    }
+  });
+
+  it("dispatches the Linux Ctrl+Alt+/ all-shortcuts chord, which never carries Shift so the key stays '/'", () => {
+    for (const nav of [globalThis.navigator, window.navigator]) {
+      Object.defineProperty(nav, "platform", { value: "Linux x86_64", configurable: true });
+    }
+    resetShortcutBindingsForTests();
+    const actions = buildActions();
+    const wrapper = mountShortcutHarness(actions, () => "main");
+
+    try {
+      window.dispatchEvent(new KeyboardEvent("keydown", {
+        key: "/",
+        code: "Slash",
+        ctrlKey: true,
+        altKey: true,
+        bubbles: true,
+        cancelable: true,
+      }));
+
+      expect(actions.showAllShortcuts).toHaveBeenCalledOnce();
+      expect(actions.showShortcuts).not.toHaveBeenCalled();
+    } finally {
+      wrapper.unmount();
+      for (const nav of [globalThis.navigator, window.navigator]) {
+        Object.defineProperty(nav, "platform", { value: "MacIntel", configurable: true });
+      }
+      resetShortcutBindingsForTests();
+    }
+  });
+
   it("leaves WebKitGTK's inspector chord native and dispatches the Linux Create Repository chord", () => {
     for (const nav of [globalThis.navigator, window.navigator]) {
       Object.defineProperty(nav, "platform", { value: "Linux x86_64", configurable: true });
