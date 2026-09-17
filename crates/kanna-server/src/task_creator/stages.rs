@@ -8,8 +8,8 @@ use super::definitions::{
 use super::prepare_stage_run_spawn;
 use super::prompt::{
     build_completed_stage_recovery_prompt, build_revision_resume_message,
-    build_revision_task_prompt, build_target_stage_prompt,
-    build_target_stage_prompt_with_instructions, RevisionRound,
+    build_revision_task_prompt, build_target_stage_prompt, build_target_stage_prompt_parts,
+    build_target_stage_prompt_with_instructions, RevisionRound, StagePromptParts,
 };
 use super::resume::{prepare_resume_workspace, same_cwd};
 use super::types::{
@@ -572,7 +572,10 @@ fn prepare_stage_run_for_target_returning_prompt(
         RunWorkspaceSpec::Fork { branch } => Some(branch.clone()),
         _ => source_branch.clone(),
     };
-    let mut final_prompt = build_target_stage_prompt(
+    let StagePromptParts {
+        prompt: mut final_prompt,
+        agent_instructions,
+    } = build_target_stage_prompt_parts(
         context.definitions,
         &context.repo.path,
         target_stage,
@@ -584,6 +587,7 @@ fn prepare_stage_run_for_target_returning_prompt(
         source_task.base_ref.as_deref(),
         source_task.branch.as_deref(),
         trigger.as_str(),
+        None,
     )?;
     if let Some(suffix) = prompt_suffix {
         final_prompt.push_str("\n\n");
@@ -629,6 +633,7 @@ fn prepare_stage_run_for_target_returning_prompt(
         completion_transition,
         workspace_spec,
         final_prompt.clone(),
+        agent_instructions,
         branch,
         feedback,
         source_task.agent_type.as_deref(),
@@ -1455,6 +1460,10 @@ fn prepare_stage_restart(
         target_stage.policy.transition,
         workspace_spec,
         final_prompt,
+        // The recovery and fresh-fallback prompts above wrap the composed
+        // stage prompt in Kanna's own prose, so none of them opens with the
+        // agent-instructions section and none is relocatable.
+        None,
         branch,
         // A restarted revision keeps the requested changes on its record, so
         // the run history does not read as an unexplained re-run of the stage.
@@ -1583,6 +1592,9 @@ fn prepare_revision_resume(
         target_stage.policy.revision_transition(),
         RunWorkspaceSpec::Resume(resume_workspace),
         message,
+        // A revision resume message is a continuation turn, not a composed
+        // stage prompt: the session already carries its agent instructions.
+        None,
         current_branch_name,
         Some(revision_prompt.to_string()),
         source_task.agent_type.as_deref(),

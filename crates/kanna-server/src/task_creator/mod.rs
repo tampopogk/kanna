@@ -49,7 +49,9 @@ use environment::{
     resolve_provider_executable, run_workspace_setup_commands_captured, write_kanna_mcp_config,
 };
 use local_config::LocalConfigOverride;
-use prompt::{build_stage_prompt, PromptContext};
+#[cfg(test)]
+use prompt::build_stage_prompt;
+use prompt::{build_stage_prompt_parts, PromptContext, StagePromptParts};
 pub(crate) use provider::parse_stage_provider_override;
 use provider::{
     normalize_agent_type, resolve_agent_provider, resolve_agent_provider_candidates,
@@ -670,7 +672,10 @@ pub(crate) fn prepare_rerun_stage_for_api(
     let prev_result = stages::previous_stage_result(db, task_id, &source_task)?;
     let prev_main_result = stages::previous_main_stage_result(db, task_id)?;
     let plan_result = stages::stamped_plan_result(db, task_id);
-    let prompt = build_stage_prompt(
+    let StagePromptParts {
+        prompt,
+        agent_instructions,
+    } = build_stage_prompt_parts(
         agent
             .as_ref()
             .map(|agent| agent.prompt.as_str())
@@ -893,6 +898,7 @@ pub(crate) fn prepare_rerun_stage_for_api(
         Some(current_stage.policy.transition.as_str()),
         "unspecified",
         prompt,
+        agent_instructions,
         model,
         effort.clone(),
         permission_mode,
@@ -1034,6 +1040,7 @@ pub(crate) fn prepare_create_task_repair_for_api(
             Some(resolved.stage_transition.as_str()),
             "unspecified",
             resolved.final_prompt,
+            resolved.agent_instructions,
             resolved.model.clone(),
             resolved.effort.clone(),
             resolved.permission_mode,
@@ -1157,6 +1164,7 @@ pub(crate) fn prepare_create_task_repair_for_api(
         Some(resolved.stage_transition.as_str()),
         "unspecified",
         resolved.final_prompt,
+        resolved.agent_instructions,
         model.clone(),
         effort.clone(),
         resolved.permission_mode,
@@ -1236,6 +1244,7 @@ pub(in crate::task_creator) fn prepare_stage_run_spawn(
     completion_transition: WorkflowStageTransition,
     workspace_spec: RunWorkspaceSpec,
     final_prompt: String,
+    agent_instructions: Option<String>,
     branch: &str,
     feedback: Option<String>,
     source_agent_type: Option<&str>,
@@ -1443,6 +1452,7 @@ pub(in crate::task_creator) fn prepare_stage_run_spawn(
             Some(completion_transition.as_str()),
             trigger.as_str(),
             final_prompt.clone(),
+            agent_instructions.clone(),
             model.clone(),
             effort.clone(),
             permission_mode.clone(),
@@ -1468,6 +1478,7 @@ pub(in crate::task_creator) fn prepare_stage_run_spawn(
             source_agent_type: source_agent_type.map(str::to_string),
             workflow_name: workflow_name.to_string(),
             final_prompt: final_prompt.clone(),
+            agent_instructions: agent_instructions.clone(),
             // The deferred worker re-resolves availability after setup and
             // may land on a later candidate, so it re-derives the pair for
             // whichever provider it ends up spawning.
@@ -1627,6 +1638,7 @@ pub(crate) fn finish_deferred_stage_setup(
         Some(prepared.completion_transition.as_str()),
         prepared.trigger.as_str(),
         deferred.final_prompt,
+        deferred.agent_instructions,
         model.clone(),
         effort.clone(),
         deferred.permission_mode,
@@ -1906,6 +1918,7 @@ fn build_prepared_session(
     stage_transition: Option<&str>,
     stage_trigger: &str,
     final_prompt: String,
+    agent_instructions: Option<String>,
     model: Option<String>,
     effort: Option<String>,
     permission_mode: Option<String>,
@@ -1989,10 +2002,17 @@ fn build_prepared_session(
                 stage_trigger,
                 mcp_config_path.as_deref(),
             );
+            let (prompt, appended_system_prompt) = relocate_agent_instructions(
+                provider,
+                agent_type,
+                workflow_name,
+                final_prompt,
+                agent_instructions,
+            );
             let agent_cmd = build_agent_command(
                 &provider,
                 &executable,
-                &final_prompt,
+                &prompt,
                 model.as_deref(),
                 effort.as_deref(),
                 permission_mode.as_deref(),
@@ -2001,6 +2021,7 @@ fn build_prepared_session(
                 max_turns,
                 max_budget_usd,
                 Some(&preamble),
+                appended_system_prompt.as_deref(),
                 mcp_config_path.as_deref(),
                 Some(worktree_path),
                 provider_session.as_ref(),
@@ -2302,6 +2323,71 @@ pub(crate) fn directory_singleton_agent(workflow_name: &str) -> Option<&str> {
     workflow_name
         .strip_prefix(SINGLETON_WORKFLOW_PREFIX)
         .filter(|agent| !agent.is_empty())
+}
+
+/// Whether this spawn delivers the agent's operating instructions as
+/// *configuration* instead of as the session's first user message.
+///
+/// The instructions are the resolved, layered `AGENT.md`/`EXTEND.md` body that
+/// `build_stage_prompt` puts in the prompt's `## Agent Instructions` section.
+/// For a short-lived stage agent that is fine: the stage ends long before a
+/// context compaction can reach them. A **long-running** agent is what this
+/// exists for. Measured on the running task manager, one compaction replaced a
+/// 219-line operating manual with a one-sentence paraphrase — every section
+/// marker gone from the whole post-compaction transcript — after which it
+/// stopped running its per-wake idle sweep. Claude's `--append-system-prompt`
+/// is re-sent with every request and is never compacted, so the same bytes
+/// survive for as long as the session does.
+///
+/// "Long-running" is read from the synthetic `singleton-{agent}` workflow name
+/// bound when an account-wide directory singleton is claimed (`task-manager`,
+/// `merge`). That name is durable, travels with the task row, and needs no new
+/// frontmatter key or hardcoded agent list.
+///
+/// Deliberate non-coverage, rather than silent divergence:
+/// - **Short-lived stage agents** keep first-user-message delivery unchanged.
+/// - **Copilot / Codex / OpenCode / Antigravity** have no
+///   `--append-system-prompt` equivalent Kanna has verified; they keep
+///   prepending the preamble to the prompt body (tampopogk/kanna#1575).
+/// - **Headless SDK sessions** map their system prompt to `--system-prompt`,
+///   which *replaces* rather than appends, and they are not perpetual
+///   conversations. They keep today's behavior.
+fn relocates_agent_instructions_to_system_prompt(
+    provider: AgentProvider,
+    agent_type: AgentSessionType,
+    workflow_name: &str,
+) -> bool {
+    provider == AgentProvider::Claude
+        && agent_type == AgentSessionType::Pty
+        && directory_singleton_agent(workflow_name).is_some()
+}
+
+/// Split a composed stage prompt into the prompt the CLI is given and the text
+/// appended to its system prompt.
+///
+/// What the agent is told must not change — only where it is told it. So the
+/// section is moved only when it is literally the composed prompt's own
+/// prefix, and the remainder is taken byte for byte:
+/// `returned.0` prefixed by `instructions + "\n\n"` reconstructs the input
+/// exactly. A wrapped prompt (recovery, transfer continuation) or one with no
+/// task section behind the instructions does not match, and is left alone.
+fn relocate_agent_instructions(
+    provider: AgentProvider,
+    agent_type: AgentSessionType,
+    workflow_name: &str,
+    final_prompt: String,
+    agent_instructions: Option<String>,
+) -> (String, Option<String>) {
+    if !relocates_agent_instructions_to_system_prompt(provider, agent_type, workflow_name) {
+        return (final_prompt, None);
+    }
+    let Some(instructions) = agent_instructions else {
+        return (final_prompt, None);
+    };
+    match final_prompt.strip_prefix(&format!("{instructions}\n\n")) {
+        Some(rest) => (rest.to_string(), Some(instructions)),
+        None => (final_prompt, None),
+    }
 }
 
 pub(crate) fn prepare_integration_task_for_api(
@@ -2693,7 +2779,10 @@ pub(crate) fn prepare_start_dormant_task_for_api(
         )?),
     };
 
-    let final_prompt = build_stage_prompt(
+    let StagePromptParts {
+        prompt: final_prompt,
+        agent_instructions,
+    } = build_stage_prompt_parts(
         agent
             .as_ref()
             .map(|agent| agent.prompt.as_str())
@@ -2865,6 +2954,7 @@ pub(crate) fn prepare_start_dormant_task_for_api(
         Some(stage.policy.transition.as_str()),
         "unspecified",
         final_prompt,
+        agent_instructions,
         model,
         effort,
         permission_mode,
@@ -2966,6 +3056,9 @@ struct ResolvedTaskSpawn {
     initial_terminal_geometry: Option<(u16, u16)>,
     stage_setup: Vec<String>,
     final_prompt: String,
+    /// The `## Agent Instructions` section of `final_prompt`, when it has one.
+    /// See [`relocate_agent_instructions`].
+    agent_instructions: Option<String>,
     /// Model/effort layers, resolved against whichever candidate the spawn
     /// finally binds to (`ResolvedTaskSpawn::model_for`).
     tuning: AgentTuningPlan,
@@ -3006,6 +3099,12 @@ impl ResolvedTaskSpawn {
 #[serde(rename_all = "camelCase")]
 struct ResolvedCreateTaskIntent {
     final_prompt: String,
+    /// The `## Agent Instructions` section of `final_prompt`, when it has one.
+    /// Additive: a row written before this field existed deserializes to
+    /// `None`, which is exactly "do not relocate" — the behavior it was
+    /// spawned with.
+    #[serde(default)]
+    agent_instructions: Option<String>,
     workflow_name: String,
     stage_name: String,
     stage_transition: WorkflowStageTransition,
@@ -3043,6 +3142,7 @@ fn resolved_create_task_intent_json(
         "_kannaResolved".to_string(),
         serde_json::to_value(ResolvedCreateTaskIntent {
             final_prompt: resolved.final_prompt.clone(),
+            agent_instructions: resolved.agent_instructions.clone(),
             workflow_name: resolved.workflow_name.clone(),
             stage_name: resolved.stage_name.clone(),
             stage_transition: resolved.stage_transition,
@@ -3422,6 +3522,12 @@ fn resolve_task_spawn(
         .is_some_and(|import| import.session_restored)
         && request.resume_session_id.is_some()
         && !matches!(request.agent_type.as_deref(), Some("agent" | "sdk"));
+    // Only a prompt this function composed itself knows which bytes are the
+    // agent body. A transfer *continuation* turn and a stage-override
+    // carry-over are prose Kanna wrote around an existing conversation, so
+    // they report none and are never relocated; a transfer that genuinely
+    // falls back to a fresh composed stage prompt does report its section.
+    let mut agent_instructions = None;
     let final_prompt = if request.stage_override.is_some() {
         if let Some(import) = request.transfer_import.as_ref() {
             let fresh_stage_prompt = if agent.is_none() && stage.prompt.is_none() {
@@ -3429,7 +3535,7 @@ fn resolve_task_spawn(
             } else {
                 stage.prompt.as_deref()
             };
-            let fresh_session_prompt = build_stage_prompt(
+            let fresh_session = build_stage_prompt_parts(
                 agent
                     .as_ref()
                     .map(|agent| agent.prompt.as_str())
@@ -3472,13 +3578,14 @@ restart or repeat work solely because task ownership moved."
                 // conversation. It has no transcript, so it needs the full
                 // active-stage context, including the pinned plan and source
                 // predecessor/revision snapshots.
-                fresh_session_prompt
+                agent_instructions = fresh_session.agent_instructions;
+                fresh_session.prompt
             }
         } else {
             original_prompt.clone()
         }
     } else {
-        build_stage_prompt(
+        let parts = build_stage_prompt_parts(
             agent
                 .as_ref()
                 .map(|agent| agent.prompt.as_str())
@@ -3504,7 +3611,9 @@ restart or repeat work solely because task ownership moved."
                 stage_trigger: "unspecified",
                 vars: repo_config.vars.as_ref(),
             },
-        )
+        );
+        agent_instructions = parts.agent_instructions;
+        parts.prompt
     };
 
     let provider_candidates = resolve_agent_provider_candidates(
@@ -3601,6 +3710,7 @@ restart or repeat work solely because task ownership moved."
             .and_then(|environment| environment.setup.clone())
             .unwrap_or_default(),
         final_prompt,
+        agent_instructions,
         tuning,
         permission_mode,
         allowed_tools,
@@ -3928,6 +4038,7 @@ fn prepare_new_task_session(
         Some(resolved.stage_transition.as_str()),
         "unspecified",
         resolved.final_prompt.clone(),
+        resolved.agent_instructions.clone(),
         model.clone(),
         effort.clone(),
         resolved.permission_mode.clone(),

@@ -2,7 +2,10 @@ use super::commands::ProviderSessionBinding;
 use super::definitions::WorkflowStageTransition;
 use super::environment::resolve_binary_from_candidates_with_path_lookup;
 use super::lifecycle::spawn_prepared_task;
-use super::prompt::{build_revision_resume_message, build_revision_task_prompt, PromptContext};
+use super::prompt::{
+    build_revision_resume_message, build_revision_task_prompt, build_stage_prompt_parts,
+    PromptContext,
+};
 use super::provider::{AgentProvider, AgentSessionType};
 use super::types::{CreatedTask, PreparedSessionSpawn, PreparedStageTransition, PreparedTaskSpawn};
 use super::{
@@ -11,9 +14,10 @@ use super::{
     prepare_merge_agent_for_api, prepare_rerun_stage_for_api, prepare_resume_task_for_api,
     prepare_revision_task_for_api, prepare_stage_completion_for_api,
     prepare_start_dormant_task_for_api, prepare_task_for_api, prepare_task_for_api_with_error,
-    read_default_agent_provider_setting, reopen_task_for_api, reopen_task_for_api_with_test_hook,
-    rerun_prepared_stage_for_api, resolve_agent_type, resolve_initial_terminal_geometry,
-    spawn_prepared_stage_run_for_api, spawn_prepared_task_for_api_recording_stage_run,
+    read_default_agent_provider_setting, relocate_agent_instructions, reopen_task_for_api,
+    reopen_task_for_api_with_test_hook, rerun_prepared_stage_for_api, resolve_agent_type,
+    resolve_initial_terminal_geometry, spawn_prepared_stage_run_for_api,
+    spawn_prepared_task_for_api_recording_stage_run,
     spawn_prepared_task_for_api_recording_stage_run_detailed, PrepareTaskError,
     PreparedTaskDeliveryError, ReopenTaskError,
 };

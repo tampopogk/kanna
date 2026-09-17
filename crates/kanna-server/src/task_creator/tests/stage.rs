@@ -181,6 +181,7 @@ fn one_stage_operation_keeps_prompt_spawn_and_teardown_on_pinned_revision() {
         stage.policy.transition,
         super::super::types::RunWorkspaceSpec::Current,
         prompt,
+        None,
         branch,
         None,
         Some("agent"),
