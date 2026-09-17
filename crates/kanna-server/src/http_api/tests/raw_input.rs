@@ -50,6 +50,7 @@ fn live_session(task_id: &str, pid: u32) -> SessionInfo {
         kind: Default::default(),
         composer_text: None,
         composer_attestation: Default::default(),
+        attempt_id: None,
     }
 }
 

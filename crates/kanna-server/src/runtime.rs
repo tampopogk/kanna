@@ -381,6 +381,7 @@ mod tests {
             kind,
             composer_text: None,
             composer_attestation: Default::default(),
+            attempt_id: None,
         }
     }
 

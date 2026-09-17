@@ -100,10 +100,10 @@ it('marks the append position, including empty panes, without retaining it on ot
   wrapper.unmount();
 });
 
-// Liveness is the launching run's lifecycle, not whether a final frame exists,
-// so a finished attempt stays in history even when it is the newest one and its
-// archive never arrived. Both the local and the remote task path feed this same
-// list, so the option membership they produce is the same.
+// Liveness is the owner daemon's session registry, not whether a final frame
+// exists, so an ended attempt stays in history even when it is the newest one
+// and its archive never arrived. Both the local and the remote task path feed
+// this same list, so the option membership they produce is the same.
 const attempt = (id: string, stage: string, over: Partial<AgentTerminalAttempt> = {}): AgentTerminalAttempt =>
   ({ id, stage, startedAt: id, cwd: '/repo', live: false, archived: false, recordedLaunch: true, observedExitCode: null, ...over });
 const optionValues = (wrapper: ReturnType<typeof mount>) =>
@@ -144,7 +144,7 @@ it('excludes only the live attempt, which Latest already shows', async () => {
   await wrapper.setProps({ selectedAttempt: 'lost-run' });
   expect(wrapper.get('select').element.value).toBe('lost-run');
   expect(wrapper.get('.stage-name').text()).toBe('plan');
-  // The live attempt ends: its run is no longer live, so it joins history.
+  // The terminal exits: the registry stops naming it, so it joins history.
   await wrapper.setProps({ selectedAttempt: '', agentAttempts: [
     attempt('plan-run','plan',{ archived:true, observedExitCode:0 }),
     attempt('lost-run','plan',{ observedExitCode:1 }),

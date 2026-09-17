@@ -10,11 +10,6 @@ pub struct AgentTerminalAttempt {
     pub stage: String,
     pub started_at: String,
     pub cwd: Option<String>,
-    /// The launching run has not terminated, so this attempt owns the session a
-    /// viewer sees live rather than history. Liveness is the run lifecycle, not
-    /// archive availability: a finished attempt whose final frame never arrived
-    /// is still history, and `archived` only reports whether that frame exists.
-    pub live: bool,
     pub archived: bool,
     pub recorded_launch: bool,
     pub observed_exit_code: Option<i32>,
@@ -32,8 +27,7 @@ impl Db {
         task_id: &str,
     ) -> Result<Vec<AgentTerminalAttempt>, rusqlite::Error> {
         let mut stmt = self.conn.prepare(
-            "SELECT sr.id, sr.stage, sr.started_at, sr.cwd, a.archive, a.run_id IS NOT NULL,
-            sr.status IN ('pending','running') AND sr.finished_at IS NULL
+            "SELECT sr.id, sr.stage, sr.started_at, sr.cwd, a.archive, a.run_id IS NOT NULL
             FROM stage_run sr LEFT JOIN agent_terminal_attempt a ON a.run_id=sr.id
             WHERE sr.task_id=? AND (a.run_id IS NOT NULL OR sr.kind='main') ORDER BY sr.rowid ASC",
         )?;
@@ -48,7 +42,6 @@ impl Db {
                     stage: row.get(1)?,
                     started_at: row.get(2)?,
                     cwd: row.get(3)?,
-                    live: row.get(6)?,
                     archived: archive.as_ref().is_some_and(|a| a.snapshot.is_some()),
                     recorded_launch: row.get(5)?,
                     observed_exit_code: archive.and_then(|a| a.observed_exit_code),
@@ -125,21 +118,6 @@ pub(crate) mod tests {
             .execute("UPDATE stage_run SET cwd=?", [cwd])
             .unwrap();
     }
-    /// Leaves `live_run` as the task's only run that has not terminated.
-    pub(crate) fn finish_every_run_except(db: &Db, live_run: &str) {
-        db.conn
-            .execute(
-                "UPDATE stage_run SET status='succeeded', finished_at=datetime('now') WHERE id!=?",
-                [live_run],
-            )
-            .unwrap();
-        db.conn
-            .execute(
-                "UPDATE stage_run SET status='running', finished_at=NULL WHERE id=?",
-                [live_run],
-            )
-            .unwrap();
-    }
     pub(crate) fn archive() -> TerminalAttemptArchive {
         TerminalAttemptArchive {
             binding: TerminalAttemptBinding {
@@ -165,38 +143,6 @@ pub(crate) mod tests {
             unavailable_reason: None,
             observed_exit_code: Some(0),
         }
-    }
-    #[test]
-    fn liveness_follows_the_run_lifecycle_not_archive_availability() {
-        let db = Db::open_for_tests(&Db::test_db_path("attempt-liveness")).unwrap();
-        seed(&db);
-        // The newest launch has ended without a usable final frame while an older
-        // one is still open: no attempt archives, so only the lifecycle tells the
-        // live session apart from history, and position alone never does.
-        finish_every_run_except(&db, "run-task-a-1");
-        let rows = db.agent_terminal_attempts("task-a").unwrap();
-        assert_eq!(
-            rows.iter()
-                .map(|row| (row.id.as_str(), row.live, row.archived))
-                .collect::<Vec<_>>(),
-            [
-                ("run-task-a-1", true, false),
-                ("run-task-a-2", false, false),
-                ("legacy-task-a", false, false)
-            ]
-        );
-        // Finishing it leaves the task a history with no live attempt at all.
-        db.conn
-            .execute(
-                "UPDATE stage_run SET status='failed', finished_at=datetime('now') WHERE id='run-task-a-1'",
-                [],
-            )
-            .unwrap();
-        assert!(db
-            .agent_terminal_attempts("task-a")
-            .unwrap()
-            .iter()
-            .all(|row| !row.live));
     }
     #[test]
     fn attempt_archives_are_owned_immutable_and_persist_across_reopen() {
@@ -227,7 +173,6 @@ pub(crate) mod tests {
         let rows = db.agent_terminal_attempts("task-a").unwrap();
         assert_eq!(rows.len(), 3);
         assert!(!rows[2].recorded_launch);
-        assert!(rows.iter().all(|row| !row.live));
         drop(db);
         let db = Db::open(&path).unwrap();
         assert_eq!(

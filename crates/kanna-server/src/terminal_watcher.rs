@@ -1255,6 +1255,7 @@ mod tests {
                 kind: Default::default(),
                 composer_text: Some("check again in a minute".to_string()),
                 composer_attestation: ComposerAttestation::NotTyped,
+                attempt_id: None,
             }],
         )
         .await;
@@ -1341,6 +1342,7 @@ mod tests {
                     kind: Default::default(),
                     composer_text: None,
                     composer_attestation: ComposerAttestation::Unknown,
+                    attempt_id: None,
                 }],
             )
             .await;
@@ -2049,6 +2051,7 @@ mod tests {
                         kind: Default::default(),
                         composer_text: None,
                         composer_attestation: Default::default(),
+                        attempt_id: None,
                     }],
                 },
             )
@@ -2142,6 +2145,7 @@ mod tests {
                     kind: Default::default(),
                     composer_text: None,
                     composer_attestation: Default::default(),
+                    attempt_id: None,
                 }],
             )
             .await;
@@ -2222,6 +2226,7 @@ mod tests {
                         kind: Default::default(),
                         composer_text: None,
                         composer_attestation: Default::default(),
+                        attempt_id: None,
                     }],
                 },
             )

@@ -465,8 +465,9 @@ export function parseAgentTerminalAttempts(value: unknown): AgentTerminalAttempt
       stage: attempt.stage,
       startedAt: attempt.startedAt,
       cwd: attempt.cwd,
-      // An owner desktop that predates run liveness reports none, which lists
-      // every attempt as history rather than failing the whole response.
+      // An owner desktop whose server or daemon cannot report a live session
+      // reports none, which lists every attempt as history rather than failing
+      // the whole response.
       live: attempt.live === true,
       archived: attempt.archived,
       recordedLaunch: attempt.recordedLaunch,

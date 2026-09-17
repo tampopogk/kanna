@@ -376,6 +376,7 @@ async fn spawn_listing_fake_daemon(
                 kind: Default::default(),
                 composer_text: None,
                 composer_attestation: Default::default(),
+                attempt_id: None,
             }],
         };
         write_half
