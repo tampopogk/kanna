@@ -6,7 +6,6 @@ use kanna_agent_protocol::StateChangeScope;
 use serde::{Deserialize, Serialize};
 
 use super::state::AppState;
-use crate::db::Db;
 
 const WINDOW_WORKSPACE_SETTINGS_KEY: &str = "window_workspace_v1";
 const DEFAULT_SIDEBAR_WIDTH: i64 = 260;
@@ -98,18 +97,19 @@ pub(super) async fn mutate_window_workspace(
 ) -> Result<Json<WorkspaceSnapshot>, (axum::http::StatusCode, String)> {
     validate_mutation(&payload)
         .map_err(|message| (axum::http::StatusCode::BAD_REQUEST, message))?;
-    let db = Db::open(&state.config.db_path).map_err(internal_db_error)?;
-    let next_json = db
-        .mutate_setting(WINDOW_WORKSPACE_SETTINGS_KEY, move |current| {
-            let snapshot = current
-                .as_deref()
-                .and_then(|value| serde_json::from_str::<WorkspaceSnapshot>(value).ok())
-                .unwrap_or_default();
-            let next = apply_mutation(snapshot, payload);
-            serde_json::to_string(&next).map_err(|error| {
-                rusqlite::Error::InvalidParameterName(format!(
-                    "failed to serialize window workspace: {error}"
-                ))
+    let next_json = state
+        .with_settings_db(|db| {
+            db.mutate_setting(WINDOW_WORKSPACE_SETTINGS_KEY, move |current| {
+                let snapshot = current
+                    .as_deref()
+                    .and_then(|value| serde_json::from_str::<WorkspaceSnapshot>(value).ok())
+                    .unwrap_or_default();
+                let next = apply_mutation(snapshot, payload);
+                serde_json::to_string(&next).map_err(|error| {
+                    rusqlite::Error::InvalidParameterName(format!(
+                        "failed to serialize window workspace: {error}"
+                    ))
+                })
             })
         })
         .map_err(internal_db_error)?;

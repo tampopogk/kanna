@@ -363,23 +363,15 @@ impl std::fmt::Display for PairingConfirmationError {
     }
 }
 
-/// Reads the legacy switch. A database that cannot be opened answers
-/// "refused": the failure mode of a broken settings read must not be
-/// plaintext authority.
-pub(crate) fn legacy_mobile_access_allowed(db_path: &str) -> bool {
-    match crate::db::Db::open(db_path) {
-        Ok(db) => match db.get_setting(MOBILE_LEGACY_ACCESS_SETTING) {
-            Ok(Some(value)) => value.trim() != MOBILE_LEGACY_ACCESS_REFUSED,
-            Ok(None) => true,
-            Err(error) => {
-                log::warn!("failed to read {MOBILE_LEGACY_ACCESS_SETTING}: {error}; refusing legacy mobile access");
-                false
-            }
-        },
+/// Reads the legacy switch from the already-open settings connection. A read
+/// that fails answers "refused": the failure mode of a broken settings read
+/// must not be plaintext authority.
+pub(crate) fn legacy_mobile_access_allowed(db: &crate::db::Db) -> bool {
+    match db.get_setting(MOBILE_LEGACY_ACCESS_SETTING) {
+        Ok(Some(value)) => value.trim() != MOBILE_LEGACY_ACCESS_REFUSED,
+        Ok(None) => true,
         Err(error) => {
-            log::warn!(
-                "failed to open the settings database: {error}; refusing legacy mobile access"
-            );
+            log::warn!("failed to read {MOBILE_LEGACY_ACCESS_SETTING}: {error}; refusing legacy mobile access");
             false
         }
     }
@@ -387,20 +379,12 @@ pub(crate) fn legacy_mobile_access_allowed(db_path: &str) -> bool {
 
 /// Reads the desktop-peer legacy switch with the same fail-closed stance as
 /// `legacy_mobile_access_allowed`.
-pub(crate) fn legacy_peer_access_allowed(db_path: &str) -> bool {
-    match crate::db::Db::open(db_path) {
-        Ok(db) => match db.get_setting(DESKTOP_PEER_LEGACY_ACCESS_SETTING) {
-            Ok(Some(value)) => value.trim() != DESKTOP_PEER_LEGACY_ACCESS_REFUSED,
-            Ok(None) => true,
-            Err(error) => {
-                log::warn!("failed to read {DESKTOP_PEER_LEGACY_ACCESS_SETTING}: {error}; refusing legacy desktop-to-desktop access");
-                false
-            }
-        },
+pub(crate) fn legacy_peer_access_allowed(db: &crate::db::Db) -> bool {
+    match db.get_setting(DESKTOP_PEER_LEGACY_ACCESS_SETTING) {
+        Ok(Some(value)) => value.trim() != DESKTOP_PEER_LEGACY_ACCESS_REFUSED,
+        Ok(None) => true,
         Err(error) => {
-            log::warn!(
-                "failed to open the settings database: {error}; refusing legacy desktop-to-desktop access"
-            );
+            log::warn!("failed to read {DESKTOP_PEER_LEGACY_ACCESS_SETTING}: {error}; refusing legacy desktop-to-desktop access");
             false
         }
     }

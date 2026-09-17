@@ -507,7 +507,18 @@ pub fn build_transfer_sidecar_env(
     // reaches no further than the sealed tunnels do and is passed through,
     // and an explicit `disabled` already is. While the gate is on the
     // sidecar resolves the mode from its inherited environment as before.
-    if !crate::http_api::secure_channel::legacy_peer_access_allowed(&config.db_path) {
+    // Not a per-request path (only sidecar spawn/respawn), so it opens its
+    // own connection rather than sharing `AppState`'s settings handle, which
+    // this free function has no access to.
+    let legacy_peer_access_allowed = crate::db::Db::open(&config.db_path)
+        .map(|db| crate::http_api::secure_channel::legacy_peer_access_allowed(&db))
+        .unwrap_or_else(|error| {
+            log::warn!(
+                "failed to open the settings database: {error}; refusing legacy desktop-to-desktop access"
+            );
+            false
+        });
+    if !legacy_peer_access_allowed {
         env.push((
             "KANNA_TRANSFER_DISCOVERY".to_string(),
             gated_discovery_mode(std::env::var("KANNA_TRANSFER_DISCOVERY").ok()),

@@ -74,6 +74,12 @@ pub struct AppState {
     pub(super) event_subscriptions_changed: Arc<Notify>,
     pub(super) copilot_wakes: Arc<StdMutex<super::copilot_wake::Registry>>,
     pub(super) config: Config,
+    /// Opened once on first use and reused for the process lifetime, so a
+    /// legacy-access check or a settings read/write does not pay for a fresh
+    /// SQLite connection (open, WAL/pragma setup) on every request. A failed
+    /// open is not cached, so the next call retries it exactly like the
+    /// previous open-per-call code did.
+    settings_db: Arc<StdMutex<Option<crate::db::Db>>>,
     pub(super) forge_client: crate::forge_pull_requests::ForgeClient,
     pub(crate) local_task_events_token: Option<String>,
     pub(crate) pairing_session: Arc<Mutex<Option<ActivePairingSession>>>,
@@ -599,6 +605,7 @@ impl AppState {
             event_subscriptions_changed: Arc::new(Notify::new()),
             copilot_wakes: Arc::new(StdMutex::new(HashMap::new())),
             config,
+            settings_db: Arc::new(StdMutex::new(None)),
             forge_client: crate::forge_pull_requests::ForgeClient::from_environment(),
             local_task_events_token,
             transfer_sidecar,
@@ -884,11 +891,38 @@ impl AppState {
             .clone()
     }
 
+    /// Runs `op` against the lifecycle-owned settings connection, opening it
+    /// on first use. The open itself is retried on the next call rather than
+    /// cached when it fails, so a transient failure self-heals exactly like
+    /// the previous per-call `Db::open` did.
+    pub(crate) fn with_settings_db<T>(
+        &self,
+        op: impl FnOnce(&crate::db::Db) -> Result<T, rusqlite::Error>,
+    ) -> Result<T, rusqlite::Error> {
+        let mut guard = self
+            .settings_db
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if guard.is_none() {
+            *guard = Some(crate::db::Db::open(&self.config.db_path)?);
+        }
+        op(guard.as_ref().expect("settings db populated above"))
+    }
+
     /// Whether legacy (relay-attested, bearer-secret, Firestore-keyed)
     /// desktop-to-desktop access is still permitted. See
     /// `http_api::secure_channel::DESKTOP_PEER_LEGACY_ACCESS_SETTING`.
     pub(crate) fn legacy_peer_access_allowed(&self) -> bool {
-        super::secure_channel::legacy_peer_access_allowed(&self.config.db_path)
+        match self.with_settings_db(|db| Ok(super::secure_channel::legacy_peer_access_allowed(db)))
+        {
+            Ok(allowed) => allowed,
+            Err(error) => {
+                log::warn!(
+                    "failed to open the settings database: {error}; refusing legacy desktop-to-desktop access"
+                );
+                false
+            }
+        }
     }
 
     /// Loads the peer trust store, fail-closed on an unusable file.
@@ -937,7 +971,17 @@ impl AppState {
     /// Whether legacy (unencrypted, bearer-secret) mobile access is still
     /// permitted. See `http_api::secure_channel`.
     pub(crate) fn legacy_mobile_access_allowed(&self) -> bool {
-        super::secure_channel::legacy_mobile_access_allowed(&self.config.db_path)
+        match self
+            .with_settings_db(|db| Ok(super::secure_channel::legacy_mobile_access_allowed(db)))
+        {
+            Ok(allowed) => allowed,
+            Err(error) => {
+                log::warn!(
+                    "failed to open the settings database: {error}; refusing legacy mobile access"
+                );
+                false
+            }
+        }
     }
 
     pub(crate) async fn pending_anonymous_push_revocations(
