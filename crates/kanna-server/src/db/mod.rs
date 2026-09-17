@@ -34,9 +34,11 @@ mod review_context;
 mod revisions;
 mod settings;
 mod snapshot;
-mod stage_runs;
+pub(crate) mod stage_runs;
 pub(crate) mod terminal_archives;
 pub use terminal_archives::AgentTerminalAttempt;
+pub(crate) mod workspace_setup;
+pub use workspace_setup::{WorkspaceSetupOutcome, WorkspaceSetupRun};
 mod task_events;
 mod task_inputs;
 #[cfg(test)]
@@ -192,6 +194,8 @@ pub(crate) const CURRENT_SCHEMA_MIGRATIONS: &[&str] = &[
     "084_task_transfer_workflow_claim",
     "085_task_attention_reason",
     "086_copilot_wake",
+    "087_stage_run_teardown_kind",
+    "088_workspace_setup_run",
 ];
 
 #[derive(Debug, Serialize)]
@@ -536,6 +540,9 @@ pub mod no_work_termination {
     pub const LIFECYCLE_OPERATION_FAILED: &str = "lifecycle_operation_failed";
     /// A task-spawn rebind failed before the agent ran.
     pub const TASK_SPAWN_FAILED: &str = "task_spawn_failed";
+    /// A workspace teardown run closed. There is no agent on this run to
+    /// record a verdict: its result is the exit of the cleanup session.
+    pub const WORKSPACE_TEARDOWN: &str = "workspace_teardown";
 }
 
 #[allow(dead_code)]
@@ -944,7 +951,11 @@ fn create_base_schema(conn: &Connection) -> Result<(), rusqlite::Error> {
           id TEXT PRIMARY KEY,
           task_id TEXT NOT NULL REFERENCES pipeline_item(id) ON DELETE CASCADE,
           stage TEXT NOT NULL,
-          kind TEXT NOT NULL DEFAULT 'main' CHECK (kind IN ('main', 'post')),
+          -- 'main'/'post' are a task's agent runs. 'teardown' is a workspace
+          -- lifecycle run: it exists so the detached td-{branch} session has a
+          -- durable identity to bind its terminal archive to, and it never
+          -- carries a stage verdict (see `stage_runs::AGENT_RUN_KINDS`).
+          kind TEXT NOT NULL DEFAULT 'main' CHECK (kind IN ('main', 'post', 'teardown')),
           agent TEXT,
           agent_provider TEXT,
           model TEXT,
@@ -2505,7 +2516,148 @@ fn run_schema_migrations(conn: &Connection) -> Result<(), rusqlite::Error> {
         )
     })?;
 
+    // A workspace teardown needs a durable run identity before its detached
+    // `td-{branch}` session is spawned, because the terminal archive is keyed
+    // by run id and `agent_terminal_attempt` is foreign-keyed to `stage_run`.
+    // Widening a CHECK constraint means rebuilding the table, which SQLite
+    // cannot do inside `run_migration`'s transaction: `PRAGMA foreign_keys` is
+    // a no-op there, and dropping the old `stage_run` with foreign keys on
+    // would cascade-delete every row in `task_input`,
+    // `agent_terminal_attempt` and `contextless_completion_attempt`.
+    run_stage_run_teardown_kind_migration(conn)?;
+
+    // One Setup record per stage run: the buffered output of the server-side
+    // workspace-setup runner, kept whether it succeeded or failed, so a stage
+    // has an addressable setup stream with a real exit status instead of a
+    // dropped buffer (success) or an error string (failure).
+    run_migration(conn, "088_workspace_setup_run", |conn| {
+        conn.execute_batch(
+            r#"
+            CREATE TABLE IF NOT EXISTS workspace_setup_run (
+              run_id TEXT PRIMARY KEY REFERENCES stage_run(id) ON DELETE CASCADE,
+              status TEXT NOT NULL CHECK (status IN ('succeeded', 'failed')),
+              exit_code INTEGER,
+              timed_out INTEGER NOT NULL DEFAULT 0,
+              truncated INTEGER NOT NULL DEFAULT 0,
+              commands TEXT NOT NULL,
+              output TEXT NOT NULL,
+              duration_ms INTEGER NOT NULL,
+              finished_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            "#,
+        )
+    })?;
+
     Ok(())
+}
+
+const STAGE_RUN_TEARDOWN_KIND_MIGRATION: &str = "087_stage_run_teardown_kind";
+
+/// The CHECK a database created from the base schema carried before a
+/// workspace teardown had a run of its own.
+const STAGE_RUN_PRE_TEARDOWN_KIND_CHECK: &str = "CHECK (kind IN ('main', 'post'))";
+const STAGE_RUN_TEARDOWN_KIND_CHECK: &str = "CHECK (kind IN ('main', 'post', 'teardown'))";
+const STAGE_RUN_KIND_REBUILD_TABLE: &str = "stage_run_teardown_kind_rebuild";
+
+/// Rebuild `stage_run` so its `kind` CHECK admits `'teardown'`.
+///
+/// Three shapes reach this. A database whose `stage_run` came from migration
+/// `023` has no CHECK on `kind` at all (`025` added the column bare) and needs
+/// nothing; one created by a current build already carries the widened CHECK
+/// from the base schema; one created by an earlier build carries the narrow
+/// one and is rebuilt here. Anything else is refused rather than left with a
+/// table that would reject every teardown run it is about to be asked to hold.
+///
+/// The replacement table is the live DDL with that one clause rewritten, not a
+/// hand-maintained column list: `stage_run` has gained a dozen columns by
+/// `ALTER TABLE` over its life, and a list that fell behind would silently
+/// drop one. Foreign keys are disabled for the swap — `DROP TABLE` would
+/// otherwise cascade `agent_terminal_attempt`, `task_input` and
+/// `contextless_completion_attempt` away — and the result is verified with
+/// `PRAGMA foreign_key_check` before the transaction commits.
+fn run_stage_run_teardown_kind_migration(conn: &Connection) -> Result<(), rusqlite::Error> {
+    if has_migration(conn, STAGE_RUN_TEARDOWN_KIND_MIGRATION)? {
+        return Ok(());
+    }
+    let ddl: String = conn.query_row(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'stage_run'",
+        [],
+        |row| row.get(0),
+    )?;
+    if !ddl.contains(STAGE_RUN_PRE_TEARDOWN_KIND_CHECK) {
+        if ddl.contains("CHECK (kind") && !ddl.contains("'teardown'") {
+            return Err(rusqlite::Error::InvalidParameterName(
+                "stage_run carries an unrecognised kind constraint; refusing to widen it".into(),
+            ));
+        }
+        return run_migration(conn, STAGE_RUN_TEARDOWN_KIND_MIGRATION, |_| Ok(()));
+    }
+    let foreign_keys_were_on: bool = conn.query_row("PRAGMA foreign_keys", [], |row| row.get(0))?;
+    conn.pragma_update(None, "foreign_keys", "OFF")?;
+    let result = rebuild_stage_run_for_teardown_kind(conn, &ddl);
+    if foreign_keys_were_on {
+        conn.pragma_update(None, "foreign_keys", "ON")?;
+    }
+    result
+}
+
+/// The live `stage_run` DDL, renamed and with its `kind` CHECK widened.
+fn stage_run_rebuild_ddl(ddl: &str) -> Result<String, rusqlite::Error> {
+    let body = ddl.find('(').ok_or_else(|| {
+        rusqlite::Error::InvalidParameterName("stage_run DDL has no column list".into())
+    })?;
+    Ok(format!(
+        "CREATE TABLE {STAGE_RUN_KIND_REBUILD_TABLE} {}",
+        ddl[body..].replace(
+            STAGE_RUN_PRE_TEARDOWN_KIND_CHECK,
+            STAGE_RUN_TEARDOWN_KIND_CHECK
+        )
+    ))
+}
+
+fn rebuild_stage_run_for_teardown_kind(
+    conn: &Connection,
+    ddl: &str,
+) -> Result<(), rusqlite::Error> {
+    let rebuild_ddl = stage_run_rebuild_ddl(ddl)?;
+    conn.execute_batch("BEGIN IMMEDIATE")?;
+    let result = (|| {
+        if has_migration(conn, STAGE_RUN_TEARDOWN_KIND_MIGRATION)? {
+            return Ok(());
+        }
+        conn.execute_batch(&format!(
+            r#"
+            DROP TABLE IF EXISTS {STAGE_RUN_KIND_REBUILD_TABLE};
+            {rebuild_ddl};
+            INSERT INTO {STAGE_RUN_KIND_REBUILD_TABLE} SELECT * FROM stage_run;
+            DROP TABLE stage_run;
+            ALTER TABLE {STAGE_RUN_KIND_REBUILD_TABLE} RENAME TO stage_run;
+            CREATE INDEX IF NOT EXISTS idx_stage_run_task_started ON stage_run(task_id, started_at);
+            "#
+        ))?;
+        let broken_references: i64 =
+            conn.query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |row| {
+                row.get(0)
+            })?;
+        if broken_references != 0 {
+            return Err(rusqlite::Error::InvalidParameterName(format!(
+                "stage_run rebuild left {broken_references} broken foreign key references"
+            )));
+        }
+        record_migration(conn, STAGE_RUN_TEARDOWN_KIND_MIGRATION)
+    })();
+    match result {
+        Ok(()) => conn.execute_batch("COMMIT"),
+        Err(error) => {
+            if let Err(rollback_error) = conn.execute_batch("ROLLBACK") {
+                log::warn!(
+                    "failed to roll back the stage_run teardown-kind rebuild after {error}: \
+                     {rollback_error}"
+                );
+            }
+            Err(error)
+        }
+    }
 }
 
 /// The instant a statistic started being accumulated.

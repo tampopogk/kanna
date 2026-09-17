@@ -35,6 +35,7 @@ import {
   createConfiguredDesktopRelayTerminalClient,
   createDesktopRelayTerminalClient,
   listActiveDesktopIdsViaRelay,
+  parseAgentTerminalAttempts,
   peerViewProxyUrl,
   resolveDesktopCloudTransportUrlFromEnv,
   type DesktopRelayTerminalEvent,
@@ -302,5 +303,51 @@ describe("resolveDesktopCloudTransportUrlFromEnv", () => {
     expect(resolveDesktopCloudTransportUrlFromEnv({ KANNA_CLOUD_ENV: "staging" }, { dev: false })).toBe(STAGING_CLOUD_TRANSPORT_URL);
     expect(resolveDesktopCloudTransportUrlFromEnv({}, { dev: false })).toBe(PRODUCTION_CLOUD_TRANSPORT_URL);
     expect(resolveDesktopCloudTransportUrlFromEnv({}, { dev: true })).toBeNull();
+  });
+});
+
+describe("parseAgentTerminalAttempts", () => {
+  const attempt = {
+    id: "run-task-a-1",
+    stage: "review",
+    startedAt: "2026-09-16 00:00:00",
+    cwd: "/work",
+    archived: true,
+    recordedLaunch: true,
+    observedExitCode: 0,
+  };
+
+  it("carries the stream each attempt belongs to", () => {
+    const parsed = parseAgentTerminalAttempts([
+      { ...attempt, kind: "main" },
+      { ...attempt, id: "run-task-a-teardown", kind: "teardown" },
+    ]);
+
+    expect(parsed.map((entry) => entry.kind)).toEqual(["main", "teardown"]);
+  });
+
+  it("reads a running teardown as the live terminal", () => {
+    // Which stream an attempt is and whether its terminal still exists are
+    // independent: the owner's daemon binds a `td-` session's attempt by the
+    // same rule it binds an agent's, so a cleanup that is still running is the
+    // live session, and a finished one is history.
+    expect(parseAgentTerminalAttempts([
+      { ...attempt, id: "run-task-a-teardown", kind: "teardown", archived: false, live: true },
+      { ...attempt, id: "run-task-a-torn-down", kind: "teardown", live: false },
+    ])).toEqual([
+      expect.objectContaining({ kind: "teardown", live: true }),
+      expect.objectContaining({ kind: "teardown", live: false }),
+    ]);
+  });
+
+  it("reads an older desktop's kindless attempt as an agent session", () => {
+    // A desktop on the other end of the relay that predates workspace
+    // teardown capture only ever listed agent sessions. Defaulting keeps its
+    // history readable instead of rejecting the whole response.
+    expect(parseAgentTerminalAttempts([attempt])[0].kind).toBe("main");
+  });
+
+  it("rejects a malformed attempt rather than inventing fields", () => {
+    expect(() => parseAgentTerminalAttempts([{ ...attempt, stage: 7 }])).toThrow();
   });
 });

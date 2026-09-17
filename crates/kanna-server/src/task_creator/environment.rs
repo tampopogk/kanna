@@ -291,53 +291,93 @@ fn apply_workspace_path_env(
     }
 }
 
-pub(super) fn run_workspace_setup_commands(
-    setup_cmds: &[String],
-    worktree_path: &str,
-    env: &HashMap<String, String>,
-) -> Result<(), String> {
-    if setup_cmds.is_empty() {
-        return Ok(());
-    }
+/// The one label every workspace-setup run is supervised and reported under.
+pub(super) const WORKSPACE_SETUP_LABEL: &str = "workspace setup";
 
-    let command = build_task_shell_command(
+/// One stage run's workspace setup: what to record, and whether it failed.
+///
+/// Both halves are always present for a setup that ran. The record is kept
+/// whether setup succeeded or failed — the whole point of moving setup onto
+/// this runner is that a stage has an addressable Setup stream either way —
+/// while `failure` carries the sentence the caller returns as its own error,
+/// unchanged from when the buffer only ever existed inside it.
+pub(super) struct WorkspaceSetupRunResult {
+    pub(super) record: crate::db::WorkspaceSetupOutcome,
+    pub(super) failure: Option<String>,
+}
+
+fn workspace_setup_shell_command(setup_cmds: &[String], env: &HashMap<String, String>) -> String {
+    build_task_shell_command(
         "true",
         setup_cmds,
         None,
         None,
         env.get("KANNA_CLI_PATH").map(String::as_str),
         env.get("PATH").map(String::as_str),
-    );
-    crate::workspace_commands::run_workspace_command(
-        "workspace setup",
-        &command,
-        Path::new(worktree_path),
-        env,
     )
 }
 
+fn workspace_setup_result(
+    setup_cmds: &[String],
+    outcome: crate::workspace_commands::WorkspaceCommandOutcome,
+    started: std::time::Instant,
+) -> WorkspaceSetupRunResult {
+    WorkspaceSetupRunResult {
+        record: crate::db::WorkspaceSetupOutcome {
+            exit_code: outcome.exit_code,
+            timed_out: outcome.timed_out,
+            truncated: outcome.truncated,
+            commands: setup_cmds.to_vec(),
+            output: outcome.output,
+            duration_ms: started.elapsed().as_millis().min(i64::MAX as u128) as i64,
+        },
+        failure: outcome.failure,
+    }
+}
+
+/// Run a workspace's setup commands on the shared server-side runner, keeping
+/// the stream.
+///
+/// `Ok(None)` means the workspace declared no setup. An `Err` is a runner
+/// failure — the commands could never be supervised — and leaves nothing to
+/// record; a command that ran and failed comes back as a result whose record
+/// is as worth keeping as a successful one.
+pub(super) fn run_workspace_setup_commands_captured(
+    setup_cmds: &[String],
+    worktree_path: &str,
+    env: &HashMap<String, String>,
+) -> Result<Option<WorkspaceSetupRunResult>, String> {
+    if setup_cmds.is_empty() {
+        return Ok(None);
+    }
+    let started = std::time::Instant::now();
+    let command = workspace_setup_shell_command(setup_cmds, env);
+    let outcome = crate::workspace_commands::run_workspace_command_captured(
+        WORKSPACE_SETUP_LABEL,
+        &command,
+        Path::new(worktree_path),
+        env,
+    )?;
+    Ok(Some(workspace_setup_result(setup_cmds, outcome, started)))
+}
+
 #[cfg(test)]
-pub(super) fn run_workspace_setup_commands_with_armed_timeout(
+pub(super) fn run_workspace_setup_commands_captured_with_armed_timeout(
     setup_cmds: &[String],
     worktree_path: &str,
     env: &HashMap<String, String>,
     armed_timeout: &std::sync::atomic::AtomicBool,
-) -> Result<(), String> {
-    let command = build_task_shell_command(
-        "true",
-        setup_cmds,
-        None,
-        None,
-        env.get("KANNA_CLI_PATH").map(String::as_str),
-        env.get("PATH").map(String::as_str),
-    );
-    crate::workspace_commands::run_workspace_command_with_armed_timeout_for_test(
-        "workspace setup",
+) -> Result<Option<WorkspaceSetupRunResult>, String> {
+    let started = std::time::Instant::now();
+    let command = workspace_setup_shell_command(setup_cmds, env);
+    let outcome = crate::workspace_commands::run_workspace_command_with_armed_timeout_for_test(
+        WORKSPACE_SETUP_LABEL,
         &command,
         Path::new(worktree_path),
         env,
         armed_timeout,
-    )
+    )?;
+    Ok(Some(workspace_setup_result(setup_cmds, outcome, started)))
 }
 
 pub(super) fn append_executable_parent_to_path(

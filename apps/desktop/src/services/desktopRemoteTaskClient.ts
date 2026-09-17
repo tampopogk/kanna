@@ -119,6 +119,13 @@ export interface RemoteTaskGraphRequest {
 export interface AgentTerminalAttempt {
   id: string;
   stage: string;
+  /**
+   * Which stream this attempt is: "main" is the stage's agent session,
+   * "teardown" is the workspace cleanup that ran when the task left that
+   * workspace. A teardown is labelled by the stage whose workspace it tore
+   * down, never by the stage the task entered.
+   */
+  kind: "main" | "teardown";
   startedAt: string;
   cwd: string | null;
   /**

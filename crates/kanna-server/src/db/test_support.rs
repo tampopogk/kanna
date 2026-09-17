@@ -209,11 +209,22 @@ impl Db {
                 ON lifecycle_operation_intent(task_id);
 
             CREATE TABLE agent_terminal_attempt (run_id TEXT PRIMARY KEY REFERENCES stage_run(id) ON DELETE CASCADE, archive TEXT);
+            CREATE TABLE workspace_setup_run (
+                run_id TEXT PRIMARY KEY REFERENCES stage_run(id) ON DELETE CASCADE,
+                status TEXT NOT NULL CHECK (status IN ('succeeded', 'failed')),
+                exit_code INTEGER,
+                timed_out INTEGER NOT NULL DEFAULT 0,
+                truncated INTEGER NOT NULL DEFAULT 0,
+                commands TEXT NOT NULL,
+                output TEXT NOT NULL,
+                duration_ms INTEGER NOT NULL,
+                finished_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
             CREATE TABLE stage_run (
                 id TEXT PRIMARY KEY,
                 task_id TEXT NOT NULL,
                 stage TEXT NOT NULL,
-                kind TEXT NOT NULL DEFAULT 'main' CHECK (kind IN ('main', 'post')),
+                kind TEXT NOT NULL DEFAULT 'main' CHECK (kind IN ('main', 'post', 'teardown')),
                 agent TEXT,
                 agent_provider TEXT,
                 model TEXT,

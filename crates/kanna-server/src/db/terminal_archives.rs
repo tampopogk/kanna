@@ -1,4 +1,10 @@
-//! Agent launch bindings and immutable final frames. Stage posts are not launches.
+//! Terminal launch bindings and immutable final frames.
+//!
+//! A row exists for every PTY launch Kanna bound a run id to: a stage's agent
+//! (`kind='main'`) and the workspace teardown session that cleans a departed
+//! workspace up (`kind='teardown'`). Stage posts are not launches — a post
+//! continues the main run's session and has no terminal of its own.
+use super::stage_runs::TEARDOWN_RUN_KIND;
 use super::Db;
 use kanna_daemon::protocol::TerminalAttemptArchive;
 use rusqlite::{params, OptionalExtension};
@@ -8,6 +14,11 @@ use rusqlite::{params, OptionalExtension};
 pub struct AgentTerminalAttempt {
     pub id: String,
     pub stage: String,
+    /// `stage_run.kind`: `main` for the stage's agent session, `teardown` for
+    /// the workspace cleanup that ran when the task left that workspace. The
+    /// label belongs to the workspace/stage the run acted on, never to the
+    /// stage being entered.
+    pub kind: String,
     pub started_at: String,
     pub cwd: Option<String>,
     pub archived: bool,
@@ -26,24 +37,26 @@ impl Db {
         &self,
         task_id: &str,
     ) -> Result<Vec<AgentTerminalAttempt>, rusqlite::Error> {
-        let mut stmt = self.conn.prepare(
-            "SELECT sr.id, sr.stage, sr.started_at, sr.cwd, a.archive, a.run_id IS NOT NULL
+        let mut stmt = self.conn.prepare(&format!(
+            "SELECT sr.id, sr.stage, sr.kind, sr.started_at, sr.cwd, a.archive, a.run_id IS NOT NULL
             FROM stage_run sr LEFT JOIN agent_terminal_attempt a ON a.run_id=sr.id
-            WHERE sr.task_id=? AND (a.run_id IS NOT NULL OR sr.kind='main') ORDER BY sr.rowid ASC",
-        )?;
+            WHERE sr.task_id=? AND (a.run_id IS NOT NULL OR sr.kind IN ('main', '{TEARDOWN_RUN_KIND}'))
+            ORDER BY sr.rowid ASC"
+        ))?;
         let rows = stmt
             .query_map([task_id], |row| {
-                let payload: Option<String> = row.get(4)?;
+                let payload: Option<String> = row.get(5)?;
                 let archive = payload
                     .as_deref()
                     .and_then(|p| serde_json::from_str::<TerminalAttemptArchive>(p).ok());
                 Ok(AgentTerminalAttempt {
                     id: row.get(0)?,
                     stage: row.get(1)?,
-                    started_at: row.get(2)?,
-                    cwd: row.get(3)?,
+                    kind: row.get(2)?,
+                    started_at: row.get(3)?,
+                    cwd: row.get(4)?,
                     archived: archive.as_ref().is_some_and(|a| a.snapshot.is_some()),
-                    recorded_launch: row.get(5)?,
+                    recorded_launch: row.get(6)?,
                     observed_exit_code: archive.and_then(|a| a.observed_exit_code),
                 })
             })?

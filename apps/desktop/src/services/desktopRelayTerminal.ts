@@ -471,6 +471,10 @@ export function parseAgentTerminalAttempts(value: unknown): AgentTerminalAttempt
     return {
       id: attempt.id,
       stage: attempt.stage,
+      // An older desktop on the other end of the relay reports no kind; its
+      // list only ever held agent sessions, so read it as one rather than
+      // rejecting the response.
+      kind: attempt.kind === "teardown" ? "teardown" : "main",
       startedAt: attempt.startedAt,
       cwd: attempt.cwd,
       // An owner desktop whose server or daemon cannot report a live session

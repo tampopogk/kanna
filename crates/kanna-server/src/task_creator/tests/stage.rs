@@ -386,10 +386,17 @@ async fn rerun_stage_uses_compiled_post_action_stage_prompt_and_stage_setup() {
     let prepared = prepare_rerun_stage_for_api(&db, &config, "task-1").unwrap();
     assert_eq!(prepared.task_id, "task-1");
     assert_eq!(prepared.cwd, worktree.to_string_lossy());
+    assert!(
+        prepared
+            .deferred_setup
+            .iter()
+            .any(|command| command.contains("setup-rerun.marker")),
+        "a PTY rerun runs its stage setup on the server-side runner"
+    );
     match &prepared.session {
         PreparedSessionSpawn::Pty { args, .. } => {
             let command = args.join(" ");
-            assert!(command.contains("setup-rerun.marker"));
+            assert!(!command.contains("setup-rerun.marker"));
             assert!(command.contains("Commit agent."));
             assert!(command.contains(
                 "Commit Fix rerun after {\"status\":\"success\",\"summary\":\"implemented\"}"
@@ -502,6 +509,7 @@ async fn acknowledged_stage_survives_db_failure_restart_and_can_complete() {
             agent_provider: kanna_daemon::protocol::AgentProvider::Codex,
         },
         deferred_setup: None,
+        setup_record: None,
         setup_timeout_signal: None,
     };
 
@@ -2060,11 +2068,12 @@ async fn stage_transition_tears_down_departed_stage_environment_before_repo_tear
         }
         other => panic!("expected next stage spawn, got {other:?}"),
     }
-    match commands.get(4) {
+    let teardown_run_id = match commands.get(4) {
         Some(kanna_daemon::protocol::Command::Spawn {
             session_id,
             cwd,
             args,
+            env,
             ..
         }) => {
             assert_eq!(session_id, "td-task-source");
@@ -2080,9 +2089,92 @@ async fn stage_transition_tears_down_departed_stage_environment_before_repo_tear
                 env_index < repo_index,
                 "environment teardown should run before repo teardown: {command}"
             );
+            // The daemon binds a terminal archive only when both keys are
+            // present and the run id is this task's, so the archive the
+            // dropdown reads exists exactly because the spawn carries them.
+            assert_eq!(env.get("KANNA_TASK_ID").map(String::as_str), Some("task-1"));
+            let run_id = env
+                .get("KANNA_STAGE_RUN_ID")
+                .expect("teardown spawn carries its run id")
+                .clone();
+            assert!(
+                run_id.starts_with("run-task-1-"),
+                "the daemon's binding rule requires run-{{task}}-…: {run_id}"
+            );
+            // A cleanup shell must not be able to record a stage verdict.
+            assert!(!env.contains_key("KANNA_COMPLETION_CONTEXT"));
+            run_id
         }
         other => panic!("expected teardown spawn, got {other:?}"),
-    }
+    };
+
+    // The run row is written before the session is spawned, because a close
+    // teardown runs after the task is closed and its worktrees are gone.
+    let teardown_run = db.stage_run(&teardown_run_id).unwrap().unwrap();
+    assert_eq!(teardown_run.kind, "teardown");
+    assert_eq!(teardown_run.task_id, "task-1");
+    // The teardown belongs to the workspace it tore down, not the stage the
+    // task just entered.
+    assert_eq!(teardown_run.stage, "in progress");
+    assert_eq!(teardown_run.status, "running");
+    assert_eq!(teardown_run.session_id.as_deref(), Some("td-task-source"));
+    assert_eq!(
+        teardown_run.cwd.as_deref(),
+        Some(source_worktree.to_string_lossy().as_ref())
+    );
+    let attempt = db
+        .agent_terminal_attempts("task-1")
+        .unwrap()
+        .into_iter()
+        .find(|attempt| attempt.id == teardown_run_id)
+        .expect("the teardown is an addressable terminal attempt");
+    assert_eq!(attempt.kind, "teardown");
+    assert!(attempt.recorded_launch);
+    // Recording it announces no agent work: a cleanup has no `run.started`,
+    // and it must not clear a runtime verdict the killed agent session earned.
+    let events = db
+        .list_task_events(
+            &crate::db::TaskEventScope::Tasks(vec!["task-1".to_string()]),
+            0,
+            i64::MAX,
+            200,
+        )
+        .unwrap();
+    assert!(
+        !events.iter().any(|event| event.event_type == "run.started"
+            && event.payload["runId"] == teardown_run_id.as_str()),
+        "a workspace teardown publishes no run.started: {events:?}"
+    );
+
+    // It is a lifecycle run, never one of the task's agent runs: the stage it
+    // entered is still the latest run, and no stage result came from cleanup.
+    let latest = db.latest_stage_run("task-1").unwrap().unwrap();
+    assert_eq!(latest.kind, "main");
+    assert_eq!(latest.stage, "review");
+    assert!(db
+        .running_stage_runs_for_task("task-1")
+        .unwrap()
+        .iter()
+        .all(|run| run.kind != "teardown"));
+
+    // The daemon's Exit for that session is what closes it, truthfully.
+    crate::task_creator::finish_teardown_run(
+        &config.db_path,
+        &teardown_run_id,
+        "failed",
+        "workspace teardown exited 3",
+    );
+    let closed = db.stage_run(&teardown_run_id).unwrap().unwrap();
+    assert_eq!(closed.status, "failed");
+    assert_eq!(
+        closed.result.as_deref(),
+        Some("workspace teardown exited 3")
+    );
+    // A closed cleanup is still not a stage verdict.
+    assert_eq!(
+        db.latest_finished_stage_run_result("task-1").unwrap(),
+        db.latest_finished_main_stage_run_result("task-1").unwrap()
+    );
 
     let _ = std::fs::remove_dir_all(&repo_root);
 }
@@ -3559,6 +3651,7 @@ fn current_stage_spawn_fixture(
             agent_provider: DaemonAgentProvider::Codex,
         },
         deferred_setup: None,
+        setup_record: None,
         setup_timeout_signal: None,
     };
     (config, db, prepared)

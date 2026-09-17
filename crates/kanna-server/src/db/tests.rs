@@ -229,7 +229,7 @@ fn open_creates_and_migrates_fresh_profile_database() {
             |row| row.get(0),
         )
         .expect("latest migration");
-    assert_eq!(latest_migration, "087_provider_capacity_notice_log");
+    assert_eq!(latest_migration, "088_workspace_setup_run");
     assert_eq!(
         index_columns(&db.conn, "idx_pipeline_item_parent_created_id"),
         vec!["parent_task_id", "created_at", "id"],
@@ -5744,4 +5744,165 @@ fn transfer_protocol_rejection_cannot_undo_import_or_completed_ownership() {
         db.get_task_transfer("completed").unwrap().unwrap().status,
         "completed"
     );
+}
+
+/// Widening `stage_run.kind` to admit a workspace teardown means rebuilding
+/// the table, and every rebuild of a table other tables point at is a chance
+/// to delete their rows: `agent_terminal_attempt`, `task_input` and
+/// `contextless_completion_attempt` all reference `stage_run(id)`, two of them
+/// `ON DELETE CASCADE`. This proves the migration keeps them and that the new
+/// kind is accepted afterwards.
+#[test]
+fn stage_run_teardown_kind_migration_keeps_rows_that_reference_it() {
+    let path = temp_db_path();
+    let path_string = path.to_string_lossy().to_string();
+    let db = Db::open_migrated(&path_string).expect("build a current database");
+    db.conn
+        .execute_batch(
+            r#"
+            INSERT INTO repo (id, path, name) VALUES ('repo-1', '/repo', 'Repo One');
+            INSERT INTO pipeline_item (id, repo_id, prompt, stage)
+              VALUES ('task-1', 'repo-1', 'prompt', 'review');
+            INSERT INTO stage_run (id, task_id, stage, kind, status, session_id, cwd)
+              VALUES ('run-task-1-1', 'task-1', 'review', 'main', 'succeeded', 'task-1', '/work');
+            INSERT INTO stage_run (id, task_id, stage, kind, status, session_id, cwd)
+              VALUES ('run-task-1-2', 'task-1', 'review', 'post', 'running', 'task-1', '/work');
+            INSERT INTO agent_terminal_attempt (run_id, archive) VALUES ('run-task-1-1', '{}');
+            INSERT INTO task_input (task_id, run_id, stage, source, message)
+              VALUES ('task-1', 'run-task-1-1', 'review', 'operator', 'keep me');
+            INSERT INTO contextless_completion_attempt (task_id, attempt_key, run_id, result)
+              VALUES ('task-1', 'key-1', 'run-task-1-1', 'ok');
+            "#,
+        )
+        .expect("seed a task with rows referencing its runs");
+
+    // Restore the pre-087 table: the CHECK a database created from the base
+    // schema carried before this migration existed.
+    db.conn
+        .execute_batch(
+            r#"
+            PRAGMA foreign_keys = OFF;
+            CREATE TABLE stage_run_pre_087 (
+              id TEXT PRIMARY KEY,
+              task_id TEXT NOT NULL REFERENCES pipeline_item(id) ON DELETE CASCADE,
+              stage TEXT NOT NULL,
+              kind TEXT NOT NULL DEFAULT 'main' CHECK (kind IN ('main', 'post')),
+              agent TEXT, agent_provider TEXT, model TEXT, effort TEXT,
+              status TEXT NOT NULL CHECK (status IN ('pending', 'running', 'succeeded', 'failed', 'cancelled')),
+              result TEXT, feedback TEXT, session_id TEXT, provider_session_id TEXT, cwd TEXT,
+              resumed_from_run_id TEXT, replaces_run_id TEXT, no_work_termination TEXT,
+              resume_fallback_reason TEXT,
+              completion_transition TEXT CHECK (completion_transition IN ('manual', 'auto')),
+              trigger TEXT CHECK (trigger IN ('auto', 'operator', 'manager', 'unspecified')),
+              completion_bound INTEGER NOT NULL DEFAULT 0,
+              started_at TEXT NOT NULL DEFAULT (datetime('now')),
+              finished_at TEXT,
+              provider_override TEXT
+            );
+            INSERT INTO stage_run_pre_087 SELECT
+              id, task_id, stage, kind, agent, agent_provider, model, effort, status, result,
+              feedback, session_id, provider_session_id, cwd, resumed_from_run_id,
+              replaces_run_id, no_work_termination, resume_fallback_reason,
+              completion_transition, trigger, completion_bound, started_at, finished_at,
+              provider_override
+              FROM stage_run;
+            DROP TABLE stage_run;
+            ALTER TABLE stage_run_pre_087 RENAME TO stage_run;
+            DELETE FROM schema_migrations WHERE id = '087_stage_run_teardown_kind';
+            PRAGMA foreign_keys = ON;
+            "#,
+        )
+        .expect("downgrade stage_run to its pre-087 shape");
+    assert!(
+        db.conn
+            .execute(
+                "INSERT INTO stage_run (id, task_id, stage, kind, status)
+                 VALUES ('run-task-1-3', 'task-1', 'review', 'teardown', 'running')",
+                [],
+            )
+            .is_err(),
+        "the pre-087 table must refuse a teardown run"
+    );
+    drop(db);
+
+    let db = Db::open_migrated(&path_string).expect("apply the teardown-kind migration");
+
+    let runs: Vec<(String, String)> = {
+        let mut statement = db
+            .conn
+            .prepare("SELECT id, kind FROM stage_run ORDER BY id")
+            .expect("read migrated runs");
+        let rows = statement
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .expect("map migrated runs")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("collect migrated runs");
+        rows
+    };
+    assert_eq!(
+        runs,
+        vec![
+            ("run-task-1-1".to_string(), "main".to_string()),
+            ("run-task-1-2".to_string(), "post".to_string()),
+        ]
+    );
+    for (table, expected) in [
+        ("agent_terminal_attempt", 1_i64),
+        ("task_input", 1),
+        ("contextless_completion_attempt", 1),
+    ] {
+        let count: i64 = db
+            .conn
+            .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                row.get(0)
+            })
+            .expect("count referencing rows");
+        assert_eq!(count, expected, "{table} lost rows to the rebuild");
+    }
+    let broken: i64 = db
+        .conn
+        .query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |row| {
+            row.get(0)
+        })
+        .expect("check foreign keys");
+    assert_eq!(broken, 0);
+
+    db.insert_stage_run(NewStageRun {
+        id: "run-task-1-3",
+        task_id: "task-1",
+        stage: "review",
+        kind: super::stage_runs::TEARDOWN_RUN_KIND,
+        agent: None,
+        agent_provider: None,
+        model: None,
+        effort: None,
+        status: "running",
+        result: None,
+        feedback: None,
+        session_id: Some("td-task-1"),
+        provider_session_id: None,
+        cwd: Some("/work"),
+        resumed_from_run_id: None,
+    })
+    .expect("a teardown run is accepted after the migration");
+    assert!(
+        db.conn
+            .execute(
+                "INSERT INTO stage_run (id, task_id, stage, kind, status)
+                 VALUES ('run-task-1-4', 'task-1', 'review', 'nonsense', 'running')",
+                [],
+            )
+            .is_err(),
+        "the widened CHECK is still a closed vocabulary"
+    );
+
+    // A teardown run is never one of the task's agent runs.
+    let latest = db
+        .latest_stage_run("task-1")
+        .expect("read the latest run")
+        .expect("a latest run exists");
+    assert_eq!(latest.id, "run-task-1-2");
+
+    drop(db);
+    let _ = std::fs::remove_file(path);
 }

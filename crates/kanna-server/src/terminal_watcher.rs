@@ -27,6 +27,44 @@ fn persist_exit_resume_session_id(
     Ok(())
 }
 
+/// Close a workspace teardown run with the exit its session actually
+/// reported.
+///
+/// A teardown is not an agent: its `td-{branch}` session id resolves to no
+/// task, it records no stage verdict, and the generic terminal-state
+/// finalization below is about a task's live stage. Returns whether this exit
+/// belonged to a teardown, so the caller stops there.
+fn finish_exited_teardown_run(
+    state: &http_api::AppState,
+    session_id: &str,
+    code: i32,
+    killed: bool,
+) -> bool {
+    let db_path = state.config().db_path.clone();
+    let run_id = match crate::db::Db::open(&db_path)
+        .and_then(|db| db.running_teardown_stage_run_for_session(session_id))
+    {
+        Ok(Some(run_id)) => run_id,
+        Ok(None) => return false,
+        Err(error) => {
+            log::warn!("failed to look up a teardown run for {session_id}: {error}");
+            return false;
+        }
+    };
+    let (status, result) = if killed {
+        (
+            "failed",
+            format!("workspace teardown was killed (exit {code})"),
+        )
+    } else if code == 0 {
+        ("succeeded", "workspace teardown completed".to_string())
+    } else {
+        ("failed", format!("workspace teardown exited {code}"))
+    };
+    crate::task_creator::finish_teardown_run(&db_path, &run_id, status, &result);
+    true
+}
+
 /// Record the provider session id an orchestrated kill discovered on its way
 /// out, on the run the killer named as outgoing.
 ///
@@ -611,6 +649,14 @@ pub(crate) async fn terminal_state_watcher_once(
                 // self-describing — a leftover entry would swallow a future
                 // legitimate Exit for the same session id.
                 let replacement = replacements.consume(&session_id);
+                if finish_exited_teardown_run(
+                    state,
+                    &session_id,
+                    code,
+                    killed || replacement.replaced,
+                ) {
+                    continue;
+                }
                 if replacement.replaced || killed {
                     // Orchestrated kill (stage swap, rerun, close) — not the
                     // agent finishing, so there is no terminal-state
@@ -867,6 +913,95 @@ mod tests {
         server.await.unwrap();
 
         assert_task_not_completed(&config);
+        let _ = std::fs::remove_file(socket_path);
+        let _ = std::fs::remove_dir_all(daemon_dir);
+    }
+
+    /// A workspace teardown session's exit closes its own run with what the
+    /// session actually did, and touches nothing about the task's stage.
+    ///
+    /// A `td-{branch}` session id resolves to no task, so without this the
+    /// cleanup run would stay `running` forever and its recorded status would
+    /// be a claim nobody ever checked.
+    #[tokio::test]
+    async fn watcher_closes_a_workspace_teardown_run_with_its_exit_status() {
+        let unique = unique_name("terminal-watcher-teardown-exit");
+        let daemon_dir = std::env::temp_dir().join(format!("{unique}-daemon"));
+        let config = test_config(&unique, &daemon_dir);
+        seed_plain_task(&config);
+        let db = Db::open(&config.db_path).unwrap();
+        db.insert_stage_run(crate::db::NewStageRun {
+            id: "run-task-child-teardown",
+            task_id: "task-child",
+            stage: "in progress",
+            kind: crate::db::stage_runs::TEARDOWN_RUN_KIND,
+            agent: None,
+            agent_provider: None,
+            model: None,
+            effort: None,
+            status: "running",
+            result: None,
+            feedback: None,
+            session_id: Some("td-task-child-2"),
+            provider_session_id: None,
+            cwd: Some("/work"),
+            resumed_from_run_id: None,
+        })
+        .unwrap();
+        drop(db);
+        let (listener, socket_path) = bind_daemon_listener(&daemon_dir);
+
+        let server = tokio::spawn(async move {
+            let mut subscriber = expect_subscribe(&listener).await;
+            write_event(
+                &mut subscriber,
+                &DaemonEvent::Exit {
+                    session_id: "td-task-child-2".to_string(),
+                    code: 3,
+                    resume_session_id: None,
+                    killed: false,
+                },
+            )
+            .await;
+            write_event(&mut subscriber, &DaemonEvent::ShuttingDown).await;
+            expect_no_notification_connection(&listener).await;
+        });
+
+        timeout(
+            Duration::from_secs(2),
+            terminal_state_watcher_once(
+                &http_api::AppState::new(config.clone()),
+                &session_replacements::SessionReplacements::default(),
+            ),
+        )
+        .await
+        .expect("watcher did not finish")
+        .unwrap();
+        server.await.unwrap();
+
+        let db = Db::open(&config.db_path).unwrap();
+        let run = db.stage_run("run-task-child-teardown").unwrap().unwrap();
+        assert_eq!(run.status, "failed");
+        assert_eq!(run.result.as_deref(), Some("workspace teardown exited 3"));
+        assert!(run.finished_at.is_some());
+        // The cleanup is not the task's agent, so nothing about the stage moved
+        // and no `run.finished` was published for a manager to wake on.
+        assert_task_not_completed(&config);
+        let events = db
+            .list_task_events(
+                &crate::db::TaskEventScope::Tasks(vec!["task-child".to_string()]),
+                0,
+                i64::MAX,
+                100,
+            )
+            .unwrap();
+        assert!(
+            !events
+                .iter()
+                .any(|event| event.event_type == "run.finished"),
+            "a workspace teardown publishes no agent run verdict: {events:?}"
+        );
+        drop(db);
         let _ = std::fs::remove_file(socket_path);
         let _ = std::fs::remove_dir_all(daemon_dir);
     }

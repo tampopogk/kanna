@@ -5625,13 +5625,20 @@ fn prepare_task_persists_create_spawn_options_and_custom_setup() {
         !std::path::Path::new(&prepared.cwd)
             .join(".kanna/custom-setup-ran")
             .exists(),
-        "PTY setup must be deferred until the terminal starts"
+        "preparation must not run the workspace setup"
+    );
+    assert!(
+        prepared
+            .deferred_setup
+            .iter()
+            .any(|command| command.contains("custom-setup-ran")),
+        "the spawn path owns the request's custom setup"
     );
     match prepared.session {
         PreparedSessionSpawn::Pty { args, .. } => {
             let command = args.join(" ");
-            assert!(command.contains("custom-setup-ran"));
-            assert!(command.contains("Running startup..."));
+            assert!(!command.contains("custom-setup-ran"));
+            assert!(!command.contains("Running startup..."));
             assert!(command.contains("--model 'opus'"));
             assert!(command.contains("--permission-mode acceptEdits"));
             assert!(command.contains("--allowedTools Bash"));

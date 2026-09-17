@@ -46,7 +46,7 @@ use definitions::{
 use environment::{
     append_executable_parent_to_path, build_spawn_env, build_workspace_search_path,
     claim_task_ports, kanna_server_base_url, resolve_headless_agent_executable,
-    resolve_provider_executable, run_workspace_setup_commands, write_kanna_mcp_config,
+    resolve_provider_executable, run_workspace_setup_commands_captured, write_kanna_mcp_config,
 };
 use local_config::LocalConfigOverride;
 use prompt::{build_stage_prompt, PromptContext};
@@ -76,10 +76,10 @@ pub(crate) use definitions::ResolvedAgentDefinition;
 pub(crate) use definitions::DEFAULT_REVISION_LIMIT;
 pub(crate) use environment::{resolve_agent_executable, warm_login_shell_path};
 pub(crate) use lifecycle::{
-    daemon_session_presence, dispatch_prepared_post_for_api, kill_session_replacing,
-    prepared_task_id, prepared_task_worktree, prune_completion_contexts_on_startup,
-    reconcile_lifecycle_operations_on_startup, remove_completion_contexts,
-    rerun_prepared_stage_for_api, resolve_legacy_completion_retry_run,
+    daemon_session_presence, dispatch_prepared_post_for_api, finish_teardown_run,
+    kill_session_replacing, prepared_task_id, prepared_task_worktree,
+    prune_completion_contexts_on_startup, reconcile_lifecycle_operations_on_startup,
+    remove_completion_contexts, rerun_prepared_stage_for_api, resolve_legacy_completion_retry_run,
     rollback_prepared_stage_run_for_api, rollback_prepared_task_for_api,
     spawn_prepared_stage_run_for_api, spawn_prepared_task_for_api_recording_stage_run,
     spawn_prepared_task_for_api_with_diagnostics, spawn_prepared_workspace_teardown_best_effort,
@@ -883,6 +883,7 @@ pub(crate) fn prepare_rerun_stage_for_api(
         .unwrap_or_default();
     let defer_headless_setup = agent_type == AgentSessionType::Agent && !stage_setup.is_empty();
     let stage_run_model = model.clone();
+    let mut setup_record = None;
     let (session, provider_session_id) = build_prepared_session(
         provider,
         agent_type,
@@ -904,6 +905,7 @@ pub(crate) fn prepare_rerun_stage_for_api(
         &worktree_path,
         &stage_setup,
         defer_headless_setup,
+        &mut setup_record,
         None,
         None,
         repo_config.local_override.as_ref(),
@@ -926,11 +928,11 @@ pub(crate) fn prepare_rerun_stage_for_api(
         provider_session_id,
         cwd: worktree_path,
         env: spawn_env,
-        deferred_setup: if defer_headless_setup {
-            stage_setup
-        } else {
-            Vec::new()
-        },
+        // Every rerun now runs its setup on the server-side runner before the
+        // replacement session spawns; a headless one additionally needs it
+        // done before its absolute executable can be resolved.
+        deferred_setup: stage_setup,
+        setup_record,
         recovery_snapshot: None,
         session,
     })
@@ -1022,6 +1024,7 @@ pub(crate) fn prepare_create_task_repair_for_api(
         )?;
         let defer_headless_setup =
             agent_type == AgentSessionType::Agent && !resolved.setup.is_empty();
+        let mut setup_record = None;
         let (mut session, provider_session_id) = build_prepared_session(
             provider,
             agent_type,
@@ -1043,6 +1046,7 @@ pub(crate) fn prepare_create_task_repair_for_api(
             &worktree_path,
             &resolved.setup,
             defer_headless_setup,
+            &mut setup_record,
             resolved.resume_session_id.as_deref(),
             resolved.transfer_import.as_ref(),
             repo_config.local_override.as_ref(),
@@ -1073,11 +1077,8 @@ pub(crate) fn prepare_create_task_repair_for_api(
             provider_session_id,
             cwd: worktree_path,
             env: spawn_env,
-            deferred_setup: if defer_headless_setup {
-                resolved.setup
-            } else {
-                Vec::new()
-            },
+            deferred_setup: resolved.setup,
+            setup_record,
             recovery_snapshot: resolved.recovery_snapshot,
             session,
         }));
@@ -1146,6 +1147,7 @@ pub(crate) fn prepare_create_task_repair_for_api(
     // it rather than composed from a layer written for another provider.
     let model = resolved.model_for(provider);
     let effort = resolved.effort_for(provider);
+    let mut setup_record = None;
     let (mut session, provider_session_id) = build_prepared_session(
         provider,
         agent_type,
@@ -1167,6 +1169,7 @@ pub(crate) fn prepare_create_task_repair_for_api(
         &worktree_path,
         &setup,
         defer_headless_setup,
+        &mut setup_record,
         resolved.resume_session_id.as_deref(),
         resolved.transfer_import.as_ref(),
         repo_config.local_override.as_ref(),
@@ -1196,11 +1199,8 @@ pub(crate) fn prepare_create_task_repair_for_api(
         provider_session_id,
         cwd: worktree_path,
         env: spawn_env,
-        deferred_setup: if defer_headless_setup {
-            setup
-        } else {
-            Vec::new()
-        },
+        deferred_setup: setup,
+        setup_record,
         recovery_snapshot: resolved.recovery_snapshot,
         session,
     }))
@@ -1455,6 +1455,9 @@ pub(in crate::task_creator) fn prepare_stage_run_spawn(
             &worktree_path,
             &setup,
             !setup.is_empty(),
+            // The provisional session never spawns and never runs setup: the
+            // detached worker below owns both.
+            &mut None,
             resume_session_id.as_deref(),
             None,
             repo_config.local_override.as_ref(),
@@ -1543,6 +1546,7 @@ pub(in crate::task_creator) fn prepare_stage_run_spawn(
         terminal_prelude: None,
         session,
         deferred_setup,
+        setup_record: None,
         #[cfg(test)]
         setup_timeout_signal: None,
     })
@@ -1567,18 +1571,31 @@ pub(crate) fn finish_deferred_stage_setup(
     };
     #[cfg(test)]
     let setup_result = match prepared.setup_timeout_signal.as_deref() {
-        Some(signal) => environment::run_workspace_setup_commands_with_armed_timeout(
+        Some(signal) => environment::run_workspace_setup_commands_captured_with_armed_timeout(
             &deferred.commands,
             &prepared.cwd,
             &prepared.env,
             signal,
         ),
-        None => run_workspace_setup_commands(&deferred.commands, &prepared.cwd, &prepared.env),
+        None => {
+            run_workspace_setup_commands_captured(&deferred.commands, &prepared.cwd, &prepared.env)
+        }
     };
     #[cfg(not(test))]
     let setup_result =
-        run_workspace_setup_commands(&deferred.commands, &prepared.cwd, &prepared.env);
-    if let Err(error) = setup_result {
+        run_workspace_setup_commands_captured(&deferred.commands, &prepared.cwd, &prepared.env);
+    // The record is kept before the failure is returned: a stage whose setup
+    // failed is exactly the one somebody needs the Setup stream for, and the
+    // spawn path binds it to the failed run it records.
+    let setup_failure = match setup_result {
+        Ok(Some(result)) => {
+            prepared.setup_record = Some(result.record);
+            result.failure
+        }
+        Ok(None) => None,
+        Err(error) => Some(error),
+    };
+    if let Some(error) = setup_failure {
         prepared.deferred_setup = Some(deferred);
         return Err(error);
     }
@@ -1622,6 +1639,7 @@ pub(crate) fn finish_deferred_stage_setup(
         &prepared.cwd,
         &[],
         false,
+        &mut None,
         deferred.resume_session_id.as_deref(),
         None,
         deferred.local_config_override.as_ref(),
@@ -1771,13 +1789,28 @@ fn prepare_workspace_teardown_with_extra(
     }
 
     let port_env = claim_task_ports(db, task_id, repo_config).ok()?;
-    let spawn_env =
+    let mut spawn_env =
         build_spawn_env(config, task_id, &port_env, &worktree_path, repo_config).ok()?;
     let session_id = format!("td-{branch}");
+    // A durable identity for the detached cleanup session, stamped into its
+    // environment so the daemon binds its terminal archive to this run.
+    // `build_spawn_env` strips the key precisely so no session inherits
+    // another's; teardown gets its own, and deliberately not a completion
+    // context — a workspace cleanup records no stage verdict.
+    let run_id = generate_failure_run_id(task_id);
+    spawn_env.insert(
+        kanna_tool_catalog::KANNA_STAGE_RUN_ID_ENV.to_string(),
+        run_id.clone(),
+    );
     let shell_command = build_teardown_shell_command(&teardown);
     let shell = crate::login_shell::login_shell();
     Some(PreparedWorkspaceTeardown {
         session_id,
+        run_id,
+        // The teardown belongs to the workspace it tears down, so its run is
+        // labelled with the stage that owned that workspace — never the stage
+        // the task is entering.
+        stage: stage_name.to_string(),
         daemon_dir: config.daemon_dir.clone(),
         db_path: config.db_path.clone(),
         task_id: task_id.to_string(),
@@ -1885,6 +1918,10 @@ fn build_prepared_session(
     worktree_path: &str,
     setup: &[String],
     defer_headless_setup: bool,
+    // Recorded here only by the headless branch, which is the one that has to
+    // run setup before it can resolve an absolute executable. A PTY spawn's
+    // setup is always run by the spawn path, against the run row it prepares.
+    setup_record: &mut Option<crate::db::WorkspaceSetupOutcome>,
     resume_session_id: Option<&str>,
     transfer_import: Option<&crate::mobile_api::TransferImportSummary>,
     local_config_override: Option<&LocalConfigOverride>,
@@ -1893,9 +1930,13 @@ fn build_prepared_session(
     validate_provider_effort(provider, effort.as_deref())?;
     Ok(match agent_type {
         AgentSessionType::Pty => {
-            // Keep PTY bootstrap visible and in the provider's shell. Setup
-            // may create the executable or export state needed by it, so
-            // defer PATH lookup until the shell reaches the final command.
+            // Setup no longer runs inside this shell: it runs on the
+            // server-side workspace command runner before the spawn, so a
+            // stage has one addressable Setup record instead of a bootstrap
+            // blob at the head of the agent's own scrollback. Provider
+            // resolution keeps deferring to the shell when setup exists,
+            // because the executable setup installs is still not on PATH at
+            // the moment this command line is built.
             let mut shell_path = spawn_env.get("PATH").cloned();
             let executable = if setup.is_empty() {
                 resolve_provider_executable(
@@ -1978,7 +2019,7 @@ fn build_prepared_session(
             };
             let full_cmd = build_task_shell_command(
                 &agent_cmd,
-                setup,
+                &[],
                 transfer_import,
                 local_config_override,
                 spawn_env.get("KANNA_CLI_PATH").map(String::as_str),
@@ -2004,7 +2045,15 @@ fn build_prepared_session(
             let headless_executable = if defer_headless_setup {
                 None
             } else {
-                run_workspace_setup_commands(setup, worktree_path, spawn_env)?;
+                if let Some(result) =
+                    run_workspace_setup_commands_captured(setup, worktree_path, spawn_env)?
+                {
+                    let failure = result.failure;
+                    *setup_record = Some(result.record);
+                    if let Some(failure) = failure {
+                        return Err(failure);
+                    }
+                }
                 resolve_headless_agent_executable(
                     provider,
                     spawn_env.get("PATH").map(String::as_str),
@@ -2806,6 +2855,7 @@ pub(crate) fn prepare_start_dormant_task_for_api(
     };
     let stage_run_model = model.clone();
     let stage_run_effort = effort.clone();
+    let mut setup_record = None;
     let (session, provider_session_id) = match build_prepared_session(
         provider,
         agent_type,
@@ -2827,6 +2877,7 @@ pub(crate) fn prepare_start_dormant_task_for_api(
         &worktree_path,
         &setup,
         false,
+        &mut setup_record,
         None,
         None,
         repo_config.local_override.as_ref(),
@@ -2862,6 +2913,12 @@ pub(crate) fn prepare_start_dormant_task_for_api(
         completion_transition: stage.policy.transition,
         provider_session_id,
         recovery_snapshot,
+        deferred_setup: if matches!(session, PreparedSessionSpawn::Pty { .. }) {
+            setup
+        } else {
+            Vec::new()
+        },
+        setup_record,
         session,
     }))
 }
@@ -3115,6 +3172,8 @@ fn prepare_task_spawn_with_error(
         agent_type,
         model: stage_run_model,
         effort: stage_run_effort,
+        deferred_setup,
+        setup_record,
     } = match prepared {
         Ok(prepared) => prepared,
         Err(err) => {
@@ -3171,6 +3230,8 @@ fn prepare_task_spawn_with_error(
         completion_transition: resolved.stage_transition,
         provider_session_id,
         recovery_snapshot: resolved.recovery_snapshot,
+        deferred_setup,
+        setup_record,
         session,
     })
 }
@@ -3768,6 +3829,10 @@ struct PreparedNewTaskSession {
     /// and the create intent are stamped with these values afterwards.
     model: Option<String>,
     effort: Option<String>,
+    /// PTY setup the spawn path runs once this task's first stage run exists.
+    deferred_setup: Vec<String>,
+    /// A headless spawn's setup stream, already run here.
+    setup_record: Option<crate::db::WorkspaceSetupOutcome>,
 }
 
 fn prepare_new_task_session(
@@ -3786,6 +3851,7 @@ fn prepare_new_task_session(
         &mut spawn_env,
     )?;
     let setup = new_task_setup_cmds(repo_config, &resolved.stage_setup, &resolved.setup_cmds);
+    let mut setup_record = None;
     let requested_headless = matches!(
         normalize_agent_type(resolved.requested_agent_type.as_deref()),
         Some("agent")
@@ -3820,7 +3886,15 @@ fn prepare_new_task_session(
         // Preserve post-setup provider discovery so setup may install any of
         // the configured fallback candidates before we resolve an absolute
         // executable for SpawnAgent.
-        run_workspace_setup_commands(&setup, worktree_path, &spawn_env)?;
+        if let Some(result) =
+            run_workspace_setup_commands_captured(&setup, worktree_path, &spawn_env)?
+        {
+            let failure = result.failure;
+            setup_record = Some(result.record);
+            if let Some(failure) = failure {
+                return Err(failure);
+            }
+        }
         let provider = resolve_available_provider()?;
         let agent_type = resolve_agent_type(resolved.requested_agent_type.as_deref(), provider)?;
         (provider, agent_type, &[][..])
@@ -3831,9 +3905,11 @@ fn prepare_new_task_session(
         let agent_type = resolve_agent_type(resolved.requested_agent_type.as_deref(), provider)?;
         (provider, agent_type, &[][..])
     } else {
-        // PTY setup belongs in the daemon shell so users see commands and
-        // output before the agent starts. Bind configured precedence now;
-        // setup may make that provider executable available later on PATH.
+        // A PTY spawn's setup runs on the server-side runner too, but only
+        // once its stage run exists to bind the record to — so it is deferred
+        // to the spawn path rather than run here. Bind configured precedence
+        // now; setup may make that provider executable available later on
+        // PATH, which is why the shell still resolves the CLI by name.
         let provider = *resolved
             .provider_candidates
             .first()
@@ -3864,6 +3940,7 @@ fn prepare_new_task_session(
         worktree_path,
         session_setup,
         false,
+        &mut setup_record,
         resolved.resume_session_id.as_deref(),
         resolved.transfer_import.as_ref(),
         repo_config.local_override.as_ref(),
@@ -3874,6 +3951,11 @@ fn prepare_new_task_session(
             *rows = initial_rows;
         }
     }
+    let deferred_setup = if matches!(session, PreparedSessionSpawn::Pty { .. }) {
+        setup
+    } else {
+        Vec::new()
+    };
     Ok(PreparedNewTaskSession {
         spawn_env,
         session,
@@ -3882,6 +3964,8 @@ fn prepare_new_task_session(
         agent_type,
         model,
         effort,
+        deferred_setup,
+        setup_record,
     })
 }
 

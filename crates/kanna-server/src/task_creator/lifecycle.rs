@@ -1,4 +1,6 @@
-use super::environment::{resolve_headless_agent_executable, run_workspace_setup_commands};
+use super::environment::{
+    resolve_headless_agent_executable, run_workspace_setup_commands_captured,
+};
 use super::types::{
     CreatedTask, PreparedPostDispatch, PreparedRunWorkspace, PreparedSessionSpawn,
     PreparedStageRerun, PreparedStageRunSpawn, PreparedTaskSpawn, PreparedWorkspaceTeardown,
@@ -288,6 +290,28 @@ pub(crate) async fn spawn_prepared_task_for_api_recording_stage_run_detailed(
         ))
     })?
     .map_err(PreparedTaskDeliveryError::BeforeAcknowledgement)?;
+    // The workspace's setup runs here, on the same server-side runner every
+    // stage after this one uses, rather than as a prefix inside the agent's
+    // own shell command. The run row above already exists, so the stream is
+    // bound to this stage's run whether setup succeeds or fails.
+    if let Err(error) = run_first_spawn_workspace_setup(db_path, &run_id, &mut prepared) {
+        // The run this recorded is running and its agent will never start, so
+        // it is closed here for the same reason a rejected spawn is.
+        let record_db_path = db_path.to_string();
+        let record_prepared = prepared.clone();
+        let record_error = error.clone();
+        let diagnostic = tokio::task::spawn_blocking(move || {
+            let db = Db::open(&record_db_path).map_err(|error| format!("db error: {error}"))?;
+            record_prepared_task_spawn_failure(&db, &record_prepared, &record_error)
+        })
+        .await;
+        let error = match diagnostic {
+            Ok(Ok(())) => error,
+            Ok(Err(record_error)) => format!("{error}; diagnostics failed: {record_error}"),
+            Err(join_error) => format!("{error}; diagnostics worker failed: {join_error}"),
+        };
+        return Err(PreparedTaskDeliveryError::BeforeAcknowledgement(error));
+    }
     bind_terminal_launch(db_path, &run_id, &prepared.session)
         .map_err(PreparedTaskDeliveryError::BeforeAcknowledgement)?;
     let created = match spawn_prepared_task_classified(daemon, prepared.clone()).await {
@@ -510,6 +534,7 @@ pub(crate) async fn spawn_prepared_stage_run_for_api(
 
     mark_stage_operation_phase(db_path, &run_id, "spawn_ready")?;
     record_stage_transition_run(db_path, &prepared, &run_id)?;
+    record_workspace_setup_for_run(db_path, &run_id, prepared.setup_record.as_ref());
     bind_terminal_launch(db_path, &run_id, &prepared.session)?;
 
     let command = spawn_session_command(
@@ -704,6 +729,9 @@ fn record_stage_transition_failure(
             db.set_stage_run_resume_fallback_reason(&run_id, reason)
                 .map_err(|db_error| format!("db error: {db_error}"))?;
         }
+        // A stage whose setup failed is the one whose Setup stream matters
+        // most, so it is bound to the failure run this records.
+        record_workspace_setup_for_run(db_path, &run_id, prepared.setup_record.as_ref());
         Ok(())
     })();
     match record {
@@ -739,6 +767,25 @@ pub(crate) async fn spawn_prepared_workspace_teardown_best_effort(
     let daemon_dir = prepared.daemon_dir.clone();
     let db_path = prepared.db_path.clone();
     let task_id = prepared.task_id.clone();
+    let run_id = prepared.run_id.clone();
+    // Written before the session exists, because the close path tears a
+    // workspace down after the task is closed and its worktrees are gone:
+    // there is no later moment at which this row could be created, and the
+    // archive the daemon keeps in its own directory is readable long after the
+    // worktree is not. A failure to record it does not cancel the cleanup —
+    // the workspace still has to be torn down — it only costs the record.
+    let recorded = record_teardown_stage_run(
+        &db_path,
+        &task_id,
+        &run_id,
+        &prepared.stage,
+        &session_id,
+        &prepared.cwd,
+    );
+    if let Err(error) = &recorded {
+        log::warn!("failed to record the workspace teardown run {run_id}: {error}");
+    }
+    let recorded = recorded.is_ok();
     let command = spawn_session_command(
         prepared.session_id,
         prepared.cwd,
@@ -746,7 +793,7 @@ pub(crate) async fn spawn_prepared_workspace_teardown_best_effort(
         None,
         prepared.session,
     );
-    match daemon.send_command_retrying_successor(&command).await {
+    let start_failure = match daemon.send_command_retrying_successor(&command).await {
         Ok(DaemonEvent::SessionCreated { .. }) => {
             tokio::spawn(supervise_teardown_session(
                 daemon_dir,
@@ -756,26 +803,78 @@ pub(crate) async fn spawn_prepared_workspace_teardown_best_effort(
                 std::time::Duration::from_secs(10 * 60),
                 std::time::Duration::from_secs(30 * 60),
             ));
+            return;
         }
         Ok(DaemonEvent::Error { message, .. }) => {
             log::warn!("workspace teardown session {session_id} failed to start: {message}");
-            record_teardown_failure(&db_path, &task_id, &session_id, &message);
+            message
         }
         Ok(other) => {
             log::warn!(
                 "workspace teardown session {session_id} returned unexpected daemon response: {other:?}"
             );
-            record_teardown_failure(
-                &db_path,
-                &task_id,
-                &session_id,
-                &format!("unexpected daemon response: {other:?}"),
-            );
+            format!("unexpected daemon response: {other:?}")
         }
         Err(error) => {
             log::warn!("workspace teardown session {session_id} daemon error: {error}");
-            record_teardown_failure(&db_path, &task_id, &session_id, &error.to_string());
+            error.to_string()
         }
+    };
+    record_teardown_failure(&db_path, &task_id, &session_id, &start_failure);
+    if recorded {
+        // The session never started, so no Exit will ever close this run.
+        finish_teardown_run(&db_path, &run_id, "failed", &start_failure);
+    }
+}
+
+/// Record the `stage_run` a workspace teardown session is bound to, and bind
+/// its terminal attempt, so the detached cleanup's scrollback has somewhere to
+/// land. The run carries no agent and no verdict; its status is the exit of
+/// the commands the workspace ran on its way out.
+fn record_teardown_stage_run(
+    db_path: &str,
+    task_id: &str,
+    run_id: &str,
+    stage: &str,
+    session_id: &str,
+    cwd: &str,
+) -> Result<(), String> {
+    let db = Db::open(db_path).map_err(|error| format!("db error: {error}"))?;
+    db.insert_stage_run(NewStageRun {
+        id: run_id,
+        task_id,
+        stage,
+        kind: crate::db::stage_runs::TEARDOWN_RUN_KIND,
+        agent: None,
+        agent_provider: None,
+        model: None,
+        effort: None,
+        status: "running",
+        result: None,
+        feedback: None,
+        session_id: Some(session_id),
+        provider_session_id: None,
+        cwd: Some(cwd),
+        resumed_from_run_id: None,
+    })
+    .map_err(|error| format!("db error: {error}"))?;
+    db.bind_agent_terminal_attempt(run_id)
+        .map_err(|error| format!("db error: {error}"))
+}
+
+/// Close a teardown run with what its session actually did.
+pub(crate) fn finish_teardown_run(db_path: &str, run_id: &str, status: &str, result: &str) {
+    let recorded = Db::open(db_path).and_then(|db| {
+        db.finish_stage_run_without_work(
+            run_id,
+            status,
+            Some(result),
+            None,
+            crate::db::no_work_termination::WORKSPACE_TEARDOWN,
+        )
+    });
+    if let Err(error) = recorded {
+        log::warn!("failed to close the workspace teardown run {run_id}: {error}");
     }
 }
 
@@ -1792,24 +1891,27 @@ pub(crate) async fn rerun_prepared_stage_for_api(
     let run_id = generate_stage_run_id(&task_id);
     let mut completion_context =
         initialize_completion_context(&mut prepared.env, &task_id, &run_id, daemon.daemon_dir())?;
-    let record_failure = |error: String| match record_rerun_stage_failure(
-        db_path,
-        &task_id,
-        &stage,
-        run_kind,
-        stage_agent.as_deref(),
-        &agent_provider,
-        model.as_deref(),
-        effort.as_deref(),
-        &session_id,
-        provider_session_id.as_deref(),
-        &cwd,
-        provider_override.as_ref(),
-        &error,
-    ) {
-        Ok(()) => error,
-        Err(record_error) => {
-            format!("{error}; failed to record stage rerun failure: {record_error}")
+    let record_failure = |error: String, setup: Option<&crate::db::WorkspaceSetupOutcome>| {
+        match record_rerun_stage_failure(
+            db_path,
+            &task_id,
+            &stage,
+            run_kind,
+            stage_agent.as_deref(),
+            &agent_provider,
+            model.as_deref(),
+            effort.as_deref(),
+            &session_id,
+            provider_session_id.as_deref(),
+            &cwd,
+            provider_override.as_ref(),
+            setup,
+            &error,
+        ) {
+            Ok(()) => error,
+            Err(record_error) => {
+                format!("{error}; failed to record stage rerun failure: {record_error}")
+            }
         }
     };
     {
@@ -1821,12 +1923,14 @@ pub(crate) async fn rerun_prepared_stage_for_api(
             .map_err(|e| format!("db error: {}", e))?;
     }
     kill_session_replacing(daemon, replacements, &session_id).await?;
-    if let Err(error) = prepare_deferred_rerun_setup(&mut prepared) {
-        return Err(record_failure(error));
+    let setup_failure = prepare_deferred_rerun_setup(&mut prepared).err();
+    let setup_record = prepared.setup_record.take();
+    if let Some(error) = setup_failure {
+        return Err(record_failure(error, setup_record.as_ref()));
     }
     if let Some(snapshot) = prepared.recovery_snapshot.as_ref() {
         if let Err(error) = seed_recovery_snapshot(daemon, &session_id, snapshot).await {
-            return Err(record_failure(error));
+            return Err(record_failure(error, setup_record.as_ref()));
         }
     }
 
@@ -1848,6 +1952,7 @@ pub(crate) async fn rerun_prepared_stage_for_api(
         provider_override.as_ref(),
         &run_id,
     )?;
+    record_workspace_setup_for_run(db_path, &run_id, setup_record.as_ref());
 
     bind_terminal_launch(db_path, &run_id, &prepared.session)?;
 
@@ -1866,9 +1971,10 @@ pub(crate) async fn rerun_prepared_stage_for_api(
             return Err(format!("daemon spawn delivery is uncertain: {message}"));
         }
         Err(SpawnDeliveryError::BeforeSubmission(message)) => {
-            return Err(record_failure(format!(
-                "daemon spawn failed before submission: {message}"
-            )));
+            return Err(record_failure(
+                format!("daemon spawn failed before submission: {message}"),
+                None,
+            ));
         }
     };
     match event {
@@ -1895,18 +2001,39 @@ pub(crate) async fn rerun_prepared_stage_for_api(
     }
 }
 
+/// Run a rerun's workspace setup on the server-side runner, keeping its
+/// stream for the stage's Setup record.
+///
+/// A PTY rerun stops here: its replacement shell launches the agent only, and
+/// the record is bound to the run the spawn records below. A headless one
+/// additionally resolves its absolute executable now, from the workspace setup
+/// just initialized.
 fn prepare_deferred_rerun_setup(prepared: &mut PreparedStageRerun) -> Result<(), String> {
     if prepared.deferred_setup.is_empty() {
         return Ok(());
     }
-    run_workspace_setup_commands(&prepared.deferred_setup, &prepared.cwd, &prepared.env)?;
+    let setup_failure = match run_workspace_setup_commands_captured(
+        &prepared.deferred_setup,
+        &prepared.cwd,
+        &prepared.env,
+    ) {
+        Ok(Some(result)) => {
+            prepared.setup_record = Some(result.record);
+            result.failure
+        }
+        Ok(None) => None,
+        Err(error) => Some(error),
+    };
+    if let Some(error) = setup_failure {
+        return Err(error);
+    }
     let PreparedSessionSpawn::Agent {
         agent_provider,
         executable,
         ..
     } = &mut prepared.session
     else {
-        return Err("deferred rerun setup requires a headless agent session".to_string());
+        return Ok(());
     };
     *executable = resolve_headless_agent_executable(
         *agent_provider,
@@ -2219,6 +2346,7 @@ fn record_rerun_stage_failure(
     provider_session_id: Option<&str>,
     cwd: &str,
     provider_override: Option<&crate::db::StageProviderOverride>,
+    setup_record: Option<&crate::db::WorkspaceSetupOutcome>,
     error: &str,
 ) -> Result<(), String> {
     let db = Db::open(db_path).map_err(|e| format!("db error: {}", e))?;
@@ -2254,7 +2382,11 @@ fn record_rerun_stage_failure(
         provider_override,
         None,
     )
-    .map_err(|e| format!("db error: {}", e))
+    .map_err(|e| format!("db error: {}", e))?;
+    // A rerun whose setup failed is exactly the one somebody needs the Setup
+    // stream for, so it is bound to the failure run this records.
+    record_workspace_setup_for_run(db_path, &run_id, setup_record);
+    Ok(())
 }
 
 fn generate_stage_run_id(task_id: &str) -> String {
@@ -4472,6 +4604,8 @@ mod teardown_deadline_tests {
         spawn_prepared_workspace_teardown_best_effort(
             &mut daemon,
             Some(PreparedWorkspaceTeardown {
+                run_id: format!("run-{task_id}-teardown"),
+                stage: "in progress".to_string(),
                 session_id: session_id.to_string(),
                 daemon_dir: daemon_dir.to_string_lossy().to_string(),
                 db_path: db_path.clone(),
@@ -4496,6 +4630,124 @@ mod teardown_deadline_tests {
             session_id,
             "daemon refused protected-input protocol 3: spawn refused",
         );
+        // The row is written before the spawn, so a session that never
+        // started still closes with why — nothing later can record it, because
+        // no Exit will ever arrive for a session that does not exist.
+        let db = Db::open(&db_path).unwrap();
+        let run = db
+            .stage_run(&format!("run-{task_id}-teardown"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(run.kind, "teardown");
+        assert_eq!(run.status, "failed");
+        assert!(
+            run.result
+                .as_deref()
+                .is_some_and(|result| result.contains("spawn refused")),
+            "result: {:?}",
+            run.result
+        );
+        drop(db);
+        let _ = std::fs::remove_file(db_path);
+        let _ = std::fs::remove_dir_all(daemon_dir);
+    }
+
+    /// Close tears a workspace down *after* the task is closed and its
+    /// worktrees are gone. The run row and its terminal attempt are written
+    /// before the session is spawned precisely because there is no later
+    /// moment at which they could be — and the attempt list, which does not
+    /// gate on `closed_at`, still carries the cleanup afterwards.
+    #[tokio::test]
+    async fn a_closed_task_still_records_its_workspace_teardown() {
+        let task_id = "task-teardown-after-close";
+        let session_id = "td-task-teardown-after-close";
+        let run_id = format!("run-{task_id}-teardown");
+        let db_path = teardown_event_db("teardown-after-close", task_id);
+        Db::open(&db_path)
+            .unwrap()
+            .close_pipeline_item(task_id)
+            .unwrap();
+        let daemon_dir =
+            std::env::temp_dir().join(format!("kanna-teardown-after-close-{}", std::process::id()));
+        std::fs::create_dir_all(&daemon_dir).unwrap();
+        let socket_path = kanna_runtime_defaults::socket_path(&daemon_dir);
+        let _ = std::fs::remove_file(&socket_path);
+        let listener = UnixListener::bind(&socket_path).unwrap();
+        let spawned_session_id = session_id.to_string();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let (read, mut write) = stream.into_split();
+            let mut reader = BufReader::new(read);
+            loop {
+                let mut line = String::new();
+                reader.read_line(&mut line).await.unwrap();
+                let command: DaemonCommand = serde_json::from_str(line.trim()).unwrap();
+                let (response, bound) = match &command {
+                    DaemonCommand::NegotiateProtectedInput { version } => {
+                        (DaemonEvent::ProtectedInputReady { version: *version }, None)
+                    }
+                    DaemonCommand::Spawn { env, .. } => (
+                        DaemonEvent::SessionCreated {
+                            session_id: spawned_session_id.clone(),
+                        },
+                        Some(env.get("KANNA_STAGE_RUN_ID").cloned()),
+                    ),
+                    other => panic!("expected a teardown spawn, got {other:?}"),
+                };
+                write
+                    .write_all(serde_json::to_string(&response).unwrap().as_bytes())
+                    .await
+                    .unwrap();
+                write.write_all(b"\n").await.unwrap();
+                if let Some(bound) = bound {
+                    return bound;
+                }
+            }
+        });
+        let mut daemon = DaemonClient::connect(daemon_dir.to_str().unwrap())
+            .await
+            .unwrap();
+        spawn_prepared_workspace_teardown_best_effort(
+            &mut daemon,
+            Some(PreparedWorkspaceTeardown {
+                run_id: run_id.clone(),
+                stage: "pr".to_string(),
+                session_id: session_id.to_string(),
+                daemon_dir: daemon_dir.to_string_lossy().to_string(),
+                db_path: db_path.clone(),
+                task_id: task_id.to_string(),
+                cwd: "/tmp".to_string(),
+                env: std::collections::HashMap::from([(
+                    kanna_tool_catalog::KANNA_STAGE_RUN_ID_ENV.to_string(),
+                    run_id.clone(),
+                )]),
+                session: PreparedSessionSpawn::Pty {
+                    agent_executable: None,
+                    executable: "/bin/sh".to_string(),
+                    args: vec![],
+                    cols: 80,
+                    rows: 24,
+                    agent_provider: kanna_daemon::protocol::AgentProvider::Claude,
+                },
+            }),
+        )
+        .await;
+        assert_eq!(server.await.unwrap().as_deref(), Some(run_id.as_str()));
+
+        let db = Db::open(&db_path).unwrap();
+        let run = db.stage_run(&run_id).unwrap().unwrap();
+        assert_eq!(run.kind, "teardown");
+        assert_eq!(run.stage, "pr");
+        assert_eq!(run.status, "running");
+        let attempts = db.agent_terminal_attempts(task_id).unwrap();
+        let attempt = attempts
+            .iter()
+            .find(|attempt| attempt.id == run_id)
+            .expect("a closed task's teardown is still an addressable attempt");
+        assert_eq!(attempt.kind, "teardown");
+        assert!(attempt.recorded_launch);
+        assert!(!attempt.archived, "nothing has been ingested yet");
+        drop(db);
         let _ = std::fs::remove_file(db_path);
         let _ = std::fs::remove_dir_all(daemon_dir);
     }
@@ -4654,6 +4906,58 @@ mod teardown_deadline_tests {
             .expect("transient soft probe failure must not cancel the hard-deadline kill")
             .unwrap();
         let _ = std::fs::remove_dir_all(daemon_dir);
+    }
+}
+
+/// Run a first spawn's workspace setup and bind its stream to the run.
+///
+/// A headless spawn already ran setup while preparing (it has to, to resolve
+/// an absolute executable), and carries only the record; a PTY spawn's
+/// commands are run here. A failure is returned so the caller fails the run it
+/// just recorded — the record is written either way.
+fn run_first_spawn_workspace_setup(
+    db_path: &str,
+    run_id: &str,
+    prepared: &mut PreparedTaskSpawn,
+) -> Result<(), String> {
+    let mut record = prepared.setup_record.take();
+    let mut failure = None;
+    if !prepared.deferred_setup.is_empty() {
+        match run_workspace_setup_commands_captured(
+            &prepared.deferred_setup,
+            &prepared.cwd,
+            &prepared.env,
+        ) {
+            Ok(Some(result)) => {
+                record = Some(result.record);
+                failure = result.failure;
+            }
+            Ok(None) => {}
+            Err(error) => failure = Some(error),
+        }
+    }
+    record_workspace_setup_for_run(db_path, run_id, record.as_ref());
+    match failure {
+        None => Ok(()),
+        Some(error) => Err(error),
+    }
+}
+
+/// Bind a workspace-setup stream to the stage run it prepared.
+///
+/// Best effort: the run row is already durable and the session is about to
+/// start, so losing the Setup record costs a history item, never a spawn.
+fn record_workspace_setup_for_run(
+    db_path: &str,
+    run_id: &str,
+    record: Option<&crate::db::WorkspaceSetupOutcome>,
+) {
+    let Some(record) = record else {
+        return;
+    };
+    let result = Db::open(db_path).and_then(|db| db.record_workspace_setup_run(run_id, record));
+    if let Err(error) = result {
+        log::warn!("failed to record the workspace setup stream for run {run_id}: {error}");
     }
 }
 
