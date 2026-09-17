@@ -4,6 +4,7 @@ import {
   requireBillingReviewCredentials,
   runBillingReviewJourney,
   type BillingReviewElement,
+  type BillingReviewSystemAlert,
   type BillingReviewUi
 } from "./billing-review.e2e";
 
@@ -29,12 +30,20 @@ function fakeElement(
   };
 }
 
+/** A system alert iOS paints over the fake app; `stuck` ones survive their button tap. */
+interface FakeSystemAlert extends BillingReviewSystemAlert {
+  stuck?: boolean;
+}
+
 /**
  * A fake account sheet with a session model: `retainedIdentity` is the
  * E2E-gated identity marker of a session present at open (`undefined` renders
  * no marker, as a build without the marker would), sign-out clears the
  * session unless `signOutSucceeds` is false, and a sign-in that succeeds
  * renders the marker for `identityAfterSignIn`, defaulting to the typed email.
+ * `systemAlerts` are raised, in order, by a successful sign-in — as the real
+ * Save Password sheet is — and each tapped button is recorded as
+ * `alert:<label>`.
  */
 function createUi(input: {
   signedInAtOpen: boolean;
@@ -42,11 +51,13 @@ function createUi(input: {
   identityAfterSignIn?: string;
   signInSucceeds?: boolean;
   signOutSucceeds?: boolean;
+  systemAlerts?: FakeSystemAlert[];
   states: Partial<Record<string, FakeElementState>>;
 }) {
   const clicks: string[] = [];
   const typed: Record<string, string> = {};
   const screenshots: string[] = [];
+  const systemAlerts: FakeSystemAlert[] = [];
   let signedIn = input.signedInAtOpen;
   let identity: string | undefined = input.signedInAtOpen ? input.retainedIdentity : undefined;
   const element = (name: string, defaults: FakeElementState = {}) =>
@@ -81,7 +92,10 @@ function createUi(input: {
       click: async () => {
         clicks.push("sign-in");
         signedIn = input.signInSucceeds !== false;
-        if (signedIn) identity = input.identityAfterSignIn ?? typed.email;
+        if (signedIn) {
+          identity = input.identityAfterSignIn ?? typed.email;
+          systemAlerts.push(...(input.systemAlerts ?? []));
+        }
       }
     }),
     getVerificationState: async () => element("verification", missing),
@@ -96,6 +110,18 @@ function createUi(input: {
     getBillingEulaLink: async () => element("eula", missing),
     getBillingPrivacyLink: async () => element("privacy", missing),
     getBillingMessage: async () => element("message", missing),
+    getSystemAlert: async () => {
+      const alert = systemAlerts[0];
+      return alert ? { text: alert.text, buttons: [...alert.buttons] } : null;
+    },
+    tapSystemAlertButton: async (label) => {
+      const alert = systemAlerts[0];
+      if (!alert || !alert.buttons.includes(label)) {
+        throw new Error(`No system alert button labelled ${label}`);
+      }
+      clicks.push(`alert:${label}`);
+      if (!alert.stuck) systemAlerts.shift();
+    },
     captureScreenshot: async (path) => { screenshots.push(path); },
     waitUntil: async (condition, options) => {
       for (let attempt = 0; attempt < 3; attempt += 1) {
@@ -162,6 +188,8 @@ describe("billing review capture", () => {
       eulaPresent: true,
       privacyPresent: true,
       message: null,
+      systemAlertsDismissed: [],
+      screenshotObscuredBy: null,
       screenshotPath,
       ready: true,
       blockers: []
@@ -432,6 +460,97 @@ describe("billing review capture", () => {
       expect(report.purchasePathRendered).toBe(false);
       expect(report.ready).toBe(false);
       expect(report.blockers).toEqual(["purchase-path-missing"]);
+    });
+  });
+
+  describe("system alerts over the capture", () => {
+    // The reproduced defect: the sign-in raised iOS's Save Password sheet,
+    // the tree-derived report read through it and credited a ready card, and
+    // the delivered screenshot showed the sheet over the price and Subscribe.
+    const savePasswordSheet: FakeSystemAlert = {
+      text: "Save Password?\nSecurely store your password so it's filled automatically the next time you need it.",
+      buttons: ["Not Now", "Save"]
+    };
+
+    it("declines the Save Password sheet the sign-in raised before capturing, and stays ready", async () => {
+      const { ui, clicks, screenshots } = createUi({
+        signedInAtOpen: false,
+        systemAlerts: [savePasswordSheet],
+        states: purchasableCard
+      });
+
+      const report = await runBillingReviewJourney(ui, { credentials, screenshotPath });
+
+      expect(clicks).toEqual(["account", "sign-in", "alert:Not Now"]);
+      expect(clicks).not.toContain("alert:Save");
+      expect(screenshots).toEqual([screenshotPath]);
+      expect(report.systemAlertsDismissed).toEqual([savePasswordSheet.text]);
+      expect(report.screenshotObscuredBy).toBeNull();
+      expect(report.ready).toBe(true);
+      expect(report.blockers).toEqual([]);
+    });
+
+    it("clears stacked alerts in order, declining each with its own non-saving button", async () => {
+      const notifications: FakeSystemAlert = {
+        text: "“Kanna” Would Like to Send You Notifications",
+        buttons: ["Don't Allow", "Allow"]
+      };
+      const { ui, clicks } = createUi({
+        signedInAtOpen: false,
+        systemAlerts: [savePasswordSheet, notifications],
+        states: purchasableCard
+      });
+
+      const report = await runBillingReviewJourney(ui, { credentials, screenshotPath });
+
+      expect(clicks).toEqual(["account", "sign-in", "alert:Not Now", "alert:Don't Allow"]);
+      expect(report.systemAlertsDismissed).toEqual([savePasswordSheet.text, notifications.text]);
+      expect(report.ready).toBe(true);
+    });
+
+    it("fails the capture as obscured when the alert survives its decline", async () => {
+      const { ui, clicks, screenshots } = createUi({
+        signedInAtOpen: false,
+        systemAlerts: [{ ...savePasswordSheet, stuck: true }],
+        states: purchasableCard
+      });
+
+      const report = await runBillingReviewJourney(ui, { credentials, screenshotPath });
+
+      expect(clicks).toEqual(["account", "sign-in", "alert:Not Now"]);
+      // The capture is still written as evidence, but never credited.
+      expect(screenshots).toEqual([screenshotPath]);
+      expect(report.systemAlertsDismissed).toEqual([]);
+      expect(report.screenshotObscuredBy).toBe(savePasswordSheet.text);
+      expect(report.ready).toBe(false);
+      expect(report.blockers).toEqual(["screenshot-obscured"]);
+    });
+
+    it("never taps a button it does not recognise as a decline, and reports the alert instead", async () => {
+      const { ui, clicks } = createUi({
+        signedInAtOpen: false,
+        systemAlerts: [{ text: "Save Password?", buttons: ["Save"] }],
+        states: purchasableCard
+      });
+
+      const report = await runBillingReviewJourney(ui, { credentials, screenshotPath });
+
+      expect(clicks).toEqual(["account", "sign-in"]);
+      expect(report.screenshotObscuredBy).toBe("Save Password?");
+      expect(report.ready).toBe(false);
+      expect(report.blockers).toEqual(["screenshot-obscured"]);
+    });
+
+    it("reports an obscured capture alongside the card's own blockers", async () => {
+      const { ui } = createUi({
+        signedInAtOpen: false,
+        systemAlerts: [{ ...savePasswordSheet, stuck: true }],
+        states: { ...purchasableCard, restore: { exists: true, enabled: false } }
+      });
+
+      const report = await runBillingReviewJourney(ui, { credentials, screenshotPath });
+
+      expect(report.blockers).toEqual(["restore-disabled", "screenshot-obscured"]);
     });
   });
 
