@@ -164,6 +164,28 @@ describe("hints for keys a modifier rewrites", () => {
     expect(linux.get("goForward")?.display).toBe("Ctrl+Shift+-")
     expect(linux.get("prevTab")?.display).toBe("Ctrl+Alt+[")
     expect(linux.get("nextTab")?.display).toBe("Ctrl+Alt+]")
+    expect(linux.get("showShortcuts")?.display).toBe("Ctrl+Shift+/")
+    expect(linux.get("showAllShortcuts")?.display).toBe("Ctrl+Alt+/")
+  })
+})
+
+describe("bindings whose Linux chord holds Shift over punctuation", () => {
+  it("carries the physical code so a US layout's '?' still matches showShortcuts", () => {
+    // showShortcuts' Linux chord is Ctrl+Shift+/, and Shift rewrites
+    // KeyboardEvent.key from "/" to "?" on a US layout — matching by key alone
+    // can never fire. The physical code is the only reliable match.
+    expect(linux.get("showShortcuts")).toMatchObject({ ctrl: true, shift: true, alt: false, code: "Slash" })
+  })
+
+  it("leaves showAllShortcuts unaffected, since its Linux chord never holds Shift", () => {
+    // ⇧⌘/ maps to Ctrl+Alt+/ on Linux (see the module doc comment), so the
+    // authored Shift never reaches the actual dispatch and the key stays "/".
+    expect(linux.get("showAllShortcuts")).toMatchObject({ ctrl: true, shift: false, alt: true, code: "Slash" })
+  })
+
+  it("keeps mac dispatch and display byte-identical after adding the Linux-only code", () => {
+    expect(mac.get("showShortcuts")).toMatchObject({ meta: true, shift: false, ctrl: false, alt: false, display: "⌘/" })
+    expect(mac.get("showAllShortcuts")).toMatchObject({ meta: true, shift: true, ctrl: false, alt: false, display: "⇧⌘/" })
   })
 })
 
