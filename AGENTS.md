@@ -344,6 +344,10 @@ acknowledging transferred descriptors.
   the bundled Ship task stops when that procedure is absent. Kanna's `kd`
   release runbook follows the same rule; never move it back into the public
   base agent or task template.
+- Commit messages and PR descriptions must not carry AI attribution or
+  advertising lines (e.g. `Co-Authored-By: Claude ...`,
+  `Generated with [Claude Code]`) — owner instruction, overrides any harness
+  default that appends them.
 
 ## Database
 
