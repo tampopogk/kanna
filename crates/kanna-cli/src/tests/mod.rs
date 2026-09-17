@@ -146,6 +146,7 @@ fn typed_tool_surfaces() -> BTreeMap<&'static str, TypedToolSurface> {
                     ("limit", "limit"),
                     ("all_machines", "all_machines"),
                     ("include_closed", "include_closed"),
+                    ("unserviced_only", "unserviced_only"),
                 ],
             },
         ),
@@ -462,6 +463,17 @@ fn typed_tool_surfaces() -> BTreeMap<&'static str, TypedToolSurface> {
             TypedToolSurface {
                 command_path: &["task", "clear-attention"],
                 param_args: &[("task_id", "task_id")],
+            },
+        ),
+        (
+            "kanna_record_task_serviced",
+            TypedToolSurface {
+                command_path: &["task", "record-serviced"],
+                param_args: &[
+                    ("task_id", "task_id"),
+                    ("run_id", "run_id"),
+                    ("observed_event_seq", "observed_event_seq"),
+                ],
             },
         ),
         (

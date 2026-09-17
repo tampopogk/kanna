@@ -32,6 +32,7 @@ mod pull_requests;
 mod repos;
 mod review_context;
 mod revisions;
+mod serviced;
 mod settings;
 mod snapshot;
 pub(crate) mod stage_runs;
@@ -75,6 +76,7 @@ pub use review_context::{
 };
 #[allow(unused_imports)]
 pub use revisions::RecordedRevisionOrigin;
+pub use serviced::TaskServicedWatermark;
 #[allow(unused_imports)]
 pub use stage_runs::{
     FinishedStageRun, ProviderOverrideSource, StageProviderOverride, StageTrigger,
@@ -196,6 +198,7 @@ pub(crate) const CURRENT_SCHEMA_MIGRATIONS: &[&str] = &[
     "086_copilot_wake",
     "087_stage_run_teardown_kind",
     "088_workspace_setup_run",
+    "089_task_serviced_watermark",
 ];
 
 #[derive(Debug, Serialize)]
@@ -2547,6 +2550,13 @@ fn run_schema_migrations(conn: &Connection) -> Result<(), rusqlite::Error> {
             "#,
         )
     })?;
+
+    // The manager's serviced watermark: one row per task, written only by a
+    // manager recording what it has dealt with. It is deliberately its own
+    // table rather than columns on `pipeline_item` — servicing must move no
+    // timestamp, no ordering and no display state on the task itself, and a
+    // task that has never been serviced must cost nothing to represent.
+    run_migration(conn, "089_task_serviced_watermark", serviced::create_schema)?;
 
     Ok(())
 }

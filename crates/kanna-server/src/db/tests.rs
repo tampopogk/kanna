@@ -229,7 +229,7 @@ fn open_creates_and_migrates_fresh_profile_database() {
             |row| row.get(0),
         )
         .expect("latest migration");
-    assert_eq!(latest_migration, "088_workspace_setup_run");
+    assert_eq!(latest_migration, "089_task_serviced_watermark");
     assert_eq!(
         index_columns(&db.conn, "idx_pipeline_item_parent_created_id"),
         vec!["parent_task_id", "created_at", "id"],
@@ -3100,6 +3100,7 @@ fn generic_task_listing_filters_runtime_before_limit_and_sorts_stably() {
             Some("repo-1"),
             Some("idle"),
             false,
+            false,
             TaskListSort::CreatedAt,
             TaskListOrder::Asc,
             1,
@@ -3118,6 +3119,7 @@ fn generic_task_listing_filters_runtime_before_limit_and_sorts_stably() {
             false,
             Some("repo-1"),
             Some("idle"),
+            false,
             false,
             TaskListSort::CreatedAt,
             TaskListOrder::Desc,
@@ -5905,4 +5907,222 @@ fn stage_run_teardown_kind_migration_keeps_rows_that_reference_it() {
 
     drop(db);
     let _ = std::fs::remove_file(path);
+}
+
+/// Work-set ids in listing order, for the serviced-watermark tests below.
+fn unserviced_idle_work_set(db: &Db) -> Vec<String> {
+    db.list_pipeline_items_query(
+        false,
+        Some("repo-1"),
+        Some("idle"),
+        false,
+        true,
+        TaskListSort::CreatedAt,
+        TaskListOrder::Asc,
+        50,
+    )
+    .expect("unserviced idle work set")
+    .into_iter()
+    .map(|task| task.id)
+    .collect()
+}
+
+fn seed_idle_task(db: &Db, id: &str, created_at: &str) {
+    db.insert_test_pipeline_item(id, "repo-1", id, Some(id), "in progress", created_at)
+        .expect("insert task");
+    db.update_pipeline_item_runtime_status(id, "idle", None)
+        .expect("idle runtime");
+}
+
+#[test]
+fn serviced_watermark_migration_creates_a_table_that_round_trips_and_never_rewinds() {
+    let path = temp_db_path();
+    let path = path.to_str().expect("utf8 path").to_string();
+    let _ = std::fs::remove_file(&path);
+    let db = Db::open_migrated(&path).expect("migrate fresh database");
+
+    let recorded: i64 = db
+        .conn
+        .query_row(
+            "SELECT COUNT(*) FROM schema_migrations WHERE id = '089_task_serviced_watermark'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("read recorded migrations");
+    assert_eq!(recorded, 1, "the watermark migration must be recorded");
+
+    db.insert_test_repo("repo-1", "Repo One").expect("repo");
+    seed_idle_task(&db, "task-a", "2026-09-17 09:00:00");
+    assert!(db
+        .task_serviced_watermark("task-a")
+        .expect("read watermark")
+        .is_none());
+
+    let first = db
+        .record_task_serviced("task-a", Some("run-1"), Some(0))
+        .expect("record servicing");
+    assert_eq!(first.task_id, "task-a");
+    assert_eq!(first.serviced_run_id.as_deref(), Some("run-1"));
+    assert_eq!(first.serviced_event_seq, 0);
+
+    db.update_pipeline_item_runtime_status("task-a", "busy", None)
+        .expect("busy runtime");
+    let head = db.latest_task_event_seq().expect("event head");
+    assert!(head > 0, "the busy edge must have appended an event");
+    let advanced = db
+        .record_task_serviced("task-a", Some("run-2"), Some(head))
+        .expect("advance watermark");
+    assert_eq!(advanced.serviced_event_seq, head);
+
+    // A replayed or stale recording never rewinds the mark, but it is still the
+    // most recent servicing, so its provenance is what the row carries.
+    let replayed = db
+        .record_task_serviced("task-a", Some("run-3"), Some(0))
+        .expect("replay stale recording");
+    assert_eq!(replayed.serviced_event_seq, head);
+    assert_eq!(replayed.serviced_run_id.as_deref(), Some("run-3"));
+
+    drop(db);
+    let reopened = Db::open_migrated(&path).expect("reopen migrated database");
+    let persisted = reopened
+        .task_serviced_watermark("task-a")
+        .expect("read persisted watermark")
+        .expect("watermark survives reopen");
+    assert_eq!(persisted.serviced_event_seq, head);
+    assert_eq!(persisted.serviced_run_id.as_deref(), Some("run-3"));
+    assert_eq!(persisted.serviced_at, replayed.serviced_at);
+
+    drop(reopened);
+    let _ = std::fs::remove_file(&path);
+}
+
+/// The safety net's whole point: a manager that dies part-way through a batch
+/// loses nothing, because a task is suppressed only by a write that committed.
+#[test]
+fn unserviced_work_set_returns_a_task_a_crashed_manager_never_recorded() {
+    let path = Db::test_db_path("unserviced-work-set-crash");
+    let db = Db::open_for_tests(&path).expect("open test db");
+    db.insert_test_repo("repo-1", "Repo One").expect("repo");
+    for (id, created_at) in [
+        ("task-a", "2026-09-17 09:00:00"),
+        ("task-b", "2026-09-17 09:01:00"),
+    ] {
+        seed_idle_task(&db, id, created_at);
+    }
+
+    let batch = unserviced_idle_work_set(&db);
+    assert_eq!(batch, vec!["task-a", "task-b"]);
+    let cursor = db.latest_task_event_seq().expect("event head");
+
+    // The manager services the first task, records it, and dies before it can
+    // record the second one.
+    db.record_task_serviced("task-a", Some("manager-run-1"), Some(cursor))
+        .expect("record first task");
+
+    let after_restart = unserviced_idle_work_set(&db);
+    assert_eq!(
+        after_restart,
+        vec!["task-b"],
+        "the unrecorded task must come back, the recorded one must not"
+    );
+
+    // Recording servicing is not itself a change, so a serviced task stays out
+    // of the work set until the task actually moves.
+    assert_eq!(unserviced_idle_work_set(&db), vec!["task-b"]);
+
+    db.record_task_serviced("task-b", Some("manager-run-2"), None)
+        .expect("record second task");
+    assert!(unserviced_idle_work_set(&db).is_empty());
+
+    // Any event but the read/unread display one re-admits a serviced task.
+    db.update_pipeline_item_runtime_status("task-a", "busy", None)
+        .expect("busy runtime");
+    db.update_pipeline_item_runtime_status("task-a", "idle", None)
+        .expect("idle runtime");
+    assert_eq!(unserviced_idle_work_set(&db), vec!["task-a"]);
+
+    drop(db);
+    let _ = std::fs::remove_file(&path);
+}
+
+/// Reading a task is not acting on it. A badged task waits for positive
+/// evidence of a human action; `task.activity_changed` is never that evidence.
+#[test]
+fn attention_badged_tasks_re_enter_the_work_set_only_on_human_action() {
+    let path = Db::test_db_path("unserviced-work-set-attention");
+    let db = Db::open_for_tests(&path).expect("open test db");
+    db.insert_test_repo("repo-1", "Repo One").expect("repo");
+    for (id, created_at) in [
+        ("task-read", "2026-09-17 09:00:00"),
+        ("task-cleared", "2026-09-17 09:01:00"),
+        ("task-operator", "2026-09-17 09:02:00"),
+        ("task-busy", "2026-09-17 09:03:00"),
+        ("task-manager", "2026-09-17 09:04:00"),
+    ] {
+        seed_idle_task(&db, id, created_at);
+        db.set_task_attention(id, Some("owner decision needed"))
+            .expect("badge task");
+    }
+
+    assert!(
+        unserviced_idle_work_set(&db).is_empty(),
+        "a badged task is human-blocked, whether or not it was ever serviced"
+    );
+
+    // Somebody opens the task and reads its output. The display state moves and
+    // `task.activity_changed` is published; the manager must not be woken.
+    for activity in ["unread", "idle"] {
+        db.update_pipeline_item_activity("task-read", activity)
+            .expect("display state");
+        assert_eq!(
+            db.flush_debounced_activity_events(0)
+                .expect("flush activity"),
+            1,
+            "the display change must have published an activity event"
+        );
+        assert!(
+            unserviced_idle_work_set(&db).is_empty(),
+            "reading a task must never re-admit it"
+        );
+    }
+
+    // An agent-declared input is not a human acting either.
+    db.record_task_input(
+        "task-manager",
+        crate::db::TaskInputSource::Manager,
+        "status?",
+    )
+    .expect("manager input");
+    assert!(unserviced_idle_work_set(&db).is_empty());
+
+    // Three positive human actions, each on its own task.
+    db.set_task_attention("task-cleared", None)
+        .expect("clear badge");
+    db.record_task_input(
+        "task-operator",
+        crate::db::TaskInputSource::Operator,
+        "go ahead",
+    )
+    .expect("operator input");
+    db.update_pipeline_item_runtime_status("task-busy", "busy", None)
+        .expect("busy runtime");
+    db.update_pipeline_item_runtime_status("task-busy", "idle", None)
+        .expect("idle runtime");
+
+    assert_eq!(
+        unserviced_idle_work_set(&db),
+        vec!["task-cleared", "task-operator", "task-busy"]
+    );
+
+    // A badge raised after the human action puts the task back out of reach:
+    // evidence is counted from the badge now standing, not from any older one.
+    db.set_task_attention("task-operator", Some("second question"))
+        .expect("re-badge task");
+    assert_eq!(
+        unserviced_idle_work_set(&db),
+        vec!["task-cleared", "task-busy"]
+    );
+
+    drop(db);
+    let _ = std::fs::remove_file(&path);
 }

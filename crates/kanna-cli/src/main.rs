@@ -211,6 +211,10 @@ pub(crate) enum TaskCommands {
         #[arg(long)]
         include_closed: bool,
 
+        /// Only tasks the manager has not serviced since they last changed
+        #[arg(long)]
+        unserviced_only: bool,
+
         /// Override the local Kanna server base URL
         #[arg(long)]
         server_url: Option<String>,
@@ -611,6 +615,21 @@ pub(crate) enum TaskCommands {
         task_id: String,
         #[arg(long)]
         reason: String,
+        #[arg(long)]
+        machine_id: Option<String>,
+        #[arg(long)]
+        server_url: Option<String>,
+    },
+    /// Record that a task has been serviced by the manager
+    RecordServiced {
+        #[arg(long)]
+        task_id: String,
+        /// The servicing run id (defaults to $KANNA_STAGE_RUN_ID when set)
+        #[arg(long)]
+        run_id: Option<String>,
+        /// The task-events cursor the task was read through
+        #[arg(long)]
+        observed_event_seq: Option<i64>,
         #[arg(long)]
         machine_id: Option<String>,
         #[arg(long)]

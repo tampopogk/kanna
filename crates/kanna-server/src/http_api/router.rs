@@ -246,6 +246,10 @@ pub fn router(state: Arc<AppState>) -> Router {
             "/v1/tasks/{task_id}/actions/clear-attention",
             post(clear_task_attention),
         )
+        .route(
+            "/v1/tasks/{task_id}/actions/record-serviced",
+            post(super::task_serviced::record_task_serviced),
+        )
         .route("/v1/tasks/{task_id}/children", get(get_task_children))
         .route("/v1/tasks/{task_id}/inputs", get(get_task_inputs))
         .route(
