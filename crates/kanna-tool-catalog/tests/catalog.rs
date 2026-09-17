@@ -58,6 +58,7 @@ fn bundled_catalog_parses_and_declares_all_tools() {
             "kanna_send_task_input",
             "kanna_send_task_raw_input",
             "kanna_close_task",
+            "kanna_confirm_event_channel",
             "kanna_rename_task",
             "kanna_set_task_attention",
             "kanna_clear_task_attention",
@@ -748,6 +749,14 @@ fn resolves_expected_requests_for_every_bundled_tool() {
             ResponseKind::Json,
             "/v1/tasks/task-1/actions/close",
             json!({}),
+        ),
+        (
+            "kanna_confirm_event_channel",
+            json!({ "task_id": "task-1", "channel_id": "channel-7" }),
+            Method::Post,
+            ResponseKind::Json,
+            "/v1/tasks/task-1/claude-channel/confirm",
+            json!({ "channelId": "channel-7" }),
         ),
         (
             "kanna_rename_task",

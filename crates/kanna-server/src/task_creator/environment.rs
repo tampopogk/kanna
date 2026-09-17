@@ -210,6 +210,25 @@ pub(super) fn write_kanna_mcp_config(
             serde_json::Value::String(token_path.clone()),
         );
     }
+    // The Claude native wake channel is opt-in and stays unshipped by default,
+    // so this forwards the switch rather than setting it: a session opts in
+    // through its own environment (or the repo's `workspace.env`), and the CLI
+    // must separately be launched able to load the channel. Without the opt-in
+    // the child's config is byte-identical to what it was, and the transport
+    // does not exist for that session. The task and run ids travel with it
+    // because the MCP child binds its channel to *this* run, never to a
+    // provider name or a historical session id.
+    if env.get("KANNA_CLAUDE_CHANNELS").map(String::as_str) == Some("1") {
+        for name in [
+            "KANNA_CLAUDE_CHANNELS",
+            "KANNA_TASK_ID",
+            kanna_tool_catalog::KANNA_STAGE_RUN_ID_ENV,
+        ] {
+            if let Some(value) = env.get(name) {
+                mcp_env.insert(name.to_string(), serde_json::Value::String(value.clone()));
+            }
+        }
+    }
     let config = serde_json::json!({
         "mcpServers": {
             "kanna-mcp": {

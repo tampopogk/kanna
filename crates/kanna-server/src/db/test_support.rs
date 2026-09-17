@@ -544,6 +544,7 @@ impl Db {
             "#,
         )?;
         super::copilot_wake::create_schema(&self.conn)?;
+        super::claude_channel::create_schema(&self.conn)?;
         create_blocker_revision_triggers(&self.conn)?;
         let mut stmt = self
             .conn

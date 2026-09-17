@@ -56,6 +56,28 @@ evidence only for that harness and configuration.
   notification must never lock it. The live manager subscription
   `watch-1789157553830857000-0` remains unchanged.
 
+## Implementation status
+
+- **Copilot** — shipped 2026-09-15 (PR #1529): the CLI-owned extension's
+  native enqueue, with the server-owned durable receipt boundary this
+  document's adapter note specified.
+- **Claude** — shipped 2026-09-17 as an opt-in native MCP-channel adapter,
+  following the recommendation below and the
+  [live evidence](../2026-09-14-claude-channel-live-compatibility.md). It
+  implements that experiment's scoped readiness contract: a probe is retried
+  from actual pending-wake admission rather than trusted once at startup,
+  transport-written and mailbox-read are recorded separately, and a notice
+  absorbed by a busy turn is repeated (bounded) once that turn ends unread. The
+  contract is in
+  [the server boundary](../kanna-server-boundary.md#the-claude-native-channel);
+  `KANNA_CLAUDE_CHANNELS=1` is the opt-in and the default is unchanged.
+- **Codex** — unchanged opt-in app-server adapter.
+- **OpenCode / Antigravity** — still without a verified native route, so they
+  keep the composer-typing adapter. That adapter now declines to type an
+  `engine` nudge into a composer attested `typed`, holding the batch pending
+  instead; it applies to the reserved engine source only and cannot delay,
+  queue, or block ordinary human or manager input.
+
 ## Concrete recommendation and smallest next experiment
 
 Keep one durable mailbox with harness-specific native delivery. The Codex and

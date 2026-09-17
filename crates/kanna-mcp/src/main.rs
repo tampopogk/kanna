@@ -21,6 +21,8 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, SystemTime};
 use tokio::io::AsyncBufReadExt;
 
+mod claude_channel;
+
 const DEFAULT_SERVER_BASE_URL: &str = "http://127.0.0.1:48120";
 const MCP_PROTOCOL_VERSION: &str = "2025-11-25";
 const MULTI_MACHINE_CURSOR_PREFIX: &str = "km1.";
@@ -152,17 +154,26 @@ async fn handle_mcp_request(
     };
 
     match method {
-        "initialize" => mcp_response(
-            id,
-            serde_json::json!({
-                "protocolVersion": MCP_PROTOCOL_VERSION,
-                "capabilities": { "tools": { "listChanged": true } },
-                "serverInfo": {
-                    "name": "kanna-mcp",
-                    "version": env!("CARGO_PKG_VERSION")
-                }
-            }),
-        ),
+        "initialize" => {
+            let mut capabilities = serde_json::json!({ "tools": { "listChanged": true } });
+            // Advertised only for a run that opted in, because advertising a
+            // channel this host will not attach to would promise a transport
+            // that does not exist.
+            if let Some(experimental) = claude_channel::experimental_capabilities() {
+                capabilities["experimental"] = experimental;
+            }
+            mcp_response(
+                id,
+                serde_json::json!({
+                    "protocolVersion": MCP_PROTOCOL_VERSION,
+                    "capabilities": capabilities,
+                    "serverInfo": {
+                        "name": "kanna-mcp",
+                        "version": env!("CARGO_PKG_VERSION")
+                    }
+                }),
+            )
+        }
         "notifications/initialized" => Value::Null,
         "tools/list" => match catalog.read() {
             Ok(catalog) => mcp_response(
@@ -588,8 +599,14 @@ async fn machine_status_with_route(
     machine_id: &str,
     path: &str,
 ) -> (Result<Value, String>, Option<String>) {
-    let response = match invoke_machine_response(base_url, machine_id, Method::Get, path, &Value::Null)
-        .await
+    let response = match invoke_machine_response(
+        base_url,
+        machine_id,
+        Method::Get,
+        path,
+        &Value::Null,
+    )
+    .await
     {
         Ok(response) => response,
         Err(error) => return (Err(error), None),
@@ -1801,6 +1818,7 @@ async fn serve_mcp(base_url: &str, cwd: &Path) -> Result<(), String> {
     let multi_machine_waits = Arc::new(Mutex::new(MultiMachineWaitRegistry::default()));
     let stdout = Arc::new(Mutex::new(std::io::stdout()));
     let _watcher = spawn_catalog_watcher(cwd.to_path_buf(), catalog.clone(), stdout.clone());
+    claude_channel::spawn(base_url, stdout.clone());
     serve_requests(
         tokio::io::BufReader::new(tokio::io::stdin()),
         base_url.to_owned(),
@@ -1945,6 +1963,7 @@ mod tests {
                 "kanna_send_task_input",
                 "kanna_send_task_raw_input",
                 "kanna_close_task",
+                "kanna_confirm_event_channel",
                 "kanna_rename_task",
                 "kanna_set_task_attention",
                 "kanna_clear_task_attention",

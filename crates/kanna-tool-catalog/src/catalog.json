@@ -806,6 +806,17 @@
       ]
     },
     {
+      "name": "kanna_confirm_event_channel",
+      "description": "Confirm that this session can receive Kanna supervisory event notices on the native channel it was just probed on. Call it only in answer to a channel probe, passing back that probe's exact channel_id. It proves the transport is listening and nothing else: it delivers no events, reads no mailbox, and acknowledges no batch \u2014 use kanna_read_event_subscription for those. An unconfirmed channel is never a lost event; the durable mailbox keeps every pending batch and Kanna re-probes on its next wake.",
+      "method": "POST",
+      "path": "/v1/tasks/{task_id}/claude-channel/confirm",
+      "response": "json",
+      "params": [
+        { "name": "task_id", "description": "The task whose channel is being confirmed \u2014 the value of the KANNA_TASK_ID env var.", "type": "string", "required": true, "location": "path" },
+        { "name": "channel_id", "description": "The exact channel_id carried by the probe being answered. A stale or invented id is rejected.", "type": "string", "required": true, "location": "body", "key": "channelId" }
+      ]
+    },
+    {
       "name": "kanna_rename_task",
       "description": "Rename an existing Kanna task by setting its display name.",
       "method": "PATCH",

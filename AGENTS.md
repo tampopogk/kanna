@@ -478,13 +478,25 @@ and carries the credential on every `fetch` and on its stream. See
 `POST /v1/tasks/{task_id}/input` (`kanna_send_task_input`) hands one logical
 message to the daemon, which types the text and writes its submission boundary
 immediately — without waiting for the terminal to settle and without inspecting
-the composer. A live session always takes the message. If a human has an unsent
-draft there, the message lands after it and both go in: that collision is the
-accepted outcome, chosen by the owner on 2026-09-08 over a delivery path that
-could strand a message at a prompt nobody pressed Enter at and then lock the
-session against every later one. Nothing is queued, parked, or refused because
-of what is on a composer; what remains is the PTY-pid fence and the record
-below.
+the composer. A live session always takes the message. That contract covers
+*speech*: `operator`, `manager`, and `unspecified` deliveries always submit,
+and nothing may delay, queue, or block one. The reserved `engine` source is the
+one exception, because a supervisory nudge is not speech and the durable
+mailbox already owns its events. Supervisory wakes prefer a native transport
+that never touches a composer at all, selected by a measured capability of the
+current run: Claude's MCP channel, Copilot's extension enqueue, Codex's
+app-server adapter. Only a harness with no native route still types, and there
+a wake whose target composer is attested `typed` is held — its batch stays
+pending and its subscription re-attempts after the next submission boundary —
+rather than submitting over somebody's half-written draft. An absent or
+uncertain native delivery keeps the batch pending too; it never falls back to
+the composer. For every other source, if a human has an unsent draft there, the
+message lands after it and both go in:
+that collision is the accepted outcome, chosen by the owner on 2026-09-08 over
+a delivery path that could strand a message at a prompt nobody pressed Enter at
+and then lock the session against every later one. No caller's message is
+queued, parked, or refused because of what is on a composer; what remains is
+the PTY-pid fence and the record below.
 
 Terminal bytes are not a record: a later stage forks a fresh worktree and
 session, so without a row it can read the whole durable record and honestly
