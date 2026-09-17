@@ -53,6 +53,14 @@ fn direct_lan_request(method: axum::http::Method, path: &str) -> Request<Body> {
     request
 }
 
+/// The `ConnectInfo` a real desktop-loopback caller arrives with. Routes
+/// classified `DesktopLocalAccess` require it: a request with no `ConnectInfo`
+/// at all is refused, unlike the `PrivilegedTaskAccess` floor which treats a
+/// missing peer as in-process.
+fn loopback_connect_info() -> axum::extract::ConnectInfo<std::net::SocketAddr> {
+    axum::extract::ConnectInfo(std::net::SocketAddr::from(([127, 0, 0, 1], 49152)))
+}
+
 async fn serve_non_loopback_http_router(desktop_id: &str) -> (String, tokio::task::JoinHandle<()>) {
     let listener = tokio::net::TcpListener::bind("0.0.0.0:0")
         .await
@@ -155,7 +163,9 @@ async fn privileged_settings_and_reconnect_reject_real_unauthenticated_non_loopb
 #[tokio::test]
 async fn generic_settings_routes_cannot_mutate_the_reserved_transfer_identity() {
     let app = super::test_router("desktop-reserved-setting", "Reserved Setting Mac");
-    for request in [
+    // Loopback, so the reserved-key guard is what refuses rather than the
+    // `DesktopLocalAccess` extractor in front of it.
+    for mut request in [
         Request::put("/v1/settings/cloud_transfer_identity_v1")
             .header("content-type", "application/json")
             .body(Body::from(r#"{"value":"forged"}"#))
@@ -164,6 +174,7 @@ async fn generic_settings_routes_cannot_mutate_the_reserved_transfer_identity() 
             .body(Body::empty())
             .unwrap(),
     ] {
+        request.extensions_mut().insert(loopback_connect_info());
         let response = app.clone().oneshot(request).await.unwrap();
         assert_eq!(response.status(), StatusCode::FORBIDDEN);
     }
@@ -1340,14 +1351,16 @@ async fn settings_routes_get_and_put_setting_values() {
 
     let updated = app
         .clone()
-        .oneshot(
-            Request::put("/v1/settings/ideCommand")
+        .oneshot({
+            let mut request = Request::put("/v1/settings/ideCommand")
                 .header("content-type", "application/json")
                 .body(Body::from(
                     serde_json::json!({ "value": "zed" }).to_string(),
                 ))
-                .unwrap(),
-        )
+                .unwrap();
+            request.extensions_mut().insert(loopback_connect_info());
+            request
+        })
         .await
         .unwrap();
     assert_eq!(updated.status(), StatusCode::OK);
@@ -1377,11 +1390,13 @@ async fn settings_routes_get_and_put_setting_values() {
 
     let deleted = app
         .clone()
-        .oneshot(
-            Request::delete("/v1/settings/ideCommand")
+        .oneshot({
+            let mut request = Request::delete("/v1/settings/ideCommand")
                 .body(Body::empty())
-                .unwrap(),
-        )
+                .unwrap();
+            request.extensions_mut().insert(loopback_connect_info());
+            request
+        })
         .await
         .unwrap();
     assert_eq!(deleted.status(), StatusCode::OK);
@@ -8713,13 +8728,10 @@ async fn lan_settings_and_repository_data_require_pairing_and_preserve_loopback(
     store.save(&pairing_path).unwrap();
     let app = crate::http_api::router(Arc::clone(&state));
     for (method, path, payload) in [
+        // Reading a setting is LAN-paired-required. Writing and deleting one
+        // is desktop-local, proven separately in
+        // `settings_mutation_refuses_every_remote_caller_and_admits_loopback`.
         ("GET", "/v1/settings/private-setting", "{}"),
-        (
-            "PUT",
-            "/v1/settings/private-setting",
-            r#"{"value":"private-value"}"#,
-        ),
-        ("DELETE", "/v1/settings/delete-me", "{}"),
         ("GET", "/v1/repos", "{}"),
         (
             "PATCH",
@@ -8801,6 +8813,188 @@ async fn lan_settings_and_repository_data_require_pairing_and_preserve_loopback(
             "trusted tunnel {method} {path}: {authenticated:?}"
         );
     }
+    std::fs::remove_file(pairing_path).unwrap();
+}
+
+#[tokio::test]
+async fn settings_mutation_refuses_every_remote_caller_and_admits_loopback() {
+    // Settings are this desktop's own controls: `mobile_legacy_access` and
+    // `desktop_peer_legacy_access` decide whether it still accepts the
+    // pre-E2EE paths, and `terminalEditorCommand` is a command line the
+    // desktop resolves and spawns. `docs/specs/secure-channel.md` promises a
+    // paired phone and a paired sibling desktop are refused
+    // `DesktopLocalAccess` routes, naming "pairing controls, settings" in
+    // both; this pins that promise on the mutation routes.
+    //
+    // Legacy mobile access is seeded on deliberately, so the header-paired LAN
+    // caller below is a genuinely trusted device rather than one the legacy
+    // switch happens to be turning away.
+    let state = super::test_state_with_seed("desktop-settings-authority", "Settings Mac", |db| {
+        db.set_test_setting(
+            crate::http_api::secure_channel::MOBILE_LEGACY_ACCESS_SETTING,
+            "allowed",
+        )
+        .unwrap();
+        db.set_test_setting("terminalEditorCommand", "nano")
+            .unwrap();
+        db.set_test_setting("ideCommand", "code").unwrap();
+    });
+    let pairing_path = PathBuf::from(&state.config().pairing_store_path);
+    let mut store = crate::pairing::PairingStore::default();
+    store.add_trusted_device(
+        &state.config().desktop_id,
+        "phone",
+        "Phone",
+        &crate::pairing::hash_device_secret("secret"),
+    );
+    store.save(&pairing_path).unwrap();
+    let app = crate::http_api::router(Arc::clone(&state));
+
+    let read_setting = |key: &str| {
+        crate::db::Db::open(&state.config().db_path)
+            .unwrap()
+            .get_setting(key)
+            .unwrap()
+    };
+    let mutations = [
+        (
+            "PUT",
+            "/v1/settings/terminalEditorCommand",
+            r#"{"value":"attacker-editor"}"#,
+        ),
+        ("DELETE", "/v1/settings/ideCommand", "{}"),
+    ];
+
+    let mut admitted: Vec<String> = Vec::new();
+    for (method, path, payload) in mutations {
+        // On the real listener, with the full middleware stack: an unpaired
+        // LAN caller and a genuinely paired one are both refused. Pairing buys
+        // task control, not this desktop's own switches.
+        for caller in ["unpaired LAN", "header-paired LAN"] {
+            let mut request = direct_lan_request(method.parse().unwrap(), path);
+            *request.body_mut() = Body::from(payload);
+            if caller == "header-paired LAN" {
+                request
+                    .headers_mut()
+                    .insert("x-kanna-device-id", "phone".parse().unwrap());
+                request
+                    .headers_mut()
+                    .insert("x-kanna-device-secret", "secret".parse().unwrap());
+            }
+            let status = app.clone().oneshot(request).await.unwrap().status();
+            if status != StatusCode::UNAUTHORIZED {
+                admitted.push(format!("{caller} {method} {path} -> {status}"));
+            }
+        }
+
+        // Through every tunnel that clears the deny-by-default floor: an
+        // account-authenticated relay invoke, a relay invoke stamped with a
+        // sibling desktop id, a paired phone's sealed session, and a paired
+        // sibling desktop's sealed peer session.
+        let body: serde_json::Value = serde_json::from_str(payload).unwrap();
+        for (caller, response) in [
+            (
+                "unauthenticated tunnel",
+                crate::http_api::routes::dispatch_http_invoke(
+                    Arc::clone(&state),
+                    method,
+                    path,
+                    body.clone(),
+                )
+                .await,
+            ),
+            (
+                "relay account tunnel",
+                crate::http_api::dispatch_authenticated_http_invoke(
+                    Arc::clone(&state),
+                    method,
+                    path,
+                    body.clone(),
+                )
+                .await,
+            ),
+            (
+                "relay-attested sibling desktop",
+                crate::http_api::dispatch_authenticated_relay_http_invoke(
+                    Arc::clone(&state),
+                    "account-uid".to_string(),
+                    Some("sibling-desktop".to_string()),
+                    method,
+                    path,
+                    body.clone(),
+                )
+                .await,
+            ),
+            (
+                "sealed paired phone",
+                crate::http_api::dispatch_sealed_device_http_invoke(
+                    Arc::clone(&state),
+                    "phone".to_string(),
+                    crate::http_api::secure_channel::SealedPairingContext {
+                        remote_static: [7u8; 32],
+                        handshake_hash: [9u8; 32],
+                        origin: crate::http_api::secure_channel::StreamOrigin::Lan,
+                    },
+                    method,
+                    path,
+                    body.clone(),
+                )
+                .await,
+            ),
+            (
+                "sealed paired sibling desktop",
+                crate::http_api::dispatch_sealed_peer_http_invoke(
+                    Arc::clone(&state),
+                    "sibling-desktop".to_string(),
+                    method,
+                    path,
+                    body.clone(),
+                )
+                .await,
+            ),
+        ] {
+            if response.status != 401 {
+                admitted.push(format!(
+                    "{caller} {method} {path} -> {} {:?}",
+                    response.status, response.body
+                ));
+            }
+        }
+    }
+    assert!(
+        admitted.is_empty(),
+        "remote callers reached settings mutation: {admitted:#?}"
+    );
+
+    // And none of them changed the database.
+    assert_eq!(
+        read_setting("terminalEditorCommand"),
+        Some("nano".to_string())
+    );
+    assert_eq!(read_setting("ideCommand"), Some("code".to_string()));
+
+    // The desktop's own loopback caller still writes and deletes.
+    for (method, path, payload) in mutations {
+        let mut request = Request::builder()
+            .method(method.parse::<axum::http::Method>().unwrap())
+            .uri(path)
+            .header("content-type", "application/json")
+            .body(Body::from(payload))
+            .unwrap();
+        request.extensions_mut().insert(loopback_connect_info());
+        let response = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(
+            response.status(),
+            StatusCode::OK,
+            "loopback {method} {path}"
+        );
+    }
+    assert_eq!(
+        read_setting("terminalEditorCommand"),
+        Some("attacker-editor".to_string()),
+    );
+    assert_eq!(read_setting("ideCommand"), None);
+
     std::fs::remove_file(pairing_path).unwrap();
 }
 

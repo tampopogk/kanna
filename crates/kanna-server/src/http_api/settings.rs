@@ -115,7 +115,23 @@ pub(super) async fn get_setting(
     Ok(Json(SettingResponse { key, value }))
 }
 
+/// Settings are this desktop's own controls, so writing one is
+/// `DesktopLocalAccess` - the class `docs/specs/secure-channel.md` §5 and §10
+/// already promise ("`DesktopLocalAccess` routes (pairing controls, settings)
+/// stay refused" for a paired phone, "never `DesktopLocalAccess` (pairing
+/// controls, settings, the peer list)" for a paired sibling desktop). The
+/// promise was only ever kept for `put_cloud_transfer_identity`: these two
+/// handlers carried no authority extractor at all, so they sat on the
+/// `require_http_access` floor and any tunneled caller that cleared it - a
+/// relay-authenticated invoke, a paired phone's sealed session, a paired
+/// sibling's sealed peer session - could write `mobile_legacy_access`,
+/// `desktop_peer_legacy_access` or `terminalEditorCommand` on this machine.
+/// The first two are the switches that decide whether this desktop still
+/// accepts the pre-E2EE paths; the third is the command line
+/// `terminal_editor::editor_choices` resolves to the executable the daemon
+/// spawns the next time the person here opens a file in a terminal editor.
 pub(super) async fn put_setting(
+    _desktop: DesktopLocalAccess,
     State(state): State<Arc<AppState>>,
     Path(key): Path<String>,
     Json(payload): Json<PutSettingRequest>,
@@ -146,7 +162,11 @@ pub(super) async fn put_setting(
     }))
 }
 
+/// Deleting a setting is a mutation like [`put_setting`], and reverting one of
+/// the switches above to its default is worth exactly as much to a remote
+/// caller as setting it, so it takes the same authority.
 pub(super) async fn delete_setting(
+    _desktop: DesktopLocalAccess,
     State(state): State<Arc<AppState>>,
     Path(key): Path<String>,
 ) -> Result<Json<serde_json::Value>, (axum::http::StatusCode, String)> {
