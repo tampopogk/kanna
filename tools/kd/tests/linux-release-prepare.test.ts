@@ -5,6 +5,7 @@ import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdir
 import { dirname, join, resolve } from "node:path";
 import { afterAll, expect, it } from "vitest";
 import { prepareLinuxRelease } from "../src/runtime/linux-release-prepare";
+import { linuxSourceBazelArgs } from "../src/runtime/linux-release-source";
 import { nodeCommandRunner, type CommandRunner } from "../src/runtime/process";
 import { sha256 } from "../src/runtime/linux-release-artifacts";
 import { packageLayout } from "../src/runtime/linux-package";
@@ -35,7 +36,10 @@ function fixture(mode: "normal" | "historical" | "stamp" | "dirty" = "normal") {
   const runner: CommandRunner = { run: async (command, args, options) => {
     calls.push([command, ...args]);
     if (command !== "bazel") return nodeCommandRunner.run(command, args, options);
-    expect(args[0]).toBe("--batch");
+    // The pinned snapshot is a build input: Bazel must be told not to rewrite
+    // its tracked MODULE.bazel.lock, or the post-build cleanliness check
+    // discards both architectures after they have already been built.
+    expect(args.slice(0, 3)).toEqual(["--batch", args[1], "--lockfile_mode=error"]);
     const cwd = options!.cwd!;
     expect(cwd).not.toBe(directory);
     const architecture = args.at(-1)!.endsWith("_x86_64") ? "x86_64" : "arm64";
@@ -252,3 +256,11 @@ it("ships retained prepared bytes from a pinned product after controller/main ad
     vi.unstubAllGlobals();
   }
 }, 30000);
+
+it("pins the isolated snapshot read-only: --batch leads, --lockfile_mode=error follows the command word", () => {
+  expect(linuxSourceBazelArgs(["build", "-c", "opt", "//packaging/linux:deb_staging_arm64"]))
+    .toEqual(["--batch", "build", "--lockfile_mode=error", "-c", "opt", "//packaging/linux:deb_staging_arm64"]);
+  expect(linuxSourceBazelArgs(["cquery", "--output=files"]))
+    .toEqual(["--batch", "cquery", "--lockfile_mode=error", "--output=files"]);
+  expect(() => linuxSourceBazelArgs([])).toThrow(/explicit Bazel command/);
+});
