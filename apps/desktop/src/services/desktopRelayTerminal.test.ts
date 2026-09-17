@@ -192,12 +192,14 @@ describe("createDesktopRelayTerminalClient", () => {
     await Promise.resolve();
     await Promise.resolve();
     // What `peers::send_error_and_close` actually writes: no `task_id` — the
-    // connection never got far enough to be about a task — and then a close.
+    // connection never got far enough to be about a task — and its keys in the
+    // order `serde_json::json!` sorts them into, discriminant last, which is
+    // what a `{"type":"error"` prefix match silently missed.
     socket.onmessage?.({
       data: JSON.stringify({
-        type: "error",
         code: "peer_pairing_required",
         message: "this desktop is not paired with that machine; pair it from Preferences → Machines",
+        type: "error",
       }),
     });
     socket.drop(1000);
@@ -214,6 +216,10 @@ describe("createDesktopRelayTerminalClient", () => {
     vi.useRealTimers();
   });
 
+  /**
+   * Spelled type-first here, the other way round from the test above: the
+   * refusal is recognized by what the frame says, not by its key order.
+   */
   it("drops a refused peer client so a later view dials again once the machines are paired", async () => {
     const sockets: FakeSocket[] = [];
     const client = createDesktopRelayTerminalClient({

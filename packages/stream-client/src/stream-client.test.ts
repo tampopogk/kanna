@@ -573,10 +573,12 @@ describe("StreamClient", () => {
     });
     const socket = sockets[0];
     socket.open();
+    // The key order `peers::send_error_and_close` actually puts on the wire:
+    // `serde_json::json!` sorts its map, so the discriminant lands last.
     socket.receive({
-      type: "error",
       code: "peer_pairing_required",
       message: "this desktop is not paired with that machine; pair it from Preferences → Machines",
+      type: "error",
     } as ServerFrame);
     socket.drop(1000);
 
@@ -588,6 +590,11 @@ describe("StreamClient", () => {
     client.close();
   });
 
+  /**
+   * Deliberately spelled type-first, the other way round from the two above:
+   * a refusal is recognized by what the frame says, not by the order a
+   * serializer happened to write it in.
+   */
   it("reports the refusal to the owner so a stopped client can be replaced", () => {
     const refusals: string[] = [];
     const client = new StreamClient({
@@ -638,9 +645,9 @@ describe("StreamClient", () => {
     socket.open();
     socket.onmessage?.({
       data: JSON.stringify({
-        type: "error",
         code: "peer_identity_mismatch",
         message: "the paired machine's identity changed",
+        type: "error",
       }),
     });
     socket.drop(1000);

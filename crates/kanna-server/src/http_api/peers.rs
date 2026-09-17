@@ -668,9 +668,18 @@ pub(super) async fn peer_ksp_proxy_stream(
     ws.on_upgrade(move |socket| run_peer_ksp_proxy(socket, state, desktop_id, auth))
 }
 
+/// The exact bytes a refusal is sent as. `serde_json::json!` builds a sorted
+/// map, so the discriminant lands *last* on the wire whatever order it is
+/// written in here - a client that recognizes this frame by a byte prefix
+/// never sees it. `error_frame_keys_are_sorted_on_the_wire` pins that, because
+/// the ordering is a property of the serializer rather than of this function.
+pub(super) fn error_frame(code: &str, message: &str) -> String {
+    serde_json::json!({ "type": "error", "code": code, "message": message }).to_string()
+}
+
 async fn send_error_and_close(socket: &mut WebSocket, code: &str, message: String) {
-    let frame = serde_json::json!({ "type": "error", "code": code, "message": message });
-    let _ = socket.send(WsMessage::Text(frame.to_string().into())).await;
+    let frame = error_frame(code, &message);
+    let _ = socket.send(WsMessage::Text(frame.into())).await;
     let _ = socket.close().await;
 }
 

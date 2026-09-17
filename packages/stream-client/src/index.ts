@@ -403,6 +403,12 @@ const MAX_PENDING_DECODE_BYTES =
   MAX_LEGAL_COMPANION_BUNDLE_CHARACTERS * 2 * 2;
 
 /** Delay before the single force-refresh retry after an auth-failure close. */
+/**
+ * The largest frame worth checking for a connection refusal: a discriminant, a
+ * code and one sentence. Everything bigger is terminal output or a payload,
+ * and this check runs on every inbound frame.
+ */
+const MAX_REFUSAL_FRAME_CHARACTERS = 4096;
 const AUTH_RETRY_DELAY_MS = 250;
 const TERMINAL_GEOMETRY_FLUSH_DELAY_MS = 50;
 
@@ -1048,13 +1054,22 @@ export class StreamClient {
    * and let the normal lane dispatch its copy if it survives.
    */
   private noteConnectionRefusal(data: string): void {
-    if (!data.startsWith('{"type":"error"')) return;
-    let frame: { task_id?: unknown; code?: unknown; message?: unknown };
+    // A frame's key order is the server's business, not a contract: this one
+    // is built with `serde_json::json!`, whose map sorts its keys, so `type`
+    // arrives last and a `{"type":"error"` prefix match never fires. Gate on
+    // the size of a frame that could carry a sentence and on the
+    // discriminant's *value*, both of which hold whatever order the keys are
+    // in, then let the parser decide. (The `term_output` prefix check above is
+    // safe because that frame is serialized from a serde-derived struct, which
+    // keeps its declared field order; this one is not.)
+    if (data.length > MAX_REFUSAL_FRAME_CHARACTERS || !data.includes('"error"')) return;
+    let frame: { type?: unknown; task_id?: unknown; code?: unknown; message?: unknown };
     try {
       frame = JSON.parse(data) as typeof frame;
     } catch {
       return;
     }
+    if (frame.type !== "error") return;
     // A task-scoped error is about one attachment, not about the connection.
     if (frame.task_id !== undefined && frame.task_id !== null) return;
     if (typeof frame.code !== "string" || !CONNECTION_REFUSAL_CODES.has(frame.code)) return;
