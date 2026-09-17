@@ -6,6 +6,7 @@ use super::super::provider::{
     resolve_agent_provider_with, validate_effort_shape, validate_model_shape,
     validate_provider_effort, validate_provider_model,
 };
+use super::super::AgentInstructions;
 use super::super::SpawnAgentOverrides;
 use super::*;
 
@@ -4570,7 +4571,10 @@ fn singleton_claude_pty_delivers_the_agent_body_as_system_prompt() {
         AgentSessionType::Pty,
         "singleton-task-manager",
         composed.prompt.clone(),
-        composed.agent_instructions.clone(),
+        composed
+            .agent_instructions
+            .clone()
+            .map(AgentInstructions::at_prompt_head),
     );
 
     // What the agent is told does not change — only where it is told it.
@@ -4646,7 +4650,10 @@ fn stage_agent_claude_pty_keeps_the_agent_body_in_the_prompt() {
             AgentSessionType::Pty,
             workflow_name,
             composed.prompt.clone(),
-            composed.agent_instructions.clone(),
+            composed
+                .agent_instructions
+                .clone()
+                .map(AgentInstructions::at_prompt_head),
         );
         assert_eq!(prompt, composed.prompt, "workflow {workflow_name}");
         assert!(appended.is_none(), "workflow {workflow_name}");
@@ -4689,7 +4696,10 @@ fn only_claude_pty_singletons_relocate_the_agent_body() {
             AgentSessionType::Pty,
             "singleton-merge",
             composed.prompt.clone(),
-            composed.agent_instructions.clone(),
+            composed
+                .agent_instructions
+                .clone()
+                .map(AgentInstructions::at_prompt_head),
         );
         assert_eq!(prompt, composed.prompt, "{provider:?}");
         assert!(appended.is_none(), "{provider:?}");
@@ -4700,7 +4710,10 @@ fn only_claude_pty_singletons_relocate_the_agent_body() {
         AgentSessionType::Agent,
         "singleton-merge",
         composed.prompt.clone(),
-        composed.agent_instructions.clone(),
+        composed
+            .agent_instructions
+            .clone()
+            .map(AgentInstructions::at_prompt_head),
     );
     assert_eq!(prompt, composed.prompt);
     assert!(appended.is_none());
@@ -4737,7 +4750,10 @@ fn a_wrapped_prompt_is_never_relocated() {
         AgentSessionType::Pty,
         "singleton-task-manager",
         wrapped.clone(),
-        composed.agent_instructions.clone(),
+        composed
+            .agent_instructions
+            .clone()
+            .map(AgentInstructions::at_prompt_head),
     );
 
     assert_eq!(prompt, wrapped);
@@ -4789,7 +4805,9 @@ fn relocating_preserves_the_layered_agent_resolution_byte_for_byte() {
         AgentSessionType::Pty,
         "singleton-task-manager",
         composed.prompt,
-        composed.agent_instructions,
+        composed
+            .agent_instructions
+            .map(AgentInstructions::at_prompt_head),
     );
     let appended = appended.expect("a singleton claude pty spawn relocates its agent body");
 

@@ -2,6 +2,10 @@ use std::collections::HashMap;
 
 use super::definitions::{RepoDefinitions, WorkflowStage, WorkflowStageTransition};
 
+// The prompt-only shape of the composer below. Production callers all need the
+// resolved agent instructions beside the prompt now, so this survives for the
+// tests that assert on the composed text alone.
+#[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 pub(super) fn build_target_stage_prompt(
     definitions: &RepoDefinitions,

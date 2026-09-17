@@ -349,9 +349,10 @@ pub(super) struct DeferredStageSetup {
     pub(super) source_agent_type: Option<String>,
     pub(super) workflow_name: String,
     pub(super) final_prompt: String,
-    /// The `## Agent Instructions` section of `final_prompt`, when it has one.
-    /// See `task_creator::relocate_agent_instructions`.
-    pub(super) agent_instructions: Option<String>,
+    /// The resolved agent body this spawn may deliver as configuration rather
+    /// than as its first user message. See
+    /// `task_creator::relocate_agent_instructions`.
+    pub(super) agent_instructions: Option<super::AgentInstructions>,
     pub(super) tuning: super::provider::AgentTuningPlan,
     pub(super) permission_mode: Option<String>,
     pub(super) allowed_tools: Vec<String>,

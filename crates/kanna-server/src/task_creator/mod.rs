@@ -898,7 +898,7 @@ pub(crate) fn prepare_rerun_stage_for_api(
         Some(current_stage.policy.transition.as_str()),
         "unspecified",
         prompt,
-        agent_instructions,
+        agent_instructions.map(AgentInstructions::at_prompt_head),
         model,
         effort.clone(),
         permission_mode,
@@ -1040,7 +1040,9 @@ pub(crate) fn prepare_create_task_repair_for_api(
             Some(resolved.stage_transition.as_str()),
             "unspecified",
             resolved.final_prompt,
-            resolved.agent_instructions,
+            resolved
+                .agent_instructions
+                .map(AgentInstructions::at_prompt_head),
             resolved.model.clone(),
             resolved.effort.clone(),
             resolved.permission_mode,
@@ -1164,7 +1166,9 @@ pub(crate) fn prepare_create_task_repair_for_api(
         Some(resolved.stage_transition.as_str()),
         "unspecified",
         resolved.final_prompt,
-        resolved.agent_instructions,
+        resolved
+            .agent_instructions
+            .map(AgentInstructions::at_prompt_head),
         model.clone(),
         effort.clone(),
         resolved.permission_mode,
@@ -1244,7 +1248,7 @@ pub(in crate::task_creator) fn prepare_stage_run_spawn(
     completion_transition: WorkflowStageTransition,
     workspace_spec: RunWorkspaceSpec,
     final_prompt: String,
-    agent_instructions: Option<String>,
+    agent_instructions: Option<AgentInstructions>,
     branch: &str,
     feedback: Option<String>,
     source_agent_type: Option<&str>,
@@ -1918,7 +1922,7 @@ fn build_prepared_session(
     stage_transition: Option<&str>,
     stage_trigger: &str,
     final_prompt: String,
-    agent_instructions: Option<String>,
+    agent_instructions: Option<AgentInstructions>,
     model: Option<String>,
     effort: Option<String>,
     permission_mode: Option<String>,
@@ -2362,51 +2366,98 @@ fn relocates_agent_instructions_to_system_prompt(
         && directory_singleton_agent(workflow_name).is_some()
 }
 
-/// Split a composed stage prompt into the prompt the CLI is given and the text
+/// The resolved agent body a spawn may deliver as configuration, and where it
+/// stands relative to the prompt beside it.
+///
+/// Both shapes exist because a spawn's prompt has two origins. A composed
+/// stage prompt *contains* the body, so relocating means moving bytes out of
+/// it. A recovery message is prose Kanna wrote itself, and the body is
+/// somewhere else entirely — for a resumed session, in the conversation being
+/// reopened. Relocating those means delivering the body that the prompt never
+/// held, which is not a move at all.
+#[derive(Clone)]
+pub(in crate::task_creator) enum AgentInstructions {
+    /// The prompt beside this opens with the `## Agent Instructions` section.
+    /// Relocating splits it off; a spawn that cannot relocate is given the
+    /// composed prompt exactly as it was composed.
+    AtPromptHead(String),
+    /// Kanna wrapped this spawn's prompt in its own prose, and `body` is not
+    /// in it. A relocating spawn delivers the body as configuration; one that
+    /// cannot is given `inline_prompt` instead, which is the same message with
+    /// the body still written into it — or the prompt as passed, when the
+    /// message never carried the body in the first place.
+    BesideProse {
+        body: String,
+        inline_prompt: Option<String>,
+    },
+}
+
+impl AgentInstructions {
+    fn at_prompt_head(section: String) -> Self {
+        Self::AtPromptHead(section)
+    }
+}
+
+/// The composed prompt with its leading `## Agent Instructions` section
+/// removed, or `None` when `prompt` does not open with exactly that section.
+///
+/// The remainder is taken byte for byte: rejoining the two over the separator
+/// that was between them reconstructs the input exactly. The separator is not
+/// part of the match, because a singleton whose stage carries no task prompt
+/// composes the instructions *alone* — the merge master, whose `task_prompt`
+/// is empty by construction, so `## Your Task` is dropped and nothing follows.
+/// Requiring the blank line made relocation a silent no-op for exactly that
+/// agent, which is one of the two this exists for.
+fn split_agent_instructions_prefix(prompt: &str, instructions: &str) -> Option<String> {
+    let rest = prompt.strip_prefix(instructions)?;
+    if rest.is_empty() {
+        // The instructions were the whole prompt. The CLI is then given no
+        // first message at all; see `build_agent_command`.
+        return Some(String::new());
+    }
+    // Anything else must be the composed prompt's own section separator, or
+    // this is not the split it looks like.
+    rest.strip_prefix("\n\n").map(str::to_string)
+}
+
+/// Decide what this spawn's CLI is given as a first message and what is
 /// appended to its system prompt.
 ///
-/// What the agent is told must not change — only where it is told it. So the
-/// section moves only when it is literally the composed prompt's own prefix,
-/// and the remainder is taken byte for byte: rejoining the two over the
-/// separator that was between them reconstructs the input exactly. A prompt
-/// Kanna wrapped in its own prose (recovery, transfer continuation) does not
-/// start with the section, so it does not match and is left alone.
-///
-/// The separator is not part of the match. `build_stage_prompt` joins its
-/// sections with a blank line, but a singleton whose stage carries no task
-/// prompt composes the instructions *alone* — the merge master, whose
-/// `task_prompt` is empty by construction, so `## Your Task` is dropped and
-/// nothing follows. Requiring the blank line made relocation a silent no-op
-/// for exactly that agent, which is one of the two this exists for.
+/// What the agent is told must not change — only where it is told it. A
+/// composed prompt therefore moves its section only when the section is
+/// literally that prompt's own prefix, and a prompt that does not match is
+/// left alone. A spawn whose prompt is Kanna's own prose carries the body
+/// beside it instead, already separated, and the two are simply handed to
+/// their own channels.
 fn relocate_agent_instructions(
     provider: AgentProvider,
     agent_type: AgentSessionType,
     workflow_name: &str,
     final_prompt: String,
-    agent_instructions: Option<String>,
+    agent_instructions: Option<AgentInstructions>,
 ) -> (String, Option<String>) {
-    if !relocates_agent_instructions_to_system_prompt(provider, agent_type, workflow_name) {
-        return (final_prompt, None);
-    }
     let Some(instructions) = agent_instructions else {
         return (final_prompt, None);
     };
-    // Owned, so the borrow of `final_prompt` ends before the arm that returns
-    // it unchanged.
-    let remainder = final_prompt.strip_prefix(&instructions).and_then(|rest| {
-        if rest.is_empty() {
-            // The instructions were the whole prompt. The CLI is then given no
-            // first message at all; see `build_agent_command`.
-            Some(String::new())
-        } else {
-            // Anything else must be the composed prompt's own section
-            // separator, or this is not the split it looks like.
-            rest.strip_prefix("\n\n").map(str::to_string)
+    if !relocates_agent_instructions_to_system_prompt(provider, agent_type, workflow_name) {
+        return match instructions {
+            AgentInstructions::AtPromptHead(_) => (final_prompt, None),
+            // The prompt beside a `BesideProse` is written for a relocating
+            // spawn. This one is not, so it is given the message that still
+            // says everything in one place.
+            AgentInstructions::BesideProse { inline_prompt, .. } => {
+                (inline_prompt.unwrap_or(final_prompt), None)
+            }
+        };
+    }
+    match instructions {
+        AgentInstructions::AtPromptHead(section) => {
+            match split_agent_instructions_prefix(&final_prompt, &section) {
+                Some(prompt) => (prompt, Some(section)),
+                None => (final_prompt, None),
+            }
         }
-    });
-    match remainder {
-        Some(prompt) => (prompt, Some(instructions)),
-        None => (final_prompt, None),
+        AgentInstructions::BesideProse { body, .. } => (final_prompt, Some(body)),
     }
 }
 
@@ -2974,7 +3025,7 @@ pub(crate) fn prepare_start_dormant_task_for_api(
         Some(stage.policy.transition.as_str()),
         "unspecified",
         final_prompt,
-        agent_instructions,
+        agent_instructions.map(AgentInstructions::at_prompt_head),
         model,
         effort,
         permission_mode,
@@ -4058,7 +4109,10 @@ fn prepare_new_task_session(
         Some(resolved.stage_transition.as_str()),
         "unspecified",
         resolved.final_prompt.clone(),
-        resolved.agent_instructions.clone(),
+        resolved
+            .agent_instructions
+            .clone()
+            .map(AgentInstructions::at_prompt_head),
         model.clone(),
         effort.clone(),
         resolved.permission_mode.clone(),
