@@ -23,6 +23,7 @@ use futures_util::stream::{SplitSink, SplitStream};
 use futures_util::{SinkExt, StreamExt};
 use kanna_secure_channel::{Domain, HelloIntent, InitiatorHello, PendingInitiator, Received};
 use std::collections::HashMap;
+use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::net::TcpStream;
@@ -85,6 +86,9 @@ pub(crate) enum PeerDialError {
     IdentityMismatch(String),
     /// No route reached the sibling at all.
     Unreachable(String),
+    /// The pooled session was retired before the request was sent; the
+    /// pool re-dials once and the error never leaves this module.
+    SessionEnded,
 }
 
 impl PeerDialError {
@@ -94,7 +98,7 @@ impl PeerDialError {
             Self::IdentityUnavailable(_) => "peer_identity_unavailable",
             Self::UpgradeRequired(_) => "peer_upgrade_required",
             Self::IdentityMismatch(_) => "peer_identity_mismatch",
-            Self::Unreachable(_) => "peer_unreachable",
+            Self::Unreachable(_) | Self::SessionEnded => "peer_unreachable",
         }
     }
 }
@@ -120,6 +124,7 @@ impl std::fmt::Display for PeerDialError {
                 "the paired machine's identity changed; remove it and pair again: {detail}"
             ),
             Self::Unreachable(detail) => write!(formatter, "peer unreachable: {detail}"),
+            Self::SessionEnded => formatter.write_str("peer unreachable: the sealed session ended"),
         }
     }
 }
@@ -230,6 +235,11 @@ impl SealedPeerReader {
 /// An established, authenticated sealed connection to a sibling.
 pub(crate) struct SealedPeerSocket {
     pub(crate) route: PeerRoute,
+    /// The LAN candidate that was tried and failed before the relay route
+    /// was taken, if any. A pooled relay session is upgraded to a LAN one
+    /// only once discovery offers a *different* candidate, so an
+    /// unreachable address is not retried on every invoke.
+    pub(crate) failed_lan_candidate: Option<SocketAddr>,
     ws: PeerWebSocket,
     sender: kanna_secure_channel::Sender,
     receiver: kanna_secure_channel::Receiver,
@@ -278,8 +288,8 @@ pub(crate) async fn dial_peer_with_key(
     let identity = state
         .peer_channel_identity()
         .map_err(PeerDialError::IdentityUnavailable)?;
-    let (ws, route) = connect_transport(state, desktop_id).await?;
-    complete_handshake(
+    let (ws, route, failed_lan_candidate) = connect_transport(state, desktop_id).await?;
+    let mut socket = complete_handshake(
         ws,
         route,
         &identity,
@@ -288,21 +298,25 @@ pub(crate) async fn dial_peer_with_key(
         &state.config().desktop_id,
         hello,
     )
-    .await
+    .await?;
+    socket.failed_lan_candidate = failed_lan_candidate;
+    Ok(socket)
 }
 
 async fn connect_transport(
     state: &Arc<AppState>,
     desktop_id: &str,
-) -> Result<(PeerWebSocket, PeerRoute), PeerDialError> {
+) -> Result<(PeerWebSocket, PeerRoute, Option<SocketAddr>), PeerDialError> {
     let mut failures = Vec::new();
+    let mut failed_lan_candidate = None;
     if let Some(candidate) = state.lan_api_candidate_for(desktop_id) {
         let url = format!("ws://{candidate}/v1/peers/channel");
         match timeout(LAN_CONNECT_TIMEOUT, tokio_tungstenite::connect_async(&url)).await {
-            Ok(Ok((ws, _))) => return Ok((ws, PeerRoute::Lan)),
+            Ok(Ok((ws, _))) => return Ok((ws, PeerRoute::Lan, None)),
             Ok(Err(error)) => failures.push(format!("LAN {candidate}: {error}")),
             Err(_) => failures.push(format!("LAN {candidate}: connect timed out")),
         }
+        failed_lan_candidate = Some(candidate);
     } else {
         failures.push("no LAN candidate discovered".to_string());
     }
@@ -323,7 +337,7 @@ async fn connect_transport(
         )
         .await
         {
-            Ok(Ok(ws)) => return Ok((ws, PeerRoute::Relay)),
+            Ok(Ok(ws)) => return Ok((ws, PeerRoute::Relay, failed_lan_candidate)),
             Ok(Err(error)) => failures.push(format!("relay: {error}")),
             Err(_) => failures.push("relay: tunnel setup timed out".to_string()),
         }
@@ -422,6 +436,7 @@ async fn complete_handshake(
     let (sender, receiver) = channel.split();
     Ok(SealedPeerSocket {
         route,
+        failed_lan_candidate: None,
         ws,
         sender,
         receiver,
@@ -442,6 +457,7 @@ pub(crate) enum PeerInvokeOutcome {
 struct PeerSession {
     desktop_id: String,
     route: PeerRoute,
+    failed_lan_candidate: Option<SocketAddr>,
     outbound: mpsc::Sender<String>,
     pending: Mutex<HashMap<u64, oneshot::Sender<HttpInvokeResponse>>>,
     next_id: AtomicU64,
@@ -458,12 +474,14 @@ impl PeerSession {
     ) -> Result<Arc<Self>, PeerDialError> {
         let socket = dial_peer(state, desktop_id, PeerHello::Session).await?;
         let route = socket.route;
+        let failed_lan_candidate = socket.failed_lan_candidate;
         let (mut writer, mut reader) = socket.split();
         let (outbound, mut outbound_rx) = mpsc::channel::<String>(256);
         let alive = Arc::new(AtomicBool::new(true));
         let session = Arc::new(Self {
             desktop_id: desktop_id.to_string(),
             route,
+            failed_lan_candidate,
             outbound,
             pending: Mutex::new(HashMap::new()),
             next_id: AtomicU64::new(1),
@@ -577,6 +595,28 @@ impl PeerSession {
         self.alive.load(Ordering::Relaxed)
     }
 
+    /// Retires a relay session in favour of a LAN handshake when discovery
+    /// now offers a candidate this session did not already fail against.
+    /// The retirement happens under the pending-request lock, so a request
+    /// is either answered by this session or refused before it is sent -
+    /// never stranded as uncertain by the swap.
+    async fn retire_for_lan_upgrade(&self, candidate: Option<SocketAddr>) -> bool {
+        if self.route != PeerRoute::Relay
+            || candidate.is_none()
+            || candidate == self.failed_lan_candidate
+        {
+            return false;
+        }
+        let pending = self.pending.lock().await;
+        if !pending.is_empty() {
+            return false;
+        }
+        self.alive.store(false, Ordering::Relaxed);
+        drop(pending);
+        self.shutdown().await;
+        true
+    }
+
     async fn invoke(
         &self,
         method: &str,
@@ -592,12 +632,15 @@ impl PeerSession {
             .acquire_owned()
             .await
             .map_err(|_| PeerDialError::Unreachable("peer session closed".into()))?;
-        if !self.is_alive() {
-            return Err(PeerDialError::Unreachable("peer session ended".into()));
-        }
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let (response_tx, response_rx) = oneshot::channel();
-        self.pending.lock().await.insert(id, response_tx);
+        {
+            let mut pending = self.pending.lock().await;
+            if !self.is_alive() {
+                return Err(PeerDialError::SessionEnded);
+            }
+            pending.insert(id, response_tx);
+        }
         let mut frame = serde_json::json!({
             "type": "request",
             "id": id,
@@ -647,10 +690,22 @@ impl PeerSessions {
     ) -> Result<Arc<PeerSession>, PeerDialError> {
         let mut sessions = self.sessions.lock().await;
         if let Some(existing) = sessions.get(desktop_id) {
-            if existing.is_alive() {
+            if !existing.is_alive() {
+                sessions.remove(desktop_id);
+            } else if existing
+                .retire_for_lan_upgrade(state.lan_api_candidate_for(desktop_id))
+                .await
+            {
+                // The LAN route is preferred whenever discovery offers it: a
+                // relay session opened before the sibling was discovered
+                // gives way to a fresh LAN handshake. Should the LAN dial
+                // fail, the replacement is a relay session that remembers
+                // the candidate it failed against and is not retried on it.
+                log::info!("[peer] retrying the LAN route to {desktop_id}");
+                sessions.remove(desktop_id);
+            } else {
                 return Ok(Arc::clone(existing));
             }
-            sessions.remove(desktop_id);
         }
         let session = PeerSession::establish(state, desktop_id).await?;
         log::info!(
@@ -672,10 +727,20 @@ impl PeerSessions {
     ) -> Result<(PeerInvokeOutcome, PeerRoute), PeerDialError> {
         let session = self.session_for(state, desktop_id).await?;
         let route = session.route;
-        session
-            .invoke(method, path, body)
-            .await
-            .map(|outcome| (outcome, route))
+        match session.invoke(method, path, body.clone()).await {
+            // The pooled session was retired between lookup and send (a
+            // LAN upgrade or an explicit close); nothing left this desktop,
+            // so the request is safe to place on the replacement once.
+            Err(PeerDialError::SessionEnded) => {
+                let session = self.session_for(state, desktop_id).await?;
+                let route = session.route;
+                session
+                    .invoke(method, path, body)
+                    .await
+                    .map(|outcome| (outcome, route))
+            }
+            result => result.map(|outcome| (outcome, route)),
+        }
     }
 
     pub(crate) async fn close(&self, desktop_id: &str) {

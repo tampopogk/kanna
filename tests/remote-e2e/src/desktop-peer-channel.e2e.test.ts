@@ -324,10 +324,9 @@ describe("desktop peer secure channel E2E", () => {
     expect(legacy.status).toBe(200);
     expect(legacy.route).toBe("relay");
     // The other side still holds its pin, but this desktop no longer
-    // recognises that key: its sealed session is pairing-only.
-    const fromPeer = await invokeMachine(peer, harness.desktopId, "/v1/status");
-    expect(fromPeer.status).toBe(401);
-    expect(fromPeer.route).toBe("peer-relay");
+    // recognises that key: the handshake grants it pairing-only authority,
+    // which the other side refuses at the handshake - no plaintext fallback.
+    expect(await invokeMachineRefusal(peer, harness.desktopId, "/v1/status")).toContain("peer_pairing_required");
     expect(await unpair(harness, peer.desktopId)).toBe(404);
     // With legacy routing off, an unpaired sibling is not reachable at all.
     await setPeerLegacyAccess(harness, false);

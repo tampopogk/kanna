@@ -332,7 +332,7 @@ fn dial_error_response(error: PeerDialError) -> (StatusCode, String) {
         PeerDialError::UpgradeRequired(_) | PeerDialError::IdentityMismatch(_) => {
             StatusCode::BAD_GATEWAY
         }
-        PeerDialError::Unreachable(_) => StatusCode::BAD_GATEWAY,
+        PeerDialError::Unreachable(_) | PeerDialError::SessionEnded => StatusCode::BAD_GATEWAY,
     };
     (status, format!("{}: {error}", error.code()))
 }
