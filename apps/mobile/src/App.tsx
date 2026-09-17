@@ -530,10 +530,7 @@ function AppContent() {
             void controller.createUserWithEmailPassword(email, password);
           }}
           onResetPassword={(email) => controller.sendPasswordResetEmail(email)}
-          onRefreshAccount={() => {
-            appleBilling.refreshBilling();
-            void refreshAccount();
-          }}
+          onResendVerification={() => controller.sendEmailVerification()}
           onSignOut={() => {
             void controller.signOut();
           }}

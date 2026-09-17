@@ -121,6 +121,10 @@ export function createFirebaseMobileAuthSdk(auth: Auth, app: FirebaseApp): Mobil
       await auth.currentUser.reload();
       return mapFirebaseUser(auth.currentUser);
     },
+    async sendEmailVerification() {
+      if (!auth.currentUser) throw new Error("Sign in before requesting a verification email.");
+      await sendEmailVerification(auth.currentUser);
+    },
     getCloudEntitlement,
     async getCloudAccess(uid) {
       const access = await getCloudEntitlement(uid);

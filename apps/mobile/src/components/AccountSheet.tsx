@@ -37,7 +37,8 @@ interface AccountSheetProps {
   onOpenQuickReplies(): void;
   onSignIn(email: string, password: string): void;
   onCreateAccount(email: string, password: string): void;
-  onRefreshAccount(): void;
+  /** Re-sends the verification link; the sheet watches for the verification itself. */
+  onResendVerification?(): Promise<void>;
   onResetPassword?(email: string): Promise<void>;
   onSignOut(): void;
   onSaveCustomRelayUrl(relayUrl: string | null): Promise<void>;
@@ -60,7 +61,7 @@ export function AccountSheet({
   onOpenQuickReplies,
   onSignIn,
   onCreateAccount,
-  onRefreshAccount,
+  onResendVerification,
   onResetPassword,
   onSignOut,
   onSaveCustomRelayUrl,
@@ -68,6 +69,7 @@ export function AccountSheet({
   onDeleteAccount
 }: AccountSheetProps) {
   const [resetMessage, setResetMessage] = useState("");
+  const [verificationMessage, setVerificationMessage] = useState("");
   const [resetPending, setResetPending] = useState(false);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -305,16 +307,28 @@ export function AccountSheet({
                   >
                     <Text style={styles.accountStateTitle}>Verify your email</Text>
                     <Text style={styles.accountStateCopy}>
-                      We sent a verification link to {auth.user.email}. Open it, then return here.
+                      We sent a verification link to {auth.user.email}. Open it and this screen updates on its own.
                     </Text>
                     <Pressable
-                      accessibilityLabel="Check email verification"
-                      style={styles.primaryButton}
-                      testID={MOBILE_E2E_IDS.accountVerificationCheckButton}
-                      onPress={onRefreshAccount}
+                      accessibilityLabel="Re-send verification email"
+                      style={styles.smallButton}
+                      testID={MOBILE_E2E_IDS.accountResendVerificationButton}
+                      onPress={() => {
+                        if (!onResendVerification) return;
+                        setVerificationMessage("");
+                        onResendVerification().then(
+                          () => setVerificationMessage("Verification email sent. Check your inbox and spam folder."),
+                          (error: unknown) => setVerificationMessage(
+                            error instanceof Error ? error.message : "Could not send the verification email."
+                          )
+                        );
+                      }}
                     >
-                      <Text style={styles.primaryLabel}>I verified my email</Text>
+                      <Text style={styles.smallLabel}>Re-send verification email</Text>
                     </Pressable>
+                    {verificationMessage ? (
+                      <Text style={styles.accountStateCopy}>{verificationMessage}</Text>
+                    ) : null}
                   </View>
                 ) : appleBilling?.enabled ? (
                   <AppleBillingCard value={appleBilling} verified={auth.user.emailVerified === true} />
@@ -353,13 +367,10 @@ export function AccountSheet({
                   </View>
                 ) : (
                   <View style={styles.accountState}>
-                    <Text style={styles.accountStateCopy}>Cloud access could not be confirmed. Refresh your account to check again.</Text>
+                    <Text style={styles.accountStateCopy}>Cloud access could not be confirmed. Sign out and back in to check again.</Text>
                   </View>
                 )}
                 <Text style={styles.accountStateCopy}>Local and paired LAN access stay free. Push notifications remain available.</Text>
-                <Pressable accessibilityLabel="Refresh account" style={styles.secondaryButton} onPress={onRefreshAccount}>
-                  <Text style={styles.secondaryLabel}>Refresh account</Text>
-                </Pressable>
                 <Pressable
                   accessibilityLabel="Sign Out"
                   style={styles.secondaryButton}
@@ -780,6 +791,20 @@ const styles = StyleSheet.create({
     color: "#F5F7FB",
     fontSize: 15,
     fontWeight: "800"
+  },
+  smallButton: {
+    alignSelf: "flex-start",
+    backgroundColor: "#172338",
+    borderColor: "#2A3957",
+    borderRadius: 12,
+    borderWidth: 1,
+    paddingHorizontal: 12,
+    paddingVertical: 8
+  },
+  smallLabel: {
+    color: "#F5F7FB",
+    fontSize: 13,
+    fontWeight: "700"
   },
   deleteButton: {
     alignItems: "center",

@@ -28,9 +28,20 @@ export interface MobileAuthSdk {
   getCloudAccess(uid: string): Promise<"active" | "inactive" | "unknown">;
   getCloudEntitlement?(uid: string): Promise<CloudAccessSnapshot>;
   sendPasswordResetEmail?(email: string): Promise<void>;
+  /** Re-sends the verification link to the signed-in user's address. */
+  sendEmailVerification?(): Promise<void>;
   signOut(): Promise<void>;
   getIdToken(forceRefresh?: boolean): Promise<string | null>;
 }
+
+/**
+ * How often an unverified signed-in account is re-read. `emailVerified` lives
+ * on the Firebase Auth user record, not in Firestore, and Auth publishes no
+ * change event for it: the record must be reloaded. Verification is a link
+ * tap in another app, so the session watches for it rather than making the
+ * person come back and press a button.
+ */
+export const EMAIL_VERIFICATION_POLL_MS = 5_000;
 
 export interface MobileAuthSession {
   initialize(): Promise<void>;
@@ -40,6 +51,7 @@ export interface MobileAuthSession {
   createUserWithEmailPassword(input: EmailPasswordSignInInput): Promise<void>;
   refreshAccount(): Promise<void>;
   sendPasswordResetEmail(email: string): Promise<void>;
+  sendEmailVerification(): Promise<void>;
   observeRelayAccess(userId: string, access: CloudAccessSnapshot): void;
   signOut(): Promise<void>;
   getIdToken(forceRefresh?: boolean): Promise<string | null>;
@@ -62,9 +74,44 @@ export function createMobileAuthSession({
   const listeners = new Set<(state: MobileAuthState) => void>();
   let revision = 0;
   let graceDeadline: ReturnType<typeof setTimeout> | null = null;
+  let verificationWatch: ReturnType<typeof setInterval> | null = null;
+  let verificationPollInFlight = false;
+
+  /**
+   * One poll of the verification watch: reload the Auth record and, only when
+   * it has flipped to verified, load the full account state so entitlement
+   * and tokens follow. An unchanged record publishes nothing.
+   */
+  const pollEmailVerification = async () => {
+    if (verificationPollInFlight) return;
+    const watched = state.status === "signedIn" ? state.user : null;
+    if (!watched || watched.emailVerified !== false) return;
+    verificationPollInFlight = true;
+    try {
+      const reloaded = await sdk.reloadUser();
+      const current = state.status === "signedIn" ? state.user : null;
+      if (!reloaded || !current || reloaded.uid !== current.uid || current.emailVerified !== false) return;
+      if (reloaded.emailVerified === true) await session.refreshAccount();
+    } catch (error) {
+      console.error("Could not check email verification:", error);
+    } finally {
+      verificationPollInFlight = false;
+    }
+  };
+
+  const syncVerificationWatch = (nextState: MobileAuthState) => {
+    const unverified = nextState.status === "signedIn" && nextState.user.emailVerified === false;
+    if (unverified && verificationWatch === null) {
+      verificationWatch = setInterval(() => { void pollEmailVerification(); }, EMAIL_VERIFICATION_POLL_MS);
+    } else if (!unverified && verificationWatch !== null) {
+      clearInterval(verificationWatch);
+      verificationWatch = null;
+    }
+  };
 
   const publish = (nextState: MobileAuthState) => {
     state = nextState;
+    syncVerificationWatch(nextState);
     if (graceDeadline) clearTimeout(graceDeadline);
     graceDeadline = null;
     const access = nextState.status === "signedIn" ? nextState.user.cloudEntitlement : undefined;
@@ -142,7 +189,7 @@ export function createMobileAuthSession({
     };
   }
 
-  return {
+  const session: MobileAuthSession = {
     initialize() {
       return waitForInitialAuth();
     },
@@ -213,6 +260,11 @@ export function createMobileAuthSession({
       if (!sdk.sendPasswordResetEmail) throw new Error("Password reset is unavailable.");
       await sdk.sendPasswordResetEmail(email.trim());
     },
+    async sendEmailVerification() {
+      if (state.status !== "signedIn") throw new Error("Sign in before requesting a verification email.");
+      if (!sdk.sendEmailVerification) throw new Error("Email verification is unavailable.");
+      await sdk.sendEmailVerification();
+    },
     observeRelayAccess(userId, access) {
       if (state.status !== "signedIn" || state.user.uid !== userId) return;
       ++revision;
@@ -244,6 +296,7 @@ export function createMobileAuthSession({
       });
     }
   };
+  return session;
 }
 
 export function createDisabledMobileAuthSession(): MobileAuthSession {

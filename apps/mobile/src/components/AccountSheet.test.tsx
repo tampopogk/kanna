@@ -152,7 +152,6 @@ function renderSignedOutSheet(onResetPassword?: (email: string) => Promise<void>
     onOpenQuickReplies: vi.fn(),
     onSignIn: vi.fn(),
     onCreateAccount: vi.fn(),
-    onRefreshAccount: vi.fn(),
     onResetPassword,
     onSignOut: vi.fn(),
     customRelayControlEnabled: true,
@@ -199,8 +198,7 @@ describe("AccountSheet", () => {
       onOpenQuickReplies: vi.fn(),
       onSignIn: vi.fn(),
       onCreateAccount: vi.fn(),
-      onRefreshAccount: vi.fn(),
-      onSignOut: vi.fn(),
+        onSignOut: vi.fn(),
       onSaveCustomRelayUrl,
       subscriptionUrl: "https://portal.example.test/subscribe"
     };
@@ -261,8 +259,7 @@ describe("AccountSheet", () => {
       onOpenQuickReplies: vi.fn(),
       onSignIn: vi.fn(),
       onCreateAccount: vi.fn(),
-      onRefreshAccount: vi.fn(),
-      onSignOut: vi.fn(),
+        onSignOut: vi.fn(),
       onSaveCustomRelayUrl: vi.fn().mockResolvedValue(undefined),
       subscriptionUrl: "https://portal.example.test/subscribe"
     };
@@ -298,8 +295,7 @@ describe("AccountSheet", () => {
       onOpenQuickReplies: vi.fn(),
       onSignIn: vi.fn(),
       onCreateAccount,
-      onRefreshAccount: vi.fn(),
-      onSignOut: vi.fn(),
+        onSignOut: vi.fn(),
       subscriptionUrl: "https://portal.example.test/subscribe"
     };
 
@@ -317,10 +313,10 @@ describe("AccountSheet", () => {
     expect(onCreateAccount).toHaveBeenCalledWith("new@example.com", "secret1");
   });
 
-  it("shows the unverified email state and checks it manually", () => {
+  it("shows the unverified email state with a small resend control and no manual check", async () => {
     if (!AccountSheet) throw new Error("AccountSheet was not loaded");
-    const onRefreshAccount = vi.fn();
-    const tree = AccountSheet({
+    const onResendVerification = vi.fn(() => Promise.resolve());
+    const render = () => AccountSheet({
       auth: {
         status: "signedIn",
         user: {
@@ -340,15 +336,56 @@ describe("AccountSheet", () => {
       onOpenQuickReplies: vi.fn(),
       onSignIn: vi.fn(),
       onCreateAccount: vi.fn(),
-      onRefreshAccount,
+      onResendVerification,
       onSignOut: vi.fn(),
       subscriptionUrl: "https://portal.example.test/subscribe"
     }) as ElementNode;
 
+    const tree = render();
     expect(textContent(tree)).toContain("Verify your email");
     expect(textContent(tree)).toContain("new@example.com");
-    findNodeByTestId(tree, "mobile.account-check-verification")?.props?.onPress?.();
-    expect(onRefreshAccount).toHaveBeenCalledOnce();
+    expect(textContent(tree)).toContain("updates on its own");
+    // The verification watch replaced the manual check; nothing invites a
+    // press that could only re-render the same screen.
+    expect(textContent(tree)).not.toContain("I verified my email");
+    expect(textContent(tree)).not.toContain("Refresh account");
+    expect(findNodeByTestId(tree, "mobile.account-check-verification")).toBeNull();
+
+    const resend = findNodeByTestId(tree, MOBILE_E2E_IDS.accountResendVerificationButton);
+    expect(resend?.props?.accessibilityLabel).toBe("Re-send verification email");
+    resend?.props?.onPress?.();
+    expect(onResendVerification).toHaveBeenCalledOnce();
+    await Promise.resolve();
+    reactState.index = 0;
+    expect(textContent(render())).toContain("Verification email sent");
+  });
+
+  it("reports a failed resend on the verification screen", async () => {
+    if (!AccountSheet) throw new Error("AccountSheet was not loaded");
+    const render = () => AccountSheet({
+      auth: {
+        status: "signedIn",
+        user: { uid: "new-user", email: "new@example.com", displayName: null, emailVerified: false, cloudAccess: "inactive" }
+      },
+      machineCount: 0,
+      availableMachineCount: 0,
+      quickRepliesReady: true,
+      visible: true,
+      onClose: vi.fn(),
+      onOpenMachines: vi.fn(),
+      onOpenQuickReplies: vi.fn(),
+      onSignIn: vi.fn(),
+      onCreateAccount: vi.fn(),
+      onResendVerification: () => Promise.reject(new Error("Too many requests.")),
+      onSignOut: vi.fn(),
+      subscriptionUrl: "https://portal.example.test/subscribe"
+    }) as ElementNode;
+
+    findNodeByTestId(render(), MOBILE_E2E_IDS.accountResendVerificationButton)?.props?.onPress?.();
+    await Promise.resolve();
+    await Promise.resolve();
+    reactState.index = 0;
+    expect(textContent(render())).toContain("Too many requests.");
   });
 
   it("links verified users without entitlement to portal subscription", () => {
@@ -374,8 +411,7 @@ describe("AccountSheet", () => {
       onOpenQuickReplies: vi.fn(),
       onSignIn: vi.fn(),
       onCreateAccount: vi.fn(),
-      onRefreshAccount: vi.fn(),
-      onSignOut: vi.fn(),
+        onSignOut: vi.fn(),
       subscriptionUrl
     }) as ElementNode;
 
@@ -408,8 +444,7 @@ describe("AccountSheet", () => {
       onOpenQuickReplies: vi.fn(),
       onSignIn: vi.fn(),
       onCreateAccount: vi.fn(),
-      onRefreshAccount: vi.fn(),
-      onSignOut: vi.fn(),
+        onSignOut: vi.fn(),
       subscriptionUrl: "https://portal.example.test/subscribe"
     }) as ElementNode;
 
@@ -691,8 +726,7 @@ describe("AccountSheet", () => {
       onOpenQuickReplies: vi.fn(),
       onSignIn: vi.fn(),
       onCreateAccount: vi.fn(),
-      onRefreshAccount: vi.fn(),
-      onSignOut: vi.fn(),
+        onSignOut: vi.fn(),
       onSaveCustomRelayUrl: vi.fn().mockResolvedValue(undefined),
       subscriptionUrl: "https://portal.example.test/subscribe"
     });

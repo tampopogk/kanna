@@ -148,7 +148,7 @@ export const MOBILE_E2E_IDS = {
   accountSignInButton: "mobile.account-sign-in",
   accountCreateButton: "mobile.account-create",
   accountVerificationState: "mobile.account-verification",
-  accountVerificationCheckButton: "mobile.account-check-verification",
+  accountResendVerificationButton: "mobile.account-resend-verification",
   accountSubscriptionState: "mobile.account-subscription",
   accountSubscribeLink: "mobile.account-subscribe",
   accountEntitledState: "mobile.account-entitled",

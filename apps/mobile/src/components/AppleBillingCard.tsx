@@ -27,8 +27,9 @@ export function AppleBillingCard({ value, verified }: { value: AppleBillingView;
       <Text style={styles.text} testID={MOBILE_E2E_IDS.appleBillingPrice}>{purchase.price ? `${purchase.price} per month` : "Monthly price unavailable"}</Text>
       <Text style={styles.text} testID={MOBILE_E2E_IDS.appleBillingTerms}>Payment is charged to your Apple Account. Automatically renews monthly unless canceled at least 24 hours before the period ends. Manage or cancel in Apple subscription settings.</Text>
       <Pressable accessibilityLabel="Subscribe to Kanna Cloud" accessibilityRole="button" testID={MOBILE_E2E_IDS.appleBillingSubscribeButton}
-        disabled={!verified || !purchase.ready || !purchase.price || purchase.busy || purchase.pending} onPress={value.buy}>
-        <Text style={styles.link}>{purchase.busy ? "Working…" : "Subscribe to Kanna Cloud"}</Text>
+        disabled={!verified || !purchase.ready || !purchase.price || purchase.busy || purchase.pending} onPress={value.buy}
+        style={[styles.subscribeButton, (!verified || !purchase.ready || !purchase.price || purchase.busy || purchase.pending) ? styles.subscribeButtonDisabled : null]}>
+        <Text style={styles.subscribeLabel}>{purchase.busy ? "Working…" : "Subscribe to Kanna Cloud"}</Text>
       </Pressable>
     </>}
     <Pressable accessibilityRole="button" disabled={!verified || !purchase.ready || purchase.busy} testID={MOBILE_E2E_IDS.appleBillingRestoreButton} onPress={value.restore}><Text style={styles.link}>Restore Purchases</Text></Pressable>
@@ -38,4 +39,9 @@ export function AppleBillingCard({ value, verified }: { value: AppleBillingView;
   </View>;
 }
 const styles = StyleSheet.create({ card: { gap: 12 }, heading: { color: "#F4F7FF", fontSize: 18, fontWeight: "600" },
-  text: { color: "#AFC0D9", lineHeight: 20 }, link: { color: "#8CB8FF", paddingVertical: 8 } });
+  text: { color: "#AFC0D9", lineHeight: 20 }, link: { color: "#8CB8FF", paddingVertical: 8 },
+  // The purchase call to action is the one control on this card that earns
+  // revenue; it is styled as the sheet's primary button, not as a text link.
+  subscribeButton: { alignItems: "center", backgroundColor: "#E8F1FF", borderRadius: 16, marginTop: 4, paddingVertical: 14 },
+  subscribeButtonDisabled: { opacity: 0.5 },
+  subscribeLabel: { color: "#0B1220", fontSize: 15, fontWeight: "800" } });

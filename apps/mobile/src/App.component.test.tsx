@@ -383,7 +383,7 @@ describe("App component wiring", () => {
     expect(refresh).toHaveBeenCalledOnce();
   });
 
-  it("coalesces overlapping Account-sheet and foreground account refreshes", async () => {
+  it("coalesces overlapping account-open and foreground account refreshes", async () => {
     const refreshPending = deferred<void>();
     const { model, controller, sessionStore } = createModel();
     sessionStore.setAuthState({
@@ -404,11 +404,18 @@ describe("App component wiring", () => {
     await act(async () => {
       renderer.root.findByType("RootNavigator").props.onOpenAccount();
       harness.appStateListener?.("active");
-      renderer.root.findByType("AccountSheet").props.onRefreshAccount();
+      harness.appStateListener?.("active");
       await flushMicrotasks();
     });
 
     expect(refreshAccount).toHaveBeenCalledOnce();
+    // The sheet no longer offers a manual refresh; its only account action
+    // besides sign-out is re-sending the verification email.
+    const accountSheet = renderer.root.findByType("AccountSheet");
+    expect(accountSheet.props.onRefreshAccount).toBeUndefined();
+    const sendEmailVerification = vi.spyOn(controller, "sendEmailVerification").mockResolvedValue(undefined);
+    await accountSheet.props.onResendVerification();
+    expect(sendEmailVerification).toHaveBeenCalledOnce();
 
     await act(async () => {
       refreshPending.resolve();
