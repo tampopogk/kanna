@@ -82,7 +82,13 @@ pub(super) async fn list_peers(
         .peer_trust_store()
         .map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, error))?;
     let environment = state.config().environment.clone();
-    let relay_active = state.list_active_relay_desktops().await.unwrap_or_default();
+    // Relay presence is only a reachability hint here; an unavailable relay
+    // must not hold the preferences list for its own timeout.
+    let relay_active = if state.desktop_routing_available() {
+        state.list_active_relay_desktops().await.unwrap_or_default()
+    } else {
+        Vec::new()
+    };
     let peers = store
         .peers
         .iter()
