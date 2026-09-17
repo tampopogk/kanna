@@ -1307,3 +1307,40 @@ fn peer_sessions_and_sockets_report_their_route_names() {
     assert_eq!(crate::peer_channel::PeerRoute::Lan.as_str(), "peer-lan");
     assert_eq!(crate::peer_channel::PeerRoute::Relay.as_str(), "peer-relay");
 }
+
+/// `AppState::with_settings_db` now backs every legacy-access check and every
+/// settings read/write with one lazily opened, lifecycle-owned connection
+/// instead of a fresh `Db::open` per call. Concurrent callers - a LAN
+/// middleware check racing a settings write racing another check, as happens
+/// under real request load - must serialize through it without deadlocking
+/// and without losing a write.
+#[tokio::test]
+async fn concurrent_settings_access_shares_one_connection_without_losing_writes() {
+    let state = state("settings-concurrency");
+    let mut handles = Vec::new();
+    for i in 0..40 {
+        let state = Arc::clone(&state);
+        handles.push(tokio::spawn(async move {
+            match i % 3 {
+                0 => {
+                    assert!(state.legacy_peer_access_allowed());
+                }
+                1 => {
+                    assert!(state.legacy_mobile_access_allowed());
+                }
+                _ => {
+                    state
+                        .with_settings_db(|db| db.set_setting("concurrency-probe", "value"))
+                        .expect("shared settings connection accepts a concurrent write");
+                }
+            }
+        }));
+    }
+    for handle in handles {
+        handle.await.expect("settings task panicked");
+    }
+    let value = state
+        .with_settings_db(|db| db.get_setting("concurrency-probe"))
+        .expect("shared settings connection still readable after concurrent use");
+    assert_eq!(value.as_deref(), Some("value"));
+}

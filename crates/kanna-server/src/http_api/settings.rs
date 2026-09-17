@@ -1,6 +1,5 @@
 use super::lan_trust::DesktopLocalAccess;
 use super::state::AppState;
-use crate::db::Db;
 use axum::extract::{Path, State};
 use axum::Json;
 use kanna_agent_protocol::StateChangeScope;
@@ -44,13 +43,8 @@ pub(super) async fn put_cloud_transfer_identity(
             format!("failed to encode cloud transfer identity: {error}"),
         )
     })?;
-    let db = Db::open(&state.config.db_path).map_err(|error| {
-        (
-            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-            format!("db error: {error}"),
-        )
-    })?;
-    db.set_setting(CLOUD_TRANSFER_IDENTITY_SETTING, &value)
+    state
+        .with_settings_db(|db| db.set_setting(CLOUD_TRANSFER_IDENTITY_SETTING, &value))
         .map_err(|error| {
             (
                 axum::http::StatusCode::INTERNAL_SERVER_ERROR,
@@ -92,14 +86,8 @@ pub(super) async fn get_setting(
     State(state): State<Arc<AppState>>,
     Path(key): Path<String>,
 ) -> Result<Json<SettingResponse>, (axum::http::StatusCode, String)> {
-    let db = Db::open(&state.config.db_path).map_err(|e| {
-        (
-            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-            format!("db error: {}", e),
-        )
-    })?;
-    let value = db
-        .get_setting(&key)
+    let value = state
+        .with_settings_db(|db| db.get_setting(&key))
         .map_err(|e| {
             (
                 axum::http::StatusCode::INTERNAL_SERVER_ERROR,
@@ -137,18 +125,14 @@ pub(super) async fn put_setting(
     Json(payload): Json<PutSettingRequest>,
 ) -> Result<Json<SettingResponse>, (axum::http::StatusCode, String)> {
     reject_reserved_setting_mutation(&key)?;
-    let db = Db::open(&state.config.db_path).map_err(|e| {
-        (
-            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-            format!("db error: {}", e),
-        )
-    })?;
-    db.set_setting(&key, &payload.value).map_err(|e| {
-        (
-            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-            format!("db error: {e}"),
-        )
-    })?;
+    state
+        .with_settings_db(|db| db.set_setting(&key, &payload.value))
+        .map_err(|e| {
+            (
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                format!("db error: {e}"),
+            )
+        })?;
     if key == super::secure_channel::DESKTOP_PEER_LEGACY_ACCESS_SETTING {
         // The sidecar's discovery mode and bind address follow the switch
         // at spawn; retire the running one so the next request respawns it
@@ -171,18 +155,14 @@ pub(super) async fn delete_setting(
     Path(key): Path<String>,
 ) -> Result<Json<serde_json::Value>, (axum::http::StatusCode, String)> {
     reject_reserved_setting_mutation(&key)?;
-    let db = Db::open(&state.config.db_path).map_err(|e| {
-        (
-            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-            format!("db error: {}", e),
-        )
-    })?;
-    db.delete_setting(&key).map_err(|e| {
-        (
-            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-            format!("db error: {e}"),
-        )
-    })?;
+    state
+        .with_settings_db(|db| db.delete_setting(&key))
+        .map_err(|e| {
+            (
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                format!("db error: {e}"),
+            )
+        })?;
     state.publish_state_changed(StateChangeScope::Settings);
     Ok(Json(serde_json::json!({ "key": key })))
 }
