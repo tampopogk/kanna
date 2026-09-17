@@ -454,6 +454,7 @@ export function parseAgentTerminalAttempts(value: unknown): AgentTerminalAttempt
       || typeof attempt.startedAt !== "string"
       || !(typeof attempt.cwd === "string" || attempt.cwd === null)
       || typeof attempt.archived !== "boolean"
+      || !(typeof attempt.live === "boolean" || attempt.live === undefined)
       || typeof attempt.recordedLaunch !== "boolean"
       || !(typeof attempt.observedExitCode === "number" || attempt.observedExitCode === null)
     ) {
@@ -464,6 +465,10 @@ export function parseAgentTerminalAttempts(value: unknown): AgentTerminalAttempt
       stage: attempt.stage,
       startedAt: attempt.startedAt,
       cwd: attempt.cwd,
+      // An owner desktop whose server or daemon cannot report a live session
+      // reports none, which lists every attempt as history rather than failing
+      // the whole response.
+      live: attempt.live === true,
       archived: attempt.archived,
       recordedLaunch: attempt.recordedLaunch,
       observedExitCode: attempt.observedExitCode,

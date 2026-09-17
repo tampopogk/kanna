@@ -3,8 +3,14 @@ import { computed } from "vue";
 import type { AgentTerminalAttempt } from "../services/desktopServerClient";
 const props = defineProps<{ attempts: AgentTerminalAttempt[]; selected: string; currentStage?: string; historyStatus?: string }>();
 const emit = defineEmits<{ select: [id: string] }>();
+// The server reports which attempt the daemon still runs the terminal for: that
+// one is the session "Latest" already shows, so listing it again would repeat
+// the live session as a permanently unavailable history row. Every other
+// attempt is history, including the newest and including one whose final frame
+// never arrived — that one keeps its unavailable marker rather than vanishing.
 const historicalAttempts = computed(() => props.attempts
   .map((attempt, index) => ({ attempt, ordinal: index + 1 }))
+  .filter(entry => !entry.attempt.live)
   .reverse());
 function selectorKey(event: KeyboardEvent) {
   // Native option navigation stays local; app shortcuts still cycle tabs.

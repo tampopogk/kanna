@@ -121,6 +121,15 @@ export interface AgentTerminalAttempt {
   stage: string;
   startedAt: string;
   cwd: string | null;
+  /**
+   * The owner's daemon still runs the terminal this attempt was launched into,
+   * so it is the live session rather than history. Only the session registry
+   * can say this: the launching run finishes at a manual gate while its PTY
+   * keeps running and a post continues in that same terminal, and a finished
+   * attempt whose final frame never arrived is history with nothing to show,
+   * which is all `archived` reports.
+   */
+  live: boolean;
   archived: boolean;
   recordedLaunch: boolean;
   observedExitCode: number | null;

@@ -128,6 +128,7 @@ for line in sys.stdin:
                                         state: SessionState::Active, idle_seconds: 0, status: SessionStatus::Idle,
                                         status_observed: true, kind: Default::default(), composer_text: None,
                                         composer_attestation: Default::default(),
+                                        attempt_id: None,
                                     }] },
                                     DaemonCommand::SubmitInputIfSession { session_id, expected_pid, data } => {
                                         assert_eq!(session_id, "child-c"); assert_eq!(expected_pid, 42);

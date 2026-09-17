@@ -3395,6 +3395,7 @@ mod lifecycle_operation_tests {
             kind: SessionKind::Pty,
             composer_text: None,
             composer_attestation: Default::default(),
+            attempt_id: None,
         }
     }
 
@@ -4531,6 +4532,7 @@ mod teardown_deadline_tests {
                                 kind: SessionKind::Pty,
                                 composer_text: None,
                                 composer_attestation: Default::default(),
+                                attempt_id: None,
                             }],
                         };
                         write
@@ -4611,6 +4613,7 @@ mod teardown_deadline_tests {
                                 kind: SessionKind::Pty,
                                 composer_text: None,
                                 composer_attestation: Default::default(),
+                                attempt_id: None,
                             }],
                         };
                         write

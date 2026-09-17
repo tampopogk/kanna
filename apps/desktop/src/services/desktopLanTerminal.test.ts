@@ -159,7 +159,7 @@ describe("createDesktopLanTerminalClient", () => {
 
     await expect(client.listAgentTerminalAttempts({
       desktopId: "peer-primary", taskId: "task-1",
-    })).resolves.toHaveLength(1);
+    })).resolves.toEqual([expect.objectContaining({ id: "run-1", live: false })]);
     await expect(client.readAgentTerminalArchive({
       desktopId: "peer-primary", taskId: "task-1", runId: "run-1",
     })).resolves.toMatchObject({

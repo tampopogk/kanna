@@ -1192,6 +1192,10 @@ impl SessionHandle {
         let idle_seconds = pty.last_active_at.elapsed().as_secs();
         let pid = pty.pid();
         let cwd = pty.cwd.clone();
+        let attempt_id = pty
+            .archive_binding
+            .as_ref()
+            .map(|binding| binding.spawned_run_id.clone());
         drop(pty);
         let status = self.status().await;
         let status_observed = self.state.lock().await.status_observed;
@@ -1207,6 +1211,7 @@ impl SessionHandle {
             kind: crate::protocol::SessionKind::Pty,
             composer_text: self.composer_line().await,
             composer_attestation: self.composer_attestation(),
+            attempt_id,
         }
     }
 

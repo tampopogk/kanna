@@ -752,6 +752,14 @@ pub struct SessionInfo {
     /// daemon with no ledger.
     #[serde(default)]
     pub composer_attestation: ComposerAttestation,
+    /// The launch this session was spawned for, from its immutable
+    /// [`TerminalAttemptBinding`]: the daemon owns terminal lifetime, so a
+    /// registry entry naming an attempt is the only proof that the attempt's
+    /// terminal is still the one a viewer attaches to. Posts rebind the
+    /// completion context without respawning, so this outlives the run that
+    /// opened it. Absent on a legacy daemon and on sessions with no binding.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attempt_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1325,6 +1333,7 @@ mod tests {
             kind: SessionKind::Pty,
             composer_text: None,
             composer_attestation: ComposerAttestation::NotTyped,
+            attempt_id: Some("run-s1-1".to_string()),
         };
         let json = serde_json::to_string(&info).unwrap();
         let decoded: SessionInfo = serde_json::from_str(&json).unwrap();
@@ -1356,6 +1365,7 @@ mod tests {
                 kind: SessionKind::Pty,
                 composer_text: Some("half typed".to_string()),
                 composer_attestation: ComposerAttestation::Typed,
+                attempt_id: None,
             }],
         };
         let json = serde_json::to_string(&evt).unwrap();
@@ -1386,6 +1396,7 @@ mod tests {
 
         match serde_json::from_str::<Event>(json).unwrap() {
             Event::SessionList { sessions } => {
+                assert_eq!(sessions[0].attempt_id, None);
                 assert_eq!(
                     sessions[0].composer_attestation,
                     ComposerAttestation::Unknown

@@ -869,6 +869,9 @@ describe("createDesktopRelayTerminalClient", () => {
       type: "response", id: attempts.id, status: 200, body: [{
         id: "run-1", stage: "review", startedAt: "today", cwd: "/repo",
         archived: true, recordedLaunch: true, observedExitCode: 7,
+      }, {
+        id: "run-2", stage: "review", startedAt: "now", cwd: "/repo",
+        live: true, archived: false, recordedLaunch: true, observedExitCode: null,
       }],
     }) });
     socket.onmessage?.({ data: JSON.stringify({
@@ -880,7 +883,10 @@ describe("createDesktopRelayTerminalClient", () => {
       },
     }) });
 
-    await expect(attemptsPromise).resolves.toHaveLength(1);
+    await expect(attemptsPromise).resolves.toEqual([
+      expect.objectContaining({ id: "run-1", live: false }),
+      expect.objectContaining({ id: "run-2", live: true }),
+    ]);
     await expect(archivePromise).resolves.toMatchObject({ observed_exit_code: 7 });
   });
 

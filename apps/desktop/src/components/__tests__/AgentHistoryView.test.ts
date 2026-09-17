@@ -30,9 +30,9 @@ it("ignores stale attempt and task responses and exposes missing history",async(
 });
 it("shows Latest first and historical attempts newest to oldest without changing identity or ordinals",async()=>{
   const attempts = [
-    { id: "run-build-1", stage: "build", startedAt: "older", cwd: null, archived: true, recordedLaunch: true, observedExitCode: 0 },
-    { id: "run-review-1", stage: "review", startedAt: "middle", cwd: null, archived: true, recordedLaunch: true, observedExitCode: 0 },
-    { id: "run-build-2", stage: "build", startedAt: "newer", cwd: null, archived: true, recordedLaunch: true, observedExitCode: 0 },
+    { id: "run-build-1", stage: "build", startedAt: "older", cwd: null, live: false, archived: true, recordedLaunch: true, observedExitCode: 0 },
+    { id: "run-review-1", stage: "review", startedAt: "middle", cwd: null, live: false, archived: true, recordedLaunch: true, observedExitCode: 0 },
+    { id: "run-build-2", stage: "build", startedAt: "newer", cwd: null, live: false, archived: true, recordedLaunch: true, observedExitCode: 0 },
   ];
   const view=mount(AgentStageSelector,{props:{selected:"",attempts}});
   expect(view.findAll("option").map(o=>o.attributes("value"))).toEqual(["","run-build-2","run-review-1","run-build-1"]);

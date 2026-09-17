@@ -5,8 +5,8 @@ use axum::{
     http::StatusCode,
     Json,
 };
-use kanna_daemon::protocol::{Command, Event, TerminalAttemptArchive};
-use std::sync::Arc;
+use kanna_daemon::protocol::{Command, Event, SessionState, TerminalAttemptArchive};
+use std::{collections::HashSet, sync::Arc};
 type Error = (StatusCode, String);
 fn internal(e: impl ToString) -> Error {
     (StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
@@ -75,11 +75,50 @@ async fn reconcile(
         }
     }
 }
+/// A listed attempt plus whether its terminal is still the live one.
+///
+/// Liveness is not a property of the row: the daemon owns terminal lifetime, so
+/// only its session registry can say whether an attempt's PTY is still the one
+/// a viewer attaches to.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct ListedAttempt {
+    #[serde(flatten)]
+    attempt: crate::db::AgentTerminalAttempt,
+    live: bool,
+}
+
+/// The attempts whose terminals the daemon still runs.
+///
+/// Neither record in the database can answer this. A run's status cannot: a
+/// main agent completes at a manual gate while its PTY keeps running, and a
+/// post then continues in that same terminal under a different run. Archive
+/// absence cannot either: a finished attempt whose final frame never arrived is
+/// history with nothing to show, not a live session. A daemon that is gone,
+/// unreachable, or older than the launch binding reports nothing here, which
+/// lists every attempt as history rather than inventing a live one.
+async fn live_attempt_ids(state: &AppState) -> HashSet<String> {
+    let Ok(mut daemon) = DaemonClient::connect(&state.config.daemon_dir).await else {
+        return HashSet::new();
+    };
+    match daemon.send_command(&Command::List).await {
+        Ok(Event::SessionList { sessions }) => sessions
+            .into_iter()
+            .filter(|session| !matches!(session.state, SessionState::Exited(_)))
+            .filter_map(|session| session.attempt_id)
+            .collect(),
+        other => {
+            log::warn!("[attempt-archive] session registry unavailable: {other:?}");
+            HashSet::new()
+        }
+    }
+}
+
 pub(super) async fn list(
     _access: PrivilegedTaskAccess,
     State(state): State<Arc<AppState>>,
     Path(task): Path<String>,
-) -> Result<Json<Vec<crate::db::AgentTerminalAttempt>>, Error> {
+) -> Result<Json<Vec<ListedAttempt>>, Error> {
     let (task, attempts) = {
         let db = Db::open(&state.config.db_path).map_err(internal)?;
         let task = resolve(&db, &task)?;
@@ -89,11 +128,19 @@ pub(super) async fn list(
     for attempt in attempts.iter().filter(|a| a.recorded_launch && !a.archived) {
         reconcile(&state, &task, &attempt.id).await?;
     }
+    let attempts = Db::open(&state.config.db_path)
+        .map_err(internal)?
+        .agent_terminal_attempts(&task)
+        .map_err(internal)?;
+    let live = live_attempt_ids(&state).await;
     Ok(Json(
-        Db::open(&state.config.db_path)
-            .map_err(internal)?
-            .agent_terminal_attempts(&task)
-            .map_err(internal)?,
+        attempts
+            .into_iter()
+            .map(|attempt| ListedAttempt {
+                live: live.contains(&attempt.id),
+                attempt,
+            })
+            .collect(),
     ))
 }
 pub(super) async fn read(
@@ -210,6 +257,202 @@ mod real_daemon_tests {
             let _ = self.0.kill();
             let _ = self.0.wait();
         }
+    }
+    fn daemon_binary() -> PathBuf {
+        let binary = std::env::var_os("KANNA_DAEMON_TEST_BIN")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| {
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .parent()
+                    .unwrap()
+                    .parent()
+                    .unwrap()
+                    .join(".build/debug/kanna-daemon")
+            });
+        assert!(
+            binary.is_file(),
+            "build the focused daemon fixture first: {binary:?}"
+        );
+        binary
+    }
+    async fn start_owned_daemon(daemon_dir: &str) -> (OwnedDaemon, DaemonClient) {
+        std::fs::create_dir_all(daemon_dir).unwrap();
+        let mut owned = OwnedDaemon(
+            ProcessCommand::new(daemon_binary())
+                .env("KANNA_DAEMON_DIR", daemon_dir)
+                .env(
+                    "KANNA_TERMINAL_RECOVERY_BIN",
+                    "/nonexistent-archive-fixture-sidecar",
+                )
+                .spawn()
+                .unwrap(),
+        );
+        let daemon = tokio::time::timeout(Duration::from_secs(15), async {
+            loop {
+                assert!(owned.0.try_wait().unwrap().is_none());
+                if let Ok(daemon) = DaemonClient::connect(daemon_dir).await {
+                    break daemon;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .unwrap();
+        (owned, daemon)
+    }
+    /// Every listed attempt as (id, live, archived), in the route's own order.
+    async fn listed_attempts(app: &axum::Router) -> Vec<(String, bool, bool)> {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/tasks/task-a/terminal-attempts")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        serde_json::from_slice::<Vec<serde_json::Value>>(
+            &axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap(),
+        )
+        .unwrap()
+        .into_iter()
+        .map(|attempt| {
+            (
+                attempt["id"].as_str().unwrap().to_string(),
+                attempt["live"].as_bool().unwrap(),
+                attempt["archived"].as_bool().unwrap(),
+            )
+        })
+        .collect()
+    }
+    /// A stage run's terminal outlives the run that opened it: a main agent
+    /// completing at a manual gate, and the post that continues in the same
+    /// PTY, must not turn the session a viewer is watching into history.
+    #[tokio::test]
+    async fn attempt_stays_live_through_main_completion_and_post_continuation() {
+        let cwd = std::env::current_dir()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        let state = crate::http_api::test_support::test_state_with_seed(
+            "archive-live",
+            "archive-live",
+            |db| crate::db::terminal_archives::tests::seed_at(db, &cwd),
+        );
+        let (_owned, mut daemon) = start_owned_daemon(&state.config.daemon_dir).await;
+        let stop = std::path::Path::new(&state.config.daemon_dir).join("stop-live-attempt");
+        {
+            let db = Db::open(&state.config.db_path).unwrap();
+            db.insert_stage_run(crate::db::NewStageRun {
+                id: "run-task-a-3",
+                task_id: "task-a",
+                stage: "review",
+                kind: "main",
+                agent: Some("review"),
+                agent_provider: None,
+                model: None,
+                effort: None,
+                status: "running",
+                result: None,
+                feedback: None,
+                session_id: Some("task-a"),
+                provider_session_id: None,
+                cwd: Some(&cwd),
+                resumed_from_run_id: None,
+            })
+            .unwrap();
+            db.bind_agent_terminal_attempt("run-task-a-3").unwrap();
+        }
+        let spawn = serde_json::from_value::<Command>(serde_json::json!({
+            "type":"Spawn","session_id":"task-a","executable":"/bin/sh",
+            "args":["-c",format!("printf 'LIVE\r\n'; while [ ! -f {} ]; do sleep 0.1; done; exit 5", stop.display())],
+            "cwd":cwd,
+            "env":{"KANNA_TASK_ID":"task-a","KANNA_STAGE_RUN_ID":"run-task-a-3"},
+            "cols":120,"rows":24
+        }))
+        .unwrap();
+        assert!(matches!(
+            daemon.send_command(&spawn).await.unwrap(),
+            Event::SessionCreated { .. }
+        ));
+        let app = crate::http_api::router(state.clone());
+        let history = [
+            ("run-task-a-1".to_string(), false, false),
+            ("run-task-a-2".to_string(), false, false),
+            ("legacy-task-a".to_string(), false, false),
+        ];
+        let live_now = |flag: bool, archived: bool| {
+            history
+                .iter()
+                .cloned()
+                .chain([("run-task-a-3".to_string(), flag, archived)])
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(listed_attempts(&app).await, live_now(true, false));
+
+        // The agent records its verdict at a manual gate and a post continues in
+        // the same terminal. The run is finished; the terminal is not.
+        {
+            let db = Db::open(&state.config.db_path).unwrap();
+            db.finish_stage_run("run-task-a-3", "succeeded", Some("success"), None)
+                .unwrap();
+            db.insert_stage_run(crate::db::NewStageRun {
+                id: "post-task-a-3",
+                task_id: "task-a",
+                stage: "review",
+                kind: "post",
+                agent: Some("commit"),
+                agent_provider: None,
+                model: None,
+                effort: None,
+                status: "running",
+                result: None,
+                feedback: None,
+                session_id: Some("task-a"),
+                provider_session_id: None,
+                cwd: Some(&cwd),
+                resumed_from_run_id: None,
+            })
+            .unwrap();
+        }
+        assert_eq!(listed_attempts(&app).await, live_now(true, false));
+
+        // The terminal exits and its final frame is lost before the server can
+        // ingest it: history with nothing to show, never a live session and
+        // never a row that disappears.
+        std::fs::write(&stop, b"").unwrap();
+        tokio::time::timeout(Duration::from_secs(20), async {
+            loop {
+                if matches!(
+                    daemon
+                        .send_command(&Command::ReadAttemptArchive {
+                            attempt_id: "run-task-a-3".into()
+                        })
+                        .await
+                        .unwrap(),
+                    Event::AttemptArchive { archive: Some(_) }
+                ) {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(matches!(
+            daemon
+                .send_command(&Command::ReleaseAttemptArchive {
+                    attempt_id: "run-task-a-3".into()
+                })
+                .await
+                .unwrap(),
+            Event::Ok
+        ));
+        assert_eq!(listed_attempts(&app).await, live_now(false, false));
     }
     #[tokio::test]
     async fn terminal_archive_real_daemon_to_http_reconciles_after_same_id_reuse() {

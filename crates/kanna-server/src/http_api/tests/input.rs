@@ -73,6 +73,7 @@ async fn assert_signal_agent_reuses_open_task_with_run_status(run_status: &str, 
                         kind: Default::default(),
                         composer_text: None,
                         composer_attestation: Default::default(),
+                        attempt_id: None,
                     }],
                 },
                 DaemonCommand::SubmitInputIfSession {
@@ -993,6 +994,7 @@ async fn merge_handoff_route_sends_an_ordinary_repo_policy_request() {
                         kind: Default::default(),
                         composer_text: None,
                         composer_attestation: Default::default(),
+                        attempt_id: None,
                     }],
                 },
                 DaemonCommand::SubmitInputIfSession {
@@ -1142,6 +1144,7 @@ async fn merge_handoff_does_not_signal_when_the_local_singleton_rejects_the_writ
                             kind: Default::default(),
                             composer_text: None,
                             composer_attestation: Default::default(),
+                            attempt_id: None,
                         }],
                     })
                     .unwrap()
@@ -2194,6 +2197,7 @@ async fn send_task_input_rejects_a_finished_task_without_a_live_daemon_session()
                         kind: Default::default(),
                         composer_text: None,
                         composer_attestation: Default::default(),
+                        attempt_id: None,
                     }],
                 },
                 DaemonCommand::InputIfSession { .. } => DaemonEvent::Ok,
@@ -2321,6 +2325,7 @@ async fn send_task_input_delivers_to_a_live_session_after_a_finished_run() {
                         kind: Default::default(),
                         composer_text: None,
                         composer_attestation: Default::default(),
+                        attempt_id: None,
                     }],
                 },
                 DaemonCommand::SubmitInputIfSession { .. } => DaemonEvent::Ok,
@@ -2593,6 +2598,7 @@ fn spawn_live_session_daemon(
                         // refusal path has its own tests on main.
                         composer_text: None,
                         composer_attestation: Default::default(),
+                        attempt_id: None,
                     }],
                 },
                 DaemonCommand::SubmitInputIfSession { .. } => DaemonEvent::Ok,
@@ -2812,6 +2818,7 @@ async fn send_task_input_reports_daemon_write_failure_as_delivery_uncertain() {
                         kind: Default::default(),
                         composer_text: None,
                         composer_attestation: Default::default(),
+                        attempt_id: None,
                     }],
                 },
                 DaemonCommand::SubmitInputIfSession { .. } => DaemonEvent::Error {
@@ -3360,6 +3367,7 @@ mod merge_handoff_on_close {
                                     kind: Default::default(),
                                     composer_text: None,
                                     composer_attestation: Default::default(),
+                                    attempt_id: None,
                                 }],
                             },
                             DaemonCommand::SubmitInputIfSession {

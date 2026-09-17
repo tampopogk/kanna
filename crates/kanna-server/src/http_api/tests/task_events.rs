@@ -2298,6 +2298,7 @@ async fn stage_start_emits_one_settled_working_edge_and_suppresses_a_resume_flic
                 kind: Default::default(),
                 composer_text: None,
                 composer_attestation: Default::default(),
+                attempt_id: None,
             })
             .collect();
         control_write

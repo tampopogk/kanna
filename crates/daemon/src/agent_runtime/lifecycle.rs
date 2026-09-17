@@ -153,6 +153,9 @@ pub async fn agent_session_infos(agents: &AgentSessions) -> Vec<protocol::Sessio
                 // structured NDJSON, never a line somebody types.
                 composer_text: None,
                 composer_attestation: protocol::ComposerAttestation::NotTyped,
+                // Headless sessions bind no terminal attempt: they never own a
+                // PTY a viewer could attach to.
+                attempt_id: None,
             }
         })
         .collect()

@@ -1027,6 +1027,7 @@ mod tests {
                             kind: SessionKind::default(),
                             composer_text: None,
                             composer_attestation: Default::default(),
+                            attempt_id: None,
                         })
                         .into_iter()
                         .collect(),
