@@ -1344,3 +1344,22 @@ async fn concurrent_settings_access_shares_one_connection_without_losing_writes(
         .expect("shared settings connection still readable after concurrent use");
     assert_eq!(value.as_deref(), Some("value"));
 }
+
+/// The renderer's peer view stops for good on a refusal instead of
+/// reconnecting behind "Connecting to remote terminal..." forever, and it
+/// recognizes one by parsing this frame. It once matched a `{"type":"error"`
+/// byte prefix instead, which these bytes never start with, so the whole
+/// stop-and-surface path was dead on the real wire. Pin them here: if this
+/// assertion ever has to change, `noteConnectionRefusal` in
+/// `packages/stream-client/src/index.ts` is the code that reads it.
+#[test]
+fn error_frame_keys_are_sorted_on_the_wire() {
+    assert_eq!(
+        super::peers::error_frame(
+            "peer_pairing_required",
+            "this desktop is not paired with that machine"
+        ),
+        r#"{"code":"peer_pairing_required","message":"this desktop is not paired with that machine","type":"error"}"#,
+        "the client must not depend on the discriminant's position in this frame"
+    );
+}

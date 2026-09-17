@@ -188,6 +188,9 @@ async function registerOwnedFixtureDir(tempDir: string): Promise<void> {
   ownedFixtureDirs.add(await realpath(resolvedTempDir).catch(() => resolvedTempDir));
 }
 
+/** The branch every seed fixture is published on. */
+const SEED_FIXTURE_BRANCH = "main";
+
 async function materializeSeedFixtureRepo(input: {
   destinationName: string;
   fixtureName: string;
@@ -206,16 +209,24 @@ async function materializeSeedFixtureRepo(input: {
 
   await cp(sourceFixturePath, fixtureRepoPath, { recursive: true });
 
-  await runCommand(["git", "init"], { cwd: fixtureRepoPath });
+  // `--initial-branch` on both inits, because the default is the machine's:
+  // git still branches to `master` unless `init.defaultBranch` is set, and a
+  // bare origin whose HEAD names a branch that was never pushed advertises no
+  // default-branch symref — which is exactly what Kanna asks an origin for
+  // when it inspects a repo, so the import refuses a fixture that is fine.
+  await runCommand(["git", "init", `--initial-branch=${SEED_FIXTURE_BRANCH}`], { cwd: fixtureRepoPath });
   await runCommand(["git", "config", "user.name", "Kanna E2E"], { cwd: fixtureRepoPath });
   await runCommand(["git", "config", "user.email", "kanna-e2e@example.com"], { cwd: fixtureRepoPath });
   await runCommand(["git", "add", "."], { cwd: fixtureRepoPath });
   await runCommand(["git", "commit", "-m", "seed fixture"], { cwd: fixtureRepoPath });
-  await runCommand(["git", "branch", "-M", "main"], { cwd: fixtureRepoPath });
+  await runCommand(["git", "branch", "-M", SEED_FIXTURE_BRANCH], { cwd: fixtureRepoPath });
 
-  await runCommand(["git", "init", "--bare", originPath], { cwd: tempDir });
+  await runCommand(
+    ["git", "init", "--bare", `--initial-branch=${SEED_FIXTURE_BRANCH}`, originPath],
+    { cwd: tempDir },
+  );
   await runCommand(["git", "remote", "add", "origin", originPath], { cwd: fixtureRepoPath });
-  await runCommand(["git", "push", "-u", "origin", "main"], { cwd: fixtureRepoPath });
+  await runCommand(["git", "push", "-u", "origin", SEED_FIXTURE_BRANCH], { cwd: fixtureRepoPath });
 
   return fixtureRepoPath;
 }

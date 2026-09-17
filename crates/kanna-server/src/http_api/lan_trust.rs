@@ -29,8 +29,11 @@ const FETCH_METADATA_HEADERS: [&str; 4] = [
     "sec-fetch-dest",
     "sec-fetch-user",
 ];
-/// KSP upgrade paths. A browser cannot attach a header to a WebSocket
-/// handshake, so these authenticate in-band instead — see `http_api::ksp`.
+/// KSP upgrade paths with a fixed spelling. A browser cannot attach a header
+/// to a WebSocket handshake, so these authenticate in-band instead — see
+/// `http_api::ksp`. The renderer's sibling-view proxy is the same kind of
+/// upgrade but names the sibling in its path, so it is matched by
+/// `is_peer_view_proxy_path` rather than listed here.
 const STREAM_UPGRADE_PATHS: [&str; 3] = ["/v1/stream", "/v2/stream", "/v1/peers/channel"];
 const STREAM_COOKIE_NAME: &str = "kanna_lan_stream";
 const STREAM_COOKIE_TTL_SECONDS: u64 = 5 * 60;
@@ -382,7 +385,8 @@ fn rejected(status: StatusCode, message: &str, request: &Request<Body>) -> Respo
 ///   credential. A cross-origin page cannot read it, so it cannot forge one.
 ///   The KSP upgrade paths are the exception, because a browser cannot attach
 ///   a header to a WebSocket handshake — they prove the same credential in
-///   band instead (`http_api::ksp`).
+///   band instead (`http_api::ksp`, and `http_api::peers` for the renderer's
+///   sibling-view proxy).
 /// - **Local process** requests (no `Origin`, no `Sec-Fetch-*`) keep today's
 ///   loopback authority. A process running as the user already holds it: it
 ///   can read the credential file, the database, and every worktree. Making
@@ -465,9 +469,25 @@ fn is_cors_preflight(request: &Request<Body>) -> bool {
 }
 
 fn is_stream_upgrade(request: &Request<Body>) -> bool {
-    STREAM_UPGRADE_PATHS.contains(&request.uri().path())
+    let path = request.uri().path();
+    (STREAM_UPGRADE_PATHS.contains(&path) || is_peer_view_proxy_path(path))
         && header_contains_token(request.headers(), &CONNECTION, "upgrade")
         && header_contains_token(request.headers(), &UPGRADE, "websocket")
+}
+
+/// `GET /v1/peers/{desktop_id}/ksp`, the loopback proxy the renderer opens to
+/// view a sibling desktop. It carries the sibling's id, so it cannot be a
+/// literal in `STREAM_UPGRADE_PATHS`, and leaving it out was what made every
+/// sibling view fail: the handshake was refused here before
+/// `peers::peer_ksp_proxy_stream` — which proves the same local control
+/// credential in the first `auth` frame that `/v1/stream` does — ever ran.
+///
+/// Matched on the raw, still-encoded path so the segments agree with the
+/// router's: a `%2F` is one segment to both.
+fn is_peer_view_proxy_path(path: &str) -> bool {
+    path.strip_prefix("/v1/peers/")
+        .and_then(|rest| rest.strip_suffix("/ksp"))
+        .is_some_and(|desktop_id| !desktop_id.is_empty() && !desktop_id.contains('/'))
 }
 
 fn header_contains_token(
