@@ -358,6 +358,19 @@ Three further rules keep the Linux keymap honest, all enforced by
   settles the question either way — a chord the desktop does not deliver cannot
   be bound, whoever is taking it.
 
+**Terminal paste is read natively on Linux.** WebKitGTK denies
+`navigator.clipboard.readText()` by policy however the chord arrived —
+`writeText` is allowed under a user gesture, `readText` is not — so
+Ctrl+Shift+V was claimed, advertised, and pasted nothing while logging a
+`NotAllowedError` where nobody reads. The handler asks the Rust side instead
+(`read_clipboard_text`, the `arboard` backend the clipboard image read already
+uses, bridged to the Wayland selection by Xwayland) and hands the text to
+`term.paste`, so a multi-line paste keeps its bracketed-paste markers when the
+program asked for them. macOS is untouched: ⌘V is the webview's own paste event
+there and never reaches the command. The Linux real-key lane presses the chord
+over a real PTY against a selection `wl-copy` published, because both of that
+lane's signals were green for the entire time the chord was dead.
+
 **Selection chords belong to the text field, not to the app.** The global
 listener captures keydown before anything else and calls `preventDefault()`, so
 any chord it claims is gone from every input, textarea and contenteditable in

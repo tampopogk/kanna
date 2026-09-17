@@ -620,3 +620,43 @@ pub fn read_clipboard_image_png() -> Result<Option<ClipboardImagePayload>, Strin
 pub fn read_clipboard_image_png() -> Result<Option<ClipboardImagePayload>, String> {
     Ok(None)
 }
+
+/// Read UTF-8 text off the system clipboard.
+///
+/// This exists for Linux. WebKitGTK denies `navigator.clipboard.readText()` by
+/// policy — `writeText` is allowed under a user gesture, `readText` never is
+/// through this path — so the terminal's `Ctrl+Shift+V` handler was calling a
+/// promise that could only ever reject with `NotAllowedError`. Copy worked,
+/// paste could not, and the chord was advertised in the shortcuts modal
+/// regardless. Reading here instead is the only way that chord can work.
+///
+/// macOS shares the implementation rather than being excluded: ⌘V there still
+/// falls through to the webview's own paste event and never reaches this
+/// command, but a platform-split command would be a second thing to keep true.
+/// The backend choice is the one `read_clipboard_image_png` already made and
+/// for the same reasons — `arboard`'s X11 backend, bridged to the Wayland
+/// selection by Xwayland, with nothing shelled out to at runtime.
+///
+/// An empty clipboard is `Ok(None)`, not an error: there is nothing to paste
+/// and nothing went wrong.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[tauri::command]
+pub fn read_clipboard_text() -> Result<Option<String>, String> {
+    let mut clipboard =
+        arboard::Clipboard::new().map_err(|error| format!("failed to open clipboard: {error}"))?;
+    match clipboard.get_text() {
+        Ok(text) if text.is_empty() => Ok(None),
+        Ok(text) => Ok(Some(text)),
+        // Both spellings mean the same thing to a paste: the selection holds
+        // something that is not text (an image, a file list), or nothing.
+        Err(arboard::Error::ContentNotAvailable) => Ok(None),
+        Err(arboard::Error::ConversionFailure) => Ok(None),
+        Err(error) => Err(format!("failed to read clipboard text: {error}")),
+    }
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+#[tauri::command]
+pub fn read_clipboard_text() -> Result<Option<String>, String> {
+    Ok(None)
+}

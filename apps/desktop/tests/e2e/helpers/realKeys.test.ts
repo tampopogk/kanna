@@ -41,6 +41,16 @@ describe("chordToKeyArgs", () => {
     ]);
   });
 
+  /**
+   * The terminal's clipboard chords. `v` and `c` are ordinary letters here,
+   * but a wrong keycode on either would have the lane report that paste works
+   * while it pressed something else entirely.
+   */
+  it("presses the terminal clipboard chords", () => {
+    expect(chordToKeyArgs("Ctrl+Shift+v")).toEqual(["29:1", "42:1", "47:1", "47:0", "42:0", "29:0"]);
+    expect(chordToKeyArgs("Ctrl+Shift+c")).toEqual(["29:1", "42:1", "46:1", "46:0", "42:0", "29:0"]);
+  });
+
   it("takes a letter in either case", () => {
     expect(chordToKeyArgs("Ctrl+Shift+U")).toEqual(chordToKeyArgs("Ctrl+Shift+u"));
   });

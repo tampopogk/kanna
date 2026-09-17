@@ -42,6 +42,11 @@ with two different fixes:
   claimed;
 - history on `Alt+←` / `Alt+→`, with nothing left on the zoom chords;
 - `Ctrl+Shift+C` staying out of the PTY while plain `Ctrl+C` reaches it;
+- `Ctrl+Shift+V` pasting a selection another Wayland client put on the
+  desktop clipboard into a real PTY — the one chord whose two signals were
+  both green while it was dead, because it arrived, was claimed, and then
+  read the clipboard through an API WebKitGTK refuses. Only the payload
+  shows that, so this case asserts the text and that nothing was logged;
 - `Ctrl+Shift+Left` extending the selection inside a focused text field, and the
   same chord still being claimed outside one.
 
@@ -82,7 +87,24 @@ export YDOTOOL_SOCKET=/run/user/$(id -u)/.ydotool_socket
 `helpers/realKeys.ts` probes this at startup (a bare Shift press, which cannot
 disturb anything) and reports what is missing in a sentence.
 
-**3. A debug build.** The lane drives the app through `tauri-plugin-webdriver`
+**3. `wl-clipboard`, and the session's X11 credentials in the environment.**
+
+```sh
+sudo apt install wl-clipboard
+export DISPLAY=:0                 # from the graphical session, not the ssh one
+export XAUTHORITY=$(ls /run/user/$(id -u)/.mutter-Xwaylandauth.*)
+```
+
+The paste case publishes its selection with `wl-copy`, as an ordinary Wayland
+client — seeding it through the app would test a loop the app owns both ends
+of. The app reads it back natively through `arboard`'s X11 backend, which mutter
+bridges to the Wayland selection via Xwayland, so the app's environment needs
+`DISPLAY` and `XAUTHORITY`. A graphical login has both; an `ssh` shell has
+neither, and without them the read fails rather than returning the wrong text.
+`helpers/realClipboard.ts` reports a missing `wl-copy` in a sentence, and the
+case names the environment as the cause when the native read fails.
+
+**4. A debug build.** The lane drives the app through `tauri-plugin-webdriver`
 and reads Vue state through `window.__KANNA_E2E__`; both are compiled out of
 release builds (`#[cfg(debug_assertions)]` and `import.meta.env.DEV`). An
 installed `.deb` therefore exposes no observation channel at all and cannot host
@@ -100,6 +122,8 @@ UTM console, which is a second seat and steals the focus the injected keys need:
 ssh kanna-linux-vm
 # in the checkout, with the toolchain on PATH:
 export YDOTOOL_SOCKET=/run/user/$(id -u)/.ydotool_socket
+export DISPLAY=:0
+export XAUTHORITY=$(ls /run/user/$(id -u)/.mutter-Xwaylandauth.*)
 pnpm -C apps/desktop test:e2e:linux
 ```
 
@@ -107,6 +131,10 @@ The VM must be showing its desktop (its display window open, a user logged in
 graphically) for the run to mean anything. A passing run prints the desktop,
 session type and input method it measured, because a keymap verdict is a verdict
 about one particular set of compositor and input-method grabs.
+
+`ydotoold` does not survive every reboot or `/dev/uinput` reload: restart it
+with the command in **2** before a run rather than reading a socket error as a
+keymap verdict.
 
 ## Adding a chord
 
