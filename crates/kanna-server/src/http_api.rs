@@ -52,6 +52,7 @@ mod task_input;
 mod task_logs;
 mod task_ports;
 mod task_raw_input;
+mod task_serviced;
 mod tasks;
 mod terminal_archives;
 mod terminal_editor;

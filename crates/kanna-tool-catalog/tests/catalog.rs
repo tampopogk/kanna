@@ -64,6 +64,7 @@ fn bundled_catalog_parses_and_declares_all_tools() {
             "kanna_rename_task",
             "kanna_set_task_attention",
             "kanna_clear_task_attention",
+            "kanna_record_task_serviced",
             "kanna_advance_stage",
             "kanna_push_task",
             "kanna_pull_task",

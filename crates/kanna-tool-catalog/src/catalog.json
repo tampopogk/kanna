@@ -272,7 +272,8 @@
         { "name": "order", "description": "Sort direction. Defaults to desc.", "type": "string", "required": false, "location": "query", "enum": ["asc", "desc"], "default": "desc" },
         { "name": "limit", "description": "Maximum rows in the final response, clamped to 200. Defaults to 50. Check truncated before treating the result as complete.", "type": "integer", "required": false, "location": "query", "min": 1, "max": 200, "default": 50 },
         { "name": "all_machines", "description": "Aggregate the same filtered query across the connected machine and every currently reachable account peer. Cannot be combined with repo_id. Check scope.machineIds and machineErrors; an older or unreachable peer makes the account snapshot incomplete.", "type": "boolean", "required": false, "location": "query", "key": "allMachines" },
-        { "name": "include_closed", "description": "Include closed tasks as well as open tasks. Defaults to false.", "type": "boolean", "required": false, "location": "query", "key": "includeClosed" }
+        { "name": "include_closed", "description": "Include closed tasks as well as open tasks. Defaults to false.", "type": "boolean", "required": false, "location": "query", "key": "includeClosed" },
+        { "name": "unserviced_only", "description": "Return only the manager work set: tasks never recorded as serviced, or whose event log moved past the recorded serviced mark. A task carrying an attention badge is withheld until there is positive evidence a human acted on it - the badge was cleared, an operator input was delivered, or its runtime went back to busy. Someone merely reading a task never re-admits it, because task.activity_changed is ignored here. Combine with runtime_state=idle for the idle unserviced work set, and record servicing with kanna_record_task_serviced; a manager that dies before recording simply sees the task again.", "type": "boolean", "required": false, "location": "query", "key": "unservicedOnly" }
       ]
     },
     {
@@ -911,6 +912,19 @@
           "required": true,
           "location": "path"
         }
+      ]
+    },
+    {
+      "name": "kanna_record_task_serviced",
+      "description": "Record that this manager has dealt with a task, so kanna_get_tasks unserviced_only stops returning it until the task changes again. Call it after servicing the task, never before: the mark exists only once the write commits, so a manager that dies mid-batch simply sees the task again. Pass observed_event_seq with the task-events cursor you read the task through, so a change that landed while you were working is not suppressed; omitting it marks the event log's current head. The mark never moves backwards, appends no task event, and changes no title, ordering, read/runtime state or lifecycle. It is not a blocked-state record: the attention badge and task blockers stay authoritative for what a human owes a task.",
+      "method": "POST",
+      "path": "/v1/tasks/{task_id}/actions/record-serviced",
+      "response": "json",
+      "params": [
+        { "name": "machine_id", "description": "Machine id from kanna_list_machines. Omit it, or pass the current machine id, to use the local machine connected to this client.", "type": "string", "required": false, "location": "routing" },
+        { "name": "task_id", "description": "Task id (stable across stages) or one of the task's branch names (task-{id} or task-{id}-{n}).", "type": "string", "required": true, "location": "path" },
+        { "name": "run_id", "description": "The servicing run, normally your own KANNA_STAGE_RUN_ID. Recorded as provenance; it never decides what the filter returns.", "type": "string", "required": false, "location": "body", "key": "runId" },
+        { "name": "observed_event_seq", "description": "The task-events cursor you read this task through. Refused when it is ahead of the event log head. Omitted means the current head, which can suppress a change that landed while you were working.", "type": "integer", "required": false, "location": "body", "key": "observedEventSeq", "min": 0 }
       ]
     },
     {

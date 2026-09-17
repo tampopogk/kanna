@@ -263,18 +263,26 @@ impl Db {
             repo_id,
             None,
             false,
+            false,
             TaskListSort::UpdatedAt,
             TaskListOrder::Desc,
             limit,
         )
     }
 
+    /// `unserviced_only` narrows the result to the manager work set: tasks the
+    /// serviced watermark says have not been dealt with since they last
+    /// changed, with human-blocked ones withheld. See
+    /// [`crate::db::serviced`] for what counts as a change and what releases a
+    /// badged task.
+    #[allow(clippy::too_many_arguments)]
     pub fn list_pipeline_items_query(
         &self,
         include_closed: bool,
         repo_id: Option<&str>,
         runtime_state: Option<&str>,
         needs_attention: bool,
+        unserviced_only: bool,
         sort: TaskListSort,
         order: TaskListOrder,
         limit: u32,
@@ -298,8 +306,10 @@ impl Db {
                AND (?2 IS NULL OR repo_id = ?2)
                AND (?3 IS NULL OR runtime_status = ?3)
                AND (NOT ?4 OR NULLIF(trim(attention_reason), '') IS NOT NULL OR runtime_status = 'waiting')
+               AND (NOT ?5 OR {unserviced_predicate})
              ORDER BY {order_clause}
-             LIMIT ?5"
+             LIMIT ?6",
+            unserviced_predicate = crate::db::serviced::UNSERVICED_WORK_PREDICATE
         );
         let mut stmt = self.conn.prepare(&sql)?;
         let rows = stmt.query_map(
@@ -308,6 +318,7 @@ impl Db {
                 repo_id,
                 runtime_state,
                 needs_attention,
+                unserviced_only,
                 limit
             ],
             |row| {
@@ -360,6 +371,7 @@ impl Db {
             repo_id,
             None,
             true,
+            false,
             TaskListSort::UpdatedAt,
             TaskListOrder::Desc,
             u32::MAX,

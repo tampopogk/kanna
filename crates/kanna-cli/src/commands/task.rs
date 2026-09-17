@@ -443,12 +443,14 @@ pub(crate) async fn run(command: TaskCommands) {
             limit,
             all_machines,
             include_closed,
+            unserviced_only,
             server_url,
         } => {
             let mut args = json!({
                 "all_repos": all_repos,
                 "all_machines": all_machines,
                 "include_closed": include_closed,
+                "unserviced_only": unserviced_only,
             });
             insert_optional(&mut args, "repo_id", repo_id);
             insert_optional(&mut args, "runtime_state", runtime_state);
@@ -895,6 +897,39 @@ pub(crate) async fn run(command: TaskCommands) {
                 server_url.as_deref(),
             )
             .await;
+        }
+        TaskCommands::RecordServiced {
+            task_id,
+            run_id,
+            observed_event_seq,
+            machine_id,
+            server_url,
+        } => {
+            let mut args = json!({ "task_id": task_id });
+            let run_id = run_id.or_else(|| {
+                std::env::var(kanna_tool_catalog::KANNA_STAGE_RUN_ID_ENV)
+                    .ok()
+                    .filter(|run_id| !run_id.trim().is_empty())
+            });
+            insert_optional(&mut args, "run_id", run_id);
+            if let (Some(object), Some(seq)) = (args.as_object_mut(), observed_event_seq) {
+                object.insert("observed_event_seq".to_string(), Value::Number(seq.into()));
+            }
+            if let Some(machine_id) = machine_id {
+                args["machine_id"] = json!(machine_id);
+            }
+            let result = crate::commands::tool::call_catalog_tool(
+                &resolve_server_base_url_from_env(server_url.as_deref()),
+                &kanna_tool_catalog::bundled_catalog(),
+                "kanna_record_task_serviced",
+                &args,
+            )
+            .await
+            .and_then(|(_, response)| print_json(&response));
+            if let Err(error) = result {
+                eprintln!("Error: {error}");
+                process::exit(1);
+            }
         }
         TaskCommands::ClearAttention {
             task_id,
