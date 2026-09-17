@@ -659,16 +659,14 @@ export function useAppCloudWorkspace({ db, store, toast, windowWorkspace }: UseA
    * by the server. Read whenever the picker refreshes its peers, so a
    * machine paired from Preferences → Machines appears without a restart
    * and a switched-off legacy path stops offering Firestore-keyed routes.
+   * A failed refresh rejects; the caller's unhandled rejection reaches the
+   * frontend log through main.ts's forwarding.
    */
   async function refreshSealedTransferRoutes(): Promise<void> {
-    try {
-      const [targets, peers] = await Promise.all([fetchTransferTargets(), fetchDesktopPeers()]);
-      transferMachineSync.setPairedPeers(pairedTransferPeersFromTargets(targets));
-      await transferMachineSync.setLegacyAccess(peers.legacyAccessAllowed);
-      transferMachineRevision.value += 1;
-    } catch (error) {
-      console.warn("[peer] failed to refresh sealed transfer routes:", error);
-    }
+    const [targets, peers] = await Promise.all([fetchTransferTargets(), fetchDesktopPeers()]);
+    transferMachineSync.setPairedPeers(pairedTransferPeersFromTargets(targets));
+    await transferMachineSync.setLegacyAccess(peers.legacyAccessAllowed);
+    transferMachineRevision.value += 1;
   }
 
   function initializeDesktopLanTaskSync(): void {

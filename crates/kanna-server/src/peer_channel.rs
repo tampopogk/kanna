@@ -270,6 +270,7 @@ pub(crate) async fn dial_peer(
 ) -> Result<SealedPeerSocket, PeerDialError> {
     let peer = state
         .paired_peer(desktop_id)
+        .map_err(PeerDialError::IdentityUnavailable)?
         .ok_or(PeerDialError::PairingRequired)?;
     let pinned = kanna_secure_channel::decode_key(&peer.channel_public_key)
         .map_err(|error| PeerDialError::IdentityMismatch(error.to_string()))?;

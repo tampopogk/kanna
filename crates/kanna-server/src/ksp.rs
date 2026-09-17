@@ -2547,9 +2547,10 @@ async fn handle_stream_channels(
                                 crate::pairing::PairingStore::load(Path::new(&config.pairing_store_path))
                                     .is_ok_and(|store| store.is_trusted(&config.desktop_id, device_id))
                             }
-                            Some(SealedRevocationScope::Peer(desktop_id)) => {
-                                conn.state.paired_peer(desktop_id).is_some()
-                            }
+                            Some(SealedRevocationScope::Peer(desktop_id)) => conn
+                                .state
+                                .paired_peer(desktop_id)
+                                .is_ok_and(|peer| peer.is_some()),
                             None => true,
                         };
                         if !still_trusted {

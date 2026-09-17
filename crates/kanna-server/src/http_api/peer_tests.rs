@@ -916,6 +916,7 @@ async fn a_transfer_identity_is_pinned_once_and_a_rotated_one_is_refused() {
         state
             .paired_peer("desktop-sibling")
             .unwrap()
+            .unwrap()
             .transfer_public_key
             .as_deref(),
         Some("tkey-sib")
@@ -996,18 +997,29 @@ async fn the_legacy_gate_refuses_every_plaintext_sibling_path_when_off() {
     let (status, _) = refusal(refused);
     assert_eq!(status, axum::http::StatusCode::FORBIDDEN);
 
-    // The sidecar is spawned loopback-only with discovery disabled.
-    std::env::set_var(
-        "KANNA_TRANSFER_ROOT",
-        crate::test_paths::unique_test_path_string("gate-root"),
-    );
-    std::env::set_var("KANNA_TRANSFER_PEER_ID", "peer-gate");
-    std::env::set_var("KANNA_TRANSFER_DISPLAY_NAME", "Gate");
-    let env = crate::transfer_sidecar::build_transfer_sidecar_env(state.config()).unwrap();
-    assert!(env.contains(&(
-        "KANNA_TRANSFER_DISCOVERY".to_string(),
-        "disabled".to_string()
-    )));
+    // The sidecar is spawned loopback-only with discovery disabled. The
+    // identity variables are process-global, and the real-sidecar fixtures
+    // set an explicit registry mode under the same guard.
+    {
+        let _guard = crate::test_sidecar_guard().await;
+        let prior_discovery = std::env::var("KANNA_TRANSFER_DISCOVERY").ok();
+        std::env::remove_var("KANNA_TRANSFER_DISCOVERY");
+        std::env::set_var(
+            "KANNA_TRANSFER_ROOT",
+            crate::test_paths::unique_test_path_string("gate-root"),
+        );
+        std::env::set_var("KANNA_TRANSFER_PEER_ID", "peer-gate");
+        std::env::set_var("KANNA_TRANSFER_DISPLAY_NAME", "Gate");
+        let env = crate::transfer_sidecar::build_transfer_sidecar_env(state.config()).unwrap();
+        assert!(env.contains(&(
+            "KANNA_TRANSFER_DISCOVERY".to_string(),
+            "disabled".to_string()
+        )));
+        match prior_discovery {
+            Some(value) => std::env::set_var("KANNA_TRANSFER_DISCOVERY", value),
+            None => std::env::remove_var("KANNA_TRANSFER_DISCOVERY"),
+        }
+    }
 
     // An unpaired sibling cannot be invoked at all.
     let error = super::invoke_desktop::invoke_desktop(
@@ -1031,6 +1043,45 @@ async fn the_legacy_gate_refuses_every_plaintext_sibling_path_when_off() {
 
 /// A TCP tap between two ends that records every byte in both directions,
 /// so a test can assert what an on-path observer could see.
+/// An unreadable peer trust store must not read as "nobody is paired":
+/// with the legacy gate allowed, that would route a pinned sibling over
+/// the plaintext LAN or relay path. The invoke fails with the identity
+/// error instead, and the sealed dial reports the same.
+#[tokio::test]
+async fn an_unreadable_trust_store_fails_closed_rather_than_falling_back_to_plaintext() {
+    use std::os::unix::fs::PermissionsExt;
+    let state = state("trust-store-unreadable");
+    assert!(state.legacy_peer_access_allowed(), "the legacy gate is on");
+    let sibling = Keypair::generate().unwrap();
+    pin_peer(&state, "desktop-sibling", &sibling);
+    let store_path = state.config().peer_trust_store_path().unwrap();
+    std::fs::set_permissions(&store_path, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+    let error = state.paired_peer("desktop-sibling").unwrap_err();
+    assert!(error.contains("unusable"), "{error}");
+
+    let error = super::invoke_desktop::invoke_desktop(
+        Arc::clone(&state),
+        "desktop-sibling".into(),
+        "GET".into(),
+        "/v1/status".into(),
+        serde_json::Value::Null,
+    )
+    .await
+    .unwrap_err();
+    assert!(error.starts_with("peer_identity_unavailable"), "{error}");
+
+    let dial = crate::peer_channel::dial_peer(
+        &state,
+        "desktop-sibling",
+        crate::peer_channel::PeerHello::Session,
+    )
+    .await
+    .err()
+    .expect("the dial is refused");
+    assert_eq!(dial.code(), "peer_identity_unavailable");
+}
+
 async fn start_tap(upstream: SocketAddr) -> (SocketAddr, Arc<std::sync::Mutex<Vec<u8>>>) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -1186,6 +1237,7 @@ async fn a_real_sealed_invoke_and_transfer_tunnel_cross_loopback_without_a_plain
             &desktop_a,
             &desktop_a
                 .paired_peer(&desktop_b.config().desktop_id)
+                .unwrap()
                 .unwrap(),
         )
         .await

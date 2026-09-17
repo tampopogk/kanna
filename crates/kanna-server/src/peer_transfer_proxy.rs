@@ -520,7 +520,10 @@ pub(crate) async fn serve_inbound_transfer_tunnel<S, M, E>(
                         return;
                     }
                     Ok(_) | Err(broadcast::error::RecvError::Lagged(_)) => {
-                        if state.paired_peer(&peer_desktop_id).is_none() {
+                        if !state
+                            .paired_peer(&peer_desktop_id)
+                            .is_ok_and(|peer| peer.is_some())
+                        {
                             if let Some(close) = close_with(&mut sender, "peer revoked") {
                                 let _ = ws_tx.send(outbound(close)).await;
                             }

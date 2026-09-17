@@ -901,11 +901,17 @@ impl AppState {
     }
 
     /// The paired sibling with `desktop_id`, in this desktop's environment.
-    pub(crate) fn paired_peer(&self, desktop_id: &str) -> Option<crate::peer_trust::PeerDesktop> {
-        self.peer_trust_store()
-            .ok()?
+    /// An unusable trust store is an error, never "not paired": a caller
+    /// that read it as absent would route a pinned sibling over a legacy
+    /// plaintext path.
+    pub(crate) fn paired_peer(
+        &self,
+        desktop_id: &str,
+    ) -> Result<Option<crate::peer_trust::PeerDesktop>, String> {
+        Ok(self
+            .peer_trust_store()?
             .peer_by_desktop_id(desktop_id, &self.config.environment)
-            .cloned()
+            .cloned())
     }
 
     /// This desktop's secure-channel identity, loaded once and cached,

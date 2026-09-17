@@ -120,8 +120,12 @@ pub(crate) async fn invoke_desktop(
     // A paired sibling is reached only through its sealed peer session,
     // over LAN or relay, and never falls back to a plaintext route: a pin
     // that cannot be honoured is an error the caller sees, not a downgrade.
-    if state.paired_peer(&desktop_id).is_some() {
-        return invoke_peer(&state, desktop_id, method, path, body).await;
+    // So is a trust store that cannot be read: whether the sibling is
+    // pinned is then unknown, and unknown is not "unpaired".
+    match state.paired_peer(&desktop_id) {
+        Ok(Some(_)) => return invoke_peer(&state, desktop_id, method, path, body).await,
+        Ok(None) => {}
+        Err(error) => return Err(format!("peer_identity_unavailable: {error}")),
     }
     if !state.legacy_peer_access_allowed() {
         return Err(format!(
