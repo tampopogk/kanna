@@ -19,7 +19,14 @@ export default defineConfig({
     // `tests/e2e/run.ts` with `tests/e2e/vitest.config.ts`. Collecting them
     // from a bare `vitest run` only runs their setup/cleanup hooks against no
     // app — which is how fixture cleanup once ran with an unassigned repo path.
+    // `linux/` needs a Linux desktop session it can inject real keys into on
+    // top of that, so it is not in the default run on any platform.
     // Harness unit tests under `tests/e2e` stay collectible.
-    exclude: [...configDefaults.exclude, "tests/e2e/mock/**", "tests/e2e/real/**"],
+    exclude: [
+      ...configDefaults.exclude,
+      "tests/e2e/mock/**",
+      "tests/e2e/real/**",
+      "tests/e2e/linux/**",
+    ],
   },
 });

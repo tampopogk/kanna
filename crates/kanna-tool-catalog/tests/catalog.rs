@@ -46,6 +46,9 @@ fn bundled_catalog_parses_and_declares_all_tools() {
             "kanna_workspace",
             "kanna_task_logs",
             "kanna_task_inputs",
+            "kanna_standing_constraints",
+            "kanna_set_standing_constraint",
+            "kanna_clear_standing_constraint",
             "kanna_task_transfers",
             "kanna_search_tasks",
             "kanna_list_repo_tasks",
@@ -1413,6 +1416,8 @@ fn wait_events_documents_every_event_type_the_server_emits() {
         "task.review_context_changed",
         "task.human_review_decision",
         "task.human_review_decision_delivery",
+        "task.standing_constraint_set",
+        "task.standing_constraint_cleared",
     ] {
         assert!(
             description.contains(event_type),
@@ -2899,4 +2904,231 @@ fn desktop_pane_controls_keep_machine_routing_and_destination_on_the_shared_wire
         &json!({"task_id":"task-a", "operation":"split", "direction":"diagonal"})
     )
     .is_err());
+}
+
+/// The standing-constraints record is only as durable as the three tools that
+/// reach it, and `kanna-mcp` and `kanna-cli` both hand-write nothing: they
+/// resolve these names out of this catalog and send whatever comes back. A
+/// path, method, or key that drifts here turns a supervisor's "what am I under?"
+/// into a 404 — which reads exactly like "no constraints", the one answer this
+/// record exists to stop being manufactured.
+#[test]
+fn standing_constraint_tools_resolve_to_the_recorded_server_surface() {
+    let catalog = bundled_catalog();
+
+    let list = resolve_request(
+        &catalog,
+        "kanna_standing_constraints",
+        &json!({ "repo_id": "repo-1", "include_cleared": true, "tail": 25 }),
+    )
+    .expect("resolve constraints listing");
+    assert_eq!(list.method, Method::Get);
+    assert_eq!(list.kind, ResponseKind::Json);
+    assert_eq!(
+        list.path,
+        "/v1/standing-constraints?repoId=repo-1&includeCleared=true&tail=25"
+    );
+
+    let set = resolve_request(
+        &catalog,
+        "kanna_set_standing_constraint",
+        &json!({
+            "repo_id": "repo-1",
+            "kind": "stand-down",
+            "text": "Owner is driving task-7 directly.",
+            "subject_task_id": "task-7",
+            "declared_by": "operator",
+            "declared_by_task_id": "manager-1",
+        }),
+    )
+    .expect("resolve constraint set");
+    assert_eq!(set.method, Method::Post);
+    assert_eq!(set.path, "/v1/standing-constraints");
+    assert_eq!(
+        set.body,
+        json!({
+            "repoId": "repo-1",
+            "kind": "stand-down",
+            "text": "Owner is driving task-7 directly.",
+            "subjectTaskId": "task-7",
+            "declaredBy": "operator",
+            "declaredByTaskId": "manager-1",
+        })
+    );
+
+    let clear = resolve_request(
+        &catalog,
+        "kanna_clear_standing_constraint",
+        &json!({
+            "constraint_id": "sc-1",
+            "cleared_by": "operator",
+            "cleared_by_task_id": "manager-1",
+            "note": "Owner handed the task back.",
+        }),
+    )
+    .expect("resolve constraint clear");
+    assert_eq!(clear.method, Method::Post);
+    assert_eq!(clear.path, "/v1/standing-constraints/sc-1/clear");
+    assert_eq!(
+        clear.body,
+        json!({
+            "clearedBy": "operator",
+            "clearedByTaskId": "manager-1",
+            "note": "Owner handed the task back.",
+        })
+    );
+
+    // The closed vocabularies are enforced by the catalog itself, because the
+    // CLI reaches `resolve_request` with no JSON-Schema validator in front of
+    // it: a misspelled kind must be a refusal, not a constraint nobody can
+    // find again by kind.
+    let bad_kind = resolve_request(
+        &catalog,
+        "kanna_set_standing_constraint",
+        &json!({ "repo_id": "repo-1", "kind": "standdown", "text": "x" }),
+    )
+    .expect_err("an unknown kind is refused");
+    assert!(bad_kind.contains("stand-down"), "{bad_kind}");
+
+    let bad_source = resolve_request(
+        &catalog,
+        "kanna_set_standing_constraint",
+        &json!({ "repo_id": "repo-1", "kind": "gate", "text": "x", "declared_by": "engine" }),
+    )
+    .expect_err("the reserved engine source is not declarable");
+    assert!(bad_source.contains("operator"), "{bad_source}");
+}
+
+/// A supervising session addresses its own repository, so the repository-scoped
+/// constraint tools default it from `KANNA_TASK_ID` the way task creation and
+/// listing already do — and say so plainly when there is neither.
+#[test]
+fn standing_constraint_tools_default_the_repository_from_the_task_session() {
+    let catalog = bundled_catalog();
+    let current_task = json!({ "id": "manager-1", "repoId": "repo-current" });
+
+    let listed = resolve_request_with_repo_context(
+        &catalog,
+        "kanna_standing_constraints",
+        &json!({}),
+        Some(&current_task),
+    )
+    .expect("resolve inferred constraints listing");
+    assert_eq!(listed.path, "/v1/standing-constraints?repoId=repo-current");
+
+    let set = resolve_request_with_repo_context(
+        &catalog,
+        "kanna_set_standing_constraint",
+        &json!({ "kind": "gate", "text": "No production publish without an explicit go." }),
+        Some(&current_task),
+    )
+    .expect("resolve inferred constraint set");
+    assert_eq!(set.body["repoId"], "repo-current");
+
+    for tool in [
+        "kanna_standing_constraints",
+        "kanna_set_standing_constraint",
+    ] {
+        assert_eq!(
+            repo_context_task_id(tool, &json!({}), Some("manager-1"), None),
+            Ok(Some("manager-1".to_string()))
+        );
+        assert_eq!(
+            repo_context_task_id(tool, &json!({}), None, None),
+            Err("repo_id is required when KANNA_TASK_ID is not available".to_string())
+        );
+        // An explicit repository is literal and needs no task lookup at all.
+        assert_eq!(
+            repo_context_task_id(
+                tool,
+                &json!({ "repo_id": "repo-x" }),
+                Some("manager-1"),
+                None
+            ),
+            Ok(None)
+        );
+    }
+
+    // Clearing names a constraint id, which is already scoped, so it never
+    // reaches for a repository and never fails outside a task session.
+    assert_eq!(
+        repo_context_task_id(
+            "kanna_clear_standing_constraint",
+            &json!({ "constraint_id": "sc-1" }),
+            None,
+            None
+        ),
+        Ok(None)
+    );
+}
+
+/// A delivered mailbox page is bounded at the source, so the tool surface every
+/// adapter renders from — MCP and the CLI both — has to say what a manager will
+/// and will not find on it, in the same words on the tool that opens the
+/// mailbox and the tool that reads it. The failure this prevents is quiet: an
+/// agent reading a 280-character summary as the whole verdict, or concluding a
+/// workflow carries no stage prompts, because nothing told it the page was
+/// bounded and where the full text lives.
+#[test]
+fn subscription_descriptions_state_what_a_bounded_delivered_page_carries() {
+    let catalog = bundled_catalog();
+    for name in ["kanna_subscribe_events", "kanna_read_event_subscription"] {
+        let description = catalog
+            .tools
+            .iter()
+            .find(|tool| tool.name == name)
+            .map(|tool| tool.description.clone())
+            .unwrap_or_else(|| panic!("{name} is declared"));
+
+        // The compact page's own key list is unchanged and still stated.
+        for key in [
+            "wakeState",
+            "batchId",
+            "staleMachines",
+            "waitOutcome",
+            "machineErrors",
+            "watchError",
+        ] {
+            assert!(
+                description.contains(key),
+                "{name} must keep documenting the compact key {key}"
+            );
+        }
+
+        // What is bounded, and the marker that says so.
+        assert!(
+            description.contains("summaryTruncated"),
+            "{name} must name the truncation marker"
+        );
+        assert!(
+            description.contains("status and metadata verbatim"),
+            "{name} must say the structured result facts survive"
+        );
+        assert!(
+            description.contains("beforeDefinition and afterDefinition"),
+            "{name} must say which definitions are bounded"
+        );
+        assert!(
+            description.contains("notificationContext"),
+            "{name} must say the relevance filter's working state is not delivered"
+        );
+
+        // And what is emphatically not bounded, so a page is still trustworthy.
+        assert!(
+            description.contains("acknowledgement by batchId are all unchanged"),
+            "{name} must say the ack contract is untouched"
+        );
+        assert!(
+            description.contains("payload.currentTask"),
+            "{name} must say delivery-time task state still arrives"
+        );
+        assert!(
+            description.contains("kanna_get_task"),
+            "{name} must say where the full prose is read from"
+        );
+        assert!(
+            description.contains("diagnostic true"),
+            "{name} must keep pointing at the verbatim escape hatch"
+        );
+    }
 }

@@ -573,6 +573,36 @@ artifact. The input ledger remains an audit trail of what was delivered, not
 terminal output or an excuse to claim that no instruction existed without
 reading it. See `docs/kanna-server-boundary.md`.
 
+**A standing constraint outlives the conversation that heard it.** Compaction is
+the only lossy event in this system, and it summarizes a carried supervision
+constraint — an owner stand-down, a release gate, a model-tier policy, a
+temporary routing decision with a planned revert — at exactly the same rate as a
+stale mailbox page. The batches whose whole content is "a constraint says don't"
+are therefore the cheapest-looking decisions a manager makes and the ones a
+compaction silently unmakes, and the failure is quiet: a manager that lost a
+stand-down does not stop, it intervenes in a session its owner asked it to leave
+alone. `standing_constraint` is the durable record, scoped per repository
+because a constraint outlives the session that declared it and a stage fork
+replaces that session: `kanna_set_standing_constraint` declares one
+(`hold` | `gate` | `policy` | `stand-down`, an optional subject task, and
+caller-declared unverified `operator`/`manager`/`unspecified` provenance in the
+same sense as the input ledger's — the reserved `engine` source is refused),
+`kanna_clear_standing_constraint` clears one with **its own** provenance, and
+`kanna_standing_constraints` loads the complete active set in one call, which is
+what a supervisor reads on every wake and immediately after a compaction.
+**Constraints are advisory facts, not enforcement**: Kanna stores the text and
+never parses it, no code path refuses anything because one exists, and they are
+not `task_blocker`, which gates workflow progression. **Nothing is deleted** — a
+clear keeps the row readable as history, because an absent row and a lifted gate
+are otherwise the same observation. Re-declaring an identical active constraint
+resolves to the existing row, so restating what was just read back is safe; a
+subject naming no task is refused rather than recorded. Set and clear append
+`task.standing_constraint_set` / `task.standing_constraint_cleared` where the
+state changes — on the subject task, or on the declaring session for a
+repository-wide constraint — so a sibling supervisor observes a constraint
+instead of discovering it by violating one. See
+`docs/kanna-server-boundary.md`.
+
 **The composer is not session output.** A CLI's composer line — Claude's `❯`,
 Codex's `›` — is where somebody is *about* to speak, and the Claude CLI fills it
 with a tab-to-accept suggestion whenever it goes idle. Surfaced as content it

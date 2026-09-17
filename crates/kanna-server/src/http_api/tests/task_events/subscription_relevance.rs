@@ -596,3 +596,269 @@ async fn exited_without_verdict_bootstraps_once_for_both_adapters_without_markin
         assert_eq!(after_detail["readState"], before_detail["readState"]);
     }
 }
+
+fn long_summary_result(summary_chars: usize) -> String {
+    json!({
+        "status": "failure",
+        "summary": "s".repeat(summary_chars),
+        "metadata": {"pr_url": "https://github.com/tampopogk/kanna/pull/4242", "head": "abc123"},
+    })
+    .to_string()
+}
+
+fn pinned_definition(name: &str) -> Value {
+    json!({
+        "name": name,
+        "description": "A description long enough to be worth dropping from a delivered page.",
+        "revision_limit": 3,
+        "stages": [{
+            "name": "in progress",
+            "agent": "implement",
+            "agent_provider": [{"harness": "claude", "model": "sonnet", "effort": "medium"}],
+            "description": "Agent implements the approved plan, then commits as tail work",
+            "policy": {"transition": "auto"},
+            "prompt": "p".repeat(2_000),
+            "post": {"name": "commit", "agent": "commit", "prompt": "c".repeat(500)},
+        }],
+        "plan_context": {
+            "source_run_id": "run-plan",
+            "stage": "plan",
+            "result": long_summary_result(3_000),
+        },
+    })
+}
+
+fn definition_carries_prose(value: &Value) -> bool {
+    match value {
+        Value::Object(object) => {
+            object.contains_key("prompt")
+                || object.contains_key("description")
+                || object.values().any(definition_carries_prose)
+        }
+        Value::Array(items) => items.iter().any(definition_carries_prose),
+        _ => false,
+    }
+}
+
+/// Delivered-page bounds, through the real subscribe/read wiring.
+///
+/// The measured problem this closes: an acknowledged page stays in a
+/// manager's conversation and is re-billed as a cache read on every later
+/// request, and almost all of its bytes are prose the manager's own contract
+/// requires it to re-read fresh — a finished run's verbatim result summary,
+/// `task.workflow_changed`'s two whole pinned definitions, and the relevance
+/// filter's own `notificationContext`. The page must lose that prose and lose
+/// nothing else: the same events are selected, `payload.currentTask` and the
+/// small structured facts survive byte for byte, `diagnostic` still returns
+/// the stored page verbatim, and acknowledgement by `batchId` is untouched.
+#[tokio::test]
+async fn delivered_page_bounds_run_and_workflow_prose_but_not_selection_or_acknowledgement() {
+    let state = test_state_with_seed("subscription-page-bounds", "Mailbox", seed_orchestration);
+    let db = Db::open(&state.config().db_path).unwrap();
+    start_run(&db, "manager-run", "child-c", "in progress");
+    let app = router(state.clone());
+    let (status, initial) = subscription_request(
+        &app,
+        "POST",
+        "/v1/event-subscriptions",
+        json!({"taskId":"child-c", "localOnly":true, "delivery":"poll"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{initial}");
+    assert!(initial["pending"].is_null(), "{initial}");
+    let id = initial["id"].as_str().unwrap().to_string();
+    let service = tokio::spawn(super::super::super::event_subscriptions::run(state.clone()));
+
+    // Order matters and makes this deterministic in real time: a workflow
+    // change is ordinary, so it cannot seal on its own inside the 300000ms
+    // defaults, while the failed run behind it is urgent and seals the page
+    // both events are by then collected into.
+    db.append_task_event(
+        "child-a",
+        TaskEventKind::WorkflowChanged,
+        json!({
+            "operation": "replace",
+            "fromWorkflow": "single-reviewer",
+            "toWorkflow": "plan-build-review",
+            "beforeDefinition": pinned_definition("single-reviewer"),
+            "afterDefinition": pinned_definition("plan-build-review"),
+        }),
+    )
+    .unwrap();
+    run_with_policy(&db, "failed-run", "child-b", "in progress", "manual");
+    db.finish_stage_run(
+        "failed-run",
+        "failed",
+        Some(&long_summary_result(4_000)),
+        None,
+    )
+    .unwrap();
+
+    let stored = await_subscription(&state, &id, |row| row.pending.is_some()).await;
+    let read_path = format!("/v1/event-subscriptions/{id}/read");
+    let (_, page) = subscription_request(&app, "POST", &read_path, json!({})).await;
+    let (_, raw) = subscription_request(&app, "POST", &read_path, json!({"diagnostic":true})).await;
+
+    // Selection is upstream of the projection and unchanged by it.
+    assert_eq!(
+        event_pairs(&page["pending"]),
+        event_pairs(&raw["pending"]),
+        "bounding a page must not change which events it carries: {page}"
+    );
+    let delivered = event_pairs(&page["pending"]);
+    assert!(
+        delivered.contains(&("child-a".into(), "task.workflow_changed".into()))
+            && delivered.contains(&("child-b".into(), "run.finished".into())),
+        "both events belong to this page: {delivered:?}"
+    );
+    assert_eq!(raw["pending"], json!(stored.pending), "{raw}");
+
+    let events = page["pending"]["events"].as_array().unwrap();
+    let finished = events
+        .iter()
+        .find(|event| event["type"] == "run.finished")
+        .unwrap();
+    let payload = finished["payload"].as_object().unwrap();
+    assert!(
+        !payload.contains_key("notificationContext"),
+        "the relevance filter's working state is not delivered: {finished}"
+    );
+    // The event-time facts a manager coordinates on survive exactly.
+    for key in ["runId", "stage", "kind", "status", "currentTask"] {
+        assert!(
+            payload.contains_key(key),
+            "payload.{key} missing: {finished}"
+        );
+    }
+    assert_eq!(payload["status"], "failed");
+    let result: Value = serde_json::from_str(payload["result"].as_str().unwrap()).unwrap();
+    assert_eq!(result["status"], "failure");
+    assert_eq!(
+        result["metadata"],
+        json!({"pr_url": "https://github.com/tampopogk/kanna/pull/4242", "head": "abc123"}),
+        "structured metadata is not prose and stays verbatim"
+    );
+    assert_eq!(result["summaryTruncated"], true);
+    let summary = result["summary"].as_str().unwrap();
+    assert_eq!(
+        summary.chars().count(),
+        super::super::super::task_events::EVENT_SUMMARY_SNIPPET_CHARS + 1,
+        "the bound plus its truncation marker: {summary}"
+    );
+    assert!(summary.starts_with("ss") && summary.ends_with('…'));
+
+    let changed = events
+        .iter()
+        .find(|event| event["type"] == "task.workflow_changed")
+        .unwrap();
+    let payload = &changed["payload"];
+    assert!(!payload
+        .as_object()
+        .unwrap()
+        .contains_key("notificationContext"));
+    for key in ["beforeDefinition", "afterDefinition"] {
+        let definition = &payload[key];
+        assert!(
+            !definition_carries_prose(definition),
+            "{key} must carry no stage prompt or description: {definition}"
+        );
+        // Structure — what a manager actually reasons about — survives.
+        assert_eq!(definition["revision_limit"], 3);
+        assert_eq!(definition["stages"][0]["name"], "in progress");
+        assert_eq!(definition["stages"][0]["agent"], "implement");
+        assert_eq!(
+            definition["stages"][0]["agent_provider"][0]["model"],
+            "sonnet"
+        );
+        assert_eq!(definition["stages"][0]["policy"]["transition"], "auto");
+        assert_eq!(definition["stages"][0]["post"]["agent"], "commit");
+        assert_eq!(definition["plan_context"]["source_run_id"], "run-plan");
+        let plan: Value =
+            serde_json::from_str(definition["plan_context"]["result"].as_str().unwrap()).unwrap();
+        assert_eq!(
+            plan["summaryTruncated"], true,
+            "a stamped plan is prose too"
+        );
+    }
+    assert_eq!(payload["fromWorkflow"], "single-reviewer");
+    assert_eq!(payload["toWorkflow"], "plan-build-review");
+
+    // Before/after instrumentation, in the test rather than in a claim: the
+    // diagnostic page is the unbounded page this projection replaces.
+    let before = serde_json::to_string(&raw["pending"]).unwrap().len();
+    let after = serde_json::to_string(&page["pending"]).unwrap().len();
+    println!(
+        "delivered page: before={before}B after={after}B cut={:.1}%",
+        100.0 * (1.0 - after as f64 / before as f64)
+    );
+    assert!(
+        after * 4 < before,
+        "the bounded page must be a fraction of the stored one: before={before}B after={after}B"
+    );
+
+    // Acknowledgement is by batch id and is untouched by the projection.
+    let (status, _) = subscription_request(
+        &app,
+        "POST",
+        &read_path,
+        json!({"acknowledgeBatchId":9_999}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    let (status, acked) = subscription_request(
+        &app,
+        "POST",
+        &read_path,
+        json!({"acknowledgeBatchId": page["batchId"]}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(acked["pending"].is_null(), "{acked}");
+    assert_eq!(page["batchId"], json!(stored.batch_id));
+    service.abort();
+    let _ = service.await;
+}
+
+/// A short result, a result that is not JSON, and a definition that is not an
+/// object are all returned exactly as stored: the page bounds prose, it never
+/// reshapes a payload into something the caller did not send.
+#[tokio::test]
+async fn a_page_leaves_a_payload_it_has_nothing_to_bound_byte_for_byte() {
+    let state = test_state_with_seed("subscription-page-verbatim", "Mailbox", seed_orchestration);
+    let db = Db::open(&state.config().db_path).unwrap();
+    start_run(&db, "manager-run", "child-c", "in progress");
+    let app = router(state.clone());
+    let (status, initial) = subscription_request(
+        &app,
+        "POST",
+        "/v1/event-subscriptions",
+        json!({"taskId":"child-c", "localOnly":true, "delivery":"poll"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{initial}");
+    let id = initial["id"].as_str().unwrap().to_string();
+    let service = tokio::spawn(super::super::super::event_subscriptions::run(state.clone()));
+    run_with_policy(&db, "short-run", "child-a", "in progress", "manual");
+    db.finish_stage_run(
+        "short-run",
+        "failed",
+        Some("a plain sentence, not JSON at all"),
+        None,
+    )
+    .unwrap();
+    let stored = await_subscription(&state, &id, |row| row.pending.is_some()).await;
+    let read_path = format!("/v1/event-subscriptions/{id}/read");
+    let (_, page) = subscription_request(&app, "POST", &read_path, json!({})).await;
+    let stored_events = stored.pending.as_ref().unwrap()["events"].clone();
+    let delivered = &page["pending"]["events"];
+    assert_eq!(
+        delivered[0]["payload"]["result"], stored_events[0]["payload"]["result"],
+        "a non-JSON result is not prose this page knows how to bound: {page}"
+    );
+    assert_eq!(
+        delivered[0]["payload"]["currentTask"], stored_events[0]["payload"]["currentTask"],
+        "currentTask is already bounded upstream and is delivered unchanged"
+    );
+    service.abort();
+    let _ = service.await;
+}

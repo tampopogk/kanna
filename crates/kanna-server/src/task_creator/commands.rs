@@ -13,6 +13,16 @@ pub(super) enum ProviderSessionBinding {
     Resume(String),
 }
 
+/// The shell command that launches a provider CLI for one PTY spawn.
+///
+/// `kanna_preamble` is the Kanna task-environment runtime block. Where the
+/// provider has a system-prompt channel Kanna has verified, it rides there;
+/// everywhere else it is prepended to the prompt body.
+///
+/// `appended_system_prompt` is text the caller has *moved out of* `prompt`
+/// onto that same channel — today, a long-running agent's operating
+/// instructions. It is only ever set for a provider that has the channel, so
+/// no provider silently loses the bytes; see the fallback arm below.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn build_agent_command(
     provider: &AgentProvider,
@@ -26,6 +36,7 @@ pub(super) fn build_agent_command(
     max_turns: Option<u32>,
     max_budget_usd: Option<f64>,
     kanna_preamble: Option<&str>,
+    appended_system_prompt: Option<&str>,
     mcp_config_path: Option<&str>,
     worktree_path: Option<&str>,
     provider_session: Option<&ProviderSessionBinding>,
@@ -39,6 +50,17 @@ pub(super) fn build_agent_command(
             // TODO: Use native system-prompt flags for these providers once Kanna
             // has verified stable CLI support for them. Until then, prepend the
             // short preamble to the prompt body so the task remains Kanna-aware.
+            //
+            // These providers have no `--append-system-prompt` equivalent that
+            // Kanna has verified, so `appended_system_prompt` is never set for
+            // them: the caller leaves their operating instructions in the
+            // prompt body exactly as before rather than dropping text into a
+            // channel that does not exist. The gap is tracked in
+            // tampopogk/kanna#1575.
+            debug_assert!(
+                appended_system_prompt.is_none(),
+                "only Claude has a verified append-system-prompt channel"
+            );
             prompt_with_system_prompt(kanna_preamble, prompt)
         }
     };
@@ -63,10 +85,23 @@ pub(super) fn build_agent_command(
             if let Some(max_budget_usd) = max_budget_usd {
                 flags.push(format!("--max-budget-usd {}", max_budget_usd));
             }
-            if let Some(preamble) = kanna_preamble {
+            // `--append-system-prompt` is re-sent with every request and is
+            // never summarized by a context compaction, which is why anything
+            // that must survive a long-running session rides here rather than
+            // in the conversation. A relocated agent body can make this value
+            // tens of KB, which enlarges the agent's argv — harmless to the
+            // CLI, but one more reason never to match a command substring with
+            // `pkill -f` (see AGENTS.md).
+            let system_prompt = match (kanna_preamble, appended_system_prompt) {
+                (Some(preamble), Some(appended)) => Some(format!("{preamble}\n\n{appended}")),
+                (Some(preamble), None) => Some(preamble.to_string()),
+                (None, Some(appended)) => Some(appended.to_string()),
+                (None, None) => None,
+            };
+            if let Some(system_prompt) = system_prompt {
                 flags.push(format!(
                     "--append-system-prompt '{}'",
-                    shell_single_quote(preamble)
+                    shell_single_quote(&system_prompt)
                 ));
             }
             if let Some(mcp_config_path) = mcp_config_path {
@@ -83,6 +118,16 @@ pub(super) fn build_agent_command(
                     flags.push(format!("--resume '{}'", shell_single_quote(session_id)));
                 }
                 None => {}
+            }
+            // Relocating the agent body can empty the prompt: a singleton whose
+            // stage carries no task prompt has nothing left to say as a first
+            // message. Launch with no positional rather than an empty one, so
+            // the session opens at its composer holding the instructions as
+            // configuration — which is what the merge master's own manual
+            // prescribes ("when no explicit request is available, wait for
+            // input").
+            if prompt.is_empty() {
+                return format!("{executable} {}", flags.join(" "));
             }
             // `--` terminates option parsing. Without it, variadic flags eat
             // the positional prompt: `--mcp-config <path> '<prompt>'` makes

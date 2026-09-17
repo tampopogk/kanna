@@ -274,6 +274,133 @@ describe("useKeyboardShortcuts", () => {
     return mount(Harness);
   }
 
+  /**
+   * The owner's report: "ctrl+shift+u etc doesn't work" and the listed
+   * Ctrl+Shift+arrows "do not". Underneath both was the same thing — this
+   * listener captures before anything else and calls `preventDefault()`, so a
+   * chord it claims is gone from every text field in the app. Ctrl+Shift+←
+   * (⇧⌘← on this suite's declared platform) is *the* word-selection chord.
+   */
+  describe("keystrokes that belong to the text field they landed in", () => {
+    function pressAt(target: HTMLElement, init: KeyboardEventInit): KeyboardEvent {
+      const event = new KeyboardEvent("keydown", { bubbles: true, cancelable: true, ...init });
+      target.dispatchEvent(event);
+      return event;
+    }
+
+    function withTarget(html: string, run: (target: HTMLElement) => void): void {
+      const host = document.createElement("div");
+      host.innerHTML = html;
+      const target = host.firstElementChild as HTMLElement;
+      document.body.appendChild(host);
+      try {
+        run(target);
+      } finally {
+        host.remove();
+      }
+    }
+
+    it("leaves a selection chord to a focused input", () => {
+      const actions = buildActions();
+      const wrapper = mountShortcutHarness(actions, () => "main");
+      withTarget(`<input type="text">`, (input) => {
+        const event = pressAt(input, { key: "ArrowUp", metaKey: true, shiftKey: true });
+        expect(actions.navigateRepoUp).not.toHaveBeenCalled();
+        expect(event.defaultPrevented).toBe(false);
+      });
+      wrapper.unmount();
+    });
+
+    it("leaves it to a textarea and a contenteditable too", () => {
+      const actions = buildActions();
+      const wrapper = mountShortcutHarness(actions, () => "main");
+      withTarget(`<textarea></textarea>`, (area) => {
+        pressAt(area, { key: "ArrowUp", metaKey: true, shiftKey: true });
+      });
+      withTarget(`<div contenteditable="true"></div>`, (editable) => {
+        pressAt(editable, { key: "ArrowUp", metaKey: true, shiftKey: true });
+      });
+      expect(actions.navigateRepoUp).not.toHaveBeenCalled();
+      wrapper.unmount();
+    });
+
+    it("still acts on the same chord anywhere else", () => {
+      const actions = buildActions();
+      const wrapper = mountShortcutHarness(actions, () => "main");
+      withTarget(`<div></div>`, (plain) => {
+        pressAt(plain, { key: "ArrowUp", metaKey: true, shiftKey: true });
+      });
+      expect(actions.navigateRepoUp).toHaveBeenCalledTimes(1);
+      wrapper.unmount();
+    });
+
+    it("still acts on a chord a text field has no use for", () => {
+      // Without Shift there is no selection to extend, so moving between tasks
+      // from a focused search field — which is how search is used at all —
+      // keeps working.
+      const actions = buildActions();
+      const wrapper = mountShortcutHarness(actions, () => "main");
+      withTarget(`<input type="search">`, (input) => {
+        pressAt(input, { key: "ArrowUp", metaKey: true, altKey: true });
+      });
+      expect(actions.navigateUp).toHaveBeenCalledTimes(1);
+      wrapper.unmount();
+    });
+
+    it("keeps acting from a focused terminal", () => {
+      // xterm's helper textarea is an editable element in the DOM only: what
+      // is typed into it goes to the PTY, and there is no selection in it to
+      // protect.
+      const actions = buildActions();
+      const wrapper = mountShortcutHarness(actions, () => "main");
+      withTarget(`<textarea class="xterm-helper-textarea"></textarea>`, (helper) => {
+        pressAt(helper, { key: "ArrowUp", metaKey: true, shiftKey: true });
+      });
+      expect(actions.navigateRepoUp).toHaveBeenCalledTimes(1);
+      wrapper.unmount();
+    });
+
+    /**
+     * Shift+Backspace extends no selection, so the listed close chord is not
+     * the field's to claim. It was conceded anyway for a while, and the whole
+     * cost of that lands in the one view a person lives in: the agent composer
+     * and the sidebar search hold the caret nearly all the time, so ⇧⌘⌫ /
+     * Ctrl+Shift+Backspace closed nothing and said nothing about why.
+     */
+    it("still closes a task from a focused text field on both platforms", () => {
+      const cases = [
+        { platform: "MacIntel", init: { key: "Backspace", metaKey: true, shiftKey: true } },
+        { platform: "Linux x86_64", init: { key: "Backspace", ctrlKey: true, shiftKey: true } },
+      ] as const;
+
+      for (const { platform, init } of cases) {
+        for (const nav of [globalThis.navigator, window.navigator]) {
+          Object.defineProperty(nav, "platform", { value: platform, configurable: true });
+        }
+        resetShortcutBindingsForTests();
+        const actions = buildActions();
+        const wrapper = mountShortcutHarness(actions, () => "main");
+
+        try {
+          for (const html of [`<input type="text">`, `<textarea></textarea>`]) {
+            withTarget(html, (field) => {
+              field.focus();
+              const event = pressAt(field, init);
+              expect(event.defaultPrevented, `${platform} ${html}`).toBe(true);
+            });
+          }
+          expect(actions.closeTask, platform).toHaveBeenCalledTimes(2);
+        } finally {
+          wrapper.unmount();
+          for (const nav of [globalThis.navigator, window.navigator]) {
+            Object.defineProperty(nav, "platform", { value: "MacIntel", configurable: true });
+          }
+          resetShortcutBindingsForTests();
+        }
+      }
+    });
+  });
+
   it("ignores workspace shortcuts until the window is ready for them", () => {
     const actions = buildActions();
     let ready = false;

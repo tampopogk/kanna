@@ -36,6 +36,7 @@ mod serviced;
 mod settings;
 mod snapshot;
 pub(crate) mod stage_runs;
+mod standing_constraints;
 pub(crate) mod terminal_archives;
 pub use terminal_archives::AgentTerminalAttempt;
 pub(crate) mod workspace_setup;
@@ -80,6 +81,12 @@ pub use serviced::TaskServicedWatermark;
 #[allow(unused_imports)]
 pub use stage_runs::{
     FinishedStageRun, ProviderOverrideSource, StageProviderOverride, StageTrigger,
+};
+#[allow(unused_imports)]
+pub use standing_constraints::{
+    clamp_cleared_constraint_tail, normalize_constraint_note, normalize_constraint_text,
+    NewStandingConstraint, StandingConstraint, StandingConstraintClear, StandingConstraintKind,
+    StandingConstraintSource,
 };
 #[allow(unused_imports)]
 pub use task_events::{
@@ -199,6 +206,7 @@ pub(crate) const CURRENT_SCHEMA_MIGRATIONS: &[&str] = &[
     "087_stage_run_teardown_kind",
     "088_workspace_setup_run",
     "089_task_serviced_watermark",
+    "090_standing_constraint",
 ];
 
 #[derive(Debug, Serialize)]
@@ -2558,6 +2566,21 @@ fn run_schema_migrations(conn: &Connection) -> Result<(), rusqlite::Error> {
     // task that has never been serviced must cost nothing to represent.
     run_migration(conn, "089_task_serviced_watermark", serviced::create_schema)?;
 
+    // Standing supervision constraints a manager must not lose to conversation
+    // compaction: stand-downs, release gates, policy, temporary holds. Scoped
+    // per repository rather than per manager task, because the constraint
+    // outlives the session that declared it and a stage fork replaces that
+    // session. Cleared rows are updated in place and kept — an absent row and
+    // a lifted gate would otherwise be the same observation. No foreign key on
+    // the task columns: a constraint is a record of a supervision decision and
+    // must survive the removal of the task it names, which a cascade would
+    // delete exactly backwards. Nothing in the server reads `text`.
+    run_migration(
+        conn,
+        "090_standing_constraint",
+        create_standing_constraint_schema,
+    )?;
+
     Ok(())
 }
 
@@ -2717,6 +2740,40 @@ fn create_event_subscription_schema(conn: &Connection) -> rusqlite::Result<()> {
         revision INTEGER NOT NULL,
         record TEXT NOT NULL
     ); CREATE INDEX idx_event_subscription_task ON event_subscription(task_id);",
+    )
+}
+
+/// The durable standing-constraints record: stand-downs, release gates, holds
+/// and policies a supervisor must apply but that are state on no task.
+///
+/// Scoped per repository, because a constraint outlives the session that
+/// declared it and a stage fork replaces that session. No foreign key on the
+/// task columns — see [`crate::db::standing_constraints`] for why a cascade
+/// here would delete the record of a supervision decision exactly backwards.
+fn create_standing_constraint_schema(conn: &Connection) -> Result<(), rusqlite::Error> {
+    conn.execute_batch(
+        r#"
+        CREATE TABLE IF NOT EXISTS standing_constraint (
+          id TEXT PRIMARY KEY,
+          repo_id TEXT NOT NULL REFERENCES repo(id) ON DELETE CASCADE,
+          kind TEXT NOT NULL CHECK (kind IN ('hold', 'gate', 'policy', 'stand-down')),
+          text TEXT NOT NULL,
+          subject_task_id TEXT,
+          declared_by TEXT NOT NULL
+            CHECK (declared_by IN ('operator', 'manager', 'unspecified')),
+          declared_by_task_id TEXT,
+          created_at TEXT NOT NULL DEFAULT (datetime('now')),
+          cleared_at TEXT,
+          cleared_by TEXT
+            CHECK (cleared_by IS NULL OR cleared_by IN ('operator', 'manager', 'unspecified')),
+          cleared_by_task_id TEXT,
+          cleared_note TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_standing_constraint_repo_active
+          ON standing_constraint(repo_id, cleared_at, created_at);
+        CREATE INDEX IF NOT EXISTS idx_standing_constraint_subject
+          ON standing_constraint(subject_task_id);
+        "#,
     )
 }
 

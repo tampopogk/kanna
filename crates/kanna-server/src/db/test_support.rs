@@ -551,6 +551,7 @@ impl Db {
             .prepare("INSERT INTO schema_migrations (id) VALUES (?1)")?;
         super::create_contextless_completion_attempt_schema(&self.conn)?;
         super::create_human_review_schema(&self.conn)?;
+        super::create_standing_constraint_schema(&self.conn)?;
         for id in CURRENT_SCHEMA_MIGRATIONS {
             stmt.execute([id])?;
         }
@@ -1089,6 +1090,19 @@ impl Db {
         self.conn.execute(
             "UPDATE pipeline_item SET pr_url = ? WHERE id = ?",
             (pr_url, id),
+        )?;
+        Ok(())
+    }
+
+    #[cfg(test)]
+    pub fn update_test_pipeline_item_prompt(
+        &self,
+        id: &str,
+        prompt: &str,
+    ) -> Result<(), rusqlite::Error> {
+        self.conn.execute(
+            "UPDATE pipeline_item SET prompt = ? WHERE id = ?",
+            (prompt, id),
         )?;
         Ok(())
     }

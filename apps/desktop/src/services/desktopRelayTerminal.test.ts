@@ -170,9 +170,14 @@ describe("configured desktop peer view client", () => {
 
 describe("createDesktopRelayTerminalClient", () => {
   it("surfaces a proxy refusal as a terminal error rather than reconnecting forever", async () => {
-    const socket = new FakeSocket();
+    vi.useFakeTimers();
+    const sockets: FakeSocket[] = [];
     const client = createDesktopRelayTerminalClient({
-      createSocket: () => socket,
+      createSocket: () => {
+        const socket = new FakeSocket();
+        sockets.push(socket);
+        return socket;
+      },
       serverBaseUrl: "http://127.0.0.1:48120",
       getCredential: async () => "local-control-token",
     });
@@ -182,23 +187,75 @@ describe("createDesktopRelayTerminalClient", () => {
       taskId: "task-1",
       listener: (event) => events.push(event),
     });
+    const socket = sockets[0];
     socket.onopen?.();
     await Promise.resolve();
     await Promise.resolve();
+    // What `peers::send_error_and_close` actually writes: no `task_id` — the
+    // connection never got far enough to be about a task — and its keys in the
+    // order `serde_json::json!` sorts them into, discriminant last, which is
+    // what a `{"type":"error"` prefix match silently missed.
     socket.onmessage?.({
       data: JSON.stringify({
-        type: "error",
-        task_id: "task-1",
         code: "peer_pairing_required",
-        message: "this desktop is not paired with that machine",
+        message: "this desktop is not paired with that machine; pair it from Preferences → Machines",
+        type: "error",
       }),
     });
+    socket.drop(1000);
     await Promise.resolve();
     expect(events).toContainEqual(expect.objectContaining({
       type: "error",
       taskId: "task-1",
-      message: expect.stringContaining("not paired"),
+      message: expect.stringContaining("Preferences"),
     }));
+    // No silent retry behind a "Connecting..." line.
+    vi.advanceTimersByTime(60_000);
+    expect(sockets).toHaveLength(1);
+    client.close();
+    vi.useRealTimers();
+  });
+
+  /**
+   * Spelled type-first here, the other way round from the test above: the
+   * refusal is recognized by what the frame says, not by its key order.
+   */
+  it("drops a refused peer client so a later view dials again once the machines are paired", async () => {
+    const sockets: FakeSocket[] = [];
+    const client = createDesktopRelayTerminalClient({
+      createSocket: () => {
+        const socket = new FakeSocket();
+        sockets.push(socket);
+        return socket;
+      },
+      serverBaseUrl: "http://127.0.0.1:48120",
+      getCredential: async () => "local-control-token",
+    });
+    const first = client.observeTerminal({
+      desktopId: "desktop-owner",
+      taskId: "task-1",
+      listener: () => {},
+    });
+    sockets[0].onopen?.();
+    await Promise.resolve();
+    await Promise.resolve();
+    sockets[0].onmessage?.({
+      data: JSON.stringify({
+        type: "error",
+        code: "peer_pairing_required",
+        message: "this desktop is not paired with that machine; pair it from Preferences → Machines",
+      }),
+    });
+    sockets[0].drop(1000);
+    await Promise.resolve();
+    first.close();
+
+    client.observeTerminal({
+      desktopId: "desktop-owner",
+      taskId: "task-1",
+      listener: () => {},
+    });
+    expect(sockets).toHaveLength(2);
     client.close();
   });
 

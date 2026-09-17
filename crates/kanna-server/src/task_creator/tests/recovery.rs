@@ -2623,3 +2623,210 @@ async fn live_daemon_session_restores_a_false_interruption_instead_of_spawning()
 
     let _ = std::fs::remove_dir_all(&repo_root);
 }
+
+/// Point the recovery fixture at the merge master's synthetic workflow — the
+/// same name and pinned definition `build_merge_task_request` writes, so the
+/// restart resolves a `singleton-` workflow exactly as production does.
+fn make_recovery_task_a_merge_singleton(db: &Db) {
+    db.update_test_pipeline_item_stage_context(
+        "recovery-task",
+        "task-recovery",
+        "singleton-merge",
+        None,
+        "claude",
+    )
+    .unwrap();
+    db.update_test_pipeline_item_pipeline_def(
+        "recovery-task",
+        &serde_json::json!({
+            "name": "singleton-merge",
+            "visibility": "internal",
+            "stages": [{
+                "name": "in progress",
+                "agent": "merge",
+                "prompt": "$TASK_PROMPT",
+                "policy": { "transition": "manual" }
+            }]
+        })
+        .to_string(),
+    )
+    .unwrap();
+}
+
+/// A provider stand-in that accepts whatever it is handed, including
+/// `--resume`. The recovery daemon fake runs the composed command line for
+/// real, and these tests are about that line's shape rather than about what
+/// the CLI does with it.
+fn write_accepting_claude_probe(worktree: &std::path::Path) {
+    let fake_claude = worktree.join(".kanna/test-provider-bin/claude");
+    std::fs::write(&fake_claude, "#!/bin/sh\nexit 0\n").unwrap();
+    std::fs::set_permissions(&fake_claude, std::fs::Permissions::from_mode(0o755)).unwrap();
+}
+
+/// A singleton's manual is configuration, so it has to reach every spawn of
+/// its session — not only the one whose prompt the stage composer happened to
+/// build.
+///
+/// The merge master records its verdict and parks at its composer, which is
+/// the state this recovery admits for resume. Its recovery message is Kanna's
+/// own prose, and once the body stopped being a first user message there was
+/// nothing left in the reopened conversation to replay it from: the resumed
+/// merge master would run with no operating instructions at all.
+#[tokio::test]
+#[allow(clippy::await_holding_lock)] // Process-global provider store must stay fixed through prepare.
+async fn a_resumed_singleton_after_a_verdict_still_carries_its_body_as_configuration() {
+    let (repo_root, config, db) = init_recovery_fixture("singleton-resume-after-verdict");
+    let worktree = repo_root.join(".kanna-worktrees/task-recovery");
+    make_recovery_task_a_merge_singleton(&db);
+    let config_dir = repo_root.join("claude-config");
+    write_recovery_transcript(&config_dir, &worktree);
+    write_accepting_claude_probe(&worktree);
+    db.finish_stage_run(
+        "run-killed-mid-turn",
+        "succeeded",
+        Some(r#"{"status":"success","summary":"merged the queue and recorded the verdict"}"#),
+        None,
+    )
+    .unwrap();
+
+    let (status, commands) = {
+        let _env_guard = super::CLAUDE_CONFIG_DIR_LOCK.lock().unwrap();
+        std::env::set_var("CLAUDE_CONFIG_DIR", &config_dir);
+        let round = resume_round(&config).await;
+        std::env::remove_var("CLAUDE_CONFIG_DIR");
+        round
+    };
+    assert_eq!(status, axum::http::StatusCode::OK);
+
+    let command_line = spawned_command_line(&commands);
+    assert!(
+        command_line.contains(&format!("--resume '{RECOVERY_SESSION_ID}'")),
+        "the parked session is reopened, not replayed: {command_line}"
+    );
+    let (flags, positional) = split_claude_command(&command_line);
+    assert!(
+        flags.contains("You are the merge master."),
+        "a resumed singleton must be given its body as configuration: {command_line}"
+    );
+    assert!(
+        !positional.contains("You are the merge master."),
+        "and not as a compactable first message: {command_line}"
+    );
+    assert!(
+        positional.contains("already recorded its stage verdict"),
+        "the recovery message itself is unchanged: {command_line}"
+    );
+
+    let _ = std::fs::remove_dir_all(&repo_root);
+}
+
+/// The same session, interrupted before it recorded anything. This arm already
+/// said everything — it embedded the whole composed stage prompt, body and all,
+/// in its recovery message — which put the body back in the conversation for
+/// the next compaction to summarize away. That is the defect this change
+/// exists to remove, on the one agent class it targets.
+#[tokio::test]
+#[allow(clippy::await_holding_lock)] // Process-global provider store must stay fixed through prepare.
+async fn a_resumed_singleton_without_a_verdict_is_not_told_its_body_twice() {
+    let (repo_root, config, db) = init_recovery_fixture("singleton-resume-without-verdict");
+    let worktree = repo_root.join(".kanna-worktrees/task-recovery");
+    make_recovery_task_a_merge_singleton(&db);
+    let config_dir = repo_root.join("claude-config");
+    write_recovery_transcript(&config_dir, &worktree);
+    write_accepting_claude_probe(&worktree);
+    db.finish_stage_run(
+        "run-killed-mid-turn",
+        "failed",
+        Some("agent session exited before recording a stage verdict (exit code 143)"),
+        None,
+    )
+    .unwrap();
+
+    let (status, commands) = {
+        let _env_guard = super::CLAUDE_CONFIG_DIR_LOCK.lock().unwrap();
+        std::env::set_var("CLAUDE_CONFIG_DIR", &config_dir);
+        let round = resume_round(&config).await;
+        std::env::remove_var("CLAUDE_CONFIG_DIR");
+        round
+    };
+    assert_eq!(status, axum::http::StatusCode::OK);
+
+    let command_line = spawned_command_line(&commands);
+    let (flags, positional) = split_claude_command(&command_line);
+    assert!(
+        flags.contains("You are the merge master."),
+        "an interrupted singleton must be given its body as configuration: {command_line}"
+    );
+    assert!(
+        !positional.contains("You are the merge master."),
+        "delivered once, as configuration — not echoed back into the conversation: {command_line}"
+    );
+    assert!(
+        positional.contains("before a stage verdict was recorded"),
+        "the recovery message itself is unchanged: {command_line}"
+    );
+    // Only the body moved. Whatever else the stage composes is still in the
+    // message, under the heading that introduces it.
+    assert!(
+        positional.contains("Active stage instructions:\n## Your Task"),
+        "the rest of the composed stage prompt is unchanged: {command_line}"
+    );
+
+    let _ = std::fs::remove_dir_all(&repo_root);
+}
+
+/// The merge master's own shape. Its task prompt is empty by construction
+/// (`build_merge_task_request`), so its composed stage prompt is the agent body
+/// and nothing else — the case a separator-keyed relocation silently skipped.
+/// Moving the body out of the recovery message leaves the heading above it with
+/// nothing to introduce, and an empty "Active stage instructions:" block reads
+/// as though the stage had no instructions at all.
+#[tokio::test]
+#[allow(clippy::await_holding_lock)] // Process-global provider store must stay fixed through prepare.
+async fn a_resumed_merge_master_is_not_left_with_an_empty_instructions_block() {
+    let (repo_root, config, db) = init_recovery_fixture("singleton-resume-empty-task-prompt");
+    let worktree = repo_root.join(".kanna-worktrees/task-recovery");
+    make_recovery_task_a_merge_singleton(&db);
+    db.update_test_pipeline_item_prompt("recovery-task", "")
+        .unwrap();
+    let config_dir = repo_root.join("claude-config");
+    write_recovery_transcript(&config_dir, &worktree);
+    write_accepting_claude_probe(&worktree);
+    db.finish_stage_run(
+        "run-killed-mid-turn",
+        "failed",
+        Some("agent session exited before recording a stage verdict (exit code 143)"),
+        None,
+    )
+    .unwrap();
+
+    let (status, commands) = {
+        let _env_guard = super::CLAUDE_CONFIG_DIR_LOCK.lock().unwrap();
+        std::env::set_var("CLAUDE_CONFIG_DIR", &config_dir);
+        let round = resume_round(&config).await;
+        std::env::remove_var("CLAUDE_CONFIG_DIR");
+        round
+    };
+    assert_eq!(status, axum::http::StatusCode::OK);
+
+    let command_line = spawned_command_line(&commands);
+    let (flags, positional) = split_claude_command(&command_line);
+    assert!(
+        flags.contains("You are the merge master."),
+        "the merge master must be given its body as configuration: {command_line}"
+    );
+    assert!(
+        !positional.contains("You are the merge master."),
+        "and not as a compactable first message: {command_line}"
+    );
+    assert!(
+        !positional.contains("Active stage instructions:"),
+        "an empty instructions block is worse than none: {command_line}"
+    );
+    assert!(
+        positional.contains("before a stage verdict was recorded"),
+        "the recovery message itself is unchanged: {command_line}"
+    );
+
+    let _ = std::fs::remove_dir_all(&repo_root);
+}
