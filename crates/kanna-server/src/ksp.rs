@@ -277,10 +277,24 @@ pub(crate) fn admit_sealed_peer_session(
             ));
         }
     }
+    // The hello names the authority this session was granted, so the
+    // initiator can tell "the sibling has not pinned me" from "paired" at
+    // the handshake instead of discovering it one 401 at a time - and never
+    // keeps a pairing-only session in its pool as if it were a sibling one.
+    let granted = if paired.is_some() && hello.intent != HelloIntent::PeerPairing {
+        crate::peer_channel::PEER_SESSION_CAPABILITY
+    } else {
+        crate::peer_channel::PEER_PAIRING_ONLY_CAPABILITY
+    };
     let responder_hello = kanna_secure_channel::ResponderHello {
         version: kanna_secure_channel::PROTOCOL_VERSION,
         desktop_id: config.desktop_id.clone(),
-        capabilities: vec!["ksp".into(), "peer-pairing".into(), "peer-tunnel".into()],
+        capabilities: vec![
+            "ksp".into(),
+            "peer-pairing".into(),
+            "peer-tunnel".into(),
+            granted.into(),
+        ],
     };
     let (reply, channel) = pending
         .accept(&responder_hello)

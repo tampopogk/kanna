@@ -1108,7 +1108,7 @@ async fn a_real_sealed_invoke_and_transfer_tunnel_cross_loopback_without_a_plain
     // transfer identity pinned on A.
     let a_identity = desktop_a.peer_channel_identity().unwrap();
     let b_identity = desktop_b.peer_channel_identity().unwrap();
-    pin_peer(&desktop_b, &desktop_a.config().desktop_id, &a_identity);
+    // A pins B first; B has not pinned A yet.
     pin_peer(&desktop_a, &desktop_b.config().desktop_id, &b_identity);
     super::peers::pin_transfer_identity(
         &desktop_a,
@@ -1133,6 +1133,21 @@ async fn a_real_sealed_invoke_and_transfer_tunnel_cross_loopback_without_a_plain
     });
     let (tap, observed) = start_tap(served).await;
     desktop_a.set_lan_api_candidate(desktop_b.config().desktop_id.clone(), tap);
+
+    // 0. B answers the handshake but grants pairing-only authority, which
+    // A refuses at the handshake rather than pooling: nothing sibling-shaped
+    // ever rides a session the other side did not grant.
+    let refused = super::invoke_desktop::invoke_desktop(
+        Arc::clone(&desktop_a),
+        desktop_b.config().desktop_id.clone(),
+        "GET".into(),
+        "/v1/status".into(),
+        serde_json::Value::Null,
+    )
+    .await
+    .expect_err("B has not pinned A");
+    assert!(refused.starts_with("peer_pairing_required"), "{refused}");
+    pin_peer(&desktop_b, &desktop_a.config().desktop_id, &a_identity);
 
     // 1. A pooled sealed invoke, route peer-lan.
     let marker = "MARKER-INVOKE-7f3a9c";

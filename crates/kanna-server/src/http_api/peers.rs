@@ -319,7 +319,9 @@ async fn dial_peer_with_key_for_pairing(
 
 fn dial_error_response(error: PeerDialError) -> (StatusCode, String) {
     let status = match error {
-        PeerDialError::PairingRequired => StatusCode::PRECONDITION_FAILED,
+        PeerDialError::PairingRequired | PeerDialError::NotPairedBySibling => {
+            StatusCode::PRECONDITION_FAILED
+        }
         PeerDialError::IdentityUnavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
         PeerDialError::UpgradeRequired(_) | PeerDialError::IdentityMismatch(_) => {
             StatusCode::BAD_GATEWAY

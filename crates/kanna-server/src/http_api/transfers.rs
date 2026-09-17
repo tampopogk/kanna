@@ -867,6 +867,12 @@ async fn list_targets(
     })?;
     let mut cloud_routes =
         crate::cloud_transfer_proxy::cloud_transfer_routes(state.cloud_transfer_proxies()).await;
+    // A paired sibling whose sealed route is still missing (its transfer
+    // identity was not exchanged yet) gets another attempt here, bounded.
+    state
+        .peer_transfer_proxies()
+        .sync_from_store_lazily(state)
+        .await;
     // Sealed routes to paired siblings shadow a legacy relay proxy for the
     // same transfer peer: once a machine is paired, its pin decides.
     let sealed: Vec<_> = state

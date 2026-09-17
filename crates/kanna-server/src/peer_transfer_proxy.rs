@@ -62,7 +62,17 @@ pub(crate) struct PeerTransferProxies {
     /// Set on first use; the proxies need the server state to dial, and the
     /// state owns the proxies.
     state: std::sync::OnceLock<Weak<AppState>>,
+    /// When `sync_from_store` last ran, so the lazy trigger from the
+    /// transfer-target listing cannot start a dial per poll.
+    last_sync: std::sync::Mutex<Option<std::time::Instant>>,
 }
+
+/// The lazy trigger's floor between two syncs.
+const LAZY_SYNC_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
+/// A sibling that just pinned this desktop dials back before this desktop
+/// has persisted its own pin; a few short retries cover that window.
+const IDENTITY_FETCH_ATTEMPTS: usize = 4;
+const IDENTITY_FETCH_RETRY_DELAY: std::time::Duration = std::time::Duration::from_secs(2);
 
 impl PeerTransferProxies {
     fn attach(&self, state: &Arc<AppState>) {
@@ -73,6 +83,24 @@ impl PeerTransferProxies {
         self.state.get().and_then(Weak::upgrade)
     }
 
+    /// `sync_from_store`, rate-limited, for callers that run often (the
+    /// transfer-target listing behind the desktop picker and the agent
+    /// tools): a paired sibling whose route is still missing gets another
+    /// chance without a restart.
+    pub(crate) async fn sync_from_store_lazily(&self, state: &Arc<AppState>) {
+        {
+            let mut last = self
+                .last_sync
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if last.is_some_and(|at| at.elapsed() < LAZY_SYNC_INTERVAL) {
+                return;
+            }
+            *last = Some(std::time::Instant::now());
+        }
+        self.sync_from_store(state).await;
+    }
+
     /// Reconciles the routes with the peer trust store: a sealed route for
     /// every paired sibling whose transfer identity is pinned, none for
     /// anyone else. A sibling paired before its sidecar reported an
@@ -80,6 +108,10 @@ impl PeerTransferProxies {
     /// pinned on first sight) in the background, then a route.
     pub(crate) async fn sync_from_store(&self, state: &Arc<AppState>) {
         self.attach(state);
+        *self
+            .last_sync
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(std::time::Instant::now());
         let peers = match state.peer_trust_store() {
             Ok(store) => store.peers,
             Err(error) => {
@@ -120,13 +152,26 @@ impl PeerTransferProxies {
                 _ => {
                     let state = Arc::clone(state);
                     tokio::spawn(async move {
-                        if let Err(error) =
-                            fetch_and_pin_transfer_identity(&state, &peer.desktop_id).await
-                        {
-                            log::info!(
-                                "[peer-transfer] transfer identity of {} not available yet: {error}",
-                                peer.desktop_id
-                            );
+                        let mut attempt = 0;
+                        loop {
+                            attempt += 1;
+                            match fetch_and_pin_transfer_identity(&state, &peer.desktop_id).await {
+                                Ok(_) => break,
+                                Err(error) if attempt < IDENTITY_FETCH_ATTEMPTS => {
+                                    log::info!(
+                                        "[peer-transfer] transfer identity of {} not available yet (attempt {attempt}): {error}",
+                                        peer.desktop_id
+                                    );
+                                    tokio::time::sleep(IDENTITY_FETCH_RETRY_DELAY).await;
+                                }
+                                Err(error) => {
+                                    log::info!(
+                                        "[peer-transfer] transfer identity of {} not available yet: {error}; it is retried when transfer peers are listed",
+                                        peer.desktop_id
+                                    );
+                                    break;
+                                }
+                            }
                         }
                     });
                 }

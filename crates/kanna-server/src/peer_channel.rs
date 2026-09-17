@@ -47,6 +47,11 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(270);
 
 pub(crate) type PeerWebSocket = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
+/// Responder-hello capability: the session was granted sibling authority.
+pub(crate) const PEER_SESSION_CAPABILITY: &str = "peer-session";
+/// Responder-hello capability: the session may only claim a pairing string.
+pub(crate) const PEER_PAIRING_ONLY_CAPABILITY: &str = "peer-pairing-only";
+
 /// The outer route a sealed peer connection took.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PeerRoute {
@@ -67,6 +72,9 @@ impl PeerRoute {
 pub(crate) enum PeerDialError {
     /// The sibling is not a paired peer of this desktop.
     PairingRequired,
+    /// This desktop is not (yet) a paired peer of the sibling: it answered
+    /// the handshake but granted only pairing authority.
+    NotPairedBySibling,
     /// This desktop's own peer channel identity is unusable.
     IdentityUnavailable(String),
     /// A pinned peer answered, but not with a peer handshake: an older
@@ -82,7 +90,7 @@ pub(crate) enum PeerDialError {
 impl PeerDialError {
     pub(crate) fn code(&self) -> &'static str {
         match self {
-            Self::PairingRequired => "peer_pairing_required",
+            Self::PairingRequired | Self::NotPairedBySibling => "peer_pairing_required",
             Self::IdentityUnavailable(_) => "peer_identity_unavailable",
             Self::UpgradeRequired(_) => "peer_upgrade_required",
             Self::IdentityMismatch(_) => "peer_identity_mismatch",
@@ -96,6 +104,9 @@ impl std::fmt::Display for PeerDialError {
         match self {
             Self::PairingRequired => formatter.write_str(
                 "this desktop is not paired with that machine; pair it from Preferences → Machines",
+            ),
+            Self::NotPairedBySibling => formatter.write_str(
+                "that machine has not paired this desktop (its pin may be stale); pair the machines again",
             ),
             Self::IdentityUnavailable(detail) => {
                 write!(formatter, "peer secure channel unavailable: {detail}")
@@ -398,6 +409,15 @@ async fn complete_handshake(
             "responder identified as {} instead of {desktop_id}",
             responder_hello.desktop_id
         )));
+    }
+    let wants_sibling_authority = !matches!(hello, PeerHello::Pairing);
+    let granted_sibling_authority = responder_hello
+        .capabilities
+        .iter()
+        .any(|capability| capability == PEER_SESSION_CAPABILITY);
+    if wants_sibling_authority && !granted_sibling_authority {
+        let _ = ws.close(None).await;
+        return Err(PeerDialError::NotPairedBySibling);
     }
     let (sender, receiver) = channel.split();
     Ok(SealedPeerSocket {
