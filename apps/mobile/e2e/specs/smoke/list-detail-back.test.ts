@@ -4,6 +4,7 @@ import * as smokeModule from "./list-detail-back.e2e";
 import {
   assertPtyTerminalFixtureAvailable,
   ensureTaskListVisible,
+  REPO_CHIP_STRIP_MAX_SCROLL_STEPS,
   exerciseTaskPromptExpansion,
   exerciseActivityDismissSwipe,
   exerciseTaskPinSwipe,
@@ -66,6 +67,79 @@ function createElement(exists: () => boolean, onClick?: () => void): FakeElement
   };
 }
 
+interface FakeRepoChip extends FakeElement {
+  isDisplayed: ReturnType<typeof vi.fn>;
+}
+
+function createRepoChip(
+  exists: () => boolean,
+  displayed: () => boolean,
+  onClick?: () => void
+): FakeRepoChip {
+  return {
+    ...createElement(exists, onClick),
+    isDisplayed: vi.fn(async () => displayed())
+  };
+}
+
+/**
+ * A repo chip strip measured in scroll steps from its start. The chip is
+ * displayed only while the strip sits at `chipPosition`; the strip opens at
+ * `initialPosition` and, like a real ScrollView, stops at its start and at
+ * `endPosition` instead of scrolling on forever. A chip positioned beyond
+ * the end models one that exists but never scrolls in.
+ */
+function createRepoChipStrip(options: {
+  chipPosition: number;
+  endPosition?: number;
+  exists?: boolean;
+  initialPosition?: number;
+  onClick?: () => void;
+}) {
+  const exists = options.exists ?? true;
+  const endPosition =
+    options.endPosition ??
+    Math.max(options.chipPosition, options.initialPosition ?? 0);
+  let position = options.initialPosition ?? 0;
+  const chip = createRepoChip(
+    () => exists,
+    () => exists && position === options.chipPosition,
+    options.onClick
+  );
+  const scrollRepoChipStrip = vi.fn(async (direction: "forward" | "backward") => {
+    position = Math.min(
+      endPosition,
+      Math.max(0, position + (direction === "forward" ? 1 : -1))
+    );
+  });
+  return { chip, scrollRepoChipStrip };
+}
+
+function createRepoScopedUi(
+  strip: ReturnType<typeof createRepoChipStrip>,
+  options: { repoChipId: string; rowsFor: () => FakeElement[] }
+) {
+  return {
+    getBackButton: vi.fn(async () => createElement(() => false)),
+    getRepoChip: vi.fn(async (repoChipId: string) => {
+      if (repoChipId !== options.repoChipId) {
+        throw new Error(`no repo chip renders for ${repoChipId}`);
+      }
+      return strip.chip;
+    }),
+    getTaskRows: vi.fn(async () => options.rowsFor()),
+    pause: vi.fn(async () => undefined),
+    scrollRepoChipStrip: strip.scrollRepoChipStrip,
+    waitUntil: vi.fn(async (condition: () => Promise<boolean>, options) => {
+      if (await condition()) {
+        return;
+      }
+
+      throw new Error(options.timeoutMsg);
+    })
+  };
+}
+
 describe("performTaskDetailEdgeSwipeBack", () => {
   it("drags from the native iOS left edge and waits for Tasks to replace TaskDetail", async () => {
     let taskDetailVisible = true;
@@ -125,7 +199,8 @@ describe("exerciseTaskPinSwipe", () => {
     };
     const repo = {
       click: vi.fn(async () => undefined),
-      waitForDisplayed: vi.fn(async () => undefined)
+      isDisplayed: vi.fn(async () => true),
+      isExisting: vi.fn(async () => true)
     };
     let renderedRowIds: () => string[] = () =>
       pinnedLocally ? ["task-1", "task-2"] : ["task-2", "task-1"];
@@ -426,55 +501,138 @@ describe("ensureTaskListVisible", () => {
     // The app auto-selects the desktop's most recently opened repo. Here that
     // repo has no open task: rows exist only once the fixture repo is chosen.
     let selectedRepoChipId: string | null = null;
-    const fixtureRepoChip = createElement(
-      () => true,
-      () => {
+    const strip = createRepoChipStrip({
+      chipPosition: 0,
+      onClick: () => {
         selectedRepoChipId = "git:hash-fixture";
       }
-    );
-    const ui = {
-      getBackButton: vi.fn(async () => createElement(() => false)),
-      getRepoChip: vi.fn(async (repoChipId: string) => {
-        if (repoChipId !== "git:hash-fixture") {
-          throw new Error(`no repo chip renders for ${repoChipId}`);
-        }
-        return fixtureRepoChip;
-      }),
-      getTaskRows: vi.fn(async () =>
+    });
+    const ui = createRepoScopedUi(strip, {
+      repoChipId: "git:hash-fixture",
+      rowsFor: () =>
         selectedRepoChipId === "git:hash-fixture" ? [createElement(() => true)] : []
-      ),
-      pause: vi.fn(async () => undefined),
-      waitUntil: vi.fn(async (condition: () => Promise<boolean>, options) => {
-        if (await condition()) {
-          return;
-        }
-
-        throw new Error(options.timeoutMsg);
-      })
-    };
+    });
 
     await ensureTaskListVisible(ui, { repoChipId: "git:hash-fixture" });
 
     expect(ui.getRepoChip).toHaveBeenCalledWith("git:hash-fixture");
-    expect(fixtureRepoChip.waitForDisplayed).toHaveBeenCalledWith({ timeout: 30_000 });
-    expect(fixtureRepoChip.click).toHaveBeenCalledTimes(1);
+    expect(strip.chip.isExisting).toHaveBeenCalled();
+    expect(strip.chip.isDisplayed).toHaveBeenCalled();
+    // A chip already on screen is clicked as is: the strip never moves.
+    expect(strip.scrollRepoChipStrip).not.toHaveBeenCalled();
+    expect(strip.chip.click).toHaveBeenCalledTimes(1);
     expect(ui.getTaskRows).toHaveBeenCalled();
   });
 
-  it("still fails when the fixture repo itself shows no rows", async () => {
-    const ui = {
-      getBackButton: vi.fn(async () => createElement(() => false)),
-      getRepoChip: vi.fn(async () => createElement(() => true)),
-      getTaskRows: vi.fn(async () => []),
-      pause: vi.fn(async () => undefined),
-      waitUntil: vi.fn(async (condition: () => Promise<boolean>, options) => {
-        if (await condition()) {
-          return;
-        }
+  it("scrolls the repo chip strip until an off-screen chip is displayed, then clicks it", async () => {
+    // Five repositories on the desktop put the fixture's chip fourth in the
+    // strip, past an iPhone's right edge: it exists, but is not displayed
+    // until the strip has moved. This is the production QA failure of
+    // 2026-09-17, where the chip was found and then waited on forever.
+    let clicked = false;
+    const strip = createRepoChipStrip({
+      chipPosition: 2,
+      onClick: () => {
+        clicked = true;
+      }
+    });
+    const ui = createRepoScopedUi(strip, {
+      repoChipId: "git:hash-fixture",
+      rowsFor: () => (clicked ? [createElement(() => true)] : [])
+    });
 
-        throw new Error(options.timeoutMsg);
-      })
-    };
+    await ensureTaskListVisible(ui, { repoChipId: "git:hash-fixture" });
+
+    expect(strip.scrollRepoChipStrip.mock.calls).toEqual([["forward"], ["forward"]]);
+    expect(ui.pause).toHaveBeenCalledWith(500);
+    expect(strip.chip.click).toHaveBeenCalledTimes(1);
+    // The click lands only once the chip is on screen, never before a scroll.
+    const lastScrollOrder = Math.max(
+      ...strip.scrollRepoChipStrip.mock.invocationCallOrder
+    );
+    expect(strip.chip.click.mock.invocationCallOrder[0]).toBeGreaterThan(lastScrollOrder);
+    expect(ui.getTaskRows).toHaveBeenCalled();
+  });
+
+  it("scrolls back toward the start when the chip lies behind the strip's current position", async () => {
+    // An earlier selection left the strip two steps in, with the chip at the
+    // start. Forward steps pile up against the strip's end first; the chip
+    // surfaces on the backward pass once the strip has returned to its start.
+    const strip = createRepoChipStrip({
+      chipPosition: 0,
+      endPosition: 3,
+      initialPosition: 2
+    });
+    const ui = createRepoScopedUi(strip, {
+      repoChipId: "git:hash-fixture",
+      rowsFor: () => [createElement(() => true)]
+    });
+
+    await ensureTaskListVisible(ui, { repoChipId: "git:hash-fixture" });
+
+    expect(strip.scrollRepoChipStrip.mock.calls).toEqual([
+      ...Array.from({ length: REPO_CHIP_STRIP_MAX_SCROLL_STEPS }, () => ["forward"]),
+      ["backward"],
+      ["backward"],
+      ["backward"]
+    ]);
+    expect(strip.chip.click).toHaveBeenCalledTimes(1);
+  });
+
+  it("fails naming the chip when it exists but never scrolls into view", async () => {
+    // The strip ends three steps in and the chip is never at any position
+    // the strip can reach, so both passes run out against its ends.
+    const strip = createRepoChipStrip({ chipPosition: 4, endPosition: 3 });
+    const ui = createRepoScopedUi(strip, {
+      repoChipId: "git:hash-fixture",
+      rowsFor: () => [createElement(() => true)]
+    });
+
+    await expect(
+      ensureTaskListVisible(ui, { repoChipId: "git:hash-fixture" })
+    ).rejects.toThrow(
+      "Repo chip git:hash-fixture exists but never became displayed after " +
+        `scrolling the repo chip strip ${REPO_CHIP_STRIP_MAX_SCROLL_STEPS} ` +
+        `steps forward and ${REPO_CHIP_STRIP_MAX_SCROLL_STEPS} steps back`
+    );
+    // The scroll is bounded: one full pass each way, then the failure.
+    expect(strip.scrollRepoChipStrip).toHaveBeenCalledTimes(
+      REPO_CHIP_STRIP_MAX_SCROLL_STEPS * 2
+    );
+    expect(strip.chip.click).not.toHaveBeenCalled();
+    expect(ui.getTaskRows).not.toHaveBeenCalled();
+  });
+
+  it("fails on existence, without scrolling, when the chip is absent entirely", async () => {
+    // A wrong id or a repository the phone does not list is a different
+    // failure from an off-screen chip, and scrolling must not blur the two.
+    const strip = createRepoChipStrip({ chipPosition: 0, exists: false });
+    const ui = createRepoScopedUi(strip, {
+      repoChipId: "git:hash-fixture",
+      rowsFor: () => [createElement(() => true)]
+    });
+
+    await expect(
+      ensureTaskListVisible(ui, { repoChipId: "git:hash-fixture" })
+    ).rejects.toThrow(
+      "Repo chip git:hash-fixture never rendered: the repository is absent " +
+        "from the phone's chip strip or the chip id is wrong"
+    );
+    expect(ui.waitUntil).toHaveBeenCalledWith(
+      expect.any(Function),
+      expect.objectContaining({ timeout: 30_000 })
+    );
+    expect(strip.scrollRepoChipStrip).not.toHaveBeenCalled();
+    expect(strip.chip.isDisplayed).not.toHaveBeenCalled();
+    expect(strip.chip.click).not.toHaveBeenCalled();
+  });
+
+  it("still fails when the fixture repo itself shows no rows", async () => {
+    const strip = createRepoChipStrip({ chipPosition: 0 });
+    const ui = createRepoScopedUi(strip, {
+      repoChipId: "git:hash-fixture",
+      rowsFor: () => []
+    });
 
     await expect(
       ensureTaskListVisible(ui, { repoChipId: "git:hash-fixture" })
@@ -1342,7 +1500,8 @@ describe("smoke local reads use local-process authority", () => {
     };
     const repo = {
       click: vi.fn(async () => undefined),
-      waitForDisplayed: vi.fn(async () => undefined)
+      isDisplayed: vi.fn(async () => true),
+      isExisting: vi.fn(async () => true)
     };
     const driver = {
       $: vi.fn(async (selector: string) =>

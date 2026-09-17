@@ -11,6 +11,12 @@ import { canonicalRepoId } from "../../../src/lib/api/repoIdentity";
 const SCREEN_TIMEOUT_MS = 30_000;
 const POLL_INTERVAL_MS = 250;
 const BACK_NAVIGATION_SETTLE_MS = 500;
+// The repo chip strip is a horizontal ScrollView: with enough repositories the
+// fixture's chip renders past the phone's right edge, so selecting it means
+// scrolling the strip in bounded steps. Each step is one near-full-width swipe,
+// so a bound of a few steps each way spans far more chips than a desktop lists.
+export const REPO_CHIP_STRIP_MAX_SCROLL_STEPS = 6;
+const REPO_CHIP_STRIP_SETTLE_MS = 500;
 const TEXT_SELECTION_LONG_PRESS_MS = 1_500;
 const LONG_PROMPT_MINIMUM_CHARS = 300;
 
@@ -60,10 +66,32 @@ interface TaskListUi {
   ): Promise<unknown>;
 }
 
-/** A task list whose repository chips the smoke can select. */
-interface RepoScopedTaskListUi extends TaskListUi {
-  getRepoChip(repoChipId: string): Promise<SmokeElement>;
+/** A repo chip: whether it is on screen decides whether the strip must scroll. */
+interface RepoChipElement extends SmokeElement {
+  isDisplayed(): Promise<boolean>;
 }
+
+/** Which way to move the horizontal repo chip strip by one step. */
+export type RepoChipStripScrollDirection = "forward" | "backward";
+
+/** The horizontal strip of repository chips above the task list. */
+interface RepoChipStripUi {
+  getRepoChip(repoChipId: string): Promise<RepoChipElement>;
+  pause(ms: number): Promise<unknown>;
+  /** Scrolls the strip one step toward later (`forward`) or earlier chips. */
+  scrollRepoChipStrip(direction: RepoChipStripScrollDirection): Promise<void>;
+  waitUntil(
+    condition: () => Promise<boolean>,
+    options: {
+      interval: number;
+      timeout: number;
+      timeoutMsg: string;
+    }
+  ): Promise<unknown>;
+}
+
+/** A task list whose repository chips the smoke can select. */
+interface RepoScopedTaskListUi extends TaskListUi, RepoChipStripUi {}
 
 interface ListDetailBackOriginUi {
   selectOrigin(origin: "tasks" | "recent"): Promise<void>;
@@ -211,7 +239,36 @@ interface RunListDetailBackSmokeOptions {
   fetchImpl?: FetchLike;
 }
 
+/**
+ * The repo chip strip as the real driver sees it. Scrolling is one wdio
+ * `swipe` across the strip element itself, not across the screen: a
+ * screen-wide horizontal swipe would reach the outer vertical list instead.
+ * WebDriverAgent's own scroll-to-visible is not an option here — it only
+ * understands table and collection cells, which React Native never renders.
+ */
+function createRepoChipStripUi(driver: Browser): RepoChipStripUi {
+  return {
+    async getRepoChip(repoChipId) {
+      return driver.$(tasksRepoSelector(repoChipId));
+    },
+    async pause(ms) {
+      return driver.pause(ms);
+    },
+    async scrollRepoChipStrip(direction) {
+      const strip = await driver.$(selectors.tasksRepoStripXPath);
+      await driver.swipe({
+        direction: direction === "forward" ? "left" : "right",
+        scrollableElement: strip
+      });
+    },
+    async waitUntil(condition, options) {
+      return driver.waitUntil(condition, options);
+    }
+  };
+}
+
 function createSmokeUi(driver: Browser): SmokeUi {
+  const repoChipStrip = createRepoChipStripUi(driver);
   return {
     async getAgentMessageView() {
       return driver.$(selectors.agentMessageView);
@@ -263,7 +320,10 @@ function createSmokeUi(driver: Browser): SmokeUi {
       return Array.from(taskRows);
     },
     async getRepoChip(repoChipId) {
-      return driver.$(tasksRepoSelector(repoChipId));
+      return repoChipStrip.getRepoChip(repoChipId);
+    },
+    async scrollRepoChipStrip(direction) {
+      return repoChipStrip.scrollRepoChipStrip(direction);
     },
     async inspectTerminalWebView() {
       return inspectTerminalWebView({
@@ -1037,12 +1097,63 @@ export async function ensureTaskListVisible(
         `Cannot select repo chip ${options.repoChipId}: this task list UI has no repo chips.`
       );
     }
-    const repoChip = await ui.getRepoChip(options.repoChipId);
-    await repoChip.waitForDisplayed?.({ timeout: SCREEN_TIMEOUT_MS });
-    await repoChip.click();
+    await selectRepoChip(ui, options.repoChipId);
   }
 
   await waitForTaskRows(ui);
+}
+
+/**
+ * Selects a repository chip, scrolling the horizontal strip until the chip is
+ * on screen first. The two ways this fails are kept apart: a chip that never
+ * renders (wrong id, repository absent from the phone) fails on existence,
+ * while one that exists but stays off screen through every bounded scroll
+ * step fails naming the step budget.
+ */
+export async function selectRepoChip(
+  ui: RepoChipStripUi,
+  repoChipId: string
+): Promise<void> {
+  const repoChip = await ui.getRepoChip(repoChipId);
+  await ui.waitUntil(() => repoChip.isExisting(), {
+    interval: POLL_INTERVAL_MS,
+    timeout: SCREEN_TIMEOUT_MS,
+    timeoutMsg:
+      `Repo chip ${repoChipId} never rendered: the repository is absent from ` +
+      "the phone's chip strip or the chip id is wrong"
+  });
+  await scrollRepoChipIntoView(ui, repoChip, repoChipId);
+  await repoChip.click();
+}
+
+async function scrollRepoChipIntoView(
+  ui: RepoChipStripUi,
+  repoChip: RepoChipElement,
+  repoChipId: string
+): Promise<void> {
+  if (await repoChip.isDisplayed()) {
+    return;
+  }
+
+  // The strip opens at its start, so the chip is almost always ahead; the
+  // backward pass only matters when an earlier selection left the strip
+  // scrolled past it.
+  const directions: RepoChipStripScrollDirection[] = ["forward", "backward"];
+  for (const direction of directions) {
+    for (let step = 0; step < REPO_CHIP_STRIP_MAX_SCROLL_STEPS; step += 1) {
+      await ui.scrollRepoChipStrip(direction);
+      await ui.pause(REPO_CHIP_STRIP_SETTLE_MS);
+      if (await repoChip.isDisplayed()) {
+        return;
+      }
+    }
+  }
+
+  throw new Error(
+    `Repo chip ${repoChipId} exists but never became displayed after ` +
+      `scrolling the repo chip strip ${REPO_CHIP_STRIP_MAX_SCROLL_STEPS} ` +
+      `steps forward and ${REPO_CHIP_STRIP_MAX_SCROLL_STEPS} steps back`
+  );
 }
 
 export async function exerciseListDetailBackFromOrigin(
@@ -1177,9 +1288,7 @@ export async function exerciseTaskPinSwipe(
     detail.repoId,
     fetchImpl
   );
-  const repo = await driver.$(tasksRepoSelector(repoChipId));
-  await repo.waitForDisplayed({ timeout: SCREEN_TIMEOUT_MS });
-  await repo.click();
+  await selectRepoChip(createRepoChipStripUi(driver), repoChipId);
 
   try {
     await swipeRowToTogglePin();
