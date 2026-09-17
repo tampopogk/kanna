@@ -19,6 +19,7 @@ use std::time::Duration;
 
 mod analytics;
 mod blockers;
+pub(crate) mod claude_channel;
 pub(crate) mod copilot_wake;
 mod create_intents;
 mod event_subscriptions;
@@ -207,6 +208,7 @@ pub(crate) const CURRENT_SCHEMA_MIGRATIONS: &[&str] = &[
     "088_workspace_setup_run",
     "089_task_serviced_watermark",
     "090_standing_constraint",
+    "091_claude_channel",
 ];
 
 #[derive(Debug, Serialize)]
@@ -2580,6 +2582,8 @@ fn run_schema_migrations(conn: &Connection) -> Result<(), rusqlite::Error> {
         "090_standing_constraint",
         create_standing_constraint_schema,
     )?;
+
+    run_migration(conn, "091_claude_channel", claude_channel::create_schema)?;
 
     Ok(())
 }

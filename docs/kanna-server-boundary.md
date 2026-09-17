@@ -88,7 +88,9 @@ scope still tells an older consumer exactly what to invalidate.
 bytes. The daemon writes it as one fenced delivery: the text, framed as a paste
 when the terminal supports it, followed by Enter in a later writer step. It
 does not inspect the composer first, and there is no condition under which it
-retains, defers, or refuses the message.
+retains, defers, or refuses a caller's message. The one composer-aware delivery
+is Kanna's own supervisory wake, which is not somebody's speech — see
+[Engine wakes wait for the boundary](#engine-wakes-wait-for-the-boundary).
 
 **A live session always takes the message.** Until 2026-09-08 the daemon parked
 a delivery behind a human's unsent draft, and withheld its Enter from a
@@ -101,7 +103,9 @@ input protection is killing me. I'd rather have collisions."* A message that
 occasionally lands after somebody's half-typed line is far cheaper than one that
 silently never arrives, so the collision is the accepted outcome and the hold is
 gone. Nothing is queued, nothing is parked, and no session refuses input because
-of what is on its composer.
+of what is on its composer. That decision is about *speech*, and it is
+unchanged: every `operator`, `manager`, and `unspecified` delivery still always
+submits, over a draft if that is what is there.
 
 **A `204` means written, boundary included.** The message and its Enter are one
 PTY write, so the acknowledgement means what a caller assumes it means. The
@@ -178,6 +182,106 @@ opaque and never used to infer submission, including inside multiline paste.
 Every accepted delivery is also recorded durably against the task — see
 [Delivered Task Inputs](#delivered-task-inputs) — because terminal bytes are
 not a record any later stage can read.
+
+### Supervisory wakes do not go through the composer
+
+The reserved `engine` source — Kanna nudging a subscriber that its mailbox has
+a pending batch — is not speech, and it is the one delivery that may decline
+the composer. The 2026-09-08 decision protects a message that would otherwise
+be lost: an owner's answer from their phone, a manager's directive, anything
+nobody would ever re-send, and for those a collision is cheaper than silence.
+A supervisory nudge is the opposite kind of thing. The durable mailbox, not the
+nudge, owns the events; the batch stays pending, stays readable through
+`kanna_read_event_subscription`, and is re-derivable at any time. Delivering
+one into somebody's half-written line costs that line: on 2026-09-17 a wake
+landed while the owner was mid-draft in a manager session, submitted the
+fragment they had typed so far, and sent the rest as a second message split
+around the engine's text.
+
+**Transport is selected by a measured capability of the current run** — never
+by a model name, documentation alone, a historical session id, or a cwd — and
+the durable observer, batching and admission, mailbox, and explicit read/ack
+contract are shared by every transport:
+
+| Harness | Route | Touches a composer |
+| --- | --- | --- |
+| Claude | Native MCP channel held by the run's own `kanna-mcp` child | No |
+| Copilot | CLI-owned extension's native enqueue | No |
+| Codex | Opt-in app-server adapter, tool output on the live root thread | No |
+| Anything else | The shared fenced input adapter, which types | Yes — see the deferral below |
+
+**Nothing falls back to the composer after a native route fails.** An absent,
+unconfirmed, or uncertain native delivery keeps the batch pending and says why
+in `error`. No fallback nudge is appended to a human composer, no second writer
+is started against the harness's own conversation storage, and an undelivered
+notice is never acknowledged.
+
+#### The Claude native channel
+
+`kanna-mcp` is already the task's MCP server, so it already holds a stdio pipe
+into the running CLI. It attaches an SSE stream to
+`/v1/tasks/{task_id}/claude-channel` for its own run, and a wake leaves the
+server as a frame on that stream, becoming a `notifications/claude/channel` on
+the pipe. Nothing is typed, so an unsent draft and its cursor are untouched —
+which the 2026-09-14 live experiment measured directly, along with native
+engine labelling, reconnect replay, and acknowledgement staying separate.
+
+It is **opt-in and off by default**. A session opts in with
+`KANNA_CLAUDE_CHANNELS=1` in its own environment (or the repo's
+`workspace.env`), which Kanna forwards to the MCP child along with the task and
+run ids; the CLI must separately be launched able to load the channel. Without
+the opt-in the MCP child's config is byte-identical to what it was and the
+transport does not exist for that session.
+
+That experiment also found two defects, and both are part of the contract here:
+
+- **Confirmation is not a startup fact.** A probe emitted during MCP
+  initialization was dropped before the CLI was listening, and nothing retried
+  it. So a channel is confirmed by the subscriber's own
+  `kanna_confirm_event_channel` call, and **every admitted wake re-probes an
+  unconfirmed channel** rather than trusting one initialization-time probe. The
+  channel id is minted per connection and re-sent with each probe, so a late
+  confirmation still names something current. While a channel is attached but
+  unconfirmed the batch stays pending with a `not confirmed` explanation — an
+  attached native route that is not ready yet is not the same as not having
+  one, and it never falls through to typing.
+- **Written is not read.** A notice written into a running turn was absorbed by
+  that turn with no mailbox read, and the prototype still called it delivered.
+  The MCP host may claim exactly one thing — that a notification reached the
+  transport — and that claim is what earns the durable `engine` `task_input`
+  row, once. A mailbox read is recorded separately, by the read route. When a
+  notice was written, the batch was never read, and the task's runtime state
+  has since been *recorded* as non-busy, the same durable attempt is repeated:
+  no new notice, no second record, and bounded to three follow-ups, because the
+  mailbox already guarantees the events survive and a wake that repeats forever
+  is a scheduler.
+
+A receipt is neither an acknowledgement nor owner speech, and the receipt route
+refuses any kind but `written` and `uncertain`. Only the subscriber's own
+`acknowledge_batch_id` retires a batch.
+
+#### The composer deferral, for harnesses with no native route
+
+OpenCode has an identified but unverified route and Antigravity has none, so
+for those the shared fenced input adapter still types. There, and only there,
+an `engine` delivery reads the composer attestation first: when the target
+composer is attested `typed`, the wake is **not delivered**, the subscription
+keeps its `pending` batch, `wakeState` stays `pending` with a
+`composer_draft_deferred` explanation in `error`, and the worker re-attempts on
+the next notification and admission slot. A submission boundary republishes the
+composer, and that republication is itself a task state change, so the edit
+that makes delivery safe is the edit that wakes the deferred attempt.
+`not-typed` and `unknown` deliver as before: the first is provably the
+provider's own chrome, the second proves nothing, and neither may hold a wake
+forever.
+
+This is scoped to the reserved `engine` source, which no API caller can
+claim: `TaskInputSource::from_caller_declared` refuses the label. **It can
+never delay or block ordinary input**: an `operator`, `manager`, or
+`unspecified` delivery never reaches the check, a pending or deferred
+notification holds no lease over the task, and there is no queue an ordinary
+message can get stuck behind. Kanna had an input arbitration feature once that
+blocked human input; this is not that, and nothing here may become that.
 
 ### Raw terminal keys
 

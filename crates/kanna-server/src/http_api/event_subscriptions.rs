@@ -427,6 +427,19 @@ pub(super) async fn subscribe(
     if copilot && request.delivery == harness_wake::Delivery::Input {
         request.delivery = harness_wake::Delivery::CopilotExtension;
     }
+    // Unlike Copilot's, an explicit `claude_channel` subscription is never
+    // auto-selected here: `input` on a Claude run resolves per delivery, by
+    // whether that run actually has a confirmed channel at the time. Naming it
+    // explicitly says "this run must use the native channel", so an absent or
+    // unconfirmed one keeps the batch pending instead of typing anywhere.
+    if request.delivery == harness_wake::Delivery::ClaudeChannel
+        && run.agent_provider.as_deref() != Some("claude")
+    {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "claude_channel delivery requires a Claude manager run".into(),
+        ));
+    }
     if request.delivery == harness_wake::Delivery::CodexAppServer
         && run.agent_provider.as_deref() != Some("codex")
     {
@@ -630,6 +643,20 @@ pub(super) async fn read(
     Json(request): Json<ReadRequest>,
 ) -> Result<Json<Value>, ApiError> {
     let mut row = load(&state, &id)?;
+    // A read is the other half of "written is not read": without recording it,
+    // a notice absorbed mid-turn and one the subscriber actually serviced look
+    // identical, and the post-turn follow-up could not tell them apart. It
+    // acknowledges nothing and never touches human read/unread state.
+    if row.pending.is_some() {
+        if let Ok(db) = database(&state) {
+            if let Err(error) = db.record_claude_channel_read(&row.id, row.batch_id) {
+                log::warn!(
+                    "failed to record channel mailbox read for {}: {error}",
+                    row.id
+                );
+            }
+        }
+    }
     if let Some(batch_id) = request.acknowledge_batch_id {
         if batch_id != row.batch_id {
             return Err((
@@ -778,10 +805,14 @@ async fn step(
                     row.error = None;
                 }
                 // Nothing reached the daemon and the cause clears itself — a
-                // daemon handoff, an unreadable daemon, a held mutation lease.
+                // daemon handoff, an unreadable daemon, a held mutation lease,
+                // or a wake deferred at somebody's unsent composer draft.
                 // Stay `pending` so the next notification re-attempts it; the
                 // retained text says why the last try failed without ever
-                // claiming the batch was delivered.
+                // claiming the batch was delivered. A submission boundary
+                // republishes the composer, which is itself a task state
+                // change, so a deferred wake is woken by the very edit that
+                // makes it safe to deliver.
                 Err(failure) if failure.retry == task_input::DeliveryRetry::Transient => {
                     row.wake_state = "pending".into();
                     row.error = Some(failure.message);
@@ -792,6 +823,25 @@ async fn step(
                 }
             }
             save(state, &mut row)?;
+        } else if row.wake_state == "notified"
+            && super::claude_channel::needs_post_turn_follow_up(state, &row)
+        {
+            // Written into a running turn and absorbed by it: the transport
+            // wrote the notice, the subscriber never read the batch, and the
+            // turn has since ended. Re-arm the same durable attempt — no new
+            // message, no new record — so the ordinary admission path repeats
+            // it once. `MAX_FOLLOW_UPS` bounds this; the mailbox, not the
+            // nudge, is what guarantees the events survive.
+            row.wake_state = "pending".into();
+            row.error = Some(
+                "channel notice was written but absorbed by the turn it landed in without a \
+                 mailbox read; re-notifying now that the turn has ended"
+                    .into(),
+            );
+            save(state, &mut row)?;
+            // Re-enter rather than wait: the state change that proved the turn
+            // ended has already been consumed, and nothing else is coming.
+            return Ok(Step::Iterate);
         } else if row.wake_state == "sending" {
             // A server died after reserving delivery. Preserve the page;
             // sending another wake could submit a second turn.

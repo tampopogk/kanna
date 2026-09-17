@@ -73,6 +73,7 @@ pub struct AppState {
         Arc<Mutex<Option<super::machine_stats::CachedCompactStats>>>,
     pub(super) event_subscriptions_changed: Arc<Notify>,
     pub(super) copilot_wakes: Arc<StdMutex<super::copilot_wake::Registry>>,
+    pub(super) claude_channels: Arc<StdMutex<super::claude_channel::Registry>>,
     pub(super) config: Config,
     /// Opened once on first use and reused for the process lifetime, so a
     /// legacy-access check or a settings read/write does not pay for a fresh
@@ -604,6 +605,7 @@ impl AppState {
             compact_machine_stats_cache: Arc::new(Mutex::new(None)),
             event_subscriptions_changed: Arc::new(Notify::new()),
             copilot_wakes: Arc::new(StdMutex::new(HashMap::new())),
+            claude_channels: Arc::new(StdMutex::new(HashMap::new())),
             config,
             settings_db: Arc::new(StdMutex::new(None)),
             forge_client: crate::forge_pull_requests::ForgeClient::from_environment(),

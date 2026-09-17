@@ -19,6 +19,8 @@ pub(super) enum Delivery {
     Poll,
     /// Copilot's host-owned extension, never terminal input.
     CopilotExtension,
+    /// Claude's native MCP channel, never terminal input.
+    ClaudeChannel,
 }
 
 impl Delivery {
@@ -28,6 +30,7 @@ impl Delivery {
             Self::CodexAppServer => "codex_app_server",
             Self::Poll => "poll",
             Self::CopilotExtension => "copilot_extension",
+            Self::ClaudeChannel => "claude_channel",
         }
     }
 }
@@ -38,12 +41,29 @@ pub(super) async fn deliver(
 ) -> Result<&'static str, task_input::EngineWakeFailure> {
     // Legacy Copilot subscriptions said `input`. Preserve their mailbox and
     // cursor, but never route their automatic notices back to the composer.
-    let copilot = Db::open(&state.config().db_path)
+    let provider = Db::open(&state.config().db_path)
         .and_then(|db| db.stage_run(&row.run_id))
         .map_err(|e| park(e.to_string()))?
-        .is_some_and(|run| run.agent_provider.as_deref() == Some("copilot"));
+        .and_then(|run| run.agent_provider);
+    let copilot = provider.as_deref() == Some("copilot");
     if row.delivery == "copilot_extension" || (row.delivery == "input" && copilot) {
         return super::copilot_wake::deliver(&state, row);
+    }
+    // Transport is chosen by a *measured* capability of this run, never by a
+    // provider name alone: a Claude run takes this route while its own MCP
+    // child holds a live channel stream. Once it does, that stream owns every
+    // wake for the run — an unconfirmed probe keeps the batch pending and
+    // re-probes rather than falling back to typing, because a native route
+    // that is not ready yet is not the same thing as not having one. `input`
+    // keeps its existing meaning for a session with no attached host, and the
+    // composer-typing path below stays the fallback for harnesses that have no
+    // native route at all.
+    if row.delivery == "claude_channel"
+        || (row.delivery == "input"
+            && provider.as_deref() == Some("claude")
+            && super::claude_channel::attached_channel(&state, &row.run_id, &row.task_id))
+    {
+        return super::claude_channel::deliver(&state, row);
     }
     let message = format!(
         "[Kanna supervisor] Event subscription {} has pending events (batch {}). Read them with kanna_read_event_subscription, then acknowledge that batch after reconciling it. This is an engine wakeup, not an owner directive or a task-completion verdict.",

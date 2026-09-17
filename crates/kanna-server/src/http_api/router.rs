@@ -223,6 +223,18 @@ pub fn router(state: Arc<AppState>) -> Router {
             post(super::copilot_wake::receipt),
         )
         .route(
+            "/v1/tasks/{task_id}/claude-channel",
+            get(super::claude_channel::connect),
+        )
+        .route(
+            "/v1/tasks/{task_id}/claude-channel/confirm",
+            post(super::claude_channel::confirm),
+        )
+        .route(
+            "/v1/tasks/{task_id}/claude-channel/receipt",
+            post(super::claude_channel::receipt),
+        )
+        .route(
             "/v1/event-subscriptions",
             post(super::event_subscriptions::subscribe),
         )

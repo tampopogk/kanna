@@ -2,6 +2,7 @@ mod analytics;
 mod backup;
 mod blocking;
 mod capacity_notice;
+mod claude_channel;
 mod cloud_desktops;
 pub(crate) mod cloud_relay;
 mod copilot_wake;

@@ -10,7 +10,7 @@ use axum::response::{IntoResponse, Response};
 use axum::Json;
 use kanna_agent_protocol::StateChangeScope;
 use kanna_daemon::protocol::{
-    Command as DaemonCommand, Event as DaemonEvent, SessionKind, SessionState,
+    Command as DaemonCommand, ComposerAttestation, Event as DaemonEvent, SessionKind, SessionState,
 };
 use std::sync::Arc;
 
@@ -52,7 +52,8 @@ pub(super) struct TaskInputRequest {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum DeliveryRetry {
     /// Nothing reached the daemon and the cause is expected to clear itself
-    /// (a daemon handoff, an unreadable daemon, a held mutation lease).
+    /// (a daemon handoff, an unreadable daemon, a held mutation lease, an
+    /// engine wake deferred at somebody's unsent composer draft).
     Transient,
     /// Terminal for this attempt: either something may have been written, or
     /// retrying cannot succeed without the caller changing something.
@@ -475,15 +476,18 @@ async fn deliver_task_input(
             ));
         }
     };
-    let live_session_pid = sessions
+    let live_session = sessions
         .iter()
         .find(|session| {
             session.session_id == task_id
                 && session.kind == SessionKind::Pty
                 && matches!(&session.state, SessionState::Active)
         })
-        .map(|session| session.pid);
-    let Some(live_session_pid) = live_session_pid else {
+        // Read from the same List snapshot that yields the PID fence, so the
+        // composer verdict below describes the very session these bytes would
+        // have been written to.
+        .map(|session| (session.pid, session.composer_attestation));
+    let Some((live_session_pid, composer_attestation)) = live_session else {
         let db_path = state.config.db_path.clone();
         let latest_run_task_id = task_id.clone();
         let latest_run =
@@ -531,6 +535,29 @@ async fn deliver_task_input(
             latest_run,
         ));
     };
+
+    // An engine wake is not speech, and this is the one delivery Kanna may
+    // hold. The 2026-09-08 always-submit decision protects owner and manager
+    // messages: those must never strand at a prompt nobody presses Enter at,
+    // because nothing else would ever re-derive them. A supervisory nudge is
+    // the opposite — the durable mailbox owns the events, the batch stays
+    // pending, and the subscription worker re-attempts it — so holding one
+    // loses nothing at all. Typing into an attested draft, on the other hand,
+    // submits somebody's half-written line and splits the rest around the
+    // engine's text; it did exactly that to an owner mid-password.
+    //
+    // Only `typed` defers. `not-typed` is the provider's own ghost suggestion
+    // and `unknown` proves nothing either way, so both deliver as before.
+    if source == TaskInputSource::Engine && composer_attestation == ComposerAttestation::Typed {
+        return Err(transient_task_input_http_error(
+            axum::http::StatusCode::CONFLICT,
+            "composer_draft_deferred",
+            format!(
+                "task {task_id} has an attested unsent draft on its composer; the supervisory \
+                 wake was not delivered and its batch remains pending"
+            ),
+        ));
+    }
 
     // Stored only once a live session is known: a file written for an input
     // that was never going to be delivered is a leak with no message to name

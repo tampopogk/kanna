@@ -3,7 +3,8 @@ use super::*;
 use crate::db::TaskEventKind;
 use crate::http_api::subscription_timing::TestEvent;
 use kanna_daemon::protocol::{
-    Command as DaemonCommand, Event as DaemonEvent, SessionInfo, SessionState, SessionStatus,
+    Command as DaemonCommand, ComposerAttestation, Event as DaemonEvent, SessionInfo, SessionState,
+    SessionStatus,
 };
 use std::os::unix::fs::PermissionsExt;
 use std::sync::Mutex;
@@ -31,6 +32,9 @@ struct Watch {
     service: tokio::task::JoinHandle<()>,
     daemon: tokio::task::JoinHandle<()>,
     inputs: Arc<Mutex<Vec<String>>>,
+    /// What the fake daemon reports for the subscriber's composer, standing in
+    /// for a real daemon's typed-byte attestation ledger.
+    composer: Arc<Mutex<ComposerAttestation>>,
     lose_input_reply: Arc<AtomicBool>,
     proxy: std::path::PathBuf,
     trace: std::path::PathBuf,
@@ -107,6 +111,8 @@ for line in sys.stdin:
         .unwrap();
         let inputs = Arc::new(Mutex::new(Vec::new()));
         let recorded = inputs.clone();
+        let composer = Arc::new(Mutex::new(ComposerAttestation::default()));
+        let reported_composer = composer.clone();
         let lose_input_reply = Arc::new(AtomicBool::new(false));
         let uncertain = lose_input_reply.clone();
         let daemon = tokio::spawn(async move {
@@ -117,19 +123,26 @@ for line in sys.stdin:
                     connection = listener.accept() => {
                         let (stream, _) = connection.unwrap();
                         let recorded = recorded.clone();
+                        let reported_composer = reported_composer.clone();
                         let uncertain = uncertain.clone();
                         clients.spawn(async move {
                             let (read, mut write) = stream.into_split();
                             let mut read = BufReader::new(read);
                             while let Some(command) = super::super::read_test_daemon_command_optional(&mut read, &mut write).await {
                                 let reply = match command {
-                                    DaemonCommand::List => DaemonEvent::SessionList { sessions: vec![SessionInfo {
-                                        session_id: "child-c".into(), pid: 42, cwd: "/workspace/manager".into(),
-                                        state: SessionState::Active, idle_seconds: 0, status: SessionStatus::Idle,
-                                        status_observed: true, kind: Default::default(), composer_text: None,
-                                        composer_attestation: Default::default(),
-                                        attempt_id: None,
-                                    }] },
+                                    DaemonCommand::List => {
+                                        let composer_attestation = *reported_composer.lock().unwrap();
+                                        // A typed ledger is the only state that renders somebody's own unsent line.
+                                        let composer_text = matches!(composer_attestation, ComposerAttestation::Typed)
+                                            .then(|| "half-typed owner draft".to_string());
+                                        DaemonEvent::SessionList { sessions: vec![SessionInfo {
+                                            session_id: "child-c".into(), pid: 42, cwd: "/workspace/manager".into(),
+                                            state: SessionState::Active, idle_seconds: 0, status: SessionStatus::Idle,
+                                            status_observed: true, kind: Default::default(), composer_text,
+                                            composer_attestation,
+                                            attempt_id: None,
+                                        }] }
+                                    },
                                     DaemonCommand::SubmitInputIfSession { session_id, expected_pid, data } => {
                                         assert_eq!(session_id, "child-c"); assert_eq!(expected_pid, 42);
                                         recorded.lock().unwrap().push(String::from_utf8(data).unwrap());
@@ -168,6 +181,7 @@ for line in sys.stdin:
             service,
             daemon,
             inputs,
+            composer,
             lose_input_reply,
             proxy,
             trace,
@@ -178,6 +192,13 @@ for line in sys.stdin:
 
     fn row(&self) -> crate::db::EventSubscription {
         self.db.event_subscription(&self.id).unwrap().unwrap()
+    }
+    /// Move the subscriber's composer, the way the daemon's ledger does, and
+    /// publish the task state change a real composer edit publishes with it.
+    fn composer(&self, attestation: ComposerAttestation) {
+        *self.composer.lock().unwrap() = attestation;
+        self.state
+            .publish_state_changed(kanna_agent_protocol::StateChangeScope::Tasks);
     }
     fn emit(&self, kind: TaskEventKind) {
         self.db
@@ -863,4 +884,94 @@ async fn lost_input_reply_and_native_identity_fault_never_retry_or_switch_adapte
             usize::from(delivery == "input")
         );
     }
+}
+
+/// The owner-reported defect: a supervisor nudge typed itself into a composer
+/// somebody was mid-draft in, submitted their half-written line, and split the
+/// rest around the engine's text. An engine wake is not speech — the mailbox
+/// owns the events — so it waits for the boundary instead.
+#[tokio::test(start_paused = true)]
+async fn an_engine_wake_defers_at_an_attested_draft_and_lands_after_the_boundary() {
+    let mut watch = Watch::new("input").await;
+    watch.composer(ComposerAttestation::Typed);
+    watch.emit(TaskEventKind::AwaitingInput);
+    let (batch, _) = watch.admitted().await;
+    until(|| {
+        let row = watch.row();
+        row.wake_state == "pending"
+            && row
+                .error
+                .as_deref()
+                .is_some_and(|error| error.contains("composer_draft_deferred"))
+    })
+    .await;
+    // Nothing was written into the session, and no record claims it was.
+    assert!(watch.inputs.lock().unwrap().is_empty());
+    assert_eq!(watch.db.count_task_inputs("child-c").unwrap(), 0);
+    // Held, never dropped: the same batch is still pending and readable.
+    let row = watch.row();
+    assert_eq!(row.batch_id, batch);
+    assert_eq!(
+        event_pairs(row.pending.as_ref().unwrap()),
+        vec![("child-a".into(), "task.awaiting_input".into())]
+    );
+
+    // The owner presses Enter. The ledger restarts from proven-empty, and the
+    // composer edit is itself the task state change that wakes the worker.
+    watch.composer(ComposerAttestation::NotTyped);
+    tokio::time::advance(Duration::from_secs(60)).await;
+    let (same, _) = watch.admitted().await;
+    assert_eq!(same, batch, "the held batch is what finally lands");
+    watch.delivered().await;
+}
+
+/// The 2026-09-08 decision is untouched: a person's own message goes in over
+/// their draft rather than stranding at a prompt nobody presses Enter at.
+#[tokio::test(start_paused = true)]
+async fn an_owner_delivery_still_submits_over_an_attested_draft() {
+    let watch = Watch::new("input").await;
+    watch.composer(ComposerAttestation::Typed);
+    let (status, body) = subscription_request(
+        &watch.app,
+        "POST",
+        "/v1/tasks/child-c/input",
+        json!({"input": "keep going", "source": "operator"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
+    assert_eq!(watch.inputs.lock().unwrap().as_slice(), ["keep going"]);
+    let inputs = watch.db.list_task_inputs("child-c", 10).unwrap();
+    assert_eq!(inputs.len(), 1);
+    assert_eq!(inputs[0].source, "operator");
+    assert_eq!(inputs[0].message, "keep going");
+}
+
+/// A deferral holds the nudge, not the events. If the subscriber reads and
+/// acknowledges the batch in the meantime there is nothing left to announce,
+/// and the composer clearing must not resurrect the wake.
+#[tokio::test(start_paused = true)]
+async fn a_batch_acknowledged_during_a_composer_deferral_is_never_redelivered() {
+    let mut watch = Watch::new("input").await;
+    watch.composer(ComposerAttestation::Typed);
+    watch.emit(TaskEventKind::AwaitingInput);
+    let (batch, _) = watch.admitted().await;
+    until(|| {
+        watch
+            .row()
+            .error
+            .as_deref()
+            .is_some_and(|error| error.contains("composer_draft_deferred"))
+    })
+    .await;
+    watch.ack(batch).await;
+    watch.composer(ComposerAttestation::NotTyped);
+    for _ in 0..3 {
+        tokio::time::advance(Duration::from_secs(60)).await;
+        watch.state.event_subscriptions_changed.notify_waiters();
+        tokio::task::yield_now().await;
+        watch.no_admission();
+    }
+    assert!(watch.row().pending.is_none());
+    assert!(watch.inputs.lock().unwrap().is_empty());
+    assert_eq!(watch.db.count_task_inputs("child-c").unwrap(), 0);
 }
