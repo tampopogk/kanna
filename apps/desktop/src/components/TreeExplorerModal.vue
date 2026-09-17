@@ -2,6 +2,7 @@
 import { ref, computed, onMounted, onUnmounted, nextTick, watch, toRef } from "vue";
 import {
   useTreeExplorer,
+  type RemoteContentLoader,
   type RemoteDirectoryLoader,
   type TreeNode,
 } from "../composables/useTreeExplorer";
@@ -46,6 +47,13 @@ const props = defineProps<EmbeddableViewProps & {
   suspended?: boolean;
   standalone?: boolean;
   remoteDirectoryLoader?: RemoteDirectoryLoader;
+  /**
+   * Read a previewed file's contents through this instead of the local
+   * worktree — the same loader the file view reads by. Supplied together with
+   * `remoteDirectoryLoader`: without it a browsed-elsewhere explorer shows no
+   * file preview rather than reading this machine's copy of the path.
+   */
+  remoteContentLoader?: RemoteContentLoader;
   remoteDesktopId?: string;
   remoteTaskId?: string;
   remoteTransport?: RemoteTaskViewTransport;
@@ -120,6 +128,8 @@ const tearOff = useModalTearOff({
 
 const {
   state,
+  previewContent,
+  previewContentLoading,
   revealPath,
   showAllFiles,
   filterText,
@@ -141,6 +151,7 @@ const {
   toRef(props, "worktreePath"),
   toRef(props, "repoRoot"),
   toRef(props, "remoteDirectoryLoader"),
+  toRef(props, "remoteContentLoader"),
 );
 
 const HORIZONTAL_WHEEL_THRESHOLD = 64;
@@ -341,9 +352,19 @@ function isDimmed(entry: TreeNode): boolean {
           <div v-else-if="state.columns[1].length === 0" class="col-empty">(empty)</div>
         </div>
 
-        <!-- Preview column -->
+        <!-- Preview column: a directory's children, or the head of a file -->
         <div class="miller-col col-preview">
-          <div class="col-scroll">
+          <div
+            v-if="previewContent"
+            class="col-scroll file-preview"
+            data-testid="tree-preview-content"
+          >
+            <pre class="file-preview-text">{{ previewContent.text }}</pre>
+            <div v-if="previewContent.truncated" class="file-preview-truncated">
+              &hellip; preview truncated
+            </div>
+          </div>
+          <div v-else class="col-scroll">
             <div
               v-for="(entry, index) in state.columns[2]"
               :key="entry.path"
@@ -355,7 +376,11 @@ function isDimmed(entry: TreeNode): boolean {
               <span class="entry-name">{{ entry.name }}{{ entry.isDir ? '/' : '' }}</span>
             </div>
           </div>
-          <div v-if="state.columns[2].length === 0 && !loading" class="col-empty">
+          <div v-if="previewContentLoading && !previewContent" class="col-loading">&middot;&middot;&middot;</div>
+          <div
+            v-else-if="!previewContent && state.columns[2].length === 0 && !loading"
+            class="col-empty"
+          >
             {{ state.columns[1].length > 0 ? '(no preview)' : '' }}
           </div>
         </div>
@@ -595,6 +620,33 @@ function isDimmed(entry: TreeNode): boolean {
 .entry-name {
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/*
+ * File preview. Read-only and deliberately plain: the column is a glance at
+ * what the cursor is on, and the file view is where a reader gets syntax
+ * highlighting, search and line numbers.
+ */
+.file-preview {
+  overflow-x: auto;
+  padding: 8px 10px;
+}
+
+.file-preview-text {
+  margin: 0;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--kn-text-secondary);
+  white-space: pre;
+  tab-size: 2;
+}
+
+.file-preview-truncated {
+  margin-top: 8px;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 10px;
+  color: var(--kn-text-muted);
 }
 
 /* Empty / loading states */

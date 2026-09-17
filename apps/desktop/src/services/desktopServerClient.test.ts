@@ -27,7 +27,12 @@ import {
   setDesktopReadinessConfirmedForTests,
   setDesktopServerClientHandlersForTests,
   setDesktopSnapshotFetcherForTests,
+  readDesktopTaskFile,
 } from "./desktopServerClient";
+import {
+  isTaskFileUnreadableError,
+  type TaskFileUnreadableError,
+} from "./taskFileRead";
 
 /**
  * The webview is a browser, so `kanna-server` refuses its requests unless they
@@ -167,6 +172,40 @@ describe("desktopServerClient", () => {
       "http://127.0.0.1:48121/v1/tasks/task%2Fparked",
       { method: "GET", headers: LOCAL_CREDENTIAL_HEADERS, body: undefined },
     );
+  });
+
+  /**
+   * The contained read is how a task's own file reaches the renderer, and
+   * `kanna-server` refuses one over its 1 MiB bound or one that is not UTF-8
+   * before returning any content. That refusal is a fact about the file, so a
+   * reader that only displays files can fall back to "no preview" instead of
+   * reporting the task as unavailable; a 500 stays a failure.
+   */
+  it("classifies an oversized or non-text task file separately from a failed read", async () => {
+    const fetchMock = vi.fn(async (url: string) => {
+      if (url.includes("huge.log")) {
+        return new Response("file exceeds the 1 MiB limit", { status: 413 });
+      }
+      if (url.includes("pack.idx")) {
+        return new Response("file is not valid UTF-8 text", { status: 415 });
+      }
+      return new Response("db error", { status: 500 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const oversized = await readDesktopTaskFile("task-1", "huge.log")
+      .catch((error: unknown) => error);
+    const nonText = await readDesktopTaskFile("task-1", "objects/pack.idx")
+      .catch((error: unknown) => error);
+    const failed = await readDesktopTaskFile("task-1", "src/app.ts")
+      .catch((error: unknown) => error);
+
+    expect(isTaskFileUnreadableError(oversized)).toBe(true);
+    expect((oversized as TaskFileUnreadableError).reason).toBe("too-large");
+    expect(isTaskFileUnreadableError(nonText)).toBe(true);
+    expect((nonText as TaskFileUnreadableError).reason).toBe("not-text");
+    expect(isTaskFileUnreadableError(failed)).toBe(false);
+    expect((failed as Error).message).toContain("500");
   });
 
   it("uses PUT only for requested task IDs and preserves POST for ordinary creation", async () => {

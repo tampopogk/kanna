@@ -1,5 +1,9 @@
 import { invoke } from "../invoke";
 import { listen } from "../listen";
+import {
+  TaskFileUnreadableError,
+  taskFileUnreadableReasonForRelayedMessage,
+} from "./taskFileRead";
 import type {
   DesktopRelayTerminalEvent,
   DesktopRelayTerminalSubscription,
@@ -430,11 +434,23 @@ export function createDesktopLanTerminalClient(): DesktopRemoteTaskViewClient {
       await invoke("advance_transfer_peer_task_stage", args);
     },
     async readTaskFile(options) {
-      const response = await invoke("read_transfer_peer_task_file", {
-        peerId: options.desktopId,
-        taskId: options.taskId,
-        path: options.path,
-      });
+      let response: unknown;
+      try {
+        response = await invoke("read_transfer_peer_task_file", {
+          peerId: options.desktopId,
+          taskId: options.taskId,
+          path: options.path,
+        });
+      } catch (error) {
+        // The owning desktop's refusal reaches us as the peer protocol's one
+        // error string. When that string is the server's own 413/415, the file
+        // has no text to show — which is not the same as the peer being
+        // unreachable, and callers that only display a file need the two apart.
+        const message = error instanceof Error ? error.message : String(error);
+        const reason = taskFileUnreadableReasonForRelayedMessage(message);
+        if (reason) throw new TaskFileUnreadableError(reason, message, { cause: error });
+        throw error;
+      }
       const record = asRecord(response);
       const path = record ? getStringField(record, "path") : null;
       const content = record ? getStringField(record, "content") : null;

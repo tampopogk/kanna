@@ -1,6 +1,7 @@
 import { nextTick, ref, shallowRef, watch, type Ref, computed } from "vue";
 import { computedAsync, refDebounced } from "@vueuse/core";
 import { invoke } from "../invoke";
+import { isTaskFileUnreadableError } from "../services/taskFileRead";
 
 export interface TreeNode {
   name: string;
@@ -25,6 +26,70 @@ export type RemoteDirectoryLoader = (
   showAllFiles: boolean,
 ) => Promise<{ entries: RemoteDirectoryEntry[] }>;
 
+export type RemoteContentLoader = (path: string) => Promise<string>;
+
+/**
+ * The head of a file the cursor is resting on, for the preview column.
+ *
+ * `text` is already bounded — it is a glance at the file, not the file — and
+ * `truncated` says so, so the column never reads as though a 40k-line source
+ * ended where the preview stopped. Opening the file is still what shows all of
+ * it.
+ */
+export interface FilePreviewContent {
+  path: string;
+  text: string;
+  truncated: boolean;
+}
+
+/**
+ * How much of a file the preview column will paint. A cursor moving down a
+ * directory rests on whatever is there — a minified bundle, a fixture, a lock
+ * file — and the column is a few hundred pixels wide, so reading megabytes
+ * into the DOM buys nothing a reader can see.
+ */
+const PREVIEW_MAX_LINES = 400;
+const PREVIEW_MAX_CHARS = 128 * 1024;
+
+/**
+ * Extensions whose contents are not text. Checked before the read, so a cursor
+ * passing over a PNG never asks for its bytes at all.
+ */
+const BINARY_EXTENSIONS = new Set([
+  "a", "aac", "apng", "avi", "avif", "bin", "bmp", "bz2", "class", "dll", "dmg",
+  "dylib", "eot", "exe", "flac", "gif", "gz", "heic", "ico", "jar", "jpeg",
+  "jpg", "keystore", "m4a", "mkv", "mov", "mp3", "mp4", "node", "o", "ogg",
+  "otf", "pdf", "pkg", "png", "psd", "pyc", "pyo", "rar", "so", "sqlite",
+  "sqlite3", "tar", "tgz", "tiff", "ttf", "wasm", "wav", "webm", "webp",
+  "woff", "woff2", "xz", "zip",
+]);
+
+function hasBinaryExtension(name: string): boolean {
+  const dot = name.lastIndexOf(".");
+  if (dot <= 0) return false;
+  return BINARY_EXTENSIONS.has(name.slice(dot + 1).toLowerCase());
+}
+
+/**
+ * Whether a failed read is a verdict about the *file* rather than an outage.
+ *
+ * Two shapes reach here, and both mean "there is nothing to preview":
+ *
+ * - A server-backed loader — the contained local one, LAN, or relay — refusing
+ *   the file for its size or for not being text. `kanna-server` bounds every
+ *   one of those reads at 1 MiB and decodes to UTF-8 before returning content,
+ *   so a big `.min.js` or an unlisted `.idx` never reaches the size guard
+ *   below; it arrives as a `TaskFileUnreadableError`.
+ * - The local worktree's own `read_text_file`, which decodes too, so every
+ *   binary the extension list does not name fails there.
+ *
+ * Reporting either as "task files unavailable" would blame the worktree for a
+ * `.pack` file being a `.pack` file.
+ */
+function isUnpreviewableFile(caught: unknown, message: string): boolean {
+  return isTaskFileUnreadableError(caught) || message.includes("valid UTF-8");
+}
+
 export interface MillerState {
   columns: TreeNode[][];
   cursor: number[];
@@ -36,6 +101,7 @@ export function useTreeExplorer(
   rootPath: Ref<string>,
   repoRoot: Ref<string>,
   remoteDirectoryLoader: Ref<RemoteDirectoryLoader | undefined>,
+  remoteContentLoader: Ref<RemoteContentLoader | undefined> = shallowRef(undefined),
 ) {
   const cache = new Map<string, TreeNode[]>();
   const effectiveRoot = computed(() => rootPath.value);
@@ -162,6 +228,78 @@ export function useTreeExplorer(
   // Debounce cursor for preview so rapid j/k doesn't spam fetches
   const debouncedCursor = refDebounced(cursorIndex, 50);
   const previewEntry = computed(() => currentEntries.value[debouncedCursor.value] ?? null);
+  const previewContentEvaluating = ref(false);
+
+  /**
+   * Read one file through whatever path this explorer is allowed to read
+   * through — the task's server-side contained resolution when a loader is
+   * supplied, the local worktree otherwise. Same path the file view reads by,
+   * so a preview cannot show content the opened file would not.
+   */
+  async function readFileContent(relativePath: string): Promise<string> {
+    const loader = remoteContentLoader.value;
+    if (loader) return loader(relativePath);
+    return invoke<string>("read_text_file", { path: absolutePath(relativePath) });
+  }
+
+  /**
+   * The head of the file under the cursor, or `null` when there is nothing to
+   * show: a directory (the column lists it instead), a binary, a file past the
+   * preview budget, or a read that failed.
+   *
+   * `null` for a read failure is not a silent blank — the failure goes to
+   * `error`, which the explorer already renders, the same way a failed
+   * directory look-ahead does.
+   */
+  const previewContent = computedAsync<FilePreviewContent | null>(
+    async () => {
+      const entry = previewEntry.value;
+      if (!entry || entry.isDir) return null;
+      if (hasBinaryExtension(entry.name)) return null;
+      // A directory loader without a content loader means this explorer is
+      // browsing something that is not the local filesystem — a remote task,
+      // or one whose reads the server resolves inside its worktree. Reading
+      // the entry's path off this machine instead would preview a different
+      // file under the task's name, so there is simply no preview.
+      if (remoteDirectoryLoader.value && !remoteContentLoader.value) return null;
+
+      let raw: string;
+      try {
+        raw = await readFileContent(entry.path);
+      } catch (caught) {
+        const message = caught instanceof Error ? caught.message : String(caught);
+        if (isUnpreviewableFile(caught, message)) return null;
+        error.value = `Task files unavailable: ${message}`;
+        console.error("[tree-explorer] failed to load preview content:", message);
+        return null;
+      }
+
+      if (raw.length > PREVIEW_MAX_CHARS) return null;
+      // A NUL byte is the rest of the binaries: decodable as UTF-8, painted as
+      // control-picture noise if it reached the column.
+      if (raw.includes("\u0000")) return null;
+
+      const lines = raw.split("\n");
+      const truncated = lines.length > PREVIEW_MAX_LINES;
+      return {
+        path: entry.path,
+        text: truncated ? lines.slice(0, PREVIEW_MAX_LINES).join("\n") : raw,
+        truncated,
+      };
+    },
+    null,
+    previewContentEvaluating,
+  );
+
+  /**
+   * Only a file's own read is worth a loading indicator. A directory's
+   * look-ahead settles into the column itself, and flashing a spinner over it
+   * would make browsing feel slower than it is.
+   */
+  const previewContentLoading = computed(() => {
+    const entry = previewEntry.value;
+    return entry !== null && !entry.isDir && previewContentEvaluating.value;
+  });
 
   const previewEntries = computedAsync(
     async () => {
@@ -543,6 +681,8 @@ export function useTreeExplorer(
 
   return {
     state,
+    previewContent,
+    previewContentLoading,
     revealPath,
     showAllFiles,
     filterText,

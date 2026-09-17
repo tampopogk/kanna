@@ -467,6 +467,11 @@ function treeViewProps(tab: MainTab) {
     // rather than walking the worktree path itself.
     remoteDirectoryLoader: containedDirectoryLoader(containedTaskId)
       ?? (modals?.activeTaskViewIsRemote.value ? modals.listRemoteTaskDirectory : undefined),
+    // The preview column reads files the same way the file view does, so a
+    // browsed-elsewhere explorer previews the task's file rather than this
+    // machine's copy of that path.
+    remoteContentLoader: containedFileLoader(containedTaskId)
+      ?? (modals?.activeTaskViewIsRemote.value ? modals.readRemoteTaskFile : undefined),
     remoteDesktopId: route?.desktopId,
     remoteTaskId: route?.taskId,
     remoteTransport: route?.transport,

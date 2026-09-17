@@ -26,6 +26,10 @@ import {
   type DesktopRelayTerminalEvent,
 } from "./desktopRelayTerminal";
 import type { DesktopRemoteCompanionEvent } from "./desktopRemoteTaskClient";
+import {
+  isTaskFileUnreadableError,
+  type TaskFileUnreadableError,
+} from "./taskFileRead";
 
 class FakeSocket {
   readyState = 1;
@@ -761,6 +765,81 @@ describe("createDesktopRelayTerminalClient", () => {
 
     await expect(missingPromise).rejects.toThrow("Remote task file read failed with HTTP 404.");
     await expect(malformedPromise).rejects.toThrow("Remote task file response was malformed.");
+  });
+
+  /**
+   * `kanna-server` bounds a task file read at 1 MiB and decodes it to UTF-8
+   * before answering, so an oversized or binary file comes back as 413/415 —
+   * a fact about that file, not about the tunnel. A reader that only displays
+   * files (the tree explorer's preview column) has to tell the two apart.
+   */
+  it("classifies an oversized or non-text remote file separately from a failed read", async () => {
+    const socket = new FakeSocket();
+    const client = createDesktopRelayTerminalClient({
+      createSocket: () => socket,
+      getIdToken: vi.fn(async () => "id-token"),
+      relayUrl: "ws://relay.test",
+    });
+
+    const oversizedPromise = client.readTaskFile({
+      desktopId: "desktop-owner",
+      taskId: "task-1",
+      path: "huge.log",
+    });
+    const nonTextPromise = client.readTaskFile({
+      desktopId: "desktop-owner",
+      taskId: "task-1",
+      path: "objects/pack.idx",
+    });
+    const unavailablePromise = client.readTaskFile({
+      desktopId: "desktop-owner",
+      taskId: "task-1",
+      path: "src/app.ts",
+    });
+
+    await openRelayTunnel(socket);
+    socket.onmessage?.({ data: JSON.stringify({ type: "auth_ok" }) });
+    await Promise.resolve();
+
+    const sent = socket.sent.map((entry) => JSON.parse(entry));
+    const request = (path: string) => sent.find((entry) => entry.path === path);
+    const oversized = request("/v1/tasks/task-1/files/content?path=huge.log");
+    const nonText = request("/v1/tasks/task-1/files/content?path=objects%2Fpack.idx");
+    const unavailable = request("/v1/tasks/task-1/files/content?path=src%2Fapp.ts");
+
+    socket.onmessage?.({
+      data: JSON.stringify({
+        type: "response",
+        id: oversized.id,
+        status: 413,
+        body: { error: "file exceeds the 1 MiB limit" },
+      }),
+    });
+    socket.onmessage?.({
+      data: JSON.stringify({
+        type: "response",
+        id: nonText.id,
+        status: 415,
+        body: { error: "file is not valid UTF-8 text" },
+      }),
+    });
+    socket.onmessage?.({
+      data: JSON.stringify({ type: "response", id: unavailable.id, status: 503, body: null }),
+    });
+
+    const oversizedError = await oversizedPromise.catch((error: unknown) => error);
+    const nonTextError = await nonTextPromise.catch((error: unknown) => error);
+    const unavailableError = await unavailablePromise.catch((error: unknown) => error);
+
+    expect(isTaskFileUnreadableError(oversizedError)).toBe(true);
+    expect((oversizedError as TaskFileUnreadableError).reason).toBe("too-large");
+    expect(isTaskFileUnreadableError(nonTextError)).toBe(true);
+    expect((nonTextError as TaskFileUnreadableError).reason).toBe("not-text");
+    // A tunnel that could not reach the desktop stays an ordinary failure.
+    expect(isTaskFileUnreadableError(unavailableError)).toBe(false);
+    expect((unavailableError as Error).message).toBe(
+      "Remote task file read failed with HTTP 503.",
+    );
   });
 
   it("routes agent attempts and archived output to the owning desktop", async () => {
