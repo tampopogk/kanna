@@ -31,6 +31,14 @@ impl Stream {
         .await
         .expect("channel stream timeout")
     }
+
+    /// No frame within a short window. A negative assertion needs a bound,
+    /// and once the follow-up budget is spent nothing more is expected here.
+    async fn idle(&mut self) -> bool {
+        tokio::time::timeout(Duration::from_millis(500), self.next())
+            .await
+            .is_err()
+    }
 }
 
 struct Fixture {
@@ -308,22 +316,63 @@ async fn a_notice_absorbed_by_a_busy_turn_is_repeated_once_the_turn_ends_unread(
         "notified"
     );
 
-    // The turn ends without the subscriber ever reading its batch.
+    // The turn ends without the subscriber ever reading its batch. Each
+    // repeat is receipted like any other write, and that receipt must return
+    // the row to `notified` — `step` gates the next follow-up on it, so a row
+    // stranded at `awaiting_receipt` would silently cap the bound at one.
+    for round in 1..=crate::db::claude_channel::MAX_FOLLOW_UPS {
+        f.runtime("idle");
+        let repeat = f.wake(&mut stream).await;
+        assert_eq!(
+            repeat.id, attempt.id,
+            "round {round}: the same durable attempt is repeated"
+        );
+        assert_eq!(
+            repeat.message, attempt.message,
+            "round {round}: no second notice is minted"
+        );
+        assert_eq!(
+            f.db.count_task_inputs("child-c").unwrap(),
+            1,
+            "round {round}: a repeat is not a second delivery record"
+        );
+        // Re-enter a turn before receipting, so the row's return to
+        // `notified` is observable rather than immediately consumed by the
+        // next follow-up.
+        f.runtime("busy");
+        assert_eq!(
+            f.receipt(&repeat, json!({"kind": "written"})).await,
+            StatusCode::OK
+        );
+        let row = await_subscription(&f.state, &f.id, |r| r.wake_state != "awaiting_receipt").await;
+        assert_eq!(
+            row.wake_state, "notified",
+            "round {round}: a receipted repeat must leave awaiting_receipt"
+        );
+        assert!(
+            f.state
+                .try_begin_requested_task_mutation("child-c")
+                .is_some(),
+            "round {round}: a repeated notification must never lock ordinary input"
+        );
+    }
+
+    // The bound is spent: the notice is still unread, the turn still ends, and
+    // nothing more is sent. The mailbox — not the nudge — owns the events.
+    assert_eq!(
+        f.db.claude_channel_attempt(&attempt.id)
+            .unwrap()
+            .expect("attempt")
+            .follow_ups,
+        crate::db::claude_channel::MAX_FOLLOW_UPS
+    );
     f.runtime("idle");
-    let repeat = f.wake(&mut stream).await;
-    assert_eq!(
-        repeat.id, attempt.id,
-        "the same durable attempt is repeated"
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(
+        stream.idle().await,
+        "a fourth follow-up must not fire once the bound is spent"
     );
-    assert_eq!(
-        repeat.message, attempt.message,
-        "no second notice is minted"
-    );
-    assert_eq!(
-        f.db.count_task_inputs("child-c").unwrap(),
-        1,
-        "a repeat is not a second delivery record"
-    );
+    assert_eq!(f.db.count_task_inputs("child-c").unwrap(), 1);
 
     // This time the subscriber reads it. A read is not an acknowledgement, but
     // it does end the follow-up: the notice was consumed.

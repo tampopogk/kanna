@@ -274,9 +274,10 @@ impl Db {
             if attempt.binding.channel_id != channel_id {
                 return Ok(false);
             }
-            if attempt.input_id.is_some() {
-                return Ok(true);
-            }
+            // A write the transport could not confirm, whether of a first
+            // notice or of a repeat: no durable row either way, and the row
+            // says so rather than being left reporting a receipt it has
+            // already had.
             if !written {
                 attempt.error = Some(
                     error
@@ -289,6 +290,18 @@ impl Db {
                     "uncertain",
                     attempt.error.as_deref(),
                 )?;
+                return Ok(true);
+            }
+            // The post-turn repeat of a notice that is already recorded. The
+            // durable row is written exactly once — a repeat is the same
+            // notice, not a second delivery — but the subscription must still
+            // leave `awaiting_receipt`, because `step` gates the follow-up on
+            // `notified`. Returning early here instead would strand the row at
+            // `awaiting_receipt` after its receipt had arrived, making every
+            // repeat after the first unreachable and `MAX_FOLLOW_UPS` a bound
+            // on something that could only ever happen once.
+            if attempt.input_id.is_some() {
+                db.set_claude_channel_mailbox_state(&attempt, "notified", None)?;
                 return Ok(true);
             }
             // Reserved source: the MCP child cannot name it, and no caller can
