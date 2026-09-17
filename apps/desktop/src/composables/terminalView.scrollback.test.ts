@@ -68,6 +68,7 @@ function desktopTerminal(agentProvider = "codex", stock = false): Terminal {
     handleLinkActivate: vi.fn(),
     sendInputBytes: vi.fn(async () => {}),
     maybeReadClipboardImage: vi.fn(async () => {}),
+    readClipboardText: vi.fn(async () => null),
     sendDroppedPaths: vi.fn(),
     onNativeDropCleanupReady: vi.fn(),
     onTerminalInteraction: vi.fn(),

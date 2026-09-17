@@ -12,6 +12,11 @@ import {
   type RealKeyboardStatus,
 } from "../helpers/realKeys";
 import {
+  inspectRealClipboard,
+  writeRealClipboard,
+  type RealClipboardStatus,
+} from "../helpers/realClipboard";
+import {
   CLEAR_KEY_PROBE_SCRIPT,
   INSTALL_KEY_PROBE_SCRIPT,
   READ_KEY_PROBE_SCRIPT,
@@ -80,6 +85,7 @@ interface Selection {
 describe("Linux keyboard shortcuts, pressed for real", () => {
   const client = new WebDriverClient();
   let keyboard: RealKeyboardStatus = { usable: false, reason: "not inspected" };
+  let clipboard: RealClipboardStatus = { usable: false, reason: "not inspected" };
   let fixtureRepoRoot = "";
   let testRepoPath = "";
   let taskId = "";
@@ -92,6 +98,11 @@ describe("Linux keyboard shortcuts, pressed for real", () => {
    */
   function requireRealKeyboard(): void {
     if (!keyboard.usable) throw new Error(`no real key injection on this host: ${keyboard.reason}`);
+  }
+
+  /** Same rule for the clipboard: a paste verdict needs a real selection. */
+  function requireRealClipboard(): void {
+    if (!clipboard.usable) throw new Error(`no real clipboard on this host: ${clipboard.reason}`);
   }
 
   async function windowHasFocus(): Promise<boolean> {
@@ -305,6 +316,7 @@ describe("Linux keyboard shortcuts, pressed for real", () => {
 
   beforeAll(async () => {
     keyboard = await inspectRealKeyboard();
+    clipboard = await inspectRealClipboard();
     await client.createSession();
     await client.waitForAppReady(30_000);
     await resetDatabase(client);
@@ -578,6 +590,118 @@ describe("Linux keyboard shortcuts, pressed for real", () => {
         await sleep(250);
       }
       expect(sawInterrupt, "plain Ctrl+C never reached the PTY, so no agent could be interrupted").toBe(true);
+      await closeViewTabs();
+    }, 180_000);
+
+    /**
+     * The other half of the same chord pair, and the one that was dead.
+     *
+     * `Ctrl+Shift+V` arrived on the terminal the whole time, and the
+     * terminal's own handler took it and called `preventDefault()`. What it
+     * then did was `navigator.clipboard.readText()`, which WebKitGTK refuses
+     * by policy on every call, so the chord the modal advertises pasted
+     * nothing and logged a `NotAllowedError` where nobody looks. Neither
+     * signal this lane records could catch that: the keystroke was never the
+     * problem, and the terminal claims the chord in the target phase, after
+     * the probe on `window` has already read `defaultPrevented`.
+     *
+     * So this one asserts the payload instead. The selection is put on the
+     * desktop clipboard by `wl-copy` — a separate Wayland client, as the other
+     * window a person copies from would be — and the text has to come out of a
+     * real PTY on the other side.
+     */
+    it("pastes the desktop clipboard into the PTY on Ctrl+Shift+V", async () => {
+      requireRealKeyboard();
+      requireRealClipboard();
+      await closeViewTabs();
+      await callVueMethod(client, "keyboardActions.openShell");
+      await waitForActiveTab("shell");
+      await focusTerminal();
+
+      // Unique per run: the assertion is "this paste arrived", and a fixed
+      // token could be satisfied by scrollback from an earlier one.
+      const token = `kanna-paste-${crypto.randomUUID().slice(0, 8)}`;
+      await writeRealClipboard(token);
+
+      // Read it back through the app's own command first. This separates a
+      // clipboard the app cannot see at all — which on this desktop means the
+      // session's DISPLAY/XAUTHORITY are missing from the app's environment,
+      // so `arboard` has no Xwayland connection to read the bridged selection
+      // through — from a chord that failed to paste what it could see.
+      //
+      // Polled, because `wl-copy` returning means the selection was offered:
+      // the compositor publishes it, and Xwayland mirrors it onto the X11
+      // selection the app reads, a moment later.
+      let nativeRead: string | null = null;
+      const readDeadline = Date.now() + 5_000;
+      while (Date.now() < readDeadline) {
+        nativeRead = (await tauriInvoke(client, "read_clipboard_text", {})) as string | null;
+        if (nativeRead === token) break;
+        await sleep(200);
+      }
+      expect(
+        nativeRead,
+        "the app could not read a selection wl-copy had just published; if this failed rather than " +
+          "returned the wrong text, export the graphical session's DISPLAY and XAUTHORITY into the lane",
+      ).toBe(token);
+
+      // Record what the page logs, so a silent denial cannot pass as a paste
+      // that merely lost a race.
+      await client.executeSync(
+        `window.__KANNA_PASTE_LOG__ = [];
+         if (!window.__KANNA_PASTE_LOG_PATCHED__) {
+           window.__KANNA_PASTE_LOG_PATCHED__ = true;
+           for (const level of ["warn", "error"]) {
+             const original = console[level].bind(console);
+             console[level] = function () {
+               try {
+                 (window.__KANNA_PASTE_LOG__ || []).push(
+                   Array.from(arguments).map((arg) => {
+                     if (arg instanceof Error) return arg.name + ": " + arg.message;
+                     if (typeof arg === "object" && arg !== null) return JSON.stringify(arg);
+                     return String(arg);
+                   }).join(" "),
+                 );
+               } catch (e) { /* recording must never break the app's own logging */ }
+               return original.apply(console, arguments);
+             };
+           }
+         }
+         return true;`,
+      );
+
+      const pasted = await expectArrived("Ctrl+Shift+v");
+      expect(pasted.target, "Ctrl+Shift+V did not land on the terminal").toContain("xterm-helper-textarea");
+
+      // Search the whole buffer, never a tail of it. `terminalText()` renders
+      // the screen, so a shell redraw rewrites earlier rows and the text is
+      // shorter or longer than the paste alone would make it — an offset taken
+      // before the chord points somewhere else afterwards. The token is unique
+      // per run, so finding it anywhere is proof it came from this paste.
+      const deadline = Date.now() + 15_000;
+      let arrived = false;
+      while (Date.now() < deadline) {
+        if ((await terminalText()).includes(token)) {
+          arrived = true;
+          break;
+        }
+        await sleep(250);
+      }
+
+      const logged = (await client.executeSync<string[]>("return window.__KANNA_PASTE_LOG__ || [];")) ?? [];
+      const denials = logged.filter((line) => /clipboard/i.test(line));
+      expect(
+        denials,
+        "the paste path logged a clipboard failure; the webview clipboard API is denied on this platform " +
+          "and the read has to go through the native command",
+      ).toEqual([]);
+      expect(
+        arrived,
+        `Ctrl+Shift+V pasted nothing into the PTY. The terminal holds ${JSON.stringify(
+          (await terminalText()).slice(-200),
+        )}`,
+      ).toBe(true);
+
       await closeViewTabs();
     }, 180_000);
   });

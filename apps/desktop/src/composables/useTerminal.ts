@@ -147,6 +147,7 @@ export function useTerminal(sessionId: string, spawnOptions?: SpawnOptions, opti
       handleLinkActivate,
       sendInputBytes: inputQueue.sendInputBytes,
       maybeReadClipboardImage: clipboardBridge.maybeReadClipboardImage,
+      readClipboardText: clipboardBridge.readClipboardText,
       sendDroppedPaths: clipboardBridge.sendDroppedPaths,
       onNativeDropCleanupReady: (cleanup) => {
         state.cleanupNativeDropEvents = cleanup

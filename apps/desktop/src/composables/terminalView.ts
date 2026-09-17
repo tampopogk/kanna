@@ -53,6 +53,7 @@ export function initializeTerminalView(params: {
     config?: { immediate?: boolean; submissionBoundary?: boolean; controlInput?: boolean },
   ) => Promise<void>
   maybeReadClipboardImage: () => Promise<void>
+  readClipboardText: () => Promise<string | null>
   sendDroppedPaths: (paths: string[]) => void
   onNativeDropCleanupReady: (cleanup: () => void) => void
   onTerminalInteraction: () => void
@@ -193,20 +194,30 @@ export function initializeTerminalView(params: {
       const clipboardAction = terminalClipboardAction(e, terminalPlatform)
       if (clipboardAction === "copy") {
         const sel = term.getSelection()
-        if (sel) navigator.clipboard.writeText(sel)
+        if (sel) {
+          void navigator.clipboard.writeText(sel).catch((error) => {
+            console.warn("[terminal] clipboard copy failed:", error)
+          })
+        }
         e.preventDefault()
         return false
       }
       if (clipboardAction === "paste") {
         if (params.options?.agentTerminal) void params.maybeReadClipboardImage()
         // macOS lets ⌘V fall through to the webview's own paste event. No such
-        // native handler exists for Ctrl+Shift+V, so read it here — through
-        // `term.paste`, which still wraps the text in bracketed-paste markers
-        // when the program on the other end asked for them.
+        // native handler exists for Ctrl+Shift+V, so the text has to be
+        // fetched here — and not from `navigator.clipboard.readText()`, which
+        // WebKitGTK refuses by policy however the chord arrives, so that
+        // branch could only ever log `NotAllowedError` and paste nothing. The
+        // native read is what makes the advertised chord real on Linux.
+        //
+        // It still goes through `term.paste`, which normalises the newlines a
+        // multi-line paste carries and wraps the text in bracketed-paste
+        // markers when the program on the other end asked for them.
         if (terminalPlatform !== "mac") {
           e.preventDefault()
-          void navigator.clipboard
-            .readText()
+          void params
+            .readClipboardText()
             .then((text) => {
               if (text) term.paste(text)
             })

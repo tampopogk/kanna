@@ -393,6 +393,7 @@ pub fn run() {
             commands::fs::read_builtin_resource,
             commands::fs::list_builtin_resources,
             commands::fs::read_clipboard_image_png,
+            commands::fs::read_clipboard_text,
             commands::cloud::post_cloud_task_snapshot,
             // Remote visual companion bridge commands
             commands::companion::upsert_remote_companion_bridge,

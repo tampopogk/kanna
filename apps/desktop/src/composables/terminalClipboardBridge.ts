@@ -15,6 +15,7 @@ const BRACKETED_PASTE_CONTROL_SEQUENCE = /\u001b\[\?2004[hl]/
 
 export interface TerminalClipboardBridge {
   maybeReadClipboardImage(): Promise<void>
+  readClipboardText(): Promise<string | null>
   handleTerminalOutputControlSequences(bytes: Uint8Array): void
   restoreTerminalModesFromSnapshot(serializedTerminalState: string): void
   sendDroppedPaths(paths: string[]): void
@@ -88,6 +89,31 @@ export function createTerminalClipboardBridge(params: {
         pendingClipboardImageLoad = null
       }
     })
+  }
+
+  /**
+   * The clipboard's text, read natively.
+   *
+   * Not `navigator.clipboard.readText()`: WebKitGTK denies that by policy, so
+   * the terminal's Linux paste chord could never resolve it. The native read
+   * is the only one that works there, and it is the same `arboard` backend
+   * the image read above already goes through.
+   *
+   * A denial or a clipboard that holds no text is `null` — the caller pastes
+   * nothing — and the reason is logged rather than swallowed.
+   */
+  async function readClipboardText(): Promise<string | null> {
+    try {
+      const text = await invoke<string | null>("read_clipboard_text", {})
+      return text ? text : null
+    } catch (error) {
+      console.warn("[terminal][clipboard] failed to read clipboard text", {
+        sessionId: params.sessionId,
+        instanceId: params.instanceId,
+        error: getAppErrorMessage(error),
+      })
+      return null
+    }
   }
 
   async function resolvePendingClipboardImage(): Promise<ClipboardImagePayload | null> {
@@ -183,6 +209,7 @@ export function createTerminalClipboardBridge(params: {
 
   return {
     maybeReadClipboardImage,
+    readClipboardText,
     handleTerminalOutputControlSequences,
     restoreTerminalModesFromSnapshot,
     sendDroppedPaths,

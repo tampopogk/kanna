@@ -60,7 +60,7 @@ function harness() {
     getTerminalStreamClient: async () => stream,
     inputQueue: { sendInputBytes, flushQueuedInput: vi.fn(async () => {}), clearPendingInputFlushTimer: vi.fn() },
     clipboardBridge: {
-      maybeReadClipboardImage: vi.fn(async () => {}), handleTerminalOutputControlSequences: vi.fn(),
+      maybeReadClipboardImage: vi.fn(async () => {}), readClipboardText: vi.fn(async () => null), handleTerminalOutputControlSequences: vi.fn(),
       restoreTerminalModesFromSnapshot: vi.fn(), sendDroppedPaths: vi.fn(), reset: vi.fn(),
     },
     layout: {

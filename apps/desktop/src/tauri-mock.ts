@@ -182,6 +182,7 @@ const invokeHandlers: Record<string, (...args: any[]) => any> = {
   run_script: () => "",
   append_log: () => ({}),
   read_clipboard_image_png: () => null,
+  read_clipboard_text: () => null,
   ensure_desktop_ready: () => ({}),
   ensure_mobile_server: () => ({}),
   local_control_credential: () => "mock-local-control-credential",
