@@ -2366,11 +2366,18 @@ fn relocates_agent_instructions_to_system_prompt(
 /// appended to its system prompt.
 ///
 /// What the agent is told must not change — only where it is told it. So the
-/// section is moved only when it is literally the composed prompt's own
-/// prefix, and the remainder is taken byte for byte:
-/// `returned.0` prefixed by `instructions + "\n\n"` reconstructs the input
-/// exactly. A wrapped prompt (recovery, transfer continuation) or one with no
-/// task section behind the instructions does not match, and is left alone.
+/// section moves only when it is literally the composed prompt's own prefix,
+/// and the remainder is taken byte for byte: rejoining the two over the
+/// separator that was between them reconstructs the input exactly. A prompt
+/// Kanna wrapped in its own prose (recovery, transfer continuation) does not
+/// start with the section, so it does not match and is left alone.
+///
+/// The separator is not part of the match. `build_stage_prompt` joins its
+/// sections with a blank line, but a singleton whose stage carries no task
+/// prompt composes the instructions *alone* — the merge master, whose
+/// `task_prompt` is empty by construction, so `## Your Task` is dropped and
+/// nothing follows. Requiring the blank line made relocation a silent no-op
+/// for exactly that agent, which is one of the two this exists for.
 fn relocate_agent_instructions(
     provider: AgentProvider,
     agent_type: AgentSessionType,
@@ -2384,8 +2391,21 @@ fn relocate_agent_instructions(
     let Some(instructions) = agent_instructions else {
         return (final_prompt, None);
     };
-    match final_prompt.strip_prefix(&format!("{instructions}\n\n")) {
-        Some(rest) => (rest.to_string(), Some(instructions)),
+    // Owned, so the borrow of `final_prompt` ends before the arm that returns
+    // it unchanged.
+    let remainder = final_prompt.strip_prefix(&instructions).and_then(|rest| {
+        if rest.is_empty() {
+            // The instructions were the whole prompt. The CLI is then given no
+            // first message at all; see `build_agent_command`.
+            Some(String::new())
+        } else {
+            // Anything else must be the composed prompt's own section
+            // separator, or this is not the split it looks like.
+            rest.strip_prefix("\n\n").map(str::to_string)
+        }
+    });
+    match remainder {
+        Some(prompt) => (prompt, Some(instructions)),
         None => (final_prompt, None),
     }
 }

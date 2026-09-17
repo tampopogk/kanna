@@ -297,6 +297,104 @@ fn prepare_merge_agent_creates_in_progress_task() {
     let _ = std::fs::remove_dir_all(&repo_root);
 }
 
+/// The production spawn wiring, not a hand-stitched composition.
+///
+/// The merge master is the harder of the two singletons: its `task_prompt` is
+/// empty by construction, so the composed prompt is the agent body *alone* with
+/// no `## Your Task` section behind it. A relocation that keyed on the section
+/// separator silently did nothing here, and the 11.8 KB body kept shipping as
+/// the first user message — compaction-vulnerable, which is the whole defect.
+#[test]
+fn prepare_merge_agent_ships_its_body_as_system_prompt_not_a_first_message() {
+    let repo_root = init_git_repo("merge-singleton-system-prompt");
+    let config = test_config("merge-singleton-system-prompt");
+    let db = Db::open_for_tests(&config.db_path).unwrap();
+    db.insert_test_repo_with_path("repo-1", &repo_root.to_string_lossy(), "Repo One")
+        .unwrap();
+    db.insert_test_pipeline_item(
+        "task-1",
+        "repo-1",
+        "Create a PR",
+        Some("Create a PR"),
+        "pr",
+        "2026-06-07 00:00:00",
+    )
+    .unwrap();
+    db.update_test_pipeline_item_stage_context("task-1", "task-task-1", "default", None, "claude")
+        .unwrap();
+
+    let prepared = prepare_merge_agent_for_api(&db, &config, "task-1").unwrap();
+    let command = match prepared.session {
+        PreparedSessionSpawn::Pty { args, .. } => args.join(" "),
+        PreparedSessionSpawn::Agent { .. } => panic!("merge master should use a PTY session"),
+    };
+    let (flags, positional) = split_claude_command(&command);
+
+    assert!(
+        flags.contains("--append-system-prompt '"),
+        "merge master command: {command}"
+    );
+    assert!(
+        flags.contains("You are the merge master."),
+        "merge master body should ride the system prompt: {command}"
+    );
+    assert!(
+        !positional.contains("You are the merge master."),
+        "merge master body should not be the first user message: {command}"
+    );
+    // Its body was the whole composed prompt, so nothing is left to say. The
+    // session opens at its composer, which is what its own manual prescribes.
+    assert!(positional.is_empty(), "merge master command: {command}");
+
+    let _ = std::fs::remove_dir_all(&repo_root);
+}
+
+/// The other singleton entry point, through the same production wiring. Unlike
+/// the merge master this one does carry a first message — the signal it was
+/// started with — so the split has both halves to check.
+#[test]
+fn prepare_task_manager_singleton_ships_its_body_as_system_prompt() {
+    let repo_root = init_git_repo("task-manager-singleton-system-prompt");
+    let config = test_config("task-manager-singleton-system-prompt");
+    let db = Db::open_for_tests(&config.db_path).unwrap();
+    db.insert_test_repo_with_path("repo-1", &repo_root.to_string_lossy(), "Repo One")
+        .unwrap();
+
+    let prepared = prepare_singleton_agent_task_for_api(
+        &db,
+        &config,
+        "repo-1",
+        "task-manager",
+        "Supervise the repository.",
+        SingletonAgentOverrides {
+            agent_provider: Some("claude".to_string()),
+            effort: None,
+        },
+        None,
+    )
+    .unwrap();
+    let command = match prepared.session {
+        PreparedSessionSpawn::Pty { args, .. } => args.join(" "),
+        PreparedSessionSpawn::Agent { .. } => panic!("task manager should use a PTY session"),
+    };
+    let (flags, positional) = split_claude_command(&command);
+
+    assert!(
+        flags.contains("Run The Event Loop"),
+        "task-manager body should ride the system prompt: {command}"
+    );
+    assert!(
+        !positional.contains("Run The Event Loop"),
+        "task-manager body should not be the first user message: {command}"
+    );
+    assert!(
+        positional.contains("Supervise the repository."),
+        "the signal message stays the first user message: {command}"
+    );
+
+    let _ = std::fs::remove_dir_all(&repo_root);
+}
+
 #[tokio::test]
 async fn rerun_stage_uses_compiled_post_action_stage_prompt_and_stage_setup() {
     let repo_root = init_git_repo("rerun-post-action");

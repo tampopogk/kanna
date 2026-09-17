@@ -1338,7 +1338,7 @@ fn prepare_stage_restart(
             },
         }
     };
-    let (workspace_spec, final_prompt, resume_fallback_reason) = match resume {
+    let (workspace_spec, final_prompt, agent_instructions, resume_fallback_reason) = match resume {
         Ok((_provider, mut workspace)) => (
             {
                 workspace.repository_setup_pending = setup_pending;
@@ -1392,6 +1392,9 @@ fn prepare_stage_restart(
                     active_stage_prompt
                 )
             },
+            // Both recovery messages wrap the composed stage prompt in Kanna's
+            // own prose, so neither opens with the agent-instructions section.
+            None,
             None,
         ),
         Err(reason) if stage_already_succeeded => {
@@ -1408,7 +1411,9 @@ fn prepare_stage_restart(
                 completed_stage_result.as_deref(),
                 source_task.prompt.as_deref().unwrap_or(""),
             );
-            (fallback_workspace(), prompt, Some(reason))
+            // Kanna's own prose again, with the stage's instructions nowhere in
+            // it: nothing to relocate.
+            (fallback_workspace(), prompt, None, Some(reason))
         }
         Err(reason) => {
             log::info!("task resume unavailable for {task_id}: {reason}; spawning fresh");
@@ -1430,7 +1435,15 @@ fn prepare_stage_restart(
                 ),
                 None => source_task.prompt.as_deref().unwrap_or("").to_string(),
             };
-            let prompt = build_target_stage_prompt(
+            // Unlike the two arms above, this one composes the stage prompt
+            // bare — no wrapping prose — so it does open with the
+            // agent-instructions section. It is also the path a long-lived
+            // singleton takes when its session cannot be resumed: the fresh
+            // conversation that will compact again. Relocate here too.
+            let StagePromptParts {
+                prompt,
+                agent_instructions,
+            } = build_target_stage_prompt_parts(
                 &loaded.definitions,
                 &loaded.repo.path,
                 &target_stage,
@@ -1442,8 +1455,14 @@ fn prepare_stage_restart(
                 source_task.base_ref.as_deref(),
                 source_task.branch.as_deref(),
                 &run.trigger,
+                None,
             )?;
-            (fallback_workspace(), prompt, Some(reason))
+            (
+                fallback_workspace(),
+                prompt,
+                agent_instructions,
+                Some(reason),
+            )
         }
     };
     let mut prepared = prepare_stage_run_spawn(
@@ -1460,10 +1479,7 @@ fn prepare_stage_restart(
         target_stage.policy.transition,
         workspace_spec,
         final_prompt,
-        // The recovery and fresh-fallback prompts above wrap the composed
-        // stage prompt in Kanna's own prose, so none of them opens with the
-        // agent-instructions section and none is relocatable.
-        None,
+        agent_instructions,
         branch,
         // A restarted revision keeps the requested changes on its record, so
         // the run history does not read as an unexplained re-run of the stage.

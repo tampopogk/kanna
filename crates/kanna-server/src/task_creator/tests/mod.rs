@@ -7,17 +7,20 @@ use super::prompt::{
     PromptContext,
 };
 use super::provider::{AgentProvider, AgentSessionType};
-use super::types::{CreatedTask, PreparedSessionSpawn, PreparedStageTransition, PreparedTaskSpawn};
+use super::types::{
+    CreatedTask, PreparedSessionSpawn, PreparedStageTransition, PreparedTaskSpawn,
+    SingletonAgentOverrides,
+};
 use super::{
     build_agent_command, build_kanna_preamble, build_prepared_session, build_spawn_env,
     build_stage_prompt, create_dormant_task_for_api_with_error, prepare_advance_stage_for_api,
     prepare_merge_agent_for_api, prepare_rerun_stage_for_api, prepare_resume_task_for_api,
-    prepare_revision_task_for_api, prepare_stage_completion_for_api,
-    prepare_start_dormant_task_for_api, prepare_task_for_api, prepare_task_for_api_with_error,
-    read_default_agent_provider_setting, relocate_agent_instructions, reopen_task_for_api,
-    reopen_task_for_api_with_test_hook, rerun_prepared_stage_for_api, resolve_agent_type,
-    resolve_initial_terminal_geometry, spawn_prepared_stage_run_for_api,
-    spawn_prepared_task_for_api_recording_stage_run,
+    prepare_revision_task_for_api, prepare_singleton_agent_task_for_api,
+    prepare_stage_completion_for_api, prepare_start_dormant_task_for_api, prepare_task_for_api,
+    prepare_task_for_api_with_error, read_default_agent_provider_setting,
+    relocate_agent_instructions, reopen_task_for_api, reopen_task_for_api_with_test_hook,
+    rerun_prepared_stage_for_api, resolve_agent_type, resolve_initial_terminal_geometry,
+    spawn_prepared_stage_run_for_api, spawn_prepared_task_for_api_recording_stage_run,
     spawn_prepared_task_for_api_recording_stage_run_detailed, PrepareTaskError,
     PreparedTaskDeliveryError, ReopenTaskError,
 };
@@ -290,6 +293,16 @@ fn init_git_repo(label: &str) -> std::path::PathBuf {
     let repo_root = init_git_repo_with_provider_fixtures(label, true);
     publish_origin_main(&repo_root, "publish initial fixture definitions");
     repo_root
+}
+
+/// Split a prepared Claude PTY command into its flags and its positional
+/// prompt — the first user message. A command that carries no positional (the
+/// agent body relocated and nothing was left to say) reports an empty one.
+fn split_claude_command(command: &str) -> (String, String) {
+    match command.split_once(" -- '") {
+        Some((flags, positional)) => (flags.to_string(), positional.to_string()),
+        None => (command.to_string(), String::new()),
+    }
 }
 
 fn run_git_fixture(repo_root: &std::path::Path, args: &[&str]) -> String {

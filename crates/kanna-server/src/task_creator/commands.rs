@@ -119,6 +119,16 @@ pub(super) fn build_agent_command(
                 }
                 None => {}
             }
+            // Relocating the agent body can empty the prompt: a singleton whose
+            // stage carries no task prompt has nothing left to say as a first
+            // message. Launch with no positional rather than an empty one, so
+            // the session opens at its composer holding the instructions as
+            // configuration — which is what the merge master's own manual
+            // prescribes ("when no explicit request is available, wait for
+            // input").
+            if prompt.is_empty() {
+                return format!("{executable} {}", flags.join(" "));
+            }
             // `--` terminates option parsing. Without it, variadic flags eat
             // the positional prompt: `--mcp-config <path> '<prompt>'` makes
             // the CLI treat the prompt as a second MCP config file and exit
