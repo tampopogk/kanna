@@ -63,6 +63,14 @@ async fn handle_invoke(
     if let Err(error) = validate_lan_invoke_request(&request) {
         return Err((StatusCode::BAD_REQUEST, error));
     }
+    if !state.legacy_peer_access_allowed() {
+        // The bearer-secret listener is the legacy sibling path; sealed
+        // peer sessions are the only sibling route once it is off.
+        return Err((
+            StatusCode::UNAUTHORIZED,
+            "peer_legacy_access_refused: this desktop only accepts end-to-end encrypted sibling sessions; pair the machines from Preferences → Machines".to_string(),
+        ));
+    }
     let response = super::routes::dispatch_authenticated_lan_http_invoke(
         state,
         source.source_desktop_id,
@@ -76,6 +84,27 @@ async fn handle_invoke(
         body: response.body,
         error: response.error,
     }))
+}
+
+/// The gateway's own refusal/dispatch path with the bearer check already
+/// passed, for tests of what happens after authentication.
+#[cfg(test)]
+pub(super) async fn handle_invoke_for_test(
+    source_desktop_id: &str,
+    state: State<Arc<AppState>>,
+    request: serde_json::Value,
+) -> Result<serde_json::Value, (StatusCode, String)> {
+    let request: LanInvokeRequest = serde_json::from_value(request)
+        .map_err(|error| (StatusCode::BAD_REQUEST, error.to_string()))?;
+    handle_invoke(
+        LanMachineInvokeAuthenticated {
+            source_desktop_id: source_desktop_id.to_string(),
+        },
+        state,
+        Json(request),
+    )
+    .await
+    .map(|Json(response)| serde_json::to_value(response).unwrap_or_default())
 }
 
 fn router(state: Arc<AppState>) -> Router {
@@ -195,6 +224,8 @@ mod tests {
 
     fn test_config(desktop_id: &str) -> crate::config::Config {
         let dir = crate::test_paths::unique_test_dir(&format!("lan-listener-{desktop_id}"));
+        let db_path = crate::db::Db::test_db_path(&format!("lan-listener-{desktop_id}"));
+        let _ = crate::db::Db::open_for_tests(&db_path).expect("open test db");
         crate::config::Config {
             relay_url: String::new(),
             device_token: "device-token".to_string(),
@@ -202,7 +233,7 @@ mod tests {
             firebase_auth_emulator_url: None,
             firebase_firestore_emulator_host: None,
             daemon_dir: dir.join("daemon").to_string_lossy().into_owned(),
-            db_path: crate::db::Db::test_db_path(&format!("lan-listener-{desktop_id}")),
+            db_path,
             kanna_cli_path: None,
             desktop_id: desktop_id.to_string(),
             desktop_secret: Some("desktop-secret".to_string()),

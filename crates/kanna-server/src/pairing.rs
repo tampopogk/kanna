@@ -948,7 +948,7 @@ pub(crate) fn generate_device_secret() -> Result<String, String> {
     Ok(bytes.iter().map(|b| format!("{:02x}", b)).collect())
 }
 
-fn generate_pairing_code() -> Result<String, String> {
+pub(crate) fn generate_pairing_code() -> Result<String, String> {
     let mut bytes = [0u8; 3];
     std::fs::File::open("/dev/urandom")
         .map_err(|e| format!("failed to open /dev/urandom: {}", e))?

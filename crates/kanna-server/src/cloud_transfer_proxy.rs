@@ -288,6 +288,11 @@ pub struct CloudTransferRoute {
     /// `ready`, `proxy_stopped`, `credential_expired`, or
     /// `credential_unreadable`.
     pub status: String,
+    /// `relay-proxy` for the renderer-credentialed relay tunnel this module
+    /// binds (legacy), `peer-tunnel` for a sealed route to a paired sibling
+    /// (`peer_transfer_proxy`), which is always `ready` and needs no
+    /// credential refresh.
+    pub kind: &'static str,
     /// Unix seconds the pushed credential expires at, when it could be read.
     pub credential_expires_at: Option<i64>,
     pub detail: Option<String>,
@@ -296,6 +301,25 @@ pub struct CloudTransferRoute {
 impl CloudTransferRoute {
     pub fn ready(&self) -> bool {
         self.status == "ready"
+    }
+
+    pub fn sealed(&self) -> bool {
+        self.kind == "peer-tunnel"
+    }
+
+    /// A sealed route to a paired sibling, in the same shape as a relay
+    /// proxy route so the target merge treats both as "the endpoint this
+    /// process bound for that peer".
+    pub fn peer_tunnel(route: &crate::peer_transfer_proxy::PeerTransferRoute) -> Self {
+        Self {
+            peer_id: route.transfer_peer_id.clone(),
+            endpoint: route.endpoint.clone(),
+            machine_id: route.desktop_id.clone(),
+            status: "ready".to_string(),
+            kind: "peer-tunnel",
+            credential_expires_at: None,
+            detail: None,
+        }
     }
 }
 
@@ -325,6 +349,7 @@ pub async fn cloud_transfer_routes(state: &CloudTransferProxyState) -> Vec<Cloud
                 endpoint: handle.endpoint.endpoint.clone(),
                 machine_id: handle.desktop_id.clone(),
                 status,
+                kind: "relay-proxy",
                 credential_expires_at,
                 detail,
             }

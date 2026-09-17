@@ -476,7 +476,7 @@ pub fn build_transfer_sidecar_env(
                 .to_string_lossy()
                 .into_owned()
         });
-    Ok(vec![
+    let mut env = vec![
         (
             "KANNA_TRANSFER_PORT".to_string(),
             config.transfer_port.to_string(),
@@ -498,7 +498,32 @@ pub fn build_transfer_sidecar_env(
             "KANNA_MOBILE_SERVER_PORT".to_string(),
             config.lan_port.to_string(),
         ),
-    ])
+    ];
+    // With legacy desktop-to-desktop routing off, the sidecar neither
+    // advertises nor browses `_kanna-transfer` and binds loopback only:
+    // every sibling it can reach is a sealed peer tunnel the server
+    // registered. Only the mDNS mode is forced off: an explicit `registry`
+    // in the server's own environment (the loopback-only dev and test mode)
+    // reaches no further than the sealed tunnels do and is passed through,
+    // and an explicit `disabled` already is. While the gate is on the
+    // sidecar resolves the mode from its inherited environment as before.
+    if !crate::http_api::secure_channel::legacy_peer_access_allowed(&config.db_path) {
+        env.push((
+            "KANNA_TRANSFER_DISCOVERY".to_string(),
+            gated_discovery_mode(std::env::var("KANNA_TRANSFER_DISCOVERY").ok()),
+        ));
+    }
+    Ok(env)
+}
+
+/// The discovery mode the sidecar runs with while legacy desktop-to-desktop
+/// access is off: whatever the environment already names, unless that is
+/// mDNS (explicitly, or by being unset), which becomes `disabled`.
+fn gated_discovery_mode(explicit: Option<String>) -> String {
+    match explicit.as_deref().map(str::trim) {
+        Some("") | None | Some("mdns") | Some("bonjour") => "disabled".to_string(),
+        Some(mode) => mode.to_string(),
+    }
 }
 
 fn required_env(name: &str) -> Result<String, String> {
@@ -874,9 +899,15 @@ fn spawn_companion_reader(
 
 /// Lazy owner of the sidecar process: spawned on first control use or inbound
 /// tunnel demand, respawned transparently once the previous child is dead.
+/// Runs after every successful sidecar spawn with the new client. The peer
+/// transfer proxies use it to re-register their sealed routes, because a
+/// fresh sidecar starts with an empty external-peer registry.
+pub type SidecarSpawnHook = Box<dyn Fn(Arc<TransferSidecarClient>) + Send + Sync>;
+
 pub struct TransferSidecarSupervisor {
     config: crate::config::Config,
     client: Mutex<Option<Arc<TransferSidecarClient>>>,
+    spawn_hook: std::sync::Mutex<Option<SidecarSpawnHook>>,
     events: Arc<TransferEventLog>,
     companion_events: Arc<CompanionEventLog>,
     incarnations: AtomicU64,
@@ -900,6 +931,7 @@ impl TransferSidecarSupervisor {
         Self {
             config,
             client: Mutex::new(None),
+            spawn_hook: std::sync::Mutex::new(None),
             events: Arc::new(TransferEventLog::default()),
             companion_events: Arc::new(CompanionEventLog::default()),
             incarnations: AtomicU64::new(0),
@@ -954,6 +986,32 @@ impl TransferSidecarSupervisor {
         self.ensure_running().await.map(|_| ())
     }
 
+    pub fn set_spawn_hook(&self, hook: SidecarSpawnHook) {
+        *self
+            .spawn_hook
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(hook);
+    }
+
+    /// Retires the running sidecar so the next control request spawns a
+    /// fresh one under the current configuration - how a changed legacy
+    /// switch takes effect on the sidecar's discovery mode and bind
+    /// address. Dropping the last handle kills the child.
+    pub async fn restart(&self) {
+        let mut guard = self.client.lock().await;
+        *guard = None;
+    }
+
+    /// The live sidecar client, if one is running - without spawning one.
+    pub async fn running_client(&self) -> Option<Arc<TransferSidecarClient>> {
+        self.client
+            .lock()
+            .await
+            .as_ref()
+            .filter(|client| !client.is_dead())
+            .cloned()
+    }
+
     pub fn events(&self) -> Arc<TransferEventLog> {
         Arc::clone(&self.events)
     }
@@ -968,14 +1026,23 @@ impl TransferSidecarSupervisor {
             *guard = None;
         }
         if guard.is_none() {
-            *guard = Some(Arc::new(TransferSidecarClient::spawn(
+            let client = Arc::new(TransferSidecarClient::spawn(
                 &self.sidecar_binary()?,
                 build_transfer_sidecar_env(&self.config)?,
                 Arc::clone(&self.events),
                 Arc::clone(&self.companion_events),
                 Arc::clone(&self.work),
                 self.incarnations.fetch_add(1, Ordering::Relaxed) + 1,
-            )?));
+            )?);
+            *guard = Some(Arc::clone(&client));
+            if let Some(hook) = self
+                .spawn_hook
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .as_ref()
+            {
+                hook(client);
+            }
         }
         guard
             .as_ref()
@@ -1261,6 +1328,61 @@ mod tests {
             );
         }
 
+        clear_identity_env();
+    }
+
+    /// With legacy desktop-to-desktop access off, the sidecar must not
+    /// browse or advertise mDNS, but the loopback-only registry mode the
+    /// dev and test fixtures set explicitly reaches no further than the
+    /// sealed tunnels do and must survive: forcing it off left the real
+    /// sidecar integration tests waiting for a pairing that never came.
+    #[test]
+    fn sidecar_env_with_legacy_access_off_keeps_explicit_registry_discovery_and_disables_mdns() {
+        let _guard = crate::test_sidecar_guard_blocking();
+        let root = crate::test_paths::unique_test_path("kanna-transfer-env-gate-test");
+        clear_identity_env();
+        std::env::set_var("KANNA_TRANSFER_ROOT", &root);
+        std::env::set_var("KANNA_TRANSFER_PEER_ID", "peer-test");
+        std::env::set_var("KANNA_TRANSFER_DISPLAY_NAME", "Test Machine");
+        let prior_discovery = std::env::var("KANNA_TRANSFER_DISCOVERY").ok();
+
+        let mut config = test_config(4455, 48120);
+        config.db_path = crate::db::Db::test_db_path("transfer-sidecar-env-gate");
+        let db = crate::db::Db::open_for_tests(&config.db_path).expect("open test db");
+        db.set_setting(
+            crate::http_api::secure_channel::DESKTOP_PEER_LEGACY_ACCESS_SETTING,
+            crate::http_api::secure_channel::DESKTOP_PEER_LEGACY_ACCESS_REFUSED,
+        )
+        .expect("refuse legacy access");
+
+        let discovery_for = |explicit: Option<&str>| -> Option<String> {
+            match explicit {
+                Some(value) => std::env::set_var("KANNA_TRANSFER_DISCOVERY", value),
+                None => std::env::remove_var("KANNA_TRANSFER_DISCOVERY"),
+            }
+            let env: HashMap<String, String> = build_transfer_sidecar_env(&config)
+                .expect("env")
+                .into_iter()
+                .collect();
+            env.get("KANNA_TRANSFER_DISCOVERY").cloned()
+        };
+        assert_eq!(discovery_for(Some("registry")).as_deref(), Some("registry"));
+        assert_eq!(discovery_for(None).as_deref(), Some("disabled"));
+        assert_eq!(discovery_for(Some("mdns")).as_deref(), Some("disabled"));
+        assert_eq!(discovery_for(Some("bonjour")).as_deref(), Some("disabled"));
+
+        // The gate on leaves the mode to the inherited environment.
+        db.set_setting(
+            crate::http_api::secure_channel::DESKTOP_PEER_LEGACY_ACCESS_SETTING,
+            "allowed",
+        )
+        .expect("allow legacy access");
+        assert_eq!(discovery_for(None), None);
+
+        match prior_discovery {
+            Some(value) => std::env::set_var("KANNA_TRANSFER_DISCOVERY", value),
+            None => std::env::remove_var("KANNA_TRANSFER_DISCOVERY"),
+        }
         clear_identity_env();
     }
 

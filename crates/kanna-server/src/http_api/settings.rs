@@ -133,6 +133,12 @@ pub(super) async fn put_setting(
             format!("db error: {e}"),
         )
     })?;
+    if key == super::secure_channel::DESKTOP_PEER_LEGACY_ACCESS_SETTING {
+        // The sidecar's discovery mode and bind address follow the switch
+        // at spawn; retire the running one so the next request respawns it
+        // under the new value.
+        state.transfer_sidecar().restart().await;
+    }
     state.publish_state_changed(StateChangeScope::Settings);
     Ok(Json(SettingResponse {
         key,

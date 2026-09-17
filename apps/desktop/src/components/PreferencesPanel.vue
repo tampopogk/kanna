@@ -17,16 +17,26 @@ import {
 } from '../composables/useEmbeddableView'
 import { isTopModal } from '../composables/useModalZIndex'
 import MobileAccessPanel from './MobileAccessPanel.vue'
+import MachinesPanel from './MachinesPanel.vue'
 import {
+  DESKTOP_PEER_LEGACY_ACCESS_ALLOWED,
+  DESKTOP_PEER_LEGACY_ACCESS_REFUSED,
+  DESKTOP_PEER_LEGACY_ACCESS_SETTING,
   MOBILE_LEGACY_ACCESS_ALLOWED,
   MOBILE_LEGACY_ACCESS_REFUSED,
   MOBILE_LEGACY_ACCESS_SETTING,
   confirmPendingPairing,
+  createDesktopPeerPairingOffer,
+  fetchDesktopPeers,
   fetchMobileDevices,
   fetchPendingPairingConfirmation,
+  pairDesktopPeer,
   putDesktopSetting,
   rejectPendingPairing,
+  removeDesktopPeer,
   type DesktopMobileDevice,
+  type DesktopPeer,
+  type DesktopPeerPairingOffer,
   type DesktopPendingPairingConfirmation,
 } from '../services/desktopServerClient'
 import { macOsTextInputAttrs } from '../utils/textInput'
@@ -90,11 +100,12 @@ const {
   bringToFront: raiseToFront,
 } = useEmbeddableView(props)
 
-const activeTab = ref<'general' | 'account' | 'mobile' | 'developer'>('general')
+type PreferencesTab = 'general' | 'account' | 'mobile' | 'machines' | 'developer'
+const activeTab = ref<PreferencesTab>('general')
 
-const tabs: Array<'general' | 'account' | 'mobile' | 'developer'> = isDev
-  ? ['general', 'account', 'mobile', 'developer']
-  : ['general', 'account', 'mobile']
+const tabs: PreferencesTab[] = isDev
+  ? ['general', 'account', 'mobile', 'machines', 'developer']
+  : ['general', 'account', 'mobile', 'machines']
 const mobileDesktopName = ref("This desktop")
 const mobileEnvironment = ref("development")
 const mobileDesktopId = ref("")
@@ -116,6 +127,21 @@ const pairingConfirmationError = ref<string | null>(null)
 const mobileDevices = ref<DesktopMobileDevice[]>([])
 const legacyAccessAllowed = ref(true)
 const legacyAccessBusy = ref(false)
+const peers = ref<DesktopPeer[]>([])
+const peersLoading = ref(false)
+const peersError = ref<string | null>(null)
+const peerChannelAvailable = ref(true)
+const relayPeerTunnelsAvailable = ref(true)
+const peerLegacyAccessAllowed = ref(true)
+const peerLegacyAccessBusy = ref(false)
+const peerOffer = ref<DesktopPeerPairingOffer | null>(null)
+const peerOfferPending = ref(false)
+const peerOfferError = ref<string | null>(null)
+const peerPairPending = ref(false)
+const peerPairError = ref<string | null>(null)
+const peerPairSuccess = ref<string | null>(null)
+const removingPeerDesktopId = ref<string | null>(null)
+let peersTimer: ReturnType<typeof setInterval> | null = null
 let pairingConfirmationTimer: ReturnType<typeof setInterval> | null = null
 const authSession = ref<DesktopAuthSession | null>(null)
 const authState = ref<DesktopAuthState>({ status: "signedOut" })
@@ -337,7 +363,106 @@ watch(activeTab, (tab) => {
   } else {
     stopPairingConfirmationPolling()
   }
+  if (tab === "machines") {
+    void refreshMobileAccess()
+    startPeersPolling()
+  } else {
+    stopPeersPolling()
+  }
 })
+
+async function refreshPeers() {
+  peersLoading.value = true
+  try {
+    const list = await fetchDesktopPeers()
+    peers.value = list.peers
+    peerChannelAvailable.value = list.peerChannelAvailable
+    relayPeerTunnelsAvailable.value = list.relayPeerTunnelsAvailable
+    peerLegacyAccessAllowed.value = list.legacyAccessAllowed
+    if (list.desktopName) mobileDesktopName.value = list.desktopName
+    if (list.desktopId) mobileDesktopId.value = list.desktopId
+    peersError.value = null
+  } catch (error) {
+    console.error("[PreferencesPanel] failed to list paired machines:", error)
+    peersError.value = error instanceof Error ? error.message : String(error)
+  } finally {
+    peersLoading.value = false
+  }
+}
+
+// A sibling that pastes this desktop's string pairs on the server; the
+// panel polls while it is open so the new machine appears without a click.
+function startPeersPolling() {
+  stopPeersPolling()
+  void refreshPeers()
+  peersTimer = setInterval(() => { void refreshPeers() }, 3000)
+}
+
+function stopPeersPolling() {
+  if (peersTimer) clearInterval(peersTimer)
+  peersTimer = null
+}
+
+async function createPeerOffer() {
+  if (peerOfferPending.value) return
+  peerOfferPending.value = true
+  peerOfferError.value = null
+  try {
+    peerOffer.value = await createDesktopPeerPairingOffer()
+  } catch (error) {
+    console.error("[PreferencesPanel] failed to create a peer pairing string:", error)
+    peerOfferError.value = error instanceof Error ? error.message : String(error)
+  } finally {
+    peerOfferPending.value = false
+  }
+}
+
+async function pairWithString(pairingString: string) {
+  if (peerPairPending.value) return
+  peerPairPending.value = true
+  peerPairError.value = null
+  peerPairSuccess.value = null
+  try {
+    const result = await pairDesktopPeer(pairingString)
+    peerPairSuccess.value = `Paired with ${result.displayName} (${result.route}).`
+    await refreshPeers()
+  } catch (error) {
+    console.error("[PreferencesPanel] peer pairing failed:", error)
+    peerPairError.value = error instanceof Error ? error.message : String(error)
+  } finally {
+    peerPairPending.value = false
+  }
+}
+
+async function removePeer(desktopId: string) {
+  if (removingPeerDesktopId.value) return
+  removingPeerDesktopId.value = desktopId
+  try {
+    await removeDesktopPeer(desktopId)
+    await refreshPeers()
+  } catch (error) {
+    console.error("[PreferencesPanel] failed to unpair machine:", error)
+    peersError.value = error instanceof Error ? error.message : String(error)
+  } finally {
+    removingPeerDesktopId.value = null
+  }
+}
+
+async function setPeerLegacyAccess(allowed: boolean) {
+  if (peerLegacyAccessBusy.value) return
+  peerLegacyAccessBusy.value = true
+  try {
+    await putDesktopSetting(
+      DESKTOP_PEER_LEGACY_ACCESS_SETTING,
+      allowed ? DESKTOP_PEER_LEGACY_ACCESS_ALLOWED : DESKTOP_PEER_LEGACY_ACCESS_REFUSED,
+    )
+    peerLegacyAccessAllowed.value = allowed
+  } catch (error) {
+    console.error("[PreferencesPanel] failed to update legacy desktop-to-desktop access:", error)
+  } finally {
+    peerLegacyAccessBusy.value = false
+  }
+}
 
 async function openAccountSettings() {
   activeTab.value = "account"
@@ -442,6 +567,7 @@ onMounted(() => {
 onBeforeUnmount(() => {
   unsubscribeAuth?.()
   stopPairingConfirmationPolling()
+  stopPeersPolling()
   ++pushGeneration
   ++statusGeneration
 })
@@ -481,6 +607,12 @@ defineExpose({ bringToFront, cycleTab, isOnTop })
             :class="{ active: activeTab === 'mobile' }"
             @click="activeTab = 'mobile'"
           >Mobile</button>
+          <button
+            class="tab"
+            data-testid="preferences-machines-tab"
+            :class="{ active: activeTab === 'machines' }"
+            @click="activeTab = 'machines'"
+          >Machines</button>
           <button
             v-if="isDev"
             class="tab"
@@ -706,6 +838,32 @@ defineExpose({ bringToFront, cycleTab, isOnTop })
           @confirm-pairing="confirmPairing"
           @reject-pairing="rejectPairing"
           @set-legacy-access="setLegacyAccess"
+        />
+      </div>
+
+      <div v-if="activeTab === 'machines'" class="prefs-body mobile-body">
+        <MachinesPanel
+          :desktop-name="mobileDesktopName"
+          :desktop-id="mobileDesktopId"
+          :peers="peers"
+          :peers-loading="peersLoading"
+          :peers-error="peersError"
+          :peer-channel-available="peerChannelAvailable"
+          :relay-peer-tunnels-available="relayPeerTunnelsAvailable"
+          :offer="peerOffer"
+          :offer-pending="peerOfferPending"
+          :offer-error="peerOfferError"
+          :pair-pending="peerPairPending"
+          :pair-error="peerPairError"
+          :pair-success="peerPairSuccess"
+          :legacy-access-allowed="peerLegacyAccessAllowed"
+          :legacy-access-busy="peerLegacyAccessBusy"
+          :removing-desktop-id="removingPeerDesktopId"
+          @create-offer="createPeerOffer"
+          @pair="pairWithString"
+          @remove-peer="removePeer"
+          @refresh="refreshPeers"
+          @set-legacy-access="setPeerLegacyAccess"
         />
       </div>
 

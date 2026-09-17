@@ -55,12 +55,23 @@ pub const LAN_ROUTING_PROTOCOL_VERSION: u32 = 1;
 /// incompatible build sharing the same LAN (e.g. a staging desktop) without
 /// needing to trust the label for anything beyond that - the real
 /// authentication happens entirely later, in `invoke_desktop`.
-fn lan_routing_txt<'a>(desktop_id: &'a str, environment: &'a str) -> Vec<(&'a str, String)> {
-    vec![
+fn lan_routing_txt<'a>(
+    desktop_id: &'a str,
+    environment: &'a str,
+    api_port: Option<u16>,
+) -> Vec<(&'a str, String)> {
+    let mut txt = vec![
         ("desktopId", desktop_id.to_string()),
         ("environment", environment.to_string()),
         ("protocolVersion", LAN_ROUTING_PROTOCOL_VERSION.to_string()),
-    ]
+    ];
+    // Where this desktop's general API (and so its sealed peer endpoint,
+    // `/v1/peers/channel`) listens. A hint like everything else here: the
+    // peer handshake against the pinned key is what proves who answered.
+    if let Some(port) = api_port {
+        txt.push(("lanPort", port.to_string()));
+    }
+    txt
 }
 
 /// Advertises this desktop's LAN machine-invoke listener. Holding this value
@@ -73,10 +84,15 @@ pub struct LanRoutingAdvertisement {
 
 #[cfg(not(target_os = "macos"))]
 impl LanRoutingAdvertisement {
-    pub fn start(desktop_id: &str, environment: &str, port: u16) -> Result<Self, String> {
+    pub fn start_with_api_port(
+        desktop_id: &str,
+        environment: &str,
+        port: u16,
+        api_port: Option<u16>,
+    ) -> Result<Self, String> {
         let daemon = ServiceDaemon::new()
             .map_err(|error| format!("failed to start mDNS daemon: {error}"))?;
-        let txt = lan_routing_txt(desktop_id, environment);
+        let txt = lan_routing_txt(desktop_id, environment, api_port);
         // Only routable addresses, matching bonjour.rs's own mobile
         // advertisement and for the identical reason: `enable_addr_auto`
         // would also publish loopback/link-local addresses, and a sibling
@@ -150,11 +166,16 @@ pub struct LanRoutingAdvertisement {
 
 #[cfg(target_os = "macos")]
 impl LanRoutingAdvertisement {
-    pub fn start(desktop_id: &str, environment: &str, port: u16) -> Result<Self, String> {
+    pub fn start_with_api_port(
+        desktop_id: &str,
+        environment: &str,
+        port: u16,
+        api_port: Option<u16>,
+    ) -> Result<Self, String> {
         let native = crate::bonjour::NativeBonjourAdvertisement::start_service(
             desktop_id,
             LAN_ROUTING_SERVICE_TYPE,
-            &lan_routing_txt(desktop_id, environment),
+            &lan_routing_txt(desktop_id, environment, api_port),
             port,
         )?;
         Ok(Self { _native: native })
@@ -239,6 +260,8 @@ pub(super) struct Resolution {
     pub(super) environment: Option<String>,
     pub(super) protocol_version: Option<String>,
     pub(super) port: u16,
+    /// The advertised `lanPort` TXT value, if any (older siblings omit it).
+    pub(super) api_port: Option<u16>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -257,7 +280,7 @@ struct Observation {
 pub(super) struct ObservationBook {
     next_generation: u64,
     observations: BTreeMap<ServiceKey, Observation>,
-    projected: BTreeMap<String, SocketAddr>,
+    projected: BTreeMap<String, (SocketAddr, Option<u16>)>,
 }
 
 impl ObservationBook {
@@ -342,7 +365,7 @@ impl ObservationBook {
         self.observations.clear();
     }
 
-    fn desired(&self, current_environment: &str) -> BTreeMap<String, SocketAddr> {
+    fn desired(&self, current_environment: &str) -> BTreeMap<String, (SocketAddr, Option<u16>)> {
         let mut desired = BTreeMap::new();
         for observation in self.observations.values() {
             let Some(resolution) = observation.resolution.as_ref() else {
@@ -357,7 +380,9 @@ impl ObservationBook {
                 current_environment,
             );
             if let Some((desktop_id, address)) = candidate {
-                desired.entry(desktop_id).or_insert(address);
+                desired
+                    .entry(desktop_id)
+                    .or_insert((address, resolution.api_port.filter(|port| *port != 0)));
             }
         }
         desired
@@ -371,10 +396,16 @@ impl ObservationBook {
                 state.remove_lan_candidate(desktop_id);
             }
         }
-        for (desktop_id, address) in &desired {
-            if self.projected.get(desktop_id) != Some(address) {
+        for (desktop_id, (address, api_port)) in &desired {
+            if self.projected.get(desktop_id) != Some(&(*address, *api_port)) {
                 log::info!("LAN routing candidate observed: {desktop_id} at {address}");
                 state.set_lan_candidate(desktop_id.clone(), *address);
+                if let Some(api_port) = api_port {
+                    state.set_lan_api_candidate(
+                        desktop_id.clone(),
+                        SocketAddr::new(address.ip(), *api_port),
+                    );
+                }
             }
         }
         self.projected = desired;
@@ -453,6 +484,10 @@ impl Discovery {
                                         .get_property_val_str("protocolVersion")
                                         .map(str::to_string),
                                     port: resolved.port,
+                                    api_port: resolved
+                                        .txt_properties
+                                        .get_property_val_str("lanPort")
+                                        .and_then(|value| value.parse().ok()),
                                 },
                             );
                             observations.replace_addresses(
@@ -666,6 +701,7 @@ mod tests {
             environment: Some("development".to_string()),
             protocol_version: Some(PROTOCOL.to_string()),
             port,
+            api_port: None,
         }
     }
 
@@ -784,9 +820,13 @@ mod tests {
         let state =
             crate::http_api::test_state_with_seed("desktop-e2e-observer", "E2E Mac", |_db| {});
 
-        let advertisement =
-            LanRoutingAdvertisement::start("desktop-e2e-target", "development", 4460)
-                .expect("start advertisement");
+        let advertisement = LanRoutingAdvertisement::start_with_api_port(
+            "desktop-e2e-target",
+            "development",
+            4460,
+            None,
+        )
+        .expect("start advertisement");
         let discovery = start_discovery(Arc::clone(&state)).expect("start discovery");
 
         // Matches this crate's existing real Bonjour integration test
@@ -834,8 +874,13 @@ mod tests {
         );
         drop(invalid);
 
-        let replacement = LanRoutingAdvertisement::start("desktop-e2e-target", "development", 4462)
-            .expect("start replacement advertisement");
+        let replacement = LanRoutingAdvertisement::start_with_api_port(
+            "desktop-e2e-target",
+            "development",
+            4462,
+            None,
+        )
+        .expect("start replacement advertisement");
         let replacement_deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
         loop {
             if state

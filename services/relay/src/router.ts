@@ -41,7 +41,16 @@ interface PendingTunnel {
   expiry: ReturnType<typeof setTimeout>;
 }
 
-export type TunnelService = "ksp" | "task-transfer";
+/**
+ * `ksp` and `task-transfer` are a phone's tunnels to its desktop. `peer` is a
+ * desktop's tunnel to a sibling desktop, opened by a second desktop-secret
+ * socket (`tunnel_client`) and carrying a sealed `kanna-ksc-peer` session
+ * the relay cannot read - KSP frames or a task transfer, it does not know.
+ */
+export type TunnelService = "ksp" | "task-transfer" | "peer";
+
+/** What a desktop tunnel client may ask for; a phone may never open one. */
+const DESKTOP_TUNNEL_SERVICES: readonly TunnelService[] = ["peer"];
 
 export interface RelayMessage {
   type?: unknown;
@@ -741,6 +750,78 @@ export function attachDesktopTunnel(
   sendControlFrame(ws, ready, readyBytes);
   sendControlFrame(tunnel.client, ready, readyBytes);
   return true;
+}
+
+/**
+ * A `tunnel_request` from a desktop tunnel client: a socket that proved
+ * this account's desktop secret for `sourceDesktopId` and registered as
+ * nothing else. The target must be another desktop of the same account
+ * whose *own* socket proved its desktop secret (`verifiedDesktopIdentities`),
+ * so a device-token desktop can neither open nor receive one. On success the
+ * requesting socket becomes the tunnel, exactly like a phone's.
+ */
+export function routeDesktopTunnelRequest(
+  userId: string,
+  source: WebSocket,
+  parsed: RelayMessage | null,
+  sourceDesktopId: string | null,
+  serverAuthProof?: ServerAuthProof | null,
+): void {
+  const id = parsed?.id;
+  if (parsed?.type !== "tunnel_request") {
+    sendErrorResponse(source, id, "desktop tunnel clients may only request tunnels");
+    return;
+  }
+  if (
+    serverAuthProof?.kind !== "desktop"
+    || !sourceDesktopId
+    || serverAuthProof.desktopId !== sourceDesktopId
+  ) {
+    sendErrorResponse(source, id, "desktop-secret authentication is required");
+    return;
+  }
+  const service = parsed.service;
+  if (typeof service !== "string" || !DESKTOP_TUNNEL_SERVICES.includes(service as TunnelService)) {
+    sendErrorResponse(source, id, "Unsupported tunnel service");
+    return;
+  }
+  const desktopId = typeof parsed.desktopId === "string" ? parsed.desktopId : undefined;
+  if (!desktopId || desktopId === sourceDesktopId) {
+    sendErrorResponse(source, id, "desktopId must name another desktop of this account");
+    return;
+  }
+  const pair = connections.get(userId);
+  const target = desktopId ? pair?.desktops.get(desktopId) : undefined;
+  if (!pair || !target || target.readyState !== 1) {
+    sendErrorResponse(source, id, "Desktop offline");
+    return;
+  }
+  if (verifiedDesktopIdentities.get(target) !== desktopId) {
+    sendErrorResponse(source, id, "target desktop-secret authentication is required");
+    return;
+  }
+  if (source.readyState !== 1) {
+    return;
+  }
+  const tunnelId = randomUUID();
+  storePendingTunnel(pair, tunnelId, source, desktopId, service as TunnelService);
+  tunnelSockets.add(source);
+  identifyByteAccount(source, {
+    uid: userId,
+    desktopId: sourceDesktopId,
+    role: "server",
+    tunnelService: service,
+  });
+  sendControlFrame(
+    target,
+    JSON.stringify({
+      type: "tunnel_establish",
+      id,
+      desktopId,
+      tunnelId,
+      service,
+    }),
+  );
 }
 
 /**

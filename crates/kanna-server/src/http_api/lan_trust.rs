@@ -31,7 +31,7 @@ const FETCH_METADATA_HEADERS: [&str; 4] = [
 ];
 /// KSP upgrade paths. A browser cannot attach a header to a WebSocket
 /// handshake, so these authenticate in-band instead — see `http_api::ksp`.
-const STREAM_UPGRADE_PATHS: [&str; 2] = ["/v1/stream", "/v2/stream"];
+const STREAM_UPGRADE_PATHS: [&str; 3] = ["/v1/stream", "/v2/stream", "/v1/peers/channel"];
 const STREAM_COOKIE_NAME: &str = "kanna_lan_stream";
 const STREAM_COOKIE_TTL_SECONDS: u64 = 5 * 60;
 
@@ -52,6 +52,28 @@ impl TrustedLanDeviceAccess {
 
     pub(super) fn device_id(&self) -> &str {
         &self.device_id
+    }
+}
+
+/// Marker inserted when a request arrived inside a sealed *peer* session
+/// whose handshake static key matched a paired sibling desktop
+/// (`router::dispatch_sealed_peer_http_invoke`). It carries the sibling
+/// route set - task control and files over LAN and relay alike, the set a
+/// relay-attested sibling invoke had - and never `DesktopLocalAccess` (this
+/// desktop's own pairing and settings controls) nor `RelayAttestedSource`
+/// (the legacy CA bootstrap, which is retired rather than re-homed).
+#[derive(Debug, Clone)]
+pub(crate) struct TrustedPeerDesktopAccess {
+    desktop_id: String,
+}
+
+impl TrustedPeerDesktopAccess {
+    pub(super) fn new(desktop_id: String) -> Self {
+        Self { desktop_id }
+    }
+
+    pub(crate) fn desktop_id(&self) -> &str {
+        &self.desktop_id
     }
 }
 
@@ -602,9 +624,13 @@ pub(super) async fn require_http_access(request: Request<Body>, next: Next) -> R
         .map_or(request.uri().path(), |path| path.as_str());
     let bootstrap = matches!(
         (request.method().as_str(), path),
-        ("GET" | "HEAD", "/v1/status" | "/v1/stream" | "/v2/stream")
-            | ("POST", "/v1/pairing/sessions/claim")
-            | ("GET", "/v1/pairing/confirmation")
+        (
+            "GET" | "HEAD",
+            "/v1/status" | "/v1/stream" | "/v2/stream" | "/v1/peers/channel"
+        ) | (
+            "POST",
+            "/v1/pairing/sessions/claim" | "/v1/peers/pairing/claim"
+        ) | ("GET", "/v1/pairing/confirmation")
     );
     if !bootstrap && privileged_task_access(request.extensions()).is_err() {
         return unauthorized_privileged_task().into_response();
@@ -616,8 +642,9 @@ fn privileged_task_access(
     extensions: &axum::http::Extensions,
 ) -> Result<PrivilegedTaskAccess, (StatusCode, String)> {
     if extensions.get::<TunneledHttpInvoke>().is_some() {
-        // A tunneled request is privileged by the relay's account marker or
-        // by a secure-channel session that matched a paired device; the
+        // A tunneled request is privileged by the relay's account marker,
+        // by a secure-channel session that matched a paired device, or by
+        // a sealed peer session that matched a paired sibling desktop; the
         // tunnel itself confers nothing.
         return extensions
             .get::<AuthenticatedHttpInvoke>()
@@ -625,6 +652,11 @@ fn privileged_task_access(
             .or_else(|| {
                 extensions
                     .get::<TrustedLanDeviceAccess>()
+                    .map(|_| PrivilegedTaskAccess)
+            })
+            .or_else(|| {
+                extensions
+                    .get::<TrustedPeerDesktopAccess>()
                     .map(|_| PrivilegedTaskAccess)
             })
             .ok_or_else(unauthorized_privileged_task);

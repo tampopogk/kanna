@@ -2,18 +2,18 @@
 
 Status: **unreleased.** Implemented on this branch for mobile↔desktop
 sessions and control over LAN and relay (Slices 0–2 of task `f4493c65`,
-2026-09-16), and not present in any shipped Kanna build: no released desktop,
-macOS artifact or iOS build carries it, and legacy (unencrypted) mobile access
-still ships on by default (§6). Everything this document claims about
-encryption is a claim about this branch, not about what users have today. The
-published privacy policy (`docs/legal/privacy-policy.md`, effective
-August 9, 2026) describes the released behaviour and is deliberately left
-unchanged; §10 holds the draft policy language that replaces it only when an
-encrypted build actually ships.
+2026-09-16) and for desktop↔desktop control, sibling terminal views and task
+transfers (Slice 5, task `affe528f`, 2026-09-16; §10), and not present in any
+shipped Kanna build: no released desktop, macOS artifact or iOS build carries
+it, and legacy (unencrypted) mobile access still ships on by default (§6).
+Everything this document claims about encryption is a claim about this
+branch, not about what users have today. The published privacy policy
+(`docs/legal/privacy-policy.md`, effective August 9, 2026) describes the
+released behaviour and is deliberately left unchanged; §11 holds the draft
+policy language that replaces it only when an encrypted build actually ships.
 
-The Firestore task index (Slice 3), push bodies (Slice 4) and
-desktop↔desktop traffic (Slice 5) are **not** covered by this document and
-remain as described in §6.
+The Firestore task index (Slice 3) and push bodies (Slice 4) are **not**
+covered by this document and remain as described in §6.
 
 ## 1. What it is
 
@@ -49,13 +49,19 @@ close semantics and the authority model below.
 
 ## 2. Wire format
 
-- **Prologue**: `kanna-ksc/1` `\0` `<desktop_id>`. Binds the protocol
-  version and the target desktop into the transcript; a mismatch fails the
-  handshake.
-- **Message 1** (phone → desktop): Noise IK message 1. Its encrypted payload
-  is JSON `InitiatorHello { version: 1, intent: "session" | "pairing",
-  deviceId?, capabilities? }`. The phone's static key is inside the
-  encrypted part, so a LAN sniffer learns no device identity.
+- **Prologue**: `kanna-ksc/1` `\0` `<desktop_id>` for a phone, and
+  `kanna-ksc-peer/1` `\0` `<desktop_id>` for a sibling desktop (§10). Binds
+  the protocol version, the *population* and the target desktop into the
+  transcript; a mismatch fails the handshake, so a phone's message 1 can
+  never complete at the peer endpoint or a sibling's at the phone endpoint.
+- **Message 1** (initiator → desktop): Noise IK message 1. Its encrypted
+  payload is JSON `InitiatorHello { version: 1, intent: "session" |
+  "pairing" | "peer_session" | "peer_pairing" | "peer_tunnel", deviceId?,
+  sourceDesktopId?, service?, capabilities? }`. The `peer_*` intents belong
+  to the peer domain and are refused in the mobile one (and vice versa);
+  `service` names what a `peer_tunnel` carries (`task-transfer`). The
+  initiator's static key is inside the encrypted part, so a LAN sniffer
+  learns no device identity.
 - **Message 2** (desktop → phone): Noise IK message 2, encrypted payload JSON
   `ResponderHello { version: 1, desktopId, capabilities? }`. The phone
   refuses a `desktopId` other than the one it dialled.
@@ -88,14 +94,17 @@ derive it from their own transcript.
 | Phone | X25519 *device identity* | `expo-secure-store`, `WHEN_UNLOCKED_THIS_DEVICE_ONLY` (Keychain / Keystore-backed), one per install; a corrupt value is replaced and the phone re-pairs |
 | Phone, per desktop | the desktop's public key | `TrustedDesktopRecord.channelPublicKey` in AsyncStorage (a public value; its integrity is protected by the same app sandbox as everything else the app trusts) |
 | Desktop, per device | the phone's public key | `TrustedDevice.channel_public_key` in the pairing store |
+| Desktop | X25519 *peer channel identity* | `peer-channel-identity.json` beside the pairing store, `0600`, same rules as the mobile identity; a distinct key so a pairing string on a clipboard, a rotation or a revocation on the peer side never touches phone pins |
+| Desktop, per sibling | the sibling's peer channel key and its task-transfer key | `PeerDesktop` in `peer-desktops.json` (`peer_trust.rs`), written `0600` and atomically through `secure_file`, bound to the environment and to the account signed in at pairing time |
+| Sidecar | X25519 *task-transfer identity* | `transfer-identities/<peer>.json`, written `0600` through the shared `secure_file`; a loose pre-existing file is tightened once, a symlink or corrupt file fails closed |
 
 Randomness on the phone comes only from `expo-crypto`'s CSPRNG (or WebCrypto
 in Node); there is no `Math.random` fallback anywhere on the identity, task-id
 or handshake paths — a runtime without secure randomness fails loudly.
 
-The desktop's channel identity is distinct from its Ed25519 push identity,
-its LAN TLS CA and its task-transfer X25519 key: a key used in one protocol
-is never reused in another.
+The desktop's channel identity is distinct from its peer channel identity,
+its Ed25519 push identity, its LAN TLS CA and its task-transfer X25519 key:
+a key used in one protocol is never reused in another.
 
 ## 4. Pairing: how the desktop key is anchored
 
@@ -215,15 +224,41 @@ code, talking to a desktop on this build:
 - A LAN attacker sees ciphertext and the plaintext `/v1/status` (which
   carries no secret). The paired device secret is never on the wire.
 
+After Slice 5 (§10), for two desktops paired by pairing string:
+
+- **Desktop ↔ desktop control, sibling terminal views and task transfers
+  are end-to-end encrypted and mutually authenticated over LAN and over the
+  relay.** The relay sees that two desktops of one account opened a `peer`
+  tunnel, its frame sizes and timing; it cannot read a request, a
+  keystroke, a terminal frame, a file, a transfer artifact, or originate an
+  invoke, and it cannot substitute a key or a CA because none is ever taken
+  from it.
+
 Still visible to the relay/cloud operator, unchanged by this work:
 
 - the Firestore task index (title, prompt snippet, waiting snippet, attention
   reason, repo name/URL, branch, PR URL) — Slice 3;
 - push notification title/body at the relay, FCM and APNs — Slice 4;
-- desktop↔desktop relay KSP and `invoke` content, and the relay-attested
-  bootstrap of the LAN TLS CA and the transfer key — Slice 5;
+- the Firestore *transfer* snapshot (peer id, transfer public key,
+  `acceptingTransfers`), still published for legacy siblings; a paired
+  sibling never adopts it;
 - routing metadata, timing, volumes and account identity at the relay —
   never claimable.
+
+**Desktop legacy window.** The setting `desktop_peer_legacy_access`
+(Preferences → Machines → "Allow legacy (unencrypted) desktop-to-desktop
+routing", default *on*) keeps the pre-Slice-5 sibling paths alive: the
+relay-attested `invoke`, the bearer-secret LAN machine-invoke listener and
+its relay-attested CA bootstrap, the Firestore transfer key and the
+sidecar's mDNS transfer pairing, and the renderer's own relay tunnel for
+transfers. **While it is on, an unpaired same-account desktop — or a
+compromised relay stamping one's identity — still reaches this desktop with
+the old authority, so the deployment cannot be called protected.** Turning
+it off refuses each of those with `peer_legacy_access_refused`, spawns the
+transfer sidecar loopback-only with discovery disabled, and leaves sealed
+peer sessions as the only sibling route. It is a separate switch from
+`mobile_legacy_access` because phones and desktops upgrade on different
+schedules.
 
 **Legacy window.** The desktop setting `mobile_legacy_access` (Preferences →
 Mobile → "Allow legacy (unencrypted) mobile connections", default *on*)
@@ -289,7 +324,113 @@ reports; it never falls back to a plaintext socket.
 - `tests/remote-e2e/src/secure-channel.e2e.test.ts`: the real relay, server and
   daemon with the real mobile relay client — see that file.
 
-## 10. Draft privacy-policy language (not in force)
+## 10. Desktop ↔ desktop (Slice 5)
+
+**One channel type, two outer routes.** The local `kanna-server` is the only
+process that talks to a sibling desktop: the desktop app is a renderer, and
+the task-transfer sidecar talks to its own server. Every sibling exchange
+is a `kanna-ksc-peer` session to the sibling's *pinned* peer channel key,
+dialled over the LAN (`ws://<candidate>/v1/peers/channel`, the address from
+the `_kanna-lan._tcp` record's `lanPort`) and otherwise through a relay
+tunnel that a second desktop-secret socket opens (`tunnel_client: true`,
+`tunnel_request { service: "peer" }`, advertised by `auth_ok` as
+`desktopTunnel: { version: 1 }`; the relay refuses it for a device-token
+socket, an unverified target, a phone, or an unentitled account with
+4402). The transport is only where to try; the handshake decides who
+answered, and **a pinned peer never falls back to plaintext**: the caller
+sees `peer_pairing_required` (no pin), `peer_upgrade_required` (a pin but
+no peer handshake answer), `peer_identity_mismatch` (a rotated key or an
+impostor) or `peer_unreachable`. Every (re)connect is a fresh handshake.
+
+What rides inside is the hello intent:
+
+- `peer_session` — KSP frames. Server-originated invokes
+  (`POST /v1/cloud/desktops/{id}/invoke`, reported as route `peer-lan` /
+  `peer-relay`) ride a pooled session per sibling; a request the session
+  accepted but never answered is `delivery_uncertain` and never retried on
+  another route. The renderer's sibling terminal, companion and file views
+  are spliced 1:1 by the loopback proxy `GET /v1/peers/{id}/ksp` (the
+  webview proves the local control credential in its first `auth` frame,
+  which is never forwarded).
+- `peer_tunnel { service: "task-transfer" }` — raw bytes. For every paired
+  sibling whose transfer identity is pinned, the server binds a loopback
+  listener and registers it with the sidecar as that peer's external
+  endpoint (with the pinned key); each accepted connection becomes a fresh
+  tunnel, and the sibling's server splices it to its own sidecar's loopback
+  port only after admitting it as a paired peer. The sidecar's own sealing
+  stays underneath. Both LAN and cloud transfers take this path; the
+  sidecar's `lan` transport is never preferred for a paired sibling.
+
+**Pairing (pairing-string ceremony).** Desktop B shows
+`KANNA-PEER:<desktopId>:<code>:<base32 peer key>:<base32 secret>` (5-minute
+TTL, 5 attempts, one use; also as a QR). Desktop A pastes it: A pins B's key
+*from the string*, opens a sealed `peer_pairing` session against exactly
+that key, and sends `{ code, secret, desktopId, desktopName, environment,
+transferIdentity }` as a sealed request to `POST /v1/peers/pairing/claim`.
+B verifies the code and the secret — which only ever existed on B's screen
+and inside the sealed claim — checks the environment and that the claimed
+id matches the handshake hello, and pins A's *handshake* static key plus
+A's transfer identity; its reply carries B's own. No SAS is needed for the
+same reason as the QR path, and a typed-code + SAS variant is deliberately
+not offered: a typed code over the relay pins nothing, and both ends have
+a clipboard. A transfer identity missing at pairing time is fetched later
+over the sealed session (`GET /v1/peers/transfer-identity`) and pinned on
+first sight; a *different* one afterwards is refused until the machines
+pair again. A key another desktop id already holds is refused.
+
+**Authority.** Decided at the handshake in `ksp::admit_sealed_peer_session`:
+a key in the peer trust store → `TrustedPeerDesktopAccess { desktop_id }`,
+exactly the sibling route set a relay-attested invoke had (task control,
+files, diffs, transfer identity) over LAN and relay alike, never
+`DesktopLocalAccess` (pairing controls, settings, the peer list),
+`AuthenticatedHttpInvoke` or `RelayAttestedSource` (the legacy CA
+bootstrap is retired, not re-homed), and never the peer pairing claim. An
+unknown key → pairing-only: `POST /v1/peers/pairing/claim` and nothing
+else; any stream frame ends the connection, and it is never subscribed to
+task-state fan-out. A `peer_tunnel` from an unknown key is refused at the
+handshake. Relay-origin peer sessions are gated by `RelayAccess` like phone
+tunnels. A hello whose `sourceDesktopId` disagrees with the pinned id, or
+names this desktop, is refused.
+
+**Revocation and account.** Unpairing (`DELETE /v1/peers/{id}`) persists
+first and then announces: every live sealed peer session for that sibling
+closes with an authenticated `peer revoked` close, the pooled outbound
+session ends, the transfer route is withdrawn, and the next handshake with
+that key is pairing-only. Records bound to an account are dropped on
+sign-out or account change through the same announcement (a pairing made
+while signed out is kept: it is LAN trust a person established by hand).
+A rotated peer identity on either side fails every handshake against the
+old pin (`peer_identity_mismatch`) until the machines pair again.
+
+**Failure table (what the calling desktop reports).**
+
+| Situation | Result | Wire |
+|---|---|---|
+| Paired, sibling on this build | invoke route `peer-lan`/`peer-relay`, view spliced, transfer over the sealed tunnel | ciphertext only after the tunnel setup |
+| Not paired, legacy on | the pre-Slice-5 relay-attested / LAN-bearer path (`relay`/`lan`), machine listed as `legacy` | plaintext, as before |
+| Not paired, legacy off | `peer_pairing_required`, machine listed as `pairingRequired` | nothing |
+| Paired, sibling answers with no peer handshake (older Kanna, identity unavailable) | `peer_upgrade_required`; no plaintext attempt | one handshake frame |
+| Paired, key rotated or impostor at the address | `peer_identity_mismatch`; no plaintext attempt | one handshake frame |
+| Paired, relay without `desktopTunnel` and no LAN candidate | `peer_unreachable` naming the relay upgrade | nothing |
+| Tampered/replayed/reordered frame | session ends on both sides; pending invokes `delivery_uncertain` | nothing after the failure |
+| Unpaired while a session is live | authenticated `peer revoked` close | one sealed close frame |
+
+**Tests.** `crates/kanna-secure-channel` (domain separation);
+`crates/kanna-server/src/http_api/peer_tests.rs` (both endpoints refuse the
+other domain and plaintext, pairing-only authority, the ceremony with a
+wrong secret/code/audience/environment, the sibling route set versus
+desktop-local and relay-attested authority, tamper/replay, revocation,
+relay account gating, transfer identity pinning, every legacy gate, and two
+real served routers where an invoke and a transfer tunnel cross a
+recording TCP tap with no marker visible); `services/relay`
+(`desktopTunnel.test.ts`); desktop `desktopRelayTerminal.test.ts`,
+`desktopTransferMachines.test.ts`, `MachinesPanel.test.ts`;
+`tests/remote-e2e/src/desktop-peer-channel.e2e.test.ts` against the real
+relay (pairing by string, sealed invokes both ways, a sibling terminal view
+through the proxy with markers absent from the relay's frame log and both
+servers' logs, rotated key, unpairing, relay restart, legacy off).
+
+## 11. Draft privacy-policy language (not in force)
 
 The published policy, `docs/legal/privacy-policy.md`, is the released one:
 effective August 9, 2026, technical implementation reviewed August 9, 2026,

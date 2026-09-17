@@ -607,6 +607,7 @@ fn browse_once(
                             environment: txt.get("environment").cloned(),
                             protocol_version: txt.get("protocolVersion").cloned(),
                             port,
+                            api_port: txt.get("lanPort").and_then(|value| value.parse().ok()),
                         },
                     );
                     observations.project(state, environment);
@@ -1023,6 +1024,7 @@ mod tests {
                     crate::lan_discovery::LAN_ROUTING_PROTOCOL_VERSION.to_string()
                 ),
                 port: 4460,
+                api_port: None,
             },
         ));
         assert!(observations.address(&key, generation, IpAddr::from([192, 168, 1, 20]), true,));
@@ -1102,6 +1104,7 @@ mod tests {
                     crate::lan_discovery::LAN_ROUTING_PROTOCOL_VERSION.to_string()
                 ),
                 port: 4461,
+                api_port: None,
             },
         ));
         assert!(observations.address(

@@ -98,7 +98,11 @@ pub fn transfer_targets(
                 .get(peer_id.as_str())
                 .map(|route| (*route).clone());
             let endpoint = string_field(peer, &["endpoint"]);
+            // A paired sibling is reached only through its sealed route:
+            // even if the sidecar also discovered it on the LAN in the
+            // clear, that plaintext route is never preferred over the pin.
             let lan_available = match (&cloud_route, &endpoint) {
+                (Some(route), _) if route.sealed() => false,
                 (Some(route), Some(endpoint)) => route.endpoint != *endpoint,
                 _ => true,
             };
@@ -345,6 +349,7 @@ mod tests {
             endpoint: proxy_endpoint(peer_id),
             machine_id: machine_id.to_string(),
             status: status.to_string(),
+            kind: "relay-proxy",
             credential_expires_at: None,
             detail: (status != "ready").then(|| format!("cloud route is {status}")),
         }

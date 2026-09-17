@@ -22,6 +22,10 @@ pub(crate) enum RouteProvenance {
     Local,
     Lan,
     Relay,
+    /// A sealed session to a paired sibling, over the LAN.
+    PeerLan,
+    /// A sealed session to a paired sibling, through a relay tunnel.
+    PeerRelay,
 }
 
 impl RouteProvenance {
@@ -30,10 +34,20 @@ impl RouteProvenance {
             RouteProvenance::Local => "local",
             RouteProvenance::Lan => "lan",
             RouteProvenance::Relay => "relay",
+            RouteProvenance::PeerLan => "peer-lan",
+            RouteProvenance::PeerRelay => "peer-relay",
+        }
+    }
+
+    fn from_peer_route(route: crate::peer_channel::PeerRoute) -> Self {
+        match route {
+            crate::peer_channel::PeerRoute::Lan => RouteProvenance::PeerLan,
+            crate::peer_channel::PeerRoute::Relay => RouteProvenance::PeerRelay,
         }
     }
 }
 
+#[derive(Debug)]
 pub(crate) struct RoutedInvokeResponse {
     pub response: HttpInvokeResponse,
     pub route: RouteProvenance,
@@ -103,6 +117,22 @@ pub(crate) async fn invoke_desktop(
         });
     }
 
+    // A paired sibling is reached only through its sealed peer session,
+    // over LAN or relay, and never falls back to a plaintext route: a pin
+    // that cannot be honoured is an error the caller sees, not a downgrade.
+    // So is a trust store that cannot be read: whether the sibling is
+    // pinned is then unknown, and unknown is not "unpaired".
+    match state.paired_peer(&desktop_id) {
+        Ok(Some(_)) => return invoke_peer(&state, desktop_id, method, path, body).await,
+        Ok(None) => {}
+        Err(error) => return Err(format!("peer_identity_unavailable: {error}")),
+    }
+    if !state.legacy_peer_access_allowed() {
+        return Err(format!(
+            "peer_pairing_required: this desktop is not paired with machine {desktop_id}; pair it from Preferences → Machines"
+        ));
+    }
+
     let outcome = attempt_lan_invoke(&state, &desktop_id, &method, &path, &body).await;
     if let Some(routed) = resolve_lan_outcome(outcome) {
         return Ok(routed);
@@ -114,6 +144,27 @@ pub(crate) async fn invoke_desktop(
     Ok(RoutedInvokeResponse {
         response,
         route: RouteProvenance::Relay,
+    })
+}
+
+/// The sealed route. A dial failure happened before any application byte
+/// went out and is the caller's error; a request the session accepted but
+/// never answered is `delivery_uncertain` exactly like the LAN contract.
+async fn invoke_peer(
+    state: &Arc<AppState>,
+    desktop_id: String,
+    method: String,
+    path: String,
+    body: serde_json::Value,
+) -> Result<RoutedInvokeResponse, String> {
+    let (outcome, route) = state
+        .peer_sessions()
+        .invoke(state, &desktop_id, &method, &path, body)
+        .await
+        .map_err(|error| format!("{}: {error}", error.code()))?;
+    Ok(RoutedInvokeResponse {
+        response: super::peers::peer_invoke_outcome_response(outcome),
+        route: RouteProvenance::from_peer_route(route),
     })
 }
 
@@ -288,6 +339,11 @@ fn maybe_trigger_lan_bootstrap(
         // Signed out: there is no account to bootstrap trust under.
         return;
     };
+    if !state.legacy_peer_access_allowed() {
+        // The relay-attested CA bootstrap is the legacy trust root; with
+        // legacy desktop-to-desktop access off it is never requested.
+        return;
+    }
     if !state.begin_lan_bootstrap_attempt(target_desktop_id) {
         return;
     }
@@ -478,6 +534,11 @@ mod tests {
 
     fn lan_e2e_test_config(desktop_id: &str) -> crate::config::Config {
         let dir = crate::test_paths::unique_test_dir(&format!("lan-e2e-{desktop_id}"));
+        // The legacy desktop-to-desktop switch is read from the settings
+        // database and fails closed when it cannot be opened, so the
+        // legacy LAN path these tests exercise needs a real one.
+        let db_path = crate::db::Db::test_db_path(&format!("lan-e2e-{desktop_id}"));
+        let _ = crate::db::Db::open_for_tests(&db_path).expect("open test db");
         crate::config::Config {
             relay_url: String::new(),
             device_token: "device-token".to_string(),
@@ -485,7 +546,7 @@ mod tests {
             firebase_auth_emulator_url: None,
             firebase_firestore_emulator_host: None,
             daemon_dir: dir.join("daemon").to_string_lossy().into_owned(),
-            db_path: crate::db::Db::test_db_path(&format!("lan-e2e-{desktop_id}")),
+            db_path,
             kanna_cli_path: None,
             desktop_id: desktop_id.to_string(),
             desktop_secret: Some("desktop-secret".to_string()),

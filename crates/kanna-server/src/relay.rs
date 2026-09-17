@@ -131,6 +131,12 @@ fn apply_relay_authentication(
         .desktop_routing
         .as_ref()
         .map_or(0, |capability| capability.version);
+    http_state.set_desktop_tunnel_available(
+        capabilities
+            .desktop_tunnel
+            .as_ref()
+            .is_some_and(|capability| capability.version >= 1),
+    );
     if *desktop_routing_version >= 1 {
         *routing_generation = http_state.set_desktop_routing_available(true);
     } else {
@@ -227,12 +233,58 @@ pub(crate) fn reconcile_machine_trust_for_account(
     let expired_purged = crate::machine_trust::unix_time_ms()
         .map(|now_ms| store.remove_expired(now_ms))
         .unwrap_or(false);
+    // The human-paired peer store follows the same account transition, so
+    // a machine handed to another account keeps no sibling authority the
+    // first account established (a pairing made while signed out is kept).
+    reconcile_peer_trust_for_account(http_state, current_account_uid)?;
     if !account_changed && !expired_purged {
         return Ok(());
     }
     store
         .save(&store_path)
         .map_err(|error| format!("failed to persist machine trust store: {error}"))
+}
+
+/// `peer_trust`'s half of the account transition: records bound to another
+/// account are dropped, persisted first, then their live sessions and
+/// routes are torn down through the same announcement an unpair makes.
+fn reconcile_peer_trust_for_account(
+    http_state: &http_api::AppState,
+    current_account_uid: Option<&str>,
+) -> Result<(), String> {
+    let Some(store_path) = http_state.config().peer_trust_store_path() else {
+        return Ok(());
+    };
+    let dropped = {
+        let _guard = crate::peer_trust::persistence_mutex()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut store = crate::peer_trust::PeerTrustStore::load(&store_path)
+            .map_err(|error| format!("failed to load peer trust store: {error}"))?;
+        let dropped = store.retain_account(current_account_uid);
+        if !dropped.is_empty() {
+            store
+                .save(&store_path)
+                .map_err(|error| format!("failed to persist peer trust store: {error}"))?;
+        }
+        dropped
+    };
+    if dropped.is_empty() {
+        return Ok(());
+    }
+    log::info!(
+        "peer pairings dropped on account transition: {}",
+        dropped.join(", ")
+    );
+    if let Ok(handle) = tokio::runtime::Handle::try_current() {
+        let state = http_state.clone();
+        handle.spawn(async move {
+            for desktop_id in dropped {
+                state.announce_peer_revocation(&desktop_id).await;
+            }
+        });
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1100,6 +1152,16 @@ async fn run_relay_loop_with_timing(
                                                 socket,
                                                 tunnel_state,
                                                 crate::http_api::secure_channel::StreamOrigin::RelayTunnel,
+                                                crate::http_api::secure_channel::SealedPopulation::Mobile,
+                                            )
+                                            .await;
+                                        }
+                                        TunnelService::Peer => {
+                                            crate::ksp::handle_tungstenite_stream(
+                                                socket,
+                                                tunnel_state,
+                                                crate::http_api::secure_channel::StreamOrigin::RelayTunnel,
+                                                crate::http_api::secure_channel::SealedPopulation::Peer,
                                             )
                                             .await;
                                         }
@@ -1658,6 +1720,25 @@ pub(crate) async fn dispatch_relay_http_invoke(
             data: None,
             error: Some(
                 "this desktop only accepts end-to-end encrypted mobile sessions; update Kanna Mobile and pair again"
+                    .to_string(),
+            ),
+            status: Some(401),
+            body: None,
+        };
+        return send_relay_response_message(&sink, response).await;
+    }
+    // A relay-attested sibling invoke is the legacy desktop-to-desktop
+    // path: the relay reads its method, path and body and *stamps* the
+    // source identity, so a compromised relay can forge one. Once legacy
+    // desktop-to-desktop access is off, a sibling reaches this desktop only
+    // through a sealed session to its pinned peer key.
+    if source_desktop_id.is_some() && !http_state.legacy_peer_access_allowed() {
+        log::warn!("Refusing relay-attested sibling invoke #{id} {method} {path}: legacy desktop-to-desktop access is off");
+        let response = RelayMessage::Response {
+            id,
+            data: None,
+            error: Some(
+                "peer_legacy_access_refused: this desktop only accepts end-to-end encrypted sibling sessions; pair the machines from Preferences → Machines"
                     .to_string(),
             ),
             status: Some(401),

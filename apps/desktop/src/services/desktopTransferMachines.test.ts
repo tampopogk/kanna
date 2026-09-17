@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   createDesktopTransferMachineSync,
   filterPairableTransferPeerPayload,
+  pairedTransferPeersFromTargets,
   parseLanTransferPeers,
   mergeTransferMachines,
   type LanTransferPeer,
@@ -166,5 +167,112 @@ describe("cloud credential renewal", () => {
 
     await sync.refreshCloudRoute("peer-b");
     expect(getIdToken).toHaveBeenCalledExactlyOnceWith(true);
+  });
+});
+
+describe("paired peers (sealed routes)", () => {
+  const paired = (overrides = {}) => ({
+    peerId: "peer-b",
+    desktopId: "desktop-b",
+    name: "Mac B",
+    transferable: true,
+    unavailableReason: null,
+    ...overrides,
+  });
+
+  it("offers a paired sibling as end-to-end encrypted and drops the same machine's Firestore and LAN entries", () => {
+    const machines = mergeTransferMachines({
+      currentDesktopId: "desktop-a",
+      lanPeers: [lanPeer({ trusted: true, publicKey: "key-from-mdns" })],
+      cloudMachines: [cloudMachine({ publicKey: "key-substituted-in-firestore" })],
+      pairedPeers: [paired()],
+    });
+    expect(machines).toEqual([expect.objectContaining({
+      peerId: "peer-b",
+      desktopId: "desktop-b",
+      trustSource: "paired-peer",
+      preferredTransport: "cloud",
+      cloudFallback: false,
+      relayDesktopId: "desktop-b",
+    })]);
+  });
+
+  it("drops every legacy route once legacy desktop-to-desktop access is off", () => {
+    expect(mergeTransferMachines({
+      currentDesktopId: "desktop-a",
+      lanPeers: [lanPeer({ id: "peer-lan", trusted: true })],
+      cloudMachines: [cloudMachine({ desktopId: "desktop-legacy", peerId: "peer-legacy" })],
+      pairedPeers: [paired()],
+      legacyAllowed: false,
+    }).map((machine) => machine.trustSource)).toEqual(["paired-peer"]);
+  });
+
+  it("skips a paired sibling whose route is not transferable, and itself", () => {
+    expect(mergeTransferMachines({
+      currentDesktopId: "desktop-a",
+      lanPeers: [],
+      cloudMachines: [],
+      pairedPeers: [
+        paired({ transferable: false, unavailableReason: "transfer identity not pinned" }),
+        paired({ desktopId: "desktop-a", peerId: "peer-a" }),
+      ],
+    })).toEqual([]);
+  });
+
+  it("maps the server's resolved targets to sealed routes only", () => {
+    expect(pairedTransferPeersFromTargets([
+      {
+        peerId: "peer-b", name: "Mac B", machineId: "desktop-b", trusted: true, acceptingTransfers: true,
+        lanAvailable: false, cloudAvailable: true, preferredTransport: "cloud", cloudFallback: false,
+        cloudRoute: { peerId: "peer-b", machineId: "desktop-b", status: "ready", kind: "peer-tunnel" },
+        transferable: true, unavailableReason: null,
+      },
+      {
+        peerId: "peer-legacy", name: "Legacy", machineId: "desktop-legacy", trusted: true, acceptingTransfers: true,
+        lanAvailable: false, cloudAvailable: true, preferredTransport: "cloud", cloudFallback: false,
+        cloudRoute: { peerId: "peer-legacy", machineId: "desktop-legacy", status: "ready", kind: "relay-proxy" },
+        transferable: true, unavailableReason: null,
+      },
+    ])).toEqual([paired()]);
+  });
+
+  it("stops provisioning Firestore-keyed cloud routes when legacy access is turned off", async () => {
+    const upsert = vi.fn(async () => undefined);
+    const removeExternalPeer = vi.fn(async () => undefined);
+    const removeProxy = vi.fn(async () => undefined);
+    const sync = createDesktopTransferMachineSync({
+      getTransferIdentity: async () => ({
+        peerId: "peer-a", displayName: "Mac A", publicKey: "key-a", protocolVersion: 1, acceptingTransfers: true,
+      }),
+      putLocalIdentity: async () => undefined,
+      resolveRelayUrl: async () => "ws://127.0.0.1:9080",
+      ensureProxy: async ({ peerId }) => ({ endpoint: `127.0.0.1:1${peerId.length}` }),
+      removeProxy,
+      clearProxies: async () => undefined,
+      upsertExternalPeer: upsert,
+      removeExternalPeer,
+      clearExternalPeers: async () => undefined,
+    });
+    const session = {
+      getIdToken: async () => "id-token",
+    } as unknown as DesktopAuthSession;
+    await sync.markSidecarReady();
+    await sync.setSignedInSession(session, "desktop-a");
+    sync.setPairedPeers([paired()]);
+    await sync.setCloudMachines([
+      cloudMachine(),
+      cloudMachine({ desktopId: "desktop-legacy", peerId: "peer-legacy" }),
+    ]);
+    // Only the unpaired legacy machine was registered from Firestore; the
+    // paired one rides its sealed route.
+    expect(upsert.mock.calls.map(([input]) => input.peer.peerId)).toEqual(["peer-legacy"]);
+    expect(sync.getTransferMachines().map((machine) => [machine.peerId, machine.trustSource])).toEqual([
+      ["peer-b", "paired-peer"],
+      ["peer-legacy", "same-account-cloud"],
+    ]);
+    await sync.setLegacyAccess(false);
+    expect(removeExternalPeer).toHaveBeenCalledWith({ peerId: "peer-legacy" });
+    expect(removeProxy).toHaveBeenCalledWith({ peerId: "peer-legacy" });
+    expect(sync.getTransferMachines().map((machine) => machine.peerId)).toEqual(["peer-b"]);
   });
 });

@@ -1,4 +1,4 @@
-use super::lan_trust::TrustedLanDeviceAccess;
+use super::lan_trust::{TrustedLanDeviceAccess, TrustedPeerDesktopAccess};
 use super::state::{AppState, AuthenticatedHttpInvoke, TunneledHttpInvoke};
 use axum::extract::ConnectInfo;
 use axum::extract::State;
@@ -13,13 +13,15 @@ pub(super) async fn status(
     trusted_lan_device: Option<Extension<TrustedLanDeviceAccess>>,
     tunneled: Option<Extension<TunneledHttpInvoke>>,
     authenticated_invoke: Option<Extension<AuthenticatedHttpInvoke>>,
+    trusted_peer: Option<Extension<TrustedPeerDesktopAccess>>,
 ) -> Result<Json<crate::mobile_api::MobileServerStatus>, (axum::http::StatusCode, String)> {
     let mut status = state.mobile_server_status().await;
     let direct_local = tunneled.is_none()
         && peer
             .as_ref()
             .is_none_or(|Extension(ConnectInfo(peer))| peer.ip().is_loopback());
-    let authenticated_relay = tunneled.is_some() && authenticated_invoke.is_some();
+    let authenticated_relay =
+        tunneled.is_some() && (authenticated_invoke.is_some() || trusted_peer.is_some());
     if !direct_local && trusted_lan_device.is_none() && !authenticated_relay {
         // Pre-capability-routing mobile builds interpret a running LAN status
         // as permission to project an account task onto this endpoint. Mark

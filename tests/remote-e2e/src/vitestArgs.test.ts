@@ -11,7 +11,9 @@ describe("remote harness Vitest arguments", () => {
       "src/lan-layer.e2e.test.ts",
       "src/lan-desktop-routing.e2e.test.ts",
       "src/task-image-attachment.e2e.test.ts",
-      "src/secure-channel.e2e.test.ts"
+      "src/secure-channel.e2e.test.ts",
+      "src/desktop-peer-channel.e2e.test.ts",
+      "src/desktop-peer-lan.e2e.test.ts"
     ]);
   });
 

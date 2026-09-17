@@ -4,7 +4,7 @@
 
 use super::*;
 use crate::http_api::secure_channel::{
-    PairingConfirmationError, StreamOrigin, MOBILE_LEGACY_ACCESS_REFUSED,
+    PairingConfirmationError, SealedPopulation, StreamOrigin, MOBILE_LEGACY_ACCESS_REFUSED,
     MOBILE_LEGACY_ACCESS_SETTING,
 };
 use crate::http_api::{test_state_with_seed, RelayAccess};
@@ -228,6 +228,8 @@ fn session_hello(device_id: &str) -> InitiatorHello {
         version: kanna_secure_channel::PROTOCOL_VERSION,
         intent: HelloIntent::Session,
         device_id: Some(device_id.into()),
+        source_desktop_id: None,
+        service: None,
         capabilities: vec![],
     }
 }
@@ -237,6 +239,8 @@ fn pairing_hello() -> InitiatorHello {
         version: kanna_secure_channel::PROTOCOL_VERSION,
         intent: HelloIntent::Pairing,
         device_id: None,
+        source_desktop_id: None,
+        service: None,
         capabilities: vec![],
     }
 }
@@ -1001,7 +1005,13 @@ async fn a_relay_tunnel_socket_waits_for_the_phone_and_admits_a_sealed_session()
         .unwrap();
     let desktop_state = Arc::clone(&state);
     let session = tokio::spawn(async move {
-        handle_tungstenite_stream(socket, desktop_state, StreamOrigin::RelayTunnel).await;
+        handle_tungstenite_stream(
+            socket,
+            desktop_state,
+            StreamOrigin::RelayTunnel,
+            SealedPopulation::Mobile,
+        )
+        .await;
     });
     let mut relay_socket = relay.await.unwrap();
     assert!(
@@ -1139,7 +1149,13 @@ async fn a_device_removed_during_admission_is_not_admitted_with_device_authority
     )
     .unwrap();
 
-    let mut admitted = admit_sealed_session(&state, StreamOrigin::Lan, &message1).unwrap();
+    let mut admitted = admit_sealed_session(
+        &state,
+        StreamOrigin::Lan,
+        SealedPopulation::Mobile,
+        &message1,
+    )
+    .unwrap();
     assert!(
         matches!(admitted.authority, SealedSessionAuthority::Device { .. }),
         "the store lookup found the device"

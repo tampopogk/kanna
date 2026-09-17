@@ -8651,9 +8651,13 @@ async fn every_registered_http_route_denies_unpaired_lan_by_default() {
         for method in ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"] {
             if matches!(
                 (method, pattern),
-                ("GET" | "HEAD", "/v1/status" | "/v1/stream" | "/v2/stream")
-                    | ("POST", "/v1/pairing/sessions/claim")
-                    | ("GET", "/v1/pairing/confirmation")
+                (
+                    "GET" | "HEAD",
+                    "/v1/status" | "/v1/stream" | "/v2/stream" | "/v1/peers/channel"
+                ) | (
+                    "POST",
+                    "/v1/pairing/sessions/claim" | "/v1/peers/pairing/claim"
+                ) | ("GET", "/v1/pairing/confirmation")
             ) {
                 continue;
             }

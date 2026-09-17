@@ -148,6 +148,10 @@ pub enum TunnelService {
     #[default]
     Ksp,
     TaskTransfer,
+    /// A sealed desktop-to-desktop session (`kanna-ksc-peer`), carrying
+    /// KSP frames or a raw task-transfer tunnel - the relay cannot tell
+    /// which, and does not need to.
+    Peer,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -193,6 +197,12 @@ pub struct RelayCapabilities {
     pub mobile_notifications: Option<MobileNotificationsCapability>,
     #[serde(default)]
     pub desktop_routing: Option<DesktopRoutingCapability>,
+    /// The relay lets a second socket authenticated with this desktop's
+    /// desktop secret open a `peer` tunnel to a sibling (`tunnel_client`).
+    /// Absent on a relay that predates sealed desktop-to-desktop sessions;
+    /// the server then fails closed on the cloud peer route.
+    #[serde(default)]
+    pub desktop_tunnel: Option<DesktopRoutingCapability>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -288,6 +298,11 @@ pub enum RelayMessage {
         tunnel_id: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
         anon_pub_key: Option<String>,
+        /// A desktop-secret socket that will *request* a tunnel to a
+        /// sibling rather than register as this desktop's control
+        /// connection. See `connect_desktop_tunnel_client`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tunnel_client: Option<bool>,
     },
     #[serde(rename = "auth_challenge")]
     AuthChallenge { nonce: String },
@@ -415,6 +430,7 @@ fn build_auth_message(config: &Config, tunnel_id: Option<String>) -> RelayMessag
                 None
             },
             tunnel_id,
+            tunnel_client: None,
         },
         None => match crate::pairing::anonymous_push_public_key(config) {
             Ok(public_key) => RelayMessage::Auth {
@@ -424,6 +440,7 @@ fn build_auth_message(config: &Config, tunnel_id: Option<String>) -> RelayMessag
                 desktop_secret: None,
                 tunnel_id,
                 anon_pub_key: Some(public_key),
+                tunnel_client: None,
             },
             Err(_) => RelayMessage::Auth {
                 access_updates,
@@ -432,8 +449,122 @@ fn build_auth_message(config: &Config, tunnel_id: Option<String>) -> RelayMessag
                 desktop_secret: None,
                 tunnel_id,
                 anon_pub_key: None,
+                tunnel_client: None,
             },
         },
+    }
+}
+
+/// Opens a *second* relay socket with this desktop's own desktop-secret
+/// credential and asks the relay for a `peer` tunnel to `target_desktop_id`.
+/// The socket becomes the tunnel once `tunnel_ready` arrives, exactly the
+/// way a phone's tunnel socket does. Unlike the phone's, no Firebase token
+/// is involved: the renderer's account session never touches the sibling
+/// path, and the relay still only routes within the account both desktop
+/// secrets resolve to.
+pub async fn connect_desktop_tunnel_client(
+    config: &Config,
+    target_desktop_id: &str,
+) -> Result<WebSocketStream<MaybeTlsStream<TcpStream>>, String> {
+    let desktop_secret = config
+        .desktop_secret
+        .clone()
+        .ok_or_else(|| "no desktop secret is configured".to_string())?;
+    let (mut ws, _) = connect_async(&config.relay_url)
+        .await
+        .map_err(|error| format!("relay connect failed: {error}"))?;
+    let auth = RelayMessage::Auth {
+        access_updates: None,
+        device_token: None,
+        desktop_id: Some(config.desktop_id.clone()),
+        desktop_secret: Some(desktop_secret),
+        tunnel_id: None,
+        anon_pub_key: None,
+        tunnel_client: Some(true),
+    };
+    ws.send(Message::Text(
+        serde_json::to_string(&auth)
+            .map_err(|error| error.to_string())?
+            .into(),
+    ))
+    .await
+    .map_err(|error| format!("relay auth send failed: {error}"))?;
+    let auth_ok = ws
+        .next()
+        .await
+        .ok_or_else(|| "relay closed before tunnel-client authentication".to_string())?
+        .map_err(|error| format!("relay socket failed: {error}"))?;
+    let authentication = parse_authentication(auth_ok, "desktop tunnel client")
+        .map_err(|error| error.to_string())?;
+    if authentication.capabilities.desktop_tunnel.is_none() {
+        let _ = ws.close(None).await;
+        return Err("relay does not offer desktop peer tunnels".to_string());
+    }
+    let request_id = format!(
+        "peer-tunnel-{}-{}",
+        config.desktop_id,
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|elapsed| elapsed.as_nanos())
+            .unwrap_or(0)
+    );
+    ws.send(Message::Text(
+        serde_json::json!({
+            "type": "tunnel_request",
+            "id": request_id,
+            "desktopId": target_desktop_id,
+            "service": "peer",
+        })
+        .to_string()
+        .into(),
+    ))
+    .await
+    .map_err(|error| format!("relay tunnel request send failed: {error}"))?;
+    loop {
+        let frame = ws
+            .next()
+            .await
+            .ok_or_else(|| "relay closed before tunnel_ready".to_string())?
+            .map_err(|error| format!("relay socket failed: {error}"))?;
+        let text = match frame {
+            Message::Text(text) => text.to_string(),
+            Message::Ping(payload) => {
+                ws.send(Message::Pong(payload))
+                    .await
+                    .map_err(|error| format!("relay pong failed: {error}"))?;
+                continue;
+            }
+            Message::Pong(_) | Message::Frame(_) => continue,
+            Message::Close(frame) => {
+                return Err(format!("relay closed before tunnel_ready: {frame:?}"))
+            }
+            Message::Binary(_) => return Err("unexpected binary relay frame".to_string()),
+        };
+        match serde_json::from_str::<RelayMessage>(&text) {
+            Ok(RelayMessage::TunnelReady {
+                desktop_id,
+                service,
+                ..
+            }) => {
+                if desktop_id != target_desktop_id {
+                    return Err("tunnel_ready named a different desktop".to_string());
+                }
+                if service != TunnelService::Peer {
+                    return Err("tunnel_ready named a different service".to_string());
+                }
+                return Ok(ws);
+            }
+            Ok(RelayMessage::Response { error, .. }) => {
+                return Err(error.unwrap_or_else(|| "relay refused the tunnel".to_string()));
+            }
+            Ok(RelayMessage::AuthOk { .. }) => continue,
+            Ok(other) => {
+                return Err(format!(
+                    "unexpected relay frame before tunnel_ready: {other:?}"
+                ))
+            }
+            Err(error) => return Err(format!("unparseable relay frame: {error}")),
+        }
     }
 }
 
@@ -546,6 +677,7 @@ pub async fn connect_anonymous_push_to_relay(
             desktop_secret: None,
             tunnel_id: None,
             anon_pub_key: Some(public_key),
+            tunnel_client: None,
         })?
         .into(),
     ))

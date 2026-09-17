@@ -1,8 +1,11 @@
 import { getConfiguredDesktopAuthSession } from "./desktopAuthSdk";
 import { invoke } from "../invoke";
-import { type CloudAccessSnapshot, createRelayTunnelWebSocketFactory, StreamClient } from "@kanna/stream-client";
+import { type CloudAccessSnapshot, StreamClient } from "@kanna/stream-client";
 import { createDesktopStreamFrameDecoder } from "./desktopStreamFrameDecoder";
 import { TaskFileUnreadableError, taskFileUnreadableReasonForStatus } from "./taskFileRead";
+import { localControlCredential } from "./localControlCredential";
+import { resolveCurrentKannaServerBaseUrl } from "./kannaServerBaseUrl";
+import { fetchDesktopMachines } from "./desktopServerClient";
 import type {
   AgentTerminalArchive,
   AgentTerminalAttempt,
@@ -40,17 +43,32 @@ interface RelaySocketLike {
   onopen: (() => void) | null;
 }
 
+/**
+ * How this window reaches a sibling desktop: never directly. Every sibling
+ * view goes to the local `kanna-server`'s loopback proxy
+ * (`GET /v1/peers/{desktop_id}/ksp`), which splices the KSP frames into a
+ * sealed peer session to the sibling over LAN or the relay. The window
+ * proves it is the app with the local control credential in its first
+ * `auth` frame; it holds no relay socket, no Firebase token and no peer key
+ * on this path.
+ */
 export interface DesktopRelayTerminalClientOptions {
   createSocket?: (url: string) => RelaySocketLike;
-  getIdToken(forceRefresh?: boolean): Promise<string | null>;
-  relayUrl: string;
+  /** The local `kanna-server` base URL (`http://127.0.0.1:<port>`). */
+  serverBaseUrl: string;
+  /** This desktop's local control credential. */
+  getCredential(forceRefresh?: boolean): Promise<string | null>;
   observeAccess?(listener: (access: CloudAccessSnapshot) => void): () => void;
 }
 
-interface PendingInvoke {
-  onSuccess?: () => void;
-  reject(error: Error): void;
-  resolve(value: unknown): void;
+/** The loopback proxy URL for a sibling's sealed session. */
+export function peerViewProxyUrl(serverBaseUrl: string, desktopId: string): string {
+  const url = new URL(serverBaseUrl);
+  url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+  url.pathname = `/v1/peers/${encodeURIComponent(desktopId)}/ksp`;
+  url.search = "";
+  url.hash = "";
+  return url.toString();
 }
 
 function assertSuccessfulTaskAction(
@@ -73,26 +91,23 @@ function assertSuccessfulTaskAction(
   throw new Error(message ?? `Remote ${action} failed with HTTP ${response.status}`);
 }
 
-export async function createConfiguredDesktopRelayTerminalClient(): Promise<DesktopRemoteTaskClient | null> {
-  const relayUrl = await resolveDesktopRelayUrl();
-  if (!relayUrl) return null;
+async function configuredClientOptions(): Promise<DesktopRelayTerminalClientOptions> {
+  await invoke("ensure_mobile_server");
+  const serverBaseUrl = await resolveCurrentKannaServerBaseUrl("creating peer view client");
   const authSession = await getConfiguredDesktopAuthSession();
-  return createDesktopRelayTerminalClient({
-    relayUrl,
-    getIdToken: (forceRefresh?: boolean) => authSession.getIdToken(forceRefresh),
+  return {
+    serverBaseUrl,
+    getCredential: (forceRefresh?: boolean) => localControlCredential(forceRefresh),
     observeAccess: await configuredAccessObserver(authSession),
-  });
+  };
+}
+
+export async function createConfiguredDesktopRelayTerminalClient(): Promise<DesktopRemoteTaskClient | null> {
+  return createDesktopRelayTerminalClient(await configuredClientOptions());
 }
 
 export async function createConfiguredDesktopRemoteTaskViewClient(): Promise<DesktopRemoteTaskViewClient | null> {
-  const relayUrl = await resolveDesktopRelayUrl();
-  if (!relayUrl) return null;
-  const authSession = await getConfiguredDesktopAuthSession();
-  return createDesktopRelayTerminalClient({
-    relayUrl,
-    getIdToken: (forceRefresh?: boolean) => authSession.getIdToken(forceRefresh),
-    observeAccess: await configuredAccessObserver(authSession),
-  });
+  return createDesktopRelayTerminalClient(await configuredClientOptions());
 }
 
 async function configuredAccessObserver(authSession: Awaited<ReturnType<typeof getConfiguredDesktopAuthSession>>) {
@@ -106,32 +121,29 @@ async function configuredAccessObserver(authSession: Awaited<ReturnType<typeof g
   }, { immediate: true });
 }
 
+/**
+ * The sibling desktops this desktop can currently reach, as the local server
+ * reports them (`GET /v1/cloud/desktops`: relay-listed and LAN-discovered
+ * siblings, paired or legacy). The window never asks the relay itself.
+ */
 export async function listActiveDesktopIdsViaRelay(): Promise<Set<string> | null> {
-  const relayUrl = await resolveDesktopRelayUrl();
-  if (!relayUrl) return null;
-  const authSession = await getConfiguredDesktopAuthSession();
-  const client = createDesktopRelayRpcClient({
-    relayUrl,
-    getIdToken: (forceRefresh?: boolean) => authSession.getIdToken(forceRefresh),
-  });
   try {
-    const response = await client.invoke({
-      command: "list_active_desktops",
-      args: {},
-    });
-    const desktopIds = isRecord(response) && Array.isArray(response.desktopIds)
-      ? response.desktopIds.filter((id): id is string => typeof id === "string" && id.length > 0)
-      : [];
-    return new Set(desktopIds);
-  } finally {
-    client.close();
+    const list = await fetchDesktopMachines();
+    return new Set(
+      list.machines
+        .filter((machine) => !machine.isLocal && machine.id.length > 0)
+        .map((machine) => machine.id),
+    );
+  } catch (error) {
+    console.debug("[peer-view] machine list unavailable:", error);
+    return null;
   }
 }
 
 export function createDesktopRelayTerminalClient({
   createSocket = (url) => new WebSocket(url) as unknown as RelaySocketLike,
-  getIdToken,
-  relayUrl,
+  getCredential,
+  serverBaseUrl,
   observeAccess,
 }: DesktopRelayTerminalClientOptions): DesktopRemoteTaskViewClient {
   const clients = new Map<string, StreamClient>();
@@ -144,15 +156,11 @@ export function createDesktopRelayTerminalClient({
   const clientForDesktop = (desktopId: string): StreamClient => {
     const existing = clients.get(desktopId);
     if (existing) return existing;
+    const proxyUrl = peerViewProxyUrl(serverBaseUrl, desktopId);
     const client = new StreamClient({
-      url: relayUrl,
-      credentialProvider: (forceRefresh) => getIdToken(forceRefresh),
-      webSocketFactory: createRelayTunnelWebSocketFactory({
-        relayUrl,
-        desktopId,
-        getIdentityToken: (forceRefresh) => getIdToken(forceRefresh),
-        webSocketFactory: createSocket,
-      }),
+      url: proxyUrl,
+      credentialProvider: (forceRefresh) => getCredential(forceRefresh),
+      webSocketFactory: (url) => createSocket(url),
       reconnectDelaysMs: [250, 500, 1000, 2000],
       onAccessRequired: observeAccess ? () => undefined : undefined,
       terminalViewerRole: "remote",
@@ -549,99 +557,6 @@ export function parseTaskGraphContent(value: unknown): RemoteTaskGraphContent {
   return value as unknown as RemoteTaskGraphContent;
 }
 
-interface DesktopRelayRpcClient {
-  close(): void;
-  invoke(payload: Record<string, unknown>): Promise<unknown>;
-}
-
-function createDesktopRelayRpcClient({
-  createSocket = (url) => new WebSocket(url) as unknown as RelaySocketLike,
-  getIdToken,
-  relayUrl,
-}: DesktopRelayTerminalClientOptions): DesktopRelayRpcClient {
-  const socket = createSocket(relayUrl);
-  let nextId = 1;
-  let ready = false;
-  const pendingInvokes = new Map<string, PendingInvoke>();
-  let resolveReady: (() => void) | null = null;
-  let rejectReady: ((error: Error) => void) | null = null;
-  const readyPromise = new Promise<void>((resolve, reject) => {
-    resolveReady = resolve;
-    rejectReady = reject;
-  });
-
-  socket.onopen = async () => {
-    try {
-      const idToken = await getIdToken();
-      if (!idToken) throw new Error("Sign in before connecting to the relay.");
-      socket.send(JSON.stringify({ type: "auth", id_token: idToken }));
-    } catch (error) {
-      fail(error instanceof Error ? error : new Error("Relay authentication failed."));
-    }
-  };
-  socket.onmessage = (event) => {
-    if (typeof event.data !== "string") return;
-    const parsed = parseJsonRecord(event.data);
-    if (!parsed) return;
-    if (parsed.type === "auth_ok") {
-      ready = true;
-      resolveReady?.();
-      resolveReady = null;
-      rejectReady = null;
-      return;
-    }
-    if (parsed.type === "response") {
-      const id = normalizeId(parsed.id);
-      if (!id) return;
-      const pending = pendingInvokes.get(id);
-      if (!pending) return;
-      pendingInvokes.delete(id);
-      if (typeof parsed.error === "string" && parsed.error.trim()) {
-        pending.reject(new Error(parsed.error));
-        return;
-      }
-      pending.resolve(parsed.data ?? parsed.body ?? null);
-    }
-  };
-  socket.onerror = () => fail(new Error("Relay connection failed."));
-  socket.onclose = () => fail(new Error("Relay connection closed."));
-
-  const fail = (error: Error) => {
-    if (!ready) rejectReady?.(error);
-    resolveReady = null;
-    rejectReady = null;
-    for (const pending of pendingInvokes.values()) {
-      pending.reject(error);
-    }
-    pendingInvokes.clear();
-  };
-
-  return {
-    close() {
-      socket.close();
-    },
-    async invoke(payload) {
-      await readyPromise;
-      const id = `desktop-rpc-${nextId++}`;
-      const promise = new Promise<unknown>((resolve, reject) => {
-        pendingInvokes.set(id, { resolve, reject });
-      });
-      const timeout = window.setTimeout(() => {
-        const pending = pendingInvokes.get(id);
-        if (!pending) return;
-        pendingInvokes.delete(id);
-        pending.reject(new Error("Relay request timed out."));
-      }, 5000);
-      socket.send(JSON.stringify({ type: "invoke", id, ...payload }));
-      try {
-        return await promise;
-      } finally {
-        window.clearTimeout(timeout);
-      }
-    },
-  };
-}
-
 export async function resolveDesktopRelayUrl(): Promise<string | null> {
   const configured = await invoke<string>("read_env_var", { name: "KANNA_RELAY_URL" }).catch(() => "");
   const port = await invoke<string>("read_env_var", { name: "KANNA_RELAY_PORT" }).catch(() => "");
@@ -667,22 +582,6 @@ export function resolveDesktopCloudTransportUrlFromEnv(
   if (cloudEnv === "staging") return STAGING_CLOUD_TRANSPORT_URL;
   if (!options.dev) return PRODUCTION_CLOUD_TRANSPORT_URL;
 
-  return null;
-}
-
-function parseJsonRecord(raw: string): Record<string, unknown> | null {
-  try {
-    const parsed: unknown = JSON.parse(raw);
-    return isRecord(parsed) ? parsed : null;
-  } catch (error) {
-    console.debug("[relay-terminal] failed to parse JSON record:", error);
-    return null;
-  }
-}
-
-function normalizeId(id: unknown): string | null {
-  if (typeof id === "string" && id) return id;
-  if (typeof id === "number" && Number.isFinite(id)) return String(id);
   return null;
 }
 
