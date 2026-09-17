@@ -1,0 +1,39 @@
+[
+  {
+    "provider": "codex",
+    "cliVersion": "0.153.4",
+    "capturedAt": "2026-09-16",
+    "capturedFrom": "kanna-daemon session scrollback of task e2de316d (the iOS release Ship task), read back through kanna_task_logs on 2026-09-16. The rows are verbatim, ANSI-stripped, in the order the CLI painted them; the refusal is the last row of the capture because what follows it in that session is the owner's own typed retry. The sentence is independently verifiable in the installed codex-cli 0.153.4 binary, which carries `Selected model is at capacity. Please try a different model.` as the display text of its own error.",
+    "ruleId": "codex/notice/capacity-refusal",
+    "kind": "capacity-refusal",
+    "scope": null,
+    "scopeClaim": "The CLI scopes its refusal to the model this run selected and names no identifier for it, so the stated scope is null. It says nothing about the account, the other models, or the provider — and it is not a spent allowance: `codex/notice/quota-rejection` is the wording for that, and it is a different sentence with a different recovery.",
+    "frame": [
+      "• Explored",
+      "  └ Search emulator.*billing|billing.*emulator|app-store-emulator|account.*deletion.*emulator|firebase.*emulator in docs",
+      "    Search *emulator*.test.ts in test",
+      "",
+      "⚠ Selected model is at capacity. Please try a different model.",
+      ""
+    ],
+    "wrappedFrame": null,
+    "wrapNote": "No narrow-terminal wrap is captured because none has been observed: the sentence is 62 columns wide, the session it was measured on ran about 140, and Kanna's notice projection is 80 columns until a client resizes it. The rule is still written as a wrapped match, so a break at any point in the sentence — on a terminal narrower than the sentence — classifies the same. That robustness is deliberate; it is not a claim that this CLI's own re-wrap of this sentence has been measured.",
+    "parksAs": "idle",
+    "parksAsEvidence": "The session was alive after the refusal: the owner typed a retry into that same composer and the agent continued the turn. This is the whole reason a capacity refusal needs its own channel — no runtime status changed, so nothing woke on it."
+  },
+  {
+    "provider": "codex",
+    "cliVersion": "0.153.4",
+    "capturedAt": "2026-09-16",
+    "capturedFrom": "negatives: a real sentence from this repository's own task records that is about capacity and is not a refusal, the agent prose a transcript may legitimately carry, Codex's own spent-allowance refusal (a different notice with a different recovery), and Claude's capacity wording, which no Codex rule may claim.",
+    "ruleId": null,
+    "scope": null,
+    "mustNotMatch": [
+      "ERR_NGROK_108 (Expo's shared anonymous ngrok account at capacity) gates ONLY that proof, not the architecture decision below.",
+      "The previous turn was refused with \"Selected model is at capacity\". Continue with the owner's authorized sequence.",
+      "  ⎿ Read docs/specs/provider-quota-recovery.md (280 lines)",
+      "■ You've hit your usage limit. Visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at Aug 20th, 2026 1:04 PM.",
+      "API Error: Repeated 529 Overloaded errors. The API is at capacity — this is usually temporary. Try again in a moment."
+    ]
+  }
+]

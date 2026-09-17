@@ -1715,6 +1715,10 @@ pub fn is_relevant_subscription_event(event: &Value) -> bool {
             | "task.awaiting_input"
             | "task.awaiting_advance"
             | "task.provider_quota_parked"
+            // Actionable the moment it is appended: the session is alive and
+            // the turn can be retried, so there is no parked event behind it
+            // to wait for.
+            | "task.provider_capacity_refused"
             | "task.teardown_failed"
             | "task.lifecycle_operation_retired",
         ) => true,
@@ -1837,6 +1841,7 @@ mod subscription_relevance_tests {
             "task.merge_signaled",
             "task.merge_handoff_missing",
             "task.provider_quota_parked",
+            "task.provider_capacity_refused",
             "task.lifecycle_failed",
             "task.lifecycle_operation_retired",
             "task.teardown_failed",
@@ -2024,5 +2029,11 @@ mod subscription_relevance_tests {
         assert!(is_relevant_subscription_event(
             &serde_json::json!({"type":"task.provider_quota_parked", "payload":{"reason":"parked-no-candidates"}})
         ));
+        // A capacity refusal has no recovery verdict to inspect: it is
+        // transient, the session is alive, and somebody has to retry the turn.
+        assert!(is_relevant_subscription_event(&serde_json::json!({
+            "type":"task.provider_capacity_refused",
+            "payload":{"provider":"codex", "model":"gpt-5.6-sol"}
+        })));
     }
 }

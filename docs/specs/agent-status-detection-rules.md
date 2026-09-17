@@ -151,13 +151,21 @@ A `notices` list sits beside `rules`, per provider and in `common`. A notice is
 `{ id, kind, versions, priority, when, scope? }` and reports something the
 provider *stated* rather than what the session is doing.
 
-Today there is one `kind`: `quota-rejection`, the CLI refusing a turn because
-the allowance for the scope it named is spent. It is a separate channel from
-`status` on purpose. A refused CLI prints its refusal and parks at its
-composer — a healthy `idle` session — so folding the fact into the status
-vocabulary would mean either inventing a runtime state for it or reporting a
-live agent as dead. A frame that matches a notice keeps whatever status its
-grid proves.
+There are two `kind`s, and the split between them is load-bearing:
+
+- `quota-rejection` — the CLI refusing a turn because the allowance for the
+  scope it named is spent. It drives automatic provider recovery.
+- `capacity-refusal` — the CLI refusing a turn because the model it is pointed
+  at has no capacity right now. Nothing is spent and nothing has to reset, so it
+  drives no recovery at all: the server records it, announces it and leaves the
+  run alone. A capacity refusal classified as a rejection would burn one of a
+  stage's ordered candidates for a transient condition.
+
+Either way it is a separate channel from `status` on purpose. A refused CLI
+prints its refusal and parks at its composer — a healthy `idle` session — so
+folding the fact into the status vocabulary would mean either inventing a
+runtime state for it or reporting a live agent as dead. A frame that matches a
+notice keeps whatever status its grid proves.
 
 Three rules differ from a status rule:
 
@@ -179,7 +187,8 @@ Declarative for the same reason the matchers are. No scope is not "everything":
 it means the CLI did not say, which is what Codex's refusal does.
 
 The chrome these are measured against is version-tagged in
-`tests/cli-contract/fixtures/provider-quota-rejection.json` and compiled into
+`tests/cli-contract/fixtures/provider-quota-rejection.json` and
+`tests/cli-contract/fixtures/provider-capacity-refusal.json`, and compiled into
 the daemon's own tests, so a pattern and its evidence cannot drift apart. See
 [`provider-quota-recovery.md`](./provider-quota-recovery.md) for what the
 server does with one.

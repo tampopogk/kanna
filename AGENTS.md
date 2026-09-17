@@ -635,6 +635,26 @@ provider argument. None of this disturbs the `agentProviders` /
 `config.local.json` / frontmatter precedence chain. See
 `docs/specs/provider-quota-recovery.md`.
 
+**A capacity refusal is not a spent allowance.** The same notice channel carries
+a second kind, and conflating them would be worse than the silence it replaced.
+A CLI that refuses a turn because the model it is pointed at has no capacity
+right now prints one line and goes back to its composer — nothing is spent,
+nothing has to reset, and the recovery is to try the turn again. So
+`capacity-refusal` is its own notice kind, measured in
+`tests/cli-contract/fixtures/provider-capacity-refusal.json` and
+version-bounded like any other, and it **never enters quota recovery**: no
+`task_provider_rejection` row, so no candidate of the stage's ordered list is
+burned, no fallback is prepared or spawned, and the refused run is left exactly
+as it is — still `running`, with its session alive. The server records it in
+`task_provider_capacity_notice`, appends `task.provider_capacity_refused` (one
+actionable event a supervisor wakes on directly, with no parked event behind
+it), marks the task unread, and reports `providerCapacityNotice` on task detail
+beside — never merged into — `providerRejection`. **The claim stays as wide as
+the sentence**: the one measured chrome refuses the *selected* model without
+naming it, so the stated scope is null and the model is the one Kanna recorded
+for the run; it says nothing about the account or the provider. See
+`docs/specs/provider-quota-recovery.md`.
+
 **A scheduled transfer is not a moved task.** Moving a task between machines is
 a first-class agent surface — `kanna_push_task` / `kanna_pull_task` /
 `kanna_task_transfers` / `kanna_list_transfer_peers`, with matching

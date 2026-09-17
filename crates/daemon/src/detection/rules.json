@@ -406,6 +406,23 @@
               ]
             }
           }
+        },
+        {
+          "id": "codex/notice/capacity-refusal",
+          "kind": "capacity-refusal",
+          "versions": ">=0.153.4",
+          "priority": 20,
+          "when": {
+            "anyLineWrapped": {
+              "allOf": [
+                { "startsWith": "⚠ Selected model" },
+                { "containsAll": [
+                  "is at capacity",
+                  "try a different model"
+                ] }
+              ]
+            }
+          }
         }
       ]
     },

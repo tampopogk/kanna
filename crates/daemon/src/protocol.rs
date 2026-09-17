@@ -295,12 +295,24 @@ pub enum ProviderNoticeKind {
     /// a rejection naming one model says nothing about the rest of that
     /// provider's models.
     QuotaRejection,
+    /// The provider refused the turn because the model this run selected has
+    /// no capacity right now. Deliberately *not* [`Self::QuotaRejection`]:
+    /// nothing is spent, nothing has to reset, and the recovery is to try the
+    /// turn again — so this must never reach the quota fallback machinery,
+    /// which would burn a stage's ordered candidates on a transient condition.
+    ///
+    /// The claim is exactly as wide as the sentence that proved it. The one
+    /// measured chrome — Codex's — scopes itself to the selected model and
+    /// names no identifier for it, so the stated scope is null and the model
+    /// is the one Kanna recorded for the run.
+    CapacityRefusal,
 }
 
 impl ProviderNoticeKind {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::QuotaRejection => "quota-rejection",
+            Self::CapacityRefusal => "capacity-refusal",
         }
     }
 }

@@ -1,4 +1,5 @@
-//! End-to-end coverage for provider quota-rejection notices.
+//! End-to-end coverage for provider notices: quota rejections, and the
+//! capacity refusal that is deliberately not one.
 //!
 //! These drive a real daemon process over its unix socket with a real PTY, so
 //! they cross the whole path the feature lives on: the `Spawn` command
@@ -34,6 +35,11 @@ static TEST_INSTANCE_COUNTER: AtomicUsize = AtomicUsize::new(0);
 const CAPTURES: &str =
     include_str!("../../../tests/cli-contract/fixtures/provider-quota-rejection.json");
 
+/// The measured capacity refusal — a different sentence, a different kind and
+/// a different recovery from a spent allowance.
+const CAPACITY_CAPTURES: &str =
+    include_str!("../../../tests/cli-contract/fixtures/provider-capacity-refusal.json");
+
 const INCIDENT_QUOTA_ROW: &str = concat!(
     "(Fable): ⎿ You've reached your Fable limit. Run /usage-credits ",
     "to continue or switch\", \"resumedFromRunId\": null, ",
@@ -59,7 +65,16 @@ struct Capture {
 }
 
 fn capture(provider: &str) -> Capture {
-    let parsed: Value = serde_json::from_str(CAPTURES).expect("capture fixture parses");
+    capture_from(CAPTURES, provider)
+}
+
+/// The measured capacity refusal for one provider.
+fn capacity_capture(provider: &str) -> Capture {
+    capture_from(CAPACITY_CAPTURES, provider)
+}
+
+fn capture_from(captures: &str, provider: &str) -> Capture {
+    let parsed: Value = serde_json::from_str(captures).expect("capture fixture parses");
     let entry = parsed
         .as_array()
         .expect("capture fixture is a list")
@@ -1088,5 +1103,78 @@ fn ordinary_output_about_limits_announces_nothing() {
     assert!(
         notices(&events).is_empty(),
         "prose about quota is not a provider refusing a turn: {events:?}"
+    );
+}
+
+/// A capacity refusal is announced as its own kind, and the session it came
+/// from is still a live agent.
+///
+/// This is the 2026-09-16 incident, which neither channel caught: the Codex
+/// CLI refused the turn because the selected model had no capacity, printed
+/// one line, and went straight back to its composer. No runtime edge fired
+/// because the session never sustained a busy classification, and no notice
+/// fired because the sentence matched no measured rule. What must reach
+/// kanna-server is `capacity-refusal` — never `quota-rejection`, which would
+/// spend the stage's ordered candidates on a transient condition.
+#[test]
+fn a_codex_capacity_refusal_announces_its_own_kind_and_stays_alive() {
+    let capture = capacity_capture("codex");
+    let daemon = DaemonHandle::start("codex-capacity");
+    let executable = fake_cli(
+        &daemon.dir,
+        "codex-capacity",
+        &format!("codex-cli {}", capture.cli_version),
+    );
+
+    let mut subscriber = daemon.connect();
+    subscriber.send(&json!({ "type": "Subscribe" }));
+
+    let mut control = daemon.connect();
+    spawn_refused_session(&mut control, "codex-capacity", &capture, Some(executable));
+
+    let events = subscriber.drain_until_notice("codex-capacity", EVENTUAL);
+    let announced = notices(&events);
+    assert_eq!(announced.len(), 1, "one refusal, one notice: {events:?}");
+    assert_eq!(announced[0]["kind"], "capacity-refusal");
+    assert_eq!(announced[0]["rule_id"], capture.rule_id);
+    assert_eq!(announced[0]["agent_provider"], "codex");
+    assert!(
+        announced[0]["scope"].is_null(),
+        "the CLI scopes itself to the selected model without naming one: {:?}",
+        announced[0]
+    );
+    assert!(
+        announced[0]["text"]
+            .as_str()
+            .is_some_and(|text| text.contains("at capacity")),
+        "the sentence travels with the claim: {:?}",
+        announced[0]
+    );
+    assert!(
+        !events.iter().any(|event| event["type"] == "Exit"),
+        "the refused session is alive and can be retried: {events:?}"
+    );
+}
+
+/// An unmeasured Codex release inherits nothing.
+#[test]
+fn an_unprobed_session_announces_no_capacity_refusal() {
+    let capture = capacity_capture("codex");
+    let daemon = DaemonHandle::start("codex-capacity-unprobed");
+
+    let mut subscriber = daemon.connect();
+    subscriber.send(&json!({ "type": "Subscribe" }));
+
+    let mut control = daemon.connect();
+    spawn_refused_session(&mut control, "codex-capacity-unprobed", &capture, None);
+
+    let events = subscriber.drain("codex-capacity-unprobed", QUIET);
+    assert!(
+        notices(&events).is_empty(),
+        "with no measured version, no refusal may be claimed: {events:?}"
+    );
+    assert!(
+        !events.iter().any(|event| event["type"] == "Exit"),
+        "the session is alive either way; withholding a claim never kills one: {events:?}"
     );
 }

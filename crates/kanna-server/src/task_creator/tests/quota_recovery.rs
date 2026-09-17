@@ -17,6 +17,8 @@
 
 use super::*;
 
+mod capacity_notice;
+
 mod revision_recovery;
 
 mod real_daemon;
@@ -273,7 +275,7 @@ async fn spawn_fake_daemon_for_rejection(
 /// expects a spawn — for the cases that must park instead of recovering.
 async fn spawn_fake_daemon_expecting_no_recovery(
     daemon_dir: String,
-    rejection: kanna_daemon::protocol::Event,
+    notices: Vec<kanna_daemon::protocol::Event>,
 ) -> tokio::task::JoinHandle<()> {
     let socket_path = test_daemon_socket_path(&daemon_dir);
     let _ = std::fs::remove_file(&socket_path);
@@ -303,7 +305,9 @@ async fn spawn_fake_daemon_expecting_no_recovery(
         )
         .await;
 
-        write_fake_daemon_event(&mut subscribe_write, &rejection).await;
+        for notice in &notices {
+            write_fake_daemon_event(&mut subscribe_write, notice).await;
+        }
         write_fake_daemon_event(
             &mut subscribe_write,
             &kanna_daemon::protocol::Event::ShuttingDown,
@@ -637,7 +641,7 @@ async fn the_last_candidate_refused_parks_the_task_once() {
 
     let fake_daemon = spawn_fake_daemon_expecting_no_recovery(
         config.daemon_dir.clone(),
-        astra_rejection(TASK_ID),
+        vec![astra_rejection(TASK_ID)],
     )
     .await;
     run_watcher(&state, &replacements).await;
@@ -697,7 +701,7 @@ async fn a_refusal_after_the_workspace_changed_parks_and_preserves_the_work() {
 
     let fake_daemon = spawn_fake_daemon_expecting_no_recovery(
         config.daemon_dir.clone(),
-        fable_rejection(TASK_ID),
+        vec![fable_rejection(TASK_ID)],
     )
     .await;
     run_watcher(&state, &replacements).await;
@@ -750,7 +754,7 @@ async fn an_explicit_provider_override_is_never_walked_around() {
 
     let fake_daemon = spawn_fake_daemon_expecting_no_recovery(
         config.daemon_dir.clone(),
-        fable_rejection(TASK_ID),
+        vec![fable_rejection(TASK_ID)],
     )
     .await;
     run_watcher(&state, &replacements).await;
@@ -996,7 +1000,7 @@ async fn a_stage_with_no_candidates_parks_and_still_reruns_and_resumes() {
 
     let fake_daemon = spawn_fake_daemon_expecting_no_recovery(
         config.daemon_dir.clone(),
-        fable_rejection(TASK_ID),
+        vec![fable_rejection(TASK_ID)],
     )
     .await;
     run_watcher(&state, &replacements).await;
@@ -1125,7 +1129,7 @@ async fn a_refusal_against_a_closed_task_changes_nothing() {
 
     let fake_daemon = spawn_fake_daemon_expecting_no_recovery(
         config.daemon_dir.clone(),
-        fable_rejection(TASK_ID),
+        vec![fable_rejection(TASK_ID)],
     )
     .await;
     run_watcher(&state, &replacements).await;

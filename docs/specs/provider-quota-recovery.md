@@ -268,6 +268,103 @@ one's.
   neither `activity` nor `runtimeState` can answer this; the field is why a
   reader does not have to conclude the run simply failed.
 
+## Capacity refusals: the same channel, a different claim
+
+On 2026-09-16 the Codex CLI answered a turn on the iOS release Ship task
+(`e2de316d`) with:
+
+```
+⚠ Selected model is at capacity. Please try a different model.
+```
+
+and went straight back to its composer. Nothing woke. The runtime channel had
+nothing to say — the refusal never sustained a busy classification, so no
+busy→idle edge fired — and the notice channel had nothing to match, because the
+sentence was in no measured rule. The owner found the stalled task by looking at
+it.
+
+This is a *notice*, by the same standard as a rejection: a positive match on
+chrome the provider drew, at a CLI version this repository has measured, never
+an inference from silence. What it is not is a spent allowance, and the
+distinction is the whole design:
+
+| | quota rejection | capacity refusal |
+|---|---|---|
+| What happened | the allowance for the stated scope is spent | the selected model has no capacity right now |
+| Lasts | until the allowance resets | transient |
+| Burns a candidate | yes — `providers_rejected_at_stage` | **no** |
+| Touches the run | closes it `failed` when a fallback starts | **nothing** |
+| Recovery | walk the stage's ordered candidates once, or park | retry the turn |
+
+So `ProviderNoticeKind::CapacityRefusal` is its own kind, recorded in its own
+table (`task_provider_capacity_notice`) that quota recovery does not read. A
+capacity refusal that landed in `task_provider_rejection` would silently retire
+a provider the stage has every right to use, and could close a live attempt as
+failed — a worse bug than the silence it replaces.
+
+What the server does, in full: record the refusal once per
+`(stage_run, provider, stated scope)` against the task's own still-running
+attempt on the provider that refused; append `task.provider_capacity_refused`;
+mark the task `unread`. The run keeps running, the session stays alive, and
+`kanna_get_task` reports `providerCapacityNotice` for the stage the task
+occupies. There is no parked event behind it, because the event *is* the
+actionable state — a subscription wakes on it directly.
+
+**The claim is exactly as wide as the sentence.** Codex refuses the *selected*
+model and names no identifier for it, so the stated `scope` is null and the
+model is the one Kanna recorded for that run. It says nothing about the
+account, the other models, or the provider.
+
+### Measured chrome, and what could not be measured
+
+`tests/cli-contract/fixtures/provider-capacity-refusal.json` holds the capture:
+the rows are verbatim from the refused session's own scrollback on 2026-09-16,
+and the sentence is independently verifiable in the installed codex-cli
+`0.153.4` binary, which carries it as the display text of its own error. The
+rule is scoped `>=0.153.4` — the version measured — so an unmeasured release
+classifies nothing, exactly as for a rejection.
+
+No narrow-terminal wrap is captured, and the fixture says so rather than
+inventing one: the sentence is 62 columns, the session it was measured on ran
+about 140, and the notice projection is 80 until a client resizes it. The rule
+is written as a wrapped match anyway, so a break anywhere in the sentence still
+classifies — robustness, not a measured claim.
+
+**The other CLIs were surveyed and deliberately got no rule:**
+
+- **Claude** (2.1.273) does carry a capacity sentence —
+  `API Error: Repeated 529 Overloaded errors. The API is at capacity — this is
+  usually temporary. Try again in a moment.`, recovered by resolving the
+  bundle's own template and its two interpolated constants. That is the
+  *sentence*, not the *frame*: how the TUI paints it — the leading glyph, the
+  indent, the row it lands on — has not been observed, and the anchoring every
+  notice rule uses is a claim about the start of a logical row. Writing a rule
+  against an unobserved row shape is the invention this architecture exists to
+  prevent, so Claude gets none until a real refusal is captured. The sentence is
+  kept as a negative instead, so no Codex rule can ever claim it.
+- **Copilot** (1.0.83) and **OpenCode** (1.4.3) have no capacity-refusal chrome
+  at all. Both carry only transport-level plumbing — a `SITE_IS_OVERLOADED`
+  status constant, an `overloaded_error` retry predicate — which is a retry
+  decision inside the client, not a sentence it prints at a person.
+
+### Capacity coverage
+
+- `crates/daemon/src/detection/rules.rs` (`capacity_notice_tests`) — the
+  capture against the real classifier: the kind, the null scope, the wrapped
+  break, the anchoring, the unmeasured and older versions, the cross-provider
+  negative, and the spent-allowance negative.
+- `crates/daemon/tests/provider_quota_notice.rs` — a real daemon and a real PTY
+  painting the measured chrome: one announcement of kind `capacity-refusal`,
+  the session still alive, and nothing at all from an unprobed CLI.
+- `crates/kanna-server/src/task_creator/tests/quota_recovery/capacity_notice.rs`
+  — the real watcher against the quota fixture, whose stage *does* name an
+  ordered candidate list: the refusal is recorded and announced, the
+  subscription wait delivers it, and no rejection row, no burned candidate, no
+  replacement run and no change to the running attempt appear anywhere.
+- `tests/cli-contract/tests/offline/provider-capacity-refusal-contract.test.ts`
+  — the provenance of the capture, including that an unmeasured wrap is
+  declared rather than invented.
+
 ## Deliberately not here
 
 Usage/quota dashboards, account switching, and quota-aware scheduling are the

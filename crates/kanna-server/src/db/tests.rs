@@ -229,7 +229,7 @@ fn open_creates_and_migrates_fresh_profile_database() {
             |row| row.get(0),
         )
         .expect("latest migration");
-    assert_eq!(latest_migration, "086_copilot_wake");
+    assert_eq!(latest_migration, "087_provider_capacity_notice_log");
     assert_eq!(
         index_columns(&db.conn, "idx_pipeline_item_parent_created_id"),
         vec!["parent_task_id", "created_at", "id"],
@@ -3695,6 +3695,7 @@ fn task_event_type_names_are_stable() {
             "task.unblocked",
             "task.provider_quota_rejected",
             "task.provider_quota_parked",
+            "task.provider_capacity_refused",
             "task.review_context_changed",
             "task.human_review_decision",
             "task.human_review_decision_delivery",

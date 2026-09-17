@@ -1788,3 +1788,276 @@ mod codex_busy_precedence_tests {
         }
     }
 }
+
+/// The measured capacity refusal and the rule that classifies it.
+///
+/// A capacity refusal is not a spent allowance. Nothing has to reset, no
+/// candidate has been burned, and the recovery is to try the turn again — so
+/// it is its own notice kind, and these pin the two claims that keep it that
+/// way: the measured frame classifies as `capacity-refusal`, and no quota rule
+/// classifies it as anything at all. The capture lives in
+/// `tests/cli-contract/fixtures/provider-capacity-refusal.json`, the
+/// repository's home for version-tagged provider CLI evidence, and is compiled
+/// in here so the pattern and the frame it was measured against cannot drift
+/// apart in separate commits.
+#[cfg(test)]
+mod capacity_notice_tests {
+    use crate::detection::classify::{Classifier, Evidence};
+    use crate::detection::version::CliVersion;
+    use crate::protocol::{AgentProvider, ProviderNoticeKind, SessionStatus};
+
+    const CAPTURES: &str =
+        include_str!("../../../../tests/cli-contract/fixtures/provider-capacity-refusal.json");
+
+    struct Capture {
+        provider: AgentProvider,
+        cli_version: String,
+        rule_id: Option<String>,
+        scope: Option<String>,
+        frame: Vec<String>,
+        wrapped_frame: Vec<String>,
+        must_not_match: Vec<String>,
+    }
+
+    fn captures() -> Vec<Capture> {
+        let parsed: serde_json::Value =
+            serde_json::from_str(CAPTURES).expect("the capture fixture must be valid JSON");
+        parsed
+            .as_array()
+            .expect("the capture fixture is a list")
+            .iter()
+            .map(|entry| {
+                let strings = |key: &str| {
+                    entry
+                        .get(key)
+                        .and_then(|value| value.as_array())
+                        .map(|values| {
+                            values
+                                .iter()
+                                .filter_map(|value| value.as_str().map(str::to_string))
+                                .collect()
+                        })
+                        .unwrap_or_default()
+                };
+                Capture {
+                    provider: entry["provider"]
+                        .as_str()
+                        .and_then(|provider| provider.parse().ok())
+                        .expect("a capture names a supported provider"),
+                    cli_version: entry["cliVersion"]
+                        .as_str()
+                        .expect("a capture names the CLI version it was measured at")
+                        .to_string(),
+                    rule_id: entry["ruleId"].as_str().map(str::to_string),
+                    scope: entry["scope"].as_str().map(str::to_string),
+                    frame: strings("frame"),
+                    wrapped_frame: strings("wrappedFrame"),
+                    must_not_match: strings("mustNotMatch"),
+                }
+            })
+            .collect()
+    }
+
+    fn classifier(capture: &Capture) -> Classifier {
+        Classifier::with_version(
+            Some(capture.provider),
+            Some(CliVersion::parse(&capture.cli_version).expect("a capture's version parses")),
+        )
+    }
+
+    fn notice(
+        classifier: &mut Classifier,
+        lines: &[String],
+    ) -> Option<crate::detection::classify::Notice> {
+        classifier.notice(&Evidence {
+            lines,
+            title: "",
+            progress: None,
+        })
+    }
+
+    fn measured() -> Vec<Capture> {
+        captures()
+            .into_iter()
+            .filter(|capture| !capture.frame.is_empty())
+            .collect()
+    }
+
+    #[test]
+    fn classifies_every_measured_capacity_refusal_as_its_own_kind() {
+        let measured = measured();
+        assert!(!measured.is_empty(), "the fixture keeps a measured capture");
+        for capture in &measured {
+            let mut classifier = classifier(capture);
+            let matched = notice(&mut classifier, &capture.frame).unwrap_or_else(|| {
+                panic!(
+                    "{:?} {} must classify its own measured capacity refusal",
+                    capture.provider, capture.cli_version
+                )
+            });
+            assert_eq!(
+                matched.kind,
+                ProviderNoticeKind::CapacityRefusal,
+                "a capacity refusal is not a spent allowance, and the kind is what keeps it out \
+                 of quota recovery",
+            );
+            assert_eq!(Some(matched.rule_id.clone()), capture.rule_id);
+            // The claim is exactly as wide as the sentence: this chrome scopes
+            // itself to the selected model without naming one, so no scope is
+            // stated and none is invented.
+            assert_eq!(matched.scope, capture.scope);
+            assert!(
+                matched.text.contains("at capacity"),
+                "a notice reports the sentence it matched: {:?}",
+                matched.text,
+            );
+        }
+    }
+
+    /// The sentence is 62 columns wide, so no measured narrow wrap exists; the
+    /// rule is written as a wrapped match anyway, and this pins that a break
+    /// anywhere in it still classifies rather than silently stopping.
+    #[test]
+    fn classifies_the_refusal_broken_across_two_rows() {
+        for capture in measured() {
+            let refusal = capture
+                .frame
+                .iter()
+                .find(|line| line.contains("at capacity"))
+                .expect("the measured refusal row");
+            let split = refusal
+                .find("Please")
+                .expect("the sentence's second clause");
+            let wrapped = vec![
+                refusal[..split].trim_end().to_string(),
+                refusal[split..].to_string(),
+            ];
+            let mut split_classifier = classifier(&capture);
+            assert!(
+                notice(&mut split_classifier, &wrapped).is_some(),
+                "{:?} must classify its refusal wrapped across rows",
+                capture.provider,
+            );
+            // Any wrapped capture the fixture does carry classifies too.
+            if !capture.wrapped_frame.is_empty() {
+                let mut wrapped_classifier = classifier(&capture);
+                assert!(notice(&mut wrapped_classifier, &capture.wrapped_frame).is_some());
+            }
+        }
+    }
+
+    /// The same anchoring every notice is held to: the measured glyph and
+    /// opening word belong to the start of a logical row, so a quoted echo of
+    /// the sentence inside session output is not a refusal.
+    #[test]
+    fn refusal_anchors_belong_to_the_first_logical_row() {
+        for capture in measured() {
+            let refusal = capture
+                .frame
+                .iter()
+                .find(|line| line.contains("at capacity"))
+                .expect("the measured refusal row");
+            let mut classifier = classifier(&capture);
+            for prefix in ["Earlier result: ", "{\"matchedText\":\"", "│ tool_result: "] {
+                assert!(
+                    notice(&mut classifier, &[format!("{prefix}{refusal}")]).is_none(),
+                    "{prefix:?} must not carry a refusal",
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn never_classifies_prose_a_spent_allowance_or_another_providers_wording() {
+        let captures = captures();
+        let negatives = captures
+            .iter()
+            .flat_map(|capture| capture.must_not_match.iter())
+            .collect::<Vec<_>>();
+        assert!(!negatives.is_empty(), "the fixture keeps negatives");
+        for provider in [AgentProvider::Claude, AgentProvider::Codex] {
+            let mut classifier = Classifier::with_version(
+                Some(provider),
+                Some(CliVersion::parse("99.0.0").expect("version parses")),
+            );
+            for line in &negatives {
+                let lines = vec![(*line).clone()];
+                let matched = notice(&mut classifier, &lines);
+                assert!(
+                    !matches!(
+                        matched.as_ref().map(|notice| notice.kind),
+                        Some(ProviderNoticeKind::CapacityRefusal)
+                    ),
+                    "{provider:?} must not read {line:?} as a capacity refusal",
+                );
+            }
+        }
+    }
+
+    /// A rejection drives automatic recovery and a capacity refusal drives an
+    /// operator-visible retry; neither may be inherited by a CLI whose chrome
+    /// nobody measured.
+    #[test]
+    fn a_version_bounded_notice_needs_a_measured_cli_version() {
+        for capture in measured() {
+            let mut unmeasured = Classifier::with_version(Some(capture.provider), None);
+            assert!(
+                notice(&mut unmeasured, &capture.frame).is_none(),
+                "{:?} must not classify a refusal from an unprobed CLI version",
+                capture.provider,
+            );
+            let mut older = Classifier::with_version(
+                Some(capture.provider),
+                Some(CliVersion::parse("0.52.0").expect("version parses")),
+            );
+            assert!(
+                notice(&mut older, &capture.frame).is_none(),
+                "{:?} 0.52.0 predates the measured chrome and must not classify it",
+                capture.provider,
+            );
+        }
+    }
+
+    /// One provider's refusal wording is not another's evidence — including
+    /// Claude's own capacity sentence, which no Codex rule may claim.
+    #[test]
+    fn a_providers_rule_does_not_classify_another_providers_refusal() {
+        for capture in measured() {
+            for other in [AgentProvider::Claude, AgentProvider::Codex] {
+                if other == capture.provider {
+                    continue;
+                }
+                let mut classifier = Classifier::with_version(
+                    Some(other),
+                    Some(CliVersion::parse("99.0.0").expect("version parses")),
+                );
+                assert!(
+                    notice(&mut classifier, &capture.frame).is_none(),
+                    "{other:?} must not classify {:?}'s refusal",
+                    capture.provider,
+                );
+            }
+        }
+    }
+
+    /// The reason this needed its own channel at all: the refusal printed and
+    /// the session went straight back to its composer, so no runtime edge
+    /// fired. A frame carrying it must never be read as a turn in flight.
+    #[test]
+    fn a_capacity_refusal_never_reads_as_a_running_turn() {
+        for capture in measured() {
+            let mut classifier = classifier(&capture);
+            let verdict = classifier.classify(&Evidence {
+                lines: &capture.frame,
+                title: "",
+                progress: None,
+            });
+            assert_ne!(
+                verdict.as_ref().map(|verdict| verdict.status),
+                Some(SessionStatus::Busy),
+                "{:?} is parked in front of its refusal, not working",
+                capture.provider,
+            );
+        }
+    }
+}
