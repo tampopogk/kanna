@@ -232,17 +232,19 @@ describe("cloud deploy runtime", () => {
     ]);
   });
 
-  it("creates the account hosting site for the quoted current Firebase CLI missing-site diagnostic", async () => {
+  // The trailing period is the only difference between these two: firebase-tools
+  // 14.27.0 (the pinned version, observed on a production `kd cloud deploy`)
+  // omits it, earlier builds print it.
+  it.each([
+    ["with a trailing period", "Error: could not find site \"kanna-build-account\" for project \"kanna-build\"."],
+    ["without a trailing period", "Error: could not find site \"kanna-build-account\" for project \"kanna-build\""]
+  ])("creates the account hosting site for the quoted Firebase CLI missing-site diagnostic %s", async (_label, stderr) => {
     const calls: string[] = [];
     const runner: CommandRunner = {
       async run(command, args) {
         calls.push(`${command} ${args.join(" ")}`);
         if (args.includes("hosting:sites:get")) {
-          return {
-            exitCode: 1,
-            stdout: "",
-            stderr: "Error: could not find site \"kanna-build-account\" for project \"kanna-build\"."
-          };
+          return { exitCode: 1, stdout: "", stderr };
         }
         return { exitCode: 0, stdout: "", stderr: "" };
       }

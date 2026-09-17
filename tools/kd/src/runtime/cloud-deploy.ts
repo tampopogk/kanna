@@ -350,9 +350,15 @@ export function resolveAccountHostingSite(repoRoot: string, projectId: string): 
 }
 
 function isMissingHostingSiteDiagnostic(output: string, site: string, projectId: string): boolean {
+  // The pinned firebase-tools 14.27.0 prints this diagnostic without a trailing
+  // period; earlier builds print it with one. The period is the only part that
+  // is optional — the site and project must still match exactly, quoted or not,
+  // so permission, auth, and network failures stay fail-closed.
+  const trimmed = output.trim();
+  const diagnostic = trimmed.endsWith(".") ? trimmed.slice(0, -1) : trimmed;
   return /\brequested entity was not found\b/i.test(output)
-    || output.trim() === `Error: could not find site ${site} for project ${projectId}.`
-    || output.trim() === `Error: could not find site "${site}" for project "${projectId}".`;
+    || diagnostic === `Error: could not find site ${site} for project ${projectId}`
+    || diagnostic === `Error: could not find site "${site}" for project "${projectId}"`;
 }
 
 export async function ensureAccountHostingSite(input: {
