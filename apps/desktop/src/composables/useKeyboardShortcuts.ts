@@ -2,6 +2,7 @@ import { onMounted, onUnmounted } from "vue";
 import { isTauri } from "../tauri-mock";
 import type { ShortcutContext } from "./useShortcutContext";
 import {
+  belongsToTextEditing,
   platformBinding,
   resolveShortcutPlatform,
   shortcutModifierTokens,
@@ -78,7 +79,12 @@ interface ShortcutDef {
   display: string;
   /** Which contexts this shortcut appears in. Undefined = all contexts. */
   context?: ShortcutContext[];
-  /** Hide from shortcuts modal display */
+  /**
+   * Hide from shortcuts modal display. Authored for macOS like `display`: a
+   * platform whose exception declares the binding `listed` shows it anyway,
+   * which is how tab cycling is a discoverable Ctrl+Page Up / Page Down on
+   * Linux while staying an unlisted ⇧⌘[ / ⇧⌘] convention on macOS.
+   */
   hidden?: boolean;
   /**
    * Hide from the command palette. Only for shortcuts whose action is the
@@ -238,8 +244,12 @@ export function getShortcutGroups(t: (key: string) => string): { key: string; ti
     "shortcuts.groupAppHelp",
   ];
   const map = new Map<string, { keys: string; action: string }[]>();
+  const resolved = bindings();
   for (const def of shortcuts) {
-    if (def.hidden) continue;
+    // The resolved binding, not the authored flag: what the modal lists is a
+    // per-platform decision, because a chord that is a platform convention on
+    // one desktop is something nobody would guess on another.
+    if (resolved.get(def.action)?.hidden ?? def.hidden) continue;
     if (!map.has(def.groupKey)) map.set(def.groupKey, []);
     map.get(def.groupKey)!.push({
       keys: bindings().get(def.action)?.display ?? def.display,
@@ -272,6 +282,11 @@ export function useKeyboardShortcuts(
 ) {
   function handler(e: KeyboardEvent) {
     if (options?.enabled && !options.enabled()) return;
+    // This listener captures before anything else and calls `preventDefault()`,
+    // so a chord it claims is gone from every text field in the app. Selection
+    // chords belong to the field the keystroke landed in — see
+    // `belongsToTextEditing`.
+    if (belongsToTextEditing(e, e.target)) return;
     const ctx = options?.context?.();
     for (const def of shortcuts) {
       if (matches(def, e)) {

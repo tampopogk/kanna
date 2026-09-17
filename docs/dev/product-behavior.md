@@ -313,11 +313,11 @@ why the last two are recorded rather than simply left out.
 | ⇧⌘E | Tree explorer |
 | ⇧⌘Enter | Toggle maximize |
 | ⇧⌘A | Analytics |
-| ⇧⌘[ / ⇧⌘] (macOS), Ctrl+Alt+[ / Ctrl+Alt+] (Linux) | Previous / next main-area tab |
+| ⇧⌘[ / ⇧⌘] | Previous / next main-area tab |
 | [ / ] | Previous / next Diff scope (Diff tab only) |
 | ⌘/ | Keyboard shortcuts |
 | ⌘, | Preferences |
-| Ctrl+- / Ctrl+Shift+- | Back / Forward |
+| ⌃- / ⌃⇧- | Back / Forward |
 | Escape | Dismiss the top dialog or active non-terminal view tab |
 
 The registry in `apps/desktop/src/composables/useKeyboardShortcuts.ts` is the
@@ -326,6 +326,71 @@ listed by their active Diff, file, tree, or graph context in the shortcut help.
 Main-area tabs stay mounted while hidden, so only the active view may consume
 its local keys; registered app shortcuts continue to work while a terminal has
 focus.
+
+#### Linux
+
+The table above is authored for macOS. `shortcutPlatform.ts` transforms it for
+Linux — ⌘X becomes Ctrl+Shift+X, ⇧⌘X becomes Ctrl+Alt+X — and holds a named
+exception table for the chords that transform cannot reach, because on a stock
+GNOME desktop something else already owns them. Every exception below was
+verified against `gsettings list-recursively` on Ubuntu 26.04 and then pressed
+on the running app.
+
+| Action | Linux chord | Why it is an exception |
+|---|---|---|
+| Previous / next main-area tab | Ctrl+Page Up / Ctrl+Page Down | The transform would give ⇧⌘[ / ⇧⌘] an unguessable Ctrl+Alt+[ / ]; this is what GNOME Terminal, Firefox and VS Code all cycle tabs with. Listed in the shortcuts modal on Linux, unlisted on macOS. |
+| Back / Forward | Alt+← / Alt+→ | ⌃- / ⌃⇧- carry across unchanged onto the webview's zoom-out chords. Alt+Arrow is what a GTK app is expected to answer anyway. |
+| Oldest unread task (repo / all repos) | Ctrl+Alt+U / Ctrl+Alt+Shift+U | Ctrl+Shift+U is IBus' Unicode code-point entry. It never reaches the webview — pressing it types a literal "u" — so the app cannot win it back by handling it. |
+| Previous / next task | Ctrl+↑ / Ctrl+↓ | The transform's Ctrl+Alt+↑/↓ is GNOME's workspace switcher, and both other candidates are dead: keys injected below the compositor for Alt+↑/↓ and for Ctrl+Shift+↑/↓ deliver their modifiers to the webview and never the arrow. Ctrl+↑/↓ arrives and nothing claims it. |
+| Previous / next repo | Alt+Shift+↑ / Alt+Shift+↓ | Same three dead chords. This keeps repo navigation one modifier above task navigation, the way ⇧⌘↑/↓ sits above ⌥⌘↑/↓. |
+
+Three further rules keep the Linux keymap honest, all enforced by
+`shortcutPlatform.test.ts`:
+
+- No binding takes a plain Ctrl+letter. Those belong to the agent session's
+  PTY — Ctrl+C is SIGINT, Ctrl+V is readline's quoted-insert — which is why the
+  terminal's clipboard chords are Ctrl+Shift+C / Ctrl+Shift+V.
+- No binding claims a chord GNOME has already taken (Ctrl+Alt+Arrow switches
+  workspaces, Ctrl+Alt+Backspace zaps the X server), and none sits on a zoom
+  chord.
+- No ↑/↓ binding sits on Ctrl+Alt, Ctrl+Shift or plain Alt. `gsettings` names
+  an owner only for the first; the other two were measured not to arrive, which
+  settles the question either way — a chord the desktop does not deliver cannot
+  be bound, whoever is taking it.
+
+**Selection chords belong to the text field, not to the app.** The global
+listener captures keydown before anything else and calls `preventDefault()`, so
+any chord it claims is gone from every input, textarea and contenteditable in
+the app — which is how Ctrl+Shift+← , *the* word-selection chord, stopped
+selecting anything in the task search field. `belongsToTextEditing` concedes a
+keystroke to the field it landed in when Shift is held over a caret or deletion
+key. Only that: Ctrl+Shift+S means nothing inside an input and still advances a
+stage from one, and xterm's hidden helper textarea is deliberately not an
+editable element — what is typed into it goes to the PTY, and navigating tasks
+from a focused agent terminal has to keep working.
+
+Ctrl+Shift+←/→ is pane focus, which does nothing without a split; its modal
+label says "(split view)" so the list cannot be read as a promise about tabs.
+
+Plain Ctrl+↑/↓ is deliberately *not* conceded to a focused text field even
+though GTK moves the caret by paragraph with it. It is task navigation here,
+and typing two characters into the sidebar search and then walking the results
+is what the field is for. Nothing is selected, so nothing is lost.
+
+Which Shift chords a field owns is a platform question, and conceding one it
+does not own is not free: the agent view's composer holds the caret nearly all
+the time, so a chord conceded there does nothing in the view a person spends
+the day in — which is how repo navigation measured dead on Linux even after it
+moved to a chord the desktop delivers. A GTK or WebKit field builds a selection
+out of Shift and Ctrl only, so on Linux `belongsToTextEditing` concedes
+Shift+caret while neither Alt nor Super is held: Ctrl+Shift+← still selects a
+word, and Alt+Shift+↑/↓ still changes repo from inside the composer. macOS is
+unchanged and concedes every Shift+caret chord, because ⌥⇧← and ⇧⌘↑ really are
+selection there.
+
+`apps/desktop/tests/e2e/linux/` drives these chords into the running app as
+real key events, which is the only layer that can tell "the app ignored it"
+apart from "the desktop ate it" — see that directory's README for how to run it.
 
 ### Preferences
 

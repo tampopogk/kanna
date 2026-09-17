@@ -496,14 +496,13 @@ describe("NewTaskModal", () => {
     await flushPromises();
     expect(getContextShortcuts("newTask")).toContainEqual({
       action: "Switch agent",
-      keys: "Ctrl+Alt+[ / Ctrl+Alt+]",
+      keys: "Ctrl+Page Up / Ctrl+Page Down",
     });
 
     await wrapper.get("textarea").trigger("keydown", {
-      key: "[",
-      code: "BracketLeft",
+      key: "PageUp",
+      code: "PageUp",
       ctrlKey: true,
-      altKey: true,
     });
     expect(selectedAgentLabel(wrapper)).toBe("claude");
   });

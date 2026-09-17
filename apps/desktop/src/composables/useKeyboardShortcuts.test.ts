@@ -274,6 +274,93 @@ describe("useKeyboardShortcuts", () => {
     return mount(Harness);
   }
 
+  /**
+   * The owner's report: "ctrl+shift+u etc doesn't work" and the listed
+   * Ctrl+Shift+arrows "do not". Underneath both was the same thing — this
+   * listener captures before anything else and calls `preventDefault()`, so a
+   * chord it claims is gone from every text field in the app. Ctrl+Shift+←
+   * (⇧⌘← on this suite's declared platform) is *the* word-selection chord.
+   */
+  describe("keystrokes that belong to the text field they landed in", () => {
+    function pressAt(target: HTMLElement, init: KeyboardEventInit): KeyboardEvent {
+      const event = new KeyboardEvent("keydown", { bubbles: true, cancelable: true, ...init });
+      target.dispatchEvent(event);
+      return event;
+    }
+
+    function withTarget(html: string, run: (target: HTMLElement) => void): void {
+      const host = document.createElement("div");
+      host.innerHTML = html;
+      const target = host.firstElementChild as HTMLElement;
+      document.body.appendChild(host);
+      try {
+        run(target);
+      } finally {
+        host.remove();
+      }
+    }
+
+    it("leaves a selection chord to a focused input", () => {
+      const actions = buildActions();
+      const wrapper = mountShortcutHarness(actions, () => "main");
+      withTarget(`<input type="text">`, (input) => {
+        const event = pressAt(input, { key: "ArrowUp", metaKey: true, shiftKey: true });
+        expect(actions.navigateRepoUp).not.toHaveBeenCalled();
+        expect(event.defaultPrevented).toBe(false);
+      });
+      wrapper.unmount();
+    });
+
+    it("leaves it to a textarea and a contenteditable too", () => {
+      const actions = buildActions();
+      const wrapper = mountShortcutHarness(actions, () => "main");
+      withTarget(`<textarea></textarea>`, (area) => {
+        pressAt(area, { key: "ArrowUp", metaKey: true, shiftKey: true });
+      });
+      withTarget(`<div contenteditable="true"></div>`, (editable) => {
+        pressAt(editable, { key: "ArrowUp", metaKey: true, shiftKey: true });
+      });
+      expect(actions.navigateRepoUp).not.toHaveBeenCalled();
+      wrapper.unmount();
+    });
+
+    it("still acts on the same chord anywhere else", () => {
+      const actions = buildActions();
+      const wrapper = mountShortcutHarness(actions, () => "main");
+      withTarget(`<div></div>`, (plain) => {
+        pressAt(plain, { key: "ArrowUp", metaKey: true, shiftKey: true });
+      });
+      expect(actions.navigateRepoUp).toHaveBeenCalledTimes(1);
+      wrapper.unmount();
+    });
+
+    it("still acts on a chord a text field has no use for", () => {
+      // Without Shift there is no selection to extend, so moving between tasks
+      // from a focused search field — which is how search is used at all —
+      // keeps working.
+      const actions = buildActions();
+      const wrapper = mountShortcutHarness(actions, () => "main");
+      withTarget(`<input type="search">`, (input) => {
+        pressAt(input, { key: "ArrowUp", metaKey: true, altKey: true });
+      });
+      expect(actions.navigateUp).toHaveBeenCalledTimes(1);
+      wrapper.unmount();
+    });
+
+    it("keeps acting from a focused terminal", () => {
+      // xterm's helper textarea is an editable element in the DOM only: what
+      // is typed into it goes to the PTY, and there is no selection in it to
+      // protect.
+      const actions = buildActions();
+      const wrapper = mountShortcutHarness(actions, () => "main");
+      withTarget(`<textarea class="xterm-helper-textarea"></textarea>`, (helper) => {
+        pressAt(helper, { key: "ArrowUp", metaKey: true, shiftKey: true });
+      });
+      expect(actions.navigateRepoUp).toHaveBeenCalledTimes(1);
+      wrapper.unmount();
+    });
+  });
+
   it("ignores workspace shortcuts until the window is ready for them", () => {
     const actions = buildActions();
     let ready = false;
