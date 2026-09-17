@@ -554,6 +554,128 @@ describe("StreamClient", () => {
     client.close();
   });
 
+  /**
+   * The sibling-view proxy answers a connection it cannot carry with one
+   * error frame and an immediate close. Treating that close as a network
+   * drop left the desktop reconnecting behind "Connecting to remote
+   * terminal..." forever while the server was plainly saying the two
+   * machines are not paired.
+   */
+  it("stops for good on a connection refusal and surfaces its message", () => {
+    const client = new StreamClient({
+      url: "ws://test/v1/peers/desktop-b/ksp",
+      webSocketFactory: factory,
+    });
+    const errors: string[] = [];
+    client.attachTerminal("task-1", {
+      onOutput: () => {},
+      onError: (code, message) => errors.push(`${code}:${message}`),
+    });
+    const socket = sockets[0];
+    socket.open();
+    socket.receive({
+      type: "error",
+      code: "peer_pairing_required",
+      message: "this desktop is not paired with that machine; pair it from Preferences → Machines",
+    } as ServerFrame);
+    socket.drop(1000);
+
+    expect(errors).toEqual([
+      "peer_pairing_required:this desktop is not paired with that machine; pair it from Preferences → Machines",
+    ]);
+    vi.advanceTimersByTime(60_000);
+    expect(sockets).toHaveLength(1);
+    client.close();
+  });
+
+  it("reports the refusal to the owner so a stopped client can be replaced", () => {
+    const refusals: string[] = [];
+    const client = new StreamClient({
+      url: "ws://test/v1/peers/desktop-b/ksp",
+      webSocketFactory: factory,
+      onConnectionRefused: (code, message) => refusals.push(`${code}:${message}`),
+    });
+    const socket = sockets[0];
+    socket.open();
+    socket.receive({
+      type: "error",
+      code: "peer_upgrade_required",
+      message: "that machine is running an older Kanna",
+    } as ServerFrame);
+    socket.drop(1000);
+
+    expect(refusals).toEqual(["peer_upgrade_required:that machine is running an older Kanna"]);
+    client.close();
+  });
+
+  /**
+   * The desktop decodes frames off the UI thread, and the close that follows
+   * a refusal discards the decode queue — so the refusal has to be recorded
+   * when the bytes arrive, not when the lane gets around to them.
+   */
+  it("keeps a refusal that the decode queue never got to dispatch", async () => {
+    let released: (() => void) | null = null;
+    const decoder = {
+      decode: async (data: string): Promise<ServerFrame | null> => {
+        await new Promise<void>((resolve) => {
+          released = resolve;
+        });
+        return JSON.parse(data) as ServerFrame;
+      },
+      cancel: () => {
+        released?.();
+        released = null;
+      },
+    };
+    const client = new StreamClient({
+      url: "ws://test/v1/peers/desktop-b/ksp",
+      webSocketFactory: factory,
+      frameDecoder: decoder,
+    });
+    const errors: string[] = [];
+    client.attachTerminal("task-1", { onOutput: () => {}, onError: (code) => errors.push(code) });
+    const socket = sockets[0];
+    socket.open();
+    socket.onmessage?.({
+      data: JSON.stringify({
+        type: "error",
+        code: "peer_identity_mismatch",
+        message: "the paired machine's identity changed",
+      }),
+    });
+    socket.drop(1000);
+    await flushMicrotasks();
+
+    expect(errors).toEqual(["peer_identity_mismatch"]);
+    vi.advanceTimersByTime(60_000);
+    expect(sockets).toHaveLength(1);
+    client.close();
+  });
+
+  /**
+   * A route that is down right now is exactly what the backoff loop is for:
+   * `peer_unreachable` must not stop the client.
+   */
+  it("keeps reconnecting when the refusal is only that the route is down", () => {
+    const client = new StreamClient({
+      url: "ws://test/v1/peers/desktop-b/ksp",
+      webSocketFactory: factory,
+      reconnectDelaysMs: [10],
+    });
+    const socket = sockets[0];
+    socket.open();
+    socket.receive({
+      type: "error",
+      code: "peer_unreachable",
+      message: "no route reached that machine",
+    } as ServerFrame);
+    socket.drop(1000);
+    vi.advanceTimersByTime(50);
+
+    expect(sockets.length).toBeGreaterThan(1);
+    client.close();
+  });
+
 
   it("reattaches terminal streams after reconnect and routes snapshot before output", () => {
     const { client, socket } = connectedClient();

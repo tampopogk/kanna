@@ -504,6 +504,14 @@ its first `auth` frame must carry the local control credential. Non-browser
 loopback upgrades keep `AuthMode::AllowEmpty`; non-loopback upgrades keep the
 paired-device rules unchanged.
 
+The same exemption covers `/v1/peers/channel` and the renderer's sibling-view
+proxy `GET /v1/peers/{desktop_id}/ksp`, which proves the credential in its own
+first `auth` frame (`http_api::peers`). That last one carries a desktop id, so
+it cannot be a literal in the exempt list and is matched on the path's shape
+instead — **an in-band-authenticating upgrade that is left out of the exemption
+is refused before its handler ever runs**, which is how every renderer view of
+a sibling desktop once failed as a silent 403 on the handshake.
+
 ### Who is affected
 
 Nothing that was working stops working:

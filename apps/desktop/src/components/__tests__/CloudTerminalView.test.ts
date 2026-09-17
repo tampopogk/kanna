@@ -400,6 +400,36 @@ describe("CloudTerminalView remote visual companion links", () => {
     wrapper.unmount();
   });
 
+  /**
+   * A peer view the server will not carry answers with one sentence and
+   * closes. It has to reach the person: an unpaired sibling used to leave
+   * this view on "Connecting to remote terminal..." indefinitely while the
+   * client reconnected behind it.
+   */
+  it("shows the reason a remote terminal was refused instead of connecting forever", async () => {
+    const client = createClient();
+    let terminalListener: ((event: DesktopRemoteTerminalEvent) => void) | undefined;
+    client.observeTerminal.mockImplementation((options) => {
+      terminalListener = options.listener;
+      return { close: client.terminalClose, setViewerVisible: vi.fn(), activate: vi.fn() };
+    });
+    mocks.relayFactory.mockResolvedValue(client);
+    const wrapper = mount(CloudTerminalView, {
+      attachTo: document.body,
+      props: { ownerDesktopId: "desktop-1", ownerTaskId: "task-1" },
+    });
+    await flushAsync();
+    terminalListener?.({
+      type: "error",
+      taskId: "task-1",
+      message: "this desktop is not paired with that machine; pair it from Preferences → Machines",
+    });
+    await flushAsync();
+
+    expect(wrapper.get(".cloud-terminal-status").text()).toContain("Preferences → Machines");
+    wrapper.unmount();
+  });
+
   it("claims before classified human input but not parser output or resize work", async () => {
     const client = createClient();
     const activate = vi.fn();

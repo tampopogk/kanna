@@ -163,6 +163,12 @@ export function createDesktopRelayTerminalClient({
       webSocketFactory: (url) => createSocket(url),
       reconnectDelaysMs: [250, 500, 1000, 2000],
       onAccessRequired: observeAccess ? () => undefined : undefined,
+      onConnectionRefused: () => {
+        // The refusal stopped this client for good. Drop it so a later view —
+        // once the machines are paired, or the sibling is updated — dials a
+        // fresh one instead of reusing a socket that can never open again.
+        if (clients.get(desktopId) === client) clients.delete(desktopId);
+      },
       terminalViewerRole: "remote",
       frameDecoder: createDesktopStreamFrameDecoder(),
     });
