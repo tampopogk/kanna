@@ -6,7 +6,7 @@ export interface ApplePurchaseState {
 export const initialAppleState: ApplePurchaseState = { ready: false, busy: false, pending: false, price: null, message: "" };
 export type AppleStore = Pick<typeof import("expo-iap"), "initConnection" | "endConnection" | "fetchProducts" |
   "getAvailablePurchases" | "getPendingTransactionsIOS" | "restorePurchases" | "requestPurchase" |
-  "finishTransaction" | "purchaseUpdatedListener" | "purchaseErrorListener" | "showManageSubscriptionsIOS">;
+  "finishTransaction" | "purchaseUpdatedListener" | "purchaseErrorListener" | "showManageSubscriptionsIOS" | "getStorefront">;
 export interface AppleBillingClient {
   begin(uid: string): Promise<{ appAccountToken: string; productId: string }>;
   register(uid: string, signedTransaction: string): Promise<void>;
@@ -31,6 +31,42 @@ export function createAppleController(store: AppleStore, client: AppleBillingCli
     if (inFlight === owner && awaitingPurchase !== owner) { inFlight = null; set({ busy: false }); }
   };
   const current = (version: number, uid: string) => !disposed && generation === version && account?.uid === uid;
+  // The storefront the displayed price was fetched under. Apple documents that
+  // the storefront can change at any time (account switch, region change) and
+  // asks for products to be refreshed when it does; expo-iap exposes no
+  // Storefront.updates listener, so the price is re-resolved at every moment
+  // it can be shown or charged: start, foreground, and before the sheet opens.
+  let pricedStorefront: string | null = null;
+  let priceFetch = 0;
+  const storefront = () => store.getStorefront().catch(() => null);
+  /** Re-resolves the monthly price against the current storefront. A price
+   * fetched under another storefront is dropped before the fetch, and only a
+   * price the current fetch produced is ever published. */
+  async function refreshPrice(): Promise<string | null> {
+    const fetch = ++priceFetch;
+    const before = await storefront();
+    if (disposed || fetch !== priceFetch) return state.price;
+    if (state.price !== null && before !== pricedStorefront) { pricedStorefront = null; set({ price: null }); }
+    let product: ProductSubscriptionIOS | undefined;
+    try {
+      const products = await store.fetchProducts({ skus: [APPLE_MONTHLY_PRODUCT], type: "subs" });
+      product = products?.find(p => p.id === APPLE_MONTHLY_PRODUCT) as ProductSubscriptionIOS | undefined;
+    } catch (error) {
+      if (!disposed && fetch === priceFetch) { pricedStorefront = null; set({ price: null }); }
+      throw error;
+    }
+    // A storefront that moved during the fetch leaves it unknown which one
+    // priced the product, so that result is not shown either.
+    const after = await storefront();
+    if (disposed || fetch !== priceFetch) return state.price;
+    // The only admitted catalog is monthly; a misconfigured ASC product
+    // must not be advertised using an invented period or price.
+    const monthly = product?.subscriptionPeriodUnitIOS?.toLowerCase() === "month" && product.subscriptionPeriodNumberIOS === "1" ? product : undefined;
+    const price = monthly && after === before ? monthly.displayPrice : null;
+    pricedStorefront = price === null ? null : before;
+    set({ price, message: monthly ? "" : "Subscriptions are unavailable in this storefront. You can still restore purchases." });
+    return price;
+  }
   const errorMessage = (error: unknown) => {
     const reason = (error as { details?: { reason?: string } })?.details?.reason;
     return reason === "apple_account_conflict"
@@ -109,13 +145,7 @@ export function createAppleController(store: AppleStore, client: AppleBillingCli
         await store.initConnection();
         if (disposed) { await store.endConnection(); return; }
         set({ ready: true });
-        const products = await store.fetchProducts({ skus: [APPLE_MONTHLY_PRODUCT], type: "subs" });
-        const product = products?.find(p => p.id === APPLE_MONTHLY_PRODUCT) as ProductSubscriptionIOS | undefined;
-        // The only admitted catalog is monthly; a misconfigured ASC product
-        // must not be advertised using an invented period or price.
-        const valid = product?.subscriptionPeriodUnitIOS?.toLowerCase() === "month" && product.subscriptionPeriodNumberIOS === "1";
-        set({ ready: true, price: valid ? product!.displayPrice : null,
-          message: valid ? "" : "Subscriptions are unavailable in this storefront. You can still restore purchases." });
+        await refreshPrice();
         await reconcile(false);
       } catch (error) { if (version === generation) set({ message: errorMessage(error) }); }
       finally { release(owner); }
@@ -128,8 +158,14 @@ export function createAppleController(store: AppleStore, client: AppleBillingCli
     },
     async purchase() {
       if (state.pending || !state.price) return;
+      const shown = state.price;
       await operation(async owner => {
         const version = generation, uid = account!.uid;
+        // The payment sheet charges the storefront of this moment, so the price
+        // the user tapped is re-resolved against it before the sheet can open.
+        const price = await refreshPrice();
+        if (!current(version, uid)) return;
+        if (price !== shown) throw new Error("The App Store price changed. Review the updated price before subscribing.");
         await reconcile(false); // Foreign/unknown purchases refuse a fresh charge.
         if (!current(version, uid)) return;
         const preflight = await client.begin(uid);
@@ -141,7 +177,9 @@ export function createAppleController(store: AppleStore, client: AppleBillingCli
       });
     },
     restore: () => operation(() => reconcile(true)),
-    resume: () => operation(() => reconcile(false)),
+    // Foreground: the storefront may have changed while backgrounded, so the
+    // price is re-resolved even for accounts that cannot yet purchase.
+    resume: () => operation(async () => { await refreshPrice(); await reconcile(false); }, false),
     manage: () => operation(async () => { await store.showManageSubscriptionsIOS(); await reconcile(false); await refresh(); }, false),
     dispose() { disposed = true; generation++; updates.remove(); errors.remove(); return store.endConnection(); },
   };

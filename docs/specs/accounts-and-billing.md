@@ -557,7 +557,14 @@ Operator runbook (live Stripe account):
   ships binary-only** (see Decision 7 for the timeline consequence).
 - The app never hardcodes price strings: price and period render from
   StoreKit product metadata (localized, storefront-correct), which is also
-  what keeps the binary honest if price points change.
+  what keeps the binary honest if price points change. `displayPrice` is
+  localized for the storefront the device is connected to, which Apple says
+  can change at any time, so the controller re-resolves it against the
+  current storefront on start, on every foreground, and again before the
+  payment sheet opens; a price fetched under another storefront is dropped
+  before the refetch, a failed refetch shows "Monthly price unavailable"
+  rather than the old value, and a tap whose price no longer matches the
+  storefront refuses to open the sheet until the new price is shown.
 
 ### Purchase binding — `appAccountToken`
 
