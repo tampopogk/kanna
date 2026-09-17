@@ -1094,6 +1094,19 @@ impl Db {
     }
 
     #[cfg(test)]
+    pub fn update_test_pipeline_item_prompt(
+        &self,
+        id: &str,
+        prompt: &str,
+    ) -> Result<(), rusqlite::Error> {
+        self.conn.execute(
+            "UPDATE pipeline_item SET prompt = ? WHERE id = ?",
+            (prompt, id),
+        )?;
+        Ok(())
+    }
+
+    #[cfg(test)]
     pub fn update_test_pipeline_item_pipeline_def(
         &self,
         id: &str,

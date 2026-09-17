@@ -6,6 +6,7 @@ use super::super::provider::{
     resolve_agent_provider_with, validate_effort_shape, validate_model_shape,
     validate_provider_effort, validate_provider_model,
 };
+use super::super::AgentInstructions;
 use super::super::SpawnAgentOverrides;
 use super::*;
 
@@ -4496,6 +4497,7 @@ fn build_agent_command_adds_claude_kanna_preamble_as_system_prompt() {
         None,
         None,
         None,
+        None,
     );
 
     assert!(command.contains("--append-system-prompt '"));
@@ -4531,6 +4533,290 @@ fn build_agent_command_adds_claude_kanna_preamble_as_system_prompt() {
     assert!(command.contains("kanna_complete_stage"));
     assert!(command.contains("kanna-cli stage-complete --task-id \"$KANNA_TASK_ID\""));
     assert!(command.contains("record completion so Kanna can advance the workflow"));
+}
+
+/// A long-running agent's operating instructions must not be conversation.
+///
+/// Delivered as the session's first user message they are compactable, and a
+/// measured compaction on the running task manager replaced a 219-line
+/// operating manual with a one-sentence paraphrase — after which it stopped
+/// running its per-wake idle sweep. `--append-system-prompt` is re-sent with
+/// every request and is never compacted.
+#[test]
+fn singleton_claude_pty_delivers_the_agent_body_as_system_prompt() {
+    let agent_body = "Run The Event Loop\n\nNotify Human Blockers whenever a task needs a human.";
+    let composed = build_stage_prompt_parts(
+        agent_body,
+        Some("$TASK_PROMPT"),
+        &PromptContext {
+            task_prompt: Some("Supervise the repository."),
+            prev_result: None,
+            prev_main_result: None,
+            plan_result: None,
+            revision_feedback: None,
+            branch: None,
+            base_ref: None,
+            source_worktree: None,
+            stage_trigger: "unspecified",
+            vars: None,
+        },
+    );
+    let agent_instructions = composed
+        .agent_instructions
+        .clone()
+        .expect("a composed stage prompt with an agent body reports its section");
+
+    let (prompt, appended) = relocate_agent_instructions(
+        AgentProvider::Claude,
+        AgentSessionType::Pty,
+        "singleton-task-manager",
+        composed.prompt.clone(),
+        composed
+            .agent_instructions
+            .clone()
+            .map(AgentInstructions::at_prompt_head),
+    );
+
+    // What the agent is told does not change — only where it is told it.
+    assert_eq!(appended.as_deref(), Some(agent_instructions.as_str()));
+    assert_eq!(format!("{agent_instructions}\n\n{prompt}"), composed.prompt);
+    assert!(!prompt.contains("Run The Event Loop"));
+    assert!(prompt.starts_with("## Your Task"));
+
+    let preamble = super::build_kanna_preamble(
+        &AgentProvider::Claude,
+        "task-123",
+        "in progress",
+        "singleton-task-manager",
+        Some("manual"),
+        "unspecified",
+        None,
+    );
+    let command = super::build_agent_command(
+        &AgentProvider::Claude,
+        AgentProvider::Claude.executable(),
+        &prompt,
+        None,
+        None,
+        Some("dontAsk"),
+        &[],
+        &[],
+        None,
+        None,
+        Some(&preamble),
+        appended.as_deref(),
+        None,
+        None,
+        None,
+    );
+
+    let (flags, positional) = command
+        .split_once(" -- '")
+        .expect("the claude command ends with its positional prompt");
+    assert!(flags.contains("--append-system-prompt '"));
+    assert!(flags.contains("Run The Event Loop"));
+    assert!(flags.contains("Notify Human Blockers"));
+    // The Kanna runtime preamble keeps its place ahead of the agent body.
+    assert!(flags.contains("## Kanna Task Environment"));
+    assert!(!positional.contains("Run The Event Loop"));
+    assert!(positional.contains("Supervise the repository."));
+}
+
+/// Only long-running agents move. A stage agent's session ends long before a
+/// compaction can reach its instructions, and moving them would change every
+/// short-lived spawn in the product for no measured benefit.
+#[test]
+fn stage_agent_claude_pty_keeps_the_agent_body_in_the_prompt() {
+    let composed = build_stage_prompt_parts(
+        "Review the branch against its brief.",
+        Some("$TASK_PROMPT"),
+        &PromptContext {
+            task_prompt: Some("Ship the fix."),
+            prev_result: None,
+            prev_main_result: None,
+            plan_result: None,
+            revision_feedback: None,
+            branch: None,
+            base_ref: None,
+            source_worktree: None,
+            stage_trigger: "unspecified",
+            vars: None,
+        },
+    );
+
+    for workflow_name in ["single-reviewer", "plan-build-review", "default"] {
+        let (prompt, appended) = relocate_agent_instructions(
+            AgentProvider::Claude,
+            AgentSessionType::Pty,
+            workflow_name,
+            composed.prompt.clone(),
+            composed
+                .agent_instructions
+                .clone()
+                .map(AgentInstructions::at_prompt_head),
+        );
+        assert_eq!(prompt, composed.prompt, "workflow {workflow_name}");
+        assert!(appended.is_none(), "workflow {workflow_name}");
+    }
+}
+
+/// Audited divergence, recorded as a test rather than left implicit.
+///
+/// Copilot, Codex, OpenCode and Antigravity have no verified
+/// `--append-system-prompt` equivalent (tampopogk/kanna#1575), and a headless
+/// SDK session maps its system prompt to `--system-prompt`, which *replaces*
+/// rather than appends. Neither may have text moved out of its prompt body.
+#[test]
+fn only_claude_pty_singletons_relocate_the_agent_body() {
+    let composed = build_stage_prompt_parts(
+        "Merge what is ready.",
+        Some("$TASK_PROMPT"),
+        &PromptContext {
+            task_prompt: Some("Watch the queue."),
+            prev_result: None,
+            prev_main_result: None,
+            plan_result: None,
+            revision_feedback: None,
+            branch: None,
+            base_ref: None,
+            source_worktree: None,
+            stage_trigger: "unspecified",
+            vars: None,
+        },
+    );
+
+    for provider in [
+        AgentProvider::Copilot,
+        AgentProvider::Codex,
+        AgentProvider::Opencode,
+        AgentProvider::Antigravity,
+    ] {
+        let (prompt, appended) = relocate_agent_instructions(
+            provider,
+            AgentSessionType::Pty,
+            "singleton-merge",
+            composed.prompt.clone(),
+            composed
+                .agent_instructions
+                .clone()
+                .map(AgentInstructions::at_prompt_head),
+        );
+        assert_eq!(prompt, composed.prompt, "{provider:?}");
+        assert!(appended.is_none(), "{provider:?}");
+    }
+
+    let (prompt, appended) = relocate_agent_instructions(
+        AgentProvider::Claude,
+        AgentSessionType::Agent,
+        "singleton-merge",
+        composed.prompt.clone(),
+        composed
+            .agent_instructions
+            .clone()
+            .map(AgentInstructions::at_prompt_head),
+    );
+    assert_eq!(prompt, composed.prompt);
+    assert!(appended.is_none());
+}
+
+/// A prompt Kanna wrapped in its own prose (recovery, transfer continuation)
+/// does not open with the agent-instructions section, so nothing is moved:
+/// relocation is a byte-exact prefix split or it does not happen.
+#[test]
+fn a_wrapped_prompt_is_never_relocated() {
+    let composed = build_stage_prompt_parts(
+        "Run The Event Loop",
+        Some("$TASK_PROMPT"),
+        &PromptContext {
+            task_prompt: Some("Supervise the repository."),
+            prev_result: None,
+            prev_main_result: None,
+            plan_result: None,
+            revision_feedback: None,
+            branch: None,
+            base_ref: None,
+            source_worktree: None,
+            stage_trigger: "unspecified",
+            vars: None,
+        },
+    );
+    let wrapped = format!(
+        "Kanna recovered this task.\n\nActive stage instructions:\n{}",
+        composed.prompt
+    );
+
+    let (prompt, appended) = relocate_agent_instructions(
+        AgentProvider::Claude,
+        AgentSessionType::Pty,
+        "singleton-task-manager",
+        wrapped.clone(),
+        composed
+            .agent_instructions
+            .clone()
+            .map(AgentInstructions::at_prompt_head),
+    );
+
+    assert_eq!(prompt, wrapped);
+    assert!(appended.is_none());
+}
+
+/// The relocation must not disturb layered `AGENT.md`/`EXTEND.md` resolution:
+/// the resolved text a singleton receives is identical before and after, down
+/// to the byte, with only its delivery channel changed.
+#[test]
+fn relocating_preserves_the_layered_agent_resolution_byte_for_byte() {
+    let repo_root = init_git_repo_without_provider_fixtures("singleton-system-prompt-layering");
+    let agent_dir = repo_root.join(".kanna/agents/task-manager");
+    std::fs::create_dir_all(&agent_dir).unwrap();
+    std::fs::write(
+        agent_dir.join("EXTEND.md"),
+        "Repo rule: never close an owner-requested consultation.",
+    )
+    .unwrap();
+    publish_origin_main(&repo_root, "publish task-manager extension");
+
+    let definition = resolve_test_agent_definition(&repo_root, "task-manager").unwrap();
+    // The layering itself is unchanged: the built-in body is still there and
+    // the repo extension still lands on top of it.
+    assert!(definition.prompt.contains("Run The Event Loop"));
+    assert!(definition
+        .prompt
+        .ends_with("Repo rule: never close an owner-requested consultation."));
+
+    let context = PromptContext {
+        task_prompt: Some("Supervise the repository."),
+        prev_result: None,
+        prev_main_result: None,
+        plan_result: None,
+        revision_feedback: None,
+        branch: None,
+        base_ref: None,
+        source_worktree: None,
+        stage_trigger: "unspecified",
+        vars: None,
+    };
+    // What delivery used to be: the whole composed prompt, first user message.
+    let before = build_stage_prompt(&definition.prompt, Some("$TASK_PROMPT"), &context);
+    let composed = build_stage_prompt_parts(&definition.prompt, Some("$TASK_PROMPT"), &context);
+    assert_eq!(composed.prompt, before);
+
+    let (prompt, appended) = relocate_agent_instructions(
+        AgentProvider::Claude,
+        AgentSessionType::Pty,
+        "singleton-task-manager",
+        composed.prompt,
+        composed
+            .agent_instructions
+            .map(AgentInstructions::at_prompt_head),
+    );
+    let appended = appended.expect("a singleton claude pty spawn relocates its agent body");
+
+    // Same bytes, different channel.
+    assert_eq!(format!("{appended}\n\n{prompt}"), before);
+    assert!(appended.contains("Run The Event Loop"));
+    assert!(appended.ends_with("Repo rule: never close an owner-requested consultation."));
+
+    let _ = std::fs::remove_dir_all(&repo_root);
 }
 
 #[test]
@@ -4603,6 +4889,7 @@ fn build_agent_command_launches_antigravity_with_prepended_kanna_context() {
         None,
         Some(&preamble),
         None,
+        None,
         Some("/tmp/repo/.kanna-worktrees/task-123"),
         None,
     );
@@ -4655,6 +4942,7 @@ fn build_agent_command_registers_codex_kanna_mcp_with_config_overrides() {
         None,
         None,
         Some("Kanna preamble."),
+        None,
         Some(mcp_config.to_string_lossy().as_ref()),
         None,
         None,
@@ -4687,6 +4975,7 @@ fn build_agent_command_registers_copilot_kanna_mcp_with_additional_config() {
         None,
         None,
         Some("Kanna preamble."),
+        None,
         Some(mcp_config.to_string_lossy().as_ref()),
         None,
         None,
@@ -4716,6 +5005,7 @@ fn build_agent_command_registers_opencode_kanna_mcp_with_inline_config() {
         None,
         None,
         Some("Kanna preamble."),
+        None,
         Some(mcp_config.to_string_lossy().as_ref()),
         None,
         None,
@@ -4754,6 +5044,7 @@ fn opencode_pty_command_launches_the_interactive_tui_not_a_one_shot_run() {
         None,
         None,
         None,
+        None,
     );
 
     assert!(command.ends_with("'opencode' -m 'opencode/big-pickle' --prompt 'Do work.'"));
@@ -4777,6 +5068,7 @@ fn opencode_pty_command_carries_effort_in_the_config_not_on_the_argv() {
         Some("dontAsk"),
         &[],
         &[],
+        None,
         None,
         None,
         None,
@@ -4808,6 +5100,7 @@ fn opencode_pty_resume_seeds_the_turn_then_attaches_the_tui_to_the_same_session(
         Some("dontAsk"),
         &[],
         &[],
+        None,
         None,
         None,
         None,
@@ -4845,6 +5138,7 @@ fn opencode_permission_modes_use_config() {
             None,
             None,
             None,
+            None,
         )
     };
 
@@ -4873,6 +5167,7 @@ fn provider_resume_commands_use_each_cli_native_session_flag() {
             None,
             None,
             Some("Kanna preamble."),
+            None,
             None,
             None,
             Some(&session),

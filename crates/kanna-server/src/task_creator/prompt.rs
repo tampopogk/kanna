@@ -2,6 +2,10 @@ use std::collections::HashMap;
 
 use super::definitions::{RepoDefinitions, WorkflowStage, WorkflowStageTransition};
 
+// The prompt-only shape of the composer below. Production callers all need the
+// resolved agent instructions beside the prompt now, so this survives for the
+// tests that assert on the composed text alone.
+#[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 pub(super) fn build_target_stage_prompt(
     definitions: &RepoDefinitions,
@@ -47,6 +51,51 @@ pub(super) fn build_target_stage_prompt_with_instructions(
     stage_trigger: &str,
     additional_agent_instructions: Option<&str>,
 ) -> Result<String, String> {
+    build_target_stage_prompt_parts(
+        definitions,
+        repo_path,
+        stage,
+        task_prompt,
+        prev_result,
+        prev_main_result,
+        plan_result,
+        branch,
+        base_ref,
+        source_worktree_branch,
+        stage_trigger,
+        additional_agent_instructions,
+    )
+    .map(|parts| parts.prompt)
+}
+
+/// A composed stage prompt, kept beside the `## Agent Instructions` section it
+/// was composed from.
+///
+/// `prompt` is exactly what the agent is told, unchanged. `agent_instructions`
+/// is the slice of it that holds the resolved, layered `AGENT.md`/`EXTEND.md`
+/// body, so a spawn that can deliver those instructions as *configuration*
+/// rather than as conversation knows which bytes they are without parsing the
+/// composed text back apart.
+pub(super) struct StagePromptParts {
+    pub(super) prompt: String,
+    pub(super) agent_instructions: Option<String>,
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn build_target_stage_prompt_parts(
+    definitions: &RepoDefinitions,
+    repo_path: &str,
+    stage: &WorkflowStage,
+    task_prompt: &str,
+    prev_result: Option<&str>,
+    prev_main_result: Option<&str>,
+    plan_result: Option<&str>,
+    branch: Option<&str>,
+    base_ref: Option<&str>,
+    source_worktree_branch: Option<&str>,
+    stage_trigger: &str,
+    additional_agent_instructions: Option<&str>,
+) -> Result<StagePromptParts, String> {
     let source_worktree =
         source_worktree_branch.map(|branch| format!("{repo_path}/.kanna-worktrees/{branch}"));
     let context = PromptContext {
@@ -72,7 +121,7 @@ pub(super) fn build_target_stage_prompt_with_instructions(
         .filter(|part| !part.is_empty())
         .collect::<Vec<_>>()
         .join("\n\n");
-        return Ok(build_stage_prompt(
+        return Ok(build_stage_prompt_parts(
             &agent_prompt,
             stage.prompt.as_deref(),
             &context,
@@ -81,14 +130,14 @@ pub(super) fn build_target_stage_prompt_with_instructions(
     // An agent-less stage (or post) still owns its prompt; only when it
     // declares none does the task's own prompt carry over.
     if stage.prompt.is_some() {
-        return Ok(build_stage_prompt(
+        return Ok(build_stage_prompt_parts(
             additional_agent_instructions.unwrap_or(""),
             stage.prompt.as_deref(),
             &context,
         ));
     }
 
-    Ok(build_stage_prompt(
+    Ok(build_stage_prompt_parts(
         additional_agent_instructions.unwrap_or(""),
         Some("$TASK_PROMPT"),
         &context,
@@ -310,13 +359,31 @@ pub(super) fn build_revision_resume_message(
     )
 }
 
+/// The composed stage prompt alone.
+///
+/// Production callers take the whole [`StagePromptParts`]; this is kept so a
+/// test can assert that splitting the section out changed nothing about the
+/// text itself.
+#[cfg(test)]
 pub(super) fn build_stage_prompt(
     agent_prompt: &str,
     stage_prompt: Option<&str>,
     context: &PromptContext<'_>,
 ) -> String {
+    build_stage_prompt_parts(agent_prompt, stage_prompt, context).prompt
+}
+
+/// Compose a stage prompt, keeping the `## Agent Instructions` section it
+/// composed. The returned `prompt` is byte-for-byte the prompt Kanna has
+/// always composed; the section is reported, never removed.
+pub(super) fn build_stage_prompt_parts(
+    agent_prompt: &str,
+    stage_prompt: Option<&str>,
+    context: &PromptContext<'_>,
+) -> StagePromptParts {
     let mut sections = Vec::new();
-    if let Some(section) = build_prompt_section("## Agent Instructions", agent_prompt, context) {
+    let agent_instructions = build_prompt_section("## Agent Instructions", agent_prompt, context);
+    if let Some(section) = agent_instructions.clone() {
         sections.push(section);
     }
     if let Some(stage_prompt) = stage_prompt {
@@ -344,7 +411,10 @@ pub(super) fn build_stage_prompt(
         }
     }
 
-    sections.join("\n\n")
+    StagePromptParts {
+        prompt: sections.join("\n\n"),
+        agent_instructions,
+    }
 }
 
 /// Prompt for a recovery that follows a *recorded success* but could not
