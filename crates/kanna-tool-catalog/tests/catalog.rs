@@ -2899,3 +2899,74 @@ fn desktop_pane_controls_keep_machine_routing_and_destination_on_the_shared_wire
     )
     .is_err());
 }
+
+/// A delivered mailbox page is bounded at the source, so the tool surface every
+/// adapter renders from — MCP and the CLI both — has to say what a manager will
+/// and will not find on it, in the same words on the tool that opens the
+/// mailbox and the tool that reads it. The failure this prevents is quiet: an
+/// agent reading a 280-character summary as the whole verdict, or concluding a
+/// workflow carries no stage prompts, because nothing told it the page was
+/// bounded and where the full text lives.
+#[test]
+fn subscription_descriptions_state_what_a_bounded_delivered_page_carries() {
+    let catalog = bundled_catalog();
+    for name in ["kanna_subscribe_events", "kanna_read_event_subscription"] {
+        let description = catalog
+            .tools
+            .iter()
+            .find(|tool| tool.name == name)
+            .map(|tool| tool.description.clone())
+            .unwrap_or_else(|| panic!("{name} is declared"));
+
+        // The compact page's own key list is unchanged and still stated.
+        for key in [
+            "wakeState",
+            "batchId",
+            "staleMachines",
+            "waitOutcome",
+            "machineErrors",
+            "watchError",
+        ] {
+            assert!(
+                description.contains(key),
+                "{name} must keep documenting the compact key {key}"
+            );
+        }
+
+        // What is bounded, and the marker that says so.
+        assert!(
+            description.contains("summaryTruncated"),
+            "{name} must name the truncation marker"
+        );
+        assert!(
+            description.contains("status and metadata verbatim"),
+            "{name} must say the structured result facts survive"
+        );
+        assert!(
+            description.contains("beforeDefinition and afterDefinition"),
+            "{name} must say which definitions are bounded"
+        );
+        assert!(
+            description.contains("notificationContext"),
+            "{name} must say the relevance filter's working state is not delivered"
+        );
+
+        // And what is emphatically not bounded, so a page is still trustworthy.
+        assert!(
+            description.contains("acknowledgement by batchId are all unchanged"),
+            "{name} must say the ack contract is untouched"
+        );
+        assert!(
+            description.contains("payload.currentTask"),
+            "{name} must say delivery-time task state still arrives"
+        );
+        assert!(
+            description.contains("kanna_get_task"),
+            "{name} must say where the full prose is read from"
+        );
+        assert!(
+            description.contains("diagnostic true"),
+            "{name} must keep pointing at the verbatim escape hatch"
+        );
+    }
+}

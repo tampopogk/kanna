@@ -1987,8 +1987,9 @@ cursor-based, not snapshot-diffed:
 Every delivered event keeps event-time fields in the payload. In particular,
 `payload.stage` is the stage in effect when the event was appended (older rows
 that did not stamp it are reconstructed from preceding immutable task/run/stage
-events), and run events keep their own `runId`, status, and result. Delivery-time
-state is structurally separate under `payload.currentTask`: current title,
+events), and run events keep their own `runId`, status, and result (on a
+subscription's delivered page that result's `summary` is bounded — see the
+mailbox section below). Delivery-time state is structurally separate under `payload.currentTask`: current title,
 stage, activity, stage transition, and, for finished/awaiting events, latest-run
 id/status plus a bounded summary snippet. A manager draining retained history
 can therefore distinguish what happened from what it can do now. `machineId`
@@ -3365,6 +3366,37 @@ subscribe/read) for the full internal row — adds `stage`, `branch`, `runId`,
 `revision`, `delivery`, `wakeAdmitted` and the raw cursor — for
 troubleshooting. The durable mailbox itself, its cursor, and restart/reconnect
 semantics are unchanged; this is a response-shape default only.
+
+The compact page is also **bounded**, because an acknowledged page does not
+leave a manager's conversation and is re-billed as a cache read on every later
+request, while almost all of its bytes are prose that manager's own contract
+requires it to re-read fresh. Three payload terms carried that mass and none of
+them is a fact a page alone can settle, so on a delivered event:
+
+- a finished run's `payload.result` keeps its `status` and `metadata` (pr urls,
+  shas — the small structured facts a manager coordinates on) byte for byte,
+  but its `summary` is bounded to the same 280 characters
+  `currentTask.latestRun.summarySnippet` already uses, with
+  `summaryTruncated: true` saying it was cut. A result that is not an object
+  with a string `summary`, or whose summary already fits, is delivered exactly
+  as stored — the page bounds prose, it never reshapes a payload.
+- `task.workflow_changed`'s `beforeDefinition` and `afterDefinition` keep every
+  stage, agent, provider candidate, policy, post and revision budget, and drop
+  each stage's `prompt` and `description`. A stamped `plan_context.result` is a
+  recorded plan, so it is bounded exactly like a run result.
+- `notificationContext` is not delivered at all. It is the relevance filter's
+  own working state, computed so `is_relevant_subscription_event` can decide
+  whether this event belongs on the page, and by the time a page exists that
+  decision is already made.
+
+What is *not* bounded is the rest: which events were selected,
+`payload.currentTask`, `payload.machineId`, the durable cursor, and
+acknowledgement by `batchId` are all untouched, because this is a projection of
+the delivered page only — it runs after selection, aggregation and the durable
+`pending` write, on the compact rendering alone. The full prose is read from the
+task (`kanna_get_task`'s `latestRun.summary`, the task's own
+`workflowDefinition`), and `diagnostic: true` still returns the stored page
+verbatim. `kanna_wait_events` and every non-subscription caller are unchanged.
 
 `staleMachines` is top-level, not nested under `pending`: an unreachable
 remote peer's degraded coverage is durable, deduped row state (see the
