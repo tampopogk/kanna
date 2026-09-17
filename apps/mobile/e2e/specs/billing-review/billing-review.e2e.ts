@@ -54,8 +54,6 @@ const MAX_SYSTEM_ALERTS_PER_CAPTURE = 3;
  * of these is never tapped blindly: it is reported as obscuring the capture.
  */
 export const SYSTEM_ALERT_DECLINE_LABELS: readonly string[] = ["Not Now", "Don't Allow", "Cancel"];
-/** Where iOS hosts the Save Password sheet and other system prompts. */
-const SPRINGBOARD_BUNDLE_ID = "com.apple.springboard";
 
 export interface BillingReviewCredentials {
   email?: string;
@@ -210,9 +208,11 @@ export function createBillingReviewUi(driver: Browser): BillingReviewUi {
         await driver.execute("mobile: alert", { action: "accept", buttonLabel: label });
         return;
       }
-      await inSpringboard(driver, async () => {
-        await driver.$(springboardButtonSelector(label)).click();
-      });
+      const prompt = await findInAppPrompt(driver);
+      if (!prompt) throw new Error(`No system prompt is painted over the app to offer a ${label} button`);
+      const [button] = await childrenOf(prompt, promptButtonSelector(label));
+      if (!button) throw new Error(`The system prompt over the app offers no ${label} button`);
+      await button.click();
     },
     async captureScreenshot(path) {
       await mkdir(dirname(path), { recursive: true });
@@ -222,31 +222,53 @@ export function createBillingReviewUi(driver: Browser): BillingReviewUi {
   };
 }
 
-function springboardButtonSelector(label: string): string {
+function promptButtonSelector(label: string): string {
   return `-ios predicate string:type == "XCUIElementTypeButton" AND visible == 1 AND label == ${JSON.stringify(label)}`;
 }
 
 /**
- * Runs `action` with WebDriverAgent's element queries pointed at SpringBoard,
- * then points them back at the app. WDA resolves its active application from
- * a point near the top-left corner, which a centred system sheet never covers,
- * so a plain query keeps answering from the app while SpringBoard paints the
- * sheet over it.
+ * The system prompts iOS presents *inside* the app's own accessibility tree.
+ * The Save Password sheet is one: on iOS 26.5 it is an XCUIElementTypeSheet
+ * named "Save Password?" inside the app's window, with "Not Now" and "Save"
+ * as descendant buttons; it is not hosted by SpringBoard. WebDriverAgent's
+ * alert detection walks the app's descendants and stops at the first Alert,
+ * Sheet or ScrollView it meets, so with the account sheet's scroll view above
+ * it `getAlertText` answers "no alert" while the sheet covers the card. This
+ * read asks for the sheet itself, and only for elements of an alert or sheet,
+ * so nothing the app itself renders can be mistaken for a prompt.
  */
-async function inSpringboard<T>(driver: Browser, action: () => Promise<T>): Promise<T> {
-  await driver.updateSettings({ defaultActiveApplication: SPRINGBOARD_BUNDLE_ID });
-  try {
-    return await action();
-  } finally {
-    await driver.updateSettings({ defaultActiveApplication: "auto" });
-  }
+const IN_APP_PROMPT_SELECTOR =
+  '-ios predicate string:(type == "XCUIElementTypeSheet" OR type == "XCUIElementTypeAlert") AND visible == 1';
+const VISIBLE_BUTTONS_SELECTOR = '-ios predicate string:type == "XCUIElementTypeButton" AND visible == 1';
+const VISIBLE_TEXTS_SELECTOR = '-ios predicate string:type == "XCUIElementTypeStaticText" AND visible == 1';
+
+/** The subset of a WebdriverIO element the prompt read needs; the fake driver in the tests implements it. */
+interface PromptChild {
+  click(): Promise<unknown>;
+  getAttribute(name: string): Promise<string | null>;
+  getText(): Promise<string>;
+}
+
+interface PromptElement extends PromptChild {
+  $$(selector: string): PromiseLike<Iterable<PromptChild>>;
+}
+
+async function findInAppPrompt(driver: Browser): Promise<PromptElement | null> {
+  const found = await driver.$$(IN_APP_PROMPT_SELECTOR);
+  const [prompt] = Array.from(found as unknown as Iterable<PromptElement>);
+  return prompt ?? null;
+}
+
+async function childrenOf(prompt: PromptElement, selector: string): Promise<PromptChild[]> {
+  return Array.from(await prompt.$$(selector));
 }
 
 /**
  * Observes the system alert over the app, if any. A WebDriver alert is asked
- * first; the Save Password sheet is not one to WebDriverAgent (its alert
- * classification, and so `autoDismissAlerts`, never fired on it), so the
- * fallback reads SpringBoard's visible buttons and static texts directly.
+ * first, which is how SpringBoard-hosted permission alerts are seen; then the
+ * app's tree is asked for a sheet or alert of its own, which is where the Save
+ * Password prompt lives and where WebDriverAgent's alert search never reaches
+ * it.
  */
 async function readSystemAlert(driver: Browser): Promise<BillingReviewSystemAlert | null> {
   const alertText = await driver.getAlertText().catch(() => null);
@@ -256,18 +278,16 @@ async function readSystemAlert(driver: Browser): Promise<BillingReviewSystemAler
       .catch(() => []);
     return { text: alertText, buttons: labelsOf(buttons) };
   }
-  return inSpringboard(driver, async () => {
-    const buttons = labelsOf(
-      await driver.$$(
-        '-ios predicate string:type == "XCUIElementTypeButton" AND visible == 1'
-      ).map((button) => button.getAttribute("label"))
-    );
-    if (buttons.length === 0) return null;
-    const texts = await driver.$$(
-      '-ios predicate string:type == "XCUIElementTypeStaticText" AND visible == 1'
-    ).map((text) => text.getText());
-    return { text: texts.filter((text) => text.trim().length > 0).join("\n"), buttons };
-  });
+  const prompt = await findInAppPrompt(driver);
+  if (!prompt) return null;
+  const buttons = labelsOf(
+    await Promise.all((await childrenOf(prompt, VISIBLE_BUTTONS_SELECTOR)).map((button) => button.getAttribute("label")))
+  );
+  const texts = (
+    await Promise.all((await childrenOf(prompt, VISIBLE_TEXTS_SELECTOR)).map((text) => text.getText()))
+  ).filter((text) => text.trim().length > 0);
+  const text = texts.length > 0 ? texts.join("\n") : (await prompt.getAttribute("label")) ?? "";
+  return { text, buttons };
 }
 
 function labelsOf(value: unknown): string[] {
