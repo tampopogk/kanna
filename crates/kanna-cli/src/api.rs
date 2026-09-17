@@ -15,6 +15,7 @@ use crate::models::{
     TaskActionResponse, TaskChild, TaskDetail, TaskInputRequest, TaskInputResponse, TaskInputs,
     TaskRawInputRequest, TaskRenameRequest, TaskSummary, WaitUntil,
 };
+use crate::models::{ClearStandingConstraintRequest, SetStandingConstraintRequest};
 
 pub(crate) fn join_server_url(base_url: &str, path: &str) -> String {
     format!("{}{}", base_url.trim_end_matches('/'), path)
@@ -469,6 +470,66 @@ pub(crate) async fn signal_merge_handoff_via_api(
     post_json(
         base_url,
         &format!("/v1/tasks/{task_id}/actions/signal-merge-handoff"),
+        request,
+    )
+    .await
+}
+
+/// The standing-constraints listing path, built the way the shared catalog
+/// builds it so the typed CLI and the MCP adapter reach the same route.
+pub(crate) fn standing_constraints_path(
+    repo_id: &str,
+    include_cleared: bool,
+    tail: Option<i64>,
+) -> String {
+    let mut path = format!(
+        "/v1/standing-constraints?repoId={}",
+        encode_path_segment(repo_id)
+    );
+    if include_cleared {
+        path.push_str("&includeCleared=true");
+    }
+    if let Some(tail) = tail {
+        path.push_str(&format!("&tail={tail}"));
+    }
+    path
+}
+
+pub(crate) fn clear_standing_constraint_path(constraint_id: &str) -> String {
+    format!(
+        "/v1/standing-constraints/{}/clear",
+        encode_path_segment(constraint_id)
+    )
+}
+
+pub(crate) async fn list_standing_constraints_via_api(
+    base_url: &str,
+    repo_id: &str,
+    include_cleared: bool,
+    tail: Option<i64>,
+) -> Result<Value, String> {
+    get_json(
+        base_url,
+        &standing_constraints_path(repo_id, include_cleared, tail),
+    )
+    .await
+}
+
+pub(crate) async fn set_standing_constraint_via_api(
+    base_url: &str,
+    request: &SetStandingConstraintRequest,
+) -> Result<Value, String> {
+    post_json(base_url, "/v1/standing-constraints", request).await
+}
+
+pub(crate) async fn clear_standing_constraint_via_api(
+    base_url: &str,
+    constraint_id: &str,
+    request: &ClearStandingConstraintRequest,
+) -> Result<Value, String> {
+    post_json(
+        base_url,
+        &clear_standing_constraint_path(constraint_id),
         request,
     )
     .await

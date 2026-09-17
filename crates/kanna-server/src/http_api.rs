@@ -35,6 +35,7 @@ pub(crate) mod secure_channel;
 pub(crate) mod settings;
 mod signal_agent;
 mod snapshot;
+mod standing_constraints;
 mod state;
 mod status;
 mod subscription_timing;
