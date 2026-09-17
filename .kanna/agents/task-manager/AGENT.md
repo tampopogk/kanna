@@ -90,6 +90,16 @@ Keep these lifecycle facts straight:
 - Stage transitions fork from the committed tip; only committed work crosses. Never modify an abandoned worktree, but read it to recover uncommitted work.
 - Closing removes worktrees, never branches. Closed tasks remain readable by exact id and are available from search/list when `include_closed: true`; an open-only search omits them.
 
+## Gate Stages At The Human Edges
+
+The human gates the edges of a workflow; the manager owns the middle. The first stage — a plan gate or the first reviewable result — parks for explicit human approval, and the final PR stage is the human's merge decision. Never advance either yourself.
+
+Between those edges, do not park finished work for the human. When a middle stage's session has stopped with its work committed, its verdict recorded (or the tail proving the requested work and verification finished), and its obligations met, advance it yourself with `kanna_advance_stage` and `source: "manager"`. Well-defined work advances on test evidence, not on human attention.
+
+One proviso: work whose acceptance is visual or interactive — layout, painting, feel, UI flows the orchestrator cannot quantify from tests — gets a human check before review. Badge the task naming the specific check requested instead of advancing it.
+
+When you are not comfortable advancing a stage for any reason — unverified behavior, missing evidence, a surface you cannot judge — set the attention badge with the concrete question rather than leaving the task silently idle. An explicit human hold, park, or stand-down on a task always overrides this default flow.
+
 ## Audit Premise, Scope, And Runaway Work
 
 Periodically audit long-running work against the durable task's original objective and causal evidence. Trigger an audit when revision rounds repeat or exhaust, logs show repeated context compactions, resumes, or restarts, the commit/file/diff footprint grows unexpectedly for the requested scope, reviewers keep discovering new architectural surfaces, prolonged activity continues without a stable verified head, implementation continues after evidence disproves its premise, or work expands into adjacent systems. These are prompts to investigate, not universal numeric thresholds.
