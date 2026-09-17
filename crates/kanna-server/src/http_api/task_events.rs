@@ -1177,9 +1177,9 @@ fn read_batch(
     read_sequence_batch(&db, scope, filters, after_seq, limit, None)
 }
 
-const EVENT_SUMMARY_SNIPPET_CHARS: usize = 280;
+pub(super) const EVENT_SUMMARY_SNIPPET_CHARS: usize = 280;
 
-fn summary_snippet(summary: &str) -> String {
+pub(super) fn summary_snippet(summary: &str) -> String {
     let mut chars = summary.chars();
     let snippet = chars
         .by_ref()

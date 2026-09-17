@@ -856,3 +856,108 @@ async fn a_paired_browser_loopback_upgrade_uses_paired_device_authority() {
     );
     assert_legacy_stream_refuses_privileged_request(&mut v1_empty).await;
 }
+
+/// Like `open_stream`, but reports a refused handshake instead of panicking:
+/// the sibling-view regression was a 403 on the upgrade itself.
+async fn try_open_stream(
+    port: u16,
+    path: &str,
+    origin: Option<&str>,
+) -> Result<TestSocket, String> {
+    let mut request = format!("ws://127.0.0.1:{port}{path}")
+        .into_client_request()
+        .expect("build websocket request");
+    if let Some(origin) = origin {
+        request
+            .headers_mut()
+            .insert("origin", origin.parse().expect("origin header value"));
+        request.headers_mut().insert(
+            "sec-fetch-mode",
+            "websocket".parse().expect("fetch mode header value"),
+        );
+    }
+    match tokio_tungstenite::connect_async(request).await {
+        Ok((socket, _)) => Ok(socket),
+        Err(error) => Err(error.to_string()),
+    }
+}
+
+/// The sibling-view proxy never answers `auth_ok`: it either refuses the
+/// credential or, having accepted it, reports on the sibling it dialled.
+/// Returns the first frame's `code`.
+async fn peer_view_answer(socket: &mut TestSocket, credential: Option<&str>) -> String {
+    let frame = match credential {
+        Some(credential) => serde_json::json!({ "type": "auth", "credential": credential }),
+        None => serde_json::json!({ "type": "auth" }),
+    };
+    socket
+        .send(Message::Text(frame.to_string().into()))
+        .await
+        .expect("send auth frame");
+    loop {
+        match tokio::time::timeout(Duration::from_secs(10), socket.next()).await {
+            Ok(Some(Ok(Message::Text(text)))) => {
+                let parsed: serde_json::Value =
+                    serde_json::from_str(&text).expect("decode server frame");
+                match parsed.get("code").and_then(|value| value.as_str()) {
+                    Some(code) => return code.to_string(),
+                    None => continue,
+                }
+            }
+            Ok(Some(Ok(_))) => continue,
+            Ok(Some(Err(_)) | None) => return "closed".to_string(),
+            Err(_) => panic!("timed out waiting for the sibling-view proxy's answer"),
+        }
+    }
+}
+
+/// `GET /v1/peers/{desktop_id}/ksp` is the same kind of upgrade as
+/// `/v1/stream`, but its path names the sibling, so it cannot be a literal in
+/// the exempt list. Leaving it out refused the renderer's handshake at the
+/// header check, before it could prove the credential in band — which is what
+/// made every sibling view fail with nothing but a disconnect.
+#[tokio::test]
+async fn the_renderer_sibling_view_proxy_proves_the_local_credential_in_band() {
+    let _fixture_guard = PROCESS_FIXTURE_LOCK.lock().await;
+    let server = launch_server("peer-view-stream").await;
+    let credential = server.credential().await;
+    let path = "/v1/peers/desktop-sibling/ksp";
+
+    let mut webview = try_open_stream(server.port, path, Some("tauri://localhost"))
+        .await
+        .expect("the webview's sibling-view upgrade must reach in-band auth");
+    assert_eq!(
+        peer_view_answer(&mut webview, Some(&credential)).await,
+        "peer_pairing_required",
+        "the credential must be accepted and the proxy must go on to dial the sibling"
+    );
+
+    // Admitting the handshake grants nothing: the credential still decides.
+    let mut hostile = try_open_stream(server.port, path, Some("http://attacker.example"))
+        .await
+        .expect("handshake is admitted so the refusal happens in band");
+    assert_eq!(
+        peer_view_answer(&mut hostile, None).await,
+        "unauthorized",
+        "an empty in-band credential must not open a sibling view"
+    );
+
+    let mut guessing = try_open_stream(server.port, path, Some("http://attacker.example"))
+        .await
+        .expect("handshake is admitted so the refusal happens in band");
+    assert_eq!(
+        peer_view_answer(&mut guessing, Some(&"0".repeat(credential.len()))).await,
+        "unauthorized",
+        "a guessed credential must not open a sibling view"
+    );
+
+    // A local process keeps its loopback authority here as on every other
+    // upgrade path.
+    let mut local = try_open_stream(server.port, path, None)
+        .await
+        .expect("a local process upgrade must be admitted");
+    assert_eq!(
+        peer_view_answer(&mut local, None).await,
+        "peer_pairing_required"
+    );
+}

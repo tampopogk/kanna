@@ -157,7 +157,7 @@ fn compact(row: &EventSubscription) -> Value {
     }
     let pending = row.pending.as_ref().map(|batch| {
         json!({
-            "events": batch["events"],
+            "events": compact_events(&batch["events"]),
             "hasMore": batch["hasMore"],
             "waitOutcome": batch["waitOutcome"],
             "machineErrors": batch["machineErrors"],
@@ -174,6 +174,122 @@ fn compact(row: &EventSubscription) -> Value {
         "pending": pending,
         "query": scope,
     })
+}
+
+/// A delivered page is not a document: the manager's contract is to reconcile
+/// it and re-read whatever it needs fresh, yet every acknowledged page stays
+/// in its conversation and is re-billed as a cache read on every later
+/// request. Measured on real mailbox pages, three payload terms are almost all
+/// of that mass and none of them is a fact the page alone can settle:
+/// `notificationContext` (the relevance filter's own working state, already
+/// applied upstream by the time a page exists), a finished run's verbatim
+/// `result` (whose `summary` was 34,658 of its 34,705 bytes on the largest
+/// page measured), and `task.workflow_changed`'s two whole pinned definitions,
+/// which are mostly stage prompts.
+///
+/// So the compact page carries the bounded shape of each and nothing is
+/// invented: what happened, which run, which stage, which workflow, which
+/// agents. The prose behind it is read from the task — `kanna_get_task`'s
+/// `latestRun.summary`, the task's own `workflowDefinition` — and `diagnostic`
+/// still returns the stored row verbatim, so nothing is lost for
+/// troubleshooting. This is a projection of the delivered page only: the
+/// durable pending batch, the cursor, acknowledgement by `batchId`, and the
+/// relevance selection that chose these events all run before it and are
+/// untouched by it.
+fn compact_events(events: &Value) -> Value {
+    match events.as_array() {
+        Some(events) => Value::Array(events.iter().map(compact_event).collect()),
+        None => events.clone(),
+    }
+}
+
+fn compact_event(event: &Value) -> Value {
+    let Some(object) = event.as_object() else {
+        return event.clone();
+    };
+    let mut event = object.clone();
+    let Some(payload) = event.get_mut("payload").and_then(Value::as_object_mut) else {
+        return Value::Object(event);
+    };
+    payload.remove("notificationContext");
+    if let Some(bounded) = payload
+        .get("result")
+        .and_then(Value::as_str)
+        .and_then(bounded_run_result)
+    {
+        payload.insert("result".into(), Value::String(bounded));
+    }
+    for key in ["beforeDefinition", "afterDefinition"] {
+        if let Some(definition) = payload.get(key) {
+            let bounded = definition_without_prose(definition);
+            payload.insert(key.to_string(), bounded);
+        }
+    }
+    Value::Object(event)
+}
+
+/// A stage run's `result` is a JSON string an agent authored. Bound its
+/// `summary` to the same length the enriched `summarySnippet` already uses and
+/// mark that it was cut; `status` and `metadata` (pr urls, shas — the small
+/// structured facts a manager coordinates on) survive byte for byte. Anything
+/// that is not an object with a string `summary`, or whose summary already
+/// fits, is returned unchanged rather than reshaped into something new.
+fn bounded_run_result(result: &str) -> Option<String> {
+    let mut parsed: Value = serde_json::from_str(result).ok()?;
+    let object = parsed.as_object_mut()?;
+    let summary = object.get("summary")?.as_str()?;
+    if summary.chars().count() <= task_events::EVENT_SUMMARY_SNIPPET_CHARS {
+        return None;
+    }
+    let snippet = task_events::summary_snippet(summary);
+    object.insert("summary".into(), Value::String(snippet));
+    object.insert("summaryTruncated".into(), Value::Bool(true));
+    serde_json::to_string(&parsed).ok()
+}
+
+/// A pinned workflow definition's structure is what a manager reasons about —
+/// stage names, agents, provider candidates, policies, revision budget. Its
+/// `description` and `prompt` strings are the bulk of its bytes and are read
+/// from the task itself. A stamped `plan_context` carries a whole recorded
+/// plan in its `result`, so it is bounded exactly like a run result.
+fn definition_without_prose(definition: &Value) -> Value {
+    let Some(object) = definition.as_object() else {
+        return definition.clone();
+    };
+    let mut bounded = serde_json::Map::new();
+    for (key, member) in object {
+        match key.as_str() {
+            "prompt" | "description" => continue,
+            "stages" => bounded.insert(
+                key.clone(),
+                match member.as_array() {
+                    Some(stages) => {
+                        Value::Array(stages.iter().map(definition_without_prose).collect())
+                    }
+                    None => member.clone(),
+                },
+            ),
+            "post" => bounded.insert(key.clone(), definition_without_prose(member)),
+            "plan_context" => bounded.insert(key.clone(), bounded_plan_context(member)),
+            _ => bounded.insert(key.clone(), member.clone()),
+        };
+    }
+    Value::Object(bounded)
+}
+
+fn bounded_plan_context(context: &Value) -> Value {
+    let Some(object) = context.as_object() else {
+        return context.clone();
+    };
+    let mut bounded = object.clone();
+    if let Some(result) = bounded
+        .get("result")
+        .and_then(Value::as_str)
+        .and_then(bounded_run_result)
+    {
+        bounded.insert("result".into(), Value::String(result));
+    }
+    Value::Object(bounded)
 }
 
 fn response(row: &EventSubscription, diagnostic: bool) -> Value {
@@ -851,7 +967,10 @@ async fn step(
                 }
                 if let Some(confirmed) = batch["confirmedMachines"].as_array() {
                     confirmed_machines.extend(
-                        confirmed.iter().filter_map(Value::as_str).map(str::to_owned),
+                        confirmed
+                            .iter()
+                            .filter_map(Value::as_str)
+                            .map(str::to_owned),
                     );
                 }
                 if batch["waitOutcome"] == "timeout" && !machine_errors_present {
@@ -1110,7 +1229,10 @@ mod outage_isolation_tests {
             false,
             "desktop-local",
         );
-        assert!(row.pending.is_some(), "a peer's confirmed recovery must wake once");
+        assert!(
+            row.pending.is_some(),
+            "a peer's confirmed recovery must wake once"
+        );
         assert_eq!(row.batch_id, 2);
         assert!(row.stale_machines.is_empty());
     }

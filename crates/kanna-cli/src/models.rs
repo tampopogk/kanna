@@ -594,3 +594,31 @@ pub(crate) enum WaitUntil {
     Finished,
     Closed,
 }
+
+/// Declare a standing supervision constraint. `repo_id` is resolved before the
+/// request is built, so this mirrors the catalog body exactly.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SetStandingConstraintRequest {
+    pub(crate) repo_id: String,
+    pub(crate) kind: String,
+    pub(crate) text: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) subject_task_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) declared_by: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) declared_by_task_id: Option<String>,
+}
+
+/// Clear one, with its own declared provenance. The declaration is untouched.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ClearStandingConstraintRequest {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) cleared_by: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) cleared_by_task_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) note: Option<String>,
+}

@@ -1543,3 +1543,216 @@ fn workspace_cli_and_open_view_destinations_match_catalog() {
     ]);
     assert!(parsed.is_ok());
 }
+
+/// The typed CLI and the catalog must reach the same routes with the same
+/// spellings, because `kanna-mcp` sends the catalog's request and `kanna-cli`
+/// sends this one: a drift between them is a supervisor that reads its
+/// constraints on one surface and not the other.
+#[test]
+fn standing_constraint_cli_paths_match_the_catalog_requests() {
+    use crate::api::{clear_standing_constraint_path, standing_constraints_path};
+
+    assert_eq!(
+        standing_constraints_path("repo 1", false, None),
+        "/v1/standing-constraints?repoId=repo%201"
+    );
+    assert_eq!(
+        standing_constraints_path("repo-1", true, Some(25)),
+        "/v1/standing-constraints?repoId=repo-1&includeCleared=true&tail=25"
+    );
+    assert_eq!(
+        clear_standing_constraint_path("sc-1"),
+        "/v1/standing-constraints/sc-1/clear"
+    );
+
+    let catalog = kanna_tool_catalog::bundled_catalog();
+    let listing = kanna_tool_catalog::resolve_request(
+        &catalog,
+        "kanna_standing_constraints",
+        &json!({ "repo_id": "repo-1", "include_cleared": true, "tail": 25 }),
+    )
+    .unwrap();
+    assert_eq!(
+        listing.path,
+        standing_constraints_path("repo-1", true, Some(25))
+    );
+    let clear = kanna_tool_catalog::resolve_request(
+        &catalog,
+        "kanna_clear_standing_constraint",
+        &json!({ "constraint_id": "sc-1" }),
+    )
+    .unwrap();
+    assert_eq!(clear.path, clear_standing_constraint_path("sc-1"));
+}
+
+/// The typed set body is the catalog body, key for key — including the
+/// declared, unverified provenance, which a reviewer of the record has to be
+/// able to trust was recorded as sent.
+#[test]
+fn typed_standing_constraint_set_body_matches_the_catalog_body() {
+    let typed = serde_json::to_value(crate::models::SetStandingConstraintRequest {
+        repo_id: "repo-1".to_string(),
+        kind: "stand-down".to_string(),
+        text: "Owner is driving task-7 directly.".to_string(),
+        subject_task_id: Some("task-7".to_string()),
+        declared_by: Some("operator".to_string()),
+        declared_by_task_id: Some("manager-1".to_string()),
+    })
+    .unwrap();
+    let catalog = kanna_tool_catalog::bundled_catalog();
+    let resolved = kanna_tool_catalog::resolve_request(
+        &catalog,
+        "kanna_set_standing_constraint",
+        &json!({
+            "repo_id": "repo-1",
+            "kind": "stand-down",
+            "text": "Owner is driving task-7 directly.",
+            "subject_task_id": "task-7",
+            "declared_by": "operator",
+            "declared_by_task_id": "manager-1",
+        }),
+    )
+    .unwrap();
+    assert_eq!(typed, resolved.body);
+
+    // Omitted optionals are absent on both sides, so "not declared" never
+    // arrives at the server as an explicit null.
+    let minimal = serde_json::to_value(crate::models::SetStandingConstraintRequest {
+        repo_id: "repo-1".to_string(),
+        kind: "gate".to_string(),
+        text: "No production publish without an explicit go.".to_string(),
+        subject_task_id: None,
+        declared_by: None,
+        declared_by_task_id: None,
+    })
+    .unwrap();
+    let resolved_minimal = kanna_tool_catalog::resolve_request(
+        &catalog,
+        "kanna_set_standing_constraint",
+        &json!({
+            "repo_id": "repo-1",
+            "kind": "gate",
+            "text": "No production publish without an explicit go.",
+        }),
+    )
+    .unwrap();
+    assert_eq!(minimal, resolved_minimal.body);
+}
+
+#[test]
+fn typed_standing_constraint_clear_body_matches_the_catalog_body() {
+    let typed = serde_json::to_value(crate::models::ClearStandingConstraintRequest {
+        cleared_by: Some("operator".to_string()),
+        cleared_by_task_id: Some("manager-1".to_string()),
+        note: Some("Owner handed the task back.".to_string()),
+    })
+    .unwrap();
+    let catalog = kanna_tool_catalog::bundled_catalog();
+    let resolved = kanna_tool_catalog::resolve_request(
+        &catalog,
+        "kanna_clear_standing_constraint",
+        &json!({
+            "constraint_id": "sc-1",
+            "cleared_by": "operator",
+            "cleared_by_task_id": "manager-1",
+            "note": "Owner handed the task back.",
+        }),
+    )
+    .unwrap();
+    assert_eq!(typed, resolved.body);
+}
+
+#[test]
+fn constraint_set_requires_a_kind_and_text() {
+    let parsed = crate::Cli::try_parse_from([
+        "kanna-cli",
+        "repo",
+        "constraint",
+        "set",
+        "--kind",
+        "stand-down",
+        "--text",
+        "Owner is driving task-7 directly.",
+    ]);
+    assert!(parsed.is_ok(), "repo_id defaults to the task session");
+
+    let error = match crate::Cli::try_parse_from([
+        "kanna-cli",
+        "repo",
+        "constraint",
+        "set",
+        "--kind",
+        "gate",
+    ]) {
+        Ok(_) => panic!("--text should be required"),
+        Err(error) => error,
+    };
+    assert_eq!(
+        error.kind(),
+        clap::error::ErrorKind::MissingRequiredArgument
+    );
+    assert!(error.to_string().contains("--text"));
+
+    let error = match crate::Cli::try_parse_from(["kanna-cli", "repo", "constraint", "clear"]) {
+        Ok(_) => panic!("--constraint-id should be required"),
+        Err(error) => error,
+    };
+    assert!(error.to_string().contains("--constraint-id"));
+}
+
+/// The per-tool half of `typed_cli_surfaces_match_catalog_tools_and_params`,
+/// scoped to the constraint tools.
+///
+/// That shared test asserts the whole tool-name set first, so it currently
+/// aborts on an unrelated catalog tool (`kanna_doctor`) that has no typed CLI
+/// surface at all — a gap that predates this record. Without this, the typed
+/// mapping for these three would be unchecked, and an unexposed argument is
+/// how a supervisor ends up unable to record a stand-down from the CLI.
+#[test]
+fn standing_constraint_typed_cli_surface_covers_every_catalog_param() {
+    let catalog = kanna_tool_catalog::bundled_catalog();
+    let typed = typed_tool_surfaces();
+    let cli = crate::Cli::command();
+
+    for name in [
+        "kanna_standing_constraints",
+        "kanna_set_standing_constraint",
+        "kanna_clear_standing_constraint",
+    ] {
+        let tool = catalog
+            .tools
+            .iter()
+            .find(|tool| tool.name == name)
+            .unwrap_or_else(|| panic!("the bundled catalog must expose {name}"));
+        let surface = typed
+            .get(name)
+            .unwrap_or_else(|| panic!("{name} must have a typed CLI surface"));
+        let command = command_for_path(&cli, surface.command_path)
+            .unwrap_or_else(|| panic!("missing typed command for {name}"));
+        let mapped = surface
+            .param_args
+            .iter()
+            .map(|(param, _)| *param)
+            .collect::<BTreeSet<_>>();
+        let params = tool
+            .params
+            .iter()
+            .filter(|param| param.location != ParamLoc::Routing)
+            .map(|param| param.name.as_str())
+            .collect::<BTreeSet<_>>();
+        assert_eq!(
+            mapped, params,
+            "{name} typed CLI mapping must cover exactly the catalog params"
+        );
+        let cli_arg_ids = command
+            .get_arguments()
+            .map(|arg| arg.get_id().as_str())
+            .collect::<BTreeSet<_>>();
+        for (param, arg) in surface.param_args {
+            assert!(
+                cli_arg_ids.contains(arg),
+                "{name} maps catalog param {param} to missing typed CLI arg {arg}"
+            );
+        }
+    }
+}

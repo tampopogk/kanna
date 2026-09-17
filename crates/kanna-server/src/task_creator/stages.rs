@@ -8,8 +8,8 @@ use super::definitions::{
 use super::prepare_stage_run_spawn;
 use super::prompt::{
     build_completed_stage_recovery_prompt, build_revision_resume_message,
-    build_revision_task_prompt, build_target_stage_prompt,
-    build_target_stage_prompt_with_instructions, RevisionRound,
+    build_revision_task_prompt, build_target_stage_prompt_parts,
+    build_target_stage_prompt_with_instructions, RevisionRound, StagePromptParts,
 };
 use super::resume::{prepare_resume_workspace, same_cwd};
 use super::types::{
@@ -18,6 +18,7 @@ use super::types::{
 };
 use super::worktree::next_fork_branch;
 use super::worktree::resolve_current_source_worktree_branch;
+use super::AgentInstructions;
 use super::SpawnAgentOverrides;
 use super::FALLBACK_WORKFLOW_NAME;
 use crate::db::Repo;
@@ -572,7 +573,10 @@ fn prepare_stage_run_for_target_returning_prompt(
         RunWorkspaceSpec::Fork { branch } => Some(branch.clone()),
         _ => source_branch.clone(),
     };
-    let mut final_prompt = build_target_stage_prompt(
+    let StagePromptParts {
+        prompt: mut final_prompt,
+        agent_instructions,
+    } = build_target_stage_prompt_parts(
         context.definitions,
         &context.repo.path,
         target_stage,
@@ -584,6 +588,7 @@ fn prepare_stage_run_for_target_returning_prompt(
         source_task.base_ref.as_deref(),
         source_task.branch.as_deref(),
         trigger.as_str(),
+        None,
     )?;
     if let Some(suffix) = prompt_suffix {
         final_prompt.push_str("\n\n");
@@ -629,6 +634,7 @@ fn prepare_stage_run_for_target_returning_prompt(
         completion_transition,
         workspace_spec,
         final_prompt.clone(),
+        agent_instructions.map(AgentInstructions::at_prompt_head),
         branch,
         feedback,
         source_task.agent_type.as_deref(),
@@ -1333,114 +1339,177 @@ fn prepare_stage_restart(
             },
         }
     };
-    let (workspace_spec, final_prompt, resume_fallback_reason) = match resume {
-        Ok((_provider, mut workspace)) => (
-            {
+    // Every arm below composes against the same predecessor context, and each
+    // one needs the target stage's own resolved agent body: a singleton must
+    // carry its manual on *every* spawn of its session, not only on the one
+    // whose prompt happened to be composed from the stage definition. Resolve
+    // both once.
+    //
+    // The failed resume/recovery row is bookkeeping, not the active stage's
+    // predecessor, so the results are reconstructed from before this
+    // replacement lineage; for a just-imported transfer, that falls back to the
+    // source-pinned snapshots persisted at import.
+    let (prev_result, prev_main_result) = recovery_predecessor_results(db, task_id, &run)?;
+    let plan_result = stamped_plan_result(db, task_id);
+    let stage_prompt_parts = |task_prompt: &str| -> Result<StagePromptParts, String> {
+        build_target_stage_prompt_parts(
+            &loaded.definitions,
+            &loaded.repo.path,
+            &target_stage,
+            task_prompt,
+            prev_result.as_deref(),
+            prev_main_result.as_deref(),
+            plan_result.as_deref(),
+            Some(branch),
+            source_task.base_ref.as_deref(),
+            source_task.branch.as_deref(),
+            &run.trigger,
+            None,
+        )
+    };
+    let (workspace_spec, final_prompt, agent_instructions, resume_fallback_reason) =
+        match resume {
+            Ok((_provider, mut workspace)) => {
                 workspace.repository_setup_pending = setup_pending;
-                RunWorkspaceSpec::Resume(workspace)
-            },
-            // What the agent is told must match what actually happened to it.
-            // A run that recorded success and then lost its PTY has no
-            // interrupted work to finish, and telling it otherwise is how a
-            // recovered manual stage redoes a stage it already completed.
-            if stage_already_succeeded {
-                format!(
-                    "Kanna recovered this task after its previous terminal session ended. \
+                let workspace = RunWorkspaceSpec::Resume(workspace);
+                // The reminder belongs to the run being recovered, not to the
+                // durable task that originally created the workflow. Compose the
+                // active stage just like a fresh recovery: this preserves its own
+                // instructions and only includes `$TASK_PROMPT` when that stage
+                // deliberately asks for it. Injecting the task prompt directly can
+                // turn a read-only review back into the build assignment.
+                let parts = stage_prompt_parts(source_task.prompt.as_deref().unwrap_or(""))?;
+                // What the agent is told must match what actually happened to it.
+                // A run that recorded success and then lost its PTY has no
+                // interrupted work to finish, and telling it otherwise is how a
+                // recovered manual stage redoes a stage it already completed.
+                if stage_already_succeeded {
+                    let message = format!(
+                        "Kanna recovered this task after its previous terminal session ended. \
                      The last run already recorded its stage verdict, so there is no \
                      interrupted work to finish and nothing to redo. Continue the existing \
                      task from the preserved conversation and worktree context, and pick up \
                      from wherever that conversation left off. Do not restart the task from \
                      scratch and do not re-record a verdict you have already \
                      recorded.\n\nTask reminder:\n{}",
-                    source_task.prompt.as_deref().unwrap_or("")
-                )
-            } else {
-                // The reminder belongs to the run being recovered, not to the
-                // durable task that originally created the workflow. Compose
-                // the active stage just like a fresh recovery: this preserves
-                // its own instructions and only includes `$TASK_PROMPT` when
-                // that stage deliberately asks for it. Injecting the task
-                // prompt directly can turn a read-only review back into the
-                // build assignment.
-                let (prev_result, prev_main_result) =
-                    recovery_predecessor_results(db, task_id, &run)?;
-                let plan_result = stamped_plan_result(db, task_id);
-                let active_stage_prompt = build_target_stage_prompt(
-                    &loaded.definitions,
-                    &loaded.repo.path,
-                    &target_stage,
-                    source_task.prompt.as_deref().unwrap_or(""),
-                    prev_result.as_deref(),
-                    prev_main_result.as_deref(),
-                    plan_result.as_deref(),
-                    Some(branch),
-                    source_task.base_ref.as_deref(),
-                    source_task.branch.as_deref(),
-                    &run.trigger,
-                )?;
-                format!(
-                    "Kanna recovered this task after its previous terminal session ended before a \
-                     stage verdict was recorded. Continue the existing task from the preserved \
-                     conversation and worktree context. Review the current state, finish the \
-                     interrupted work, and follow the stage completion instructions. \
-                     Do not restart the task from scratch.\n\nActive stage instructions:\n{}",
-                    active_stage_prompt
-                )
-            },
-            None,
-        ),
-        Err(reason) if stage_already_succeeded => {
-            // Both fallbacks land here: a transcript that failed preflight, and
-            // a resume the provider rejected at runtime. Neither may replay a
-            // stage whose verdict is already recorded.
-            log::info!(
-                "task resume unavailable for {task_id}: {reason}; \
+                        source_task.prompt.as_deref().unwrap_or("")
+                    );
+                    // This message never carried the stage's instructions, and
+                    // neither does the recovery below it — the resumed
+                    // conversation was where they lived. That is precisely why a
+                    // relocating spawn has to deliver them here: its body is no
+                    // longer a message in that conversation to be replayed.
+                    let instructions =
+                        parts
+                            .agent_instructions
+                            .map(|body| AgentInstructions::BesideProse {
+                                body,
+                                inline_prompt: None,
+                            });
+                    (workspace, message, instructions, None)
+                } else {
+                    let prose = "Kanna recovered this task after its previous terminal session \
+                             ended before a stage verdict was recorded. Continue the existing \
+                             task from the preserved conversation and worktree context. Review \
+                             the current state, finish the interrupted work, and follow the \
+                             stage completion instructions. Do not restart the task from \
+                             scratch.";
+                    let inline_prompt =
+                        format!("{prose}\n\nActive stage instructions:\n{}", parts.prompt);
+                    // Embedding the whole composed stage prompt puts the agent
+                    // body back into the conversation, where the next compaction
+                    // summarizes it away again — the defect this change exists to
+                    // fix, on the one agent class it targets. A relocating spawn
+                    // is therefore given the same message with the section left
+                    // out, and the body beside it; every other spawn keeps the
+                    // message exactly as Kanna has always composed it.
+                    match parts.agent_instructions.as_deref().and_then(|body| {
+                        super::split_agent_instructions_prefix(&parts.prompt, body)
+                    }) {
+                        Some(remainder) => {
+                            let relocated_prompt = if remainder.is_empty() {
+                                // The stage composes nothing but its instructions
+                                // — the merge master, whose task prompt is empty
+                                // by construction. Keeping the heading with
+                                // nothing under it would be the only thing the
+                                // block said.
+                                prose.to_string()
+                            } else {
+                                format!("{prose}\n\nActive stage instructions:\n{remainder}")
+                            };
+                            let body = parts.agent_instructions.unwrap_or_default();
+                            (
+                                workspace,
+                                relocated_prompt,
+                                Some(AgentInstructions::BesideProse {
+                                    body,
+                                    inline_prompt: Some(inline_prompt),
+                                }),
+                                None,
+                            )
+                        }
+                        // The stage resolves to no agent body at all, so there is
+                        // nothing to deliver either way.
+                        None => (workspace, inline_prompt, None, None),
+                    }
+                }
+            }
+            Err(reason) if stage_already_succeeded => {
+                // Both fallbacks land here: a transcript that failed preflight, and
+                // a resume the provider rejected at runtime. Neither may replay a
+                // stage whose verdict is already recorded.
+                log::info!(
+                    "task resume unavailable for {task_id}: {reason}; \
                  spawning fresh after a recorded success"
-            );
-            let prompt = build_completed_stage_recovery_prompt(
-                &target_stage.name,
-                &reason,
-                completed_stage_result.as_deref(),
-                source_task.prompt.as_deref().unwrap_or(""),
-            );
-            (fallback_workspace(), prompt, Some(reason))
-        }
-        Err(reason) => {
-            log::info!("task resume unavailable for {task_id}: {reason}; spawning fresh");
-            // The failed resume/recovery row is bookkeeping, not the active
-            // stage's predecessor. Reconstruct the values from before this
-            // replacement lineage; for a just-imported transfer, that falls
-            // back to the source-pinned snapshots persisted at import.
-            let (prev_result, prev_main_result) = recovery_predecessor_results(db, task_id, &run)?;
-            let plan_result = stamped_plan_result(db, task_id);
-            // A fresh conversation knows only what the prompt tells it. When
-            // the interrupted run was a revision, its reviewer feedback is
-            // part of what the task is, so it is composed back into the task
-            // prompt rather than lost with the transcript.
-            let task_prompt = match requested_changes.as_deref() {
-                Some(feedback) => build_revision_task_prompt(
+                );
+                let prompt = build_completed_stage_recovery_prompt(
+                    &target_stage.name,
+                    &reason,
+                    completed_stage_result.as_deref(),
                     source_task.prompt.as_deref().unwrap_or(""),
-                    feedback,
-                    None,
-                ),
-                None => source_task.prompt.as_deref().unwrap_or("").to_string(),
-            };
-            let prompt = build_target_stage_prompt(
-                &loaded.definitions,
-                &loaded.repo.path,
-                &target_stage,
-                &task_prompt,
-                prev_result.as_deref(),
-                prev_main_result.as_deref(),
-                plan_result.as_deref(),
-                Some(branch),
-                source_task.base_ref.as_deref(),
-                source_task.branch.as_deref(),
-                &run.trigger,
-            )?;
-            (fallback_workspace(), prompt, Some(reason))
-        }
-    };
+                );
+                // Kanna's own prose again, with the stage's instructions nowhere in
+                // it — and this is a fresh conversation, so nothing replays them
+                // either. A relocating spawn delivers them as configuration.
+                let instructions = stage_prompt_parts(source_task.prompt.as_deref().unwrap_or(""))?
+                    .agent_instructions
+                    .map(|body| AgentInstructions::BesideProse {
+                        body,
+                        inline_prompt: None,
+                    });
+                (fallback_workspace(), prompt, instructions, Some(reason))
+            }
+            Err(reason) => {
+                log::info!("task resume unavailable for {task_id}: {reason}; spawning fresh");
+                // A fresh conversation knows only what the prompt tells it. When
+                // the interrupted run was a revision, its reviewer feedback is
+                // part of what the task is, so it is composed back into the task
+                // prompt rather than lost with the transcript.
+                let task_prompt = match requested_changes.as_deref() {
+                    Some(feedback) => build_revision_task_prompt(
+                        source_task.prompt.as_deref().unwrap_or(""),
+                        feedback,
+                        None,
+                    ),
+                    None => source_task.prompt.as_deref().unwrap_or("").to_string(),
+                };
+                // Unlike the two arms above, this one composes the stage prompt
+                // bare — no wrapping prose — so it does open with the
+                // agent-instructions section. It is also the path a long-lived
+                // singleton takes when its session cannot be resumed: the fresh
+                // conversation that will compact again. Relocate here too.
+                let StagePromptParts {
+                    prompt,
+                    agent_instructions,
+                } = stage_prompt_parts(&task_prompt)?;
+                (
+                    fallback_workspace(),
+                    prompt,
+                    agent_instructions.map(AgentInstructions::at_prompt_head),
+                    Some(reason),
+                )
+            }
+        };
     let mut prepared = prepare_stage_run_spawn(
         db,
         config,
@@ -1455,6 +1524,7 @@ fn prepare_stage_restart(
         target_stage.policy.transition,
         workspace_spec,
         final_prompt,
+        agent_instructions,
         branch,
         // A restarted revision keeps the requested changes on its record, so
         // the run history does not read as an unexplained re-run of the stage.
@@ -1583,6 +1653,9 @@ fn prepare_revision_resume(
         target_stage.policy.revision_transition(),
         RunWorkspaceSpec::Resume(resume_workspace),
         message,
+        // A revision resume message is a continuation turn, not a composed
+        // stage prompt: the session already carries its agent instructions.
+        None,
         current_branch_name,
         Some(revision_prompt.to_string()),
         source_task.agent_type.as_deref(),

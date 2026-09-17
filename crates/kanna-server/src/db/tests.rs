@@ -3100,6 +3100,7 @@ fn generic_task_listing_filters_runtime_before_limit_and_sorts_stably() {
             Some("repo-1"),
             Some("idle"),
             false,
+            false,
             TaskListSort::CreatedAt,
             TaskListOrder::Asc,
             1,
@@ -3118,6 +3119,7 @@ fn generic_task_listing_filters_runtime_before_limit_and_sorts_stably() {
             false,
             Some("repo-1"),
             Some("idle"),
+            false,
             false,
             TaskListSort::CreatedAt,
             TaskListOrder::Desc,
@@ -3699,6 +3701,8 @@ fn task_event_type_names_are_stable() {
             "task.review_context_changed",
             "task.human_review_decision",
             "task.human_review_decision_delivery",
+            "task.standing_constraint_set",
+            "task.standing_constraint_cleared",
         ]
     );
 }
@@ -5902,6 +5906,728 @@ fn stage_run_teardown_kind_migration_keeps_rows_that_reference_it() {
         .expect("read the latest run")
         .expect("a latest run exists");
     assert_eq!(latest.id, "run-task-1-2");
+
+    drop(db);
+    let _ = std::fs::remove_file(path);
+}
+
+/// Work-set ids in listing order, for the serviced-watermark tests below.
+fn unserviced_idle_work_set(db: &Db) -> Vec<String> {
+    db.list_pipeline_items_query(
+        false,
+        Some("repo-1"),
+        Some("idle"),
+        false,
+        true,
+        TaskListSort::CreatedAt,
+        TaskListOrder::Asc,
+        50,
+    )
+    .expect("unserviced idle work set")
+    .into_iter()
+    .map(|task| task.id)
+    .collect()
+}
+
+fn seed_idle_task(db: &Db, id: &str, created_at: &str) {
+    db.insert_test_pipeline_item(id, "repo-1", id, Some(id), "in progress", created_at)
+        .expect("insert task");
+    db.update_pipeline_item_runtime_status(id, "idle", None)
+        .expect("idle runtime");
+}
+
+#[test]
+fn serviced_watermark_migration_creates_a_table_that_round_trips_and_never_rewinds() {
+    let path = temp_db_path();
+    let path = path.to_str().expect("utf8 path").to_string();
+    let _ = std::fs::remove_file(&path);
+    let db = Db::open_migrated(&path).expect("migrate fresh database");
+
+    let recorded: i64 = db
+        .conn
+        .query_row(
+            "SELECT COUNT(*) FROM schema_migrations WHERE id = '089_task_serviced_watermark'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("read recorded migrations");
+    assert_eq!(recorded, 1, "the watermark migration must be recorded");
+
+    db.insert_test_repo("repo-1", "Repo One").expect("repo");
+    seed_idle_task(&db, "task-a", "2026-09-17 09:00:00");
+    assert!(db
+        .task_serviced_watermark("task-a")
+        .expect("read watermark")
+        .is_none());
+
+    let first = db
+        .record_task_serviced("task-a", Some("run-1"), Some(0))
+        .expect("record servicing");
+    assert_eq!(first.task_id, "task-a");
+    assert_eq!(first.serviced_run_id.as_deref(), Some("run-1"));
+    assert_eq!(first.serviced_event_seq, 0);
+
+    db.update_pipeline_item_runtime_status("task-a", "busy", None)
+        .expect("busy runtime");
+    let head = db.latest_task_event_seq().expect("event head");
+    assert!(head > 0, "the busy edge must have appended an event");
+    let advanced = db
+        .record_task_serviced("task-a", Some("run-2"), Some(head))
+        .expect("advance watermark");
+    assert_eq!(advanced.serviced_event_seq, head);
+
+    // A replayed or stale recording never rewinds the mark, but it is still the
+    // most recent servicing, so its provenance is what the row carries.
+    let replayed = db
+        .record_task_serviced("task-a", Some("run-3"), Some(0))
+        .expect("replay stale recording");
+    assert_eq!(replayed.serviced_event_seq, head);
+    assert_eq!(replayed.serviced_run_id.as_deref(), Some("run-3"));
+
+    drop(db);
+    let reopened = Db::open_migrated(&path).expect("reopen migrated database");
+    let persisted = reopened
+        .task_serviced_watermark("task-a")
+        .expect("read persisted watermark")
+        .expect("watermark survives reopen");
+    assert_eq!(persisted.serviced_event_seq, head);
+    assert_eq!(persisted.serviced_run_id.as_deref(), Some("run-3"));
+    assert_eq!(persisted.serviced_at, replayed.serviced_at);
+
+    drop(reopened);
+    let _ = std::fs::remove_file(&path);
+}
+
+/// The safety net's whole point: a manager that dies part-way through a batch
+/// loses nothing, because a task is suppressed only by a write that committed.
+#[test]
+fn unserviced_work_set_returns_a_task_a_crashed_manager_never_recorded() {
+    let path = Db::test_db_path("unserviced-work-set-crash");
+    let db = Db::open_for_tests(&path).expect("open test db");
+    db.insert_test_repo("repo-1", "Repo One").expect("repo");
+    for (id, created_at) in [
+        ("task-a", "2026-09-17 09:00:00"),
+        ("task-b", "2026-09-17 09:01:00"),
+    ] {
+        seed_idle_task(&db, id, created_at);
+    }
+
+    let batch = unserviced_idle_work_set(&db);
+    assert_eq!(batch, vec!["task-a", "task-b"]);
+    let cursor = db.latest_task_event_seq().expect("event head");
+
+    // The manager services the first task, records it, and dies before it can
+    // record the second one.
+    db.record_task_serviced("task-a", Some("manager-run-1"), Some(cursor))
+        .expect("record first task");
+
+    let after_restart = unserviced_idle_work_set(&db);
+    assert_eq!(
+        after_restart,
+        vec!["task-b"],
+        "the unrecorded task must come back, the recorded one must not"
+    );
+
+    // Recording servicing is not itself a change, so a serviced task stays out
+    // of the work set until the task actually moves.
+    assert_eq!(unserviced_idle_work_set(&db), vec!["task-b"]);
+
+    db.record_task_serviced("task-b", Some("manager-run-2"), None)
+        .expect("record second task");
+    assert!(unserviced_idle_work_set(&db).is_empty());
+
+    // Any event but the read/unread display one re-admits a serviced task.
+    db.update_pipeline_item_runtime_status("task-a", "busy", None)
+        .expect("busy runtime");
+    db.update_pipeline_item_runtime_status("task-a", "idle", None)
+        .expect("idle runtime");
+    assert_eq!(unserviced_idle_work_set(&db), vec!["task-a"]);
+
+    drop(db);
+    let _ = std::fs::remove_file(&path);
+}
+
+/// Reading a task is not acting on it. A badged task waits for positive
+/// evidence of a human action; `task.activity_changed` is never that evidence.
+#[test]
+fn attention_badged_tasks_re_enter_the_work_set_only_on_human_action() {
+    let path = Db::test_db_path("unserviced-work-set-attention");
+    let db = Db::open_for_tests(&path).expect("open test db");
+    db.insert_test_repo("repo-1", "Repo One").expect("repo");
+    for (id, created_at) in [
+        ("task-read", "2026-09-17 09:00:00"),
+        ("task-cleared", "2026-09-17 09:01:00"),
+        ("task-operator", "2026-09-17 09:02:00"),
+        ("task-busy", "2026-09-17 09:03:00"),
+        ("task-manager", "2026-09-17 09:04:00"),
+    ] {
+        seed_idle_task(&db, id, created_at);
+        db.set_task_attention(id, Some("owner decision needed"))
+            .expect("badge task");
+    }
+
+    assert!(
+        unserviced_idle_work_set(&db).is_empty(),
+        "a badged task is human-blocked, whether or not it was ever serviced"
+    );
+
+    // Somebody opens the task and reads its output. The display state moves and
+    // `task.activity_changed` is published; the manager must not be woken.
+    for activity in ["unread", "idle"] {
+        db.update_pipeline_item_activity("task-read", activity)
+            .expect("display state");
+        assert_eq!(
+            db.flush_debounced_activity_events(0)
+                .expect("flush activity"),
+            1,
+            "the display change must have published an activity event"
+        );
+        assert!(
+            unserviced_idle_work_set(&db).is_empty(),
+            "reading a task must never re-admit it"
+        );
+    }
+
+    // An agent-declared input is not a human acting either.
+    db.record_task_input(
+        "task-manager",
+        crate::db::TaskInputSource::Manager,
+        "status?",
+    )
+    .expect("manager input");
+    assert!(unserviced_idle_work_set(&db).is_empty());
+
+    // Three positive human actions, each on its own task.
+    db.set_task_attention("task-cleared", None)
+        .expect("clear badge");
+    db.record_task_input(
+        "task-operator",
+        crate::db::TaskInputSource::Operator,
+        "go ahead",
+    )
+    .expect("operator input");
+    db.update_pipeline_item_runtime_status("task-busy", "busy", None)
+        .expect("busy runtime");
+    db.update_pipeline_item_runtime_status("task-busy", "idle", None)
+        .expect("idle runtime");
+
+    assert_eq!(
+        unserviced_idle_work_set(&db),
+        vec!["task-cleared", "task-operator", "task-busy"]
+    );
+
+    // A badge raised after the human action puts the task back out of reach:
+    // evidence is counted from the badge now standing, not from any older one.
+    db.set_task_attention("task-operator", Some("second question"))
+        .expect("re-badge task");
+    assert_eq!(
+        unserviced_idle_work_set(&db),
+        vec!["task-cleared", "task-busy"]
+    );
+
+    drop(db);
+    let _ = std::fs::remove_file(&path);
+}
+
+// ---------------------------------------------------------------------------
+// Standing supervision constraints
+// ---------------------------------------------------------------------------
+
+fn seed_constraint_repo(db: &Db) {
+    db.insert_test_repo("repo-sc", "Constraint Repo")
+        .expect("repo");
+    for (task_id, title) in [
+        ("manager-1", "Task manager"),
+        ("task-7", "Owner-driven work"),
+    ] {
+        db.insert_test_pipeline_item(
+            task_id,
+            "repo-sc",
+            "Prompt",
+            Some(title),
+            "in progress",
+            "2026-09-17T00:00:00Z",
+        )
+        .expect("task");
+    }
+}
+
+fn stand_down_on_task_seven() -> super::NewStandingConstraint<'static> {
+    super::NewStandingConstraint {
+        repo_id: "repo-sc",
+        kind: super::StandingConstraintKind::StandDown,
+        text: "Owner is driving task-7 directly; do not intervene until they say otherwise.",
+        subject_task_id: Some("task-7"),
+        declared_by: super::StandingConstraintSource::Operator,
+        declared_by_task_id: Some("manager-1"),
+    }
+}
+
+/// The whole point of the record: what a manager declares in one session is
+/// readable, byte for byte and with its provenance, by a session that has none
+/// of its conversation.
+#[test]
+fn a_standing_constraint_round_trips_with_its_declared_provenance() {
+    let path = temp_db_path();
+    let db = Db::open_migrated(path.to_str().expect("utf8 path")).expect("open migrated db");
+    seed_constraint_repo(&db);
+
+    let (recorded, created) = db
+        .record_standing_constraint(stand_down_on_task_seven())
+        .expect("record constraint");
+    assert!(created);
+    assert!(recorded.id.starts_with("sc-"));
+    assert!(recorded.is_active());
+
+    // Read back through a second connection: the manager that needs this has
+    // been restarted or compacted, and holds nothing from the write.
+    let reader = Db::open(path.to_str().expect("utf8 path")).expect("reopen db");
+    let active = reader
+        .list_active_standing_constraints("repo-sc")
+        .expect("list active");
+    assert_eq!(active, vec![recorded.clone()]);
+    assert_eq!(active[0].kind, super::StandingConstraintKind::StandDown);
+    assert_eq!(
+        active[0].text,
+        "Owner is driving task-7 directly; do not intervene until they say otherwise."
+    );
+    assert_eq!(active[0].subject_task_id.as_deref(), Some("task-7"));
+    assert_eq!(
+        active[0].declared_by,
+        super::StandingConstraintSource::Operator
+    );
+    assert_eq!(active[0].declared_by_task_id.as_deref(), Some("manager-1"));
+    assert!(active[0].cleared_at.is_none());
+    assert_eq!(
+        reader
+            .count_cleared_standing_constraints("repo-sc")
+            .expect("count cleared"),
+        0
+    );
+
+    drop(reader);
+    drop(db);
+    let _ = std::fs::remove_file(path);
+}
+
+/// Re-declaring a constraint a manager just read back to itself is recovery,
+/// not a second decision — otherwise every compaction would double the history
+/// the next recovery has to read.
+#[test]
+fn an_identical_active_constraint_resolves_to_the_row_that_already_stands() {
+    let path = temp_db_path();
+    let db = Db::open_migrated(path.to_str().expect("utf8 path")).expect("open migrated db");
+    seed_constraint_repo(&db);
+
+    let (first, created) = db
+        .record_standing_constraint(stand_down_on_task_seven())
+        .expect("record");
+    assert!(created);
+    let (again, created_again) = db
+        .record_standing_constraint(stand_down_on_task_seven())
+        .expect("record again");
+    assert!(!created_again);
+    assert_eq!(again.id, first.id);
+    assert_eq!(
+        db.list_active_standing_constraints("repo-sc")
+            .expect("list")
+            .len(),
+        1
+    );
+
+    // A different subject, or different text, is a different constraint.
+    let (repo_wide, created_repo_wide) = db
+        .record_standing_constraint(super::NewStandingConstraint {
+            subject_task_id: None,
+            ..stand_down_on_task_seven()
+        })
+        .expect("record repo-wide");
+    assert!(created_repo_wide);
+    assert_ne!(repo_wide.id, first.id);
+    assert_eq!(
+        db.list_active_standing_constraints("repo-sc")
+            .expect("list")
+            .len(),
+        2
+    );
+
+    drop(db);
+    let _ = std::fs::remove_file(path);
+}
+
+/// A cleared constraint is history, not an absence. A supervisor rebuilding
+/// its state must be able to see that a gate was lifted, by whom, and when —
+/// deleting the row would make "lifted" and "never existed" the same reading.
+#[test]
+fn clearing_keeps_the_constraint_readable_with_its_own_provenance() {
+    let path = temp_db_path();
+    let db = Db::open_migrated(path.to_str().expect("utf8 path")).expect("open migrated db");
+    seed_constraint_repo(&db);
+    let (recorded, _) = db
+        .record_standing_constraint(stand_down_on_task_seven())
+        .expect("record");
+
+    let (cleared, was_cleared) = db
+        .clear_standing_constraint(
+            &recorded.id,
+            super::StandingConstraintClear {
+                cleared_by: super::StandingConstraintSource::Operator,
+                cleared_by_task_id: Some("manager-1"),
+                note: Some("  Owner handed the task back.  "),
+            },
+        )
+        .expect("clear")
+        .expect("the constraint exists");
+    assert!(was_cleared);
+    assert!(!cleared.is_active());
+    assert_eq!(
+        cleared.cleared_by,
+        Some(super::StandingConstraintSource::Operator)
+    );
+    assert_eq!(cleared.cleared_by_task_id.as_deref(), Some("manager-1"));
+    assert_eq!(
+        cleared.cleared_note.as_deref(),
+        Some("Owner handed the task back.")
+    );
+    // The declaration itself is untouched by its clear.
+    assert_eq!(cleared.text, recorded.text);
+    assert_eq!(cleared.declared_by, recorded.declared_by);
+    assert_eq!(cleared.created_at, recorded.created_at);
+
+    assert!(db
+        .list_active_standing_constraints("repo-sc")
+        .expect("list active")
+        .is_empty());
+    assert_eq!(
+        db.count_cleared_standing_constraints("repo-sc")
+            .expect("count cleared"),
+        1
+    );
+    assert_eq!(
+        db.list_cleared_standing_constraints("repo-sc", 50)
+            .expect("list cleared"),
+        vec![cleared.clone()]
+    );
+
+    // Clearing twice is a no-op: the decision that mattered already happened.
+    let (again, cleared_again) = db
+        .clear_standing_constraint(
+            &recorded.id,
+            super::StandingConstraintClear {
+                cleared_by: super::StandingConstraintSource::Manager,
+                cleared_by_task_id: None,
+                note: None,
+            },
+        )
+        .expect("clear again")
+        .expect("still exists");
+    assert!(!cleared_again);
+    assert_eq!(again, cleared);
+
+    assert!(db
+        .clear_standing_constraint(
+            "sc-does-not-exist",
+            super::StandingConstraintClear {
+                cleared_by: super::StandingConstraintSource::Manager,
+                cleared_by_task_id: None,
+                note: None,
+            },
+        )
+        .expect("clear unknown")
+        .is_none());
+
+    drop(db);
+    let _ = std::fs::remove_file(path);
+}
+
+/// The record announces itself where the state changes, so a sibling
+/// supervisor observes a constraint instead of discovering it by violating
+/// one. Both ends of a constraint's life land on the same task.
+#[test]
+fn setting_and_clearing_append_events_where_the_constraint_lives() {
+    let path = temp_db_path();
+    let db = Db::open_migrated(path.to_str().expect("utf8 path")).expect("open migrated db");
+    seed_constraint_repo(&db);
+    let cursor = db.latest_task_event_seq().expect("cursor");
+
+    let (subject_scoped, _) = db
+        .record_standing_constraint(stand_down_on_task_seven())
+        .expect("record");
+    // A repository-wide constraint has no subject, so it is announced on the
+    // session that declared it.
+    let (repo_wide, _) = db
+        .record_standing_constraint(super::NewStandingConstraint {
+            kind: super::StandingConstraintKind::Gate,
+            text: "No production publish without an explicit owner go.",
+            subject_task_id: None,
+            declared_by: super::StandingConstraintSource::Manager,
+            ..stand_down_on_task_seven()
+        })
+        .expect("record repo-wide");
+    db.clear_standing_constraint(
+        &subject_scoped.id,
+        super::StandingConstraintClear {
+            cleared_by: super::StandingConstraintSource::Operator,
+            cleared_by_task_id: None,
+            note: None,
+        },
+    )
+    .expect("clear")
+    .expect("exists");
+
+    let head = db.latest_task_event_seq().expect("head");
+    let events = db
+        .list_task_events(
+            &super::TaskEventScope::Repo("repo-sc".to_string()),
+            cursor,
+            head,
+            100,
+        )
+        .expect("list events");
+    let constraint_events = events
+        .iter()
+        .filter(|event| event.event_type.starts_with("task.standing_constraint"))
+        .collect::<Vec<_>>();
+    assert_eq!(constraint_events.len(), 3);
+
+    assert_eq!(
+        constraint_events[0].event_type,
+        "task.standing_constraint_set"
+    );
+    assert_eq!(constraint_events[0].task_id, "task-7");
+    assert_eq!(
+        constraint_events[0].payload["constraintId"],
+        subject_scoped.id.as_str()
+    );
+    assert_eq!(constraint_events[0].payload["kind"], "stand-down");
+    assert_eq!(constraint_events[0].payload["declaredBy"], "operator");
+    assert_eq!(constraint_events[0].payload["repoId"], "repo-sc");
+
+    assert_eq!(
+        constraint_events[1].event_type,
+        "task.standing_constraint_set"
+    );
+    assert_eq!(constraint_events[1].task_id, "manager-1");
+    assert_eq!(
+        constraint_events[1].payload["constraintId"],
+        repo_wide.id.as_str()
+    );
+    assert!(constraint_events[1].payload["subjectTaskId"].is_null());
+
+    assert_eq!(
+        constraint_events[2].event_type,
+        "task.standing_constraint_cleared"
+    );
+    assert_eq!(constraint_events[2].task_id, "task-7");
+    assert_eq!(
+        constraint_events[2].payload["constraintId"],
+        subject_scoped.id.as_str()
+    );
+    assert_eq!(constraint_events[2].payload["clearedBy"], "operator");
+
+    // A no-op clear takes no second decision and therefore announces nothing.
+    let before_noop = db.latest_task_event_seq().expect("seq");
+    db.clear_standing_constraint(
+        &subject_scoped.id,
+        super::StandingConstraintClear {
+            cleared_by: super::StandingConstraintSource::Manager,
+            cleared_by_task_id: None,
+            note: None,
+        },
+    )
+    .expect("clear again")
+    .expect("exists");
+    assert_eq!(db.latest_task_event_seq().expect("seq"), before_noop);
+
+    drop(db);
+    let _ = std::fs::remove_file(path);
+}
+
+/// A constraint that names no task at all is still durable. It simply has
+/// nowhere in a task-keyed feed to be announced, and the write says so rather
+/// than failing or pretending it published one.
+#[test]
+fn a_constraint_naming_no_task_is_recorded_and_announces_nothing() {
+    let path = temp_db_path();
+    let db = Db::open_migrated(path.to_str().expect("utf8 path")).expect("open migrated db");
+    seed_constraint_repo(&db);
+    let cursor = db.latest_task_event_seq().expect("cursor");
+
+    let (constraint, created) = db
+        .record_standing_constraint(super::NewStandingConstraint {
+            repo_id: "repo-sc",
+            kind: super::StandingConstraintKind::Policy,
+            text: "Mechanical tasks run on the cheap tier.",
+            subject_task_id: None,
+            declared_by: super::StandingConstraintSource::Operator,
+            declared_by_task_id: None,
+        })
+        .expect("record");
+    assert!(created);
+    assert!(constraint.announcement_task_id().is_none());
+    assert_eq!(db.latest_task_event_seq().expect("seq"), cursor);
+    assert_eq!(
+        db.list_active_standing_constraints("repo-sc")
+            .expect("list"),
+        vec![constraint]
+    );
+
+    drop(db);
+    let _ = std::fs::remove_file(path);
+}
+
+/// Refusals happen before anything is written: a blank constraint is not a
+/// constraint, and an oversized one is a document that belongs on the task.
+#[test]
+fn constraint_text_and_notes_are_normalized_and_bounded() {
+    let path = temp_db_path();
+    let db = Db::open_migrated(path.to_str().expect("utf8 path")).expect("open migrated db");
+    seed_constraint_repo(&db);
+
+    let blank = db.record_standing_constraint(super::NewStandingConstraint {
+        text: "   ",
+        ..stand_down_on_task_seven()
+    });
+    assert!(matches!(
+        blank,
+        Err(rusqlite::Error::InvalidParameterName(ref message)) if message.contains("must not be empty")
+    ));
+
+    let oversized = "x".repeat(super::standing_constraints::MAX_CONSTRAINT_TEXT_CHARS + 1);
+    let refused = db.record_standing_constraint(super::NewStandingConstraint {
+        text: &oversized,
+        ..stand_down_on_task_seven()
+    });
+    assert!(matches!(
+        refused,
+        Err(rusqlite::Error::InvalidParameterName(ref message)) if message.contains("at most")
+    ));
+    assert!(db
+        .list_active_standing_constraints("repo-sc")
+        .expect("list")
+        .is_empty());
+
+    let (recorded, _) = db
+        .record_standing_constraint(super::NewStandingConstraint {
+            text: "  Owner is driving task-7 directly.  ",
+            ..stand_down_on_task_seven()
+        })
+        .expect("record trimmed");
+    assert_eq!(recorded.text, "Owner is driving task-7 directly.");
+
+    let oversized_note = "y".repeat(super::standing_constraints::MAX_CONSTRAINT_NOTE_CHARS + 1);
+    let refused_note = db.clear_standing_constraint(
+        &recorded.id,
+        super::StandingConstraintClear {
+            cleared_by: super::StandingConstraintSource::Operator,
+            cleared_by_task_id: None,
+            note: Some(&oversized_note),
+        },
+    );
+    assert!(matches!(
+        refused_note,
+        Err(rusqlite::Error::InvalidParameterName(ref message)) if message.contains("at most")
+    ));
+    assert!(db
+        .read_standing_constraint(&recorded.id)
+        .expect("read")
+        .expect("exists")
+        .is_active());
+
+    drop(db);
+    let _ = std::fs::remove_file(path);
+}
+
+/// The migration must reach a database that predates it, and its CHECK
+/// constraints must be the ones the code believes it wrote — a row outside the
+/// vocabulary would be a constraint no reader can classify.
+#[test]
+fn migration_adds_the_standing_constraint_table_to_an_existing_database() {
+    let path = temp_db_path();
+    let path_string = path.to_string_lossy().to_string();
+    {
+        // A database from before this record: fully migrated otherwise, with
+        // neither the table nor its migration row.
+        let db = Db::open_migrated(&path_string).expect("open migrated db");
+        db.conn
+            .execute_batch(
+                "DROP TABLE standing_constraint;
+                 DELETE FROM schema_migrations WHERE id = '090_standing_constraint';",
+            )
+            .expect("rewind the standing-constraint migration");
+        let table_exists: i64 = db
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master
+                 WHERE type = 'table' AND name = 'standing_constraint'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("count table before migration");
+        assert_eq!(table_exists, 0);
+    }
+
+    let db = Db::open_migrated(&path_string).expect("apply migration");
+    assert!(CURRENT_SCHEMA_MIGRATIONS.contains(&"090_standing_constraint"));
+    let recorded: i64 = db
+        .conn
+        .query_row(
+            "SELECT COUNT(*) FROM schema_migrations WHERE id = '090_standing_constraint'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("count migration row");
+    assert_eq!(recorded, 1);
+
+    seed_constraint_repo(&db);
+    db.record_standing_constraint(stand_down_on_task_seven())
+        .expect("record after migration");
+
+    for kind in super::StandingConstraintKind::ALL {
+        db.record_standing_constraint(super::NewStandingConstraint {
+            kind: *kind,
+            text: &format!("A {} constraint.", kind.as_str()),
+            ..stand_down_on_task_seven()
+        })
+        .unwrap_or_else(|error| panic!("record {}: {error}", kind.as_str()));
+    }
+    for source in super::StandingConstraintSource::ALL {
+        db.record_standing_constraint(super::NewStandingConstraint {
+            text: &format!("Declared by {}.", source.as_str()),
+            declared_by: *source,
+            ..stand_down_on_task_seven()
+        })
+        .unwrap_or_else(|error| panic!("record {}: {error}", source.as_str()));
+    }
+
+    let outside_the_vocabulary = db.conn.execute(
+        "INSERT INTO standing_constraint (id, repo_id, kind, text, declared_by)
+         VALUES ('sc-bad', 'repo-sc', 'advice', 'Not a kind', 'operator')",
+        [],
+    );
+    assert!(
+        outside_the_vocabulary.is_err(),
+        "the kind CHECK must reject a value no reader can classify"
+    );
+    let outside_the_source_vocabulary = db.conn.execute(
+        "INSERT INTO standing_constraint (id, repo_id, kind, text, declared_by)
+         VALUES ('sc-bad', 'repo-sc', 'gate', 'Engine cannot declare one', 'engine')",
+        [],
+    );
+    assert!(
+        outside_the_source_vocabulary.is_err(),
+        "the reserved engine source must not be declarable as provenance"
+    );
+
+    // Re-opening is a no-op rather than a second CREATE.
+    drop(db);
+    let db = Db::open_migrated(&path_string).expect("reopen migrated db");
+    assert_eq!(
+        db.list_active_standing_constraints("repo-sc")
+            .expect("list")
+            .len(),
+        8
+    );
 
     drop(db);
     let _ = std::fs::remove_file(path);

@@ -130,6 +130,91 @@ pub(crate) enum RepoCommands {
         #[command(subcommand)]
         command: RepoAgentCommands,
     },
+    /// Read and write a repo's durable standing supervision constraints
+    Constraint {
+        #[command(subcommand)]
+        command: RepoConstraintCommands,
+    },
+}
+
+/// Standing supervision constraints: stand-downs, gates, holds and policies a
+/// supervising agent must apply but that are state on no task.
+///
+/// Advisory records, never enforcement — Kanna stores the text and never parses
+/// it. Clearing keeps the row as history, because an absent constraint and a
+/// lifted one are otherwise the same reading.
+#[derive(Subcommand)]
+pub(crate) enum RepoConstraintCommands {
+    /// List the complete set of constraints still standing for a repo
+    List {
+        /// Repository ID; defaults to the calling task session's repository
+        #[arg(long)]
+        repo_id: Option<String>,
+
+        /// Also return cleared constraints as history, newest first
+        #[arg(long)]
+        include_cleared: bool,
+
+        /// Maximum cleared constraints to return (default 50, clamped to 500)
+        #[arg(long)]
+        tail: Option<i64>,
+
+        /// Override the local Kanna server base URL
+        #[arg(long)]
+        server_url: Option<String>,
+    },
+    /// Record a standing constraint so it survives a compacted conversation
+    Set {
+        /// Repository ID; defaults to the calling task session's repository
+        #[arg(long)]
+        repo_id: Option<String>,
+
+        /// hold, gate, policy, or stand-down
+        #[arg(long)]
+        kind: String,
+
+        /// The constraint in the declarer's own words, 1-2000 characters
+        #[arg(long)]
+        text: String,
+
+        /// The task this constraint is about, when it is about one
+        #[arg(long)]
+        subject_task_id: Option<String>,
+
+        /// Declared, unverified provenance: operator, manager, or unspecified
+        #[arg(long)]
+        declared_by: Option<String>,
+
+        /// The task session recording this, normally $KANNA_TASK_ID
+        #[arg(long)]
+        declared_by_task_id: Option<String>,
+
+        /// Override the local Kanna server base URL
+        #[arg(long)]
+        server_url: Option<String>,
+    },
+    /// Clear one standing constraint, recording who cleared it
+    Clear {
+        /// Constraint ID from `repo constraint list`
+        #[arg(long)]
+        constraint_id: String,
+
+        /// Declared, unverified provenance: operator, manager, or unspecified
+        #[arg(long)]
+        cleared_by: Option<String>,
+
+        /// The task session clearing this, normally $KANNA_TASK_ID
+        #[arg(long)]
+        cleared_by_task_id: Option<String>,
+
+        /// Why it was cleared, up to 500 characters
+        #[arg(long)]
+        note: Option<String>,
+
+        /// Override the local Kanna server base URL
+        #[arg(long)]
+        server_url: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -210,6 +295,10 @@ pub(crate) enum TaskCommands {
         /// Include closed tasks in the result
         #[arg(long)]
         include_closed: bool,
+
+        /// Only tasks the manager has not serviced since they last changed
+        #[arg(long)]
+        unserviced_only: bool,
 
         /// Override the local Kanna server base URL
         #[arg(long)]
@@ -611,6 +700,21 @@ pub(crate) enum TaskCommands {
         task_id: String,
         #[arg(long)]
         reason: String,
+        #[arg(long)]
+        machine_id: Option<String>,
+        #[arg(long)]
+        server_url: Option<String>,
+    },
+    /// Record that a task has been serviced by the manager
+    RecordServiced {
+        #[arg(long)]
+        task_id: String,
+        /// The servicing run id (defaults to $KANNA_STAGE_RUN_ID when set)
+        #[arg(long)]
+        run_id: Option<String>,
+        /// The task-events cursor the task was read through
+        #[arg(long)]
+        observed_event_seq: Option<i64>,
         #[arg(long)]
         machine_id: Option<String>,
         #[arg(long)]

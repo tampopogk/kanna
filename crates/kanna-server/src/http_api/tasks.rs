@@ -97,6 +97,11 @@ struct GetTasksResponse {
     tasks: Vec<crate::mobile_api::TaskSummary>,
     scope: TaskListScope,
     runtime_state: Option<String>,
+    /// Echo of the serviced work-set filter. A peer that predates it omits the
+    /// field, which deserializes here as `false` - that is how an older peer's
+    /// unfiltered page is detected and reported rather than merged.
+    #[serde(default)]
+    unserviced_only: bool,
     include_closed: bool,
     sort_by: String,
     order: String,
@@ -136,6 +141,7 @@ pub(super) async fn get_tasks(
             query.include_closed,
             repo_id,
             runtime_state,
+            query.unserviced_only,
             query.sort_by.db_sort(),
             query.order.db_order(),
             limit,
@@ -154,6 +160,7 @@ pub(super) async fn get_tasks(
             machine_ids: vec![state.config.desktop_id.clone()],
         },
         runtime_state: runtime_state.map(str::to_string),
+        unserviced_only: query.unserviced_only,
         include_closed: query.include_closed,
         sort_by: query.sort_by.as_str().to_string(),
         order: query.order.as_str().to_string(),
@@ -167,19 +174,23 @@ pub(super) async fn get_tasks(
         ));
     }
 
+    let mut params = vec![
+        ("includeClosed", query.include_closed.to_string()),
+        ("allMachines", "false".to_string()),
+        ("allRepos", "true".to_string()),
+        ("sortBy", query.sort_by.as_str().to_string()),
+        ("order", query.order.as_str().to_string()),
+        ("limit", limit.to_string()),
+    ];
+    if query.unserviced_only {
+        params.push(("unservicedOnly", "true".to_string()));
+    }
     aggregate_get_tasks(
         &state,
         response,
         task_listing_remote_path(
             "/v1/tasks",
-            &[
-                ("includeClosed", query.include_closed.to_string()),
-                ("allMachines", "false".to_string()),
-                ("allRepos", "true".to_string()),
-                ("sortBy", query.sort_by.as_str().to_string()),
-                ("order", query.order.as_str().to_string()),
-                ("limit", limit.to_string()),
-            ],
+            &params,
             runtime_state.map(|state| ("runtimeState", state)),
         ),
         query.sort_by,
@@ -590,6 +601,8 @@ pub(super) struct GetTasksQuery {
     all_machines: bool,
     runtime_state: Option<TaskRuntimeState>,
     #[serde(default)]
+    unserviced_only: bool,
+    #[serde(default)]
     sort_by: TaskSort,
     #[serde(default)]
     order: TaskSortOrder,
@@ -710,6 +723,17 @@ async fn aggregate_get_tasks(
         {
             Ok(remote) if remote.status == 200 => match remote.body {
                 Some(body) => match serde_json::from_value::<GetTasksResponse>(body) {
+                    // A peer that did not apply the serviced work-set filter
+                    // answered a different question, and its page is dropped
+                    // rather than merged: an unserviced work set silently
+                    // padded with already-serviced tasks is worse than a
+                    // reported hole.
+                    Ok(peer) if response.unserviced_only && !peer.unserviced_only => {
+                        response.machine_errors.push(serde_json::json!({
+                            "machineId": machine_id,
+                            "error": "peer did not apply unservicedOnly (peer may not support the serviced work set)",
+                        }))
+                    }
                     Ok(mut peer) => {
                         response.truncated |= peer.truncated;
                         for task in &mut peer.tasks {

@@ -608,6 +608,14 @@ its first `auth` frame must carry the local control credential. Non-browser
 loopback upgrades keep `AuthMode::AllowEmpty`; non-loopback upgrades keep the
 paired-device rules unchanged.
 
+The same exemption covers `/v1/peers/channel` and the renderer's sibling-view
+proxy `GET /v1/peers/{desktop_id}/ksp`, which proves the credential in its own
+first `auth` frame (`http_api::peers`). That last one carries a desktop id, so
+it cannot be a literal in the exempt list and is matched on the path's shape
+instead — **an in-band-authenticating upgrade that is left out of the exemption
+is refused before its handler ever runs**, which is how every renderer view of
+a sibling desktop once failed as a silent 403 on the handshake.
+
 ### Who is affected
 
 Nothing that was working stops working:
@@ -733,6 +741,9 @@ at all.
 - `GET /v1/tasks/search?query=...`
 - `GET /v1/tasks/{task_id}/children` (durable direct-child fan-out history; includes closed children)
 - `GET /v1/tasks/{task_id}/inputs?tail=...` (durable instruction history: every message delivered into the task's agent session from outside it)
+- `GET /v1/standing-constraints?repoId=...&includeCleared=...&tail=...` (durable standing supervision constraints for a repository: the complete active set, plus cleared history on request; advisory facts a supervisor reads, never enforcement, see [Standing Supervision Constraints](#standing-supervision-constraints))
+- `POST /v1/standing-constraints` (declare one; `repoId`, `kind`, `text`, optional `subjectTaskId` and declared provenance)
+- `POST /v1/standing-constraints/{constraint_id}/clear` (clear one with its own provenance; the row is kept as history)
 - `GET /v1/task-events?taskIds=...|parentTaskId=...|repoId=...|repoRemoteUrlHash=...&excludeTaskIds=...&excludeEventTypes=...&eventTypes=...&excludeOwn=...&cursor=...&timeoutSecs=...&limit=...&minEvents=...&debounceMs=...&minIntervalMs=...` (multi-task, multi-machine event feed; blocks server-side until the batch is complete or the window elapses; `excludeTaskIds`, `excludeEventTypes`, `eventTypes` and `excludeOwn` are filters over the chosen scope, see [Task Event Feed](#task-event-feed))
 - `POST /v1/tasks`
 - `POST /v1/tasks/{task_id}/input` (optionally with one base64 image `attachment`; see [Image attachments](#image-attachments))
@@ -2087,12 +2098,22 @@ cursor-based, not snapshot-diffed:
   `headSha`, `mergeTaskId`, `ownerDesktopId`). `uncertain`, and a `pending`
   that outlived its request, both mean the outcome is unknown and the merge
   master may already hold the request. Same section.
+- `task.standing_constraint_set` / `task.standing_constraint_cleared` announce
+  that a durable standing supervision constraint was declared or cleared
+  (`payload.constraintId`, `repoId`, `kind`, `text`, `subjectTaskId`, and the
+  declared `declaredBy` or `clearedBy`). Both ends of one constraint land on
+  the same task — its subject, or the session that declared a repository-wide
+  one — so a sibling supervisor observes it rather than discovering it by
+  violating one. Advisory: Kanna never interprets the text and the event gates
+  nothing. See
+  [Standing Supervision Constraints](#standing-supervision-constraints).
 
 Every delivered event keeps event-time fields in the payload. In particular,
 `payload.stage` is the stage in effect when the event was appended (older rows
 that did not stamp it are reconstructed from preceding immutable task/run/stage
-events), and run events keep their own `runId`, status, and result. Delivery-time
-state is structurally separate under `payload.currentTask`: current title,
+events), and run events keep their own `runId`, status, and result (on a
+subscription's delivered page that result's `summary` is bounded — see the
+mailbox section below). Delivery-time state is structurally separate under `payload.currentTask`: current title,
 stage, activity, stage transition, and, for finished/awaiting events, latest-run
 id/status plus a bounded summary snippet. A manager draining retained history
 can therefore distinguish what happened from what it can do now. `machineId`
@@ -2338,6 +2359,98 @@ visible rather than silent. `GET /v1/tasks/{task_id}` reports
 from it that nothing was ever sent. The review and qa-dispatcher agent
 definitions require reading this surface before making any claim about what was
 or was not instructed.
+
+## Standing Supervision Constraints
+
+A supervising manager carries constraints that are state on no task: an owner
+stand-down ("I'm working with that task directly, stand down"), a release or
+publish gate, a model-tier policy, a temporary routing decision with a planned
+revert. Until this record existed they lived in exactly one place — the
+manager's conversation — and **conversation compaction is the only lossy event
+in this system**. It summarizes a carried constraint at exactly the same rate
+as a stale mailbox page, so the batches whose whole content is "a constraint
+says don't" — the cheapest-looking decisions a manager makes — are precisely
+the ones a compaction silently unmakes. The failure is not loud: a manager that
+has lost a stand-down does not stop, it intervenes in a session its owner asked
+it to leave alone.
+
+`standing_constraint` is that record, scoped per repository rather than per
+manager task, because a constraint outlives the session that declared it and a
+stage fork replaces that session.
+
+- **Advisory, never enforcement.** Kanna stores `text` and never parses it. No
+  code path refuses a stage advance, an input delivery, a merge, or anything
+  else because a constraint exists, and the read surface hands the whole active
+  set to a supervisor that applies it with judgment. The moment the server
+  started interpreting a constraint, an unparseable sentence would be an outage
+  and a typo would be policy.
+- **Not a task blocker.** `task_blocker` gates workflow progression and is
+  derived state with a resolution rule of its own. A constraint gates nothing
+  and resolves only when somebody clears it. The two answer different
+  questions and neither substitutes for the other.
+- **Kinds are a closed vocabulary**, because they are what a reader scans
+  first and an open set degrades into synonyms: `stand-down`, `gate`, `hold`,
+  `policy`. The kind changes nothing about how Kanna treats the row.
+- **Provenance is declared and unverified**, the same model the input ledger
+  and revision origin use: `operator` (a human, or their words relayed by the
+  agent they were said to), `manager` (an orchestrating agent on its own
+  authority), or `unspecified`. The reserved `engine` source of the input
+  ledger is deliberately absent — Kanna's own supervisory machinery authors
+  wakes, never decisions — and is refused. What a row proves is that *this*
+  constraint, with this text, was recorded at this time by a caller claiming
+  that source.
+- **Nothing is deleted.** Clearing writes `cleared_at` with its **own**
+  provenance and an optional note beside the untouched declaration; the row
+  stays readable as history. A supervisor rebuilding its state must be able to
+  see that a gate was lifted, by whom and when — an absent row and a lifted
+  gate are otherwise the same observation, and only one of them is true.
+  Clearing an already cleared constraint is a no-op that appends no second
+  event.
+- **A subject that names no task is refused**, not recorded. A stand-down
+  naming a task that does not exist reads as protection and provides none.
+- **Re-declaring an identical active constraint resolves to the existing row**
+  (`created: false`, no second event). The caller most likely to re-declare is
+  a manager that just lost its conversation and is restating what it read back,
+  and a second row would make the history the next recovery reads less legible.
+  A *cleared* row never absorbs a re-declaration: re-declaring a lifted gate is
+  a new decision with its own timestamp and provenance.
+
+**Events are appended where the state changes**, as everywhere else in the feed.
+`task.standing_constraint_set` and `task.standing_constraint_cleared` announce a
+constraint's whole life on one task — its subject when it names one, otherwise
+the session that declared a repository-wide constraint — so a watcher scoped to
+that task sees both ends of it, and a sibling supervisor observes a constraint
+another session set instead of discovering it by violating one. The task-event
+log is keyed by task and there is no repository-level feed, so a constraint
+naming neither a subject nor a declaring session is still durable and still
+returned by the read surface but announces nothing; the write reports that as
+`announcedOnTaskId: null` rather than pretending otherwise. Both kinds fall
+through the subscription relevance predicate's default arm and stay visible,
+because a constraint another session changed alters what this one may do.
+
+Three routes, deliberately — set, clear, and load the active set in one cheap
+call, which is what a manager makes on every wake and immediately after a
+compaction:
+
+- `POST /v1/standing-constraints` (`kanna_set_standing_constraint`) takes
+  `repoId`, `kind`, `text` (1–2000 trimmed characters), and optional
+  `subjectTaskId`, `declaredBy`, `declaredByTaskId`. It answers with the stored
+  constraint, `created`, and `announcedOnTaskId`.
+- `POST /v1/standing-constraints/{constraint_id}/clear`
+  (`kanna_clear_standing_constraint`) takes `clearedBy`, `clearedByTaskId` and
+  an optional `note` (up to 500 trimmed characters), and answers with the
+  cleared row and `cleared`.
+- `GET /v1/standing-constraints?repoId=…` (`kanna_standing_constraints`)
+  returns `constraints`, the **complete** active set oldest first — never a
+  page, because the one dropped from a truncated active set is the one then
+  violated — plus `activeCount` and `clearedTotal`. `clearedTotal` is reported
+  whether or not history was requested, so an absent history reads as "not
+  requested" rather than "none"; `includeCleared=true` adds `cleared`, newest
+  first, bounded by `tail` (default 50, clamped to 500).
+
+Both repository-scoped tools default `repoId` from `KANNA_TASK_ID` the way task
+creation and listing do, so a supervising session loads its own repository's
+constraints with no arguments at all.
 
 ## The Composer Is Not Session Output
 
@@ -3301,6 +3414,7 @@ The CLI remains the shell/script interface; MCP is the structured agent-tool int
 - `kanna-cli task push --task-id <TASK_ID> --to-machine <MACHINE_OR_PEER_ID> [--transport auto|lan|cloud] [--intent-key <KEY>] [--machine-id <MACHINE_ID>] [--server-url <URL>]` calls `POST /v1/tasks/{task_id}/actions/push-to-peer`. It runs on the machine that owns the task, so `--machine-id` is how a task is pushed off a sibling machine. It schedules the transfer; the response reports `moved: false`.
 - `kanna-cli task pull --source-task-id <TASK_ID> --from-machine <MACHINE_OR_PEER_ID> [--transport auto|lan|cloud] [--server-url <URL>]` calls `POST /v1/transfers/actions/pull-task`. It always runs on the machine the task is moving to and takes no `--machine-id`. It delivers the request; the response reports `moved: false` and a `requestId` that is stable for repeats inside the source's request window.
 - `kanna-cli task transfers --task-id <TASK_ID> [--machine-id <MACHINE_ID>] [--server-url <URL>]` calls `GET /v1/tasks/{task_id}/transfers` and prints the recorded moves with the coarse `pending` / `completed` / `failed` / `rejected` verdict. This is the surface that answers whether a scheduled move happened; a push or pull result never does. A task id that names no task *here* still answers when a transfer was recorded against it — a pull this machine asked for and the source refused — rather than 404.
+- `kanna-cli repo constraint list [--repo-id <REPO_ID>] [--include-cleared] [--tail <N>] [--server-url <URL>]`, `kanna-cli repo constraint set [--repo-id <REPO_ID>] --kind <hold|gate|policy|stand-down> --text <TEXT> [--subject-task-id <TASK_ID>] [--declared-by <operator|manager|unspecified>] [--declared-by-task-id <TASK_ID>]`, and `kanna-cli repo constraint clear --constraint-id <ID> [--cleared-by <SOURCE>] [--cleared-by-task-id <TASK_ID>] [--note <TEXT>]` are the typed counterparts of `kanna_standing_constraints`, `kanna_set_standing_constraint` and `kanna_clear_standing_constraint`. `--repo-id` defaults to the calling task session's repository, the same shared tool policy the catalog clients use. See [Standing Supervision Constraints](#standing-supervision-constraints).
 
 The provider support and daemon-loss trigger matrix is documented in
 [`2026-07-30-session-death-recovery.md`](2026-07-30-session-death-recovery.md).
@@ -3469,6 +3583,37 @@ subscribe/read) for the full internal row — adds `stage`, `branch`, `runId`,
 `revision`, `delivery`, `wakeAdmitted` and the raw cursor — for
 troubleshooting. The durable mailbox itself, its cursor, and restart/reconnect
 semantics are unchanged; this is a response-shape default only.
+
+The compact page is also **bounded**, because an acknowledged page does not
+leave a manager's conversation and is re-billed as a cache read on every later
+request, while almost all of its bytes are prose that manager's own contract
+requires it to re-read fresh. Three payload terms carried that mass and none of
+them is a fact a page alone can settle, so on a delivered event:
+
+- a finished run's `payload.result` keeps its `status` and `metadata` (pr urls,
+  shas — the small structured facts a manager coordinates on) byte for byte,
+  but its `summary` is bounded to the same 280 characters
+  `currentTask.latestRun.summarySnippet` already uses, with
+  `summaryTruncated: true` saying it was cut. A result that is not an object
+  with a string `summary`, or whose summary already fits, is delivered exactly
+  as stored — the page bounds prose, it never reshapes a payload.
+- `task.workflow_changed`'s `beforeDefinition` and `afterDefinition` keep every
+  stage, agent, provider candidate, policy, post and revision budget, and drop
+  each stage's `prompt` and `description`. A stamped `plan_context.result` is a
+  recorded plan, so it is bounded exactly like a run result.
+- `notificationContext` is not delivered at all. It is the relevance filter's
+  own working state, computed so `is_relevant_subscription_event` can decide
+  whether this event belongs on the page, and by the time a page exists that
+  decision is already made.
+
+What is *not* bounded is the rest: which events were selected,
+`payload.currentTask`, `payload.machineId`, the durable cursor, and
+acknowledgement by `batchId` are all untouched, because this is a projection of
+the delivered page only — it runs after selection, aggregation and the durable
+`pending` write, on the compact rendering alone. The full prose is read from the
+task (`kanna_get_task`'s `latestRun.summary`, the task's own
+`workflowDefinition`), and `diagnostic: true` still returns the stored page
+verbatim. `kanna_wait_events` and every non-subscription caller are unchanged.
 
 `staleMachines` is top-level, not nested under `pending`: an unreachable
 remote peer's degraded coverage is durable, deduped row state (see the

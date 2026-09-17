@@ -67,6 +67,22 @@ export const AUTH_FAILURE_CLOSE_CODE = 4005;
  */
 export const SECURE_CHANNEL_REFUSED_CLOSE_CODE = 4910;
 
+/**
+ * Error codes a server sends immediately before closing a connection it will
+ * not carry. Each names a standing fact about this pair of machines — an
+ * unpaired sibling, an older one, a rotated key, a broken local identity —
+ * that reconnecting cannot change, so the client stops and surfaces the
+ * message instead of retrying behind a "Connecting..." line forever.
+ * `peer_unreachable` is deliberately absent: a route that is down right now is
+ * exactly what the backoff loop exists for.
+ */
+export const CONNECTION_REFUSAL_CODES: ReadonlySet<string> = new Set([
+  "peer_pairing_required",
+  "peer_identity_unavailable",
+  "peer_upgrade_required",
+  "peer_identity_mismatch",
+]);
+
 export interface AgentStreamHandlers {
   /** Journal replay on (re)attach. `nextSeq` is where the live stream resumes. */
   onSnapshot(
@@ -255,6 +271,11 @@ export interface StreamClientOptions {
    * connection (close code `SECURE_CHANNEL_REFUSED_CLOSE_CODE`). The client
    * has stopped; the caller decides what the person sees. */
   onSecureChannelRefused?(reason: string): void;
+  /** Invoked when the server refused the connection outright, naming a
+   * standing reason (see `CONNECTION_REFUSAL_CODES`) and closing. The client
+   * has stopped; the caller decides what the person sees, and builds a fresh
+   * client if the reason is later resolved. */
+  onConnectionRefused?(code: string, message: string): void;
   /** Injectable local monotonic clock for terminal dispatch diagnostics. */
   now?: () => number;
   /** Decode large inbound frames away from the UI thread. */
@@ -382,6 +403,12 @@ const MAX_PENDING_DECODE_BYTES =
   MAX_LEGAL_COMPANION_BUNDLE_CHARACTERS * 2 * 2;
 
 /** Delay before the single force-refresh retry after an auth-failure close. */
+/**
+ * The largest frame worth checking for a connection refusal: a discriminant, a
+ * code and one sentence. Everything bigger is terminal output or a payload,
+ * and this check runs on every inbound frame.
+ */
+const MAX_REFUSAL_FRAME_CHARACTERS = 4096;
 const AUTH_RETRY_DELAY_MS = 250;
 const TERMINAL_GEOMETRY_FLUSH_DELAY_MS = 50;
 
@@ -406,6 +433,12 @@ export class StreamClient {
   /** Set when a local credential fetch fails, so the ensuing disconnect is
    * treated as an auth failure even without a relay close code. */
   private authFailurePending = false;
+  /** A refusal frame seen on the current socket, held until its close arrives.
+   * Recorded synchronously on receipt because the decode queue it would
+   * otherwise travel through is discarded by that very close. */
+  private connectionRefusal:
+    | { code: string; message: string; dispatched: boolean }
+    | null = null;
   private nextRequestId = 1;
   private nextScrollbackRequestId = 1;
   private nextAgentHistoryRequestId = 1;
@@ -965,6 +998,7 @@ export class StreamClient {
   private connect(): void {
     if (this.closed || this.socket || this.accessAllowed === false) return;
     this.authed = false;
+    this.connectionRefusal = null;
     this.supportedStreamKinds.clear();
     this.supportedCapabilities.clear();
     this.companionTasksOnSocket.clear();
@@ -981,6 +1015,7 @@ export class StreamClient {
       if (socket !== this.socket) return;
       if (typeof event.data !== "string") return;
       const data = event.data;
+      this.noteConnectionRefusal(data);
       if (!this.frameDecoder) {
         try {
           this.handleFrame(JSON.parse(data) as ServerFrame);
@@ -1007,6 +1042,43 @@ export class StreamClient {
     socket.onclose = (event) => this.handleDisconnect(socket, event);
     socket.onerror = () => {
       // onclose follows; nothing to do here.
+    };
+  }
+
+  /**
+   * A refusal is the last thing the server says before it closes, and the
+   * close resets the decode queue — so an error frame left to the ordinary
+   * asynchronous lane is thrown away before anything reads it, which is how a
+   * peer view sat on "Connecting..." while the server was answering "these
+   * machines are not paired". Record it here, on the socket callback itself,
+   * and let the normal lane dispatch its copy if it survives.
+   */
+  private noteConnectionRefusal(data: string): void {
+    // A frame's key order is the server's business, not a contract: this one
+    // is built with `serde_json::json!`, whose map sorts its keys, so `type`
+    // arrives last and a `{"type":"error"` prefix match never fires. Gate on
+    // the size of a frame that could carry a sentence and on the
+    // discriminant's *value*, both of which hold whatever order the keys are
+    // in, then let the parser decide. (The `term_output` prefix check above is
+    // safe because that frame is serialized from a serde-derived struct, which
+    // keeps its declared field order; this one is not.)
+    if (data.length > MAX_REFUSAL_FRAME_CHARACTERS || !data.includes('"error"')) return;
+    let frame: { type?: unknown; task_id?: unknown; code?: unknown; message?: unknown };
+    try {
+      frame = JSON.parse(data) as typeof frame;
+    } catch {
+      return;
+    }
+    if (frame.type !== "error") return;
+    // A task-scoped error is about one attachment, not about the connection.
+    if (frame.task_id !== undefined && frame.task_id !== null) return;
+    if (typeof frame.code !== "string" || !CONNECTION_REFUSAL_CODES.has(frame.code)) return;
+    this.connectionRefusal = {
+      code: frame.code,
+      message: typeof frame.message === "string" && frame.message.length > 0
+        ? frame.message
+        : frame.code,
+      dispatched: false,
     };
   }
 
@@ -1043,6 +1115,22 @@ export class StreamClient {
         attachment.handlers.onError?.("secure_channel_refused", reason);
       }
       this.options.onSecureChannelRefused?.(reason);
+      return;
+    }
+    const refusal = this.connectionRefusal;
+    if (refusal) {
+      // The server named a standing reason and closed. Reconnecting would
+      // re-earn the same sentence, so stop and let the person read it.
+      this.connectionRefusal = null;
+      this.closed = true;
+      this.sendQueue = [];
+      this.failPendingRequests(new Error(refusal.message));
+      if (!refusal.dispatched) {
+        for (const attachment of this.attachments.values()) {
+          attachment.handlers.onError?.(refusal.code, refusal.message);
+        }
+      }
+      this.options.onConnectionRefused?.(refusal.code, refusal.message);
       return;
     }
     this.failPendingRequests(new Error(closeEventCode(closeEvent) === 4402
@@ -1478,6 +1566,15 @@ export class StreamClient {
         } else {
           for (const attachment of this.attachments.values()) {
             attachment.handlers.onError?.(frame.code, frame.message);
+          }
+          if (CONNECTION_REFUSAL_CODES.has(frame.code)) {
+            // Delivered above; the close that follows must stop the client
+            // for good without saying it twice.
+            this.connectionRefusal = {
+              code: frame.code,
+              message: frame.message,
+              dispatched: true,
+            };
           }
         }
         return;

@@ -10,6 +10,17 @@ export function linuxSourceEnv(input: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   for (const name of Object.keys(env)) if (/^GIT_(?:DIR|WORK_TREE|INDEX_FILE|OBJECT_DIRECTORY|ALTERNATE_OBJECT_DIRECTORIES|COMMON_DIR|NAMESPACE|CONFIG_COUNT|CONFIG_PARAMETERS|CONFIG_KEY_.*|CONFIG_VALUE_.*)$/.test(name)) delete env[name];
   return env;
 }
+/** The pinned snapshot is a build *input*; Bazel must never write to it.
+ * `--lockfile_mode=error` stops Bazel refreshing the tracked `MODULE.bazel.lock`
+ * mid-build, which otherwise dirties the checkout and is only noticed by the
+ * post-build cleanliness check — after both architectures have been built, with
+ * every artifact discarded and nothing naming the cause. Failing closed instead
+ * reports a stale lock in seconds. `--batch` is a startup option and must lead;
+ * `--lockfile_mode` is a command option and must follow the command word. */
+export function linuxSourceBazelArgs(args: string[]): string[] {
+  if (!args.length) throw new Error("Linux product source requires an explicit Bazel command.");
+  return ["--batch", args[0], "--lockfile_mode=error", ...args.slice(1)];
+}
 export async function withLinuxSource<T>(input: {
   repoRoot: string; env: NodeJS.ProcessEnv; runner: CommandRunner; ref: string;
 }, use: (product: { repoRoot: string; env: NodeJS.ProcessEnv; runner: CommandRunner; source: LinuxSource }) => Promise<T>): Promise<T> {
@@ -35,7 +46,7 @@ export async function withLinuxSource<T>(input: {
       if (JSON.stringify(await cleanLinuxSource(checkout, env, input.runner)) !== JSON.stringify(source)) throw new Error("Linux product source snapshot changed.");
     };
     await check();
-    const runner: CommandRunner = { run: (command, args, options) => input.runner.run(command, command === "bazel" ? ["--batch", ...args] : args, options) };
+    const runner: CommandRunner = { run: (command, args, options) => input.runner.run(command, command === "bazel" ? linuxSourceBazelArgs(args) : args, options) };
     const result = await use({ repoRoot: checkout, env, runner, source });
     await check();
     return result;

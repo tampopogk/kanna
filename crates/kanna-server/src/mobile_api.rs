@@ -1050,11 +1050,13 @@ impl MobileApi {
         self.map_task_summaries(items, &repo_names)
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn get_tasks(
         &self,
         include_closed: bool,
         repo_id: Option<&str>,
         runtime_state: Option<&str>,
+        unserviced_only: bool,
         sort: crate::db::TaskListSort,
         order: crate::db::TaskListOrder,
         limit: u32,
@@ -1068,6 +1070,7 @@ impl MobileApi {
                 repo_id,
                 runtime_state,
                 false,
+                unserviced_only,
                 sort,
                 order,
                 limit.saturating_add(1),

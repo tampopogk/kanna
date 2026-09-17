@@ -995,6 +995,7 @@ fn codex_accept_edits_uses_the_sandbox_flag_not_removed_full_auto() {
         None,
         None,
         None,
+        None,
     );
 
     assert!(
@@ -1019,6 +1020,7 @@ fn codex_default_modes_keep_the_yolo_flag() {
             mode,
             &[],
             &[],
+            None,
             None,
             None,
             None,

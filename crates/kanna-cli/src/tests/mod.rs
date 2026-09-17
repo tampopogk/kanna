@@ -69,6 +69,43 @@ fn typed_tool_surfaces() -> BTreeMap<&'static str, TypedToolSurface> {
             },
         ),
         (
+            "kanna_standing_constraints",
+            TypedToolSurface {
+                command_path: &["repo", "constraint", "list"],
+                param_args: &[
+                    ("repo_id", "repo_id"),
+                    ("include_cleared", "include_cleared"),
+                    ("tail", "tail"),
+                ],
+            },
+        ),
+        (
+            "kanna_set_standing_constraint",
+            TypedToolSurface {
+                command_path: &["repo", "constraint", "set"],
+                param_args: &[
+                    ("repo_id", "repo_id"),
+                    ("kind", "kind"),
+                    ("text", "text"),
+                    ("subject_task_id", "subject_task_id"),
+                    ("declared_by", "declared_by"),
+                    ("declared_by_task_id", "declared_by_task_id"),
+                ],
+            },
+        ),
+        (
+            "kanna_clear_standing_constraint",
+            TypedToolSurface {
+                command_path: &["repo", "constraint", "clear"],
+                param_args: &[
+                    ("constraint_id", "constraint_id"),
+                    ("cleared_by", "cleared_by"),
+                    ("cleared_by_task_id", "cleared_by_task_id"),
+                    ("note", "note"),
+                ],
+            },
+        ),
+        (
             "kanna_list_transfer_peers",
             TypedToolSurface {
                 command_path: &["machine", "transfer-peers"],
@@ -146,6 +183,7 @@ fn typed_tool_surfaces() -> BTreeMap<&'static str, TypedToolSurface> {
                     ("limit", "limit"),
                     ("all_machines", "all_machines"),
                     ("include_closed", "include_closed"),
+                    ("unserviced_only", "unserviced_only"),
                 ],
             },
         ),
@@ -462,6 +500,17 @@ fn typed_tool_surfaces() -> BTreeMap<&'static str, TypedToolSurface> {
             TypedToolSurface {
                 command_path: &["task", "clear-attention"],
                 param_args: &[("task_id", "task_id")],
+            },
+        ),
+        (
+            "kanna_record_task_serviced",
+            TypedToolSurface {
+                command_path: &["task", "record-serviced"],
+                param_args: &[
+                    ("task_id", "task_id"),
+                    ("run_id", "run_id"),
+                    ("observed_event_seq", "observed_event_seq"),
+                ],
             },
         ),
         (

@@ -12,7 +12,7 @@
 // the relay must be unable to read.
 
 import { createHash, webcrypto } from "node:crypto";
-import { rm } from "node:fs/promises";
+import { readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { localProcessFetch } from "@kanna/local-process-fetch";
@@ -131,6 +131,38 @@ async function pairFailure(claimant: Desktop, pairingString: string): Promise<st
   const text = await response.text();
   expect(response.ok, `expected pairing to fail, got ${response.status}: ${text}`).toBe(false);
   return text;
+}
+
+/**
+ * Dials the renderer's sibling-view proxy the way the desktop webview does
+ * and answers with the first frame the proxy sends back. A handshake refused
+ * at the local-client boundary never opens, so it rejects instead - which is
+ * the shape of the regression this covers.
+ */
+async function firstPeerViewFrame(
+  url: string,
+  headers: Record<string, string>,
+  credential: string
+): Promise<{ type?: string; code?: string; message?: string }> {
+  const socket = new NodeRelaySocket(url, headers);
+  try {
+    return await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error("the peer view proxy sent no frame")), 30_000);
+      const settle = (outcome: () => void) => {
+        clearTimeout(timer);
+        outcome();
+      };
+      socket.onopen = () => socket.send(JSON.stringify({ type: "auth", credential }));
+      socket.onmessage = (event) =>
+        settle(() => resolve(JSON.parse(String(event.data)) as { type?: string; code?: string }));
+      socket.onclose = (event) =>
+        settle(() => reject(new Error(`closed before any frame: ${JSON.stringify(event)}`)));
+      socket.onerror = (error) =>
+        settle(() => reject(error instanceof Error ? error : new Error(String(error))));
+    });
+  } finally {
+    socket.close();
+  }
 }
 
 async function listPeers(desktop: Desktop): Promise<PeerList> {
@@ -292,6 +324,37 @@ describe("desktop peer secure channel E2E", () => {
     expect(harness.serverLogs()).not.toContain(inputMarker);
     expect(peer.serverLogs()).not.toContain(terminalMarker);
     expect(peer.serverLogs()).not.toContain(inputMarker);
+  }, 120_000);
+
+  /**
+   * The splice test above dials with a Node socket, which carries neither an
+   * `Origin` nor a `Sec-Fetch-*` header and so keeps ordinary loopback
+   * authority (`ProxyAuth::LoopbackProcess`). The desktop webview is a
+   * browser: its handshake always carries those headers, takes the
+   * browser-originated path through `lan_trust`, and proves the local control
+   * credential in its first `auth` frame. That path is the one that was
+   * broken - `/v1/peers/{desktop_id}/ksp` is parameterized, so it was missing
+   * from the stream-upgrade exemption and every renderer handshake was
+   * answered 403 before the proxy ever ran. A Node-socket dial can never
+   * catch that, so it is asserted here explicitly.
+   */
+  it("admits the renderer's browser-originated sibling view and refuses it without the credential", async () => {
+    await ensurePaired();
+    const credential = (await readFile(join(harness.paths.daemonDir, "task-events.token"), "utf8")).trim();
+    const url = `ws://127.0.0.1:${harness.ports.server}/v1/peers/${encodeURIComponent(peer.desktopId)}/ksp`;
+    const browserHandshake = {
+      Origin: "tauri://localhost",
+      "Sec-Fetch-Mode": "websocket",
+      "Sec-Fetch-Site": "same-origin"
+    };
+
+    const admitted = await firstPeerViewFrame(url, browserHandshake, credential);
+    expect(admitted.type, `expected the sibling's auth_ok, got ${JSON.stringify(admitted)}`).toBe("auth_ok");
+
+    // The credential is what admits it, not the loopback address: a page the
+    // user happens to have open gets the same 4-byte answer as a stranger.
+    const refused = await firstPeerViewFrame(url, browserHandshake, "not-the-local-control-token");
+    expect(refused).toMatchObject({ type: "error", code: "unauthorized" });
   }, 120_000);
 
   it("refuses a rotated peer key and recovers only by pairing again", async () => {
