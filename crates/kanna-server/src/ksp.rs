@@ -291,13 +291,19 @@ pub(crate) fn admit_sealed_peer_session(
         origin,
         declared_desktop_id: hello.source_desktop_id.clone(),
     };
+    // A pairing hello never carries sibling authority, even from a key that
+    // is already pinned: re-pairing (a rotated key on the other side, a
+    // fresh string) replaces the record through the claim, and a session
+    // that came to pair must not be able to do anything else meanwhile.
     let authority = match paired {
-        Some(peer) => SealedSessionAuthority::PeerDesktop {
-            desktop_id: peer.desktop_id,
-            origin,
-            context,
-        },
-        None => SealedSessionAuthority::PeerPairingOnly(context),
+        Some(peer) if hello.intent != HelloIntent::PeerPairing => {
+            SealedSessionAuthority::PeerDesktop {
+                desktop_id: peer.desktop_id,
+                origin,
+                context,
+            }
+        }
+        _ => SealedSessionAuthority::PeerPairingOnly(context),
     };
     let (sender, receiver) = channel.split();
     Ok(AdmittedSealedSession {

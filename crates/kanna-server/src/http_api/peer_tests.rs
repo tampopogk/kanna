@@ -655,6 +655,57 @@ async fn the_pairing_ceremony_pins_the_handshake_key_and_refuses_a_wrong_secret_
     assert_eq!(view["peers"][0]["transferIdentityPinned"], true);
 }
 
+/// Re-pairing is how a rotated key on either side becomes trusted again: a
+/// `peer_pairing` hello from a key this desktop already pins gets
+/// pairing-only authority (not sibling authority), and its claim replaces
+/// the record.
+#[tokio::test]
+async fn a_pairing_hello_from_an_already_pinned_key_is_pairing_only_and_replaces_the_record() {
+    let issuer = state("repair");
+    let claimant = Keypair::generate().unwrap();
+    pin_peer(&issuer, "desktop-claimant", &claimant);
+    let offer = super::peers::create_pairing_offer(DesktopLocalAccess, State(Arc::clone(&issuer)))
+        .await
+        .unwrap()
+        .0;
+    let parsed = crate::peer_pairing::parse_pairing_string(&offer.pairing_string).unwrap();
+    let mut sibling = SealedSibling::establish(
+        &issuer,
+        StreamOrigin::Lan,
+        &claimant,
+        "desktop-claimant",
+        HelloIntent::PeerPairing,
+        None,
+    )
+    .await
+    .unwrap();
+    sibling.auth().await;
+    // Pairing-only: the sibling route set is not reachable on this session.
+    let response = sibling
+        .request(1, "GET", "/v1/status", serde_json::Value::Null)
+        .await;
+    assert_eq!(response["status"], 401, "{response}");
+    let response = sibling
+        .request(
+            2,
+            "POST",
+            "/v1/peers/pairing/claim",
+            serde_json::json!({
+                "code": parsed.code, "secret": parsed.secret, "desktopId": "desktop-claimant",
+                "desktopName": "Renamed Claimant", "environment": "development"
+            }),
+        )
+        .await;
+    assert_eq!(response["status"], 200, "{response}");
+    let store = issuer.peer_trust_store().unwrap();
+    assert_eq!(store.peers.len(), 1);
+    assert_eq!(store.peers[0].display_name, "Renamed Claimant");
+    assert_eq!(
+        store.peers[0].channel_public_key,
+        claimant.encoded_public_key()
+    );
+}
+
 #[tokio::test]
 async fn the_pairing_string_binds_its_audience() {
     let issuer = state("audience");

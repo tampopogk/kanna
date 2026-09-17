@@ -858,11 +858,33 @@ catalog-resolved HTTP request through
 
 Those two bridge routes require a real desktop-loopback request
 (`DesktopLocalAccess`). A paired LAN client or an inbound relay request cannot
-use one trusted desktop as a proxy into the rest of the account. The local
-server submits the request through its existing desktop-authenticated relay
-socket; the relay resolves that credential to one user and routes only to a
-desktop socket registered under the same user. No raw server URL, device
-secret, desktop secret, or Firebase token enters the MCP arguments.
+use one trusted desktop as a proxy into the rest of the account. For a
+*paired* sibling (`peer_trust`, pinned through the pairing-string ceremony in
+`docs/specs/secure-channel.md` §10) the local server dials a sealed
+`kanna-ksc-peer` session to that sibling's pinned key — over the LAN at the
+address discovery observed, else through a relay tunnel opened with this
+desktop's own desktop secret — and reports the route as `peer-lan` or
+`peer-relay`; a pinned peer never falls back to a plaintext route, and the
+refusal names why (`peer_pairing_required`, `peer_upgrade_required`,
+`peer_identity_mismatch`, `peer_unreachable`). For an unpaired sibling, and
+only while `desktop_peer_legacy_access` is on, the local server submits the
+request through its existing desktop-authenticated relay socket; the relay
+resolves that credential to one user and routes only to a desktop socket
+registered under the same user, stamping the sender's identity — a relay
+that is compromised can forge exactly that, which is why the switch exists.
+No raw server URL, device secret, desktop secret, or Firebase token enters
+the MCP arguments. `kanna_list_machines` reports each machine's
+`encryption` (`local`, `e2ee`, `legacy`, `pairingRequired`).
+
+The desktop app is a renderer here, not a peer: its sibling terminal,
+companion and file views open the loopback proxy `GET /v1/peers/{id}/ksp`
+(proving the local control credential in the first `auth` frame), which the
+server splices into a sealed session to the sibling. The renderer holds no
+relay socket, Firebase token or peer key on the sibling path. Peer pairing,
+the peer list and unpairing are `DesktopLocalAccess` routes under
+`/v1/peers`; the sealed endpoint itself is `GET /v1/peers/channel`, and the
+claim `POST /v1/peers/pairing/claim` is reachable only inside a sealed peer
+session whose key is not yet paired.
 
 The relay connection is also the availability boundary. Machine discovery
 always returns the current machine and reports `relayAvailable` plus an error
@@ -1270,12 +1292,24 @@ reachable only by whoever held a private stdio pipe.
   evicts its oldest entries and says so via `missedEvents`, which it could not
   do while a lifecycle event might be among them.
 - `POST /v1/transfers/cloud-proxies`, `DELETE /v1/transfers/cloud-proxies`,
-  `DELETE /v1/transfers/cloud-proxies/{peer_id}` — outbound cloud transfer
-  tunnels. This cannot ride the server's own relay connection: the relay honours
-  `tunnel_request` only from a socket authenticated with a Firebase user
-  `id_token`, and the server authenticates as a *desktop* with its device token
-  or desktop secret. The signed-in renderer holds the only Firebase credential,
-  so it pushes and rotates the ID token through the first route.
+  `DELETE /v1/transfers/cloud-proxies/{peer_id}` — the *legacy* outbound cloud
+  transfer tunnels, refused once `desktop_peer_legacy_access` is off. They
+  ride a relay tunnel the renderer's Firebase `id_token` opens to a sibling
+  whose transfer key was read from Firestore. A **paired** sibling takes a
+  different route the server owns entirely (`peer_transfer_proxy`): a
+  loopback listener per peer, registered with the sidecar as that peer's
+  external endpoint with the transfer key pinned from the sealed pairing
+  claim, whose every accepted connection becomes a sealed `peer_tunnel`
+  session to the sibling over LAN or the relay (`tunnel_client` desktop
+  socket, service `peer`). The sibling's server admits the tunnel only from a
+  paired key and splices it to its own sidecar's loopback port. `GET
+  /v1/transfers/peers` reports such a route as a ready `cloudRoute` of kind
+  `peer-tunnel` and never offers the sidecar's plaintext LAN route for a
+  paired machine; a legacy relay proxy for the same transfer peer is
+  shadowed by the sealed route. With the switch off the sidecar is spawned
+  with `KANNA_TRANSFER_DISCOVERY=disabled` (loopback bind, no `_kanna-transfer`
+  advertisement or browse), and the renderer's own external-peer
+  registrations and the sidecar's mDNS pairing are refused.
 
 Identity and port have one owner each, and it is the desktop: it derives
 `transfer_port` into `server.toml` (the same value the inbound tunnel bridge
