@@ -25,6 +25,7 @@ function harness() {
     finishTransaction: vi.fn(async () => undefined), showManageSubscriptionsIOS: vi.fn(async () => []),
     purchaseUpdatedListener: vi.fn((fn) => { update = fn; return { remove }; }),
     purchaseErrorListener: vi.fn((fn) => { error = fn; return { remove }; }),
+    getStorefront: vi.fn(async () => "JPN"),
   };
   const client = { begin: vi.fn(async () => ({ appAccountToken: "token", productId: APPLE_MONTHLY_PRODUCT })), register: vi.fn(async () => undefined) };
   const refresh = vi.fn(async () => undefined);
@@ -223,5 +224,96 @@ describe("native Apple purchase lifecycle", () => {
     expect(h.store.showManageSubscriptionsIOS).toHaveBeenCalledOnce();
     expect(h.client.begin).not.toHaveBeenCalled();
     expect(h.client.register).not.toHaveBeenCalled();
+  });
+});
+
+describe("storefront-correct price", () => {
+  // StoreKit's displayPrice is localized for the storefront the device is
+  // connected to, which Apple documents can change at any time. The card must
+  // never show a price fetched under a storefront other than the one the
+  // payment sheet will charge.
+  const usProduct = [{ id: APPLE_MONTHLY_PRODUCT, displayPrice: "$5.00", subscriptionPeriodUnitIOS: "month", subscriptionPeriodNumberIOS: "1" }];
+  const after = (h: ReturnType<typeof harness>, from: number) => h.state.slice(from).map(s => s.price);
+  // The operation's opening busy publish precedes the storefront read; once the
+  // stale price has been dropped it must never be published again.
+  const neverRevived = (prices: (string | null)[], stale: string) => {
+    const dropped = prices.indexOf(null);
+    expect(dropped).toBeGreaterThanOrEqual(0);
+    expect(prices.slice(dropped)).not.toContain(stale);
+  };
+  it("drops a price fetched under one storefront before the next storefront's fetch resolves on foreground", async () => {
+    const h = harness(); await h.controller.start();
+    expect(h.state.at(-1)?.price).toBe("¥500");
+    const from = h.state.length;
+    h.store.getStorefront.mockResolvedValue("USA");
+    let resolve!: (products: typeof usProduct) => void;
+    h.store.fetchProducts.mockImplementationOnce(() => new Promise(yes => { resolve = yes; }));
+    const resume = h.controller.resume(); await flush();
+    expect(h.state.at(-1)?.price).toBeNull();
+    resolve(usProduct); await resume;
+    expect(h.state.at(-1)).toMatchObject({ price: "$5.00", busy: false, message: "" });
+    neverRevived(after(h, from), "¥500");
+    expect(h.store.fetchProducts).toHaveBeenCalledTimes(2);
+    await h.controller.dispose();
+  });
+  it("degrades to no price, never the stale one, when the refresh fails after a storefront change", async () => {
+    const h = harness(); await h.controller.start();
+    const from = h.state.length;
+    h.store.getStorefront.mockResolvedValue("USA");
+    h.store.fetchProducts.mockRejectedValueOnce(new Error("App Store unreachable"));
+    await h.controller.resume();
+    expect(h.state.at(-1)).toMatchObject({ price: null, busy: false, message: "App Store unreachable" });
+    neverRevived(after(h, from), "¥500");
+    await h.controller.purchase();
+    expect(h.store.requestPurchase).not.toHaveBeenCalled();
+    h.store.fetchProducts.mockResolvedValueOnce(usProduct);
+    await h.controller.resume();
+    expect(h.state.at(-1)?.price).toBe("$5.00");
+    await h.controller.dispose();
+  });
+  it("keeps showing the price while an unchanged storefront is re-confirmed", async () => {
+    const h = harness(); await h.controller.start();
+    const from = h.state.length;
+    let resolve!: (products: unknown[]) => void;
+    h.store.fetchProducts.mockImplementationOnce(() => new Promise(yes => { resolve = yes; }));
+    const resume = h.controller.resume(); await flush();
+    expect(after(h, from)).not.toContain(null);
+    resolve([{ id: APPLE_MONTHLY_PRODUCT, displayPrice: "¥500", subscriptionPeriodUnitIOS: "month", subscriptionPeriodNumberIOS: "1" }]);
+    await resume;
+    expect(after(h, from)).not.toContain(null);
+    expect(h.state.at(-1)?.price).toBe("¥500");
+    await h.controller.dispose();
+  });
+  it("does not show a price whose fetch straddled a storefront change", async () => {
+    const h = harness();
+    h.store.getStorefront.mockResolvedValueOnce("JPN").mockResolvedValue("USA");
+    await h.controller.start();
+    expect(h.state.at(-1)).toMatchObject({ price: null, message: "" });
+    await h.controller.resume();
+    expect(h.state.at(-1)?.price).toBe("¥500");
+    await h.controller.dispose();
+  });
+  it("re-resolves the tapped price against the current storefront before opening the payment sheet", async () => {
+    const h = harness(); await h.controller.start();
+    expect(h.state.at(-1)?.price).toBe("¥500");
+    h.store.getStorefront.mockResolvedValue("USA");
+    h.store.fetchProducts.mockResolvedValue(usProduct);
+    await h.controller.purchase();
+    expect(h.store.requestPurchase).not.toHaveBeenCalled();
+    expect(h.client.begin).not.toHaveBeenCalled();
+    expect(h.state.at(-1)).toMatchObject({ price: "$5.00", busy: false });
+    expect(h.state.at(-1)?.message).toContain("price changed");
+    await h.controller.purchase();
+    expect(h.store.requestPurchase).toHaveBeenCalledOnce();
+    await h.controller.dispose();
+  });
+  it("still shows the fetched price when the storefront cannot be read", async () => {
+    const h = harness();
+    h.store.getStorefront.mockRejectedValue(new Error("no storefront"));
+    await h.controller.start();
+    expect(h.state.at(-1)?.price).toBe("¥500");
+    await h.controller.resume();
+    expect(h.state.at(-1)?.price).toBe("¥500");
+    await h.controller.dispose();
   });
 });
