@@ -64,6 +64,11 @@ export const selectors = {
   quickReplyEditorCancel: `~${MOBILE_E2E_IDS.quickReplyEditorCancel}`,
   quickReplyEditorInputsXPath:
     '//*[starts-with(@name, "mobile.quick-replies.") and contains(@name, ".input")]',
+  // The horizontal strip the repo chips scroll inside. It carries no test id of
+  // its own, so it is the nearest scroll view above any rendered repo chip.
+  tasksRepoStripXPath:
+    '(//*[starts-with(@name, "mobile.tasks.repo.")])[1]' +
+    "/ancestor::XCUIElementTypeScrollView[1]",
   machinesScreen: `~${MOBILE_E2E_IDS.machinesScreen}`,
   machinesBackButton: `~${MOBILE_E2E_IDS.machinesBackButton}`,
   machinesAddButton: `~${MOBILE_E2E_IDS.machinesAddButton}`,
