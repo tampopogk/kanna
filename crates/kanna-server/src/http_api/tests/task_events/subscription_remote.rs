@@ -127,9 +127,7 @@ fn connect_repo_peers(
     // — a budget smaller than the peer count would starve one of them with
     // an artificial busy rejection on every registration, not just when a
     // test deliberately exhausts it. Nothing here exhausts this budget.
-    let permits = Arc::new(crate::relay::RelayHttpInvokePermits::new(
-        peers.len().max(1),
-    ));
+    let permits = Arc::new(crate::relay::RelayHttpInvokePermits::new(peers.len().max(1)));
     let budget = permits.for_path("/v1/task-events");
     let counts = Arc::new(Counts::default());
     let observed = counts.clone();
@@ -258,10 +256,7 @@ impl GatedInvoke {
 fn connect_gated_peer(
     source: &Arc<AppState>,
     peer: Arc<AppState>,
-) -> (
-    RelayFixture,
-    tokio::sync::mpsc::UnboundedReceiver<GatedInvoke>,
-) {
+) -> (RelayFixture, tokio::sync::mpsc::UnboundedReceiver<GatedInvoke>) {
     let mut requests = source.take_desktop_relay_requests().unwrap();
     source.set_desktop_routing_available(true);
     let permits = Arc::new(crate::relay::RelayHttpInvokePermits::new(1));
@@ -611,8 +606,11 @@ impl WatchFixture {
             sibling_id.clone(),
             missing_id.clone(),
         ]));
-        let relay =
-            connect_repo_peers(&source, &[sibling.clone(), missing.clone()], active.clone());
+        let relay = connect_repo_peers(
+            &source,
+            &[sibling.clone(), missing.clone()],
+            active.clone(),
+        );
         let app = router(source.clone());
         let (status, initial) =
             subscription_request(&app, "POST", "/v1/event-subscriptions", Self::request()).await;
@@ -633,7 +631,10 @@ impl WatchFixture {
         // `subscription_retirement_abandons_one_leg_until_peer_deadline`),
         // so the exclusion must land before any leg to this peer is ever
         // spawned, not after.
-        active.lock().unwrap().retain(|entry| *entry != missing_id);
+        active
+            .lock()
+            .unwrap()
+            .retain(|entry| *entry != missing_id);
         let service = tokio::spawn(super::super::super::event_subscriptions::run(
             source.clone(),
         ));
@@ -948,12 +949,10 @@ async fn subscription_remote_outage_isolates_to_that_leg_and_recovers() {
     // pending now null — not only through diagnostic:true.
     let compact_after_first_ack = compact_read(&watch.app, &watch.id).await;
     assert!(compact_after_first_ack["pending"].is_null());
-    assert!(
-        compact_after_first_ack["staleMachines"]["desktop-pending-peer"]
-            .as_str()
-            .unwrap()
-            .contains("too many concurrent requests")
-    );
+    assert!(compact_after_first_ack["staleMachines"]["desktop-pending-peer"]
+        .as_str()
+        .unwrap()
+        .contains("too many concurrent requests"));
 
     // A pure notification storm with the peer still down and nothing new
     // locally must not manufacture a fresh wake from the already-reported,
@@ -1138,7 +1137,8 @@ async fn subscription_remote_cursor_rejection_remains_a_hard_pause_distinct_from
 /// intervening event from that preserved checkpoint.
 #[tokio::test(start_paused = true)]
 async fn subscription_remote_outage_with_a_healthy_sibling_isolates_and_recovers() {
-    let (watch, missing, active) = WatchFixture::new_with_healthy_sibling_and_excluded_peer().await;
+    let (watch, missing, active) =
+        WatchFixture::new_with_healthy_sibling_and_excluded_peer().await;
     let missing_id = missing.config().desktop_id.clone();
     let checkpoint = watch.row().cursor.unwrap();
     let missing_checkpoint =
@@ -1190,10 +1190,7 @@ async fn subscription_remote_outage_with_a_healthy_sibling_isolates_and_recovers
     let second = watch.page().await;
     let second_batch = second.pending.as_ref().unwrap();
     assert!(second_batch.get("watchError").is_none(), "{second_batch}");
-    assert_eq!(
-        second_batch["machineErrors"][0]["machineId"],
-        json!(missing_id)
-    );
+    assert_eq!(second_batch["machineErrors"][0]["machineId"], json!(missing_id));
     assert_eq!(
         decode_cursor(second_batch["cursor"].as_str().unwrap())["cursorsByMachine"]
             [missing_id.as_str()],
@@ -1232,10 +1229,7 @@ async fn subscription_remote_outage_with_a_healthy_sibling_isolates_and_recovers
         .publish_state_changed(kanna_agent_protocol::StateChangeScope::Tasks);
     let recovered = watch.page().await;
     let recovered_batch = recovered.pending.as_ref().unwrap();
-    assert!(
-        recovered_batch.get("watchError").is_none(),
-        "{recovered_batch}"
-    );
+    assert!(recovered_batch.get("watchError").is_none(), "{recovered_batch}");
     assert_eq!(recovered_batch["machineErrors"], json!([]));
     assert_eq!(
         event_pairs(recovered_batch),
@@ -1274,12 +1268,13 @@ async fn subscription_remote_outage_with_a_healthy_sibling_isolates_and_recovers
 /// cannot reach.
 #[tokio::test(start_paused = true)]
 async fn subscription_remote_outage_survives_a_server_restart_and_recovers() {
-    let (watch, missing, active) = WatchFixture::new_with_healthy_sibling_and_excluded_peer().await;
+    let (watch, missing, active) =
+        WatchFixture::new_with_healthy_sibling_and_excluded_peer().await;
     let missing_id = missing.config().desktop_id.clone();
     let sibling = watch.peer.clone();
     let original_checkpoint = decode_cursor(&watch.row().cursor.unwrap())["cursorsByMachine"]
         [missing_id.as_str()]
-    .clone();
+        .clone();
 
     // Several real local events and ACKs while the peer stays excluded.
     for pr in [301, 302, 303] {
@@ -1349,14 +1344,10 @@ async fn subscription_remote_outage_survives_a_server_restart_and_recovers() {
     // a fresh pending batch once the fault is already acknowledged.
     let batch_id_before_idle = watch.row().batch_id;
     for _ in 0..2 {
-        tokio::time::advance(Duration::from_secs(
-            kanna_tool_catalog::MAX_WAIT_TIMEOUT_SECS,
-        ))
-        .await;
+        tokio::time::advance(Duration::from_secs(kanna_tool_catalog::MAX_WAIT_TIMEOUT_SECS)).await;
         notifications(&watch.source).await;
         assert_eq!(
-            watch.row().batch_id,
-            batch_id_before_idle,
+            watch.row().batch_id, batch_id_before_idle,
             "a still-down, already-reported peer must not manufacture a new pending batch"
         );
         assert_eq!(watch.row().wake_state, "idle");
@@ -1378,10 +1369,7 @@ async fn subscription_remote_outage_survives_a_server_restart_and_recovers() {
         .publish_state_changed(kanna_agent_protocol::StateChangeScope::Tasks);
     let recovered = watch.page().await;
     let recovered_batch = recovered.pending.as_ref().unwrap();
-    assert!(
-        recovered_batch.get("watchError").is_none(),
-        "{recovered_batch}"
-    );
+    assert!(recovered_batch.get("watchError").is_none(), "{recovered_batch}");
     assert_eq!(recovered_batch["machineErrors"], json!([]));
     assert_eq!(
         event_pairs(recovered_batch),
@@ -1509,18 +1497,16 @@ async fn subscription_remote_stale_coverage_survives_a_pending_leg_until_positiv
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{initial}");
-    let checkpoint_wrapped = decode_cursor(initial["cursor"].as_str().unwrap())["cursorsByMachine"]
-        [peer_id.as_str()]
-    .clone();
+    let checkpoint_wrapped =
+        decode_cursor(initial["cursor"].as_str().unwrap())["cursorsByMachine"][peer_id.as_str()]
+            .clone();
     let checkpoint_native = native_cursor_of(&checkpoint_wrapped);
     let fixture = GatedPeerFixture {
         source: source.clone(),
         relay,
         app,
         id: initial["id"].as_str().unwrap().to_string(),
-        service: tokio::spawn(super::super::super::event_subscriptions::run(
-            source.clone(),
-        )),
+        service: tokio::spawn(super::super::super::event_subscriptions::run(source.clone())),
     };
 
     // Establish and ACK the peer's first fault.
@@ -1536,15 +1522,12 @@ async fn subscription_remote_stale_coverage_survives_a_pending_leg_until_positiv
     assert_eq!(batch["machineErrors"][0]["machineId"], json!(peer_id));
     fixture.ack(&first).await;
     assert_eq!(
-        fixture
-            .row()
-            .stale_machines
-            .get(&peer_id)
-            .map(String::as_str),
+        fixture.row().stale_machines.get(&peer_id).map(String::as_str),
         Some("peer connection reset")
     );
     assert_eq!(
-        decode_cursor(fixture.row().cursor.as_ref().unwrap())["cursorsByMachine"][peer_id.as_str()],
+        decode_cursor(fixture.row().cursor.as_ref().unwrap())["cursorsByMachine"]
+            [peer_id.as_str()],
         checkpoint_wrapped
     );
 
@@ -1575,11 +1558,7 @@ async fn subscription_remote_stale_coverage_survives_a_pending_leg_until_positiv
         );
         fixture.ack(&page).await;
         assert_eq!(
-            fixture
-                .row()
-                .stale_machines
-                .get(&peer_id)
-                .map(String::as_str),
+            fixture.row().stale_machines.get(&peer_id).map(String::as_str),
             Some("peer connection reset"),
             "stale coverage must survive while the peer's own leg has not positively resolved"
         );
@@ -1612,16 +1591,13 @@ async fn subscription_remote_stale_coverage_survives_a_pending_leg_until_positiv
         "an unchanged (still-down) peer must not manufacture a new pending batch just because its error text changed"
     );
     assert_eq!(
-        fixture
-            .row()
-            .stale_machines
-            .get(&peer_id)
-            .map(String::as_str),
+        fixture.row().stale_machines.get(&peer_id).map(String::as_str),
         Some("peer connection reset again"),
         "the stored reason still updates even though no wake was warranted"
     );
     assert_eq!(
-        decode_cursor(fixture.row().cursor.as_ref().unwrap())["cursorsByMachine"][peer_id.as_str()],
+        decode_cursor(fixture.row().cursor.as_ref().unwrap())["cursorsByMachine"]
+            [peer_id.as_str()],
         checkpoint_wrapped
     );
 
@@ -1641,10 +1617,7 @@ async fn subscription_remote_stale_coverage_survives_a_pending_leg_until_positiv
     }));
     let recovered = fixture.page().await;
     let recovered_batch = recovered.pending.as_ref().unwrap();
-    assert!(
-        recovered_batch.get("watchError").is_none(),
-        "{recovered_batch}"
-    );
+    assert!(recovered_batch.get("watchError").is_none(), "{recovered_batch}");
     assert_eq!(recovered_batch["machineErrors"], json!([]));
     assert_eq!(event_pairs(recovered_batch), Vec::<(String, String)>::new());
     assert!(
@@ -1736,22 +1709,16 @@ async fn subscription_remote_same_call_success_then_failure_keeps_the_peer_stale
     // Existing, supported subscription timing parameters (the same override
     // `WatchFixture::request` already uses) — no `minEvents` and none needed:
     // a non-urgent first event already leaves `ready` false on its own.
-    let (status, initial) = subscription_request(
-        &app,
-        "POST",
-        "/v1/event-subscriptions",
-        WatchFixture::request(),
-    )
-    .await;
+    let (status, initial) =
+        subscription_request(&app, "POST", "/v1/event-subscriptions", WatchFixture::request())
+            .await;
     assert_eq!(status, StatusCode::OK, "{initial}");
     let fixture = GatedPeerFixture {
         source: source.clone(),
         relay,
         app,
         id: initial["id"].as_str().unwrap().to_string(),
-        service: tokio::spawn(super::super::super::event_subscriptions::run(
-            source.clone(),
-        )),
+        service: tokio::spawn(super::super::super::event_subscriptions::run(source.clone())),
     };
 
     // The peer's leg succeeds first, with one real, non-urgent event: not
@@ -1816,7 +1783,7 @@ async fn subscription_remote_same_call_success_then_failure_keeps_the_peer_stale
         native_cursor_of(
             &decode_cursor(fixture.row().cursor.as_ref().unwrap())["cursorsByMachine"]
                 [peer_id.as_str()]
-            .clone()
+                .clone()
         ),
         "native-after-first-success",
         "the earlier successful leg's checkpoint must be retained despite the later fault"
@@ -1853,16 +1820,11 @@ async fn subscription_remote_same_call_success_then_failure_keeps_the_peer_stale
     )
     .await;
     assert_eq!(
-        fixture.row().batch_id,
-        batch_id_before,
+        fixture.row().batch_id, batch_id_before,
         "an unchanged (still-down) peer must not manufacture a new pending batch"
     );
     assert_eq!(
-        fixture
-            .row()
-            .stale_machines
-            .get(&peer_id)
-            .map(String::as_str),
+        fixture.row().stale_machines.get(&peer_id).map(String::as_str),
         Some("peer connection reset")
     );
 }

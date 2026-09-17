@@ -1484,10 +1484,7 @@ async fn human_revision_request_ignores_the_budget_and_hands_it_back() {
         .into_iter()
         .filter(|run| run.stage == "in progress" && run.kind == "main")
         .count();
-    assert_eq!(
-        revision_runs, 1,
-        "the authorized request starts exactly once"
-    );
+    assert_eq!(revision_runs, 1, "the authorized request starts exactly once");
 
     // The announced budget is the one the revision leaves behind. Reporting
     // the pre-reset count made a human revision claim a spent budget

@@ -103,7 +103,9 @@ pub(crate) async fn retry_pending_account_sign_out(http_state: &Arc<AppState>, d
     match crate::relay::reconcile_machine_trust_for_account(http_state, None, generation) {
         Ok(()) => {
             if let Err(error) = db.delete_setting(PENDING_ACCOUNT_SIGN_OUT_SETTING) {
-                log::warn!("Failed to clear pending sign-out marker after startup retry: {error}");
+                log::warn!(
+                    "Failed to clear pending sign-out marker after startup retry: {error}"
+                );
             } else {
                 log::info!(
                     "Retried a machine-trust cleanup left pending by an explicit sign-out \
@@ -149,10 +151,9 @@ mod tests {
         state.set_authenticated_account_uid(Some("uid-1".to_string()));
         seed_trust_for_uid(&state, "uid-1");
 
-        let result =
-            sign_out_desktop_cloud_account(PrivilegedTaskAccess, State(Arc::clone(&state)))
-                .await
-                .expect("sign-out succeeds");
+        let result = sign_out_desktop_cloud_account(PrivilegedTaskAccess, State(Arc::clone(&state)))
+            .await
+            .expect("sign-out succeeds");
         assert_eq!(result, StatusCode::NO_CONTENT);
 
         assert_eq!(state.authenticated_account_uid(), None);

@@ -803,23 +803,24 @@ async fn aggregate_task_summaries(
         .map(|routed| routed.response)
         {
             Ok(response) if response.status == 200 => match response.body {
-                Some(body) => {
-                    match serde_json::from_value::<Vec<crate::mobile_api::TaskSummary>>(body) {
-                        Ok(mut remote_tasks) => {
-                            for task in &mut remote_tasks {
-                                task.machine_id = Some(machine_id.clone());
-                                if task.waiting_prompt_snippet.is_none() {
-                                    task.waiting_prompt_snippet = task.snippet.take();
-                                }
+                Some(body) => match serde_json::from_value::<
+                    Vec<crate::mobile_api::TaskSummary>,
+                >(body)
+                {
+                    Ok(mut remote_tasks) => {
+                        for task in &mut remote_tasks {
+                            task.machine_id = Some(machine_id.clone());
+                            if task.waiting_prompt_snippet.is_none() {
+                                task.waiting_prompt_snippet = task.snippet.take();
                             }
-                            tasks.append(&mut remote_tasks);
                         }
-                        Err(error) => machine_errors.push(serde_json::json!({
-                            "machineId": machine_id,
-                            "error": format!("invalid task-list response: {error}"),
-                        })),
+                        tasks.append(&mut remote_tasks);
                     }
-                }
+                    Err(error) => machine_errors.push(serde_json::json!({
+                        "machineId": machine_id,
+                        "error": format!("invalid task-list response: {error}"),
+                    })),
+                },
                 None => machine_errors.push(serde_json::json!({
                     "machineId": machine_id,
                     "error": "task-list response had no body",
