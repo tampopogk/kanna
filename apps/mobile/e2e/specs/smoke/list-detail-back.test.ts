@@ -13,6 +13,7 @@ import {
   performTaskDetailEdgeSwipeBack,
   PTY_SNAPSHOT_MIN_DECODED_BYTES,
   resolveRequiredPtyTerminalFixture,
+  resolveMobileRepoChipId,
   assertPtyFixtureTaskRow,
   waitForRenderedPtyTerminal,
   waitForTaskTerminalLive
@@ -129,9 +130,15 @@ describe("exerciseTaskPinSwipe", () => {
     let renderedRowIds: () => string[] = () =>
       pinnedLocally ? ["task-1", "task-2"] : ["task-2", "task-1"];
     const driver = {
-      $: vi.fn(async (selector: string) =>
-        selector === "~mobile.tasks.repo.repo-1" ? repo : row
-      ),
+      // The phone renders the hashed repo under its canonical `git:<hash>`
+      // chip; the desktop-local `repo-1` chip does not exist on screen.
+      $: vi.fn(async (selector: string) => {
+        if (selector === "~mobile.tasks.repo.git:hash-1") return repo;
+        if (selector.startsWith("~mobile.tasks.repo.")) {
+          throw new Error(`no repo chip renders for ${selector}`);
+        }
+        return row;
+      }),
       $$: vi.fn(async () =>
         renderedRowIds().map((taskId) => ({
           getAttribute: vi.fn(async (name: string) =>
@@ -164,6 +171,15 @@ describe("exerciseTaskPinSwipe", () => {
           ok: true,
           status: 200,
           json: async () => ({ repoId: "repo-1" })
+        };
+      }
+      if (url.endsWith("/v1/repos")) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => [
+            { id: "repo-1", name: "fixture", remoteUrlHash: "hash-1" }
+          ]
         };
       }
       return {
@@ -200,6 +216,8 @@ describe("exerciseTaskPinSwipe", () => {
       }
     );
     expect(repo.click).toHaveBeenCalledOnce();
+    expect(driver.$).toHaveBeenCalledWith("~mobile.tasks.repo.git:hash-1");
+    expect(driver.$).not.toHaveBeenCalledWith("~mobile.tasks.repo.repo-1");
     // Pin, then unpin: the phone is the only place the pin lives, so the
     // journey puts it back itself — two swipes, and no tap in between.
     expect(driver.execute).toHaveBeenCalledTimes(2);
@@ -248,6 +266,15 @@ describe("exerciseTaskPinSwipe", () => {
               ok: true,
               status: 200,
               json: async () => ({ repoId: "repo-1" })
+            };
+          }
+          if (url.endsWith("/v1/repos")) {
+            return {
+              ok: true,
+              status: 200,
+              json: async () => [
+                { id: "repo-1", name: "fixture", remoteUrlHash: "hash-1" }
+              ]
             };
           }
           return {
@@ -394,6 +421,113 @@ describe("ensureTaskListVisible", () => {
     expect(backButton.click).not.toHaveBeenCalled();
     expect(ui.pause).not.toHaveBeenCalled();
   });
+
+  it("selects the fixture's repo chip before waiting for rows, because the auto-selected repo may hold none", async () => {
+    // The app auto-selects the desktop's most recently opened repo. Here that
+    // repo has no open task: rows exist only once the fixture repo is chosen.
+    let selectedRepoChipId: string | null = null;
+    const fixtureRepoChip = createElement(
+      () => true,
+      () => {
+        selectedRepoChipId = "git:hash-fixture";
+      }
+    );
+    const ui = {
+      getBackButton: vi.fn(async () => createElement(() => false)),
+      getRepoChip: vi.fn(async (repoChipId: string) => {
+        if (repoChipId !== "git:hash-fixture") {
+          throw new Error(`no repo chip renders for ${repoChipId}`);
+        }
+        return fixtureRepoChip;
+      }),
+      getTaskRows: vi.fn(async () =>
+        selectedRepoChipId === "git:hash-fixture" ? [createElement(() => true)] : []
+      ),
+      pause: vi.fn(async () => undefined),
+      waitUntil: vi.fn(async (condition: () => Promise<boolean>, options) => {
+        if (await condition()) {
+          return;
+        }
+
+        throw new Error(options.timeoutMsg);
+      })
+    };
+
+    await ensureTaskListVisible(ui, { repoChipId: "git:hash-fixture" });
+
+    expect(ui.getRepoChip).toHaveBeenCalledWith("git:hash-fixture");
+    expect(fixtureRepoChip.waitForDisplayed).toHaveBeenCalledWith({ timeout: 30_000 });
+    expect(fixtureRepoChip.click).toHaveBeenCalledTimes(1);
+    expect(ui.getTaskRows).toHaveBeenCalled();
+  });
+
+  it("still fails when the fixture repo itself shows no rows", async () => {
+    const ui = {
+      getBackButton: vi.fn(async () => createElement(() => false)),
+      getRepoChip: vi.fn(async () => createElement(() => true)),
+      getTaskRows: vi.fn(async () => []),
+      pause: vi.fn(async () => undefined),
+      waitUntil: vi.fn(async (condition: () => Promise<boolean>, options) => {
+        if (await condition()) {
+          return;
+        }
+
+        throw new Error(options.timeoutMsg);
+      })
+    };
+
+    await expect(
+      ensureTaskListVisible(ui, { repoChipId: "git:hash-fixture" })
+    ).rejects.toThrow("Expected at least one task row in the mobile task list");
+  });
+});
+
+describe("resolveMobileRepoChipId", () => {
+  function reposFetch(repos: unknown) {
+    return vi.fn(async () => ({ ok: true, status: 200, json: async () => repos }));
+  }
+
+  it("maps a hashed desktop-local repo id to the canonical git:<hash> chip the phone renders", async () => {
+    const fetchImpl = reposFetch([
+      { id: "repo-fixture", name: "Disposable acceptance", remoteUrlHash: "hash-fixture" },
+      { id: "ca99c7ee", name: "kanna", remoteUrlHash: "hash-kanna" }
+    ]);
+
+    await expect(
+      resolveMobileRepoChipId("http://127.0.0.1:48120", "ca99c7ee", fetchImpl)
+    ).resolves.toBe("git:hash-kanna");
+    expect(fetchImpl).toHaveBeenCalledWith("http://127.0.0.1:48120/v1/repos");
+  });
+
+  it("keeps the desktop-local id for a repo without a remote URL hash", async () => {
+    await expect(
+      resolveMobileRepoChipId(
+        "http://127.0.0.1:48120",
+        "repo-local",
+        reposFetch([{ id: "repo-local", name: "local only" }])
+      )
+    ).resolves.toBe("repo-local");
+  });
+
+  it("fails when the desktop does not list the fixture's repo", async () => {
+    await expect(
+      resolveMobileRepoChipId(
+        "http://127.0.0.1:48120",
+        "repo-missing",
+        reposFetch([{ id: "repo-other", name: "other", remoteUrlHash: "hash-other" }])
+      )
+    ).rejects.toThrow("Repository repo-missing is not listed");
+  });
+
+  it("fails when the repository list cannot be read", async () => {
+    await expect(
+      resolveMobileRepoChipId(
+        "http://127.0.0.1:48120",
+        "repo-1",
+        vi.fn(async () => ({ ok: false, status: 403, json: async () => null }))
+      )
+    ).rejects.toThrow("Could not list repositories");
+  });
 });
 
 describe("PTY fixture selection", () => {
@@ -435,6 +569,7 @@ describe("PTY fixture selection", () => {
       status: 200,
       json: async () => ({
         id: "task-pty",
+        repoId: "repo-pty",
         title: "Short renamed task",
         prompt:
           `${"Detailed canonical prompt line. ".repeat(12)}\nMOBILE_PROMPT_END_SENTINEL`,
@@ -458,8 +593,38 @@ describe("PTY fixture selection", () => {
     ).resolves.toEqual({
       expectedTitle: "Short renamed task",
       promptEndSentinel: "MOBILE_PROMPT_END_SENTINEL",
+      repoId: "repo-pty",
       taskId: "task-pty"
     });
+  });
+
+  it("rejects a fixture task that does not report its repository", async () => {
+    const fetchImpl = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        id: "task-pty",
+        title: "Short renamed task",
+        prompt:
+          `${"Detailed canonical prompt line. ".repeat(12)}\nMOBILE_PROMPT_END_SENTINEL`,
+        agentType: "pty",
+        closedAt: null
+      })
+    }));
+
+    await expect(
+      assertPtyTerminalFixtureAvailable(
+        "http://127.0.0.1:48120",
+        {
+          taskId: "task-pty",
+          sentinel: "Kanna PTY sentinel",
+          expectedCols: 80,
+          expectedRows: 48,
+          minDecodedBytes: PTY_SNAPSHOT_MIN_DECODED_BYTES
+        },
+        fetchImpl
+      )
+    ).rejects.toThrow("did not expose a repository id");
   });
 
   it("opens the exact fixture task row by id and never clicks the first arbitrary row", async () => {
@@ -1088,6 +1253,12 @@ describe("smoke local reads use local-process authority", () => {
               closedAt: null
             })
           );
+        } else if (url === "/v1/repos") {
+          response.end(
+            JSON.stringify([
+              { id: "repo-1", name: "fixture", remoteUrlHash: "hash-1" }
+            ])
+          );
         } else if (url === "/v1/repos/repo-1/tasks") {
           response.end(
             JSON.stringify([
@@ -1138,6 +1309,7 @@ describe("smoke local reads use local-process authority", () => {
     await expect(assertPtyTerminalFixtureAvailable(baseUrl, FIXTURE)).resolves.toEqual({
       expectedTitle: "Fixture task",
       promptEndSentinel: "MOBILE_PROMPT_END_SENTINEL",
+      repoId: "repo-1",
       taskId: "task-1"
     });
 
@@ -1174,7 +1346,7 @@ describe("smoke local reads use local-process authority", () => {
     };
     const driver = {
       $: vi.fn(async (selector: string) =>
-        selector === "~mobile.tasks.repo.repo-1" ? repo : row
+        selector === "~mobile.tasks.repo.git:hash-1" ? repo : row
       ),
       $$: vi.fn(async () =>
         (pinnedLocally ? ["task-1", "task-2"] : ["task-2", "task-1"]).map((taskId) => ({
@@ -1196,6 +1368,7 @@ describe("smoke local reads use local-process authority", () => {
     expect(received.map((call) => `${call.method} ${call.url}`)).toEqual([
       "GET /v1/tasks/task-1",
       "GET /v1/repos/repo-1/tasks",
+      "GET /v1/repos",
       "GET /v1/repos/repo-1/tasks"
     ]);
     expectLocalProcessRequests();
