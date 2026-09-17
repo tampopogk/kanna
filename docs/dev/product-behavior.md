@@ -363,9 +363,10 @@ listener captures keydown before anything else and calls `preventDefault()`, so
 any chord it claims is gone from every input, textarea and contenteditable in
 the app — which is how Ctrl+Shift+← , *the* word-selection chord, stopped
 selecting anything in the task search field. `belongsToTextEditing` concedes a
-keystroke to the field it landed in when Shift is held over a caret or deletion
-key. Only that: Ctrl+Shift+S means nothing inside an input and still advances a
-stage from one, and xterm's hidden helper textarea is deliberately not an
+keystroke to the field it landed in when Shift is held over a caret key. Only
+that: the deletion keys are not caret keys, so Ctrl+Shift+Backspace still
+closes a task from a focused composer rather than silently doing nothing;
+Ctrl+Shift+S means nothing inside an input and still advances a stage from one, and xterm's hidden helper textarea is deliberately not an
 editable element — what is typed into it goes to the PTY, and navigating tasks
 from a focused agent terminal has to keep working.
 

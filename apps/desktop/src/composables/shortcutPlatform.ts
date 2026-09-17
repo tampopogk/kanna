@@ -307,9 +307,14 @@ export function terminalClipboardAction(
 }
 
 /**
- * Keys that move the caret or delete around it. Held with Shift they mean
- * "extend the selection" in every text field on every platform, which is the
- * one thing an app-level shortcut must never take.
+ * Keys that move the caret. Held with Shift they mean "extend the selection"
+ * in every text field on every platform, which is the one thing an app-level
+ * shortcut must never take.
+ *
+ * The deletion keys are deliberately absent: Shift+Backspace and Shift+Delete
+ * extend nothing, and conceding them would hand a focused field the listed
+ * `closeTask` chord (⇧⌘⌫ / Ctrl+Shift+Backspace), which is exactly the kind of
+ * silent no-op this guard exists to prevent.
  */
 const TEXT_NAVIGATION_KEYS = new Set([
   "ArrowLeft",
@@ -320,8 +325,6 @@ const TEXT_NAVIGATION_KEYS = new Set([
   "End",
   "PageUp",
   "PageDown",
-  "Backspace",
-  "Delete",
 ])
 
 /** Input types that hold text a person edits, as opposed to a widget. */

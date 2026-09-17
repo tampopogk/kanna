@@ -357,7 +357,17 @@ describe("belongsToTextEditing", () => {
     for (const key of ["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End", "PageUp", "PageDown"]) {
       expect(belongsToTextEditing(event(key, true), field), key).toBe(true)
     }
-    expect(belongsToTextEditing(event("Backspace", true), field)).toBe(true)
+  })
+
+  it("keeps the deletion keys, which extend no selection", () => {
+    // Shift+Backspace and Shift+Delete select nothing on either platform, and
+    // conceding them handed a focused field the listed closeTask chord
+    // (⇧⌘⌫ / Ctrl+Shift+Backspace) — which then silently closed nothing,
+    // while on macOS ⌘⌫ went on to eat the composer draft.
+    for (const platform of ["mac", "linux"] as const) {
+      expect(belongsToTextEditing(event("Backspace", true), field, platform), platform).toBe(false)
+      expect(belongsToTextEditing(event("Delete", true), field, platform), platform).toBe(false)
+    }
   })
 
   it("concedes nothing outside a text field", () => {

@@ -359,6 +359,46 @@ describe("useKeyboardShortcuts", () => {
       expect(actions.navigateRepoUp).toHaveBeenCalledTimes(1);
       wrapper.unmount();
     });
+
+    /**
+     * Shift+Backspace extends no selection, so the listed close chord is not
+     * the field's to claim. It was conceded anyway for a while, and the whole
+     * cost of that lands in the one view a person lives in: the agent composer
+     * and the sidebar search hold the caret nearly all the time, so ⇧⌘⌫ /
+     * Ctrl+Shift+Backspace closed nothing and said nothing about why.
+     */
+    it("still closes a task from a focused text field on both platforms", () => {
+      const cases = [
+        { platform: "MacIntel", init: { key: "Backspace", metaKey: true, shiftKey: true } },
+        { platform: "Linux x86_64", init: { key: "Backspace", ctrlKey: true, shiftKey: true } },
+      ] as const;
+
+      for (const { platform, init } of cases) {
+        for (const nav of [globalThis.navigator, window.navigator]) {
+          Object.defineProperty(nav, "platform", { value: platform, configurable: true });
+        }
+        resetShortcutBindingsForTests();
+        const actions = buildActions();
+        const wrapper = mountShortcutHarness(actions, () => "main");
+
+        try {
+          for (const html of [`<input type="text">`, `<textarea></textarea>`]) {
+            withTarget(html, (field) => {
+              field.focus();
+              const event = pressAt(field, init);
+              expect(event.defaultPrevented, `${platform} ${html}`).toBe(true);
+            });
+          }
+          expect(actions.closeTask, platform).toHaveBeenCalledTimes(2);
+        } finally {
+          wrapper.unmount();
+          for (const nav of [globalThis.navigator, window.navigator]) {
+            Object.defineProperty(nav, "platform", { value: "MacIntel", configurable: true });
+          }
+          resetShortcutBindingsForTests();
+        }
+      }
+    });
   });
 
   it("ignores workspace shortcuts until the window is ready for them", () => {
