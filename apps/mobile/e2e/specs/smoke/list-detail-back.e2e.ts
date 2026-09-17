@@ -6,6 +6,7 @@ import {
   tasksRepoSelector
 } from "../../helpers/selectors";
 import { DEFAULT_MOBILE_TERMINAL_GEOMETRY } from "../../../src/mobileTerminalGeometry";
+import { canonicalRepoId } from "../../../src/lib/api/repoIdentity";
 
 const SCREEN_TIMEOUT_MS = 30_000;
 const POLL_INTERVAL_MS = 250;
@@ -59,6 +60,11 @@ interface TaskListUi {
   ): Promise<unknown>;
 }
 
+/** A task list whose repository chips the smoke can select. */
+interface RepoScopedTaskListUi extends TaskListUi {
+  getRepoChip(repoChipId: string): Promise<SmokeElement>;
+}
+
 interface ListDetailBackOriginUi {
   selectOrigin(origin: "tasks" | "recent"): Promise<void>;
   openTask(taskId: string): Promise<void>;
@@ -90,6 +96,8 @@ interface TaskPromptExpansionUi {
 export interface TaskPromptFixture {
   expectedTitle: string;
   promptEndSentinel: string;
+  /** The desktop-local repository id the task API reports for the task. */
+  repoId: string;
   taskId: string;
 }
 
@@ -98,7 +106,7 @@ interface RenderedPtyTerminalUi extends TaskTerminalLiveUi {
 }
 
 interface SmokeUi
-  extends TaskListUi,
+  extends RepoScopedTaskListUi,
     RenderedPtyTerminalUi,
     PtyFixtureTaskUi,
     TaskPromptExpansionUi {}
@@ -254,6 +262,9 @@ function createSmokeUi(driver: Browser): SmokeUi {
       const taskRows = await driver.$$(selectors.taskRowsXPath);
       return Array.from(taskRows);
     },
+    async getRepoChip(repoChipId) {
+      return driver.$(tasksRepoSelector(repoChipId));
+    },
     async inspectTerminalWebView() {
       return inspectTerminalWebView({
         execute: async <T>(script: () => T) => await driver.execute(script) as T,
@@ -375,6 +386,13 @@ export async function assertPtyTerminalFixtureAvailable(
     );
   }
 
+  const repoId = getStringProperty(task, "repoId");
+  if (!repoId) {
+    throw new Error(
+      `Known PTY fixture task ${fixture.taskId} did not expose a repository id.`
+    );
+  }
+
   const expectedTitle = getStringProperty(task, "title")?.trim();
   const prompt = getStringProperty(task, "prompt")?.trim();
   const promptLines = prompt?.split(/\r?\n/) ?? [];
@@ -394,7 +412,46 @@ export async function assertPtyTerminalFixtureAvailable(
     );
   }
 
-  return { expectedTitle, promptEndSentinel, taskId: fixture.taskId };
+  return { expectedTitle, promptEndSentinel, repoId, taskId: fixture.taskId };
+}
+
+/**
+ * The repository chip id the phone renders for a desktop-local repo id.
+ *
+ * The desktop's task and repo APIs speak desktop-local ids (`ca99c7ee`,
+ * `repo-…`), but the app lists a repo that carries a remote URL hash under
+ * the machine-independent `git:<hash>` id (`canonicalRepoId`), and its chip
+ * and task `repoId` values follow. A smoke that selected the chip by the
+ * desktop-local id would never find it. The app also auto-selects the first
+ * repo the desktop lists (most recently opened first) when nothing is
+ * selected, which need not be the fixture task's repo and may hold no open
+ * task at all, so the smoke selects the fixture's repo explicitly.
+ */
+export async function resolveMobileRepoChipId(
+  desktopServerUrl: string,
+  repoId: string,
+  fetchImpl: FetchLike = localProcessFetch
+): Promise<string> {
+  const response = await fetchImpl(`${desktopServerUrl}/v1/repos`);
+  if (!response.ok) {
+    throw new Error(
+      `Could not list repositories from ${desktopServerUrl} to resolve repo ${repoId} (${response.status}).`
+    );
+  }
+  const repos = await response.json();
+  if (!Array.isArray(repos)) {
+    throw new Error(`Repository list from ${desktopServerUrl} was not an array.`);
+  }
+  for (const candidate of repos) {
+    if (getStringProperty(candidate, "id") !== repoId) continue;
+    return canonicalRepoId({
+      id: repoId,
+      remoteUrlHash: getStringProperty(candidate, "remoteUrlHash")
+    });
+  }
+  throw new Error(
+    `Repository ${repoId} is not listed by ${desktopServerUrl}, so the mobile task list has no chip for it.`
+  );
 }
 
 export async function smokeElementText(element: SmokeElement): Promise<string> {
@@ -953,11 +1010,36 @@ export async function assertPtyFixtureTaskRow(
   );
 }
 
-export async function ensureTaskListVisible(ui: TaskListUi): Promise<void> {
+export async function ensureTaskListVisible(ui: TaskListUi): Promise<void>;
+/**
+ * Backs out of persisted task detail, selects the given repository chip, and
+ * waits for that repository's task rows. Without a chip id the rows waited
+ * on belong to whatever repo the app selected on its own, which is the
+ * desktop's most recently opened repo rather than the fixture's.
+ */
+export async function ensureTaskListVisible(
+  ui: RepoScopedTaskListUi,
+  options: { repoChipId: string }
+): Promise<void>;
+export async function ensureTaskListVisible(
+  ui: TaskListUi | RepoScopedTaskListUi,
+  options: { repoChipId?: string } = {}
+): Promise<void> {
   const backButton = await ui.getBackButton();
   if (await backButton.isExisting()) {
     await backButton.click();
     await ui.pause(BACK_NAVIGATION_SETTLE_MS);
+  }
+
+  if (options.repoChipId !== undefined) {
+    if (!("getRepoChip" in ui)) {
+      throw new Error(
+        `Cannot select repo chip ${options.repoChipId}: this task list UI has no repo chips.`
+      );
+    }
+    const repoChip = await ui.getRepoChip(options.repoChipId);
+    await repoChip.waitForDisplayed?.({ timeout: SCREEN_TIMEOUT_MS });
+    await repoChip.click();
   }
 
   await waitForTaskRows(ui);
@@ -1090,7 +1172,12 @@ export async function exerciseTaskPinSwipe(
     await dragRowPastCommitThreshold(driver, row);
   };
 
-  const repo = await driver.$(tasksRepoSelector(detail.repoId));
+  const repoChipId = await resolveMobileRepoChipId(
+    desktopServerUrl,
+    detail.repoId,
+    fetchImpl
+  );
+  const repo = await driver.$(tasksRepoSelector(repoChipId));
   await repo.waitForDisplayed({ timeout: SCREEN_TIMEOUT_MS });
   await repo.click();
 
@@ -1237,10 +1324,16 @@ export async function runListDetailBackSmoke(
     fetchImpl
   );
 
+  const repoChipId = await resolveMobileRepoChipId(
+    desktopServerUrl,
+    promptFixture.repoId,
+    fetchImpl
+  );
+
   const appShell = await driver.$(selectors.appShell);
   await appShell.waitForDisplayed({ timeout: SCREEN_TIMEOUT_MS });
 
-  await ensureTaskListVisible(ui);
+  await ensureTaskListVisible(ui, { repoChipId });
   await exerciseTaskPinSwipe(driver, desktopServerUrl, fixture.taskId, fetchImpl);
   await exerciseActivityDismissSwipe(
     driver,
