@@ -594,6 +594,25 @@ no task-state notifications. Existing paired clients use the same credential and
 so no protocol version changes. The complete route classification is recorded
 in `docs/task-specs/c9f5721b.md` and enforced by the router authorization tests.
 
+**Settings mutation is desktop-local.** Reading a setting is part of the
+LAN-paired route set, but `PUT` and `DELETE /v1/settings/{key}` are
+`DesktopLocalAccess`, alongside `PUT /v1/settings/cloud-transfer-identity`.
+Settings are this desktop's own controls, not shared task state:
+`mobile_legacy_access` and `desktop_peer_legacy_access` decide whether it still
+accepts the pre-E2EE paths at all, and `terminalEditorCommand` is the command
+line `terminal_editor::editor_choices` resolves to the executable the daemon
+spawns the next time the person here opens a file in a terminal editor. So a
+paired phone, a paired sibling desktop and an account-authenticated relay invoke
+are all refused, over LAN and relay alike — which is what
+`docs/specs/secure-channel.md` §5 and §10 already promised for both sealed
+authorities ("pairing controls, settings"). Until 2026-09-16 the two mutation
+handlers carried no authority extractor and sat on the deny-by-default floor
+instead, so every one of those callers could write them;
+`settings_mutation_refuses_every_remote_caller_and_admits_loopback` pins each
+shape. No client was using the remote path: the desktop webview reaches the
+routes over its own loopback listener, and mobile never calls `/v1/settings`
+at all.
+
 - `GET /v1/status`
 - `GET /v1/stream` (KSP WebSocket for terminal, agent, and streamed task API frames)
 - `GET /v1/desktops`

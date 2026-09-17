@@ -12108,13 +12108,21 @@ mod tests {
         let lock = rusqlite::Connection::open(&config.db_path).expect("open lock connection");
         lock.execute_batch("BEGIN IMMEDIATE; UPDATE settings SET value = value;")
             .expect("hold sqlite write lock");
+        // A request that blocks on the held sqlite write lock. It has to be one
+        // a tunneled KSP caller may actually reach, so it cannot be
+        // `PUT /v1/settings/{key}` - that is desktop-local and would now be
+        // refused before it ever touched the database. The window-workspace
+        // mutation writes its setting through `Db::mutate_setting`, which opens
+        // with `BEGIN IMMEDIATE` and blocks the same way.
         send_frame(
             &mut socket,
             &ClientFrame::Request {
                 id: 71,
-                method: "PUT".into(),
-                path: "/v1/settings/terminalLatencyTest".into(),
-                body: Some(serde_json::json!({ "value": "busy" })),
+                method: "POST".into(),
+                path: "/v1/window-workspace/mutations".into(),
+                body: Some(
+                    serde_json::json!({ "operation": "updateSelection", "windowId": "latency" }),
+                ),
             },
         )
         .await;
@@ -12266,14 +12274,20 @@ mod tests {
         let lock = rusqlite::Connection::open(&config.db_path).expect("open lock connection");
         lock.execute_batch("BEGIN IMMEDIATE; UPDATE settings SET value = value;")
             .expect("hold sqlite write lock");
+        // See `terminal_input_bypasses_blocked_ksp_request`: a tunneled caller
+        // cannot reach `PUT /v1/settings/{key}`, so saturation uses the
+        // window-workspace mutation, which blocks on the same write lock.
         for offset in 0..40u64 {
             send_frame(
                 &mut socket,
                 &ClientFrame::Request {
                     id: 10_000 + offset,
-                    method: "PUT".into(),
-                    path: format!("/v1/settings/requestSaturation{offset}"),
-                    body: Some(serde_json::json!({ "value": "busy" })),
+                    method: "POST".into(),
+                    path: "/v1/window-workspace/mutations".into(),
+                    body: Some(serde_json::json!({
+                        "operation": "updateSelection",
+                        "windowId": format!("saturation-{offset}"),
+                    })),
                 },
             )
             .await;
