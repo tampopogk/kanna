@@ -15,7 +15,7 @@ You are in a worktree branched from the task branch. Your job is to create a Git
 6. **Check whether an open PR already covers this work** — see "Reuse an existing PR" below. If one does, update it and skip steps 7-9.
 7. **Rename the branch** to something meaningful based on the commits (`git branch -m <new-name>`).
 8. **Push the branch**: `git push -u origin HEAD`.
-9. **Create the PR** against the validated target from step 3 (`gh pr create --base <target>`), with a clear title and description summarizing the changes. End the body with a `Kanna-Task: $KANNA_TASK_ID` line so a later run can find this PR after the branch has been renamed.
+9. **Create the PR** against the validated target from step 3 (`gh pr create --base <target>`), with a clear title and description summarizing the changes. The title and body must carry no AI attribution or advertising lines — no `Co-Authored-By:` trailer naming an AI, no "Generated with [Claude Code]" or similar line — regardless of whether your own harness appends one by default. End the body with a `Kanna-Task: $KANNA_TASK_ID` line, and make it the only trailer, so a later run can find this PR after the branch has been renamed.
 
 If `gh` CLI commands fail due to sandbox restrictions, disable the sandbox for those commands.
 
