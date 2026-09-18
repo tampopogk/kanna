@@ -539,10 +539,18 @@ describe("remote task listing, creation, and actions E2E", () => {
       null
     ));
     expect(getString(resumed, "cursor")).toBe(cursor);
-    expect(eventTypes(resumed)).toEqual(["task.awaiting_input", "task.revision_requested"]);
+    // Two events for the same task in one response now collapse into a
+    // single current-state `task.runtime_changed` row (see
+    // `collapse_events_to_task_state`) carrying both original types in
+    // `payload.causedByEventTypes`, rather than being returned as two rows.
+    expect(eventTypes(resumed)).toEqual(["task.runtime_changed"]);
+    expect(causedByEventTypes(resumed)).toEqual([
+      "task.awaiting_input",
+      "task.revision_requested"
+    ]);
     seen.push(...eventTypes(resumed));
-    expect(seen).toHaveLength(4_102);
-    expect(new Set(seen).size).toBe(4_102);
+    expect(seen).toHaveLength(4_101);
+    expect(new Set(seen).size).toBe(4_101);
 
     // Batching over the real relay. A blocking aggregate wait that needs three
     // events must re-arm the remote leg as each one arrives, or the first
@@ -568,7 +576,14 @@ describe("remote task listing, creation, and actions E2E", () => {
       await appendTaskEvent(remote, task.taskId, type);
     }
     const batchedResponse = asRecord(await batched);
-    expect(eventTypes(batchedResponse)).toEqual([
+    // Three events for the same task in one batched response likewise
+    // collapse into a single current-state row (see
+    // `collapse_events_to_task_state`); the batching property under test —
+    // that the remote leg was re-armed for all three instead of ending the
+    // wait after the first — is exactly what a single collapsed row naming
+    // all three in `causedByEventTypes` still proves.
+    expect(eventTypes(batchedResponse)).toEqual(["task.runtime_changed"]);
+    expect(causedByEventTypes(batchedResponse)).toEqual([
       "run.started",
       "run.finished",
       "stage.changed"
@@ -1164,6 +1179,25 @@ function eventTypes(value: unknown): string[] {
     throw new Error(`expected task event array ${JSON.stringify(value)}`);
   }
   return events.map((event) => getString(asRecord(event), "type"));
+}
+
+// Several events for the same task landing in one response now collapse
+// into a single `task.runtime_changed` current-state row carrying
+// `payload.causedByEventTypes` (the distinct event types that fired, in
+// order) instead of the whole transcript. This reads that field back off
+// the first (and, for a collapsed response, only) event, the way
+// `eventTypes` reads `type` off every event.
+function causedByEventTypes(value: unknown): string[] {
+  const events = asRecord(value).events;
+  if (!Array.isArray(events) || events.length === 0) {
+    throw new Error(`expected a non-empty task event array ${JSON.stringify(value)}`);
+  }
+  const payload = asRecord(asRecord(events[0]).payload);
+  const types = payload.causedByEventTypes;
+  if (!Array.isArray(types)) {
+    throw new Error(`expected causedByEventTypes array ${JSON.stringify(value)}`);
+  }
+  return types.map((type) => String(type));
 }
 
 async function appendTaskEvent(

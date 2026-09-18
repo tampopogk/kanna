@@ -4,15 +4,40 @@ use serde_json::Value;
 use std::time::Duration;
 use tokio::time::Instant;
 
-// Equal by design: a lone event should collect for the full window below, not
-// seal early on a short trailing-quiet gap. See docs/kanna-server-boundary.md.
-pub(super) const QUIET: Duration = Duration::from_millis(300_000);
-pub(super) const MAX_HOLD: Duration = Duration::from_millis(300_000);
+/// A lone event should collect for the full window below, not seal early on
+/// a short trailing-quiet gap. See docs/kanna-server-boundary.md.
+///
+/// This used to be two knobs — `quiet` (deadline resets on each new relevant
+/// event) and `max_hold` (a hard cap from the first relevant event) — whose
+/// deadline was `(last + quiet).min(first + max_hold)`. Shipped equal at
+/// 300000/300000, `max_hold` always won the `min` and `quiet` could never
+/// bind, so debouncing a steady trickle of events never actually happened:
+/// every relevant event pushed `last` forward, but the deadline stayed pinned
+/// to `first + max_hold` regardless. Collapsed to the one knob that was ever
+/// load-bearing — trailing quiet, reset on every relevant observation — with
+/// its own hard cap derived from it (`HOLD_CAP_MULTIPLIER` below) rather than
+/// a second configured knob, so a steady trickle of relevant events at
+/// intervals shorter than `hold` still seals within a bounded time of the
+/// first one instead of deferring indefinitely.
+pub(super) const HOLD: Duration = Duration::from_millis(300_000);
+/// The hard cap on a collection is `first + HOLD_CAP_MULTIPLIER * hold`
+/// (`hold` being the manager default above or a subscription's own
+/// validated override — there is no separate cap knob). An isolated burst
+/// still seals on trailing quiet, well below this cap; only sustained
+/// relevant activity — events arriving faster than `hold` apart, which keeps
+/// pushing `last + hold` forward — ever reaches it. 3 gives that steady
+/// trickle up to three `hold` windows (15 minutes at the 300000ms default)
+/// from its first relevant observation before the mailbox forces a seal,
+/// comfortably longer than any single `hold` window so quiet remains the
+/// binding rule for the ordinary case that motivated collapsing to one knob,
+/// while still bounding the delivery latency of the production manager-wake
+/// path under sustained traffic.
+pub(super) const HOLD_CAP_MULTIPLIER: u32 = 3;
 pub(super) const ADMISSION_INTERVAL: Duration = Duration::from_millis(60_000);
-/// Floor for a per-subscription override of quiet/max-hold/admission
-/// spacing (validated at registration in `event_subscriptions::subscribe`).
-/// Without one, a near-zero override would defeat the pacing this module
-/// exists to provide.
+/// Floor for a per-subscription override of hold/admission spacing
+/// (validated at registration in `event_subscriptions::subscribe`). Without
+/// one, a near-zero override would defeat the pacing this module exists to
+/// provide.
 pub(super) const MIN_OVERRIDE: Duration = Duration::from_millis(1_000);
 
 #[derive(Debug)]
@@ -20,35 +45,30 @@ pub(super) struct Collection {
     first: Option<Instant>,
     last: Option<Instant>,
     urgent: bool,
-    quiet: Duration,
-    max_hold: Duration,
+    hold: Duration,
 }
 
 impl Default for Collection {
     fn default() -> Self {
-        Self::new(QUIET, MAX_HOLD)
+        Self::new(HOLD)
     }
 }
 
 impl Collection {
-    pub(super) fn new(quiet: Duration, max_hold: Duration) -> Self {
+    pub(super) fn new(hold: Duration) -> Self {
         Self {
             first: None,
             last: None,
             urgent: false,
-            quiet,
-            max_hold,
+            hold,
         }
     }
 
-    /// Build from a subscription's own (already-validated) query overrides,
-    /// falling back to the manager-adopted defaults when absent — including
-    /// for a pre-existing row created before this override existed.
-    pub(super) fn from_query(quiet_ms: Option<u64>, max_hold_ms: Option<u64>) -> Self {
-        Self::new(
-            quiet_ms.map(Duration::from_millis).unwrap_or(QUIET),
-            max_hold_ms.map(Duration::from_millis).unwrap_or(MAX_HOLD),
-        )
+    /// Build from a subscription's own (already-validated) `hold_ms`
+    /// override, falling back to the manager-adopted default when absent —
+    /// including for a pre-existing row created before this override existed.
+    pub(super) fn from_query(hold_ms: Option<u64>) -> Self {
+        Self::new(hold_ms.map(Duration::from_millis).unwrap_or(HOLD))
     }
 
     pub(super) fn observe(&mut self, events: &[Value], now: Instant) {
@@ -59,15 +79,24 @@ impl Collection {
         }
     }
 
-    /// The subscription's own quiet/max-hold deadline, independent of any
-    /// single native call's receiver. `None` until something relevant has
-    /// been observed. A caller that chains several (up to 240s) native calls
-    /// to honor a larger window reads this to size each next request and to
-    /// know when it has genuinely finished, not merely run out of one call's
-    /// own budget.
+    /// The subscription's own trailing-quiet deadline, capped against
+    /// sustained relevant activity, independent of any single native call's
+    /// receiver. `None` until something relevant has been observed. A caller
+    /// that chains several (up to 240s) native calls to honor a larger
+    /// window reads this to size each next request and to know when it has
+    /// genuinely finished, not merely run out of one call's own budget.
+    ///
+    /// `last + hold` alone resets on every relevant observation, so a steady
+    /// trickle of relevant events at intervals shorter than `hold` would
+    /// keep pushing it forward without limit. `first + HOLD_CAP_MULTIPLIER *
+    /// hold` is the hard cap that bounds that case; an isolated burst is
+    /// governed by the trailing-quiet term well before the cap is ever
+    /// reached, since `HOLD_CAP_MULTIPLIER` is comfortably greater than one.
     pub(super) fn intrinsic_deadline(&self) -> Option<Instant> {
         match (self.first, self.last) {
-            (Some(first), Some(last)) => Some((last + self.quiet).min(first + self.max_hold)),
+            (Some(first), Some(last)) => {
+                Some((last + self.hold).min(first + self.hold * HOLD_CAP_MULTIPLIER))
+            }
             _ => None,
         }
     }
@@ -80,7 +109,7 @@ impl Collection {
     }
 
     /// Whether the subscription's own criteria are genuinely satisfied:
-    /// urgent, a full page, or the intrinsic quiet/max-hold deadline reached.
+    /// urgent, a full page, or the intrinsic trailing-quiet deadline reached.
     /// Deliberately ignores any single native call's own receiver — a caller
     /// chaining several calls to cover a window larger than one call's budget
     /// must not mistake "this call's budget ran out" for "done".

@@ -668,11 +668,25 @@ whose meaning is unchanged. The same split holds in the event feed:
 read/blended one. `WaitUntil::Finished` resolves only on a recorded
 termination (closed, terminal `stage_run`, or `runtimeState: "exited"`), never
 on `unread`. A PTY agent that parks without recording a verdict records none of
-the three — its session survives — so the default `WaitUntil::Reconcile` instead resolves on
-`runtimeSettled: true` (observed non-busy runtime past the existing debounce)
-or recorded termination. Explicit `Finished` retains its termination-only
-meaning. Fresh event waits include settled current state by default; passing
-the cursor acknowledges that scan once without touching human read state. See
+the three — its session survives — so the default `WaitUntil::Reconcile` instead
+resolves on `runtimeSettled: true` (observed non-busy runtime past the
+existing debounce) or recorded termination, and also — unconditionally, even
+while the agent is still busy — the instant the task becomes blocked,
+attention-badged, or provider-parked/provider-capacity-noticed, since those
+are already durable facts rather than a transition that can flicker.
+`unread` is gated on runtime instead of being unconditional like the other
+three: `activity` stays `unread` for a busy task too (sending a stopped
+child input and immediately waiting on it produces exactly that shape), and
+`Reconcile` is evaluated on every poll of a `kanna_wait_task` call, so an
+unconditional `unread` check would resolve on an actively running agent and
+keep doing so on every subsequent call — the spin this predicate exists to
+remove. `Reconcile` therefore only resolves on `unread` once the runtime is
+not busy. `kanna_wait_events`' cold-start snapshot evaluates `unread`
+unconditionally instead, because it is a one-shot read at cold start rather
+than a repeatedly-polled predicate, so the same busy+unread task is legitimate
+snapshot news there. Explicit `Finished` retains its termination-only meaning.
+Fresh event waits include settled current state by default; passing the
+cursor acknowledges that scan once without touching human read state. See
 `docs/kanna-server-boundary.md`.
 
 **A spent allowance is a provider event, not a dead session.** A CLI that

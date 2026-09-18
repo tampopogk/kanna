@@ -56,12 +56,10 @@ pub(super) struct SubscribeRequest {
     /// replacement for it.
     #[serde(default)]
     exclude_event_types: Vec<String>,
-    /// Per-subscription override of the collector's trailing-quiet duration.
-    /// Omitted keeps the manager-adopted default; see `subscription_timing`.
+    /// Per-subscription override of the collector's trailing-quiet hold — the
+    /// single collection-window pacing knob; see `subscription_timing::HOLD`.
+    /// Omitted keeps the manager-adopted default.
     quiet_ms: Option<u64>,
-    /// Per-subscription override of the collector's max collection hold.
-    /// Validated at registration to be at least `quiet_ms`.
-    max_hold_ms: Option<u64>,
     /// Per-subscription override of the minimum spacing between adapter-call
     /// admissions (the wake-rate gate, not the collection window).
     min_admission_interval_ms: Option<u64>,
@@ -111,15 +109,16 @@ async fn collect(
 }
 
 /// A fresh, subscription-scoped collector seeded from the row's own
-/// (already-validated) quiet/max-hold overrides, falling back to the
-/// manager-adopted defaults when absent.
+/// (already-validated) quiet-hold override, falling back to the
+/// manager-adopted default when absent. A row persisted before the
+/// quiet/max-hold collapse may still carry a stored `maxHoldMs`; it is
+/// simply not read any more.
 fn fresh_collection(
     row: &EventSubscription,
 ) -> Arc<std::sync::Mutex<subscription_timing::Collection>> {
     Arc::new(std::sync::Mutex::new(
         subscription_timing::Collection::from_query(
             row.query.get("quietMs").and_then(Value::as_u64),
-            row.query.get("maxHoldMs").and_then(Value::as_u64),
         ),
     ))
 }
@@ -465,24 +464,15 @@ pub(super) async fn subscribe(
     // pre-existing row has, so registration-retry equality is unaffected.
     let quiet_ms = request
         .quiet_ms
-        .unwrap_or(subscription_timing::QUIET.as_millis() as u64);
-    let max_hold_ms = request
-        .max_hold_ms
-        .unwrap_or(subscription_timing::MAX_HOLD.as_millis() as u64);
+        .unwrap_or(subscription_timing::HOLD.as_millis() as u64);
     let min_admission_interval_ms = request
         .min_admission_interval_ms
         .unwrap_or(subscription_timing::ADMISSION_INTERVAL.as_millis() as u64);
     let floor_ms = subscription_timing::MIN_OVERRIDE.as_millis() as u64;
-    if quiet_ms < floor_ms || max_hold_ms < floor_ms || min_admission_interval_ms < floor_ms {
+    if quiet_ms < floor_ms || min_admission_interval_ms < floor_ms {
         return Err((
             StatusCode::BAD_REQUEST,
-            format!("quiet_ms, max_hold_ms and min_admission_interval_ms must each be at least {floor_ms}ms"),
-        ));
-    }
-    if max_hold_ms < quiet_ms {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            "max_hold_ms must be at least quiet_ms".into(),
+            format!("quiet_ms and min_admission_interval_ms must each be at least {floor_ms}ms"),
         ));
     }
     // No ceiling by policy. `Duration::from_millis` accepts any `u64`, and so
@@ -525,9 +515,6 @@ pub(super) async fn subscribe(
     }
     if request.quiet_ms.is_some() {
         query["quietMs"] = json!(quiet_ms);
-    }
-    if request.max_hold_ms.is_some() {
-        query["maxHoldMs"] = json!(max_hold_ms);
     }
     if request.min_admission_interval_ms.is_some() {
         query["minAdmissionIntervalMs"] = json!(min_admission_interval_ms);

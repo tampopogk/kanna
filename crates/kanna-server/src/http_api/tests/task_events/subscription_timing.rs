@@ -56,10 +56,10 @@ impl Watch {
         Self::configured(delivery, false).await
     }
 
-    /// A subscription with its own quiet/max-hold/admission-interval
-    /// overrides, so a test can exercise the collector's timing logic
-    /// without depending on the (much larger) global defaults or the fixed
-    /// 240s native receiver window.
+    /// A subscription with its own quiet/admission-interval overrides, so a
+    /// test can exercise the collector's timing logic without depending on
+    /// the (much larger) global defaults or the fixed 240s native receiver
+    /// window.
     async fn with_overrides(delivery: &'static str, overrides: Value) -> Self {
         Self::configured_with(delivery, false, overrides).await
     }
@@ -326,18 +326,21 @@ async fn both_adapters_trail_bursts_and_rate_gate_urgent_attention() {
     for delivery in ["input", "codex_app_server"] {
         let mut watch = Watch::new(delivery).await;
         watch.emit(TaskEventKind::PrCreated);
-        let first = watch.observed().await;
+        watch.observed().await;
         tokio::time::advance(Duration::from_millis(800)).await;
         watch.emit(TaskEventKind::TaskClosed);
-        // max_hold is measured from `first`, quiet from this later event —
-        // with both set to 300s, max_hold's earlier deadline always wins, so
-        // this later observation does not push sealing out to `last + 300s`.
-        watch.observed().await;
-        tokio::time::advance(Duration::from_millis(299_199)).await;
+        // Quiet is anchored to the latest observation (the collapsed single
+        // knob, replacing the old quiet/max-hold pair): this later event
+        // genuinely pushes sealing out to `last + 300s`, not `first + 300s`.
+        let second = watch.observed().await;
+        // 1ms short of the new deadline (second + 300s), then across it —
+        // was 299_199ms/1ms against the old first-anchored deadline before
+        // the second event started pushing it out by another 800ms.
+        tokio::time::advance(Duration::from_millis(299_999)).await;
         watch.no_admission();
         tokio::time::advance(Duration::from_millis(1)).await;
         let (batch, admitted) = watch.admitted().await;
-        assert_eq!(admitted, first + Duration::from_secs(300));
+        assert_eq!(admitted, second + Duration::from_secs(300));
         watch.delivered().await;
         assert_eq!(
             watch.row().pending.unwrap()["events"]
@@ -435,15 +438,15 @@ async fn ack_during_cooldown_invalidates_scheduled_wake_without_erasing_gate() {
 #[tokio::test(start_paused = true)]
 async fn lone_noise_sustained_and_urgent_bursts_have_the_same_bounds_for_both_adapters() {
     for delivery in ["input", "codex_app_server"] {
-        // Per-subscription overrides, not the 300000/300000/60000ms global
-        // defaults: this test exercises the collector's quiet/max-hold/
-        // admission arithmetic itself, which the fixed 240s native receiver
-        // window would otherwise dominate now that the defaults exceed it
-        // (any intervening real event — even an irrelevant one — triggers a
+        // Per-subscription overrides, not the 300000/60000ms global
+        // defaults: this test exercises the collector's quiet/admission
+        // arithmetic itself, which the fixed 240s native receiver window
+        // would otherwise dominate now that the defaults exceed it (any
+        // intervening real event — even an irrelevant one — triggers a
         // re-check that can complete the batch at the receiver instead).
         let mut watch = Watch::with_overrides(
             delivery,
-            json!({"quietMs": 2_000, "maxHoldMs": 10_000, "minAdmissionIntervalMs": 1_000}),
+            json!({"quietMs": 2_000, "minAdmissionIntervalMs": 1_000}),
         )
         .await;
         watch.emit(TaskEventKind::PrCreated);
@@ -461,18 +464,33 @@ async fn lone_noise_sustained_and_urgent_bursts_have_the_same_bounds_for_both_ad
         watch.ack(batch).await;
         watch.emit(TaskEventKind::PrCreated);
         let first = watch.observed().await;
-        for _ in 0..6 {
+        // Continuous relevant events at intervals shorter than quietMs
+        // (2000ms) keep pushing the trailing-quiet deadline forward exactly
+        // as the collapsed single knob intends — each of these three still
+        // lands well inside the restored hard cap (first +
+        // HOLD_CAP_MULTIPLIER * quietMs = first + 6000ms), genuinely
+        // extending the live deadline past what it would otherwise have
+        // been.
+        for _ in 0..3 {
             tokio::time::advance(Duration::from_millis(1_600)).await;
             watch.emit(TaskEventKind::PrCreated);
             watch.observed().await;
             watch.no_admission();
         }
-        tokio::time::advance(Duration::from_millis(400)).await;
-        let (batch, at) = watch.admitted().await;
+        // After the 4th event (t0+4800), the naive last+quiet deadline would
+        // be t0+6800 — past the cap. Sustained relevance must not defer the
+        // batch beyond the cap the way it used to: admission happens at
+        // exactly the cap, t0+6000, with no further events and none of them
+        // individually urgent. `advance_to_deadline_and_admit` both proves
+        // nothing sealed before the cap and pins the exact instant it does.
+        let (batch, at) =
+            advance_to_deadline_and_admit(&mut watch, first + Duration::from_millis(6_000)).await;
         assert_eq!(
             at - first,
-            Duration::from_secs(10),
-            "continuous relevance cannot extend the cap"
+            Duration::from_millis(6_000),
+            "sustained relevant activity must seal at the hard cap (first + \
+             HOLD_CAP_MULTIPLIER * hold), not be deferred further by more of it: {:?}",
+            at - first
         );
         watch.delivered().await;
         watch.ack(batch).await;
@@ -714,17 +732,17 @@ async fn events_straddling_a_native_leg_boundary_are_all_retained_and_acked_toge
     // response unless the chain retains it explicitly.
     tokio::task::yield_now().await;
     watch.emit(TaskEventKind::PrCreated);
-    let first_observed = watch.observed().await;
+    watch.observed().await;
     watch.leg_timed_out().await;
     watch.emit(TaskEventKind::TaskClosed);
-    watch.observed().await;
+    let second_observed = watch.observed().await;
     watch.no_admission();
-    // max_hold is anchored to the first event, so the intrinsic deadline is
-    // first_observed + 300s regardless of the second (later) event's own
-    // quiet window.
+    // Quiet is anchored to the LATEST observation (the collapsed single
+    // knob), so the intrinsic deadline is second_observed + 300s, pushed out
+    // by the second (later) event rather than pinned to the first.
     let (_, admitted) =
-        advance_to_deadline_and_admit(&mut watch, first_observed + Duration::from_secs(300)).await;
-    assert_eq!(admitted - first_observed, Duration::from_secs(300));
+        advance_to_deadline_and_admit(&mut watch, second_observed + Duration::from_secs(300)).await;
+    assert_eq!(admitted - second_observed, Duration::from_secs(300));
     watch.delivered().await;
     assert_eq!(
         event_pairs(watch.row().pending.as_ref().unwrap()),
@@ -737,12 +755,13 @@ async fn events_straddling_a_native_leg_boundary_are_all_retained_and_acked_toge
 
 #[tokio::test(start_paused = true)]
 async fn a_later_event_that_extends_the_live_quiet_deadline_mid_leg_is_not_sealed_early() {
-    // quiet (300s) < max_hold (600s), so quiet — anchored to the LATEST
-    // observation — actually controls the deadline, unlike the default
-    // quiet == max_hold configuration where max_hold (anchored to the first
-    // observation) always wins or ties regardless of later events.
-    let mut watch =
-        Watch::with_overrides("input", json!({"quietMs": 300_000, "maxHoldMs": 600_000})).await;
+    // Quiet is anchored to the LATEST observation, so a second relevant event
+    // genuinely pushes the intrinsic deadline out — the collapsed single
+    // knob's whole point, replacing the old quiet/max-hold pair whose
+    // shipped-equal default meant this could never happen (max_hold, anchored
+    // to the first observation, always won or tied regardless of later
+    // events).
+    let mut watch = Watch::with_overrides("input", json!({"quietMs": 300_000})).await;
     tokio::task::yield_now().await;
     watch.emit(TaskEventKind::PrCreated);
     let first_observed = watch.observed().await;
@@ -752,10 +771,9 @@ async fn a_later_event_that_extends_the_live_quiet_deadline_mid_leg_is_not_seale
     watch.leg_timed_out().await;
     // Leg 2 dispatches sized to that 300s deadline (60s remaining, clamped
     // under the 240s ceiling). A second relevant event lands inside it,
-    // pushing the live intrinsic deadline out (last_observed + 300s quiet,
-    // still short of first_observed + 600s max_hold) — but leg 2's own
-    // receiver was already fixed at the stale 300s point when it was
-    // dispatched.
+    // pushing the live intrinsic deadline out (last_observed + 300s quiet) —
+    // but leg 2's own receiver was already fixed at the stale 300s point when
+    // it was dispatched.
     watch.emit(TaskEventKind::TaskClosed);
     let second_observed = watch.observed().await;
     let obsolete_deadline = first_observed + Duration::from_secs(300);
@@ -798,8 +816,8 @@ async fn a_later_event_that_extends_the_live_quiet_deadline_mid_leg_is_not_seale
 async fn page_capacity_accounting_survives_a_native_leg_boundary_and_seals_on_the_combined_total() {
     let mut watch = Watch::new("input").await;
     // 60 events (well short of the 100-event page) fill leg 1; it can only
-    // end on its own 240s receiver, since neither capacity nor quiet/max-hold
-    // (anchored 300s out) are reached yet.
+    // end on its own 240s receiver, since neither capacity nor the 300s
+    // quiet deadline are reached yet.
     for _ in 0..60 {
         watch.emit(TaskEventKind::PrCreated);
     }
@@ -815,7 +833,7 @@ async fn page_capacity_accounting_survives_a_native_leg_boundary_and_seals_on_th
     }
     let (_, admitted) = watch.admitted().await;
     // Sealed by the combined page reaching capacity, far short of the 300s
-    // quiet/max-hold deadline.
+    // quiet deadline.
     assert!(admitted - observed < Duration::from_secs(300));
     watch.delivered().await;
     assert_eq!(

@@ -604,7 +604,7 @@ async fn level_triggered_activity_wait_returns_an_already_idle_task_immediately(
 }
 
 #[tokio::test]
-async fn repo_watch_can_start_at_current_tail_without_changing_cursorless_replay() {
+async fn repo_watch_can_start_at_current_tail_explicitly_or_by_omitting_from() {
     let (app, db_path) = events_router();
 
     let tail = get_json_body(
@@ -629,16 +629,33 @@ async fn repo_watch_can_start_at_current_tail_without_changing_cursorless_replay
     assert_eq!(next["events"].as_array().map(Vec::len), Some(1));
     assert_eq!(next["events"][0]["type"], "stage.changed");
 
-    let replay = get_json_body(
+    // `from` now defaults to `now`: omitting it on a fresh cursorless call
+    // behaves exactly like the explicit value above, not like a full replay.
+    let omitted = get_json_body(
         &app,
         "/v1/task-events?includeCurrentActivity=false&repoId=repo-events&localOnly=true&timeoutSecs=0",
+    )
+    .await;
+    assert_eq!(omitted["waitOutcome"], "timeout");
+    assert!(
+        omitted["events"]
+            .as_array()
+            .is_some_and(Vec::is_empty),
+        "omitting from must default to now, the same as the explicit value, not replay retained history"
+    );
+
+    // `from=beginning` is the explicit, deliberate opt-in to the old
+    // full-replay default.
+    let replay = get_json_body(
+        &app,
+        "/v1/task-events?includeCurrentActivity=false&repoId=repo-events&localOnly=true&from=beginning&timeoutSecs=0",
     )
     .await;
     assert!(
         replay["events"]
             .as_array()
             .is_some_and(|events| !events.is_empty()),
-        "omitting from must preserve retained-history replay"
+        "from=beginning must still replay retained history"
     );
 }
 
@@ -652,13 +669,21 @@ async fn repo_watch_limit_allows_pages_larger_than_the_default_one_hundred() {
     .await;
     let cursor = cursor_of(&tail);
     let db = Db::open(&db_path).expect("open db");
+    // 150 different tasks, one event each: events about the same task now
+    // collapse into one current-state row (see `collapse_events_to_task_state`),
+    // so a page-size test needs distinct tasks to fill a 150-item page.
     for index in 0..150 {
-        let stage = if index % 2 == 0 {
-            "review"
-        } else {
-            "in progress"
-        };
-        db.update_pipeline_item_stage("child-a", stage)
+        let task_id = format!("page-child-{index}");
+        db.insert_test_pipeline_item(
+            &task_id,
+            "repo-events",
+            "page-sized child work",
+            Some(&task_id),
+            "in progress",
+            "2026-07-29 00:00:00",
+        )
+        .expect("insert page child task");
+        db.update_pipeline_item_stage(&task_id, "review")
             .expect("append stage event");
     }
 
@@ -821,6 +846,12 @@ async fn aggregate_current_activity_pages_drain_every_machine_without_starvation
     let relay = connect_test_relay_peer(&source, Arc::clone(&peer), connected);
     let mut settled = Vec::new();
     let mut durable = Vec::new();
+    // The durable edge injected below may land in its own page (a separate
+    // durable row) or in the same page as peer-settled-c's own settled row —
+    // in which case they collapse into one current-state row (see
+    // `collapse_events_to_task_state`) that still names the transition in
+    // `causedByEventTypes`. Either is a faithful "not lost"; track which.
+    let mut peer_settled_c_caused_by_stage_changed = false;
     let mut page_has_more = Vec::new();
 
     for page_index in 0..8 {
@@ -835,15 +866,23 @@ async fn aggregate_current_activity_pages_drain_every_machine_without_starvation
         cursor = cursor_of(&page);
         page_has_more.push(page["hasMore"].as_bool().expect("hasMore"));
         for event in page["events"].as_array().expect("events") {
+            let task_id = event["taskId"].as_str().expect("task id").to_string();
             if event["synthetic"] == true {
                 settled.push((
                     event["machineId"].as_str().expect("machine id").to_string(),
-                    event["taskId"].as_str().expect("task id").to_string(),
+                    task_id.clone(),
                 ));
+                if task_id == "peer-settled-c"
+                    && event["payload"]["causedByEventTypes"]
+                        .as_array()
+                        .is_some_and(|types| types.iter().any(|t| t == "stage.changed"))
+                {
+                    peer_settled_c_caused_by_stage_changed = true;
+                }
             } else {
                 durable.push((
                     event["machineId"].as_str().expect("machine id").to_string(),
-                    event["taskId"].as_str().expect("task id").to_string(),
+                    task_id,
                     event["type"].as_str().expect("event type").to_string(),
                 ));
             }
@@ -871,14 +910,16 @@ async fn aggregate_current_activity_pages_drain_every_machine_without_starvation
         .collect::<Vec<_>>();
     expected.sort();
     assert_eq!(settled, expected);
-    assert_eq!(
-        durable,
-        vec![(
-            "desktop-page-peer".to_string(),
-            "peer-settled-c".to_string(),
-            "stage.changed".to_string(),
-        )],
-        "a peer durable edge arriving between aggregate pages must not be lost"
+    assert!(
+        durable
+            == vec![(
+                "desktop-page-peer".to_string(),
+                "peer-settled-c".to_string(),
+                "stage.changed".to_string(),
+            )]
+            || peer_settled_c_caused_by_stage_changed,
+        "a peer durable edge arriving between aggregate pages must not be lost, whether it \
+         landed as its own row or collapsed into peer-settled-c's own: {durable:?}"
     );
     assert_eq!(page_has_more.last(), Some(&false));
     assert!(page_has_more[..page_has_more.len() - 1]
@@ -896,6 +937,333 @@ async fn aggregate_current_activity_pages_drain_every_machine_without_starvation
     assert_eq!(drained["waitOutcome"], "timeout");
     assert_eq!(drained["hasMore"], false);
     assert!(drained["events"].as_array().expect("events").is_empty());
+    relay.abort();
+}
+
+/// The same drain as `aggregate_current_activity_pages_drain_every_machine_without_starvation`,
+/// but with `includeCurrentActivity` omitted on every call rather than passed
+/// explicitly — the shape both the catalog description and
+/// docs/kanna-server-boundary.md tell a real caller to use ("pass the opaque
+/// cursor back and drain while hasMore is true"). The single-machine wait
+/// keeps the snapshot implied across such a drain by checking whether the
+/// supplied cursor is itself a not-yet-`settled_complete` current-activity
+/// continuation; the aggregate path forwarded a fixed `includeCurrentActivity`
+/// per leg with no equivalent guard, so a cursorless aggregate wait whose
+/// snapshot exceeds `limit` returned page one correctly but silently stopped
+/// including current-activity rows in every following page, because
+/// `supplied_cursor.is_none()` is false as soon as any cursor comes back —
+/// dropping the remaining actionable tasks even though `hasMore` said there
+/// were more. This test starts genuinely cursorless (unlike the sibling
+/// above, which seeds a pre-built `ks1.` cursor) and never names
+/// `includeCurrentActivity` on any call, so it fails the moment that guard
+/// regresses.
+#[tokio::test]
+async fn aggregate_current_activity_pages_drain_with_the_flag_omitted() {
+    let local_ids = ["omitted-local-a", "omitted-local-b", "omitted-local-c"];
+    let peer_ids = ["omitted-peer-a", "omitted-peer-b", "omitted-peer-c"];
+    let all_ids = local_ids
+        .iter()
+        .chain(peer_ids.iter())
+        .copied()
+        .collect::<Vec<_>>();
+    let source = test_state_with_seed("desktop-omitted-source", "Omitted Source", |db| {
+        db.insert_test_repo("repo-omitted-source", "Omitted Source Repo")
+            .expect("insert source repo");
+        for task_id in local_ids {
+            db.insert_test_pipeline_item(
+                task_id,
+                "repo-omitted-source",
+                "local settled task",
+                Some(task_id),
+                "in progress",
+                "2026-08-23 00:00:00",
+            )
+            .expect("insert local task");
+        }
+        settle_runtime_tasks(db, &local_ids);
+    });
+    let peer = test_state_with_seed("desktop-omitted-peer", "Omitted Peer", |db| {
+        db.insert_test_repo("repo-omitted-peer", "Omitted Peer Repo")
+            .expect("insert peer repo");
+        for task_id in peer_ids {
+            db.insert_test_pipeline_item(
+                task_id,
+                "repo-omitted-peer",
+                "peer settled task",
+                Some(task_id),
+                "in progress",
+                "2026-08-23 00:00:00",
+            )
+            .expect("insert peer task");
+        }
+        settle_runtime_tasks(db, &peer_ids);
+    });
+    let source_router = router(Arc::clone(&source));
+    let task_ids = all_ids.join(",");
+    let connected = Arc::new(AtomicBool::new(true));
+    let relay = connect_test_relay_peer(&source, Arc::clone(&peer), connected);
+
+    let mut cursor: Option<String> = None;
+    let mut settled = Vec::new();
+    let mut page_has_more = Vec::new();
+    for _ in 0..8 {
+        let path = match &cursor {
+            None => format!("/v1/task-events?taskIds={task_ids}&limit=2&timeoutSecs=2"),
+            Some(cursor) => {
+                format!("/v1/task-events?taskIds={task_ids}&limit=2&cursor={cursor}&timeoutSecs=2")
+            }
+        };
+        let page = get_account_json_body(&source_router, &source, &path).await;
+        cursor = Some(cursor_of(&page));
+        page_has_more.push(page["hasMore"].as_bool().expect("hasMore"));
+        for event in page["events"].as_array().expect("events") {
+            if event["synthetic"] == true {
+                settled.push((
+                    event["machineId"].as_str().expect("machine id").to_string(),
+                    event["taskId"].as_str().expect("task id").to_string(),
+                ));
+            }
+        }
+        if page["hasMore"] == false {
+            break;
+        }
+    }
+
+    settled.sort();
+    let mut expected = local_ids
+        .iter()
+        .map(|task_id| ("desktop-omitted-source".to_string(), (*task_id).to_string()))
+        .chain(
+            peer_ids
+                .iter()
+                .map(|task_id| ("desktop-omitted-peer".to_string(), (*task_id).to_string())),
+        )
+        .collect::<Vec<_>>();
+    expected.sort();
+    assert_eq!(
+        settled, expected,
+        "every actionable task on every machine must be delivered across the drain even though \
+         includeCurrentActivity was never named on any call"
+    );
+    assert_eq!(page_has_more.last(), Some(&false));
+    relay.abort();
+}
+
+/// The measured defect this task fixes: an aggregate wait with genuinely
+/// nothing to report — a cursor already caught up, `includeCurrentActivity`
+/// false, no durable events pending, no actionable snapshot signal — must
+/// still hold for its full `timeoutSecs` AND report every reachable machine
+/// in `confirmedMachines`. Before `AGGREGATE_LEG_JOIN_GRACE`, a leg spawned
+/// this call was joined against a deadline capped at exactly this wait's own
+/// `deadline`, which raced a leg that was always going to answer at or after
+/// it: the outer `timeout_at` could fire first and the loop would `break`
+/// before ever joining the very leg it just started, so the response was
+/// `waitOutcome: "timeout"` with `confirmedMachines: []` despite the peer
+/// being reachable and having genuinely finished its own leg. No test in this
+/// module asserted `confirmedMachines` before this fix, which is how that
+/// shipped unnoticed. Removing `AGGREGATE_LEG_JOIN_GRACE` (or shrinking it
+/// back to zero) reintroduces this failure.
+#[tokio::test]
+async fn aggregate_wait_with_nothing_to_report_still_confirms_every_machine() {
+    let source = test_state_with_seed("desktop-confirm-source", "Confirm Source", |db| {
+        db.insert_test_repo("repo-confirm-source", "Confirm Source Repo")
+            .expect("insert source repo");
+        db.insert_test_pipeline_item(
+            "confirm-source-child",
+            "repo-confirm-source",
+            "source child",
+            Some("Confirm Source Child"),
+            "in progress",
+            "2026-09-18 00:00:00",
+        )
+        .expect("insert source task");
+    });
+    let peer = test_state_with_seed("desktop-confirm-peer", "Confirm Peer", |db| {
+        db.insert_test_repo("repo-confirm-peer", "Confirm Peer Repo")
+            .expect("insert peer repo");
+        db.insert_test_pipeline_item(
+            "confirm-peer-child",
+            "repo-confirm-peer",
+            "peer child",
+            Some("Confirm Peer Child"),
+            "in progress",
+            "2026-09-18 00:00:00",
+        )
+        .expect("insert peer task");
+    });
+    let source_router = router(Arc::clone(&source));
+    // Alphabetical: `resolve_aggregate_scope`'s `task_ids` are sorted through
+    // `normalized_values`, so the cursor's embedded scope must match that
+    // order or the server rejects it as belonging to a different scope.
+    let task_ids = "confirm-peer-child,confirm-source-child";
+    let connected = Arc::new(AtomicBool::new(true));
+    let relay = connect_test_relay_peer(&source, Arc::clone(&peer), connected);
+
+    let source_head = Db::open(&source.config().db_path)
+        .expect("open source db")
+        .latest_task_event_seq()
+        .expect("source event head")
+        .to_string();
+    let peer_head = Db::open(&peer.config().db_path)
+        .expect("open peer db")
+        .latest_task_event_seq()
+        .expect("peer event head")
+        .to_string();
+    let cursor = aggregate_tasks_cursor(
+        "desktop-confirm-source",
+        "desktop-confirm-peer",
+        &["confirm-peer-child", "confirm-source-child"],
+        &source_head,
+        &peer_head,
+    );
+
+    let started = std::time::Instant::now();
+    let result = tokio::time::timeout(
+        Duration::from_secs(15),
+        get_account_json_body(
+            &source_router,
+            &source,
+            &format!(
+                "/v1/task-events?taskIds={task_ids}&includeCurrentActivity=false&cursor={cursor}&timeoutSecs=2"
+            ),
+        ),
+    )
+    .await
+    .expect("aggregate wait returned");
+    let elapsed = started.elapsed();
+
+    assert_eq!(result["waitOutcome"], "timeout");
+    assert!(result["events"].as_array().expect("events").is_empty());
+    assert!(
+        elapsed >= Duration::from_secs(2),
+        "a wait with nothing to report must hold for its full timeout, took {elapsed:?}"
+    );
+    let confirmed = result["confirmedMachines"]
+        .as_array()
+        .expect("confirmedMachines")
+        .iter()
+        .map(|id| id.as_str().expect("machine id").to_string())
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        confirmed,
+        std::collections::BTreeSet::from([
+            "desktop-confirm-source".to_string(),
+            "desktop-confirm-peer".to_string(),
+        ]),
+        "every reachable machine must be confirmed even when nothing was found: {result}"
+    );
+    relay.abort();
+}
+
+/// The companion positive case: the same call must not merely block — once a
+/// peer event lands mid-wait it must be delivered, and the reachable peer
+/// must still be confirmed. This is the "blocks AND delivers" evidence the
+/// original task asked for through the real fan-out path, complementing the
+/// sibling test above (which covers "blocks and confirms with nothing to
+/// deliver").
+#[tokio::test]
+async fn aggregate_wait_blocks_then_delivers_a_peer_event_appended_mid_wait() {
+    let source = test_state_with_seed("desktop-deliver-source", "Deliver Source", |db| {
+        db.insert_test_repo("repo-deliver-source", "Deliver Source Repo")
+            .expect("insert source repo");
+    });
+    let peer = test_state_with_seed("desktop-deliver-peer", "Deliver Peer", |db| {
+        db.insert_test_repo("repo-deliver-peer", "Deliver Peer Repo")
+            .expect("insert peer repo");
+        db.insert_test_pipeline_item(
+            "deliver-peer-child",
+            "repo-deliver-peer",
+            "peer child",
+            Some("Deliver Peer Child"),
+            "in progress",
+            "2026-09-18 00:00:00",
+        )
+        .expect("insert peer task");
+    });
+    let source_router = router(Arc::clone(&source));
+    let task_ids = "deliver-peer-child";
+    let connected = Arc::new(AtomicBool::new(true));
+    let relay = connect_test_relay_peer(&source, Arc::clone(&peer), connected);
+
+    let source_head = Db::open(&source.config().db_path)
+        .expect("open source db")
+        .latest_task_event_seq()
+        .expect("source event head")
+        .to_string();
+    let peer_head = Db::open(&peer.config().db_path)
+        .expect("open peer db")
+        .latest_task_event_seq()
+        .expect("peer event head")
+        .to_string();
+    let cursor = aggregate_tasks_cursor(
+        "desktop-deliver-source",
+        "desktop-deliver-peer",
+        &["deliver-peer-child"],
+        &source_head,
+        &peer_head,
+    );
+
+    let peer_db_path = peer.config().db_path.clone();
+    let writer = tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        let db = Db::open(&peer_db_path).expect("open peer db");
+        db.update_pipeline_item_stage("deliver-peer-child", "review")
+            .expect("append peer durable event mid-wait");
+    });
+
+    let started = std::time::Instant::now();
+    // A generous window and outer guard: under heavy parallel test load the
+    // background append above can itself be delayed several seconds by
+    // scheduling contention before it ever reaches the peer's database, so
+    // this needs enough margin for that append to still land inside the
+    // wait's own window rather than only ruling out a genuine hang.
+    let result = tokio::time::timeout(
+        Duration::from_secs(50),
+        get_account_json_body(
+            &source_router,
+            &source,
+            &format!(
+                "/v1/task-events?taskIds={task_ids}&includeCurrentActivity=false&cursor={cursor}&timeoutSecs=30"
+            ),
+        ),
+    )
+    .await
+    .expect("aggregate wait returned");
+    let elapsed = started.elapsed();
+    writer.await.expect("writer task");
+
+    assert_eq!(result["waitOutcome"], "events");
+    assert_eq!(
+        event_pairs(&result),
+        vec![(
+            "deliver-peer-child".to_string(),
+            "stage.changed".to_string()
+        )]
+    );
+    assert_eq!(result["events"][0]["machineId"], "desktop-deliver-peer");
+    assert!(
+        elapsed >= Duration::from_millis(250),
+        "the wait must genuinely hold until the peer event lands, took {elapsed:?}"
+    );
+    // Deliberately no tight upper bound here beyond the outer 15s guard: under
+    // heavy parallel test load the background append can itself be delayed by
+    // scheduling contention, and this test's job is to prove delivery
+    // happens at all once something lands mid-wait (the sibling test above
+    // covers the actual regression — confirming every machine when nothing
+    // ever lands). A hard "delivered promptly" bound here is exactly the
+    // class of load-sensitive assertion several other timing tests in this
+    // module already accept as flaky under full parallel `cargo test` runs
+    // while passing reliably in isolation.
+    let confirmed = result["confirmedMachines"]
+        .as_array()
+        .expect("confirmedMachines")
+        .iter()
+        .map(|id| id.as_str().expect("machine id").to_string())
+        .collect::<std::collections::BTreeSet<_>>();
+    assert!(
+        confirmed.contains("desktop-deliver-peer"),
+        "the peer that delivered the event must be confirmed: {result}"
+    );
     relay.abort();
 }
 
@@ -979,6 +1347,16 @@ async fn aggregate_mid_settled_cursor_resumes_without_replaying_durable_sequence
     let relay = connect_test_relay_peer(&source, Arc::clone(&peer), connected);
     let task_ids = all_ids.join(",");
     let mut delivered_sequences = HashSet::new();
+    // The 125-event backlog is all on one task, so — unlike a mix of
+    // different tasks — every page containing any of it collapses that
+    // page's share into one current-state row with no `seq` (see
+    // `collapse_events_to_task_state`): there is no page boundary that could
+    // ever split same-task events apart while leaving each individually
+    // addressable. The per-sequence dedup below still holds for whatever
+    // *does* carry a `seq` (peer-settled-a's and local-settled-b's own rows);
+    // separately, confirm the backlog itself was not silently dropped behind
+    // the collapse.
+    let mut seen_local_settled_a = false;
     let mut drained = false;
 
     for _ in 0..8 {
@@ -1004,6 +1382,9 @@ async fn aggregate_mid_settled_cursor_resumes_without_replaying_durable_sequence
                 .as_str()
                 .is_some_and(|cursor| cursor.starts_with("ke1."))));
         for event in page["events"].as_array().expect("events") {
+            if event["taskId"].as_str() == Some("local-settled-a") {
+                seen_local_settled_a = true;
+            }
             let Some(seq) = event["seq"].as_i64() else {
                 continue;
             };
@@ -1024,7 +1405,11 @@ async fn aggregate_mid_settled_cursor_resumes_without_replaying_durable_sequence
     }
 
     assert!(drained, "the mid-settled scan must terminate");
-    assert!(delivered_sequences.len() >= 125);
+    assert!(
+        seen_local_settled_a,
+        "the 125-event backlog on one task must still surface it, not silently drop it behind \
+         the collapse"
+    );
     relay.abort();
 }
 
@@ -1048,9 +1433,16 @@ async fn replayed_run_event_keeps_event_time_stage_after_task_advances() {
     db.update_pipeline_item_stage("child-a", "pr")
         .expect("advance to pr");
 
+    // `eventTypes=run.finished&limit=1&from=beginning`: child-a has five
+    // events by now, all about the same task, and would otherwise collapse
+    // into one current-state row (see `collapse_events_to_task_state`) —
+    // losing exactly the event-time payload this test is checking. Filtering
+    // to the one relevant type and capping to the first match reads the
+    // historical `run.finished` alone, before anything else could ever join
+    // it in the same batch.
     let replay = get_json_body(
         &app,
-        "/v1/task-events?includeCurrentActivity=false&taskIds=child-a&localOnly=true&limit=500&timeoutSecs=0",
+        "/v1/task-events?includeCurrentActivity=false&taskIds=child-a&localOnly=true&eventTypes=run.finished&limit=1&from=beginning&timeoutSecs=0",
     )
     .await;
     let historical = replay["events"]
@@ -1303,11 +1695,13 @@ async fn blocked_edges_publish_for_a_rewrite_and_for_a_blocker_resolving() {
 #[tokio::test]
 async fn orchestrator_receives_every_child_event_exactly_once_across_polls() {
     let (router, db_path) = events_router();
-    let watch = "/v1/task-events?includeCurrentActivity=false&taskIds=child-a,child-b,child-c";
+    // Explicit `from=beginning`: a fan-out that raced its parent and started
+    // watching after the child already did something must still be able to
+    // ask for what it missed — the cursorless default is `now` (skip
+    // history) instead, so this is an opt-in, not automatic.
+    let watch = "/v1/task-events?includeCurrentActivity=false&taskIds=child-a,child-b,child-c&from=beginning";
 
-    // Fired before the orchestrator ever calls: a watcher that starts without a
-    // cursor must still see what it missed, or a fan-out that raced its parent
-    // loses events it can never ask for again.
+    // Fired before the orchestrator ever calls.
     {
         let db = Db::open(&db_path).expect("open db");
         start_run(&db, "run-a1", "child-a", "in progress");
@@ -1352,13 +1746,16 @@ async fn orchestrator_receives_every_child_event_exactly_once_across_polls() {
          (took {blocked_for:?})"
     );
     assert_eq!(blocked["waitOutcome"], serde_json::json!("events"));
+    // Both transitions are about child-a, so they collapse into one
+    // current-state row (see `collapse_events_to_task_state`).
     assert_eq!(
         event_pairs(&blocked),
-        vec![
-            ("child-a".to_string(), "run.finished".to_string()),
-            ("child-a".to_string(), "stage.changed".to_string()),
-        ],
+        vec![("child-a".to_string(), "task.runtime_changed".to_string())],
         "the blocked call must return exactly the events that fired during it"
+    );
+    assert_eq!(
+        blocked["events"][0]["payload"]["causedByEventTypes"],
+        json!(["run.finished", "stage.changed"])
     );
     cursor = cursor_of(&blocked);
 
@@ -1372,14 +1769,19 @@ async fn orchestrator_receives_every_child_event_exactly_once_across_polls() {
     }
 
     let after_gap = get_json_body(&router, &format!("{watch}&cursor={cursor}&timeoutSecs=1")).await;
+    // child-b's two events collapse into one current-state row; child-c's
+    // lone event does not (see `collapse_events_to_task_state`).
     assert_eq!(
         event_pairs(&after_gap),
         vec![
-            ("child-b".to_string(), "run.started".to_string()),
-            ("child-b".to_string(), "task.pr_created".to_string()),
+            ("child-b".to_string(), "task.runtime_changed".to_string()),
             ("child-c".to_string(), "task.closed".to_string()),
         ],
         "events that fired between two polls must be delivered on the next one"
+    );
+    assert_eq!(
+        after_gap["events"][0]["payload"]["causedByEventTypes"],
+        json!(["run.started", "task.pr_created"])
     );
     cursor = cursor_of(&after_gap);
 
@@ -1655,21 +2057,33 @@ async fn a_replayed_cursor_returns_the_same_events_and_never_earlier_ones() {
 async fn a_truncated_batch_reports_more_and_the_next_call_continues_from_it() {
     let (router, db_path) = events_router();
 
+    // Four different tasks, one event each, against a page size of two, so
+    // the second page is exactly full and must still report that nothing is
+    // left. Events about the same task now collapse into one current-state
+    // row (see `collapse_events_to_task_state`), so a page-size test needs
+    // distinct tasks rather than stacking several events on one.
     {
         let db = Db::open(&db_path).expect("open db");
-        // Four events against a page size of two, so the second page is exactly
-        // full and must still report that nothing is left.
+        db.insert_test_pipeline_item(
+            "child-d",
+            "repo-events",
+            "fourth child work",
+            Some("child-d"),
+            "in progress",
+            "2026-07-29 00:00:00",
+        )
+        .expect("insert fourth child task");
         start_run(&db, "run-a1", "child-a", "in progress");
-        db.update_pipeline_item_stage("child-a", "review")
+        db.update_pipeline_item_stage("child-b", "review")
             .expect("advance stage");
-        db.update_pipeline_item_stage("child-a", "pr")
+        db.update_pipeline_item_stage("child-c", "pr")
             .expect("advance stage again");
-        db.close_pipeline_item("child-a").expect("close task");
+        db.close_pipeline_item("child-d").expect("close task");
     }
 
     let first = get_json_body(
         &router,
-        "/v1/task-events?includeCurrentActivity=false&taskIds=child-a&limit=2&timeoutSecs=1",
+        "/v1/task-events?includeCurrentActivity=false&taskIds=child-a,child-b,child-c,child-d&limit=2&timeoutSecs=1&from=beginning",
     )
     .await;
     assert_eq!(first["hasMore"], serde_json::json!(true));
@@ -1678,7 +2092,7 @@ async fn a_truncated_batch_reports_more_and_the_next_call_continues_from_it() {
     let second = get_json_body(
         &router,
         &format!(
-            "/v1/task-events?includeCurrentActivity=false&taskIds=child-a&limit=2&timeoutSecs=1&cursor={}",
+            "/v1/task-events?includeCurrentActivity=false&taskIds=child-a,child-b,child-c,child-d&limit=2&timeoutSecs=1&cursor={}",
             cursor_of(&first)
         ),
     )
@@ -1691,8 +2105,8 @@ async fn a_truncated_batch_reports_more_and_the_next_call_continues_from_it() {
     assert_eq!(
         event_pairs(&second),
         vec![
-            ("child-a".to_string(), "stage.changed".to_string()),
-            ("child-a".to_string(), "task.closed".to_string()),
+            ("child-c".to_string(), "stage.changed".to_string()),
+            ("child-d".to_string(), "task.closed".to_string()),
         ]
     );
 }
@@ -1711,7 +2125,7 @@ async fn repo_scope_watches_tasks_the_caller_did_not_name() {
 
     let body = get_json_body(
         &router,
-        "/v1/task-events?includeCurrentActivity=false&repoId=repo-events&timeoutSecs=1",
+        "/v1/task-events?includeCurrentActivity=false&repoId=repo-events&from=beginning&timeoutSecs=1",
     )
     .await;
     assert_eq!(
@@ -1776,35 +2190,49 @@ async fn local_surface_aggregates_peer_repo_events_and_resumes_after_reconnect()
     let source_router = router(Arc::clone(&source));
     let peer_router = router(Arc::clone(&peer));
 
+    // `task.activity_changed` is now excluded by default (the human
+    // read/unread display dimension, not manager-facing), and all three
+    // events below are about the same task, so they'd otherwise collapse
+    // into one current-state row (see `collapse_events_to_task_state`).
+    // Name the types explicitly and inspect `causedByEventTypes` so this
+    // fixture still exercises exactly what it always did.
     let first = get_account_json_body(
         &source_router,
         &source,
-        "/v1/task-events?includeCurrentActivity=false&repoId=repo-source-id&timeoutSecs=1",
+        "/v1/task-events?includeCurrentActivity=false&repoId=repo-source-id&eventTypes=run.started,task.runtime_changed,task.activity_changed&from=beginning&timeoutSecs=1",
     )
     .await;
     assert_eq!(first["waitOutcome"], "events");
     assert!(cursor_of(&first).starts_with("ks1."));
     assert_eq!(
         event_pairs(&first),
-        vec![
-            ("remote-child".into(), "run.started".into()),
-            ("remote-child".into(), "task.runtime_changed".into()),
-            ("remote-child".into(), "task.activity_changed".into()),
-        ]
+        vec![("remote-child".into(), "task.runtime_changed".into())]
+    );
+    assert_eq!(
+        first["events"][0]["payload"]["causedByEventTypes"],
+        json!([
+            "run.started",
+            "task.runtime_changed",
+            "task.activity_changed"
+        ])
     );
     assert_eq!(first["events"][0]["machineId"], "desktop-peer-events");
-    assert_eq!(first["events"][2]["machineId"], "desktop-peer-events");
     assert_eq!(first["machineErrors"], json!([]));
     let first_cursor = cursor_of(&first);
 
-    // The same event is present on the peer's own native feed. This compares
-    // the aggregate output against its source of truth rather than a fixture.
+    // The same events are present on the peer's own native feed. This
+    // compares the aggregate output against its source of truth rather than
+    // a fixture.
     let peer_first = get_json_body(
         &peer_router,
-        "/v1/task-events?includeCurrentActivity=false&repoId=repo-peer-different-id&localOnly=true&timeoutSecs=0",
+        "/v1/task-events?includeCurrentActivity=false&repoId=repo-peer-different-id&localOnly=true&eventTypes=run.started,task.runtime_changed,task.activity_changed&from=beginning&timeoutSecs=0",
     )
     .await;
     assert_eq!(event_pairs(&peer_first), event_pairs(&first));
+    assert_eq!(
+        peer_first["events"][0]["payload"]["causedByEventTypes"],
+        first["events"][0]["payload"]["causedByEventTypes"]
+    );
 
     connected.store(false, Ordering::SeqCst);
     Db::open(&peer.config().db_path)
@@ -1854,19 +2282,53 @@ async fn local_surface_aggregates_peer_repo_events_and_resumes_after_reconnect()
     assert_eq!(drained["waitOutcome"], "timeout");
     assert_eq!(event_pairs(&drained), Vec::new());
 
+    // A single full replay collapses run.started + task.runtime_changed +
+    // task.activity_changed + stage.changed into one current-state row (see
+    // `collapse_events_to_task_state`), where the two-call, disconnect/
+    // reconnect sequence above delivered them as two rows across two
+    // responses. Comparing raw pairs no longer applies across that split;
+    // comparing the union of underlying event types each surfaced does.
     let peer_all = get_json_body(
         &peer_router,
-        "/v1/task-events?includeCurrentActivity=false&repoRemoteUrlHash=sha256%3Asame-origin-on-two-machines&localOnly=true&timeoutSecs=0",
+        "/v1/task-events?includeCurrentActivity=false&repoRemoteUrlHash=sha256%3Asame-origin-on-two-machines&localOnly=true&eventTypes=run.started,task.runtime_changed,task.activity_changed,stage.changed&from=beginning&timeoutSecs=0",
     )
     .await;
-    let aggregate_events = event_pairs(&first)
-        .into_iter()
-        .chain(event_pairs(&caught_up))
+    fn underlying_types(event: &Value) -> Vec<String> {
+        match event["payload"]["causedByEventTypes"].as_array() {
+            Some(types) => types
+                .iter()
+                .map(|t| t.as_str().unwrap().to_string())
+                .collect(),
+            None => vec![event["type"].as_str().unwrap().to_string()],
+        }
+    }
+    let mut aggregate_types = first["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .chain(caught_up["events"].as_array().unwrap())
+        .flat_map(underlying_types)
         .collect::<Vec<_>>();
+    aggregate_types.sort();
+    let mut peer_all_types = peer_all["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(underlying_types)
+        .collect::<Vec<_>>();
+    peer_all_types.sort();
     assert_eq!(
-        aggregate_events,
-        event_pairs(&peer_all),
+        aggregate_types, peer_all_types,
         "the aggregate feed must neither duplicate nor lose peer events"
+    );
+    assert_eq!(
+        peer_all["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|event| event["taskId"].as_str().unwrap())
+            .collect::<HashSet<_>>(),
+        HashSet::from(["remote-child"])
     );
 
     relay.abort();
@@ -2139,11 +2601,21 @@ async fn manual_stage_agent_exit_emits_enriched_awaiting_advance_event() {
         ),
     )
     .await;
+    // The exit sequence may also emit a runtime edge for the same task in
+    // the same batch, in which case it collapses together with
+    // task.awaiting_advance into one current-state row (see
+    // `collapse_events_to_task_state`) rather than appearing as its own
+    // separate event.
     let event = response["events"]
         .as_array()
         .expect("events array")
         .iter()
-        .find(|event| event["type"] == "task.awaiting_advance")
+        .find(|event| {
+            event["type"] == "task.awaiting_advance"
+                || event["payload"]["causedByEventTypes"]
+                    .as_array()
+                    .is_some_and(|types| types.iter().any(|t| t == "task.awaiting_advance"))
+        })
         .expect("awaiting advance event");
     assert_eq!(event["machineId"], "desktop-awaiting-advance");
     assert_eq!(
@@ -2341,7 +2813,11 @@ async fn stage_start_emits_one_settled_working_edge_and_suppresses_a_resume_flic
         &source_router,
         &source,
         &format!(
-            "/v1/task-events?includeCurrentActivity=false&repoId=repo-start-source&excludeEventTypes=task.runtime_changed&cursor={}&timeoutSecs=5",
+            // `task.activity_changed` is now excluded by default (it is the
+            // human read/unread display dimension, not manager-facing); this
+            // test's whole subject is that type, so it must be explicitly
+            // named in the allow-list to bypass the default.
+            "/v1/task-events?includeCurrentActivity=false&repoId=repo-start-source&excludeEventTypes=task.runtime_changed&eventTypes=task.activity_changed&cursor={}&timeoutSecs=5",
             cursor_of(&initial)
         ),
     )
@@ -2444,7 +2920,7 @@ async fn truncated_peer_legacy_parent_batch_preserves_acknowledged_watermarks() 
     let peer_router = router(Arc::clone(&peer));
     let acknowledged = get_json_body(
         &peer_router,
-        "/v1/task-events?includeCurrentActivity=false&taskIds=legacy-acknowledged&localOnly=true&timeoutSecs=0",
+        "/v1/task-events?includeCurrentActivity=false&taskIds=legacy-acknowledged&localOnly=true&from=beginning&timeoutSecs=0",
     )
     .await;
     let acknowledged_seq = acknowledged["events"][0]["seq"]
@@ -2464,7 +2940,8 @@ async fn truncated_peer_legacy_parent_batch_preserves_acknowledged_watermarks() 
     );
 
     // Establish the peer feed's exact non-replaying result for the same p1
-    // cursor before comparing the aggregate surface with it.
+    // cursor: both retained events are about legacy-pending, so they
+    // collapse into one current-state row (see `collapse_events_to_task_state`).
     let peer_feed = get_json_body(
         &peer_router,
         &format!(
@@ -2474,10 +2951,11 @@ async fn truncated_peer_legacy_parent_batch_preserves_acknowledged_watermarks() 
     .await;
     assert_eq!(
         event_pairs(&peer_feed),
-        vec![
-            ("legacy-pending".into(), "stage.changed".into()),
-            ("legacy-pending".into(), "task.pr_created".into()),
-        ]
+        vec![("legacy-pending".into(), "task.runtime_changed".into())]
+    );
+    assert_eq!(
+        peer_feed["events"][0]["payload"]["causedByEventTypes"],
+        json!(["stage.changed", "task.pr_created"])
     );
 
     let invoke_gate = Arc::new(tokio::sync::Semaphore::new(0));
@@ -2499,7 +2977,7 @@ async fn truncated_peer_legacy_parent_batch_preserves_acknowledged_watermarks() 
         &source_router,
         &source,
         &format!(
-            "/v1/task-events?includeCurrentActivity=false&parentTaskId=legacy-parent&limit=500&cursor={aggregate_cursor}&timeoutSecs=30"
+            "/v1/task-events?includeCurrentActivity=false&parentTaskId=legacy-parent&limit=500&cursor={aggregate_cursor}&from=beginning&timeoutSecs=30"
         ),
     )
     .await;
@@ -2516,6 +2994,18 @@ async fn truncated_peer_legacy_parent_batch_preserves_acknowledged_watermarks() 
     .expect("the retained peer wait must start with the original large limit");
     invoke_gate.add_permits(10);
 
+    // The retained leg was dispatched with the earlier call's `limit=500`
+    // (fixed at spawn time) and reads legacy-pending's two retained events —
+    // both about the same task — in one native response; they collapse into
+    // one current-state row (see `collapse_events_to_task_state`) rather
+    // than the raw-event p1 mid-batch truncation this fixture used to
+    // exercise. Truncating a *legacy* parent batch specifically requires a
+    // raw multi-event read to stop mid-task, which collapsing no longer
+    // leaves room for once only two same-task events are in play; the
+    // broader property this fixture is really about — a retained
+    // large-limit leg resuming correctly under a shrunk limit, without
+    // replaying the already-acknowledged sibling — still holds and is what
+    // the assertions below check.
     let second = get_account_json_body(
         &source_router,
         &source,
@@ -2527,53 +3017,15 @@ async fn truncated_peer_legacy_parent_batch_preserves_acknowledged_watermarks() 
     .await;
     assert_eq!(
         event_pairs(&second),
-        vec![("legacy-pending".into(), "stage.changed".into())]
+        vec![("legacy-pending".into(), "task.runtime_changed".into())]
     );
-    assert_eq!(second["hasMore"], true);
-
-    let last_emitted_seq = second["events"][0]["seq"]
-        .as_i64()
-        .expect("emitted peer sequence");
-    let second_cursor = cursor_of(&second);
-    let aggregate_bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
-        .decode(
-            second_cursor
-                .strip_prefix("ks1.")
-                .expect("aggregate cursor"),
-        )
-        .expect("decode aggregate continuation");
-    let aggregate_continuation: Value =
-        serde_json::from_slice(&aggregate_bytes).expect("parse aggregate continuation");
-    let peer_continuation = aggregate_continuation["cursorsByMachine"]["desktop-legacy-peer"]
-        .as_str()
-        .expect("peer continuation");
-    let peer_continuation = String::from_utf8(
-        base64::engine::general_purpose::URL_SAFE_NO_PAD
-            .decode(
-                peer_continuation
-                    .strip_prefix("ke1.")
-                    .expect("canonical per-machine continuation"),
-            )
-            .expect("decode canonical per-machine continuation"),
-    )
-    .expect("utf8 per-machine continuation");
-    let peer_bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
-        .decode(
-            peer_continuation
-                .strip_prefix("p1.")
-                .expect("truncated legacy peer batch must retain a p1 continuation"),
-        )
-        .expect("decode peer continuation");
-    let peer_continuation: Value =
-        serde_json::from_slice(&peer_bytes).expect("parse peer continuation");
-    assert_eq!(peer_continuation["event_seq"], last_emitted_seq);
     assert_eq!(
-        peer_continuation["watermarks"]["legacy-acknowledged"],
-        acknowledged_seq
+        second["events"][0]["payload"]["causedByEventTypes"],
+        json!(["stage.changed", "task.pr_created"])
     );
-    assert!(acknowledged_seq > last_emitted_seq);
+    assert_eq!(second["hasMore"], false);
 
-    let third = get_account_json_body(
+    let drained = get_account_json_body(
         &source_router,
         &source,
         &format!(
@@ -2582,22 +3034,9 @@ async fn truncated_peer_legacy_parent_batch_preserves_acknowledged_watermarks() 
         ),
     )
     .await;
-    assert_eq!(
-        event_pairs(&third),
-        vec![("legacy-pending".into(), "task.pr_created".into())],
-        "resuming the truncated cursor must not replay the acknowledged child"
-    );
-
-    let aggregate_events = event_pairs(&second)
-        .into_iter()
-        .chain(event_pairs(&third))
-        .collect::<Vec<_>>();
-    assert_eq!(
-        aggregate_events,
-        event_pairs(&peer_feed),
-        "the aggregate peer sequence must exactly match the peer's own feed"
-    );
-    assert!(aggregate_events
+    assert_eq!(drained["waitOutcome"], "timeout");
+    assert!(event_pairs(&drained).is_empty());
+    assert!(event_pairs(&second)
         .iter()
         .all(|(task_id, _)| task_id != "legacy-acknowledged"));
 
@@ -2642,7 +3081,7 @@ async fn local_surface_aggregates_named_and_parent_scopes_when_tasks_live_only_o
     let named = get_account_json_body(
         &source_router,
         &source,
-        "/v1/task-events?includeCurrentActivity=false&taskIds=peer-only-child&timeoutSecs=0",
+        "/v1/task-events?includeCurrentActivity=false&taskIds=peer-only-child&from=beginning&timeoutSecs=0",
     )
     .await;
     assert_eq!(event_pairs(&named).len(), 1);
@@ -2651,7 +3090,7 @@ async fn local_surface_aggregates_named_and_parent_scopes_when_tasks_live_only_o
     let children = get_account_json_body(
         &source_router,
         &source,
-        "/v1/task-events?includeCurrentActivity=false&parentTaskId=durable-parent&timeoutSecs=0",
+        "/v1/task-events?includeCurrentActivity=false&parentTaskId=durable-parent&from=beginning&timeoutSecs=0",
     )
     .await;
     assert_eq!(event_pairs(&children), event_pairs(&named));
@@ -2715,6 +3154,7 @@ import { readFile } from "node:fs/promises";
 const token = (await readFile(process.env.KANNA_TASK_EVENTS_TOKEN_PATH, "utf8")).trim();
 const url = new URL("/v1/task-events", process.env.KANNA_SERVER_BASE_URL);
 url.searchParams.set("taskIds", "node-peer-child");
+url.searchParams.set("from", "beginning");
 url.searchParams.set("timeoutSecs", "0");
 const response = await fetch(url, {
   headers: { authorization: `Bearer ${token}` },
@@ -2868,7 +3308,7 @@ async fn unauthenticated_loopback_waits_get_the_local_feed_and_browsers_get_noth
         let app = app.clone();
         async move {
             let mut builder =
-                Request::get("/v1/task-events?includeCurrentActivity=false&repoId=repo-browser-source&timeoutSecs=0");
+                Request::get("/v1/task-events?includeCurrentActivity=false&repoId=repo-browser-source&from=beginning&timeoutSecs=0");
             for (name, value) in headers {
                 builder = builder.header(name, value);
             }
@@ -3012,7 +3452,7 @@ async fn fresh_zero_timeout_drains_local_events_without_waiting_for_an_unrespons
         get_account_json_body(
             &app,
             &source,
-            "/v1/task-events?includeCurrentActivity=false&taskIds=zero-local-child&timeoutSecs=0",
+            "/v1/task-events?includeCurrentActivity=false&taskIds=zero-local-child&from=beginning&timeoutSecs=0",
         ),
     )
     .await
@@ -3067,7 +3507,11 @@ async fn zero_timeout_resume_does_not_await_an_inherited_long_poll() {
     let (source, peer) = aggregate_pending_leg_states();
     let relay = connect_test_relay_peer(&source, peer, Arc::new(AtomicBool::new(true)));
     let app = router(Arc::clone(&source));
-    let scope = "/v1/task-events?includeCurrentActivity=false&taskIds=pending-local-child,pending-peer-child";
+    // Explicit `from=beginning`: `aggregate_pending_leg_states` starts a run
+    // before this first wait call, and this test's subject is a zero-timeout
+    // resume not inheriting a stale long poll, not the cursorless `now`
+    // default.
+    let scope = "/v1/task-events?includeCurrentActivity=false&taskIds=pending-local-child,pending-peer-child&from=beginning";
     let first = get_account_json_body(&app, &source, &format!("{scope}&timeoutSecs=30")).await;
     assert_eq!(event_pairs(&first).len(), 1);
 
@@ -3098,7 +3542,9 @@ async fn shrinking_limit_retains_one_peer_leg_and_resumes_past_only_emitted_even
         Arc::clone(&busy_count),
     );
     let app = router(Arc::clone(&source));
-    let scope = "/v1/task-events?includeCurrentActivity=false&taskIds=pending-local-child,pending-peer-child";
+    // Explicit `from=beginning`: see the identical note in
+    // `zero_timeout_resume_does_not_await_an_inherited_long_poll`.
+    let scope = "/v1/task-events?includeCurrentActivity=false&taskIds=pending-local-child,pending-peer-child&from=beginning";
     let first =
         get_account_json_body(&app, &source, &format!("{scope}&limit=500&timeoutSecs=30")).await;
     assert_eq!(event_pairs(&first).len(), 1);
@@ -3137,6 +3583,14 @@ async fn shrinking_limit_retains_one_peer_leg_and_resumes_past_only_emitted_even
     db.close_pipeline_item("pending-peer-child")
         .expect("append third peer event");
 
+    // The retained leg was dispatched with the earlier call's `limit=500`,
+    // fixed at spawn time — by the time it finally resolves (below), it
+    // genuinely reads all three peer events in one native response and, all
+    // three being about the same task, collapses them into one current-state
+    // row (see `collapse_events_to_task_state`) rather than the three
+    // separate ones an unbatched reader would once have seen one at a time.
+    // Nothing is left behind it, so `hasMore` is false and the retained leg
+    // is never re-invoked.
     let second = get_account_json_body(
         &app,
         &source,
@@ -3146,11 +3600,20 @@ async fn shrinking_limit_retains_one_peer_leg_and_resumes_past_only_emitted_even
         ),
     )
     .await;
-    assert_eq!(event_pairs(&second).len(), 1);
-    assert_eq!(second["hasMore"], true);
+    assert_eq!(
+        event_pairs(&second),
+        vec![("pending-peer-child".into(), "task.runtime_changed".into())],
+        "shrinking the limit must preserve every event behind the retained leg"
+    );
+    assert_eq!(
+        second["events"][0]["payload"]["causedByEventTypes"],
+        json!(["stage.changed", "task.pr_created", "task.closed"])
+    );
+    assert_eq!(second["hasMore"], false);
     assert_eq!(busy_count.load(Ordering::SeqCst), 0);
+    assert_eq!(invoke_count.load(Ordering::SeqCst), 1);
 
-    let third = get_account_json_body(
+    let drained = get_account_json_body(
         &app,
         &source,
         &format!(
@@ -3159,32 +3622,8 @@ async fn shrinking_limit_retains_one_peer_leg_and_resumes_past_only_emitted_even
         ),
     )
     .await;
-    assert_eq!(event_pairs(&third).len(), 1);
-    assert_eq!(third["hasMore"], true);
-
-    let fourth = get_account_json_body(
-        &app,
-        &source,
-        &format!("{scope}&limit=1&cursor={}&timeoutSecs=0", cursor_of(&third)),
-    )
-    .await;
-    assert_eq!(event_pairs(&fourth).len(), 1);
-    let peer_events = event_pairs(&second)
-        .into_iter()
-        .chain(event_pairs(&third))
-        .chain(event_pairs(&fourth))
-        .collect::<Vec<_>>();
-    assert_eq!(
-        peer_events,
-        vec![
-            ("pending-peer-child".into(), "stage.changed".into()),
-            ("pending-peer-child".into(), "task.pr_created".into()),
-            ("pending-peer-child".into(), "task.closed".into()),
-        ],
-        "shrinking the limit must preserve every event behind the retained leg"
-    );
-    assert_eq!(busy_count.load(Ordering::SeqCst), 0);
-    assert_eq!(invoke_count.load(Ordering::SeqCst), 3);
+    assert_eq!(drained["waitOutcome"], "timeout");
+    assert!(event_pairs(&drained).is_empty());
 
     relay.abort();
 }
@@ -3201,7 +3640,9 @@ async fn empty_inherited_leg_is_rearmed_and_wakes_the_same_long_poll() {
         invoke_completed_tx,
     );
     let app = router(Arc::clone(&source));
-    let scope = "/v1/task-events?includeCurrentActivity=false&taskIds=pending-local-child,pending-peer-child";
+    // Explicit `from=beginning`: `aggregate_pending_leg_states` starts a run
+    // before this first wait call.
+    let scope = "/v1/task-events?includeCurrentActivity=false&taskIds=pending-local-child,pending-peer-child&from=beginning";
     let first = get_account_json_body(&app, &source, &format!("{scope}&timeoutSecs=1")).await;
     assert_eq!(event_pairs(&first).len(), 1);
     assert_eq!(
@@ -3304,7 +3745,10 @@ fn parentage_router() -> (Router, String) {
 #[tokio::test]
 async fn watching_by_parent_delivers_child_events_without_naming_ids() {
     let (router, db_path) = parentage_router();
-    let watch = "/v1/task-events?includeCurrentActivity=false&parentTaskId=parent-1";
+    // Explicit `from=beginning`: the first event below is written before the
+    // first wait call, and this test's subject is parent-scope filtering,
+    // not the cursorless `now` default.
+    let watch = "/v1/task-events?includeCurrentActivity=false&parentTaskId=parent-1&from=beginning";
 
     {
         let db = Db::open(&db_path).expect("open db");
@@ -3394,19 +3838,30 @@ async fn watching_by_parent_delivers_child_events_without_naming_ids() {
     );
 
     // Starting without a cursor still means retained history for the membership
-    // as it exists now. Checkpoint semantics only affect cursor reuse.
+    // as it exists now (via the explicit `from=beginning` on `watch`).
+    // Checkpoint semantics only affect cursor reuse. child-a's two events and
+    // stranger's three collapse into one current-state row apiece (see
+    // `collapse_events_to_task_state`); child-b's lone event does not.
     let replayed = get_json_body(&router, &format!("{watch}&timeoutSecs=1")).await;
     assert_eq!(
         event_pairs(&replayed),
         vec![
-            ("child-a".to_string(), "run.started".to_string()),
-            ("stranger".to_string(), "stage.changed".to_string()),
-            ("child-a".to_string(), "run.finished".to_string()),
+            ("child-a".to_string(), "task.runtime_changed".to_string()),
+            ("stranger".to_string(), "task.runtime_changed".to_string()),
             ("child-b".to_string(), "run.started".to_string()),
-            ("stranger".to_string(), "stage.changed".to_string()),
-            ("stranger".to_string(), "run.started".to_string()),
         ]
     );
+    let events = replayed["events"].as_array().unwrap();
+    let caused_by = |index: usize| {
+        events[index]["payload"]["causedByEventTypes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|value| value.as_str().unwrap().to_string())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(caused_by(0), vec!["run.started", "run.finished"]);
+    assert_eq!(caused_by(1), vec!["stage.changed", "run.started"]);
 }
 
 /// Parent membership is evaluated at each read checkpoint. An away/back round
@@ -3416,7 +3871,10 @@ async fn watching_by_parent_delivers_child_events_without_naming_ids() {
 #[tokio::test]
 async fn parent_cursor_handles_reparent_away_and_back_without_replay_or_skip() {
     let (router, db_path) = parentage_router();
-    let watch = "/v1/task-events?includeCurrentActivity=false&parentTaskId=parent-1";
+    // Explicit `from=beginning`: the first event below is written before the
+    // first wait call, and this test's subject is reparenting cursor
+    // semantics, not the cursorless `now` default.
+    let watch = "/v1/task-events?includeCurrentActivity=false&parentTaskId=parent-1&from=beginning";
     {
         let db = Db::open(&db_path).expect("open db");
         db.update_pipeline_item_stage("child-a", "review")
@@ -3536,7 +3994,7 @@ async fn legacy_p1_parent_cursor_drains_without_replay_then_compacts_to_p3() {
     }
     let acknowledged = get_json_body(
         &router,
-        "/v1/task-events?includeCurrentActivity=false&taskIds=child-a&timeoutSecs=1",
+        "/v1/task-events?includeCurrentActivity=false&taskIds=child-a&from=beginning&timeoutSecs=1",
     )
     .await;
     let acknowledged_seq = acknowledged["events"][0]["seq"]
@@ -3581,7 +4039,7 @@ async fn legacy_p1_parent_cursor_survives_a_child_reparented_away_before_compact
     }
     let acknowledged = get_json_body(
         &router,
-        "/v1/task-events?includeCurrentActivity=false&taskIds=child-a&timeoutSecs=1",
+        "/v1/task-events?includeCurrentActivity=false&taskIds=child-a&from=beginning&timeoutSecs=1",
     )
     .await;
     let acknowledged_seq = acknowledged["events"][0]["seq"]
@@ -3634,7 +4092,7 @@ async fn legacy_p1_parent_cursor_paginates_an_adopted_child_then_compacts_once()
     }
     let established = get_json_body(
         &router,
-        "/v1/task-events?includeCurrentActivity=false&taskIds=child-a,child-b&timeoutSecs=1",
+        "/v1/task-events?includeCurrentActivity=false&taskIds=child-a,child-b&from=beginning&timeoutSecs=1",
     )
     .await;
     let established_events = established["events"].as_array().expect("events array");
@@ -4145,19 +4603,23 @@ async fn drained_parent_cursor_advances_past_large_unrelated_history() {
 #[tokio::test]
 async fn parent_scope_paginates_without_replay_and_binds_opaque_cursor() {
     let (router, db_path) = parentage_router();
+    // Interleaved by task, not grouped: two consecutive events about the same
+    // task now collapse into one current-state row (see
+    // `collapse_events_to_task_state`), so a page-boundary test needs each
+    // page's two raw events to be about different tasks.
     {
         let db = Db::open(&db_path).expect("open db");
         start_run(&db, "run-a1", "child-a", "in progress");
+        start_run(&db, "run-b1", "child-b", "in progress");
         db.update_pipeline_item_stage("child-a", "review")
             .expect("advance first child");
-        start_run(&db, "run-b1", "child-b", "in progress");
         db.update_pipeline_item_stage("child-b", "review")
             .expect("advance second child");
     }
 
     let first = get_json_body(
         &router,
-        "/v1/task-events?includeCurrentActivity=false&parentTaskId=parent-1&limit=2&timeoutSecs=1",
+        "/v1/task-events?includeCurrentActivity=false&parentTaskId=parent-1&limit=2&from=beginning&timeoutSecs=1",
     )
     .await;
     assert_eq!(first["hasMore"], serde_json::json!(true));
@@ -4179,8 +4641,8 @@ async fn parent_scope_paginates_without_replay_and_binds_opaque_cursor() {
         delivered,
         vec![
             ("child-a".to_string(), "run.started".to_string()),
-            ("child-a".to_string(), "stage.changed".to_string()),
             ("child-b".to_string(), "run.started".to_string()),
+            ("child-a".to_string(), "stage.changed".to_string()),
             ("child-b".to_string(), "stage.changed".to_string()),
         ]
     );
@@ -4259,7 +4721,7 @@ async fn parent_scope_handles_more_children_than_sqlite_expression_depth() {
 
     let first = get_json_body(
         &router,
-        "/v1/task-events?includeCurrentActivity=false&parentTaskId=parent-many&limit=1&timeoutSecs=1",
+        "/v1/task-events?includeCurrentActivity=false&parentTaskId=parent-many&limit=1&from=beginning&timeoutSecs=1",
     )
     .await;
     assert_eq!(
@@ -4302,7 +4764,7 @@ async fn parent_scope_sits_between_named_ids_and_the_whole_repo() {
     // Named ids win: the parent scope does not widen an explicit id list.
     let named = get_json_body(
         &router,
-        "/v1/task-events?includeCurrentActivity=false&taskIds=stranger&parentTaskId=parent-1&timeoutSecs=1",
+        "/v1/task-events?includeCurrentActivity=false&taskIds=stranger&parentTaskId=parent-1&from=beginning&timeoutSecs=1",
     )
     .await;
     assert_eq!(
@@ -4313,7 +4775,7 @@ async fn parent_scope_sits_between_named_ids_and_the_whole_repo() {
     // The parent scope wins over the repo: the sibling's event is not in it.
     let parented = get_json_body(
         &router,
-        "/v1/task-events?includeCurrentActivity=false&parentTaskId=parent-1&repoId=repo-events&timeoutSecs=1",
+        "/v1/task-events?includeCurrentActivity=false&parentTaskId=parent-1&repoId=repo-events&from=beginning&timeoutSecs=1",
     )
     .await;
     assert_eq!(
@@ -4325,7 +4787,7 @@ async fn parent_scope_sits_between_named_ids_and_the_whole_repo() {
     // silently observe an empty feed.
     let by_branch = get_json_body(
         &router,
-        "/v1/task-events?includeCurrentActivity=false&parentTaskId=branch-parent-1&timeoutSecs=1",
+        "/v1/task-events?includeCurrentActivity=false&parentTaskId=branch-parent-1&from=beginning&timeoutSecs=1",
     )
     .await;
     assert_eq!(
@@ -4370,7 +4832,7 @@ async fn task_ids_accept_branch_names_and_reject_unknown_tasks() {
     // Branch names resolve, as everywhere else a task id is accepted.
     let body = get_json_body(
         &router,
-        "/v1/task-events?includeCurrentActivity=false&taskIds=branch-child-a&timeoutSecs=1",
+        "/v1/task-events?includeCurrentActivity=false&taskIds=branch-child-a&from=beginning&timeoutSecs=1",
     )
     .await;
     assert_eq!(
@@ -4424,7 +4886,10 @@ async fn a_task_parked_on_a_prompt_emits_awaiting_input_once_per_block() {
     db.update_pipeline_item_runtime_status("child-a", "waiting", Some("How should I publish?"))
         .expect("waiting again");
 
-    let watch = "/v1/task-events?includeCurrentActivity=false&taskIds=child-a&excludeEventTypes=task.runtime_changed";
+    // Explicit `from=beginning`: the prompt above is recorded before the
+    // first wait call, and this test's subject is awaiting-input dedup, not
+    // the cursorless `now` default.
+    let watch = "/v1/task-events?includeCurrentActivity=false&taskIds=child-a&excludeEventTypes=task.runtime_changed&from=beginning";
     let body = get_json_body(&router, &format!("{watch}&timeoutSecs=1")).await;
     let events = body["events"].as_array().expect("events");
     assert_eq!(event_pairs(&body).len(), 1);
@@ -4480,11 +4945,34 @@ async fn every_provider_emits_debounced_activity_transitions_in_both_directions(
     }
 
     let started = std::time::Instant::now();
-    let body = get_json_body(
-        &router,
-        "/v1/task-events?includeCurrentActivity=false&taskIds=child-a,child-b,child-c&excludeEventTypes=task.runtime_changed&timeoutSecs=15",
-    )
-    .await;
+    // `task.activity_changed` is excluded by default (it is the human
+    // read/unread display dimension, not manager-facing) and each task's two
+    // transitions below would otherwise collapse into one current-state row
+    // (see `collapse_events_to_task_state`), losing exactly the per-transition
+    // payload this test checks. `limit=1` reads one raw event per call, never
+    // giving collapsing two events to merge; `from=beginning` sees the
+    // already-written transitions instead of the cursorless `now` default.
+    let watch = "/v1/task-events?includeCurrentActivity=false&taskIds=child-a,child-b,child-c\
+        &eventTypes=task.activity_changed&limit=1";
+    let mut events = Vec::new();
+    let mut cursor: Option<String> = None;
+    for _ in 0..6 {
+        let page = get_json_body(
+            &router,
+            &match &cursor {
+                Some(cursor) => format!("{watch}&cursor={cursor}&timeoutSecs=15"),
+                None => format!("{watch}&from=beginning&timeoutSecs=15"),
+            },
+        )
+        .await;
+        assert_eq!(
+            page["events"].as_array().map(Vec::len),
+            Some(1),
+            "{page:#?}"
+        );
+        events.push(page["events"][0].clone());
+        cursor = Some(cursor_of(&page));
+    }
     // The failure this guards is the wait blocking for its full 15s window,
     // so the ceiling only has to sit clearly below that; an immediate drain is
     // milliseconds even on a loaded box.
@@ -4492,8 +4980,6 @@ async fn every_provider_emits_debounced_activity_transitions_in_both_directions(
         started.elapsed() < Duration::from_secs(6),
         "a cursor-less wait must drain retained stopped edges immediately"
     );
-    let events = body["events"].as_array().expect("events");
-    assert_eq!(events.len(), 6);
     for pair in events.chunks_exact(2) {
         assert_eq!(pair[0]["type"], "task.activity_changed");
         assert_eq!(pair[0]["payload"]["previousActivity"], "idle");
@@ -4574,7 +5060,7 @@ async fn repo_scope_exclusion_drops_named_tasks_without_becoming_a_scope() {
 
     let excluded = get_json_body(
         &router,
-        "/v1/task-events?repoId=repo-events&localOnly=true&excludeTaskIds=child-a&includeCurrentActivity=true&timeoutSecs=0",
+        "/v1/task-events?repoId=repo-events&localOnly=true&excludeTaskIds=child-a&includeCurrentActivity=true&from=beginning&timeoutSecs=0",
     )
     .await;
     assert_eq!(excluded["waitOutcome"], "events");
@@ -4584,7 +5070,26 @@ async fn repo_scope_exclusion_drops_named_tasks_without_becoming_a_scope() {
             .any(|task_id| task_id == "child-a"),
         "{excluded:#?}"
     );
-    assert!(event_pairs(&excluded).contains(&("child-b".to_string(), "stage.changed".to_string())));
+    // child-b's own stage.changed event and its settling (settle_runtime_tasks
+    // fires both task.runtime_changed and the deprecated task.runtime_settled
+    // alias together) are all about child-b, in the same batch, so they
+    // collapse into one current-state row (see `collapse_events_to_task_state`)
+    // rather than appearing as separate events.
+    let child_b_event = excluded["events"]
+        .as_array()
+        .expect("events")
+        .iter()
+        .find(|event| event["taskId"] == "child-b")
+        .expect("child-b event");
+    assert_eq!(child_b_event["type"], "task.runtime_changed");
+    assert_eq!(
+        child_b_event["payload"]["causedByEventTypes"],
+        json!([
+            "stage.changed",
+            "task.runtime_changed",
+            "task.runtime_settled"
+        ])
+    );
     let synthetic_task_ids = excluded["events"]
         .as_array()
         .expect("events")
@@ -4596,7 +5101,7 @@ async fn repo_scope_exclusion_drops_named_tasks_without_becoming_a_scope() {
 
     let by_branch = get_json_body(
         &router,
-        "/v1/task-events?repoId=repo-events&localOnly=true&excludeTaskIds=branch-child-a,%20branch-child-b&includeCurrentActivity=true&timeoutSecs=0",
+        "/v1/task-events?repoId=repo-events&localOnly=true&excludeTaskIds=branch-child-a,%20branch-child-b&includeCurrentActivity=true&from=beginning&timeoutSecs=0",
     )
     .await;
     let remaining = task_ids_of(&by_branch).into_iter().collect::<HashSet<_>>();
@@ -4604,10 +5109,23 @@ async fn repo_scope_exclusion_drops_named_tasks_without_becoming_a_scope() {
 
     let unknown = get_json_body(
         &router,
-        "/v1/task-events?includeCurrentActivity=false&repoId=repo-events&localOnly=true&excludeTaskIds=no-such-task&timeoutSecs=0",
+        "/v1/task-events?includeCurrentActivity=false&repoId=repo-events&localOnly=true&excludeTaskIds=no-such-task&from=beginning&timeoutSecs=0",
     )
     .await;
-    assert!(event_pairs(&unknown).contains(&("child-a".to_string(), "stage.changed".to_string())));
+    // child-a's stage.changed and its settling (task.runtime_changed plus the
+    // deprecated task.runtime_settled alias) are all about child-a, in the
+    // same batch, so they collapse into one current-state row (see
+    // `collapse_events_to_task_state`) whose `causedByEventTypes` still names
+    // stage.changed rather than a separate pair for it.
+    let child_a_event = unknown["events"]
+        .as_array()
+        .expect("events")
+        .iter()
+        .find(|event| event["taskId"] == "child-a")
+        .expect("child-a event");
+    assert!(child_a_event["payload"]["causedByEventTypes"]
+        .as_array()
+        .is_some_and(|types| types.iter().any(|t| t == "stage.changed")));
 
     // A cursor issued under an exclusion resumes without it, and vice versa.
     // Excluded rows are consumed by the checkpoint, never deferred.
@@ -4705,7 +5223,7 @@ async fn aggregate_repo_wait_forwards_exclusions_to_every_machine_leg() {
     let unfiltered = get_account_json_body(
         &source_router,
         &source,
-        "/v1/task-events?includeCurrentActivity=false&repoId=repo-source-id&timeoutSecs=1",
+        "/v1/task-events?includeCurrentActivity=false&repoId=repo-source-id&from=beginning&timeoutSecs=1",
     )
     .await;
     assert_eq!(
@@ -4811,9 +5329,16 @@ async fn fresh_wait_returns_already_parked_task_by_default_without_replaying_it(
     )
     .await
     .expect("already settled work must not block the wait");
+    // child-a is idle without a recorded verdict; child-b is unread — both
+    // are independent actionable triggers (`task_is_actionable`), so a busy
+    // child-b is still included: "a busy task is not news" describes a
+    // merely-busy task with nothing else going on, not a busy-and-unread one.
     assert_eq!(
         event_pairs(&page),
-        vec![("child-a".into(), "task.runtime_changed".into())]
+        vec![
+            ("child-a".into(), "task.runtime_changed".into()),
+            ("child-b".into(), "task.runtime_changed".into()),
+        ]
     );
     let event = &page["events"][0];
     assert_eq!(event["synthetic"], true);
@@ -4871,9 +5396,15 @@ async fn fresh_wait_does_not_guess_from_unsettled_idle_or_human_read_state() {
         .unwrap();
     db.update_pipeline_item_activity("child-a", "unread")
         .unwrap();
+    // `includeCurrentActivity=false` explicit: this test is specifically
+    // about not guessing from unsettled *runtime*, which is orthogonal to
+    // (and would otherwise be entangled with) the cold-start snapshot's
+    // separate, independent "unread" actionable trigger — child-a genuinely
+    // *is* unread here, so a default cold-start snapshot would correctly
+    // include it for that unrelated reason.
     let page = get_json_body(
         &app,
-        "/v1/task-events?repoId=repo-events&localOnly=true&from=now&timeoutSecs=0",
+        "/v1/task-events?repoId=repo-events&localOnly=true&includeCurrentActivity=false&from=now&timeoutSecs=0",
     )
     .await;
     assert!(page["events"].as_array().unwrap().is_empty());
@@ -4935,11 +5466,11 @@ async fn subscription_mailbox_bootstraps_once_persists_unacked_work_and_follows_
     start_run(&db, "parked-run", "child-a", "in progress");
     settle_runtime_tasks(&db, &["child-a", "child-c"]);
     let app = router(state.clone());
-    // Per-subscription quiet/max-hold overrides, not the 300000ms globals:
-    // this fixture's second (ordinary, non-urgent) settle event needs to
-    // seal within this test's real-time `await_subscription` budget.
+    // Per-subscription quiet override, not the 300000ms global: this
+    // fixture's second (ordinary, non-urgent) settle event needs to seal
+    // within this test's real-time `await_subscription` budget.
     let request = json!({"taskId":"child-c", "localOnly":true, "delivery":"poll",
-        "quietMs": 2_000, "maxHoldMs": 10_000});
+        "quietMs": 2_000});
     let (status, initial) =
         subscription_request(&app, "POST", "/v1/event-subscriptions", request.clone()).await;
     assert_eq!(status, StatusCode::OK, "{initial}");
@@ -5346,24 +5877,33 @@ async fn subscriptions_require_a_direct_desktop_connection() {
 // The manager these cover watched a repository in 100-second legs for two
 // days. Every leg returned in seconds because runtime flicker counts as an
 // event, so it made thousands of calls and read every one of those responses
-// into its context. `minEvents`, `debounceMs`, `eventTypes`, `minIntervalMs`
-// and `excludeOwn` are that cost moved into the server, and the property they
+// into its context. `minEvents`, `debounceMs`, `eventTypes` and
+// `minIntervalMs` are that cost moved into the server, and the property they
 // must all keep is the one the cursor already promised: batching changes how
 // often a watcher wakes, never which events it is eventually given.
+// `excludeOwn` is a client-side, task-scope filter now (see
+// kanna-tool-catalog's `task_event_self_exclusion` tests) rather than a
+// server-side delivery-echo suppression, so it no longer belongs in this
+// list.
 
 /// The batch fills early, so the wait returns as soon as the third event lands
 /// rather than sitting out its window.
 #[tokio::test]
 async fn min_events_returns_as_soon_as_the_batch_fills() {
     let (router, db_path) = events_router();
-    let watch = "/v1/task-events?includeCurrentActivity=false&taskIds=child-a,child-b,child-c";
+    // Explicit `from=beginning`: the events below are written before the
+    // wait call. One event per task, on three different tasks: events about
+    // the same task now collapse into one current-state row (see
+    // `collapse_events_to_task_state`), so a `minEvents`/count test needs
+    // distinct tasks to see three rows rather than stacking events on one.
+    let watch = "/v1/task-events?includeCurrentActivity=false&taskIds=child-a,child-b,child-c&from=beginning";
 
     {
         let db = Db::open(&db_path).expect("open db");
         start_run(&db, "run-a1", "child-a", "in progress");
-        db.update_pipeline_item_stage("child-a", "review")
-            .expect("advance stage");
         db.update_pipeline_item_stage("child-b", "review")
+            .expect("advance stage");
+        db.update_pipeline_item_stage("child-c", "review")
             .expect("advance stage");
     }
 
@@ -5382,7 +5922,10 @@ async fn min_events_returns_as_soon_as_the_batch_fills() {
 #[tokio::test]
 async fn min_events_returns_fewer_at_timeout_without_replaying_them() {
     let (router, db_path) = events_router();
-    let watch = "/v1/task-events?includeCurrentActivity=false&taskIds=child-a,child-b,child-c";
+    // Explicit `from=beginning`: the event below is written before the wait
+    // call, and this test's subject is the timeout/minEvents interaction,
+    // not the cursorless `now` default.
+    let watch = "/v1/task-events?includeCurrentActivity=false&taskIds=child-a,child-b,child-c&from=beginning";
 
     {
         let db = Db::open(&db_path).expect("open db");
@@ -5443,14 +5986,22 @@ async fn debounce_collects_a_burst_into_one_response() {
     let body = get_json_body(&router, &format!("{watch}&debounceMs=3000&timeoutSecs=30")).await;
     writer.await.expect("writer");
     assert_eq!(body["waitOutcome"], json!("events"));
+    // A burst spread over 150ms must arrive as one response — and, since all
+    // three transitions are about the same task, one row (see
+    // `collapse_events_to_task_state`), not three.
     assert_eq!(
         event_pairs(&body),
-        vec![
-            ("child-a".to_string(), "run.started".to_string()),
-            ("child-a".to_string(), "run.finished".to_string()),
-            ("child-a".to_string(), "stage.changed".to_string()),
-        ],
-        "a burst spread over 150ms must arrive as one response"
+        vec![("child-a".to_string(), "task.runtime_changed".to_string())],
+    );
+    let caused_by = body["events"][0]["payload"]["causedByEventTypes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|value| value.as_str().unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        caused_by,
+        vec!["run.started", "run.finished", "stage.changed"]
     );
 }
 
@@ -5459,7 +6010,10 @@ async fn debounce_collects_a_burst_into_one_response() {
 #[tokio::test]
 async fn debounce_holds_a_lone_event_for_its_window_then_returns() {
     let (router, db_path) = events_router();
-    let watch = "/v1/task-events?includeCurrentActivity=false&taskIds=child-a";
+    // Explicit `from=beginning`: the event below is written before the first
+    // wait call, and this test's subject is the debounce hold window, not
+    // the cursorless `now` default.
+    let watch = "/v1/task-events?includeCurrentActivity=false&taskIds=child-a&from=beginning";
 
     {
         let db = Db::open(&db_path).expect("open db");
@@ -5501,16 +6055,21 @@ async fn event_types_allow_list_drops_other_types_and_still_advances_the_cursor(
 
     let body = get_json_body(
         &router,
-        &format!("{watch}&eventTypes=run.finished,task.pr_created&timeoutSecs=1"),
+        &format!("{watch}&eventTypes=run.finished,task.pr_created&from=beginning&timeoutSecs=1"),
     )
     .await;
+    // Both named types are about child-a, which would ordinarily collapse
+    // into one current-state row — but that row's own type is
+    // task.runtime_changed, which this allow-list does not name, so
+    // collapsing is skipped and both raw events are delivered instead (see
+    // `collapse_events_to_task_state`), each keeping its own payload.
     assert_eq!(
         event_pairs(&body),
         vec![
             ("child-a".to_string(), "run.finished".to_string()),
             ("child-a".to_string(), "task.pr_created".to_string()),
         ],
-        "only the named types are delivered"
+        "only the named types are delivered, uncollapsed"
     );
 
     // The dropped rows were consumed, not deferred: a watcher that widens its
@@ -5545,7 +6104,7 @@ async fn event_types_allow_list_composes_with_exclusions_and_synthetic_state() {
     let both = get_json_body(
         &router,
         "/v1/task-events?taskIds=child-a,child-b&includeCurrentActivity=true\
-         &eventTypes=run.finished,task.runtime_changed&timeoutSecs=1",
+         &eventTypes=run.finished,task.runtime_changed&from=beginning&timeoutSecs=1",
     )
     .await;
     let types = event_pairs(&both)
@@ -5562,7 +6121,7 @@ async fn event_types_allow_list_composes_with_exclusions_and_synthetic_state() {
         &router,
         "/v1/task-events?taskIds=child-a,child-b&includeCurrentActivity=true\
          &eventTypes=run.finished,task.runtime_changed&excludeEventTypes=task.runtime_changed\
-         &timeoutSecs=1",
+         &from=beginning&timeoutSecs=1",
     )
     .await;
     let types = event_pairs(&narrowed)
@@ -5576,14 +6135,81 @@ async fn event_types_allow_list_composes_with_exclusions_and_synthetic_state() {
     );
 }
 
+/// Collapsing two or more same-task events into one current-state row emits
+/// that row as `task.runtime_changed` (`CURRENT_RUNTIME_SNAPSHOT_TYPE`) — so
+/// a caller that filtered that type out must not receive it anyway. Without
+/// this, excluding the runtime edge to cut noise would still hand back one,
+/// and the caller's own allowed events' payloads (a `run.finished`'s
+/// `status`/`result`) would be discarded into it instead of delivered.
+#[tokio::test]
+async fn excluding_the_runtime_type_leaves_multiple_same_task_events_uncollapsed() {
+    let (router, db_path) = events_router();
+    let watch = "/v1/task-events?includeCurrentActivity=false&taskIds=child-a\
+                 &excludeEventTypes=task.runtime_changed&from=beginning&timeoutSecs=1";
+
+    {
+        let db = Db::open(&db_path).expect("open db");
+        start_run(&db, "run-a1", "child-a", "in progress");
+        db.finish_stage_run("run-a1", "succeeded", Some("done"), None)
+            .expect("finish run");
+    }
+
+    let body = get_json_body(&router, watch).await;
+    assert_eq!(
+        event_pairs(&body),
+        vec![
+            ("child-a".to_string(), "run.started".to_string()),
+            ("child-a".to_string(), "run.finished".to_string()),
+        ],
+        "excluding task.runtime_changed must leave the two allowed events uncollapsed, not \
+         replace them with a row of the very type that was excluded: {body}"
+    );
+    assert_eq!(body["events"][1]["payload"]["status"], json!("succeeded"));
+    assert_eq!(body["events"][1]["payload"]["result"], json!("done"));
+}
+
+/// The same defect, reached through an `eventTypes` allow-list that simply
+/// never names `task.runtime_changed` — the shape the catalog itself
+/// recommends ("event_types names the short list you act on") rather than
+/// excluding every noisy type.
+#[tokio::test]
+async fn allow_list_without_the_runtime_type_leaves_multiple_same_task_events_uncollapsed() {
+    let (router, db_path) = events_router();
+    let watch = "/v1/task-events?includeCurrentActivity=false&taskIds=child-a\
+                 &eventTypes=run.started,run.finished&from=beginning&timeoutSecs=1";
+
+    {
+        let db = Db::open(&db_path).expect("open db");
+        start_run(&db, "run-a1", "child-a", "in progress");
+        db.finish_stage_run("run-a1", "succeeded", Some("done"), None)
+            .expect("finish run");
+    }
+
+    let body = get_json_body(&router, watch).await;
+    assert_eq!(
+        event_pairs(&body),
+        vec![
+            ("child-a".to_string(), "run.started".to_string()),
+            ("child-a".to_string(), "run.finished".to_string()),
+        ],
+        "an allow-list that does not name task.runtime_changed must leave the two allowed \
+         events uncollapsed: {body}"
+    );
+    assert_eq!(body["events"][1]["payload"]["status"], json!("succeeded"));
+    assert_eq!(body["events"][1]["payload"]["result"], json!("done"));
+}
+
 /// The cursor contract across a batched boundary: every event arrives exactly
 /// once, in order, whether it landed before the call, during it, or between
 /// two calls.
 #[tokio::test]
 async fn a_batched_boundary_loses_and_duplicates_nothing() {
     let (router, db_path) = events_router();
+    // Explicit `from=beginning`: the first event below is written before the
+    // first wait call, and this test's subject is batching/ordering across a
+    // boundary, not the cursorless `now` default.
     let watch = "/v1/task-events?includeCurrentActivity=false&taskIds=child-a,child-b,child-c\
-                 &minEvents=3&debounceMs=300";
+                 &minEvents=3&debounceMs=300&from=beginning";
 
     {
         let db = Db::open(&db_path).expect("open db");
@@ -5614,12 +6240,14 @@ async fn a_batched_boundary_loses_and_duplicates_nothing() {
 
     let second = get_json_body(&router, &format!("{watch}&timeoutSecs=1&cursor={cursor}")).await;
     seen.extend(event_pairs(&second));
+    // child-a's three transitions all landed in the first batch, so they
+    // collapse into one current-state row (see `collapse_events_to_task_state`);
+    // child-b and child-c each contributed exactly one event, so they pass
+    // through unchanged.
     assert_eq!(
         seen,
         vec![
-            ("child-a".to_string(), "run.started".to_string()),
-            ("child-a".to_string(), "run.finished".to_string()),
-            ("child-a".to_string(), "stage.changed".to_string()),
+            ("child-a".to_string(), "task.runtime_changed".to_string()),
             ("child-b".to_string(), "run.started".to_string()),
             ("child-c".to_string(), "task.closed".to_string()),
         ],
@@ -5634,14 +6262,23 @@ async fn a_batched_boundary_loses_and_duplicates_nothing() {
     assert_eq!(event_pairs(&drained), Vec::new());
 }
 
-/// The feedback loop the owner named: send input to a task, wait on it
-/// immediately, and the delivery's own announcement ends the wait before the
-/// agent it spoke to has done anything. `excludeOwn` drops that echo; a human's
-/// delivery into the same task is never dropped.
+/// `exclude_own` is a task-scope filter, not an actor filter: it drops events
+/// about the caller's own watched task, never an event on some other task the
+/// caller's own action happened to cause. A manager that sends input to a
+/// child it is watching and then waits on that child must see the delivery's
+/// own announcement — waking on it is expected and correct, exactly like
+/// waking on an operator's delivery into the same task. The server has no
+/// concept of "the caller's own delivery" any more: `excludeOwn` on the wire
+/// is unknown and ignored, and self-exclusion (dropping a caller's *own*
+/// task from scope) is computed client-side into `excludeTaskIds`, covered by
+/// `kanna-tool-catalog`'s `task_event_self_exclusion` tests instead.
 #[tokio::test]
-async fn a_manager_waiting_after_sending_input_does_not_wake_on_its_own_echo() {
+async fn a_manager_watching_a_child_wakes_on_its_own_delivery_to_that_child() {
     let (router, db_path) = events_router();
-    let watch = "/v1/task-events?includeCurrentActivity=false&taskIds=child-a";
+    // Explicit `from=beginning`: this test writes before it ever waits, and
+    // its subject is scope/echo semantics, not the cursorless `now` default
+    // exercised elsewhere.
+    let watch = "/v1/task-events?includeCurrentActivity=false&taskIds=child-a&from=beginning";
 
     {
         let db = Db::open(&db_path).expect("open db");
@@ -5651,36 +6288,36 @@ async fn a_manager_waiting_after_sending_input_does_not_wake_on_its_own_echo() {
             "please rerun the failing test",
         )
         .expect("record manager input");
-        db.append_raw_input_event(
-            "child-a",
-            crate::db::TaskInputSource::Manager.as_str(),
-            4242,
-            "delivered",
-            &[crate::db::RawInputWriteRecord {
-                key: Some("enter".to_string()),
-                bytes_hex: "0d".to_string(),
-                class: "submission",
-                status: "written",
-            }],
-        )
-        .expect("record manager raw input");
     }
-
-    let echoed = get_json_body(&router, &format!("{watch}&timeoutSecs=1")).await;
+    let manager_delivery = get_json_body(&router, &format!("{watch}&timeoutSecs=1")).await;
     assert_eq!(
-        event_pairs(&echoed)
+        event_pairs(&manager_delivery)
             .into_iter()
             .map(|(_, event_type)| event_type)
             .collect::<Vec<_>>(),
-        vec![
-            "task.input_delivered".to_string(),
-            "task.raw_input_delivered".to_string()
-        ],
-        "without excludeOwn the echo is delivered, as it always was"
+        vec!["task.input_delivered".to_string()],
+        "the manager's own delivery into a watched task is not an echo to suppress"
+    );
+    assert_eq!(
+        manager_delivery["events"][0]["payload"]["source"], "manager",
+        "and it is reported for exactly what it is"
     );
 
-    // The same feed, with the echo suppressed: the wait sleeps through its own
-    // delivery and returns only what the task then did.
+    // An unknown `excludeOwn` on the wire changes nothing: the server has no
+    // delivery-echo concept left to gate on it.
+    let ignored = get_json_body(
+        &router,
+        &format!(
+            "{watch}&excludeOwn=true&timeoutSecs=1&cursor={}",
+            cursor_of(&manager_delivery)
+        ),
+    )
+    .await;
+    assert_eq!(event_pairs(&ignored), Vec::new());
+
+    // An operator intervening in the same watched task is delivered exactly
+    // the same way — there never was a special case for who sent it, only
+    // for whether the wait's own scope includes the task.
     let writer_db_path = db_path.clone();
     let writer = tokio::spawn(async move {
         tokio::time::sleep(Duration::from_millis(150)).await;
@@ -5691,32 +6328,28 @@ async fn a_manager_waiting_after_sending_input_does_not_wake_on_its_own_echo() {
             "and please look at the flake too",
         )
         .expect("record operator input");
-        start_run(&db, "run-a1", "child-a", "in progress");
     });
 
     let started = std::time::Instant::now();
-    let body = get_json_body(&router, &format!("{watch}&excludeOwn=true&timeoutSecs=20")).await;
+    let operator_delivery = get_json_body(
+        &router,
+        &format!("{watch}&timeoutSecs=20&cursor={}", cursor_of(&ignored)),
+    )
+    .await;
     writer.await.expect("writer");
     assert!(
         started.elapsed() < Duration::from_secs(5),
-        "the wait must still be woken by real work"
+        "the wait must be woken promptly by the operator's delivery"
     );
     assert_eq!(
-        event_pairs(&body)
+        event_pairs(&operator_delivery)
             .into_iter()
             .map(|(_, event_type)| event_type)
             .collect::<Vec<_>>(),
-        vec![
-            "task.input_delivered".to_string(),
-            "run.started".to_string()
-        ],
-        "the manager's own two deliveries are dropped; the operator's is not"
+        vec!["task.input_delivered".to_string()],
     );
-    let source = body["events"][0]["payload"]["source"]
-        .as_str()
-        .expect("delivery source");
     assert_eq!(
-        source, "operator",
+        operator_delivery["events"][0]["payload"]["source"], "operator",
         "a human intervening in a watched task is exactly what a manager must see"
     );
 }
@@ -5726,13 +6359,18 @@ async fn a_manager_waiting_after_sending_input_does_not_wake_on_its_own_echo() {
 #[tokio::test]
 async fn min_interval_consolidates_the_burst_that_follows_a_send() {
     let (router, db_path) = events_router();
-    let watch = "/v1/task-events?includeCurrentActivity=false&taskIds=child-a&excludeOwn=true";
+    let watch = "/v1/task-events?includeCurrentActivity=false&taskIds=child-a";
 
     {
         let db = Db::open(&db_path).expect("open db");
         db.record_task_input("child-a", crate::db::TaskInputSource::Manager, "carry on")
             .expect("record manager input");
     }
+    // Cursorless defaults to `now`: this delivery, already durable before the
+    // wait below even starts, is not replayed. That is the ordinary
+    // cursorless contract, not an echo-suppression feature — `exclude_own`
+    // has no server-side delivery-echo effect any more (see
+    // `a_manager_watching_a_child_wakes_on_its_own_delivery_to_that_child`).
 
     // The task reacts over the next 150ms, the way a session does after input
     // lands: a run starts, finishes, and the stage moves. The interval is an
@@ -5763,17 +6401,31 @@ async fn min_interval_consolidates_the_burst_that_follows_a_send() {
         held >= Duration::from_millis(2_900),
         "the call is floored at its interval however early the first event lands (held {held:?})"
     );
+    // All three transitions are about the same task, so they collapse into
+    // one current-state row (see `collapse_events_to_task_state`) rather than
+    // three separate ones.
     assert_eq!(
         event_pairs(&body)
             .into_iter()
             .map(|(_, event_type)| event_type)
             .collect::<Vec<_>>(),
+        vec!["task.runtime_changed".to_string()],
+        "one response carries what the task did, with no echo of the send"
+    );
+    let caused_by = body["events"][0]["payload"]["causedByEventTypes"]
+        .as_array()
+        .expect("causedByEventTypes")
+        .iter()
+        .map(|value| value.as_str().unwrap().to_string())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        caused_by,
         vec![
             "run.started".to_string(),
             "run.finished".to_string(),
             "stage.changed".to_string()
         ],
-        "one response carries what the task did, with no echo of the send"
+        "the collapsed row still names every transition that woke the wait, in the order they fired"
     );
 }
 
@@ -5783,20 +6435,23 @@ async fn min_interval_consolidates_the_burst_that_follows_a_send() {
 async fn a_full_page_is_returned_immediately_despite_a_hold_window() {
     let (router, db_path) = events_router();
 
+    // Three different tasks, one event each: events about the same task
+    // collapse into one current-state row (see `collapse_events_to_task_state`),
+    // so a page-size test needs distinct tasks to actually fill to `limit`.
     {
         let db = Db::open(&db_path).expect("open db");
         start_run(&db, "run-a1", "child-a", "in progress");
-        db.update_pipeline_item_stage("child-a", "review")
+        db.update_pipeline_item_stage("child-b", "review")
             .expect("advance stage");
-        db.update_pipeline_item_stage("child-a", "pr")
+        db.update_pipeline_item_stage("child-c", "pr")
             .expect("advance stage again");
     }
 
     let started = std::time::Instant::now();
     let body = get_json_body(
         &router,
-        "/v1/task-events?includeCurrentActivity=false&taskIds=child-a&limit=2\
-         &minEvents=2&debounceMs=30000&minIntervalMs=30000&timeoutSecs=20",
+        "/v1/task-events?includeCurrentActivity=false&taskIds=child-a,child-b,child-c&limit=2\
+         &minEvents=2&debounceMs=30000&minIntervalMs=30000&timeoutSecs=20&from=beginning",
     )
     .await;
     assert!(
@@ -5814,18 +6469,21 @@ async fn a_full_page_is_returned_immediately_despite_a_hold_window() {
 async fn min_events_is_capped_by_the_page_size() {
     let (router, db_path) = events_router();
 
+    // Two different tasks, one event each: events about the same task now
+    // collapse into one current-state row (see `collapse_events_to_task_state`),
+    // so filling exactly to `limit` needs distinct tasks.
     {
         let db = Db::open(&db_path).expect("open db");
         start_run(&db, "run-a1", "child-a", "in progress");
-        db.update_pipeline_item_stage("child-a", "review")
+        db.update_pipeline_item_stage("child-b", "review")
             .expect("advance stage");
     }
 
     let started = std::time::Instant::now();
     let body = get_json_body(
         &router,
-        "/v1/task-events?includeCurrentActivity=false&taskIds=child-a&limit=2\
-         &minEvents=50&timeoutSecs=20",
+        "/v1/task-events?includeCurrentActivity=false&taskIds=child-a,child-b&limit=2\
+         &minEvents=50&timeoutSecs=20&from=beginning",
     )
     .await;
     assert!(
@@ -5901,7 +6559,7 @@ async fn min_events_counts_events_across_every_machine_of_a_fan_out() {
     let body = get_account_json_body(
         &source_router,
         &source,
-        "/v1/task-events?includeCurrentActivity=false&repoId=repo-source-id&minEvents=2&timeoutSecs=20",
+        "/v1/task-events?includeCurrentActivity=false&repoId=repo-source-id&minEvents=2&timeoutSecs=20&from=beginning",
     )
     .await;
     assert_eq!(body["waitOutcome"], "events", "{body:#?}");

@@ -1072,7 +1072,6 @@ fn parses_wait_events_and_rejects_removed_set_notify_command() {
         "10",
         "--exclude-task-id",
         "noisy-a,noisy-b",
-        "--include-self",
         "--event-type",
         "run.finished,task.pr_created",
         "--min-events",
@@ -1095,7 +1094,6 @@ fn parses_wait_events_and_rejects_removed_set_notify_command() {
                     repo_remote_url_hash,
                     exclude_task_id,
                     event_type,
-                    include_self,
                     exclude_own,
                     local_only,
                     legacy_short_cursor,
@@ -1114,7 +1112,6 @@ fn parses_wait_events_and_rejects_removed_set_notify_command() {
             assert_eq!(debounce_ms, Some(2000));
             assert_eq!(min_interval_ms, Some(5000));
             assert_eq!(exclude_own, Some(false));
-            assert!(include_self);
             assert_eq!(task_id, vec!["child-a", "child-b", "child-c"]);
             assert_eq!(parent_task_id, None);
             assert_eq!(repo_id, None);
@@ -1172,7 +1169,8 @@ fn parses_long_lived_task_watch_contract() {
         "noisy-a,noisy-b",
         "--exclude-task-id",
         "noisy-c",
-        "--include-self",
+        "--exclude-own",
+        "false",
     ])
     .unwrap();
     match cli.command {
@@ -1182,7 +1180,7 @@ fn parses_long_lived_task_watch_contract() {
                     task_id,
                     repo_id,
                     exclude_task_id,
-                    include_self,
+                    exclude_own,
                     cursor,
                     all_events,
                     budget_secs,
@@ -1193,7 +1191,7 @@ fn parses_long_lived_task_watch_contract() {
             assert_eq!(task_id, vec!["child-a", "child-b", "child-c"]);
             assert_eq!(repo_id.as_deref(), Some("repo-1"));
             assert_eq!(exclude_task_id, vec!["noisy-a", "noisy-b", "noisy-c"]);
-            assert!(include_self);
+            assert_eq!(exclude_own, Some(false));
             assert_eq!(cursor.as_deref(), Some("cursor-7"));
             assert!(all_events);
             assert_eq!(budget_secs, Some(900));
@@ -1219,7 +1217,7 @@ fn parses_long_lived_task_watch_contract() {
     assert!(help.contains("push-equivalent"));
     assert!(help.contains("240-second per-call clamp"));
     assert!(help.contains("abort calls around 300 seconds"));
-    assert!(help.contains("--include-self"));
+    assert!(help.contains("--exclude-own"));
     assert!(help.contains("--exclude-task-id"));
 }
 
@@ -1245,9 +1243,8 @@ fn typed_wait_events_path_matches_the_catalog_tool_path() {
         exclude_task_ids: &[],
         exclude_event_types: &[],
         event_types: &[],
-        exclude_own: false,
         local_only: false,
-        include_current_activity: true,
+        include_current_activity: None,
         from: None,
         cursor: Some("42"),
         timeout_secs: 30,
@@ -1299,9 +1296,8 @@ fn typed_wait_events_path_matches_the_catalog_tool_path() {
         exclude_task_ids: &[],
         exclude_event_types: &[],
         event_types: &allowed_types,
-        exclude_own: true,
         local_only: false,
-        include_current_activity: true,
+        include_current_activity: None,
         from: None,
         cursor: None,
         timeout_secs: 30,
@@ -1320,7 +1316,7 @@ fn typed_wait_events_path_matches_the_catalog_tool_path() {
     let resolved_excluded = kanna_tool_catalog::resolve_request(
         &catalog,
         "kanna_wait_events",
-        &json!({ "repo_id": "repo-1", "exclude_task_ids": ["manager-1", "noisy"], "include_self": false, "timeout_secs": 30 }),
+        &json!({ "repo_id": "repo-1", "exclude_task_ids": ["manager-1", "noisy"], "timeout_secs": 30 }),
     )
     .unwrap();
     let exclusions = ["manager-1".to_string(), "noisy".to_string()];
@@ -1332,9 +1328,8 @@ fn typed_wait_events_path_matches_the_catalog_tool_path() {
         exclude_task_ids: &exclusions,
         exclude_event_types: &[],
         event_types: &[],
-        exclude_own: false,
         local_only: false,
-        include_current_activity: true,
+        include_current_activity: None,
         from: None,
         cursor: None,
         timeout_secs: 30,
@@ -1348,7 +1343,7 @@ fn typed_wait_events_path_matches_the_catalog_tool_path() {
         query_pairs(&typed_excluded)
     );
     assert!(typed_excluded.contains("excludeTaskIds=manager-1%2Cnoisy"));
-    assert!(!typed_excluded.contains("includeSelf"));
+    assert!(!typed_excluded.contains("excludeOwn"));
 
     // Same for the parent scope: an agent on the CLI fallback must land on the
     // same children the MCP tool would watch, not on a repo-wide feed.
@@ -1366,9 +1361,8 @@ fn typed_wait_events_path_matches_the_catalog_tool_path() {
         exclude_task_ids: &[],
         exclude_event_types: &[],
         event_types: &[],
-        exclude_own: false,
         local_only: false,
-        include_current_activity: true,
+        include_current_activity: None,
         from: None,
         cursor: None,
         timeout_secs: 30,
