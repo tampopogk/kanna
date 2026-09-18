@@ -48,7 +48,15 @@ with two different fixes:
   read the clipboard through an API WebKitGTK refuses. Only the payload
   shows that, so this case asserts the text and that nothing was logged;
 - `Ctrl+Shift+Left` extending the selection inside a focused text field, and the
-  same chord still being claimed outside one.
+  same chord still being claimed outside one;
+- the chords borrowed back from VS Code, each asserted by the dialog it opens
+  rather than only by arrival: `Ctrl+,` for Preferences, `Ctrl+Shift+P` for the
+  command palette — which used to open the *file picker*, an answer harder to
+  diagnose than a no-op — and `Ctrl+Alt+P` for the picker;
+- the worktree shell's unlisted `Ctrl+J`, both ways round: claimed and opening
+  the shell when nothing is focused, and **not** claimed when the agent
+  terminal has the caret, because `Ctrl+J` is LF and belongs to the PTY there.
+  The half that must not happen is the reason this one is measured at all.
 
 ## Running it
 
@@ -148,3 +156,8 @@ Press only the chords a test needs. A sweep over every listed binding looks
 tempting and is not safe: `Ctrl+Shift+W` is `closeTabOrWindow`, and a probe that
 included it closed the app out from under the run, which then failed as
 `ECONNREFUSED` on the WebDriver port and looked like an app crash.
+
+A chord that opens something has to close it again. `Ctrl+,`, `Ctrl+Shift+P`
+and `Ctrl+Alt+P` each leave a dialog up, and a dialog left standing changes
+what the next case is pressing keys at; each of those cases presses a real
+Escape and waits for the dialog to go.
