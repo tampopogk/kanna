@@ -1,8 +1,10 @@
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import type { TaskActivity, TaskSummary } from "../lib/api/types";
 import {
+  TASK_ATTENTION_BADGE,
   TASK_BLOCKED_THEME,
   TASK_STAGE_STRIPE_WIDTH,
+  contrastRatio,
   resolveTaskStageTheme
 } from "../theme/taskStageTheme";
 
@@ -646,6 +648,160 @@ describe("TaskCard", () => {
     expect(flattenStyle(title?.props?.style)).toMatchObject({
       fontWeight: "normal",
       fontStyle: "normal"
+    });
+  });
+  describe("attention badge", () => {
+    const badgedTask = (
+      overrides: Partial<TaskSummary> = {}
+    ): TaskSummary => ({
+      id: "task-1",
+      repoId: "repo-1",
+      title: "Ship the staging build",
+      stage: "in progress",
+      attentionReason: "Owner must approve the release",
+      ...overrides
+    });
+
+    it("marks a badged row with its own pill and announces the reason", () => {
+      if (!TaskCard) throw new Error("TaskCard was not loaded");
+      const tree = TaskCard({
+        task: badgedTask(),
+        onPress: vi.fn()
+      }) as ElementNode;
+
+      const pill = findNodeByProp(
+        tree,
+        "testID",
+        "mobile.task-row-attention.task-1"
+      );
+      expect(pill).not.toBeNull();
+      expect(textContent(pill)).toBe("attention");
+      expect(pill?.props?.accessibilityLabel).toBe(
+        "Attention requested: Owner must approve the release"
+      );
+      expect(tree.props?.accessibilityLabel).toContain(
+        "Attention requested: Owner must approve the release"
+      );
+    });
+
+    it("renders no pill for an unset or whitespace-only reason", () => {
+      if (!TaskCard) throw new Error("TaskCard was not loaded");
+      for (const attentionReason of [undefined, null, "   "]) {
+        const tree = TaskCard({
+          task: badgedTask({ attentionReason }),
+          onPress: vi.fn()
+        }) as ElementNode;
+
+        expect(
+          findNodeByProp(tree, "testID", "mobile.task-row-attention.task-1")
+        ).toBeNull();
+        expect(textContent(tree)).not.toContain("attention");
+        expect(tree.props?.accessibilityLabel).not.toContain(
+          "Attention requested"
+        );
+      }
+    });
+
+    // Attention is an explicit human-action annotation and unread is read
+    // state. A row wearing one must never be mistaken for a row wearing the
+    // other, and a row wearing both must show both.
+    it.each([
+      ["badged and read", "Owner must approve the release", "idle", true, "normal"],
+      ["unread and unbadged", null, "unread", false, "bold"],
+      ["badged and unread", "Owner must approve the release", "unread", true, "bold"]
+    ] as const)(
+      "keeps attention and unread separable on a %s row",
+      (_label, attentionReason, activity, expectsPill, expectedFontWeight) => {
+        if (!TaskCard) throw new Error("TaskCard was not loaded");
+        const tree = TaskCard({
+          task: badgedTask({
+            activity: activity as TaskActivity,
+            attentionReason,
+            readState: activity === "unread" ? "unread" : "read"
+          }),
+          onPress: vi.fn()
+        }) as ElementNode;
+
+        const pill = findNodeByProp(
+          tree,
+          "testID",
+          "mobile.task-row-attention.task-1"
+        );
+        if (expectsPill) {
+          expect(pill).not.toBeNull();
+        } else {
+          expect(pill).toBeNull();
+        }
+        const title = findTextNodeByCompleteText(tree, "Ship the staging build");
+        expect(flattenStyle(title?.props?.style)).toMatchObject({
+          fontWeight: expectedFontWeight
+        });
+      }
+    );
+
+    it("keeps the attention pill on its own colour, apart from blocked", () => {
+      if (!TaskCard) throw new Error("TaskCard was not loaded");
+      const tree = TaskCard({
+        task: badgedTask({ blockedByTaskIds: ["task-blocker"] }),
+        onPress: vi.fn()
+      }) as ElementNode;
+
+      const attentionLabel = findTextNodeByCompleteText(tree, "attention");
+      const blockedLabel = findTextNodeByCompleteText(tree, "blocked");
+      expect(flattenStyle(attentionLabel?.props?.style).color).toBe(
+        TASK_ATTENTION_BADGE.label
+      );
+      expect(flattenStyle(blockedLabel?.props?.style).color).toBe(
+        TASK_BLOCKED_THEME.chipLabel
+      );
+      expect(TASK_ATTENTION_BADGE.label).not.toBe(TASK_BLOCKED_THEME.chipLabel);
+      expect(
+        contrastRatio(
+          TASK_ATTENTION_BADGE.label,
+          TASK_ATTENTION_BADGE.background
+        )
+      ).toBeGreaterThanOrEqual(4.5);
+    });
+
+    // The badge cannot lean on hue: `in progress` is the commonest stage and
+    // wears the same orange as a tinted chip, so a tinted attention pill
+    // vanished beside it on the simulator. Fill is what separates them, and it
+    // has to hold for every stage colour, not just this one.
+    it.each(["in progress", "review", "pr", "consultation", "some custom stage"])(
+      "stays distinct from the stage pill on a %s row",
+      (stage) => {
+        if (!TaskCard) throw new Error("TaskCard was not loaded");
+        const tree = TaskCard({
+          task: badgedTask({ stage }),
+          onPress: vi.fn()
+        }) as ElementNode;
+
+        const pill = findNodeByProp(
+          tree,
+          "testID",
+          "mobile.task-row-attention.task-1"
+        );
+        const stageChipBackground = resolveTaskStageTheme(stage).chipBackground;
+        const pillBackground = flattenStyle(pill?.props?.style).backgroundColor;
+        expect(pillBackground).toBe(TASK_ATTENTION_BADGE.background);
+        expect(pillBackground).not.toBe(stageChipBackground);
+        expect(
+          contrastRatio(String(pillBackground), stageChipBackground)
+        ).toBeGreaterThanOrEqual(3);
+      }
+    );
+
+    it("says the reason once when the list already passes it as context", () => {
+      if (!TaskCard) throw new Error("TaskCard was not loaded");
+      const reason = "Owner must approve the release";
+      const tree = TaskCard({
+        task: badgedTask(),
+        contextLabel: reason,
+        onPress: vi.fn()
+      }) as ElementNode;
+
+      const label = String(tree.props?.accessibilityLabel);
+      expect(label.split(reason).length - 1).toBe(1);
     });
   });
 });

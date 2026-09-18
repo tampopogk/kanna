@@ -279,6 +279,7 @@ interface RenderTaskScreenOptions {
   taskPreviewRouteAvailable?: boolean;
   taskId?: string;
   ownerLocalTaskId?: string;
+  attentionReason?: string | null;
   title?: string;
   prompt?: string;
   ports?: Array<{ name: string; port: number }>;
@@ -357,6 +358,7 @@ function renderTaskScreen(options: RenderTaskScreenOptions = {}): ElementNode {
     taskPreviewRouteAvailable = true,
     taskId = "task-1",
     ownerLocalTaskId,
+    attentionReason,
     title = "Task",
     prompt,
     ports,
@@ -382,6 +384,7 @@ function renderTaskScreen(options: RenderTaskScreenOptions = {}): ElementNode {
     task: {
       id: taskId,
       ownerLocalTaskId,
+      attentionReason,
       repoId: "repo-1",
       title,
       prompt,
@@ -1365,6 +1368,59 @@ describe("TaskScreen", () => {
 
     expect(placeholder).not.toBeNull();
     expect(JSON.stringify(placeholder)).toContain("task-elsewhere");
+  });
+
+  it("marks a badged task in the collapsed chip and announces the reason", () => {
+    const tree = renderTaskScreen({
+      attentionReason: "  Owner must approve the release  "
+    });
+
+    expect(
+      findByTestId(tree, MOBILE_E2E_IDS.taskDetailAttentionMarker)
+    ).not.toBeNull();
+    // Collapsed, the chip has room for a glyph only; the reason is in its
+    // accessibility label and behind one tap.
+    expect(
+      findByTestId(tree, MOBILE_E2E_IDS.taskDetailAttentionReason)
+    ).toBeNull();
+    expect(
+      findByTestId(tree, MOBILE_E2E_IDS.taskTitleButton)?.props
+        ?.accessibilityLabel
+    ).toContain("Attention requested: Owner must approve the release");
+  });
+
+  it.each([undefined, null, "   "])(
+    "shows no attention marker for %p",
+    (attentionReason) => {
+      const tree = renderTaskScreen({ attentionReason });
+
+      expect(
+        findByTestId(tree, MOBILE_E2E_IDS.taskDetailAttentionMarker)
+      ).toBeNull();
+      expect(
+        findByTestId(tree, MOBILE_E2E_IDS.taskTitleButton)?.props
+          ?.accessibilityLabel
+      ).not.toContain("Attention requested");
+    }
+  );
+
+  it("shows the full reason once the title chip is expanded", () => {
+    const attentionReason = "Owner must approve the release";
+    const collapsed = renderTaskScreen({ attentionReason });
+    const titleButton = findByTestId(collapsed, MOBILE_E2E_IDS.taskTitleButton);
+    (titleButton?.props?.onPress as () => void)();
+
+    const expanded = renderTaskScreen({ attentionReason });
+    const reason = findByTestId(
+      expanded,
+      MOBILE_E2E_IDS.taskDetailAttentionReason
+    );
+    expect(reason).not.toBeNull();
+    expect(reason?.props?.children).toBe(attentionReason);
+    // Still discoverable from the marker that sent the reader here.
+    expect(
+      findByTestId(expanded, MOBILE_E2E_IDS.taskDetailAttentionMarker)
+    ).not.toBeNull();
   });
 
   it("routes agent tasks to the native agent message view", () => {

@@ -99,10 +99,16 @@ import {
   buildTaskQuickReply,
   type TaskQuickReply
 } from "./taskQuickReplies";
+import {
+  taskAttentionAccessibilityLabel,
+  taskAttentionReason
+} from "./taskPresentation";
 import { buildTaskWorkspaceModel } from "./taskWorkspace";
 import { useTerminalReconnectPresentation } from "./terminalReconnectPresentation";
 import { resolveMobileTerminalGeometry } from "../mobileTerminalGeometry";
 import {
+  TASK_ATTENTION_BADGE,
+  TASK_ATTENTION_THEME,
   TASK_STAGE_STRIPE_WIDTH,
   resolveTaskStageTheme
 } from "../theme/taskStageTheme";
@@ -292,6 +298,13 @@ export function TaskScreen({
     terminalErrorMessage,
     taskCreationPhase
   });
+  // The explicit human-action badge. The list shows only that it is set; the
+  // reason itself lives here, where the reader arrives after the row sent
+  // them.
+  const attentionReason = taskAttentionReason(task);
+  const attentionLabel = attentionReason
+    ? taskAttentionAccessibilityLabel(attentionReason)
+    : null;
   const [attachment, setAttachment] = useState<PreparedImageAttachment | null>(
     null
   );
@@ -1126,7 +1139,9 @@ export function TaskScreen({
           accessibilityHint={
             isTitleExpanded ? "Collapse title" : "Expand title"
           }
-          accessibilityLabel={`${model.stageLabel}: ${
+          accessibilityLabel={`${
+            attentionLabel ? `${attentionLabel}. ` : ""
+          }${model.stageLabel}: ${
             isTitleExpanded
               ? `${expandedPrompt}. Task ID: ${expandedTaskId}`
               : collapsedTaskId
@@ -1155,6 +1170,27 @@ export function TaskScreen({
             )
           }
         >
+          {attentionReason ? (
+            <View
+              accessible={false}
+              style={[
+                styles.attentionMarker,
+                { backgroundColor: TASK_ATTENTION_BADGE.background }
+              ]}
+              testID={MOBILE_E2E_IDS.taskDetailAttentionMarker}
+            >
+              <Text
+                accessible={false}
+                allowFontScaling={false}
+                style={[
+                  styles.attentionMarkerGlyph,
+                  { color: TASK_ATTENTION_BADGE.label }
+                ]}
+              >
+                !
+              </Text>
+            </View>
+          ) : null}
           <Text
             accessible={false}
             maxFontSizeMultiplier={1.5}
@@ -1183,6 +1219,27 @@ export function TaskScreen({
                   {expandedPrompt}
                 </Text>
               </ScrollView>
+              {attentionReason ? (
+                <View accessible={false} style={styles.taskIdentity}>
+                  <Text
+                    accessible={false}
+                    style={[
+                      styles.taskIdLabel,
+                      { color: TASK_ATTENTION_THEME.chipLabel }
+                    ]}
+                  >
+                    Attention requested
+                  </Text>
+                  <Text
+                    accessible={false}
+                    selectable
+                    style={styles.attentionReason}
+                    testID={MOBILE_E2E_IDS.taskDetailAttentionReason}
+                  >
+                    {attentionReason}
+                  </Text>
+                </View>
+              ) : null}
               <View accessible={false} style={styles.taskIdentity}>
                 <Text accessible={false} style={styles.taskIdLabel}>
                   Task ID
@@ -1910,6 +1967,29 @@ const styles = StyleSheet.create({
     color: "#9BB0CC",
     fontSize: 11,
     lineHeight: 16
+  },
+  /**
+   * The collapsed chip has no room for a sentence, so the badge is a glyph
+   * beside the stage and the reason waits inside the expanded chip. Font
+   * scaling is off for the glyph alone: it is a fixed-size dot, and the chip
+   * row it sits in is already height-bounded by the stage label.
+   */
+  attentionMarker: {
+    alignItems: "center",
+    borderRadius: 999,
+    height: 18,
+    justifyContent: "center",
+    width: 18
+  },
+  attentionMarkerGlyph: {
+    fontSize: 12,
+    fontWeight: "800",
+    lineHeight: 14
+  },
+  attentionReason: {
+    color: "#F0DCC4",
+    fontSize: 13,
+    lineHeight: 18
   },
   bottomChrome: {
     left: 14,

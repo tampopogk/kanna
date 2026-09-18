@@ -9,8 +9,12 @@ import {
 import { MOBILE_E2E_IDS } from "../e2eTestIds";
 import type { TaskSummary } from "../lib/api/types";
 import { isTaskBlocked } from "../lib/api/taskIdentity";
-import { buildTaskListItemModel } from "../screens/taskPresentation";
 import {
+  buildTaskListItemModel,
+  taskAttentionAccessibilityLabel
+} from "../screens/taskPresentation";
+import {
+  TASK_ATTENTION_BADGE,
   TASK_BLOCKED_THEME,
   TASK_STAGE_STRIPE_WIDTH,
   resolveTaskStageTheme
@@ -82,15 +86,25 @@ export function TaskCard({
   // same channel.
   const stageTheme = resolveTaskStageTheme(task.stage);
   const pinLabel = pinned ? "Unpin" : "Pin";
+  // The attention badge is somebody asking for a human, so it is announced
+  // before the row's own identity — and ahead of the unread treatment on the
+  // title, which is a different claim the reader must still be able to hear
+  // separately.
+  const attentionLabel = model.attentionReason
+    ? taskAttentionAccessibilityLabel(model.attentionReason)
+    : null;
   const accessibilityLabel = [
     isSubtask ? "Subtask" : null,
+    attentionLabel,
     blocked ? "Blocked" : null,
     pinned ? "Pinned" : null,
     model.title,
     shortId ? `Task ID ${shortId}` : null,
     repoLabel,
     model.stageLabel,
-    contextLabel,
+    // The needs-you list already passes the reason as this row's context, and
+    // saying it twice in one utterance helps nobody.
+    contextLabel === model.attentionReason ? null : contextLabel,
     contextLabel ? null : model.waitingPromptSnippet
   ]
     .filter((part): part is string => Boolean(part))
@@ -195,11 +209,34 @@ export function TaskCard({
               {model.stageLabel}
             </Text>
           </View>
+          {model.attentionReason ? (
+            <View
+              accessibilityLabel={attentionLabel ?? undefined}
+              accessibilityRole="text"
+              style={[
+                styles.stagePill,
+                styles.overlayPill,
+                { backgroundColor: TASK_ATTENTION_BADGE.background }
+              ]}
+              testID={MOBILE_E2E_IDS.taskListItemAttention(uiId)}
+            >
+              <Text
+                maxFontSizeMultiplier={1.5}
+                numberOfLines={1}
+                style={[
+                  styles.stageLabel,
+                  { color: TASK_ATTENTION_BADGE.label }
+                ]}
+              >
+                attention
+              </Text>
+            </View>
+          ) : null}
           {blocked ? (
             <View
               style={[
                 styles.stagePill,
-                styles.blockedPill,
+                styles.overlayPill,
                 { backgroundColor: TASK_BLOCKED_THEME.chipBackground }
               ]}
             >
@@ -334,7 +371,8 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10,
     paddingVertical: 6
   },
-  blockedPill: {
+  /** Stage-overlay pills — attention, blocked — hang off the column's edge. */
+  overlayPill: {
     alignSelf: "flex-end"
   },
   // Subordinate to the title on purpose: legible for cross-checking, quiet

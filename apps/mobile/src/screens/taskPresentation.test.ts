@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { buildTaskListItemModel } from "./taskPresentation";
+import {
+  buildTaskListItemModel,
+  taskAttentionAccessibilityLabel,
+  taskAttentionReason
+} from "./taskPresentation";
 
 describe("buildTaskListItemModel", () => {
   it("shows the current title and waiting prompt", () => {
@@ -15,7 +19,8 @@ describe("buildTaskListItemModel", () => {
       stageLabel: "in progress",
       title: "Current editable title",
       waitingPromptSnippet: "Ready for review",
-      isWaitingPromptPlaceholder: false
+      isWaitingPromptPlaceholder: false,
+      attentionReason: null
     });
   });
 
@@ -140,5 +145,61 @@ describe("buildTaskListItemModel", () => {
     expect(model.title.endsWith("…")).toBe(true);
     expect(Array.from(model.waitingPromptSnippet)).toHaveLength(240);
     expect(model.waitingPromptSnippet.endsWith("…")).toBe(true);
+  });
+});
+
+describe("taskAttentionReason", () => {
+  it("reports a trimmed reason for a badged task", () => {
+    const task = {
+      id: "task-1",
+      repoId: "repo-1",
+      title: "Ship the staging build",
+      stage: "in progress",
+      attentionReason: "  Owner must approve the release  "
+    };
+
+    expect(taskAttentionReason(task)).toBe("Owner must approve the release");
+    expect(buildTaskListItemModel(task).attentionReason).toBe(
+      "Owner must approve the release"
+    );
+  });
+
+  it.each([undefined, null, "", "   "])(
+    "reports no badge for %p",
+    (attentionReason) => {
+      const task = {
+        id: "task-1",
+        repoId: "repo-1",
+        title: "Ship the staging build",
+        stage: "in progress",
+        attentionReason
+      };
+
+      expect(taskAttentionReason(task)).toBeNull();
+      expect(buildTaskListItemModel(task).attentionReason).toBeNull();
+    }
+  );
+
+  // Attention is the explicit human-action annotation, never a restatement of
+  // read or runtime state: an unread, waiting, never-read task carries no
+  // badge unless somebody set one.
+  it("stays independent of unread and runtime state", () => {
+    expect(
+      buildTaskListItemModel({
+        id: "task-1",
+        repoId: "repo-1",
+        title: "Ship the staging build",
+        stage: "in progress",
+        activity: "unread",
+        readState: "unread",
+        runtimeState: "waiting"
+      }).attentionReason
+    ).toBeNull();
+  });
+
+  it("spells the badge out for a screen reader", () => {
+    expect(taskAttentionAccessibilityLabel("Owner must approve")).toBe(
+      "Attention requested: Owner must approve"
+    );
   });
 });
