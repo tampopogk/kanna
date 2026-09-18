@@ -201,6 +201,15 @@ The user-facing surface is described in
     invokes (HTTP-over-relay, including `/v1/task-events` long polls under a
     separate long-poll permit budget), mobile push notifications, and cloud
     task snapshot publication.
+  - **Peer introduction.** A desktop's control socket announces its peer
+    channel *public* key in its `auth` frame, and the relay serves it with
+    presence (`list_active_desktops` → `desktops[].peerChannelPublicKey`).
+    It records a key only for a socket whose desktop secret it verified for
+    that exact desktop id, holds it in memory for that socket's life, and
+    persists nothing. This is how two desktops of one account pin each other
+    without a pairing ceremony — see `docs/specs/secure-channel.md` §10,
+    "Automatic enrollment". The relay never sees a private key, and after
+    first contact it cannot influence the pin at all.
   - **Tunnels** carry the streaming protocols; exactly two tunnel service
     classes exist — `ksp` (the Kanna Stream Protocol, including raw terminal
     bytes) and `task-transfer` — each with its own backpressure watermarks.

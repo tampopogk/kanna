@@ -205,8 +205,23 @@ onBeforeUnmount(() => {
         >
           <div class="peer-main">
             <span class="peer-name">{{ peer.displayName }}</span>
-            <span class="badge badge-secure">{{ t('machines.peerEncrypted') }}</span>
+            <span
+              class="badge"
+              :class="peer.provenance === 'account' ? 'badge-account' : 'badge-secure'"
+              :data-testid="`machines-peer-provenance-${peer.desktopId}`"
+            >{{ t(peer.provenance === 'account' ? 'machines.peerEncryptedAccount' : 'machines.peerEncryptedVerified') }}</span>
           </div>
+          <p
+            v-if="peer.provenance === 'account'"
+            class="peer-hint"
+            :data-testid="`machines-peer-account-hint-${peer.desktopId}`"
+          >{{ t('machines.peerAccountHint') }}</p>
+          <p
+            v-if="peer.identityChanged"
+            class="peer-hint error"
+            role="alert"
+            :data-testid="`machines-peer-identity-changed-${peer.desktopId}`"
+          >{{ t('machines.peerIdentityChanged') }}</p>
           <div class="peer-meta diagnostic">
             <span>{{ peer.desktopId }}</span>
             <span>{{ reachability(peer) }}</span>
@@ -330,6 +345,10 @@ p {
 .peer-name {
   font-weight: 600;
 }
+.peer-hint {
+  grid-column: 1;
+  margin: 2px 0 0;
+}
 .peer-meta {
   grid-column: 1;
   display: flex;
@@ -340,7 +359,7 @@ p {
 .peer-list li .text-action {
   grid-row: 1 / span 2;
   grid-column: 2;
-  align-self: center;
+  align-self: start;
 }
 .badge {
   border-radius: 999px;
@@ -351,6 +370,12 @@ p {
 .badge-secure {
   background: rgba(60, 170, 110, 0.18);
   color: #6fd39c;
+}
+/* Distinct from verified on purpose: an account-trusted pin is real
+   end-to-end encryption, but it is not the claim a carried key makes. */
+.badge-account {
+  background: rgba(90, 140, 210, 0.18);
+  color: #8fb6ea;
 }
 .legacy-toggle {
   display: flex;

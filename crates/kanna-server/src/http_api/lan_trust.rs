@@ -649,7 +649,7 @@ pub(super) async fn require_http_access(request: Request<Body>, next: Next) -> R
             "/v1/status" | "/v1/stream" | "/v2/stream" | "/v1/peers/channel"
         ) | (
             "POST",
-            "/v1/pairing/sessions/claim" | "/v1/peers/pairing/claim"
+            "/v1/pairing/sessions/claim" | "/v1/peers/pairing/claim" | "/v1/peers/account-enroll"
         ) | ("GET", "/v1/pairing/confirmation")
     );
     if !bootstrap && privileged_task_access(request.extensions()).is_err() {

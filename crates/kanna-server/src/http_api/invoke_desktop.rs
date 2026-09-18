@@ -122,14 +122,22 @@ pub(crate) async fn invoke_desktop(
     // that cannot be honoured is an error the caller sees, not a downgrade.
     // So is a trust store that cannot be read: whether the sibling is
     // pinned is then unknown, and unknown is not "unpaired".
-    match state.paired_peer(&desktop_id) {
+    let enroll_refusal = match state.paired_peer(&desktop_id) {
         Ok(Some(_)) => return invoke_peer(&state, desktop_id, method, path, body).await,
-        Ok(None) => {}
+        // Unpinned. Two desktops signed into one account are introduced by
+        // the relay and pinned automatically, so the sealed route is
+        // available on first contact without a ceremony; anything else keeps
+        // the behavior it had, with the reason attached.
+        Ok(None) => match crate::peer_enrollment::try_enroll(&state, &desktop_id).await {
+            Ok(_) => return invoke_peer(&state, desktop_id, method, path, body).await,
+            Err(error) => error.to_string(),
+        },
         Err(error) => return Err(format!("peer_identity_unavailable: {error}")),
-    }
+    };
     if !state.legacy_peer_access_allowed() {
         return Err(format!(
-            "peer_pairing_required: this desktop is not paired with machine {desktop_id}; pair it from Preferences → Machines"
+            "peer_pairing_required: this desktop is not paired with machine {desktop_id} and \
+             could not pair automatically ({enroll_refusal}); pair it from Preferences → Machines"
         ));
     }
 

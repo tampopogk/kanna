@@ -50,7 +50,11 @@ fn connect(source: &Arc<AppState>, peer: Arc<AppState>) -> RelayFixture {
                             let _ = response.send(Ok(()));
                         }
                         DesktopRelayRequest::ListActive { response, .. } => {
-                            let _ = response.send(Ok(vec![peer.config().desktop_id.clone()]));
+                            let _ = response.send(Ok(vec![
+                                crate::http_api::RelayDesktopPresence::without_key(
+                                    peer.config().desktop_id.clone(),
+                                ),
+                            ]));
                         }
                         DesktopRelayRequest::Invoke { method, path, body, mut response, .. } => {
                             assert!(path.starts_with("/v1/task-events?"));
@@ -155,7 +159,10 @@ fn connect_repo_peers(
                                 .lock()
                                 .unwrap_or_else(|poisoned| poisoned.into_inner())
                                 .clone();
-                            let _ = response.send(Ok(ids));
+                            let _ = response.send(Ok(ids
+                                .into_iter()
+                                .map(crate::http_api::RelayDesktopPresence::without_key)
+                                .collect()));
                         }
                         DesktopRelayRequest::Invoke {
                             desktop_id,
@@ -283,7 +290,11 @@ fn connect_gated_peer(
                             let _ = response.send(Ok(()));
                         }
                         DesktopRelayRequest::ListActive { response, .. } => {
-                            let _ = response.send(Ok(vec![peer.config().desktop_id.clone()]));
+                            let _ = response.send(Ok(vec![
+                                crate::http_api::RelayDesktopPresence::without_key(
+                                    peer.config().desktop_id.clone(),
+                                ),
+                            ]));
                         }
                         DesktopRelayRequest::Invoke { method, path, body, response, .. } => {
                             assert!(path.starts_with("/v1/task-events?"));

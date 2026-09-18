@@ -72,8 +72,8 @@ mod tests;
 pub(crate) use state::RelayAccess;
 pub use state::{AppState, HttpInvokeResponse};
 pub(crate) use state::{
-    DesktopRelayRequest, MobileNotificationRequest, ObservedSingletonTask, RemoteSingletonClaim,
-    RemoteSingletonOwner,
+    DesktopRelayRequest, MobileNotificationRequest, ObservedSingletonTask, RelayDesktopPresence,
+    RemoteSingletonClaim, RemoteSingletonOwner,
 };
 
 #[cfg(test)]

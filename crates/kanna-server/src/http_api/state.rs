@@ -210,6 +210,7 @@ pub struct AppState {
     /// attempt is already running does not start a second one concurrently.
     /// See `invoke_desktop::maybe_trigger_lan_bootstrap`.
     lan_bootstrap_in_flight: Arc<StdMutex<HashSet<String>>>,
+    peer_enrollment_attempts: Arc<crate::peer_enrollment::EnrollmentAttempts>,
     relay_desktop_routing_available: Arc<AtomicBool>,
     relay_desktop_routing_unavailable_reason: Arc<StdMutex<Option<String>>>,
     relay_desktop_routing_unreachable_since: Arc<StdMutex<Option<String>>>,
@@ -294,6 +295,37 @@ pub(crate) struct MobileNotificationRequest {
     pub response: oneshot::Sender<Result<crate::relay_client::MobileNotificationDelivery, String>>,
 }
 
+/// One same-account desktop the relay reports as connected right now,
+/// with the peer channel public key it announced on its own verified
+/// control socket.
+///
+/// The key is *introduction*, never authorization: it says which key to run
+/// a `kanna-ksc-peer` handshake against, and the handshake is what proves
+/// the far side holds it. `None` means that desktop announced none (an
+/// older Kanna, or one whose peer identity failed to load) or the relay
+/// predates the field - either way automatic enrollment is unavailable for
+/// it and the pairing ceremony remains its path.
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct RelayDesktopPresence {
+    pub desktop_id: String,
+    #[serde(default)]
+    pub peer_channel_public_key: Option<String>,
+}
+
+impl RelayDesktopPresence {
+    /// A desktop the relay listed without a key: an older Kanna, one whose
+    /// peer identity failed to load, or a relay that predates the field.
+    /// Production builds the struct directly in `relay::parse_active_desktop_listing`.
+    #[cfg(test)]
+    pub(crate) fn without_key(desktop_id: impl Into<String>) -> Self {
+        Self {
+            desktop_id: desktop_id.into(),
+            peer_channel_public_key: None,
+        }
+    }
+}
+
 pub(crate) enum DesktopRelayRequest {
     PublishTaskSnapshot {
         generation: u64,
@@ -301,7 +333,7 @@ pub(crate) enum DesktopRelayRequest {
     },
     ListActive {
         generation: u64,
-        response: oneshot::Sender<Result<Vec<String>, String>>,
+        response: oneshot::Sender<Result<Vec<RelayDesktopPresence>, String>>,
     },
     ListRepoSingletons {
         generation: u64,
@@ -670,6 +702,9 @@ impl AppState {
             lan_api_candidates: Arc::new(StdMutex::new(HashMap::new())),
             desktop_tunnel_available: Arc::new(AtomicBool::new(false)),
             lan_bootstrap_in_flight: Arc::new(StdMutex::new(HashSet::new())),
+            peer_enrollment_attempts: Arc::new(
+                crate::peer_enrollment::EnrollmentAttempts::default(),
+            ),
             anonymous_push_revocations_changed: Arc::new(Notify::new()),
             relay_desktop_routing_available: Arc::new(AtomicBool::new(false)),
             relay_desktop_routing_unavailable_reason: Arc::new(StdMutex::new(Some(
@@ -1247,6 +1282,11 @@ impl AppState {
             .collect()
     }
 
+    /// The per-target guard automatic peer enrollment serializes on.
+    pub(crate) fn peer_enrollment_attempts(&self) -> &crate::peer_enrollment::EnrollmentAttempts {
+        &self.peer_enrollment_attempts
+    }
+
     /// Claims the in-flight slot for a LAN bootstrap of `target_desktop_id`.
     /// `true` means the caller now owns it and must call
     /// `finish_lan_bootstrap_attempt` when done; `false` means one is
@@ -1306,6 +1346,19 @@ impl AppState {
     }
 
     pub(crate) async fn list_active_relay_desktops(&self) -> Result<Vec<String>, String> {
+        Ok(self
+            .list_active_relay_desktop_presence()
+            .await?
+            .into_iter()
+            .map(|presence| presence.desktop_id)
+            .collect())
+    }
+
+    /// The same listing with each desktop's announced peer channel key, for
+    /// the one caller that needs it: automatic peer enrollment.
+    pub(crate) async fn list_active_relay_desktop_presence(
+        &self,
+    ) -> Result<Vec<RelayDesktopPresence>, String> {
         let (response, result) = oneshot::channel();
         let generation = self
             .relay_desktop_routing_generation

@@ -93,7 +93,10 @@ fn connect_test_relay_peer(
                     } else {
                         Vec::new()
                     };
-                    let _ = response.send(Ok(machine_ids));
+                    let _ = response.send(Ok(machine_ids
+                        .into_iter()
+                        .map(crate::http_api::RelayDesktopPresence::without_key)
+                        .collect()));
                 }
                 crate::http_api::DesktopRelayRequest::ListRepoSingletons { response, .. } => {
                     let _ = response.send(Ok(Vec::new()));
@@ -148,7 +151,11 @@ fn connect_test_relay_peer_with_long_poll_budget(
                     let _ = response.send(Ok(()));
                 }
                 crate::http_api::DesktopRelayRequest::ListActive { response, .. } => {
-                    let _ = response.send(Ok(vec![peer.config().desktop_id.clone()]));
+                    let _ = response.send(Ok(vec![
+                        crate::http_api::RelayDesktopPresence::without_key(
+                            peer.config().desktop_id.clone(),
+                        ),
+                    ]));
                 }
                 crate::http_api::DesktopRelayRequest::ListRepoSingletons { response, .. } => {
                     let _ = response.send(Ok(Vec::new()));
@@ -211,7 +218,11 @@ fn connect_test_relay_peer_with_invoke_gate(
                     let _ = response.send(Ok(()));
                 }
                 crate::http_api::DesktopRelayRequest::ListActive { response, .. } => {
-                    let _ = response.send(Ok(vec![peer.config().desktop_id.clone()]));
+                    let _ = response.send(Ok(vec![
+                        crate::http_api::RelayDesktopPresence::without_key(
+                            peer.config().desktop_id.clone(),
+                        ),
+                    ]));
                 }
                 crate::http_api::DesktopRelayRequest::ListRepoSingletons { response, .. } => {
                     let _ = response.send(Ok(Vec::new()));
@@ -266,7 +277,11 @@ fn connect_test_relay_peer_with_invoke_events(
                     let _ = response.send(Ok(()));
                 }
                 crate::http_api::DesktopRelayRequest::ListActive { response, .. } => {
-                    let _ = response.send(Ok(vec![peer.config().desktop_id.clone()]));
+                    let _ = response.send(Ok(vec![
+                        crate::http_api::RelayDesktopPresence::without_key(
+                            peer.config().desktop_id.clone(),
+                        ),
+                    ]));
                 }
                 crate::http_api::DesktopRelayRequest::ListRepoSingletons { response, .. } => {
                     let _ = response.send(Ok(Vec::new()));
@@ -319,7 +334,9 @@ fn connect_unresponsive_listed_peer(
                     let _ = response.send(Ok(()));
                 }
                 crate::http_api::DesktopRelayRequest::ListActive { response, .. } => {
-                    let _ = response.send(Ok(vec![machine_id.clone()]));
+                    let _ = response.send(Ok(vec![
+                        crate::http_api::RelayDesktopPresence::without_key(machine_id.clone()),
+                    ]));
                 }
                 crate::http_api::DesktopRelayRequest::ListRepoSingletons { response, .. } => {
                     let _ = response.send(Ok(Vec::new()));

@@ -26,6 +26,8 @@ const peer = (overrides: Partial<DesktopPeer> = {}): DesktopPeer => ({
   desktopId: "desktop-b",
   displayName: "Laptop",
   encryption: "e2ee",
+  provenance: "verified",
+  identityChanged: false,
   pairedAtUnixMs: 1,
   lastSeenUnixMs: null,
   transferIdentityPinned: true,
@@ -94,7 +96,7 @@ describe("MachinesPanel", () => {
     expect(w.find(selector("no-peers")).exists()).toBe(false);
     const laptop = w.get(selector("peer-desktop-b"));
     expect(laptop.text()).toContain("Laptop");
-    expect(laptop.text()).toContain("End-to-end encrypted");
+    expect(laptop.text()).toContain("End-to-end encrypted · verified");
     expect(laptop.text()).toContain("Reachable on the local network");
     const studio = w.get(selector("peer-desktop-c"));
     expect(studio.text()).toContain("Reachable through the relay");
@@ -103,6 +105,39 @@ describe("MachinesPanel", () => {
     expect(w.emitted("remove-peer")).toEqual([["desktop-b"]]);
     await w.setProps({ peers: [] });
     expect(w.find(selector("no-peers")).exists()).toBe(true);
+  });
+
+  it("distinguishes an account-trusted pin from a verified one, and shouts about a changed key", async () => {
+    const w = panel({
+      peers: [
+        peer(),
+        peer({ desktopId: "desktop-c", displayName: "Studio", provenance: "account" }),
+        peer({ desktopId: "desktop-d", displayName: "Mini", provenance: "account", identityChanged: true }),
+      ],
+    });
+    // A verified pin says so, and carries neither the account hint nor a notice.
+    const laptop = w.get(selector("peer-desktop-b"));
+    expect(laptop.get(selector("peer-provenance-desktop-b")).text())
+      .toBe("End-to-end encrypted · verified");
+    expect(w.find(selector("peer-account-hint-desktop-b")).exists()).toBe(false);
+    expect(w.find(selector("peer-identity-changed-desktop-b")).exists()).toBe(false);
+
+    // An account-trusted pin never claims to be verified, and says how to
+    // make it one.
+    const studio = w.get(selector("peer-desktop-c"));
+    expect(studio.get(selector("peer-provenance-desktop-c")).text())
+      .toBe("End-to-end encrypted · account-trusted");
+    expect(studio.text()).not.toContain("· verified");
+    expect(w.get(selector("peer-account-hint-desktop-c")).text())
+      .toContain("Verify it with a pairing string");
+    expect(w.find(selector("peer-identity-changed-desktop-c")).exists()).toBe(false);
+
+    // A changed key is an alert with both resolutions, never a silent retry.
+    const changed = w.get(selector("peer-identity-changed-desktop-d"));
+    expect(changed.attributes("role")).toBe("alert");
+    expect(changed.text()).toContain("Key changed");
+    expect(changed.text()).toContain("Verify it with a pairing string");
+    expect(changed.text()).toContain("unpair it");
   });
 
   it("exposes the legacy routing switch and the channel/relay availability notes", async () => {

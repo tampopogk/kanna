@@ -24,6 +24,7 @@ mod machine_trust;
 mod mobile_api;
 mod pairing;
 mod peer_channel;
+mod peer_enrollment;
 mod peer_pairing;
 mod peer_transfer_proxy;
 mod peer_trust;

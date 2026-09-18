@@ -377,7 +377,10 @@ fn connect_singleton_relay_peer(
                     } else {
                         vec![peer.config().desktop_id.clone()]
                     };
-                    let _ = response.send(Ok(machine_ids));
+                    let _ = response.send(Ok(machine_ids
+                        .into_iter()
+                        .map(crate::http_api::RelayDesktopPresence::without_key)
+                        .collect()));
                 }
                 crate::http_api::DesktopRelayRequest::ListRepoSingletons {
                     remote_url_hash,

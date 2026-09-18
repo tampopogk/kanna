@@ -171,6 +171,12 @@ describe("connection pair lifetime", () => {
     );
     expect((await listed).data).toEqual({
       desktopIds: ["desktop-requester", "desktop-target"],
+      // Neither socket announced a peer channel key, so neither is listed
+      // with one - the introduction is opt-in per socket.
+      desktops: [
+        { desktopId: "desktop-requester", peerChannelPublicKey: null },
+        { desktopId: "desktop-target", peerChannelPublicKey: null },
+      ],
     });
 
     const delivered = nextMessage(target.client);

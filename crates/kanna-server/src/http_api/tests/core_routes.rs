@@ -1,4 +1,5 @@
 use super::*;
+use crate::http_api::RelayDesktopPresence;
 use rusqlite::Connection;
 use std::io::{Read, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -537,9 +538,9 @@ async fn machine_stats_route_keeps_successful_siblings_when_another_times_out() 
         };
         response
             .send(Ok(vec![
-                "desktop-local".to_string(),
-                "desktop-hung".to_string(),
-                "desktop-remote".to_string(),
+                RelayDesktopPresence::without_key("desktop-local"),
+                RelayDesktopPresence::without_key("desktop-hung"),
+                RelayDesktopPresence::without_key("desktop-remote"),
             ]))
             .unwrap();
 
@@ -4484,7 +4485,10 @@ async fn get_tasks_all_machines_merges_successful_peers_with_stable_global_sorti
                 vec!["desktop-a", "desktop-local", "desktop-z"]
             };
             response
-                .send(Ok(peers.into_iter().map(str::to_string).collect()))
+                .send(Ok(peers
+                    .into_iter()
+                    .map(RelayDesktopPresence::without_key)
+                    .collect()))
                 .unwrap();
 
             for _ in 0..2 {
@@ -4655,8 +4659,8 @@ async fn get_tasks_all_machines_applies_final_limit_and_preserves_peer_truncatio
             };
             response
                 .send(Ok(vec![
-                    "desktop-local".to_string(),
-                    "desktop-remote".to_string(),
+                    RelayDesktopPresence::without_key("desktop-local"),
+                    RelayDesktopPresence::without_key("desktop-remote"),
                 ]))
                 .unwrap();
             let super::super::state::DesktopRelayRequest::Invoke {
@@ -4753,8 +4757,8 @@ async fn get_tasks_all_machines_reports_older_peer_without_unfiltered_fallback()
         };
         response
             .send(Ok(vec![
-                "desktop-local".to_string(),
-                "desktop-older".to_string(),
+                RelayDesktopPresence::without_key("desktop-local"),
+                RelayDesktopPresence::without_key("desktop-older"),
             ]))
             .unwrap();
 
@@ -8674,7 +8678,9 @@ async fn every_registered_http_route_denies_unpaired_lan_by_default() {
                     "/v1/status" | "/v1/stream" | "/v2/stream" | "/v1/peers/channel"
                 ) | (
                     "POST",
-                    "/v1/pairing/sessions/claim" | "/v1/peers/pairing/claim"
+                    "/v1/pairing/sessions/claim"
+                        | "/v1/peers/pairing/claim"
+                        | "/v1/peers/account-enroll"
                 ) | ("GET", "/v1/pairing/confirmation")
             ) {
                 continue;

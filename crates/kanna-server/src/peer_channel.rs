@@ -9,7 +9,15 @@
 //! peer channel key. The transport is only ever where to try; the handshake
 //! is what proves who answered, and a pinned peer never falls back to a
 //! plaintext route: the failure is reported as `peer_pairing_required` (no
-//! pin) or `peer_upgrade_required` (a pin but no peer handshake answer).
+//! pin, and none could be established) or `peer_upgrade_required` (a pin but
+//! no peer handshake answer).
+//!
+//! [`dial_peer`] is also where a pin is *created*: a sibling signed into the
+//! same account is enrolled automatically before the dial
+//! (`peer_enrollment::try_enroll`), so `peer_pairing_required` is
+//! unreachable for two signed-in same-account desktops and, when it is
+//! reported at all, says why. A pin that stops matching is flagged for a
+//! person here rather than retried away.
 //!
 //! What rides inside is decided by the hello intent: `peer_session` carries
 //! KSP frames (server-originated invokes through the pooled [`PeerSessions`],
@@ -71,8 +79,12 @@ impl PeerRoute {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum PeerDialError {
-    /// The sibling is not a paired peer of this desktop.
-    PairingRequired,
+    /// The sibling is not a paired peer of this desktop, and automatic
+    /// same-account enrollment could not establish one. The detail says
+    /// *why* - signed out, sibling offline, sibling on an older Kanna, relay
+    /// too old - because for a signed-in owner the single line "pair it from
+    /// Preferences → Machines" was both the only message and the wrong one.
+    PairingRequired(String),
     /// This desktop is not (yet) a paired peer of the sibling: it answered
     /// the handshake but granted only pairing authority.
     NotPairedBySibling,
@@ -94,7 +106,7 @@ pub(crate) enum PeerDialError {
 impl PeerDialError {
     pub(crate) fn code(&self) -> &'static str {
         match self {
-            Self::PairingRequired | Self::NotPairedBySibling => "peer_pairing_required",
+            Self::PairingRequired(_) | Self::NotPairedBySibling => "peer_pairing_required",
             Self::IdentityUnavailable(_) => "peer_identity_unavailable",
             Self::UpgradeRequired(_) => "peer_upgrade_required",
             Self::IdentityMismatch(_) => "peer_identity_mismatch",
@@ -106,8 +118,10 @@ impl PeerDialError {
 impl std::fmt::Display for PeerDialError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::PairingRequired => formatter.write_str(
-                "this desktop is not paired with that machine; pair it from Preferences → Machines",
+            Self::PairingRequired(detail) => write!(
+                formatter,
+                "this desktop is not paired with that machine and could not pair automatically \
+                 ({detail}); pair it from Preferences → Machines",
             ),
             Self::NotPairedBySibling => formatter.write_str(
                 "that machine has not paired this desktop (its pin may be stale); pair the machines again",
@@ -268,13 +282,34 @@ pub(crate) async fn dial_peer(
     desktop_id: &str,
     hello: PeerHello,
 ) -> Result<SealedPeerSocket, PeerDialError> {
-    let peer = state
+    let peer = match state
         .paired_peer(desktop_id)
         .map_err(PeerDialError::IdentityUnavailable)?
-        .ok_or(PeerDialError::PairingRequired)?;
+    {
+        Some(peer) => peer,
+        // No pin yet. For two desktops signed into one account this is not a
+        // dead end any more: the relay introduces them and both sides end up
+        // pinned, so `peer_pairing_required` becomes unreachable for the
+        // signed-in same-account case. Everything else - signed out, another
+        // account, an older sibling - still reports why, and the ceremony
+        // remains its path.
+        None => crate::peer_enrollment::try_enroll(state, desktop_id)
+            .await
+            .map_err(|error| PeerDialError::PairingRequired(error.to_string()))?,
+    };
     let pinned = kanna_secure_channel::decode_key(&peer.channel_public_key)
         .map_err(|error| PeerDialError::IdentityMismatch(error.to_string()))?;
-    dial_peer_with_key(state, desktop_id, pinned, hello).await
+    let dialed = dial_peer_with_key(state, desktop_id, pinned, hello).await;
+    // A pin that stops matching is the one event automatic trust must make
+    // loud rather than retry away; a handshake that succeeds again clears it.
+    match &dialed {
+        Err(PeerDialError::IdentityMismatch(_)) => {
+            crate::peer_enrollment::note_identity_mismatch(state, desktop_id)
+        }
+        Ok(_) => crate::peer_enrollment::clear_identity_mismatch(state, desktop_id),
+        Err(_) => {}
+    }
+    dialed
 }
 
 /// Dials `desktop_id` against an explicitly pinned key - the pairing

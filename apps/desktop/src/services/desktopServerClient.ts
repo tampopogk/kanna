@@ -771,12 +771,22 @@ export const DESKTOP_PEER_LEGACY_ACCESS_SETTING = "desktop_peer_legacy_access";
 export const DESKTOP_PEER_LEGACY_ACCESS_REFUSED = "refused";
 export const DESKTOP_PEER_LEGACY_ACCESS_ALLOWED = "allowed";
 
-/** A sibling desktop this one pinned through the peer pairing ceremony. */
+/** How a peer's pin was born. `verified` is the pairing-string ceremony, a
+ * key a person carried between two screens. `account` is automatic
+ * same-account enrollment, where the relay introduced the two desktops at
+ * first contact and the key has been pinned ever since. */
+export type DesktopPeerProvenance = "verified" | "account";
+
+/** A sibling desktop this one has pinned. */
 export interface DesktopPeer {
   desktopId: string;
   displayName: string;
   /** Always `e2ee`: a record here is a pinned peer. */
   encryption: "e2ee";
+  provenance: DesktopPeerProvenance;
+  /** A handshake against this pin met a different key and has not succeeded
+   * since: verify with a pairing string, or unpair and let it pair again. */
+  identityChanged: boolean;
   pairedAtUnixMs: number;
   lastSeenUnixMs: number | null;
   transferIdentityPinned: boolean;
@@ -840,9 +850,13 @@ export interface DesktopMachine {
   id: string;
   name: string | null;
   isLocal: boolean;
-  /** `local`, `e2ee` (paired sibling), `legacy` (unpaired, legacy routing
+  /** `local`, `e2ee` (pinned sibling), `legacy` (unpinned, legacy routing
    * still allowed) or `pairingRequired`. */
   encryption: "local" | "e2ee" | "legacy" | "pairingRequired";
+  /** How an `e2ee` machine's pin was born; absent for every other value. */
+  provenance?: DesktopPeerProvenance;
+  /** A handshake against that machine's pin met a different key. */
+  identityChanged?: boolean;
 }
 
 export interface DesktopMachineList {

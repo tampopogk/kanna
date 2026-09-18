@@ -1349,7 +1349,7 @@ describe("Relay integration", () => {
         requester,
         (message) => message.type === "response" && message.id === "same-account-presence",
       );
-      expect(presence.data).toEqual({
+      expect(presence.data).toMatchObject({
         desktopIds: expect.arrayContaining([
           SECRET_DESKTOP_ID,
           ROUTING_TARGET_DESKTOP_ID,
@@ -4738,7 +4738,7 @@ describe("Relay integration", () => {
       phone,
       (msg) => msg.type === "response" && msg.id === "active-desktops"
     );
-    expect(response.data).toEqual({
+    expect(response.data).toMatchObject({
       desktopIds: expect.arrayContaining([
         "desktop-active-one",
         "desktop-active-two",
@@ -4759,8 +4759,11 @@ describe("Relay integration", () => {
       phone,
       (msg) => msg.type === "response" && msg.id === "active-desktops-after-close"
     );
+    // `desktops` is the same listing with each desktop's announced peer
+    // channel key beside it; these sockets announce none.
     expect(afterClose.data).toEqual({
       desktopIds: ["desktop-active-one"],
+      desktops: [{ desktopId: "desktop-active-one", peerChannelPublicKey: null }],
     });
 
     await closeAndWait(phone);

@@ -64,7 +64,9 @@ enum PendingDesktopRequest {
         response: tokio::sync::oneshot::Sender<Result<(), String>>,
     },
     ListActive {
-        response: tokio::sync::oneshot::Sender<Result<Vec<String>, String>>,
+        response: tokio::sync::oneshot::Sender<
+            Result<Vec<crate::http_api::RelayDesktopPresence>, String>,
+        >,
     },
     ListRepoSingletons {
         response: tokio::sync::oneshot::Sender<
@@ -245,6 +247,21 @@ pub(crate) fn reconcile_machine_trust_for_account(
         .map_err(|error| format!("failed to persist machine trust store: {error}"))
 }
 
+/// The peer channel public key this desktop announces on its relay control
+/// socket, so the account's other desktops can pin it without a ceremony
+/// (`peer_enrollment`). `None` when the identity file is unusable: the
+/// desktop then simply publishes nothing and siblings fall back to the
+/// pairing string, which is the pre-existing behavior.
+fn announced_peer_channel_key(http_state: &http_api::AppState) -> Option<String> {
+    match http_state.peer_channel_identity() {
+        Ok(identity) => Some(identity.encoded_public_key()),
+        Err(error) => {
+            log::warn!("not announcing a peer channel key to the relay: {error}");
+            None
+        }
+    }
+}
+
 /// `peer_trust`'s half of the account transition: records bound to another
 /// account are dropped, persisted first, then their live sessions and
 /// routes are torn down through the same announcement an unpair makes.
@@ -422,7 +439,11 @@ async fn run_relay_loop_with_timing(
         log::info!("Connecting to relay at {}...", config.relay_url);
 
         let connection = tokio::select! {
-            connection = relay_client::connect_to_relay(&config, timing.connect_timeout) => connection,
+            connection = relay_client::connect_to_relay(
+                &config,
+                timing.connect_timeout,
+                announced_peer_channel_key(&http_state),
+            ) => connection,
             _ = http_state.wait_for_cloud_relay_reconnect() => {
                 let reason = "desktop relay connect cancelled by local reconnect request";
                 log::info!("Cloud relay connect cancelled by the local reconnect request");
@@ -1570,6 +1591,91 @@ fn fail_pending_desktop_request(request: PendingDesktopRequest, error: String) {
     }
 }
 
+/// The `list_active_desktops` reply, in both shapes.
+///
+/// A relay new enough to introduce peers answers with `desktops`, each entry
+/// carrying the key that desktop announced on its own verified control
+/// socket (`null` for one running an older Kanna). A relay that predates
+/// the field answers with `desktopIds` alone, which is synthesized into the
+/// same shape with no keys - automatic enrollment is then simply
+/// unavailable and the ceremony remains the path.
+fn parse_active_desktop_listing(
+    data: Option<serde_json::Value>,
+) -> Result<Vec<crate::http_api::RelayDesktopPresence>, String> {
+    let data =
+        data.ok_or_else(|| "relay returned an invalid active-desktop response".to_string())?;
+    if let Some(desktops) = data.get("desktops") {
+        return serde_json::from_value::<Vec<crate::http_api::RelayDesktopPresence>>(
+            desktops.clone(),
+        )
+        .map_err(|error| format!("relay returned an invalid desktop presence list: {error}"));
+    }
+    let ids = data
+        .get("desktopIds")
+        .cloned()
+        .ok_or_else(|| "relay returned an invalid active-desktop response".to_string())?;
+    serde_json::from_value::<Vec<String>>(ids)
+        .map_err(|error| format!("relay returned invalid desktop ids: {error}"))
+        .map(|ids| {
+            ids.into_iter()
+                .map(|desktop_id| crate::http_api::RelayDesktopPresence {
+                    desktop_id,
+                    peer_channel_public_key: None,
+                })
+                .collect()
+        })
+}
+
+#[cfg(test)]
+mod active_desktop_listing_tests {
+    use super::parse_active_desktop_listing;
+
+    /// Both relay generations, because the older one is what every desktop
+    /// meets until staging is deployed: it answers `desktopIds` alone, and
+    /// the absence of keys must degrade to "cannot enroll automatically"
+    /// rather than to an error or an empty listing.
+    #[test]
+    fn a_relay_without_key_presence_still_lists_its_desktops() {
+        let legacy = parse_active_desktop_listing(Some(serde_json::json!({
+            "desktopIds": ["desktop-a", "desktop-b"],
+        })))
+        .unwrap();
+        assert_eq!(
+            legacy
+                .iter()
+                .map(|entry| (
+                    entry.desktop_id.as_str(),
+                    entry.peer_channel_public_key.as_deref()
+                ))
+                .collect::<Vec<_>>(),
+            vec![("desktop-a", None), ("desktop-b", None)]
+        );
+
+        let current = parse_active_desktop_listing(Some(serde_json::json!({
+            "desktopIds": ["desktop-a", "desktop-b"],
+            "desktops": [
+                { "desktopId": "desktop-a", "peerChannelPublicKey": "key-a" },
+                { "desktopId": "desktop-b", "peerChannelPublicKey": null },
+            ],
+        })))
+        .unwrap();
+        assert_eq!(
+            current
+                .iter()
+                .map(|entry| (
+                    entry.desktop_id.as_str(),
+                    entry.peer_channel_public_key.as_deref()
+                ))
+                .collect::<Vec<_>>(),
+            vec![("desktop-a", Some("key-a")), ("desktop-b", None)]
+        );
+
+        assert!(parse_active_desktop_listing(None).is_err());
+        assert!(parse_active_desktop_listing(Some(serde_json::json!({}))).is_err());
+        assert!(parse_active_desktop_listing(Some(serde_json::json!({ "desktops": 7 }))).is_err());
+    }
+}
+
 fn resolve_pending_desktop_request(
     request: PendingDesktopRequest,
     data: Option<serde_json::Value>,
@@ -1585,17 +1691,10 @@ fn resolve_pending_desktop_request(
                 })));
         }
         PendingDesktopRequest::ListActive { response } => {
-            let result = match error {
+            let _ = response.send(match error {
                 Some(error) => Err(error),
-                None => data
-                    .and_then(|value| value.get("desktopIds").cloned())
-                    .ok_or_else(|| "relay returned an invalid active-desktop response".to_string())
-                    .and_then(|value| {
-                        serde_json::from_value::<Vec<String>>(value)
-                            .map_err(|error| format!("relay returned invalid desktop ids: {error}"))
-                    }),
-            };
-            let _ = response.send(result);
+                None => parse_active_desktop_listing(data),
+            });
         }
         PendingDesktopRequest::ClaimRepoSingleton { response } => {
             let result = match error {
@@ -2567,6 +2666,7 @@ mod tests {
         let error = match relay_client::connect_to_relay(
             state.config(),
             relay_client::RELAY_CONNECT_TIMEOUT,
+            None,
         )
         .await
         {

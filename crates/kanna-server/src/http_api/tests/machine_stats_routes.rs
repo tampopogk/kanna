@@ -1,5 +1,6 @@
 use super::*;
 use crate::http_api::state::DesktopRelayRequest;
+use crate::http_api::RelayDesktopPresence;
 use serde_json::{json, Value};
 
 #[tokio::test]
@@ -145,7 +146,11 @@ async fn compact_legacy_remote_filters_detailed_diagnostics_but_detailed_retains
             else {
                 panic!("expected listing")
             };
-            response.send(Ok(vec!["stats-legacy-peer".into()])).unwrap();
+            response
+                .send(Ok(vec![RelayDesktopPresence::without_key(
+                    "stats-legacy-peer",
+                )]))
+                .unwrap();
             let DesktopRelayRequest::Invoke { path, response, .. } = requests.recv().await.unwrap()
             else {
                 panic!("expected invoke")
@@ -262,7 +267,11 @@ async fn machine_stats_http_relay_keeps_native_peer_when_local_collection_fails(
         else {
             panic!("expected listing")
         };
-        response.send(Ok(vec!["stats-native-peer".into()])).unwrap();
+        response
+            .send(Ok(vec![RelayDesktopPresence::without_key(
+                "stats-native-peer",
+            )]))
+            .unwrap();
         let DesktopRelayRequest::Invoke {
             desktop_id,
             method,

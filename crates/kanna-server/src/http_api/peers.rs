@@ -5,8 +5,12 @@
 //! Authority model:
 //! - Pairing controls, the peer list and unpairing are `DesktopLocalAccess`:
 //!   this desktop's own person, never a paired device, tunnel or sibling.
-//! - `POST /v1/peers/pairing/claim` is reachable only inside a sealed peer
-//!   session whose key is *not yet* paired (`SealedPeerPairingContext`).
+//! - `POST /v1/peers/pairing/claim` and `POST /v1/peers/account-enroll` are
+//!   reachable only inside a sealed peer session whose key is *not yet*
+//!   paired (`SealedPeerPairingContext`). The first is authorized by a
+//!   one-time secret a person carried; the second by relay presence under
+//!   this desktop's own account (`peer_enrollment`). Both pin; only the
+//!   first records `verified` provenance.
 //! - `GET /v1/peers/transfer-identity` answers a paired sibling
 //!   (`TrustedPeerDesktopAccess`) or the local desktop.
 //! - `GET /v1/peers/channel` is the sealed endpoint itself; nothing about
@@ -21,6 +25,7 @@ use super::lan_trust::{
 use super::secure_channel::{SealedPeerPairingContext, SealedPopulation};
 use super::state::AppState;
 use crate::peer_channel::{dial_peer, PeerDialError, PeerHello, PeerInvokeOutcome};
+use crate::peer_enrollment::{note_identity_mismatch, PeerAccountEnrollClaim};
 use crate::peer_pairing::{
     self, PeerPairingClaim, PeerPairingClaimResponse, PeerPairingOfferView, PeerTransferIdentity,
 };
@@ -52,8 +57,19 @@ pub(super) struct PeerView {
     desktop_id: String,
     display_name: String,
     /// Always `e2ee`: a record here *is* a pinned peer. Reported explicitly
-    /// so the machine list can say what it means.
+    /// so the machine list can say what it means. Unchanged when automatic
+    /// enrollment arrived, because every existing CLI/MCP/mobile consumer
+    /// reads it and both kinds of pin really are end-to-end encrypted;
+    /// `provenance` is the new dimension.
     encryption: &'static str,
+    /// `verified` (the pairing-string ceremony) or `account` (automatic
+    /// same-account enrollment). Never blurred together: nothing may label
+    /// an account-introduced pin as verified.
+    provenance: &'static str,
+    /// A handshake against this pin met a different key and has not
+    /// succeeded since. Loud on purpose - it is the event automatic trust
+    /// must never retry away.
+    identity_changed: bool,
     paired_at_unix_ms: u64,
     last_seen_unix_ms: Option<u64>,
     transfer_identity_pinned: bool,
@@ -97,6 +113,8 @@ pub(super) async fn list_peers(
             desktop_id: peer.desktop_id.clone(),
             display_name: peer.display_name.clone(),
             encryption: "e2ee",
+            provenance: peer.provenance.as_str(),
+            identity_changed: peer.identity_mismatch_at_unix_ms.is_some(),
             paired_at_unix_ms: peer.paired_at_unix_ms,
             last_seen_unix_ms: peer.last_seen_unix_ms,
             transfer_identity_pinned: peer.transfer_peer_id.is_some()
@@ -200,7 +218,7 @@ pub(super) async fn pair_with_string(
                     .as_bytes(),
             )
             .await?;
-        expect_frame(&mut reader, "auth_ok").await?;
+        expect_sealed_frame(&mut reader, "auth_ok").await?;
         writer
             .send(
                 serde_json::json!({
@@ -214,7 +232,7 @@ pub(super) async fn pair_with_string(
                 .as_bytes(),
             )
             .await?;
-        let response = expect_frame(&mut reader, "response").await?;
+        let response = expect_sealed_frame(&mut reader, "response").await?;
         Ok::<serde_json::Value, String>(response)
     };
     let response = match tokio::time::timeout(Duration::from_secs(20), outcome).await {
@@ -289,6 +307,12 @@ pub(super) async fn pair_with_string(
             .map(|identity| identity.public_key.clone()),
         environment: config.environment.clone(),
         account_uid: state.authenticated_account_uid(),
+        // The ceremony is the strong claim, and running it against a peer
+        // this desktop had pinned automatically is exactly how that record
+        // is upgraded - the replacement carries `Verified` and no stale
+        // identity-change notice.
+        provenance: crate::peer_trust::PeerProvenance::Verified,
+        identity_mismatch_at_unix_ms: None,
         paired_at_unix_ms: now_ms,
         last_seen_unix_ms: Some(now_ms),
     };
@@ -325,7 +349,7 @@ async fn dial_peer_with_key_for_pairing(
 
 fn dial_error_response(error: PeerDialError) -> (StatusCode, String) {
     let status = match error {
-        PeerDialError::PairingRequired | PeerDialError::NotPairedBySibling => {
+        PeerDialError::PairingRequired(_) | PeerDialError::NotPairedBySibling => {
             StatusCode::PRECONDITION_FAILED
         }
         PeerDialError::IdentityUnavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
@@ -337,7 +361,10 @@ fn dial_error_response(error: PeerDialError) -> (StatusCode, String) {
     (status, format!("{}: {error}", error.code()))
 }
 
-async fn expect_frame(
+/// Reads sealed frames until one of `kind` arrives, turning the sibling's
+/// own `error` frame into this side's error. Shared by the pairing ceremony
+/// and by automatic enrollment (`peer_enrollment`).
+pub(crate) async fn expect_sealed_frame(
     reader: &mut crate::peer_channel::SealedPeerReader,
     kind: &str,
 ) -> Result<serde_json::Value, String> {
@@ -364,7 +391,7 @@ async fn expect_frame(
 /// This desktop's own transfer identity, if the sidecar can report one.
 /// Absent (not an error) when the sidecar is unavailable: pairing still
 /// succeeds and the identity is exchanged later over the sealed session.
-async fn local_transfer_identity(state: &Arc<AppState>) -> Option<PeerTransferIdentity> {
+pub(crate) async fn local_transfer_identity(state: &Arc<AppState>) -> Option<PeerTransferIdentity> {
     match state
         .transfer_sidecar()
         .control("identity", serde_json::json!({}))
@@ -494,6 +521,12 @@ pub(super) async fn claim_pairing_offer(
             .map(|identity| identity.public_key.clone()),
         environment: config.environment.clone(),
         account_uid: state.authenticated_account_uid(),
+        // The ceremony is the strong claim, and running it against a peer
+        // this desktop had pinned automatically is exactly how that record
+        // is upgraded - the replacement carries `Verified` and no stale
+        // identity-change notice.
+        provenance: crate::peer_trust::PeerProvenance::Verified,
+        identity_mismatch_at_unix_ms: None,
         paired_at_unix_ms: now_ms,
         last_seen_unix_ms: Some(now_ms),
     };
@@ -515,6 +548,169 @@ pub(super) async fn claim_pairing_offer(
         environment: config.environment.clone(),
         transfer_identity: local_transfer_identity(&state).await,
     }))
+}
+
+/// The responder side of automatic same-account enrollment: reachable only
+/// inside a sealed peer session whose key is not yet pinned, exactly like
+/// the pairing claim, but authorized by *relay presence under this account*
+/// rather than by a secret off a screen.
+///
+/// The refusal order is the security property, and it mirrors the
+/// initiator's (`peer_enrollment::try_enroll`) so one exchange leaves a real
+/// pin on both sides:
+///
+/// 1. A sealed pairing-only context must exist - the handshake, not a header.
+/// 2. The claimed desktop id must be well formed, not this desktop's own,
+///    and must equal what the handshake hello declared.
+/// 3. The environments must match (a staging desktop is not a sibling of a
+///    development one).
+/// 4. This desktop must be signed in; a signed-out one has no account to be
+///    introduced within and the ceremony is its path.
+/// 5. **The relay must list that desktop id right now with exactly the key
+///    this session authenticated.** This is what an unauthenticated LAN
+///    dialer cannot satisfy: it may reach the endpoint and complete a
+///    handshake with its own key, but the relay does not publish that key
+///    for the id it claims, so it enrolls nothing.
+/// 6. A record already pinned for that id under a *different* key is a
+///    hard 409 that replaces nothing and is flagged for a person to resolve.
+///    A record under the same key is idempotent.
+pub(super) async fn claim_account_enrollment(
+    State(state): State<Arc<AppState>>,
+    sealed: Option<Extension<SealedPeerPairingContext>>,
+    Json(claim): Json<PeerAccountEnrollClaim>,
+) -> Result<Json<PeerPairingClaimResponse>, (StatusCode, String)> {
+    let Some(Extension(context)) = sealed else {
+        return Err((
+            StatusCode::UNAUTHORIZED,
+            "an account enrollment claim is only accepted inside a sealed peer session".to_string(),
+        ));
+    };
+    let config = state.config();
+    if !peer_pairing::desktop_id_is_pairable(&claim.desktop_id)
+        || claim.desktop_name.trim().is_empty()
+        || claim.desktop_name.len() > 256
+    {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "invalid account enrollment claim".to_string(),
+        ));
+    }
+    if claim.desktop_id == config.desktop_id {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "a desktop cannot enroll itself".to_string(),
+        ));
+    }
+    if context
+        .declared_desktop_id
+        .as_deref()
+        .is_some_and(|declared| declared != claim.desktop_id)
+    {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "desktop id does not match the handshake".to_string(),
+        ));
+    }
+    if claim.environment != config.environment {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "the desktops run in different Kanna environments".to_string(),
+        ));
+    }
+    let Some(account_uid) = state.authenticated_account_uid() else {
+        return Err((
+            StatusCode::FORBIDDEN,
+            "peer_enrollment_refused: this desktop is signed out".to_string(),
+        ));
+    };
+    let presented_key = context.encoded_remote_static();
+    let announced = state
+        .list_active_relay_desktop_presence()
+        .await
+        .map_err(|error| {
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                format!("peer_enrollment_refused: the relay is unavailable: {error}"),
+            )
+        })?
+        .into_iter()
+        .find(|entry| entry.desktop_id == claim.desktop_id)
+        .and_then(|entry| entry.peer_channel_public_key);
+    if announced.as_deref() != Some(presented_key.as_str()) {
+        log::warn!(
+            "[peer] refusing an account enrollment claim from {}: the relay does not list that \
+             desktop with this session's key",
+            claim.desktop_id
+        );
+        return Err((
+            StatusCode::FORBIDDEN,
+            "peer_enrollment_refused: your account does not publish that key for that machine"
+                .to_string(),
+        ));
+    }
+    let now_ms = unix_time_ms()?;
+    match state.paired_peer(&claim.desktop_id) {
+        Ok(Some(existing)) if existing.channel_public_key != presented_key => {
+            note_identity_mismatch(&state, &claim.desktop_id);
+            return Err((
+                StatusCode::CONFLICT,
+                format!(
+                    "peer_identity_mismatch: {} is already paired here under a different key; \
+                     unpair it or verify it with a pairing string",
+                    claim.desktop_id
+                ),
+            ));
+        }
+        // Already enrolled with this exact key: the other side raced us, or
+        // is retrying. Idempotent, and nothing is replaced.
+        Ok(Some(_)) => {
+            touch_peer(&state, &claim.desktop_id);
+            return Ok(Json(enrollment_reply(&state).await));
+        }
+        Ok(None) => {}
+        Err(error) => return Err((StatusCode::INTERNAL_SERVER_ERROR, error)),
+    }
+    let peer = PeerDesktop {
+        desktop_id: claim.desktop_id.clone(),
+        display_name: claim.desktop_name.trim().to_string(),
+        channel_public_key: presented_key,
+        transfer_peer_id: claim
+            .transfer_identity
+            .as_ref()
+            .map(|identity| identity.peer_id.clone()),
+        transfer_public_key: claim
+            .transfer_identity
+            .as_ref()
+            .map(|identity| identity.public_key.clone()),
+        environment: config.environment.clone(),
+        account_uid: Some(account_uid),
+        provenance: crate::peer_trust::PeerProvenance::Account,
+        identity_mismatch_at_unix_ms: None,
+        paired_at_unix_ms: now_ms,
+        last_seen_unix_ms: Some(now_ms),
+    };
+    persist_peer(&state, peer).await?;
+    state.publish_state_changed(kanna_agent_protocol::StateChangeScope::Settings);
+    log::info!(
+        "[peer] enrolled {} automatically (same account, relay-introduced) over {:?}",
+        claim.desktop_id,
+        context.origin
+    );
+    state.peer_sessions().close(&claim.desktop_id).await;
+    let proxies = state.peer_transfer_proxies();
+    let sync_state = Arc::clone(&state);
+    tokio::spawn(async move { proxies.sync_from_store(&sync_state).await });
+    Ok(Json(enrollment_reply(&state).await))
+}
+
+async fn enrollment_reply(state: &Arc<AppState>) -> PeerPairingClaimResponse {
+    let config = state.config();
+    PeerPairingClaimResponse {
+        desktop_id: config.desktop_id.clone(),
+        desktop_name: config.desktop_name.clone(),
+        environment: config.environment.clone(),
+        transfer_identity: local_transfer_identity(state).await,
+    }
 }
 
 /// This desktop's sidecar identity, for a paired sibling (over its sealed
