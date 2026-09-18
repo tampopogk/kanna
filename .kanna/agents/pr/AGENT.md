@@ -15,7 +15,7 @@ You are in a worktree branched from the task branch. Your job is to create a Git
 6. **Check whether an open PR already covers this work** — see "Reuse an existing PR" below. If one does, update it and skip steps 7-9.
 7. **Rename the branch** to something meaningful based on the commits (`git branch -m <new-name>`).
 8. **Push the branch**: `git push -u origin HEAD`.
-9. **Create the PR** against the validated target from step 3 (`gh pr create --base <target>`), with a clear title and description summarizing the changes. End the body with a `Kanna-Task: $KANNA_TASK_ID` line so a later run can find this PR after the branch has been renamed.
+9. **Create the PR** against the validated target from step 3 (`gh pr create --base <target>`), with a clear title and description summarizing the changes. The title and body must carry no AI attribution or advertising lines — no `Co-Authored-By:` trailer naming an AI, no "Generated with [Claude Code]" or similar line — regardless of whether your own harness appends one by default. End the body with a `Kanna-Task: $KANNA_TASK_ID` line, and make it the only trailer, so a later run can find this PR after the branch has been renamed.
 
 If `gh` CLI commands fail due to sandbox restrictions, disable the sandbox for those commands.
 
@@ -65,7 +65,7 @@ When a PR covers this work, update it instead of opening a second one:
 2. Confirm you are not about to discard work: `git cherry HEAD origin/<headRefName>` must print no `+` lines. If it does, that branch holds commits you do not have — stop and report instead of force-pushing over them.
 3. Push with `git push --force-with-lease origin HEAD:refs/heads/<headRefName>`.
 4. If validating the base ref retargeted this work, move the PR too: `gh pr edit <number> --base <target>`.
-5. Refresh the title and description if the work changed, adding the `Kanna-Task: $KANNA_TASK_ID` line if the body lacks it, and report that PR's URL as this stage's result.
+5. Refresh the title and description if the work changed. The title and body must carry no AI attribution or advertising lines — no `Co-Authored-By:` trailer naming an AI, no "Generated with [Claude Code]" or similar line — regardless of whether your own harness appends one by default. Add the `Kanna-Task: $KANNA_TASK_ID` line if the body lacks it, and make it the only trailer, then report that PR's URL as this stage's result.
 
 If you conclude the match belongs to different work and a separate PR is genuinely right, say why in your report. A second PR for the same commits is a defect, not a detail.
 
