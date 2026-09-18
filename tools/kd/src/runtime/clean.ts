@@ -19,15 +19,18 @@ export interface CleanInput {
   sharedRustBuild: boolean;
 }
 
+export type CleanOutcome = "removed" | "would-remove" | "absent" | "failed";
+
 export interface CleanRemoval {
   path: string;
-  removed: boolean;
-  dryRun: boolean;
+  outcome: CleanOutcome;
+  error?: string;
 }
 
 export interface CleanResult {
   removals: CleanRemoval[];
-  bazelOutputBase: string;
+  /** Absent when `bazel info output_base` could not be resolved; see the "failed" removal for why. */
+  bazelOutputBase?: string;
 }
 
 export async function resolveBazelOutputBase(input: {
@@ -69,57 +72,98 @@ export async function resolveBazelOutputBase(input: {
   return outputBase;
 }
 
-function removePath(path: string, dry: boolean, requirePresent = false): CleanRemoval | null {
+function describeError(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function removePath(path: string, dry: boolean, requirePresent = false): CleanRemoval {
   try {
     lstatSync(path);
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-    if (requirePresent) {
-      throw new Error(`[kd] Cannot clean external .build target ${path}: the resolved target became unavailable`);
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+      return { path, outcome: "failed", error: describeError(error) };
     }
-    return null;
+    if (requirePresent) {
+      return { path, outcome: "failed", error: "the resolved target became unavailable" };
+    }
+    return { path, outcome: "absent" };
   }
-  if (!dry) {
+  if (dry) {
+    return { path, outcome: "would-remove" };
+  }
+  try {
     rmSync(path, { recursive: true, force: !requirePresent });
+  } catch (error) {
+    return { path, outcome: "failed", error: describeError(error) };
   }
-  return { path, removed: !dry, dryRun: dry };
+  return { path, outcome: "removed" };
 }
 
+/**
+ * Every candidate is removed independently: a failure resolving or deleting
+ * one (a full disk, an unreachable Bazel daemon, a permissions error) is
+ * reported and never stops the rest of the sweep, since `kd clean --all`
+ * runs unattended as the second half of repo teardown.
+ */
 export async function cleanWorkspace(input: CleanInput): Promise<CleanResult> {
   const homeDir = input.homeDir ?? homedir();
-  const bazelOutputBase = await resolveBazelOutputBase(input);
-  const externalWorkspaceBuild = resolveExternalWorkspaceBuild(input.repoRoot);
-  const candidates: Array<{ path: string; requirePresent?: boolean }> = [
-    ...(externalWorkspaceBuild ? [{ path: externalWorkspaceBuild, requirePresent: true }] : []),
-    { path: join(input.repoRoot, WORKSPACE_BUILD_DIRECTORY) },
-    { path: join(input.repoRoot, EXTERNAL_WORKSPACE_BUILD_RECORD) },
-    { path: join(input.repoRoot, "apps", "desktop", "src-tauri", "target") },
-    { path: bazelOutputBase }
-  ];
+  const removals: CleanRemoval[] = [];
+  const localBuildDirectory = join(input.repoRoot, WORKSPACE_BUILD_DIRECTORY);
+
+  let bazelOutputBase: string | undefined;
+  try {
+    bazelOutputBase = await resolveBazelOutputBase(input);
+  } catch (error) {
+    removals.push({ path: "Bazel output base", outcome: "failed", error: describeError(error) });
+  }
+
+  // `.build` and its external-target record describe the same pointer as the
+  // resolved external build: when resolution fails (an unreachable volume, a
+  // mismatched sibling workspace), leave both alone rather than guess at
+  // whether it is safe to unlink them.
+  let externalWorkspaceBuild: string | undefined;
+  let keepLocalBuildPointer = false;
+  try {
+    externalWorkspaceBuild = resolveExternalWorkspaceBuild(input.repoRoot);
+  } catch (error) {
+    keepLocalBuildPointer = true;
+    removals.push({ path: localBuildDirectory, outcome: "failed", error: describeError(error) });
+  }
+
+  if (externalWorkspaceBuild) {
+    removals.push(removePath(externalWorkspaceBuild, input.dry, true));
+  }
+  if (!keepLocalBuildPointer) {
+    removals.push(removePath(localBuildDirectory, input.dry));
+    removals.push(removePath(join(input.repoRoot, EXTERNAL_WORKSPACE_BUILD_RECORD), input.dry));
+  }
+
+  removals.push(removePath(join(input.repoRoot, "apps", "desktop", "src-tauri", "target"), input.dry));
+
+  if (bazelOutputBase !== undefined) {
+    removals.push(removePath(bazelOutputBase, input.dry));
+  }
 
   if (input.sharedRustBuild) {
     // Same directory `resolveKdContext` treats as the legacy shared build
     // dir; if these two disagree, `kd clean` silently leaves it behind.
-    candidates.push({
-      path: join(appCacheDir(homeDir, process.env, process.platform), "kanna", "rust-build")
-    });
-  }
-
-  if (input.all) {
-    candidates.push(
-      { path: join(input.repoRoot, "apps", "desktop", "dist") },
-      { path: join(input.repoRoot, "node_modules") },
-      { path: join(input.repoRoot, "apps", "desktop", "node_modules") },
-      { path: join(input.repoRoot, "packages", "core", "node_modules") },
-      { path: join(input.repoRoot, "packages", "db", "node_modules") },
-      { path: join(input.repoRoot, ".turbo") }
+    removals.push(
+      removePath(join(appCacheDir(homeDir, process.env, process.platform), "kanna", "rust-build"), input.dry)
     );
   }
 
-  return {
-    bazelOutputBase,
-    removals: candidates
-      .map(({ path, requirePresent }) => removePath(path, input.dry, requirePresent))
-      .filter((removal): removal is CleanRemoval => removal !== null)
-  };
+  if (input.all) {
+    for (const segments of [
+      ["apps", "desktop", "dist"],
+      ["node_modules"],
+      ["apps", "desktop", "node_modules"],
+      ["packages", "core", "node_modules"],
+      ["packages", "db", "node_modules"],
+      [".turbo"]
+    ]) {
+      removals.push(removePath(join(input.repoRoot, ...segments), input.dry));
+    }
+  }
+
+  return { bazelOutputBase, removals };
 }

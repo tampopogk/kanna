@@ -92,16 +92,17 @@ describe("external build workspace teardown", () => {
     execFileSync("/bin/sh", [legacyHook], { cwd: departed, stdio: "pipe" });
     expect(lstatSync(join(departed, ".build")).isDirectory()).toBe(true);
     expect(readFileSync(departedRecord, "utf8")).toBe(`${departedBuild}\n`);
-    await expect(
-      cleanWorkspace({
-        repoRoot: departed,
-        homeDir: join(fixture, "home"),
-        runner: bazelRunner(join(fixture, "bazel-output")),
-        all: true,
-        dry: false,
-        sharedRustBuild: false
-      })
-    ).rejects.toThrow(/Cannot clean external \.build target.*recorded target is unavailable.*preserving/);
+    const unavailableResult = await cleanWorkspace({
+      repoRoot: departed,
+      homeDir: join(fixture, "home"),
+      runner: bazelRunner(join(fixture, "bazel-output")),
+      all: true,
+      dry: false,
+      sharedRustBuild: false
+    });
+    const unavailableFailure = unavailableResult.removals.find((removal) => removal.path === join(departed, ".build"));
+    expect(unavailableFailure?.outcome).toBe("failed");
+    expect(unavailableFailure?.error).toMatch(/Cannot clean external \.build target.*recorded target is unavailable.*preserving/);
     expect(existsSync(join(departed, ".build"))).toBe(true);
     expect(readFileSync(departedRecord, "utf8")).toBe(`${departedBuild}\n`);
 
