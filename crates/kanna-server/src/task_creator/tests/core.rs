@@ -3451,6 +3451,26 @@ fn builtin_plan_build_review_workflow_and_plan_agent_resolve_from_compiled_resou
         .collect::<Vec<_>>();
     assert_eq!(stage_names, vec!["plan", "in progress", "review", "pr"]);
 
+    // The plan stage is the single human decision point in this workflow:
+    // once the plan is approved, build, review, and PR all transition
+    // automatically, so the approved plan carries the task all the way to a
+    // merged PR without a further manual gate.
+    let transitions = workflow
+        .stages
+        .iter()
+        .map(|stage| (stage.name.as_str(), stage.policy.transition))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        transitions,
+        vec![
+            ("plan", WorkflowStageTransition::Manual),
+            ("in progress", WorkflowStageTransition::Auto),
+            ("review", WorkflowStageTransition::Auto),
+            ("pr", WorkflowStageTransition::Auto),
+        ],
+        "plan-build-review must have exactly one manual gate, on `plan`",
+    );
+
     let plan_stage = &workflow.stages[0];
     assert_eq!(plan_stage.agent.as_deref(), Some("plan"));
     assert_eq!(

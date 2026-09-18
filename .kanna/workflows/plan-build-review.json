@@ -1,7 +1,7 @@
 {
   "$schema": "./schema.json",
   "name": "plan-build-review",
-  "description": "Plan first: plan (manual gate) -> build (commit as post) -> review -> PR, with per-stage provider selectors",
+  "description": "Plan first: plan (manual gate) -> build (commit as post) -> review -> PR (approve post), automatic after the plan is approved, with per-stage provider selectors",
   "revision_limit": 5,
   "stages": [
     {
@@ -18,7 +18,7 @@
       "agent": "implement",
       "prompt": "Implement the task following the approved plan below. Original task: $TASK_PROMPT\n\nApproved plan (previous stage result): $PREV_MAIN_RESULT",
       "agent_provider": ["claude-opus-med", "codex-gpt-6-astra-lo"],
-      "policy": { "transition": "manual", "revision_transition": "auto" },
+      "policy": { "transition": "auto", "revision_transition": "auto" },
       "post": {
         "name": "commit",
         "agent": "commit",
@@ -40,7 +40,7 @@
       "agent": "pr",
       "prompt": "Create a PR for the reviewed work on branch $BRANCH.",
       "agent_provider": ["claude-sonnet", "codex"],
-      "policy": { "transition": "manual" },
+      "policy": { "transition": "auto" },
       "post": {
         "name": "approve",
         "agent": "approve",
