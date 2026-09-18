@@ -78,11 +78,20 @@ describe("KeyboardShortcutsModal", () => {
       ?.get(".shortcut-keys")
       .text();
 
-    // These are distinct adjacent entries in the Tools group. Keep the
-    // labels in the assertion so File Picker's Ctrl+Shift+P cannot be mistaken
-    // for the Command Palette binding that actually dispatches on Ctrl+Alt+P.
-    expect(shortcutKeys("shortcuts.commandPalette")).toBe("Ctrl+Alt+P");
-    expect(shortcutKeys("shortcuts.filePicker")).toBe("Ctrl+Shift+P");
+    // These are distinct adjacent entries in the Tools group. Keep the labels
+    // in the assertion: the two used to be the other way round, which meant
+    // VS Code's most-memorized chord opened the file picker here instead of
+    // doing nothing — an answer that is harder to diagnose than a no-op.
+    expect(shortcutKeys("shortcuts.commandPalette")).toBe("Ctrl+Shift+P");
+    expect(shortcutKeys("shortcuts.filePicker")).toBe("Ctrl+Alt+P");
+    expect(shortcutKeys("shortcuts.filePreview")).toBe("Ctrl+Alt+Shift+P");
+    expect(shortcutKeys("shortcuts.preferences")).toBe("Ctrl+,");
+    // The worktree shell's Ctrl+J is deliberately unlisted: it is inactive
+    // wherever a PTY has the caret, and the modal must not advertise a chord
+    // that is dead in the view a person spends the day in.
+    expect(shortcutKeys("shortcuts.shellTerminal")).toBe("Ctrl+Shift+J");
+    expect(shortcutKeys("shortcuts.shellRepoRoot")).toBe("Ctrl+Alt+J");
+    expect(wrapper.text()).not.toContain("Ctrl+J");
     expect(wrapper.text()).toContain("shortcuts.toggleSidebarCtrl+Shift+B");
     expect(wrapper.get(".toggle-hint").text()).toBe("CtrlAlt/");
     expect(wrapper.text()).not.toContain("⌘");

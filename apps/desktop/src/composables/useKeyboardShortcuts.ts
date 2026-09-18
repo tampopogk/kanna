@@ -2,10 +2,13 @@ import { onMounted, onUnmounted } from "vue";
 import { isTauri } from "../tauri-mock";
 import type { ShortcutContext } from "./useShortcutContext";
 import {
+  belongsToTerminalInput,
   belongsToTextEditing,
   platformBinding,
   resolveShortcutPlatform,
+  secondaryBinding,
   shortcutModifierTokens,
+  type LinuxSecondaryBinding,
   type ShortcutBinding,
   type ShortcutPlatform,
 } from "./shortcutPlatform";
@@ -162,16 +165,36 @@ export function bindingsFor(platform: ShortcutPlatform): Map<ActionName, Shortcu
   return new Map(shortcuts.map((def) => [def.action, platformBinding(def.action, def, platform)]));
 }
 
+/**
+ * The unlisted extra chords, for the actions that have one. Dispatch-only:
+ * nothing here reaches the shortcuts modal, which lists resolved bindings.
+ */
+export function secondaryBindingsFor(platform: ShortcutPlatform): Map<ActionName, LinuxSecondaryBinding> {
+  const entries: [ActionName, LinuxSecondaryBinding][] = [];
+  for (const def of shortcuts) {
+    const secondary = secondaryBinding(def.action, platform);
+    if (secondary) entries.push([def.action, secondary]);
+  }
+  return new Map(entries);
+}
+
 let resolvedBindings: Map<ActionName, ShortcutBinding> | null = null;
+let resolvedSecondaryBindings: Map<ActionName, LinuxSecondaryBinding> | null = null;
 
 function bindings(): Map<ActionName, ShortcutBinding> {
   resolvedBindings ??= bindingsFor(resolveShortcutPlatform());
   return resolvedBindings;
 }
 
+function secondaryBindings(): Map<ActionName, LinuxSecondaryBinding> {
+  resolvedSecondaryBindings ??= secondaryBindingsFor(resolveShortcutPlatform());
+  return resolvedSecondaryBindings;
+}
+
 /** Test seam: the platform is fixed for an app run, and a test run is not one. */
 export function resetShortcutBindingsForTests(): void {
   resolvedBindings = null;
+  resolvedSecondaryBindings = null;
 }
 
 /**
@@ -203,8 +226,16 @@ export function shortcutHintKeys(action: ActionName): string[] {
   return keys;
 }
 
-function matches(def: ShortcutDef, e: KeyboardEvent): boolean {
-  const binding = bindings().get(def.action) ?? def;
+interface MatchableBinding {
+  key: string | string[];
+  code?: string | string[];
+  meta?: boolean;
+  shift?: boolean;
+  alt?: boolean;
+  ctrl?: boolean;
+}
+
+function matchesBinding(binding: MatchableBinding, e: KeyboardEvent): boolean {
   // Exact modifier match — no extra modifiers allowed
   if (e.metaKey !== (binding.meta ?? false)) return false;
   if (e.shiftKey !== (binding.shift ?? false)) return false;
@@ -215,6 +246,17 @@ function matches(def: ShortcutDef, e: KeyboardEvent): boolean {
   const eventKey = /^[A-Za-z]$/.test(e.key) ? e.key.toLowerCase() : e.key;
   return keys.some((key) => (/^[A-Za-z]$/.test(key) ? key.toLowerCase() : key) === eventKey)
     || codes.includes(e.code);
+}
+
+function matches(def: ShortcutDef, e: KeyboardEvent): boolean {
+  if (matchesBinding(bindings().get(def.action) ?? def, e)) return true;
+  const secondary = secondaryBindings().get(def.action);
+  if (!secondary) return false;
+  // Where the PTY owns the key, the secondary chord does not exist: this is
+  // the same predicate `isAppShortcut` answers for the terminal, so the
+  // keystroke is neither claimed here nor held back from the session.
+  if (!secondary.activeInTerminal && belongsToTerminalInput(e.target)) return false;
+  return matchesBinding(secondary, e);
 }
 
 /** Match one named shortcut through the same platform-aware owner as globals. */

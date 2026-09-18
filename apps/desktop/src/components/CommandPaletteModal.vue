@@ -52,7 +52,7 @@ interface UnifiedCommand {
 }
 
 /**
- * Split a shortcut hint into individual keys: "⇧⌘P" on macOS, "Ctrl+Alt+P" on
+ * Split a shortcut hint into individual keys: "⇧⌘P" on macOS, "Ctrl+Shift+P" on
  * Linux. The modifier vocabulary comes from the platform layer rather than a
  * literal list here, so a hint can never be split by the wrong platform's
  * spelling.

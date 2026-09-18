@@ -7,6 +7,7 @@ import {
   getShortcutGroups,
   isAppShortcut,
   resetShortcutBindingsForTests,
+  secondaryBindingsFor,
   useKeyboardShortcuts,
   shortcuts,
   type ActionName,
@@ -490,7 +491,11 @@ describe("useKeyboardShortcuts", () => {
         }));
       }
 
-      expect(actions.openFile).toHaveBeenCalledOnce();
+      // Ctrl+Shift+P is VS Code's command palette, and it is the palette here
+      // too. It used to open the file picker, which is worse than a dead
+      // chord: the wrong dialog appears and nothing says why.
+      expect(actions.commandPalette).toHaveBeenCalledOnce();
+      expect(actions.openFile).not.toHaveBeenCalled();
       expect(actions.toggleSidebar).toHaveBeenCalledOnce();
     } finally {
       wrapper.unmount();
@@ -501,7 +506,7 @@ describe("useKeyboardShortcuts", () => {
     }
   });
 
-  it("dispatches and labels Linux Preferences from the physical shifted comma key", () => {
+  it("dispatches and labels Linux Preferences on VS Code's plain Ctrl+, ", () => {
     for (const nav of [globalThis.navigator, window.navigator]) {
       Object.defineProperty(nav, "platform", { value: "Linux x86_64", configurable: true });
     }
@@ -513,8 +518,19 @@ describe("useKeyboardShortcuts", () => {
       const preferences = getShortcutGroups(identityTranslate)
         .flatMap((group) => group.shortcuts)
         .find((shortcut) => shortcut.action === "shortcuts.preferences");
-      expect(preferences?.keys).toBe("Ctrl+Shift+,");
+      expect(preferences?.keys).toBe("Ctrl+,");
 
+      window.dispatchEvent(new KeyboardEvent("keydown", {
+        key: ",",
+        code: "Comma",
+        ctrlKey: true,
+        bubbles: true,
+        cancelable: true,
+      }));
+
+      expect(actions.openPreferences).toHaveBeenCalledOnce();
+
+      // The chord the systematic mapping used to put it on is now nobody's.
       window.dispatchEvent(new KeyboardEvent("keydown", {
         key: "<",
         code: "Comma",
@@ -523,7 +539,6 @@ describe("useKeyboardShortcuts", () => {
         bubbles: true,
         cancelable: true,
       }));
-
       expect(actions.openPreferences).toHaveBeenCalledOnce();
     } finally {
       wrapper.unmount();
@@ -534,7 +549,7 @@ describe("useKeyboardShortcuts", () => {
     }
   });
 
-  it("dispatches the working Linux Ctrl+Alt+P command palette binding", () => {
+  it("dispatches the Linux Ctrl+Alt+P file picker, the tier the palette vacated", () => {
     for (const nav of [globalThis.navigator, window.navigator]) {
       Object.defineProperty(nav, "platform", { value: "Linux x86_64", configurable: true });
     }
@@ -552,7 +567,8 @@ describe("useKeyboardShortcuts", () => {
         cancelable: true,
       }));
 
-      expect(actions.commandPalette).toHaveBeenCalledOnce();
+      expect(actions.openFile).toHaveBeenCalledOnce();
+      expect(actions.commandPalette).not.toHaveBeenCalled();
     } finally {
       wrapper.unmount();
       for (const nav of [globalThis.navigator, window.navigator]) {
@@ -618,6 +634,126 @@ describe("useKeyboardShortcuts", () => {
       }
       resetShortcutBindingsForTests();
     }
+  });
+
+  /**
+   * Ctrl+J is VS Code's panel toggle and the worktree shell is the nearest
+   * thing to it here — but Ctrl+J is also LF, a byte an agent composer needs
+   * for a literal newline. VS Code takes it from its integrated terminal
+   * through `commandsToSkipShell`; the terminal *is* the product here, so the
+   * app takes it everywhere else and nowhere a PTY has the caret.
+   */
+  describe("the worktree shell's unlisted Linux Ctrl+J", () => {
+    function onLinux(run: (actions: KeyboardActions) => void): void {
+      for (const nav of [globalThis.navigator, window.navigator]) {
+        Object.defineProperty(nav, "platform", { value: "Linux x86_64", configurable: true });
+      }
+      resetShortcutBindingsForTests();
+      const actions = buildActions();
+      const wrapper = mountShortcutHarness(actions, () => "main");
+      try {
+        run(actions);
+      } finally {
+        wrapper.unmount();
+        for (const nav of [globalThis.navigator, window.navigator]) {
+          Object.defineProperty(nav, "platform", { value: "MacIntel", configurable: true });
+        }
+        resetShortcutBindingsForTests();
+      }
+    }
+
+    function pressCtrlJAt(target: EventTarget): KeyboardEvent {
+      const event = new KeyboardEvent("keydown", {
+        key: "j",
+        code: "KeyJ",
+        ctrlKey: true,
+        bubbles: true,
+        cancelable: true,
+      });
+      target.dispatchEvent(event);
+      return event;
+    }
+
+    function withHelperTextarea(run: (helper: HTMLElement) => void): void {
+      const host = document.createElement("div");
+      host.innerHTML = `<textarea class="xterm-helper-textarea"></textarea>`;
+      const helper = host.firstElementChild as HTMLElement;
+      document.body.appendChild(host);
+      try {
+        run(helper);
+      } finally {
+        host.remove();
+      }
+    }
+
+    it("opens the worktree shell when the caret is not in a PTY", () => {
+      onLinux((actions) => {
+        expect(pressCtrlJAt(window).defaultPrevented).toBe(true);
+        expect(actions.openShell).toHaveBeenCalledOnce();
+      });
+    });
+
+    it("leaves Ctrl+J to a focused terminal, where it is LF", () => {
+      onLinux((actions) => {
+        withHelperTextarea((helper) => {
+          const event = pressCtrlJAt(helper);
+          expect(event.defaultPrevented).toBe(false);
+        });
+        expect(actions.openShell).not.toHaveBeenCalled();
+        // `isAppShortcut` is what the terminal consults to decide which keys
+        // bubble up, so this is the same verdict from the PTY's side.
+        expect(isAppShortcut(pressCtrlJAt(document.createElement("div")))).toBe(true);
+      });
+    });
+
+    it("changes neither shell chord, and lists only the one that always works", () => {
+      onLinux((actions) => {
+        const listed = getShortcutGroups(identityTranslate)
+          .flatMap((group) => group.shortcuts)
+          .map((shortcut) => shortcut.keys);
+        expect(listed).toContain("Ctrl+Shift+J");
+        expect(listed).not.toContain("Ctrl+J");
+
+        // Ctrl+Shift+J reaches the worktree shell from inside a terminal too,
+        // which is why it, and not Ctrl+J, is the advertised one.
+        withHelperTextarea((helper) => {
+          helper.dispatchEvent(new KeyboardEvent("keydown", {
+            key: "J",
+            code: "KeyJ",
+            ctrlKey: true,
+            shiftKey: true,
+            bubbles: true,
+            cancelable: true,
+          }));
+        });
+        expect(actions.openShell).toHaveBeenCalledOnce();
+
+        // The main-checkout shell stays exactly where it was.
+        window.dispatchEvent(new KeyboardEvent("keydown", {
+          key: "J",
+          code: "KeyJ",
+          ctrlKey: true,
+          altKey: true,
+          bubbles: true,
+          cancelable: true,
+        }));
+        expect(actions.openShellRepoRoot).toHaveBeenCalledOnce();
+      });
+    });
+
+    it("gives macOS no secondary binding at all", () => {
+      // ⌘J already reaches the app over a focused terminal, and the mac table
+      // is frozen.
+      expect(secondaryBindingsFor("mac").size).toBe(0);
+      const actions = buildActions();
+      const wrapper = mountShortcutHarness(actions, () => "main");
+      try {
+        pressCtrlJAt(window);
+        expect(actions.openShell).not.toHaveBeenCalled();
+      } finally {
+        wrapper.unmount();
+      }
+    });
   });
 
   it("leaves WebKitGTK's inspector chord native and dispatches the Linux Create Repository chord", () => {

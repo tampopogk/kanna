@@ -29,6 +29,17 @@
  * test drive found a listed hint sitting on a dead chord. So an exception may
  * also replace the key, and may declare that its Linux form must be *listed*
  * where the macOS one is a convention too well known to advertise.
+ *
+ * The shortcuts were modelled on VS Code, and on Linux VS Code maps Cmd to
+ * plain Ctrl, so every single-⌘ binding here sits one tier above its VS Code
+ * twin. That is the price of leaving readline alone and is mostly worth
+ * paying, but not always: where the VS Code chord costs the PTY nothing
+ * (`Ctrl+,`) or where the tier shift silently lands a *different* action on
+ * the chord everybody's fingers already know (`Ctrl+Shift+P`), the exception
+ * table puts it back where a VS Code user reaches for it.
+ *
+ * Where the VS Code chord is a byte the PTY needs, the action gets a
+ * *secondary* binding instead of moving — see `LINUX_SECONDARY_BINDINGS`.
  */
 export type ShortcutPlatform = "mac" | "linux"
 
@@ -179,8 +190,19 @@ const LINUX_EXCEPTIONS: Record<string, LinuxException> = {
   // in a GTK field, so it survives there.
   navigateRepoUp: { alt: true, shift: true },
   navigateRepoDown: { alt: true, shift: true },
-  // ⌥⌘P would land on Ctrl+Alt+P, which ⇧⌘P (the command palette) already has.
+  // VS Code Linux opens its command palette with Ctrl+Shift+P, and the
+  // systematic mapping gave that chord to ⌘P — the file picker. A chord that
+  // is not dead but opens the wrong dialog is harder to diagnose than one that
+  // does nothing, so the palette takes its VS Code chord back and the picker
+  // moves to the Ctrl+Alt tier the palette vacated.
+  commandPalette: { ctrl: true, shift: true },
+  openFile: { ctrl: true, alt: true },
+  // ⌥⌘P would land on Ctrl+Alt+P, which the file picker now has.
   toggleFilePreview: { ctrl: true, alt: true, shift: true },
+  // VS Code Linux is Ctrl+, and so is every GNOME app's preferences dialog.
+  // Plain Ctrl+, produces no control code and no terminal claims it, so unlike
+  // the Ctrl+<letter> tier this one costs the PTY nothing.
+  openPreferences: { ctrl: true },
   // Ctrl+Alt+Backspace is the historical "kill the X server" chord. Disabled by
   // default on modern systems, but not something to bind an app action to.
   // Nothing else claims Ctrl+Shift+Backspace, because no ⌘⌫ shortcut exists.
@@ -211,6 +233,54 @@ const LINUX_EXCEPTIONS: Record<string, LinuxException> = {
 /** The named Linux exception for an action, if it has one. */
 export function linuxException(action: string): LinuxException | undefined {
   return LINUX_EXCEPTIONS[action]
+}
+
+/**
+ * An extra chord for an action, in addition to its resolved binding.
+ *
+ * A secondary binding is the answer for a VS Code chord that is *also* a byte
+ * the PTY needs. `Ctrl+J` is LF: a Kanna user types it into an agent composer
+ * for a literal newline, and an app that claimed it would take that away from
+ * every session. VS Code claims it anyway, stealing it back from its
+ * integrated terminal through `commandsToSkipShell` — a trade a VS Code user
+ * makes for a terminal panel and a Kanna user cannot make for the product.
+ *
+ * So it is not a move. The action keeps its systematic chord, which works
+ * everywhere; the secondary is an accelerator that is simply inactive where
+ * the PTY owns the key. It is never listed — the shortcuts modal advertising a
+ * chord that is dead in the view a person spends the day in is the exact
+ * failure this module exists to prevent, and is how a listed hint on a dead
+ * chord got reported from a previous test drive. The modal keeps showing the
+ * chord that always works.
+ */
+export interface LinuxSecondaryBinding extends ShortcutModifiers {
+  key: string | string[]
+  code?: string | string[]
+  /**
+   * Whether the app may claim this chord while a terminal has focus. `false`
+   * leaves the keystroke to the PTY, which is the only reason this mechanism
+   * exists.
+   */
+  activeInTerminal: boolean
+}
+
+/** Unlisted second chords, keyed by action name. See `LinuxSecondaryBinding`. */
+const LINUX_SECONDARY_BINDINGS: Record<string, LinuxSecondaryBinding> = {
+  // VS Code Linux toggles its panel with Ctrl+J, and the worktree shell is the
+  // closest thing Kanna has. The systematic Ctrl+Shift+J stays exactly where
+  // it is and stays the listed one; this reaches the same shell from anywhere
+  // the caret is not inside a PTY.
+  openShell: { ctrl: true, key: "j", activeInTerminal: false },
+}
+
+/** The unlisted secondary chord for an action on this platform, if it has one. */
+export function secondaryBinding(
+  action: string,
+  platform: ShortcutPlatform,
+): LinuxSecondaryBinding | undefined {
+  // macOS has no secondary bindings: every ⌘ chord already reaches the app
+  // over a focused terminal, so nothing there needs a second way in.
+  return platform === "linux" ? LINUX_SECONDARY_BINDINGS[action] : undefined
 }
 
 /** The modifiers this action actually dispatches on, for this platform. */
@@ -358,6 +428,20 @@ export function isEditableElement(target: EventTarget | null): boolean {
     return EDITABLE_INPUT_TYPES.has(target.type) && !target.readOnly && !target.disabled
   }
   return false
+}
+
+/**
+ * Whether this keystroke landed inside a terminal's PTY input.
+ *
+ * The same element `isEditableElement` singles out, asked the opposite
+ * question. There it is "not a text field, so app navigation still works from
+ * a focused agent terminal"; here it is "this is the PTY, so a chord the PTY
+ * owns stays the PTY's" — which is what keeps a secondary binding on a key
+ * like Ctrl+J from reaching the app out of a session someone is typing into.
+ */
+export function belongsToTerminalInput(target: EventTarget | null): boolean {
+  if (typeof HTMLElement === "undefined" || !(target instanceof HTMLElement)) return false
+  return target.classList.contains("xterm-helper-textarea")
 }
 
 /**

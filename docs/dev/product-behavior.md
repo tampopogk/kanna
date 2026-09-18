@@ -355,6 +355,8 @@ on the running app.
 | Oldest unread task (repo / all repos) | Ctrl+Alt+U / Ctrl+Alt+Shift+U | Ctrl+Shift+U is IBus' Unicode code-point entry. It never reaches the webview — pressing it types a literal "u" — so the app cannot win it back by handling it. |
 | Previous / next task | Ctrl+↑ / Ctrl+↓ | The transform's Ctrl+Alt+↑/↓ is GNOME's workspace switcher, and both other candidates are dead: keys injected below the compositor for Alt+↑/↓ and for Ctrl+Shift+↑/↓ deliver their modifiers to the webview and never the arrow. Ctrl+↑/↓ arrives and nothing claims it. |
 | Previous / next repo | Alt+Shift+↑ / Alt+Shift+↓ | Same three dead chords. This keeps repo navigation one modifier above task navigation, the way ⇧⌘↑/↓ sits above ⌥⌘↑/↓. |
+| Preferences | Ctrl+, | The shortcuts were modelled on VS Code, which maps Cmd to plain Ctrl on Linux, so the transform leaves every single-⌘ binding one tier above its VS Code twin. Ctrl+, is VS Code's and every GNOME app's, produces no control code, and no terminal claims it — so it costs the PTY nothing to put it back. |
+| Command palette / File picker | Ctrl+Shift+P / Ctrl+Alt+P | The transform had these the other way round, which meant VS Code's most-memorized chord was not dead here — it opened the *file picker*. An app that answers with the wrong dialog is harder to diagnose than one that does nothing. File preview keeps Ctrl+Alt+Shift+P. |
 
 Three further rules keep the Linux keymap honest, all enforced by
 `shortcutPlatform.test.ts`:
@@ -369,6 +371,16 @@ Three further rules keep the Linux keymap honest, all enforced by
   an owner only for the first; the other two were measured not to arrive, which
   settles the question either way — a chord the desktop does not deliver cannot
   be bound, whoever is taking it.
+
+**One chord is reached two ways.** VS Code toggles its panel with Ctrl+J and
+the worktree shell is the nearest thing to it here, but Ctrl+J is LF — a byte
+an agent composer needs for a literal newline, which VS Code only claims by
+stealing it back from its own integrated terminal. So neither shell binding
+moves: the worktree shell stays on Ctrl+Shift+J and the main-checkout shell on
+Ctrl+Alt+J, and Ctrl+J is an additional, deliberately **unlisted** way to the
+worktree shell that is inactive wherever a PTY has the caret. The shortcuts
+modal keeps showing Ctrl+Shift+J, because advertising a chord that is dead in
+the agent view is the failure the exception table exists to prevent.
 
 **Terminal paste is read natively on Linux.** WebKitGTK denies
 `navigator.clipboard.readText()` by policy however the chord arrived —

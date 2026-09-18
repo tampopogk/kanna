@@ -1,12 +1,14 @@
 import { describe, expect, it } from "vitest"
-import { bindingsFor, shortcuts } from "./useKeyboardShortcuts"
+import { bindingsFor, secondaryBindingsFor, shortcuts } from "./useKeyboardShortcuts"
 import {
+  belongsToTerminalInput,
   belongsToTextEditing,
   isEditableElement,
   linuxException,
   metaOrControlHint,
   platformModifiers,
   resolveShortcutPlatform,
+  secondaryBinding,
   shortcutModifierTokens,
   terminalClipboardAction,
 } from "./shortcutPlatform"
@@ -208,6 +210,31 @@ describe("Linux bindings", () => {
     }
   })
 
+  it("keeps the VS Code chords that cost the terminal nothing", () => {
+    // The whole table sits one tier above its VS Code twin, which is the
+    // price of leaving readline alone. Ctrl+, is not part of that price: it
+    // produces no control code and no terminal claims it.
+    expect(linux.get("openPreferences")).toMatchObject({
+      ctrl: true, shift: false, alt: false, meta: false, key: ",", code: "Comma", display: "Ctrl+,",
+    })
+  })
+
+  it("puts the command palette on the chord a VS Code user's fingers already know", () => {
+    // Ctrl+Shift+P was not dead here before — it opened the *file picker*,
+    // which is harder to diagnose than a no-op, because the app answers and
+    // answers with the wrong dialog. The picker takes the tier the palette
+    // vacated, and file preview keeps the one above it.
+    expect(linux.get("commandPalette")).toMatchObject({
+      ctrl: true, shift: true, alt: false, meta: false, display: "Ctrl+Shift+P",
+    })
+    expect(linux.get("openFile")).toMatchObject({
+      ctrl: true, shift: false, alt: true, meta: false, display: "Ctrl+Alt+P",
+    })
+    expect(linux.get("toggleFilePreview")).toMatchObject({
+      ctrl: true, shift: true, alt: true, meta: false, display: "Ctrl+Alt+Shift+P",
+    })
+  })
+
   it("keeps Escape bare", () => {
     expect(linux.get("dismiss")).toMatchObject({ ctrl: false, shift: false, alt: false, meta: false, display: "Escape" })
   })
@@ -404,5 +431,94 @@ describe("belongsToTextEditing", () => {
     // every Shift+caret chord still belongs to the field.
     expect(belongsToTextEditing(event("ArrowDown", true, { altKey: true }), field, "mac")).toBe(true)
     expect(belongsToTextEditing(event("ArrowUp", true, { metaKey: true }), field, "mac")).toBe(true)
+  })
+})
+
+describe("secondary bindings", () => {
+  const linuxSecondary = secondaryBindingsFor("linux")
+
+  it("gives the worktree shell VS Code's Ctrl+J without moving either shell chord", () => {
+    // Ctrl+J is LF. The pair could not simply shift down a tier — that byte
+    // belongs to the agent composers this app exists to run — so the listed
+    // chords stay exactly where the systematic mapping put them and Ctrl+J is
+    // an extra way in.
+    expect(linux.get("openShell")).toMatchObject({ ctrl: true, shift: true, alt: false, display: "Ctrl+Shift+J" })
+    expect(linux.get("openShellRepoRoot")).toMatchObject({ ctrl: true, alt: true, shift: false, display: "Ctrl+Alt+J" })
+    expect(linuxSecondary.get("openShell")).toMatchObject({ ctrl: true, key: "j", activeInTerminal: false })
+  })
+
+  it("is the only plain Ctrl+letter, and only where no PTY has the caret", () => {
+    // The invariant the resolved table keeps absolutely: a secondary binding
+    // is the one way to be on a terminal key at all, and it is bought by
+    // being inactive exactly where the terminal is.
+    for (const [action, secondary] of linuxSecondary) {
+      const keys = Array.isArray(secondary.key) ? secondary.key : [secondary.key]
+      if (!keys.some((key) => /^[A-Za-z]$/.test(key))) continue
+      if (secondary.ctrl && !secondary.shift && !secondary.alt) {
+        expect(secondary.activeInTerminal, `${action} would take a terminal key from the PTY`).toBe(false)
+      }
+    }
+  })
+
+  it("collides with no resolved Linux binding", () => {
+    const taken = new Set<string>()
+    for (const binding of linux.values()) {
+      const keys = Array.isArray(binding.key) ? binding.key : [binding.key]
+      for (const key of keys) taken.add(`${chord(binding)}+${key.toLowerCase()}`)
+    }
+    for (const [action, secondary] of linuxSecondary) {
+      const keys = Array.isArray(secondary.key) ? secondary.key : [secondary.key]
+      for (const key of keys) {
+        expect(taken.has(`${chord(secondary)}+${key.toLowerCase()}`), `${action}'s extra chord is taken`).toBe(false)
+      }
+    }
+  })
+
+  it("stays off macOS entirely, where every ⌘ chord already outranks the PTY", () => {
+    expect(secondaryBindingsFor("mac").size).toBe(0)
+    expect(secondaryBinding("openShell", "mac")).toBeUndefined()
+    expect(secondaryBinding("openShell", "linux")).toBeDefined()
+  })
+
+  it("is never listed, because the modal must not advertise a chord that is dead in the agent view", () => {
+    // The failure this module exists to prevent: a hint pressed in the view a
+    // person spends the day in, which did nothing. The modal renders resolved
+    // bindings only, so no secondary chord may appear among their hints.
+    const hints = new Set([...linux.values()].map((binding) => binding.display))
+    for (const [action, secondary] of linuxSecondary) {
+      const keys = Array.isArray(secondary.key) ? secondary.key : [secondary.key]
+      for (const key of keys) {
+        const hint = `${chord(secondary)}+${key.toUpperCase()}`
+        expect(hints.has(hint), `${action}'s unlisted ${hint} is being advertised`).toBe(false)
+      }
+    }
+  })
+})
+
+describe("belongsToTerminalInput", () => {
+  const make = (html: string): HTMLElement => {
+    const host = document.createElement("div")
+    host.innerHTML = html
+    return host.firstElementChild as HTMLElement
+  }
+
+  it("recognises the one element a PTY types through", () => {
+    expect(belongsToTerminalInput(make(`<textarea class="xterm-helper-textarea"></textarea>`))).toBe(true)
+  })
+
+  it("is not an editing question — it is the same element, asked the opposite way", () => {
+    // `isEditableElement` answers false for the helper textarea so that task
+    // navigation works from a focused terminal; this answers true for it so
+    // that a chord the PTY owns is left alone there. Both are needed.
+    const helper = make(`<textarea class="xterm-helper-textarea"></textarea>`)
+    expect(isEditableElement(helper)).toBe(false)
+    expect(belongsToTerminalInput(helper)).toBe(true)
+  })
+
+  it("claims nothing else", () => {
+    expect(belongsToTerminalInput(make(`<textarea></textarea>`))).toBe(false)
+    expect(belongsToTerminalInput(make(`<input type="text">`))).toBe(false)
+    expect(belongsToTerminalInput(make(`<div></div>`))).toBe(false)
+    expect(belongsToTerminalInput(null)).toBe(false)
   })
 })

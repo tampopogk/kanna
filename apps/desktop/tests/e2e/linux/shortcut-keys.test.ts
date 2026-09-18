@@ -554,6 +554,98 @@ describe("Linux keyboard shortcuts, pressed for real", () => {
     });
   });
 
+  /**
+   * The chords Kanna borrowed from VS Code, which on Linux maps Cmd to plain
+   * Ctrl while this app maps it to Ctrl+Shift. Every single-⌘ binding
+   * therefore sits one tier above its VS Code twin, which is the price of
+   * leaving readline alone — except where it need not be paid.
+   */
+  describe("the VS Code chords", () => {
+    /** Escape, pressed for real, so a dialog a chord opened does not outlive it. */
+    async function dismissWithEscape(selector: string): Promise<void> {
+      await press("Escape");
+      await client.waitForNoElement(selector);
+    }
+
+    it("opens Preferences on Ctrl+, and lists that chord", async () => {
+      requireRealKeyboard();
+      // Plain Ctrl+, produces no control code and no terminal claims it, so
+      // the Ctrl+Shift tier buys nothing here.
+      const keys = (await listedShortcuts()).map((row) => row.keys);
+      expect(keys).toContain("Ctrl+,");
+      expect(keys).not.toContain("Ctrl+Shift+,");
+
+      await expectClaimed("Ctrl+Comma");
+      await client.waitForElement(".prefs-panel", 8_000);
+      await dismissWithEscape(".prefs-panel");
+    }, 120_000);
+
+    it("opens the command palette on Ctrl+Shift+P, not the file picker", async () => {
+      requireRealKeyboard();
+      // This chord was never dead here — it opened the *file picker*, which is
+      // worse: the app answers, with the wrong dialog, and nothing says why.
+      await expectClaimed("Ctrl+Shift+p");
+      await client.waitForElement(".palette-modal", 8_000);
+      expect(
+        await client.executeSync<boolean>(`return !!document.querySelector(".picker-modal");`),
+        "Ctrl+Shift+P opened the file picker, which is the bug this chord swap fixes",
+      ).toBe(false);
+      await dismissWithEscape(".palette-modal");
+    }, 120_000);
+
+    it("opens the file picker on the Ctrl+Alt+P tier the palette vacated", async () => {
+      requireRealKeyboard();
+      await expectClaimed("Ctrl+Alt+p");
+      await client.waitForElement(".picker-modal", 8_000);
+      await dismissWithEscape(".picker-modal");
+    }, 120_000);
+
+    /**
+     * Ctrl+J is LF. VS Code claims it for its panel by stealing it back from
+     * its integrated terminal through `commandsToSkipShell`; here the
+     * terminal is the product, so neither shell binding moves and Ctrl+J is an
+     * unlisted extra way to the worktree shell — inactive wherever a PTY has
+     * the caret. Both halves are measured, because the half that matters is
+     * the one that must *not* happen.
+     */
+    describe("the worktree shell's unlisted Ctrl+J", () => {
+      it("lists only the chord that works everywhere", async () => {
+        requireRealKeyboard();
+        const keys = (await listedShortcuts()).map((row) => row.keys);
+        expect(keys).toContain("Ctrl+Shift+J");
+        expect(keys).toContain("Ctrl+Alt+J");
+        // Advertising a chord that is dead in the agent view is the exact
+        // failure the exception table exists to prevent.
+        expect(keys).not.toContain("Ctrl+J");
+      });
+
+      it("leaves Ctrl+J to a focused agent terminal, where it is LF", async () => {
+        requireRealKeyboard();
+        await closeViewTabs();
+        await focusTerminal();
+
+        const event = await expectArrived("Ctrl+j");
+        expect(event.target, "Ctrl+J did not land on the terminal").toContain("xterm-helper-textarea");
+        expect(
+          event.defaultPrevented,
+          "the app claimed Ctrl+J out of a focused PTY; that byte is the composer's literal newline",
+        ).toBe(false);
+        expect(await openTabIds()).not.toContain("shell");
+        await blurActiveElement();
+      }, 120_000);
+
+      it("opens the worktree shell on Ctrl+J when no PTY has the caret", async () => {
+        requireRealKeyboard();
+        await closeViewTabs();
+        await blurActiveElement();
+
+        await expectClaimed("Ctrl+j");
+        await waitForActiveTab("shell");
+        await closeViewTabs();
+      }, 120_000);
+    });
+  });
+
   describe("the terminal's claim on the keyboard", () => {
     /**
      * Plain Ctrl+C is the one key an agent session cannot lose: it is how a
