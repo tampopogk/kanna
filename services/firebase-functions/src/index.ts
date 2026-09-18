@@ -47,6 +47,10 @@ import { BillingRequestError } from "./billing/errors.js";
 import type { BillingLogger } from "./billing/logger.js";
 import { handleStripeWebhook } from "./billing/stripeWebhook.js";
 import { accountDeletionDependencies, deleteAccount as deleteAccountCore } from "./accountDeletion.js";
+import {
+  accountDesktopDependencies,
+  removeAccountDesktop as removeAccountDesktopCore,
+} from "./accountDesktops.js";
 
 setGlobalOptions({ region: "us-central1", maxInstances: 10 });
 
@@ -135,6 +139,28 @@ export const deleteAccount = onCall(
     }
   },
 );
+
+/**
+ * Forget one machine from the signed-in caller's own cloud desktop directory.
+ *
+ * Needs no secret: it reads the uid from the verified Auth token and touches
+ * nothing outside `users/{uid}/desktops`. See `accountDesktops.ts` for why
+ * removal is a function rather than a client write.
+ */
+export const removeAccountDesktop = onCall(async (request) => {
+  try {
+    return await removeAccountDesktopCore(
+      request.data,
+      request.auth ? { uid: request.auth.uid } : null,
+      accountDesktopDependencies(db()),
+    );
+  } catch (error) {
+    if (error instanceof BillingRequestError) {
+      throw new HttpsError(error.code, error.message, { reason: error.reason });
+    }
+    throw error;
+  }
+});
 
 /**
  * Stripe's webhook endpoint: the only writer of `users/{uid}/billing/stripe`.

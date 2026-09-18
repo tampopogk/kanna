@@ -51,11 +51,14 @@ describe("deployed function secret bindings", () => {
       .filter(([, value]) => typeof value === "function")
       .map(([name]) => name)
       .sort();
-    expect(deployed).toEqual(["appStoreNotifications", "beginAppStorePurchase", "createCheckoutSession", "createPortalSession", "deleteAccount", "registerAppStoreTransaction", "stripeWebhook"]);
+    expect(deployed).toEqual(["appStoreNotifications", "beginAppStorePurchase", "createCheckoutSession", "createPortalSession", "deleteAccount", "registerAppStoreTransaction", "removeAccountDesktop", "stripeWebhook"]);
   });
 
   it("scopes Apple and Stripe keys to their provider I/O", () => {
     expect(boundSecrets("appStoreNotifications")).toEqual([]);
+    // Forgetting a machine reads the uid from the Auth token and touches only
+    // Firestore, so binding it any credential would be over-provisioning.
+    expect(boundSecrets("removeAccountDesktop")).toEqual([]);
     expect(boundSecrets("registerAppStoreTransaction")).toEqual(["APP_STORE_PRIVATE_KEY"]);
     expect(boundSecrets("beginAppStorePurchase")).toEqual(["STRIPE_SECRET_KEY"]);
   });
