@@ -38,6 +38,8 @@ export const MOBILE_E2E_IDS = {
   taskDetailScreen: "mobile.task-detail-screen",
   taskDetailTitle: "mobile.task-detail-title",
   taskDetailTaskId: "mobile.task-detail-task-id",
+  taskDetailAttentionMarker: "mobile.task-detail-attention-marker",
+  taskDetailAttentionReason: "mobile.task-detail-attention-reason",
   taskTitleButton: "mobile.task-title-button",
   taskExpandedPrompt: "mobile.task-expanded-prompt",
   taskExpandedTaskId: "mobile.task-expanded-task-id",
@@ -268,6 +270,11 @@ export const MOBILE_E2E_IDS = {
   // enumerate rows match that prefix, and the id is a child of a row.
   taskListItemId(taskId: string): string {
     return `mobile.task-row-id.${taskId}`;
+  },
+  // Same reason as the id above: a row-enumerating selector matches the
+  // `mobile.task-row.` prefix, and the attention pill is a child of a row.
+  taskListItemAttention(taskId: string): string {
+    return `mobile.task-row-attention.${taskId}`;
   },
   taskListSubtaskRow(taskId: string): string {
     return `mobile.task-row.${taskId}.subtask`;

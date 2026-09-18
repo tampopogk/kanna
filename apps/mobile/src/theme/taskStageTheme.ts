@@ -178,6 +178,27 @@ const UNKNOWN_STAGE_COLOR_NAME: KannaIconColorName = "slate";
 /** Blocked is not a stage: it overlays whatever stage the task sits in. */
 export const TASK_BLOCKED_THEME: TaskStageTheme = taskStageThemeForColor("rose");
 
+/**
+ * The explicit human-attention badge is not a stage either. It takes the
+ * icon's hottest colour because it is the one row state that asks the reader
+ * to do something, and it stays clear of blocked's rose so a row wearing both
+ * still reads as two separate facts.
+ */
+export const TASK_ATTENTION_THEME: TaskStageTheme = taskStageThemeForColor("orange");
+
+/**
+ * ...and unlike blocked, it cannot rely on hue alone: `in progress` is the
+ * commonest stage there is and already wears this same orange as a tinted
+ * chip, so an attention pill drawn the same way disappears beside it. The
+ * badge is therefore filled with the accent at full strength and labelled in
+ * the card's own dark, which no stage chip ever is. The difference a reader
+ * sees is fill, not hue, so it survives every stage colour.
+ */
+export const TASK_ATTENTION_BADGE = {
+  background: TASK_ATTENTION_THEME.accent,
+  label: CARD_SURFACE
+} as const;
+
 export function normalizeStageKey(stage: string | null | undefined): string {
   return (stage ?? "")
     .trim()
