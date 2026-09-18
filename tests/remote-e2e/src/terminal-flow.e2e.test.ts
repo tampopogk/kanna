@@ -442,7 +442,13 @@ describe("remote task terminal flow E2E", () => {
     const managerWatch =
       `taskIds=${task.taskId}&localOnly=true&excludeEventTypes=` +
       encodeURIComponent("task.activity_changed,task.runtime_settled");
-    const displayWatch = `taskIds=${task.taskId}&localOnly=true`;
+    // `task.activity_changed` is now excluded by default (it is the human
+    // read/unread display dimension, not manager-facing), so a display
+    // consumer that actually wants it must name it explicitly in
+    // `eventTypes` — the default exclusion is skipped when the allow-list
+    // names the type itself.
+    const displayWatch =
+      `taskIds=${task.taskId}&localOnly=true&eventTypes=task.activity_changed`;
     const runtimeEdge = (previous: string | null, next: string) =>
       (event: TaskEvent) =>
         event.type === "task.runtime_changed"
@@ -481,8 +487,10 @@ describe("remote task terminal flow E2E", () => {
     const quiet = await readFeed(managerWatch, cursor, 25);
     expect(quiet.waitOutcome).toBe("timeout");
     expect(quiet.events).toEqual([]);
-    // Same cursor, no exclusions: exclusions are a filter, not a scope, so the
-    // display edge was there the whole time — the manager simply never woke.
+    // Same cursor, `task.activity_changed` named explicitly: exclusions and
+    // the default exclusion are both filters, not a scope, so the display
+    // edge was there the whole time — the manager simply never woke, and a
+    // display consumer that asks for it by name still sees it.
     const display = await readFeed(displayWatch, cursor, 5);
     expect(display.events.map((event) => event.type)).toContain("task.activity_changed");
 
@@ -1103,10 +1111,21 @@ describe("remote task terminal flow E2E", () => {
       expect(await taskInputCount(harness, parent.taskId)).toBe(0);
       expect(parentEvents.outputText()).not.toContain(`TASK ${child.taskId} DONE`);
 
+      // `from` now defaults to "now" (never a full replay by default), so a
+      // cursorless call would skip the already-recorded `run.finished` and
+      // only receive the current actionable snapshot instead. This wants the
+      // retained history, so it asks for it explicitly. `eventTypes` also
+      // isolates just `run.finished`: this task has more than one durable
+      // event by now (at least `run.started` too), and several events for
+      // the same task in one response now collapse into a single
+      // `task.runtime_changed` state row (see `collapse_events_to_task_state`)
+      // whose payload carries `causedByEventTypes`, not the original
+      // `run.finished` payload the assertion below reads — naming the type
+      // keeps this read to exactly the one raw event it cares about.
       const waited = await harness.client.invokeDesktop({
         desktopId: harness.desktopId,
         method: "GET",
-        path: `/v1/task-events?taskIds=${child.taskId}&timeoutSecs=0`,
+        path: `/v1/task-events?taskIds=${child.taskId}&eventTypes=run.finished&from=beginning&timeoutSecs=0`,
         body: null
       }) as { events?: Array<{ type?: string; payload?: { result?: string } }> };
       const finished = waited.events?.find((event) => event.type === "run.finished");

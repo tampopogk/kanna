@@ -333,9 +333,16 @@ describe("an installed upgrade with a live agent session", () => {
 
     const detail = await worker!.json<TaskDetail>(`/v1/tasks/${taskId}`);
     expect(detail.latestRun).toMatchObject({ id: runId, status: "succeeded", summary: "survived the installed upgrade" });
+    // `from` now defaults to "now" (never a full replay by default), so a
+    // cursorless call would start at the tail and skip the already-recorded
+    // `run.finished` this reads. `from=beginning` asks for the retained
+    // history explicitly; the strict `run.finished` allow-list means no
+    // other event (including a synthetic current-state row, whose type is
+    // always `task.runtime_changed`) can match, so there is nothing here for
+    // multiple same-task events to collapse.
     const batch = await worker!.json<{
       events: Array<{ type: string; taskId: string; payload: { runId?: string; status?: string } }>;
-    }>(`/v1/task-events?taskIds=${taskId}&eventTypes=run.finished&localOnly=true&timeoutSecs=0`);
+    }>(`/v1/task-events?taskIds=${taskId}&eventTypes=run.finished&localOnly=true&from=beginning&timeoutSecs=0`);
     expect(batch.events).toContainEqual(expect.objectContaining({
       type: "run.finished", taskId, payload: expect.objectContaining({ runId, status: "succeeded" }),
     }));

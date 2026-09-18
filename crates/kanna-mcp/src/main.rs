@@ -664,15 +664,20 @@ async fn wait_task(
         // reached a terminal status, its agent session exited, or its runtime
         // has settled past the server's own debounce — none of which a
         // per-frame daemon misclassification can fake. But `Reconcile` also
-        // resolves on `unread`, which is read straight off the same raw,
-        // per-frame `activity` field `confirm_stopped_activity` exists to
-        // debounce for `kanna_get_task`/list routes: a working agent can be
-        // misclassified as `unread` for one frame, and without confirmation
-        // this loop would report that misread as a finished wait. So every
-        // sample is passed through the same one-sided confirming re-read
-        // `kanna_get_task` already pays for a stopped-looking response — free
-        // when the sample does not look stopped, one extra
-        // `ACTIVITY_CONFIRM_DELAY` + GET when it does.
+        // resolves on `unread` while the runtime is not busy, which is read
+        // straight off the same raw, per-frame `activity` field
+        // `confirm_stopped_activity` exists to debounce for
+        // `kanna_get_task`/list routes: a working agent can be misclassified
+        // as `unread` for one frame, and without confirmation this loop would
+        // report that misread as a finished wait. So every sample is passed
+        // through the same one-sided confirming re-read `kanna_get_task`
+        // already pays for a stopped-looking response — free when the sample
+        // does not look stopped, one extra `ACTIVITY_CONFIRM_DELAY` + GET when
+        // it does. This confirmation guards against a *misclassified* frame;
+        // it does not by itself keep a busy-and-genuinely-unread task from
+        // resolving — `task_matches_wait_until` gates `unread` on non-busy
+        // runtime for exactly that reason (see `task_state_matches_wait_until`
+        // in `kanna-tool-catalog`).
         let task = confirm_stopped_activity(base_url, &path, task, machine_id).await?;
         if task_matches_wait_until(&task, until) {
             return Ok(wait_resolved_result(task));
@@ -2586,15 +2591,16 @@ mod activity_debounce_tests {
     }
 
     /// `unread` is read state — a working agent whose output nobody read
-    /// carries it too — and the default `Reconcile` now resolves on it
-    /// (`kanna_wait_events`' cold-start snapshot uses the same signal), unlike
-    /// `Finished`, which never reads `activity` at all. But `unread` is read
-    /// straight off the same raw, per-frame daemon classification
-    /// `confirm_stopped_activity` exists to debounce for `kanna_get_task`, so
-    /// the wait must not resolve on a single unconfirmed stopped-looking
-    /// sample: a working agent misclassified as `unread` for one frame, then
-    /// seen working again on the confirming re-read, must not be reported as
-    /// finished.
+    /// carries it too — and the default `Reconcile` resolves on it once the
+    /// runtime is not busy, unlike `Finished`, which never reads `activity` at
+    /// all. But `unread` is read straight off the same raw, per-frame daemon
+    /// classification `confirm_stopped_activity` exists to debounce for
+    /// `kanna_get_task`, so the wait must not resolve on a single unconfirmed
+    /// stopped-looking sample: a working agent misclassified as `unread` for
+    /// one frame, then seen working again on the confirming re-read, must not
+    /// be reported as finished. This fixture carries no `runtimeState`, so the
+    /// busy gate does not apply here — see
+    /// `waiting_on_a_busy_and_unread_task_does_not_resolve` for that case.
     #[tokio::test(start_paused = true)]
     async fn waiting_on_a_task_does_not_resolve_on_an_unconfirmed_read_state_misclassification() {
         let (base_url, _) = spawn_scripted_task_server(serving(vec![
@@ -2620,9 +2626,9 @@ mod activity_debounce_tests {
         assert_eq!(result["activity"], json!("working"));
     }
 
-    /// The positive case: once the confirming re-read agrees `unread` holds,
-    /// the wait resolves on it exactly like `kanna_get_task` would confirm
-    /// and report the same stop.
+    /// The positive case: once the confirming re-read agrees `unread` holds
+    /// on a task whose runtime is not busy, the wait resolves on it exactly
+    /// like `kanna_get_task` would confirm and report the same stop.
     #[tokio::test(start_paused = true)]
     async fn waiting_on_a_task_resolves_on_a_confirmed_unread_read() {
         let (base_url, reads) =
@@ -2650,6 +2656,41 @@ mod activity_debounce_tests {
             "a genuine stop should surface one confirmation delay later, took {elapsed:?}"
         );
         assert_eq!(reads.load(Ordering::SeqCst), 2);
+    }
+
+    /// `activity` stays `unread` for a task whose agent is actively working —
+    /// nobody has read the output yet, but the runtime is `busy` — which is
+    /// exactly the shape produced by sending a stopped child input and
+    /// immediately waiting on it. `Reconcile` must not resolve on that: doing
+    /// so would report a currently running agent as needing reconciliation,
+    /// and keep doing so on every subsequent call, reintroducing the spin
+    /// this predicate exists to remove. The confirming re-read does not save
+    /// this case either — the task is genuinely, stably `unread`, so a second
+    /// sample agrees with the first.
+    #[tokio::test(start_paused = true)]
+    async fn waiting_on_a_busy_and_unread_task_does_not_resolve() {
+        let mut busy_and_unread = task_with_activity("unread");
+        busy_and_unread["runtimeState"] = json!("busy");
+        let (base_url, _) =
+            spawn_scripted_task_server(serving(vec![busy_and_unread.clone(), busy_and_unread]))
+                .await;
+        let catalog = shared_bundled_catalog();
+
+        let result = call_tool(
+            &base_url,
+            &catalog,
+            "kanna_wait_task",
+            json!({ "task_id": "child-1", "timeout_secs": 2, "poll_secs": 1 }),
+        )
+        .await;
+
+        assert_eq!(
+            result["waitOutcome"],
+            json!("timeout"),
+            "a busy task must not resolve on unread alone: {result}"
+        );
+        assert_eq!(result["activity"], json!("unread"));
+        assert_eq!(result["runtimeState"], json!("busy"));
     }
 
     /// What does resolve it: the runtime dimension's terminal value, which the

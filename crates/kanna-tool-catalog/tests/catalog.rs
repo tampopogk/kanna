@@ -2130,11 +2130,13 @@ fn finished_is_decided_by_a_recorded_termination_not_the_activity_flag() {
 }
 
 /// `Reconcile` — the default `until` — resolves the instant a task becomes
-/// actionable by any of `kanna_wait_events`' cold-start signals, even while
+/// blocked, badged, provider-parked, or provider-capacity-noticed, even while
 /// its agent is still busy, because none of them need a settling window the
 /// way runtime does: they are already durable facts on the task, not a
 /// transition that can flicker. A plain busy task with none of them still
 /// must not resolve, or every reconcile wait would return immediately.
+/// `unread` is deliberately not one of these — see
+/// `reconcile_does_not_resolve_on_unread_alone_while_busy` below.
 #[test]
 fn reconcile_resolves_on_any_actionable_signal_even_while_busy() {
     let plain_busy = json!({
@@ -2158,17 +2160,6 @@ fn reconcile_resolves_on_any_actionable_signal_even_while_busy() {
     assert!(
         task_value_matches_wait_until(&blocked_while_busy, WaitUntil::Reconcile),
         "an unresolved blocker resolves reconcile even while busy"
-    );
-
-    let unread_while_busy = json!({
-        "activity": "unread",
-        "runtimeState": "busy",
-        "closedAt": null,
-        "latestRun": { "status": "running" },
-    });
-    assert!(
-        task_value_matches_wait_until(&unread_while_busy, WaitUntil::Reconcile),
-        "unread resolves reconcile even while busy, unlike Finished"
     );
 
     let badged_while_busy = json!({
@@ -2236,6 +2227,52 @@ fn reconcile_resolves_on_any_actionable_signal_even_while_busy() {
     assert!(
         !task_value_matches_wait_until(&clear_of_every_signal, WaitUntil::Reconcile),
         "explicit empty/null signal fields must not themselves resolve reconcile"
+    );
+}
+
+/// `activity` stays `unread` for a task whose agent is actively working —
+/// nobody has read the output yet, but the runtime is `busy` — which is
+/// exactly the shape produced by sending a stopped child input and
+/// immediately waiting on it (AGENTS.md's "Runtime and read state are two
+/// dimensions": "A busy task may therefore remain `unread` until someone
+/// reads that output"). Unlike the other actionable signals, `unread` must
+/// NOT resolve `Reconcile` while the runtime is busy: doing so would report
+/// an actively running agent as needing reconciliation and keep doing so on
+/// every subsequent call, reintroducing the spin this predicate exists to
+/// remove. Once the runtime is no longer busy, `unread` alone is enough —
+/// there is nothing left running to wait out.
+#[test]
+fn reconcile_does_not_resolve_on_unread_alone_while_busy() {
+    let unread_while_busy = json!({
+        "activity": "unread",
+        "runtimeState": "busy",
+        "closedAt": null,
+        "latestRun": { "status": "running" },
+    });
+    assert!(
+        !task_value_matches_wait_until(&unread_while_busy, WaitUntil::Reconcile),
+        "unread must not resolve reconcile while the runtime is busy"
+    );
+
+    let unread_while_idle = json!({
+        "activity": "unread",
+        "runtimeState": "idle",
+        "closedAt": null,
+        "latestRun": { "status": "running" },
+    });
+    assert!(
+        task_value_matches_wait_until(&unread_while_idle, WaitUntil::Reconcile),
+        "unread still resolves reconcile once the runtime is not busy"
+    );
+
+    let unread_with_no_runtime_state = json!({
+        "activity": "unread",
+        "closedAt": null,
+        "latestRun": { "status": "running" },
+    });
+    assert!(
+        task_value_matches_wait_until(&unread_with_no_runtime_state, WaitUntil::Reconcile),
+        "unread resolves reconcile when the runtime dimension is unknown, not just busy"
     );
 }
 

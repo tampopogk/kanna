@@ -2060,6 +2060,26 @@ fn encode_aggregate_cursor(
     Ok(encoded)
 }
 
+/// Mirrors the single-machine wait's guard against abandoning a cold-start
+/// snapshot scan partway through (see `wait_local_task_events`'s `cold_start`
+/// derivation): true when any machine's retained native cursor is itself a
+/// current-activity continuation (`kc1.`) whose scan has not yet reached
+/// `settled_complete`. A caller draining a paginated cold-start snapshot
+/// passes the returned `ks1.` cursor straight back without repeating
+/// `includeCurrentActivity`, exactly as the tool's own guidance says to; each
+/// leg's own unfinished scan must keep implying the snapshot on every
+/// following call, or the remaining actionable tasks are silently dropped as
+/// soon as `hasMore` goes true on page one.
+fn aggregate_cursor_mid_snapshot(cursor: &AggregateCursor) -> bool {
+    cursor.cursors_by_machine.values().any(|machine_cursor| {
+        decode_machine_cursor(machine_cursor)
+            .ok()
+            .filter(|native| native.starts_with(CURRENT_ACTIVITY_CURSOR_PREFIX))
+            .and_then(|native| decode_current_activity_cursor(&native).ok().flatten())
+            .is_some_and(|parsed| !parsed.settled_complete)
+    })
+}
+
 fn normalized_values(raw: Option<&str>) -> Vec<String> {
     let mut values = raw
         .map(|raw| {
@@ -2574,15 +2594,19 @@ async fn wait_aggregate_task_events(
         include_event_types: aggregate_include_event_types,
     };
     let supplied_cursor = query.cursor.as_deref();
-    // Same cold-start rule as the single-machine wait: no cursor at all means
-    // a fresh watcher, so the snapshot is implied unless overridden.
-    let include_current_activity = query
-        .include_current_activity
-        .unwrap_or(supplied_cursor.is_none());
     let decoded = supplied_cursor
         .filter(|cursor| cursor.starts_with(AGGREGATE_CURSOR_PREFIX))
         .map(decode_aggregate_cursor)
         .transpose()?;
+    // Same cold-start rule as the single-machine wait: no cursor at all means
+    // a fresh watcher, so the snapshot is implied unless overridden — *unless*
+    // the supplied aggregate cursor is itself mid-drain of a snapshot scan on
+    // some machine, in which case omitting the flag must not silently
+    // abandon it partway through (see `aggregate_cursor_mid_snapshot`; this
+    // mirrors the single-machine wait's `cold_start` derivation).
+    let include_current_activity = query.include_current_activity.unwrap_or(
+        supplied_cursor.is_none() || decoded.as_ref().is_some_and(aggregate_cursor_mid_snapshot),
+    );
     let local_machine_id = state.config().desktop_id.clone();
     let cursor = match decoded {
         Some(cursor) => {
@@ -2894,8 +2918,28 @@ async fn wait_aggregate_task_events(
         if !machine_errors.is_empty() && completed_machines.len() >= active_machines.len() {
             break;
         }
+        // The same reasoning `AGGREGATE_LEG_JOIN_GRACE` documents for the
+        // join call itself applies here: a leg genuinely holding to its own
+        // full native timeout (nothing actionable, nothing pending — the
+        // ordinary case now that a wait never returns instantly empty) tends
+        // to complete at or just past `deadline`. When one such leg is
+        // processed here right at that boundary, `now >= deadline` is
+        // already true even though a sibling leg spawned in the very same
+        // iteration is still in flight and about to land within the grace
+        // window the next `join_next()` call allows for. Breaking here
+        // regardless would give up on that sibling without ever attempting
+        // to join it — reintroducing the measured defect's shape (a leg
+        // that was genuinely about to answer is never confirmed) through
+        // this second exit point instead of the one the grace period
+        // covers. So the deadline alone only ends the wait once nothing
+        // already-spawned remains pending; a still-pending leg gets its
+        // grace-bounded join attempt on the next iteration, which itself
+        // gives up quickly (immediately, once `deadline + GRACE` has also
+        // elapsed) if that leg truly never answers.
         if completed_machines.len() >= active_machines.len()
-            || (timeout_secs > 0 && tokio::time::Instant::now() >= deadline)
+            || (timeout_secs > 0
+                && tokio::time::Instant::now() >= deadline
+                && session.pending_machines.is_empty())
         {
             break;
         }

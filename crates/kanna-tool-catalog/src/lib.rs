@@ -485,8 +485,10 @@ pub struct WaitTaskState<'a> {
     pub runtime_state: Option<&'a str>,
     pub runtime_settled: bool,
     pub latest_run_status: Option<&'a str>,
-    /// A human has not read the task's latest output — the read dimension,
-    /// independent of whether the agent is still running.
+    /// A human has not read the task's latest output. The read dimension is
+    /// tracked independently of the runtime one, but `activity` stays
+    /// `unread` for a busy task too — see `task_state_matches_wait_until`'s
+    /// `Reconcile` arm for why that matters to this predicate.
     pub unread: bool,
     /// The task has at least one unresolved blocker.
     pub blocked: bool,
@@ -524,19 +526,28 @@ pub struct WaitTaskState<'a> {
 /// parked work without turning that observation into a completion verdict.
 /// An older server without that field retains termination-only behavior.
 /// Beyond runtime, `Reconcile` also resolves the instant the task becomes
-/// actionable by any of the independent signals above — unread, blocked,
-/// badged, provider-parked or capacity-noticed — even while the agent is
-/// still busy: a caller blocked on one task must not sit out its whole
-/// timeout because the task that just gained an attention badge, or hit a
-/// provider capacity notice, happens to still be running. None of these need
-/// their own settling window the way runtime does; they are already durable
-/// facts on the task, not a transition that can flicker.
+/// actionable by any of the independent signals above — blocked, badged,
+/// provider-parked or capacity-noticed — even while the agent is still busy:
+/// a caller blocked on one task must not sit out its whole timeout because
+/// the task that just gained an attention badge, or hit a provider capacity
+/// notice, happens to still be running. None of these need their own
+/// settling window the way runtime does; they are already durable facts on
+/// the task, not a transition that can flicker.
+///
+/// `unread` is the one exception: it is gated on non-busy runtime rather than
+/// treated as independent. `activity` stays `unread` for a busy task whose
+/// last output nobody has read yet — sending a child input and immediately
+/// waiting on it produces exactly that shape — so an unconditional `unread`
+/// check would resolve on an actively running agent and keep resolving on
+/// every subsequent call, reintroducing the spin this predicate exists to
+/// remove. Once the runtime is no longer busy, `unread` alone is enough:
+/// there is nothing left running to wait out.
 pub fn task_state_matches_wait_until(state: WaitTaskState<'_>, until: WaitUntil) -> bool {
     match until {
         WaitUntil::Reconcile => {
             (state.runtime_settled
                 && matches!(state.runtime_state, Some("idle" | "waiting" | "exited")))
-                || state.unread
+                || (state.unread && !matches!(state.runtime_state, Some("busy")))
                 || state.blocked
                 || state.badged
                 || state.provider_parked

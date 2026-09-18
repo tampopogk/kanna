@@ -940,6 +940,333 @@ async fn aggregate_current_activity_pages_drain_every_machine_without_starvation
     relay.abort();
 }
 
+/// The same drain as `aggregate_current_activity_pages_drain_every_machine_without_starvation`,
+/// but with `includeCurrentActivity` omitted on every call rather than passed
+/// explicitly — the shape both the catalog description and
+/// docs/kanna-server-boundary.md tell a real caller to use ("pass the opaque
+/// cursor back and drain while hasMore is true"). The single-machine wait
+/// keeps the snapshot implied across such a drain by checking whether the
+/// supplied cursor is itself a not-yet-`settled_complete` current-activity
+/// continuation; the aggregate path forwarded a fixed `includeCurrentActivity`
+/// per leg with no equivalent guard, so a cursorless aggregate wait whose
+/// snapshot exceeds `limit` returned page one correctly but silently stopped
+/// including current-activity rows in every following page, because
+/// `supplied_cursor.is_none()` is false as soon as any cursor comes back —
+/// dropping the remaining actionable tasks even though `hasMore` said there
+/// were more. This test starts genuinely cursorless (unlike the sibling
+/// above, which seeds a pre-built `ks1.` cursor) and never names
+/// `includeCurrentActivity` on any call, so it fails the moment that guard
+/// regresses.
+#[tokio::test]
+async fn aggregate_current_activity_pages_drain_with_the_flag_omitted() {
+    let local_ids = ["omitted-local-a", "omitted-local-b", "omitted-local-c"];
+    let peer_ids = ["omitted-peer-a", "omitted-peer-b", "omitted-peer-c"];
+    let all_ids = local_ids
+        .iter()
+        .chain(peer_ids.iter())
+        .copied()
+        .collect::<Vec<_>>();
+    let source = test_state_with_seed("desktop-omitted-source", "Omitted Source", |db| {
+        db.insert_test_repo("repo-omitted-source", "Omitted Source Repo")
+            .expect("insert source repo");
+        for task_id in local_ids {
+            db.insert_test_pipeline_item(
+                task_id,
+                "repo-omitted-source",
+                "local settled task",
+                Some(task_id),
+                "in progress",
+                "2026-08-23 00:00:00",
+            )
+            .expect("insert local task");
+        }
+        settle_runtime_tasks(db, &local_ids);
+    });
+    let peer = test_state_with_seed("desktop-omitted-peer", "Omitted Peer", |db| {
+        db.insert_test_repo("repo-omitted-peer", "Omitted Peer Repo")
+            .expect("insert peer repo");
+        for task_id in peer_ids {
+            db.insert_test_pipeline_item(
+                task_id,
+                "repo-omitted-peer",
+                "peer settled task",
+                Some(task_id),
+                "in progress",
+                "2026-08-23 00:00:00",
+            )
+            .expect("insert peer task");
+        }
+        settle_runtime_tasks(db, &peer_ids);
+    });
+    let source_router = router(Arc::clone(&source));
+    let task_ids = all_ids.join(",");
+    let connected = Arc::new(AtomicBool::new(true));
+    let relay = connect_test_relay_peer(&source, Arc::clone(&peer), connected);
+
+    let mut cursor: Option<String> = None;
+    let mut settled = Vec::new();
+    let mut page_has_more = Vec::new();
+    for _ in 0..8 {
+        let path = match &cursor {
+            None => format!("/v1/task-events?taskIds={task_ids}&limit=2&timeoutSecs=2"),
+            Some(cursor) => {
+                format!("/v1/task-events?taskIds={task_ids}&limit=2&cursor={cursor}&timeoutSecs=2")
+            }
+        };
+        let page = get_account_json_body(&source_router, &source, &path).await;
+        cursor = Some(cursor_of(&page));
+        page_has_more.push(page["hasMore"].as_bool().expect("hasMore"));
+        for event in page["events"].as_array().expect("events") {
+            if event["synthetic"] == true {
+                settled.push((
+                    event["machineId"].as_str().expect("machine id").to_string(),
+                    event["taskId"].as_str().expect("task id").to_string(),
+                ));
+            }
+        }
+        if page["hasMore"] == false {
+            break;
+        }
+    }
+
+    settled.sort();
+    let mut expected = local_ids
+        .iter()
+        .map(|task_id| ("desktop-omitted-source".to_string(), (*task_id).to_string()))
+        .chain(
+            peer_ids
+                .iter()
+                .map(|task_id| ("desktop-omitted-peer".to_string(), (*task_id).to_string())),
+        )
+        .collect::<Vec<_>>();
+    expected.sort();
+    assert_eq!(
+        settled, expected,
+        "every actionable task on every machine must be delivered across the drain even though \
+         includeCurrentActivity was never named on any call"
+    );
+    assert_eq!(page_has_more.last(), Some(&false));
+    relay.abort();
+}
+
+/// The measured defect this task fixes: an aggregate wait with genuinely
+/// nothing to report — a cursor already caught up, `includeCurrentActivity`
+/// false, no durable events pending, no actionable snapshot signal — must
+/// still hold for its full `timeoutSecs` AND report every reachable machine
+/// in `confirmedMachines`. Before `AGGREGATE_LEG_JOIN_GRACE`, a leg spawned
+/// this call was joined against a deadline capped at exactly this wait's own
+/// `deadline`, which raced a leg that was always going to answer at or after
+/// it: the outer `timeout_at` could fire first and the loop would `break`
+/// before ever joining the very leg it just started, so the response was
+/// `waitOutcome: "timeout"` with `confirmedMachines: []` despite the peer
+/// being reachable and having genuinely finished its own leg. No test in this
+/// module asserted `confirmedMachines` before this fix, which is how that
+/// shipped unnoticed. Removing `AGGREGATE_LEG_JOIN_GRACE` (or shrinking it
+/// back to zero) reintroduces this failure.
+#[tokio::test]
+async fn aggregate_wait_with_nothing_to_report_still_confirms_every_machine() {
+    let source = test_state_with_seed("desktop-confirm-source", "Confirm Source", |db| {
+        db.insert_test_repo("repo-confirm-source", "Confirm Source Repo")
+            .expect("insert source repo");
+        db.insert_test_pipeline_item(
+            "confirm-source-child",
+            "repo-confirm-source",
+            "source child",
+            Some("Confirm Source Child"),
+            "in progress",
+            "2026-09-18 00:00:00",
+        )
+        .expect("insert source task");
+    });
+    let peer = test_state_with_seed("desktop-confirm-peer", "Confirm Peer", |db| {
+        db.insert_test_repo("repo-confirm-peer", "Confirm Peer Repo")
+            .expect("insert peer repo");
+        db.insert_test_pipeline_item(
+            "confirm-peer-child",
+            "repo-confirm-peer",
+            "peer child",
+            Some("Confirm Peer Child"),
+            "in progress",
+            "2026-09-18 00:00:00",
+        )
+        .expect("insert peer task");
+    });
+    let source_router = router(Arc::clone(&source));
+    // Alphabetical: `resolve_aggregate_scope`'s `task_ids` are sorted through
+    // `normalized_values`, so the cursor's embedded scope must match that
+    // order or the server rejects it as belonging to a different scope.
+    let task_ids = "confirm-peer-child,confirm-source-child";
+    let connected = Arc::new(AtomicBool::new(true));
+    let relay = connect_test_relay_peer(&source, Arc::clone(&peer), connected);
+
+    let source_head = Db::open(&source.config().db_path)
+        .expect("open source db")
+        .latest_task_event_seq()
+        .expect("source event head")
+        .to_string();
+    let peer_head = Db::open(&peer.config().db_path)
+        .expect("open peer db")
+        .latest_task_event_seq()
+        .expect("peer event head")
+        .to_string();
+    let cursor = aggregate_tasks_cursor(
+        "desktop-confirm-source",
+        "desktop-confirm-peer",
+        &["confirm-peer-child", "confirm-source-child"],
+        &source_head,
+        &peer_head,
+    );
+
+    let started = std::time::Instant::now();
+    let result = tokio::time::timeout(
+        Duration::from_secs(15),
+        get_account_json_body(
+            &source_router,
+            &source,
+            &format!(
+                "/v1/task-events?taskIds={task_ids}&includeCurrentActivity=false&cursor={cursor}&timeoutSecs=2"
+            ),
+        ),
+    )
+    .await
+    .expect("aggregate wait returned");
+    let elapsed = started.elapsed();
+
+    assert_eq!(result["waitOutcome"], "timeout");
+    assert!(result["events"].as_array().expect("events").is_empty());
+    assert!(
+        elapsed >= Duration::from_secs(2),
+        "a wait with nothing to report must hold for its full timeout, took {elapsed:?}"
+    );
+    let confirmed = result["confirmedMachines"]
+        .as_array()
+        .expect("confirmedMachines")
+        .iter()
+        .map(|id| id.as_str().expect("machine id").to_string())
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        confirmed,
+        std::collections::BTreeSet::from([
+            "desktop-confirm-source".to_string(),
+            "desktop-confirm-peer".to_string(),
+        ]),
+        "every reachable machine must be confirmed even when nothing was found: {result}"
+    );
+    relay.abort();
+}
+
+/// The companion positive case: the same call must not merely block — once a
+/// peer event lands mid-wait it must be delivered, and the reachable peer
+/// must still be confirmed. This is the "blocks AND delivers" evidence the
+/// original task asked for through the real fan-out path, complementing the
+/// sibling test above (which covers "blocks and confirms with nothing to
+/// deliver").
+#[tokio::test]
+async fn aggregate_wait_blocks_then_delivers_a_peer_event_appended_mid_wait() {
+    let source = test_state_with_seed("desktop-deliver-source", "Deliver Source", |db| {
+        db.insert_test_repo("repo-deliver-source", "Deliver Source Repo")
+            .expect("insert source repo");
+    });
+    let peer = test_state_with_seed("desktop-deliver-peer", "Deliver Peer", |db| {
+        db.insert_test_repo("repo-deliver-peer", "Deliver Peer Repo")
+            .expect("insert peer repo");
+        db.insert_test_pipeline_item(
+            "deliver-peer-child",
+            "repo-deliver-peer",
+            "peer child",
+            Some("Deliver Peer Child"),
+            "in progress",
+            "2026-09-18 00:00:00",
+        )
+        .expect("insert peer task");
+    });
+    let source_router = router(Arc::clone(&source));
+    let task_ids = "deliver-peer-child";
+    let connected = Arc::new(AtomicBool::new(true));
+    let relay = connect_test_relay_peer(&source, Arc::clone(&peer), connected);
+
+    let source_head = Db::open(&source.config().db_path)
+        .expect("open source db")
+        .latest_task_event_seq()
+        .expect("source event head")
+        .to_string();
+    let peer_head = Db::open(&peer.config().db_path)
+        .expect("open peer db")
+        .latest_task_event_seq()
+        .expect("peer event head")
+        .to_string();
+    let cursor = aggregate_tasks_cursor(
+        "desktop-deliver-source",
+        "desktop-deliver-peer",
+        &["deliver-peer-child"],
+        &source_head,
+        &peer_head,
+    );
+
+    let peer_db_path = peer.config().db_path.clone();
+    let writer = tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        let db = Db::open(&peer_db_path).expect("open peer db");
+        db.update_pipeline_item_stage("deliver-peer-child", "review")
+            .expect("append peer durable event mid-wait");
+    });
+
+    let started = std::time::Instant::now();
+    // A generous window and outer guard: under heavy parallel test load the
+    // background append above can itself be delayed several seconds by
+    // scheduling contention before it ever reaches the peer's database, so
+    // this needs enough margin for that append to still land inside the
+    // wait's own window rather than only ruling out a genuine hang.
+    let result = tokio::time::timeout(
+        Duration::from_secs(50),
+        get_account_json_body(
+            &source_router,
+            &source,
+            &format!(
+                "/v1/task-events?taskIds={task_ids}&includeCurrentActivity=false&cursor={cursor}&timeoutSecs=30"
+            ),
+        ),
+    )
+    .await
+    .expect("aggregate wait returned");
+    let elapsed = started.elapsed();
+    writer.await.expect("writer task");
+
+    assert_eq!(result["waitOutcome"], "events");
+    assert_eq!(
+        event_pairs(&result),
+        vec![(
+            "deliver-peer-child".to_string(),
+            "stage.changed".to_string()
+        )]
+    );
+    assert_eq!(result["events"][0]["machineId"], "desktop-deliver-peer");
+    assert!(
+        elapsed >= Duration::from_millis(250),
+        "the wait must genuinely hold until the peer event lands, took {elapsed:?}"
+    );
+    // Deliberately no tight upper bound here beyond the outer 15s guard: under
+    // heavy parallel test load the background append can itself be delayed by
+    // scheduling contention, and this test's job is to prove delivery
+    // happens at all once something lands mid-wait (the sibling test above
+    // covers the actual regression — confirming every machine when nothing
+    // ever lands). A hard "delivered promptly" bound here is exactly the
+    // class of load-sensitive assertion several other timing tests in this
+    // module already accept as flaky under full parallel `cargo test` runs
+    // while passing reliably in isolation.
+    let confirmed = result["confirmedMachines"]
+        .as_array()
+        .expect("confirmedMachines")
+        .iter()
+        .map(|id| id.as_str().expect("machine id").to_string())
+        .collect::<std::collections::BTreeSet<_>>();
+    assert!(
+        confirmed.contains("desktop-deliver-peer"),
+        "the peer that delivered the event must be confirmed: {result}"
+    );
+    relay.abort();
+}
+
 #[tokio::test]
 async fn aggregate_mid_settled_cursor_resumes_without_replaying_durable_sequences() {
     let local_ids = ["local-settled-a", "local-settled-b"];

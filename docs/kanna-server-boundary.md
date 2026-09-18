@@ -2644,25 +2644,40 @@ Which dimension each consumer reads:
   Task detail's `runtimeSettled` uses the same observed non-busy baseline and
   completed debounce as the synthetic feed scan, never human read state or
   absence of output. It also resolves for recorded termination. Beyond
-  runtime, `reconcile` also resolves the instant the task becomes actionable
-  by the same vocabulary `kanna_wait_events`' cold-start snapshot uses —
-  unread, an unresolved blocker, an attention badge, or a provider-parked or
-  provider-capacity-noticed refusal — even while the agent is still busy: a
-  caller blocked on one task must not sit out its whole timeout because that
-  task gained an attention badge, or hit a provider capacity notice, while
-  still running. None of these need their own settling window the way runtime
-  does; they are already durable facts on the task, not a transition that can
-  flicker. `unread` is the one exception worth naming: it is read straight off
-  the same raw, per-frame daemon classification `kanna_get_task`'s own
-  confirming re-read exists to debounce, so `kanna-mcp`'s `wait_task` passes
-  every sample through that same one-sided confirmation before checking the
-  predicate — free when the sample does not look stopped, one extra
-  confirmation delay plus one re-read when it does — rather than resolving a
-  wait on a single misclassified frame. Explicit `until: "finished"` retains
-  the termination-only contract above and never reads these signals;
-  `until: "closed"` requires closure. A resolved reconciliation wait asks the
-  caller to inspect work; it does not create a verdict, advance a stage, or
-  claim a turn is complete.
+  runtime, `reconcile` also resolves the instant the task becomes blocked, an
+  attention badge is set, or it is reported provider-parked or
+  provider-capacity-noticed — nearly the same vocabulary `kanna_wait_events`'
+  cold-start snapshot uses — even while the agent is still busy: a caller
+  blocked on one task must not sit out its whole timeout because that task
+  gained an attention badge, or hit a provider capacity notice, while still
+  running. None of these need their own settling window the way runtime does;
+  they are already durable facts on the task, not a transition that can
+  flicker.
+
+  `unread` is the one signal `reconcile` does *not* treat the same way
+  `kanna_wait_events`' snapshot does, and deliberately so: `activity` stays
+  `unread` for a task whose agent is still working — nobody has read the
+  output yet, but the runtime is `busy` — which is exactly the shape a
+  manager produces by sending a stopped child input and immediately waiting
+  on it. `kanna_wait_events`' snapshot only evaluates `unread` once, at cold
+  start, so treating it as unconditionally actionable there is safe. `reconcile`
+  is instead evaluated on every poll of a `kanna_wait_task` call, so an
+  unconditional `unread` check would resolve on an actively running agent and
+  keep resolving on every subsequent call — the exact spin this predicate
+  exists to remove. `reconcile` therefore only resolves on `unread` once the
+  runtime is not busy; the other four signals above are unconditional.
+  Independently of that gate, `unread` is also read straight off the same raw,
+  per-frame daemon classification `kanna_get_task`'s own confirming re-read
+  exists to debounce, so `kanna-mcp`'s `wait_task` passes every sample through
+  that same one-sided confirmation before checking the predicate — free when
+  the sample does not look stopped, one extra confirmation delay plus one
+  re-read when it does — rather than resolving a wait on a single
+  misclassified frame; that confirmation guards against a misclassified frame,
+  not against a genuinely busy-and-unread task, which is what the busy gate is
+  for. Explicit `until: "finished"` retains the termination-only contract
+  above and never reads these signals; `until: "closed"` requires closure. A
+  resolved reconciliation wait asks the caller to inspect work; it does not
+  create a verdict, advance a stage, or claim a turn is complete.
 - **Supervisors and orchestrators** read `runtimeState` to decide whether a task
   is alive. A quiet-task alarm keyed on `activity` fires on tasks whose agents
   are demonstrably running.
