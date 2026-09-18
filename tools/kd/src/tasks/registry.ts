@@ -3295,11 +3295,10 @@ export const taskDefinitions = [
         dry: parsed.dry,
         sharedRustBuild: parsed.sharedRustBuild
       });
+      const failedRemovals = result.removals.filter((removal) => removal.outcome === "failed");
       return {
-        ok: true,
-        message: result.removals.length === 0
-          ? `nothing to clean (Bazel output base: ${result.bazelOutputBase})`
-          : formatJsonResult(result.removals),
+        ok: failedRemovals.length === 0,
+        message: formatJsonResult(result.removals),
         data: { ...result, inventoryCleanup }
       };
     }

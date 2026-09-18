@@ -1,4 +1,5 @@
 import {
+  chmodSync,
   existsSync,
   lstatSync,
   mkdirSync,
@@ -63,7 +64,11 @@ describe("clean runtime", () => {
     });
 
     expect(result.bazelOutputBase).toBe(bazelOutputBase);
-    expect(result.removals.map((removal) => removal.path)).toContain(bazelOutputBase);
+    expect(result.removals.every((removal) => removal.outcome !== "failed")).toBe(true);
+    expect(result.removals.find((removal) => removal.path === bazelOutputBase)).toEqual({
+      path: bazelOutputBase,
+      outcome: "removed"
+    });
     expect(existsSync(bazelOutputBase)).toBe(false);
     expect(existsSync(join(repo, ".build"))).toBe(false);
     expect(existsSync(sharedRust)).toBe(true);
@@ -88,56 +93,79 @@ describe("clean runtime", () => {
       sharedRustBuild: false
     });
 
-    expect(result.removals.map((removal) => removal.path)).toEqual([
-      join(realpathSync(join(root, "external")), "task-abcd1234-2"),
-      join(repo, ".build")
+    const externalCanonical = join(realpathSync(join(root, "external")), "task-abcd1234-2");
+    const recordPath = join(repo, ".kanna-external-build-target");
+    expect(result.removals).toEqual([
+      { path: externalCanonical, outcome: "removed" },
+      { path: join(repo, ".build"), outcome: "removed" },
+      { path: recordPath, outcome: "absent" },
+      { path: join(repo, "apps", "desktop", "src-tauri", "target"), outcome: "absent" },
+      { path: join(root, "bazel-output"), outcome: "absent" }
     ]);
     expect(existsSync(externalBuild)).toBe(false);
     expect(existsSync(join(repo, ".build"))).toBe(false);
     await rm(root, { recursive: true, force: true });
   });
 
-  it("refuses an external build target belonging to a sibling workspace", async () => {
+  it("skips an external build target belonging to a sibling workspace but keeps cleaning the rest", async () => {
     const root = await mkdtemp(join(tmpdir(), "kd-clean-mismatch-"));
     const repo = join(root, "task-current");
     const siblingBuild = join(root, "external", "task-sibling");
+    const tauriTarget = join(repo, "apps", "desktop", "src-tauri", "target");
     mkdirSync(repo, { recursive: true });
     mkdirSync(siblingBuild, { recursive: true });
+    mkdirSync(tauriTarget, { recursive: true });
     writeFileSync(join(siblingBuild, "artifact.txt"), "keep");
+    writeFileSync(join(tauriTarget, "artifact.txt"), "x");
     symlinkSync(siblingBuild, join(repo, ".build"));
+    const bazelOutputBase = join(root, "bazel-output");
+    mkdirSync(bazelOutputBase, { recursive: true });
 
-    await expect(
-      cleanWorkspace({
-        repoRoot: repo,
-        homeDir: join(root, "home"),
-        runner: bazelRunner(join(root, "bazel-output")),
-        all: true,
-        dry: false,
-        sharedRustBuild: false
-      })
-    ).rejects.toThrow(/Refusing to clean external \.build target.*expected an exact workspace target/);
+    const result = await cleanWorkspace({
+      repoRoot: repo,
+      homeDir: join(root, "home"),
+      runner: bazelRunner(bazelOutputBase),
+      all: true,
+      dry: false,
+      sharedRustBuild: false
+    });
+
+    const buildFailure = result.removals.find((removal) => removal.path === join(repo, ".build"));
+    expect(buildFailure?.outcome).toBe("failed");
+    expect(buildFailure?.error).toMatch(/Refusing to clean external \.build target.*expected an exact workspace target/);
     expect(readFileSync(join(siblingBuild, "artifact.txt"), "utf8")).toBe("keep");
     expect(lstatSync(join(repo, ".build")).isSymbolicLink()).toBe(true);
+
+    // Everything unrelated to the mismatched pointer still gets cleaned.
+    expect(existsSync(tauriTarget)).toBe(false);
+    expect(result.removals.find((removal) => removal.path === tauriTarget)?.outcome).toBe("removed");
+    expect(existsSync(bazelOutputBase)).toBe(false);
+    expect(result.removals.find((removal) => removal.path === bazelOutputBase)?.outcome).toBe("removed");
     await rm(root, { recursive: true, force: true });
   });
 
-  it("reports an unavailable recorded external build and preserves its authoritative link", async () => {
+  it("reports an unavailable recorded external build, preserves its authoritative link, and keeps cleaning the rest", async () => {
     const root = await mkdtemp(join(tmpdir(), "kd-clean-dangling-"));
     const repo = join(root, "task-dangling");
-    mkdirSync(repo, { recursive: true });
+    const tauriTarget = join(repo, "apps", "desktop", "src-tauri", "target");
+    mkdirSync(tauriTarget, { recursive: true });
     symlinkSync(join(root, "external", "task-dangling"), join(repo, ".build"));
 
-    await expect(
-      cleanWorkspace({
-        repoRoot: repo,
-        homeDir: join(root, "home"),
-        runner: bazelRunner(join(root, "bazel-output")),
-        all: false,
-        dry: false,
-        sharedRustBuild: false
-      })
-    ).rejects.toThrow(/Cannot clean external \.build target.*recorded target is unavailable.*preserving/);
+    const result = await cleanWorkspace({
+      repoRoot: repo,
+      homeDir: join(root, "home"),
+      runner: bazelRunner(join(root, "bazel-output")),
+      all: false,
+      dry: false,
+      sharedRustBuild: false
+    });
+
+    const buildFailure = result.removals.find((removal) => removal.path === join(repo, ".build"));
+    expect(buildFailure?.outcome).toBe("failed");
+    expect(buildFailure?.error).toMatch(/Cannot clean external \.build target.*recorded target is unavailable.*preserving/);
     expect(lstatSync(join(repo, ".build")).isSymbolicLink()).toBe(true);
+    expect(existsSync(tauriTarget)).toBe(false);
+    expect(result.removals.find((removal) => removal.path === tauriTarget)?.outcome).toBe("removed");
     await rm(root, { recursive: true, force: true });
   });
 
@@ -156,11 +184,18 @@ describe("clean runtime", () => {
       sharedRustBuild: false
     });
 
-    expect(result).toEqual({ bazelOutputBase, removals: [] });
+    expect(result.bazelOutputBase).toBe(bazelOutputBase);
+    expect(result.removals.every((removal) => removal.outcome === "absent")).toBe(true);
+    expect(result.removals.map((removal) => removal.path)).toEqual([
+      join(repo, ".build"),
+      join(repo, ".kanna-external-build-target"),
+      join(repo, "apps", "desktop", "src-tauri", "target"),
+      bazelOutputBase
+    ]);
     await rm(root, { recursive: true, force: true });
   });
 
-  it("fails before cleaning when Bazel is unavailable", async () => {
+  it("still reclaims .build and the other repo-local paths when Bazel is unavailable", async () => {
     const root = await mkdtemp(join(tmpdir(), "kd-clean-no-bazel-"));
     const repo = join(root, "repo");
     mkdirSync(join(repo, ".build"), { recursive: true });
@@ -170,14 +205,18 @@ describe("clean runtime", () => {
       }
     };
 
-    await expect(
-      cleanWorkspace({ repoRoot: repo, runner, all: false, dry: false, sharedRustBuild: false })
-    ).rejects.toThrow(/Cannot resolve Bazel output base.*could not run.*ENOENT/);
-    expect(existsSync(join(repo, ".build"))).toBe(true);
+    const result = await cleanWorkspace({ repoRoot: repo, runner, all: false, dry: false, sharedRustBuild: false });
+
+    expect(result.bazelOutputBase).toBeUndefined();
+    const bazelFailure = result.removals.find((removal) => removal.outcome === "failed");
+    expect(bazelFailure?.path).toBe("Bazel output base");
+    expect(bazelFailure?.error).toMatch(/Cannot resolve Bazel output base.*could not run.*ENOENT/);
+    expect(existsSync(join(repo, ".build"))).toBe(false);
+    expect(result.removals.find((removal) => removal.path === join(repo, ".build"))?.outcome).toBe("removed");
     await rm(root, { recursive: true, force: true });
   });
 
-  it("fails before cleaning when Bazel cannot report its output base", async () => {
+  it("fails only the Bazel candidate when Bazel cannot report its output base", async () => {
     const root = await mkdtemp(join(tmpdir(), "kd-clean-bazel-failure-"));
     const repo = join(root, "repo");
     mkdirSync(join(repo, ".build"), { recursive: true });
@@ -192,14 +231,67 @@ describe("clean runtime", () => {
       }
     };
 
-    await expect(
-      cleanWorkspace({ repoRoot: repo, runner: failedRunner, all: false, dry: false, sharedRustBuild: false })
-    ).rejects.toThrow(/Cannot resolve Bazel output base.*could not read bazelrc/);
-    await expect(
-      cleanWorkspace({ repoRoot: repo, runner: emptyRunner, all: false, dry: false, sharedRustBuild: false })
-    ).rejects.toThrow(/Cannot resolve Bazel output base.*returned no path/);
-    expect(existsSync(join(repo, ".build"))).toBe(true);
+    const failedResult = await cleanWorkspace({
+      repoRoot: repo,
+      runner: failedRunner,
+      all: false,
+      dry: false,
+      sharedRustBuild: false
+    });
+    expect(failedResult.removals.find((removal) => removal.outcome === "failed")?.error).toMatch(
+      /Cannot resolve Bazel output base.*could not read bazelrc/
+    );
+    expect(existsSync(join(repo, ".build"))).toBe(false);
+    mkdirSync(join(repo, ".build"), { recursive: true });
+
+    const emptyResult = await cleanWorkspace({
+      repoRoot: repo,
+      runner: emptyRunner,
+      all: false,
+      dry: false,
+      sharedRustBuild: false
+    });
+    expect(emptyResult.removals.find((removal) => removal.outcome === "failed")?.error).toMatch(
+      /Cannot resolve Bazel output base.*returned no path/
+    );
+    expect(existsSync(join(repo, ".build"))).toBe(false);
     await rm(root, { recursive: true, force: true });
+  });
+
+  it("continues past a removal failure and still attempts the remaining candidates", async () => {
+    const root = await mkdtemp(join(tmpdir(), "kd-clean-partial-failure-"));
+    const repo = join(root, "repo");
+    const tauriDir = join(repo, "apps", "desktop", "src-tauri");
+    mkdirSync(join(tauriDir, "target"), { recursive: true });
+    writeFileSync(join(tauriDir, "target", "artifact.txt"), "x");
+    mkdirSync(join(repo, ".build"), { recursive: true });
+    writeFileSync(join(repo, ".build", "artifact.txt"), "x");
+    const bazelOutputBase = join(root, "bazel-output");
+    mkdirSync(bazelOutputBase, { recursive: true });
+    chmodSync(tauriDir, 0o500);
+
+    try {
+      const result = await cleanWorkspace({
+        repoRoot: repo,
+        homeDir: join(root, "home"),
+        runner: bazelRunner(bazelOutputBase),
+        all: false,
+        dry: false,
+        sharedRustBuild: false
+      });
+
+      const targetOutcome = result.removals.find((removal) => removal.path === join(tauriDir, "target"));
+      expect(targetOutcome?.outcome).toBe("failed");
+      expect(targetOutcome?.error).toBeTruthy();
+
+      expect(existsSync(join(repo, ".build"))).toBe(false);
+      expect(result.removals.find((removal) => removal.path === join(repo, ".build"))?.outcome).toBe("removed");
+      expect(existsSync(bazelOutputBase)).toBe(false);
+      expect(result.removals.find((removal) => removal.path === bazelOutputBase)?.outcome).toBe("removed");
+    } finally {
+      chmodSync(tauriDir, 0o700);
+      await rm(root, { recursive: true, force: true });
+    }
   });
 });
 
