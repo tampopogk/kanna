@@ -143,6 +143,7 @@ fn spawn_args_pin_the_stream_json_contract() {
         cwd: String::new(),
         model: Some("claude-fable-5".to_string()),
         effort: Some("xhigh".to_string()),
+        autocompact: None,
         permission_mode: Some("acceptEdits".to_string()),
         allowed_tools: vec!["Bash".to_string()],
         disallowed_tools: vec!["Write".to_string(), "Edit".to_string()],
@@ -192,6 +193,7 @@ fn spawn_args_include_mcp_config_for_initial_and_resume_spawns() {
         cwd: String::new(),
         model: None,
         effort: None,
+        autocompact: None,
         permission_mode: None,
         allowed_tools: vec![],
         disallowed_tools: vec![],
@@ -219,6 +221,7 @@ fn default_spawn_runs_yolo_without_sandbox_or_prompts() {
         cwd: String::new(),
         model: None,
         effort: None,
+        autocompact: None,
         // No enforcing permission mode -> agent mode runs yolo.
         permission_mode: None,
         allowed_tools: vec![],
@@ -244,6 +247,7 @@ fn dont_ask_and_default_modes_are_treated_as_yolo() {
             cwd: String::new(),
             model: None,
             effort: None,
+            autocompact: None,
             permission_mode: Some(mode.to_string()),
             allowed_tools: vec![],
             disallowed_tools: vec![],
@@ -450,4 +454,39 @@ mod rate_limit {
             }],
         );
     }
+}
+
+/// A headless Claude session must never inherit the machine's global
+/// auto-compact window. `autoCompactWindow` lives in `~/.claude/settings.json`
+/// — a *user* file, which Kanna does not write — so the only way a task's
+/// window is the task's own is for every spawn to name one explicitly.
+#[test]
+fn headless_spawns_always_pin_an_autocompact_window() {
+    let adapter = ClaudeAdapter::new();
+    let unconfigured = SpawnCtx {
+        prompt: "fix the bug".to_string(),
+        ..SpawnCtx::default()
+    };
+
+    for args in [
+        adapter.initial_spawn(&unconfigured).args.join(" "),
+        adapter
+            .resume_spawn(&unconfigured, "sess-1", "keep going")
+            .args
+            .join(" "),
+    ] {
+        assert!(
+            args.contains("--autocompact auto"),
+            "an unconfigured headless spawn must pin the default window: {args}"
+        );
+    }
+
+    let configured = SpawnCtx {
+        prompt: "fix the bug".to_string(),
+        autocompact: Some("400k".to_string()),
+        ..SpawnCtx::default()
+    };
+    let args = adapter.initial_spawn(&configured).args.join(" ");
+    assert!(args.contains("--autocompact 400k"), "{args}");
+    assert!(!args.contains("--autocompact auto"), "{args}");
 }

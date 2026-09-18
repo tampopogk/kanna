@@ -269,7 +269,8 @@ fn validate_agent_providers(value: &Value) -> Result<(), String> {
         if super::definitions::parse_agent_provider_preference(preference).is_none() {
             return Err(format!(
                 "entry `{pattern}` must be a provider name, an array of provider names, \
-                 a structured `{{ harness, model?, effort? }}` candidate, or an object with a `provider` field"
+                 a structured `{{ harness, model?, effort?, autocompact? }}` candidate, or an object \
+                 with a `provider` field"
             ));
         }
     }

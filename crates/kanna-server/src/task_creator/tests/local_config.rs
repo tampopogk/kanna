@@ -352,3 +352,54 @@ fn a_layered_spawn_announces_the_local_file_before_running_setup() {
 
     let _ = std::fs::remove_dir_all(&repo.path);
 }
+
+/// The escape hatch covers Claude's auto-compact window too: an operator can
+/// widen or narrow one machine's tasks without a merge to `origin/main`, and
+/// a window written for a harness that has no such flag fails resolution by
+/// name rather than reaching a spawn that would exit on a usage error.
+#[test]
+fn a_local_entry_may_set_a_claude_autocompact_window_and_refuses_a_wrong_harness() {
+    let repo =
+        init_repo_with_committed_config("local-config-autocompact", committed_provider_fixture());
+
+    write_local_config(
+        &repo,
+        r#"{"agentProviders": {"review": {"provider": "claude", "autocompact": "400k"}}}"#,
+    );
+    let definitions = RepoDefinitions::resolve(&repo).unwrap();
+    let preference = definitions
+        .config()
+        .agent_provider_preference(Some("review"))
+        .expect("the local entry replaces the committed one whole")
+        .clone();
+    assert_eq!(preference.autocompact.as_deref(), Some("400k"));
+    // The entry is replaced whole, so the committed model does not survive
+    // beside a local entry that does not name one.
+    assert_eq!(preference.model, None);
+    assert_eq!(
+        super::super::agent_tuning_plan(None, None, None, None, Some(&preference), None)
+            .autocompact_for(AgentProvider::Claude)
+            .as_deref(),
+        Some("400k"),
+    );
+
+    for (local_config, expected) in [
+        (
+            r#"{"agentProviders": {"review": {"harness": "codex", "autocompact": "400k"}}}"#,
+            "entry `review` must be a provider name",
+        ),
+        (
+            r#"{"agentProviders": {"review": {"harness": "claude", "autocompact": "5000"}}}"#,
+            "entry `review` must be a provider name",
+        ),
+    ] {
+        write_local_config(&repo, local_config);
+        let error = RepoDefinitions::resolve(&repo)
+            .err()
+            .unwrap_or_else(|| panic!("{local_config} should fail resolution"));
+        assert!(error.contains(".kanna/config.local.json"), "{error}");
+        assert!(error.contains(expected), "{error}");
+    }
+
+    let _ = std::fs::remove_dir_all(&repo.path);
+}

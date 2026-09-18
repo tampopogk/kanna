@@ -55,9 +55,9 @@ use prompt::{build_stage_prompt_parts, PromptContext, StagePromptParts};
 pub(crate) use provider::parse_stage_provider_override;
 use provider::{
     normalize_agent_type, resolve_agent_provider, resolve_agent_provider_candidates,
-    resolve_agent_type, validate_effort_shape, validate_model_shape, validate_provider_effort,
-    validate_provider_model, AgentProvider, AgentSessionType, AgentTuningLayer, AgentTuningPlan,
-    ResolveProviderCandidatesError,
+    resolve_agent_type, validate_effort_shape, validate_model_shape, validate_provider_autocompact,
+    validate_provider_effort, validate_provider_model, AgentProvider, AgentSessionType,
+    AgentTuningLayer, AgentTuningPlan, ResolveProviderCandidatesError,
 };
 use std::collections::HashMap;
 use std::str::FromStr;
@@ -846,6 +846,14 @@ pub(crate) fn prepare_rerun_stage_for_api(
             None
         }
     };
+    let autocompact = tuning.autocompact_for(provider);
+    let autocompact = match validate_provider_autocompact(provider, autocompact.as_deref()) {
+        Ok(()) => autocompact,
+        Err(error) => {
+            log::warn!("ignoring the configured autocompact window for {task_id}: {error}");
+            None
+        }
+    };
     let permission_mode = agent
         .as_ref()
         .and_then(|agent| agent.permission_mode.clone());
@@ -901,6 +909,7 @@ pub(crate) fn prepare_rerun_stage_for_api(
         agent_instructions.map(AgentInstructions::at_prompt_head),
         model,
         effort.clone(),
+        autocompact,
         permission_mode,
         allowed_tools,
         Vec::new(),
@@ -1045,6 +1054,7 @@ pub(crate) fn prepare_create_task_repair_for_api(
                 .map(AgentInstructions::at_prompt_head),
             resolved.model.clone(),
             resolved.effort.clone(),
+            resolved.autocompact.clone(),
             resolved.permission_mode,
             resolved.allowed_tools,
             resolved.disallowed_tools,
@@ -1156,6 +1166,7 @@ pub(crate) fn prepare_create_task_repair_for_api(
     // it rather than composed from a layer written for another provider.
     let model = resolved.model_for(provider);
     let effort = resolved.effort_for(provider);
+    let autocompact = resolved.autocompact_for(provider);
     let mut setup_record = None;
     let (mut session, provider_session_id) = build_prepared_session(
         provider,
@@ -1171,6 +1182,7 @@ pub(crate) fn prepare_create_task_repair_for_api(
             .map(AgentInstructions::at_prompt_head),
         model.clone(),
         effort.clone(),
+        autocompact,
         resolved.permission_mode,
         resolved.allowed_tools,
         resolved.disallowed_tools,
@@ -1446,6 +1458,7 @@ pub(in crate::task_creator) fn prepare_stage_run_spawn(
         // a layer written for another provider never attaches to this spawn.
         let model = tuning.model_for(provider);
         let effort = tuning.effort_for(provider);
+        let autocompact = tuning.autocompact_for(provider);
         let stage_run_model = model.clone();
         let (session, provider_session_id) = build_prepared_session(
             provider,
@@ -1459,6 +1472,7 @@ pub(in crate::task_creator) fn prepare_stage_run_spawn(
             agent_instructions.clone(),
             model.clone(),
             effort.clone(),
+            autocompact,
             permission_mode.clone(),
             allowed_tools.clone(),
             Vec::new(),
@@ -1633,6 +1647,7 @@ pub(crate) fn finish_deferred_stage_setup(
     // the provider actually being spawned, and the run is stamped with it.
     let model = deferred.tuning.model_for(provider);
     let effort = deferred.tuning.effort_for(provider);
+    let autocompact = deferred.tuning.autocompact_for(provider);
     let (session, provider_session_id) = build_prepared_session(
         provider,
         agent_type,
@@ -1645,6 +1660,7 @@ pub(crate) fn finish_deferred_stage_setup(
         deferred.agent_instructions,
         model.clone(),
         effort.clone(),
+        autocompact,
         deferred.permission_mode,
         deferred.allowed_tools,
         Vec::new(),
@@ -1925,6 +1941,7 @@ fn build_prepared_session(
     agent_instructions: Option<AgentInstructions>,
     model: Option<String>,
     effort: Option<String>,
+    autocompact: Option<String>,
     permission_mode: Option<String>,
     allowed_tools: Vec<String>,
     disallowed_tools: Vec<String>,
@@ -1945,6 +1962,7 @@ fn build_prepared_session(
 ) -> Result<(PreparedSessionSpawn, Option<String>), String> {
     validate_provider_model(provider, model.as_deref())?;
     validate_provider_effort(provider, effort.as_deref())?;
+    validate_provider_autocompact(provider, autocompact.as_deref())?;
     Ok(match agent_type {
         AgentSessionType::Pty => {
             // Setup no longer runs inside this shell: it runs on the
@@ -2019,6 +2037,7 @@ fn build_prepared_session(
                 &prompt,
                 model.as_deref(),
                 effort.as_deref(),
+                autocompact.as_deref(),
                 permission_mode.as_deref(),
                 &allowed_tools,
                 &disallowed_tools,
@@ -2100,6 +2119,7 @@ fn build_prepared_session(
                     prompt: final_prompt,
                     model,
                     effort,
+                    autocompact,
                     permission_mode,
                     allowed_tools,
                     disallowed_tools,
@@ -2665,6 +2685,12 @@ pub(crate) fn create_dormant_task_for_api_with_error(
     let effort = tuning.effort_for(provider);
     validate_provider_effort(provider, effort.as_deref())
         .map_err(PrepareTaskError::InvalidRequest)?;
+    // Checked here, at request time, for the same reason the pair above is:
+    // an out-of-range or wrong-harness window is a CLI usage error that would
+    // exit the spawn before the agent drew anything, parking the task behind
+    // a stage that never started.
+    validate_provider_autocompact(provider, tuning.autocompact_for(provider).as_deref())
+        .map_err(PrepareTaskError::InvalidRequest)?;
     let permission_mode = request.permission_mode.clone().or_else(|| {
         agent
             .as_ref()
@@ -2897,6 +2923,7 @@ pub(crate) fn prepare_start_dormant_task_for_api(
     );
     let model = tuning.model_for(provider);
     let effort = tuning.effort_for(provider);
+    let autocompact = tuning.autocompact_for(provider);
     let permission_mode = create_request
         .as_ref()
         .and_then(|request| request.permission_mode.clone())
@@ -3028,6 +3055,7 @@ pub(crate) fn prepare_start_dormant_task_for_api(
         agent_instructions.map(AgentInstructions::at_prompt_head),
         model,
         effort,
+        autocompact,
         permission_mode,
         allowed_tools,
         disallowed_tools,
@@ -3159,6 +3187,10 @@ impl ResolvedTaskSpawn {
         self.tuning.effort_for(provider)
     }
 
+    fn autocompact_for(&self, provider: AgentProvider) -> Option<String> {
+        self.tuning.autocompact_for(provider)
+    }
+
     /// The provider a task record is stamped with before the workspace has
     /// been prepared: the configured first choice.
     fn provisional_provider(&self) -> Option<AgentProvider> {
@@ -3186,6 +3218,11 @@ struct ResolvedCreateTaskIntent {
     setup: Vec<String>,
     model: Option<String>,
     effort: Option<String>,
+    /// Additive: an intent written before this field existed deserializes to
+    /// `None`, which spawns on the explicit default rather than inheriting
+    /// the machine's global window.
+    #[serde(default)]
+    autocompact: Option<String>,
     permission_mode: Option<String>,
     allowed_tools: Vec<String>,
     disallowed_tools: Vec<String>,
@@ -3224,6 +3261,7 @@ fn resolved_create_task_intent_json(
             setup: new_task_setup_cmds(repo_config, &resolved.stage_setup, &resolved.setup_cmds),
             model: resolved.model_for(provider),
             effort: resolved.effort_for(provider),
+            autocompact: resolved.autocompact_for(provider),
             permission_mode: resolved.permission_mode.clone(),
             allowed_tools: resolved.allowed_tools.clone(),
             disallowed_tools: resolved.disallowed_tools.clone(),
@@ -3481,6 +3519,11 @@ fn agent_tuning_plan(
             .unwrap_or_default(),
         model: explicit_model,
         effort: explicit_effort,
+        // No explicit-override slot names an auto-compact window: an advance
+        // and a run stamp carry provider/model/effort, so a window always
+        // comes from configuration and a reproduced run re-reads the same
+        // value from the layer that selected its provider.
+        autocompact: None,
     }];
     layers.extend(provider::selection_tuning_layers(stage_provider, true));
     layers.extend(provider::selection_tuning_layers(
@@ -3493,6 +3536,7 @@ fn agent_tuning_plan(
             .unwrap_or_default(),
         model: repo_preference.and_then(|preference| preference.model.clone()),
         effort: repo_preference.and_then(|preference| preference.effort.clone()),
+        autocompact: repo_preference.and_then(|preference| preference.autocompact.clone()),
     });
     layers.extend(provider::selection_tuning_layers(
         agent.map(|a| a.agent_providers.as_slice()),
@@ -3504,6 +3548,9 @@ fn agent_tuning_plan(
             .unwrap_or_default(),
         model: agent.and_then(|agent| agent.model.clone()),
         effort: agent.and_then(|agent| agent.effort.clone()),
+        // Frontmatter has no sibling `autocompact:` key; a structured
+        // `agent_provider` candidate carries one through the layer above.
+        autocompact: None,
     });
     AgentTuningPlan::new(layers)
 }
@@ -4100,6 +4147,7 @@ fn prepare_new_task_session(
     };
     let model = resolved.model_for(provider);
     let effort = resolved.effort_for(provider);
+    let autocompact = resolved.autocompact_for(provider);
     let (mut session, provider_session_id) = build_prepared_session(
         provider,
         agent_type,
@@ -4115,6 +4163,7 @@ fn prepare_new_task_session(
             .map(AgentInstructions::at_prompt_head),
         model.clone(),
         effort.clone(),
+        autocompact,
         resolved.permission_mode.clone(),
         resolved.allowed_tools.clone(),
         resolved.disallowed_tools.clone(),

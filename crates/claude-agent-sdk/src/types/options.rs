@@ -76,6 +76,14 @@ pub struct SessionOptions {
     /// Provider-native effort string for callers that resolve CLI options
     /// dynamically instead of using [`Effort`].
     pub effort_override: Option<String>,
+    /// Per-session auto-compact window (`auto`, or `100k`-`1M` tokens).
+    ///
+    /// Without it the CLI falls back to the user-global `autoCompactWindow`
+    /// setting, so a headless session inherits whatever the machine's owner
+    /// last set for their own terminal. Callers that want a session's window
+    /// to be a property of the session set this explicitly, including to
+    /// `auto`.
+    pub autocompact: Option<String>,
     /// Additional environment variables for the CLI process.
     pub env: HashMap<String, String>,
     /// Whether the CLI process should inherit the parent process environment.
@@ -110,6 +118,7 @@ impl Default for SessionOptions {
             thinking: None,
             effort: None,
             effort_override: None,
+            autocompact: None,
             env: HashMap::new(),
             inherit_parent_env: true,
             include_partial_messages: false,
@@ -208,6 +217,11 @@ impl SessionOptions {
         {
             args.push("--effort".to_string());
             args.push(effort.to_string());
+        }
+
+        if let Some(autocompact) = &self.autocompact {
+            args.push("--autocompact".to_string());
+            args.push(autocompact.clone());
         }
 
         if self.include_partial_messages {
@@ -319,6 +333,12 @@ impl SessionOptionsBuilder {
     /// Set a provider-native effort string.
     pub fn effort_override(mut self, effort: impl Into<String>) -> Self {
         self.options.effort_override = Some(effort.into());
+        self
+    }
+
+    /// Pin this session's auto-compact window (`auto`, or `100k`-`1M`).
+    pub fn autocompact(mut self, autocompact: impl Into<String>) -> Self {
+        self.options.autocompact = Some(autocompact.into());
         self
     }
 

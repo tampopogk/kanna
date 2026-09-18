@@ -97,6 +97,7 @@ fn pty_setup_keeps_sidecar_provider_directory_as_path_fallback() {
         None,
         None,
         None,
+        None,
         Vec::new(),
         Vec::new(),
         None,

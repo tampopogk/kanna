@@ -150,6 +150,7 @@ fn spawn_args_pin_the_run_json_contract() {
         cwd: "/tmp/kanna-task".to_string(),
         model: Some("opencode/big-pickle".to_string()),
         effort: Some("high".to_string()),
+        autocompact: None,
         ..Default::default()
     };
 
@@ -371,6 +372,7 @@ fn literal_models_and_custom_variants_reach_initial_and_resume_native_commands()
     let ctx = SpawnCtx {
         model: Some("local/My/Model-high".into()),
         effort: Some("custom-hi".into()),
+        autocompact: None,
         ..Default::default()
     };
     for spec in [

@@ -32,6 +32,12 @@ export interface RepoAgentProviderPreference {
   provider: AgentSelectionEntry[];
   model?: string;
   effort?: string;
+  /**
+   * Claude's auto-compact window for the provider this entry selects — the
+   * first name in `provider`. Claude-only, and validated server-side against
+   * the window its CLI accepts.
+   */
+  autocompact?: string;
 }
 
 export interface RepoConfig {
@@ -119,14 +125,15 @@ export function parseRepoConfig(json: string): RepoConfig {
           : undefined;
       if (providerValue && typeof providerValue === "object" && (!Array.isArray(providerValue) || providerValue.some(v => typeof v === "object"))) {
         const raw = rawPreference as Record<string, unknown>;
-        if (Object.keys(raw).some(key => !["provider", "model", "effort"].includes(key)) || ["model", "effort"].some(key => key in raw && typeof raw[key] !== "string")) {
+        if (Object.keys(raw).some(key => !["provider", "model", "effort", "autocompact"].includes(key)) || ["model", "effort", "autocompact"].some(key => key in raw && typeof raw[key] !== "string")) {
           throw new Error(`invalid structured agentProviders entry '${pattern}'`);
         }
         const provider = parseAgentSelection(providerValue, false);
         const model = typeof raw.model === "string" ? raw.model : undefined;
         const effort = typeof raw.effort === "string" ? raw.effort : undefined;
-        validateSelectionSiblings(provider, model, effort);
-        agentProviders[pattern] = { provider, model, effort };
+        const autocompact = typeof raw.autocompact === "string" ? raw.autocompact : undefined;
+        validateSelectionSiblings(provider, model, effort, autocompact);
+        agentProviders[pattern] = { provider, model, effort, autocompact };
         continue;
       }
       if (
@@ -153,6 +160,10 @@ export function parseRepoConfig(json: string): RepoConfig {
         const effort = (rawPreference as Record<string, unknown>).effort;
         if (typeof effort === "string" && effort.length > 0) {
           preference.effort = effort;
+        }
+        const autocompact = (rawPreference as Record<string, unknown>).autocompact;
+        if (typeof autocompact === "string" && autocompact.length > 0) {
+          preference.autocompact = autocompact;
         }
       }
       agentProviders[pattern] = preference;

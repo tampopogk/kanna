@@ -154,6 +154,7 @@ fn spawn_args_pin_the_exec_json_contract() {
         prompt: "fix the bug".to_string(),
         model: Some("gpt-5.5".to_string()),
         effort: Some("xhigh".to_string()),
+        autocompact: None,
         ..Default::default()
     };
 
@@ -298,6 +299,7 @@ fn native_effort_strings_are_escaped_for_initial_and_resume_config() {
     let adapter = CodexAdapter::new();
     let ctx = SpawnCtx {
         effort: Some("custom\"\\variant".into()),
+        autocompact: None,
         ..Default::default()
     };
     for spec in [

@@ -991,6 +991,7 @@ fn model_resolution_prefers_explicit_then_repo_then_layered_agent_definition() {
         providers: vec![kanna_agent_protocol::AgentSelectionEntry::from("codex")],
         model: Some("repo-model".to_string()),
         effort: Some("repo-effort".to_string()),
+        autocompact: None,
     };
     let plan = |explicit_provider, explicit_model: Option<&str>, explicit_effort: Option<&str>| {
         super::super::agent_tuning_plan(
@@ -1087,6 +1088,7 @@ fn model_resolution_skips_layers_written_for_another_provider() {
         providers: vec![kanna_agent_protocol::AgentSelectionEntry::from("claude")],
         model: Some("opus".to_string()),
         effort: Some("xhigh".to_string()),
+        autocompact: None,
     };
 
     // A task already stamped `codex` keeps codex, and gets neither the
@@ -1152,6 +1154,7 @@ fn model_resolution_skips_layers_written_for_another_provider() {
         ],
         model: Some("opus".to_string()),
         effort: Some("xhigh".to_string()),
+        autocompact: None,
     };
     let ordered =
         super::super::agent_tuning_plan(None, None, None, None, Some(&ordered_preference), None);
@@ -4488,6 +4491,7 @@ fn build_agent_command_adds_claude_kanna_preamble_as_system_prompt() {
         "Review the branch.",
         None,
         None,
+        None,
         Some("dontAsk"),
         &[],
         &[],
@@ -4596,6 +4600,7 @@ fn singleton_claude_pty_delivers_the_agent_body_as_system_prompt() {
         &AgentProvider::Claude,
         AgentProvider::Claude.executable(),
         &prompt,
+        None,
         None,
         None,
         Some("dontAsk"),
@@ -4882,6 +4887,7 @@ fn build_agent_command_launches_antigravity_with_prepended_kanna_context() {
         "Ship the task.",
         None,
         None,
+        None,
         Some("dontAsk"),
         &[],
         &[],
@@ -4936,6 +4942,7 @@ fn build_agent_command_registers_codex_kanna_mcp_with_config_overrides() {
         "Do work.",
         None,
         None,
+        None,
         Some("dontAsk"),
         &[],
         &[],
@@ -4969,6 +4976,7 @@ fn build_agent_command_registers_copilot_kanna_mcp_with_additional_config() {
         "Do work.",
         None,
         None,
+        None,
         Some("dontAsk"),
         &[],
         &[],
@@ -4997,6 +5005,7 @@ fn build_agent_command_registers_opencode_kanna_mcp_with_inline_config() {
         &AgentProvider::Opencode,
         AgentProvider::Opencode.executable(),
         "Do work.",
+        None,
         None,
         None,
         Some("dontAsk"),
@@ -5035,6 +5044,7 @@ fn opencode_pty_command_launches_the_interactive_tui_not_a_one_shot_run() {
         "Do work.",
         Some("opencode/big-pickle"),
         None,
+        None,
         Some("dontAsk"),
         &[],
         &[],
@@ -5065,6 +5075,7 @@ fn opencode_pty_command_carries_effort_in_the_config_not_on_the_argv() {
         "Do work.",
         Some("opencode/big-pickle"),
         Some("high"),
+        None,
         Some("dontAsk"),
         &[],
         &[],
@@ -5095,6 +5106,7 @@ fn opencode_pty_resume_seeds_the_turn_then_attaches_the_tui_to_the_same_session(
         &AgentProvider::Opencode,
         AgentProvider::Opencode.executable(),
         "Continue.",
+        None,
         None,
         None,
         Some("dontAsk"),
@@ -5129,6 +5141,7 @@ fn opencode_permission_modes_use_config() {
             "Do work.",
             None,
             None,
+            None,
             permission_mode,
             &[],
             &[],
@@ -5159,6 +5172,7 @@ fn provider_resume_commands_use_each_cli_native_session_flag() {
             &provider,
             provider.executable(),
             "Continue.",
+            None,
             None,
             None,
             Some("dontAsk"),
@@ -8771,4 +8785,229 @@ fn transfer_preserves_genuine_revision_feedback_for_a_fresh_fallback() {
         "{command}"
     );
     let _ = std::fs::remove_dir_all(repo_root);
+}
+
+/// The auto-compact window from `.kanna/config.json` reaches the Claude PTY
+/// argv, and a Claude spawn with nothing configured still pins one.
+///
+/// The failure this closes: `autoCompactWindow` is a *user-global* Claude
+/// setting, so before Kanna named a window on every spawn, an operator who
+/// shrank their own terminal's window silently shrank every task's. The
+/// fixture is the same one the CLI-contract tests measure the real CLI with.
+#[test]
+fn configured_autocompact_reaches_the_claude_pty_argv_and_a_default_always_does() {
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct AutocompactContract {
+        flag: String,
+        default: String,
+    }
+
+    let contract: AutocompactContract = serde_json::from_str(include_str!(
+        "../../../../../tests/cli-contract/fixtures/claude-autocompact.json"
+    ))
+    .unwrap();
+    let request_defaults = || CreateTaskRequest {
+        repo_id: String::new(),
+        prompt: String::new(),
+        display_name: None,
+        workflow_name: None,
+        stage: None,
+        base_ref: None,
+        diff_base_ref: None,
+        agent: None,
+        agent_provider: None,
+        agent_type: None,
+        terminal_cols: None,
+        terminal_rows: None,
+        model: None,
+        effort: None,
+        permission_mode: None,
+        allowed_tools: None,
+        disallowed_tools: None,
+        max_turns: None,
+        max_budget_usd: None,
+        setup_cmds: None,
+        task_template: None,
+        resume_session_id: None,
+        recovery_snapshot: None,
+        transfer_import: None,
+        blocker_task_ids: None,
+        notify_task_id: None,
+        review_context: None,
+        parent_task_id: None,
+    };
+
+    let repo_root = init_git_repo("create-autocompact-spawn-contract");
+    std::fs::create_dir_all(repo_root.join(".kanna/workflows")).unwrap();
+    // `windowed` names a window; `plain` names none, so its spawn must still
+    // carry the explicit default rather than inheriting the machine's.
+    // The `*` entry leads with codex, so its window must reach nothing: a
+    // value belongs to the provider it was written beside.
+    std::fs::write(
+        repo_root.join(".kanna/config.json"),
+        serde_json::json!({
+            "agentProviders": {
+                "windowed": { "provider": "claude", "autocompact": "400k" },
+                "plain": { "provider": "claude" },
+                "listed": {
+                    "provider": [
+                        { "harness": "claude", "autocompact": "250k" },
+                        { "harness": "codex", "model": "gpt-6-astra" }
+                    ]
+                }
+            }
+        })
+        .to_string(),
+    )
+    .unwrap();
+    for agent in ["windowed", "plain", "listed"] {
+        std::fs::create_dir_all(repo_root.join(format!(".kanna/agents/{agent}"))).unwrap();
+        std::fs::write(
+            repo_root.join(format!(".kanna/agents/{agent}/AGENT.md")),
+            format!(
+                "---\nname: {agent}\ndescription: Autocompact spawn fixture\n---\nRun $TASK_PROMPT"
+            ),
+        )
+        .unwrap();
+    }
+    std::fs::write(
+        repo_root.join(".kanna/workflows/autocompact-contract.json"),
+        serde_json::json!({
+            "stages": [
+                { "name": "windowed", "agent": "windowed", "prompt": "$TASK_PROMPT",
+                  "policy": { "transition": "manual" } },
+                { "name": "plain", "agent": "plain", "prompt": "$TASK_PROMPT",
+                  "policy": { "transition": "manual" } },
+                { "name": "listed", "agent": "listed", "prompt": "$TASK_PROMPT",
+                  "policy": { "transition": "manual" } }
+            ]
+        })
+        .to_string(),
+    )
+    .unwrap();
+    publish_origin_main(&repo_root, "publish autocompact spawn contract");
+
+    let config = test_config("create-autocompact-spawn-contract");
+    let db = Db::open_for_tests(&config.db_path).unwrap();
+    db.insert_test_repo_with_path("repo-1", &repo_root.to_string_lossy(), "Repo One")
+        .unwrap();
+
+    let pty_args = |stage: &str, provider: Option<&str>| {
+        let prepared = prepare_task_for_api(
+            &db,
+            &config,
+            CreateTaskRequest {
+                repo_id: "repo-1".to_string(),
+                prompt: format!("autocompact {stage}"),
+                workflow_name: Some("autocompact-contract".to_string()),
+                stage: Some(stage.to_string()),
+                agent_provider: provider.map(str::to_string),
+                agent_type: Some("pty".to_string()),
+                ..request_defaults()
+            },
+        )
+        .unwrap();
+        let agent_provider = prepared.agent_provider.clone();
+        match prepared.session {
+            PreparedSessionSpawn::Pty { args, .. } => (agent_provider, args.join(" ")),
+            PreparedSessionSpawn::Agent { .. } => panic!("expected PTY spawn"),
+        }
+    };
+
+    let (provider, windowed) = pty_args("windowed", None);
+    assert_eq!(provider, "claude");
+    assert!(
+        windowed.contains(&format!("{} '400k'", contract.flag)),
+        "a configured window must reach the claude argv: {windowed}"
+    );
+
+    let (provider, plain) = pty_args("plain", None);
+    assert_eq!(provider, "claude");
+    assert!(
+        plain.contains(&format!("{} '{}'", contract.flag, contract.default)),
+        "an unconfigured claude spawn must still pin a window: {plain}"
+    );
+
+    // The leading structured candidate owns the window; the codex fallback
+    // behind it must receive no autocompact flag at all, because its CLI
+    // would exit on one.
+    let (provider, leading) = pty_args("listed", None);
+    assert_eq!(provider, "claude");
+    assert!(
+        leading.contains(&format!("{} '250k'", contract.flag)),
+        "{leading}"
+    );
+
+    let (provider, fallback) = pty_args("listed", Some("codex"));
+    assert_eq!(provider, "codex");
+    assert!(
+        !fallback.contains(&contract.flag),
+        "a non-claude spawn must never receive an autocompact flag: {fallback}"
+    );
+
+    let _ = std::fs::remove_dir_all(&repo_root);
+}
+
+/// An out-of-range or wrong-harness window fails the *request*, not the
+/// spawn: the CLI rejects it at argument-parse time and exits before drawing
+/// anything, which would otherwise park a task behind a stage that never
+/// started.
+#[test]
+fn an_unusable_autocompact_window_is_refused_at_config_resolution() {
+    use super::super::provider::validate_provider_autocompact;
+
+    assert!(validate_provider_autocompact(AgentProvider::Claude, Some("400k")).is_ok());
+    assert!(validate_provider_autocompact(AgentProvider::Claude, Some("auto")).is_ok());
+    assert!(validate_provider_autocompact(AgentProvider::Claude, Some("5000")).is_err());
+    assert!(validate_provider_autocompact(AgentProvider::Claude, Some("2M")).is_err());
+    assert!(validate_provider_autocompact(AgentProvider::Claude, Some(" 400k")).is_err());
+    assert!(validate_provider_autocompact(AgentProvider::Codex, Some("400k")).is_err());
+    assert!(validate_provider_autocompact(AgentProvider::Codex, None).is_ok());
+
+    // A repo config that names a window beside a harness with no such flag is
+    // a configuration error, not a value quietly dropped at spawn.
+    let rejected = super::super::definitions::parse_agent_provider_preference(
+        &serde_json::json!({ "harness": "codex", "autocompact": "400k" }),
+    );
+    assert!(rejected.is_none());
+
+    let accepted = super::super::definitions::parse_agent_provider_preference(
+        &serde_json::json!({ "provider": "claude", "autocompact": "400k" }),
+    )
+    .expect("a claude entry may name a window");
+    assert_eq!(accepted.autocompact.as_deref(), Some("400k"));
+}
+
+/// A window walks the same coherent chain as model and effort: it comes from
+/// the layer that would itself have selected the resolved provider, and never
+/// from one written for another harness.
+#[test]
+fn an_autocompact_window_resolves_only_for_the_provider_it_was_written_beside() {
+    let ordered: Vec<kanna_agent_protocol::AgentSelectionEntry> = vec![
+        kanna_agent_protocol::AgentSelectionEntry::Candidate(
+            kanna_agent_protocol::AgentCandidate {
+                harness: AgentProvider::Claude,
+                model: None,
+                effort: None,
+                autocompact: Some("300k".to_string()),
+            },
+        ),
+        kanna_agent_protocol::AgentSelectionEntry::Candidate(
+            kanna_agent_protocol::AgentCandidate {
+                harness: AgentProvider::Codex,
+                model: Some("gpt-6-astra".to_string()),
+                effort: None,
+                autocompact: None,
+            },
+        ),
+    ];
+    let plan = super::super::agent_tuning_plan(None, None, None, Some(&ordered), None, None);
+
+    assert_eq!(
+        plan.autocompact_for(AgentProvider::Claude).as_deref(),
+        Some("300k")
+    );
+    assert_eq!(plan.autocompact_for(AgentProvider::Codex), None);
+    assert_eq!(plan.autocompact_for(AgentProvider::Opencode), None);
 }

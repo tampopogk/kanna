@@ -112,6 +112,34 @@ pub(super) fn validate_provider_effort(
     kanna_agent_protocol::validate_provider_effort(provider, effort)
 }
 
+/// Shape checks plus the auto-compact window rule — Claude-only, and within
+/// the window the CLI accepts. Same division of labour as
+/// [`validate_provider_model`]: the rule itself lives in the protocol crate
+/// so every layer that may name a window is checked against one statement.
+pub(super) fn validate_provider_autocompact(
+    provider: AgentProvider,
+    autocompact: Option<&str>,
+) -> Result<(), String> {
+    validate_autocompact_shape(autocompact)?;
+    kanna_agent_protocol::validate_provider_autocompact(provider, autocompact)
+}
+
+pub(super) fn validate_autocompact_shape(autocompact: Option<&str>) -> Result<(), String> {
+    let Some(autocompact) = autocompact else {
+        return Ok(());
+    };
+    if autocompact.is_empty() {
+        return Err("autocompact must not be empty".to_string());
+    }
+    if autocompact.trim() != autocompact {
+        return Err("autocompact must not have leading or trailing whitespace".to_string());
+    }
+    if autocompact.chars().any(char::is_control) {
+        return Err("autocompact must not contain control characters".to_string());
+    }
+    Ok(())
+}
+
 /// Validate one advance-carried provider override and turn it into the
 /// durable record the spawned stage run keeps.
 ///
@@ -291,11 +319,14 @@ pub(super) fn selection_tuning_layers(
         .unwrap_or_default()
         .iter()
         .filter_map(|entry| entry.resolve(compact).ok())
-        .filter(|selector| selector.model.is_some() || selector.effort.is_some())
+        .filter(|selector| {
+            selector.model.is_some() || selector.effort.is_some() || selector.autocompact.is_some()
+        })
         .map(|selector| AgentTuningLayer {
             providers: vec![selector.provider.as_str().to_string()],
             model: selector.model,
             effort: selector.effort,
+            autocompact: selector.autocompact,
         })
         .collect()
 }
@@ -344,6 +375,10 @@ pub(super) struct AgentTuningLayer {
     pub(super) providers: Vec<String>,
     pub(super) model: Option<String>,
     pub(super) effort: Option<String>,
+    /// Claude's auto-compact window. It walks the same coherent chain as
+    /// model and effort for the same reason: it is a Claude-only control, so
+    /// a layer that would have chosen another harness must not contribute it.
+    pub(super) autocompact: Option<String>,
 }
 
 /// The model and effort a spawn may draw from, left unresolved until the
@@ -393,6 +428,11 @@ impl AgentTuningPlan {
     pub(super) fn effort_for(&self, provider: AgentProvider) -> Option<String> {
         self.layers_for(provider)
             .find_map(|layer| layer.effort.clone())
+    }
+
+    pub(super) fn autocompact_for(&self, provider: AgentProvider) -> Option<String> {
+        self.layers_for(provider)
+            .find_map(|layer| layer.autocompact.clone())
     }
 
     fn layers_for(

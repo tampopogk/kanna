@@ -768,6 +768,10 @@ fn validate_transfer_launch_selection(
         harness,
         model: task.model.clone(),
         effort: task.effort.clone(),
+        // A transfer carries the recorded launch model and effort; the
+        // auto-compact window is not stamped on a run, so the destination
+        // re-resolves it from its own configuration at spawn.
+        autocompact: None,
     })
     .resolve(false)
     .map_err(ImportFailure::Terminal)?;

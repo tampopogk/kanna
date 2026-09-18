@@ -290,6 +290,7 @@ fn spawn_params(cwd: &Path, executable: &Path, prompt: &str) -> AgentSpawnParams
         env: HashMap::new(),
         model: None,
         effort: None,
+        autocompact: None,
         permission_mode: None,
         allowed_tools: Vec::new(),
         disallowed_tools: Vec::new(),

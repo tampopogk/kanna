@@ -4,7 +4,7 @@ use crate::mobile_api::TransferImportSummary;
 use kanna_agent_protocol::mcp::{
     codex_mcp_config_overrides, opencode_spawn_config, read_kanna_mcp_server,
 };
-use kanna_agent_protocol::{prompt_with_system_prompt, EffortOverride};
+use kanna_agent_protocol::{prompt_with_system_prompt, EffortOverride, DEFAULT_AUTOCOMPACT_WINDOW};
 use std::path::Path;
 
 /// How a PTY spawn binds to the provider CLI's durable conversation store.
@@ -30,6 +30,7 @@ pub(super) fn build_agent_command(
     prompt: &str,
     model: Option<&str>,
     effort: Option<&str>,
+    autocompact: Option<&str>,
     permission_mode: Option<&str>,
     allowed_tools: &[String],
     disallowed_tools: &[String],
@@ -64,6 +65,13 @@ pub(super) fn build_agent_command(
             prompt_with_system_prompt(kanna_preamble, prompt)
         }
     };
+    // No other CLI publishes a per-session auto-compact window, and handing
+    // one an unknown flag is fatal at spawn. Resolution refuses the value long
+    // before here; this is the last statement of the same rule.
+    debug_assert!(
+        autocompact.is_none() || matches!(provider, AgentProvider::Claude),
+        "an autocompact window reached a provider with no such flag"
+    );
     let escaped_prompt = shell_single_quote(&prompt_with_fallback);
     let executable = format!("'{}'", shell_single_quote(executable));
     match provider {
@@ -73,6 +81,18 @@ pub(super) fn build_agent_command(
                 flags.push(format!("--model '{}'", shell_single_quote(model)));
             }
             extend_effort_flags(*provider, &mut flags, effort);
+            // Always passed, configured or not. The auto-compact window is a
+            // *user-global* Claude setting (`autoCompactWindow` in
+            // `~/.claude/settings.json`), so a spawn that names no window
+            // silently runs at whatever the machine's owner last set for
+            // their own terminal — which is how every Kanna task on this
+            // machine once inherited a 200k window. `auto` is the CLI's own
+            // "use the model's native window" value, and Kanna never writes
+            // to the operator's settings file to achieve it.
+            flags.push(format!(
+                "--autocompact '{}'",
+                shell_single_quote(autocompact.unwrap_or(DEFAULT_AUTOCOMPACT_WINDOW))
+            ));
             if !allowed_tools.is_empty() {
                 flags.push(format!("--allowedTools {}", allowed_tools.join(",")));
             }
