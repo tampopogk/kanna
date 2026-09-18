@@ -6058,16 +6058,18 @@ async fn event_types_allow_list_drops_other_types_and_still_advances_the_cursor(
         &format!("{watch}&eventTypes=run.finished,task.pr_created&from=beginning&timeoutSecs=1"),
     )
     .await;
-    // Both named types are about child-a, so they collapse into one
-    // current-state row (see `collapse_events_to_task_state`).
+    // Both named types are about child-a, which would ordinarily collapse
+    // into one current-state row — but that row's own type is
+    // task.runtime_changed, which this allow-list does not name, so
+    // collapsing is skipped and both raw events are delivered instead (see
+    // `collapse_events_to_task_state`), each keeping its own payload.
     assert_eq!(
         event_pairs(&body),
-        vec![("child-a".to_string(), "task.runtime_changed".to_string())],
-        "only the named types are delivered"
-    );
-    assert_eq!(
-        body["events"][0]["payload"]["causedByEventTypes"],
-        json!(["run.finished", "task.pr_created"])
+        vec![
+            ("child-a".to_string(), "run.finished".to_string()),
+            ("child-a".to_string(), "task.pr_created".to_string()),
+        ],
+        "only the named types are delivered, uncollapsed"
     );
 
     // The dropped rows were consumed, not deferred: a watcher that widens its
@@ -6131,6 +6133,70 @@ async fn event_types_allow_list_composes_with_exclusions_and_synthetic_state() {
         HashSet::from(["run.finished".to_string()]),
         "an explicit exclusion narrows the allow-list rather than fighting it"
     );
+}
+
+/// Collapsing two or more same-task events into one current-state row emits
+/// that row as `task.runtime_changed` (`CURRENT_RUNTIME_SNAPSHOT_TYPE`) — so
+/// a caller that filtered that type out must not receive it anyway. Without
+/// this, excluding the runtime edge to cut noise would still hand back one,
+/// and the caller's own allowed events' payloads (a `run.finished`'s
+/// `status`/`result`) would be discarded into it instead of delivered.
+#[tokio::test]
+async fn excluding_the_runtime_type_leaves_multiple_same_task_events_uncollapsed() {
+    let (router, db_path) = events_router();
+    let watch = "/v1/task-events?includeCurrentActivity=false&taskIds=child-a\
+                 &excludeEventTypes=task.runtime_changed&from=beginning&timeoutSecs=1";
+
+    {
+        let db = Db::open(&db_path).expect("open db");
+        start_run(&db, "run-a1", "child-a", "in progress");
+        db.finish_stage_run("run-a1", "succeeded", Some("done"), None)
+            .expect("finish run");
+    }
+
+    let body = get_json_body(&router, watch).await;
+    assert_eq!(
+        event_pairs(&body),
+        vec![
+            ("child-a".to_string(), "run.started".to_string()),
+            ("child-a".to_string(), "run.finished".to_string()),
+        ],
+        "excluding task.runtime_changed must leave the two allowed events uncollapsed, not \
+         replace them with a row of the very type that was excluded: {body}"
+    );
+    assert_eq!(body["events"][1]["payload"]["status"], json!("succeeded"));
+    assert_eq!(body["events"][1]["payload"]["result"], json!("done"));
+}
+
+/// The same defect, reached through an `eventTypes` allow-list that simply
+/// never names `task.runtime_changed` — the shape the catalog itself
+/// recommends ("event_types names the short list you act on") rather than
+/// excluding every noisy type.
+#[tokio::test]
+async fn allow_list_without_the_runtime_type_leaves_multiple_same_task_events_uncollapsed() {
+    let (router, db_path) = events_router();
+    let watch = "/v1/task-events?includeCurrentActivity=false&taskIds=child-a\
+                 &eventTypes=run.started,run.finished&from=beginning&timeoutSecs=1";
+
+    {
+        let db = Db::open(&db_path).expect("open db");
+        start_run(&db, "run-a1", "child-a", "in progress");
+        db.finish_stage_run("run-a1", "succeeded", Some("done"), None)
+            .expect("finish run");
+    }
+
+    let body = get_json_body(&router, watch).await;
+    assert_eq!(
+        event_pairs(&body),
+        vec![
+            ("child-a".to_string(), "run.started".to_string()),
+            ("child-a".to_string(), "run.finished".to_string()),
+        ],
+        "an allow-list that does not name task.runtime_changed must leave the two allowed \
+         events uncollapsed: {body}"
+    );
+    assert_eq!(body["events"][1]["payload"]["status"], json!("succeeded"));
+    assert_eq!(body["events"][1]["payload"]["result"], json!("done"));
 }
 
 /// The cursor contract across a batched boundary: every event arrives exactly

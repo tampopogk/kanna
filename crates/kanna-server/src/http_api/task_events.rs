@@ -1553,8 +1553,20 @@ fn append_current_activity_snapshots(
 /// acknowledged.
 fn collapse_events_to_task_state(
     config: &crate::config::Config,
+    filters: &TaskEventFilters,
     events: Vec<Value>,
 ) -> Result<Vec<Value>, (axum::http::StatusCode, String)> {
+    // A collapsed row states the task's current picture as a synthetic
+    // `CURRENT_RUNTIME_SNAPSHOT_TYPE` row, which a caller that filtered that
+    // type out — by excluding it, or by naming an allow-list without it —
+    // does not want, exactly like `append_current_activity_snapshots`
+    // already enforces for its own synthetic row. Returning the events
+    // uncollapsed here keeps every individually-allowed event (and its own
+    // payload, e.g. a `run.finished`'s `status`/`result`) intact instead of
+    // discarding it into a row of a type the caller asked not to see.
+    if !filters.allows_event_type(CURRENT_RUNTIME_SNAPSHOT_TYPE) {
+        return Ok(events);
+    }
     let mut counts: HashMap<String, usize> = HashMap::new();
     for event in &events {
         if let Some(task_id) = event.get("taskId").and_then(Value::as_str) {
@@ -1855,7 +1867,7 @@ async fn wait_local_task_events(
             let events = if query.subscription_timing {
                 collected
             } else {
-                collapse_events_to_task_state(state.config(), collected)?
+                collapse_events_to_task_state(state.config(), &filters, collected)?
             };
             return Ok(Json(json!({
                 "waitOutcome": "events",
@@ -1887,7 +1899,7 @@ async fn wait_local_task_events(
             let events = if query.subscription_timing {
                 collected
             } else {
-                collapse_events_to_task_state(state.config(), collected)?
+                collapse_events_to_task_state(state.config(), &filters, collected)?
             };
             return Ok(Json(json!({
                 "waitOutcome": "timeout",
@@ -2593,6 +2605,12 @@ async fn wait_aggregate_task_events(
         ),
         include_event_types: aggregate_include_event_types,
     };
+    // `filters` is conditionally moved into `session.filters` below (only
+    // when the session's own copy differs), and `session` itself is later
+    // moved into the registry before the collapse call near the end of this
+    // function needs a filter to check — so this clone, taken before any of
+    // that, is what the collapse call reads.
+    let collapse_filters = filters.clone();
     let supplied_cursor = query.cursor.as_deref();
     let decoded = supplied_cursor
         .filter(|cursor| cursor.starts_with(AGGREGATE_CURSOR_PREFIX))
@@ -2985,7 +3003,7 @@ async fn wait_aggregate_task_events(
     let events = if query.subscription_timing {
         events
     } else {
-        collapse_events_to_task_state(state.config(), events)?
+        collapse_events_to_task_state(state.config(), &collapse_filters, events)?
     };
     Ok(Json(json!({
         "waitOutcome": wait_outcome,

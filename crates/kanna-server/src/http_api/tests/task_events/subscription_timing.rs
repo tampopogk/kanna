@@ -464,31 +464,32 @@ async fn lone_noise_sustained_and_urgent_bursts_have_the_same_bounds_for_both_ad
         watch.ack(batch).await;
         watch.emit(TaskEventKind::PrCreated);
         let first = watch.observed().await;
-        for _ in 0..6 {
+        // Continuous relevant events at intervals shorter than quietMs
+        // (2000ms) keep pushing the trailing-quiet deadline forward exactly
+        // as the collapsed single knob intends — each of these three still
+        // lands well inside the restored hard cap (first +
+        // HOLD_CAP_MULTIPLIER * quietMs = first + 6000ms), genuinely
+        // extending the live deadline past what it would otherwise have
+        // been.
+        for _ in 0..3 {
             tokio::time::advance(Duration::from_millis(1_600)).await;
             watch.emit(TaskEventKind::PrCreated);
             watch.observed().await;
             watch.no_admission();
         }
-        // Past the new deadline (last event at t0+9600, +2000ms quiet =
-        // t0+11600). Stepped rather than one large `advance()`: the worker
-        // must actually get a turn to register its own timer against the
-        // just-extended deadline, or a single big jump can land past it
-        // without ever polling for it (see `advance_in_one_second_steps_to`).
-        advance_in_one_second_steps_to(first + Duration::from_millis(9_600 + 2_000 + 1)).await;
-        let (batch, at) = watch.admitted().await;
-        // No cap any more (the collapsed single quiet knob replaced the old
-        // quiet/max-hold pair): each relevant event pushes the deadline
-        // forward, so the batch cannot seal before quiet_ms after the *last*
-        // of the 7 events (t0, +1600 x6 = t0+9600) — well past the old 10s
-        // cap this fixture used to assert exactly. Bounded, not exact: unlike
-        // a fixed deadline known from the first event, a deadline that keeps
-        // moving is only ever re-registered when the worker next wakes, so
-        // precisely which of this harness's own 1s steps that lands on is not
-        // a fact worth pinning down here.
-        assert!(
-            at - first >= Duration::from_millis(9_600 + 2_000),
-            "continuous relevance must keep extending the deadline past the old 10s cap: {:?}",
+        // After the 4th event (t0+4800), the naive last+quiet deadline would
+        // be t0+6800 — past the cap. Sustained relevance must not defer the
+        // batch beyond the cap the way it used to: admission happens at
+        // exactly the cap, t0+6000, with no further events and none of them
+        // individually urgent. `advance_to_deadline_and_admit` both proves
+        // nothing sealed before the cap and pins the exact instant it does.
+        let (batch, at) =
+            advance_to_deadline_and_admit(&mut watch, first + Duration::from_millis(6_000)).await;
+        assert_eq!(
+            at - first,
+            Duration::from_millis(6_000),
+            "sustained relevant activity must seal at the hard cap (first + \
+             HOLD_CAP_MULTIPLIER * hold), not be deferred further by more of it: {:?}",
             at - first
         );
         watch.delivered().await;

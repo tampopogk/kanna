@@ -3567,18 +3567,30 @@ acknowledgement does not alter human read state. No cursor format, relay protoco
 mailbox backpressure or delivery retry contract changes.
 
 The owning subscription collector also applies one internal timing policy:
-**300000ms (5 minute) trailing quiet and maximum collection hold**, equal by
-design so an ordinary batch collects for the full window from its first
-relevant observation rather than sealing early on a short trailing-quiet gap,
-and **60000ms minimum between adapter-call admissions**. The 5-minute figure is
-an owner-specified value (superseding an earlier manager-proposed 30s/120s
+**300000ms (5 minute) trailing quiet**, reset on every relevant observation so
+an ordinary batch collects for the full window from its latest relevant
+observation rather than sealing early on a short trailing-quiet gap, and
+**60000ms minimum between adapter-call admissions**. The 5-minute figure is an
+owner-specified value (superseding an earlier manager-proposed 30s/120s
 split); the 60s admission floor remains a manager-adopted engineering default,
-not measured tuning. Capacity remains 100, minimum one. Quiet resets only on
-relevant observations; the collection closes at the earliest of last
-observation + 300s, first observation + 300s, urgent attention, or a full
-page.
+not measured tuning. Capacity remains 100, minimum one.
 
-The 300s figures exceed the fixed 240s native receiver window
+Trailing quiet alone has no upper bound: relevant events at intervals shorter
+than the quiet window keep pushing the deadline forward indefinitely, which
+would let ordinary sustained traffic on an active repository — `task.closed`,
+`task.pr_created`, `task.blocked`/`task.unblocked`, `task.awaiting_advance`,
+`task.merge_signaled`, or a parked successful `run.finished` are all relevant
+and non-urgent — defer a manager's wake for as long as that traffic continues.
+So the collector also caps the deadline at `first + HOLD_CAP_MULTIPLIER *
+quiet`, `HOLD_CAP_MULTIPLIER` fixed at 3 (15 minutes at the 5-minute default):
+the collection closes at the earliest of last relevant observation + quiet,
+first relevant observation + 3 × quiet, urgent attention, or a full page. This
+is the one hold knob's own hard cap, derived from it rather than a second
+configured value — an isolated burst still seals well below the cap on
+trailing quiet alone, since 3× is comfortably larger than one quiet window,
+and only sustained relevance ever reaches it.
+
+The 300s and 900s figures exceed the fixed 240s native receiver window
 (`kanna_tool_catalog::MAX_WAIT_TIMEOUT_SECS`), so a single native
 `wait_local_task_events`/`wait_aggregate_task_events` call cannot honor them
 alone. `event_subscriptions::step` owns the true window instead: it shares one
@@ -3587,9 +3599,9 @@ takes (each still capped at 240s, and each sized to the remaining time once
 the first relevant observation is known), and treats a native call's own
 `"waitOutcome": "timeout"` — its budget merely expiring — as "not yet", not
 "done". Only a native `"events"` outcome (urgent, a full page, or the
-collector's own quiet/max-hold reached) is genuinely final. A native call's
-own receiver therefore never truncates the subscription's real window,
-including when the first relevant event arrives late inside one call's own
+collector's own quiet deadline or its hard cap reached) is genuinely final. A
+native call's own receiver therefore never truncates the subscription's real
+window, including when the first relevant event arrives late inside one call's own
 240s leg — the shared collection's first-observation instant survives into
 whatever calls follow. Peer legs and checkpoints are unaffected: chaining
 just re-invokes the same wait with an advanced cursor, which the existing
@@ -3762,11 +3774,12 @@ can never exceed `Duration`'s own far larger capacity, confirmed empirically
 (`Instant::now().checked_add(Duration::from_millis(u64::MAX))` never returns
 `None`). An extreme `quiet_ms` is genuinely honored — the collector chains
 native calls to cover it, exactly like the default — not capped by the 240s
-native receiver; an extreme `min_admission_interval_ms` just delays that
-subscription's own future admissions. Urgent-event handling is unaffected: an
-urgent batch still seals its collection immediately regardless of these
-overrides, gated only by the (possibly overridden) minimum admission interval
-— no new urgency taxonomy, no runtime retry loop.
+native receiver; the derived hard cap (below) scales with it, so an extreme
+`quiet_ms` extends both together. An extreme `min_admission_interval_ms` just
+delays that subscription's own future admissions. Urgent-event handling is
+unaffected: an urgent batch still seals its collection immediately regardless
+of these overrides, gated only by the (possibly overridden) minimum admission
+interval — no new urgency taxonomy, no runtime retry loop.
 
 `quiet_ms` used to be two knobs — `quiet` (deadline reset on each new relevant
 event) and `max_hold` (a hard cap from the *first* relevant event), with a
@@ -3774,12 +3787,26 @@ deadline of `(last + quiet).min(first + max_hold)`. Shipped equal at
 300000/300000, `max_hold` always won that `min`, so `quiet` could never bind:
 every relevant event pushed `last` forward, but the deadline stayed pinned to
 `first + max_hold` regardless, and debouncing a steady trickle of events never
-actually happened. Collapsed to the one knob that was ever load-bearing — an
-unbounded-by-count *trailing*-quiet window (`Collection::intrinsic_deadline`
-is `last + hold`, recomputed and pushed out on every relevant observation, not
-fixed at the first one), capped only by the wait's own outer timeout.
-`max_hold_ms` is retired: it is an unknown wire parameter, rejected the same
-way any other undeclared argument is, not silently ignored.
+actually happened. Collapsed to the one knob that was ever load-bearing — a
+*trailing*-quiet window (`Collection::intrinsic_deadline`'s `last + hold`
+term, recomputed and pushed out on every relevant observation, not fixed at
+the first one) — but a single knob still needs its own bound against the
+opposite failure: relevant events at intervals shorter than `hold` push
+`last + hold` forward without limit, so an initially unbounded collapse let
+ordinary sustained traffic on an active repository — `task.pr_created`,
+`task.closed`, `task.blocked`/`task.unblocked`, `task.awaiting_advance`,
+`task.merge_signaled`, a parked successful `run.finished` — defer a wake for
+as long as that traffic continued, measured directly by this branch's own
+`lone_noise_sustained_and_urgent_bursts_have_the_same_bounds_for_both_adapters`
+test. The fix is one *more* derived quantity from the same single knob, not a
+second configured one: `Collection::intrinsic_deadline` is
+`(last + hold).min(first + HOLD_CAP_MULTIPLIER * hold)`,
+`HOLD_CAP_MULTIPLIER` a fixed, documented `3` — trailing quiet still governs
+an isolated burst, which seals well below the cap, while sustained relevance
+is bounded to three `hold` windows (15 minutes at the 300000ms default) from
+its first relevant observation. `max_hold_ms` is retired: it is an unknown
+wire parameter, rejected the same way any other undeclared argument is, not
+silently ignored — the cap is derived, not a wire-accepted value.
 
 These fields are additive and optional at the wire and in storage: a
 subscription that never sets them persists the exact `query` shape it always
