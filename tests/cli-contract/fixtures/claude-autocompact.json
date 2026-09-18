@@ -1,0 +1,29 @@
+{
+  "flag": "--autocompact",
+  "default": "auto",
+  "settingsKey": "autoCompactWindow",
+  "measuredCliVersion": "2.1.276",
+  "minTokens": 100000,
+  "maxTokens": 1000000,
+  "usageErrorFragment": "is invalid. It must be 'auto', or between 100k and 1M",
+  "comment": "Claude's auto-compact window is a user-global setting (autoCompactWindow in ~/.claude/settings.json), so a spawn that names no window inherits whatever the machine's owner last set. --autocompact is the per-invocation override Kanna passes on every claude spawn; `auto` restores the model's native window. accepted[] and rejected[] are the values measured against the CLI at measuredCliVersion; `tokens` is the window the CLI then reported through /context.",
+  "accepted": [
+    { "value": "auto", "tokens": null },
+    { "value": "AUTO", "tokens": null },
+    { "value": "100k", "tokens": 100000 },
+    { "value": "500K", "tokens": 500000 },
+    { "value": "1M", "tokens": 1000000 },
+    { "value": "1m", "tokens": 1000000 },
+    { "value": "0.5M", "tokens": 500000 },
+    { "value": "1000k", "tokens": 1000000 },
+    { "value": "100000", "tokens": 100000 },
+    { "value": "200000", "tokens": 200000 },
+    { "value": "1000000", "tokens": 1000000 },
+    { "value": "100", "tokens": 100000 },
+    { "value": "200", "tokens": 200000 },
+    { "value": "999", "tokens": 999000 },
+    { "value": "1000", "tokens": 1000000 }
+  ],
+  "rejected": ["99", "1001", "1500", "5000", "50000", "2000000", "2M", "100000000", "bogus", ""],
+  "shorthand": "A bare number is read as thousands when it is at most 1000, and as raw tokens above that: 200 and 200000 are both 200k, while 5000 is 5000 tokens and out of range."
+}

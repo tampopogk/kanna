@@ -30,6 +30,22 @@
   {
     "value": [
       {
+        "harness": "claude",
+        "model": "opus",
+        "autocompact": "400k"
+      }
+    ],
+    "expected": [
+      {
+        "provider": "claude",
+        "model": "opus",
+        "autocompact": "400k"
+      }
+    ]
+  },
+  {
+    "value": [
+      {
         "harness": "codex"
       },
       {
@@ -140,6 +156,24 @@
       {
         "harness": "codex",
         "effort": 4
+      }
+    ],
+    "error": true
+  },
+  {
+    "value": [
+      {
+        "harness": "claude",
+        "autocompact": " 400k"
+      }
+    ],
+    "error": true
+  },
+  {
+    "value": [
+      {
+        "harness": "claude",
+        "autocompact": 400000
       }
     ],
     "error": true

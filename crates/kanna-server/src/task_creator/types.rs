@@ -142,6 +142,7 @@ pub(crate) enum PreparedSessionSpawn {
         prompt: String,
         model: Option<String>,
         effort: Option<String>,
+        autocompact: Option<String>,
         permission_mode: Option<String>,
         allowed_tools: Vec<String>,
         disallowed_tools: Vec<String>,

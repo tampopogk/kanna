@@ -5,4 +5,10 @@ import type { AgentProvider } from "./AgentProvider";
  * Native identifiers are opaque. In particular, a model ending in `-high`
  * and a custom OpenCode variant are never parsed as compact selectors.
  */
-export type AgentCandidate = { harness: AgentProvider, model?: string, effort?: string, };
+export type AgentCandidate = { harness: AgentProvider, model?: string, effort?: string, 
+/**
+ * Claude's per-session auto-compact window (`auto`, or `100k`–`1M`).
+ * Claude-only: no other CLI has the vocabulary, and a value written
+ * beside another harness is refused rather than dropped.
+ */
+autocompact?: string, };

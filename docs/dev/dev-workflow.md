@@ -284,6 +284,68 @@ process you start before recording stage completion. Detached repository
 teardown remains best-effort, but startup failures and hard timeouts (30 min)
 are logged and appended to the task event feed as `task.teardown_failed`.
 
+### Pinning a Claude session's context window
+
+Claude's auto-compact window — how much context a session fills before the CLI
+compacts it — is a **user-global** setting: `autoCompactWindow` in
+`~/.claude/settings.json`. That file belongs to whoever is sitting at the
+machine, and nothing about it is per-session, so an operator who set a 200k
+window for their own terminal silently gave every Kanna task on the machine a
+200k window too (2026-09-18). Kanna never writes to that file.
+
+Two things follow.
+
+**Every Claude spawn names a window.** PTY and headless alike pass
+`--autocompact`, and when nothing is configured they pass `auto` — the CLI's own
+"use the model's native window" value. A task's window is therefore a property
+of the task, not of whoever last edited their settings. Only Claude has the
+flag; passing it to another CLI would be fatal at spawn (`codex` exits on an
+unknown flag the same way it does on `-m opus`), so no other provider ever
+receives it.
+
+**A repo can pin one**, in the same `agentProviders` slot that carries model and
+effort:
+
+```jsonc
+{
+  "agentProviders": {
+    // The window for whichever agent this entry matches.
+    "review": { "provider": "claude", "autocompact": "400k" },
+
+    // On a structured candidate, the window belongs to that harness alone.
+    // If claude is unavailable and the spawn falls through to codex, codex
+    // gets no window flag at all.
+    "implement": {
+      "provider": [
+        { "harness": "claude", "autocompact": "250k" },
+        { "harness": "codex", "model": "gpt-6-astra" }
+      ]
+    }
+  }
+}
+```
+
+The value is `auto`, or a window between `100k` and `1M`: `500k`, `0.5M`,
+`200000`, or `200` as shorthand for 200k. Note the CLI's own shorthand rule — a
+bare number at or below 1000 means *thousands*, so `200` is 200k but `5000` is
+five thousand tokens and out of range.
+
+A window follows exactly the coherence rule model and effort follow: it comes
+from the first layer that both names one and would itself have selected the
+resolved provider, and it belongs to the **first** name in that layer's
+`provider`. Naming it beside a non-Claude harness, or outside the window the CLI
+accepts, fails the request at resolution rather than the spawn — the CLI rejects
+a bad value at argument-parse time and exits before drawing anything, which
+would otherwise park a task behind a stage that never started. Compact workflow
+selectors (`claude-fable-hi`) have no slot for a window, so a stage that wants
+one names a structured candidate; a stage that names none gets `auto`.
+
+The flag, the accepted values and the bounds are measured against the installed
+CLI in `tests/cli-contract/tests/live/claude-autocompact.test.ts` and recorded
+in `tests/cli-contract/fixtures/claude-autocompact.json`, which the offline
+contract test and the Rust validator both read — so a CLI that moves the window
+surfaces there rather than in a wedged spawn.
+
 ### Machine-local config: `.kanna/config.local.json`
 
 Agents, workflows, and `config.json` are resolved from `origin/<default_branch>`
@@ -349,6 +411,12 @@ depends on what the next spawn is:
 | Rerun, resume, revision, recovery | the stamp | These reproduce a *recorded run*; its provider is fed back as an explicit override, which outranks `agentProviders`. Re-resolving would break `--resume` — agent-CLI transcripts are per-provider and per-worktree — and silently change what the run is continuing. |
 | Stage advance (and the fallback spawn of a stage's post, when the live session is gone) | re-resolved from the chain, with the stamp only as the final fallback | A transition is a new run of a stage, so it resolves that stage's own bindings: stage `agent_provider`, then this map (locally merged), then the agent definition, then the task's stamp. A local entry therefore does move an in-flight task at its next stage boundary — which is how a task is routed around a wedged provider without a commit. |
 | Stage advance carrying `next_stage_agent_provider` | that provider, with the `next_stage_model` / `next_stage_effort` written beside it | The advance fills the explicit-override slot, so it outranks everything above for *that one stage*. Nothing is pinned: no workflow definition, no default, and no later stage changes. |
+
+A Claude auto-compact window is the one tuning value no run stamp and no
+advance override carries: it is never recorded on a run, so every spawn — rerun
+included — re-reads it from the layer that selected its provider. A local
+`agentProviders` entry therefore changes a task's window at its next spawn,
+with no stamp to outrank.
 
 Nothing rebinds a task in place: the move happens when the task next spawns, and
 never mid-run.

@@ -49,6 +49,16 @@ impl ClaudeAdapter {
         if let Some(effort) = &ctx.effort {
             builder = builder.effort_override(effort.clone());
         }
+        // Always explicit, never inherited. `autoCompactWindow` in
+        // `~/.claude/settings.json` is a *user-global* setting, so a headless
+        // Kanna session that passes no flag runs with whatever window the
+        // machine's owner last chose for their own terminal. Passing `auto`
+        // when nothing is configured restores the model's native window.
+        builder = builder.autocompact(
+            ctx.autocompact
+                .clone()
+                .unwrap_or_else(|| crate::DEFAULT_AUTOCOMPACT_WINDOW.to_string()),
+        );
         if !ctx.allowed_tools.is_empty() {
             builder = builder.allowed_tools(ctx.allowed_tools.clone());
         }

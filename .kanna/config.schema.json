@@ -52,7 +52,7 @@
     },
     "agentProviders": {
       "type": "object",
-      "description": "`agentProviders` maps exact agent names or `*` globs to a provider name or to `{ provider, model, effort }`; `provider` may be an ordered candidate list. Exact keys beat globs. Among matching globs, the most non-`*` characters wins and lexical order breaks ties. Selection precedence is: explicit task or stage override; matching `agentProviders` entry (including the local layer); layered `AGENT.md`/`EXTEND.md` frontmatter; global default provider. A rerun, resume, revision, or recovery reproduces the recorded run's provider as an explicit override, while a plain stage advance re-resolves the chain and uses the task's stamp only as the final fallback. Provider-specific model and effort values are layer-coherent: Kanna never combines them across providers or layers. It walks the same chain and takes the first value from a layer that would itself select the resolved provider. In an ordered provider list, model and effort belong only to the leading candidate; fallback candidates use a lower coherent layer or their own stamped/default values.",
+      "description": "`agentProviders` maps exact agent names or `*` globs to a provider name or to `{ provider, model, effort }`; `provider` may be an ordered candidate list. Exact keys beat globs. Among matching globs, the most non-`*` characters wins and lexical order breaks ties. Selection precedence is: explicit task or stage override; matching `agentProviders` entry (including the local layer); layered `AGENT.md`/`EXTEND.md` frontmatter; global default provider. A rerun, resume, revision, or recovery reproduces the recorded run's provider as an explicit override, while a plain stage advance re-resolves the chain and uses the task's stamp only as the final fallback. Provider-specific model and effort values are layer-coherent: Kanna never combines them across providers or layers. It walks the same chain and takes the first value from a layer that would itself select the resolved provider. In an ordered provider list, model and effort belong only to the leading candidate; fallback candidates use a lower coherent layer or their own stamped/default values. `autocompact` follows the same coherence rule and is Claude-only.",
       "propertyNames": {
         "type": "string",
         "minLength": 1
@@ -103,6 +103,11 @@
                 "type": "string",
                 "minLength": 1,
                 "description": "Reasoning effort for the provider this entry selects \u2014 the first name in `provider`. Effort vocabularies are provider-specific, so this value is not applied to any other provider; a fallback candidate listed behind that name takes its effort from a lower layer written for it, or runs on its own stamped or default effort."
+              },
+              "autocompact": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Claude only: the auto-compact window for the provider this entry selects \u2014 the first name in `provider`. `auto` (the model's native window) or 100k-1M tokens (`500k`, `200000`, `0.5M`, or `200` as shorthand for 200k). Kanna passes `auto` when nothing is configured, so a session never inherits the machine-wide `autoCompactWindow` from the operator's own `~/.claude/settings.json`. It is not applied to a fallback candidate listed behind that name, and naming it for a non-claude provider is an error."
               }
             }
           },
@@ -270,6 +275,11 @@
           "type": "string",
           "minLength": 1,
           "description": "Exact native effort or variant; no compact aliases are expanded."
+        },
+        "autocompact": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Claude only: this session's auto-compact window \u2014 `auto` (the model's native window) or 100k-1M tokens (`500k`, `200000`, `0.5M`, or `200` as shorthand for 200k). Kanna passes `auto` when nothing is configured, so a session never inherits the machine-wide `autoCompactWindow` from the operator's own `~/.claude/settings.json`. Naming it beside any other harness is an error: no other CLI has the flag."
         }
       }
     }

@@ -92,6 +92,7 @@ pub fn params_to_ctx(params: &AgentSpawnParams) -> SpawnCtx {
         cwd: params.cwd.clone(),
         model: params.model.clone(),
         effort: params.effort.clone(),
+        autocompact: params.autocompact.clone(),
         permission_mode: params.permission_mode.clone(),
         allowed_tools: params.allowed_tools.clone(),
         disallowed_tools: params.disallowed_tools.clone(),

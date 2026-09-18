@@ -35,8 +35,10 @@ pub use frames::{
 };
 pub use opencode::OpencodeAdapter;
 pub use providers::{
-    agent_provider_specs, parse_provider_selector, validate_agent_selection,
-    validate_native_identifier, validate_provider_effort, validate_provider_model, AgentCandidate,
-    AgentHarness, AgentProvider, AgentProviderSpec, AgentSelectionEntry, AgentSessionType,
-    EffortOverride, ProviderSelector, PROVIDER_RESOLUTION_CASES_JSON,
+    agent_provider_specs, parse_provider_selector, resolve_autocompact_window,
+    validate_agent_selection, validate_native_identifier, validate_provider_autocompact,
+    validate_provider_effort, validate_provider_model, AgentCandidate, AgentHarness, AgentProvider,
+    AgentProviderSpec, AgentSelectionEntry, AgentSessionType, EffortOverride, ProviderSelector,
+    DEFAULT_AUTOCOMPACT_WINDOW, MAX_AUTOCOMPACT_TOKENS, MIN_AUTOCOMPACT_TOKENS,
+    PROVIDER_RESOLUTION_CASES_JSON,
 };

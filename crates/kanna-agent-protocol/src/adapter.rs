@@ -46,6 +46,11 @@ pub struct SpawnCtx {
     pub model: Option<String>,
     /// Provider-native reasoning-effort / model-variant string.
     pub effort: Option<String>,
+    /// Claude's per-session auto-compact window, when one is configured.
+    /// `None` does not mean "let the CLI decide": the Claude adapter still
+    /// pins an explicit default, because the CLI's own fallback is the
+    /// user-global setting this exists to stop leaking into tasks.
+    pub autocompact: Option<String>,
     /// Kanna permission mode (`dontAsk` / `acceptEdits` / `default`); each
     /// adapter maps it onto its provider's flags or config.
     pub permission_mode: Option<String>,

@@ -41,6 +41,16 @@ pub struct AgentCandidate {
     )]
     #[cfg_attr(feature = "typescript", ts(optional))]
     pub effort: Option<String>,
+    /// Claude's per-session auto-compact window (`auto`, or `100k`–`1M`).
+    /// Claude-only: no other CLI has the vocabulary, and a value written
+    /// beside another harness is refused rather than dropped.
+    #[serde(
+        default,
+        deserialize_with = "deserialize_native_option",
+        skip_serializing_if = "Option::is_none"
+    )]
+    #[cfg_attr(feature = "typescript", ts(optional))]
+    pub autocompact: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -71,16 +81,20 @@ impl AgentSelectionEntry {
                 provider: value.parse()?,
                 model: None,
                 effort: None,
+                autocompact: None,
             }),
             Self::Candidate(candidate) => {
                 validate_native_identifier("model", candidate.model.as_deref())?;
                 validate_native_identifier("effort", candidate.effort.as_deref())?;
+                validate_native_identifier("autocompact", candidate.autocompact.as_deref())?;
                 validate_provider_model(candidate.harness, candidate.model.as_deref())?;
                 validate_provider_effort(candidate.harness, candidate.effort.as_deref())?;
+                validate_provider_autocompact(candidate.harness, candidate.autocompact.as_deref())?;
                 Ok(ProviderSelector {
                     provider: candidate.harness,
                     model: candidate.model.clone(),
                     effort: candidate.effort.clone(),
+                    autocompact: candidate.autocompact.clone(),
                 })
             }
         }
@@ -216,6 +230,28 @@ impl AgentProvider {
         }
     }
 
+    /// Native CLI flag that pins this session's auto-compact window.
+    ///
+    /// Claude alone has one. The window is otherwise a **user-global**
+    /// setting (`autoCompactWindow` in `~/.claude/settings.json`), so
+    /// whatever the operator last set for their own terminal silently
+    /// applied to every agent session Kanna spawned on the machine. Kanna
+    /// therefore passes this flag on every Claude spawn — with
+    /// [`DEFAULT_AUTOCOMPACT_WINDOW`] when nothing is configured — so a
+    /// task's window is a property of the task, not of the machine.
+    ///
+    /// No other CLI publishes an equivalent, and handing one an unknown flag
+    /// is fatal at spawn (the same class of failure as `codex -m opus`), so
+    /// this is `None` everywhere else and a configured value beside another
+    /// harness is refused rather than dropped. Pinned by
+    /// `tests/cli-contract/tests/live/claude-autocompact.test.ts`.
+    pub const fn autocompact_flag(self) -> Option<&'static str> {
+        match self {
+            Self::Claude => Some("--autocompact"),
+            Self::Copilot | Self::Codex | Self::Opencode | Self::Antigravity => None,
+        }
+    }
+
     /// The composer command that ends an interactive session cleanly.
     ///
     /// Transfer finalization types this into the live TUI instead of signalling
@@ -282,6 +318,10 @@ pub struct ProviderSelector {
     pub provider: AgentProvider,
     pub model: Option<String>,
     pub effort: Option<String>,
+    /// Claude's auto-compact window. Compact selectors never name it — the
+    /// syntax has no unambiguous slot for it — so this is `None` for every
+    /// legacy entry and carries a value only from a structured candidate.
+    pub autocompact: Option<String>,
 }
 
 /// Effort tokens a selector's trailing segment may use, mapped to the
@@ -349,6 +389,7 @@ pub fn parse_provider_selector(value: &str) -> Result<ProviderSelector, String> 
             provider,
             model: None,
             effort: None,
+            autocompact: None,
         });
     };
     let segments = rest.split('-').collect::<Vec<_>>();
@@ -375,6 +416,7 @@ pub fn parse_provider_selector(value: &str) -> Result<ProviderSelector, String> 
         provider,
         model,
         effort: effort.map(str::to_string),
+        autocompact: None,
     })
 }
 
@@ -419,6 +461,101 @@ pub fn validate_provider_effort(
     }
 }
 
+/// What Kanna passes for a Claude session whose window nothing configures.
+///
+/// `auto` is the CLI's own "use the model's native window" value, and — this
+/// is the point — it is an *explicit* one: without it the CLI falls back to
+/// the user-global `autoCompactWindow` setting, so an operator who shrank
+/// their own terminal's window shrank every Kanna task's window with it.
+pub const DEFAULT_AUTOCOMPACT_WINDOW: &str = "auto";
+
+/// Smallest auto-compact window the Claude CLI accepts, in tokens.
+pub const MIN_AUTOCOMPACT_TOKENS: u64 = 100_000;
+
+/// Largest auto-compact window the Claude CLI accepts, in tokens.
+pub const MAX_AUTOCOMPACT_TOKENS: u64 = 1_000_000;
+
+/// Resolve an auto-compact window to tokens, or `None` for `auto`.
+///
+/// This mirrors the Claude CLI's own parser as measured on 2.1.276 and
+/// pinned by `tests/cli-contract/fixtures/claude-autocompact.json`: a
+/// `k`/`M` suffix (either case) multiplies, and a bare number is read as
+/// *thousands* when it is at most 1000 and as raw tokens above that — so
+/// `200` and `200000` are both 200k, while `5000` is 5000 tokens and out of
+/// range. Decimals are accepted (`0.5M`).
+///
+/// Kanna validates the value rather than passing it through the way it
+/// passes a model id, because an out-of-range window is not a wrong answer
+/// from the model — it is a CLI usage error that exits before the agent
+/// draws anything, leaving the task parked behind a stage that never
+/// started. Validating here fails the *request* instead. The bounds are a
+/// measured CLI fact, so a CLI that widens them surfaces in the contract
+/// test rather than silently here.
+pub fn resolve_autocompact_window(value: &str) -> Result<Option<u64>, String> {
+    let trimmed = value.trim();
+    let invalid = || {
+        format!(
+            "autocompact must be 'auto' or a window between 100k and 1M tokens \
+             (e.g. auto, 500k, 200000, or 200 as shorthand); got '{value}'"
+        )
+    };
+    if trimmed.eq_ignore_ascii_case(DEFAULT_AUTOCOMPACT_WINDOW) {
+        return Ok(None);
+    }
+    let (digits, multiplier) = match trimmed.as_bytes().last() {
+        Some(b'k' | b'K') => (&trimmed[..trimmed.len() - 1], Some(1_000f64)),
+        Some(b'm' | b'M') => (&trimmed[..trimmed.len() - 1], Some(1_000_000f64)),
+        _ => (trimmed, None),
+    };
+    if digits.is_empty()
+        || !digits
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || byte == b'.')
+    {
+        return Err(invalid());
+    }
+    let parsed = digits.parse::<f64>().map_err(|_| invalid())?;
+    if !parsed.is_finite() || parsed < 0.0 {
+        return Err(invalid());
+    }
+    // A bare number at or below 1000 is the CLI's own shorthand for
+    // thousands; above it the number is already a token count.
+    let tokens = match multiplier {
+        Some(multiplier) => parsed * multiplier,
+        None if parsed <= 1_000f64 => parsed * 1_000f64,
+        None => parsed,
+    };
+    let tokens = tokens.round() as u64;
+    if !(MIN_AUTOCOMPACT_TOKENS..=MAX_AUTOCOMPACT_TOKENS).contains(&tokens) {
+        return Err(invalid());
+    }
+    Ok(Some(tokens))
+}
+
+/// Whether `provider` accepts an auto-compact window, and whether the value
+/// is one its CLI will take.
+///
+/// Like [`validate_provider_model`], this is the single statement of the rule
+/// for every layer that may name one — a structured `agentProviders`
+/// candidate, its sibling form, agent frontmatter — so a value written beside
+/// a harness that has no such flag is a configuration error rather than a
+/// flag silently dropped or, worse, handed to a CLI that exits on it.
+pub fn validate_provider_autocompact(
+    provider: AgentProvider,
+    autocompact: Option<&str>,
+) -> Result<(), String> {
+    let Some(autocompact) = autocompact else {
+        return Ok(());
+    };
+    if provider.autocompact_flag().is_none() {
+        return Err(format!(
+            "autocompact windows are not supported for agent provider '{provider}': \
+             only claude publishes a per-session auto-compact window"
+        ));
+    }
+    resolve_autocompact_window(autocompact).map(|_| ())
+}
+
 pub fn agent_provider_specs() -> Vec<AgentProviderSpec> {
     AgentProvider::ALL
         .into_iter()
@@ -454,6 +591,7 @@ mod selector_tests {
                     provider,
                     model: None,
                     effort: None,
+                    autocompact: None,
                 }
             );
         }
@@ -467,6 +605,7 @@ mod selector_tests {
                 provider: AgentProvider::Claude,
                 model: Some("fable".to_string()),
                 effort: Some("high".to_string()),
+                autocompact: None,
             }
         );
         assert_eq!(
@@ -475,6 +614,7 @@ mod selector_tests {
                 provider: AgentProvider::Codex,
                 model: Some("gpt-6-astra".to_string()),
                 effort: Some("low".to_string()),
+                autocompact: None,
             }
         );
     }
@@ -487,6 +627,7 @@ mod selector_tests {
                 provider: AgentProvider::Codex,
                 model: Some("gpt-5.6-sol".to_string()),
                 effort: None,
+                autocompact: None,
             }
         );
     }
@@ -499,6 +640,7 @@ mod selector_tests {
                 provider: AgentProvider::Claude,
                 model: None,
                 effort: Some("high".to_string()),
+                autocompact: None,
             }
         );
         assert_eq!(
@@ -507,6 +649,7 @@ mod selector_tests {
                 provider: AgentProvider::Codex,
                 model: None,
                 effort: Some("medium".to_string()),
+                autocompact: None,
             }
         );
     }

@@ -246,6 +246,11 @@ pub struct AgentSpawnParams {
     pub model: Option<String>,
     #[serde(default)]
     pub effort: Option<String>,
+    /// Claude's per-session auto-compact window. Absent — including from an
+    /// older server that predates the field — leaves the adapter's own
+    /// explicit default in force rather than the user-global setting.
+    #[serde(default)]
+    pub autocompact: Option<String>,
     #[serde(default)]
     pub permission_mode: Option<String>,
     #[serde(default)]

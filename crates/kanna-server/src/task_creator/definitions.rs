@@ -63,6 +63,12 @@ pub(super) struct AgentProviderPreference {
     pub(super) model: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) effort: Option<String>,
+    /// Claude's auto-compact window, for the provider this entry selects.
+    /// Like `model` and `effort` it belongs to the *first* name in
+    /// `provider`; a fallback candidate behind it is a different harness and
+    /// takes nothing from here.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) autocompact: Option<String>,
 }
 
 impl<'de> Deserialize<'de> for AgentProviderPreference {
@@ -873,7 +879,7 @@ fn validate_structured_preferences(
                             .is_some_and(|a| a.iter().any(serde_json::Value::is_object))
                 });
             if structured && parse_agent_provider_preference(value).is_none() {
-                return Err(format!("invalid structured agentProviders entry '{name}': expected harness, optional model/effort, and unique harness candidates"));
+                return Err(format!("invalid structured agentProviders entry '{name}': expected harness, optional model/effort/autocompact, and unique harness candidates"));
             }
         }
     }
@@ -1032,16 +1038,20 @@ pub(super) fn parse_agent_provider_preference(
             providers: parse_selection_value(value.clone(), false).ok()?,
             model: None,
             effort: None,
+            autocompact: None,
         });
     }
-    let (provider, model, effort) = match value {
-        serde_json::Value::String(_) => (value, None, None),
+    let (provider, model, effort, autocompact) = match value {
+        serde_json::Value::String(_) => (value, None, None, None),
         serde_json::Value::Object(raw) => (
             raw.get("provider")?,
             raw.get("model")
                 .and_then(serde_json::Value::as_str)
                 .map(str::to_string),
             raw.get("effort")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string),
+            raw.get("autocompact")
                 .and_then(serde_json::Value::as_str)
                 .map(str::to_string),
         ),
@@ -1053,21 +1063,30 @@ pub(super) fn parse_agent_provider_preference(
             .is_some_and(|v| v.iter().any(serde_json::Value::is_object))
     {
         let raw = value.as_object()?;
-        if raw
-            .keys()
-            .any(|key| !matches!(key.as_str(), "provider" | "model" | "effort"))
-            || ["model", "effort"]
-                .iter()
-                .any(|key| raw.get(*key).is_some_and(|value| !value.is_string()))
+        if raw.keys().any(|key| {
+            !matches!(
+                key.as_str(),
+                "provider" | "model" | "effort" | "autocompact"
+            )
+        }) || ["model", "effort", "autocompact"]
+            .iter()
+            .any(|key| raw.get(*key).is_some_and(|value| !value.is_string()))
         {
             return None;
         }
         let providers = parse_selection_value(provider.clone(), false).ok()?;
-        validate_selection_siblings(&providers, model.as_deref(), effort.as_deref()).ok()?;
+        validate_selection_siblings(
+            &providers,
+            model.as_deref(),
+            effort.as_deref(),
+            autocompact.as_deref(),
+        )
+        .ok()?;
         return Some(AgentProviderPreference {
             providers,
             model,
             effort,
+            autocompact,
         });
     }
     let providers = match provider {
@@ -1092,6 +1111,7 @@ pub(super) fn parse_agent_provider_preference(
         providers: providers.into_iter().map(Into::into).collect(),
         model,
         effort,
+        autocompact,
     })
 }
 
@@ -1720,6 +1740,7 @@ fn validate_agent_definition(definition: &AgentDefinition) -> Result<(), String>
         &definition.agent_providers,
         definition.model.as_deref(),
         definition.effort.as_deref(),
+        None,
     )?;
     Ok(())
 }
@@ -1728,12 +1749,14 @@ fn validate_selection_siblings(
     entries: &[AgentSelectionEntry],
     model: Option<&str>,
     effort: Option<&str>,
+    autocompact: Option<&str>,
 ) -> Result<(), String> {
     for entry in entries {
         if let AgentSelectionEntry::Candidate(candidate) = entry {
             for (name, nested, sibling) in [
                 ("model", candidate.model.as_deref(), model),
                 ("effort", candidate.effort.as_deref(), effort),
+                ("autocompact", candidate.autocompact.as_deref(), autocompact),
             ] {
                 if nested.zip(sibling).is_some_and(|(a, b)| a != b) {
                     return Err(format!(

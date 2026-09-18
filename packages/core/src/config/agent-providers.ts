@@ -49,6 +49,11 @@ export interface AgentProviderSelector {
   provider: AgentProvider;
   model?: string;
   effort?: string;
+  /**
+   * Claude's per-session auto-compact window. Compact selectors have no slot
+   * for it, so it is set only by a structured candidate.
+   */
+  autocompact?: string;
 }
 
 /**
@@ -107,8 +112,8 @@ export type AgentSelection = AgentSelectionEntry | AgentSelectionEntry[];
 export function parseAgentCandidate(value: unknown): AgentCandidate | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const raw = value as Record<string, unknown>;
-  if (!isAgentProvider(raw.harness) || Object.keys(raw).some(k => !["harness", "model", "effort"].includes(k))) return null;
-  for (const key of ["model", "effort"]) {
+  if (!isAgentProvider(raw.harness) || Object.keys(raw).some(k => !["harness", "model", "effort", "autocompact"].includes(k))) return null;
+  for (const key of ["model", "effort", "autocompact"]) {
     if (key in raw && (typeof raw[key] !== "string" || !raw[key] || raw[key].trim() !== raw[key] || /[\x00-\x1f\x7f-\x9f]/.test(raw[key]))) return null;
   }
   return value as AgentCandidate;
@@ -117,7 +122,7 @@ export function parseAgentCandidate(value: unknown): AgentCandidate | null {
 export function resolveAgentSelectionEntry(value: AgentSelectionEntry, compact = true): AgentProviderSelector | null {
   if (typeof value === "string") return compact ? parseAgentProviderSelector(value) : isAgentProvider(value) ? { provider: value } : null;
   const candidate = parseAgentCandidate(value);
-  return candidate ? { provider: candidate.harness, model: candidate.model, effort: candidate.effort } : null;
+  return candidate ? { provider: candidate.harness, model: candidate.model, effort: candidate.effort, autocompact: candidate.autocompact } : null;
 }
 
 export function parseAgentSelection(value: unknown, compact = true): AgentSelectionEntry[] {
@@ -135,11 +140,12 @@ export function parseAgentSelection(value: unknown, compact = true): AgentSelect
   return entries as AgentSelectionEntry[];
 }
 
-export function validateSelectionSiblings(entries: AgentSelectionEntry[], model?: string, effort?: string): void {
+export function validateSelectionSiblings(entries: AgentSelectionEntry[], model?: string, effort?: string, autocompact?: string): void {
   for (const entry of entries) {
     if (typeof entry === "string") continue;
     if ((entry.model !== undefined && model !== undefined && entry.model !== model) ||
-        (entry.effort !== undefined && effort !== undefined && entry.effort !== effort)) {
+        (entry.effort !== undefined && effort !== undefined && entry.effort !== effort) ||
+        (entry.autocompact !== undefined && autocompact !== undefined && entry.autocompact !== autocompact)) {
       throw new Error("conflicting nested and sibling model/effort in agent_provider");
     }
   }

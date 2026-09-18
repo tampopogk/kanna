@@ -257,3 +257,35 @@ it("preserves each repo candidate's native tuning", () => {
   const entries = [{ harness: "codex", model: "gpt-6-astra" }, { harness: "opencode", model: "local/model-high", effort: "custom-hi" }];
   expect(parseRepoConfig(JSON.stringify({ agentProviders: { implement: entries } })).agentProviders?.implement).toEqual({ provider: entries });
 });
+
+// Claude's auto-compact window rides the same `agentProviders` slot as model
+// and effort, and for the same reason: it is provider-specific tuning that
+// belongs to the harness it was written beside. The server validates the value
+// itself against the window the CLI accepts.
+it("carries a claude auto-compact window on a structured preference", () => {
+  const entries = [{ harness: "claude", autocompact: "400k" }, { harness: "codex", model: "gpt-6-astra" }];
+  expect(parseRepoConfig(JSON.stringify({ agentProviders: { implement: entries } })).agentProviders?.implement)
+    .toEqual({ provider: entries });
+
+  expect(parseRepoConfig(JSON.stringify({
+    agentProviders: { implement: { provider: { harness: "claude" }, autocompact: "auto" } },
+  })).agentProviders?.implement).toEqual({
+    provider: [{ harness: "claude" }],
+    model: undefined,
+    effort: undefined,
+    autocompact: "auto",
+  });
+
+  expect(parseRepoConfig(JSON.stringify({
+    agentProviders: { implement: { provider: "claude", autocompact: "400k" } },
+  })).agentProviders?.implement).toEqual({ provider: ["claude"], autocompact: "400k" });
+});
+
+it("rejects a non-string or conflicting auto-compact window", () => {
+  for (const value of [
+    { provider: { harness: "claude" }, autocompact: 400000 },
+    { provider: [{ harness: "claude", autocompact: "400k" }], autocompact: "250k" },
+  ]) {
+    expect(() => parseRepoConfig(JSON.stringify({ agentProviders: { implement: value } }))).toThrow();
+  }
+});

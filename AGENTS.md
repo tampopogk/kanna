@@ -292,6 +292,23 @@ acknowledging transferred descriptors.
   machines need updated servers and transfer sidecars. The receiver validates
   selection values before asking the source to stop; omissions remain eligible
   for destination/native defaults. See `docs/dev/dev-workflow.md`.
+  **Claude's auto-compact window is the same kind of native tuning, and it is
+  Claude-only.** It is a *user-global* setting (`autoCompactWindow` in
+  `~/.claude/settings.json`), so before Kanna named one, whatever window the
+  machine's owner last set applied to every task on the machine. Kanna never
+  writes to that file: every Claude spawn — PTY and headless — instead passes
+  `--autocompact`, with the CLI's own `auto` when nothing is configured. A repo
+  pins one with `autocompact` beside `model`/`effort` on a structured candidate
+  or an `agentProviders` entry (`auto`, or 100k-1M: `500k`, `200000`, `0.5M`,
+  or `200` as shorthand for 200k — a bare number at or below 1000 means
+  thousands). It obeys the same coherent-layer rule and belongs to the leading
+  provider only; naming it beside another harness, or outside that window,
+  fails the request rather than the spawn, because the CLI exits on a usage
+  error before drawing anything. No run stamp, transfer, or advance override
+  carries it, so every spawn re-reads it from configuration. Compact selectors
+  have no slot for it. Measured against the real CLI in
+  `tests/cli-contract/tests/live/claude-autocompact.test.ts` and recorded in
+  `tests/cli-contract/fixtures/claude-autocompact.json`.
   One stage advance may fill the explicit-override slot for the stage it
   *enters*: `kanna_advance_stage` (and `kanna-cli task advance-stage`) accept
   `next_stage_harness` (alias `next_stage_agent_provider`) with `next_stage_model` and `next_stage_effort`,
