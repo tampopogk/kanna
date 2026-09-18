@@ -41,9 +41,8 @@ async fn typed_cli_accepts_a_full_aggregate_cursor_through_the_automatic_short_s
         exclude_task_ids: &[],
         exclude_event_types: &[],
         event_types: &[],
-        exclude_own: false,
         local_only: false,
-        include_current_activity: true,
+        include_current_activity: Some(true),
         from: None,
         cursor,
         timeout_secs: 0,
@@ -266,7 +265,7 @@ async fn catalog_cli_defaults_listing_search_and_watch_to_the_task_repository() 
         (
             "kanna_wait_events",
             serde_json::json!({ "from": "now", "timeout_secs": 0 }),
-            "/v1/task-events?repoId=repo-current&excludeTaskIds=task-current&excludeOwn=true&includeCurrentActivity=true&shortCursor=true&from=now&timeoutSecs=0",
+            "/v1/task-events?repoId=repo-current&excludeTaskIds=task-current&from=now&timeoutSecs=0&shortCursor=true",
             serde_json::json!({
                 "waitOutcome": "timeout",
                 "cursor": "17",
@@ -1111,12 +1110,14 @@ async fn create_task_via_api_omits_agent_type_when_flags_are_absent() {
 }
 
 /// The typed CLI applies the catalog's self-exclusion policy: a repository
-/// watch from inside a task session drops the caller, explicit scopes and
-/// `--include-self` are taken literally, and explicit exclusions always apply.
+/// watch from inside a task session drops the caller by default
+/// (`exclude_own: true`), `exclude_own: false` opts out, an explicit `task_id`
+/// scope is taken literally regardless of `exclude_own`, and explicit
+/// exclusions always apply.
 #[test]
 fn task_watch_self_exclusion_matches_catalog_policy() {
     assert_eq!(
-        resolve_task_event_exclusions(Vec::new(), false, false, Some("manager-1")),
+        resolve_task_event_exclusions(Vec::new(), false, true, Some("manager-1")),
         vec!["manager-1"]
     );
     assert_eq!(
@@ -1127,28 +1128,30 @@ fn task_watch_self_exclusion_matches_catalog_policy() {
                 "noisy".to_string()
             ],
             false,
-            false,
+            true,
             Some("manager-1")
         ),
         vec!["noisy", "manager-1"]
     );
     assert_eq!(
-        resolve_task_event_exclusions(vec!["noisy".to_string()], false, true, Some("manager-1")),
-        vec!["noisy"]
+        resolve_task_event_exclusions(vec!["noisy".to_string()], false, false, Some("manager-1")),
+        vec!["noisy"],
+        "exclude_own: false opts out of self-exclusion, keeping only the explicit exclusion"
     );
     assert_eq!(
-        resolve_task_event_exclusions(Vec::new(), true, false, Some("manager-1")),
+        resolve_task_event_exclusions(Vec::new(), true, true, Some("manager-1")),
         Vec::<String>::new(),
-        "an explicit task or parent scope is literal"
+        "an explicit task scope is literal regardless of exclude_own"
     );
     assert_eq!(
-        resolve_task_event_exclusions(Vec::new(), false, false, None),
+        resolve_task_event_exclusions(Vec::new(), false, true, None),
         Vec::<String>::new(),
         "outside a task session there is no self to exclude"
     );
     assert_eq!(
-        resolve_task_event_exclusions(Vec::new(), false, false, Some("   ")),
-        Vec::<String>::new()
+        resolve_task_event_exclusions(Vec::new(), false, true, Some("   ")),
+        Vec::<String>::new(),
+        "a blank task id is not a session"
     );
 }
 
@@ -1231,7 +1234,6 @@ async fn subscribe_events_posts_diagnostic_filters_and_timing_overrides_in_the_r
         "event_types": ["run.finished"],
         "exclude_event_types": ["task.activity_changed"],
         "quiet_ms": 30_000,
-        "max_hold_ms": 120_000,
         "min_admission_interval_ms": 60_000,
     });
     call_catalog_tool_with_task_id(&base_url, &catalog, "kanna_subscribe_events", &args, None)
@@ -1242,7 +1244,7 @@ async fn subscribe_events_posts_diagnostic_filters_and_timing_overrides_in_the_r
     assert!(request.starts_with("POST /v1/event-subscriptions HTTP/1.1"));
     assert!(
         request.contains(
-            r#"{"delivery":"input","diagnostic":true,"eventTypes":["run.finished"],"excludeEventTypes":["task.activity_changed"],"excludeTaskIds":[],"localOnly":false,"maxHoldMs":120000,"minAdmissionIntervalMs":60000,"quietMs":30000,"taskId":"task-123","taskIds":[]}"#
+            r#"{"delivery":"input","diagnostic":true,"eventTypes":["run.finished"],"excludeEventTypes":["task.activity_changed"],"excludeTaskIds":[],"localOnly":false,"minAdmissionIntervalMs":60000,"quietMs":30000,"taskId":"task-123","taskIds":[]}"#
         ),
         "{request}"
     );

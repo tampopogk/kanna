@@ -135,10 +135,11 @@ pub(crate) struct TaskEventsParams<'a> {
     /// Event type names to receive to the exclusion of every other type. Empty
     /// means every type, which is the unfiltered feed.
     pub(crate) event_types: &'a [String],
-    /// Drop the caller's own manager-labelled delivery announcements.
-    pub(crate) exclude_own: bool,
     pub(crate) local_only: bool,
-    pub(crate) include_current_activity: bool,
+    /// Deprecated explicit override for the cold-start snapshot; `None`
+    /// leaves it to the server's own cursor-implied default (true when no
+    /// cursor is given, false once one exists).
+    pub(crate) include_current_activity: Option<bool>,
     pub(crate) from: Option<&'a str>,
     pub(crate) cursor: Option<&'a str>,
     pub(crate) timeout_secs: u64,
@@ -195,16 +196,12 @@ pub(crate) fn task_events_path(params: &TaskEventsParams<'_>) -> String {
             encode_path_segment(&params.event_types.join(","))
         ));
     }
-    if params.exclude_own {
-        query.push("excludeOwn=true".to_string());
-    }
     if params.local_only {
         query.push("localOnly=true".to_string());
     }
-    query.push(format!(
-        "includeCurrentActivity={}",
-        params.include_current_activity
-    ));
+    if let Some(include_current_activity) = params.include_current_activity {
+        query.push(format!("includeCurrentActivity={include_current_activity}"));
+    }
     // Agent-facing CLI waits always use a short handle. Direct HTTP and the
     // server-owned subscription worker retain the full-cursor path.
     query.push("shortCursor=true".to_string());
@@ -678,6 +675,15 @@ pub(crate) fn task_matches_wait_until(task: &TaskDetail, until: WaitUntil) -> bo
                 .latest_run
                 .as_ref()
                 .and_then(|run| run.status.as_deref()),
+            unread: task.activity.as_deref() == Some("unread"),
+            blocked: !task.blocked_by_task_ids.is_empty(),
+            badged: task.attention_reason.is_some(),
+            provider_parked: task
+                .provider_rejection
+                .as_ref()
+                .and_then(|rejection| rejection.recovery.as_deref())
+                .is_some_and(|recovery| recovery.starts_with("parked-")),
+            provider_capacity_noticed: task.provider_capacity_notice.is_some(),
         },
         match until {
             WaitUntil::Reconcile => CatalogWaitUntil::Reconcile,

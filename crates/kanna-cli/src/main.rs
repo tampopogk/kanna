@@ -1051,12 +1051,11 @@ pub(crate) enum TaskCommands {
         /// Additional event types to drop, on top of the fixed baseline exclusion
         #[arg(long, value_delimiter = ',')]
         exclude_event_types: Vec<String>,
-        /// Override this subscription's trailing-quiet duration (default 300000ms)
+        /// Override this subscription's trailing-quiet hold — the single
+        /// collection-window pacing knob, replacing the old quiet_ms/max_hold_ms
+        /// pair (default 300000ms)
         #[arg(long)]
         quiet_ms: Option<i64>,
-        /// Override this subscription's maximum ordinary-collection hold (default 300000ms)
-        #[arg(long)]
-        max_hold_ms: Option<i64>,
         /// Override the minimum spacing between adapter-call wake admissions (default 60000ms)
         #[arg(long)]
         min_admission_interval_ms: Option<i64>,
@@ -1125,15 +1124,13 @@ pub(crate) enum TaskCommands {
         #[arg(long = "event-type", value_delimiter = ',')]
         event_type: Vec<String>,
 
-        /// Keep the calling task's own events in a repository-scoped wait
-        /// issued from a task session (disables the automatic self-exclusion
-        /// only; explicit --exclude-task-id values still apply)
-        #[arg(long)]
-        include_self: bool,
-
-        /// Drop the announcements of your own manager-labelled input
-        /// deliveries, so sending input and then waiting does not wake on the
-        /// echo of the send. Defaults to true inside a task session
+        /// Drop this task's own events from a repository- or
+        /// parent-default-scoped wait issued from a task session (a
+        /// task-scope filter only — it never drops an event on some other
+        /// watched task merely because your own action caused it). Defaults
+        /// to true inside a task session; pass --exclude-own=false to also
+        /// watch your own task's events. Explicit --task-ids scopes are
+        /// always taken literally regardless of this flag.
         #[arg(long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true")]
         exclude_own: Option<bool>,
 
@@ -1141,9 +1138,13 @@ pub(crate) enum TaskCommands {
         #[arg(long)]
         local_only: bool,
 
-        /// Return existing settled tasks once per cursor (false opts out)
-        #[arg(long, default_value_t = true, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true")]
-        include_current_activity: bool,
+        /// Deprecated explicit override for the cold-start snapshot. Omit
+        /// this: a cursorless call implies the actionable snapshot (idle,
+        /// waiting, exited, unread, blocked, attention-badged, or
+        /// provider-parked/capacity-noticed tasks) and a cursor'd call
+        /// implies edges only.
+        #[arg(long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true")]
+        include_current_activity: Option<bool>,
 
         /// Deprecated compatibility spelling; agent waits always use short cursors
         #[arg(long = "short-cursor", hide = true, action = clap::ArgAction::Set)]
@@ -1210,7 +1211,7 @@ pub(crate) enum TaskCommands {
         /// both scopes are supplied, matching the event feed contract. When
         /// run from inside a task session (KANNA_TASK_ID set), the calling
         /// task's own events are excluded so the watch never wakes its owner
-        /// with its own settled-runtime edges; see --include-self.
+        /// with its own settled-runtime edges; see --exclude-own.
         #[arg(long)]
         repo_id: Option<String>,
 
@@ -1220,11 +1221,12 @@ pub(crate) enum TaskCommands {
         #[arg(long = "exclude-task-id", value_delimiter = ',')]
         exclude_task_id: Vec<String>,
 
-        /// Keep the calling task's own events in a repository-scoped watch
-        /// run from a task session, e.g. to observe your own run.finished.
-        /// Disables the automatic self-exclusion only.
-        #[arg(long)]
-        include_self: bool,
+        /// Drop this task's own events from a repository-scoped watch run
+        /// from a task session — a task-scope filter only, defaulting to
+        /// true inside a task session. Pass --exclude-own=false to also
+        /// observe your own task's events, e.g. your own run.finished.
+        #[arg(long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true")]
+        exclude_own: Option<bool>,
 
         /// Resume from the final cursor printed by an earlier watch. Without
         /// this option the watch starts at the live tail and replays no history.

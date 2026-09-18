@@ -1107,7 +1107,7 @@ fn serve_defaults_listing_search_and_tail_watch_to_current_task_repo() {
         },
         ExpectedRequest {
             method: "GET",
-            path: "/v1/task-events?repoId=repo-current&excludeTaskIds=task-current&excludeOwn=true&includeCurrentActivity=true&shortCursor=true&from=now&timeoutSecs=0",
+            path: "/v1/task-events?repoId=repo-current&excludeTaskIds=task-current&from=now&timeoutSecs=0&shortCursor=true",
             body: None,
             response_status: "200 OK",
             response_body: json!({
@@ -1124,13 +1124,13 @@ fn serve_defaults_listing_search_and_tail_watch_to_current_task_repo() {
             response_status: "200 OK",
             response_body: current_task,
         },
-        // include_self is consumed by the adapter: the caller's own task is
-        // no longer excluded and nothing named includeSelf reaches the wire.
-        // excludeOwn is unrelated and survives — it drops the announcement of
-        // this manager's own deliveries, not its own task's events.
+        // exclude_own is consumed entirely by the adapter (client-only,
+        // task-scope filter): when the caller passes exclude_own: false, the
+        // caller's own task is no longer folded into exclude_task_ids, and
+        // neither excludeOwn nor excludeTaskIds reaches the wire at all.
         ExpectedRequest {
             method: "GET",
-            path: "/v1/task-events?repoId=repo-current&excludeOwn=true&includeCurrentActivity=true&shortCursor=true&from=now&timeoutSecs=0",
+            path: "/v1/task-events?repoId=repo-current&from=now&timeoutSecs=0&shortCursor=true",
             body: None,
             response_status: "200 OK",
             response_body: json!({
@@ -1159,7 +1159,7 @@ fn serve_defaults_listing_search_and_tail_watch_to_current_task_repo() {
             }),
             json!({
                 "jsonrpc": "2.0", "id": 16, "method": "tools/call",
-                "params": { "name": "kanna_wait_events", "arguments": { "from": "now", "timeout_secs": 0, "include_self": true } }
+                "params": { "name": "kanna_wait_events", "arguments": { "from": "now", "timeout_secs": 0, "exclude_own": false } }
             }),
         ],
         &[("KANNA_TASK_ID", "task-current")],
@@ -1540,7 +1540,7 @@ fn wait_events_discovers_task_owners_and_waits_across_machines() {
 fn repo_wait_reads_the_local_credential_file_and_sends_bearer_authorization() {
     let (base_url, server) = start_http_fixture(vec![ExpectedRequest {
         method: "GET",
-        path: "/v1/task-events?repoId=repo-1&includeCurrentActivity=true&shortCursor=true&timeoutSecs=0",
+        path: "/v1/task-events?repoId=repo-1&timeoutSecs=0&shortCursor=true",
         body: None,
         response_status: "200 OK",
         response_body: json!({
@@ -1601,7 +1601,7 @@ fn all_local_event_wait_does_not_require_relay_discovery() {
         ExpectedRequest {
             method: "GET",
             path:
-                "/v1/task-events?taskIds=task-local&localOnly=true&includeCurrentActivity=true&shortCursor=true&timeoutSecs=5",
+                "/v1/task-events?taskIds=task-local&localOnly=true&timeoutSecs=5&shortCursor=true",
             body: None,
             response_status: "200 OK",
             response_body: json!({
@@ -1655,7 +1655,7 @@ fn short_aggregate_cursor_preserves_continuity_across_calls() {
         },
         ExpectedRequest {
             method: "GET",
-            path: "/v1/task-events?taskIds=task-local&localOnly=true&includeCurrentActivity=true&shortCursor=true&timeoutSecs=0",
+            path: "/v1/task-events?taskIds=task-local&localOnly=true&timeoutSecs=0&shortCursor=true",
             body: None,
             response_status: "200 OK",
             response_body: json!({
@@ -1674,7 +1674,7 @@ fn short_aggregate_cursor_preserves_continuity_across_calls() {
         },
         ExpectedRequest {
             method: "GET",
-            path: "/v1/task-events?taskIds=task-local&localOnly=true&includeCurrentActivity=true&shortCursor=true&cursor=12&timeoutSecs=0",
+            path: "/v1/task-events?taskIds=task-local&localOnly=true&cursor=12&timeoutSecs=0&shortCursor=true",
             body: None,
             response_status: "200 OK",
             response_body: json!({
@@ -1727,7 +1727,7 @@ fn routed_cursor_rejection_invalidates_the_fan_in_checkpoint() {
         "km1.{}",
         base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(cursor_body)
     );
-    let machine_path = "/v1/task-events?taskIds=task-remote&localOnly=true&includeCurrentActivity=true&shortCursor=true&cursor=ksh1.deadbeef&timeoutSecs=0";
+    let machine_path = "/v1/task-events?taskIds=task-remote&localOnly=true&cursor=ksh1.deadbeef&timeoutSecs=0&shortCursor=true";
     let (base_url, server) = start_http_fixture(vec![
         ExpectedRequest {
             method: "GET",

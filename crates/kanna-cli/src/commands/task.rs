@@ -43,15 +43,18 @@ pub(crate) struct TaskWatchOptions {
 
 /// The typed CLI's application of the shared self-exclusion policy
 /// (`kanna_tool_catalog::task_event_self_exclusion`): explicit
-/// `--exclude-task-id` values always apply, and a repository-scoped wait from
-/// inside a task session (`KANNA_TASK_ID`) also drops the caller's own task
-/// unless `--include-self` was passed. The same rule the catalog applies to
-/// `kanna_wait_events`, so an agent on the CLI fallback is not woken by
-/// events the MCP tool would have filtered.
+/// `--exclude-task-id` values always apply, and a repository- or
+/// parent-default-scoped wait from inside a task session (`KANNA_TASK_ID`)
+/// also drops the caller's own task whenever `exclude_own` is true (see
+/// [`resolve_task_event_exclude_own`]). A task-scope filter only — it never
+/// drops an event on some other watched task merely because the caller's own
+/// action caused it. The same rule the catalog applies to `kanna_wait_events`,
+/// so an agent on the CLI fallback is not woken by events the MCP tool would
+/// have filtered.
 pub(crate) fn resolve_task_event_exclusions(
     explicit_exclusions: Vec<String>,
     explicit_task_scope: bool,
-    include_self: bool,
+    exclude_own: bool,
     current_task_id: Option<&str>,
 ) -> Vec<String> {
     let mut exclusions: Vec<String> = Vec::new();
@@ -62,7 +65,7 @@ pub(crate) fn resolve_task_event_exclusions(
         }
     }
     if let Some(self_task_id) =
-        task_event_self_exclusion(explicit_task_scope, include_self, current_task_id)
+        task_event_self_exclusion(explicit_task_scope, exclude_own, current_task_id)
     {
         if !exclusions.contains(&self_task_id) {
             exclusions.push(self_task_id);
@@ -71,11 +74,12 @@ pub(crate) fn resolve_task_event_exclusions(
     exclusions
 }
 
-/// The typed CLI's application of the shared echo-suppression default: a wait
-/// issued from inside a task session drops its own manager-labelled delivery
-/// announcements unless the caller said otherwise. Unlike self-exclusion this
-/// does not depend on the scope — the loop it breaks happens under an explicit
-/// `--task-id` watch on the task that was just sent input.
+/// Resolve the `--exclude-own` flag to a concrete value: an explicit value
+/// always wins, and omitting it defaults to true whenever a caller task id is
+/// known (false outside a task session, since there is then no task to
+/// exclude). Feeds [`resolve_task_event_exclusions`] — this is the same
+/// default `kanna-tool-catalog::args_with_self_exclusion` applies for the MCP
+/// and catalog-driven CLI paths.
 pub(crate) fn resolve_task_event_exclude_own(
     explicit_exclude_own: Option<bool>,
     current_task_id: Option<&str>,
@@ -193,9 +197,8 @@ pub(crate) async fn watch_task_events<W: Write>(
             // actionable itself, so `--all` can still show everything —
             // including a raw delivery, which its filter does treat as
             // actionable.
-            exclude_own: false,
             local_only: false,
-            include_current_activity: true,
+            include_current_activity: Some(true),
             from: (first_call && cursor.is_none()).then_some("now"),
             cursor: cursor.as_deref(),
             timeout_secs,
@@ -1266,7 +1269,6 @@ pub(crate) async fn run(command: TaskCommands) {
             event_types,
             exclude_event_types,
             quiet_ms,
-            max_hold_ms,
             min_admission_interval_ms,
             server_url,
         } => {
@@ -1285,9 +1287,6 @@ pub(crate) async fn run(command: TaskCommands) {
             }
             if let Some(quiet_ms) = quiet_ms {
                 args["quiet_ms"] = json!(quiet_ms);
-            }
-            if let Some(max_hold_ms) = max_hold_ms {
-                args["max_hold_ms"] = json!(max_hold_ms);
             }
             if let Some(min_admission_interval_ms) = min_admission_interval_ms {
                 args["min_admission_interval_ms"] = json!(min_admission_interval_ms);
@@ -1331,7 +1330,6 @@ pub(crate) async fn run(command: TaskCommands) {
             exclude_task_id,
             exclude_event_type,
             event_type,
-            include_self,
             exclude_own,
             local_only,
             include_current_activity,
@@ -1347,14 +1345,18 @@ pub(crate) async fn run(command: TaskCommands) {
         } => {
             let base_url = resolve_server_base_url_from_env(server_url.as_deref());
             let current_task_id = current_task_id_from_env();
-            let exclude_task_ids = resolve_task_event_exclusions(
-                exclude_task_id,
-                !task_id.is_empty() || parent_task_id.is_some(),
-                include_self,
-                current_task_id.as_deref(),
-            );
+            // Matches the catalog's own scope resolution: an explicit
+            // `task_ids` list is already literal; `parent_task_id` needs no
+            // carve-out because it excludes the parent's own events
+            // structurally regardless.
             let exclude_own =
                 resolve_task_event_exclude_own(exclude_own, current_task_id.as_deref());
+            let exclude_task_ids = resolve_task_event_exclusions(
+                exclude_task_id,
+                !task_id.is_empty(),
+                exclude_own,
+                current_task_id.as_deref(),
+            );
             let params = crate::api::TaskEventsParams {
                 task_ids: &task_id,
                 parent_task_id: parent_task_id.as_deref(),
@@ -1363,7 +1365,6 @@ pub(crate) async fn run(command: TaskCommands) {
                 exclude_task_ids: &exclude_task_ids,
                 exclude_event_types: &exclude_event_type,
                 event_types: &event_type,
-                exclude_own,
                 local_only,
                 include_current_activity,
                 from: from.as_deref(),
@@ -1389,7 +1390,7 @@ pub(crate) async fn run(command: TaskCommands) {
             task_id,
             repo_id,
             exclude_task_id,
-            include_self,
+            exclude_own,
             cursor,
             all_events,
             budget_secs,
@@ -1397,11 +1398,14 @@ pub(crate) async fn run(command: TaskCommands) {
             server_url,
         } => {
             let base_url = resolve_server_base_url_from_env(server_url.as_deref());
+            let current_task_id = current_task_id_from_env();
+            let exclude_own =
+                resolve_task_event_exclude_own(exclude_own, current_task_id.as_deref());
             let exclude_task_ids = resolve_task_event_exclusions(
                 exclude_task_id,
                 !task_id.is_empty(),
-                include_self,
-                current_task_id_from_env().as_deref(),
+                exclude_own,
+                current_task_id.as_deref(),
             );
             let options = TaskWatchOptions {
                 task_ids: task_id,

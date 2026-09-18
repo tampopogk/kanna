@@ -744,7 +744,7 @@ at all.
 - `GET /v1/standing-constraints?repoId=...&includeCleared=...&tail=...` (durable standing supervision constraints for a repository: the complete active set, plus cleared history on request; advisory facts a supervisor reads, never enforcement, see [Standing Supervision Constraints](#standing-supervision-constraints))
 - `POST /v1/standing-constraints` (declare one; `repoId`, `kind`, `text`, optional `subjectTaskId` and declared provenance)
 - `POST /v1/standing-constraints/{constraint_id}/clear` (clear one with its own provenance; the row is kept as history)
-- `GET /v1/task-events?taskIds=...|parentTaskId=...|repoId=...|repoRemoteUrlHash=...&excludeTaskIds=...&excludeEventTypes=...&eventTypes=...&excludeOwn=...&cursor=...&timeoutSecs=...&limit=...&minEvents=...&debounceMs=...&minIntervalMs=...` (multi-task, multi-machine event feed; blocks server-side until the batch is complete or the window elapses; `excludeTaskIds`, `excludeEventTypes`, `eventTypes` and `excludeOwn` are filters over the chosen scope, see [Task Event Feed](#task-event-feed))
+- `GET /v1/task-events?taskIds=...|parentTaskId=...|repoId=...|repoRemoteUrlHash=...&excludeTaskIds=...&excludeEventTypes=...&eventTypes=...&cursor=...&timeoutSecs=...&limit=...&minEvents=...&debounceMs=...&minIntervalMs=...` (multi-task, multi-machine event feed; blocks server-side until the batch is complete or the window elapses; `excludeTaskIds`, `excludeEventTypes` and `eventTypes` are filters over the chosen scope, see [Task Event Feed](#task-event-feed)). `excludeOwn` is a client-only, task-scope self-exclusion flag — folded into `excludeTaskIds` by `kanna-tool-catalog` before the request is built — and never reaches this route on the wire.
 - `POST /v1/tasks`
 - `POST /v1/tasks/{task_id}/input` (optionally with one base64 image `attachment`; see [Image attachments](#image-attachments))
 - `POST /v1/tasks/{task_id}/actions/complete-stage`
@@ -1953,12 +1953,19 @@ cursor-based, not snapshot-diffed:
   deployed watchers keyed on it keep working. New callers watch
   `task.runtime_changed`; `kanna-cli task watch` suppresses the alias as
   redundant with an event already in the batch.
-- Fresh waits default to `includeCurrentActivity=true` and are level-triggered
-  even with `from=now`; explicit `false` preserves edge-only reads:
-  every scoped task whose current non-busy state has already survived that
-  debounce is returned immediately as a synthetic `task.runtime_changed`
-  response row without consuming or inventing a sequence number. It uses daemon
-  runtime state only, never human read/unread activity. The durable
+- `includeCurrentActivity` is cursor-implied rather than defaulted: a
+  cursorless call (the cold-start case) implies the actionable snapshot —
+  `true` — even when it also passes `from=now`, and a call carrying a cursor
+  implies edges only — `false`. Explicit `true`/`false` still overrides either
+  inference. The snapshot is the same actionable vocabulary `kanna_wait_task`'s
+  default `Reconcile` resolves on: every scoped task whose current non-busy
+  runtime has already survived the debounce, or that is unread, blocked,
+  attention-badged, or provider-parked/capacity-noticed, is returned
+  immediately as a synthetic `task.runtime_changed` response row without
+  consuming or inventing a sequence number — a merely busy task with none of
+  those is not news and is left out. Runtime state alone stays debounced;
+  the read/blocked/badge/provider signals are already durable facts and need no
+  settling window of their own. The durable
   sequence checkpoint remains independent, so restart cannot miss parked work
   and synthetic state cannot weaken the append-log ordering contract. Synthetic
   rows share the response limit with durable events. The opaque cursor also
@@ -2155,11 +2162,16 @@ own `task.runtime_settled` edge at the end of every turn, forever. The server
 has no notion of "self", so the exclusion is client policy applied once in
 `kanna-tool-catalog` (`args_with_self_exclusion`) and shared by `kanna-mcp`,
 `kanna-cli tool call`, and the typed `kanna-cli task watch` / `task
-wait-events` commands: a repository-scoped wait issued with `KANNA_TASK_ID`
-set adds the caller's own id to `exclude_task_ids` unless `include_self` /
-`--include-self` is given. Explicit `taskIds` and `parentTaskId` scopes are
-taken literally — the former is already explicit and the latter excludes the
-parent structurally.
+wait-events` commands: a repository- or parent-scoped wait issued with
+`KANNA_TASK_ID` set adds the caller's own id to `exclude_task_ids` by default
+— the client-only `exclude_own` flag, default `true` whenever a caller task id
+is known — unless `exclude_own` is passed `false` (`--exclude-own=false` on
+the typed CLI). An explicit `taskIds` scope is taken completely literally —
+naming your own id there is a deliberate request to watch it — while
+`parentTaskId` gets no such carve-out: the default self-exclusion still runs
+for it, though it is a harmless no-op, because a parent scope already excludes
+the parent's own events structurally (only direct children are ever
+returned).
 
 `eventTypes` (comma-separated event type names) is the allow-list complement
 of `excludeEventTypes`, and the third filter over the chosen scope. It exists
@@ -2177,31 +2189,34 @@ every machine leg of an aggregate wait, and an allow-list that does not name
 `task.runtime_changed` suppresses the synthetic `includeCurrentActivity` rows
 with it.
 
-`excludeOwn` breaks the loop where an orchestrator sends input to a task and
-then waits on it: the delivery's own `task.input_delivered` row ends the very
-next wait, before the agent it spoke to has done anything, and the manager
-wakes again on each status flip that follows. It drops `task.input_delivered`
-and `task.raw_input_delivered` rows whose `payload.source` is `manager` —
-raw terminal writes count as own for the same reason ordinary ones do. The
-match is positive and exactly as wide as the delivering caller's own
-declaration. **An operator delivery is never dropped**, because a human
-intervening in a watched task is precisely what a manager must see, and a
-delivery whose caller declared nothing is indistinguishable from that human,
-so it is not dropped either — a manager that wants the suppression declares
-`source: "manager"` on `kanna_send_task_input`, which is what the input record
-asks of it anyway. The label is as far as the record goes: `task_input` records
-*that* a manager spoke, not *which* one, so `excludeOwn` also drops a peer
-manager's delivery into a task this one is watching. That is the honest reading
-of the data — inventing an identity the row does not carry would be worse — and
-a manager that must see its peers' deliveries passes `excludeOwn=false` and
-filters them itself, or reads them with `kanna_task_inputs`, which is the
-durable record and is unaffected. Also a filter, never part of the cursor. Its default is
-client policy, not a server default: `args_with_self_exclusion` in
-`kanna-tool-catalog` sets it for a call made from inside a task session
-(`KANNA_TASK_ID`), on every scope rather than only the repository one, because
-the loop it breaks happens under an explicit `taskIds` watch. The typed
-`kanna-cli task wait-events` applies the same rule; a direct HTTP caller that
-omits it keeps the unfiltered feed.
+`excludeOwn` is a task-scope filter and nothing more, resolved and consumed
+entirely by the client: the catalog declares it `location: client`, so it
+never reaches this route on the wire at all, and the server has no
+delivery-echo or actor/causation concept of any kind. It exists only to spare
+a manager the churn of watching a repository- or parent-default scope from
+inside its own task session — without it, a manager's own turn ending busy →
+idle, or its own activity edge, would wake the very wait it just issued.
+`kanna-tool-catalog`'s `args_with_self_exclusion` folds the caller's own task
+id into `excludeTaskIds` when `exclude_own` is `true` (the default whenever a
+caller task id — `KANNA_TASK_ID` — is known) and the scope is not an explicit
+`taskIds` list; `kanna-mcp`, `kanna-cli tool call`, and the typed `kanna-cli
+task watch` / `task wait-events` commands all go through it, so no surface can
+drift from another.
+
+This corrects an earlier design where `excludeOwn` was a *delivery-echo*
+filter: it dropped `task.input_delivered` / `task.raw_input_delivered` rows
+the caller declared itself the author of (`payload.source: "manager"`),
+anywhere in the watched scope — including on some other, entirely different
+task a manager was watching, if that manager's own action happened to cause
+the row. That behavior is retired. Waking on an event on some other watched
+task because the caller's own action caused it — a manager sends input to a
+child it is watching, then wakes on that child's own `task.input_delivered`
+announcing the delivery — is now correct, expected behavior, and is never
+suppressed by `exclude_own`. `exclude_own` only ever drops events *about the
+caller's own watched task*, exactly like `excludeTaskIds` with the caller's
+own id added to it, because that is in fact its entire implementation. A
+manager that wants a direct read of its own or a peer's deliveries reads
+`kanna_task_inputs`, the durable record, which is unaffected either way.
 
 ### Batching a task-event wait
 
@@ -2234,6 +2249,31 @@ elapsed window returns whatever accumulated, `waitOutcome: "timeout"` with a
 possibly non-empty `events` array, rather than holding events back for a batch
 the caller never asked to wait longer for.
 
+Several events for the same task landing in one batch collapse into a single
+current-state `task.runtime_changed` row carrying `payload.causedByEventTypes`
+(the distinct event types that fired, in the order they occurred) instead of
+the whole transcript — state, not a blow-by-blow, is what a burst returns.
+A task with exactly one event in the batch is returned unchanged. This is
+public-wait only, a presentation transform applied after selection and after
+the response's own cursor is already computed — it changes nothing about
+what was read, filtered, or acknowledged. `kanna_subscribe_events`'s durable
+mailbox is unaffected: its own consumers (relevance detection, harness
+delivery text) depend on the raw event stream, so collapsing is never applied
+to it.
+
+An aggregate wait joining a leg it just spawned this call must wait at least
+as long as that leg's own rounded-up native timeout, or a join deadline capped
+at exactly this wait's own `deadline` races a leg that was always going to
+return at or after it and gives up before ever joining what it just spawned —
+the defect where an aggregate wait reported `timeout` without ever confirming
+a single machine, returning instantly empty despite every peer being
+reachable and still working. `AGGREGATE_LEG_JOIN_GRACE` (2s) covers the
+rounding plus ordinary scheduling slack and only ever delays the case where
+nothing happened at all; an earlier completion still resolves the join
+immediately. A wait now never returns instantly empty on a healthy fan-out —
+it always genuinely confirms every reachable machine before reporting
+`waitOutcome: "timeout"`.
+
 `minEvents` and `debounceMs` compose with the cross-machine fan-out the way the
 timeout does — enforced by the machine serving the wait, over every leg's
 events together. They are deliberately *not* forwarded to the legs: a
@@ -2251,8 +2291,9 @@ The point of all of this is the cost of watching. A singleton manager that
 watched a repository in 100-second legs made ~4,700 requests in two days —
 every leg returned in seconds because runtime flicker counts as an event, and
 79% of that session's token spend was this one surface. `minEvents`,
-`debounceMs`, `eventTypes`, `minIntervalMs` and `excludeOwn` move that cost
-into the server. The complement for continuous management remains
+`debounceMs`, `eventTypes`, `minIntervalMs` and the self-exclusion `exclude_own`
+folds into `excludeTaskIds` move that cost into the server. The complement for
+continuous management remains
 `kanna_subscribe_events`, whose durable mailbox owns observation; this is the
 cheap version for plain polling.
 
@@ -2602,10 +2643,26 @@ Which dimension each consumer reads:
   The default `until: "reconcile"` returns this already-settled task instead.
   Task detail's `runtimeSettled` uses the same observed non-busy baseline and
   completed debounce as the synthetic feed scan, never human read state or
-  absence of output. It also resolves for recorded termination. Explicit
-  `until: "finished"` retains the contract above; `until: "closed"` requires
-  closure. A resolved reconciliation wait asks the caller to inspect work;
-  it does not create a verdict, advance a stage, or claim a turn is complete.
+  absence of output. It also resolves for recorded termination. Beyond
+  runtime, `reconcile` also resolves the instant the task becomes actionable
+  by the same vocabulary `kanna_wait_events`' cold-start snapshot uses —
+  unread, an unresolved blocker, an attention badge, or a provider-parked or
+  provider-capacity-noticed refusal — even while the agent is still busy: a
+  caller blocked on one task must not sit out its whole timeout because that
+  task gained an attention badge, or hit a provider capacity notice, while
+  still running. None of these need their own settling window the way runtime
+  does; they are already durable facts on the task, not a transition that can
+  flicker. `unread` is the one exception worth naming: it is read straight off
+  the same raw, per-frame daemon classification `kanna_get_task`'s own
+  confirming re-read exists to debounce, so `kanna-mcp`'s `wait_task` passes
+  every sample through that same one-sided confirmation before checking the
+  predicate — free when the sample does not look stopped, one extra
+  confirmation delay plus one re-read when it does — rather than resolving a
+  wait on a single misclassified frame. Explicit `until: "finished"` retains
+  the termination-only contract above and never reads these signals;
+  `until: "closed"` requires closure. A resolved reconciliation wait asks the
+  caller to inspect work; it does not create a verdict, advance a stage, or
+  claim a turn is complete.
 - **Supervisors and orchestrators** read `runtimeState` to decide whether a task
   is alive. A quiet-task alarm keyed on `activity` fires on tasks whose agents
   are demonstrably running.
@@ -3679,40 +3736,53 @@ knobs that reuse existing ownership rather than adding a policy engine:
 same `TaskEventsQuery` filter `kanna_wait_events` already exposes — a query
 filter, never part of the cursor, additive to the subscription's fixed
 baseline exclusion (`task.activity_changed`, `task.runtime_settled`,
-`task.input_delivered`). `quiet_ms`, `max_hold_ms` and
-`min_admission_interval_ms` override that one subscription's collection
-window and admission floor (defaults 300000/300000/60000ms); each is
-rejected below a 1000ms floor, and `max_hold_ms` is rejected below
-`quiet_ms`. There is deliberately no policy ceiling, and none is needed on
-correctness grounds either: `Duration::from_millis` accepts any `u64`, and so
-does the `Instant + Duration` arithmetic these values feed into
+`task.input_delivered`). `quiet_ms` and `min_admission_interval_ms` override
+that one subscription's collection window and admission floor (defaults
+300000/60000ms); each is rejected below a 1000ms floor. There is deliberately
+no policy ceiling, and none is needed on correctness grounds either:
+`Duration::from_millis` accepts any `u64`, and so does the
+`Instant + Duration` arithmetic these values feed into
 (`Collection::intrinsic_deadline`, `Admission`) — a `u64` millisecond count
 can never exceed `Duration`'s own far larger capacity, confirmed empirically
 (`Instant::now().checked_add(Duration::from_millis(u64::MAX))` never returns
-`None`). An extreme `quiet_ms`/`max_hold_ms` is genuinely honored — the
-collector chains native calls to cover it, exactly like the default — not
-capped by the 240s native receiver; an extreme `min_admission_interval_ms`
-just delays that subscription's own future admissions. Urgent-event handling
-is unaffected: an urgent batch still seals its collection immediately
-regardless of these overrides, gated only by the (possibly overridden)
-minimum admission interval — no new urgency taxonomy, no runtime retry loop.
+`None`). An extreme `quiet_ms` is genuinely honored — the collector chains
+native calls to cover it, exactly like the default — not capped by the 240s
+native receiver; an extreme `min_admission_interval_ms` just delays that
+subscription's own future admissions. Urgent-event handling is unaffected: an
+urgent batch still seals its collection immediately regardless of these
+overrides, gated only by the (possibly overridden) minimum admission interval
+— no new urgency taxonomy, no runtime retry loop.
+
+`quiet_ms` used to be two knobs — `quiet` (deadline reset on each new relevant
+event) and `max_hold` (a hard cap from the *first* relevant event), with a
+deadline of `(last + quiet).min(first + max_hold)`. Shipped equal at
+300000/300000, `max_hold` always won that `min`, so `quiet` could never bind:
+every relevant event pushed `last` forward, but the deadline stayed pinned to
+`first + max_hold` regardless, and debouncing a steady trickle of events never
+actually happened. Collapsed to the one knob that was ever load-bearing — an
+unbounded-by-count *trailing*-quiet window (`Collection::intrinsic_deadline`
+is `last + hold`, recomputed and pushed out on every relevant observation, not
+fixed at the first one), capped only by the wait's own outer timeout.
+`max_hold_ms` is retired: it is an unknown wire parameter, rejected the same
+way any other undeclared argument is, not silently ignored.
 
 These fields are additive and optional at the wire and in storage: a
 subscription that never sets them persists the exact `query` shape it always
 has, so pre-existing rows and the registration-retry `existing.query != query`
 equality check are unaffected. A subscription's own value is read back from
-its persisted `query` on every collection (`quietMs`/`maxHoldMs`) and at
-worker (re)start (`minAdmissionIntervalMs`, bound once into that
-subscription's `Admission`); a row from before this feature shipped simply
-has no such keys and falls back to the global defaults, identical to its
-prior behavior. This omission contract depends on the request the server
-actually receives never carrying these keys unless the caller means to
-override — so the catalog declares no `default` for them: the shared MCP/CLI
-request resolver (`value_for_param`) fills in a declared default for any
-omitted parameter and sends it on the wire, which would turn every omitted
-knob into an explicit (if numerically identical) override, breaking retry and
-resume for every pre-existing row. Each description states its default in
-prose instead.
+its persisted `query` on every collection (`quietMs`) and at worker (re)start
+(`minAdmissionIntervalMs`, bound once into that subscription's `Admission`); a
+row from before this feature shipped simply has no such keys and falls back to
+the global defaults, identical to its prior behavior. A row persisted with the
+retired `maxHoldMs` key (from before the collapse) is read back and ignored —
+`quietMs` alone governs its collection window from here on. This omission
+contract depends on the request the server actually receives never carrying
+these keys unless the caller means to override — so the catalog declares no
+`default` for them: the shared MCP/CLI request resolver (`value_for_param`)
+fills in a declared default for any omitted parameter and sends it on the
+wire, which would turn every omitted knob into an explicit (if numerically
+identical) override, breaking retry and resume for every pre-existing row.
+Each description states its default in prose instead.
 
 The first returned page is already observed by the registering caller. A later
 page receives one coalesced wake. Wakes contain only the subscription and batch

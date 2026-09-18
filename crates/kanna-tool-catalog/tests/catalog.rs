@@ -1151,9 +1151,15 @@ fn wait_events_is_scoped_cursored_and_bounded_by_the_client_budget() {
     .expect("wait events");
     assert_eq!(request.method, Method::Get);
     assert_eq!(request.kind, ResponseKind::Json);
+    // `include_current_activity` is no longer forced onto the wire: it is
+    // cursor-implied server-side now, so an untouched request omits it
+    // entirely rather than carrying a catalog-level default. shortCursor is
+    // appended last now: it used to piggyback on include_current_activity's
+    // position in the param loop, and with that param absent it falls
+    // through to the trailing append instead.
     assert_eq!(
         request.path,
-        format!("/v1/task-events?taskIds=task-a%2Ctask-b&includeCurrentActivity=true&shortCursor=true&cursor=42&timeoutSecs={DEFAULT_WAIT_TIMEOUT_SECS}")
+        format!("/v1/task-events?taskIds=task-a%2Ctask-b&cursor=42&timeoutSecs={DEFAULT_WAIT_TIMEOUT_SECS}&shortCursor=true")
     );
     let tools = catalog.tools_list_value();
     let schema = tools
@@ -1189,7 +1195,7 @@ fn wait_events_is_scoped_cursored_and_bounded_by_the_client_budget() {
     .path;
     assert_eq!(
         repo_scoped,
-        format!("/v1/task-events?repoId=repo%201&includeCurrentActivity=true&shortCursor=true&timeoutSecs={MAX_WAIT_TIMEOUT_SECS}&limit=5"),
+        format!("/v1/task-events?repoId=repo%201&timeoutSecs={MAX_WAIT_TIMEOUT_SECS}&limit=5&shortCursor=true"),
         "an over-long window must be clamped before the client can kill the call"
     );
 
@@ -1204,7 +1210,7 @@ fn wait_events_is_scoped_cursored_and_bounded_by_the_client_budget() {
     .path;
     assert_eq!(
         parent_scoped,
-        format!("/v1/task-events?parentTaskId=parent%201&includeCurrentActivity=true&shortCursor=true&timeoutSecs={DEFAULT_WAIT_TIMEOUT_SECS}")
+        format!("/v1/task-events?parentTaskId=parent%201&timeoutSecs={DEFAULT_WAIT_TIMEOUT_SECS}&shortCursor=true")
     );
     let description = &catalog
         .tools
@@ -1250,9 +1256,12 @@ fn task_session_repo_defaulting_is_shared_by_every_catalog_client() {
             "/v1/tasks/search?query=review&repoId=repo-current",
         ),
         (
+            // `include_current_activity` is cursor-implied server-side now
+            // and no longer forced onto the wire by the catalog, so an
+            // untouched request omits it entirely.
             "kanna_wait_events",
             json!({ "from": "now", "timeout_secs": 0 }),
-            "/v1/task-events?repoId=repo-current&includeCurrentActivity=true&shortCursor=true&from=now&timeoutSecs=0",
+            "/v1/task-events?repoId=repo-current&from=now&timeoutSecs=0&shortCursor=true",
         ),
     ] {
         assert_eq!(
@@ -2120,6 +2129,116 @@ fn finished_is_decided_by_a_recorded_termination_not_the_activity_flag() {
     assert!(task_value_matches_wait_until(&closed, WaitUntil::Closed));
 }
 
+/// `Reconcile` — the default `until` — resolves the instant a task becomes
+/// actionable by any of `kanna_wait_events`' cold-start signals, even while
+/// its agent is still busy, because none of them need a settling window the
+/// way runtime does: they are already durable facts on the task, not a
+/// transition that can flicker. A plain busy task with none of them still
+/// must not resolve, or every reconcile wait would return immediately.
+#[test]
+fn reconcile_resolves_on_any_actionable_signal_even_while_busy() {
+    let plain_busy = json!({
+        "activity": "working",
+        "runtimeState": "busy",
+        "closedAt": null,
+        "latestRun": { "status": "running" },
+    });
+    assert!(
+        !task_value_matches_wait_until(&plain_busy, WaitUntil::Reconcile),
+        "a plain busy task with no actionable signal must not resolve reconcile"
+    );
+
+    let blocked_while_busy = json!({
+        "activity": "working",
+        "runtimeState": "busy",
+        "closedAt": null,
+        "latestRun": { "status": "running" },
+        "blockedByTaskIds": ["blocker-1"],
+    });
+    assert!(
+        task_value_matches_wait_until(&blocked_while_busy, WaitUntil::Reconcile),
+        "an unresolved blocker resolves reconcile even while busy"
+    );
+
+    let unread_while_busy = json!({
+        "activity": "unread",
+        "runtimeState": "busy",
+        "closedAt": null,
+        "latestRun": { "status": "running" },
+    });
+    assert!(
+        task_value_matches_wait_until(&unread_while_busy, WaitUntil::Reconcile),
+        "unread resolves reconcile even while busy, unlike Finished"
+    );
+
+    let badged_while_busy = json!({
+        "activity": "working",
+        "runtimeState": "busy",
+        "closedAt": null,
+        "latestRun": { "status": "running" },
+        "attentionReason": "owner flagged this for review",
+    });
+    assert!(
+        task_value_matches_wait_until(&badged_while_busy, WaitUntil::Reconcile),
+        "an attention badge resolves reconcile even while busy"
+    );
+
+    let provider_parked_while_busy = json!({
+        "activity": "working",
+        "runtimeState": "busy",
+        "closedAt": null,
+        "latestRun": { "status": "running" },
+        "providerRejection": { "recovery": "parked-no-candidates" },
+    });
+    assert!(
+        task_value_matches_wait_until(&provider_parked_while_busy, WaitUntil::Reconcile),
+        "a provider-parked refusal resolves reconcile even while busy"
+    );
+
+    let capacity_noticed_while_busy = json!({
+        "activity": "working",
+        "runtimeState": "busy",
+        "closedAt": null,
+        "latestRun": { "status": "running" },
+        "providerCapacityNotice": { "provider": "codex", "model": "gpt-6" },
+    });
+    assert!(
+        task_value_matches_wait_until(&capacity_noticed_while_busy, WaitUntil::Reconcile),
+        "a provider capacity notice resolves reconcile even while busy"
+    );
+
+    // A fallback-started refusal is not a park: recovery keeps going
+    // automatically, so it must not resolve reconcile by itself.
+    let fallback_started_while_busy = json!({
+        "activity": "working",
+        "runtimeState": "busy",
+        "closedAt": null,
+        "latestRun": { "status": "running" },
+        "providerRejection": { "recovery": "fallback-started" },
+    });
+    assert!(
+        !task_value_matches_wait_until(&fallback_started_while_busy, WaitUntil::Reconcile),
+        "a fallback-started refusal is not parked and must not resolve reconcile"
+    );
+
+    // An empty blocker list and a null badge/notice must not themselves
+    // resolve reconcile.
+    let clear_of_every_signal = json!({
+        "activity": "working",
+        "runtimeState": "busy",
+        "closedAt": null,
+        "latestRun": { "status": "running" },
+        "blockedByTaskIds": [],
+        "attentionReason": null,
+        "providerRejection": null,
+        "providerCapacityNotice": null,
+    });
+    assert!(
+        !task_value_matches_wait_until(&clear_of_every_signal, WaitUntil::Reconcile),
+        "explicit empty/null signal fields must not themselves resolve reconcile"
+    );
+}
+
 /// A server that predates the split sends no `runtimeState`. The wait must
 /// still work off the terminal `stage_run`, and must not start resolving on
 /// read state again to compensate.
@@ -2231,8 +2350,10 @@ fn kanna_info_reports_tools_the_connected_server_cannot_serve() {
 
 /// Self-exclusion is catalog policy so `kanna-mcp` and `kanna-cli tool call`
 /// cannot drift: a repository-scoped wait from inside a task session drops the
-/// caller's own task, explicit task/parent scopes are taken literally, and
-/// `include_self` is the documented way to opt out.
+/// caller's own task, an explicit `task_ids` scope is taken literally, and
+/// `exclude_own: false` is the documented way to opt out. `exclude_own` is a
+/// task-scope filter and nothing more: it is consumed entirely client-side
+/// (folded into `exclude_task_ids`) and never reaches the server on the wire.
 #[test]
 fn wait_events_self_exclusion_is_shared_catalog_policy() {
     let catalog = bundled_catalog();
@@ -2244,6 +2365,10 @@ fn wait_events_self_exclusion_is_shared_catalog_policy() {
     )
     .expect("apply policy");
     assert_eq!(defaulted["exclude_task_ids"], json!(["manager-1"]));
+    assert!(
+        defaulted.get("exclude_own").is_none(),
+        "exclude_own is consumed, never forwarded"
+    );
     let resolved = resolve_request_with_repo_context(
         &catalog,
         "kanna_wait_events",
@@ -2251,9 +2376,11 @@ fn wait_events_self_exclusion_is_shared_catalog_policy() {
         Some(&json!({ "repoId": "repo-current" })),
     )
     .expect("resolve defaulted wait");
+    // Neither excludeOwn (client-only, never sent) nor includeCurrentActivity
+    // (cursor-implied server-side, no catalog default any more) reach the wire.
     assert_eq!(
         resolved.path,
-        "/v1/task-events?repoId=repo-current&excludeTaskIds=manager-1&excludeOwn=true&includeCurrentActivity=true&shortCursor=true&from=now&timeoutSecs=240"
+        "/v1/task-events?repoId=repo-current&excludeTaskIds=manager-1&from=now&timeoutSecs=240&shortCursor=true"
     );
 
     let explicit_repo = args_with_self_exclusion(
@@ -2297,33 +2424,45 @@ fn wait_events_self_exclusion_is_shared_catalog_policy() {
         );
     }
 
-    for literal in [
-        json!({ "task_ids": ["manager-1", "child-a"] }),
-        json!({ "parent_task_id": "manager-1" }),
-    ] {
-        let unchanged = args_with_self_exclusion("kanna_wait_events", &literal, Some("manager-1"))
+    // An explicit `task_ids` list is already literal: naming your own id
+    // there is a deliberate request to watch it, so self-exclusion never
+    // applies and the args pass through completely unchanged (`exclude_own`
+    // is still consumed, but there was none to remove here).
+    let literal_task_ids = json!({ "task_ids": ["manager-1", "child-a"] });
+    let unchanged =
+        args_with_self_exclusion("kanna_wait_events", &literal_task_ids, Some("manager-1"))
             .expect("apply policy");
-        let mut expected = literal.clone();
-        // Echo suppression is not scope-dependent: the loop it breaks — send
-        // input to a child, wait, wake on the delivery announcement — happens
-        // under exactly these explicit scopes.
-        expected["exclude_own"] = json!(true);
-        assert_eq!(
-            unchanged, expected,
-            "explicit scopes are taken literally apart from echo suppression"
-        );
-    }
+    assert_eq!(
+        unchanged, literal_task_ids,
+        "an explicit task_ids scope is taken completely literally"
+    );
+
+    // `parent_task_id` gets no such carve-out: self-exclusion still runs, but
+    // it is a harmless no-op there, because a parent scope already excludes
+    // the parent's own events structurally (only direct children are ever
+    // returned) — adding the parent's own id to exclude_task_ids drops
+    // nothing that scope would ever have produced anyway.
+    let parent_scope = args_with_self_exclusion(
+        "kanna_wait_events",
+        &json!({ "parent_task_id": "manager-1" }),
+        Some("manager-1"),
+    )
+    .expect("apply policy");
+    assert_eq!(
+        parent_scope,
+        json!({ "parent_task_id": "manager-1", "exclude_task_ids": ["manager-1"] })
+    );
 
     let included = args_with_self_exclusion(
         "kanna_wait_events",
-        &json!({ "repo_id": "repo-explicit", "include_self": true, "exclude_task_ids": ["other"] }),
+        &json!({ "repo_id": "repo-explicit", "exclude_own": false, "exclude_task_ids": ["other"] }),
         Some("manager-1"),
     )
     .expect("apply policy");
     assert_eq!(
         included,
-        json!({ "repo_id": "repo-explicit", "exclude_task_ids": ["other"], "exclude_own": true }),
-        "include_self opts out of self-exclusion only"
+        json!({ "repo_id": "repo-explicit", "exclude_task_ids": ["other"] }),
+        "exclude_own: false opts out of self-exclusion only, and is itself consumed"
     );
 
     let outside_session =
@@ -2332,26 +2471,33 @@ fn wait_events_self_exclusion_is_shared_catalog_policy() {
     assert_eq!(
         outside_session,
         json!({ "repo_id": "repo-1" }),
-        "a caller that is not a task session has no own deliveries to suppress"
+        "a caller that is not a task session has no own task to exclude, and defaults exclude_own to false"
     );
 
-    // The echo of a manager's own send is what wakes it a beat after it sends;
-    // an explicit value always wins over the session default, in both
-    // directions.
-    let kept_echo = args_with_self_exclusion(
+    // An explicit value always wins over the session default, in both
+    // directions, and is always consumed rather than forwarded.
+    let kept_own_events = args_with_self_exclusion(
         "kanna_wait_events",
-        &json!({ "task_ids": ["child-a"], "exclude_own": false }),
+        &json!({ "parent_task_id": "manager-1", "exclude_own": false }),
         Some("manager-1"),
     )
     .expect("apply policy");
-    assert_eq!(kept_echo["exclude_own"], json!(false));
-    let asked_outside_session = args_with_self_exclusion(
+    assert_eq!(
+        kept_own_events,
+        json!({ "parent_task_id": "manager-1" }),
+        "exclude_own: false disables self-exclusion even for a session caller"
+    );
+    let excluded_outside_session = args_with_self_exclusion(
         "kanna_wait_events",
-        &json!({ "task_ids": ["child-a"], "exclude_own": true }),
+        &json!({ "parent_task_id": "outsider" }),
         None,
     )
     .expect("apply policy");
-    assert_eq!(asked_outside_session["exclude_own"], json!(true));
+    assert_eq!(
+        excluded_outside_session,
+        json!({ "parent_task_id": "outsider" }),
+        "no task id is known outside a session, so there is nothing to exclude by default"
+    );
 
     let other_tool = args_with_self_exclusion(
         "kanna_list_recent_tasks",
@@ -2363,14 +2509,14 @@ fn wait_events_self_exclusion_is_shared_catalog_policy() {
 
     let error = args_with_self_exclusion(
         "kanna_wait_events",
-        &json!({ "include_self": "yes" }),
+        &json!({ "exclude_own": "yes" }),
         Some("manager-1"),
     )
-    .expect_err("include_self must be boolean");
-    assert!(error.contains("include_self must be a boolean"), "{error}");
+    .expect_err("exclude_own must be boolean");
+    assert!(error.contains("exclude_own must be a boolean"), "{error}");
 
     assert_eq!(
-        task_event_self_exclusion(false, false, Some("  ")),
+        task_event_self_exclusion(false, true, Some("  ")),
         None,
         "a blank task id is not a session"
     );
@@ -2385,7 +2531,6 @@ fn wait_events_batching_parameters_reach_the_wire_with_their_bounds() {
 
     for (name, key) in [
         ("event_types", "eventTypes"),
-        ("exclude_own", "excludeOwn"),
         ("min_events", "minEvents"),
         ("debounce_ms", "debounceMs"),
         ("min_interval_ms", "minIntervalMs"),
@@ -2400,6 +2545,18 @@ fn wait_events_batching_parameters_reach_the_wire_with_their_bounds() {
         );
         assert_eq!(param.key.as_deref(), Some(key), "{name} wire key");
     }
+
+    // `exclude_own` is the odd one out here: it is a client-only, task-scope
+    // filter (folded into exclude_task_ids by args_with_self_exclusion) and
+    // never reaches the server on the wire at all.
+    let exclude_own = catalog
+        .find_param("kanna_wait_events", "exclude_own")
+        .expect("exclude_own must be declared");
+    assert_eq!(
+        exclude_own.location,
+        ParamLoc::Client,
+        "exclude_own is shaped client-side"
+    );
 
     let min_events = catalog
         .find_param("kanna_wait_events", "min_events")
@@ -2431,9 +2588,16 @@ fn wait_events_batching_parameters_reach_the_wire_with_their_bounds() {
         }),
     )
     .expect("resolve batched wait");
+    // `exclude_own` is a raw arg here (this test calls `resolve_request`
+    // directly, bypassing `args_with_self_exclusion`), so it is simply
+    // dropped by its `Client` location — never reaches the wire.
+    assert!(
+        !resolved.path.contains("excludeOwn"),
+        "exclude_own must never reach the server: {}",
+        resolved.path
+    );
     for expected in [
         "eventTypes=run.finished%2Ctask.pr_created",
-        "excludeOwn=true",
         "minEvents=5",
         "debounceMs=2000",
         "minIntervalMs=5000",
@@ -2489,16 +2653,17 @@ fn the_batch_release_rule_is_shared_and_never_holds_a_full_page() {
     assert_eq!(clamp_task_event_hold_ms(None), 0);
 }
 
-/// `include_self` is advertised and validated like every other argument but
-/// never reaches the wire: the server has no notion of "self".
+/// `exclude_own` is advertised and validated like every other argument but
+/// never reaches the wire: the server has no notion of "self" any more — the
+/// old, separate `include_self` parameter was folded into it.
 #[test]
-fn include_self_is_a_client_only_parameter() {
+fn exclude_own_is_a_client_only_parameter() {
     let catalog = bundled_catalog();
-    let include_self = catalog
-        .find_param("kanna_wait_events", "include_self")
-        .expect("include_self declared");
-    assert_eq!(include_self.location, ParamLoc::Client);
-    assert_eq!(include_self.param_type, ParamType::Boolean);
+    let exclude_own = catalog
+        .find_param("kanna_wait_events", "exclude_own")
+        .expect("exclude_own declared");
+    assert_eq!(exclude_own.location, ParamLoc::Client);
+    assert_eq!(exclude_own.param_type, ParamType::Boolean);
     let exclude = catalog
         .find_param("kanna_wait_events", "exclude_task_ids")
         .expect("exclude_task_ids declared");
@@ -2506,15 +2671,17 @@ fn include_self_is_a_client_only_parameter() {
     assert_eq!(exclude.param_type, ParamType::StringArray);
     assert_eq!(exclude.key.as_deref(), Some("excludeTaskIds"));
 
+    // `resolve_request` alone (bypassing `args_with_self_exclusion`) drops a
+    // client-only param outright — it never reaches the built path.
     let resolved = resolve_request(
         &catalog,
         "kanna_wait_events",
-        &json!({ "repo_id": "repo-1", "include_self": true, "exclude_task_ids": ["a", "b"], "timeout_secs": 0 }),
+        &json!({ "repo_id": "repo-1", "exclude_own": true, "exclude_task_ids": ["a", "b"], "timeout_secs": 0 }),
     )
     .expect("resolve");
     assert_eq!(
         resolved.path,
-        "/v1/task-events?repoId=repo-1&excludeTaskIds=a%2Cb&includeCurrentActivity=true&shortCursor=true&timeoutSecs=0"
+        "/v1/task-events?repoId=repo-1&excludeTaskIds=a%2Cb&timeoutSecs=0&shortCursor=true"
     );
 
     let schema = bundled_catalog().tools_list_value();
@@ -2525,7 +2692,8 @@ fn include_self_is_a_client_only_parameter() {
         .find(|tool| tool["name"] == "kanna_wait_events")
         .expect("wait events tool");
     let properties = &wait_events["inputSchema"]["properties"];
-    assert!(properties.get("include_self").is_some());
+    assert!(properties.get("include_self").is_none());
+    assert!(properties.get("exclude_own").is_some());
     assert!(properties.get("exclude_task_ids").is_some());
     assert!(wait_events["description"]
         .as_str()
@@ -2687,7 +2855,7 @@ fn subscribe_events_timing_overrides_are_omitted_from_the_wire_when_not_given() 
     )
     .expect("minimal subscribe request resolves");
 
-    for key in ["quietMs", "maxHoldMs", "minAdmissionIntervalMs"] {
+    for key in ["quietMs", "minAdmissionIntervalMs"] {
         assert!(
             minimal.body.get(key).is_none(),
             "{key} must be entirely absent from an omitted-knob request body, not merely null: {}",
@@ -2705,14 +2873,29 @@ fn subscribe_events_timing_overrides_are_omitted_from_the_wire_when_not_given() 
             "local_only": true,
             "delivery": "input",
             "quiet_ms": 300_000,
-            "max_hold_ms": 300_000,
             "min_admission_interval_ms": 60_000,
         }),
     )
     .expect("explicit subscribe request resolves");
     assert_eq!(explicit.body["quietMs"], 300_000);
-    assert_eq!(explicit.body["maxHoldMs"], 300_000);
     assert_eq!(explicit.body["minAdmissionIntervalMs"], 60_000);
+
+    // `max_hold_ms` collapsed into `quiet_ms` and no longer exists: the
+    // server rejects it outright rather than silently ignoring it.
+    let rejected = resolve_request(
+        &catalog,
+        "kanna_subscribe_events",
+        &json!({
+            "task_id": "manager-1",
+            "local_only": true,
+            "delivery": "input",
+            "max_hold_ms": 300_000,
+        }),
+    );
+    assert!(
+        rejected.is_err(),
+        "max_hold_ms must be rejected, not silently accepted and ignored"
+    );
 }
 
 /// `diagnostic` reaches the wire the same way on all three subscription

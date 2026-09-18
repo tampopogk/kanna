@@ -176,6 +176,22 @@ pub(crate) struct TaskDetail {
     pub(crate) child_task_ids: Option<Vec<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) latest_run: Option<TaskLatestRun>,
+    /// Unresolved blocker task ids. Same actionable vocabulary a
+    /// `kanna_wait_events` cold-start snapshot uses, so the typed wait
+    /// resolves on the same signals as the MCP tool.
+    #[serde(default)]
+    pub(crate) blocked_by_task_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) provider_rejection: Option<TaskProviderRejection>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) provider_capacity_notice: Option<Value>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct TaskProviderRejection {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) recovery: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -221,6 +237,12 @@ struct TaskDetailDef {
     child_task_ids: Option<Vec<String>>,
     #[serde(default)]
     latest_run: Option<TaskLatestRun>,
+    #[serde(default)]
+    blocked_by_task_ids: Vec<String>,
+    #[serde(default)]
+    provider_rejection: Option<TaskProviderRejection>,
+    #[serde(default)]
+    provider_capacity_notice: Option<Value>,
 }
 
 impl<'de> Deserialize<'de> for TaskDetail {

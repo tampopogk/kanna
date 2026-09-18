@@ -464,23 +464,41 @@ pub fn run_status_is_terminal(status: &str) -> bool {
     matches!(status, "succeeded" | "failed")
 }
 
-/// The three facts a wait predicate needs out of a task detail.
+/// The facts a wait predicate needs out of a task detail.
 ///
 /// It exists so every client surface that answers "has this task finished?" —
 /// `kanna-mcp`, the typed `kanna-cli` wait, and the catalog-driven `kanna-cli`
-/// wait — reads the same fields the same way. The three used to carry their own
+/// wait — reads the same fields the same way. These used to carry their own
 /// copy of the predicate, which is how they drifted.
 ///
-/// `activity` is deliberately absent. It is a display value blending the
-/// runtime and read dimensions, so `unread` means "a human has not read the
-/// latest output" — which a *working* task satisfies. Waits read
-/// `runtimeState`, the runtime dimension, instead.
+/// `activity` itself is deliberately absent — it is a display value blending
+/// the runtime and read dimensions, so it cannot say on its own which of
+/// `runtimeState` or `unread` changed. `unread`, `blocked`, `badged`,
+/// `provider_parked` and `provider_capacity_noticed` are its independent
+/// components, the same actionable vocabulary `kanna_wait_events`' cold-start
+/// snapshot uses (see `task_is_actionable` in `kanna-server`): the two tools
+/// share one mental model of "is this task worth a manager's attention" so a
+/// caller does not have to learn it twice.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct WaitTaskState<'a> {
     pub closed: bool,
     pub runtime_state: Option<&'a str>,
     pub runtime_settled: bool,
     pub latest_run_status: Option<&'a str>,
+    /// A human has not read the task's latest output — the read dimension,
+    /// independent of whether the agent is still running.
+    pub unread: bool,
+    /// The task has at least one unresolved blocker.
+    pub blocked: bool,
+    /// An explicit attention annotation is set.
+    pub badged: bool,
+    /// A provider refused this task's turn because its allowance is spent,
+    /// and nothing is left to try automatically — the task is parked for a
+    /// person.
+    pub provider_parked: bool,
+    /// A provider refused this task's turn for transient capacity; the
+    /// session is alive and the recovery is to retry the turn.
+    pub provider_capacity_noticed: bool,
 }
 
 /// Whether a task has reached the state a wait was asked to block for.
@@ -490,25 +508,39 @@ pub struct WaitTaskState<'a> {
 /// replacement (`runtimeState == "exited"`). All three are durable records of
 /// a termination, written where the termination happens.
 ///
-/// It used to also resolve on `activity == "unread"`, which is a read-state
-/// value, not a termination: an actively working task whose last output nobody
-/// has read carries `unread` too, so a wait could report a busy agent as
-/// finished. An agent whose *process* ends without recording a verdict is
-/// covered positively by `exited`.
+/// It used to also resolve on `activity == "unread"` alone, which is a
+/// read-state value, not a termination: an actively working task whose last
+/// output nobody has read carries `unread` too, so a wait could report a busy
+/// agent as finished. An agent whose *process* ends without recording a
+/// verdict is covered positively by `exited`.
 ///
-/// `idle` deliberately does not resolve: the daemon reports `idle` for a task
-/// parked at its composer between turns and for one that never started, and
-/// neither has finished anything. Termination, not quiet, is the signal.
+/// `idle` deliberately does not resolve on its own: the daemon reports `idle`
+/// for a task parked at its composer between turns and for one that never
+/// started, and neither has finished anything. Termination, not quiet, is the
+/// signal.
 ///
 /// The default `Reconcile` also accepts `runtimeSettled`: the server's
 /// observation of non-busy runtime after the existing debounce. It surfaces
 /// parked work without turning that observation into a completion verdict.
 /// An older server without that field retains termination-only behavior.
+/// Beyond runtime, `Reconcile` also resolves the instant the task becomes
+/// actionable by any of the independent signals above — unread, blocked,
+/// badged, provider-parked or capacity-noticed — even while the agent is
+/// still busy: a caller blocked on one task must not sit out its whole
+/// timeout because the task that just gained an attention badge, or hit a
+/// provider capacity notice, happens to still be running. None of these need
+/// their own settling window the way runtime does; they are already durable
+/// facts on the task, not a transition that can flicker.
 pub fn task_state_matches_wait_until(state: WaitTaskState<'_>, until: WaitUntil) -> bool {
     match until {
         WaitUntil::Reconcile => {
             (state.runtime_settled
                 && matches!(state.runtime_state, Some("idle" | "waiting" | "exited")))
+                || state.unread
+                || state.blocked
+                || state.badged
+                || state.provider_parked
+                || state.provider_capacity_noticed
                 || task_state_matches_wait_until(state, WaitUntil::Finished)
         }
         WaitUntil::Closed => state.closed,
@@ -533,6 +565,22 @@ pub fn wait_task_state(task: &Value) -> WaitTaskState<'_> {
             .get("latestRun")
             .and_then(|run| run.get("status"))
             .and_then(Value::as_str),
+        unread: task.get("activity").and_then(Value::as_str) == Some("unread"),
+        blocked: task
+            .get("blockedByTaskIds")
+            .and_then(Value::as_array)
+            .is_some_and(|blockers| !blockers.is_empty()),
+        badged: task
+            .get("attentionReason")
+            .is_some_and(|reason| !reason.is_null()),
+        provider_parked: task
+            .get("providerRejection")
+            .and_then(|rejection| rejection.get("recovery"))
+            .and_then(Value::as_str)
+            .is_some_and(|recovery| recovery.starts_with("parked-")),
+        provider_capacity_noticed: task
+            .get("providerCapacityNotice")
+            .is_some_and(|notice| !notice.is_null()),
     }
 }
 
@@ -1199,22 +1247,29 @@ pub fn repo_context_task_id(
     Ok(Some(task_id.to_string()))
 }
 
-/// The task whose events a repository-scoped wait drops so it does not wake
-/// itself, or `None` when no exclusion applies.
+/// The task whose events a wait drops so it does not wake on its own task's
+/// events, or `None` when no exclusion applies.
 ///
 /// Self-exclusion is tool policy shared by every catalog client, so it lives
 /// here beside repository defaulting. It applies only when the wait is
-/// repository-scoped — an explicit `repo_id` / `repo_remote_url_hash`, or the
-/// task-session repository default — because an explicit `task_ids` list is
-/// already literal and a `parent_task_id` scope excludes the parent
-/// structurally. `include_self` turns the default off; explicit
-/// `exclude_task_ids` entries are never touched by either.
+/// repository- or parent-scoped — an explicit `repo_id` / `repo_remote_url_hash`,
+/// the task-session repository default, or `parent_task_id` — because an
+/// explicit `task_ids` list is already literal: naming your own id there is a
+/// deliberate request to watch it. `exclude_own` (default true whenever a
+/// caller task id is known) turns the exclusion off when set `false`;
+/// explicit `exclude_task_ids` entries are never touched by it.
+///
+/// This is a task-scope filter and nothing more: it drops events *about* the
+/// caller's own task. It does not, and must not, drop an event on some other
+/// task in scope merely because the caller's own action caused it — sending
+/// input to a watched child and then waking on that child's own
+/// `task.input_delivered` echo is expected and correct.
 pub fn task_event_self_exclusion(
     explicit_task_scope: bool,
-    include_self: bool,
+    exclude_own: bool,
     current_task_id: Option<&str>,
 ) -> Option<String> {
-    if explicit_task_scope || include_self {
+    if explicit_task_scope || !exclude_own {
         return None;
     }
     current_task_id
@@ -1225,7 +1280,8 @@ pub fn task_event_self_exclusion(
 
 /// Apply [`task_event_self_exclusion`] to `kanna_wait_events` arguments,
 /// appending the caller task to `exclude_task_ids` and consuming the
-/// client-only `include_self` flag. Every other tool passes through unchanged.
+/// client-only `exclude_own` flag (default true whenever a caller task id is
+/// known). Every other tool passes through unchanged.
 pub fn args_with_self_exclusion(
     tool_name: &str,
     args: &Value,
@@ -1238,39 +1294,28 @@ pub fn args_with_self_exclusion(
         .as_object()
         .cloned()
         .ok_or_else(|| "tool arguments must be a JSON object".to_string())?;
-    let include_self = match resolved_args.remove("include_self") {
-        Some(Value::Bool(include_self)) => include_self,
-        Some(Value::Null) | None => false,
-        Some(_) => return Err("include_self must be a boolean".to_string()),
+    let has_task_id = current_task_id
+        .map(str::trim)
+        .is_some_and(|task_id| !task_id.is_empty());
+    let exclude_own = match resolved_args.remove("exclude_own") {
+        Some(Value::Bool(exclude_own)) => exclude_own,
+        Some(Value::Null) | None => has_task_id,
+        Some(_) => return Err("exclude_own must be a boolean".to_string()),
     };
-    // Match the server's scope resolution: empty task-id arrays and blank
-    // parent ids fall through to repository scope, so they must not disable
-    // the repository watch's default self-exclusion.
-    let explicit_task_ids = match resolved_args.get("task_ids") {
+    // Match the server's scope resolution: an empty task-id array falls
+    // through to repository scope, so it must not disable the repository
+    // watch's default self-exclusion. `parent_task_id` needs no equivalent
+    // check: it excludes the parent's own events structurally (only direct
+    // children are ever in that scope), so self-exclusion is already a no-op
+    // there regardless of this flag.
+    let explicit_task_scope = match resolved_args.get("task_ids") {
         Some(Value::Null) | None => false,
         Some(value) => string_array_value(value, "task_ids")?
             .iter()
             .any(|task_id| !task_id.trim().is_empty()),
     };
-    let explicit_parent_scope = resolved_args
-        .get("parent_task_id")
-        .and_then(Value::as_str)
-        .is_some_and(|parent_task_id| !parent_task_id.trim().is_empty());
-    let explicit_task_scope = explicit_task_ids || explicit_parent_scope;
-    // Echo suppression is not scope-dependent the way self-exclusion is: the
-    // loop it exists to break — send input to a child, wait, wake on the
-    // delivery announcement — happens under an explicit `task_ids` scope. A
-    // caller in a task session gets it by default on every scope, and an
-    // explicit value always wins.
-    if current_task_id
-        .map(str::trim)
-        .is_some_and(|task_id| !task_id.is_empty())
-        && !matches!(resolved_args.get("exclude_own"), Some(value) if !value.is_null())
-    {
-        resolved_args.insert("exclude_own".to_string(), Value::Bool(true));
-    }
     let Some(self_task_id) =
-        task_event_self_exclusion(explicit_task_scope, include_self, current_task_id)
+        task_event_self_exclusion(explicit_task_scope, exclude_own, current_task_id)
     else {
         return Ok(Value::Object(resolved_args));
     };
