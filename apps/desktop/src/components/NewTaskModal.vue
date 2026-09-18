@@ -213,7 +213,9 @@ function handleSubmit() {
     selectedBaseBranch.value,
     "pty",
     selectedBlockerItems.value.map((item) => item.id),
-    ...(agentProvider.value === "opencode" && model.value ? [model.value] as [string] : [] as []),
+    ...((agentProvider.value === "opencode" || agentProvider.value === "copilot") && model.value
+      ? [model.value] as [string]
+      : [] as []),
   );
   prompt.value = "";
 }
@@ -409,7 +411,12 @@ function handleKeydown(e: KeyboardEvent) {
         </button>
       </div>
       <div class="modal-body">
-        <OpenCodeModelSelect v-if="agentProvider === 'opencode'" v-model="model" :repo-id="repoId" />
+        <OpenCodeModelSelect
+          v-if="agentProvider === 'opencode' || agentProvider === 'copilot'"
+          v-model="model"
+          :repo-id="repoId"
+          :provider="agentProvider === 'opencode' ? 'opencode' : 'copilot'"
+        />
         <textarea
           ref="textareaRef"
           v-model="prompt"

@@ -1619,6 +1619,14 @@ export async function fetchDesktopOpenCodeModels(repoId: string): Promise<OpenCo
   return requestJson(`/v1/repos/${encodeURIComponent(repoId)}/opencode-models`);
 }
 
+export interface CopilotModelOption {
+  id: string;
+}
+
+export async function fetchDesktopCopilotModels(repoId: string): Promise<CopilotModelOption[]> {
+  return requestJson(`/v1/repos/${encodeURIComponent(repoId)}/copilot-models`);
+}
+
 export interface PinnedTaskWorkflow {
   [key: string]: unknown;
   stages: Array<{ [key: string]: unknown; name: string; agent_provider?: AgentSelectionEntry | AgentSelectionEntry[]; post?: unknown }>;

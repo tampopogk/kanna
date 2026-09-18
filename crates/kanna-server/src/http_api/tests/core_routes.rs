@@ -4,6 +4,9 @@ use std::io::{Read, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex as StdMutex};
 use std::time::{Duration, Instant};
+use tokio::sync::Mutex;
+
+static COPILOT_CONFIG_DIR_LOCK: Mutex<()> = Mutex::const_new(());
 
 fn pairing_create_request(peer: [u8; 4]) -> Request<Body> {
     let mut request = Request::post("/v1/pairing/sessions")
@@ -9572,4 +9575,49 @@ esac
     assert_eq!(result[0]["connection"], "http://127.0.0.1:8000");
     assert!(!String::from_utf8_lossy(&body).contains("secret"));
     std::fs::remove_dir_all(repo_root).unwrap();
+}
+
+#[tokio::test]
+async fn copilot_model_route_returns_only_recent_model_ids() {
+    let _environment = COPILOT_CONFIG_DIR_LOCK.lock().await;
+    let repo_root = crate::test_paths::unique_test_path("kanna-copilot-models");
+    let config_dir = crate::test_paths::unique_test_path("kanna-copilot-model-config");
+    init_test_git_repo(&repo_root);
+    std::fs::create_dir_all(&config_dir).unwrap();
+    std::fs::write(
+        config_dir.join("config.json"),
+        r#"{"recentModelIds":["gpt-5.6-terra"],"token":"secret"}"#,
+    )
+    .unwrap();
+    let previous_config_dir = std::env::var_os("COPILOT_CONFIG_DIR");
+    std::env::set_var("COPILOT_CONFIG_DIR", &config_dir);
+
+    let state = super::test_state_with_seed("desktop-copilot-models", "Model Machine", |db| {
+        db.insert_test_repo_with_path("repo-models", &repo_root.to_string_lossy(), "Models")
+            .unwrap();
+    });
+    let response = super::router(state)
+        .oneshot(
+            Request::get("/v1/repos/repo-models/copilot-models")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    match previous_config_dir {
+        Some(value) => std::env::set_var("COPILOT_CONFIG_DIR", value),
+        None => std::env::remove_var("COPILOT_CONFIG_DIR"),
+    }
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&body).unwrap(),
+        serde_json::json!([{"id":"gpt-5.6-terra"}])
+    );
+    assert!(!String::from_utf8_lossy(&body).contains("secret"));
+    std::fs::remove_dir_all(repo_root).unwrap();
+    std::fs::remove_dir_all(config_dir).unwrap();
 }

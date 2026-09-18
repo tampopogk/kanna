@@ -998,6 +998,21 @@ pub(super) async fn list_opencode_models(
         .map_err(|error| (axum::http::StatusCode::SERVICE_UNAVAILABLE, error))
 }
 
+/// Recent model IDs are advisory suggestions from the execution machine. The
+/// provider owns the catalog, so callers may always enter another model ID.
+pub(super) async fn list_copilot_models(
+    State(state): State<Arc<AppState>>,
+    Path(repo_id): Path<String>,
+) -> Result<Json<Vec<crate::copilot_models::CopilotModel>>, HttpError> {
+    let models = run_blocking_http(move || {
+        get_definition_repo(&state, &repo_id)?;
+        crate::copilot_models::discover()
+            .map_err(|error| (axum::http::StatusCode::SERVICE_UNAVAILABLE, error))
+    })
+    .await?;
+    Ok(Json(models))
+}
+
 #[derive(serde::Deserialize)]
 pub(super) struct DoctorQuery {
     candidate_path: Option<String>,
