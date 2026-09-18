@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+  EMAIL_VERIFICATION_POLL_MS,
   createMobileAuthSession,
   type MobileAuthSdk,
   type MobileAuthUser
@@ -42,6 +43,7 @@ function createSdkMock(initialUser: MobileAuthUser | null = null): MobileAuthSdk
       return currentUser;
     }),
     reloadUser: vi.fn(async () => currentUser),
+    sendEmailVerification: vi.fn(async () => undefined),
     getCloudAccess: vi.fn(async () => "active" as const),
     signOut: vi.fn(async () => {
       currentUser = null;
@@ -265,6 +267,60 @@ describe("createMobileAuthSession", () => {
       grace();
       await session.signOut();
       expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("watches an unverified account every 5 seconds and loads the account once verification lands", async () => {
+    vi.useFakeTimers();
+    try {
+      const sdk = createSdkMock();
+      const session = createMobileAuthSession({ sdk });
+      await session.initialize();
+      await session.createUserWithEmailPassword({ email: "new@example.test", password: "secret1" });
+      expect(session.getState()).toMatchObject({ status: "signedIn", user: { emailVerified: false } });
+      expect(vi.getTimerCount()).toBe(1);
+
+      // Still unverified: the record is reloaded, nothing else is read or published.
+      const published: unknown[] = [];
+      session.subscribe((state) => { published.push(state); });
+      await vi.advanceTimersByTimeAsync(EMAIL_VERIFICATION_POLL_MS);
+      expect(sdk.reloadUser).toHaveBeenCalledTimes(1);
+      expect(sdk.getCloudAccess).not.toHaveBeenCalled();
+      expect(published).toHaveLength(1);
+
+      // The link is tapped elsewhere: the next poll sees it and the full
+      // account state (entitlement, fresh token) follows without a button.
+      const current = sdk.getCurrentUser();
+      vi.mocked(sdk.reloadUser).mockImplementation(async () => current ? { ...current, emailVerified: true } : null);
+      await vi.advanceTimersByTimeAsync(EMAIL_VERIFICATION_POLL_MS);
+      expect(session.getState()).toMatchObject({ status: "signedIn", user: { emailVerified: true, cloudAccess: "active" } });
+      expect(sdk.getIdToken).toHaveBeenCalledWith(true);
+      expect(vi.getTimerCount()).toBe(0);
+
+      await vi.advanceTimersByTimeAsync(EMAIL_VERIFICATION_POLL_MS * 3);
+      expect(sdk.reloadUser).toHaveBeenCalledTimes(3);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("stops the verification watch on sign-out and re-sends the verification email on request", async () => {
+    vi.useFakeTimers();
+    try {
+      const sdk = createSdkMock();
+      const session = createMobileAuthSession({ sdk });
+      await session.initialize();
+      await expect(session.sendEmailVerification()).rejects.toThrow("Sign in before requesting");
+      await session.createUserWithEmailPassword({ email: "new@example.test", password: "secret1" });
+      await session.sendEmailVerification();
+      expect(sdk.sendEmailVerification).toHaveBeenCalledOnce();
+      expect(vi.getTimerCount()).toBe(1);
+      await session.signOut();
+      expect(vi.getTimerCount()).toBe(0);
+      await vi.advanceTimersByTimeAsync(EMAIL_VERIFICATION_POLL_MS * 2);
+      expect(sdk.reloadUser).not.toHaveBeenCalled();
     } finally {
       vi.useRealTimers();
     }

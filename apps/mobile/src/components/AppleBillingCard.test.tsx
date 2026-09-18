@@ -56,6 +56,11 @@ describe("native source-aware billing", () => {
     expect(byTestId(MOBILE_E2E_IDS.appleBillingCard)).toHaveLength(1);
     expect(byTestId(MOBILE_E2E_IDS.appleBillingPrice)[0]?.props.children).toBe("CA$5.00 per month");
     expect(byTestId(MOBILE_E2E_IDS.appleBillingSubscribeButton)[0]?.props.disabled).toBe(false);
+    // The purchase call to action renders as a filled primary button, not a text link.
+    expect(byTestId(MOBILE_E2E_IDS.appleBillingSubscribeButton)[0]?.props.style).toEqual([
+      expect.objectContaining({ backgroundColor: "#E8F1FF", borderRadius: 16 }),
+      null
+    ]);
     expect(byTestId(MOBILE_E2E_IDS.appleBillingRestoreButton)[0]?.props.disabled).toBe(false);
     expect(byTestId(MOBILE_E2E_IDS.appleBillingEulaLink)).toHaveLength(1);
     expect(byTestId(MOBILE_E2E_IDS.appleBillingPrivacyLink)).toHaveLength(1);
