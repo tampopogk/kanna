@@ -477,25 +477,7 @@ pub struct TaskEventFilters {
     /// `exclude_event_types` for a manager that knows the short list it acts
     /// on and would otherwise have to enumerate every noisy type instead.
     pub include_event_types: Vec<String>,
-    /// Drop the announcements of deliveries a manager declared itself the
-    /// author of. It breaks the loop where an orchestrator sends input to a
-    /// task and then waits on it: without this the delivery's own
-    /// `task.input_delivered` row ends the very next wait, before the agent it
-    /// spoke to has done anything.
-    ///
-    /// The match is positive and is exactly as wide as the delivering caller's
-    /// own declaration: `payload.source == "manager"` on
-    /// `task.input_delivered` and `task.raw_input_delivered`. An operator's
-    /// delivery is a human intervening in a task a manager is watching and is
-    /// never dropped, and a caller that declared nothing is indistinguishable
-    /// from that human, so it is not dropped either.
-    pub exclude_own_deliveries: bool,
 }
-
-/// Delivery announcements, and the source label that makes one a manager's own
-/// echo. Matched in SQL so a suppressed echo does not end the wait at all.
-const DELIVERY_EVENT_TYPES: [&str; 2] = ["task.input_delivered", "task.raw_input_delivered"];
-const OWN_DELIVERY_SOURCE: &str = "manager";
 
 impl TaskEventFilters {
     /// Whether a row of this type survives both type lists. An explicit
@@ -520,40 +502,17 @@ impl TaskEventFilters {
     /// them.
     fn clauses(&self, task_id_column: &str) -> String {
         format!(
-            "{}{}{}{}",
+            "{}{}{}",
             exclusion_clause(task_id_column, &self.exclude_task_ids),
             exclusion_clause("type", &self.exclude_event_types),
             inclusion_clause("type", &self.include_event_types),
-            self.own_delivery_clause()
         )
-    }
-
-    fn own_delivery_clause(&self) -> String {
-        if !self.exclude_own_deliveries {
-            return String::new();
-        }
-        let placeholders = vec!["?"; DELIVERY_EVENT_TYPES.len()].join(", ");
-        format!(" AND NOT (type IN ({placeholders}) AND json_extract(payload, '$.source') = ?)")
-    }
-
-    fn own_delivery_params(&self) -> Vec<SqlValue> {
-        if !self.exclude_own_deliveries {
-            return Vec::new();
-        }
-        DELIVERY_EVENT_TYPES
-            .iter()
-            .map(|event_type| SqlValue::Text((*event_type).to_string()))
-            .chain(std::iter::once(SqlValue::Text(
-                OWN_DELIVERY_SOURCE.to_string(),
-            )))
-            .collect()
     }
 
     fn params(&self) -> impl Iterator<Item = SqlValue> + '_ {
         exclusion_params(&self.exclude_task_ids)
             .chain(exclusion_params(&self.exclude_event_types))
             .chain(exclusion_params(&self.include_event_types))
-            .chain(self.own_delivery_params())
     }
 }
 
@@ -651,6 +610,46 @@ impl Db {
         let rows = statement.query_map(rusqlite::params_from_iter(params), |row| {
             Ok((row.get(0)?, row.get(1)?))
         })?;
+        rows.collect()
+    }
+
+    /// Open (non-closed) task ids in scope, paginated by id like
+    /// [`Self::list_non_busy_task_runtime_states`]. Unlike that method this
+    /// applies no runtime-status predicate: a cold-start snapshot's
+    /// actionability spans more than the runtime dimension (unread, blocked,
+    /// attention-badged, provider-parked or capacity-noticed), so the caller
+    /// checks each candidate's full task detail rather than a narrow SQL
+    /// filter here.
+    pub fn list_open_task_ids(
+        &self,
+        scope: &TaskEventScope,
+        filters: &TaskEventFilters,
+        after_task_id: Option<&str>,
+        limit: i64,
+    ) -> Result<Vec<String>, rusqlite::Error> {
+        let sql = format!(
+            "SELECT id FROM pipeline_item
+             WHERE closed_at IS NULL
+               AND (? IS NULL OR id > ?)
+               AND {}{}
+             ORDER BY id ASC
+             LIMIT ?",
+            scope.pipeline_item_where_clause(),
+            exclusion_clause("id", &filters.exclude_task_ids)
+        );
+        let mut params = vec![
+            after_task_id
+                .map(|task_id| SqlValue::Text(task_id.to_string()))
+                .unwrap_or(SqlValue::Null),
+            after_task_id
+                .map(|task_id| SqlValue::Text(task_id.to_string()))
+                .unwrap_or(SqlValue::Null),
+        ];
+        params.extend(scope.params());
+        params.extend(exclusion_params(&filters.exclude_task_ids));
+        params.push(SqlValue::Integer(limit));
+        let mut statement = self.conn.prepare(&sql)?;
+        let rows = statement.query_map(rusqlite::params_from_iter(params), |row| row.get(0))?;
         rows.collect()
     }
 

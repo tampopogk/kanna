@@ -1,7 +1,16 @@
-//! Bounded per-subscription knobs: validated quiet/max-hold/admission
-//! overrides and the event_types/exclude_event_types filter passthrough.
-//! These reuse the subscription's own query/timing ownership — no new
-//! scheduler, no runtime retry loop.
+//! Bounded per-subscription knobs: a validated quiet/admission override pair
+//! and the event_types/exclude_event_types filter passthrough. These reuse
+//! the subscription's own query/timing ownership — no new scheduler, no
+//! runtime retry loop.
+//!
+//! `quiet_ms` used to be paired with `max_hold_ms`, whose
+//! `min(last+quiet, first+max_hold)` deadline formula meant `max_hold`
+//! always won once the two were shipped equal (300000/300000) and `quiet`
+//! could never bind — the latent bug `kanna_wait_events`'s redesign fixed.
+//! Collapsed to the one knob that was ever load-bearing: a trailing-quiet
+//! hold from the last relevant observation, capped only by the wait's own
+//! outer timeout. `max_hold_ms` no longer exists; a caller that still sends
+//! it is rejected (`SubscribeRequest` denies unknown fields).
 use super::*;
 use crate::db::TaskEventKind;
 
@@ -18,7 +27,6 @@ async fn invalid_timing_overrides_are_rejected_before_any_registration() {
     let base = json!({"taskId":"child-c", "localOnly":true, "delivery":"poll"});
     for (field, value, expectation) in [
         ("quietMs", json!(999), "below the 1000ms floor"),
-        ("maxHoldMs", json!(0), "below the 1000ms floor"),
         (
             "minAdmissionIntervalMs",
             json!(500),
@@ -34,13 +42,16 @@ async fn invalid_timing_overrides_are_rejected_before_any_registration() {
             "{field} {expectation}: {response}"
         );
     }
-    // max_hold_ms below quiet_ms is a degenerate pair even though both clear
-    // the floor individually.
-    let mut inverted = base.clone();
-    inverted["quietMs"] = json!(5_000);
-    inverted["maxHoldMs"] = json!(2_000);
-    let (status, response) = subscribe(&app, inverted).await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "{response}");
+    // A retired knob is now simply an unknown field, rejected the same way
+    // as any other typo — never silently ignored.
+    let mut retired = base.clone();
+    retired["maxHoldMs"] = json!(10_000);
+    let (status, response) = subscribe(&app, retired).await;
+    assert_eq!(
+        status,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "maxHoldMs no longer exists: {response}"
+    );
     // Nothing was left half-registered by a rejected request.
     assert!(db.event_subscriptions().unwrap().is_empty());
 }
@@ -52,10 +63,9 @@ async fn there_is_no_reachable_overflow_so_an_extreme_override_is_accepted_not_p
     // (`Collection::intrinsic_deadline`, `Admission`): a `u64` millisecond
     // count can never exceed `Duration`'s own (far larger) capacity, so
     // registration has nothing to reject here — confirmed empirically, not
-    // just assumed. An extreme quiet_ms/max_hold_ms is genuinely honored (the
-    // collector chains native calls to cover it); an extreme
-    // min_admission_interval_ms just delays this subscription's own future
-    // admissions.
+    // just assumed. An extreme quiet_ms is genuinely honored (the collector
+    // chains native calls to cover it); an extreme min_admission_interval_ms
+    // just delays this subscription's own future admissions.
     let state = test_state_with_seed("overrides-extreme", "Overrides", seed_orchestration);
     let db = Db::open(&state.config().db_path).unwrap();
     start_run(&db, "manager", "child-c", "in progress");
@@ -63,12 +73,11 @@ async fn there_is_no_reachable_overflow_so_an_extreme_override_is_accepted_not_p
     let (status, initial) = subscribe(
         &app,
         json!({"taskId":"child-c", "localOnly":true, "delivery":"poll",
-            "quietMs": u64::MAX, "maxHoldMs": u64::MAX, "minAdmissionIntervalMs": u64::MAX}),
+            "quietMs": u64::MAX, "minAdmissionIntervalMs": u64::MAX}),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{initial}");
     assert_eq!(initial["query"]["quietMs"], u64::MAX);
-    assert_eq!(initial["query"]["maxHoldMs"], u64::MAX);
     assert_eq!(initial["query"]["minAdmissionIntervalMs"], u64::MAX);
     assert_eq!(db.event_subscriptions().unwrap().len(), 1);
 }
@@ -88,12 +97,7 @@ async fn omitted_overrides_keep_the_exact_prior_query_shape() {
     // An untouched request never persists the override keys, so a
     // pre-existing row's `existing.query != query` retry comparison is
     // unaffected by this feature's addition.
-    for key in [
-        "quietMs",
-        "maxHoldMs",
-        "minAdmissionIntervalMs",
-        "eventTypes",
-    ] {
+    for key in ["quietMs", "minAdmissionIntervalMs", "eventTypes"] {
         assert!(initial["query"][key].is_null(), "{key}: {initial}");
     }
     assert_eq!(
@@ -110,7 +114,7 @@ async fn omitted_overrides_keep_the_exact_prior_query_shape() {
 }
 
 #[tokio::test]
-async fn explicit_overrides_are_persisted_and_validated_as_a_pair() {
+async fn explicit_overrides_are_persisted() {
     let state = test_state_with_seed("overrides-persisted", "Overrides", seed_orchestration);
     let db = Db::open(&state.config().db_path).unwrap();
     start_run(&db, "manager", "child-c", "in progress");
@@ -118,13 +122,12 @@ async fn explicit_overrides_are_persisted_and_validated_as_a_pair() {
     let (status, initial) = subscribe(
         &app,
         json!({"taskId":"child-c", "localOnly":true, "delivery":"poll",
-            "quietMs": 2_000, "maxHoldMs": 4_000, "minAdmissionIntervalMs": 1_000,
+            "quietMs": 2_000, "minAdmissionIntervalMs": 1_000,
             "eventTypes": ["task.pr_created"], "excludeEventTypes": ["task.blocked"]}),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{initial}");
     assert_eq!(initial["query"]["quietMs"], 2_000);
-    assert_eq!(initial["query"]["maxHoldMs"], 4_000);
     assert_eq!(initial["query"]["minAdmissionIntervalMs"], 1_000);
     assert_eq!(initial["query"]["eventTypes"], "task.pr_created");
     // Additive to the fixed baseline, not a replacement for it.
@@ -140,7 +143,7 @@ async fn explicit_overrides_are_persisted_and_validated_as_a_pair() {
 }
 
 #[tokio::test]
-async fn quiet_and_max_hold_overrides_seal_an_ordinary_batch_at_the_overridden_window() {
+async fn a_quiet_override_seals_an_ordinary_batch_at_the_overridden_window() {
     let state = test_state_with_seed("overrides-quiet", "Overrides", seed_orchestration);
     let db = Db::open(&state.config().db_path).unwrap();
     start_run(&db, "manager", "child-c", "in progress");
@@ -148,7 +151,7 @@ async fn quiet_and_max_hold_overrides_seal_an_ordinary_batch_at_the_overridden_w
     let (status, initial) = subscribe(
         &app,
         json!({"taskId":"child-c", "localOnly":true, "delivery":"poll",
-            "quietMs": 1_000, "maxHoldMs": 1_000}),
+            "quietMs": 1_000}),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{initial}");
@@ -268,7 +271,7 @@ async fn mcp_resolved_omitted_knobs_resume_a_legacy_active_subscription_without_
     let (status, initial) = subscribe(&app, request.clone()).await;
     assert_eq!(status, StatusCode::OK, "{initial}");
     let id = initial["id"].as_str().unwrap().to_string();
-    for key in ["quietMs", "maxHoldMs", "minAdmissionIntervalMs"] {
+    for key in ["quietMs", "minAdmissionIntervalMs"] {
         assert!(initial["query"][key].is_null(), "{key}: {initial}");
     }
     let (status, retried) = subscribe(&app, request).await;
@@ -343,7 +346,7 @@ async fn an_explicit_timing_override_still_conflicts_with_a_differently_configur
         &kanna_tool_catalog::bundled_catalog(),
         "kanna_subscribe_events",
         &json!({"task_id": "child-c", "local_only": true, "delivery": "poll",
-            "quiet_ms": 2_000, "max_hold_ms": 10_000}),
+            "quiet_ms": 2_000}),
     )
     .expect("explicit subscribe request resolves")
     .body;

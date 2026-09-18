@@ -72,6 +72,17 @@ const ZERO_TIMEOUT_DRAIN_BUDGET: Duration = Duration::from_millis(100);
 const MAX_AGGREGATE_WAIT_SESSIONS: usize = 256;
 const MAX_AGGREGATE_MACHINES: usize = 128;
 const MAX_SHORT_CURSOR_HANDLES: usize = 4_096;
+/// A leg spawned this call is handed `remaining_secs`, its own native
+/// timeout, rounded *up* to the next whole second so it never returns before
+/// this wait's own `deadline`. Joining that leg must therefore wait at least
+/// as long, or a `timeout_at` capped at exactly `deadline` races a leg that
+/// was always going to return at or after it and gives up before ever
+/// joining what it just spawned — the measured defect where an aggregate
+/// wait "timed out" without ever confirming a single machine. This grace
+/// covers the rounding plus ordinary scheduling slack and only ever delays
+/// the case where nothing happened at all; an earlier completion still
+/// resolves the join immediately.
+const AGGREGATE_LEG_JOIN_GRACE: Duration = Duration::from_secs(2);
 static SHORT_CURSOR_NONCE: AtomicU64 = AtomicU64::new(0);
 
 /// Remote E2E deliberately ages the process-local tier quickly. The durable
@@ -89,7 +100,10 @@ fn aggregate_wait_session_ttl() -> Duration {
 pub(super) struct TaskEventsQuery {
     cursor: Option<String>,
     /// On a cursorless request, establish the durable checkpoint at the
-    /// current event-log tail instead of replaying retained history.
+    /// current event-log tail (`now`, the default) instead of replaying
+    /// retained history from the origin of the log (`beginning`, explicit
+    /// opt-in only). Ignored once a `cursor` is supplied — the caller already
+    /// has a checkpoint to resume from.
     from: Option<String>,
     /// Comma-separated task ids or branch names. Omit to watch a whole repo.
     task_ids: Option<String>,
@@ -131,20 +145,17 @@ pub(super) struct TaskEventsQuery {
     /// from the start of the call. A caller polling in a loop therefore wakes
     /// at most once per interval however fast events arrive.
     min_interval_ms: Option<u64>,
-    /// Drop the announcements of this caller's own deliveries —
-    /// `task.input_delivered` and `task.raw_input_delivered` rows a manager
-    /// declared itself the author of — so sending input and then waiting does
-    /// not wake on the echo of the send.
-    #[serde(default)]
-    exclude_own: bool,
     /// Used by kanna-mcp's existing km1 fan-in so its native local sub-wait
     /// does not recursively start the server-side fan-in too.
     #[serde(default)]
     local_only: bool,
-    /// Level-triggered manager wait: include synthetic current-state rows for
-    /// tasks already stopped, so a restart cannot miss an earlier edge.
-    #[serde(default = "include_current_state_by_default")]
-    include_current_activity: bool,
+    /// Deprecated explicit override for the cold-start snapshot. Ordinary
+    /// callers omit this: a cursorless call implies `true` (a cold start
+    /// wants the current actionable picture) and a cursor'd call implies
+    /// `false` (the caller already has that picture and wants only edges).
+    /// An explicit value always wins, which is how `kanna_subscribe_events`
+    /// keeps its own always-on snapshot behavior unchanged.
+    include_current_activity: Option<bool>,
     /// Agent-facing callers ask the server to replace the full native or
     /// aggregate checkpoint with a short, process-local handle. Direct HTTP
     /// clients that omit this keep the deployed stateless wire format.
@@ -157,24 +168,19 @@ pub(super) struct TaskEventsQuery {
     /// Set only by the owning subscription call, never from peer wire input.
     #[serde(skip)]
     subscription_timing: bool,
-    /// Per-subscription override of the collector's trailing-quiet duration,
-    /// validated and persisted by `event_subscriptions::subscribe`. Inert
-    /// unless `subscription_timing` is set.
+    /// Per-subscription override of the collector's trailing-quiet hold — the
+    /// one pacing knob `Collection` has left after collapsing the old
+    /// quiet/max-hold pair (see `subscription_timing::HOLD`). Validated and
+    /// persisted by `event_subscriptions::subscribe`. Inert unless
+    /// `subscription_timing` is set.
     quiet_ms: Option<u64>,
-    /// Per-subscription override of the collector's max collection hold.
-    /// Inert unless `subscription_timing` is set.
-    max_hold_ms: Option<u64>,
     /// Shared across every chained native call within one subscription batch
-    /// cycle, so quiet/max-hold timing tracks the true first relevant
-    /// observation rather than resetting at each individual call's own (up
-    /// to 240s) native receiver window. Set only by `wait_subscription_events`
-    /// via `event_subscriptions::step`; always `None` for the public wait.
+    /// cycle, so the hold's timing tracks the true first relevant observation
+    /// rather than resetting at each individual call's own (up to 240s)
+    /// native receiver window. Set only by `wait_subscription_events` via
+    /// `event_subscriptions::step`; always `None` for the public wait.
     #[serde(skip)]
     subscription_collection: Option<Arc<Mutex<super::subscription_timing::Collection>>>,
-}
-
-fn include_current_state_by_default() -> bool {
-    true
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
@@ -226,15 +232,21 @@ struct ShortCursorEntry {
     last_touched: tokio::time::Instant,
 }
 
+/// Only consulted when the caller supplied no cursor. The default changed:
+/// omitting `from` used to replay the scope's entire retained history, which
+/// a cold-starting manager never wants and a live one never asks for by
+/// omission — every explicit caller already asked for `now`. `from` now
+/// defaults to `now`; `beginning` is the explicit, deliberate opt-in to the
+/// old full-replay behavior.
 fn starts_at_current_tail(
     query: &TaskEventsQuery,
 ) -> Result<bool, (axum::http::StatusCode, String)> {
     match query.from.as_deref() {
-        None => Ok(false),
-        Some("now") => Ok(true),
+        None | Some("now") => Ok(true),
+        Some("beginning") => Ok(false),
         Some(value) => Err((
             axum::http::StatusCode::BAD_REQUEST,
-            format!("from must be now, got {value}"),
+            format!("from must be now or beginning, got {value}"),
         )),
     }
 }
@@ -830,12 +842,42 @@ fn resolve_exclusions(
             exclude_task_ids.push(task_id);
         }
     }
+    let include_event_types = normalized_values(query.event_types.as_deref());
     Ok(TaskEventFilters {
         exclude_task_ids,
-        exclude_event_types: normalized_values(query.exclude_event_types.as_deref()),
-        include_event_types: normalized_values(query.event_types.as_deref()),
-        exclude_own_deliveries: query.exclude_own,
+        exclude_event_types: default_exclude_event_types(
+            normalized_values(query.exclude_event_types.as_deref()),
+            &include_event_types,
+        ),
+        include_event_types,
     })
+}
+
+/// `task.activity_changed` is the human read/unread display dimension, not
+/// the manager-facing runtime edge, so a caller that did not otherwise
+/// mention it should not wake on it by default — the display event stays
+/// available to whoever explicitly asks for it. Additive to the caller's own
+/// exclusions, and skipped when the caller's own allow-list names it
+/// explicitly: a positive request must not be defeated by a default sitting
+/// beside it.
+const DEFAULT_EXCLUDED_EVENT_TYPE: &str = "task.activity_changed";
+
+fn default_exclude_event_types(
+    mut exclude_event_types: Vec<String>,
+    include_event_types: &[String],
+) -> Vec<String> {
+    if !include_event_types
+        .iter()
+        .any(|event_type| event_type == DEFAULT_EXCLUDED_EVENT_TYPE)
+        && !exclude_event_types
+            .iter()
+            .any(|event_type| event_type == DEFAULT_EXCLUDED_EVENT_TYPE)
+    {
+        exclude_event_types.push(DEFAULT_EXCLUDED_EVENT_TYPE.to_string());
+        exclude_event_types.sort();
+        exclude_event_types.dedup();
+    }
+    exclude_event_types
 }
 
 struct EventBatch {
@@ -1337,60 +1379,284 @@ fn enrich_event_batch(
     Ok(())
 }
 
+/// A task's current picture, as both the cold-start snapshot and collapsed
+/// multi-event state rows (see `collapse_to_task_state`) report it — the
+/// task's state, not a specific transition. `caused_by` is empty for a pure
+/// cold-start row and holds the distinct event types collapsed into a
+/// multi-event one.
+fn task_state_snapshot_row(task: &crate::mobile_api::TaskDetail, caused_by: &[String]) -> Value {
+    let mut payload = json!({
+        "previousRuntimeState": Value::Null,
+        "runtimeState": task.runtime_state,
+        "currentState": true,
+        "unread": task.activity.as_deref() == Some("unread"),
+        "blockedByTaskIds": task.blocked_by_task_ids,
+        "attentionReason": task.attention_reason,
+        "providerParked": task.provider_rejection.as_ref()
+            .is_some_and(|rejection| rejection.recovery.starts_with("parked-")),
+        "providerCapacityNoticed": task.provider_capacity_notice.is_some(),
+    });
+    if !caused_by.is_empty() {
+        payload["causedByEventTypes"] = json!(caused_by);
+    }
+    json!({
+        "seq": Value::Null,
+        "taskId": task.id,
+        "type": CURRENT_RUNTIME_SNAPSHOT_TYPE,
+        "payload": payload,
+        "createdAt": Value::Null,
+        "synthetic": true,
+    })
+}
+
+/// Whether a task's current state is worth a cold-starting supervisor's
+/// attention: settled (non-busy) runtime, an unread human-facing edge, an
+/// active blocker, an attention badge, or a provider parked or
+/// capacity-noticed at the task's current stage. A busy task with none of
+/// these is not news — the whole point of the snapshot is that a manager
+/// need not enumerate every task to find the ones that matter.
+fn task_is_actionable(task: &crate::mobile_api::TaskDetail) -> bool {
+    matches!(
+        task.runtime_state.as_deref(),
+        Some("idle" | "waiting" | "exited")
+    ) || task.activity.as_deref() == Some("unread")
+        || !task.blocked_by_task_ids.is_empty()
+        || task.attention_reason.is_some()
+        || task
+            .provider_rejection
+            .as_ref()
+            .is_some_and(|rejection| rejection.recovery.starts_with("parked-"))
+        || task.provider_capacity_notice.is_some()
+}
+
+/// Page size for scanning open-task-id candidates while building the
+/// actionable snapshot.
+const ACTIONABLE_SCAN_PAGE: i64 = 100;
+/// Bounds how many open-but-inactionable candidates one call scans before
+/// giving up and reporting `hasMore` instead. Actionable tasks are typically
+/// a minority of a repo's open ones, so a bounded scan keeps one call's work
+/// bounded on a repo with hundreds of quietly busy tasks and nothing to
+/// report; the caller resumes the scan from `settled_after_task_id`.
+const ACTIONABLE_SCAN_LIMIT: i64 = 500;
+
 fn append_current_activity_snapshots(
-    db_path: &str,
+    config: &crate::config::Config,
     scope: &TaskEventScope,
     filters: &TaskEventFilters,
     batch: &mut EventBatch,
     limit: i64,
     progress: &mut CurrentActivityProgress,
-) -> Result<(), rusqlite::Error> {
-    let remaining = (limit as usize).saturating_sub(batch.events.len());
-    if remaining == 0 || progress.settled_complete {
+) -> Result<(), (axum::http::StatusCode, String)> {
+    if (limit as usize).saturating_sub(batch.events.len()) == 0 || progress.settled_complete {
         return Ok(());
     }
-    // A synthetic row states the same fact as the durable event it is named
-    // after, so a caller that filtered that type out — by excluding it, or by
-    // naming an allow-list without it — does not want it here either.
+    // A synthetic row states the task's current picture, which a caller that
+    // filtered the snapshot type out — by excluding it, or by naming an
+    // allow-list without it — does not want either.
     if !filters.allows_event_type(CURRENT_RUNTIME_SNAPSHOT_TYPE) {
         progress.settled_complete = true;
         return Ok(());
     }
-    let db = Db::open(db_path)?;
-    let mut rows = db.list_non_busy_task_runtime_states(
-        scope,
-        filters,
-        progress.settled_after_task_id.as_deref(),
-        remaining.saturating_add(1) as i64,
-    )?;
-    let has_more = rows.len() > remaining;
-    rows.truncate(remaining);
-    for (task_id, runtime_state) in rows {
-        progress.settled_after_task_id = Some(task_id.clone());
-        batch.events.push(json!({
-            "seq": Value::Null,
-            "taskId": task_id,
-            "type": CURRENT_RUNTIME_SNAPSHOT_TYPE,
-            "payload": {
-                "previousRuntimeState": Value::Null,
-                "runtimeState": runtime_state,
-                "currentState": true,
-            },
-            "createdAt": Value::Null,
-            "synthetic": true,
-        }));
+    let db = Db::open(&config.db_path).map_err(db_error)?;
+    let api = crate::mobile_api::MobileApi::new(
+        config.clone(),
+        Db::open(&config.db_path).map_err(db_error)?,
+    );
+    // `has_more` on the batch means "already known to be ready, so the wait
+    // may return instantly" — it is what lets a caller with a full page loop
+    // without waiting. It must therefore only be set on genuine overflow
+    // (a further actionable task actually exists beyond `limit`), never
+    // merely because the page happened to fill exactly at the last
+    // candidate, and never merely because the scan budget below ran out
+    // before finishing: neither is evidence anything is ready, and treating
+    // either as such would return a batch claiming more when there is
+    // nothing further — exactly the spin this redesign exists to prevent. So
+    // once the page is full, the scan keeps going — without adding — purely
+    // to confirm whether at least one more actionable candidate exists; only
+    // that positive proof sets `has_more`. When the scan budget runs out
+    // first (whether still filling the page or still probing past it), this
+    // simply returns with `settled_complete` still false; the caller's own
+    // retry loop (or a later call with the resulting cursor) resumes the
+    // scan from `settled_after_task_id`.
+    let mut scanned: i64 = 0;
+    loop {
+        if scanned >= ACTIONABLE_SCAN_LIMIT {
+            return Ok(());
+        }
+        let page = db
+            .list_open_task_ids(
+                scope,
+                filters,
+                progress.settled_after_task_id.as_deref(),
+                ACTIONABLE_SCAN_PAGE,
+            )
+            .map_err(db_error)?;
+        if page.is_empty() {
+            progress.settled_complete = true;
+            return Ok(());
+        }
+        let page_len = page.len() as i64;
+        for task_id in page {
+            scanned += 1;
+            if let Some(task) = api
+                .get_task(&task_id)
+                .map_err(|error| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, error))?
+            {
+                if task_is_actionable(&task) {
+                    if batch.events.len() < limit as usize {
+                        batch.events.push(task_state_snapshot_row(&task, &[]));
+                        progress.settled_after_task_id = Some(task_id.clone());
+                    } else {
+                        // The page was already full and this candidate is
+                        // positive proof there is genuinely more beyond it —
+                        // but the cursor must NOT advance past it: it was
+                        // never emitted, so the next call has to see it
+                        // again and actually add it, not skip straight over
+                        // it as if it had already been handled.
+                        batch.has_more = true;
+                        return Ok(());
+                    }
+                } else {
+                    progress.settled_after_task_id = Some(task_id.clone());
+                }
+            } else {
+                progress.settled_after_task_id = Some(task_id.clone());
+            }
+            if scanned >= ACTIONABLE_SCAN_LIMIT {
+                return Ok(());
+            }
+        }
+        if page_len < ACTIONABLE_SCAN_PAGE {
+            progress.settled_complete = true;
+            return Ok(());
+        }
     }
-    progress.settled_complete = !has_more;
-    batch.has_more |= has_more;
-    Ok(())
+}
+
+/// Several events for the same task collapse into one row carrying that
+/// task's current actionable state plus the distinct event types that woke
+/// the caller (`payload.causedByEventTypes`), rather than the whole
+/// transcript — a direct token saving for every burst a manager does not
+/// need transition-by-transition. A task with exactly one event in the batch
+/// is returned unchanged: there is nothing to collapse, and this is the
+/// common case, so it is checked first and cheaply.
+///
+/// Public-wait only. `kanna_subscribe_events`'s durable mailbox keeps
+/// delivering the raw event stream its own consumers — relevance detection,
+/// harness delivery text — already depend on; callers set
+/// `subscription_timing` only from that path, so this is never invoked for
+/// it.
+///
+/// Collapsing runs after selection and after the cursor for the response has
+/// already been computed: it is a presentation transform over the batch
+/// about to be returned, never a change to what was read, filtered, or
+/// acknowledged.
+fn collapse_events_to_task_state(
+    config: &crate::config::Config,
+    events: Vec<Value>,
+) -> Result<Vec<Value>, (axum::http::StatusCode, String)> {
+    let mut counts: HashMap<String, usize> = HashMap::new();
+    for event in &events {
+        if let Some(task_id) = event.get("taskId").and_then(Value::as_str) {
+            *counts.entry(task_id.to_string()).or_insert(0) += 1;
+        }
+    }
+    let multi: HashSet<String> = counts
+        .into_iter()
+        .filter(|(_, count)| *count > 1)
+        .map(|(task_id, _)| task_id)
+        .collect();
+    if multi.is_empty() {
+        return Ok(events);
+    }
+
+    let mut caused_by: HashMap<String, Vec<String>> = HashMap::new();
+    for event in &events {
+        let Some(task_id) = event.get("taskId").and_then(Value::as_str) else {
+            continue;
+        };
+        if !multi.contains(task_id) {
+            continue;
+        }
+        let types = caused_by.entry(task_id.to_string()).or_default();
+        if let Some(event_type) = event.get("type").and_then(Value::as_str) {
+            if !types.iter().any(|existing| existing == event_type) {
+                types.push(event_type.to_string());
+            }
+        }
+    }
+
+    let api = crate::mobile_api::MobileApi::new(
+        config.clone(),
+        Db::open(&config.db_path).map_err(db_error)?,
+    );
+    let mut rows: HashMap<String, Value> = HashMap::new();
+    for task_id in &multi {
+        // A task unreadable right now (closed or removed between collection
+        // and this transform) is left out of `rows`: its group falls back to
+        // its original, uncollapsed events below rather than inventing state
+        // for a task this call can no longer read.
+        if let Some(task) = api
+            .get_task(task_id)
+            .map_err(|error| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, error))?
+        {
+            let empty = Vec::new();
+            let types = caused_by.get(task_id).unwrap_or(&empty);
+            rows.insert(task_id.clone(), task_state_snapshot_row(&task, types));
+        }
+    }
+
+    let mut emitted: HashSet<String> = HashSet::new();
+    let mut output = Vec::with_capacity(events.len());
+    for event in events {
+        let Some(task_id) = event
+            .get("taskId")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+        else {
+            output.push(event);
+            continue;
+        };
+        if !multi.contains(&task_id) {
+            output.push(event);
+            continue;
+        }
+        match rows.get(&task_id) {
+            Some(row) => {
+                if emitted.insert(task_id) {
+                    output.push(row.clone());
+                }
+                // else: already emitted the collapsed row for this task —
+                // this raw event is the reason it collapsed, not a separate
+                // fact to also report.
+            }
+            None => output.push(event),
+        }
+    }
+    // A collapsed row is built fresh, after `enrich_event_batch` already ran
+    // on the pre-collapse batch, so it never got the `currentTask`/`stage`/
+    // `machineId`/`reconciliationReason` enrichment every other delivered
+    // event carries. Run it again over the collapsed output so a collapsed
+    // row is exactly as enriched as an uncollapsed one — harmless on the
+    // pass-through events mixed in alongside it, which just get the same
+    // (already-correct) fields recomputed.
+    let mut enriched = EventBatch {
+        events: output,
+        cursor: String::new(),
+        has_more: false,
+    };
+    enrich_event_batch(config, &mut enriched, false)
+        .map_err(|error| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, error))?;
+    Ok(enriched.events)
 }
 
 /// Runs `f` against the query's shared collection when present — subscription
 /// mode, where the same `Collection` is reused across every chained native
-/// call in one batch cycle so quiet/max-hold tracks the true first relevant
-/// observation rather than resetting at each call's own native receiver
-/// window — or a throwaway local one otherwise (the public wait never sets
-/// `subscription_timing`, so that fallback is never actually consulted).
+/// call in one batch cycle so the trailing-quiet hold tracks the true first
+/// relevant observation rather than resetting at each call's own native
+/// receiver window — or a throwaway local one otherwise (the public wait
+/// never sets `subscription_timing`, so that fallback is never actually
+/// consulted).
 fn with_collection<R>(
     query: &TaskEventsQuery,
     f: impl FnOnce(&mut super::subscription_timing::Collection) -> R,
@@ -1404,7 +1670,6 @@ fn with_collection<R>(
         }
         None => f(&mut super::subscription_timing::Collection::from_query(
             query.quiet_ms,
-            query.max_hold_ms,
         )),
     }
 }
@@ -1459,6 +1724,24 @@ async fn wait_local_task_events(
         )
     };
     let from_now = starts_at_current_tail(&query)?;
+    // The cold-start snapshot is implied by the call, not configured: no
+    // cursor means a fresh watcher that wants the current actionable
+    // picture; a cursor means it already has that picture and wants only
+    // edges from here — *unless* the supplied cursor is itself a
+    // current-activity continuation whose scan is not yet complete, in which
+    // case the caller is still mid-snapshot and omitting the flag must not
+    // silently abandon it partway through. `subscription_timing` always
+    // implies the snapshot regardless of cursor: the durable mailbox's
+    // always-on behavior is unchanged by this redesign, and every internal
+    // caller in this collection cycle must agree on it, not just the one
+    // that happened to set the flag explicitly. An explicit
+    // `include_current_activity` always wins over all of the above.
+    let cold_start = query.subscription_timing
+        || cursor.is_none()
+        || supplied_current_cursor
+            .as_ref()
+            .is_some_and(|cursor| !cursor.settled_complete);
+    let include_current_activity = query.include_current_activity.unwrap_or(cold_start);
     if cursor.is_none() && from_now {
         let db = Db::open(&db_path).map_err(db_error)?;
         let head_seq = db.latest_task_event_seq().map_err(db_error)?;
@@ -1507,16 +1790,15 @@ async fn wait_local_task_events(
         appended.as_mut().enable();
         let remaining_limit = limit.saturating_sub(collected.len() as i64).max(1);
         let mut batch = read_batch(&db_path, &scope, &filters, cursor.as_ref(), remaining_limit)?;
-        if query.include_current_activity {
+        if include_current_activity {
             append_current_activity_snapshots(
-                &db_path,
+                state.config(),
                 &scope,
                 &filters,
                 &mut batch,
                 remaining_limit,
                 &mut current_progress,
-            )
-            .map_err(db_error)?;
+            )?;
         }
         enrich_event_batch(
             state.config(),
@@ -1524,7 +1806,7 @@ async fn wait_local_task_events(
             query.orchestration_notifications,
         )
         .map_err(|error| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, error))?;
-        let output_cursor = if query.include_current_activity {
+        let output_cursor = if include_current_activity {
             encode_current_activity_cursor(&CurrentActivityCursor {
                 durable_cursor: batch.cursor.clone(),
                 settled_after_task_id: current_progress.settled_after_task_id.clone(),
@@ -1570,10 +1852,15 @@ async fn wait_local_task_events(
             )
         };
         if batch_complete {
+            let events = if query.subscription_timing {
+                collected
+            } else {
+                collapse_events_to_task_state(state.config(), collected)?
+            };
             return Ok(Json(json!({
                 "waitOutcome": "events",
                 "cursor": output_cursor,
-                "events": collected,
+                "events": events,
                 "hasMore": collected_has_more,
             })));
         }
@@ -1597,10 +1884,15 @@ async fn wait_local_task_events(
             // events back for a batch the caller never asked to wait longer
             // for would lose them for a whole extra window.
             let collected_count = collected.len();
+            let events = if query.subscription_timing {
+                collected
+            } else {
+                collapse_events_to_task_state(state.config(), collected)?
+            };
             return Ok(Json(json!({
                 "waitOutcome": "timeout",
                 "cursor": output_cursor,
-                "events": collected,
+                "events": events,
                 "hasMore": query.orchestration_notifications && batch.has_more,
                 "waitTimeoutSecs": timeout_secs,
                 "waitHint": if collected_count == 0 {
@@ -1855,15 +2147,18 @@ fn local_query_for_aggregate(
         timeout_secs: Some(timeout_secs),
         limit: Some(limit),
         local_only: true,
-        include_current_activity,
-        from: from_now.then(|| "now".to_string()),
+        include_current_activity: Some(include_current_activity),
+        // Always explicit, never omitted: the session decided `from_now` once
+        // at cold start, and an omitted value now defaults to `now` rather
+        // than the old full-replay default, so a session that chose
+        // `beginning` must say so explicitly on every forwarded leg query.
+        from: Some(if from_now { "now" } else { "beginning" }.to_string()),
         exclude_task_ids: (!filters.exclude_task_ids.is_empty())
             .then(|| filters.exclude_task_ids.join(",")),
         exclude_event_types: (!filters.exclude_event_types.is_empty())
             .then(|| filters.exclude_event_types.join(",")),
         event_types: (!filters.include_event_types.is_empty())
             .then(|| filters.include_event_types.join(",")),
-        exclude_own: filters.exclude_own_deliveries,
         // `minEvents` and `debounceMs` are deliberately *not* forwarded: they
         // shape the aggregated response, and a per-machine minimum would hold
         // a leg's events back while the fan-out already had enough of them.
@@ -1889,7 +2184,7 @@ fn aggregate_query_path(query: &TaskEventsQuery) -> String {
     ];
     params.push(format!(
         "includeCurrentActivity={}",
-        query.include_current_activity
+        query.include_current_activity.unwrap_or(false)
     ));
     if let Some(from) = query.from.as_deref() {
         params.push(format!("from={}", encode_path_segment(from)));
@@ -1926,9 +2221,6 @@ fn aggregate_query_path(query: &TaskEventsQuery) -> String {
     }
     if query.orchestration_notifications {
         params.push("orchestrationNotifications=true".to_string());
-    }
-    if query.exclude_own {
-        params.push("excludeOwn=true".to_string());
     }
     if let Some(cursor) = query.cursor.as_deref() {
         params.push(format!("cursor={}", encode_path_segment(cursor)));
@@ -2272,13 +2564,21 @@ async fn wait_aggregate_task_events(
         .clamp(1, MAX_EVENT_LIMIT);
     let db = Db::open(&state.config().db_path).map_err(db_error)?;
     let requested_scope = resolve_aggregate_scope(&db, &query)?;
+    let aggregate_include_event_types = normalized_values(query.event_types.as_deref());
     let filters = TaskEventFilters {
         exclude_task_ids: normalized_values(query.exclude_task_ids.as_deref()),
-        exclude_event_types: normalized_values(query.exclude_event_types.as_deref()),
-        include_event_types: normalized_values(query.event_types.as_deref()),
-        exclude_own_deliveries: query.exclude_own,
+        exclude_event_types: default_exclude_event_types(
+            normalized_values(query.exclude_event_types.as_deref()),
+            &aggregate_include_event_types,
+        ),
+        include_event_types: aggregate_include_event_types,
     };
     let supplied_cursor = query.cursor.as_deref();
+    // Same cold-start rule as the single-machine wait: no cursor at all means
+    // a fresh watcher, so the snapshot is implied unless overridden.
+    let include_current_activity = query
+        .include_current_activity
+        .unwrap_or(supplied_cursor.is_none());
     let decoded = supplied_cursor
         .filter(|cursor| cursor.starts_with(AGGREGATE_CURSOR_PREFIX))
         .map(decode_aggregate_cursor)
@@ -2342,12 +2642,12 @@ async fn wait_aggregate_task_events(
                 pending: tokio::task::JoinSet::new(),
                 pending_machines: HashSet::new(),
                 last_touched: now,
-                include_current_activity: query.include_current_activity,
+                include_current_activity,
                 from_now,
                 orchestration_notifications: query.orchestration_notifications,
             })
     };
-    if session.include_current_activity != query.include_current_activity
+    if session.include_current_activity != include_current_activity
         || session.filters != filters
         || session.orchestration_notifications != query.orchestration_notifications
     {
@@ -2356,7 +2656,7 @@ async fn wait_aggregate_task_events(
         // cancellation as a failed wait.
         session.pending = tokio::task::JoinSet::new();
         session.pending_machines.clear();
-        session.include_current_activity = query.include_current_activity;
+        session.include_current_activity = include_current_activity;
         session.filters = filters;
         session.orchestration_notifications = query.orchestration_notifications;
     }
@@ -2502,9 +2802,29 @@ async fn wait_aggregate_task_events(
                 .await
                 .unwrap_or_default()
         } else {
-            tokio::time::timeout_at(join_deadline, session.pending.join_next())
-                .await
-                .unwrap_or_default()
+            // `remaining_secs` handed to a just-spawned leg above is rounded
+            // *up* to the next whole second (a leg's own native timeout is
+            // never shorter than what this wait still owes it), so a leg
+            // spawned near `deadline` promises to return at or after
+            // `deadline`, never before it. Joining only up to `join_deadline`
+            // itself (which equals `deadline` in the common case of nothing
+            // yet satisfying `min_events`) therefore races that leg: this
+            // `timeout_at` can fire first and `break` below before the leg's
+            // own completion — which the outer loop already spawned and is
+            // genuinely about to deliver — is ever joined. That is the
+            // measured defect this grace period exists to close: an
+            // aggregate wait that "times out" without ever having joined the
+            // very leg it started, so it neither reports the leg confirmed
+            // nor reflects anything it might have found. The grace covers
+            // that rounding plus ordinary scheduling slack; it only ever
+            // delays the "nothing happened at all" case, since an earlier
+            // completion still resolves `join_next()` immediately.
+            tokio::time::timeout_at(
+                join_deadline + AGGREGATE_LEG_JOIN_GRACE,
+                session.pending.join_next(),
+            )
+            .await
+            .unwrap_or_default()
         };
         let Some(joined) = joined else {
             break;
@@ -2618,6 +2938,11 @@ async fn wait_aggregate_task_events(
     } else {
         "timeout"
     };
+    let events = if query.subscription_timing {
+        events
+    } else {
+        collapse_events_to_task_state(state.config(), events)?
+    };
     Ok(Json(json!({
         "waitOutcome": wait_outcome,
         "cursor": output_cursor,
@@ -2698,6 +3023,12 @@ async fn wait_events_in_process(
             // one the caller replayed and the reset cannot pass unnoticed.
             input_short_cursor = None;
             query.cursor = None;
+            // The caller's true position was lost with the handle, so this
+            // must safely replay full retained history regardless of `from`
+            // — never fall back to the ordinary cursorless default of `now`,
+            // which would silently skip whatever fired between the caller's
+            // old (now-unrecoverable) position and this reset.
+            query.from = Some("beginning".to_string());
             Some(reason)
         }
     };

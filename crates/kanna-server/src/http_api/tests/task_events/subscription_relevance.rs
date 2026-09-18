@@ -17,7 +17,6 @@ async fn selected(state: Arc<AppState>, query: Value) -> Value {
     let collection = Arc::new(std::sync::Mutex::new(
         super::super::super::subscription_timing::Collection::from_query(
             query.get("quietMs").and_then(Value::as_u64),
-            query.get("maxHoldMs").and_then(Value::as_u64),
         ),
     ));
     super::super::super::task_events::wait_subscription_events(state, query, collection)
@@ -26,8 +25,12 @@ async fn selected(state: Arc<AppState>, query: Value) -> Value {
 }
 
 fn query(limit: i64) -> Value {
+    // Explicit `from=beginning`: every one of these fixtures seeds events
+    // before its first cursorless `selected()` call and expects to see them,
+    // relying on the pre-redesign full-replay default rather than the
+    // current `now` one.
     json!({"taskIds":"child-a,child-b", "localOnly":true,
-        "includeCurrentActivity":false, "timeoutSecs":0, "limit":limit})
+        "includeCurrentActivity":false, "from":"beginning", "timeoutSecs":0, "limit":limit})
 }
 
 fn noise(db: &Db, count: usize) {
@@ -93,17 +96,34 @@ async fn automatic_review_to_pr_and_noise_drain_before_limit_without_changing_ra
         event_pairs(&attention),
         vec![("child-b".into(), "task.awaiting_input".into())]
     );
+    // Explicit `from=beginning`: everything above already happened before
+    // this call, and the point is to see all of it, not the cursorless `now`
+    // default's prospective-only view.
     let raw = get_json_body(
         &router(state),
-        "/v1/task-events?taskIds=child-a&localOnly=true&includeCurrentActivity=false&timeoutSecs=0",
+        "/v1/task-events?taskIds=child-a&localOnly=true&includeCurrentActivity=false&from=beginning&timeoutSecs=0",
     )
     .await;
-    assert!(event_pairs(&raw)
+    // child-a's whole history is many events on one task, so it collapses
+    // into a single current-state row (see `collapse_events_to_task_state`)
+    // rather than a list of individually-typed events. `causedByEventTypes`
+    // still names every transition that fed it — including `run.finished`
+    // and the busy `task.runtime_changed` noise, which subscription
+    // selection filtered out but raw history still retains (the point of
+    // this fixture). `task.activity_changed` is no longer a fair example of
+    // that: the public wait now excludes it from the underlying selection by
+    // default for an unrelated reason (it is the human read/unread display
+    // dimension, not manager-facing).
+    let events = raw["events"].as_array().unwrap();
+    assert_eq!(events.len(), 1, "{events:?}");
+    let caused_by = events[0]["payload"]["causedByEventTypes"]
+        .as_array()
+        .unwrap()
         .iter()
-        .any(|(_, kind)| kind == "run.finished"));
-    assert!(event_pairs(&raw)
-        .iter()
-        .any(|(_, kind)| kind == "task.activity_changed"));
+        .map(|value| value.as_str().unwrap())
+        .collect::<Vec<_>>();
+    assert!(caused_by.contains(&"run.finished"), "{caused_by:?}");
+    assert!(caused_by.contains(&"task.runtime_changed"), "{caused_by:?}");
 }
 
 #[tokio::test(start_paused = true)]
@@ -154,12 +174,10 @@ async fn excluded_events_neither_fill_batch_nor_start_its_debounce() {
     // `selected()` goes through `wait_subscription_events`, which always
     // selects subscription-timing mode — the generic `minEvents`/`debounceMs`
     // below are inert there. `quietMs` is that mode's own equivalent of the
-    // debounce this test exercises; `maxHoldMs` stays generous so quiet is
-    // what actually governs sealing here.
+    // debounce this test exercises.
     q["minEvents"] = json!(2);
     q["debounceMs"] = json!(1000);
     q["quietMs"] = json!(1_000);
-    q["maxHoldMs"] = json!(30_000);
     let wait = tokio::spawn(selected(state, q));
     tokio::task::yield_now().await;
     tokio::time::advance(Duration::from_secs(2)).await;
@@ -476,12 +494,12 @@ async fn final_auto_completion_reaches_both_mailboxes_and_fresh_registration() {
                 &app,
                 "POST",
                 "/v1/event-subscriptions",
-                // Per-subscription quiet/max-hold overrides, not the
-                // 300000ms globals: the non-bootstrap branch's successful
-                // (non-urgent) run.finished event needs to seal within this
-                // test's real-time `await_subscription` budget.
+                // Per-subscription quiet override, not the 300000ms global:
+                // the non-bootstrap branch's successful (non-urgent)
+                // run.finished event needs to seal within this test's
+                // real-time `await_subscription` budget.
                 json!({"taskId":"child-c", "localOnly":true, "delivery":delivery,
-                    "quietMs": 2_000, "maxHoldMs": 10_000}),
+                    "quietMs": 2_000}),
             )
             .await;
             assert_eq!(status, StatusCode::OK, "{initial}");
