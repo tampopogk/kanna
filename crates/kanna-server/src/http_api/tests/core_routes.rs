@@ -4,8 +4,9 @@ use std::io::{Read, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex as StdMutex};
 use std::time::{Duration, Instant};
+use tokio::sync::Mutex;
 
-static COPILOT_CONFIG_DIR_LOCK: StdMutex<()> = StdMutex::new(());
+static COPILOT_CONFIG_DIR_LOCK: Mutex<()> = Mutex::const_new(());
 
 fn pairing_create_request(peer: [u8; 4]) -> Request<Body> {
     let mut request = Request::post("/v1/pairing/sessions")
@@ -9578,9 +9579,7 @@ esac
 
 #[tokio::test]
 async fn copilot_model_route_returns_only_recent_model_ids() {
-    let _environment = COPILOT_CONFIG_DIR_LOCK
-        .lock()
-        .unwrap_or_else(|error| error.into_inner());
+    let _environment = COPILOT_CONFIG_DIR_LOCK.lock().await;
     let repo_root = crate::test_paths::unique_test_path("kanna-copilot-models");
     let config_dir = crate::test_paths::unique_test_path("kanna-copilot-model-config");
     init_test_git_repo(&repo_root);
