@@ -835,7 +835,9 @@ export async function runProfileDisconnectedConnectionSmoke(
     ui,
     options.desktopId,
     true,
-    () => acceptRemovalAlert(driver)
+    // This machine is account-backed too; the assertion below is that the
+    // account row survives, so answer with the pairing-only removal.
+    () => acceptRemovalAlert(driver, "Remove pairing only")
   );
 }
 
@@ -861,7 +863,18 @@ async function submitPairingFailure(
   await assertPairingFailure(ui, failure);
 }
 
-async function acceptRemovalAlert(driver: Browser): Promise<void> {
+/**
+ * Answer the remove-machine confirmation.
+ *
+ * A machine that is both paired and account-backed offers two removals, so
+ * the button is named rather than left to `acceptAlert()`, which taps the
+ * last one and would silently turn "remove the pairing" into "remove the
+ * machine from the account too".
+ */
+async function acceptRemovalAlert(
+  driver: Browser,
+  buttonLabel?: string
+): Promise<void> {
   const alertAppeared = await driver
     .waitUntil(
       async () => driver.getAlertText().then(() => true).catch(() => false),
@@ -873,7 +886,15 @@ async function acceptRemovalAlert(driver: Browser): Promise<void> {
     )
     .then(() => true)
     .catch(() => false);
-  if (alertAppeared) await driver.acceptAlert();
+  if (!alertAppeared) return;
+  if (buttonLabel) {
+    const button = await driver.$(`~${buttonLabel}`);
+    if (await button.isExisting()) {
+      await button.click();
+      return;
+    }
+  }
+  await driver.acceptAlert();
 }
 
 export async function relaunchApp(

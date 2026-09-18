@@ -28,6 +28,7 @@ import {
 import { createMachinePairingService } from "./lib/pairing/machinePairing";
 import type { MobileAuthSession, MobileAuthState } from "./lib/firebase/auth";
 import { createConfiguredMobileAuthSession } from "./lib/firebase/sdk";
+import { requestAccountDesktopRemoval } from "./lib/firebase/accountDesktops";
 import {
   createFirestoreTaskIndex,
   type CloudDesktopRecord,
@@ -125,6 +126,9 @@ interface AppModelOptions {
   /** Raw LAN WebSocket for the pairing handshake; defaults to the runtime's
    * `WebSocket`. */
   createSecureChannelSocket?: (url: string) => SealedWebSocketLike;
+  /** Deletes a machine from the account's cloud desktop directory; defaults
+   * to the `removeAccountDesktop` callable. */
+  removeAccountDesktop?: (desktopId: string) => Promise<void>;
 }
 
 interface ResolvedAppClient {
@@ -597,6 +601,8 @@ export function createAppModel(input: CreateAppModelInput = {}): AppModel {
     createTaskId: () => randomHex(4, randomBytes),
     persistSessionContext: persistContext,
     replaceClientForTrustChange: replaceActiveClient,
+    removeAccountDesktop:
+      options.removeAccountDesktop ?? requestAccountDesktopRemoval,
     revokeAnonymousPushPairing: async (desktop) => {
       if (!desktop.desktopPushIdentity || !desktop.pushPairingCert) return;
       await anonymousPushBindingCoordinator.revoke({

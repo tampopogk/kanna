@@ -2,6 +2,7 @@ import React from "react";
 import { Alert, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { MachinePairingSheet } from "../components/MachinePairingSheet";
 import { MOBILE_E2E_IDS } from "../e2eTestIds";
+import type { ForgetMachineScope } from "../state/mobileController";
 import type { MobileMachine } from "../state/machineInventory";
 import { secureChannelStatusLabel } from "../lib/security/secureChannelPeer";
 
@@ -16,32 +17,71 @@ interface MachinesScreenProps {
   onClosePairing(): void;
   onPairCode(code: string): Promise<void>;
   onPairPayload(payload: string): Promise<void>;
-  onRemoveManual(desktopId: string): Promise<void>;
+  /** Forget the machine. `scope` decides how much of it goes. */
+  onForgetMachine(desktopId: string, scope: ForgetMachineScope): Promise<void>;
+  /**
+   * Whether the account's cloud directory can be edited right now. False when
+   * signed out, which is what makes an account-only machine unremovable: its
+   * entry is backend-authored and this phone holds nothing of it to delete.
+   */
+  accountRemovalAvailable?: boolean;
 }
 
 export function MachinesScreen(props: MachinesScreenProps) {
   const available = props.machines.filter(isAvailable);
   const offline = props.machines.filter((machine) => !isAvailable(machine));
 
+  const accountRemovalAvailable = props.accountRemovalAvailable ?? false;
+  const canRemove = (machine: MobileMachine) =>
+    machine.origins.manual || (machine.origins.account && accountRemovalAvailable);
+
+  const forget = (machine: MobileMachine, scope: ForgetMachineScope) => {
+    void props.onForgetMachine(machine.desktopId, scope).catch((error) => {
+      const detail = error instanceof Error
+        ? error.message
+        : "The machine could not be removed. Try again.";
+      Alert.alert("Couldn’t remove machine", detail);
+    });
+  };
+
+  // Naming the machine in the title is the whole confirmation: the rows differ
+  // only by name, and removal deletes trust material that cannot be recovered
+  // without pairing the machine again in person.
+  //
+  // A machine that is both paired and account-backed is two removals, not
+  // one, and the difference is not cosmetic - dropping the pairing while
+  // keeping cloud access is a thing people do on purpose - so the choice is
+  // offered rather than decided here.
   const confirmRemoval = (machine: MobileMachine) => {
-    const message = machine.origins.account
-      ? "This removes the manual pairing. The machine will remain available through your account."
-      : "This removes the manual pairing from this phone. You can add the machine again later.";
-    Alert.alert("Remove paired machine?", message, [
-      { text: "Cancel", style: "cancel" },
-      {
-        text: "Remove",
-        style: "destructive",
-        onPress: () => {
-          void props.onRemoveManual(machine.desktopId).catch((error) => {
-            const detail = error instanceof Error
-              ? error.message
-              : "The pairing could not be removed. Try again.";
-            Alert.alert("Couldn’t remove machine", detail);
-          });
-        }
-      }
-    ]);
+    const removesBoth = machine.origins.manual
+      && machine.origins.account
+      && accountRemovalAvailable;
+    Alert.alert(
+      `Remove ${machine.displayName}?`,
+      removalMessage(machine, accountRemovalAvailable),
+      removesBoth
+        ? [
+            { text: "Cancel", style: "cancel" },
+            {
+              text: "Remove pairing only",
+              style: "destructive",
+              onPress: () => forget(machine, "pairing")
+            },
+            {
+              text: "Remove everywhere",
+              style: "destructive",
+              onPress: () => forget(machine, "machine")
+            }
+          ]
+        : [
+            { text: "Cancel", style: "cancel" },
+            {
+              text: "Remove",
+              style: "destructive",
+              onPress: () => forget(machine, "machine")
+            }
+          ]
+    );
   };
 
   return (
@@ -76,8 +116,18 @@ export function MachinesScreen(props: MachinesScreenProps) {
           <WarningBanner label="Local network" message={props.sourceWarnings.local} />
         ) : null}
 
-        <MachineSection title="Available" machines={available} onRemove={confirmRemoval} />
-        <MachineSection title="Offline" machines={offline} onRemove={confirmRemoval} />
+        <MachineSection
+          title="Available"
+          machines={available}
+          canRemove={canRemove}
+          onRemove={confirmRemoval}
+        />
+        <MachineSection
+          title="Offline"
+          machines={offline}
+          canRemove={canRemove}
+          onRemove={confirmRemoval}
+        />
 
         {props.machines.length === 0 ? (
           <View style={styles.empty}>
@@ -105,10 +155,12 @@ export function MachinesScreen(props: MachinesScreenProps) {
 function MachineSection({
   title,
   machines,
+  canRemove,
   onRemove
 }: {
   title: string;
   machines: MobileMachine[];
+  canRemove(machine: MobileMachine): boolean;
   onRemove(machine: MobileMachine): void;
 }) {
   if (machines.length === 0) return null;
@@ -144,9 +196,9 @@ function MachineSection({
                 ) : null}
               </View>
             </View>
-            {machine.origins.manual ? (
+            {canRemove(machine) ? (
               <Pressable
-                accessibilityLabel={`Remove pairing for ${machine.displayName}`}
+                accessibilityLabel={`Remove ${machine.displayName}`}
                 accessibilityRole="button"
                 testID={MOBILE_E2E_IDS.machineRemoveButton(machine.desktopId)}
                 onPress={() => onRemove(machine)}
@@ -191,6 +243,33 @@ function WarningBanner({ label, message }: { label: string; message: string }) {
       <Text style={styles.warningMessage}>{message}</Text>
     </View>
   );
+}
+
+/**
+ * What removal actually destroys, per origin. A pairing is trust material this
+ * phone holds and its deletion is final here; an account entry is a
+ * backend-authored directory row, and a machine that is still running simply
+ * republishes it, which the copy says rather than promising more than removal
+ * can deliver.
+ */
+function removalMessage(
+  machine: MobileMachine,
+  accountRemovalAvailable: boolean
+): string {
+  const pairing =
+    `This phone deletes its pairing with ${machine.displayName} — the device ` +
+    "secret, the pinned identity and the notification pairing — and its tasks " +
+    "disappear from this phone. Pairing again means scanning its QR code.";
+  const account =
+    `${machine.displayName} is removed from your account on every device. If ` +
+    "the machine is still running, it will appear again the next time it " +
+    "connects.";
+  if (machine.origins.manual && machine.origins.account) {
+    return accountRemovalAvailable
+      ? `${pairing}\n\n“Remove everywhere” also does this: ${account}`
+      : `${pairing}\n\n${machine.displayName} stays listed through your account.`;
+  }
+  return machine.origins.manual ? pairing : account;
 }
 
 function isAvailable(machine: MobileMachine): boolean {

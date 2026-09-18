@@ -24,6 +24,7 @@ export type BillingErrorReason =
   | "already_subscribed"
   | "unknown_plan"
   | "invalid_portal_request"
+  | "invalid_desktop_request"
   | "no_stripe_customer"
   | "customer_ownership_mismatch"
   | "not_configured"
