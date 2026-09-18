@@ -14,7 +14,7 @@ You are in a worktree branched from the task branch. Publish the work as a draft
 5. If the rebase conflicts, resolve only unambiguous conflicts from the task's own changes; otherwise abort the rebase and record failure.
 6. Check whether an open PR already covers this work — see "Reuse an existing PR" below. If one does, update it and skip steps 7-8.
 7. Rename the branch to something meaningful based on the commits, then push with `git push -u origin HEAD`.
-8. Create the draft PR against the validated target from step 3: `gh pr create --draft --base <target>`, with a clear title and description. End the body with a `Kanna-Task: $KANNA_TASK_ID` line so a later run can find this PR after the branch has been renamed.
+8. Create the draft PR against the validated target from step 3: `gh pr create --draft --base <target>`, with a clear title and description. The title and body must carry no AI attribution or advertising lines — no `Co-Authored-By:` trailer naming an AI, no "Generated with [Claude Code]" or similar line — regardless of whether your own harness appends one by default. End the body with a `Kanna-Task: $KANNA_TASK_ID` line, and make it the only trailer, so a later run can find this PR after the branch has been renamed.
 
 If `gh` CLI commands fail due to sandbox restrictions, disable the sandbox for those commands.
 
