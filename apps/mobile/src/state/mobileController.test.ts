@@ -37,6 +37,7 @@ import {
   type LocalTaskListPreferences
 } from "./taskListPreferences";
 import type { TaskListPreferencesStore } from "./taskListPreferencesStorage";
+import type { TrustedDesktopRecord } from "./sessionPersistence";
 
 function terminalText(store: ReturnType<typeof createSessionStore>): string {
   return terminalOutputToString(store.getState().taskTerminalOutput);
@@ -623,6 +624,22 @@ describe("createMobileController", () => {
     }],
     lastSeenAt: "2026-07-17T00:00:00.000Z"
   };
+
+  /** The shape a removed machine's queued push revocation is allowed to keep:
+   * the relay's `DELETE /push/pairings` needs the desktop push identity and
+   * the pair-scoped certificate, and no other trust material survives. */
+  function pushRevocationOnly(desktop: TrustedDesktopRecord): TrustedDesktopRecord {
+    return {
+      desktopId: desktop.desktopId,
+      displayName: desktop.displayName,
+      lanEndpoints: [],
+      lastSeenAt: desktop.lastSeenAt,
+      ...(desktop.desktopPushIdentity
+        ? { desktopPushIdentity: desktop.desktopPushIdentity }
+        : {}),
+      ...(desktop.pushPairingCert ? { pushPairingCert: desktop.pushPairingCert } : {})
+    };
+  }
 
   function createPairingServiceMock(): MachinePairingService {
     return {
@@ -1335,9 +1352,13 @@ describe("createMobileController", () => {
     await flushMicrotasks();
 
     expect(revokeAnonymousPushPairing).toHaveBeenCalledOnce();
-    expect(revokeAnonymousPushPairing).toHaveBeenCalledWith(pairedDesktop);
+    expect(revokeAnonymousPushPairing).toHaveBeenCalledWith(
+      pushRevocationOnly(pairedDesktop)
+    );
     expect(store.getState().trustedDesktops).toEqual([retainedDesktop]);
-    expect(store.getState().pendingAnonymousPushRevocations).toEqual([pairedDesktop]);
+    expect(store.getState().pendingAnonymousPushRevocations).toEqual([
+      pushRevocationOnly(pairedDesktop)
+    ]);
     revocation.resolve();
     await removal;
     expect(store.getState().trustedDesktops).toEqual([retainedDesktop]);
@@ -1526,11 +1547,296 @@ describe("createMobileController", () => {
     await expect(controller.removeManualMachine("desktop-1")).resolves.toBeUndefined();
 
     expect(store.getState().trustedDesktops).toEqual([]);
-    expect(store.getState().pendingAnonymousPushRevocations).toEqual([pairedDesktop]);
+    expect(store.getState().pendingAnonymousPushRevocations).toEqual([
+      pushRevocationOnly(pairedDesktop)
+    ]);
     expect(persistSessionContext).toHaveBeenCalledWith(expect.objectContaining({
       trustedDesktops: [],
-      pendingAnonymousPushRevocations: [pairedDesktop]
+      pendingAnonymousPushRevocations: [pushRevocationOnly(pairedDesktop)]
     }));
+  });
+
+  it("deletes the removed machine's device secret and pinned identity everywhere it was kept", async () => {
+    const store = createSessionStore();
+    const pairedDesktop: TrustedDesktopRecord = {
+      ...trustedDesktop,
+      deviceSecret: "lan-device-secret",
+      channelPublicKey: "pinned-desktop-key",
+      desktopPushIdentity: {
+        publicKey: "desktop-public-key",
+        relayUrl: "wss://relay-staging.kanna.build",
+        environment: "staging"
+      },
+      pushPairingCert: {
+        deviceId: "phone-1",
+        issuedAt: 1_000,
+        expiresAt: 2_000,
+        signature: "pairing-certificate"
+      }
+    };
+    store.setTrustedDesktops([pairedDesktop]);
+    store.setSecureChannelState("desktop-1", { mode: "sealed" });
+    const persistSessionContext = vi.fn().mockResolvedValue(undefined);
+    const controller = createMobileController(
+      createClientMock(),
+      store,
+      undefined,
+      {
+        persistSessionContext,
+        // The relay is unreachable, so the revocation stays queued - the
+        // worst case for anything the queue is allowed to keep.
+        revokeAnonymousPushPairing: vi.fn().mockRejectedValue(new Error("offline"))
+      }
+    );
+
+    await controller.removeManualMachine("desktop-1");
+
+    expect(store.getState().trustedDesktops).toEqual([]);
+    expect(store.getState().secureChannelStates).not.toHaveProperty("desktop-1");
+    const queued = store.getState().pendingAnonymousPushRevocations;
+    expect(queued).toEqual([pushRevocationOnly(pairedDesktop)]);
+    expect(queued[0]).not.toHaveProperty("deviceSecret");
+    expect(queued[0]).not.toHaveProperty("channelPublicKey");
+    expect(queued[0]?.lanEndpoints).toEqual([]);
+    const persisted = JSON.stringify(
+      persistSessionContext.mock.calls.map(([context]) => context)
+    );
+    expect(persisted).not.toContain("lan-device-secret");
+    expect(persisted).not.toContain("pinned-desktop-key");
+    expect(persisted).toContain("pairing-certificate");
+  });
+
+  it("re-points the selected machine when the removal happens offline", async () => {
+    const store = createSessionStore();
+    const retainedDesktop = {
+      ...trustedDesktop,
+      desktopId: "desktop-2",
+      displayName: "Laptop"
+    };
+    store.setTrustedDesktops([trustedDesktop, retainedDesktop]);
+    store.setDesktops([
+      { id: "desktop-1", name: "Studio Mac", online: true, mode: "lan" },
+      { id: "desktop-2", name: "Laptop", online: true, mode: "lan" }
+    ]);
+    store.selectDesktop("desktop-1");
+    const client = createClientMock();
+    client.listDesktops.mockRejectedValue(new Error("Network request failed"));
+    const controller = createMobileController(client, store, undefined, {
+      persistSessionContext: vi.fn().mockResolvedValue(undefined),
+      replaceClientForTrustChange: vi.fn()
+    });
+
+    await controller.removeManualMachine("desktop-1");
+
+    expect(store.getState().desktops.map((desktop) => desktop.id)).toEqual([
+      "desktop-2"
+    ]);
+    expect(store.getState().selectedDesktopId).toBe("desktop-2");
+  });
+
+  it("clears the selection when the last machine is removed offline", async () => {
+    const store = createSessionStore();
+    store.setTrustedDesktops([trustedDesktop]);
+    store.setDesktops([
+      { id: "desktop-1", name: "Studio Mac", online: true, mode: "lan" }
+    ]);
+    store.selectDesktop("desktop-1");
+    const client = createClientMock();
+    client.listDesktops.mockRejectedValue(new Error("Network request failed"));
+    const controller = createMobileController(client, store, undefined, {
+      persistSessionContext: vi.fn().mockResolvedValue(undefined),
+      replaceClientForTrustChange: vi.fn()
+    });
+
+    await controller.removeManualMachine("desktop-1");
+
+    expect(store.getState().desktops).toEqual([]);
+    expect(store.getState().selectedDesktopId).toBeNull();
+  });
+
+  it("leaves an account-backed machine selected when only its pairing is removed", async () => {
+    const store = createSessionStore();
+    store.setTrustedDesktops([trustedDesktop]);
+    const accountDesktop = {
+      id: "desktop-1",
+      name: "Studio Mac",
+      online: true,
+      mode: "remote" as const
+    };
+    store.setMachineSourceDesktops({ account: [accountDesktop], local: [] });
+    store.setDesktops([accountDesktop]);
+    store.selectDesktop("desktop-1");
+    const client = createClientMock();
+    client.listDesktops.mockRejectedValue(new Error("Network request failed"));
+    const controller = createMobileController(client, store, undefined, {
+      persistSessionContext: vi.fn().mockResolvedValue(undefined),
+      replaceClientForTrustChange: vi.fn()
+    });
+
+    await controller.removeManualMachine("desktop-1");
+
+    expect(store.getState().trustedDesktops).toEqual([]);
+    expect(store.getState().desktops).toEqual([accountDesktop]);
+    expect(store.getState().selectedDesktopId).toBe("desktop-1");
+  });
+
+  it("forgets a machine from the account directory and drops its work", async () => {
+    const store = createSessionStore();
+    const accountDesktop = {
+      id: "desktop-dev",
+      name: "Dead Dev Instance",
+      online: false,
+      mode: "remote" as const
+    };
+    const retainedDesktop = {
+      id: "desktop-2",
+      name: "Laptop",
+      online: true,
+      mode: "remote" as const
+    };
+    store.setMachineSourceDesktops({
+      account: [accountDesktop, retainedDesktop],
+      local: []
+    });
+    store.setDesktops([accountDesktop, retainedDesktop]);
+    store.selectDesktop("desktop-dev");
+    store.setRecentTasks([{
+      id: "task-dev",
+      repoId: "repo-dev",
+      title: "Dev task",
+      stage: "in progress",
+      ownerDesktopId: "desktop-dev"
+    }]);
+    const client = createClientMock();
+    client.listDesktops.mockResolvedValue([retainedDesktop]);
+    const removeAccountDesktop = vi.fn().mockResolvedValue(undefined);
+    const controller = createMobileController(client, store, undefined, {
+      persistSessionContext: vi.fn().mockResolvedValue(undefined),
+      removeAccountDesktop
+    });
+
+    await controller.forgetMachine("desktop-dev");
+
+    expect(removeAccountDesktop).toHaveBeenCalledWith("desktop-dev");
+    expect(store.getState().accountDesktops).toEqual([retainedDesktop]);
+    expect(store.getState().recentTasks).toEqual([]);
+    expect(store.getState().selectedDesktopId).toBe("desktop-2");
+  });
+
+  it("keeps the account machine listed when the directory delete fails", async () => {
+    const store = createSessionStore();
+    const accountDesktop = {
+      id: "desktop-dev",
+      name: "Dead Dev Instance",
+      online: false,
+      mode: "remote" as const
+    };
+    store.setMachineSourceDesktops({ account: [accountDesktop], local: [] });
+    store.setDesktops([accountDesktop]);
+    const controller = createMobileController(createClientMock(), store, undefined, {
+      persistSessionContext: vi.fn().mockResolvedValue(undefined),
+      removeAccountDesktop: vi.fn().mockRejectedValue(new Error("Network request failed"))
+    });
+
+    await expect(controller.forgetMachine("desktop-dev")).rejects.toThrow(
+      "Network request failed"
+    );
+
+    // The directory is backend-authored, so hiding it locally after a failed
+    // delete would only mean the machine reappears on the next refresh.
+    expect(store.getState().accountDesktops).toEqual([accountDesktop]);
+  });
+
+  it("removes both halves of a machine that is paired and account-backed", async () => {
+    const store = createSessionStore();
+    const accountDesktop = {
+      id: "desktop-1",
+      name: "Studio Mac",
+      online: true,
+      mode: "remote" as const
+    };
+    store.setTrustedDesktops([trustedDesktop]);
+    store.setMachineSourceDesktops({ account: [accountDesktop], local: [] });
+    store.setDesktops([accountDesktop]);
+    const client = createClientMock();
+    client.listDesktops.mockResolvedValue([]);
+    const removeAccountDesktop = vi.fn().mockResolvedValue(undefined);
+    const controller = createMobileController(client, store, undefined, {
+      persistSessionContext: vi.fn().mockResolvedValue(undefined),
+      replaceClientForTrustChange: vi.fn(),
+      removeAccountDesktop
+    });
+
+    await controller.forgetMachine("desktop-1");
+
+    expect(store.getState().trustedDesktops).toEqual([]);
+    expect(removeAccountDesktop).toHaveBeenCalledWith("desktop-1");
+    expect(store.getState().accountDesktops).toEqual([]);
+  });
+
+  it("keeps the pairing deleted when the account half of a removal fails", async () => {
+    const store = createSessionStore();
+    const accountDesktop = {
+      id: "desktop-1",
+      name: "Studio Mac",
+      online: true,
+      mode: "remote" as const
+    };
+    store.setTrustedDesktops([trustedDesktop]);
+    store.setMachineSourceDesktops({ account: [accountDesktop], local: [] });
+    const controller = createMobileController(createClientMock(), store, undefined, {
+      persistSessionContext: vi.fn().mockResolvedValue(undefined),
+      replaceClientForTrustChange: vi.fn(),
+      removeAccountDesktop: vi.fn().mockRejectedValue(new Error("Network request failed"))
+    });
+
+    await expect(controller.forgetMachine("desktop-1")).rejects.toThrow(
+      "Network request failed"
+    );
+
+    // The local half is the half that always works; a failed account delete
+    // must not resurrect trust material this phone already destroyed.
+    expect(store.getState().trustedDesktops).toEqual([]);
+  });
+
+  it("keeps the account entry when only the pairing is removed", async () => {
+    const store = createSessionStore();
+    const accountDesktop = {
+      id: "desktop-1",
+      name: "Studio Mac",
+      online: true,
+      mode: "remote" as const
+    };
+    store.setTrustedDesktops([trustedDesktop]);
+    store.setMachineSourceDesktops({ account: [accountDesktop], local: [] });
+    const removeAccountDesktop = vi.fn().mockResolvedValue(undefined);
+    const controller = createMobileController(createClientMock(), store, undefined, {
+      persistSessionContext: vi.fn().mockResolvedValue(undefined),
+      replaceClientForTrustChange: vi.fn(),
+      removeAccountDesktop
+    });
+
+    await controller.forgetMachine("desktop-1", "pairing");
+
+    expect(store.getState().trustedDesktops).toEqual([]);
+    expect(removeAccountDesktop).not.toHaveBeenCalled();
+    expect(store.getState().accountDesktops).toEqual([accountDesktop]);
+  });
+
+  it("forgets a paired-only machine without calling the account directory", async () => {
+    const store = createSessionStore();
+    store.setTrustedDesktops([trustedDesktop]);
+    const removeAccountDesktop = vi.fn().mockResolvedValue(undefined);
+    const controller = createMobileController(createClientMock(), store, undefined, {
+      persistSessionContext: vi.fn().mockResolvedValue(undefined),
+      replaceClientForTrustChange: vi.fn(),
+      removeAccountDesktop
+    });
+
+    await controller.forgetMachine("desktop-1");
+
+    expect(store.getState().trustedDesktops).toEqual([]);
+    expect(removeAccountDesktop).not.toHaveBeenCalled();
   });
 
   it("keeps manual trust published until durable removal succeeds", async () => {

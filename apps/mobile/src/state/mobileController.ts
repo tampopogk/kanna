@@ -77,11 +77,23 @@ import {
   type TaskListPreferencesStore
 } from "./taskListPreferencesStorage";
 
+/**
+ * How much of a machine a removal takes. `pairing` drops only this phone's
+ * pairing, leaving the machine reachable through the account; `machine` also
+ * deletes its entry from the account's cloud desktop directory.
+ */
+export type ForgetMachineScope = "pairing" | "machine";
+
 export interface MobileController {
   bootstrap(): Promise<void>;
   pairMachineByCode(code: string): Promise<string>;
   pairMachineByPayload(payload: string): Promise<string>;
   removeManualMachine(desktopId: string): Promise<void>;
+  /**
+   * Forget a machine: its pairing with this phone, and - at `machine` scope -
+   * its entry in the cloud account directory. The UI's Remove.
+   */
+  forgetMachine(desktopId: string, scope?: ForgetMachineScope): Promise<void>;
   signInWithEmailPassword(email: string, password: string): Promise<void>;
   createUserWithEmailPassword(email: string, password: string): Promise<void>;
   refreshAccount(): Promise<void>;
@@ -230,6 +242,12 @@ export interface MobileControllerOptions {
   pairingService?: MachinePairingService;
   replaceClientForTrustChange?: () => void;
   revokeAnonymousPushPairing?: (desktop: TrustedDesktopRecord) => Promise<void>;
+  /**
+   * Delete a machine from the signed-in account's cloud desktop directory.
+   * Absent when the app has no Firebase configuration, which is also how the
+   * UI decides whether an account-only machine can be removed at all.
+   */
+  removeAccountDesktop?: (desktopId: string) => Promise<void>;
   subscribeTaskRouteChanges?: (
     listener: (clientGeneration: number) => void
   ) => () => void;
@@ -316,6 +334,28 @@ function taskInputOutcomeForError(error: unknown): TaskInputSendOutcome {
       error instanceof Error
         ? error.message
         : "The connection ended before input delivery was confirmed."
+  };
+}
+
+/**
+ * What a queued anonymous-push revocation still needs, and nothing else.
+ * Revoking at the relay (`DELETE /push/pairings`) takes only the desktop's
+ * push identity and the pair-scoped certificate it signed. The rest of the
+ * record - the LAN device secret, the pinned secure-channel key, the
+ * endpoints - is trust material the person just asked this phone to forget,
+ * so it does not outlive the removal in a retry queue that can sit in
+ * AsyncStorage indefinitely while the relay is unreachable.
+ */
+function pushRevocationRecord(desktop: TrustedDesktopRecord): TrustedDesktopRecord {
+  return {
+    desktopId: desktop.desktopId,
+    displayName: desktop.displayName,
+    lanEndpoints: [],
+    lastSeenAt: desktop.lastSeenAt,
+    ...(desktop.desktopPushIdentity
+      ? { desktopPushIdentity: desktop.desktopPushIdentity }
+      : {}),
+    ...(desktop.pushPairingCert ? { pushPairingCert: desktop.pushPairingCert } : {})
   };
 }
 
@@ -2379,6 +2419,52 @@ export function createMobileController(
     reconcileSelectedTask(true);
   };
 
+  /**
+   * Drop a removed machine from the merged desktop read and re-point the
+   * selection at whatever is left. Removal has to complete with the machine
+   * unreachable - that is the case it exists for - and `refreshDesktops`
+   * swallows its own failure, so without this the app keeps a
+   * `selectedDesktopId` naming a machine it no longer has any trust material
+   * for, and every routed call goes on addressing it.
+   */
+  const forgetRemovedMachineSelection = (desktopId: string) => {
+    const { desktops, selectedDesktopId } = store.getState();
+    const remaining = desktops.filter((desktop) => desktop.id !== desktopId);
+    if (remaining.length === desktops.length && selectedDesktopId !== desktopId) {
+      return;
+    }
+    // `setDesktops` re-points a selection its own list no longer carries.
+    store.setDesktops(remaining);
+    reconcileComposerAgentProvider();
+  };
+
+  /**
+   * Delete a machine from the account's cloud desktop directory.
+   *
+   * The directory entry is backend-authored and is *not* trust material this
+   * phone holds, so unlike a pairing this cannot be done offline - the call
+   * either reaches the callable or it fails, and the caller reports it. The
+   * local projections are only dropped once the delete is acknowledged, so a
+   * failure never leaves the app hiding a machine the account still lists.
+   *
+   * A machine that is in fact still running simply republishes its entry on
+   * its next cloud publication session; nothing here has to guard against
+   * removing a live machine.
+   */
+  const removeAccountMachine = async (desktopId: string) => {
+    await options.removeAccountDesktop?.(desktopId);
+    const { accountDesktops, liveLanDesktops, trustedDesktops } = store.getState();
+    store.setMachineSourceDesktops({
+      account: accountDesktops.filter((desktop) => desktop.id !== desktopId),
+      local: liveLanDesktops.filter((desktop) => desktop.id !== desktopId)
+    });
+    if (!trustedDesktops.some((desktop) => desktop.desktopId === desktopId)) {
+      invalidateManualMachineWork(desktopId);
+      forgetRemovedMachineSelection(desktopId);
+    }
+    await refreshDesktops({ force: true });
+  };
+
   const uniqueTasksById = (tasks: TaskSummary[]): TaskSummary[] => {
     const seen = new Set<string>();
     return tasks.filter((task) => {
@@ -2878,7 +2964,7 @@ export function createMobileController(
     }
   };
 
-  return {
+  const controller: MobileController = {
     bootstrap,
 
     async pairMachineByCode(code) {
@@ -2935,6 +3021,26 @@ export function createMobileController(
       return trusted.desktopId;
     },
 
+    /**
+     * Forget a machine this phone paired with. Every step is local, because
+     * the case this exists for is a desktop that is never coming back.
+     *
+     * **The desktop is deliberately not told.** Its only unpair surface,
+     * `DELETE /v1/pairing/trusted-devices/{device_id}`, refuses any caller
+     * that is not real loopback *and* every `TunneledHttpInvoke` - which
+     * `dispatch_http_invoke_with_extensions` stamps on every sealed and
+     * relayed dispatch - so a phone cannot reach it, by design:
+     * docs/specs/secure-channel.md §5 keeps pairing controls on
+     * `DesktopLocalAccess` and makes revocation a desktop-side act. Telling
+     * it would mean adding a phone-reachable mutation of the pairing store,
+     * and nothing is left dangling without one: removal destroys the pinned
+     * channel key, the device secret and the endpoints, so this phone can no
+     * longer dial that desktop, and what the desktop keeps is this phone's
+     * *public* key, which gives it nothing. The one capability that would
+     * outlive the pairing - the desktop pushing to this phone through the
+     * relay - is revoked below, and durably queued when the relay is
+     * unreachable.
+     */
     async removeManualMachine(desktopId) {
       const currentTrustedDesktops = store.getState().trustedDesktops;
       const removedDesktop = currentTrustedDesktops.find(
@@ -2947,12 +3053,15 @@ export function createMobileController(
         && removedDesktop.pushPairingCert
         && options.revokeAnonymousPushPairing
       );
-      const pendingRevocations = shouldRevoke
+      const queuedRevocation = shouldRevoke
+        ? pushRevocationRecord(removedDesktop!)
+        : null;
+      const pendingRevocations = queuedRevocation
         ? [
             ...store.getState().pendingAnonymousPushRevocations.filter(
               (desktop) => desktop.desktopId !== desktopId
             ),
-            removedDesktop!
+            queuedRevocation
           ]
         : store.getState().pendingAnonymousPushRevocations;
       await options.persistSessionContext?.({
@@ -2962,17 +3071,21 @@ export function createMobileController(
       });
       store.setTrustedDesktops(nextTrustedDesktops);
       store.setPendingAnonymousPushRevocations(pendingRevocations);
+      // The pinned desktop key left with the record, so the cached verdict on
+      // using that key belongs to a pairing that no longer exists.
+      store.clearSecureChannelState(desktopId);
       const remainsAccountBacked = store.getState().accountDesktops.some(
         (desktop) => desktop.id === desktopId
       );
       if (!remainsAccountBacked) {
         invalidateManualMachineWork(desktopId);
+        forgetRemovedMachineSelection(desktopId);
       }
       options.replaceClientForTrustChange?.();
       await refreshDesktops({ force: true });
-      if (shouldRevoke) {
+      if (queuedRevocation) {
         try {
-          await options.revokeAnonymousPushPairing!(removedDesktop!);
+          await options.revokeAnonymousPushPairing!(queuedRevocation);
           const remaining = store.getState().pendingAnonymousPushRevocations
             .filter((desktop) => desktop.desktopId !== desktopId);
           await options.persistSessionContext?.({
@@ -2983,6 +3096,25 @@ export function createMobileController(
         } catch (error) {
           console.warn("Anonymous push pairing revocation will be retried:", error);
         }
+      }
+    },
+
+    async forgetMachine(desktopId, scope = "machine") {
+      const { accountDesktops, trustedDesktops } = store.getState();
+      const paired = trustedDesktops.some(
+        (desktop) => desktop.desktopId === desktopId
+      );
+      const accountBacked = accountDesktops.some(
+        (desktop) => desktop.id === desktopId
+      );
+      // The pairing goes first because it is the half that always succeeds:
+      // it is local, so an unreachable machine or a dead network cannot leave
+      // this phone still trusting a machine the person asked it to forget.
+      if (paired) {
+        await controller.removeManualMachine(desktopId);
+      }
+      if (scope === "machine" && accountBacked && options.removeAccountDesktop) {
+        await removeAccountMachine(desktopId);
       }
     },
 
@@ -4187,6 +4319,8 @@ export function createMobileController(
       repoCommandTaskOpenListeners.clear();
     }
   };
+
+  return controller;
 }
 
 function mapCreatedTask(response: CreateTaskResponse): TaskSummary {

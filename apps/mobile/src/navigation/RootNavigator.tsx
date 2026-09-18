@@ -611,7 +611,10 @@ function DesktopsRoute({ navigation }: NativeStackScreenProps<RootStackParamList
           await controller.pairMachineByPayload(payload);
           setPairingVisible(false);
         }}
-        onRemoveManual={(desktopId) => controller.removeManualMachine(desktopId)}
+        accountRemovalAvailable={state.auth.status === "signedIn"}
+        onForgetMachine={(desktopId, scope) =>
+          controller.forgetMachine(desktopId, scope)
+        }
       />
     </UtilityScreen>
   );
