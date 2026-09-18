@@ -4,8 +4,14 @@ import { mount } from "@vue/test-utils";
 import { nextTick } from "vue";
 import { describe, expect, it, vi } from "vitest";
 import OpenCodeModelSelect from "../OpenCodeModelSelect.vue";
-import { fetchDesktopOpenCodeModels } from "../../services/desktopServerClient";
-vi.mock("../../services/desktopServerClient", () => ({ fetchDesktopOpenCodeModels: vi.fn() }));
+import {
+  fetchDesktopCopilotModels,
+  fetchDesktopOpenCodeModels,
+} from "../../services/desktopServerClient";
+vi.mock("../../services/desktopServerClient", () => ({
+  fetchDesktopCopilotModels: vi.fn(),
+  fetchDesktopOpenCodeModels: vi.fn(),
+}));
 
 describe("OpenCode model selection", () => {
   it("dismisses a committed discovered suggestion without blurring custom model entry", async () => {
@@ -55,5 +61,16 @@ describe("OpenCode model selection", () => {
     resolve([]);
     await nextTick();
     expect(wrapper.find('[role="status"]').exists()).toBe(false);
+  });
+
+  it("shows Copilot recent model IDs as suggestions while retaining unrestricted entry", async () => {
+    vi.mocked(fetchDesktopCopilotModels).mockResolvedValue([{ id: "gpt-5.6-terra" }]);
+    const wrapper = mount(OpenCodeModelSelect, {
+      props: { provider: "copilot", repoId: "repo-local", modelValue: "" },
+    });
+    await vi.waitFor(() => expect(wrapper.find("option").exists()).toBe(true));
+    expect(wrapper.text()).toContain("recently used Copilot models on this machine, not a catalog");
+    await wrapper.get('[aria-label="GitHub Copilot model"]').setValue("newly-released-model");
+    expect(wrapper.emitted("update:modelValue")?.[0]).toEqual(["newly-released-model"]);
   });
 });

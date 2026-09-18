@@ -4974,7 +4974,7 @@ fn build_agent_command_registers_copilot_kanna_mcp_with_additional_config() {
         &AgentProvider::Copilot,
         AgentProvider::Copilot.executable(),
         "Do work.",
-        None,
+        Some("gpt-5.6-terra"),
         None,
         None,
         Some("dontAsk"),
@@ -4992,6 +4992,7 @@ fn build_agent_command_registers_copilot_kanna_mcp_with_additional_config() {
     assert!(command.starts_with("'copilot' "));
     assert!(command.contains("--additional-mcp-config @'"));
     assert!(command.contains(mcp_config.to_string_lossy().as_ref()));
+    assert!(command.contains("--model='gpt-5.6-terra'"));
     assert!(command.contains("-i 'Kanna preamble."));
     assert!(command.contains("Do work."));
 

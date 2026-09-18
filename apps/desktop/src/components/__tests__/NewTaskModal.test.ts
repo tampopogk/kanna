@@ -27,6 +27,17 @@ vi.mock("../../invoke", () => ({
 }));
 
 describe("NewTaskModal", () => {
+  it("submits an explicit Copilot model with the new task", async () => {
+    const wrapper = mount(NewTaskModal, {
+      props: { availableAgentProviders: ["copilot"], defaultAgentProvider: "copilot", baseBranches: ["origin/main"] },
+      global: { mocks: { $t: (key: string) => key } },
+    });
+    await wrapper.get('[aria-label="GitHub Copilot model"]').setValue("gpt-5.6-terra");
+    await wrapper.get("textarea").setValue("Implement the feature");
+    await wrapper.get(".btn-primary").trigger("click");
+    expect(wrapper.emitted("submit")?.[0]).toEqual(["Implement the feature", "copilot", "no-review", "origin/main", "pty", [], "gpt-5.6-terra"]);
+  });
+
   it("submits an explicit OpenCode native model with the new task", async () => {
     const wrapper = mount(NewTaskModal, {
       props: { availableAgentProviders: ["opencode"], defaultAgentProvider: "opencode", baseBranches: ["origin/main"] },

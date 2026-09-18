@@ -19,6 +19,7 @@ import {
   setDesktopTaskCloudIdentity,
   setDesktopTaskWorkflow,
   replaceDesktopTaskWorkflow,
+  fetchDesktopCopilotModels,
   fetchDesktopOpenCodeModels,
   ensureDesktopReady,
   approveIncomingTaskTransfer,
@@ -78,6 +79,8 @@ describe("desktopServerClient", () => {
     vi.stubGlobal("fetch", fetchMock);
     await fetchDesktopOpenCodeModels("repo-models");
     expect(fetchMock).toHaveBeenCalledWith("http://127.0.0.1:48121/v1/repos/repo-models/opencode-models", expect.objectContaining({ method: "GET", headers: LOCAL_CREDENTIAL_HEADERS }));
+    await fetchDesktopCopilotModels("repo-models");
+    expect(fetchMock).toHaveBeenLastCalledWith("http://127.0.0.1:48121/v1/repos/repo-models/copilot-models", expect.objectContaining({ method: "GET", headers: LOCAL_CREDENTIAL_HEADERS }));
     const before = { name: "task-workflow", stages: [{ name: "review", prompt: "Keep this" }] };
     const after = { ...before, stages: [{ ...before.stages[0], name: "review", agent_provider: "opencode-local/Qwen" }] };
     const canonical = { ...after, stages: [{ ...after.stages[0], agent_provider: ["opencode-local/Qwen"] }] };
