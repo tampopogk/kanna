@@ -1543,9 +1543,23 @@ fn append_current_activity_snapshots(
 ///
 /// Public-wait only. `kanna_subscribe_events`'s durable mailbox keeps
 /// delivering the raw event stream its own consumers — relevance detection,
-/// harness delivery text — already depend on; callers set
-/// `subscription_timing` only from that path, so this is never invoked for
-/// it.
+/// harness delivery text — already depend on, so every call site skips this
+/// function whenever `query.subscription_timing` is set. That alone is not
+/// the whole guard: a subscription served through the aggregate fan-out
+/// (`wait_aggregate_task_events`, reached whenever a registration's
+/// `localOnly` is not true) spawns each leg — local or peer — with a fresh
+/// `TaskEventsQuery::default()` that carries `subscription_timing: false`,
+/// since the flag is `#[serde(skip)]` and cannot cross a peer leg's HTTP
+/// request at all. Only `orchestration_notifications` survives onto every
+/// leg query (`local_query_for_aggregate`, the forwarded leg URL). So a call
+/// site must skip this function whenever *either* flag is set, or a
+/// subscription leg that happens to land two relevant same-task events in
+/// one read (e.g. `run.started` + `run.finished`) would still collapse them
+/// into a synthetic `task.runtime_changed` row here — silently discarding the
+/// raw events the mailbox's own relevance detection and delivery text
+/// depend on, and re-judging relevance on a row whose runtime snapshot can
+/// itself read as irrelevant, dropping the wake entirely while the leg's
+/// cursor still advances past what caused it.
 ///
 /// Collapsing runs after selection and after the cursor for the response has
 /// already been computed: it is a presentation transform over the batch
@@ -1864,7 +1878,12 @@ async fn wait_local_task_events(
             )
         };
         if batch_complete {
-            let events = if query.subscription_timing {
+            // A subscription leg carries no `subscription_timing` of its own
+            // once it crosses the aggregate fan-out (see
+            // `collapse_events_to_task_state`'s own doc comment), so
+            // `orchestration_notifications` — which does survive onto every
+            // leg — is the other half of this guard.
+            let events = if query.subscription_timing || query.orchestration_notifications {
                 collected
             } else {
                 collapse_events_to_task_state(state.config(), &filters, collected)?
@@ -1896,7 +1915,7 @@ async fn wait_local_task_events(
             // events back for a batch the caller never asked to wait longer
             // for would lose them for a whole extra window.
             let collected_count = collected.len();
-            let events = if query.subscription_timing {
+            let events = if query.subscription_timing || query.orchestration_notifications {
                 collected
             } else {
                 collapse_events_to_task_state(state.config(), &filters, collected)?
@@ -3000,7 +3019,7 @@ async fn wait_aggregate_task_events(
     } else {
         "timeout"
     };
-    let events = if query.subscription_timing {
+    let events = if query.subscription_timing || query.orchestration_notifications {
         events
     } else {
         collapse_events_to_task_state(state.config(), &collapse_filters, events)?

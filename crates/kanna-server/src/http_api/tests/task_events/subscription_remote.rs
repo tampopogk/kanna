@@ -2011,6 +2011,112 @@ async fn an_aggregate_later_event_extends_the_live_deadline_mid_leg_and_is_not_s
     assert_eq!(acked["cursor"], batch["cursor"]);
 }
 
+/// A subscription leg carries no `subscription_timing` of its own once it
+/// crosses the aggregate fan-out — every leg query is built fresh by
+/// `local_query_for_aggregate`, and the field is `#[serde(skip)]` so a
+/// remote leg cannot carry it over HTTP at all. Unlike the two tests above,
+/// which deliberately split their two same-task events across a native leg
+/// boundary, this appends both to the peer with no intervening await, so
+/// they land in one leg's own `read_batch`. Without the collapse guard also
+/// checking `orchestration_notifications` (which does survive onto every
+/// leg), that one read would collapse them into a single synthetic
+/// `task.runtime_changed` row before this wait's own relevance filtering
+/// ever saw either original event — discarding both raw events (and their
+/// own payloads) into a state row instead of delivering them.
+#[tokio::test(start_paused = true)]
+async fn two_relevant_events_landing_in_one_peer_leg_are_delivered_raw_not_collapsed() {
+    let (watch, _) = WatchFixture::new(false).await;
+    let peer_db = Db::open(&watch.peer.config().db_path).unwrap();
+    peer_db
+        .append_task_event(
+            "pending-peer-child",
+            crate::db::TaskEventKind::TaskBlocked,
+            json!({"blockerTaskIds": ["some-blocker"]}),
+        )
+        .unwrap();
+    peer_db
+        .append_task_event(
+            "pending-peer-child",
+            crate::db::TaskEventKind::PrCreated,
+            json!({"prNumber": 701, "prUrl": "https://example.test/pull/701"}),
+        )
+        .unwrap();
+    let page = watch.page().await;
+    let batch = page.pending.as_ref().unwrap();
+    assert!(
+        batch.get("watchError").is_none(),
+        "peer errors: {}",
+        batch["machineErrors"]
+    );
+    assert_eq!(
+        event_pairs(batch),
+        vec![
+            ("pending-peer-child".into(), "task.blocked".into()),
+            ("pending-peer-child".into(), "task.pr_created".into()),
+        ],
+        "two relevant events for one task landing in one leg's read must be delivered as their \
+         own raw rows, not collapsed into a single task.runtime_changed state row: {batch}"
+    );
+    let acked = watch.ack(&page).await;
+    assert_eq!(acked["cursor"], batch["cursor"]);
+}
+
+/// The wake-loss shape the guard above exists to prevent: when the task's
+/// live runtime happens to be busy at the moment a leg's response would
+/// otherwise be collapsed, the resulting synthetic row reads
+/// `runtimeState: "busy"` — which `is_relevant_subscription_event` treats as
+/// noise unconditionally (a busy edge is never itself news) — so the
+/// collapsed row, and the two real relevant events that caused it, would be
+/// dropped from the batch entirely rather than merely mislabelled. The task
+/// genuinely has an unresolved blocker and a new PR the whole time; nothing
+/// about that stops being true just because its agent is still running.
+#[tokio::test(start_paused = true)]
+async fn busy_runtime_at_collapse_time_no_longer_drops_the_wake_entirely() {
+    let (watch, _) = WatchFixture::new(false).await;
+    let peer_db = Db::open(&watch.peer.config().db_path).unwrap();
+    // Entering busy appends its own task.runtime_changed(busy) event, which
+    // is not itself relevant either way (a busy edge is noise), so it is
+    // appended alongside the two relevant events below rather than in its
+    // own separately-settled batch — no intervening await, so all three
+    // land in the same leg read.
+    peer_db
+        .update_pipeline_item_runtime_status("pending-peer-child", "busy", None)
+        .unwrap();
+    peer_db
+        .append_task_event(
+            "pending-peer-child",
+            crate::db::TaskEventKind::TaskBlocked,
+            json!({"blockerTaskIds": ["some-blocker"]}),
+        )
+        .unwrap();
+    peer_db
+        .append_task_event(
+            "pending-peer-child",
+            crate::db::TaskEventKind::PrCreated,
+            json!({"prNumber": 801, "prUrl": "https://example.test/pull/801"}),
+        )
+        .unwrap();
+    let page = watch.page().await;
+    let batch = page.pending.as_ref().unwrap();
+    assert!(
+        batch.get("watchError").is_none(),
+        "peer errors: {}",
+        batch["machineErrors"]
+    );
+    assert_eq!(
+        event_pairs(batch),
+        vec![
+            ("pending-peer-child".into(), "task.blocked".into()),
+            ("pending-peer-child".into(), "task.pr_created".into()),
+        ],
+        "two relevant events must still wake the subscription even while the task's live \
+         runtime is busy, not be silently dropped as a collapsed-then-irrelevant \
+         task.runtime_changed row: {batch}"
+    );
+    let acked = watch.ack(&page).await;
+    assert_eq!(acked["cursor"], batch["cursor"]);
+}
+
 #[tokio::test(start_paused = true)]
 async fn initial_discovery_fault_pins_local_tail_before_recovery() {
     let state = test_state_with_seed("subscription-discovery", "Discovery", seed_orchestration);
