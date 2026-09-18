@@ -431,6 +431,37 @@ apart from "the desktop ate it" — see that directory's README for how to run i
 
 Stored in SQLite `settings` table.
 
+#### Machines (your other Macs)
+
+Macs signed into one Kanna account pair themselves the first time one reaches
+the other: the relay introduces their peer channel public keys, each pins the
+other's, and everything between them is end-to-end encrypted from that point
+on. There is no ceremony to perform and no "this desktop is not paired"
+error to hit for two signed-in Macs that are both online on a build that
+supports it.
+
+The panel lists each pinned machine with the claim its trust actually rests
+on, and never blurs the two:
+
+- **End-to-end encrypted · verified** — pinned from a pairing string a person
+  carried between the two screens.
+- **End-to-end encrypted · account-trusted** — pinned automatically because
+  both Macs are signed into the account. The row says so, and offers the
+  upgrade: pairing by string rules out a relay that was compromised at first
+  contact, and replaces the record with a verified one.
+
+**Key changed** is an alert on the row, not a retry. A machine answering with
+a key other than the pinned one is refused, and stays refused until a person
+either verifies it with a pairing string or unpairs it and lets it pair
+again. Nothing re-trusts a changed key on its own.
+
+The pairing string, its QR code and the paste field remain for exactly two
+jobs: verifying a machine that paired automatically, and pairing a Mac that
+is signed out or on another account. The "Allow legacy (unencrypted)
+desktop-to-desktop routing" switch is unchanged and still defaults on. See
+`docs/specs/secure-channel.md` §6 and §10 for the trust model, including the
+honest statement of what the relay can and cannot do at first contact.
+
 ## Mobile app
 
 The connection model and data paths are in

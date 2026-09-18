@@ -76,6 +76,28 @@ export interface RelayMessage {
 /** In-memory map of userId → client and desktop WebSocket connections. */
 const connections = new Map<string, ConnectionPair>();
 const verifiedDesktopIdentities = new WeakMap<WebSocket, string>();
+/**
+ * The peer channel public key a desktop announced on its own desktop-secret
+ * control socket, held only for as long as that socket lives.
+ *
+ * This is the introducer half of automatic same-account E2EE peer trust: a
+ * desktop that wants to pin a sibling it has never paired with reads the
+ * sibling's key from here, and the relay only ever lists a key for a socket
+ * that proved that desktop's secret on this connection
+ * (`verifiedDesktopIdentities`). Nothing is persisted - a key that is not
+ * backed by a live, authenticated desktop cannot be served at all, which is
+ * deliberately weaker than a stored document could offer and exactly the
+ * property that keeps a one-time account compromise from planting a key that
+ * outlives it.
+ */
+const announcedPeerChannelKeys = new WeakMap<WebSocket, string>();
+
+/** An unpadded base64url X25519 public key, as `kanna-secure-channel` encodes one. */
+const PEER_CHANNEL_KEY_PATTERN = /^[A-Za-z0-9_-]{43}$/;
+
+export function isPeerChannelPublicKey(value: unknown): value is string {
+  return typeof value === "string" && PEER_CHANNEL_KEY_PATTERN.test(value);
+}
 const tunnelPeers = new WeakMap<WebSocket, WebSocket>();
 const tunnelLabels = new WeakMap<WebSocket, "client" | "desktop">();
 const tunnelServices = new WeakMap<WebSocket, TunnelService>();
@@ -480,6 +502,34 @@ function newConnectionPair(): ConnectionPair {
 }
 
 /**
+ * The `list_active_desktops` reply.
+ *
+ * `desktopIds` is the original field and stays exactly what it was, so an
+ * older desktop reads this reply unchanged. `desktops` is the same listing
+ * with each desktop's announced peer channel key beside it (`null` when that
+ * desktop runs a Kanna that announces none), which is what lets a sibling
+ * pin it without a pairing ceremony.
+ */
+function activeDesktopListing(pair: ConnectionPair): {
+  desktopIds: string[];
+  desktops: Array<{ desktopId: string; peerChannelPublicKey: string | null }>;
+} {
+  const live = Array.from(pair.desktops.entries()).filter(
+    ([, ws]) => ws.readyState === 1,
+  );
+  return {
+    desktopIds: live.map(([desktopId]) => desktopId),
+    desktops: live.map(([desktopId, ws]) => ({
+      desktopId,
+      peerChannelPublicKey:
+        verifiedDesktopIdentities.get(ws) === desktopId
+          ? announcedPeerChannelKeys.get(ws) ?? null
+          : null,
+    })),
+  };
+}
+
+/**
  * Drop the user's pair only once *both* sides are gone.
  *
  * The pair is shared by every phone client and every desktop of one account,
@@ -534,6 +584,7 @@ export function setServerConnection(
   desktopId: string,
   ws: WebSocket,
   serverAuthProof?: ServerAuthProof | null,
+  peerChannelPublicKey?: string | null,
 ): void {
   let pair = connections.get(userId);
   if (!pair) {
@@ -554,6 +605,12 @@ export function setServerConnection(
     && serverAuthProof.desktopId === desktopId
   ) {
     verifiedDesktopIdentities.set(ws, desktopId);
+    // Only a socket that just proved this desktop's own secret may publish a
+    // key for it. A device-token socket proves account membership and nothing
+    // about which desktop it is, so it never announces.
+    if (isPeerChannelPublicKey(peerChannelPublicKey)) {
+      announcedPeerChannelKeys.set(ws, peerChannelPublicKey);
+    }
   }
 
   pair.desktops.set(desktopId, ws);
@@ -892,11 +949,7 @@ export function routeMessage(
     }
 
     if (parsed?.command === "list_active_desktops") {
-      sendDataResponse(source, parsed.id, {
-        desktopIds: Array.from(pair.desktops.entries())
-          .filter(([, ws]) => ws.readyState === 1)
-          .map(([desktopId]) => desktopId),
-      });
+      sendDataResponse(source, parsed.id, activeDesktopListing(pair));
       return;
     }
 
@@ -1010,11 +1063,7 @@ export function routeMessage(
         return;
       }
       if (parsed.command === "list_active_desktops") {
-        sendDataResponse(source, parsed.id, {
-          desktopIds: Array.from(pair.desktops.entries())
-            .filter(([, ws]) => ws.readyState === 1)
-            .map(([desktopId]) => desktopId),
-        });
+        sendDataResponse(source, parsed.id, activeDesktopListing(pair));
         return;
       }
 

@@ -37,6 +37,7 @@ import {
   sendErrorResponse,
   getConnectionCount,
   getTunnelFlowStats,
+  isPeerChannelPublicKey,
   isTunnelSocket,
 } from "./router.js";
 import { handleOtaRequest } from "./ota.js";
@@ -549,6 +550,13 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
   let desktopId: string | null = null;
   let serverAuthProof: ServerAuthProof | null = null;
   let principalKind: "account" | "anonymousDesktop" | null = null;
+  /**
+   * The peer channel public key this desktop announced in its auth frame, if
+   * any. Held here rather than in the per-message `msg` because a desktop
+   * credential session that also proves an anonymous push key answers a
+   * challenge in a *second* message, and the announcement rides the first.
+   */
+  let announcedPeerChannelKey: string | null = null;
   let anonymousPubKey: string | null = null;
   let pendingAnonymousNonce: string | null = null;
   // Null until the handshake resolves an identity. Every entitlement check the
@@ -580,6 +588,24 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
       );
     });
   });
+
+  /**
+   * Records a desktop's announced peer channel public key, or closes the
+   * socket when the value is malformed. Returns `false` when the caller must
+   * stop handling this frame. An absent announcement is normal: a desktop
+   * whose peer channel identity failed to load, or one running an older
+   * Kanna, simply publishes nothing and is listed without a key.
+   */
+  const recordAnnouncedPeerChannelKey = (value: unknown): boolean => {
+    if (value === undefined || value === null) return true;
+    if (!isPeerChannelPublicKey(value)) {
+      ws.close(4004, "Invalid peer channel public key");
+      clearTimeout(authTimer);
+      return false;
+    }
+    announcedPeerChannelKey = value;
+    return true;
+  };
 
   // 10-second auth timeout
   const authTimer = setTimeout(() => {
@@ -621,6 +647,7 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
         anon_pub_key?: string;
         signature?: string;
         tunnel_client?: boolean;
+        peer_channel_public_key?: string;
       };
 
       try {
@@ -692,6 +719,7 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
           };
           role = "server";
           principalKind = "account";
+          if (!recordAnnouncedPeerChannelKey(msg.peer_channel_public_key)) return;
         }
         anonymousPubKey = msg.anon_pub_key;
         pendingAnonymousNonce = randomBytes(32).toString("base64url");
@@ -723,6 +751,11 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
         } : null;
         role = msg.tunnel_client === true ? "desktopClient" : "server";
         principalKind = "account";
+        // A tunnel client is not this desktop's control connection and
+        // announces nothing; only the control socket introduces its key.
+        if (role === "server" && !recordAnnouncedPeerChannelKey(msg.peer_channel_public_key)) {
+          return;
+        }
       } else if (msg.device_token) {
         // Server (kanna-server) auth
         userId = await verifyDeviceToken(msg.device_token);
@@ -859,7 +892,13 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
       if (role === "phone") {
         setPhoneConnection(userId, ws);
       } else if (principalKind === "account") {
-        setServerConnection(userId, desktopId ?? "default", ws, serverAuthProof);
+        setServerConnection(
+          userId,
+          desktopId ?? "default",
+          ws,
+          serverAuthProof,
+          announcedPeerChannelKey,
+        );
       }
       identifyByteAccount(ws, {
         uid: userId,

@@ -539,6 +539,10 @@ pub fn router(state: Arc<AppState>) -> Router {
             post(super::peers::claim_pairing_offer),
         )
         .route(
+            "/v1/peers/account-enroll",
+            post(super::peers::claim_account_enrollment),
+        )
+        .route(
             "/v1/peers/transfer-identity",
             get(super::peers::transfer_identity),
         )

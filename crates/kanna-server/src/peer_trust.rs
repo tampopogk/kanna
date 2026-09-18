@@ -3,15 +3,32 @@
 //! Distinct from every other trust store in this crate on purpose:
 //! `pairing::PairingStore` holds phones, `machine_trust::MachineTrustStore`
 //! holds the *automatic*, relay-bootstrapped, account-derived LAN bearer
-//! secrets that the legacy desktop-to-desktop path uses. A record here is
-//! neither automatic nor account-derived: it exists because a person pasted
-//! one desktop's pairing string into the other, and it pins two public keys
-//! that no relay, Firestore document or Bonjour record can substitute -
-//! the sibling's peer *channel* key (what every `kanna-ksc-peer` handshake
-//! authenticates) and its task-transfer key (what the sidecar seals
-//! transfer payloads to). Public values only, but written owner-only and
-//! atomically through `secure_file` all the same: a store another account
-//! could rewrite is a store that could pin an impostor.
+//! secrets that the legacy desktop-to-desktop path uses. A record here pins
+//! two public keys - the sibling's peer *channel* key (what every
+//! `kanna-ksc-peer` handshake authenticates) and its task-transfer key
+//! (what the sidecar seals transfer payloads to). Public values only, but
+//! written owner-only and atomically through `secure_file` all the same: a
+//! store another account could rewrite is a store that could pin an
+//! impostor.
+//!
+//! A record is born one of two ways, and [`PeerProvenance`] says which:
+//!
+//! - `Verified` - a person pasted one desktop's pairing string into the
+//!   other. The key came off a screen, so no relay, Firestore document or
+//!   Bonjour record was ever in a position to substitute it.
+//! - `Account` - both desktops were signed into one account and the relay
+//!   *introduced* them (`peer_enrollment`). The relay is the introducer at
+//!   first contact and could have lied then; it can never lie again,
+//!   because what it produced is a real pin. This is the WhatsApp/Signal
+//!   trade: trust on first use, a persistent pin afterwards, a loud
+//!   [`PeerDesktop::identity_mismatch_at_unix_ms`] when the pinned key
+//!   stops matching, and the ceremony available to upgrade the record to
+//!   `Verified` for anyone who wants the stronger claim.
+//!
+//! Provenance never changes how a session is sealed or what authority it
+//! carries - both kinds are the same pin to every other module here. It is
+//! reported so a person can see which claim their machines actually rest
+//! on, and nothing labels an account-introduced pin as verified.
 //!
 //! Records are bound to the environment they were minted in (a staging
 //! desktop must not become a peer of a development one just because both
@@ -34,6 +51,26 @@ pub const PEER_TRUST_STORE_VERSION: u8 = 1;
 pub(crate) fn persistence_mutex() -> &'static Mutex<()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
     LOCK.get_or_init(|| Mutex::new(()))
+}
+
+/// How a [`PeerDesktop`] record came to exist. See the module docs.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum PeerProvenance {
+    /// The pairing-string ceremony: a key carried by a person.
+    #[default]
+    Verified,
+    /// Automatic same-account enrollment: a key the relay introduced.
+    Account,
+}
+
+impl PeerProvenance {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Verified => "verified",
+            Self::Account => "account",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -59,6 +96,18 @@ pub struct PeerDesktop {
     /// or `None` for a pairing made while signed out.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub account_uid: Option<String>,
+    /// How this record was born. Absent on every record written before
+    /// automatic enrollment existed, and every one of those came from the
+    /// ceremony - so the default is `Verified` and the migration is the
+    /// default.
+    #[serde(default)]
+    pub provenance: PeerProvenance,
+    /// When a handshake against this pin last failed against a *different*
+    /// key. Sticky: it survives until a handshake succeeds again or the
+    /// record is replaced, because an identity change is exactly the event
+    /// a person must be told about rather than have quietly retried away.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub identity_mismatch_at_unix_ms: Option<u64>,
     pub paired_at_unix_ms: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_seen_unix_ms: Option<u64>,
@@ -203,6 +252,38 @@ impl PeerTrustStore {
         }
     }
 
+    /// Flags the sibling's pinned key as having failed a handshake against
+    /// a different key. Returns whether anything changed, so the caller can
+    /// skip a write and a state-change publication for a repeat.
+    pub fn record_identity_mismatch(&mut self, desktop_id: &str, now_ms: u64) -> bool {
+        match self
+            .peers
+            .iter_mut()
+            .find(|peer| peer.desktop_id == desktop_id)
+        {
+            Some(peer) if peer.identity_mismatch_at_unix_ms.is_none() => {
+                peer.identity_mismatch_at_unix_ms = Some(now_ms);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Clears the flag after a handshake against the pin succeeded again.
+    pub fn clear_identity_mismatch(&mut self, desktop_id: &str) -> bool {
+        match self
+            .peers
+            .iter_mut()
+            .find(|peer| peer.desktop_id == desktop_id)
+        {
+            Some(peer) if peer.identity_mismatch_at_unix_ms.is_some() => {
+                peer.identity_mismatch_at_unix_ms = None;
+                true
+            }
+            _ => false,
+        }
+    }
+
     pub fn touch(&mut self, desktop_id: &str, now_ms: u64) {
         if let Some(peer) = self
             .peers
@@ -255,6 +336,8 @@ mod tests {
             transfer_public_key: None,
             environment: "development".into(),
             account_uid: account.map(str::to_string),
+            provenance: PeerProvenance::Verified,
+            identity_mismatch_at_unix_ms: None,
             paired_at_unix_ms: 1,
             last_seen_unix_ms: None,
         }
@@ -334,6 +417,61 @@ mod tests {
             "a conflict changes nothing"
         );
         assert!(store.pin_transfer_identity("desktop-x", "p", "k").is_err());
+    }
+
+    /// Every record written before automatic enrollment existed came from
+    /// the ceremony, so an absent `provenance` must load as `verified` -
+    /// the migration is the serde default and nothing rewrites the file.
+    #[test]
+    fn a_legacy_record_without_provenance_loads_as_verified() {
+        let path = store_path();
+        crate::secure_file::atomic_write_0600(
+            &path,
+            r#"{"version":1,"peers":[{"desktopId":"desktop-b","displayName":"B Mac",
+               "channelPublicKey":"key-b","environment":"development","pairedAtUnixMs":1}]}"#,
+        )
+        .unwrap();
+        let store = PeerTrustStore::load(&path).unwrap();
+        assert_eq!(store.peers[0].provenance, PeerProvenance::Verified);
+        assert_eq!(store.peers[0].identity_mismatch_at_unix_ms, None);
+    }
+
+    #[test]
+    fn the_identity_mismatch_flag_is_sticky_and_round_trips() {
+        let path = store_path();
+        let mut store = PeerTrustStore::default();
+        let mut account = peer("desktop-b", "key-b", Some("uid-1"));
+        account.provenance = PeerProvenance::Account;
+        store.upsert(account).unwrap();
+        assert!(store.record_identity_mismatch("desktop-b", 42));
+        assert!(
+            !store.record_identity_mismatch("desktop-b", 99),
+            "a repeat changes nothing, so no write and no notice"
+        );
+        assert!(!store.record_identity_mismatch("desktop-x", 42));
+        store.save(&path).unwrap();
+        let mut store = PeerTrustStore::load(&path).unwrap();
+        assert_eq!(store.peers[0].provenance, PeerProvenance::Account);
+        assert_eq!(store.peers[0].identity_mismatch_at_unix_ms, Some(42));
+        assert!(store.clear_identity_mismatch("desktop-b"));
+        assert!(!store.clear_identity_mismatch("desktop-b"));
+    }
+
+    /// The ceremony is the upgrade path: running it against a peer this
+    /// desktop pinned automatically replaces the record with a verified one.
+    #[test]
+    fn the_ceremony_upgrades_an_account_record_to_verified() {
+        let mut store = PeerTrustStore::default();
+        let mut account = peer("desktop-b", "key-b", Some("uid-1"));
+        account.provenance = PeerProvenance::Account;
+        account.identity_mismatch_at_unix_ms = Some(7);
+        store.upsert(account).unwrap();
+        store
+            .upsert(peer("desktop-b", "key-b", Some("uid-1")))
+            .unwrap();
+        assert_eq!(store.peers.len(), 1);
+        assert_eq!(store.peers[0].provenance, PeerProvenance::Verified);
+        assert_eq!(store.peers[0].identity_mismatch_at_unix_ms, None);
     }
 
     #[test]

@@ -234,6 +234,38 @@ After Slice 5 (§10), for two desktops paired by pairing string:
   invoke, and it cannot substitute a key or a CA because none is ever taken
   from it.
 
+**Automatic same-account pins: what changes, honestly.** Desktops signed
+into one account now pin each other automatically at first contact (§10,
+"Automatic enrollment"), and that is a genuinely weaker *first-contact*
+claim than the pairing string, which the product must not blur:
+
+- **At first contact the relay is the introducer.** It publishes each
+  desktop's peer channel public key with presence, and a compromised relay
+  could hand each side a key of its own and insert itself — once, at
+  enrollment. A pairing string cannot be attacked this way, because the key
+  came off a screen.
+- **After first contact, a relay can do nothing.** What enrollment produces
+  is a real pin. Every later handshake is against it, a different key
+  hard-fails with `peer_identity_mismatch`, and enrollment is never
+  attempted while a record for that desktop id exists. Nothing re-trusts a
+  changed key, and the responder refuses a claim for an id it already pins
+  under another key.
+- **Both weaknesses are visible rather than silent.** Every record carries
+  its provenance — `verified` (ceremony) or `account` (automatic) — and the
+  peer list, the machine list and Preferences → Machines say which; nothing
+  labels an account pin as verified. A pin that stops matching is reported
+  as "Key changed" with its two resolutions (verify with a pairing string,
+  or unpair and let it pair again).
+- **The stronger claim stays available.** Running the ceremony against a
+  machine that paired automatically replaces the record with a `verified`
+  one — this is the out-of-band verification, the equivalent of comparing a
+  safety number.
+
+This is the WhatsApp/Signal trade, taken deliberately: trust on first use,
+a persistent pin afterwards, loud key-change notices and optional
+verification, in exchange for two of one person's own Macs working together
+without a ceremony neither of them needed to be safe.
+
 Still visible to the relay/cloud operator, unchanged by this work:
 
 - the Firestore task index (title, prompt snippet, waiting snippet, attention
@@ -378,6 +410,54 @@ over the sealed session (`GET /v1/peers/transfer-identity`) and pinned on
 first sight; a *different* one afterwards is refused until the machines
 pair again. A key another desktop id already holds is refused.
 
+**Automatic enrollment (same account, no ceremony).** The ceremony above is
+*verification*, not the entry fee. Two desktops signed into one account pin
+each other on first contact:
+
+1. Each desktop announces its peer channel **public** key on its own relay
+   control socket, in the `auth` frame's `peer_channel_public_key`. The relay
+   records it only for a socket whose desktop secret it just verified for
+   that exact desktop id (`verifiedDesktopIdentities`), holds it in memory
+   for the life of that socket, and **persists nothing**. A device-token
+   socket and a `tunnel_client` socket announce nothing.
+2. `list_active_desktops` answers with `desktops: [{ desktopId,
+   peerChannelPublicKey }]` beside the unchanged `desktopIds`. A relay that
+   predates the field answers as before and automatic enrollment is simply
+   unavailable; a desktop that announced no key is listed with `null`.
+3. When this desktop needs an unpinned sibling — `dial_peer`,
+   `invoke_desktop`, or eagerly in the background when the machine list is
+   refreshed — `peer_enrollment::try_enroll` reads that sibling's announced
+   key, dials it with an ordinary sealed `peer_pairing` handshake **against
+   exactly that key**, and sends `{ desktopId, desktopName, environment,
+   transferIdentity }` to `POST /v1/peers/account-enroll`.
+4. The responder refuses in this order: no sealed pairing-only context; a
+   malformed or self-claimed id; an id that disagrees with the handshake
+   hello; an environment mismatch; this desktop signed out; **the relay not
+   listing that id right now with exactly this session's key**
+   (`peer_enrollment_refused`); an existing record for that id under a
+   different key (`peer_identity_mismatch`, 409, nothing replaced, the
+   change flagged). Otherwise it pins the claimant's *handshake* key with
+   provenance `account` and replies with its own identity, which the
+   initiator pins the same way. One exchange, both directions, as the
+   ceremony leaves them.
+
+Check 4's key comparison is what an unauthenticated LAN dialer cannot
+satisfy: it may reach `/v1/peers/channel` and complete a handshake with its
+own key, but the account does not publish that key for the id it claims, so
+it enrolls nothing. No private key is ever announced, published or
+transported. A Firestore document was rejected as the distribution channel
+because it is persistent and rewritable — a one-time account or rules
+compromise could plant a key that outlives it — and because the server has
+no Firestore client, so the renderer would re-enter the sibling trust path.
+
+Enrollment is bounded: one in-flight attempt per target and a 30-second
+negative cache, so the eager and lazy triggers cannot become a dial storm.
+An automatic record is always account-bound, so `retain_account` drops it on
+sign-out or an account change and it re-enrolls on the next sign-in. A
+signed-out machine, or one on another account, is never listed by the relay,
+so `peer_pairing_required` remains its answer — with the reason attached —
+and the ceremony remains its path.
+
 **Authority.** Decided at the handshake in `ksp::admit_sealed_peer_session`:
 a key in the peer trust store → `TrustedPeerDesktopAccess { desktop_id }`,
 exactly the sibling route set a relay-attested invoke had (task control,
@@ -386,7 +466,7 @@ files, diffs, transfer identity) over LAN and relay alike, never
 `AuthenticatedHttpInvoke` or `RelayAttestedSource` (the legacy CA
 bootstrap is retired, not re-homed), and never the peer pairing claim. An
 unknown key → pairing-only: `POST /v1/peers/pairing/claim` and nothing
-else; any stream frame ends the connection, and it is never subscribed to
+and `POST /v1/peers/account-enroll`, and nothing else; any stream frame ends the connection, and it is never subscribed to
 task-state fan-out. A `peer_tunnel` from an unknown key is refused at the
 handshake. Relay-origin peer sessions are gated by `RelayAccess` like phone
 tunnels. A hello whose `sourceDesktopId` disagrees with the pinned id, or
@@ -407,8 +487,12 @@ old pin (`peer_identity_mismatch`) until the machines pair again.
 | Situation | Result | Wire |
 |---|---|---|
 | Paired, sibling on this build | invoke route `peer-lan`/`peer-relay`, view spliced, transfer over the sealed tunnel | ciphertext only after the tunnel setup |
-| Not paired, legacy on | the pre-Slice-5 relay-attested / LAN-bearer path (`relay`/`lan`), machine listed as `legacy` | plaintext, as before |
-| Not paired, legacy off | `peer_pairing_required`, machine listed as `pairingRequired` | nothing |
+| Not paired, same account, both online on this build | enrolled automatically, then invoke route `peer-lan`/`peer-relay`; provenance `account` | one extra sealed handshake and claim |
+| Not paired, this desktop signed out or the sibling on another account | `peer_pairing_required` naming the reason; the ceremony is the path | nothing |
+| Not paired, sibling announces no key (older Kanna) or the relay predates key presence | `peer_pairing_required` naming which | nothing |
+| Not paired and not enrollable, legacy on | the pre-Slice-5 relay-attested / LAN-bearer path (`relay`/`lan`), machine listed as `legacy` | plaintext, as before |
+| Not paired and not enrollable, legacy off | `peer_pairing_required`, machine listed as `pairingRequired` | nothing |
+| Enrolled automatically, sibling's key later rotates | `peer_identity_mismatch`, sticky "Key changed" notice, **never** re-enrolled | one handshake frame |
 | Paired, sibling answers with no peer handshake (older Kanna, identity unavailable) | `peer_upgrade_required`; no plaintext attempt | one handshake frame |
 | Paired, key rotated or impostor at the address | `peer_identity_mismatch`; no plaintext attempt | one handshake frame |
 | Paired, relay without `desktopTunnel` and no LAN candidate | `peer_unreachable` naming the relay upgrade | nothing |
@@ -418,15 +502,20 @@ old pin (`peer_identity_mismatch`) until the machines pair again.
 **Tests.** `crates/kanna-secure-channel` (domain separation);
 `crates/kanna-server/src/http_api/peer_tests.rs` (both endpoints refuse the
 other domain and plaintext, pairing-only authority, the ceremony with a
-wrong secret/code/audience/environment, the sibling route set versus
+wrong secret/code/audience/environment, automatic enrollment refused unless
+the relay publishes this session's key for the claimed id and never
+replacing an existing pin, the sibling route set versus
 desktop-local and relay-attested authority, tamper/replay, revocation,
 relay account gating, transfer identity pinning, every legacy gate, and two
 real served routers where an invoke and a transfer tunnel cross a
 recording TCP tap with no marker visible); `services/relay`
-(`desktopTunnel.test.ts`); desktop `desktopRelayTerminal.test.ts`,
+(`desktopTunnel.test.ts`, `peerKeyAnnouncement.test.ts` — who may publish a
+key, that `desktopIds` is unchanged, and the malformed-key refusal); desktop
+`desktopRelayTerminal.test.ts`,
 `desktopTransferMachines.test.ts`, `MachinesPanel.test.ts`;
 `tests/remote-e2e/src/desktop-peer-channel.e2e.test.ts` against the real
-relay (pairing by string, sealed invokes both ways, a sibling terminal view
+relay (automatic same-account enrollment with no ceremony, pairing by string
+upgrading it to verified, sealed invokes both ways, a sibling terminal view
 through the proxy with markers absent from the relay's frame log and both
 servers' logs, rotated key, unpairing, relay restart, legacy off).
 
@@ -457,6 +546,18 @@ implementation-review dates are updated in the same edit.
 > phone and that desktop, over the local network and through the relay alike;
 > the cloud task index and push notification bodies are not covered by that
 > encryption.
+
+> **Between your own Macs**: Macs signed into one Kanna account establish
+> end-to-end encryption between themselves automatically the first time one
+> reaches the other. Each Mac publishes only a public key to the relay while
+> it is connected, and the relay introduces the two; from then on each Mac
+> pins the other's key, and a key that changes is reported to you rather than
+> trusted. The relay carries only ciphertext plus connection metadata between
+> your Macs — it cannot read tasks, terminal output, files or transfers, and
+> it cannot act as either Mac. Because the relay makes the introduction, you
+> can additionally verify a Mac out of band with a pairing string in
+> Preferences → Machines; the app shows which of your Macs are verified that
+> way and which were introduced by your account.
 
 > **Content sent through cloud access**: For a phone paired with a current
 > desktop, the content the relay routes is end-to-end encrypted between the

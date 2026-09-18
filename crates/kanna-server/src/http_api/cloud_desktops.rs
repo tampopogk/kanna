@@ -12,10 +12,18 @@ struct MachineDescriptor {
     name: Option<String>,
     is_local: bool,
     /// How this desktop reaches the machine: `local` (itself), `e2ee` (a
-    /// paired sibling over its sealed peer session), `legacy` (an unpaired
+    /// pinned sibling over its sealed peer session), `legacy` (an unpinned
     /// sibling over the relay-attested or bearer-secret path, while that
-    /// is still allowed), or `pairingRequired` (unpaired, legacy off).
+    /// is still allowed), or `pairingRequired` (unpinned, legacy off).
     encryption: &'static str,
+    /// For an `e2ee` machine, how its pin was born: `verified` (the pairing
+    /// string a person carried) or `account` (automatic same-account
+    /// enrollment). `None` for every other value of `encryption`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    provenance: Option<&'static str>,
+    /// A handshake against that machine's pin met a different key and has
+    /// not succeeded since.
+    identity_changed: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -43,10 +51,20 @@ pub(super) async fn list_cloud_desktops(
 ) -> Json<MachineListResponse> {
     let current_id = state.config().desktop_id.clone();
     let mut ids = vec![current_id.clone()];
+    let mut enrollable: Vec<String> = Vec::new();
     let (relay_available, error) = if state.desktop_routing_available() {
-        match state.list_active_relay_desktops().await {
+        match state.list_active_relay_desktop_presence().await {
             Ok(active) => {
-                ids.extend(active);
+                enrollable.extend(
+                    active
+                        .iter()
+                        .filter(|entry| {
+                            entry.desktop_id != current_id
+                                && entry.peer_channel_public_key.is_some()
+                        })
+                        .map(|entry| entry.desktop_id.clone()),
+                );
+                ids.extend(active.into_iter().map(|entry| entry.desktop_id));
                 (true, None)
             }
             Err(error) => (false, Some(error)),
@@ -77,6 +95,22 @@ pub(super) async fn list_cloud_desktops(
             .filter(|peer| state.lan_api_candidate_for(&peer.desktop_id).is_some())
             .map(|peer| peer.desktop_id.clone()),
     );
+    // Same-account siblings the relay can introduce are enrolled eagerly, in
+    // the background, so both directions are pinned from one exchange and
+    // this list reports `e2ee` on its next refresh without anyone having to
+    // open a session first. `try_enroll` is a no-op for anyone already
+    // pinned and is guarded against concurrent attempts per target, so this
+    // is idempotent however often the list is refreshed.
+    for desktop_id in enrollable {
+        if matches!(state.paired_peer(&desktop_id), Ok(None)) {
+            let state = Arc::clone(&state);
+            tokio::spawn(async move {
+                if let Err(error) = crate::peer_enrollment::try_enroll(&state, &desktop_id).await {
+                    log::debug!("[peer] {desktop_id} was not enrolled automatically: {error}");
+                }
+            });
+        }
+    }
     ids.sort();
     ids.dedup();
     let machines = ids
@@ -99,6 +133,9 @@ pub(super) async fn list_cloud_desktops(
                 } else {
                     "pairingRequired"
                 },
+                provenance: peer.map(|peer| peer.provenance.as_str()),
+                identity_changed: peer
+                    .is_some_and(|peer| peer.identity_mismatch_at_unix_ms.is_some()),
                 id,
                 is_local,
             }

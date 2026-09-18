@@ -3465,12 +3465,14 @@ fn pairing_only_request_allowed(method: &str, path: &str) -> bool {
     )
 }
 
-/// The one request an unpaired sibling desktop may make.
+/// The two requests an unpaired sibling desktop may make: claim a pairing
+/// string, or claim automatic same-account enrollment. Both end in a pin and
+/// nothing else is reachable from a session that has none.
 fn peer_pairing_only_request_allowed(method: &str, path: &str) -> bool {
     let path = path.split('?').next().unwrap_or(path);
     matches!(
         (method.to_ascii_uppercase().as_str(), path),
-        ("POST", "/v1/peers/pairing/claim")
+        ("POST", "/v1/peers/pairing/claim") | ("POST", crate::peer_enrollment::ACCOUNT_ENROLL_PATH)
     )
 }
 

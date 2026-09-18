@@ -251,7 +251,9 @@ fn old_peer(source: &Arc<AppState>, peer: Arc<AppState>) -> tokio::task::JoinHan
                     let Some(request) = request else { break };
                     match request {
                         crate::http_api::DesktopRelayRequest::ListActive { response, .. } => {
-                            let _ = response.send(Ok(vec![peer.config().desktop_id.clone()]));
+                            let _ = response.send(Ok(vec![crate::http_api::RelayDesktopPresence::without_key(
+                        peer.config().desktop_id.clone(),
+                    )]));
                         }
                         crate::http_api::DesktopRelayRequest::Invoke { method, path, body, response, .. } => {
                             assert!(path.contains("orchestrationNotifications=true"));

@@ -993,22 +993,42 @@ catalog-resolved HTTP request through
 Those two bridge routes require a real desktop-loopback request
 (`DesktopLocalAccess`). A paired LAN client or an inbound relay request cannot
 use one trusted desktop as a proxy into the rest of the account. For a
-*paired* sibling (`peer_trust`, pinned through the pairing-string ceremony in
-`docs/specs/secure-channel.md` §10) the local server dials a sealed
+*pinned* sibling (`peer_trust`; see `docs/specs/secure-channel.md` §10) the
+local server dials a sealed
 `kanna-ksc-peer` session to that sibling's pinned key — over the LAN at the
 address discovery observed, else through a relay tunnel opened with this
 desktop's own desktop secret — and reports the route as `peer-lan` or
 `peer-relay`; a pinned peer never falls back to a plaintext route, and the
 refusal names why (`peer_pairing_required`, `peer_upgrade_required`,
-`peer_identity_mismatch`, `peer_unreachable`). For an unpaired sibling, and
-only while `desktop_peer_legacy_access` is on, the local server submits the
+`peer_identity_mismatch`, `peer_unreachable`).
+
+A record is pinned one of two ways. The **pairing-string ceremony** pins a
+key a person carried between two screens. **Automatic same-account
+enrollment** pins one the relay introduced: each desktop announces its peer
+channel public key on its own verified relay control socket, and a desktop
+reaching an unpinned sibling of the same account dials that announced key
+and claims `POST /v1/peers/account-enroll`, which the responder accepts only
+if the relay lists the claimed id right now with exactly that session's key.
+Trust on first use, a persistent pin afterwards: the relay can insert itself
+at enrollment and never again, a changed key hard-fails rather than
+re-enrolling, and the ceremony upgrades a record to `verified`. So
+`peer_pairing_required` is unreachable for two signed-in same-account
+desktops that are both online on this build; every other refusal now names
+its reason. For a sibling that cannot be enrolled — signed out, another
+account, an older Kanna, an older relay — and only while
+`desktop_peer_legacy_access` is on, the local server submits the
 request through its existing desktop-authenticated relay socket; the relay
 resolves that credential to one user and routes only to a desktop socket
 registered under the same user, stamping the sender's identity — a relay
 that is compromised can forge exactly that, which is why the switch exists.
 No raw server URL, device secret, desktop secret, or Firebase token enters
 the MCP arguments. `kanna_list_machines` reports each machine's
-`encryption` (`local`, `e2ee`, `legacy`, `pairingRequired`).
+`encryption` (`local`, `e2ee`, `legacy`, `pairingRequired`) and, for an
+`e2ee` machine, the `provenance` its pin was born with (`verified` for the
+ceremony, `account` for automatic enrollment) plus `identityChanged`.
+`encryption` is deliberately unchanged by provenance: both kinds of pin
+really are end-to-end encrypted, and nothing labels an account pin as
+verified.
 
 The desktop app is a renderer here, not a peer: its sibling terminal,
 companion and file views open the loopback proxy `GET /v1/peers/{id}/ksp`
@@ -1017,8 +1037,8 @@ server splices into a sealed session to the sibling. The renderer holds no
 relay socket, Firebase token or peer key on the sibling path. Peer pairing,
 the peer list and unpairing are `DesktopLocalAccess` routes under
 `/v1/peers`; the sealed endpoint itself is `GET /v1/peers/channel`, and the
-claim `POST /v1/peers/pairing/claim` is reachable only inside a sealed peer
-session whose key is not yet paired.
+claims `POST /v1/peers/pairing/claim` and `POST /v1/peers/account-enroll`
+are reachable only inside a sealed peer session whose key is not yet pinned.
 
 The relay connection is also the availability boundary. Machine discovery
 always returns the current machine and reports `relayAvailable` plus an error

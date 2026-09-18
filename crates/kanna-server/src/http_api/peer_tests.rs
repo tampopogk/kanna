@@ -304,6 +304,8 @@ fn pin_peer(state: &AppState, desktop_id: &str, identity: &Keypair) {
             transfer_public_key: None,
             environment: "development".into(),
             account_uid: None,
+            provenance: crate::peer_trust::PeerProvenance::Verified,
+            identity_mismatch_at_unix_ms: None,
             paired_at_unix_ms: 1,
             last_seen_unix_ms: None,
         })
@@ -757,6 +759,298 @@ async fn the_pairing_string_binds_its_audience() {
         "neither spent the offer"
     );
     assert!(issuer.peer_trust_store().unwrap().peers.is_empty());
+}
+
+/// Answers this desktop's `list_active_desktops` requests from a fixed
+/// presence table for as long as the returned task lives - the relay's role
+/// in automatic enrollment, played locally.
+fn serve_relay_presence(
+    state: &Arc<AppState>,
+    presence: Vec<(String, Option<String>)>,
+) -> tokio::task::JoinHandle<()> {
+    let mut requests = state
+        .take_desktop_relay_requests()
+        .expect("relay request receiver");
+    state.set_desktop_routing_available(true);
+    tokio::spawn(async move {
+        while let Some(request) = requests.recv().await {
+            match request {
+                super::state::DesktopRelayRequest::ListActive { response, .. } => {
+                    let _ = response.send(Ok(presence
+                        .iter()
+                        .map(|(desktop_id, key)| crate::http_api::RelayDesktopPresence {
+                            desktop_id: desktop_id.clone(),
+                            peer_channel_public_key: key.clone(),
+                        })
+                        .collect()));
+                }
+                _ => panic!("unexpected relay request during an enrollment test"),
+            }
+        }
+    })
+}
+
+fn enroll_claim(desktop_id: &str, environment: &str) -> serde_json::Value {
+    serde_json::json!({
+        "desktopId": desktop_id,
+        "desktopName": format!("{desktop_id} Mac"),
+        "environment": environment,
+        "transferIdentity": { "peerId": "peer-x", "publicKey": "tkey-x" },
+    })
+}
+
+/// The happy path and every refusal of the responder side, driven through
+/// the real sealed session.
+///
+/// The property that matters is #5 in `claim_account_enrollment`'s own list:
+/// the claim is authorized by the relay listing *this session's key* for the
+/// id it claims. A dialer that reaches the endpoint with its own key enrolls
+/// nothing, whatever it claims and wherever it dialed from.
+#[tokio::test]
+async fn an_account_enrollment_claim_needs_the_relay_to_publish_this_sessions_key() {
+    let responder = state("enroll-responder");
+    responder.set_authenticated_account_uid(Some("uid-1".to_string()));
+    let sibling_identity = Keypair::generate().unwrap();
+    let _relay = serve_relay_presence(
+        &responder,
+        vec![
+            (
+                "desktop-sibling".to_string(),
+                Some(sibling_identity.encoded_public_key()),
+            ),
+            ("desktop-keyless".to_string(), None),
+        ],
+    );
+
+    // A dialer whose key the account does not publish for the id it claims.
+    let stranger = Keypair::generate().unwrap();
+    let mut impostor = SealedSibling::establish(
+        &responder,
+        StreamOrigin::Lan,
+        &stranger,
+        "desktop-sibling",
+        HelloIntent::PeerPairing,
+        None,
+    )
+    .await
+    .unwrap();
+    impostor.auth().await;
+    let response = impostor
+        .request(
+            1,
+            "POST",
+            "/v1/peers/account-enroll",
+            enroll_claim("desktop-sibling", "development"),
+        )
+        .await;
+    assert_eq!(response["status"], 403, "{response}");
+    assert!(
+        responder.peer_trust_store().unwrap().peers.is_empty(),
+        "a refused claim pins nothing"
+    );
+    impostor.sibling.ended().await;
+
+    // The real sibling: same key the relay publishes for that id.
+    let mut sibling = SealedSibling::establish(
+        &responder,
+        StreamOrigin::Lan,
+        &sibling_identity,
+        "desktop-sibling",
+        HelloIntent::PeerPairing,
+        None,
+    )
+    .await
+    .unwrap();
+    sibling.auth().await;
+    // ...but the environment must still match, and the declared id must
+    // agree with the handshake hello.
+    let response = sibling
+        .request(
+            1,
+            "POST",
+            "/v1/peers/account-enroll",
+            enroll_claim("desktop-sibling", "staging"),
+        )
+        .await;
+    assert_eq!(response["status"], 400, "{response}");
+    let response = sibling
+        .request(
+            2,
+            "POST",
+            "/v1/peers/account-enroll",
+            enroll_claim("desktop-keyless", "development"),
+        )
+        .await;
+    assert_eq!(response["status"], 400, "{response}");
+    assert!(responder.peer_trust_store().unwrap().peers.is_empty());
+
+    let response = sibling
+        .request(
+            3,
+            "POST",
+            "/v1/peers/account-enroll",
+            enroll_claim("desktop-sibling", "development"),
+        )
+        .await;
+    assert_eq!(response["status"], 200, "{response}");
+    assert_eq!(response["body"]["desktopId"], responder.config().desktop_id);
+    let store = responder.peer_trust_store().unwrap();
+    let pinned = store
+        .peer_by_desktop_id("desktop-sibling", "development")
+        .expect("enrolled");
+    assert_eq!(
+        pinned.channel_public_key,
+        sibling_identity.encoded_public_key()
+    );
+    assert_eq!(
+        pinned.provenance,
+        crate::peer_trust::PeerProvenance::Account,
+        "an automatic pin must never claim to be verified"
+    );
+    assert_eq!(
+        pinned.account_uid.as_deref(),
+        Some("uid-1"),
+        "an automatic pin is account-bound, so sign-out purges it"
+    );
+
+    // A repeat with the same key is idempotent.
+    let response = sibling
+        .request(
+            4,
+            "POST",
+            "/v1/peers/account-enroll",
+            enroll_claim("desktop-sibling", "development"),
+        )
+        .await;
+    assert_eq!(response["status"], 200, "{response}");
+    assert_eq!(responder.peer_trust_store().unwrap().peers.len(), 1);
+
+    // The list reports the provenance rather than blurring it into `e2ee`.
+    let list = super::peers::list_peers(DesktopLocalAccess, State(Arc::clone(&responder)))
+        .await
+        .unwrap()
+        .0;
+    let view = serde_json::to_value(&list).unwrap();
+    assert_eq!(view["peers"][0]["encryption"], "e2ee");
+    assert_eq!(view["peers"][0]["provenance"], "account");
+    assert_eq!(view["peers"][0]["identityChanged"], false);
+}
+
+/// A signed-out desktop has no account to be introduced within, so the
+/// ceremony remains its path, and a rotated sibling key is a hard 409 that
+/// replaces nothing.
+#[tokio::test]
+async fn enrollment_is_refused_while_signed_out_and_never_replaces_a_pin() {
+    let responder = state("enroll-refusals");
+    let sibling_identity = Keypair::generate().unwrap();
+    let _relay = serve_relay_presence(
+        &responder,
+        vec![(
+            "desktop-sibling".to_string(),
+            Some(sibling_identity.encoded_public_key()),
+        )],
+    );
+    let mut sibling = SealedSibling::establish(
+        &responder,
+        StreamOrigin::Lan,
+        &sibling_identity,
+        "desktop-sibling",
+        HelloIntent::PeerPairing,
+        None,
+    )
+    .await
+    .unwrap();
+    sibling.auth().await;
+    let response = sibling
+        .request(
+            1,
+            "POST",
+            "/v1/peers/account-enroll",
+            enroll_claim("desktop-sibling", "development"),
+        )
+        .await;
+    assert_eq!(response["status"], 403, "signed out: {response}");
+    assert!(responder.peer_trust_store().unwrap().peers.is_empty());
+    sibling.sibling.ended().await;
+
+    // Now signed in, but this desktop already pins that sibling id under
+    // another key: the relay saying otherwise changes nothing.
+    responder.set_authenticated_account_uid(Some("uid-1".to_string()));
+    let stale = Keypair::generate().unwrap();
+    pin_peer(&responder, "desktop-sibling", &stale);
+    let mut sibling = SealedSibling::establish(
+        &responder,
+        StreamOrigin::Lan,
+        &sibling_identity,
+        "desktop-sibling",
+        HelloIntent::PeerPairing,
+        None,
+    )
+    .await
+    .unwrap();
+    sibling.auth().await;
+    let response = sibling
+        .request(
+            1,
+            "POST",
+            "/v1/peers/account-enroll",
+            enroll_claim("desktop-sibling", "development"),
+        )
+        .await;
+    assert_eq!(response["status"], 409, "{response}");
+    let store = responder.peer_trust_store().unwrap();
+    let pinned = store
+        .peer_by_desktop_id("desktop-sibling", "development")
+        .unwrap();
+    assert_eq!(
+        pinned.channel_public_key,
+        stale.encoded_public_key(),
+        "a changed key must never silently re-trust"
+    );
+    assert!(
+        pinned.identity_mismatch_at_unix_ms.is_some(),
+        "the change must be loud"
+    );
+}
+
+/// An unpaired session may reach the enrollment claim and nothing else.
+#[tokio::test]
+async fn the_enrollment_route_is_the_only_new_thing_an_unpaired_session_may_reach() {
+    let state = state("enroll-authority");
+    let stranger = Keypair::generate().unwrap();
+    let mut sibling = SealedSibling::establish(
+        &state,
+        StreamOrigin::Lan,
+        &stranger,
+        "desktop-stranger",
+        HelloIntent::PeerSession,
+        None,
+    )
+    .await
+    .unwrap();
+    sibling.auth().await;
+    for (method, path) in [
+        ("GET", "/v1/peers/account-enroll"),
+        ("POST", "/v1/peers/account-enrollment"),
+        ("POST", "/v1/peers"),
+    ] {
+        let response = sibling
+            .request(1, method, path, serde_json::Value::Null)
+            .await;
+        assert_eq!(response["status"], 401, "{method} {path}: {response}");
+    }
+    // Reachable, and refused on its merits rather than by the authority gate
+    // (no relay routing configured here, so the presence check cannot pass).
+    let response = sibling
+        .request(
+            2,
+            "POST",
+            "/v1/peers/account-enroll",
+            enroll_claim("desktop-stranger", "development"),
+        )
+        .await;
+    assert_ne!(response["status"], 401, "{response}");
+    assert!(state.peer_trust_store().unwrap().peers.is_empty());
 }
 
 #[tokio::test]
@@ -1300,6 +1594,162 @@ async fn a_real_sealed_invoke_and_transfer_tunnel_cross_loopback_without_a_plain
     assert_eq!(routes.len(), 1);
     assert_eq!(routes[0].transfer_peer_id, "peer-b");
     assert_eq!(routes[0].desktop_id, desktop_b.config().desktop_id);
+}
+
+/// Two real served desktops, no pins, one account: the failure the owner
+/// actually hit. Opening a session must establish trust by itself, both
+/// directions must be pinned from that single exchange, and a key that
+/// rotates afterwards must hard-fail rather than re-enroll.
+#[tokio::test]
+async fn same_account_desktops_enroll_each_other_on_first_contact_and_never_re_enroll() {
+    let desktop_b = state("first-contact-b");
+    let desktop_a = state("first-contact-a");
+    for state in [&desktop_a, &desktop_b] {
+        state.set_authenticated_account_uid(Some("uid-1".to_string()));
+    }
+    let a_key = desktop_a
+        .peer_channel_identity()
+        .unwrap()
+        .encoded_public_key();
+    let b_key = desktop_b
+        .peer_channel_identity()
+        .unwrap()
+        .encoded_public_key();
+    // Each desktop's relay: the account's presence table with both keys.
+    let presence = vec![
+        (desktop_a.config().desktop_id.clone(), Some(a_key.clone())),
+        (desktop_b.config().desktop_id.clone(), Some(b_key.clone())),
+    ];
+    let _relay_a = serve_relay_presence(&desktop_a, presence.clone());
+    let _relay_b = serve_relay_presence(&desktop_b, presence);
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let served = listener.local_addr().unwrap();
+    let router = super::router(Arc::clone(&desktop_b));
+    tokio::spawn(async move {
+        let _ = axum::serve(
+            listener,
+            router.into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .await;
+    });
+    desktop_a.set_lan_api_candidate(desktop_b.config().desktop_id.clone(), served);
+
+    assert!(
+        desktop_a.peer_trust_store().unwrap().peers.is_empty()
+            && desktop_b.peer_trust_store().unwrap().peers.is_empty(),
+        "the scenario starts with no ceremony having been run"
+    );
+    let routed = super::invoke_desktop::invoke_desktop(
+        Arc::clone(&desktop_a),
+        desktop_b.config().desktop_id.clone(),
+        "GET".into(),
+        "/v1/status".into(),
+        serde_json::Value::Null,
+    )
+    .await
+    .unwrap_or_else(|error| panic!("first contact must pair and then succeed: {error}"));
+    assert_eq!(routed.route.as_str(), "peer-lan");
+    assert_eq!(routed.response.status, 200, "{:?}", routed.response);
+
+    // One exchange, both directions, both `account`.
+    let pinned_on_a = desktop_a
+        .paired_peer(&desktop_b.config().desktop_id)
+        .unwrap()
+        .expect("A pinned B");
+    assert_eq!(pinned_on_a.channel_public_key, b_key);
+    assert_eq!(
+        pinned_on_a.provenance,
+        crate::peer_trust::PeerProvenance::Account
+    );
+    let pinned_on_b = desktop_b
+        .paired_peer(&desktop_a.config().desktop_id)
+        .unwrap()
+        .expect("B pinned A from the same exchange");
+    assert_eq!(pinned_on_b.channel_public_key, a_key);
+    assert_eq!(
+        pinned_on_b.provenance,
+        crate::peer_trust::PeerProvenance::Account
+    );
+
+    // The machine list reports what it rests on rather than only `e2ee`.
+    let machines = super::cloud_desktops::list_cloud_desktops(
+        DesktopLocalAccess,
+        State(Arc::clone(&desktop_a)),
+    )
+    .await
+    .0;
+    let view = serde_json::to_value(&machines).unwrap();
+    let sibling = view["machines"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|machine| machine["id"] == desktop_b.config().desktop_id.as_str())
+        .expect("the sibling is listed");
+    assert_eq!(sibling["encryption"], "e2ee");
+    assert_eq!(sibling["provenance"], "account");
+    assert_eq!(sibling["identityChanged"], false);
+
+    // A rotated key on B: the pin holds, the failure is sticky, and nothing
+    // re-enrolls - not even though the relay would happily introduce them.
+    let rotated = Keypair::generate().unwrap();
+    {
+        let path = desktop_a.config().peer_trust_store_path().unwrap();
+        let mut store = PeerTrustStore::load(&path).unwrap();
+        store.remove(&desktop_b.config().desktop_id);
+        store.save(&path).unwrap();
+    }
+    pin_peer(&desktop_a, &desktop_b.config().desktop_id, &rotated);
+    desktop_a
+        .peer_sessions()
+        .close(&desktop_b.config().desktop_id)
+        .await;
+    let error = super::invoke_desktop::invoke_desktop(
+        Arc::clone(&desktop_a),
+        desktop_b.config().desktop_id.clone(),
+        "GET".into(),
+        "/v1/status".into(),
+        serde_json::Value::Null,
+    )
+    .await
+    .expect_err("a pin that no longer matches must fail");
+    assert!(error.starts_with("peer_identity_mismatch"), "{error}");
+    let stale = desktop_a
+        .paired_peer(&desktop_b.config().desktop_id)
+        .unwrap()
+        .expect("the stale pin is kept, not replaced");
+    assert_eq!(stale.channel_public_key, rotated.encoded_public_key());
+    assert!(
+        stale.identity_mismatch_at_unix_ms.is_some(),
+        "the change must be reported rather than retried away"
+    );
+
+    // Unpairing is the documented recovery: the next call enrolls again.
+    super::peers::remove_peer(
+        DesktopLocalAccess,
+        State(Arc::clone(&desktop_a)),
+        axum::extract::Path(desktop_b.config().desktop_id.clone()),
+    )
+    .await
+    .unwrap();
+    let routed = super::invoke_desktop::invoke_desktop(
+        Arc::clone(&desktop_a),
+        desktop_b.config().desktop_id.clone(),
+        "GET".into(),
+        "/v1/status".into(),
+        serde_json::Value::Null,
+    )
+    .await
+    .unwrap_or_else(|error| panic!("unpairing must allow a fresh enrollment: {error}"));
+    assert_eq!(routed.response.status, 200);
+    assert_eq!(
+        desktop_a
+            .paired_peer(&desktop_b.config().desktop_id)
+            .unwrap()
+            .unwrap()
+            .channel_public_key,
+        b_key
+    );
 }
 
 #[test]

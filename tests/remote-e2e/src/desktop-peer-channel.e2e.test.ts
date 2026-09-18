@@ -1,10 +1,15 @@
 // Sealed desktop-to-desktop sessions against the real relay, two real
-// servers and daemons: pairing by string, sealed invokes in both directions
-// through a desktop-secret relay tunnel, a sibling terminal view spliced
-// through the local peer proxy with known markers asserted absent from the
-// relay's frame log and both servers' logs, a rotated peer key refused,
-// unpairing closing the route, reconnection after a relay restart, and the
-// legacy switch refusing a relay-attested invoke from an unpaired sibling.
+// servers and daemons: automatic same-account enrollment with no ceremony at
+// all, the pairing string upgrading that pin to verified, sealed invokes in
+// both directions through a desktop-secret relay tunnel, a sibling terminal
+// view spliced through the local peer proxy with known markers asserted
+// absent from the relay's frame log and both servers' logs, a rotated peer
+// key refused and never re-enrolled, unpairing, and reconnection after a
+// relay restart.
+//
+// The first case is the reported failure itself: two desktops signed into one
+// account, freshly started, no pins anywhere, opening a session and getting
+// "this desktop is not paired with that machine". It must now simply work.
 //
 // The harness binds every server to loopback while Bonjour advertises the
 // routable interface, so a paired sibling's LAN candidate is unreachable
@@ -33,6 +38,8 @@ interface Peer {
   desktopId: string;
   displayName: string;
   encryption: string;
+  provenance: "verified" | "account";
+  identityChanged: boolean;
   transferIdentityPinned: boolean;
   reachable: { lan: boolean; relay: boolean };
 }
@@ -191,6 +198,20 @@ async function pairBoth(issuer: Desktop, claimant: Desktop): Promise<string> {
   return result.route;
 }
 
+interface Machine {
+  id: string;
+  encryption: string;
+  provenance?: "verified" | "account";
+  identityChanged?: boolean;
+}
+
+async function listMachines(desktop: Desktop): Promise<Machine[]> {
+  const list = await json<{ machines: Machine[] }>(
+    await localProcessFetch(`${desktop.lanBaseUrl}/v1/cloud/desktops`)
+  );
+  return list.machines;
+}
+
 describe("desktop peer secure channel E2E", () => {
   let harness: RemoteHarness;
   let peer: RemoteDesktop;
@@ -224,6 +245,39 @@ describe("desktop peer secure channel E2E", () => {
     await harness?.stop();
   }, 30_000);
 
+  // The reported failure, exactly: two same-account desktops, no ceremony
+  // anywhere, one opens a session to the other. This must establish trust by
+  // itself and take the sealed route - never `peer_pairing_required`, and
+  // never the legacy plaintext path either.
+  it("pairs two same-account desktops automatically on first contact, with no ceremony", async () => {
+    expect(await listPeers(harness).then((list) => list.peers), "no pin exists yet").toEqual([]);
+    expect(await listPeers(peer).then((list) => list.peers)).toEqual([]);
+
+    const first = await invokeMachine(harness, peer.desktopId, "/v1/status");
+    expect(first.status).toBe(200);
+    expect(first.route, "first contact must be sealed, not the legacy relay path").toBe("peer-relay");
+    expect((first.body as { desktopId?: string }).desktopId).toBe(peer.desktopId);
+
+    // One exchange pins both directions, and both say what they rest on.
+    const mine = (await listPeers(harness)).peers;
+    expect(mine.map((entry) => [entry.desktopId, entry.encryption, entry.provenance]))
+      .toEqual([[peer.desktopId, "e2ee", "account"]]);
+    expect(mine[0].identityChanged).toBe(false);
+    const theirs = (await listPeers(peer)).peers;
+    expect(theirs.map((entry) => [entry.desktopId, entry.encryption, entry.provenance]))
+      .toEqual([[harness.desktopId, "e2ee", "account"]]);
+
+    // The reverse direction rides that same pin without a second exchange.
+    const backward = await invokeMachine(peer, harness.desktopId, "/v1/status");
+    expect(backward.status).toBe(200);
+    expect(backward.route).toBe("peer-relay");
+
+    const machine = (await listMachines(harness)).find((entry) => entry.id === peer.desktopId);
+    expect(machine?.encryption).toBe("e2ee");
+    expect(machine?.provenance, "an automatic pin must never claim to be verified").toBe("account");
+    expect(machine?.identityChanged).toBe(false);
+  }, 120_000);
+
   it("pairs by string and carries sealed invokes in both directions over the relay", async () => {
     const route = await pairBoth(peer, harness);
     expect(route.startsWith("peer-")).toBe(true);
@@ -231,9 +285,13 @@ describe("desktop peer secure channel E2E", () => {
     const mine = await listPeers(harness);
     expect(mine.peerChannelAvailable).toBe(true);
     expect(mine.relayPeerTunnelsAvailable).toBe(true);
-    expect(mine.peers.map((entry) => [entry.desktopId, entry.encryption])).toEqual([[peer.desktopId, "e2ee"]]);
+    // The ceremony is the upgrade path: the record the previous case
+    // established automatically is now a verified one.
+    expect(mine.peers.map((entry) => [entry.desktopId, entry.encryption, entry.provenance]))
+      .toEqual([[peer.desktopId, "e2ee", "verified"]]);
     const theirs = await listPeers(peer);
-    expect(theirs.peers.map((entry) => [entry.desktopId, entry.encryption])).toEqual([[harness.desktopId, "e2ee"]]);
+    expect(theirs.peers.map((entry) => [entry.desktopId, entry.encryption, entry.provenance]))
+      .toEqual([[harness.desktopId, "e2ee", "verified"]]);
 
     const forward = await invokeMachine(harness, peer.desktopId, "/v1/status");
     expect(forward.status).toBe(200);
@@ -249,10 +307,8 @@ describe("desktop peer secure channel E2E", () => {
     expect(local.status).toBe(401);
     expect(local.route).toBe("peer-relay");
 
-    const machines = await json<{ machines: Array<{ id: string; encryption: string }> }>(
-      await localProcessFetch(`${harness.lanBaseUrl}/v1/cloud/desktops`)
-    );
-    expect(machines.machines.find((machine) => machine.id === peer.desktopId)?.encryption).toBe("e2ee");
+    expect((await listMachines(harness)).find((machine) => machine.id === peer.desktopId))
+      .toMatchObject({ encryption: "e2ee", provenance: "verified" });
 
     // A wrong secret pins nothing and counts as a failed attempt.
     const offer = await createOffer(peer);
@@ -370,39 +426,71 @@ describe("desktop peer secure channel E2E", () => {
     // Nothing plaintext was tried instead: the sibling still lists it as a
     // pinned (now stale) peer rather than downgrading.
     expect((await listPeers(peer)).peers.map((entry) => entry.desktopId)).toEqual([harness.desktopId]);
-    // Re-pairing replaces the pin on the sibling and restores the route.
+    // And automatic enrollment must NOT rescue this. The relay is publishing
+    // the new key right now and both desktops are on one account, so the only
+    // thing standing between the sibling and the impostor's key is the pin -
+    // which is exactly the property trust-on-first-use depends on. Repeated
+    // attempts must keep failing, and the change must be reported.
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      expect(await invokeMachineRefusal(peer, harness.desktopId, "/v1/status"))
+        .toContain("peer_identity_mismatch");
+    }
+    const stale = (await listPeers(peer)).peers[0];
+    expect(stale.identityChanged, "a changed key must be reported, not retried away").toBe(true);
+    expect((await listMachines(peer)).find((machine) => machine.id === harness.desktopId))
+      .toMatchObject({ encryption: "e2ee", identityChanged: true });
+
+    // Two documented recoveries, both requiring a person. First: unpairing
+    // clears the stale pin, after which automatic enrollment may run again.
+    expect(await unpair(peer, harness.desktopId)).toBe(204);
+    const reEnrolled = await invokeMachine(peer, harness.desktopId, "/v1/status");
+    expect(reEnrolled.status).toBe(200);
+    expect(reEnrolled.route).toBe("peer-relay");
+    expect((await listPeers(peer)).peers[0]).toMatchObject({ provenance: "account", identityChanged: false });
+    // Second: the ceremony, which also upgrades the record to verified.
     const route = await pairBoth(harness, peer);
     expect(route.startsWith("peer-")).toBe(true);
     const restored = await invokeMachine(peer, harness.desktopId, "/v1/status");
     expect(restored.status).toBe(200);
     expect(restored.route).toBe("peer-relay");
+    expect((await listPeers(peer)).peers[0].provenance).toBe("verified");
   }, 120_000);
 
-  it("unpairing withdraws the sealed route on both sides until paired again", async () => {
+  // Unpairing still withdraws the route; what changed is what happens next.
+  // For a same-account pair the answer is no longer the legacy plaintext
+  // path, and is never `peer_pairing_required`: the machines simply pair
+  // themselves again, which is the whole point of this work.
+  it("unpairing withdraws the sealed route, and same-account machines re-establish it themselves", async () => {
     await ensurePaired();
     expect(await unpair(harness, peer.desktopId)).toBe(204);
-    // Legacy routing is still on, so an unpaired sibling is reached the old
-    // way - the documented migration window, reported honestly as `relay`.
-    const legacy = await invokeMachine(harness, peer.desktopId, "/v1/status");
-    expect(legacy.status).toBe(200);
-    expect(legacy.route).toBe("relay");
-    // The other side still holds its pin, but this desktop no longer
-    // recognises that key: the handshake grants it pairing-only authority,
-    // which the other side refuses at the handshake - no plaintext fallback.
-    expect(await invokeMachineRefusal(peer, harness.desktopId, "/v1/status")).toContain("peer_pairing_required");
     expect(await unpair(harness, peer.desktopId)).toBe(404);
-    // With legacy routing off, an unpaired sibling is not reachable at all.
+
+    // Legacy routing is on, but it is not what serves this: the sibling is
+    // enrolled and the invoke takes the sealed route, not `relay`.
+    const reEnrolled = await invokeMachine(harness, peer.desktopId, "/v1/status");
+    expect(reEnrolled.status).toBe(200);
+    expect(reEnrolled.route, "an unpaired same-account sibling must re-pair, not downgrade").toBe("peer-relay");
+    expect((await listPeers(harness)).peers[0]).toMatchObject({ desktopId: peer.desktopId, provenance: "account" });
+
+    // And with legacy routing off - the configuration this work is meant to
+    // make shippable - it still works, because nothing plaintext is needed.
+    expect(await unpair(harness, peer.desktopId)).toBe(204);
     await setPeerLegacyAccess(harness, false);
     try {
-      expect(await invokeMachineRefusal(harness, peer.desktopId, "/v1/status")).toContain("peer_pairing_required");
+      const strict = await invokeMachine(harness, peer.desktopId, "/v1/status");
+      expect(strict.status).toBe(200);
+      expect(strict.route).toBe("peer-relay");
     } finally {
       await setPeerLegacyAccess(harness, true);
     }
+
+    // The ceremony still upgrades that automatic pin to a verified one.
     const route = await pairBoth(peer, harness);
     expect(route.startsWith("peer-")).toBe(true);
     const sealed = await invokeMachine(harness, peer.desktopId, "/v1/status");
     expect(sealed.status).toBe(200);
     expect(sealed.route).toBe("peer-relay");
+    expect((await listPeers(harness)).peers[0].provenance).toBe("verified");
   }, 120_000);
 
   it("reconnects with a fresh handshake after the relay restarts", async () => {
@@ -425,29 +513,37 @@ describe("desktop peer secure channel E2E", () => {
     );
   }, 120_000);
 
-  it("with legacy routing off, an unpaired sibling's relay-attested invoke is refused while the sealed route keeps working", async () => {
+  // A third machine joining the account is the ordinary case this work is
+  // for: it has paired with nobody, and it reaches its siblings sealed from
+  // its very first call - with legacy routing off, so nothing plaintext can
+  // be what served it. The plaintext paths' own refusals are covered where
+  // they can be provoked deterministically, in
+  // `peer_tests::the_legacy_gate_refuses_every_plaintext_sibling_path_when_off`.
+  it("a newly added third machine reaches its siblings sealed, with legacy routing off", async () => {
     await ensurePaired();
     const stranger = await startSameAccountPeer(harness, "c");
     try {
-      const allowed = await invokeMachine(stranger, peer.desktopId, "/v1/status");
-      expect(allowed.status).toBe(200);
-      expect(allowed.route).toBe("relay");
       await setPeerLegacyAccess(peer, false);
+      await setPeerLegacyAccess(stranger, false);
       try {
-        const refused = await invokeMachine(stranger, peer.desktopId, "/v1/status");
-        expect(refused.status).toBe(401);
-        expect(refused.error ?? "").toContain("peer_legacy_access_refused");
-        const sealed = await invokeMachine(harness, peer.desktopId, "/v1/status");
+        const sealed = await invokeMachine(stranger, peer.desktopId, "/v1/status");
         expect(sealed.status).toBe(200);
-        expect(sealed.route).toBe("peer-relay");
-        const machines = await json<{ machines: Array<{ id: string; encryption: string }> }>(
-          await localProcessFetch(`${peer.lanBaseUrl}/v1/cloud/desktops`)
-        );
-        expect(machines.machines.find((machine) => machine.id === harness.desktopId)?.encryption).toBe("e2ee");
-        expect(machines.machines.find((machine) => machine.id === stranger.desktopId)?.encryption).toBe("pairingRequired");
-        expect(await invokeMachineRefusal(peer, stranger.desktopId, "/v1/status")).toContain("peer_pairing_required");
+        expect(sealed.route, "a brand-new same-account machine must not need a ceremony").toBe("peer-relay");
+        expect((await listPeers(stranger)).peers.map((entry) => [entry.desktopId, entry.provenance]))
+          .toEqual([[peer.desktopId, "account"]]);
+
+        // The existing verified pair is untouched by any of it.
+        const existing = await invokeMachine(harness, peer.desktopId, "/v1/status");
+        expect(existing.status).toBe(200);
+        expect(existing.route).toBe("peer-relay");
+        const machines = await listMachines(peer);
+        expect(machines.find((machine) => machine.id === harness.desktopId))
+          .toMatchObject({ encryption: "e2ee", provenance: "verified" });
+        expect(machines.find((machine) => machine.id === stranger.desktopId))
+          .toMatchObject({ encryption: "e2ee", provenance: "account" });
       } finally {
         await setPeerLegacyAccess(peer, true);
+        await setPeerLegacyAccess(stranger, true);
       }
     } finally {
       await stranger.stop();

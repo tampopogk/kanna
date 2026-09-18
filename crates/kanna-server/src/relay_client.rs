@@ -303,6 +303,13 @@ pub enum RelayMessage {
         /// connection. See `connect_desktop_tunnel_client`.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         tunnel_client: Option<bool>,
+        /// This desktop's peer channel public key, announced on its
+        /// *control* socket so the account's other desktops can pin it
+        /// without a pairing ceremony (`peer_enrollment`). Public value
+        /// only; a relay that predates the field ignores it, and a desktop
+        /// whose peer identity failed to load simply sends none.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        peer_channel_public_key: Option<String>,
     },
     #[serde(rename = "auth_challenge")]
     AuthChallenge { nonce: String },
@@ -416,8 +423,18 @@ pub enum RelayMessage {
     },
 }
 
-fn build_auth_message(config: &Config, tunnel_id: Option<String>) -> RelayMessage {
+fn build_auth_message(
+    config: &Config,
+    tunnel_id: Option<String>,
+    peer_channel_public_key: Option<String>,
+) -> RelayMessage {
     let access_updates = tunnel_id.is_none().then_some(true);
+    // Only the control socket introduces this desktop; a tunnel socket is
+    // not it and announces nothing.
+    let peer_channel_public_key = tunnel_id
+        .is_none()
+        .then_some(peer_channel_public_key)
+        .flatten();
     match &config.desktop_secret {
         Some(desktop_secret) => RelayMessage::Auth {
             access_updates,
@@ -431,6 +448,7 @@ fn build_auth_message(config: &Config, tunnel_id: Option<String>) -> RelayMessag
             },
             tunnel_id,
             tunnel_client: None,
+            peer_channel_public_key,
         },
         None => match crate::pairing::anonymous_push_public_key(config) {
             Ok(public_key) => RelayMessage::Auth {
@@ -441,6 +459,9 @@ fn build_auth_message(config: &Config, tunnel_id: Option<String>) -> RelayMessag
                 tunnel_id,
                 anon_pub_key: Some(public_key),
                 tunnel_client: None,
+                // A signed-out desktop has no account to be introduced
+                // within; automatic peer trust is account-scoped.
+                peer_channel_public_key: None,
             },
             Err(_) => RelayMessage::Auth {
                 access_updates,
@@ -450,6 +471,10 @@ fn build_auth_message(config: &Config, tunnel_id: Option<String>) -> RelayMessag
                 tunnel_id,
                 anon_pub_key: None,
                 tunnel_client: None,
+                // A device token proves account membership, never which
+                // desktop this is, so the relay would refuse to publish a
+                // key presented on it anyway.
+                peer_channel_public_key: None,
             },
         },
     }
@@ -481,6 +506,7 @@ pub async fn connect_desktop_tunnel_client(
         tunnel_id: None,
         anon_pub_key: None,
         tunnel_client: Some(true),
+        peer_channel_public_key: None,
     };
     ws.send(Message::Text(
         serde_json::to_string(&auth)
@@ -571,8 +597,14 @@ pub async fn connect_desktop_tunnel_client(
 pub async fn connect_to_relay(
     config: &Config,
     timeout: Duration,
+    peer_channel_public_key: Option<String>,
 ) -> Result<(WsSink, WsStream, Option<RelayAuthentication>), RelayConnectError> {
-    match tokio::time::timeout(timeout, connect_to_relay_inner(config)).await {
+    match tokio::time::timeout(
+        timeout,
+        connect_to_relay_inner(config, peer_channel_public_key),
+    )
+    .await
+    {
         Ok(result) => result.map_err(RelayConnectError::Failed),
         Err(_) => Err(RelayConnectError::TimedOut { timeout }),
     }
@@ -580,6 +612,7 @@ pub async fn connect_to_relay(
 
 async fn connect_to_relay_inner(
     config: &Config,
+    peer_channel_public_key: Option<String>,
 ) -> Result<(WsSink, WsStream, Option<RelayAuthentication>), Box<dyn std::error::Error + Send + Sync>>
 {
     let (ws_stream, _response) = connect_async(&config.relay_url)
@@ -588,7 +621,7 @@ async fn connect_to_relay_inner(
     let (mut sink, mut stream) = ws_stream.split();
 
     // Send auth message immediately after connecting
-    let auth = build_auth_message(config, None);
+    let auth = build_auth_message(config, None, peer_channel_public_key);
     let anonymous_auth = matches!(
         &auth,
         RelayMessage::Auth {
@@ -678,6 +711,7 @@ pub async fn connect_anonymous_push_to_relay(
             tunnel_id: None,
             anon_pub_key: Some(public_key),
             tunnel_client: None,
+            peer_channel_public_key: None,
         })?
         .into(),
     ))
@@ -721,7 +755,7 @@ pub async fn probe_account_auth(config: &Config) -> AccountAuthProbe {
         let (mut socket, _) = connect_async(&config.relay_url).await?;
         socket
             .send(Message::Text(
-                serde_json::to_string(&build_auth_message(config, None))?.into(),
+                serde_json::to_string(&build_auth_message(config, None, None))?.into(),
             ))
             .await?;
         while let Some(frame) = socket.next().await {
@@ -777,7 +811,7 @@ pub async fn connect_tunnel_to_relay(
 ) -> Result<WebSocketStream<MaybeTlsStream<TcpStream>>, Box<dyn std::error::Error + Send + Sync>> {
     let (mut ws_stream, _response) = connect_async(&config.relay_url).await?;
 
-    let auth = build_auth_message(config, Some(tunnel_id.clone()));
+    let auth = build_auth_message(config, Some(tunnel_id.clone()), None);
     ws_stream
         .send(Message::Text(serde_json::to_string(&auth)?.into()))
         .await?;
@@ -870,7 +904,7 @@ mod tests {
         let mut config = test_config();
         config.relay_url = format!("ws://{address}");
 
-        let error = match super::connect_to_relay(&config, Duration::from_millis(100)).await {
+        let error = match super::connect_to_relay(&config, Duration::from_millis(100), None).await {
             Ok(_) => panic!("relay connected without an auth acknowledgement"),
             Err(error) => error,
         };
@@ -891,7 +925,7 @@ mod tests {
         let mut config = test_config();
         config.relay_url = relay_url;
 
-        let error = match super::connect_to_relay(&config, Duration::from_secs(1)).await {
+        let error = match super::connect_to_relay(&config, Duration::from_secs(1), None).await {
             Ok(_) => panic!("HTTP refusal unexpectedly upgraded to WebSocket"),
             Err(error) => error,
         };
@@ -923,9 +957,41 @@ mod tests {
         assert!(reason.ends_with('…'));
     }
 
+    /// The introduction is opt-in per socket and belongs to the control
+    /// socket alone: a tunnel socket carries no announcement even when one
+    /// is handed to it, which is what keeps the relay from binding a key to
+    /// a connection it did not authenticate as this desktop.
+    #[test]
+    fn only_the_control_socket_announces_the_peer_channel_key() {
+        let mut config = test_config();
+        config.desktop_secret = Some("desktop-secret".to_string());
+        let key = "A".repeat(43);
+
+        let control =
+            serde_json::to_value(super::build_auth_message(&config, None, Some(key.clone())))
+                .unwrap();
+        assert_eq!(control["peer_channel_public_key"], key);
+
+        let tunnel = serde_json::to_value(super::build_auth_message(
+            &config,
+            Some("tunnel-1".to_string()),
+            Some(key.clone()),
+        ))
+        .unwrap();
+        assert!(
+            tunnel.get("peer_channel_public_key").is_none(),
+            "a tunnel socket must not announce: {tunnel}"
+        );
+
+        // A desktop whose peer identity failed to load announces nothing,
+        // and the field is omitted rather than sent as null.
+        let silent = serde_json::to_value(super::build_auth_message(&config, None, None)).unwrap();
+        assert!(silent.get("peer_channel_public_key").is_none(), "{silent}");
+    }
+
     #[test]
     fn build_auth_message_uses_legacy_device_token_when_desktop_secret_is_missing() {
-        let auth = super::build_auth_message(&test_config(), None);
+        let auth = super::build_auth_message(&test_config(), None, None);
         let payload = serde_json::to_value(auth).unwrap();
 
         assert_eq!(
@@ -944,7 +1010,7 @@ mod tests {
         let mut config = test_config();
         config.desktop_secret = Some("desktop-secret".to_string());
 
-        let auth = super::build_auth_message(&config, None);
+        let auth = super::build_auth_message(&config, None, None);
         let payload = serde_json::to_value(auth).unwrap();
 
         assert_eq!(
@@ -978,7 +1044,7 @@ mod tests {
         )
         .unwrap();
 
-        let payload = serde_json::to_value(super::build_auth_message(&config, None)).unwrap();
+        let payload = serde_json::to_value(super::build_auth_message(&config, None, None)).unwrap();
 
         assert_eq!(payload["desktop_id"], "desktop-1");
         assert_eq!(payload["desktop_secret"], "desktop-secret");
@@ -993,7 +1059,7 @@ mod tests {
         let mut config = test_config();
         config.desktop_secret = Some("desktop-secret".to_string());
 
-        let auth = super::build_auth_message(&config, Some("tunnel-1".to_string()));
+        let auth = super::build_auth_message(&config, Some("tunnel-1".to_string()), None);
         let payload = serde_json::to_value(auth).unwrap();
 
         assert_eq!(

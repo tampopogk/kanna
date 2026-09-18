@@ -2,6 +2,15 @@
 //! shows a one-time pairing string, a person pastes it into another (the
 //! *claimant*), and both end up pinning each other's peer channel key.
 //!
+//! This is no longer the only way a pin is born, and deliberately no longer
+//! the entry fee: desktops signed into one account are introduced by the
+//! relay and pin each other automatically (`peer_enrollment`). What the
+//! ceremony remains is the *stronger* claim - the key came off a screen, so
+//! no relay was ever in a position to substitute it - and the only path for
+//! a machine that is signed out or on another account. Run against a peer
+//! that was pinned automatically it is the out-of-band verification, and
+//! replaces that record with a `verified` one.
+//!
 //! The string is the trust anchor, exactly as the phone's `KANNA2` QR is:
 //!
 //! ```text
