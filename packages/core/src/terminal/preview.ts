@@ -1,4 +1,10 @@
-function stripAnsi(value: string): string {
+/**
+ * Drop the escape sequences a PTY or a colourising CLI wrote into captured
+ * bytes. Shared because two surfaces present recorded terminal text without a
+ * terminal to interpret it: the sidebar preview line and the stored
+ * workspace-setup transcript.
+ */
+export function stripAnsi(value: string): string {
   return value.replace(/\u001b\[[0-9;?]*[ -/]*[@-~]/g, "");
 }
 

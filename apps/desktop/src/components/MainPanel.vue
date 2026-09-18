@@ -16,12 +16,15 @@ import {
   fetchDesktopTaskDetail,
   listDesktopTaskDirectory,
   listAgentTerminalAttempts,
+  listWorkspaceSetupRuns,
   readAgentTerminalArchive,
   readDesktopTaskFile,
   type AgentTerminalArchive,
   type AgentTerminalAttempt,
   type DesktopTaskDetail,
+  type WorkspaceSetupRun,
 } from "../services/desktopServerClient";
+import { parseStageHistorySelection } from "../utils/agentStageHistory";
 import { isBlockerResolved } from "../utils/blockerResolution";
 import { isRemotePresentationTaskId } from "../utils/remoteTaskIdentity";
 import { invoke } from "../invoke";
@@ -29,6 +32,7 @@ import TaskPreviewCache from "./TaskPreviewCache.vue";
 import TaskHeader from "./TaskHeader.vue";
 import TerminalTabs from "./TerminalTabs.vue";
 import AgentHistoryView from "./AgentHistoryView.vue";
+import WorkspaceSetupLogView from "./WorkspaceSetupLogView.vue";
 import MainTabBar from "./MainTabBar.vue";
 import { usePaneTabDrag } from "../composables/usePaneTabDrag";
 import DiffModal from "./DiffModal.vue";
@@ -88,8 +92,10 @@ const TERMINAL_EDITOR_NOTICE_SETTING_KEY = "hideTerminalEditorNotice";
 const item = computed(() => props.uiSlot?.task ?? null);
 const selectedAttempt = ref("");
 const agentAttempts = ref<AgentTerminalAttempt[]>([]);
+const agentSetupRuns = ref<WorkspaceSetupRun[]>([]);
 const agentHistoryStatus = ref("");
 let attemptsRequest = 0;
+let setupRunsRequest = 0;
 const agentHistoryRemoteRoute = computed(() => {
   const ref = props.cloudTerminalRef;
   if (!item.value || !ref || (!props.cloudTask && !isRemotePresentationTaskId(item.value.id))) return null;
@@ -151,7 +157,37 @@ async function loadSelectedAgentArchive(runId: string): Promise<AgentTerminalArc
   if (!taskDetailIsLocal.value) throw new Error("owner route unavailable");
   return readAgentTerminalArchive(agentHistoryBindingTaskId.value, runId);
 }
+/**
+ * Setup streams are served by the owner machine's local API alone: no LAN or
+ * relay route carries them yet. A task presented from another desktop keeps an
+ * empty list, so the selector simply offers no Setup item rather than showing
+ * one that cannot be read.
+ */
+async function loadAgentSetupRuns(presentationTaskId: string, sourceKey: string) {
+  const request = ++setupRunsRequest;
+  if (agentHistoryRemoteRoute.value || !taskDetailIsLocal.value) return;
+  try {
+    const runs = await listWorkspaceSetupRuns(presentationTaskId);
+    if (
+      request === setupRunsRequest
+      && item.value?.id === presentationTaskId
+      && agentHistorySourceKey.value === sourceKey
+    ) agentSetupRuns.value = runs;
+  } catch (error) {
+    console.debug("[agent-history] setup log list unavailable", error);
+  }
+}
 function selectAttempt(id: string) { selectedAttempt.value = id; selectTab(AGENT_TAB_ID); }
+// One selection token drives the agent tab: empty is the live session, a setup
+// token names a stored setup stream, and anything else is a run id whose
+// terminal archive the history view reads — an agent attempt or a teardown.
+const historySelection = computed(() => parseStageHistorySelection(selectedAttempt.value));
+const selectedArchiveRunId = computed(() =>
+  historySelection.value.kind === "attempt" ? historySelection.value.runId : ""
+);
+const selectedSetupRunId = computed(() =>
+  historySelection.value.kind === "setup" ? historySelection.value.runId : ""
+);
 
 
 const tabs = computed<MainTab[]>(() => props.views?.tabs.tabs.value ?? []);
@@ -242,6 +278,7 @@ const ownerLabel = computed(() => props.cloudTerminalRef?.ownerDesktopId
   ?? (props.cloudTask ? "Owner unavailable" : "This machine"));
 const previewCache = ref<InstanceType<typeof TaskPreviewCache> | null>(null);
 const agentHistoryRef = ref<InstanceType<typeof AgentHistoryView> | null>(null);
+const setupLogRef = ref<InstanceType<typeof WorkspaceSetupLogView> | null>(null);
 const previewWorkspaces = computed(() => Object.fromEntries(
   (props.views?.store.items ?? []).filter(task => task.closed_at == null)
     .map(task => [task.id, props.views?.store.worktreePaths?.[task.id] ?? ""]),
@@ -307,7 +344,8 @@ async function focusActivePaneContent(paneId?: string) {
   }
   if (id === AGENT_TAB_ID) {
     if (selectedAttempt.value) {
-      if (!agentHistoryRef.value?.focusContent()) focusPaneChrome();
+      const view = selectedSetupRunId.value ? setupLogRef.value : agentHistoryRef.value;
+      if (!view?.focusContent()) focusPaneChrome();
       return;
     }
     refocusActiveTerminal();
@@ -749,11 +787,16 @@ watch(
     const identityChanged = taskId !== previous?.[0] || sourceKey !== previous?.[2];
     if (identityChanged) {
       attemptsRequest += 1;
+      setupRunsRequest += 1;
       agentAttempts.value = [];
+      agentSetupRuns.value = [];
       agentHistoryStatus.value = "";
       selectedAttempt.value = "";
     }
-    if (taskId) void loadAgentAttempts(taskId, sourceKey);
+    if (taskId) {
+      void loadAgentAttempts(taskId, sourceKey);
+      void loadAgentSetupRuns(taskId, sourceKey);
+    }
   },
   { immediate: true },
 );
@@ -969,6 +1012,7 @@ function dismissCommandHint() {
           :can-close-pane="!narrowLayout && paneRects.length > 1"
           @close-pane="views?.tabs.closePane(rect.pane.id)"
           :agent-attempts="item ? agentAttempts : undefined"
+          :agent-setup-runs="agentSetupRuns"
           :agent-history-status="agentHistoryStatus"
           :selected-attempt="selectedAttempt"
           :current-stage="item?.stage"
@@ -1039,11 +1083,17 @@ function dismissCommandHint() {
         </section>
         <AgentHistoryView
           ref="agentHistoryRef"
-          v-if="selectedAttempt && item"
+          v-if="selectedArchiveRunId && item"
           :task-id="agentHistoryBindingTaskId"
-          :attempt-id="selectedAttempt"
+          :attempt-id="selectedArchiveRunId"
           :source-key="agentHistorySourceKey"
           :load-archive="loadSelectedAgentArchive"
+        />
+        <WorkspaceSetupLogView
+          ref="setupLogRef"
+          v-else-if="selectedSetupRunId && item"
+          :task-id="agentHistoryBindingTaskId"
+          :run-id="selectedSetupRunId"
         />
         <div v-show="!selectedAttempt" class="agent-live-content">
         <CloudTerminalCache

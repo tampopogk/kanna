@@ -21,6 +21,8 @@ const readTaskFileMock = vi.fn();
 const listTaskDirectoryMock = vi.fn();
 const listAgentTerminalAttemptsMock = vi.fn().mockResolvedValue([]);
 const readAgentTerminalArchiveMock = vi.fn().mockResolvedValue(null);
+const listWorkspaceSetupRunsMock = vi.fn().mockResolvedValue([]);
+const readWorkspaceSetupRunMock = vi.fn().mockResolvedValue(null);
 
 const draft = {
   repo_id: "repo-1",
@@ -102,6 +104,8 @@ vi.mock("../../services/desktopServerClient", () => ({
   readDesktopTaskFile: readTaskFileMock,
   listDesktopTaskDirectory: listTaskDirectoryMock,
   readAgentTerminalArchive: readAgentTerminalArchiveMock,
+  listWorkspaceSetupRuns: listWorkspaceSetupRunsMock,
+  readWorkspaceSetupRun: readWorkspaceSetupRunMock,
 }));
 
 describe("MainPanel", () => {
@@ -116,6 +120,10 @@ describe("MainPanel", () => {
     listAgentTerminalAttemptsMock.mockResolvedValue([]);
     readAgentTerminalArchiveMock.mockReset();
     readAgentTerminalArchiveMock.mockResolvedValue(null);
+    listWorkspaceSetupRunsMock.mockReset();
+    listWorkspaceSetupRunsMock.mockResolvedValue([]);
+    readWorkspaceSetupRunMock.mockReset();
+    readWorkspaceSetupRunMock.mockResolvedValue(null);
     fetchTaskDetailMock.mockImplementation(async (taskId: string) => ({
       id: taskId,
       stage: "in progress",
@@ -1126,6 +1134,76 @@ describe("MainPanel", () => {
     expect(spawn).not.toHaveBeenCalled();
     expect(recover).not.toHaveBeenCalled();
     wrapper.unmount();
+  });
+
+  it("reads a stored setup stream from the selector and asks no remote desktop for one", async () => {
+    listAgentTerminalAttemptsMock.mockResolvedValue([
+      { id: "run-1", stage: "in progress", kind: "main", startedAt: "earlier", cwd: "/repo/task-a",
+        live: true, archived: false, recordedLaunch: true, observedExitCode: null },
+    ]);
+    const setupRun = {
+      runId: "run-1", status: "succeeded", exitCode: 0, timedOut: false, truncated: false,
+      commands: ["pnpm install"],
+      // The runner captures what the command wrote, colour codes and all;
+      // nothing here interprets them, so the view strips them.
+      output: "\u001b[33mRunning startup...\u001b[0m\nLockfile is up to date",
+      durationMs: 1200,
+      finishedAt: "2026-09-18 10:00:00",
+    };
+    listWorkspaceSetupRunsMock.mockResolvedValue([setupRun]);
+    readWorkspaceSetupRunMock.mockResolvedValue(setupRun);
+    const tabs = useMainTabs({ scopeKey: computed(() => "item:task-a") });
+    const { default: MainPanel } = await import("../MainPanel.vue");
+    const wrapper = mount(MainPanel, {
+      props: {
+        uiSlot: readySlot(durableTask({ id: "task-a" })), repoPath: "/repo", hasRepos: true,
+        views: {
+          tabs,
+          modals: { activeTaskViewIsRemote: computed(() => false), activeWorktreePath: computed(() => "/repo/task-a") },
+          store: { items: [], worktreePaths: {} }, preferences: {},
+        } as unknown as MainTabViewsController,
+      },
+      attachTo: document.body,
+      global: {
+        plugins: [createI18n({ legacy: false, locale: "en", messages: { en } })],
+        mocks: { $t: (key: string) => key },
+        stubs: { TaskHeader: true, TerminalTabs: true, CloudTerminalCache: true },
+      },
+    });
+    try {
+      await flushPromises();
+      expect(listWorkspaceSetupRunsMock).toHaveBeenCalledExactlyOnceWith("task-a");
+      // The session is live, so Latest shows it; the setup that prepared it
+      // already finished and is the one history item on offer.
+      const selector = wrapper.get('select[aria-label="Agent stage output"]');
+      expect(selector.findAll("option").map(option => option.attributes("value")))
+        .toEqual(["", "setup:run-1"]);
+      expect(selector.findAll("option")[1].text()).toBe("Setup · in progress · 2026-09-18 10:00:00");
+
+      await selector.setValue("setup:run-1");
+      await flushPromises();
+      expect(readWorkspaceSetupRunMock).toHaveBeenCalledExactlyOnceWith("task-a", "run-1");
+      expect(readAgentTerminalArchiveMock).not.toHaveBeenCalled();
+      expect(wrapper.find('[data-testid="agent-history"]').exists()).toBe(false);
+      const view = wrapper.get('[data-testid="setup-log"]');
+      expect(view.get("pre").text()).toBe("Running startup...\nLockfile is up to date");
+      expect(view.get("code").text()).toBe("pnpm install");
+      expect(view.get('[role="status"]').text()).toBe("Setup succeeded · Exit 0 · 1200 ms");
+      await (wrapper.vm as unknown as { focusActivePaneContent: (id: string) => Promise<void> }).focusActivePaneContent("pane-1");
+      expect(document.activeElement).toBe(view.get("pre").element);
+
+      // A task presented from another desktop has no route to a setup stream,
+      // so the item is absent rather than broken.
+      await wrapper.setProps({
+        uiSlot: readySlot(durableTask({ id: "cloud:presentation" })),
+        cloudTask: true,
+        cloudTerminalRef: { ownerDesktopId: "owner-a", ownerLocalTaskId: "task-a", transport: "lan" },
+      });
+      await flushPromises();
+      expect(listWorkspaceSetupRunsMock).toHaveBeenCalledTimes(1);
+    } finally {
+      wrapper.unmount();
+    }
   });
 
   it("discards stale remote attempt lists when task ownership changes", async () => {

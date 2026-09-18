@@ -162,3 +162,29 @@ it('leaves an all-live list with nothing but Latest', async () => {
   expect(optionValues(wrapper)).toEqual(['']);
   wrapper.unmount();
 });
+
+// A teardown row is a workspace cleanup session, not an agent attempt: it is
+// labelled as one and takes no attempt number, or every attempt after the
+// first workspace fork is numbered for a session nobody ran. Setup streams
+// join the same list from their own record.
+it('labels teardown and setup streams beside the agent attempts they belong to', async () => {
+  const wrapper = mount(MainTabBar, { props: { tabs:[{id:'agent',kind:'agent'}],activeTabId:'agent',currentStage:'review',
+    agentAttempts:[
+      attempt('build-run','in progress',{ archived:true, observedExitCode:0 }),
+      attempt('td-run','in progress',{ kind:'teardown', archived:true, observedExitCode:0 }),
+      attempt('review-run','review',{ live:true }),
+    ],
+    agentSetupRuns:[
+      { runId:'build-run', status:'succeeded', exitCode:0, timedOut:false, truncated:false, commands:['pnpm install'], output:'ok', durationMs:9, finishedAt:'build-setup' },
+      { runId:'review-run', status:'failed', exitCode:1, timedOut:false, truncated:false, commands:['pnpm install'], output:'boom', durationMs:9, finishedAt:'review-setup' },
+    ] } });
+  expect(optionValues(wrapper)).toEqual(['', 'setup:review-run', 'td-run', 'build-run', 'setup:build-run']);
+  expect(wrapper.findAll('option')[1].text()).toBe('Setup · review · review-setup · failed');
+  expect(wrapper.findAll('option')[2].text()).toBe('Teardown · in progress · td-run');
+  expect(wrapper.findAll('option')[3].text()).toBe('in progress · attempt 1 · build-run');
+  await wrapper.setProps({ selectedAttempt: 'td-run' });
+  expect(wrapper.get('.stage-name').text()).toBe('Teardown · in progress');
+  await wrapper.setProps({ selectedAttempt: 'setup:build-run' });
+  expect(wrapper.get('.stage-name').text()).toBe('Setup · in progress');
+  wrapper.unmount();
+});
