@@ -1,22 +1,29 @@
 <script setup lang="ts">
 import { computed } from "vue";
-import type { AgentTerminalAttempt } from "../services/desktopServerClient";
-const props = defineProps<{ attempts: AgentTerminalAttempt[]; selected: string; currentStage?: string; historyStatus?: string }>();
+import type { AgentTerminalAttempt, WorkspaceSetupRun } from "../services/desktopServerClient";
+import { stageHistoryItems } from "../utils/agentStageHistory";
+const props = defineProps<{
+  attempts: AgentTerminalAttempt[];
+  setupRuns?: WorkspaceSetupRun[];
+  selected: string;
+  currentStage?: string;
+  historyStatus?: string;
+}>();
 const emit = defineEmits<{ select: [id: string] }>();
-// The server reports which attempt the daemon still runs the terminal for: that
-// one is the session "Latest" already shows, so listing it again would repeat
-// the live session as a permanently unavailable history row. Every other
-// attempt is history, including the newest and including one whose final frame
-// never arrived — that one keeps its unavailable marker rather than vanishing.
-const historicalAttempts = computed(() => props.attempts
-  .map((attempt, index) => ({ attempt, ordinal: index + 1 }))
-  .filter(entry => !entry.attempt.live)
-  .reverse());
+// The list is history only: the server reports which attempt the daemon still
+// runs the terminal for, and that session is what "Latest" already shows.
+// Everything else the task left behind belongs here — the agent's own earlier
+// sessions, the teardown that cleaned a departed workspace up, and the setup
+// that prepared each spawn. `stageHistoryItems` owns the labelling and the
+// attempt numbering, which counts agent sessions only.
+const items = computed(() => stageHistoryItems(props.attempts, props.setupRuns ?? []));
 function selectorKey(event: KeyboardEvent) {
   // Native option navigation stays local; app shortcuts still cycle tabs.
   if (!event.metaKey && !event.ctrlKey) event.stopPropagation();
 }
-const stage = computed(() => (props.selected ? props.attempts.find(attempt => attempt.id === props.selected)?.stage : props.currentStage) ?? 'Agent');
+const stage = computed(() => (props.selected
+  ? items.value.find(item => item.value === props.selected)?.title
+  : props.currentStage) ?? 'Agent');
 </script>
 <template>
   <span class="agent-stage">
@@ -28,9 +35,7 @@ const stage = computed(() => (props.selected ? props.attempts.find(attempt => at
     </span>
     <select aria-label="Agent stage output" :value="selected" @click.stop @keydown="selectorKey" @change="emit('select', ($event.target as HTMLSelectElement).value)">
       <option value="">Latest{{ currentStage ? ` · ${currentStage}` : '' }}</option>
-      <option v-for="entry in historicalAttempts" :key="entry.attempt.id" :value="entry.attempt.id">
-        {{ entry.attempt.stage }} · attempt {{ entry.ordinal }} · {{ entry.attempt.startedAt }}{{ entry.attempt.archived ? '' : ' · history unavailable' }}
-      </option>
+      <option v-for="item in items" :key="item.value" :value="item.value">{{ item.label }}</option>
       <option v-if="historyStatus" value="" disabled>{{ historyStatus }}</option>
     </select>
   </span>

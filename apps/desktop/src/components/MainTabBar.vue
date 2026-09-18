@@ -3,12 +3,13 @@ import { computed, ref, nextTick, onBeforeUnmount } from "vue";
 import { useI18n } from "vue-i18n";
 
 import AgentStageSelector from "./AgentStageSelector.vue";
-import type { AgentTerminalAttempt } from "../services/desktopServerClient";
+import type { AgentTerminalAttempt, WorkspaceSetupRun } from "../services/desktopServerClient";
 import type { MainTab } from "../composables/useMainTabs";
 
 const props = defineProps<{
   tabs: MainTab[];
   agentAttempts?: AgentTerminalAttempt[];
+  agentSetupRuns?: WorkspaceSetupRun[];
   agentHistoryStatus?: string;
   selectedAttempt?: string;
   currentStage?: string;
@@ -183,7 +184,7 @@ onBeforeUnmount(() => closeMenu());
       @auxclick.middle.prevent="tab.closable && emit('close', tab.id)"
     >
       <span v-if="tab.id !== 'agent' || !agentAttempts" class="main-tab-label">{{ tab.label }}</span>
-      <AgentStageSelector v-if="tab.id === 'agent' && agentAttempts" :attempts="agentAttempts" :history-status="agentHistoryStatus" :current-stage="currentStage" :selected="selectedAttempt ?? ''" @select="emit('selectAttempt', $event)" />
+      <AgentStageSelector v-if="tab.id === 'agent' && agentAttempts" :attempts="agentAttempts" :setup-runs="agentSetupRuns" :history-status="agentHistoryStatus" :current-stage="currentStage" :selected="selectedAttempt ?? ''" @select="emit('selectAttempt', $event)" />
       <button
         v-if="tab.closable"
         type="button"

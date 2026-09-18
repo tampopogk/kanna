@@ -1640,3 +1640,31 @@ export function listAgentTerminalAttempts(taskId: string): Promise<AgentTerminal
 export function readAgentTerminalArchive(taskId: string, runId: string): Promise<AgentTerminalArchive | null> {
   return requestJson(`/v1/tasks/${encodeURIComponent(taskId)}/terminal-attempts/${encodeURIComponent(runId)}`);
 }
+
+/**
+ * One stage run's workspace setup stream, as `workspace_setup_run` recorded it.
+ *
+ * Sibling of the terminal archive above and addressed by the same identity —
+ * the stage run — but captured text rather than terminal frames, because the
+ * setup commands run on the server-side workspace command runner and never had
+ * a PTY of their own.
+ */
+export interface WorkspaceSetupRun {
+  runId: string;
+  status: "succeeded" | "failed";
+  exitCode: number | null;
+  timedOut: boolean;
+  /** The runner's output cap was reached and the tail was dropped. */
+  truncated: boolean;
+  /** The setup commands, in the order they ran. */
+  commands: string[];
+  output: string;
+  durationMs: number;
+  finishedAt: string;
+}
+export function listWorkspaceSetupRuns(taskId: string): Promise<WorkspaceSetupRun[]> {
+  return requestJson(`/v1/tasks/${encodeURIComponent(taskId)}/setup-logs`);
+}
+export function readWorkspaceSetupRun(taskId: string, runId: string): Promise<WorkspaceSetupRun | null> {
+  return requestJson(`/v1/tasks/${encodeURIComponent(taskId)}/setup-logs/${encodeURIComponent(runId)}`);
+}

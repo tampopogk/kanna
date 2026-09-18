@@ -147,14 +147,26 @@ workspace resets those reading positions. Live terminal continuity comes from
 surviving daemon sessions; unavailable sessions and stale remote file snapshots
 are not restored by tab persistence.
 
-The Agent tab's stage selector offers Latest and dated historical attempts.
-Earlier attempts show read-only terminal-retained scrollback (including the
-final alternate screen) and the observed exit status, or an explicit unknown
-status. Repeated attempts remain separate. Uncaptured legacy history is marked
-unavailable; saved stage summaries do not stand in for terminal output. Selecting
-history never starts or attaches to an ended process. Latest returns to the
-same current terminal. Continued posts share a process's launch identity;
-retries and fallback launches receive distinct identities.
+The Agent tab's stage selector offers Latest and the task's dated history:
+its earlier agent attempts, the workspace teardown that ran when the task left
+a workspace, and the workspace setup that prepared each session. Every item is
+labelled by the stage whose workspace it belongs to, never by the stage the
+task went on to enter, and **attempt N** numbers the agent's own sessions only
+— a teardown consumes no attempt number. Earlier attempts and teardowns show
+read-only terminal-retained scrollback (including the final alternate screen)
+and the observed exit status, or an explicit unknown status. A Setup item shows
+that run's stored setup commands and captured output with its exit status,
+duration, and a failed or truncated marker; setup output is captured text
+rather than terminal frames, so the colour codes its commands wrote are
+stripped rather than printed. A live session's setup is offered while Latest
+still shows that session. Repeated attempts remain separate. Uncaptured legacy
+history is marked unavailable; saved stage summaries do not stand in for
+terminal output. Selecting history never starts or attaches to an ended
+process. Latest returns to the same current terminal. Continued posts share a
+process's launch identity; retries and fallback launches receive distinct
+identities. Setup streams are read from the owning machine's local API only, so
+a task presented from another desktop offers attempts and teardowns without
+Setup items.
 
 A local task's claimed port opens a reference preview after resolving its
 current workspace and port against the owning server. **Open in browser**
