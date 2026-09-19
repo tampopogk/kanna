@@ -3060,11 +3060,20 @@ async fn terminal_exit_with_legacy_notify_registration_uses_events_not_task_inpu
     );
     drop(db);
 
+    // The completion fact is the durable `run.finished` row, so this reads it
+    // as a durable row rather than as whatever a cold-starting supervisor
+    // would be handed. Both parameters are load-bearing: a cursorless call
+    // defaults to `from=now` and would start above an event already appended,
+    // and naming the event type keeps this task's burst out of the
+    // multi-event collapse into a synthetic `task.runtime_changed` state row.
     let response = router(state)
         .oneshot(
-            Request::get("/v1/task-events?taskIds=task-child&timeoutSecs=0")
-                .body(Body::empty())
-                .unwrap(),
+            Request::get(
+                "/v1/task-events?taskIds=task-child&timeoutSecs=0\
+                 &from=beginning&eventTypes=run.finished",
+            )
+            .body(Body::empty())
+            .unwrap(),
         )
         .await
         .unwrap();
