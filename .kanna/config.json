@@ -17,6 +17,12 @@
       "model": "gpt-6-astra",
       "effort": "high"
     },
+    "task-manager": {
+      "provider": "claude",
+      "model": "claude-opus-5",
+      "effort": "high",
+      "autocompact": "200k"
+    },
     "*": {
       "provider": ["claude", "codex", "copilot", "opencode", "antigravity"]
     }
