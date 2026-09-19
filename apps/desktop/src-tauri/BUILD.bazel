@@ -66,18 +66,28 @@ filegroup(
 
 genrule(
     name = "tauri_updater_bazel_config",
-    srcs = ["tauri.conf.json"],
+    srcs = [
+        "tauri.conf.json",
+        "//:VERSION",
+    ],
     outs = ["tauri.bazel.conf.json"],
     cmd = """
-python3 - "$(location tauri.conf.json)" "$@" <<'PY'
+python3 - "$(location tauri.conf.json)" "$(location //:VERSION)" "$@" <<'PY'
 import json
 import os
 import pathlib
 import sys
 
 source_path = pathlib.Path(sys.argv[1])
-output_path = pathlib.Path(sys.argv[2])
+version_path = pathlib.Path(sys.argv[2])
+output_path = pathlib.Path(sys.argv[3])
 config = json.loads(source_path.read_text(encoding="utf-8"))
+# The bundle plist takes its version from //:VERSION (via version_file), while
+# this config is what Tauri's codegen compiles into the binary as
+# PackageInfo.version -- which is the version the updater compares against the
+# release feed. Stamp both from the same file or a build made outside
+# `kd release ship` ships an app whose About menu and updater disagree.
+config["version"] = version_path.read_text(encoding="utf-8").strip()
 pubkey = os.environ.get("KANNA_UPDATER_PUBKEY", "").strip()
 if pubkey:
     config.setdefault("plugins", {}).setdefault("updater", {})["pubkey"] = pubkey
@@ -88,18 +98,25 @@ PY
 
 genrule(
     name = "tauri_staging_bazel_config",
-    srcs = ["tauri.conf.json"],
+    srcs = [
+        "tauri.conf.json",
+        "//:VERSION",
+    ],
     outs = ["tauri.staging.bazel.conf.json"],
     cmd = """
-python3 - "$(location tauri.conf.json)" "$@" <<'PY'
+python3 - "$(location tauri.conf.json)" "$(location //:VERSION)" "$@" <<'PY'
 import json
 import os
 import pathlib
 import sys
 
 source_path = pathlib.Path(sys.argv[1])
-output_path = pathlib.Path(sys.argv[2])
+version_path = pathlib.Path(sys.argv[2])
+output_path = pathlib.Path(sys.argv[3])
 config = json.loads(source_path.read_text(encoding="utf-8"))
+# Same reason as the production config above: //:VERSION is the single source
+# of the version that reaches both the plist and the compiled PackageInfo.
+config["version"] = version_path.read_text(encoding="utf-8").strip()
 config["productName"] = "Kanna Staging"
 config["identifier"] = "build.kanna.staging"
 config.setdefault("plugins", {}).setdefault("updater", {})["endpoints"] = [
