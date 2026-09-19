@@ -115,13 +115,13 @@ fn bundled_guides_are_topic_addressable_and_drive_schema_descriptions() {
 }
 
 #[test]
-fn task_creation_and_workflow_guidance_distinguish_consultation_from_planning() {
+fn task_creation_and_workflow_guidance_distinguish_research_from_planning() {
     let catalog = bundled_catalog();
     let workflow_guide = catalog.render_guide("workflows").expect("workflow guide");
-    assert!(workflow_guide.contains("public `consultation` workflow"));
+    assert!(workflow_guide.contains("public `research` workflow"));
     assert!(workflow_guide.contains("standalone manual product discussion"));
     assert!(workflow_guide.contains("never authorizes implementation"));
-    assert!(workflow_guide.contains("technical approach consultation"));
+    assert!(workflow_guide.contains("technical approach research"));
 
     let create_task = catalog
         .tools
@@ -137,7 +137,7 @@ fn task_creation_and_workflow_guidance_distinguish_consultation_from_planning() 
         .description
         .as_deref()
         .expect("workflow_name description");
-    assert!(description.contains("'consultation' is a standalone manual product discussion"));
+    assert!(description.contains("'research' is a standalone manual product discussion"));
     assert!(description.contains("recommendation never authorizes implementation"));
     assert!(description.contains("For an already chosen objective"));
     assert!(description.contains("'plan-build-review' adds a manual implementation-planning gate"));

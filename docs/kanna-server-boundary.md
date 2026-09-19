@@ -1806,18 +1806,18 @@ a repo `AGENT.md` wins over a built-in of the same name, then the repo's
 `repo_authored`; extending a built-in counts as a repo override because the
 definition that runs is repo-modified. Definitions whose resolved frontmatter
 declares `visibility: internal` — the `commit` and `approve` stage posts and
-the purpose-built `architect` consultation role Kanna binds itself — are
+the purpose-built `architect` research role Kanna binds itself — are
 omitted from the listing, but still resolve when the
 `agent` field names them explicitly: visibility governs listing, not access.
 
-The matching `architect-consultation` workflow is internal for the same
+The matching `architect-research` workflow is internal for the same
 reason: it is a finite manual-stage child contract named explicitly by the
 task manager, not a product-work workflow choice. The workflow binds
 `architect`; task creation supplies the assessed work item as `parentTaskId`
 and the assessed committed branch as `baseRef`. The manager observes its
 completion through the MCP wait surface. No singleton or new event loop is
 involved. See
-[Architect Consultations](specs/architect-consultations.md).
+[Architect Research](specs/architect-research.md).
 
 Task creation uses that same resolution path for any agent role, not only
 specialty reviewers. An explicit request provider wins, followed by the

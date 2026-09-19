@@ -10126,18 +10126,18 @@ describe("createMobileController", () => {
     expect(store.getState().recentTasks[0]?.id).toBe("task-pr");
   });
 
-  /// A consultation with a plan stage appended and no plan published yet: no
+  /// A research task with a plan stage appended and no plan published yet: no
   /// stamp, and precisely the shape whose tail is about to change.
   const unstampedWorkflow = {
-    name: "consultation",
-    stages: [{ name: "consultation" }, { name: "plan" }]
+    name: "research",
+    stages: [{ name: "research" }, { name: "plan" }]
   };
 
   const publishedWorkflow = {
-    name: "consultation",
+    name: "research",
     plan_context: { source_run_id: "run-plan", stage: "plan", result: "{}" },
     stages: [
-      { name: "consultation" },
+      { name: "research" },
       { name: "plan" },
       { name: "in progress" },
       { name: "pr" }

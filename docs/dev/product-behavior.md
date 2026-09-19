@@ -30,7 +30,7 @@ semantics, and the MCP task-management rule — stay in the repo-root
 5. Human reviews the PR through its preserved PR link, then uses the ordinary task stage-advance action. When the task's pinned workflow ships the `approve` post, that post hands approved work to the merge queue/master; pinned workflows without the post only advance. The workflow's existing single-flight and completion semantics remain unchanged.
 
 **A task can grow its own workflow.** A workflow does not have to be chosen in
-full before the task starts. The owner opens a `consultation`; when they choose
+full before the task starts. The owner opens a `research` task; when they choose
 an outcome and ask to proceed, the task manager appends a manual `plan` stage to
 **that same task** with `kanna_replace_task_workflow` and advances it. The
 planning agent then chooses the review depth, agents, providers, and revision
@@ -264,7 +264,8 @@ supervision reads `runtimeState`, because a busy task nobody has read carries
 
 Sidebar order: pinned (manual `pin_order`) → unpinned unblocked tasks grouped
 by workflow stage in the repo's `stage_order` (default `pr` → `review` →
-`in progress` → `plan` → `consultation`; unknown stages last), newest first within each group → blocked
+`in progress` → `plan` → `research`; unknown stages last, and the retired
+`consultation` spelling sorts with `research`), newest first within each group → blocked
 (newest first). Subtasks nest under their parents (suppressed while
 searching).
 
@@ -489,7 +490,7 @@ previews. Account, the Machines list, and the Quick Replies editor live in a
 modal account sheet; there is no settings tab.
 
 **Task cards** are tinted by workflow stage from the app-icon palette
-(`in progress` orange, `review` purple, `pr` green, `consultation` blue;
+(`in progress` orange, `review` purple, `pr` green, `research` blue;
 custom stages hash onto a fixed sub-palette; blocked is a rose badge on top of
 the stage color). A short task id sits beside the truncating title; unusually
 long IDs middle-ellipsize in their bounded metadata column so the title remains

@@ -75,7 +75,7 @@ reconnect, `tests/cli-contract/` for agent CLI compatibility.
 - **Post** — tail work injected into the stage's *running* agent session before
   the transition. Stages fork workspaces and swap sessions; posts continue them.
 - **A grown workflow** — a task's stages need not all be chosen before it
-  starts. A consultation task that the owner authorizes gets a manual `plan`
+  starts. A research task that the owner authorizes gets a manual `plan`
   stage appended to it by the task manager, and that plan publishes the delivery
   stages it chose in the same `kanna_complete_stage` call that records it (one
   transaction; `workflowDefinition` + `expectedDefinition`). The recorded stages
@@ -106,7 +106,7 @@ not a choice: it is the single-stage workflow the dispatcher gives its child
 tasks, and its definition declares `"visibility": "internal"`, so it resolves
 by name but never reaches the repo manifest, the new-task picker, or the tool
 catalog's advertised lineup. The same internal, explicitly bound convention
-applies to `architect-consultation`, the single manual-stage workflow a task
+applies to `architect-research`, the single manual-stage workflow a task
 manager uses for a bounded `architect` advisory child of the durable work item
 being assessed. Neither the workflow nor agent is an ordinary picker choice,
 and the architect never owns a perpetual management loop. Visibility is

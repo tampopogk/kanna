@@ -3112,19 +3112,19 @@ describe("kanna store task base branch integration", () => {
     expect(store.items[0]?.stage_advance_pending).toBeUndefined();
   });
 
-  /// A consultation with a plan stage appended and no plan published yet. It
+  /// A research task with a plan stage appended and no plan published yet. It
   /// carries no `plan_context`, and it is exactly the shape whose tail is about
   /// to change: the plan stage is where the remaining stages get chosen.
   const unstampedWorkflow = {
-    name: "consultation",
-    stages: [{ name: "consultation" }, { name: "plan" }],
+    name: "research",
+    stages: [{ name: "research" }, { name: "plan" }],
   };
 
   const publishedWorkflow = {
     ...unstampedWorkflow,
     plan_context: { source_run_id: "run-plan", stage: "plan", result: "{}" },
     stages: [
-      { name: "consultation" },
+      { name: "research" },
       { name: "plan" },
       { name: "in progress", post: { name: "commit" } },
       { name: "review" },
@@ -3135,7 +3135,7 @@ describe("kanna store task base branch integration", () => {
   function taskDetailServing(definition: unknown) {
     return async () => ({
       id: "item-grown",
-      stage: "consultation",
+      stage: "research",
       closedAt: null,
       latestRun: null,
       revisionRounds: 0,
@@ -3147,18 +3147,18 @@ describe("kanna store task base branch integration", () => {
 
   function grownTaskState() {
     // The repo file this task's workflow *name* resolves to is the one-stage
-    // consultation; the task's own pinned definition already differs, and is
+    // research workflow; the task's own pinned definition already differs, and is
     // about to differ more.
     mockState.workflowDefinition = {
-      name: "consultation",
-      stages: [{ name: "consultation", transition: "manual" }],
+      name: "research",
+      stages: [{ name: "research", transition: "manual" }],
     };
     mockState.workflowItems = [
       mockState.makeItem({
         id: "item-grown",
         branch: "task-grown",
-        stage: "consultation",
-        pipeline: "consultation",
+        stage: "research",
+        pipeline: "research",
       }),
     ];
   }
@@ -3185,7 +3185,7 @@ describe("kanna store task base branch integration", () => {
       expect.stringContaining("/actions/advance-stage"),
       expect.anything(),
     );
-    expect(mockState.workflowItems[0]?.stage).toBe("consultation");
+    expect(mockState.workflowItems[0]?.stage).toBe("research");
   });
 
   it("does not advance on nothing when the task's stages cannot be read", async () => {
@@ -3248,7 +3248,7 @@ describe("kanna store task base branch integration", () => {
       },
     );
     expect(toastWarningMock).toHaveBeenCalledWith("mainPanel.stageSequenceChanged");
-    expect(mockState.workflowItems[0]?.stage).toBe("consultation");
+    expect(mockState.workflowItems[0]?.stage).toBe("research");
   });
 
   it("recovers from a refused fence without restarting the app", async () => {
@@ -3299,7 +3299,7 @@ describe("kanna store task base branch integration", () => {
             id: "item-grown",
             branch: "task-grown-2",
             stage: "plan",
-            pipeline: "consultation",
+            pipeline: "research",
           }),
         ];
         return { taskId: "item-grown" };
@@ -3321,15 +3321,15 @@ describe("kanna store task base branch integration", () => {
 
   it("reports a refused stale-workflow fence distinctly from a blocked task", async () => {
     mockState.workflowDefinition = {
-      name: "consultation",
-      stages: [{ name: "consultation", transition: "manual" }],
+      name: "research",
+      stages: [{ name: "research", transition: "manual" }],
     };
     mockState.workflowItems = [
       mockState.makeItem({
         id: "item-grown",
         branch: "task-grown",
-        stage: "consultation",
-        pipeline: "consultation",
+        stage: "research",
+        pipeline: "research",
       }),
     ];
     // The server refuses the fence: the task's stages moved between the read
@@ -3348,7 +3348,7 @@ describe("kanna store task base branch integration", () => {
     expect(result).toBe("ignored");
     expect(toastWarningMock).toHaveBeenCalledWith("mainPanel.stageSequenceChanged");
     expect(toastWarningMock).not.toHaveBeenCalledWith("mainPanel.taskBlocked");
-    expect(mockState.workflowItems[0]?.stage).toBe("consultation");
+    expect(mockState.workflowItems[0]?.stage).toBe("research");
   });
 
   it("waits for a terminal-stage advance snapshot before restoring selection", async () => {

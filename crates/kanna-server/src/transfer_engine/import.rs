@@ -4018,7 +4018,7 @@ mod stored_workflow_tests {
 
     fn pinned(with_plan_context: bool) -> String {
         let mut definition = serde_json::json!({
-            "name": "consultation",
+            "name": "research",
             "revision_limit": 3,
             "stages": [
                 {"name": "plan", "agent": "plan", "policy": {"transition": "manual"}},

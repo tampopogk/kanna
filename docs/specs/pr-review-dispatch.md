@@ -7,7 +7,7 @@ exercised against real PRs.
 Related: [qa-dispatch-review.md](./qa-dispatch-review.md) (the pattern this follows),
 [task-graph-stages.md](./task-graph-stages.md), [merge-master.md](./merge-master.md),
 [native-review.md](./native-review.md) (the shipped in-task review loop, untouched here),
-[architect-consultations.md](./architect-consultations.md) (the manager/child precedent).
+[architect-research.md](./architect-research.md) (the manager/child precedent).
 
 ## The directive
 

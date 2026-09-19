@@ -228,7 +228,7 @@ pin time. Public resolved agents are allowed. Internal agents are denied as
 main stages unless explicitly allowlisted for system composition; initially
 that allowlist is `qa-dispatcher` for `review`. Internal post agents are limited
 to the existing lifecycle bindings `commit` and `approve`, in their usual
-positions. `specialty-review` and `architect-consultation` remain explicit
+positions. `specialty-review` and `architect-research` remain explicit
 child-task workflows, not stages a generator can splice into a parent rail.
 This retains the visibility contract: internal means resolvable by an
 intentional Kanna composition, not generally selectable.

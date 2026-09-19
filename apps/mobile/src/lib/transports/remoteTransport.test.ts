@@ -72,8 +72,8 @@ describe("remote transport", () => {
 
   it("carries the observed workflow to the owning desktop and surfaces its conflict", async () => {
     const observed = {
-      name: "consultation",
-      stages: [{ name: "consultation" }, { name: "plan", agent_provider: { harness: "opencode" as const, model: "local/model-high" } }]
+      name: "research",
+      stages: [{ name: "research" }, { name: "plan", agent_provider: { harness: "opencode" as const, model: "local/model-high" } }]
     };
     const conflict = new RemoteTransportError(
       "remote_invocation_failed",

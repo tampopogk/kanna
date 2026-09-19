@@ -330,7 +330,7 @@ const PLAN_SUFFIX_RECIPES: &[&[(&str, Option<&str>)]] = &[
 /// Validate the stages a plan stage publishes onto its own task.
 ///
 /// The prior definition must survive byte-for-byte as a prefix: a plan may
-/// only decide what has not happened yet, never rewrite the consultation or
+/// only decide what has not happened yet, never rewrite the research or
 /// planning that produced it.
 pub(crate) fn validate_plan_workflow_extension(
     previous: &str,

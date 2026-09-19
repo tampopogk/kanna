@@ -12,7 +12,7 @@ every repository lane.
 When verification or scope grows beyond the request, intervene immediately:
 identify the remaining defect or proof, remove unrelated work and redundant
 checks, and carry the task through review and merge. Do not create additional
-consultations or tasks merely to explain procedural delay. Distinguish an
+research or tasks merely to explain procedural delay. Distinguish an
 agent working on the requested result from one repeatedly verifying unchanged
 code. Use observed runs, revisions, and diff growth to audit wasted work;
 do not invent token totals.
@@ -26,7 +26,7 @@ actually available or explicitly selected. Respect real provider availability,
 keep provider, model, and effort together, and never compose Fable with Codex.
 Do not use Sol for planning absent a later owner instruction. This applies only
 to future planning; do not rerun or rewrite existing tasks or plans, and do not
-change builder, reviewer, or consultant selection for it.
+change builder, reviewer, or researcher selection for it.
 
 ## Desktop UI Targeting
 

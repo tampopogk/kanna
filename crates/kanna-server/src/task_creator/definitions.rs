@@ -183,7 +183,7 @@ pub(super) struct RepoWorkspacePathConfig {
 /// itself and offering it only invites picking it by mistake. Visibility is
 /// not access control: resolution by explicit name never consults it, so the
 /// dispatcher naming `specialty-review`, the task manager naming
-/// `architect-consultation`, and a stage post binding `commit` keep working
+/// `architect-research`, and a stage post binding `commit` keep working
 /// unchanged.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -1312,8 +1312,8 @@ const BUILTIN_AGENT_RESOURCES: &[(&str, &str)] = &[
         include_str!("../../../../.kanna/agents/commit/AGENT.md"),
     ),
     (
-        ".kanna/agents/consultant/AGENT.md",
-        include_str!("../../../../.kanna/agents/consultant/AGENT.md"),
+        ".kanna/agents/researcher/AGENT.md",
+        include_str!("../../../../.kanna/agents/researcher/AGENT.md"),
     ),
     (
         ".kanna/agents/implement/AGENT.md",
@@ -1429,6 +1429,7 @@ fn is_builtin_agent_name(name: &str) -> bool {
 const LEGACY_BUILTIN_AGENTS: &[(&str, &str)] = &[
     ("pr-triage", "pr-review-manager"),
     ("config-factory", "setup"),
+    ("consultant", "researcher"),
 ];
 
 fn canonical_builtin_agent_name(name: &str) -> &str {
@@ -1465,6 +1466,8 @@ pub(super) const LEGACY_BUILTIN_WORKFLOWS: &[(&str, &str)] = &[
     ("default", "no-review"),
     ("qa", "single-reviewer"),
     ("qa-dispatch", "specialized-reviewers"),
+    ("consultation", "research"),
+    ("architect-consultation", "architect-research"),
 ];
 
 /// The current name a possibly-retired built-in workflow resolves to, or
@@ -1481,9 +1484,9 @@ pub(super) fn canonical_builtin_workflow_name(name: &str) -> &str {
 /// fallback read this table, so a built-in can never be offered without
 /// shipping a definition. Whether a name is offered as a choice is declared by
 /// the definition itself, through its `visibility` field. Purpose-built child
-/// workflows such as `specialty-review` and `architect-consultation` declare
+/// workflows such as `specialty-review` and `architect-research` declare
 /// `"visibility": "internal"`: their invoking agents bind them explicitly,
-/// while public consultation and complete product-work workflows remain
+/// while public research and complete product-work workflows remain
 /// operator choices.
 const BUILTIN_WORKFLOWS: &[(&str, &str)] = &[
     (
@@ -1491,12 +1494,8 @@ const BUILTIN_WORKFLOWS: &[(&str, &str)] = &[
         include_str!("../../../../.kanna/workflows/repository-setup.json"),
     ),
     (
-        "architect-consultation",
-        include_str!("../../../../.kanna/workflows/architect-consultation.json"),
-    ),
-    (
-        "consultation",
-        include_str!("../../../../.kanna/workflows/consultation.json"),
+        "architect-research",
+        include_str!("../../../../.kanna/workflows/architect-research.json"),
     ),
     (
         "no-review",
@@ -1513,6 +1512,10 @@ const BUILTIN_WORKFLOWS: &[(&str, &str)] = &[
     (
         "pr-review-single",
         include_str!("../../../../.kanna/workflows/pr-review-single.json"),
+    ),
+    (
+        "research",
+        include_str!("../../../../.kanna/workflows/research.json"),
     ),
     (
         "single-reviewer",

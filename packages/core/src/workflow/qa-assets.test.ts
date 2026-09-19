@@ -263,15 +263,15 @@ describe("QA workflow assets", () => {
     expect(agent.prompt).toContain("Audit Premise, Scope, And Runaway Work");
     expect(agent.prompt).toContain("ask the agent for one concise re-report");
     expect(agent.prompt).toContain("HOLD implementation and merge handoff");
-    expect(agent.prompt).toContain("independent, bounded, on-demand architect consultation");
-    expect(agent.prompt).toContain('"workflow_name": "architect-consultation"');
+    expect(agent.prompt).toContain("independent, bounded, on-demand architect research task");
+    expect(agent.prompt).toContain('"workflow_name": "architect-research"');
     expect(agent.prompt).toContain('"base_ref": "<assessed-work-item-branch>"');
     expect(agent.prompt).toContain(
       '"parent_task_id": "<assessed-durable-work-item-id>"'
     );
     expect(agent.prompt).toContain("Do not add an `agent` override");
     expect(agent.prompt).toContain("singleton/perpetual architect");
-    expect(agent.prompt).toContain("consultation's `latestRun.summary`");
+    expect(agent.prompt).toContain("research child's `latestRun.summary`");
     expect(agent.prompt).toContain(
       "The manager remains accountable for scope, dependencies, budgets, holds, review coverage, and merge handoff"
     );
@@ -323,60 +323,60 @@ describe("QA workflow assets", () => {
     expect(dispatcher.prompt).toContain("Create all children before waiting");
   });
 
-  it("keeps product consultation public, standalone, and distinct from planning", () => {
-    const consultantFile = readRepoFile(".kanna/agents/consultant/AGENT.md");
-    const consultant = parseAgentDefinition(consultantFile);
-    const consultantPhrases = readRepoPhrases(".kanna/agents/consultant/AGENT.md");
-    const consultationFile = readRepoFile(".kanna/workflows/consultation.json");
-    const consultation = parseWorkflowJson(consultationFile);
+  it("keeps product research public, standalone, and distinct from planning", () => {
+    const researcherFile = readRepoFile(".kanna/agents/researcher/AGENT.md");
+    const researcher = parseAgentDefinition(researcherFile);
+    const researcherPhrases = readRepoPhrases(".kanna/agents/researcher/AGENT.md");
+    const researchFile = readRepoFile(".kanna/workflows/research.json");
+    const research = parseWorkflowJson(researchFile);
     const plan = readRepoPhrases(".kanna/agents/plan/AGENT.md");
     const manager = readRepoPhrases(".kanna/agents/task-manager/AGENT.md");
 
-    expect(consultant.name).toBe("consultant");
-    expect(consultantFile).not.toContain("visibility: internal");
-    expect(consultantPhrases).toContain("decide **what** outcome to pursue and **why**");
-    expect(consultantPhrases).toContain("When `docs/dev/product-context.md` exists, read it first");
-    expect(consultantPhrases).toContain("especially while still a draft, does not by itself create a new owner decision");
-    expect(consultantPhrases).toContain("verified facts");
-    expect(consultantPhrases).toContain("explicit owner decisions");
-    expect(consultantPhrases).toContain("**assumptions**, **unknowns**, and **proposals**");
-    expect(consultantPhrases).toContain("A recommendation is never authorization to implement it");
-    expect(consultantPhrases).toContain("Do not create development tasks, fan work out");
-    expect(consultantPhrases).toContain("remain available in the same session for discussion");
+    expect(researcher.name).toBe("researcher");
+    expect(researcherFile).not.toContain("visibility: internal");
+    expect(researcherPhrases).toContain("decide **what** outcome to pursue and **why**");
+    expect(researcherPhrases).toContain("When `docs/dev/product-context.md` exists, read it first");
+    expect(researcherPhrases).toContain("especially while still a draft, does not by itself create a new owner decision");
+    expect(researcherPhrases).toContain("verified facts");
+    expect(researcherPhrases).toContain("explicit owner decisions");
+    expect(researcherPhrases).toContain("**assumptions**, **unknowns**, and **proposals**");
+    expect(researcherPhrases).toContain("A recommendation is never authorization to implement it");
+    expect(researcherPhrases).toContain("Do not create development tasks, fan work out");
+    expect(researcherPhrases).toContain("remain available in the same session for discussion");
 
-    expect(consultation.name).toBe("consultation");
-    expect(consultationFile).not.toContain('"visibility": "internal"');
-    expect(consultation.stages).toHaveLength(1);
-    expect(consultation.stages[0]).toMatchObject({
-      name: "consultation",
-      agent: "consultant",
+    expect(research.name).toBe("research");
+    expect(researchFile).not.toContain('"visibility": "internal"');
+    expect(research.stages).toHaveLength(1);
+    expect(research.stages[0]).toMatchObject({
+      name: "research",
+      agent: "researcher",
       prompt: "$TASK_PROMPT",
       policy: { transition: "manual" },
     });
-    expect(consultation.stages[0]?.post).toBeUndefined();
+    expect(research.stages[0]?.post).toBeUndefined();
 
     expect(plan).toContain("Planning answers **how** to deliver an objective the owner has already chosen");
-    expect(plan).toContain("recommendation from an earlier consultation is context, not implementation authorization");
-    expect(manager).toContain("Separate Product Consultation From Planning");
-    expect(manager).toContain("Do not automatically convert a consultation");
-    expect(manager).toContain("read the consultation's full task and durable input ledger to verify that instruction");
-    // The owner's authorization grows the consultation task itself: the
+    expect(plan).toContain("recommendation from earlier research is context, not implementation authorization");
+    expect(manager).toContain("Separate Product Research From Planning");
+    expect(manager).toContain("Do not automatically convert a research task");
+    expect(manager).toContain("read the research task's full record and durable input ledger to verify that instruction");
+    // The owner's authorization grows the research task itself: the
     // manager appends a planning stage to it, and a replacement task is the
     // exception for genuinely separate work rather than the default.
     expect(manager).toContain("**grow that same task** rather than replacing it");
     expect(manager).toContain("`kanna_replace_task_workflow` with that document unchanged as");
     expect(manager).toContain("Leave every existing stage and post byte-for-byte intact");
     expect(manager).toContain("Create a separate top-level development task with `kanna_create_task` instead");
-    expect(consultantPhrases).toContain("appends a manual `plan` stage to **this same task**");
-    expect(consultantPhrases).toContain("You neither append stages nor advance them");
-    expect(manager).toContain("internal `architect-consultation` workflow remains a different tool");
+    expect(researcherPhrases).toContain("appends a manual `plan` stage to **this same task**");
+    expect(researcherPhrases).toContain("You neither append stages nor advance them");
+    expect(manager).toContain("internal `architect-research` workflow remains a different tool");
     expect(manager).toContain("do not inject manager terminal input to manufacture a decision");
   });
 
   it("lets one task grow its own delivery stages from its plan", () => {
     const plan = readRepoPhrases(".kanna/agents/plan/AGENT.md");
-    const consultation = JSON.parse(
-      readRepoFile(".kanna/workflows/consultation.json")
+    const research = JSON.parse(
+      readRepoFile(".kanna/workflows/research.json")
     ) as { description?: string };
 
     // Publishing is conditional on this plan stage actually being the tail of
@@ -400,7 +400,7 @@ describe("QA workflow assets", () => {
     expect(plan).toContain("a plain success then means the stages were **not** published");
     expect(plan).toContain("Your recorded result becomes `$PLAN_RESULT`");
 
-    expect(consultation.description).toContain(
+    expect(research.description).toContain(
       "the task manager appends a manual plan stage to this same task"
     );
   });
@@ -411,7 +411,7 @@ describe("QA workflow assets", () => {
     const phrases = readRepoPhrases(".kanna/agents/architect/AGENT.md");
 
     // Any repository orchestrated by Kanna can invoke this agent, so the
-    // project under consultation is arbitrary: only the platform is Kanna.
+    // project under study is arbitrary: only the platform is Kanna.
     expect(file).not.toContain("Kanna Architect");
     expect(architect.prompt).toContain("You are a software architect");
     expect(phrases).toContain(

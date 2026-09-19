@@ -1763,7 +1763,7 @@ fn recorded_plan_publication(db: &Db, task_id: &str) -> Option<RecordedPlanPubli
 /// Stage whose completion may publish the rest of its own task's workflow.
 ///
 /// A single reserved name, not a policy flag: the journey this serves is
-/// consultation -> appended planning -> the stages planning chose, and the
+/// research -> appended planning -> the stages planning chose, and the
 /// planning agent is the one that has read the objective.
 const PLAN_STAGE_NAME: &str = "plan";
 

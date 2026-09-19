@@ -3,12 +3,15 @@ import { describe, it, expect } from "vitest";
 import { DEFAULT_STAGE_ORDER, parseRepoConfig } from "./repo-config.js";
 
 describe("parseRepoConfig", () => {
-  it("puts consultations immediately below plans in the built-in stage display order", () => {
+  it("puts research immediately below plans in the built-in stage display order", () => {
     expect(DEFAULT_STAGE_ORDER).toEqual([
       "pr",
       "review",
       "in progress",
       "plan",
+      "research",
+      // The retired spelling still orders with its replacement, because
+      // definitions pinned before the rename keep the old stage name.
       "consultation",
     ]);
     expect(DEFAULT_STAGE_ORDER).not.toContain("commit");
