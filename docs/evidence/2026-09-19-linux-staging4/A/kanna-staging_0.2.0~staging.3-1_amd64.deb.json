@@ -1,0 +1,321 @@
+{
+  "builder": "bazel",
+  "buildRevision": "cc7bb93dcf8e8481e8e52b4d2941467d21e4f8a2",
+  "buildTree": "7c4abb7e7ab1bb87c008f144e1e82c0d790ba6b9",
+  "version": "0.2.0",
+  "channel": "staging",
+  "architecture": "x86_64",
+  "debianVersion": "0.2.0~staging.3-1",
+  "sha256": "0b12f3894da7af5f0a57b17d3906543e18c954f742a9e6ba70a3b271326e6f78",
+  "depends": [
+    "libc6 (>= 2.39)",
+    "libglib2.0-0t64",
+    "libgtk-3-0t64",
+    "libsoup-3.0-0",
+    "libwebkit2gtk-4.1-0"
+  ],
+  "audit": {
+    "findings": [],
+    "requiredPackages": [
+      "libc6",
+      "libglib2.0-0t64",
+      "libgtk-3-0t64",
+      "libsoup-3.0-0",
+      "libwebkit2gtk-4.1-0"
+    ],
+    "conditionalUses": []
+  },
+  "executables": [
+    {
+      "path": "kanna-desktop",
+      "machine": "Advanced Micro Devices X86-64",
+      "interpreter": "/lib64/ld-linux-x86-64.so.2",
+      "needed": [
+        "ld-linux-x86-64.so.2",
+        "libc.so.6",
+        "libcairo.so.2",
+        "libgdk-3.so.0",
+        "libgdk_pixbuf-2.0.so.0",
+        "libgio-2.0.so.0",
+        "libglib-2.0.so.0",
+        "libgobject-2.0.so.0",
+        "libgtk-3.so.0",
+        "libjavascriptcoregtk-4.1.so.0",
+        "libm.so.6",
+        "libsoup-3.0.so.0",
+        "libwebkit2gtk-4.1.so.0"
+      ],
+      "runpaths": [],
+      "versionRequirements": {
+        "GLIBC": [
+          "2.10",
+          "2.14",
+          "2.15",
+          "2.16",
+          "2.17",
+          "2.18",
+          "2.2.5",
+          "2.25",
+          "2.27",
+          "2.28",
+          "2.29",
+          "2.3",
+          "2.3.2",
+          "2.3.4",
+          "2.30",
+          "2.32",
+          "2.33",
+          "2.34",
+          "2.38",
+          "2.39",
+          "2.4",
+          "2.5",
+          "2.7",
+          "2.9"
+        ]
+      },
+      "sha256": "5f77245cb39acae4c52fc3cb04c92f5aeed1f4f161a8382d0bc1d310eb85fa15"
+    },
+    {
+      "path": "kanna-worker",
+      "machine": "Advanced Micro Devices X86-64",
+      "interpreter": "/lib64/ld-linux-x86-64.so.2",
+      "needed": [
+        "ld-linux-x86-64.so.2",
+        "libc.so.6",
+        "libm.so.6"
+      ],
+      "runpaths": [],
+      "versionRequirements": {
+        "GLIBC": [
+          "2.15",
+          "2.16",
+          "2.17",
+          "2.18",
+          "2.2.5",
+          "2.25",
+          "2.28",
+          "2.29",
+          "2.3",
+          "2.3.2",
+          "2.3.4",
+          "2.30",
+          "2.32",
+          "2.33",
+          "2.34",
+          "2.39",
+          "2.7",
+          "2.9"
+        ]
+      },
+      "sha256": "09bf6a116c22b4f651e8b45168a4d3b44c32a5ccf5afc7c7e26e1e6e77a6463c"
+    },
+    {
+      "path": "kanna-daemon",
+      "machine": "Advanced Micro Devices X86-64",
+      "interpreter": "/lib64/ld-linux-x86-64.so.2",
+      "needed": [
+        "ld-linux-x86-64.so.2",
+        "libc.so.6",
+        "libm.so.6"
+      ],
+      "runpaths": [],
+      "versionRequirements": {
+        "GLIBC": [
+          "2.10",
+          "2.15",
+          "2.16",
+          "2.17",
+          "2.18",
+          "2.2.5",
+          "2.25",
+          "2.27",
+          "2.28",
+          "2.29",
+          "2.3",
+          "2.3.2",
+          "2.3.4",
+          "2.30",
+          "2.32",
+          "2.33",
+          "2.34",
+          "2.39",
+          "2.4",
+          "2.7",
+          "2.9"
+        ]
+      },
+      "sha256": "60349b6cd12abe8bb764e805484e91280d5177b1cc55d136fac1a5fe444342e2"
+    },
+    {
+      "path": "kanna-cli",
+      "machine": "Advanced Micro Devices X86-64",
+      "interpreter": "/lib64/ld-linux-x86-64.so.2",
+      "needed": [
+        "ld-linux-x86-64.so.2",
+        "libc.so.6"
+      ],
+      "runpaths": [],
+      "versionRequirements": {
+        "GLIBC": [
+          "2.14",
+          "2.16",
+          "2.17",
+          "2.18",
+          "2.2.5",
+          "2.25",
+          "2.28",
+          "2.3",
+          "2.3.2",
+          "2.3.4",
+          "2.30",
+          "2.32",
+          "2.33",
+          "2.34",
+          "2.38",
+          "2.7",
+          "2.9"
+        ]
+      },
+      "sha256": "79a45cba53ae15b4e3a5a4a50e8dc4bbd17e8e5224fe33b0a7c09c70954135f6"
+    },
+    {
+      "path": "kanna-mcp",
+      "machine": "Advanced Micro Devices X86-64",
+      "interpreter": "/lib64/ld-linux-x86-64.so.2",
+      "needed": [
+        "ld-linux-x86-64.so.2",
+        "libc.so.6"
+      ],
+      "runpaths": [],
+      "versionRequirements": {
+        "GLIBC": [
+          "2.14",
+          "2.16",
+          "2.17",
+          "2.18",
+          "2.2.5",
+          "2.25",
+          "2.28",
+          "2.3",
+          "2.3.2",
+          "2.3.4",
+          "2.30",
+          "2.32",
+          "2.33",
+          "2.34",
+          "2.38",
+          "2.7",
+          "2.9"
+        ]
+      },
+      "sha256": "f1d57f74e81369c46b882637be37f244395500170f070d8d57ed7bf1e4b6d3b3"
+    },
+    {
+      "path": "kanna-server",
+      "machine": "Advanced Micro Devices X86-64",
+      "interpreter": "/lib64/ld-linux-x86-64.so.2",
+      "needed": [
+        "ld-linux-x86-64.so.2",
+        "libc.so.6",
+        "libm.so.6"
+      ],
+      "runpaths": [],
+      "versionRequirements": {
+        "GLIBC": [
+          "2.10",
+          "2.15",
+          "2.16",
+          "2.17",
+          "2.18",
+          "2.2.5",
+          "2.25",
+          "2.27",
+          "2.28",
+          "2.29",
+          "2.3",
+          "2.3.2",
+          "2.3.4",
+          "2.30",
+          "2.32",
+          "2.33",
+          "2.34",
+          "2.38",
+          "2.39",
+          "2.4",
+          "2.5",
+          "2.7",
+          "2.9"
+        ]
+      },
+      "sha256": "8454c32d331e714250a6d37393f97d578258bc7327e9b7237268ceb89e9a8fae"
+    },
+    {
+      "path": "kanna-task-transfer",
+      "machine": "Advanced Micro Devices X86-64",
+      "interpreter": "/lib64/ld-linux-x86-64.so.2",
+      "needed": [
+        "ld-linux-x86-64.so.2",
+        "libc.so.6",
+        "libm.so.6"
+      ],
+      "runpaths": [],
+      "versionRequirements": {
+        "GLIBC": [
+          "2.10",
+          "2.16",
+          "2.17",
+          "2.18",
+          "2.2.5",
+          "2.25",
+          "2.27",
+          "2.28",
+          "2.29",
+          "2.3",
+          "2.3.2",
+          "2.3.4",
+          "2.30",
+          "2.32",
+          "2.33",
+          "2.34",
+          "2.4",
+          "2.5",
+          "2.7",
+          "2.9"
+        ]
+      },
+      "sha256": "81de15f3501bc1aeb535b86e5fc39038bac778854dac944bd5199885a8ee4a47"
+    },
+    {
+      "path": "kanna-terminal-recovery",
+      "machine": "Advanced Micro Devices X86-64",
+      "interpreter": "/lib64/ld-linux-x86-64.so.2",
+      "needed": [
+        "ld-linux-x86-64.so.2",
+        "libc.so.6"
+      ],
+      "runpaths": [],
+      "versionRequirements": {
+        "GLIBC": [
+          "2.10",
+          "2.16",
+          "2.17",
+          "2.18",
+          "2.2.5",
+          "2.25",
+          "2.27",
+          "2.28",
+          "2.3",
+          "2.3.2",
+          "2.3.4",
+          "2.30",
+          "2.32",
+          "2.33",
+          "2.34",
+          "2.4"
+        ]
+      },
+      "sha256": "214faf98ff480f4dc11130a926e3222d378c4f5cc0a88978bbc3c512acd361dc"
+    }
+  ]
+}

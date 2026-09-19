@@ -1,0 +1,42 @@
+{
+  "schemaVersion": 1,
+  "kind": "linux-local-preparation",
+  "source": {
+    "revision": "40d25b76cf05433ec81f23b7ebc7f3f04214bf55",
+    "tree": "e0aa6bd4a0d740a7c63a0b8a094c1de9eb47f14f"
+  },
+  "version": "0.2.0",
+  "channel": "staging",
+  "iteration": 4,
+  "preparedAt": "2026-09-19T12:22:40.150Z",
+  "artifacts": [
+    {
+      "architecture": "x86_64",
+      "sourceRevision": "40d25b76cf05433ec81f23b7ebc7f3f04214bf55",
+      "buildRevision": "40d25b76cf05433ec81f23b7ebc7f3f04214bf55",
+      "buildTree": "e0aa6bd4a0d740a7c63a0b8a094c1de9eb47f14f",
+      "version": "0.2.0",
+      "channel": "staging",
+      "iteration": 4,
+      "label": "//packaging/linux:deb_staging_x86_64",
+      "fileName": "kanna-staging_0.2.0~staging.4-1_amd64.deb",
+      "sha256": "e86357168f9db8d0a8f963a23e8981fc0698ac4120abb75829c2473133ed3ed7",
+      "sizeBytes": 45737858,
+      "reportSha256": "ac4099ebd20fb114e4320e1423d6db5f0ef79d284ed71cd51f06d74de9d804ee"
+    },
+    {
+      "architecture": "arm64",
+      "sourceRevision": "40d25b76cf05433ec81f23b7ebc7f3f04214bf55",
+      "buildRevision": "40d25b76cf05433ec81f23b7ebc7f3f04214bf55",
+      "buildTree": "e0aa6bd4a0d740a7c63a0b8a094c1de9eb47f14f",
+      "version": "0.2.0",
+      "channel": "staging",
+      "iteration": 4,
+      "label": "//packaging/linux:deb_staging_arm64",
+      "fileName": "kanna-staging_0.2.0~staging.4-1_arm64.deb",
+      "sha256": "d2e4f73006b85408ec9f18e80b6b2a7eabd15e4612d149382d360b0baf0d0b0d",
+      "sizeBytes": 44843640,
+      "reportSha256": "3d6e5b2e8a52773c2fbc327ae03e100eb7f509fd9c1d9548a9a85708af45132d"
+    }
+  ]
+}
