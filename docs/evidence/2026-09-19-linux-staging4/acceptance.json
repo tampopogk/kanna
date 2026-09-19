@@ -1,0 +1,55 @@
+{
+  "schemaVersion": 1,
+  "sourceRevision": "40d25b76cf05433ec81f23b7ebc7f3f04214bf55",
+  "sourceTree": "e0aa6bd4a0d740a7c63a0b8a094c1de9eb47f14f",
+  "version": "0.2.0",
+  "iteration": 4,
+  "artifacts": {
+    "x86_64": "e86357168f9db8d0a8f963a23e8981fc0698ac4120abb75829c2473133ed3ed7",
+    "arm64": "d2e4f73006b85408ec9f18e80b6b2a7eabd15e4612d149382d360b0baf0d0b0d"
+  },
+  "checks": [
+    {
+      "kind": "installed",
+      "architecture": "x86_64",
+      "status": "pass",
+      "testedAt": "2026-09-19T13:27:43.288Z",
+      "evidencePath": "docs/evidence/2026-09-19-linux-staging4/ci-35445787608/x86_64/vitest-result.json",
+      "evidenceSha256": "b6da3c7c09e090de77116e057f1b24cd50803320df5b9b34bc893da7b28b5a82"
+    },
+    {
+      "kind": "upgrade",
+      "architecture": "x86_64",
+      "status": "pass",
+      "testedAt": "2026-09-19T13:27:43.288Z",
+      "evidencePath": "docs/evidence/2026-09-19-linux-staging4/ci-35445787608/x86_64/vitest-result.json",
+      "evidenceSha256": "b6da3c7c09e090de77116e057f1b24cd50803320df5b9b34bc893da7b28b5a82",
+      "predecessor": {
+        "sourceRevision": "cc7bb93dcf8e8481e8e52b4d2941467d21e4f8a2",
+        "version": "0.2.0~staging.3-1",
+        "sha256": "0b12f3894da7af5f0a57b17d3906543e18c954f742a9e6ba70a3b271326e6f78"
+      }
+    },
+    {
+      "kind": "installed",
+      "architecture": "arm64",
+      "status": "pass",
+      "testedAt": "2026-09-19T13:27:55.545Z",
+      "evidencePath": "docs/evidence/2026-09-19-linux-staging4/ci-35445787608/arm64/vitest-result.json",
+      "evidenceSha256": "db7ffbbc380587c4bb2a9be9901940f230c0b10577bb8aff2136151b043841c4"
+    },
+    {
+      "kind": "upgrade",
+      "architecture": "arm64",
+      "status": "pass",
+      "testedAt": "2026-09-19T13:27:55.545Z",
+      "evidencePath": "docs/evidence/2026-09-19-linux-staging4/ci-35445787608/arm64/vitest-result.json",
+      "evidenceSha256": "db7ffbbc380587c4bb2a9be9901940f230c0b10577bb8aff2136151b043841c4",
+      "predecessor": {
+        "sourceRevision": "cc7bb93dcf8e8481e8e52b4d2941467d21e4f8a2",
+        "version": "0.2.0~staging.3-1",
+        "sha256": "cb70b5d2b007177766038f3e2941f2647e349811db54dc55680399c899220eda"
+      }
+    }
+  ]
+}
