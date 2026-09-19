@@ -1,12 +1,24 @@
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
-  REMOTE_E2E_TRIGGER_PATHS,
+  REMOTE_E2E_LANE_ID,
   buildRemoteE2eLaneArgs,
   executeRemoteE2e,
   matchRemoteE2eTriggerPaths,
+  remoteE2eTriggerPaths,
   selectRemoteE2eByChangedPaths,
 } from "../src/runtime/remote-e2e";
+import { LANE_MANIFEST_PATH, laneTriggerPaths } from "../src/runtime/lane-inventory";
 import type { CommandResult, CommandRunner } from "../src/runtime/process";
+
+/**
+ * The trigger prefixes live in `docs/verification/lanes.json`, so these tests
+ * run against the real repository root: the selection reads the manifest and
+ * only git is a fixture. The previous shape asserted the module's own literal
+ * against the same literal, which nothing in the repository could break.
+ */
+const repoRoot = resolve(import.meta.dirname, "..", "..", "..");
 
 interface RecordedCall {
   command: string;
@@ -52,8 +64,8 @@ const DEV_LANE_OPTIONS = {
 };
 
 describe("remote E2E trigger paths", () => {
-  it("matches the path filter of the deleted remote-e2e.yml workflow", () => {
-    expect([...REMOTE_E2E_TRIGGER_PATHS]).toEqual([
+  it("keeps the deleted remote-e2e.yml path filter in the lane manifest", () => {
+    expect(remoteE2eTriggerPaths(repoRoot)).toEqual([
       "services/relay/",
       "crates/kanna-server/",
       "services/firebase-functions/",
@@ -63,15 +75,41 @@ describe("remote E2E trigger paths", () => {
     ]);
   });
 
+  /**
+   * Two copies of the same answer is two things to keep in step, and the
+   * manifest is the one that the inventory test holds to repository state.
+   */
+  it("keeps no second copy of the prefixes beside the manifest", () => {
+    const module = readFileSync(resolve(repoRoot, "tools/kd/src/runtime/remote-e2e.ts"), "utf8");
+    for (const prefix of remoteE2eTriggerPaths(repoRoot)) {
+      expect(module, `${prefix} is declared in two places`).not.toContain(`"${prefix}"`);
+    }
+    expect(remoteE2eTriggerPaths(repoRoot)).toEqual(
+      laneTriggerPaths(repoRoot, REMOTE_E2E_LANE_ID),
+    );
+  });
+
+  /**
+   * An empty prefix list answers "not required" for every branch — a gate that
+   * has silently detached, which is the failure the manifest exists to remove.
+   * It must be an error, not a quiet pass.
+   */
+  it("refuses a lane the manifest does not declare", () => {
+    expect(() => laneTriggerPaths(repoRoot, "no-such-lane")).toThrow(LANE_MANIFEST_PATH);
+  });
+
   it("matches by path prefix without matching sibling directories", () => {
     expect(
-      matchRemoteE2eTriggerPaths([
-        "crates/kanna-server/src/mobile_api.rs",
-        "crates/kanna-daemon/src/lib.rs",
-        "apps/mobile/src/lib/transports/relayClient.ts",
-        "apps/mobile/src/screens/TaskList.tsx",
-        "docs/specs/remote-task-e2e.md",
-      ])
+      matchRemoteE2eTriggerPaths(
+        [
+          "crates/kanna-server/src/mobile_api.rs",
+          "crates/kanna-daemon/src/lib.rs",
+          "apps/mobile/src/lib/transports/relayClient.ts",
+          "apps/mobile/src/screens/TaskList.tsx",
+          "docs/specs/remote-task-e2e.md",
+        ],
+        remoteE2eTriggerPaths(repoRoot)
+      )
     ).toEqual([
       "crates/kanna-server/src/mobile_api.rs",
       "apps/mobile/src/lib/transports/relayClient.ts",
@@ -88,7 +126,7 @@ describe("kd test remote-e2e --if-changed", () => {
     );
 
     const selection = await selectRemoteE2eByChangedPaths({
-      repoRoot: "/repo",
+      repoRoot,
       env: {},
       runner,
     });
@@ -99,6 +137,7 @@ describe("kd test remote-e2e --if-changed", () => {
       mergeBase: "abc123",
       changedPaths: ["README.md", "services/relay/src/index.ts", "tests/remote-e2e/src/new.ts"],
       matchedPaths: ["services/relay/src/index.ts", "tests/remote-e2e/src/new.ts"],
+      triggerPaths: remoteE2eTriggerPaths(repoRoot),
     });
     expect(calls.map((call) => `${call.command} ${call.args.join(" ")}`)).toEqual([
       ORIGIN_HEAD,
@@ -122,7 +161,7 @@ describe("kd test remote-e2e --if-changed", () => {
     );
 
     const selection = await selectRemoteE2eByChangedPaths({
-      repoRoot: "/repo",
+      repoRoot,
       env: {},
       runner,
     });
@@ -139,7 +178,7 @@ describe("kd test remote-e2e --if-changed", () => {
     };
 
     const result = await executeRemoteE2e({
-      repoRoot: "/repo",
+      repoRoot,
       env: { KANNA_DEV_PORT: "1421" },
       runner: gitRunner(responses, calls),
       options: DEV_LANE_OPTIONS,
@@ -178,7 +217,7 @@ describe("kd test remote-e2e --if-changed", () => {
     };
 
     const result = await executeRemoteE2e({
-      repoRoot: "/repo",
+      repoRoot,
       env: {},
       runner: gitRunner(responses, calls),
       options,
@@ -198,7 +237,7 @@ describe("kd test remote-e2e --if-changed", () => {
     );
 
     const result = await executeRemoteE2e({
-      repoRoot: "/repo",
+      repoRoot,
       env: {},
       runner,
       options: DEV_LANE_OPTIONS,
@@ -223,7 +262,7 @@ describe("kd test remote-e2e --if-changed", () => {
     );
 
     const result = await executeRemoteE2e({
-      repoRoot: "/repo",
+      repoRoot,
       env: {},
       runner,
       options: { ...DEV_LANE_OPTIONS, ifChanged: false },
@@ -238,7 +277,7 @@ describe("kd test remote-e2e --if-changed", () => {
   it("refuses to gate the staging lane", async () => {
     const calls: RecordedCall[] = [];
     const result = await executeRemoteE2e({
-      repoRoot: "/repo",
+      repoRoot,
       env: {},
       runner: gitRunner({}, calls),
       options: { ...DEV_LANE_OPTIONS, staging: true },
@@ -260,7 +299,7 @@ describe("kd test remote-e2e --if-changed", () => {
     };
 
     const result = await executeRemoteE2e({
-      repoRoot: "/repo",
+      repoRoot,
       env: {},
       runner: gitRunner(responses, calls),
       options: DEV_LANE_OPTIONS,
