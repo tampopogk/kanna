@@ -133,15 +133,24 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
+/* A remote pane renders the owner's authoritative grid, which is routinely
+   wider than this viewer's window. These are row flex items, so without
+   `min-width: 0` their automatic minimum size is that grid's intrinsic width
+   and the pane widens to the grid instead of clipping it. `FitAddon` then
+   measures the grid rather than the pane, and the controller registers that
+   measurement back to the daemon — one round trip per step, walking the PTY
+   down to the pane. `min-height: 0` alone left the inline axis open. */
 .cloud-terminal-cache {
   display: flex;
   flex: 1;
+  min-width: 0;
   min-height: 0;
 }
 
 .cloud-terminal-cache-entry {
   display: flex;
   flex: 1;
+  min-width: 0;
   min-height: 0;
 }
 </style>

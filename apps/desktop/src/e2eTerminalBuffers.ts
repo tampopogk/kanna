@@ -61,6 +61,7 @@ export function registerE2ETerminalBuffer(
     write: writeTerminalBuffer,
     input: inputTerminalBuffer,
     refresh: refreshTerminalBuffer,
+    resize: resizeTerminalBuffer,
     element: getTerminalElement,
     findTextCell: findTerminalTextCell,
     cursor: getTerminalCursorPosition,
@@ -113,6 +114,20 @@ function getTerminalElement(sessionId: string): HTMLElement | null {
     throw new Error(`terminal buffer not registered for session ${sessionId}`);
   }
   return terminal.element ?? null;
+}
+
+/**
+ * Put the grid where an authoritative snapshot would: `applyTerminalSnapshot`
+ * restores the owner's recorded dimensions before replaying its bytes. This is
+ * the only geometric act of that hydration, so a test can reproduce it without
+ * an owner daemon to push a snapshot from.
+ */
+function resizeTerminalBuffer(sessionId: string, cols: number, rows: number): void {
+  const terminal = terminals.get(sessionId);
+  if (!terminal) {
+    throw new Error(`terminal buffer not registered for session ${sessionId}`);
+  }
+  terminal.resize(cols, rows);
 }
 
 function refreshTerminalBuffer(sessionId: string): void {
