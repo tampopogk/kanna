@@ -23,11 +23,20 @@ async function settle() {
  * Let the preview column's debounced cursor fire and its read land. The
  * explorer deliberately waits 50ms before previewing anything so that holding
  * `j` does not read every file it passes over.
+ *
+ * Shiki and markdown-it are not mocked here, so the extra flush loop gives
+ * their real (dynamically imported) modules room to resolve and highlight or
+ * render the preview before assertions run — the same pattern
+ * FilePreviewRange.test.ts uses for the same reason.
  */
 async function settlePreview() {
   await new Promise((resolve) => setTimeout(resolve, 80));
   await settle();
   await settle();
+  for (let attempt = 0; attempt < 12; attempt += 1) {
+    await vi.dynamicImportSettled();
+    await settle();
+  }
 }
 
 /**
@@ -226,19 +235,63 @@ describe("TreeExplorerModal preview column", () => {
 
   it("shows the head of the file under the cursor", async () => {
     mockLocalFs({
+      entries: [{ name: "notes.txt", is_dir: false }],
+      textByPath: { [`${LOCAL_ROOT}/notes.txt`]: "first line\n\nsecond line\n" },
+    });
+    const wrapper = mountLocal();
+    await settlePreview();
+
+    const preview = wrapper.get('[data-testid="tree-preview-content"]');
+    expect(preview.text()).toContain("first line");
+    expect(preview.text()).toContain("second line");
+    expect(wrapper.text()).not.toContain("(no preview)");
+    expect(invokeMock).toHaveBeenCalledWith("read_text_file", {
+      path: `${LOCAL_ROOT}/notes.txt`,
+    });
+    wrapper.unmount();
+  });
+
+  it("syntax-highlights a file whose extension Shiki has a grammar for", async () => {
+    mockLocalFs({
+      entries: [{ name: "main.ts", is_dir: false }],
+      textByPath: { [`${LOCAL_ROOT}/main.ts`]: "const answer = 42;\n" },
+    });
+    const wrapper = mountLocal();
+    await settlePreview();
+
+    const rendered = wrapper.get('[data-testid="tree-preview-rendered"]');
+    expect(rendered.find("pre.shiki").exists()).toBe(true);
+    expect(rendered.text()).toContain("const answer = 42;");
+    wrapper.unmount();
+  });
+
+  it("renders Markdown files instead of showing raw source", async () => {
+    mockLocalFs({
       entries: [{ name: "README.md", is_dir: false }],
       textByPath: { [`${LOCAL_ROOT}/README.md`]: "# Kanna\n\nsecond line\n" },
     });
     const wrapper = mountLocal();
     await settlePreview();
 
-    const preview = wrapper.get('[data-testid="tree-preview-content"]');
-    expect(preview.text()).toContain("# Kanna");
-    expect(preview.text()).toContain("second line");
-    expect(wrapper.text()).not.toContain("(no preview)");
-    expect(invokeMock).toHaveBeenCalledWith("read_text_file", {
-      path: `${LOCAL_ROOT}/README.md`,
+    const rendered = wrapper.get('[data-testid="tree-preview-rendered"]');
+    expect(rendered.find("h1").exists()).toBe(true);
+    expect(rendered.text()).toContain("Kanna");
+    expect(rendered.text()).toContain("second line");
+    // Rendered, not raw source — the "#" markdown syntax is gone.
+    expect(rendered.text()).not.toContain("# Kanna");
+    wrapper.unmount();
+  });
+
+  it("shows an unrecognized extension as plain text rather than failing to render", async () => {
+    mockLocalFs({
+      entries: [{ name: "Dockerfile", is_dir: false }],
+      textByPath: { [`${LOCAL_ROOT}/Dockerfile`]: "FROM node:20\n" },
     });
+    const wrapper = mountLocal();
+    await settlePreview();
+
+    const preview = wrapper.get('[data-testid="tree-preview-content"]');
+    expect(preview.text()).toContain("FROM node:20");
     wrapper.unmount();
   });
 

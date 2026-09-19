@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import TerminalEditorPicker from "./TerminalEditorPicker.vue";
-import type MarkdownIt from "markdown-it";
-import type { BundledLanguage, DecorationItem, ShikiTransformer } from "shiki";
+import type { DecorationItem, ShikiTransformer } from "shiki";
 import { ref, computed, onMounted, nextTick, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import { invoke } from "../invoke";
@@ -18,6 +17,12 @@ import {
 } from "../composables/useEmbeddableView";
 import { macOsTextInputAttrs } from "../utils/textInput";
 import { getSyntaxLanguageForPath } from "../utils/syntaxLanguage";
+import {
+  getFilePreviewHighlighter,
+  renderFilePreviewMarkdown,
+  resolveHighlightableLanguage,
+  toShikiLanguage,
+} from "../utils/filePreviewRenderer";
 import { getShikiTheme } from "../theme/theme";
 import { useThemeRuntime } from "../theme/runtime";
 import { metaOrControlHint } from "../composables/shortcutPlatform";
@@ -148,59 +153,7 @@ const lineCount = computed(() => {
   return content.value.split('\n').length;
 });
 
-type ShikiModule = typeof import("shiki");
-type ShikiHighlighter = Awaited<ReturnType<ShikiModule["createHighlighter"]>>;
 type HastElement = Parameters<NonNullable<ShikiTransformer["pre"]>>[0];
-type ShikiLanguage = BundledLanguage | "text";
-
-function toShikiLanguage(lang: string): ShikiLanguage {
-  return lang === "text" ? "text" : lang as BundledLanguage;
-}
-
-// Lazy-load shiki to avoid blocking startup
-let highlighter: ShikiHighlighter | null = null;
-
-async function getHighlighter() {
-  if (highlighter) return highlighter;
-  const { createHighlighter } = await import("shiki");
-  highlighter = await createHighlighter({
-    themes: ["github-dark", "github-light"],
-    langs: [],
-  });
-  return highlighter;
-}
-
-// Lazy-load markdown-it to avoid blocking startup
-let md: MarkdownIt | null = null;
-
-async function getMarkdownIt() {
-  if (md) return md;
-  const [{ default: MarkdownIt }, { default: taskLists }, { default: strikethrough }] =
-    await Promise.all([
-      import("markdown-it"),
-      import("markdown-it-task-lists"),
-      import("markdown-it-strikethrough-alt"),
-    ]);
-
-  const hl = await getHighlighter();
-
-  md = new MarkdownIt({
-    html: false,
-    linkify: true,
-    typographer: false,
-    highlight(str: string, lang: string) {
-      if (!lang) return hl.codeToHtml(str, { lang: "text", theme: shikiTheme.value });
-      // Languages are pre-loaded in the watcher before md.render() is called,
-      // so getLoadedLanguages() is reliable here (no async needed).
-      const loaded = hl.getLoadedLanguages();
-      const useLang = loaded.includes(toShikiLanguage(lang)) ? toShikiLanguage(lang) : "text";
-      return hl.codeToHtml(str, { lang: useLang, theme: shikiTheme.value });
-    },
-  });
-  md.use(taskLists, { enabled: false });
-  md.use(strikethrough);
-  return md;
-}
 
 const renderedMarkdown = ref("");
 
@@ -209,22 +162,10 @@ watch([renderMarkdown, content, effectiveCodeTheme], async ([shouldRender, raw])
     renderedMarkdown.value = "";
     return;
   }
-  const parser = await getMarkdownIt();
-  const hl = await getHighlighter();
-
-  // Pre-load all fenced code block languages before rendering,
-  // because markdown-it's highlight callback is synchronous.
-  const langMatches = raw.matchAll(/^```(\w+)/gm);
-  const langs = [...new Set([...langMatches].map((m) => m[1]))];
-  await Promise.all(
-    langs.map((lang) =>
-      hl.loadLanguage(toShikiLanguage(lang)).catch((error: unknown) => {
-        console.debug(`[file-preview] failed to preload markdown code language "${lang}"; using text fallback:`, error);
-      })
-    )
-  );
-
-  renderedMarkdown.value = parser.render(raw);
+  renderedMarkdown.value = await renderFilePreviewMarkdown(raw, shikiTheme.value).catch((error: unknown) => {
+    console.debug("[file-preview] failed to render markdown:", error);
+    return renderedMarkdown.value;
+  });
 });
 
 async function loadFile() {
@@ -243,21 +184,13 @@ async function loadFile() {
 
     if (loadId !== activeFileLoadId) return;
 
-    const hl = await getHighlighter();
     const lang = getSyntaxLanguageForPath(props.filePath);
-
-    try {
-      await hl.loadLanguage(toShikiLanguage(lang));
-    } catch (error) {
-      console.debug(`[file-preview] failed to load syntax language "${lang}"; using text fallback:`, error);
-      // Language not available — fall back to text
-    }
+    const resolvedLang = await resolveHighlightableLanguage(lang);
 
     if (loadId !== activeFileLoadId) return;
 
-    const loadedLangs = hl.getLoadedLanguages();
     // Set lang before content so the watcher fires once with the correct language
-    currentLang.value = loadedLangs.includes(toShikiLanguage(lang)) ? lang : "text";
+    currentLang.value = resolvedLang;
     content.value = raw;
   } catch (e: unknown) {
     if (loadId !== activeFileLoadId) return;
@@ -333,7 +266,7 @@ const decorations = computed<DecorationItem[]>(() => {
 async function renderHighlighted(raw: string, lang: string, decos: DecorationItem[]) {
   if (!raw) { highlighted.value = ""; return; }
   try {
-    const hl = await getHighlighter();
+    const hl = await getFilePreviewHighlighter();
     const wrapTransformer: ShikiTransformer = {
       pre(node: HastElement) {
         node.properties.style = "white-space:pre-wrap;word-wrap:break-word;";
