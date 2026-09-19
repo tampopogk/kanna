@@ -4016,7 +4016,7 @@ export function createMobileController(
           };
           if (refreshed.definition) {
             // A pinned workflow exists and nothing on this screen was read from
-            // it. Any pinned tail can move — a consultation can have a plan
+            // it. Any pinned tail can move — a research task can have a plan
             // stage appended to it, and a plan can publish the stages after it,
             // neither of which leaves a mark before it happens — so the
             // presence of the document, not what is in it, is what makes this

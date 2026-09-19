@@ -180,23 +180,23 @@ Use this intervention ladder:
 
 Audit token efficiency through observable wasted work — repeated turns, revisions, restarts, and disproportionate churn — not by sacrificing necessary verification or review. Kanna's current task and log surfaces do not expose a reliable universal token counter; never invent one. Report precise usage telemetry as a follow-up need rather than turning coordination into a telemetry product project.
 
-## Separate Product Consultation From Planning
+## Separate Product Research From Planning
 
-Use the public `consultation` workflow when the owner wants to explore **what**
+Use the public `research` workflow when the owner wants to explore **what**
 product outcome to pursue and **why**: alternatives, evidence, tradeoffs,
 assumptions, recommendations, and questions for discussion. Its public
-`consultant` agent records an advisory brief and parks at its only manual stage.
+`researcher` agent records an advisory brief and parks at its only manual stage.
 It does not plan delivery, implement, commit, review, or open a PR.
 
 Planning answers **how** to deliver an objective the owner has chosen. A
-consultation recommendation is not owner authorization for implementation. Do
-not automatically convert a consultation, advance it into product work, fan out
+research recommendation is not owner authorization for implementation. Do
+not automatically convert a research task, advance it into product work, fan out
 from it, or interpret its successful run as permission to start delivery.
-Observe consultation completion through its normal run result and event; do not
+Observe research completion through its normal run result and event; do not
 inject manager terminal input to manufacture a decision.
 
 When the owner explicitly chooses an outcome and asks to proceed, read the
-consultation's full task and durable input ledger to verify that instruction,
+research task's full record and durable input ledger to verify that instruction,
 then **grow that same task** rather than replacing it. Read its
 `workflowDefinition` from `kanna_get_task` and call
 `kanna_replace_task_workflow` with that document unchanged as
@@ -208,13 +208,13 @@ manual stage appended:
   "name": "plan",
   "description": "Planning agent records how to deliver the objective the owner chose, and publishes the stages that will deliver it",
   "agent": "plan",
-  "prompt": "<the chosen objective, the owner's decision and its boundaries, and the relevant consultation result, verbatim>",
+  "prompt": "<the chosen objective, the owner's decision and its boundaries, and the relevant research result, verbatim>",
   "policy": { "transition": "manual" }
 }
 ```
 
 Leave every existing stage and post byte-for-byte intact; an edit that touches
-them is refused, and the consultation's own history is the evidence the plan is
+them is refused, and the research task's own history is the evidence the plan is
 built on. Then advance the task normally with `kanna_advance_stage`, passing the
 definition you just wrote as `expected_definition` so a concurrent edit is a
 conflict rather than a silently different tail. The planning agent publishes the
@@ -224,31 +224,31 @@ on its own.
 
 Create a separate top-level development task with `kanna_create_task` instead
 when the work is genuinely a different work item — a second, independent
-outcome from one consultation, or work the owner asked to track separately.
+outcome from one research task, or work the owner asked to track separately.
 Select an ordinary product-work workflow appropriate to the requested
-planning/review depth. One consultation that turns into one piece of work stays
-one task: a replacement task loses the consultation's durable prompt, input
+planning/review depth. One research task that turns into one piece of work stays
+one task: a replacement task loses the research task's durable prompt, input
 ledger, and run history that the plan and every later reviewer read as the
 task's terms.
 
-The internal `architect-consultation` workflow remains a different tool: it
+The internal `architect-research` workflow remains a different tool: it
 answers an approach-level technical question about a specific durable work item
-for the manager, while product consultation helps the owner choose the outcome
+for the manager, while product research helps the owner choose the outcome
 itself. Preserve the architect child lifecycle and guidance below.
 
-When work crosses risky system boundaries, the approach is uncertain, the premise changes, or scope/review churn expands, request an independent, bounded, on-demand architect consultation. First read the durable work item with `kanna_get_task`, resolve its current committed branch, and HOLD implementation or merge as appropriate. Then create the consultation as a genuine semantic child of that work item:
+When work crosses risky system boundaries, the approach is uncertain, the premise changes, or scope/review churn expands, request an independent, bounded, on-demand architect research task. First read the durable work item with `kanna_get_task`, resolve its current committed branch, and HOLD implementation or merge as appropriate. Then create the research task as a genuine semantic child of that work item:
 
 ```
 kanna_create_task {
-  "display_name": "Architect consultation: <short decision>",
+  "display_name": "Architect research: <short decision>",
   "prompt": "Assess durable work item <id>.\nOriginal objective: <objective from the durable task>.\nDecision needed: <one exact approach-level question>.\nEvidence verified so far: <claims, reproduction, logs, diff or review history>.\nConstraints and explicit human decisions: <non-negotiables>.\nAffected or disputed surfaces: <known producers, consumers, lifecycle owners, diff/scope growth>.\nInspect the current worktree forked from <branch> and independently verify the premise before returning your verdict.\nArtifact requested: none (advisory verdict only).",
-  "workflow_name": "architect-consultation",
+  "workflow_name": "architect-research",
   "base_ref": "<assessed-work-item-branch>",
   "parent_task_id": "<assessed-durable-work-item-id>"
 }
 ```
 
-The internal workflow binds the internal `architect` agent and parks after its one manual-stage verdict; neither definition is an ordinary task-picker choice. Do not add an `agent` override, substitute a product-work workflow, make this manager the parent, or create a singleton/perpetual architect. When its wait event arrives, read the consultation's `latestRun.summary`, verify it begins with `APPROVE`, `REVISE`, or `STOP-and-escalate`, then close the consultation child after preserving its verdict. Reconcile `APPROVE` or `REVISE` against the task evidence yourself. A `STOP-and-escalate`, a verdict that conflicts with an explicit human product decision, or material unresolved disagreement goes to the human; the architect cannot overrule them. The manager remains accountable for scope, dependencies, budgets, holds, review coverage, and merge handoff.
+The internal workflow binds the internal `architect` agent and parks after its one manual-stage verdict; neither definition is an ordinary task-picker choice. Do not add an `agent` override, substitute a product-work workflow, make this manager the parent, or create a singleton/perpetual architect. When its wait event arrives, read the research child's `latestRun.summary`, verify it begins with `APPROVE`, `REVISE`, or `STOP-and-escalate`, then close the research child after preserving its verdict. Reconcile `APPROVE` or `REVISE` against the task evidence yourself. A `STOP-and-escalate`, a verdict that conflicts with an explicit human product decision, or material unresolved disagreement goes to the human; the architect cannot overrule them. The manager remains accountable for scope, dependencies, budgets, holds, review coverage, and merge handoff.
 
 ## Order Dependencies And Reconcile Branches
 

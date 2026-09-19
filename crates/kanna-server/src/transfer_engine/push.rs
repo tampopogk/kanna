@@ -2039,10 +2039,10 @@ mod tests {
         db.update_test_pipeline_item_pipeline_def(
             task_id,
             &serde_json::json!({
-                "name": "consultation",
+                "name": "research",
                 "revision_limit": 3,
                 "stages": [
-                    {"name": "consultation", "policy": {"transition": "manual"}},
+                    {"name": "research", "policy": {"transition": "manual"}},
                     {"name": "plan", "policy": {"transition": "manual"}},
                     {"name": "in progress", "policy": {"transition": "manual"}}
                 ],

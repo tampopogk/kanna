@@ -156,7 +156,10 @@ const STAGE_COLOR_NAMES: Record<string, KannaIconColorName> = {
   "in progress": "orange",
   review: "purple",
   pr: "green",
-  // The internal architect-consultation workflow's only stage.
+  // The `research` and internal `architect-research` workflows' only stage,
+  // plus `consultation`, the retired spelling that pinned definitions from
+  // before the rename still carry.
+  research: "blue",
   consultation: "blue"
 };
 

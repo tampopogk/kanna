@@ -927,7 +927,7 @@ describe("remote task terminal flow E2E", () => {
       inputTraceFile: traceFile,
     });
     const events = collectTerminalEvents(harness, task.taskId);
-    const managerMessage = "answer the consultation question";
+    const managerMessage = "answer the research question";
 
     try {
       await waitForTerminalOutput(events, "SCRIPT_INPUT_READY");

@@ -32,6 +32,9 @@ describe("resolveTaskStageTheme", () => {
     ["in progress", "orange"],
     ["review", "purple"],
     ["pr", "green"],
+    ["research", "blue"],
+    // The retired spelling of the research stage, still carried by pinned
+    // definitions created before the rename.
     ["consultation", "blue"]
   ])("maps the %s stage to the icon's %s", (stage, colorName) => {
     const theme = resolveTaskStageTheme(stage);
@@ -79,6 +82,7 @@ describe("resolveTaskStageTheme", () => {
     "PR review",
     "review",
     "pr",
+    "research",
     "consultation",
     "qa",
     null

@@ -102,8 +102,8 @@ shell access, stage controls, and preferences around that terminal. See
 
 ### Decide the work and how it will be done
 
-For work whose objective is not yet chosen, the operator opens a consultation
-task. Its consultant explores what outcome to pursue and why and parks for
+For work whose objective is not yet chosen, the operator opens a research
+task. Its researcher explores what outcome to pursue and why and parks for
 discussion. When the operator chooses an outcome and asks to proceed, the task
 manager appends a planning stage to **that same task**, and the planning agent
 chooses the review depth, agents, providers, and revision budget the work

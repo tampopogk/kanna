@@ -2051,13 +2051,13 @@ fn builtin_dispatch_definitions_resolve_from_compiled_resources() {
     // the dispatcher uniformly collects the verdict and closes every child.
     assert_eq!(stage.policy.transition, WorkflowStageTransition::Manual);
 
-    let consultation = definitions.workflow("architect-consultation").unwrap();
-    assert_eq!(consultation.stages.len(), 1);
-    let consultation_stage = &consultation.stages[0];
-    assert_eq!(consultation_stage.name, "consultation");
-    assert_eq!(consultation_stage.agent.as_deref(), Some("architect"));
+    let research = definitions.workflow("architect-research").unwrap();
+    assert_eq!(research.stages.len(), 1);
+    let research_stage = &research.stages[0];
+    assert_eq!(research_stage.name, "research");
+    assert_eq!(research_stage.agent.as_deref(), Some("architect"));
     assert_eq!(
-        consultation_stage.policy.transition,
+        research_stage.policy.transition,
         WorkflowStageTransition::Manual
     );
 
@@ -2099,6 +2099,10 @@ fn legacy_builtin_workflow_names_still_resolve_for_committed_repo_config() {
             "specialized-reviewers",
             Some("qa-dispatcher"),
         ),
+        // `consultation` and `architect-consultation` were renamed to the
+        // research spelling; open tasks store the retired names.
+        ("consultation", "research", None),
+        ("architect-consultation", "architect-research", None),
     ] {
         let repo_root =
             init_git_repo_without_provider_fixtures(&format!("definitions-legacy-{legacy}"));
@@ -2142,10 +2146,10 @@ fn legacy_builtin_workflow_names_still_resolve_for_committed_repo_config() {
         assert_eq!(
             names,
             vec![
-                "consultation",
                 "no-review",
                 "plan-build-review",
                 "pr-review",
+                "research",
                 "single-reviewer",
                 "specialized-reviewers"
             ]
@@ -2339,11 +2343,7 @@ fn internal_builtin_workflows_resolve_without_being_offered_as_a_choice() {
     let definitions = RepoDefinitions::resolve(&definition_repo(&repo_root, "main")).unwrap();
 
     let names = definitions.workflow_names().unwrap();
-    for internal in [
-        "architect-consultation",
-        "pr-review-single",
-        "specialty-review",
-    ] {
+    for internal in ["architect-research", "pr-review-single", "specialty-review"] {
         assert!(
             !names.contains(&internal.to_string()),
             "internal built-in `{internal}` must not be offered as a choice; got {names:?}"
@@ -2453,7 +2453,7 @@ fn a_repo_authored_workflow_declaring_internal_visibility_is_unlisted_but_resolv
 #[test]
 fn internal_builtin_agents_are_unlisted_but_resolve_by_name() {
     // Kanna binds `commit` and `approve` as stage posts and `architect` from
-    // the purpose-built consultation workflow. Their AGENT.md frontmatter
+    // the purpose-built research workflow. Their AGENT.md frontmatter
     // declares `visibility: internal`, so `agents()` omits them while their
     // owning workflow bindings keep resolving them by name.
     let repo_root = init_git_repo_without_provider_fixtures("definitions-internal-agents");
@@ -3030,11 +3030,11 @@ fn workflow_names_are_sorted_deduped_remote_and_compiled_union() {
         definitions.workflow_names().unwrap(),
         vec![
             "alpha",
-            "consultation",
             "no-review",
             "plan-build-review",
             "pr-review",
             "qa",
+            "research",
             "single-reviewer",
             "specialized-reviewers",
             "zeta"
@@ -3919,10 +3919,10 @@ fn read_agent_definition_loads_builtin_task_manager_agent_with_codex_first() {
         .contains("ask the agent for one concise re-report"));
     assert!(definition
         .prompt
-        .contains("independent, bounded, on-demand architect consultation"));
+        .contains("independent, bounded, on-demand architect research task"));
     assert!(definition
         .prompt
-        .contains("\"workflow_name\": \"architect-consultation\""));
+        .contains("\"workflow_name\": \"architect-research\""));
     assert!(definition
         .prompt
         .contains("\"parent_task_id\": \"<assessed-durable-work-item-id>\""));
@@ -5799,9 +5799,9 @@ fn prepare_task_binds_specialty_agent_on_specialty_review_workflow() {
 }
 
 #[test]
-fn prepare_task_binds_bounded_architect_consultation_to_assessed_work_item() {
-    let repo_root = init_git_repo("architect-consultation");
-    let config = test_config("architect-consultation");
+fn prepare_task_binds_bounded_architect_research_to_assessed_work_item() {
+    let repo_root = init_git_repo("architect-research");
+    let config = test_config("architect-research");
     let db = Db::open_for_tests(&config.db_path).unwrap();
     db.insert_test_repo_with_path("repo-1", &repo_root.to_string_lossy(), "Repo One")
         .unwrap();
@@ -5831,8 +5831,8 @@ fn prepare_task_binds_bounded_architect_consultation_to_assessed_work_item() {
         CreateTaskRequest {
             repo_id: "repo-1".to_string(),
             prompt: prompt.to_string(),
-            display_name: Some("Architect consultation: lifecycle owner".to_string()),
-            workflow_name: Some("architect-consultation".to_string()),
+            display_name: Some("Architect research: lifecycle owner".to_string()),
+            workflow_name: Some("architect-research".to_string()),
             stage: None,
             base_ref: None,
             diff_base_ref: None,
@@ -5861,7 +5861,7 @@ fn prepare_task_binds_bounded_architect_consultation_to_assessed_work_item() {
     )
     .unwrap();
 
-    assert_eq!(prepared.created_task.stage, "consultation");
+    assert_eq!(prepared.created_task.stage, "research");
     assert_eq!(prepared.stage_agent.as_deref(), Some("architect"));
     assert_eq!(
         prepared.completion_transition,
@@ -5871,7 +5871,7 @@ fn prepare_task_binds_bounded_architect_consultation_to_assessed_work_item() {
         .get_pipeline_item(&prepared.created_task.task_id)
         .unwrap()
         .unwrap();
-    assert_eq!(stored.pipeline.as_deref(), Some("architect-consultation"));
+    assert_eq!(stored.pipeline.as_deref(), Some("architect-research"));
     assert_eq!(stored.parent_task_id.as_deref(), Some("work-item-1"));
     assert!(stored.notify_task_id.is_none());
     match prepared.session {
@@ -9031,4 +9031,48 @@ fn an_autocompact_window_resolves_only_for_the_provider_it_was_written_beside() 
     );
     assert_eq!(plan.autocompact_for(AgentProvider::Codex), None);
     assert_eq!(plan.autocompact_for(AgentProvider::Opencode), None);
+}
+
+/// The other half of the same guarantee: a task that stored only the retired
+/// workflow *name* resolves the renamed built-in, and the retired internal
+/// name still serves an internal definition rather than being promoted into
+/// the picker by losing its `visibility`.
+#[test]
+fn retired_workflow_names_resolve_to_the_renamed_definitions() {
+    let repo_root = init_git_repo_without_provider_fixtures("legacy-research-names");
+    std::fs::create_dir_all(repo_root.join(".kanna")).unwrap();
+    publish_origin_main(&repo_root, "publish repo without workflows");
+    let definitions = RepoDefinitions::resolve(&definition_repo(&repo_root, "main")).unwrap();
+
+    let research = definitions.workflow("consultation").unwrap();
+    assert_eq!(research.name.as_deref(), Some("research"));
+    assert_eq!(research.stages.len(), 1);
+    assert_eq!(research.stages[0].name, "research");
+    assert_eq!(research.stages[0].agent.as_deref(), Some("researcher"));
+
+    let architect = definitions.workflow("architect-consultation").unwrap();
+    assert_eq!(architect.name.as_deref(), Some("architect-research"));
+    assert_eq!(architect.stages[0].agent.as_deref(), Some("architect"));
+
+    // Unlisted, both under the retired names and under the renamed internal
+    // one: an internal definition that lost `visibility` would silently
+    // become a new-task choice.
+    let names = definitions.workflow_names().unwrap();
+    for unlisted in [
+        "consultation",
+        "architect-consultation",
+        "architect-research",
+    ] {
+        assert!(
+            !names.contains(&unlisted.to_string()),
+            "`{unlisted}` must not be offered as a choice; got {names:?}"
+        );
+    }
+    assert!(names.contains(&"research".to_string()), "{names:?}");
+
+    // The retired agent name resolves to the renamed agent too.
+    let researcher = definitions.agent("consultant").unwrap();
+    assert_eq!(researcher.name, "researcher");
+
+    let _ = std::fs::remove_dir_all(&repo_root);
 }

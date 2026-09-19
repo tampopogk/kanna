@@ -694,8 +694,8 @@ async fn replacement_preserves_history_and_compiles_legacy_post_snapshots() {
 
 // --- Publishing a task's remaining stages with its plan -------------------
 
-/// The consultation-grown shape: a manual `plan` stage appended to the task
-/// that carried the consultation, with the planning run live.
+/// The research-grown shape: a manual `plan` stage appended to the task
+/// that carried the research, with the planning run live.
 /// `plan_publication_fixture` with a stop between a finalization attempt
 /// acquiring the source and doing anything to it.
 ///
@@ -729,8 +729,8 @@ fn plan_publication_fixture_with_barrier(label: &str) -> BarrieredFixture {
 
 fn plan_publication_fixture(label: &str) -> (tempfile::TempDir, Arc<AppState>, Value) {
     let (temp, repo_path) = workflow_test_repo(label);
-    let before = serde_json::json!({"name": "consultation", "stages": [
-        {"name": "consultation", "agent": "consultant", "prompt": "$TASK_PROMPT",
+    let before = serde_json::json!({"name": "research", "stages": [
+        {"name": "research", "agent": "researcher", "prompt": "$TASK_PROMPT",
          "policy": {"transition": "manual"}},
         {"name": "plan", "agent": "plan", "prompt": "Deliver the chosen outcome.",
          "policy": {"transition": "manual"}}
@@ -741,23 +741,23 @@ fn plan_publication_fixture(label: &str) -> (tempfile::TempDir, Arc<AppState>, V
             db,
             &repo_path,
             "task-1",
-            "consultation",
+            "research",
             "plan",
             &saved.to_string(),
         );
         db.insert_stage_run(NewStageRun {
-            id: "run-consultation",
+            id: "run-research",
             task_id: "task-1",
-            stage: "consultation",
+            stage: "research",
             kind: "main",
-            agent: Some("consultant"),
+            agent: Some("researcher"),
             agent_provider: Some("claude"),
             model: None,
             effort: None,
             status: "succeeded",
             result: Some(r#"{"status":"success","summary":"brief"}"#),
             feedback: None,
-            session_id: Some("session-consultation"),
+            session_id: Some("session-research"),
             provider_session_id: None,
             cwd: Some(&repo_path),
             resumed_from_run_id: None,
@@ -873,7 +873,7 @@ async fn plan_completion_publishes_its_stages_and_stamps_the_plan() {
             .iter()
             .map(|stage| stage["name"].as_str().unwrap())
             .collect::<Vec<_>>(),
-        ["consultation", "plan", "in progress", "review", "pr"]
+        ["research", "plan", "in progress", "review", "pr"]
     );
     assert_eq!(saved["revision_limit"], serde_json::json!(3));
     // The plan rides inside the pinned workflow, so it survives every later
@@ -1020,11 +1020,10 @@ async fn only_a_final_manual_plan_stage_may_publish_remaining_stages() {
     let (_temp, state, before) = plan_publication_fixture("plan-publish-position");
     let app = router(Arc::clone(&state));
     {
-        // Move the task back to the consultation stage: a consultant must not
+        // Move the task back to the research stage: a researcher must not
         // be able to publish delivery stages for itself.
         let db = Db::open(&state.config.db_path).unwrap();
-        db.update_pipeline_item_stage("task-1", "consultation")
-            .unwrap();
+        db.update_pipeline_item_stage("task-1", "research").unwrap();
     }
     let after = single_reviewer_suffix(&before);
     let (status, body) = complete_plan(&app, "brief", Some((&before, &after))).await;

@@ -15,6 +15,10 @@ export const DEFAULT_STAGE_ORDER: readonly string[] = [
   "review",
   "in progress",
   "plan",
+  "research",
+  // `consultation` is the retired spelling of the `research` stage. Pinned
+  // workflow definitions keep it byte-for-byte, so tasks created before the
+  // rename still report it and still need a place in the display order.
   "consultation",
 ];
 

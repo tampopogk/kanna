@@ -767,7 +767,7 @@ describe("TaskCard", () => {
     // wears the same orange as a tinted chip, so a tinted attention pill
     // vanished beside it on the simulator. Fill is what separates them, and it
     // has to hold for every stage colour, not just this one.
-    it.each(["in progress", "review", "pr", "consultation", "some custom stage"])(
+    it.each(["in progress", "review", "pr", "research", "some custom stage"])(
       "stays distinct from the stage pill on a %s row",
       (stage) => {
         if (!TaskCard) throw new Error("TaskCard was not loaded");

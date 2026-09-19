@@ -6,7 +6,7 @@ import desktopPkg from "../package.json";
 import tauriConf from "../src-tauri/tauri.conf.json";
 
 describe("desktop sidecar packaging", () => {
-  it("bundles the canonical product and architect consultation definitions as desktop resources", () => {
+  it("bundles the canonical product and architect research definitions as desktop resources", () => {
     const repoRoot = resolve(import.meta.dirname, "../../..");
     const resources = tauriConf.bundle.resources;
     const architectAgent = readFileSync(
@@ -14,15 +14,15 @@ describe("desktop sidecar packaging", () => {
       "utf8",
     );
     const architectWorkflow = readFileSync(
-      resolve(repoRoot, ".kanna/workflows/architect-consultation.json"),
+      resolve(repoRoot, ".kanna/workflows/architect-research.json"),
       "utf8",
     );
-    const consultantAgent = readFileSync(
-      resolve(repoRoot, ".kanna/agents/consultant/AGENT.md"),
+    const researcherAgent = readFileSync(
+      resolve(repoRoot, ".kanna/agents/researcher/AGENT.md"),
       "utf8",
     );
-    const consultationWorkflow = readFileSync(
-      resolve(repoRoot, ".kanna/workflows/consultation.json"),
+    const researchWorkflow = readFileSync(
+      resolve(repoRoot, ".kanna/workflows/research.json"),
       "utf8",
     );
 
@@ -30,13 +30,13 @@ describe("desktop sidecar packaging", () => {
     expect(resources["../../../.kanna/workflows/"]).toBe(".kanna/workflows/");
     expect(architectAgent).toContain("name: architect");
     expect(architectAgent).toContain("visibility: internal");
-    expect(architectWorkflow).toContain('"name": "architect-consultation"');
+    expect(architectWorkflow).toContain('"name": "architect-research"');
     expect(architectWorkflow).toContain('"agent": "architect"');
-    expect(consultantAgent).toContain("name: consultant");
-    expect(consultantAgent).not.toContain("visibility: internal");
-    expect(consultationWorkflow).toContain('"name": "consultation"');
-    expect(consultationWorkflow).toContain('"agent": "consultant"');
-    expect(consultationWorkflow).not.toContain('"visibility": "internal"');
+    expect(researcherAgent).toContain("name: researcher");
+    expect(researcherAgent).not.toContain("visibility: internal");
+    expect(researchWorkflow).toContain('"name": "research"');
+    expect(researchWorkflow).toContain('"agent": "researcher"');
+    expect(researchWorkflow).not.toContain('"visibility": "internal"');
   });
 
   it("keeps release builds free of dev-only version and sidecar staging hooks", () => {

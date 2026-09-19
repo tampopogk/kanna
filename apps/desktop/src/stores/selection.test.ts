@@ -1086,9 +1086,9 @@ describe("createSelectionApi", () => {
         created_at: "2026-04-29T00:02:00.000Z",
       }),
       createItem({
-        id: "task-consultation",
-        prompt: "Consultation task",
-        stage: "consultation",
+        id: "task-research",
+        prompt: "Research task",
+        stage: "research",
         created_at: "2026-04-29T00:05:00.000Z",
       }),
       createItem({
@@ -1125,13 +1125,15 @@ describe("createSelectionApi", () => {
       "review",
       "in progress",
       "plan",
+      "research",
+      // The retired spelling of the research stage keeps its display slot.
       "consultation",
     ]);
     expect(api.sortedItemsForCurrentRepo.value.map((item) => item.id)).toEqual([
       "task-review",
       "task-progress",
       "task-plan",
-      "task-consultation",
+      "task-research",
       "task-commit",
     ]);
   });

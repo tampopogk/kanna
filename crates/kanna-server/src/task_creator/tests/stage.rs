@@ -4535,7 +4535,7 @@ fn stamped_plan_result_comes_from_the_pinned_workflow() {
 /// agents that produced it, into a real repository fixture.
 fn write_grown_workflow_agents(repo_root: &std::path::Path) {
     for (name, body) in [
-        ("consultant", "Consultant agent."),
+        ("researcher", "Researcher agent."),
         ("plan", "Plan agent."),
         ("implement", "Implement agent."),
         ("commit", "Commit agent."),
@@ -4554,11 +4554,11 @@ fn write_grown_workflow_agents(repo_root: &std::path::Path) {
     }
     std::fs::create_dir_all(repo_root.join(".kanna/workflows")).unwrap();
     std::fs::write(
-        repo_root.join(".kanna/workflows/consultation.json"),
+        repo_root.join(".kanna/workflows/research.json"),
         serde_json::json!({
-            "name": "consultation",
+            "name": "research",
             "stages": [{
-                "name": "consultation", "agent": "consultant", "prompt": "$TASK_PROMPT",
+                "name": "research", "agent": "researcher", "prompt": "$TASK_PROMPT",
                 "policy": { "transition": "manual" }
             }]
         })
@@ -4573,19 +4573,19 @@ fn write_grown_workflow_agents(repo_root: &std::path::Path) {
 /// job is to prove what those validators accept actually executes.
 fn publish_grown_workflow(repo: &crate::db::Repo, plan_run_id: &str, plan_result: &str) -> String {
     let after_manager_append = serde_json::json!({
-        "name": "consultation",
+        "name": "research",
         "stages": [
-            {"name": "consultation", "agent": "consultant", "prompt": "$TASK_PROMPT",
+            {"name": "research", "agent": "researcher", "prompt": "$TASK_PROMPT",
              "policy": {"transition": "manual"}},
             {"name": "plan", "agent": "plan", "prompt": "Deliver the chosen outcome.",
              "policy": {"transition": "manual"}}
         ]
     });
     let published = serde_json::json!({
-        "name": "consultation",
+        "name": "research",
         "revision_limit": 3,
         "stages": [
-            {"name": "consultation", "agent": "consultant", "prompt": "$TASK_PROMPT",
+            {"name": "research", "agent": "researcher", "prompt": "$TASK_PROMPT",
              "policy": {"transition": "manual"}},
             {"name": "plan", "agent": "plan", "prompt": "Deliver the chosen outcome.",
              "policy": {"transition": "manual"}},
@@ -4668,14 +4668,8 @@ fn commit_prepared_run(
         resumed_from_run_id: None,
     })
     .unwrap();
-    db.update_test_pipeline_item_stage_context(
-        &run.task_id,
-        &branch,
-        "consultation",
-        None,
-        "claude",
-    )
-    .unwrap();
+    db.update_test_pipeline_item_stage_context(&run.task_id, &branch, "research", None, "claude")
+        .unwrap();
     db.update_pipeline_item_stage(&run.task_id, &run.next_stage)
         .unwrap();
     (branch, worktree_path)
@@ -4707,7 +4701,7 @@ fn a_published_plan_suffix_executes_and_keeps_its_plan_bound() {
         .unwrap();
     let repo = db.get_repo("repo-1").unwrap().unwrap();
 
-    // The task the consultation ran in, now parked at its appended plan stage.
+    // The task the research ran in, now parked at its appended plan stage.
     run_git_fixture(&repo_root, &["branch", "task-grown"]);
     let source_worktree = repo_root.join(".kanna-worktrees/task-grown");
     run_git_fixture(
@@ -4731,7 +4725,7 @@ fn a_published_plan_suffix_executes_and_keeps_its_plan_bound() {
     db.update_test_pipeline_item_stage_context(
         "task-grown",
         "task-grown",
-        "consultation",
+        "research",
         None,
         "claude",
     )
@@ -4746,10 +4740,10 @@ fn a_published_plan_suffix_executes_and_keeps_its_plan_bound() {
     .unwrap();
     for (id, stage, status, result) in [
         (
-            "run-consultation",
-            "consultation",
+            "run-research",
+            "research",
             "succeeded",
-            Some(r#"{"status":"success","summary":"CONSULT-BODY"}"#),
+            Some(r#"{"status":"success","summary":"RESEARCH-BODY"}"#),
         ),
         ("run-plan", "plan", "succeeded", Some(plan_result)),
     ] {
@@ -4893,7 +4887,7 @@ fn a_published_plan_suffix_executes_and_keeps_its_plan_bound() {
     db.update_test_pipeline_item_stage_context(
         "task-grown",
         &build_branch,
-        "consultation",
+        "research",
         None,
         "claude",
     )
@@ -4912,6 +4906,96 @@ fn a_published_plan_suffix_executes_and_keeps_its_plan_bound() {
     assert!(
         rerun_prompt.contains("PLAN-BODY"),
         "a recovery spawn must still carry the approved plan: {rerun_prompt}"
+    );
+
+    let _ = std::fs::remove_dir_all(&repo_root);
+}
+
+/// A task opened before `consultation` was renamed to `research` keeps both
+/// halves of what it stored: the retired workflow *name* in
+/// `pipeline_item.pipeline`, and a pinned definition naming the retired stage
+/// and the retired `consultant` agent. Neither is rewritten, so both have to
+/// keep working — the task must still read its own definition, still spawn its
+/// stage's agent through the agent alias, and still advance.
+#[test]
+fn a_task_pinned_to_the_retired_consultation_definition_still_reads_and_advances() {
+    let repo_root = init_git_repo("legacy-consultation-task");
+    let config = test_config("legacy-consultation-task");
+    let db = Db::open_for_tests(&config.db_path).unwrap();
+    db.insert_test_repo_with_path("repo-1", &repo_root.to_string_lossy(), "Repo One")
+        .unwrap();
+
+    // Byte-for-byte what such a task pinned, down to the stage description.
+    let pinned = serde_json::json!({
+        "name": "consultation",
+        "description": "Product consultation: explore what outcome to pursue and why.",
+        "stages": [{
+            "name": "consultation",
+            "agent": "consultant",
+            "prompt": "$TASK_PROMPT",
+            "policy": { "transition": "manual" }
+        }]
+    })
+    .to_string();
+
+    run_git_fixture(&repo_root, &["branch", "task-legacy"]);
+    let worktree = repo_root.join(".kanna-worktrees/task-legacy");
+    run_git_fixture(
+        &repo_root,
+        &[
+            "worktree",
+            "add",
+            worktree.to_string_lossy().as_ref(),
+            "task-legacy",
+        ],
+    );
+    db.insert_test_pipeline_item(
+        "task-legacy",
+        "repo-1",
+        "Where should Kanna go next?",
+        Some("Product consultation"),
+        "consultation",
+        "2026-09-19 00:00:00",
+    )
+    .unwrap();
+    db.update_test_pipeline_item_stage_context(
+        "task-legacy",
+        "task-legacy",
+        "consultation",
+        None,
+        "claude",
+    )
+    .unwrap();
+    db.update_test_pipeline_item_pipeline_def("task-legacy", &pinned)
+        .unwrap();
+
+    // Reads: the pinned definition still resolves, and its `consultant`
+    // binding still spawns — as the renamed `researcher` definition, because
+    // the retired agent name is a resolution alias rather than a second file.
+    let rerun = super::super::prepare_rerun_stage_for_api(&db, &config, "task-legacy").unwrap();
+    assert_eq!(rerun.stage, "consultation");
+    assert_eq!(rerun.stage_agent.as_deref(), Some("consultant"));
+    let prompt = match &rerun.session {
+        PreparedSessionSpawn::Pty { args, .. } => args.join(" "),
+        PreparedSessionSpawn::Agent {
+            prompt,
+            system_prompt,
+            ..
+        } => format!("{system_prompt}\n{prompt}"),
+    };
+    assert!(
+        prompt.contains("You are the product researcher"),
+        "the retired agent name must resolve to the renamed definition: {prompt}"
+    );
+
+    // Advances: the pinned definition's only stage is its last, so advancing
+    // closes the task exactly as it did before the rename.
+    assert!(
+        matches!(
+            prepare_advance_stage_for_api(&db, &config, "task-legacy").unwrap(),
+            PreparedStageTransition::Close { .. }
+        ),
+        "advancing past the pinned final stage must still close the task"
     );
 
     let _ = std::fs::remove_dir_all(&repo_root);
