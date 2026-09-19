@@ -767,10 +767,15 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
+/* The viewer's own measurement must not depend on the grid it was told to
+   render, so this pane never widens to an authoritative grid larger than the
+   window: it shrinks to the pane and clips. See CloudTerminalCache.vue. */
 .cloud-terminal-shell {
   position: relative;
   flex: 1;
+  min-width: 0;
   min-height: 0;
+  overflow: hidden;
   background: var(--kn-terminal-bg);
 }
 
