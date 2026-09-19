@@ -5,9 +5,12 @@
 //! single implementation and neither client grows a polling loop of its own.
 //!
 //! Contract:
-//! - `cursor` omitted → the caller is starting fresh and gets the scope's
-//!   retained history from the beginning, so events that fired before the first
-//!   call are not lost.
+//! - `cursor` omitted → the caller is cold-starting, and `from` decides what
+//!   it gets. Omitted or `now`, the checkpoint is established at the current
+//!   tail: a fresh watcher is handed the scope's current actionable picture
+//!   (see `append_current_activity_snapshots`) rather than a replay of the
+//!   whole retained log. `beginning` is the deliberate opt-in to that replay,
+//!   for a caller that needs the durable rows themselves.
 //! - Events available → return them immediately. Fixed scopes return a numeric
 //!   sequence; a parent scope returns the same global sequence bound to the
 //!   parent id in a constant-size opaque cursor. `hasMore` says another batch
