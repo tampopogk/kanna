@@ -1,0 +1,239 @@
+{
+  "builder": "bazel",
+  "buildRevision": "40d25b76cf05433ec81f23b7ebc7f3f04214bf55",
+  "buildTree": "e0aa6bd4a0d740a7c63a0b8a094c1de9eb47f14f",
+  "version": "0.2.0",
+  "channel": "staging",
+  "architecture": "arm64",
+  "debianVersion": "0.2.0~staging.4-1",
+  "sha256": "d2e4f73006b85408ec9f18e80b6b2a7eabd15e4612d149382d360b0baf0d0b0d",
+  "depends": [
+    "libc6 (>= 2.39)",
+    "libglib2.0-0t64",
+    "libgtk-3-0t64",
+    "libsoup-3.0-0",
+    "libwebkit2gtk-4.1-0"
+  ],
+  "audit": {
+    "findings": [],
+    "requiredPackages": [
+      "libc6",
+      "libglib2.0-0t64",
+      "libgtk-3-0t64",
+      "libsoup-3.0-0",
+      "libwebkit2gtk-4.1-0"
+    ],
+    "conditionalUses": []
+  },
+  "executables": [
+    {
+      "path": "kanna-desktop",
+      "machine": "AArch64",
+      "interpreter": "/lib/ld-linux-aarch64.so.1",
+      "needed": [
+        "libc.so.6",
+        "libcairo.so.2",
+        "libgdk-3.so.0",
+        "libgdk_pixbuf-2.0.so.0",
+        "libgio-2.0.so.0",
+        "libglib-2.0.so.0",
+        "libgobject-2.0.so.0",
+        "libgtk-3.so.0",
+        "libjavascriptcoregtk-4.1.so.0",
+        "libm.so.6",
+        "libsoup-3.0.so.0",
+        "libwebkit2gtk-4.1.so.0"
+      ],
+      "runpaths": [],
+      "versionRequirements": {
+        "GLIBC": [
+          "2.17",
+          "2.18",
+          "2.25",
+          "2.27",
+          "2.28",
+          "2.29",
+          "2.30",
+          "2.32",
+          "2.33",
+          "2.34",
+          "2.38",
+          "2.39"
+        ]
+      },
+      "sha256": "3675ae3a8c4c6a10c6abc72003be90004defb9ac62c5523211efc7071287fce7"
+    },
+    {
+      "path": "kanna-worker",
+      "machine": "AArch64",
+      "interpreter": "/lib/ld-linux-aarch64.so.1",
+      "needed": [
+        "libc.so.6",
+        "libm.so.6"
+      ],
+      "runpaths": [],
+      "versionRequirements": {
+        "GLIBC": [
+          "2.17",
+          "2.18",
+          "2.25",
+          "2.28",
+          "2.29",
+          "2.30",
+          "2.32",
+          "2.33",
+          "2.34",
+          "2.39"
+        ]
+      },
+      "sha256": "97cd6316f37113da970679c25b1361b3f549e80c003e0686470a38e45b8f38eb"
+    },
+    {
+      "path": "kanna-daemon",
+      "machine": "AArch64",
+      "interpreter": "/lib/ld-linux-aarch64.so.1",
+      "needed": [
+        "libc.so.6",
+        "libm.so.6"
+      ],
+      "runpaths": [],
+      "versionRequirements": {
+        "GLIBC": [
+          "2.17",
+          "2.18",
+          "2.25",
+          "2.27",
+          "2.28",
+          "2.29",
+          "2.30",
+          "2.32",
+          "2.33",
+          "2.34",
+          "2.39"
+        ]
+      },
+      "sha256": "6cea74a1b0b6d84d23f9976fd5ffca8e7ea9c18882eec4f4ac7e807448e3ba30"
+    },
+    {
+      "path": "kanna-cli",
+      "machine": "AArch64",
+      "interpreter": "/lib/ld-linux-aarch64.so.1",
+      "needed": [
+        "libc.so.6"
+      ],
+      "runpaths": [],
+      "versionRequirements": {
+        "GLIBC": [
+          "2.17",
+          "2.18",
+          "2.25",
+          "2.28",
+          "2.30",
+          "2.32",
+          "2.33",
+          "2.34",
+          "2.38"
+        ]
+      },
+      "sha256": "992861c2fb820528ed6e3ff4dd3b22a73474c3c9c563f67c994044b09dcaa128"
+    },
+    {
+      "path": "kanna-mcp",
+      "machine": "AArch64",
+      "interpreter": "/lib/ld-linux-aarch64.so.1",
+      "needed": [
+        "libc.so.6"
+      ],
+      "runpaths": [],
+      "versionRequirements": {
+        "GLIBC": [
+          "2.17",
+          "2.18",
+          "2.25",
+          "2.28",
+          "2.30",
+          "2.32",
+          "2.33",
+          "2.34",
+          "2.38"
+        ]
+      },
+      "sha256": "3ac148e26ebacd8202f97bd2e466952bac14217ab0cc9cbaa39b738f21e60cd4"
+    },
+    {
+      "path": "kanna-server",
+      "machine": "AArch64",
+      "interpreter": "/lib/ld-linux-aarch64.so.1",
+      "needed": [
+        "libc.so.6",
+        "libm.so.6"
+      ],
+      "runpaths": [],
+      "versionRequirements": {
+        "GLIBC": [
+          "2.17",
+          "2.18",
+          "2.25",
+          "2.27",
+          "2.28",
+          "2.29",
+          "2.30",
+          "2.32",
+          "2.33",
+          "2.34",
+          "2.38",
+          "2.39"
+        ]
+      },
+      "sha256": "faa67d27e27b04cd2709f1cbbe3700b7f7bf34ac3438bd54d3b770c26ca0281c"
+    },
+    {
+      "path": "kanna-task-transfer",
+      "machine": "AArch64",
+      "interpreter": "/lib/ld-linux-aarch64.so.1",
+      "needed": [
+        "libc.so.6",
+        "libm.so.6"
+      ],
+      "runpaths": [],
+      "versionRequirements": {
+        "GLIBC": [
+          "2.17",
+          "2.18",
+          "2.25",
+          "2.27",
+          "2.28",
+          "2.29",
+          "2.30",
+          "2.32",
+          "2.33",
+          "2.34"
+        ]
+      },
+      "sha256": "a7edfbcb75ee7225e8e74a4fd6fcf02c6a19e243a73692a1b415d404e4bc8942"
+    },
+    {
+      "path": "kanna-terminal-recovery",
+      "machine": "AArch64",
+      "interpreter": "/lib/ld-linux-aarch64.so.1",
+      "needed": [
+        "libc.so.6"
+      ],
+      "runpaths": [],
+      "versionRequirements": {
+        "GLIBC": [
+          "2.17",
+          "2.18",
+          "2.25",
+          "2.27",
+          "2.28",
+          "2.30",
+          "2.32",
+          "2.33",
+          "2.34"
+        ]
+      },
+      "sha256": "d05f5f6c03bc34484c911e61df047789db94c1598fe2be1dacab756e0c8752e0"
+    }
+  ]
+}
