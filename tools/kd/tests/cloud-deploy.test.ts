@@ -106,6 +106,7 @@ describe("cloud deploy runtime", () => {
         "createcheckoutsession",
         "createportalsession",
         "deleteaccount",
+        "removeaccountdesktop",
         "stripewebhook",
         "beginappstorepurchase",
         "registerappstoretransaction",
