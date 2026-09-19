@@ -1,0 +1,694 @@
+{
+  "description": "Every executable test suite in this repository, and what reaches it today. Reality, not intent: `trigger` says how a lane is actually reached and `owner` says who is accountable for it being green, so `unowned` with a written `note` is a permitted and expected claim. Discovery in tools/kd/src/runtime/lane-inventory.ts reads the repository's own state (workspace `test*` scripts, `kd test` subcommands, Vitest `exclude` globs, `*.e2e.test.ts` and `*.test.sh` files) and tools/kd/tests/lane-inventory.test.ts fails when a discovered suite is claimed by zero or more than one lane, or when a lane claims a suite that no longer exists. Claims are exact ids, never globs, so a new suite cannot be absorbed silently. `id` is permanent: verification records reference lanes indefinitely, so renaming one orphans its history. `triggerPaths` are repo-relative prefixes matched with `startsWith`, the per-lane generalization of the deleted .github/workflows/remote-e2e.yml `paths:` filter; an empty list means the lane is unscoped. This file is the single source of truth for them — `kd test remote-e2e --if-changed` reads the `remote-e2e-dev` lane here rather than a constant of its own. A prefix that matches nothing in the tree fails the inventory test. `hostCapabilities` is a closed capability set and never a machine id, because repo ids are machine-local and hosts come and go; `host` is the same requirement in prose, including conditions the vocabulary cannot express, and `hostCapabilities` is what a selector matches. `scope` declares which selectors should include a lane. Nothing reads it yet: the `kd verify` runner, the daily sweep and the ship gate are later increments, so a scope here wires nothing into any gate. This manifest records coverage; it does not cause anything to run.",
+  "lanes": [
+    {
+      "id": "workspace-unit",
+      "description": "The turbo fan-out over every workspace package's own `test` script: TS/Vue unit tests, offline CLI contracts, kd's own suite, and the narrow default slices of the headless-worker and linux-installed packages.",
+      "invocation": "pnpm test",
+      "trigger": "per-branch",
+      "scope": [
+        "branch",
+        "sweep",
+        "release"
+      ],
+      "host": "any",
+      "hostCapabilities": [
+        "posix"
+      ],
+      "triggerPaths": [],
+      "owner": "merge-master",
+      "claims": [
+        "script:.#test",
+        "script:apps/desktop#test",
+        "script:apps/mobile#test",
+        "script:apps/web-portal#test",
+        "script:packages/agent-protocol#test",
+        "script:packages/core#test",
+        "script:packages/db#test",
+        "script:packages/local-process-fetch#test",
+        "script:packages/secure-channel#test",
+        "script:packages/stream-client#test",
+        "script:packages/visual-companion#test",
+        "script:services/firebase-functions#test",
+        "script:services/relay#test",
+        "script:tests/cli-contract#test",
+        "script:tests/headless-worker#test",
+        "script:tests/linux-installed#test",
+        "script:tests/remote-e2e#test",
+        "script:tools/kd#test"
+      ],
+      "note": "`.kanna/config.json`'s `test` array is exactly `[\"pnpm test\"]`, which is what the merge singleton runs per branch. `tests/headless-worker#test` and `tests/linux-installed#test` each name a single file here; the real work in those packages is behind `test:gate` and is a separate, unowned lane."
+    },
+    {
+      "id": "kd-test-all",
+      "description": "The canonical broad local run: the workspace lane, the Bazel daemon build script, the Rust lane, then the desktop mock E2E lane, failing fast.",
+      "invocation": "./kd test all",
+      "trigger": "on-demand",
+      "scope": [
+        "operator"
+      ],
+      "host": "macos",
+      "hostCapabilities": [
+        "macos-gui",
+        "bazel"
+      ],
+      "triggerPaths": [],
+      "owner": "operator",
+      "claims": [
+        "kd-test:all"
+      ],
+      "note": "Composite. Nothing invokes it automatically: `.kanna/config.json` configures `pnpm test`, and no scheduler exists in the repository. It stops at the first red lane, so a failure in lane 1 says nothing about lanes 2-4."
+    },
+    {
+      "id": "rust",
+      "description": "Strict `cargo clippy --workspace --all-targets -- -D warnings`, then the workspace Rust tests with the daemon integration tests serialized behind the machine-wide Rust gate.",
+      "invocation": "./kd test rust",
+      "trigger": "on-demand",
+      "scope": [
+        "branch",
+        "sweep",
+        "release"
+      ],
+      "host": "any",
+      "hostCapabilities": [
+        "posix",
+        "bazel"
+      ],
+      "triggerPaths": [
+        "crates/",
+        "apps/desktop/src-tauri/",
+        "Cargo.toml",
+        "Cargo.lock",
+        "rust-toolchain.toml"
+      ],
+      "owner": "operator",
+      "claims": [
+        "kd-test:rust"
+      ],
+      "note": "Reached through `./kd test all`, `.kanna/agents/ship/EXTEND.md`'s backport path, and operators typing it. Not in the per-branch checks."
+    },
+    {
+      "id": "desktop-mock-e2e",
+      "description": "The desktop mock E2E suite: the real macOS debug app driven through WebDriver against mock boundaries.",
+      "invocation": "./kd test desktop-mock-e2e",
+      "trigger": "on-demand",
+      "scope": [
+        "sweep",
+        "release"
+      ],
+      "host": "macos",
+      "hostCapabilities": [
+        "macos-gui"
+      ],
+      "triggerPaths": [
+        "apps/desktop/",
+        "crates/",
+        "packages/"
+      ],
+      "owner": "operator",
+      "claims": [
+        "kd-test:desktop-mock-e2e",
+        "script:apps/desktop#test:e2e",
+        "vitest-exclude:apps/desktop/vitest.config.ts#tests/e2e/mock/**"
+      ],
+      "note": "The Vitest exclude is why this lane never ran inside `pnpm test`; left out of every gate it rotted until a third of it was red, which is the precedent this manifest exists to prevent repeating. It is now the last lane of `./kd test all`."
+    },
+    {
+      "id": "desktop-real-e2e-unattended",
+      "description": "The unattended desktop real E2E tier declared in apps/desktop/tests/e2e/realTiers.ts: real app to server to daemon/PTY, git worktrees, local/LAN/relay, Firebase emulators and companion-browser wiring.",
+      "invocation": "./kd test desktop-e2e",
+      "trigger": "unowned",
+      "scope": [
+        "sweep",
+        "release"
+      ],
+      "host": "macos",
+      "hostCapabilities": [
+        "macos-gui",
+        "firebase-emulators"
+      ],
+      "triggerPaths": [
+        "apps/desktop/",
+        "crates/",
+        "packages/",
+        "services/relay/",
+        "services/firebase-functions/"
+      ],
+      "owner": "unowned",
+      "claims": [
+        "kd-test:desktop-e2e",
+        "script:apps/desktop#test:e2e:real",
+        "script:apps/desktop#test:e2e:all",
+        "script:apps/desktop#test:e2e:cloud-mobile-index",
+        "vitest-exclude:apps/desktop/vitest.config.ts#tests/e2e/real/**"
+      ],
+      "note": "docs/dev/testing.md states this tier runs \"Nightly and pre-release\". There is no scheduler anywhere in the repository — no launchd plist, no cron entry, no workflow — so nothing runs it on any cadence and nobody is accountable for its colour. The documented convention is not a mechanism. `test:e2e:all` runs every tier including the operator and Linux files and is claimed here because it has no separate trigger of its own."
+    },
+    {
+      "id": "desktop-real-e2e-operator",
+      "description": "The credentialed and provider-specific desktop real E2E files: deployed-cloud smoke, Codex SDK lifecycle, retained Claude-specific coverage.",
+      "invocation": "./kd test desktop-e2e-operator",
+      "trigger": "operator-only",
+      "scope": [
+        "operator"
+      ],
+      "host": "macos with cloud credentials and provider accounts",
+      "hostCapabilities": [
+        "macos-gui",
+        "cloud-production-credentials",
+        "live-provider-credentials"
+      ],
+      "triggerPaths": [
+        "apps/desktop/",
+        "crates/",
+        "services/firebase-functions/"
+      ],
+      "owner": "unowned",
+      "claims": [
+        "kd-test:desktop-e2e-operator"
+      ],
+      "note": "Runs only when an operator intentionally supplies credentials; missing context skips files rather than failing, so a run of it can be almost entirely vacuous and still exit green. No standing owner."
+    },
+    {
+      "id": "desktop-e2e-linux",
+      "description": "The Linux desktop E2E files, which need a Linux desktop session real key events can be injected into.",
+      "invocation": "pnpm --dir apps/desktop test:e2e:linux",
+      "trigger": "unowned",
+      "scope": [
+        "sweep"
+      ],
+      "host": "linux desktop session",
+      "hostCapabilities": [
+        "linux-gui"
+      ],
+      "triggerPaths": [
+        "apps/desktop/",
+        "crates/"
+      ],
+      "owner": "unowned",
+      "claims": [
+        "script:apps/desktop#test:e2e:linux",
+        "vitest-exclude:apps/desktop/vitest.config.ts#tests/e2e/linux/**"
+      ],
+      "note": "Excluded from the default Vitest run on every platform and named by no gate or schedule. The Linux dev VM exists but nothing points this lane at it."
+    },
+    {
+      "id": "desktop-app-update-bundle",
+      "description": "The full-bundle app update E2E: a real signed update bundle applied end to end.",
+      "invocation": "./kd test app-update-bundle",
+      "trigger": "unowned",
+      "scope": [
+        "release"
+      ],
+      "host": "macos",
+      "hostCapabilities": [
+        "macos-gui"
+      ],
+      "triggerPaths": [
+        "apps/desktop/",
+        "crates/",
+        "scripts/app-update-full-bundle-e2e.sh"
+      ],
+      "owner": "unowned",
+      "claims": [
+        "kd-test:app-update-bundle",
+        "script:apps/desktop#test:e2e:app-update",
+        "script:apps/desktop#test:e2e:app-update:bundle"
+      ],
+      "note": "Guards the updater path that ships to end users and is reached by no gate, no release step and no schedule."
+    },
+    {
+      "id": "remote-e2e-dev",
+      "description": "The remote task interaction E2E lane against locally spawned kanna-server, daemon and relay processes: nine *.e2e.test.ts files covering terminal flow, task listing, LAN layers, secure channel, desktop peer channels and image attachments.",
+      "invocation": "./kd test remote-e2e",
+      "trigger": "on-demand",
+      "scope": [
+        "sweep"
+      ],
+      "host": "macos",
+      "hostCapabilities": [
+        "macos",
+        "firebase-emulators"
+      ],
+      "triggerPaths": [
+        "services/relay/",
+        "crates/kanna-server/",
+        "services/firebase-functions/",
+        "apps/mobile/src/lib/",
+        "tests/remote-e2e/",
+        "tools/kd/"
+      ],
+      "owner": "unowned",
+      "claims": [
+        "kd-test:remote-e2e",
+        "script:.#test:remote-e2e",
+        "script:tests/remote-e2e#test:remote-e2e",
+        "e2e-file:tests/remote-e2e/src/cloud-pairing-auth-discovery.e2e.test.ts",
+        "e2e-file:tests/remote-e2e/src/desktop-peer-channel.e2e.test.ts",
+        "e2e-file:tests/remote-e2e/src/desktop-peer-lan.e2e.test.ts",
+        "e2e-file:tests/remote-e2e/src/lan-desktop-routing.e2e.test.ts",
+        "e2e-file:tests/remote-e2e/src/lan-layer.e2e.test.ts",
+        "e2e-file:tests/remote-e2e/src/secure-channel.e2e.test.ts",
+        "e2e-file:tests/remote-e2e/src/task-image-attachment.e2e.test.ts",
+        "e2e-file:tests/remote-e2e/src/task-listing-actions.e2e.test.ts",
+        "e2e-file:tests/remote-e2e/src/terminal-flow.e2e.test.ts"
+      ],
+      "note": "Standing red: terminal-flow alone measured 7 failed of 16 at 69239bc6b, reproduced in a control run, so this is lane debt rather than one branch's regression. `tests/remote-e2e/package.json`'s own `test` script enumerates six unit files and so excludes every file above from `pnpm test`, which is the same hiding mechanism that rotted the desktop mock lane. This lane's `triggerPaths` are the prefixes `kd test remote-e2e --if-changed` selects on, migrated here from the `REMOTE_E2E_TRIGGER_PATHS` constant so there is one copy; the flag works and is tested, but nothing invokes the verb automatically. Wiring it into the per-branch checks is deliberately sequenced after this red set is triaged, so it does not block an unrelated branch."
+    },
+    {
+      "id": "staging-smoke",
+      "description": "Staging health: the remote doctor followed by the staging remote E2E lane against deployed staging services.",
+      "invocation": "./kd test staging-smoke",
+      "trigger": "on-demand",
+      "scope": [
+        "sweep"
+      ],
+      "host": "macos with staging credentials",
+      "hostCapabilities": [
+        "macos",
+        "cloud-staging-credentials"
+      ],
+      "triggerPaths": [
+        "services/relay/",
+        "services/firebase-functions/",
+        "crates/kanna-server/",
+        "tests/remote-e2e/"
+      ],
+      "owner": "unowned",
+      "claims": [
+        "kd-test:staging-smoke",
+        "e2e-file:tests/remote-e2e/src/staging-smoke.e2e.test.ts"
+      ],
+      "note": "Run by hand when staging is suspected to be broken. No schedule and no release step requires it, so staging drift is discovered by someone noticing."
+    },
+    {
+      "id": "cloud-emulator",
+      "description": "Cloud sync E2E against the local Firebase emulator suite.",
+      "invocation": "./kd test cloud-emulator",
+      "trigger": "unowned",
+      "scope": [
+        "sweep",
+        "release"
+      ],
+      "host": "macos with firebase emulators",
+      "hostCapabilities": [
+        "macos",
+        "firebase-emulators"
+      ],
+      "triggerPaths": [
+        "services/firebase-functions/",
+        "crates/kanna-server/",
+        "apps/desktop/src/"
+      ],
+      "owner": "unowned",
+      "claims": [
+        "kd-test:cloud-emulator"
+      ],
+      "note": "The one cloud lane that needs no deployed environment and no credential, and still nothing runs it."
+    },
+    {
+      "id": "cloud-staging",
+      "description": "Cloud sync E2E against deployed staging cloud services.",
+      "invocation": "./kd test cloud-staging",
+      "trigger": "unowned",
+      "scope": [
+        "sweep"
+      ],
+      "host": "macos with staging cloud credentials",
+      "hostCapabilities": [
+        "macos",
+        "cloud-staging-credentials"
+      ],
+      "triggerPaths": [
+        "services/firebase-functions/",
+        "services/relay/",
+        "crates/kanna-server/"
+      ],
+      "owner": "unowned",
+      "claims": [
+        "kd-test:cloud-staging"
+      ],
+      "note": "Requires KANNA_E2E_CLOUD_* credentials and refuses without them. No gate, schedule or release step invokes it."
+    },
+    {
+      "id": "cloud-prod-smoke",
+      "description": "Minimal cloud smoke against production cloud services.",
+      "invocation": "./kd test cloud-prod-smoke",
+      "trigger": "operator-only",
+      "scope": [
+        "operator"
+      ],
+      "host": "macos with production cloud credentials",
+      "hostCapabilities": [
+        "macos",
+        "cloud-production-credentials"
+      ],
+      "triggerPaths": [
+        "services/firebase-functions/",
+        "services/relay/",
+        "crates/kanna-server/"
+      ],
+      "owner": "unowned",
+      "claims": [
+        "kd-test:cloud-prod-smoke"
+      ],
+      "note": "Touches production, so it is correctly operator-gated — but no release or promotion step requires it either, so production cloud health is verified only when somebody decides to."
+    },
+    {
+      "id": "lan-lab",
+      "description": "LAN sync between two physical Macs over SSH, with WebDriver tunnels and a cross-machine task visibility scenario.",
+      "invocation": "./kd test lan-lab --hosts <inventory>",
+      "trigger": "unowned",
+      "scope": [
+        "operator"
+      ],
+      "host": "two physical Macs on one LAN, reachable over SSH",
+      "hostCapabilities": [
+        "macos",
+        "lan-peer-hosts"
+      ],
+      "triggerPaths": [
+        "crates/kanna-server/",
+        "apps/desktop/",
+        "packages/secure-channel/"
+      ],
+      "owner": "unowned",
+      "claims": [
+        "kd-test:lan-lab"
+      ],
+      "note": "Needs a hardware inventory file that is not committed. Unrunnable in the default environment and unowned; the manifest entry is the record of that, per the design's rule against writing another dated gap note."
+    },
+    {
+      "id": "headless-worker-gate",
+      "description": "The headless worker exit gate: create, execute, durable input, completion, stage fork and close, plus server restart and daemon replacement against real processes.",
+      "invocation": "./kd test headless-worker",
+      "trigger": "unowned",
+      "scope": [
+        "sweep",
+        "release"
+      ],
+      "host": "any",
+      "hostCapabilities": [
+        "posix"
+      ],
+      "triggerPaths": [
+        "crates/",
+        "tests/headless-worker/"
+      ],
+      "owner": "unowned",
+      "claims": [
+        "kd-test:headless-worker",
+        "script:tests/headless-worker#test:gate",
+        "e2e-file:tests/headless-worker/src/gate.e2e.test.ts",
+        "e2e-file:tests/headless-worker/src/process.e2e.test.ts"
+      ],
+      "note": "The package's default `test` script runs only src/providerPath.test.ts, so the gate files never enter `pnpm test`. kanna-worker is the Linux launcher and its supervision behaviour is verified by nothing on any cadence."
+    },
+    {
+      "id": "linux-installed-gate",
+      "description": "Install a built .deb with apt, run the worker under systemd --user, then upgrade to a second package with a live agent session and prove the session survived.",
+      "invocation": "./kd test linux-installed",
+      "trigger": "unowned",
+      "scope": [
+        "release"
+      ],
+      "host": "linux host where the test user can become root",
+      "hostCapabilities": [
+        "linux",
+        "linux-root"
+      ],
+      "triggerPaths": [
+        "crates/",
+        "tests/linux-installed/",
+        "tools/kd/src/runtime/linux-"
+      ],
+      "owner": "unowned",
+      "claims": [
+        "kd-test:linux-installed",
+        "script:tests/linux-installed#test:gate",
+        "e2e-file:tests/linux-installed/src/installed.e2e.test.ts",
+        "e2e-file:tests/linux-installed/src/upgrade.e2e.test.ts"
+      ],
+      "note": "Refuses to run off Linux, and the package's default `test` script runs only src/installedLayout.test.ts. `.github/workflows/linux-release-check.yml` runs installed.e2e.test.ts alone on hosted x86_64 and arm64 runners; the upgrade half needs two packages from distinct source revisions, which is wired nowhere. Under the directive to delete GitHub CI this lane has no replacement host yet."
+    },
+    {
+      "id": "cli-contract-live",
+      "description": "Live agent CLI compatibility contracts: the real claude, codex, copilot and opencode binaries measured against the recorded fixtures Kanna's spawn paths depend on.",
+      "invocation": "pnpm test:agent-cli-compat",
+      "trigger": "on-demand",
+      "scope": [
+        "sweep"
+      ],
+      "host": "macos with installed and authenticated agent CLIs",
+      "hostCapabilities": [
+        "macos",
+        "real-pty",
+        "live-provider-credentials"
+      ],
+      "triggerPaths": [
+        "tests/cli-contract/",
+        "crates/kanna-agent-protocol/",
+        "packages/agent-protocol/",
+        "packages/core/src/config/"
+      ],
+      "owner": "unowned",
+      "claims": [
+        "script:.#test:agent-cli-compat",
+        "script:tests/cli-contract#test:agent-cli-compat"
+      ],
+      "note": "The lane that would notice an agent CLI upgrading out from under Kanna — the drift that no commit in this repository can cause and no branch-scoped check can see. Everything skips rather than fails when a CLI is unavailable, so a green run proves less than it looks like. Nothing runs it on any cadence."
+    },
+    {
+      "id": "tui-fidelity",
+      "description": "TUI fidelity: real terminal rendering compared against recorded frames.",
+      "invocation": "pnpm test:tui-fidelity",
+      "trigger": "unowned",
+      "scope": [
+        "sweep"
+      ],
+      "host": "macos with a real PTY",
+      "hostCapabilities": [
+        "macos",
+        "real-pty"
+      ],
+      "triggerPaths": [
+        "tests/tui-fidelity/",
+        "crates/daemon/"
+      ],
+      "owner": "unowned",
+      "claims": [
+        "script:.#test:tui-fidelity",
+        "script:tests/tui-fidelity#test:tui-fidelity"
+      ],
+      "note": "Deliberately kept out of `pnpm test` as live and process-heavy, and then given no other trigger."
+    },
+    {
+      "id": "terminal-safe-region",
+      "description": "The terminal safe-region check inside the TUI fidelity package.",
+      "invocation": "pnpm --dir tests/tui-fidelity test:terminal-safe-region",
+      "trigger": "unowned",
+      "scope": [
+        "sweep"
+      ],
+      "host": "macos with a real PTY",
+      "hostCapabilities": [
+        "macos",
+        "real-pty"
+      ],
+      "triggerPaths": [
+        "tests/tui-fidelity/",
+        "crates/daemon/"
+      ],
+      "owner": "unowned",
+      "claims": [
+        "script:tests/tui-fidelity#test:terminal-safe-region"
+      ],
+      "note": "A second entry point in the same package, named by no documentation, no gate and no schedule."
+    },
+    {
+      "id": "mobile-appium-simulator",
+      "description": "The mobile Appium E2E suites on the iOS Simulator: smoke, cloud, relay, relay terminal control, hybrid, profile-disconnected, search focus, tab reselection, shell visual, and the preflight that checks the environment first.",
+      "invocation": "pnpm --dir apps/mobile test:e2e:smoke",
+      "trigger": "unowned",
+      "scope": [
+        "sweep",
+        "release"
+      ],
+      "host": "macos with an iOS simulator and a running desktop server",
+      "hostCapabilities": [
+        "macos-gui",
+        "ios-simulator",
+        "appium",
+        "desktop-server"
+      ],
+      "triggerPaths": [
+        "apps/mobile/",
+        "crates/kanna-server/",
+        "services/relay/"
+      ],
+      "owner": "unowned",
+      "claims": [
+        "script:apps/mobile#test:e2e",
+        "script:apps/mobile#test:e2e:cloud",
+        "script:apps/mobile#test:e2e:hybrid",
+        "script:apps/mobile#test:e2e:preflight",
+        "script:apps/mobile#test:e2e:profile-disconnected",
+        "script:apps/mobile#test:e2e:relay",
+        "script:apps/mobile#test:e2e:relay-terminal-control",
+        "script:apps/mobile#test:e2e:search-focus",
+        "script:apps/mobile#test:e2e:shell-visual",
+        "script:apps/mobile#test:e2e:smoke",
+        "script:apps/mobile#test:e2e:tab-reselection"
+      ],
+      "note": "Needs a simulator, an Appium server and the same machine's desktop server to pair against. Nothing runs any of them on a cadence, and mobile ships OTA, where a stale runtimeVersion is exactly the class of defect these would catch."
+    },
+    {
+      "id": "mobile-appium-device",
+      "description": "The physical-iPhone variants of the mobile Appium suites, plus the staging release-install check.",
+      "invocation": "pnpm --dir apps/mobile test:e2e:device:smoke",
+      "trigger": "operator-only",
+      "scope": [
+        "operator"
+      ],
+      "host": "physical-ios-device",
+      "hostCapabilities": [
+        "macos",
+        "physical-device",
+        "appium",
+        "desktop-server"
+      ],
+      "triggerPaths": [
+        "apps/mobile/"
+      ],
+      "owner": "unowned",
+      "claims": [
+        "script:apps/mobile#test:e2e:device:preflight",
+        "script:apps/mobile#test:e2e:device:profile-disconnected",
+        "script:apps/mobile#test:e2e:device:release-install",
+        "script:apps/mobile#test:e2e:device:smoke"
+      ],
+      "note": "Correctly human-run — a physical device cannot be scheduled — but nobody is accountable for them being green, and a device can silently run a cached bundle, so a passing run here needs its own evidence that the branch's JS was served."
+    },
+    {
+      "id": "mobile-appium-server",
+      "description": "Appium server and XCUITest driver setup commands used by the mobile E2E lanes.",
+      "invocation": "pnpm --dir apps/mobile test:e2e:appium:start",
+      "trigger": "operator-only",
+      "scope": [
+        "operator"
+      ],
+      "host": "macos",
+      "hostCapabilities": [
+        "macos",
+        "appium"
+      ],
+      "triggerPaths": [
+        "apps/mobile/e2e/"
+      ],
+      "owner": "unowned",
+      "claims": [
+        "script:apps/mobile#test:e2e:appium:install-xcuitest",
+        "script:apps/mobile#test:e2e:appium:start"
+      ],
+      "note": "Not suites: harness setup that discovery surfaces because the scripts are named `test:*`. Declared here so they are accounted for rather than quietly filtered out of discovery, which would be a hole shaped exactly like the ones this manifest closes."
+    },
+    {
+      "id": "mobile-billing-review",
+      "description": "The App Review billing capture: a production-identity simulator build driven to the billing screens for App Store review evidence.",
+      "invocation": "pnpm --dir apps/mobile test:e2e:billing-review",
+      "trigger": "operator-only",
+      "scope": [
+        "operator",
+        "release"
+      ],
+      "host": "macos with a production-identity simulator build and an App Review account",
+      "hostCapabilities": [
+        "macos-gui",
+        "ios-simulator",
+        "cloud-production-credentials"
+      ],
+      "triggerPaths": [
+        "apps/mobile/"
+      ],
+      "owner": "unowned",
+      "claims": [
+        "script:apps/mobile#test:e2e:billing-review",
+        "e2e-file:apps/mobile/e2e/specs/billing-review/billing-review.e2e.test.ts"
+      ],
+      "note": "Needs production credentials, so it is correctly operator-gated; it is also the evidence an App Store submission depends on and no release step requires it."
+    },
+    {
+      "id": "mobile-integration",
+      "description": "The mobile integration suites held behind explicit environment flags: agent provider inventory, Expo modules JSI worktree cache, and the Firebase account journey against emulators.",
+      "invocation": "pnpm --dir apps/mobile test:integration:firebase-account",
+      "trigger": "unowned",
+      "scope": [
+        "sweep"
+      ],
+      "host": "macos with firebase emulators",
+      "hostCapabilities": [
+        "macos",
+        "firebase-emulators"
+      ],
+      "triggerPaths": [
+        "apps/mobile/",
+        "services/firebase-functions/"
+      ],
+      "owner": "unowned",
+      "claims": [
+        "script:apps/mobile#test:integration:agent-provider-inventory",
+        "script:apps/mobile#test:integration:expo-modules-jsi-worktrees",
+        "script:apps/mobile#test:integration:firebase-account"
+      ],
+      "note": "Each is gated on its own KANNA_RUN_* variable, so the files are inert inside `pnpm test` and the scripts are invoked by nothing."
+    },
+    {
+      "id": "web-portal-integration",
+      "description": "The web portal's emulator-backed integration runs, including the account deletion journey.",
+      "invocation": "pnpm --dir apps/web-portal test:integration",
+      "trigger": "unowned",
+      "scope": [
+        "sweep",
+        "release"
+      ],
+      "host": "macos with firebase emulators",
+      "hostCapabilities": [
+        "macos",
+        "firebase-emulators"
+      ],
+      "triggerPaths": [
+        "apps/web-portal/",
+        "services/firebase-functions/"
+      ],
+      "owner": "unowned",
+      "claims": [
+        "script:apps/web-portal#test:account-deletion-integration",
+        "script:apps/web-portal#test:integration"
+      ],
+      "note": "Account deletion is an irreversible user-facing operation and its integration coverage is reached by no gate or schedule."
+    },
+    {
+      "id": "shell-fixtures",
+      "description": "Shell fixture tests for the repo-config reader and the worktree setup script.",
+      "invocation": "bash scripts/repo-config.test.sh",
+      "trigger": "unowned",
+      "scope": [
+        "branch",
+        "sweep"
+      ],
+      "host": "any",
+      "hostCapabilities": [
+        "posix"
+      ],
+      "triggerPaths": [
+        "scripts/"
+      ],
+      "owner": "unowned",
+      "claims": [
+        "shell-test:scripts/repo-config.test.sh",
+        "shell-test:scripts/setup-worktree.sh.test.sh"
+      ],
+      "note": "docs/dev/testing.md lists these under \"run directly\", which is the documentation's way of recording that nothing runs them."
+    }
+  ]
+}

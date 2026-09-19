@@ -215,9 +215,9 @@ branch's changed paths against the merge-base with the repo's default branch
 (committed, uncommitted, and untracked) and runs the dev lane only when one of
 them touches a remote E2E surface: `services/relay/`, `crates/kanna-server/`,
 `services/firebase-functions/`, `apps/mobile/src/lib/`, `tests/remote-e2e/`, or
-`tools/kd/`. That trigger list lives as the single constant
-`REMOTE_E2E_TRIGGER_PATHS` in `tools/kd/src/runtime/remote-e2e.ts`; update it
-there when the remote surface moves. On no match the command exits 0 with a
+`tools/kd/`. That trigger list lives in one place, the `remote-e2e-dev` lane's
+`triggerPaths` in `docs/verification/lanes.json`; update it there when the
+remote surface moves. On no match the command exits 0 with a
 "remote E2E not required for this branch" message and starts no emulators and
 runs no tests; on a match it runs the dev lane completely unchanged. The flag
 applies to the dev lane only — it is refused with `--staging` — and the remote

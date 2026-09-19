@@ -1,24 +1,23 @@
+import { laneTriggerPaths, matchTriggerPaths } from "./lane-inventory";
 import type { CommandRunner } from "./process";
 
 /**
- * Path prefixes that make the remote E2E lane worthwhile for a branch.
+ * The lane whose trigger paths gate `--if-changed`.
  *
- * Recovered from the pull-request `paths:` filter of the deleted
- * `.github/workflows/remote-e2e.yml` (removed with the whole `.github/` tree).
- * That filter was the only automatic answer to "does this branch need the
- * remote E2E lane?"; this constant is its local replacement, so it is the one
- * place to update when the remote surface moves. The workflow's self-reference
- * (`.github/workflows/remote-e2e.yml`) is intentionally dropped — the file is
- * gone.
+ * The prefixes themselves were recovered from the pull-request `paths:` filter
+ * of the deleted `.github/workflows/remote-e2e.yml` and lived here as a
+ * constant. They now live in `docs/verification/lanes.json`, which declares
+ * `triggerPaths` for every lane, because two copies of the same answer is two
+ * things to keep in step — and because a constant asserted against its own
+ * literal is the anti-pattern the lane manifest exists to remove. Update the
+ * manifest when the remote surface moves; nothing here needs to change.
  */
-export const REMOTE_E2E_TRIGGER_PATHS = [
-  "services/relay/",
-  "crates/kanna-server/",
-  "services/firebase-functions/",
-  "apps/mobile/src/lib/",
-  "tests/remote-e2e/",
-  "tools/kd/",
-] as const;
+export const REMOTE_E2E_LANE_ID = "remote-e2e-dev";
+
+/** The `remote-e2e-dev` lane's trigger prefixes, read from the manifest. */
+export function remoteE2eTriggerPaths(repoRoot: string): string[] {
+  return laneTriggerPaths(repoRoot, REMOTE_E2E_LANE_ID);
+}
 
 /**
  * Remote-tracking refs tried in order when `refs/remotes/origin/HEAD` is not
@@ -39,6 +38,8 @@ export interface RemoteE2eSelection {
   mergeBase: string;
   changedPaths: string[];
   matchedPaths: string[];
+  /** The prefixes the selection was made against, as the manifest declared them. */
+  triggerPaths: string[];
 }
 
 export interface RemoteE2eOptions {
@@ -49,10 +50,11 @@ export interface RemoteE2eOptions {
   ifChanged: boolean;
 }
 
-export function matchRemoteE2eTriggerPaths(changedPaths: string[]): string[] {
-  return changedPaths.filter((path) =>
-    REMOTE_E2E_TRIGGER_PATHS.some((trigger) => path.startsWith(trigger))
-  );
+export function matchRemoteE2eTriggerPaths(
+  changedPaths: string[],
+  triggerPaths: readonly string[]
+): string[] {
+  return matchTriggerPaths(changedPaths, triggerPaths);
 }
 
 async function runGit(input: RemoteE2eGitInput, args: string[]) {
@@ -119,14 +121,16 @@ export async function readBranchChangedPaths(
 export async function selectRemoteE2eByChangedPaths(
   input: RemoteE2eGitInput
 ): Promise<RemoteE2eSelection> {
+  const triggerPaths = remoteE2eTriggerPaths(input.repoRoot);
   const { defaultBranchRef, mergeBase, changedPaths } = await readBranchChangedPaths(input);
-  const matchedPaths = matchRemoteE2eTriggerPaths(changedPaths);
+  const matchedPaths = matchRemoteE2eTriggerPaths(changedPaths, triggerPaths);
   return {
     required: matchedPaths.length > 0,
     defaultBranchRef,
     mergeBase,
     changedPaths,
     matchedPaths,
+    triggerPaths,
   };
 }
 
@@ -174,7 +178,7 @@ export async function executeRemoteE2e(input: {
         ok: true,
         message:
           "remote E2E not required for this branch: no change since " +
-          `${selection.defaultBranchRef} touches ${REMOTE_E2E_TRIGGER_PATHS.join(", ")}.`,
+          `${selection.defaultBranchRef} touches ${selection.triggerPaths.join(", ")}.`,
         data: { selection },
       };
     }
