@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted, nextTick, watch, toRef } from "vue";
+import { computedAsync } from "@vueuse/core";
 import {
   useTreeExplorer,
   type RemoteContentLoader,
@@ -17,6 +18,10 @@ import type {
   DesktopViewOpenCommand,
   DesktopViewOpenOutcome,
 } from "../composables/desktopViewOpen";
+import { getSyntaxLanguageForPath } from "../utils/syntaxLanguage";
+import { highlightFilePreviewCode, renderFilePreviewMarkdown } from "../utils/filePreviewRenderer";
+import { getShikiTheme } from "../theme/theme";
+import { useThemeRuntime } from "../theme/runtime";
 
 registerContextShortcuts("tree", [
   { label: "Filter", display: "/", groupKey: "shortcuts.groupSearch" },
@@ -153,6 +158,43 @@ const {
   toRef(props, "remoteDirectoryLoader"),
   toRef(props, "remoteContentLoader"),
 );
+
+const { effectiveCodeTheme } = useThemeRuntime();
+const shikiTheme = computed(() => getShikiTheme(effectiveCodeTheme.value));
+
+const MARKDOWN_PREVIEW_EXTENSIONS = /\.(?:md|markdown)$/i;
+
+/**
+ * Above this, a file still fits the column's own 128 KiB / 400-line preview
+ * budget but is not worth tokenizing (or Markdown-rendering) on every cursor
+ * move: a single very long minified line, or a doc with a huge fenced code
+ * block, comfortably clears that budget while still being expensive to
+ * highlight. Above the ceiling the (already-truncated) text renders plain,
+ * exactly as it did before this column had highlighting.
+ */
+const PREVIEW_HIGHLIGHT_MAX_CHARS = 20_000;
+
+const isPreviewMarkdown = computed(() =>
+  MARKDOWN_PREVIEW_EXTENSIONS.test(previewContent.value?.path ?? "")
+);
+
+/**
+ * The preview column's rendered HTML — syntax-highlighted code, or rendered
+ * Markdown — for the file under the (debounced) cursor.
+ *
+ * `computedAsync` discards a stale run by itself: a cursor that has already
+ * moved on by the time an older highlight/render resolves never overwrites
+ * what the reader is now looking at.
+ */
+const previewRenderedHtml = computedAsync<string | null>(async () => {
+  const entry = previewContent.value;
+  if (!entry || entry.text.length > PREVIEW_HIGHLIGHT_MAX_CHARS) return null;
+  if (isPreviewMarkdown.value) {
+    return renderFilePreviewMarkdown(entry.text, shikiTheme.value);
+  }
+  const lang = getSyntaxLanguageForPath(entry.path);
+  return highlightFilePreviewCode(entry.text, lang, shikiTheme.value);
+}, null);
 
 const HORIZONTAL_WHEEL_THRESHOLD = 64;
 const HORIZONTAL_WHEEL_COOLDOWN_MS = 220;
@@ -357,9 +399,16 @@ function isDimmed(entry: TreeNode): boolean {
           <div
             v-if="previewContent"
             class="col-scroll file-preview"
+            :class="{ 'file-preview-markdown': isPreviewMarkdown && previewRenderedHtml }"
             data-testid="tree-preview-content"
           >
-            <pre class="file-preview-text">{{ previewContent.text }}</pre>
+            <div
+              v-if="previewRenderedHtml"
+              class="file-preview-rendered"
+              data-testid="tree-preview-rendered"
+              v-html="previewRenderedHtml"
+            ></div>
+            <pre v-else class="file-preview-text">{{ previewContent.text }}</pre>
             <div v-if="previewContent.truncated" class="file-preview-truncated">
               &hellip; preview truncated
             </div>
@@ -623,9 +672,9 @@ function isDimmed(entry: TreeNode): boolean {
 }
 
 /*
- * File preview. Read-only and deliberately plain: the column is a glance at
- * what the cursor is on, and the file view is where a reader gets syntax
- * highlighting, search and line numbers.
+ * File preview. Read-only: the column is a glance at what the cursor is on,
+ * so it stops at syntax highlighting and rendered Markdown — no search or
+ * line numbers, which stay in the full file view.
  */
 .file-preview {
   overflow-x: auto;
@@ -646,6 +695,93 @@ function isDimmed(entry: TreeNode): boolean {
   margin-top: 8px;
   font-family: "JetBrains Mono", monospace;
   font-size: 10px;
+  color: var(--kn-text-muted);
+}
+
+/* Shiki-highlighted code (non-Markdown files) */
+.file-preview-rendered :deep(pre) {
+  margin: 0;
+  padding: 0;
+  background: transparent !important;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 11px;
+  line-height: 1.5;
+  tab-size: 2;
+  white-space: pre;
+}
+
+/* Rendered Markdown */
+.file-preview-markdown {
+  padding: 10px 12px;
+}
+
+.file-preview-markdown .file-preview-rendered {
+  color: var(--kn-text-secondary);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.file-preview-markdown :deep(h1),
+.file-preview-markdown :deep(h2),
+.file-preview-markdown :deep(h3),
+.file-preview-markdown :deep(h4),
+.file-preview-markdown :deep(h5),
+.file-preview-markdown :deep(h6) {
+  color: var(--kn-text-primary);
+  margin: 12px 0 6px;
+  font-weight: 600;
+  line-height: 1.3;
+}
+
+.file-preview-markdown :deep(h1) { font-size: 1.3em; }
+.file-preview-markdown :deep(h2) { font-size: 1.15em; }
+.file-preview-markdown :deep(h3) { font-size: 1.05em; }
+
+.file-preview-markdown :deep(p) {
+  margin: 0 0 8px;
+}
+
+.file-preview-markdown :deep(a) {
+  color: var(--kn-accent);
+}
+
+.file-preview-markdown :deep(ul),
+.file-preview-markdown :deep(ol) {
+  margin: 0 0 8px;
+  padding-left: 20px;
+}
+
+.file-preview-markdown :deep(li) {
+  margin: 2px 0;
+}
+
+.file-preview-markdown :deep(code) {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.9em;
+  background: var(--kn-bg-panel-raised);
+  padding: 1px 4px;
+  border-radius: 3px;
+}
+
+.file-preview-markdown :deep(pre) {
+  margin: 0 0 8px;
+  padding: 8px 10px;
+  background: var(--kn-code-bg) !important;
+  border-radius: 4px;
+  overflow-x: auto;
+}
+
+.file-preview-markdown :deep(pre code) {
+  background: none;
+  padding: 0;
+  border-radius: 0;
+}
+
+.file-preview-markdown :deep(blockquote) {
+  margin: 0 0 8px;
+  padding: 2px 10px;
+  border-left: 2px solid var(--kn-border-strong);
   color: var(--kn-text-muted);
 }
 
