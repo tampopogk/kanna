@@ -771,6 +771,89 @@ async fn get_task_route_names_a_paired_but_unreachable_machine_in_its_not_found_
     );
 }
 
+/// A machine this attempt actually *discovered* (an eligible LAN candidate,
+/// unlike the never-discovered paired peer above) but could not successfully
+/// dispatch to - a first-contact pairing failure or a dial that never
+/// connects - must still be named in the 404, with the reason the dispatch
+/// failed, and must never be silently folded into `paired_but_unchecked`'s
+/// "never even discovered" bucket merely because it was attempted.
+#[tokio::test]
+async fn get_task_route_names_a_discovered_but_undialable_machine_with_its_dispatch_reason() {
+    use axum::body::to_bytes;
+    use tower::ServiceExt;
+
+    let source = test_state_with_seed("desktop-undialable-source", "Source", |db| {
+        db.insert_test_repo("repo-source", "Source Repo")
+            .expect("insert source repo");
+    });
+    source.set_authenticated_account_uid(Some("uid-1".to_string()));
+    source.set_lan_candidate(
+        "desktop-undialable-peer".to_string(),
+        "127.0.0.1:1".parse().expect("parse candidate address"),
+    );
+    let now_ms = crate::machine_trust::unix_time_ms().expect("clock");
+    let machine_trust_store_path = source
+        .config()
+        .machine_trust_store_path()
+        .expect("machine trust store path");
+    {
+        let mut store = crate::machine_trust::MachineTrustStore::default();
+        store
+            .pending_or_create(
+                "desktop-undialable-peer",
+                "uid-1",
+                &source.config().environment,
+                &source.config().desktop_id,
+                || Ok("secret".to_string()),
+                now_ms,
+            )
+            .expect("prepare pending outbound grant");
+        store
+            .confirm_outbound(
+                "desktop-undialable-peer",
+                "secret",
+                &source.config().desktop_id,
+                Some("fake-ca".to_string()),
+                now_ms + 1000,
+            )
+            .expect("confirm outbound grant");
+        store
+            .save(&machine_trust_store_path)
+            .expect("save machine trust store");
+    }
+
+    // Deliberately no `connect_test_relay_peer` and nothing listening at the
+    // seeded candidate address: `desktop-undialable-peer` is discovered (an
+    // eligible LAN candidate `relay_and_lan_desktop_ids` will report), but
+    // every attempt to actually dispatch to it must fail - the LAN dial
+    // refuses at `127.0.0.1:1`, and the relay fallback has no routing task
+    // in this test to answer it either.
+    let app = router(Arc::clone(&source));
+
+    let response = app
+        .clone()
+        .oneshot(
+            axum::http::Request::get("/v1/tasks/nowhere-task")
+                .body(axum::body::Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("lookup response");
+    assert_eq!(response.status(), axum::http::StatusCode::NOT_FOUND);
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read body");
+    let body = String::from_utf8(body.to_vec()).expect("utf8 body");
+    assert!(
+        body.contains("desktop-undialable-peer"),
+        "404 must name the discovered machine it could not dispatch to: {body}"
+    );
+    assert!(
+        body.contains("could not dispatch"),
+        "404 must carry the dispatch-failure reason, not just the machine id: {body}"
+    );
+}
+
 #[tokio::test]
 async fn level_triggered_activity_wait_returns_an_already_idle_task_immediately() {
     let (app, db_path) = events_router();

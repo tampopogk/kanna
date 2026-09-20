@@ -87,14 +87,12 @@ pub(super) async fn resolve_task_route(
                          once it is reachable rather than assuming this request never arrived"
                     ),
                 )),
-                FederationOutcome::NotFound { unreachable } if !unreachable.is_empty() => Err((
+                FederationOutcome::NotFound {
+                    unreachable,
+                    dispatch_failures,
+                } if !unreachable.is_empty() || !dispatch_failures.is_empty() => Err((
                     StatusCode::NOT_FOUND,
-                    format!(
-                        "task not found: {task_id} (checked every currently reachable machine; \
-                         could not reach {} paired machine(s) to confirm: {})",
-                        unreachable.len(),
-                        unreachable.join(", ")
-                    ),
+                    not_found_message(task_id, &unreachable, &dispatch_failures),
                 )),
                 FederationOutcome::NotFound { .. } => Err(error),
             }
@@ -105,8 +103,13 @@ pub(super) async fn resolve_task_route(
 
 enum FederationOutcome {
     Found(Response),
-    Uncertain { machine_id: String },
-    NotFound { unreachable: Vec<String> },
+    Uncertain {
+        machine_id: String,
+    },
+    NotFound {
+        unreachable: Vec<String>,
+        dispatch_failures: Vec<(String, String)>,
+    },
 }
 
 async fn federate(
@@ -119,12 +122,12 @@ async fn federate(
     let forward_path = with_local_only(path);
     let mut checked: HashSet<String> = HashSet::new();
     checked.insert(state.config.desktop_id.clone());
+    let mut dispatch_failures: Vec<(String, String)> = Vec::new();
     for machine_id in machine_ids {
         if machine_id == state.config.desktop_id {
             continue;
         }
-        checked.insert(machine_id.clone());
-        let Ok(routed) = super::invoke_desktop::invoke_desktop(
+        let routed = match super::invoke_desktop::invoke_desktop(
             Arc::clone(state),
             machine_id.clone(),
             method.to_string(),
@@ -132,12 +135,23 @@ async fn federate(
             body.clone(),
         )
         .await
-        else {
-            // A pre-dispatch routing failure (no pairing, no grant): nothing
-            // was sent, so this candidate is exactly as informative as one
-            // relay/LAN discovery never surfaced at all - keep looking.
-            continue;
+        {
+            Ok(routed) => routed,
+            Err(error) => {
+                // A pre-dispatch routing failure (no pairing, no grant, a
+                // dial failure): this candidate was discovered but this
+                // attempt never actually managed to ask it, so it must NOT
+                // be marked `checked` - doing so would silently fold "we
+                // found it and could not reach it" into
+                // `paired_but_unchecked`'s "never discovered at all" list,
+                // erasing the one fact this branch exists to keep. Record
+                // the machine and the reason and keep looking; a failed
+                // dispatch is not an answer.
+                dispatch_failures.push((machine_id, error));
+                continue;
+            }
         };
+        checked.insert(machine_id.clone());
         if routed.response.status == StatusCode::NOT_FOUND.as_u16() {
             continue;
         }
@@ -150,7 +164,47 @@ async fn federate(
     }
     FederationOutcome::NotFound {
         unreachable: paired_but_unchecked(state, &checked),
+        dispatch_failures,
     }
+}
+
+/// Builds the final not-found message, keeping two distinct kinds of "this
+/// might not mean what a bare 404 means" apart: a paired machine
+/// `paired_but_unchecked` says this attempt never even discovered (no relay
+/// presence, no cached LAN candidate), and a machine this attempt *did*
+/// discover but could not successfully dispatch to (named in
+/// `dispatch_failures`, alongside the reason `invoke_desktop` gave). Neither
+/// list folds into the other, so a caller reading this message can tell "no
+/// such task" apart from "a known machine was unreachable" apart from "a
+/// discovered machine refused or failed the dispatch."
+fn not_found_message(
+    task_id: &str,
+    unreachable: &[String],
+    dispatch_failures: &[(String, String)],
+) -> String {
+    let mut message =
+        format!("task not found: {task_id} (checked every currently reachable machine");
+    if !unreachable.is_empty() {
+        message.push_str(&format!(
+            "; could not reach {} paired machine(s) to confirm: {}",
+            unreachable.len(),
+            unreachable.join(", ")
+        ));
+    }
+    if !dispatch_failures.is_empty() {
+        let details = dispatch_failures
+            .iter()
+            .map(|(machine_id, reason)| format!("{machine_id} ({reason})"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        message.push_str(&format!(
+            "; discovered but could not dispatch to {} machine(s): {}",
+            dispatch_failures.len(),
+            details
+        ));
+    }
+    message.push(')');
+    message
 }
 
 /// Rebuilds the sibling's response the way it would have rendered locally.
