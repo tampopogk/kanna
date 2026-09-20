@@ -1180,25 +1180,30 @@ fn auth_ok_frame() -> ServerFrame {
     auth_ok_frame_for(true)
 }
 
+/// The reply to a client that negotiates the full terminal-viewer pair, which
+/// is what `client_auth_frame()` sends and what the real stream client sends
+/// whenever `terminalViewerRole` is set.
 #[cfg(test)]
 fn auth_ok_frame_for(companion_access: bool) -> ServerFrame {
-    auth_ok_frame_with_terminal_geometry(companion_access, true)
+    auth_ok_frame_with_terminal_capabilities(companion_access, true, true)
 }
 
+/// The reply to a client that negotiates geometry but declines active view.
+/// Active view is a separate client opt-in on top of geometry (see the
+/// `supports_terminal_active_view` assignment in `handle_auth`), so this pair
+/// has to stay expressible: an expectation helper that derived active view
+/// from geometry is exactly what let these assertions drift away from what
+/// the server advertises.
+#[cfg(test)]
+fn auth_ok_frame_without_terminal_active_view(companion_access: bool) -> ServerFrame {
+    auth_ok_frame_with_terminal_capabilities(companion_access, true, false)
+}
+
+/// The reply when the client asked for neither, or the daemon has no geometry
+/// support at all. Active view is gated on geometry, so both are absent.
 #[cfg(test)]
 fn auth_ok_frame_without_terminal_geometry(companion_access: bool) -> ServerFrame {
-    auth_ok_frame_with_terminal_geometry(companion_access, false)
-}
-
-fn auth_ok_frame_with_terminal_geometry(
-    companion_access: bool,
-    terminal_geometry_supported: bool,
-) -> ServerFrame {
-    auth_ok_frame_with_terminal_capabilities(
-        companion_access,
-        terminal_geometry_supported,
-        terminal_geometry_supported,
-    )
+    auth_ok_frame_with_terminal_capabilities(companion_access, false, false)
 }
 
 fn auth_ok_frame_with_terminal_capabilities(
@@ -1236,7 +1241,7 @@ fn auth_ok_frame_with_terminal_capabilities(
 #[cfg(test)]
 #[test]
 fn auth_capabilities_do_not_advertise_geometry_without_daemon_support() {
-    let frame = auth_ok_frame_with_terminal_geometry(true, false);
+    let frame = auth_ok_frame_with_terminal_capabilities(true, false, false);
     let ServerFrame::AuthOk { capabilities, .. } = frame else {
         panic!("expected auth success frame");
     };
@@ -7792,7 +7797,28 @@ mod tests {
             .expect("send frame");
     }
 
+    /// What the real stream client sends for a terminal viewer: geometry and
+    /// active view are opted into as a pair (`packages/stream-client`
+    /// advertises `terminal_geometry` and `terminal_active_view` together
+    /// whenever `terminalViewerRole` is set), never geometry alone.
     fn client_auth_frame() -> ClientFrame {
+        ClientFrame::Auth {
+            credential: None,
+            capabilities: vec![
+                KspCapability::CompanionEventEpoch,
+                KspCapability::TermInputBoundary,
+                KspCapability::TerminalGeometry,
+                KspCapability::TerminalActiveView,
+            ],
+        }
+    }
+
+    /// A client that negotiates geometry and declines active view. Attaching a
+    /// terminal as an active-view client first synchronizes terminal control
+    /// with the daemon (see `synchronize_terminal_control`), so tests whose
+    /// fake daemon does not answer that round trip say so here rather than
+    /// letting the shared viewer client drag it in.
+    fn geometry_only_client_auth_frame() -> ClientFrame {
         ClientFrame::Auth {
             credential: None,
             capabilities: vec![
@@ -11115,8 +11141,11 @@ mod tests {
 
         let url = fixture.serve().await;
         let mut socket = ws_connect(&url).await;
-        send_frame(&mut socket, &client_auth_frame()).await;
-        assert_eq!(recv_frame(&mut socket).await, auth_ok_frame());
+        send_frame(&mut socket, &geometry_only_client_auth_frame()).await;
+        assert_eq!(
+            recv_frame(&mut socket).await,
+            auth_ok_frame_without_terminal_active_view(true)
+        );
         send_frame(
             &mut socket,
             &ClientFrame::Attach {
@@ -12270,8 +12299,11 @@ mod tests {
         ))))
         .await;
         let mut socket = ws_connect(&url).await;
-        send_frame(&mut socket, &client_auth_frame()).await;
-        assert_eq!(recv_frame(&mut socket).await, auth_ok_frame_for(false));
+        send_frame(&mut socket, &geometry_only_client_auth_frame()).await;
+        assert_eq!(
+            recv_frame(&mut socket).await,
+            auth_ok_frame_without_terminal_active_view(false)
+        );
 
         let lock = rusqlite::Connection::open(&config.db_path).expect("open lock connection");
         lock.execute_batch("BEGIN IMMEDIATE; UPDATE settings SET value = value;")
@@ -13393,8 +13425,11 @@ mod tests {
         let url = serve_router(router).await;
         let mut socket = ws_connect(&url).await;
 
-        send_frame(&mut socket, &client_auth_frame()).await;
-        assert_eq!(recv_frame(&mut socket).await, auth_ok_frame_for(false));
+        send_frame(&mut socket, &geometry_only_client_auth_frame()).await;
+        assert_eq!(
+            recv_frame(&mut socket).await,
+            auth_ok_frame_without_terminal_active_view(false)
+        );
         send_frame(
             &mut socket,
             &ClientFrame::Attach {
@@ -13591,10 +13626,10 @@ mod tests {
         let url = serve_router(router).await;
         let mut socket = ws_connect(&url).await;
 
-        send_frame(&mut socket, &client_auth_frame()).await;
+        send_frame(&mut socket, &geometry_only_client_auth_frame()).await;
         assert_eq!(
             recv_frame(&mut socket).await,
-            auth_ok_frame_with_terminal_capabilities(false, true, false)
+            auth_ok_frame_without_terminal_active_view(false)
         );
         send_frame(
             &mut socket,
@@ -13819,7 +13854,10 @@ mod tests {
             },
         )
         .await;
-        assert_eq!(recv_frame(&mut socket).await, auth_ok_frame_for(false));
+        assert_eq!(
+            recv_frame(&mut socket).await,
+            auth_ok_frame_without_terminal_active_view(false)
+        );
         send_frame(
             &mut socket,
             &ClientFrame::Attach {
@@ -13997,7 +14035,10 @@ mod tests {
             },
         )
         .await;
-        assert_eq!(recv_frame(&mut socket).await, auth_ok_frame_for(false));
+        assert_eq!(
+            recv_frame(&mut socket).await,
+            auth_ok_frame_without_terminal_active_view(false)
+        );
         send_frame(&mut socket, &attach_agent_frame(0)).await;
 
         let snapshot = recv_frame(&mut socket).await;
@@ -14082,7 +14123,10 @@ mod tests {
             },
         )
         .await;
-        assert_eq!(recv_frame(&mut socket).await, auth_ok_frame_for(false));
+        assert_eq!(
+            recv_frame(&mut socket).await,
+            auth_ok_frame_without_terminal_active_view(false)
+        );
         send_frame(&mut socket, &attach_agent_frame(0)).await;
 
         let snapshot = recv_frame(&mut socket).await;
@@ -14141,7 +14185,10 @@ mod tests {
             },
         )
         .await;
-        assert_eq!(recv_frame(&mut socket).await, auth_ok_frame_for(false));
+        assert_eq!(
+            recv_frame(&mut socket).await,
+            auth_ok_frame_without_terminal_active_view(false)
+        );
         send_frame(&mut socket, &attach_agent_frame(0)).await;
 
         match recv_frame(&mut socket).await {
@@ -14295,7 +14342,7 @@ mod tests {
         .await;
         assert_eq!(
             recv_frame(&mut first_socket).await,
-            auth_ok_frame_for(false)
+            auth_ok_frame_without_terminal_active_view(false)
         );
         send_frame(&mut first_socket, &attach_agent_frame(0)).await;
         let cold_history_start = match recv_frame(&mut first_socket).await {
@@ -14369,7 +14416,7 @@ mod tests {
         .await;
         assert_eq!(
             recv_frame(&mut resumed_socket).await,
-            auth_ok_frame_for(false)
+            auth_ok_frame_without_terminal_active_view(false)
         );
         send_frame(&mut resumed_socket, &attach_agent_frame(500)).await;
         match recv_frame(&mut resumed_socket).await {
@@ -14532,8 +14579,11 @@ mod tests {
         let url = serve_router(router).await;
         let mut socket = ws_connect(&url).await;
 
-        send_frame(&mut socket, &client_auth_frame()).await;
-        assert_eq!(recv_frame(&mut socket).await, auth_ok_frame_for(false));
+        send_frame(&mut socket, &geometry_only_client_auth_frame()).await;
+        assert_eq!(
+            recv_frame(&mut socket).await,
+            auth_ok_frame_without_terminal_active_view(false)
+        );
         send_frame(
             &mut socket,
             &ClientFrame::Attach {
@@ -15144,7 +15194,10 @@ mod tests {
             },
         )
         .await;
-        assert_eq!(recv_frame(&mut socket).await, auth_ok_frame_for(false));
+        assert_eq!(
+            recv_frame(&mut socket).await,
+            auth_ok_frame_without_terminal_active_view(false)
+        );
         send_frame(
             &mut socket,
             &ClientFrame::TermInput {
@@ -15337,6 +15390,7 @@ mod tests {
                     KspCapability::TermScrollbackWindow,
                     KspCapability::AgentHistoryWindow,
                     KspCapability::TerminalGeometry,
+                    KspCapability::TerminalActiveView,
                 ],
             })
         );
@@ -15454,7 +15508,7 @@ mod tests {
     }
 
     fn windowed_auth_ok_frame() -> ServerFrame {
-        auth_ok_frame_with_terminal_capabilities(false, true, false)
+        auth_ok_frame_without_terminal_active_view(false)
     }
 
     fn scrollback_vt(lines: usize) -> String {
@@ -16033,8 +16087,11 @@ mod tests {
         let fixture =
             WindowedTerminalFixture::new("unwindowed-snapshot", vt.clone(), Vec::new()).await;
         let mut socket = ws_connect(&fixture.url).await;
-        send_frame(&mut socket, &client_auth_frame()).await;
-        assert_eq!(recv_frame(&mut socket).await, auth_ok_frame_for(false));
+        send_frame(&mut socket, &geometry_only_client_auth_frame()).await;
+        assert_eq!(
+            recv_frame(&mut socket).await,
+            auth_ok_frame_without_terminal_active_view(false)
+        );
         send_frame(&mut socket, &attach_terminal_frame(None)).await;
 
         match recv_frame(&mut socket).await {
