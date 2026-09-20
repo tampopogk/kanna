@@ -341,23 +341,23 @@ acknowledging transferred descriptors.
   missing partial or a recursive/self-including chain fails the whole
   definition with a clear error naming the missing or cyclic partial; neither
   is silently emitted as nothing. Partials make the composed prompt *less*
-  obvious by construction, which is why `kanna-cli agent show <name>`
-  (`kanna_show_agent`) always shows the fully-resolved text by default —
-  partials expanded, any `EXTEND.md` merged in — with `--raw` for the
-  unresolved source (partial markers left literal) a customer would actually
-  copy into `.kanna/agents/<name>/` to start overriding. Every stage spawn
-  persists that same fully-resolved prompt text to `stage_run_prompt`
+  obvious by construction, which is why `kanna-cli repo agent show --agent
+  <name>` (`kanna_show_agent`) always shows the fully-resolved text by
+  default — partials expanded, any `EXTEND.md` merged in — with `--raw` for
+  the unresolved source (partial markers left literal) a customer would
+  actually copy into `.kanna/agents/<name>/` to start overriding. Every stage
+  spawn persists that same fully-resolved prompt text to `stage_run_prompt`
   (keyed by `run_id`, kept out of `get_task`/`get_tasks` like
   `workspace_setup_run` beside it) so a strangely-behaving agent can be
   debugged against what it was actually told; read it back with
   `GET /v1/tasks/{task_id}/runs/{run_id}/resolved-prompt`.
-  `kanna-cli agent eject <name>` (`kanna_eject_agent`) writes that resolved
-  text into `.kanna/agents/<name>/AGENT.md` in the open repo's own working
-  tree (loopback-only — it never routes to another machine), so the file on
-  disk becomes the whole prompt with nothing left to resolve; it refuses when
-  an `EXTEND.md` already exists for that agent (ejecting would extend the
-  result a second time on the next resolution) or when a file already sits at
-  the target path, unless `force` is set.
+  `kanna-cli repo agent eject --agent <name>` (`kanna_eject_agent`) writes
+  that resolved text into `.kanna/agents/<name>/AGENT.md` in the open repo's
+  own working tree (loopback-only — it never routes to another machine), so
+  the file on disk becomes the whole prompt with nothing left to resolve; it
+  refuses when an `EXTEND.md` already exists for that agent (ejecting would
+  extend the result a second time on the next resolution) or when a file
+  already sits at the target path, unless `force` is set.
 - `config.json` has a machine-local companion, `.kanna/config.local.json`:
   gitignored, read from the **open repo's working tree** rather than the origin
   snapshot, and deep-merged over the committed config with local winning — so a
