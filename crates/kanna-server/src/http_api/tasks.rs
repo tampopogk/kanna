@@ -296,42 +296,34 @@ pub(super) async fn get_task(
         .get_task(&task_id)
         .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e))?;
     let Some(mut task) = task else {
-        if !query.local_only {
-            // A trusted discovered LAN peer must still be probed even when
-            // relay routing itself is unavailable or its listing fails.
-            let (machine_ids, _relay_error) =
-                super::invoke_desktop::relay_and_lan_desktop_ids(&state).await;
-            for machine_id in machine_ids {
-                if machine_id == state.config.desktop_id {
-                    continue;
-                }
-                let encoded_task_id = encode_path_segment(&task_id);
-                let path = format!("/v1/tasks/{encoded_task_id}?localOnly=true");
-                if let Ok(response) = super::invoke_desktop::invoke_desktop(
-                    state.clone(),
-                    machine_id.clone(),
-                    "GET".to_string(),
-                    path,
-                    serde_json::Value::Null,
-                )
-                .await
-                .map(|routed| routed.response)
-                {
-                    if response.status == axum::http::StatusCode::OK.as_u16() {
-                        return Err((
-                            axum::http::StatusCode::NOT_FOUND,
-                            format!(
-                                "task {task_id} was found on machine {machine_id}; pass machine_id: \"{machine_id}\" to kanna_get_task"
-                            ),
-                        ));
-                    }
-                }
-            }
-        }
-        return Err((
-            axum::http::StatusCode::NOT_FOUND,
-            format!("task not found: {task_id}"),
-        ));
+        // Absent locally: the caller need not already know which machine
+        // owns this task id. Forward the exact same read to whichever
+        // reachable sibling actually has it and return its answer directly,
+        // rather than merely naming the owner and asking the caller to
+        // repeat itself with `machine_id`. `query.local_only` is how the one
+        // federated hop this makes stops a remote server's own local miss
+        // from recursing.
+        let path = super::task_federation::task_path(&task_id, "");
+        let route = super::task_federation::resolve_task_route(
+            &state,
+            &task_id,
+            query.local_only,
+            "GET",
+            &path,
+            &serde_json::Value::Null,
+        )
+        .await?;
+        return match route {
+            super::task_federation::TaskRoute::Remote(response) => Ok(response),
+            // `resolve_task_route` only ever returns `Local` when the id
+            // resolves - which this branch already knows it does not - so
+            // this is unreachable in practice; kept as a definite error
+            // rather than a panic if that invariant is ever loosened.
+            super::task_federation::TaskRoute::Local(_) => Err((
+                axum::http::StatusCode::NOT_FOUND,
+                format!("task not found: {task_id}"),
+            )),
+        };
     };
     if query.agent_view
         && task
@@ -827,24 +819,23 @@ async fn aggregate_task_summaries(
         .map(|routed| routed.response)
         {
             Ok(response) if response.status == 200 => match response.body {
-                Some(body) => match serde_json::from_value::<
-                    Vec<crate::mobile_api::TaskSummary>,
-                >(body)
-                {
-                    Ok(mut remote_tasks) => {
-                        for task in &mut remote_tasks {
-                            task.machine_id = Some(machine_id.clone());
-                            if task.waiting_prompt_snippet.is_none() {
-                                task.waiting_prompt_snippet = task.snippet.take();
+                Some(body) => {
+                    match serde_json::from_value::<Vec<crate::mobile_api::TaskSummary>>(body) {
+                        Ok(mut remote_tasks) => {
+                            for task in &mut remote_tasks {
+                                task.machine_id = Some(machine_id.clone());
+                                if task.waiting_prompt_snippet.is_none() {
+                                    task.waiting_prompt_snippet = task.snippet.take();
+                                }
                             }
+                            tasks.append(&mut remote_tasks);
                         }
-                        tasks.append(&mut remote_tasks);
+                        Err(error) => machine_errors.push(serde_json::json!({
+                            "machineId": machine_id,
+                            "error": format!("invalid task-list response: {error}"),
+                        })),
                     }
-                    Err(error) => machine_errors.push(serde_json::json!({
-                        "machineId": machine_id,
-                        "error": format!("invalid task-list response: {error}"),
-                    })),
-                },
+                }
                 None => machine_errors.push(serde_json::json!({
                     "machineId": machine_id,
                     "error": "task-list response had no body",

@@ -35,10 +35,21 @@ pub(crate) struct TaskWatchOptions {
     pub(crate) repo_id: Option<String>,
     /// Effective exclusions — see [`resolve_task_event_exclusions`].
     pub(crate) exclude_task_ids: Vec<String>,
+    /// Event type names dropped server-side from every batch, matching
+    /// `kanna_wait_events`'s `exclude_event_types`.
+    pub(crate) exclude_event_types: Vec<String>,
     pub(crate) cursor: Option<String>,
     pub(crate) all_events: bool,
     pub(crate) budget_secs: Option<u64>,
     pub(crate) follow: bool,
+    /// Explicit override for the cold-start snapshot, matching
+    /// `kanna_wait_events`'s `include_current_activity`. `None` lets the
+    /// server apply its own natural default (cursorless implies the
+    /// snapshot, cursor'd implies edges only) — which is what makes a
+    /// re-armed watch (or this loop's own second-and-later internal poll,
+    /// once it holds a cursor) stop redelivering the whole already-actionable
+    /// set on every call.
+    pub(crate) include_current_activity: Option<bool>,
 }
 
 /// The typed CLI's application of the shared self-exclusion policy
@@ -188,17 +199,14 @@ pub(crate) async fn watch_task_events<W: Write>(
             repo_id: options.repo_id.as_deref(),
             repo_remote_url_hash: None,
             exclude_task_ids: &options.exclude_task_ids,
-            // The watch owns its own actionable filter, which suppresses the
-            // display dimension client-side while still advancing the cursor
-            // past it — `--all` must still be able to show it.
-            exclude_event_types: &[],
+            exclude_event_types: &options.exclude_event_types,
             event_types: &[],
             // The watch keeps the unfiltered feed and decides what is
             // actionable itself, so `--all` can still show everything —
             // including a raw delivery, which its filter does treat as
             // actionable.
             local_only: false,
-            include_current_activity: Some(true),
+            include_current_activity: options.include_current_activity,
             from: (first_call && cursor.is_none()).then_some("now"),
             cursor: cursor.as_deref(),
             timeout_secs,
@@ -581,8 +589,22 @@ pub(crate) async fn run(command: TaskCommands) {
             task_id,
             brief,
             agent_view,
+            machine_id,
             server_url,
         } => {
+            // An explicit machine id is a routed override, going through the
+            // same catalog/machine-invoke path every other machine-aware
+            // command uses. Omitting it keeps this route's existing local
+            // call and output shape unchanged — the local server itself now
+            // auto-resolves a task absent locally against reachable
+            // siblings, so no client-side routing is needed for that case.
+            if let Some(machine_id) = machine_id {
+                let mut args =
+                    json!({ "task_id": task_id, "brief": brief, "agent_view": agent_view });
+                insert_optional(&mut args, "machine_id", Some(machine_id));
+                run_catalog_task_tool("kanna_get_task", &args, server_url.as_deref()).await;
+                return;
+            }
             let base_url = resolve_server_base_url_from_env(server_url.as_deref());
             let result = if brief {
                 get_brief_task_via_api(&base_url, &task_id, agent_view)
@@ -739,8 +761,18 @@ pub(crate) async fn run(command: TaskCommands) {
             task_id,
             tail,
             agent_view,
+            machine_id,
             server_url,
         } => {
+            if let Some(machine_id) = machine_id {
+                let mut args = json!({ "task_id": task_id, "agent_view": agent_view });
+                if let (Some(object), Some(tail)) = (args.as_object_mut(), tail) {
+                    object.insert("tail".to_string(), Value::Number(tail.into()));
+                }
+                insert_optional(&mut args, "machine_id", Some(machine_id));
+                run_catalog_task_tool("kanna_task_logs", &args, server_url.as_deref()).await;
+                return;
+            }
             let base_url = resolve_server_base_url_from_env(server_url.as_deref());
             let logs = task_logs_with_agent_view_via_api(&base_url, &task_id, tail, agent_view)
                 .await
@@ -841,8 +873,16 @@ pub(crate) async fn run(command: TaskCommands) {
             task_id,
             message,
             source,
+            machine_id,
             server_url,
         } => {
+            if let Some(machine_id) = machine_id {
+                let mut args = json!({ "task_id": task_id, "input": message });
+                insert_optional(&mut args, "source", source);
+                insert_optional(&mut args, "machine_id", Some(machine_id));
+                run_catalog_task_tool("kanna_send_task_input", &args, server_url.as_deref()).await;
+                return;
+            }
             let base_url = resolve_server_base_url_from_env(server_url.as_deref());
             let request = build_send_task_input_request(message, source);
             let response = send_task_input_via_api(&base_url, &task_id, &request)
@@ -863,10 +903,24 @@ pub(crate) async fn run(command: TaskCommands) {
             encoding,
             source,
             list_keys,
+            machine_id,
             server_url,
         } => {
             if list_keys {
                 print!("{}", rendered_key_vocabulary());
+                return;
+            }
+            if let Some(machine_id) = machine_id {
+                let mut args = json!({ "task_id": task_id });
+                if !keys.is_empty() {
+                    args["keys"] = json!(keys);
+                }
+                insert_optional(&mut args, "bytes", bytes);
+                insert_optional(&mut args, "encoding", encoding);
+                insert_optional(&mut args, "source", source);
+                insert_optional(&mut args, "machine_id", Some(machine_id));
+                run_catalog_task_tool("kanna_send_task_raw_input", &args, server_url.as_deref())
+                    .await;
                 return;
             }
             let base_url = resolve_server_base_url_from_env(server_url.as_deref());
@@ -974,8 +1028,39 @@ pub(crate) async fn run(command: TaskCommands) {
             next_stage_effort,
             next_stage_provider_source,
             expected_definition,
+            machine_id,
             server_url,
         } => {
+            let expected_definition = expected_definition.map(|raw| {
+                serde_json::from_str::<serde_json::Value>(&raw).unwrap_or_else(|error| {
+                    eprintln!("Error: --expected-definition must be a JSON object: {error}");
+                    process::exit(1);
+                })
+            });
+            if let Some(machine_id) = machine_id {
+                let mut args = json!({ "task_id": task_id });
+                insert_optional(&mut args, "source", source);
+                insert_optional(
+                    &mut args,
+                    "next_stage_agent_provider",
+                    next_stage_agent_provider,
+                );
+                insert_optional(&mut args, "next_stage_model", next_stage_model);
+                insert_optional(&mut args, "next_stage_effort", next_stage_effort);
+                insert_optional(
+                    &mut args,
+                    "next_stage_provider_source",
+                    next_stage_provider_source,
+                );
+                if let (Some(object), Some(definition)) =
+                    (args.as_object_mut(), expected_definition)
+                {
+                    object.insert("expected_definition".to_string(), definition);
+                }
+                insert_optional(&mut args, "machine_id", Some(machine_id));
+                run_catalog_task_tool("kanna_advance_stage", &args, server_url.as_deref()).await;
+                return;
+            }
             let base_url = resolve_server_base_url_from_env(server_url.as_deref());
             let next_stage = NextStageProviderOverride {
                 provider: next_stage_agent_provider.as_deref(),
@@ -983,12 +1068,6 @@ pub(crate) async fn run(command: TaskCommands) {
                 effort: next_stage_effort.as_deref(),
                 source: next_stage_provider_source.as_deref(),
             };
-            let expected_definition = expected_definition.map(|raw| {
-                serde_json::from_str::<serde_json::Value>(&raw).unwrap_or_else(|error| {
-                    eprintln!("Error: --expected-definition must be a JSON object: {error}");
-                    process::exit(1);
-                })
-            });
             let advanced = advance_stage_via_api(
                 &base_url,
                 &task_id,
@@ -1087,8 +1166,15 @@ pub(crate) async fn run(command: TaskCommands) {
         }
         TaskCommands::RerunStage {
             task_id,
+            machine_id,
             server_url,
         } => {
+            if let Some(machine_id) = machine_id {
+                let mut args = json!({ "task_id": task_id });
+                insert_optional(&mut args, "machine_id", Some(machine_id));
+                run_catalog_task_tool("kanna_rerun_stage", &args, server_url.as_deref()).await;
+                return;
+            }
             let base_url = resolve_server_base_url_from_env(server_url.as_deref());
             let rerun = rerun_stage_via_api(&base_url, &task_id)
                 .await
@@ -1103,8 +1189,15 @@ pub(crate) async fn run(command: TaskCommands) {
         }
         TaskCommands::Resume {
             task_id,
+            machine_id,
             server_url,
         } => {
+            if let Some(machine_id) = machine_id {
+                let mut args = json!({ "task_id": task_id });
+                insert_optional(&mut args, "machine_id", Some(machine_id));
+                run_catalog_task_tool("kanna_resume_task", &args, server_url.as_deref()).await;
+                return;
+            }
             let base_url = resolve_server_base_url_from_env(server_url.as_deref());
             let resumed = resume_task_via_api(&base_url, &task_id)
                 .await
@@ -1390,7 +1483,9 @@ pub(crate) async fn run(command: TaskCommands) {
             task_id,
             repo_id,
             exclude_task_id,
+            exclude_event_type,
             exclude_own,
+            include_current_activity,
             cursor,
             all_events,
             budget_secs,
@@ -1411,10 +1506,12 @@ pub(crate) async fn run(command: TaskCommands) {
                 task_ids: task_id,
                 repo_id,
                 exclude_task_ids,
+                exclude_event_types: exclude_event_type,
                 cursor,
                 all_events,
                 budget_secs,
                 follow,
+                include_current_activity,
             };
             if let Err(error) = watch_task_events(&base_url, options, &mut std::io::stdout()).await
             {

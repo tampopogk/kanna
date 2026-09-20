@@ -60,7 +60,7 @@ const MAX_KEYS_PER_CALL: usize = 16;
 /// message route is for.
 const MAX_RAW_BYTES: usize = 1024;
 
-#[derive(Debug, serde::Deserialize)]
+#[derive(Debug, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct RawInputRequest {
     /// Named keys, written in order. Mutually exclusive with `bytes`.
@@ -390,8 +390,32 @@ pub(super) async fn send_task_raw_input(
     _access: PrivilegedTaskAccess,
     State(state): State<Arc<AppState>>,
     axum::extract::Path(task_id): axum::extract::Path<String>,
+    axum::extract::Query(local_only): axum::extract::Query<super::task_federation::LocalOnlyQuery>,
     Json(payload): Json<RawInputRequest>,
 ) -> Result<Response, RawInputHttpError> {
+    let forward_body = serde_json::to_value(&payload).unwrap_or(serde_json::Value::Null);
+    let path = super::task_federation::task_path(&task_id, "/raw-input");
+    match super::task_federation::resolve_task_route(
+        &state,
+        &task_id,
+        local_only.local_only,
+        "POST",
+        &path,
+        &forward_body,
+    )
+    .await
+    {
+        Ok(super::task_federation::TaskRoute::Remote(response)) => return Ok(response),
+        Ok(super::task_federation::TaskRoute::Local(_)) => {}
+        Err((status, message)) => {
+            let reason = if status == axum::http::StatusCode::NOT_FOUND {
+                "task_not_found"
+            } else {
+                "task_input_unavailable"
+            };
+            return Err(raw_input_error(status, reason, message));
+        }
+    }
     let source = match payload.source.as_deref() {
         Some(declared) => TaskInputSource::from_caller_declared(declared).map_err(|message| {
             raw_input_error(

@@ -44,7 +44,7 @@ pub(crate) const MAX_TASK_INPUT_ATTACHMENT_BYTES: usize = 3 * 1024 * 1024;
 pub(crate) const MAX_TASK_INPUT_BODY_BYTES: usize = 8 * 1024 * 1024;
 
 /// One image the caller attached to a task input.
-#[derive(Debug, Clone, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct TaskInputAttachment {
     /// The caller's name for the file. Advisory: it is reduced to a safe stem

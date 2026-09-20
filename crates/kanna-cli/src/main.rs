@@ -423,6 +423,12 @@ pub(crate) enum TaskCommands {
         #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
         agent_view: bool,
 
+        /// Machine that owns the task. Omit it, or pass the current machine
+        /// id, to use this machine — a task absent locally is still found:
+        /// the local server auto-resolves it against reachable siblings.
+        #[arg(long)]
+        machine_id: Option<String>,
+
         /// Override the local Kanna server base URL
         #[arg(long)]
         server_url: Option<String>,
@@ -566,6 +572,12 @@ pub(crate) enum TaskCommands {
         #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
         agent_view: bool,
 
+        /// Machine that owns the task. Omit it, or pass the current machine
+        /// id, to use this machine — a task absent locally is still found:
+        /// the local server auto-resolves it against reachable siblings.
+        #[arg(long)]
+        machine_id: Option<String>,
+
         /// Override the local Kanna server base URL
         #[arg(long)]
         server_url: Option<String>,
@@ -695,6 +707,12 @@ pub(crate) enum TaskCommands {
         #[arg(long)]
         source: Option<String>,
 
+        /// Machine that owns the task. Omit it, or pass the current machine
+        /// id, to use this machine — a task absent locally is still found:
+        /// the local server auto-resolves it against reachable siblings.
+        #[arg(long)]
+        machine_id: Option<String>,
+
         /// Override the local Kanna server base URL
         #[arg(long)]
         server_url: Option<String>,
@@ -731,6 +749,12 @@ pub(crate) enum TaskCommands {
         /// List the accepted key names and exit without writing anything
         #[arg(long)]
         list_keys: bool,
+
+        /// Machine that owns the task. Omit it, or pass the current machine
+        /// id, to use this machine — a task absent locally is still found:
+        /// the local server auto-resolves it against reachable siblings.
+        #[arg(long)]
+        machine_id: Option<String>,
 
         /// Override the local Kanna server base URL
         #[arg(long)]
@@ -824,6 +848,12 @@ pub(crate) enum TaskCommands {
         /// nobody read.
         #[arg(long)]
         expected_definition: Option<String>,
+
+        /// Machine that owns the task. Omit it, or pass the current machine
+        /// id, to use this machine — a task absent locally is still found:
+        /// the local server auto-resolves it against reachable siblings.
+        #[arg(long)]
+        machine_id: Option<String>,
 
         /// Override the local Kanna server base URL
         #[arg(long)]
@@ -957,6 +987,12 @@ pub(crate) enum TaskCommands {
         #[arg(long)]
         task_id: String,
 
+        /// Machine that owns the task. Omit it, or pass the current machine
+        /// id, to use this machine — a task absent locally is still found:
+        /// the local server auto-resolves it against reachable siblings.
+        #[arg(long)]
+        machine_id: Option<String>,
+
         /// Override the local Kanna server base URL
         #[arg(long)]
         server_url: Option<String>,
@@ -966,6 +1002,12 @@ pub(crate) enum TaskCommands {
         /// The task ID to resume
         #[arg(long)]
         task_id: String,
+
+        /// Machine that owns the task. Omit it, or pass the current machine
+        /// id, to use this machine — a task absent locally is still found:
+        /// the local server auto-resolves it against reachable siblings.
+        #[arg(long)]
+        machine_id: Option<String>,
 
         /// Override the local Kanna server base URL
         #[arg(long)]
@@ -1263,12 +1305,31 @@ pub(crate) enum TaskCommands {
         #[arg(long = "exclude-task-id", value_delimiter = ',')]
         exclude_task_id: Vec<String>,
 
+        /// Drop these event types from the watch; repeat or comma-separate.
+        /// A filter, not a scope, so it never invalidates a cursor. Matches
+        /// `kanna_wait_events`'s --exclude-event-type: a manager watching
+        /// runtime state passes `task.activity_changed` so a human reading a
+        /// task never wakes it.
+        #[arg(long = "exclude-event-type", value_delimiter = ',')]
+        exclude_event_type: Vec<String>,
+
         /// Drop this task's own events from a repository-scoped watch run
         /// from a task session — a task-scope filter only, defaulting to
         /// true inside a task session. Pass --exclude-own=false to also
         /// observe your own task's events, e.g. your own run.finished.
         #[arg(long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true")]
         exclude_own: Option<bool>,
+
+        /// Deprecated explicit override for the cold-start snapshot, matching
+        /// `kanna_wait_events`'s flag of the same name. Omit this: a
+        /// cursorless call implies the actionable snapshot and a cursor'd
+        /// call implies edges only. Pass --include-current-activity=false to
+        /// force edges-only on a re-armed watch even without a cursor — the
+        /// re-arm case a manager hits after servicing a batch, where the
+        /// implicit cursorless snapshot would otherwise redeliver every
+        /// already-actionable task all over again.
+        #[arg(long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true")]
+        include_current_activity: Option<bool>,
 
         /// Resume from the final cursor printed by an earlier watch. Without
         /// this option the watch starts at the live tail and replays no history.

@@ -507,7 +507,8 @@ fn start_run(db: &Db, run_id: &str, task_id: &str, stage: &str) {
 }
 
 #[tokio::test]
-async fn task_discovery_labels_cross_machine_rows_includes_closed_and_explains_remote_misses() {
+async fn task_discovery_labels_cross_machine_rows_includes_closed_and_auto_resolves_a_remote_task()
+{
     use axum::body::to_bytes;
     use tower::ServiceExt;
 
@@ -536,7 +537,11 @@ async fn task_discovery_labels_cross_machine_rows_includes_closed_and_explains_r
         connect_test_relay_peer(&source, Arc::clone(&peer), Arc::new(AtomicBool::new(true)));
     let app = router(Arc::clone(&source));
 
-    let miss = app
+    // A task absent locally, with no `machine_id` given, is no longer a bare
+    // miss: the source auto-resolves it against the one reachable sibling
+    // that actually has it and forwards the request there, returning that
+    // machine's own answer verbatim rather than a "retry with machine_id" hint.
+    let found = app
         .clone()
         .oneshot(
             axum::http::Request::get("/v1/tasks/remote-open")
@@ -545,13 +550,13 @@ async fn task_discovery_labels_cross_machine_rows_includes_closed_and_explains_r
         )
         .await
         .expect("remote lookup response");
-    assert_eq!(miss.status(), axum::http::StatusCode::NOT_FOUND);
-    let miss_body = to_bytes(miss.into_body(), usize::MAX)
+    assert_eq!(found.status(), axum::http::StatusCode::OK);
+    let found_body = to_bytes(found.into_body(), usize::MAX)
         .await
-        .expect("read miss body");
-    let miss_body = String::from_utf8(miss_body.to_vec()).expect("utf8 miss body");
-    assert!(miss_body.contains("found on machine desktop-discovery-peer"));
-    assert!(miss_body.contains("pass machine_id"));
+        .expect("read found body");
+    let found_body: serde_json::Value =
+        serde_json::from_slice(&found_body).expect("json found body");
+    assert_eq!(found_body["id"], "remote-open");
 
     let recent = get_json_body(&app, "/v1/tasks/recent?allMachines=true&includeClosed=true").await;
     assert!(recent["machineErrors"]
@@ -573,6 +578,104 @@ async fn task_discovery_labels_cross_machine_rows_includes_closed_and_explains_r
     )
     .await;
     assert_eq!(search["tasks"].as_array().map(Vec::len), Some(2));
+    relay.abort();
+}
+
+/// Auto-resolve is not `kanna_get_task`-only: a *mutation* route absent
+/// locally also forwards to the sibling that owns the task and returns its
+/// answer, rather than a flat local 404. `set_task_attention` exercises a
+/// non-GET method with a JSON body through the same
+/// `task_federation::resolve_task_route` path `get_task` uses.
+#[tokio::test]
+async fn set_task_attention_route_auto_resolves_to_the_owning_sibling_machine() {
+    use axum::body::to_bytes;
+    use tower::ServiceExt;
+
+    let source = test_state_with_seed("desktop-attention-source", "Source", |db| {
+        db.insert_test_repo("repo-source", "Source Repo")
+            .expect("insert source repo");
+    });
+    let peer = test_state_with_seed("desktop-attention-peer", "Peer", |db| {
+        db.insert_test_repo("repo-peer", "Peer Repo")
+            .expect("insert peer repo");
+        db.insert_test_pipeline_item(
+            "remote-task",
+            "repo-peer",
+            "remote-task",
+            Some("remote-task"),
+            "in progress",
+            "2026-08-23 00:00:00",
+        )
+        .expect("insert remote task");
+    });
+    let relay =
+        connect_test_relay_peer(&source, Arc::clone(&peer), Arc::new(AtomicBool::new(true)));
+    let app = router(Arc::clone(&source));
+
+    let response = app
+        .clone()
+        .oneshot(
+            axum::http::Request::put("/v1/tasks/remote-task/attention")
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from(
+                    serde_json::json!({ "reason": "needs a human decision" }).to_string(),
+                ))
+                .expect("request"),
+        )
+        .await
+        .expect("remote attention response");
+    assert_eq!(response.status(), axum::http::StatusCode::OK);
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read body");
+    let body: serde_json::Value = serde_json::from_slice(&body).expect("json body");
+    assert_eq!(body["taskId"], "remote-task");
+    assert_eq!(body["attentionReason"], "needs a human decision");
+    assert_eq!(body["changed"], true);
+
+    // The mutation actually landed on the peer, not the source.
+    let peer_db = crate::db::Db::open(&peer.config().db_path).expect("open peer db");
+    let peer_item = peer_db
+        .get_pipeline_item("remote-task")
+        .expect("read peer item")
+        .expect("peer item exists");
+    assert_eq!(
+        peer_item.attention_reason.as_deref(),
+        Some("needs a human decision")
+    );
+
+    relay.abort();
+}
+
+/// A task absent from every reachable machine is still a flat, honest 404 -
+/// auto-resolve only changes the *found* case.
+#[tokio::test]
+async fn get_task_route_returns_not_found_when_no_reachable_sibling_has_the_task_either() {
+    use tower::ServiceExt;
+
+    let source = test_state_with_seed("desktop-nowhere-source", "Source", |db| {
+        db.insert_test_repo("repo-source", "Source Repo")
+            .expect("insert source repo");
+    });
+    let peer = test_state_with_seed("desktop-nowhere-peer", "Peer", |db| {
+        db.insert_test_repo("repo-peer", "Peer Repo")
+            .expect("insert peer repo");
+    });
+    let relay =
+        connect_test_relay_peer(&source, Arc::clone(&peer), Arc::new(AtomicBool::new(true)));
+    let app = router(Arc::clone(&source));
+
+    let response = app
+        .clone()
+        .oneshot(
+            axum::http::Request::get("/v1/tasks/nowhere-task")
+                .body(axum::body::Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("lookup response");
+    assert_eq!(response.status(), axum::http::StatusCode::NOT_FOUND);
+
     relay.abort();
 }
 

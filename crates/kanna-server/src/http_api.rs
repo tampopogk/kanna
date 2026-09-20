@@ -48,6 +48,7 @@ mod task_attention;
 mod task_blockers;
 mod task_diff;
 mod task_events;
+mod task_federation;
 mod task_files;
 mod task_graph;
 mod task_input;

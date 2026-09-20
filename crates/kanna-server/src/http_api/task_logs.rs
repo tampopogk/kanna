@@ -7,12 +7,14 @@ use kanna_daemon::protocol::{Command as DaemonCommand, Event as DaemonEvent};
 use std::path::Path;
 use std::sync::Arc;
 
-#[derive(Debug, serde::Deserialize)]
+#[derive(Debug, Default, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct TaskLogsQuery {
     tail: Option<usize>,
     #[serde(default)]
     agent_view: bool,
+    #[serde(default)]
+    local_only: bool,
 }
 
 const DEFAULT_TASK_LOG_TAIL: usize = 50;
@@ -23,26 +25,29 @@ pub(super) async fn task_logs(
     axum::extract::Query(query): axum::extract::Query<TaskLogsQuery>,
 ) -> Result<Response, (axum::http::StatusCode, String)> {
     let tail = query.tail.unwrap_or(DEFAULT_TASK_LOG_TAIL).max(1);
+    let path = super::task_federation::task_path(
+        &task_id,
+        &format!("/logs?tail={tail}&agentView={}", query.agent_view),
+    );
+    let pipeline_item_id = match super::task_federation::resolve_task_route(
+        &state,
+        &task_id,
+        query.local_only,
+        "GET",
+        &path,
+        &serde_json::Value::Null,
+    )
+    .await?
+    {
+        super::task_federation::TaskRoute::Local(id) => id,
+        super::task_federation::TaskRoute::Remote(response) => return Ok(response),
+    };
     let db = Db::open(&state.config.db_path).map_err(|e| {
         (
             axum::http::StatusCode::INTERNAL_SERVER_ERROR,
             format!("db error: {}", e),
         )
     })?;
-    let pipeline_item_id = db
-        .resolve_pipeline_item_id(&task_id)
-        .map_err(|e| {
-            (
-                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                format!("db error: {}", e),
-            )
-        })?
-        .ok_or_else(|| {
-            (
-                axum::http::StatusCode::NOT_FOUND,
-                format!("task not found: {task_id}"),
-            )
-        })?;
     let item = db.get_pipeline_item(&pipeline_item_id).map_err(|e| {
         (
             axum::http::StatusCode::INTERNAL_SERVER_ERROR,
