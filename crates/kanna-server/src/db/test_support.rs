@@ -220,6 +220,11 @@ impl Db {
                 duration_ms INTEGER NOT NULL,
                 finished_at TEXT NOT NULL DEFAULT (datetime('now'))
             );
+            CREATE TABLE stage_run_prompt (
+                run_id TEXT PRIMARY KEY REFERENCES stage_run(id) ON DELETE CASCADE,
+                resolved_prompt TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
             CREATE TABLE stage_run (
                 id TEXT PRIMARY KEY,
                 task_id TEXT NOT NULL,

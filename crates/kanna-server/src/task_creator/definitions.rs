@@ -663,6 +663,9 @@ impl RepoDefinitions {
         for dir in &repo_agent_dirs {
             let agent_path = format!(".kanna/agents/{dir}/AGENT.md");
             if let Some(content) = read_snapshot_utf8(&self.snapshot, &agent_path)? {
+                let content = self
+                    .expand_partials(&content, &agent_path)
+                    .map_err(|error| definition_error(&self.snapshot, &agent_path, error))?;
                 definition = Some(
                     parse_agent_definition(&content)
                         .map_err(|error| definition_error(&self.snapshot, &agent_path, error))?,
@@ -676,6 +679,15 @@ impl RepoDefinitions {
                 let Some(content) = optional_builtin_agent_resource(&selector) else {
                     return Ok(None);
                 };
+                let builtin_path = format!(".kanna/agents/{}/AGENT.md", selector.role);
+                let content = self
+                    .expand_partials(&content, &builtin_path)
+                    .map_err(|error| {
+                        format!(
+                            "invalid compiled agent resource for selector `{}`: {error}",
+                            selector.display()
+                        )
+                    })?;
                 parse_agent_definition(&content).map_err(|error| {
                     format!(
                         "invalid compiled agent resource for selector `{}`: {error}",
@@ -688,12 +700,36 @@ impl RepoDefinitions {
         for dir in repo_agent_dirs {
             let extension_path = format!(".kanna/agents/{dir}/EXTEND.md");
             if let Some(extension) = read_snapshot_utf8(&self.snapshot, &extension_path)? {
+                let extension = self
+                    .expand_partials(&extension, &extension_path)
+                    .map_err(|error| definition_error(&self.snapshot, &extension_path, error))?;
                 apply_agent_extension(&mut definition, &extension)
                     .map_err(|error| definition_error(&self.snapshot, &extension_path, error))?;
                 break;
             }
         }
         Ok(Some(definition))
+    }
+
+    /// Resolve one `.kanna/partials/{name}.md` fragment: the repository's own
+    /// override first, falling back to a bundled built-in — the same
+    /// override-by-name rule `agent_optional` applies to `AGENT.md`/`EXTEND.md`
+    /// themselves.
+    fn partial(&self, name: &str) -> Result<Option<String>, String> {
+        let path = format!(".kanna/partials/{name}.md");
+        if let Some(content) = read_snapshot_utf8(&self.snapshot, &path)? {
+            return Ok(Some(content));
+        }
+        Ok(optional_builtin_partial_resource(name).map(str::to_string))
+    }
+
+    /// Expand every `{{> name}}` partial include in `content`, which was read
+    /// from `origin` (an AGENT.md/EXTEND.md path, used only for error
+    /// messages). A missing partial or a recursive include fails the whole
+    /// definition rather than silently emitting nothing or looping forever —
+    /// see the module doc comment above [`expand_partials_with_stack`].
+    fn expand_partials(&self, content: &str, origin: &str) -> Result<String, String> {
+        expand_partials_with_stack(self, content, origin, &mut Vec::new())
     }
 
     /// Every workflow name this repo offers as a *choice* — what the desktop's
@@ -834,6 +870,125 @@ impl RepoDefinitions {
         }
         Ok(resolved)
     }
+
+    /// The raw, unresolved source behind an agent selector: `AGENT.md` and,
+    /// when the repo layers one, `EXTEND.md`, exactly as authored — partial
+    /// includes left as literal `{{> name}}` tokens, no EXTEND merge applied.
+    /// This is what `kanna-cli agent show --raw` and its MCP counterpart
+    /// serve: the file(s) a repo would actually be overriding, since the
+    /// resolved prompt alone never showed a customer what to copy.
+    pub(super) fn agent_source(&self, selector: &str) -> Result<Option<AgentSourceView>, String> {
+        let selector = AgentSelector::resolve(selector, self.config.flavors.as_ref());
+        let repo_agent_dirs = agent_repo_dirs(&selector.role);
+
+        let mut agent_md = None;
+        for dir in &repo_agent_dirs {
+            let agent_path = format!(".kanna/agents/{dir}/AGENT.md");
+            if let Some(content) = read_snapshot_utf8(&self.snapshot, &agent_path)? {
+                agent_md = Some(content);
+                break;
+            }
+        }
+        let repo_has_agent = agent_md.is_some();
+        let agent_md = match agent_md {
+            Some(content) => content,
+            None => match optional_builtin_agent_resource(&selector) {
+                Some(content) => content,
+                None => return Ok(None),
+            },
+        };
+
+        let mut extend_md = None;
+        for dir in &repo_agent_dirs {
+            let extension_path = format!(".kanna/agents/{dir}/EXTEND.md");
+            if let Some(content) = read_snapshot_utf8(&self.snapshot, &extension_path)? {
+                extend_md = Some(content);
+                break;
+            }
+        }
+        let repo_has_extension = extend_md.is_some();
+
+        let builtin = is_builtin_agent_name(&selector.role);
+        let source = match (repo_has_agent, repo_has_extension, builtin) {
+            (true, _, true) | (false, true, true) => AgentDefinitionSource::RepoOverride,
+            (false, false, true) => AgentDefinitionSource::BuiltIn,
+            (true, _, false) => AgentDefinitionSource::RepoAuthored,
+            (false, _, false) => {
+                return Err(format!(
+                    "agent `{}` disappeared while resolving repository definitions",
+                    selector.display()
+                ));
+            }
+        };
+
+        Ok(Some(AgentSourceView {
+            name: canonical_builtin_agent_name(&selector.role).to_string(),
+            source,
+            agent_md,
+            extend_md,
+        }))
+    }
+}
+
+/// The raw source behind a resolved agent, for `kanna-cli agent show --raw`
+/// and its MCP counterpart. See `RepoDefinitions::agent_source`.
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct AgentSourceView {
+    pub(super) name: String,
+    pub(super) source: AgentDefinitionSource,
+    /// Raw `AGENT.md` text exactly as authored (repo override, or the
+    /// bundled built-in when the repo has none) — frontmatter and body,
+    /// partial includes left unexpanded.
+    pub(super) agent_md: String,
+    /// Raw `EXTEND.md` text, when the repo layers one over the base
+    /// definition.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) extend_md: Option<String>,
+}
+
+/// Serializable mirror of `AgentDefinition`'s frontmatter, for `agent eject`.
+/// Round-trips through `parse_agent_definition`: a file this writes reads
+/// back to the same resolved definition (partials already expanded, so there
+/// is nothing left to include).
+#[derive(Serialize)]
+struct AgentFrontmatterOut<'a> {
+    name: &'a str,
+    description: &'a str,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    agent_provider: &'a Vec<AgentSelectionEntry>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    model: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    effort: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    permission_mode: Option<&'a str>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    allowed_tools: &'a Vec<String>,
+    #[serde(skip_serializing_if = "DefinitionVisibility::is_public")]
+    visibility: DefinitionVisibility,
+}
+
+/// Render a fully-resolved `AgentDefinition` back into `AGENT.md` text, for
+/// `kanna-cli agent eject`. The output is self-contained: partials and any
+/// `EXTEND.md` are already merged into `definition.prompt`, so the file this
+/// produces has nothing left to resolve against — which is also why ejecting
+/// over an existing `EXTEND.md` is refused by the caller rather than handled
+/// here: applying that extension again on the next resolution would double it.
+pub(super) fn render_agent_md(definition: &AgentDefinition) -> Result<String, String> {
+    let frontmatter = AgentFrontmatterOut {
+        name: &definition.name,
+        description: &definition.description,
+        agent_provider: &definition.agent_providers,
+        model: definition.model.as_deref(),
+        effort: definition.effort.as_deref(),
+        permission_mode: definition.permission_mode.as_deref(),
+        allowed_tools: &definition.allowed_tools,
+        visibility: definition.visibility,
+    };
+    let yaml = serde_yaml::to_string(&frontmatter)
+        .map_err(|error| format!("failed to render agent frontmatter: {error}"))?;
+    Ok(format!("---\n{yaml}---\n\n{}\n", definition.prompt.trim()))
 }
 
 fn repo_definition_resolution_error(repo: &Repo, error: String) -> String {
@@ -1277,6 +1432,97 @@ fn split_agent_selector(agent_name: &str) -> (String, Option<String>) {
     }
     (role.to_string(), Some(flavor.to_string()))
 }
+
+/// Shared prompt fragments an `AGENT.md`/`EXTEND.md` body can include by name,
+/// with `{{> name}}`.
+///
+/// That syntax is Handlebars/Mustache's partial-include marker, chosen
+/// deliberately: agent prompts already use `$NAME`/`${NAME}` for the engine's
+/// own variable substitution (`prompt::substitute_prompt_vars`), and a
+/// double-brace marker cannot collide with that, with Markdown, or with the
+/// shell/JSON snippets these prompts routinely quote. No `.kanna/agents/*.md`
+/// file uses `{{` today.
+///
+/// A partial resolves exactly like `AGENT.md`/`EXTEND.md` themselves:
+/// `.kanna/partials/{name}.md` in the repo's definition snapshot, falling
+/// back to a bundled built-in of the same name. Resolution happens right
+/// where AGENT.md/EXTEND.md are read and merged, in `agent_optional`, so the
+/// text every later stage (var substitution, provider dispatch) sees is
+/// already flat.
+///
+/// A missing partial or a recursive/self-including chain fails the whole
+/// agent definition rather than silently emitting nothing or looping
+/// forever — an agent that quietly loses a safety paragraph, or a server that
+/// hangs expanding a cycle, is worse than a definition that refuses to
+/// resolve with a clear error naming the missing or cyclic partial.
+fn expand_partials_with_stack(
+    definitions: &RepoDefinitions,
+    content: &str,
+    origin: &str,
+    stack: &mut Vec<String>,
+) -> Result<String, String> {
+    const MAX_PARTIAL_DEPTH: usize = 16;
+
+    let mut out = String::with_capacity(content.len());
+    let mut index = 0;
+    while index < content.len() {
+        let Some(marker_offset) = content[index..].find("{{>") else {
+            out.push_str(&content[index..]);
+            break;
+        };
+        out.push_str(&content[index..index + marker_offset]);
+        let after_marker = index + marker_offset + 3;
+        let Some(end_offset) = content[after_marker..].find("}}") else {
+            return Err(format!(
+                "unterminated partial include `{{{{> ...` in {origin}"
+            ));
+        };
+        let name = content[after_marker..after_marker + end_offset].trim();
+        if name.is_empty() {
+            return Err(format!("empty partial include `{{{{>}}}}` in {origin}"));
+        }
+        if let Some(cycle_start) = stack.iter().position(|included| included == name) {
+            let mut cycle = stack[cycle_start..].to_vec();
+            cycle.push(name.to_string());
+            return Err(format!(
+                "recursive partial include in {origin}: {}",
+                cycle.join(" -> ")
+            ));
+        }
+        if stack.len() >= MAX_PARTIAL_DEPTH {
+            return Err(format!(
+                "partial include nesting exceeds {MAX_PARTIAL_DEPTH} levels while including \
+                 `{name}` in {origin}"
+            ));
+        }
+        let partial_content = definitions.partial(name)?.ok_or_else(|| {
+            format!(
+                "unknown partial `{name}` referenced in {origin} (expected \
+                 `.kanna/partials/{name}.md` in the repository or a bundled built-in)"
+            )
+        })?;
+        let partial_origin = format!(".kanna/partials/{name}.md");
+        stack.push(name.to_string());
+        let expanded =
+            expand_partials_with_stack(definitions, &partial_content, &partial_origin, stack)?;
+        stack.pop();
+        out.push_str(expanded.trim_end_matches('\n'));
+        index = after_marker + end_offset + 2;
+    }
+    Ok(out)
+}
+
+fn optional_builtin_partial_resource(name: &str) -> Option<&'static str> {
+    let path = format!(".kanna/partials/{name}.md");
+    BUILTIN_PARTIAL_RESOURCES
+        .iter()
+        .find_map(|(resource_path, content)| (*resource_path == path).then_some(*content))
+}
+
+const BUILTIN_PARTIAL_RESOURCES: &[(&str, &str)] = &[(
+    ".kanna/partials/no-ai-attribution.md",
+    include_str!("../../../../.kanna/partials/no-ai-attribution.md"),
+)];
 
 fn optional_builtin_agent_resource(selector: &AgentSelector) -> Option<String> {
     let role = canonical_builtin_agent_name(&selector.role);

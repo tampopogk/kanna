@@ -8,7 +8,7 @@ use std::env;
 
 use crate::models::{
     AddRepoRequest, BlockTaskRequest, CompleteStageRequest, CreateTaskRequest, CreateTaskResponse,
-    DependentTasksExistResponse, MergeHandoffRequest, MobileNotificationRequest,
+    DependentTasksExistResponse, EjectAgentRequest, MergeHandoffRequest, MobileNotificationRequest,
     MobileNotificationResponse, ReconcileRepoMetadataRequest, ReconcileRepoMetadataResponse,
     RepoDetail, RepoSummary, RequestRevisionRequest, ResolvedAgentDefinition, SetTaskParentRequest,
     SetTaskWorkflowRequest, SetTaskWorkflowResponse, SignalAgentRequest, SignalAgentResponse,
@@ -74,6 +74,30 @@ pub(crate) fn signal_agent_path(repo_id: &str, agent: &str) -> String {
         "/v1/repos/{}/agents/{}/signal",
         encode_path_segment(repo_id),
         encode_path_segment(agent)
+    )
+}
+
+/// Same route `kanna_show_agent`/the desktop app read the resolved definition
+/// from; `raw` adds the query param that switches it to the unresolved
+/// AGENT.md/EXTEND.md source instead.
+pub(crate) fn agent_definition_path(repo_id: &str, agent_selector: &str, raw: bool) -> String {
+    let base = format!(
+        "/v1/repos/{}/kanna-definitions/agents/{}",
+        encode_path_segment(repo_id),
+        encode_path_segment(agent_selector)
+    );
+    if raw {
+        format!("{base}?raw=true")
+    } else {
+        base
+    }
+}
+
+pub(crate) fn agent_eject_path(repo_id: &str, agent_selector: &str) -> String {
+    format!(
+        "/v1/repos/{}/kanna-definitions/agents/{}/eject",
+        encode_path_segment(repo_id),
+        encode_path_segment(agent_selector)
     )
 }
 
@@ -537,6 +561,33 @@ pub(crate) async fn list_repo_agents_via_api(
     repo_id: &str,
 ) -> Result<Vec<ResolvedAgentDefinition>, String> {
     get_json(base_url, &repo_agent_list_path(repo_id)).await
+}
+
+pub(crate) async fn show_agent_via_api(
+    base_url: &str,
+    repo_id: &str,
+    agent_selector: &str,
+    raw: bool,
+) -> Result<Value, String> {
+    get_json(
+        base_url,
+        &agent_definition_path(repo_id, agent_selector, raw),
+    )
+    .await
+}
+
+pub(crate) async fn eject_agent_via_api(
+    base_url: &str,
+    repo_id: &str,
+    agent_selector: &str,
+    request: &EjectAgentRequest,
+) -> Result<Value, String> {
+    post_json(
+        base_url,
+        &agent_eject_path(repo_id, agent_selector),
+        request,
+    )
+    .await
 }
 
 pub(crate) async fn list_tasks_via_api(base_url: &str) -> Result<Vec<TaskSummary>, String> {

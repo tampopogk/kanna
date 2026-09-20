@@ -8,6 +8,7 @@ use super::super::provider::{
 };
 use super::super::AgentInstructions;
 use super::super::SpawnAgentOverrides;
+use super::super::{definitions, eject_repo_agent_definition, RepoDefinitionsCache};
 use super::*;
 
 fn default_base_task_request() -> CreateTaskRequest {
@@ -3197,6 +3198,212 @@ fn read_agent_extension_rejects_malformed_provider_frontmatter() {
         );
         let _ = std::fs::remove_dir_all(&repo_root);
     }
+}
+
+fn write_partial(repo_root: &std::path::Path, name: &str, content: &str) {
+    let partials_dir = repo_root.join(".kanna/partials");
+    std::fs::create_dir_all(&partials_dir).unwrap();
+    std::fs::write(partials_dir.join(format!("{name}.md")), content).unwrap();
+}
+
+#[test]
+fn partial_include_expands_into_agent_prompt() {
+    let repo_root = write_agent_repo(
+        "partial-basic",
+        "---\nname: reviewer\ndescription: Reviews changes\nagent_provider: claude\n---\nBefore.\n\n{{> scope-rules}}\n\nAfter.",
+        None,
+    );
+    write_partial(&repo_root, "scope-rules", "Shared scope text.");
+    publish_origin_main(&repo_root, "publish partial fixture");
+
+    let definition = resolve_test_agent_definition(&repo_root, "reviewer").unwrap();
+
+    assert!(
+        definition.prompt.contains("Shared scope text."),
+        "{}",
+        definition.prompt
+    );
+    assert!(
+        !definition.prompt.contains("{{>"),
+        "partial marker must not survive resolution: {}",
+        definition.prompt
+    );
+}
+
+#[test]
+fn partial_include_expands_inside_extend_md() {
+    let extension = "{{> scope-rules}}";
+    let repo_root = write_agent_repo(
+        "partial-extend",
+        "---\nname: reviewer\ndescription: Reviews changes\nagent_provider: claude\n---\nBase prompt.",
+        Some(extension),
+    );
+    write_partial(&repo_root, "scope-rules", "Extended scope text.");
+    publish_origin_main(&repo_root, "publish partial extension fixture");
+
+    let definition = resolve_test_agent_definition(&repo_root, "reviewer").unwrap();
+
+    assert!(definition.prompt.contains("Base prompt."));
+    assert!(definition.prompt.contains("Extended scope text."));
+}
+
+#[test]
+fn repo_partial_overrides_the_built_in_of_the_same_name() {
+    let repo_root = write_agent_repo(
+        "partial-override",
+        "---\nname: reviewer\ndescription: Reviews changes\nagent_provider: claude\n---\n{{> no-ai-attribution}}",
+        None,
+    );
+    write_partial(
+        &repo_root,
+        "no-ai-attribution",
+        "custom repo-authored attribution rule.",
+    );
+    publish_origin_main(&repo_root, "publish partial override fixture");
+
+    let definition = resolve_test_agent_definition(&repo_root, "reviewer").unwrap();
+
+    assert!(definition
+        .prompt
+        .contains("custom repo-authored attribution rule."));
+    assert!(!definition.prompt.contains("Co-Authored-By"));
+}
+
+#[test]
+fn built_in_agent_resolves_its_partial_include_against_the_bundled_built_in() {
+    // `commit` ships with `{{> no-ai-attribution}}` in its bundled AGENT.md
+    // (see `.kanna/agents/commit/AGENT.md`); an empty repo has no override for
+    // either the agent or the partial, so this exercises the compiled
+    // built-in partial fallback end to end.
+    let repo_root = init_git_repo_without_provider_fixtures("partial-builtin-fallback");
+    publish_origin_main(&repo_root, "publish empty repo");
+
+    let definition = resolve_test_agent_definition(&repo_root, "commit").unwrap();
+
+    assert!(
+        definition.prompt.contains("Co-Authored-By"),
+        "{}",
+        definition.prompt
+    );
+    assert!(!definition.prompt.contains("{{>"));
+}
+
+#[test]
+fn missing_partial_include_fails_the_whole_definition() {
+    let repo_root = write_agent_repo(
+        "partial-missing",
+        "---\nname: reviewer\ndescription: Reviews changes\nagent_provider: claude\n---\n{{> does-not-exist}}",
+        None,
+    );
+    publish_origin_main(&repo_root, "publish missing partial fixture");
+
+    let error = resolve_test_agent_definition(&repo_root, "reviewer")
+        .expect_err("a missing partial must fail resolution rather than emit nothing");
+
+    assert!(error.contains("does-not-exist"), "{error}");
+    assert!(error.contains("unknown partial"), "{error}");
+}
+
+#[test]
+fn recursive_partial_include_fails_the_whole_definition() {
+    let repo_root = write_agent_repo(
+        "partial-recursive",
+        "---\nname: reviewer\ndescription: Reviews changes\nagent_provider: claude\n---\n{{> a}}",
+        None,
+    );
+    write_partial(&repo_root, "a", "{{> b}}");
+    write_partial(&repo_root, "b", "{{> a}}");
+    publish_origin_main(&repo_root, "publish recursive partial fixture");
+
+    let error = resolve_test_agent_definition(&repo_root, "reviewer")
+        .expect_err("a partial cycle must fail resolution rather than hang or loop");
+
+    assert!(error.contains("recursive"), "{error}");
+}
+
+#[test]
+fn agent_source_reports_raw_unexpanded_text_and_source() {
+    let repo_root = write_agent_repo(
+        "raw-source",
+        "---\nname: reviewer\ndescription: Reviews changes\nagent_provider: claude\n---\n{{> no-ai-attribution}}",
+        None,
+    );
+    publish_origin_main(&repo_root, "publish raw source fixture");
+
+    let definitions = RepoDefinitions::resolve(&definition_repo(&repo_root, "main")).unwrap();
+    let source = definitions.agent_source("reviewer").unwrap().unwrap();
+
+    assert!(
+        source.agent_md.contains("{{> no-ai-attribution}}"),
+        "raw source must leave partial markers unexpanded: {}",
+        source.agent_md
+    );
+    assert!(source.extend_md.is_none());
+}
+
+#[test]
+fn render_agent_md_round_trips_through_parse_agent_definition() {
+    let repo_root = write_agent_repo(
+        "render-round-trip",
+        "---\nname: reviewer\ndescription: Reviews changes\nagent_provider: claude\nmodel: opus\n---\n{{> no-ai-attribution}}",
+        None,
+    );
+    publish_origin_main(&repo_root, "publish render round-trip fixture");
+
+    let definition = resolve_test_agent_definition(&repo_root, "reviewer").unwrap();
+    let rendered = definitions::render_agent_md(&definition).unwrap();
+
+    assert!(!rendered.contains("{{>"), "{rendered}");
+    assert!(rendered.contains("Co-Authored-By"), "{rendered}");
+
+    // Round-trip through a fresh fixture repo, the same path `agent eject`
+    // relies on: writing `rendered` back out must resolve to the identical
+    // definition, with nothing left to expand.
+    let reparsed_repo = write_agent_repo("render-round-trip-reparsed", &rendered, None);
+    let reparsed = resolve_test_agent_definition(&reparsed_repo, "reviewer").unwrap();
+    assert_eq!(reparsed.name, definition.name);
+    assert_eq!(reparsed.description, definition.description);
+    assert_eq!(reparsed.prompt, definition.prompt);
+    assert_eq!(reparsed.model, definition.model);
+}
+
+#[test]
+fn eject_writes_resolved_definition_and_requires_force_to_overwrite() {
+    let repo_root = init_git_repo_without_provider_fixtures("eject-basic");
+    publish_origin_main(&repo_root, "publish empty repo for eject");
+    let repo = definition_repo(&repo_root, "main");
+    let cache = RepoDefinitionsCache::default();
+
+    let result = eject_repo_agent_definition(&cache, &repo, "commit", false).unwrap();
+    assert_eq!(result.path, ".kanna/agents/commit/AGENT.md");
+    assert!(!result.overwritten);
+    let written = std::fs::read_to_string(repo_root.join(&result.path)).unwrap();
+    assert!(written.contains("Co-Authored-By"), "{written}");
+    assert!(!written.contains("{{>"), "{written}");
+
+    let error = eject_repo_agent_definition(&cache, &repo, "commit", false)
+        .expect_err("ejecting again without force must refuse to overwrite");
+    assert!(error.to_string().contains("force"), "{error}");
+
+    let result = eject_repo_agent_definition(&cache, &repo, "commit", true).unwrap();
+    assert!(result.overwritten);
+}
+
+#[test]
+fn eject_refuses_when_an_extend_md_already_exists() {
+    let repo_root = write_agent_repo(
+        "eject-extend-conflict",
+        "---\nname: reviewer\ndescription: Reviews changes\nagent_provider: claude\n---\nBase prompt.",
+        Some("Extended prompt."),
+    );
+    publish_origin_main(&repo_root, "publish eject/extend conflict fixture");
+    let repo = definition_repo(&repo_root, "main");
+    let cache = RepoDefinitionsCache::default();
+
+    let error = eject_repo_agent_definition(&cache, &repo, "reviewer", false)
+        .expect_err("ejecting over an existing EXTEND.md must be refused");
+
+    assert!(error.to_string().contains("EXTEND.md"), "{error}");
 }
 
 #[test]

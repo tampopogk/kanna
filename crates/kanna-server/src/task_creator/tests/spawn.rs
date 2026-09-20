@@ -54,6 +54,7 @@ async fn merge_pty_spawns_with_ordinary_input_policy() {
         recovery_snapshot: None,
         deferred_setup: Vec::new(),
         setup_record: None,
+        resolved_prompt: String::new(),
         session: PreparedSessionSpawn::Pty {
             agent_executable: None,
             executable: "/bin/cat".to_string(),
@@ -132,6 +133,7 @@ async fn protected_pty_negotiation_disconnect_is_recorded_before_acknowledgement
         recovery_snapshot: None,
         deferred_setup: Vec::new(),
         setup_record: None,
+        resolved_prompt: String::new(),
         session: PreparedSessionSpawn::Pty {
             agent_executable: None,
             executable: "/bin/cat".to_string(),
@@ -213,6 +215,7 @@ async fn spawn_prepared_task_sends_spawn_agent_for_agent_sessions() {
         recovery_snapshot: None,
         deferred_setup: Vec::new(),
         setup_record: None,
+        resolved_prompt: String::new(),
         session: PreparedSessionSpawn::Agent {
             agent_provider: DaemonAgentProvider::Claude,
             prompt: "Do work".to_string(),
@@ -294,6 +297,7 @@ async fn spawn_prepared_task_records_running_stage_run_after_session_created() {
         recovery_snapshot: None,
         deferred_setup: Vec::new(),
         setup_record: None,
+        resolved_prompt: String::new(),
         session: PreparedSessionSpawn::Agent {
             agent_provider: DaemonAgentProvider::Claude,
             prompt: "Do work".to_string(),
@@ -387,6 +391,7 @@ async fn lost_spawn_response_is_classified_after_ack_and_never_rolled_back_as_re
         recovery_snapshot: None,
         deferred_setup: Vec::new(),
         setup_record: None,
+        resolved_prompt: String::new(),
         session: PreparedSessionSpawn::Agent {
             agent_provider: DaemonAgentProvider::Claude,
             prompt: "Do work".to_string(),
@@ -506,6 +511,7 @@ async fn rejected_spawn_rolls_back_run_scoped_completion_artifacts_immediately()
         recovery_snapshot: None,
         deferred_setup: Vec::new(),
         setup_record: None,
+        resolved_prompt: String::new(),
         session: PreparedSessionSpawn::Agent {
             agent_provider: DaemonAgentProvider::Claude,
             prompt: "Merge work".to_string(),

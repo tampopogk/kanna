@@ -36,11 +36,13 @@ mod revisions;
 mod serviced;
 mod settings;
 mod snapshot;
+pub(crate) mod stage_run_prompt;
 pub(crate) mod stage_runs;
 mod standing_constraints;
 pub(crate) mod terminal_archives;
 pub use terminal_archives::AgentTerminalAttempt;
 pub(crate) mod workspace_setup;
+pub use stage_run_prompt::StageRunPrompt;
 pub use workspace_setup::{WorkspaceSetupOutcome, WorkspaceSetupRun};
 mod task_events;
 mod task_inputs;
@@ -209,6 +211,7 @@ pub(crate) const CURRENT_SCHEMA_MIGRATIONS: &[&str] = &[
     "089_task_serviced_watermark",
     "090_standing_constraint",
     "091_claude_channel",
+    "092_stage_run_prompt",
 ];
 
 #[derive(Debug, Serialize)]
@@ -2584,6 +2587,24 @@ fn run_schema_migrations(conn: &Connection) -> Result<(), rusqlite::Error> {
     )?;
 
     run_migration(conn, "091_claude_channel", claude_channel::create_schema)?;
+
+    // The fully-resolved prompt text a stage run was actually spawned with —
+    // partials expanded, `$VAR` substitution applied — so an agent that
+    // behaves strangely can be debugged against what it was told rather than
+    // reconstructed from the definition files and guesswork. One row per
+    // stage run, kept out of `get_task`/`get_tasks` like `workspace_setup_run`
+    // beside it; addressed only through its own endpoint.
+    run_migration(conn, "092_stage_run_prompt", |conn| {
+        conn.execute_batch(
+            r#"
+            CREATE TABLE IF NOT EXISTS stage_run_prompt (
+              run_id TEXT PRIMARY KEY REFERENCES stage_run(id) ON DELETE CASCADE,
+              resolved_prompt TEXT NOT NULL,
+              created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            "#,
+        )
+    })?;
 
     Ok(())
 }

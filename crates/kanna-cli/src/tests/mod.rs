@@ -449,6 +449,28 @@ fn typed_tool_surfaces() -> BTreeMap<&'static str, TypedToolSurface> {
             },
         ),
         (
+            "kanna_show_agent",
+            TypedToolSurface {
+                command_path: &["repo", "agent", "show"],
+                param_args: &[
+                    ("repo_id", "repo_id"),
+                    ("agent_selector", "agent"),
+                    ("raw", "raw"),
+                ],
+            },
+        ),
+        (
+            "kanna_eject_agent",
+            TypedToolSurface {
+                command_path: &["repo", "agent", "eject"],
+                param_args: &[
+                    ("repo_id", "repo_id"),
+                    ("agent_selector", "agent"),
+                    ("force", "force"),
+                ],
+            },
+        ),
+        (
             "kanna_set_task_parent",
             TypedToolSurface {
                 command_path: &["task", "set-parent"],

@@ -1,3 +1,4 @@
+use super::lan_trust::DesktopLocalAccess;
 use super::state::AppState;
 use crate::db::{Db, PipelineItem, RepoPatch};
 use crate::mobile_api::MobileApi;
@@ -756,16 +757,83 @@ pub(super) async fn get_repo_workflow_definition(
     .map(Json)
 }
 
+#[derive(serde::Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct GetAgentDefinitionQuery {
+    /// `true` serves the raw, unresolved `AGENT.md`/`EXTEND.md` source instead
+    /// of the resolved definition (partials expanded, EXTEND merged) — the
+    /// same distinction `kanna-cli agent show --raw` and its MCP counterpart
+    /// expose. Wire-compatible with every existing caller: omitting it (the
+    /// desktop app's own usage) is unchanged.
+    #[serde(default)]
+    raw: bool,
+}
+
+/// Untagged so the wire shape is exactly `RevisionedAgentDefinition` or
+/// exactly `RevisionedAgentSource` — never a wrapper — keeping this endpoint's
+/// existing (non-`raw`) callers, chiefly the desktop app, byte-for-byte
+/// unchanged.
+#[derive(serde::Serialize)]
+#[serde(untagged)]
+pub(super) enum AgentDefinitionOrSource {
+    Definition(crate::task_creator::RevisionedAgentDefinition),
+    Source(crate::task_creator::RevisionedAgentSource),
+}
+
 pub(super) async fn get_repo_agent_definition(
     State(state): State<Arc<AppState>>,
     Path((repo_id, agent_selector)): Path<(String, String)>,
-) -> Result<Json<crate::task_creator::RevisionedAgentDefinition>, HttpError> {
+    Query(query): Query<GetAgentDefinitionQuery>,
+) -> Result<Json<AgentDefinitionOrSource>, HttpError> {
     run_blocking_http(move || {
         let repo = get_definition_repo(&state, &repo_id)?;
-        crate::task_creator::load_repo_agent_definition(
+        if query.raw {
+            crate::task_creator::load_repo_agent_source(
+                &state.repo_definitions,
+                &repo,
+                &agent_selector,
+            )
+            .map(AgentDefinitionOrSource::Source)
+            .map_err(map_definition_lookup_error)
+        } else {
+            crate::task_creator::load_repo_agent_definition(
+                &state.repo_definitions,
+                &repo,
+                &agent_selector,
+            )
+            .map(AgentDefinitionOrSource::Definition)
+            .map_err(map_definition_lookup_error)
+        }
+    })
+    .await
+    .map(Json)
+}
+
+#[derive(serde::Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct EjectAgentRequest {
+    #[serde(default)]
+    force: bool,
+}
+
+// Writes a file into the open repository's own working tree, so — unlike
+// every other read-only definitions route — it is `DesktopLocalAccess`
+// (loopback-only), never LAN-paired: a paired sibling device has no business
+// modifying this desktop's checkout.
+pub(super) async fn eject_repo_agent_definition(
+    _desktop: DesktopLocalAccess,
+    State(state): State<Arc<AppState>>,
+    Path((repo_id, agent_selector)): Path<(String, String)>,
+    Json(request): Json<EjectAgentRequest>,
+) -> Result<Json<crate::task_creator::AgentEjectResult>, HttpError> {
+    let force = request.force;
+    run_blocking_http(move || {
+        let repo = get_definition_repo(&state, &repo_id)?;
+        crate::task_creator::eject_repo_agent_definition(
             &state.repo_definitions,
             &repo,
             &agent_selector,
+            force,
         )
         .map_err(map_definition_lookup_error)
     })

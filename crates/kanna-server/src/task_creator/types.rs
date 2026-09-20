@@ -114,6 +114,10 @@ pub(crate) struct PreparedTaskSpawn {
     /// The setup stream this spawn produced, bound to its stage run once that
     /// row exists.
     pub(super) setup_record: Option<crate::db::WorkspaceSetupOutcome>,
+    /// The fully-resolved prompt this spawn was actually given — partials and
+    /// `$VAR` substitution already applied — bound to its stage run once that
+    /// row exists. See `crate::db::stage_run_prompt`.
+    pub(super) resolved_prompt: String,
 }
 
 impl PreparedTaskSpawn {
@@ -209,6 +213,9 @@ pub(crate) struct PreparedStageRerun {
     pub(super) setup_record: Option<crate::db::WorkspaceSetupOutcome>,
     pub(super) recovery_snapshot: Option<crate::mobile_api::CreateTaskRecoverySnapshot>,
     pub(super) session: PreparedSessionSpawn,
+    /// The fully-resolved prompt this rerun was actually given, bound to its
+    /// stage run once that row exists. See `crate::db::stage_run_prompt`.
+    pub(super) resolved_prompt: String,
 }
 
 /// A stage-run workspace forked from the task's committed tip: swaps get a
@@ -338,6 +345,10 @@ pub(crate) struct PreparedStageRunSpawn {
     /// The setup stream this run's workspace produced, kept whether setup
     /// succeeded or failed and bound to the run row the spawn records.
     pub(super) setup_record: Option<crate::db::WorkspaceSetupOutcome>,
+    /// The fully-resolved prompt this run was actually given — partials and
+    /// `$VAR` substitution already applied — bound to its stage run once that
+    /// row exists. See `crate::db::stage_run_prompt`.
+    pub(super) resolved_prompt: String,
     /// Test seam: when armed, workspace setup reports its hard timeout. See
     /// `workspace_commands::run_workspace_command_with_armed_timeout_for_test`.
     #[cfg(test)]

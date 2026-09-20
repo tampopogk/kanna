@@ -1,16 +1,17 @@
 use std::process;
 
 use crate::api::{
-    add_repo_via_api, clear_standing_constraint_via_api, get_task_via_api,
+    add_repo_via_api, clear_standing_constraint_via_api, eject_agent_via_api, get_task_via_api,
     list_repo_agents_via_api, list_repos_via_api, list_standing_constraints_via_api,
-    reconcile_repo_metadata_via_api, set_standing_constraint_via_api, signal_agent_via_api,
+    reconcile_repo_metadata_via_api, set_standing_constraint_via_api, show_agent_via_api,
+    signal_agent_via_api,
 };
 use crate::commands::print_json;
 use crate::config::resolve_guide_task_id;
 use crate::config::resolve_server_base_url_from_env;
 use crate::models::{
-    AddRepoRequest, ClearStandingConstraintRequest, ReconcileRepoMetadataRequest,
-    SetStandingConstraintRequest, SignalAgentRequest,
+    AddRepoRequest, ClearStandingConstraintRequest, EjectAgentRequest,
+    ReconcileRepoMetadataRequest, SetStandingConstraintRequest, SignalAgentRequest,
 };
 use crate::{RepoAgentCommands, RepoCommands, RepoConstraintCommands};
 
@@ -121,19 +122,59 @@ pub(crate) async fn run(command: RepoCommands) {
                     process::exit(1);
                 }
             }
+            RepoAgentCommands::Show {
+                repo_id,
+                agent,
+                raw,
+                server_url,
+            } => {
+                let base_url = resolve_server_base_url_from_env(server_url.as_deref());
+                let repo_id = resolve_default_repo_id(&base_url, repo_id).await;
+                let definition = show_agent_via_api(&base_url, &repo_id, &agent, raw)
+                    .await
+                    .unwrap_or_else(|e| {
+                        eprintln!("Error: {e}");
+                        process::exit(1);
+                    });
+                if let Err(e) = print_json(&definition) {
+                    eprintln!("Error: {e}");
+                    process::exit(1);
+                }
+            }
+            RepoAgentCommands::Eject {
+                repo_id,
+                agent,
+                force,
+                server_url,
+            } => {
+                let base_url = resolve_server_base_url_from_env(server_url.as_deref());
+                let repo_id = resolve_default_repo_id(&base_url, repo_id).await;
+                let request = EjectAgentRequest { force };
+                let result = eject_agent_via_api(&base_url, &repo_id, &agent, &request)
+                    .await
+                    .unwrap_or_else(|e| {
+                        eprintln!("Error: {e}");
+                        process::exit(1);
+                    });
+                if let Err(e) = print_json(&result) {
+                    eprintln!("Error: {e}");
+                    process::exit(1);
+                }
+            }
         },
         RepoCommands::Constraint { command } => run_constraint(command).await,
     }
 }
 
-/// Resolve the repository a constraint call is about.
+/// Resolve the repository a call is about, when the CLI accepts an optional
+/// `--repo-id`.
 ///
 /// Repository defaulting is shared tool policy (`repo_context_task_id`), so the
 /// typed CLI resolves it the same way the catalog clients do: an explicit
 /// `--repo-id` wins, otherwise the calling task session's repository, otherwise
 /// the caller is told plainly rather than sending a request that cannot name a
 /// repository.
-async fn resolve_constraint_repo_id(base_url: &str, repo_id: Option<String>) -> String {
+async fn resolve_default_repo_id(base_url: &str, repo_id: Option<String>) -> String {
     if let Some(repo_id) = repo_id.filter(|repo_id| !repo_id.trim().is_empty()) {
         return repo_id;
     }
@@ -164,7 +205,7 @@ async fn run_constraint(command: RepoConstraintCommands) {
             server_url,
         } => {
             let base_url = resolve_server_base_url_from_env(server_url.as_deref());
-            let repo_id = resolve_constraint_repo_id(&base_url, repo_id).await;
+            let repo_id = resolve_default_repo_id(&base_url, repo_id).await;
             let constraints =
                 list_standing_constraints_via_api(&base_url, &repo_id, include_cleared, tail)
                     .await
@@ -187,7 +228,7 @@ async fn run_constraint(command: RepoConstraintCommands) {
             server_url,
         } => {
             let base_url = resolve_server_base_url_from_env(server_url.as_deref());
-            let repo_id = resolve_constraint_repo_id(&base_url, repo_id).await;
+            let repo_id = resolve_default_repo_id(&base_url, repo_id).await;
             let request = SetStandingConstraintRequest {
                 repo_id,
                 kind,

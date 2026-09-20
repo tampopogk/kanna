@@ -159,6 +159,13 @@ pub(crate) struct RevisionedAgentDefinition {
     definition: definitions::AgentDefinition,
 }
 
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct RevisionedAgentSource {
+    revision: Option<String>,
+    source: definitions::AgentSourceView,
+}
+
 /// One entry of a stage's ordered provider list, already split into the
 /// provider and the model and effort written beside it.
 ///
@@ -432,6 +439,117 @@ pub(crate) fn load_repo_agent_definition(
             revision: definitions.revision().map(str::to_string),
             definition,
         })
+    })
+}
+
+/// The raw, unresolved source behind an agent selector — `AGENT.md` and, when
+/// the repo layers one, `EXTEND.md` — exactly as authored, with partial
+/// includes left as literal `{{> name}}` tokens. Backs
+/// `kanna-cli agent show --raw` and its MCP counterpart, so a repo owner can
+/// see exactly what file(s) to copy into `.kanna/agents/<name>/` before
+/// overriding a built-in.
+pub(crate) fn load_repo_agent_source(
+    cache: &RepoDefinitionsCache,
+    repo: &Repo,
+    agent_selector: &str,
+) -> Result<RevisionedAgentSource, DefinitionLookupError> {
+    validate_agent_selector(agent_selector)?;
+    cache.with_definitions(repo, |definitions| {
+        let source = definitions
+            .agent_source(agent_selector)
+            .map_err(DefinitionLookupError::Other)?
+            .ok_or_else(|| {
+                DefinitionLookupError::NotFound(format!(
+                    "agent definition not found: {agent_selector}"
+                ))
+            })?;
+        Ok(RevisionedAgentSource {
+            revision: definitions.revision().map(str::to_string),
+            source,
+        })
+    })
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct AgentEjectResult {
+    /// Path written, relative to the repository root.
+    path: String,
+    /// Whether an existing file at that path was replaced.
+    overwritten: bool,
+}
+
+/// Write an agent's fully-resolved `AGENT.md` — partials expanded, any
+/// `EXTEND.md` merged in — into the open repository's working tree, so a
+/// customer can see exactly what ran and edit it directly instead of guessing
+/// at a bundled built-in they never had the source for. Backs
+/// `kanna-cli agent eject`.
+///
+/// Refused when the repo already layers an `EXTEND.md` over this agent: the
+/// ejected file would be extended a second time on the next resolution,
+/// silently doubling that text. Refused when a file already sits at the
+/// target path unless `force` is set, so ejecting never silently discards a
+/// customization the repo already wrote.
+pub(crate) fn eject_repo_agent_definition(
+    cache: &RepoDefinitionsCache,
+    repo: &Repo,
+    agent_selector: &str,
+    force: bool,
+) -> Result<AgentEjectResult, DefinitionLookupError> {
+    validate_agent_selector(agent_selector)?;
+    let (agent_md, canonical_name) = cache.with_definitions(repo, |definitions| {
+        let definition = definitions
+            .agent_optional(agent_selector)
+            .map_err(DefinitionLookupError::Other)?
+            .ok_or_else(|| {
+                DefinitionLookupError::NotFound(format!(
+                    "agent definition not found: {agent_selector}"
+                ))
+            })?;
+        let source = definitions
+            .agent_source(agent_selector)
+            .map_err(DefinitionLookupError::Other)?
+            .ok_or_else(|| {
+                DefinitionLookupError::NotFound(format!(
+                    "agent definition not found: {agent_selector}"
+                ))
+            })?;
+        if source.extend_md.is_some() {
+            return Err(DefinitionLookupError::Other(format!(
+                "cannot eject `{agent_selector}`: `.kanna/agents/{}/EXTEND.md` already exists \
+                 and would extend the ejected file a second time on the next resolution; \
+                 remove or fold it into the ejected AGENT.md first",
+                source.name
+            )));
+        }
+        let agent_md =
+            definitions::render_agent_md(&definition).map_err(DefinitionLookupError::Other)?;
+        Ok((agent_md, source.name))
+    })?;
+
+    let relative_path = format!(".kanna/agents/{canonical_name}/AGENT.md");
+    let absolute_path = std::path::Path::new(&repo.path).join(&relative_path);
+    let overwritten = absolute_path.exists();
+    if overwritten && !force {
+        return Err(DefinitionLookupError::Other(format!(
+            "refusing to overwrite existing `{relative_path}`; pass force to replace it"
+        )));
+    }
+    if let Some(parent) = absolute_path.parent() {
+        std::fs::create_dir_all(parent).map_err(|error| {
+            DefinitionLookupError::Other(format!(
+                "failed to create `{}`: {error}",
+                parent.display()
+            ))
+        })?;
+    }
+    std::fs::write(&absolute_path, agent_md).map_err(|error| {
+        DefinitionLookupError::Other(format!("failed to write `{relative_path}`: {error}"))
+    })?;
+
+    Ok(AgentEjectResult {
+        path: relative_path,
+        overwritten,
     })
 }
 
@@ -896,6 +1014,7 @@ pub(crate) fn prepare_rerun_stage_for_api(
         .unwrap_or_default();
     let defer_headless_setup = agent_type == AgentSessionType::Agent && !stage_setup.is_empty();
     let stage_run_model = model.clone();
+    let resolved_prompt = prompt.clone();
     let mut setup_record = None;
     let (session, provider_session_id) = build_prepared_session(
         provider,
@@ -950,6 +1069,7 @@ pub(crate) fn prepare_rerun_stage_for_api(
         setup_record,
         recovery_snapshot: None,
         session,
+        resolved_prompt,
     })
 }
 
@@ -1040,6 +1160,7 @@ pub(crate) fn prepare_create_task_repair_for_api(
         let defer_headless_setup =
             agent_type == AgentSessionType::Agent && !resolved.setup.is_empty();
         let mut setup_record = None;
+        let resolved_prompt = resolved.final_prompt.clone();
         let (mut session, provider_session_id) = build_prepared_session(
             provider,
             agent_type,
@@ -1100,6 +1221,7 @@ pub(crate) fn prepare_create_task_repair_for_api(
             setup_record,
             recovery_snapshot: resolved.recovery_snapshot,
             session,
+            resolved_prompt,
         }));
     }
 
@@ -1168,6 +1290,7 @@ pub(crate) fn prepare_create_task_repair_for_api(
     let effort = resolved.effort_for(provider);
     let autocompact = resolved.autocompact_for(provider);
     let mut setup_record = None;
+    let resolved_prompt = resolved.final_prompt.clone();
     let (mut session, provider_session_id) = build_prepared_session(
         provider,
         agent_type,
@@ -1227,6 +1350,7 @@ pub(crate) fn prepare_create_task_repair_for_api(
         setup_record,
         recovery_snapshot: resolved.recovery_snapshot,
         session,
+        resolved_prompt,
     }))
 }
 
@@ -1576,6 +1700,7 @@ pub(in crate::task_creator) fn prepare_stage_run_spawn(
         session,
         deferred_setup,
         setup_record: None,
+        resolved_prompt: final_prompt,
         #[cfg(test)]
         setup_timeout_signal: None,
     })
@@ -3043,6 +3168,7 @@ pub(crate) fn prepare_start_dormant_task_for_api(
     let stage_run_model = model.clone();
     let stage_run_effort = effort.clone();
     let mut setup_record = None;
+    let resolved_prompt = final_prompt.clone();
     let (session, provider_session_id) = match build_prepared_session(
         provider,
         agent_type,
@@ -3109,6 +3235,7 @@ pub(crate) fn prepare_start_dormant_task_for_api(
         },
         setup_record,
         session,
+        resolved_prompt,
     }))
 }
 
@@ -3442,6 +3569,7 @@ fn prepare_task_spawn_with_error(
         deferred_setup,
         setup_record,
         session,
+        resolved_prompt: resolved.final_prompt,
     })
 }
 
