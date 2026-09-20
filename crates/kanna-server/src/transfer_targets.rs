@@ -512,7 +512,11 @@ mod tests {
 
         let error = plan_route(target, Some("cloud")).expect_err("a stale route cannot carry work");
         assert!(error.contains("credential_expired"), "{error}");
-        assert!(error.contains("signed-in Kanna desktop app"), "{error}");
+        // What matters is that the refusal names the act a person can perform,
+        // not how the sentence around it is worded — the phrase naming the
+        // signed-in desktop has already been reworded once under this
+        // assertion.
+        assert!(error.contains("sign in there"), "{error}");
 
         let error = plan_route(target, None).expect_err("auto must not paper over it either");
         assert!(error.contains("credential_expired"), "{error}");
