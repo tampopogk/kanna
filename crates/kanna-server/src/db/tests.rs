@@ -1179,17 +1179,20 @@ fn an_incoming_transfer_can_be_failed_from_every_stage_an_import_dies_at() {
 fn incoming_transfer_state_machine_is_durable_and_provenance_is_idempotent() {
     let path = Db::test_db_path("incoming-transfer-state-machine");
     let db = Db::open_for_tests(&path).expect("open test db");
-    db.conn
-        .execute_batch(
-            "CREATE TABLE task_transfer_provenance (
-               pipeline_item_id TEXT PRIMARY KEY,
-               source_peer_id TEXT NOT NULL,
-               source_task_id TEXT NOT NULL,
-               source_machine_task_label TEXT,
-               imported_at TEXT NOT NULL DEFAULT (datetime('now'))
-             );",
-        )
-        .expect("create provenance table");
+    // The imported task the provenance row below belongs to.
+    // `task_transfer_provenance.pipeline_item_id` is a real foreign key, and
+    // the test schema owns the table now, so the row has to exist.
+    db.insert_test_repo("repo-1", "Repo One")
+        .expect("insert repo");
+    db.insert_test_pipeline_item(
+        "task-local",
+        "repo-1",
+        "Imported task",
+        None,
+        "in progress",
+        "2026-07-26 09:00:00",
+    )
+    .expect("insert imported task");
     db.insert_test_task_transfer("transfer-1", "incoming", "pending", Some("{}"))
         .expect("insert transfer");
     drop(db);

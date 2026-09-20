@@ -43,11 +43,25 @@ fn insert_running_codex_attempt(db: &Db, repo_root: &std::path::Path, id: &str) 
     insert_running_review_run(db, repo_root, id, "codex", Some("gpt-6-astra"), Some("low"));
 }
 
-/// Every event the real subscription selection would deliver for this task.
+/// Every durable event row the real subscription selection would deliver for
+/// this task.
+///
+/// The observation mode is the *durable feed*, and both parameters that
+/// choose it are load-bearing. `from=beginning` is the deliberate opt-in to
+/// reading below the tail: a cursorless wait defaults to `from=now`, so
+/// without it the checkpoint is established above an event that was already
+/// appended and this is structurally unable to see it.
+/// `includeCurrentActivity=false` keeps the cold-start snapshot out, so what
+/// comes back is the durable rows themselves and nothing else — which is
+/// what this test is asserting about. (The snapshot is the *other* channel a
+/// cold-starting supervisor reads; it is not what a refusal's durable record
+/// is checked through.)
 ///
 /// Driven through the HTTP wait with `orchestrationNotifications=true`, which
-/// is the surface `kanna_subscribe_events` and `kanna_wait_events` sit on, so
-/// this answers the question a manager actually has: would this have woken me?
+/// is the surface `kanna_subscribe_events` and `kanna_wait_events` sit on.
+/// That flag also keeps this task's burst out of the collapse into a
+/// synthetic `task.runtime_changed` state row, so the rows below arrive as
+/// themselves.
 async fn subscription_events(config: &Config) -> Vec<serde_json::Value> {
     let app = crate::http_api::router(std::sync::Arc::new(crate::http_api::AppState::new(
         config.clone(),
@@ -56,7 +70,8 @@ async fn subscription_events(config: &Config) -> Vec<serde_json::Value> {
         app,
         axum::http::Request::get(format!(
             "/v1/task-events?taskIds={TASK_ID}&timeoutSecs=0&localOnly=true\
-             &includeCurrentActivity=false&orchestrationNotifications=true"
+             &from=beginning&includeCurrentActivity=false\
+             &orchestrationNotifications=true"
         ))
         .body(axum::body::Body::empty())
         .unwrap(),
@@ -172,7 +187,9 @@ async fn a_capacity_refusal_wakes_a_supervisor_without_entering_quota_recovery()
     drop(db);
 
     // And it reaches a supervisor. This is the whole point: the incident was
-    // invisible because neither channel woke anybody.
+    // invisible because neither channel woke anybody. What is asserted is the
+    // durable row on the subscription selection — a supervisor that reads the
+    // feed gets the refusal itself, not a state row it has to interpret.
     let delivered = subscription_events(&config).await;
     assert!(
         delivered
