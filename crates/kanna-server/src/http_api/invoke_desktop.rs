@@ -674,20 +674,16 @@ mod tests {
     /// takes whatever `SocketAddr` the candidate carries - so retargeting
     /// the exact same chain at a real interface address, instead of
     /// loopback, is a faithful, minimal same-address qualification, not a
-    /// different mechanism. A no-op (not a failure) on a host with no real
-    /// non-loopback interface, matching the listener-reachability test's own
-    /// portability rule.
+    /// different mechanism. A no-op (not a failure) on a host with no usable
+    /// interface, matching the listener-reachability test's own portability
+    /// rule - including its restriction to IPv4, the only family
+    /// `lan_host: "0.0.0.0"` binds.
     #[tokio::test]
     async fn a_real_lan_invoke_completes_over_a_real_tls_socket_on_the_same_real_routable_address()
     {
-        let Some(real_ip) = if_addrs::get_if_addrs().ok().and_then(|interfaces| {
-            interfaces
-                .into_iter()
-                .map(|interface| interface.addr.ip())
-                .find(crate::lan_discovery::is_routable_lan_address)
-        }) else {
+        let Some(real_ip) = crate::lan_discovery::first_routable_ipv4_address() else {
             eprintln!(
-                "skipping: no non-loopback interface on this host to qualify same-address pinned TLS on"
+                "skipping: no routable IPv4 interface on this host to qualify same-address pinned TLS on"
             );
             return;
         };

@@ -260,18 +260,14 @@ mod tests {
     /// discovery defect (architect `2bf0950f` acceptance criterion 3), to
     /// isolate that the listener/TLS layer was never the fault. Portable:
     /// discovers a real address at run time rather than hardcoding one, and
-    /// is a no-op (not a failure) on a host with no non-loopback interface
-    /// at all.
+    /// is a no-op (not a failure) on a host with no usable interface at all.
+    /// The address must be IPv4, because `lan_host: "0.0.0.0"` is the IPv4
+    /// wildcard - see [`crate::lan_discovery::first_routable_ipv4_address`].
     #[tokio::test]
     async fn listener_bound_to_all_interfaces_is_reachable_on_a_real_routable_address() {
-        let Some(real_ip) = if_addrs::get_if_addrs().ok().and_then(|interfaces| {
-            interfaces
-                .into_iter()
-                .map(|interface| interface.addr.ip())
-                .find(crate::lan_discovery::is_routable_lan_address)
-        }) else {
+        let Some(real_ip) = crate::lan_discovery::first_routable_ipv4_address() else {
             eprintln!(
-                "skipping: no non-loopback interface on this host to qualify reachability on"
+                "skipping: no routable IPv4 interface on this host to qualify reachability on"
             );
             return;
         };
