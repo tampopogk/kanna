@@ -921,8 +921,19 @@ impl RepoDefinitions {
             }
         };
 
+        let canonical_role = canonical_builtin_agent_name(&selector.role);
+        let name = match selector.selected_flavor() {
+            // The served text is whichever flavor actually resolved
+            // (explicit `role@flavor`, or a role's config-selected flavor),
+            // so the reported name must say which agent this is, or a caller
+            // reading `pr@draft-pr`'s raw source under the name `pr` would
+            // copy it into `.kanna/agents/pr/` believing it was the
+            // unflavored role.
+            Some(flavor) => format!("{canonical_role}@{flavor}"),
+            None => canonical_role.to_string(),
+        };
         Ok(Some(AgentSourceView {
-            name: canonical_builtin_agent_name(&selector.role).to_string(),
+            name,
             source,
             agent_md,
             extend_md,

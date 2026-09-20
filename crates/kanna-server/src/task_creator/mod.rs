@@ -497,6 +497,25 @@ pub(crate) fn eject_repo_agent_definition(
     force: bool,
 ) -> Result<AgentEjectResult, DefinitionLookupError> {
     validate_agent_selector(agent_selector)?;
+    // Repo agent overrides are role-scoped: `agent_optional`'s repo lookup is
+    // always `.kanna/agents/{role}/AGENT.md`, never a `flavors/` subpath. An
+    // explicit `role@flavor` selector has nowhere correct to land — writing
+    // it to the role's plain path would silently take over every flavor of
+    // that role, including no flavor at all, the next time anything resolves
+    // it. A flavor implied by the repo's own `config.json` `flavors` map for
+    // an *unflavored* selector is not this case: that is what the role
+    // actually resolves to in this repo, so it must keep ejecting normally —
+    // hence keying the refusal on the caller's own explicit `@flavor` in
+    // `agent_selector`, never on whichever flavor resolution ultimately
+    // selects.
+    if agent_selector.contains('@') {
+        return Err(DefinitionLookupError::InvalidName(format!(
+            "cannot eject `{agent_selector}`: repo agent overrides are role-scoped \
+             (`.kanna/agents/<role>/AGENT.md`) and cannot target one flavor alone; eject the \
+             unflavored role instead, or select this flavor for the role via `.kanna/config.json`'s \
+             `flavors` map"
+        )));
+    }
     let (agent_md, canonical_name) = cache.with_definitions(repo, |definitions| {
         let definition = definitions
             .agent_optional(agent_selector)
@@ -514,17 +533,27 @@ pub(crate) fn eject_repo_agent_definition(
                     "agent definition not found: {agent_selector}"
                 ))
             })?;
+        // `agent_selector` has no `@` here (refused above), so `source.name`
+        // carries a flavor suffix only when the repo's own `config.json`
+        // `flavors` map selected one for this role — in which case it must
+        // be stripped back to the bare role: both `EXTEND.md` and the
+        // ejected `AGENT.md` live at the role-scoped path
+        // (`.kanna/agents/<role>/...`), never a flavor-scoped one.
+        let canonical_role = source
+            .name
+            .split_once('@')
+            .map_or(source.name.as_str(), |(role, _)| role)
+            .to_string();
         if source.extend_md.is_some() {
             return Err(DefinitionLookupError::Other(format!(
-                "cannot eject `{agent_selector}`: `.kanna/agents/{}/EXTEND.md` already exists \
-                 and would extend the ejected file a second time on the next resolution; \
-                 remove or fold it into the ejected AGENT.md first",
-                source.name
+                "cannot eject `{agent_selector}`: `.kanna/agents/{canonical_role}/EXTEND.md` \
+                 already exists and would extend the ejected file a second time on the next \
+                 resolution; remove or fold it into the ejected AGENT.md first"
             )));
         }
         let agent_md =
             definitions::render_agent_md(&definition).map_err(DefinitionLookupError::Other)?;
-        Ok((agent_md, source.name))
+        Ok((agent_md, canonical_role))
     })?;
 
     let relative_path = format!(".kanna/agents/{canonical_name}/AGENT.md");

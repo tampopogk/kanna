@@ -3342,6 +3342,24 @@ fn agent_source_reports_raw_unexpanded_text_and_source() {
 }
 
 #[test]
+fn agent_source_reports_the_selected_flavor_in_its_name() {
+    let repo_root = init_git_repo_without_provider_fixtures("raw-source-flavor");
+    publish_origin_main(&repo_root, "publish empty repo for flavored raw source");
+
+    let definitions = RepoDefinitions::resolve(&definition_repo(&repo_root, "main")).unwrap();
+
+    // An explicit `role@flavor` selector must be reported under that same
+    // flavored name — never the bare role — or a caller reading `--raw`
+    // output would believe this text belongs at `.kanna/agents/pr/`.
+    let flavored = definitions.agent_source("pr@draft-pr").unwrap().unwrap();
+    assert_eq!(flavored.name, "pr@draft-pr");
+
+    // The unflavored role keeps reporting under its own bare name.
+    let unflavored = definitions.agent_source("pr").unwrap().unwrap();
+    assert_eq!(unflavored.name, "pr");
+}
+
+#[test]
 fn render_agent_md_round_trips_through_parse_agent_definition() {
     let repo_root = write_agent_repo(
         "render-round-trip",
@@ -3387,6 +3405,27 @@ fn eject_writes_resolved_definition_and_requires_force_to_overwrite() {
 
     let result = eject_repo_agent_definition(&cache, &repo, "commit", true).unwrap();
     assert!(result.overwritten);
+}
+
+#[test]
+fn eject_refuses_an_explicit_flavor_selector_and_writes_nothing() {
+    let repo_root = init_git_repo_without_provider_fixtures("eject-flavor-refusal");
+    publish_origin_main(&repo_root, "publish empty repo for eject flavor refusal");
+    let repo = definition_repo(&repo_root, "main");
+    let cache = RepoDefinitionsCache::default();
+
+    // Repo overrides are role-scoped: there is no correct flavor-scoped
+    // target, so ejecting an explicit flavor must be refused rather than
+    // silently landing on the role's own plain path and taking over every
+    // flavor of that role (including no flavor) on the next resolution.
+    let error = eject_repo_agent_definition(&cache, &repo, "pr@draft-pr", false)
+        .expect_err("ejecting an explicit role@flavor selector must be refused");
+    assert!(error.to_string().contains("role-scoped"), "{error}");
+
+    assert!(
+        !repo_root.join(".kanna/agents/pr/AGENT.md").exists(),
+        "a refused eject must leave no file on disk"
+    );
 }
 
 #[test]

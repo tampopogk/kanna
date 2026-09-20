@@ -297,7 +297,7 @@ async fn spawn_prepared_task_records_running_stage_run_after_session_created() {
         recovery_snapshot: None,
         deferred_setup: Vec::new(),
         setup_record: None,
-        resolved_prompt: String::new(),
+        resolved_prompt: "## Agent Instructions\n\nDo work".to_string(),
         session: PreparedSessionSpawn::Agent {
             agent_provider: DaemonAgentProvider::Claude,
             prompt: "Do work".to_string(),
@@ -330,6 +330,15 @@ async fn spawn_prepared_task_records_running_stage_run_after_session_created() {
     assert_eq!(runs[0].model.as_deref(), Some("sonnet"));
     assert_eq!(runs[0].status, "running");
     assert_eq!(runs[0].session_id.as_deref(), Some("task-1"));
+
+    // The resolved prompt the spawn actually carried must reach the
+    // stage_run_prompt record this same spawn wrote, not just whatever a
+    // handwritten fixture happens to seed elsewhere.
+    let recorded_prompt = db.stage_run_prompt("task-1", &runs[0].id).unwrap().unwrap();
+    assert_eq!(
+        recorded_prompt.resolved_prompt,
+        "## Agent Instructions\n\nDo work"
+    );
 }
 
 #[tokio::test]
