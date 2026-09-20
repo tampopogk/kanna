@@ -77,17 +77,32 @@ export function buildRustTestCommands(
   return commands;
 }
 
+/**
+ * Tells the Rust suites that an absent fixture binary is a failure, not a skip.
+ *
+ * A handful of kanna-server tests spawn a real `kanna-daemon` or
+ * `kanna-task-transfer` child process, and skip themselves when this tree has
+ * not built one — which is what keeps an ad-hoc `cargo test -p kanna-server`
+ * readable instead of burying it in fifteen "build it first" panics. This lane
+ * is the case where that skip would be a lie: `./kd build sidecars` runs above,
+ * before anything is tested, so the binaries are there. If they are not, the
+ * build step is broken and the gate must say so rather than quietly covering
+ * fifteen fewer real processes than it claims.
+ */
+export const REQUIRE_TEST_FIXTURE_BINARIES = "KANNA_REQUIRE_TEST_FIXTURE_BINARIES";
+
 export async function executeRustTests(input: {
   repoRoot: string;
   env: NodeJS.ProcessEnv;
   runner: CommandRunner;
   desktop?: boolean;
 }) {
+  const env: NodeJS.ProcessEnv = { ...input.env, [REQUIRE_TEST_FIXTURE_BINARIES]: "1" };
   const commands: ExecutedRustTestCommand[] = [];
   for (const command of buildRustTestCommands(process.platform, { desktop: input.desktop })) {
     const result = await input.runner.run(command.command, command.args, {
       cwd: input.repoRoot,
-      env: input.env,
+      env,
       streamOutput: true,
     });
     commands.push({ ...command, ...result });

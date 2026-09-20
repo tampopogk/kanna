@@ -1775,6 +1775,7 @@ async fn resolve_source_machine_name(state: &Arc<AppState>, peer_id: &str) -> Op
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_fixture_binaries::{fixture_binary_or_skip, KANNA_TASK_TRANSFER};
 
     fn work_item(id: &str) -> TransferWorkItem {
         TransferWorkItem {
@@ -2156,35 +2157,11 @@ mod tests {
     // OS assign each sidecar's listener port, so nothing here can collide
     // with another worktree's or another test's fixed port.
     //
-    // Requires the sidecar binary to actually be built first:
-    //   cargo build -p kanna-task-transfer
-    // (add --release for a release-profile binary). Left as a clear panic
-    // naming this command, per this task's instructions, rather than a
-    // silent skip.
-
-    fn real_sidecar_binary_for_test() -> PathBuf {
-        let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        let workspace_root = manifest_dir
-            .parent()
-            .and_then(Path::parent)
-            .expect("kanna-server crate sits two path segments under the workspace root")
-            .to_path_buf();
-        let build_root = workspace_root.join(".build");
-        for candidate in [
-            build_root.join("debug").join("kanna-task-transfer"),
-            build_root.join("release").join("kanna-task-transfer"),
-        ] {
-            if candidate.exists() {
-                return candidate;
-            }
-        }
-        panic!(
-            "kanna-task-transfer sidecar binary not found under {}; build it first with \
-             `cargo build -p kanna-task-transfer` (or add --release) from the repo root, \
-             then re-run this test",
-            build_root.display(),
-        );
-    }
+    // Requires the `kanna-task-transfer` sidecar binary to actually be built.
+    // Each of these tests resolves it once with `fixture_binary_or_skip!` and
+    // threads it through the fixtures below, so a tree that has not built it
+    // skips rather than reporting four failures about its own build state --
+    // see `crate::test_fixture_binaries`.
 
     /// Snapshots the sidecar identity env vars these fixtures mutate and
     /// restores their prior values (or absence) on drop, including on panic
@@ -2305,6 +2282,7 @@ mod tests {
     /// `crate::test_sidecar_guard()` and `Item4EnvVarGuard::capture()` for
     /// the whole test.
     async fn spawn_test_sidecar(
+        binary: &Path,
         root: &Path,
         registry_dir: &Path,
         peer_id: &str,
@@ -2325,7 +2303,7 @@ mod tests {
         let supervisor = crate::transfer_sidecar::TransferSidecarSupervisor::with_binary_for_test(
             config,
             work,
-            real_sidecar_binary_for_test(),
+            binary.to_path_buf(),
         );
         supervisor
             .control("identity", serde_json::json!({}))
@@ -2694,6 +2672,7 @@ mod tests {
     /// further destination incarnations against the same durable identity
     /// and read back what the source durably recorded.
     struct Item4RealTransfer {
+        sidecar_binary: PathBuf,
         // Never read again after construction — held only so its `Drop` (and
         // the real child process it owns) outlives every destination
         // incarnation this reservation's callers spawn.
@@ -2716,6 +2695,7 @@ mod tests {
             let config = item4_test_config(label);
             let work = new_test_work_queue(label);
             spawn_test_sidecar(
+                &self.sidecar_binary,
                 &self.destination_root,
                 &self.registry_dir,
                 &self.destination_peer_id,
@@ -2739,7 +2719,10 @@ mod tests {
     /// like a real restart — including in the one-incarnation case, which is
     /// still a restart relative to the incarnation that actually received
     /// the commit.
-    async fn establish_real_transfer_reservation(label: &str) -> Item4RealTransfer {
+    async fn establish_real_transfer_reservation(
+        sidecar_binary: &Path,
+        label: &str,
+    ) -> Item4RealTransfer {
         let registry_dir =
             crate::test_paths::unique_test_dir(&format!("kanna-transfer-item4-registry-{label}"));
         std::fs::create_dir_all(&registry_dir).expect("create registry dir");
@@ -2751,6 +2734,7 @@ mod tests {
         let source_config = item4_test_config(&format!("{label}-source"));
         let source_work = new_test_work_queue(&format!("{label}-source"));
         let source = spawn_test_sidecar(
+            sidecar_binary,
             &source_root,
             &registry_dir,
             &source_peer_id,
@@ -2766,6 +2750,7 @@ mod tests {
         let bootstrap_config = item4_test_config(&format!("{label}-dest-bootstrap"));
         let bootstrap_work = new_test_work_queue(&format!("{label}-dest-bootstrap"));
         let destination_bootstrap = spawn_test_sidecar(
+            sidecar_binary,
             &destination_root,
             &registry_dir,
             &destination_peer_id,
@@ -2802,6 +2787,7 @@ mod tests {
         drop(destination_bootstrap);
 
         Item4RealTransfer {
+            sidecar_binary: sidecar_binary.to_path_buf(),
             source,
             source_work,
             transfer_id,
@@ -2869,7 +2855,8 @@ mod tests {
     async fn retry_with_persisted_commitment_skips_reverification_and_replays_the_real_ack() {
         let _guard = crate::test_sidecar_guard().await;
         let _env_guard = Item4EnvVarGuard::capture();
-        let reservation = establish_real_transfer_reservation("persisted").await;
+        let sidecar_binary = fixture_binary_or_skip!(KANNA_TASK_TRANSFER);
+        let reservation = establish_real_transfer_reservation(&sidecar_binary, "persisted").await;
 
         let local_task_id = "task-item4-persisted";
         let repo_id = "repo-item4-persisted";
@@ -2970,7 +2957,8 @@ mod tests {
     async fn retry_with_persisted_commitment_survives_a_real_sidecar_process_restart() {
         let _guard = crate::test_sidecar_guard().await;
         let _env_guard = Item4EnvVarGuard::capture();
-        let reservation = establish_real_transfer_reservation("restart").await;
+        let sidecar_binary = fixture_binary_or_skip!(KANNA_TASK_TRANSFER);
+        let reservation = establish_real_transfer_reservation(&sidecar_binary, "restart").await;
 
         // One more incarnation between the commit and the one `run_import`
         // uses: proves the reservation survives more than the single
@@ -3321,7 +3309,9 @@ mod tests {
         std::fs::create_dir_all(&destination_home).unwrap();
         let _home_guard = Item4HomeGuard::set(&destination_home);
 
-        let reservation = establish_real_transfer_reservation("acquisition-retry").await;
+        let sidecar_binary = fixture_binary_or_skip!(KANNA_TASK_TRANSFER);
+        let reservation =
+            establish_real_transfer_reservation(&sidecar_binary, "acquisition-retry").await;
         let source_repo = crate::test_paths::unique_test_dir("kanna-transfer-acquisition-source");
         let (head_oid, base_oid, bundle_path, workflow_definition) =
             init_import_source_repo(&source_repo);
@@ -3767,6 +3757,7 @@ mod tests {
     }
     #[tokio::test]
     async fn transfer_protocol_rejection_crosses_real_sidecars_and_source_server() {
+        let sidecar_binary = fixture_binary_or_skip!(KANNA_TASK_TRANSFER);
         let _sidecar_guard = crate::test_sidecar_guard().await;
         let _env_guard = Item4EnvVarGuard::capture();
         let source_state =
@@ -3801,6 +3792,7 @@ mod tests {
         let mut source_config = source_state.config().clone();
         source_config.transfer_port = 0;
         let source = spawn_test_sidecar(
+            &sidecar_binary,
             &root.join("source"),
             &registry,
             "peer-refusal-source",
@@ -3815,6 +3807,7 @@ mod tests {
             destination_config.db_path.clone(),
         );
         let destination = spawn_test_sidecar(
+            &sidecar_binary,
             &root.join("destination"),
             &registry,
             "peer-refusal-dest",

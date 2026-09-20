@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { buildRustTestCommands, executeRustTests } from "../src/runtime/rust-test";
+import {
+  buildRustTestCommands,
+  executeRustTests,
+  REQUIRE_TEST_FIXTURE_BINARIES,
+} from "../src/runtime/rust-test";
 import type { CommandRunner } from "../src/runtime/process";
 
 describe("Rust test orchestration", () => {
@@ -87,7 +91,7 @@ describe("Rust test orchestration", () => {
         const index = calls.length;
         calls.push({ command, args });
         expect(options?.cwd).toBe("/repo");
-        expect(options?.env).toBe(env);
+        expect(options?.env).toEqual({ ...env, [REQUIRE_TEST_FIXTURE_BINARIES]: "1" });
         expect(options?.streamOutput).toBe(true);
         return { exitCode: 0, stdout: `stdout-${index}`, stderr: "" };
       },
@@ -108,6 +112,39 @@ describe("Rust test orchestration", () => {
         })),
       },
     });
+  });
+
+  /**
+   * The sidecars are built above every test lane, so the kanna-server fixtures
+   * that spawn a real daemon or transfer sidecar have no excuse to skip here.
+   * Without this flag a broken `kd build sidecars` would silently turn fifteen
+   * real-process tests into no-ops and leave the gate green.
+   */
+  it("requires the real-process fixture binaries rather than letting them skip", async () => {
+    const seen: Array<string | undefined> = [];
+    const runner: CommandRunner = {
+      async run(_command, _args, options) {
+        seen.push(options?.env?.[REQUIRE_TEST_FIXTURE_BINARIES]);
+        return { exitCode: 0, stdout: "", stderr: "" };
+      },
+    };
+
+    await executeRustTests({ repoRoot: "/repo", env: { KANNA_DEV_PORT: "1421" }, runner });
+
+    expect(seen).toEqual(buildRustTestCommands().map(() => "1"));
+  });
+
+  it("leaves the caller's own environment untouched", async () => {
+    const env: NodeJS.ProcessEnv = { KANNA_DEV_PORT: "1421" };
+    const runner: CommandRunner = {
+      async run() {
+        return { exitCode: 0, stdout: "", stderr: "" };
+      },
+    };
+
+    await executeRustTests({ repoRoot: "/repo", env, runner });
+
+    expect(env).toEqual({ KANNA_DEV_PORT: "1421" });
   });
 
   it("stops on clippy warnings before running test binaries and retains prior results", async () => {

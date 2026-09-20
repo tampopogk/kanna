@@ -244,9 +244,9 @@ mod tests {
 #[cfg(test)]
 mod real_daemon_tests {
     use super::*;
+    use crate::test_fixture_binaries::{fixture_binary_or_skip, KANNA_DAEMON};
     use axum::{body::Body, http::Request};
     use std::{
-        path::PathBuf,
         process::{Child, Command as ProcessCommand},
         time::Duration,
     };
@@ -258,27 +258,16 @@ mod real_daemon_tests {
             let _ = self.0.wait();
         }
     }
-    fn daemon_binary() -> PathBuf {
-        let binary = std::env::var_os("KANNA_DAEMON_TEST_BIN")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| {
-                std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                    .parent()
-                    .unwrap()
-                    .parent()
-                    .unwrap()
-                    .join(".build/debug/kanna-daemon")
-            });
-        assert!(
-            binary.is_file(),
-            "build the focused daemon fixture first: {binary:?}"
-        );
-        binary
-    }
-    async fn start_owned_daemon(daemon_dir: &str) -> (OwnedDaemon, DaemonClient) {
+    /// `binary` comes from `fixture_binary_or_skip!` in the test itself, so a
+    /// tree with no `kanna-daemon` built skips rather than failing about its
+    /// own build state.
+    async fn start_owned_daemon(
+        daemon_dir: &str,
+        binary: &std::path::Path,
+    ) -> (OwnedDaemon, DaemonClient) {
         std::fs::create_dir_all(daemon_dir).unwrap();
         let mut owned = OwnedDaemon(
-            ProcessCommand::new(daemon_binary())
+            ProcessCommand::new(binary)
                 .env("KANNA_DAEMON_DIR", daemon_dir)
                 .env(
                     "KANNA_TERMINAL_RECOVERY_BIN",
@@ -343,7 +332,9 @@ mod real_daemon_tests {
             "archive-live",
             |db| crate::db::terminal_archives::tests::seed_at(db, &cwd),
         );
-        let (_owned, mut daemon) = start_owned_daemon(&state.config.daemon_dir).await;
+        let daemon_binary = fixture_binary_or_skip!(KANNA_DAEMON);
+        let (_owned, mut daemon) =
+            start_owned_daemon(&state.config.daemon_dir, &daemon_binary).await;
         let stop = std::path::Path::new(&state.config.daemon_dir).join("stop-live-attempt");
         {
             let db = Db::open(&state.config.db_path).unwrap();
@@ -465,20 +456,7 @@ mod real_daemon_tests {
             "archive-real",
             |db| crate::db::terminal_archives::tests::seed_at(db, &cwd),
         );
-        let binary = std::env::var_os("KANNA_DAEMON_TEST_BIN")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| {
-                std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                    .parent()
-                    .unwrap()
-                    .parent()
-                    .unwrap()
-                    .join(".build/debug/kanna-daemon")
-            });
-        assert!(
-            binary.is_file(),
-            "build the focused daemon fixture first: {binary:?}"
-        );
+        let binary = fixture_binary_or_skip!(KANNA_DAEMON);
         std::fs::create_dir_all(&state.config.daemon_dir).unwrap();
         let mut owned = OwnedDaemon(
             ProcessCommand::new(binary)
@@ -647,7 +625,9 @@ mod real_daemon_tests {
                     .unwrap();
             },
         );
-        let (_owned, mut daemon) = start_owned_daemon(&state.config.daemon_dir).await;
+        let daemon_binary = fixture_binary_or_skip!(KANNA_DAEMON);
+        let (_owned, mut daemon) =
+            start_owned_daemon(&state.config.daemon_dir, &daemon_binary).await;
         let stop = std::path::Path::new(&state.config.daemon_dir).join("stop-teardown");
         // Exactly the spawn the server builds for a teardown: the departed
         // workspace's session id, and the teardown run bound into its
