@@ -434,8 +434,37 @@ extension's native enqueue API, never the composer; other input adapters use
 the shared fenced delivery path. Supervisory inputs use the reserved `engine`
 source; they never claim owner speech
 or declare a worker complete. The durable mailbox, not the nudge, owns events.
-The structured completion vocabulary remains exactly `success`, `failure`, or
-`closed` on stage-run results, task detail, and events.
+
+**A stage verdict is six words, and `closed` is not one of them.** Owner
+decision, 2026-09-19. `kanna_complete_stage` accepts `success` (did the work,
+verified it), `unverified` (did it, could not prove it), `partial` (did some of
+the scope), `needs-input` (the task as specified does not say enough to
+proceed), `declined` (deliberately did not do it — wrong premise, already done,
+or should not be done) and `failure` (tried, could not). It was two words until
+then, and that is why the record was unreadable: an agent that correctly
+concluded the work should not be done had to report the same thing as one that
+crashed, which trains the cheap move of building it anyway. The table is
+`kanna_runtime_defaults::stage_verdict` — one list for the MCP schema, the CLI
+and the server, held in step by a contract test in `kanna-tool-catalog`. It is
+strictly closed on the way in: an unrecognized word is **refused**, never
+coerced, because guessing which one a caller meant would invent a verdict
+nobody recorded. It is deliberately *not* closed on the way out — a stored
+verdict is history, so a pre-2026-09-19 row or one a newer peer transferred in
+is reported verbatim and never rewritten.
+
+**Only `success` advances a workflow.** Every other word records what happened
+and stops advancement, which is exactly what `failure` alone used to do: the
+vocabulary got wider, the engine did not change. `stage_run.status` likewise
+stays the engine's own `succeeded` / `failed` / `cancelled` lifecycle enum and
+collapses all five non-success verdicts into `failed`; the new information
+lives in the verdict, surfaced as `latestRun.verdict` on task detail and
+`kanna_list_task_children`, in `run.finished`'s `payload.result`, and as
+`currentTask.latestRun.verdict` in the event feed. `closed` left the vocabulary
+because it is a lifecycle fact, not a verdict on work — read `closedAt` or
+`task.closed` — and recording it as one made "somebody stopped this" and "the
+agent failed" the same observation. The verdict is also not the attention
+badge, `task_blocker`, or the `waiting` runtime state; those are live state,
+this is what one finished run reported.
 
 **Task event feed.** `GET /v1/task-events` (`kanna_wait_events`) is how an agent
 watches *several* tasks — `kanna_wait_task` watches one id, defaulting to settled runtime

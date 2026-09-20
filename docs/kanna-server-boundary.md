@@ -2975,23 +2975,69 @@ when applicable, and task detail. Kanna does not inject completion text into a
 manager task's PTY; that input channel is reserved for actual operator and
 manager speech.
 
-The structured status vocabulary remains closed — three words, matched exactly:
+### The stage verdict vocabulary
 
-- `success` — the task ended cleanly: it advanced past its final workflow stage,
-  or its session ended with no failing verdict recorded against it.
-- `failure` — its terminating `stage_run` reported failure, or the agent process
-  itself died (non-zero exit). A verdict of failure wins even when the PTY then
-  exits 0, because an agent that reports failure and quits still failed.
-- `closed` — the task was closed before finishing its workflow (sidebar ⇧⌘⌫ or
-  `POST /v1/tasks/{task_id}/actions/close`). No verdict was ever reached; this is
-  not a failure and must not be diagnosed as one.
+What an agent records about *its own work* is a closed vocabulary of six words,
+matched exactly. It was `success` and `failure` until 2026-09-19, and the owner
+replaced it because two words made the record unreadable: an agent with working
+code and no test run, an agent that finished half the scope, an agent that
+lacked the information to proceed, and an agent that correctly concluded the
+work should not be done all had to write `failure`, indistinguishable from a
+crash — which teaches the cheap move of building the thing anyway.
+
+- `success` — did the work, verified it.
+- `unverified` — did the work, could not prove it. The summary must say what is
+  unproven.
+- `partial` — did some of the scope. The summary must say what remains.
+- `needs-input` — stopped because the task as specified does not say enough to
+  proceed. The summary must state the specific question.
+- `declined` — deliberately did not do it: the premise was wrong, it was already
+  done, or it should not be done. The summary must say which.
+- `failure` — tried, could not.
+
+The table is `kanna_runtime_defaults::stage_verdict`, shared by the MCP schema,
+`kanna-cli`, and the server, and held in step by a contract test in
+`kanna-tool-catalog`. **Closed inbound, open outbound**: an unrecognized status
+on `kanna_complete_stage` is refused with the whole vocabulary named — coercion
+would invent a verdict nobody recorded, and the caller is a live agent that can
+correct itself — while a *stored* verdict is history and is reported verbatim,
+including a pre-2026-09-19 `closed` row or a word carried in from a newer peer
+by a task transfer. Nothing rewrites a recorded verdict; there is no migration,
+because an absent verdict and a verdict somebody wrote are different facts and
+only one of them is recoverable afterwards.
+
+**Only `success` completes a stage.** Every other word records the result and
+stops advancement, exactly as `failure` alone did — the vocabulary widened, the
+engine did not. `stage_run.status` remains the engine's own `succeeded` /
+`failed` / `cancelled` lifecycle enum and collapses the five non-success
+verdicts into `failed`, so existing readers of `run.finished` and
+`latestRun.status` are unchanged. The verdict is surfaced beside it as
+`latestRun.verdict` (task detail, `kanna_list_task_children`), in
+`run.finished`'s `payload.result`, and as `currentTask.latestRun.verdict` in the
+event feed; it is absent when the run recorded no verdict at all.
+
+`closed` is **not** in the vocabulary. Closing a task is a lifecycle action —
+read `closedAt`, or the `task.closed` event — and recording it as a verdict made
+"somebody stopped this before a verdict was reached" and "the agent failed" the
+same observation. A verdict is likewise not the attention badge, `task_blocker`,
+or the `waiting` runtime state; those are live state, and this is what one
+finished run reported.
+
+### Task-level completion
+
+Whether a *task* finished is read from its durable lifecycle facts, not from a
+word: `closedAt` and `task.closed` say it was closed, the terminating
+`stage_run` and its `run.finished` say what its last run reported, and
+`runtimeState: "exited"` says its session ended unreplaced. A task closed before
+finishing its workflow reached no verdict; that is not a failure and must not be
+diagnosed as one.
 
 Daemon `Exit` finalizes activity/runtime state and any running `stage_run` in
 the same server-side path regardless of whether a desktop event bridge is
-open. An interrupted run's structured result keeps `success` or `failure` as
-appropriate; a direct close is `closed`, while a normal workflow finish keeps
-the successful terminating run. The account-wide event feed preserves these
-facts across machines.
+open. An interrupted run records `success` or `failure` — the session ended
+before any agent verdict, and the exit code is all the server knows — while a
+normal workflow finish keeps the successful terminating run. The account-wide
+event feed preserves these facts across machines.
 
 The legacy SQLite columns `pipeline_item.notify_task_id` and `notified_at`
 remain readable for database/snapshot compatibility but are inert. The

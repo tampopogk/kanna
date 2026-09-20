@@ -10,10 +10,22 @@ fn revision_resume_message_follows_target_stage_transition() {
         None,
     );
     assert!(manual.contains("do not record stage completion"));
-    assert!(
-        manual.contains("kanna_complete_stage {\"task_id\": \"task-1\", \"status\": \"failure\"")
-    );
-    assert!(manual.contains("--status failure"));
+    assert!(manual.contains("kanna_complete_stage {\"task_id\": \"task-1\", \"status\": \"...\""));
+    // A reviewer's finding that is wrong, already fixed, or unanswerable is
+    // not a failed revision, so the fallback names the whole vocabulary
+    // instead of the one word it used to hand the agent.
+    for verdict in [
+        "needs-input",
+        "declined",
+        "partial",
+        "unverified",
+        "failure",
+    ] {
+        assert!(
+            manual.contains(verdict),
+            "manual revision message omits {verdict}"
+        );
+    }
     assert!(!manual.contains("--status success"));
     assert!(!manual.contains("Kanna will then advance"));
 

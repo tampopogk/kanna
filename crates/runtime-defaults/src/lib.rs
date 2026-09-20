@@ -3,6 +3,7 @@ pub mod linux_install;
 pub mod login_shell;
 pub mod secure_file;
 pub mod session_id;
+pub mod stage_verdict;
 pub mod terminal_keys;
 
 use std::path::{Path, PathBuf};

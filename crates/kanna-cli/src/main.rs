@@ -41,7 +41,11 @@ pub(crate) enum Commands {
         #[arg(long)]
         task_id: String,
 
-        /// Completion status: "success" or "failure"
+        /// Verdict on this stage's work: "success" (did it, verified it),
+        /// "unverified" (did it, could not prove it), "partial" (did some of
+        /// the scope), "needs-input" (the task does not say enough to
+        /// proceed), "declined" (deliberately did not do it) or "failure"
+        /// (tried, could not). Only "success" can auto-advance.
         #[arg(long)]
         status: String,
 

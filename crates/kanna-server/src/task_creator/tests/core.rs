@@ -4872,7 +4872,18 @@ fn build_kanna_preamble_renders_transition_specific_completion_guidance() {
     assert!(manual.contains("This stage's transition is `manual`"));
     assert!(manual.contains("recording a successful result does not advance the workflow"));
     assert!(manual.contains("record completion only if this stage's prompt asks for it"));
-    assert!(manual.contains("record status `failure` with the reason"));
+    assert!(manual.contains(
+        "record the status that fits rather than stopping silently or defaulting to `failure`"
+    ));
+    // The vocabulary must be advertised where an agent reads it, or the
+    // wider enum only exists in the schema.
+    for verdict in kanna_runtime_defaults::stage_verdict::STAGE_VERDICTS {
+        assert!(
+            manual.contains(verdict.as_str()),
+            "manual completion guidance omits {}",
+            verdict.as_str()
+        );
+    }
     assert!(!manual.contains("--status success"));
     assert!(!manual.contains("{{COMPLETION}}"));
 

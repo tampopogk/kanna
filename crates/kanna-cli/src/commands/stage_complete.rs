@@ -7,6 +7,7 @@ use crate::api::complete_stage_via_api;
 use crate::commands::parse_metadata_json;
 use crate::config::resolve_server_base_url;
 use crate::models::CompleteStageRequest;
+use kanna_runtime_defaults::stage_verdict::StageVerdict;
 
 pub(crate) fn build_complete_stage_request(
     run_id: Option<String>,
@@ -51,12 +52,11 @@ pub(crate) async fn run(
     expected_definition: Option<String>,
     server_url: Option<&str>,
 ) {
-    // Validate status
-    if status != "success" && status != "failure" {
-        eprintln!(
-            "Error: --status must be \"success\" or \"failure\", got \"{}\"",
-            status
-        );
+    // Validated here against the shared vocabulary table, before anything is
+    // sent, so a guessed word is refused with the whole list rather than
+    // travelling to the server to come back as a 400.
+    if let Err(refusal) = StageVerdict::parse(&status) {
+        eprintln!("Error: --{refusal}");
         process::exit(1);
     }
     let metadata_value = parse_metadata_json(&metadata).unwrap_or_else(|e| {

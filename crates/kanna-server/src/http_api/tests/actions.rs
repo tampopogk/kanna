@@ -7582,3 +7582,376 @@ async fn read_close_daemon_command(
         .await
         .expect("fake daemon disconnected")
 }
+
+/// The stage-completion vocabulary an agent records, end to end.
+///
+/// Until 2026-09-19 an agent had two words, so working code that was never
+/// tested, half-finished scope, a brief that did not say enough to proceed and
+/// work that was correctly refused all landed in the record as `failure`,
+/// indistinguishable from a crash. This walks one of the new words through the
+/// wiring that has to carry it: the route that validates it, the run row that
+/// stores it, the `run.finished` event a manager wakes on, and the task detail
+/// a supervisor reads.
+///
+/// The stage is deliberately `auto`. Only `success` may advance a workflow,
+/// and this is where that is decided, so recording `declined` here has to
+/// leave the task exactly where it was.
+#[tokio::test]
+async fn complete_stage_records_a_declined_verdict_without_advancing_the_workflow() {
+    let repo_root = crate::test_paths::unique_test_path("kanna-http-verdict-declined");
+    init_test_git_repo(&repo_root);
+    std::fs::create_dir_all(repo_root.join(".kanna/workflows")).unwrap();
+    std::fs::write(
+        repo_root.join(".kanna/workflows/default.json"),
+        r#"{
+  "stages": [
+    { "name": "in progress", "transition": "auto", "agent": "implement", "prompt": "Do $TASK_PROMPT" },
+    { "name": "review", "transition": "manual", "agent": "reviewer", "prompt": "Review $PREV_RESULT" }
+  ]
+}"#,
+    )
+    .unwrap();
+    let repo_path = repo_root.to_string_lossy().to_string();
+    let state = super::test_state_with_seed("desktop-verdict", "Studio Mac", {
+        let repo_path = repo_path.clone();
+        move |db| {
+            db.insert_test_repo_with_path("repo-1", &repo_path, "Repo One")
+                .unwrap();
+            db.insert_test_pipeline_item(
+                "task-1",
+                "repo-1",
+                "Add the retry loop",
+                Some("Add the retry loop"),
+                "in progress",
+                "2026-09-19 00:00:00",
+            )
+            .unwrap();
+            db.insert_stage_run(crate::db::NewStageRun {
+                id: "run-1",
+                task_id: "task-1",
+                stage: "in progress",
+                kind: "main",
+                agent: Some("implement"),
+                agent_provider: Some("claude"),
+                model: None,
+                effort: None,
+                status: "running",
+                result: None,
+                feedback: None,
+                session_id: Some("task-1"),
+                provider_session_id: None,
+                cwd: None,
+                resumed_from_run_id: None,
+            })
+            .unwrap();
+        }
+    });
+    let db_path = state.config.db_path.clone();
+    let app = super::router(state);
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::post("/v1/tasks/task-1/actions/complete-stage")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "runId": "run-1",
+                        "status": "declined",
+                        "summary": "The retry loop already exists in poll(); adding a second one would double every request.",
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let db = Db::open(&db_path).unwrap();
+    let runs = db.list_stage_runs_for_task("task-1").unwrap();
+    // No successor: a declined stage is finished work, not a stage to advance.
+    assert_eq!(runs.len(), 1);
+    // The lifecycle column stays the engine's own two-valued enum.
+    assert_eq!(runs[0].status, "failed");
+    let recorded: serde_json::Value =
+        serde_json::from_str(runs[0].result.as_deref().expect("a recorded verdict")).unwrap();
+    assert_eq!(recorded["status"], "declined");
+    assert!(recorded["summary"]
+        .as_str()
+        .unwrap()
+        .contains("already exists in poll()"));
+
+    let item = db.get_pipeline_item("task-1").unwrap().unwrap();
+    assert_eq!(item.stage.as_deref(), Some("in progress"));
+    assert!(item.closed_at.is_none());
+
+    let events = db
+        .list_task_events(
+            &crate::db::TaskEventScope::Tasks(vec!["task-1".to_string()]),
+            0,
+            i64::MAX,
+            20,
+        )
+        .unwrap();
+    assert!(
+        !events
+            .iter()
+            .any(|event| event.event_type == "stage.changed"),
+        "a declined verdict must not move the workflow"
+    );
+    let finished = events
+        .iter()
+        .find(|event| event.event_type == "run.finished")
+        .expect("run.finished");
+    assert_eq!(finished.payload["status"], "failed");
+    let carried: serde_json::Value =
+        serde_json::from_str(finished.payload["result"].as_str().expect("result")).unwrap();
+    assert_eq!(carried["status"], "declined");
+
+    // What a supervisor actually reads. `status` alone cannot distinguish a
+    // refusal from a crash; `verdict` is the word the agent chose.
+    let detail = app
+        .clone()
+        .oneshot(
+            Request::get("/v1/tasks/task-1")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(detail.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(detail.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let detail: serde_json::Value = from_slice(&body).unwrap();
+    assert_eq!(detail["latestRun"]["verdict"], "declined");
+    assert_eq!(detail["latestRun"]["status"], "failed");
+
+    let _ = std::fs::remove_dir_all(&repo_root);
+}
+
+/// The vocabulary is closed, and the two words it grew out of still work.
+///
+/// An unrecognized status is refused rather than coerced: guessing which of
+/// the six a caller meant would invent a verdict nobody recorded, and the
+/// caller is a live agent that can read the refusal and correct itself.
+/// `closed` is refused specifically — it left the vocabulary because closing a
+/// task is a lifecycle action, and recording it as a verdict made "somebody
+/// stopped this" and "the agent failed" the same observation.
+#[tokio::test]
+async fn complete_stage_refuses_a_status_outside_the_vocabulary_and_records_nothing() {
+    for rejected in ["closed", "done", "SUCCESS"] {
+        let state = super::test_state_with_seed("desktop-verdict-refuse", "Studio Mac", |db| {
+            db.insert_test_repo("repo-1", "Repo One").unwrap();
+            db.insert_test_pipeline_item(
+                "task-1",
+                "repo-1",
+                "Implement it",
+                Some("Implement it"),
+                "in progress",
+                "2026-09-19 00:00:00",
+            )
+            .unwrap();
+            db.insert_stage_run(crate::db::NewStageRun {
+                id: "run-1",
+                task_id: "task-1",
+                stage: "in progress",
+                kind: "main",
+                agent: Some("implement"),
+                agent_provider: Some("claude"),
+                model: None,
+                effort: None,
+                status: "running",
+                result: None,
+                feedback: None,
+                session_id: Some("task-1"),
+                provider_session_id: None,
+                cwd: None,
+                resumed_from_run_id: None,
+            })
+            .unwrap();
+        });
+        let db_path = state.config.db_path.clone();
+        let app = super::router(state);
+
+        let response = app
+            .oneshot(
+                Request::post("/v1/tasks/task-1/actions/complete-stage")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::json!({
+                            "runId": "run-1",
+                            "status": rejected,
+                            "summary": "whatever",
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{rejected}");
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let message = String::from_utf8(body.to_vec()).unwrap();
+        // The refusal teaches the vocabulary; an agent that guessed once
+        // should not have to guess again.
+        for verdict in kanna_runtime_defaults::stage_verdict::STAGE_VERDICTS {
+            assert!(
+                message.contains(verdict.as_str()),
+                "{rejected}: refusal omits {}: {message}",
+                verdict.as_str()
+            );
+        }
+
+        // Nothing was recorded: the run is still running and still unfinished.
+        let db = Db::open(&db_path).unwrap();
+        let runs = db.list_stage_runs_for_task("task-1").unwrap();
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].status, "running", "{rejected}");
+        assert!(runs[0].result.is_none(), "{rejected}");
+    }
+}
+
+/// Every word an agent may now record reaches the record intact, and only
+/// `success` finishes its run as a completed stage.
+///
+/// The seeded repository has no workspace, so the `success` case is also the
+/// engine coupling made visible: it is the one verdict that reaches the stage
+/// transition at all, and it fails there. The five others are accepted and
+/// recorded without the handler ever looking at the workflow — which is the
+/// whole behavioural claim of this change. The verdict is written before the
+/// transition is attempted, so the durable record is asserted for all six.
+#[tokio::test]
+async fn every_verdict_is_recorded_verbatim_with_its_own_run_status() {
+    for verdict in kanna_runtime_defaults::stage_verdict::STAGE_VERDICTS {
+        let state = super::test_state_with_seed("desktop-verdict-all", "Studio Mac", |db| {
+            db.insert_test_repo("repo-1", "Repo One").unwrap();
+            db.insert_test_pipeline_item(
+                "task-1",
+                "repo-1",
+                "Implement it",
+                Some("Implement it"),
+                "in progress",
+                "2026-09-19 00:00:00",
+            )
+            .unwrap();
+            db.insert_stage_run(crate::db::NewStageRun {
+                id: "run-1",
+                task_id: "task-1",
+                stage: "in progress",
+                kind: "main",
+                agent: Some("implement"),
+                agent_provider: Some("claude"),
+                model: None,
+                effort: None,
+                status: "running",
+                result: None,
+                feedback: None,
+                session_id: Some("task-1"),
+                provider_session_id: None,
+                cwd: None,
+                resumed_from_run_id: None,
+            })
+            .unwrap();
+        });
+        let db_path = state.config.db_path.clone();
+        let app = super::router(state);
+
+        let response = app
+            .oneshot(
+                Request::post("/v1/tasks/task-1/actions/complete-stage")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::json!({
+                            "runId": "run-1",
+                            "status": verdict.as_str(),
+                            "summary": format!("reported {}", verdict.as_str()),
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        if verdict.completes_stage() {
+            assert_ne!(
+                response.status(),
+                StatusCode::OK,
+                "success is the only verdict that reaches the stage transition, \
+                 and this fixture has no workspace for it to fork"
+            );
+        } else {
+            assert_eq!(response.status(), StatusCode::OK, "{}", verdict.as_str());
+        }
+
+        let db = Db::open(&db_path).unwrap();
+        let runs = db.list_stage_runs_for_task("task-1").unwrap();
+        assert_eq!(runs[0].status, verdict.run_status(), "{}", verdict.as_str());
+        let recorded: serde_json::Value =
+            serde_json::from_str(runs[0].result.as_deref().expect("a recorded verdict")).unwrap();
+        assert_eq!(recorded["status"], verdict.as_str());
+    }
+}
+
+/// History is not reinterpreted. A run carrying a word this vocabulary no
+/// longer accepts — the retired `closed`, or one written by a newer machine a
+/// task was transferred from — is reported exactly as it was written, because
+/// an absent verdict and a verdict somebody wrote are different facts and
+/// only one of them can be recovered afterwards.
+#[tokio::test]
+async fn a_verdict_outside_the_vocabulary_is_reported_verbatim_rather_than_rewritten() {
+    let app = super::test_router_with_seed("desktop-verdict-history", "Studio Mac", |db| {
+        db.insert_test_repo("repo-1", "Repo One").unwrap();
+        db.insert_test_pipeline_item(
+            "task-1",
+            "repo-1",
+            "Implement it",
+            Some("Implement it"),
+            "in progress",
+            "2026-09-19 00:00:00",
+        )
+        .unwrap();
+        db.insert_stage_run(crate::db::NewStageRun {
+            id: "run-1",
+            task_id: "task-1",
+            stage: "in progress",
+            kind: "main",
+            agent: Some("implement"),
+            agent_provider: Some("claude"),
+            model: None,
+            effort: None,
+            status: "failed",
+            result: Some(
+                r#"{"status":"closed","summary":"closed before finishing","metadata":null}"#,
+            ),
+            feedback: None,
+            session_id: Some("task-1"),
+            provider_session_id: None,
+            cwd: None,
+            resumed_from_run_id: None,
+        })
+        .unwrap();
+    });
+
+    let response = app
+        .oneshot(
+            Request::get("/v1/tasks/task-1")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let detail: serde_json::Value = from_slice(&body).unwrap();
+    assert_eq!(detail["latestRun"]["verdict"], "closed");
+    assert_eq!(
+        detail["latestRun"]["summary"], "closed before finishing",
+        "an unrecognized verdict must not cost the summary beside it"
+    );
+}

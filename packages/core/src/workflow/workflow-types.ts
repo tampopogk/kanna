@@ -101,8 +101,22 @@ export interface AgentExtension {
   prompt: string; // markdown body appended to the base prompt
 }
 
+/**
+ * The verdict vocabulary `kanna_complete_stage` accepts, mirroring
+ * `kanna_runtime_defaults::stage_verdict`. Only `success` completes a stage;
+ * every other word records what happened and stops advancement. `closed` is
+ * deliberately absent — closing a task is a lifecycle action, not a verdict.
+ */
+export type StageVerdict =
+  | "success"
+  | "unverified"
+  | "partial"
+  | "needs-input"
+  | "declined"
+  | "failure";
+
 export interface StageCompleteResult {
-  status: "success" | "failure";
+  status: StageVerdict;
   summary: string;
   metadata?: Record<string, unknown>;
 }

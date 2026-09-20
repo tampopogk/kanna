@@ -1929,12 +1929,12 @@ pub(super) async fn complete_stage(
             .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e));
     }
 
-    if payload.status != "success" && payload.status != "failure" {
-        return Err((
-            axum::http::StatusCode::BAD_REQUEST,
-            "status must be success or failure".to_string(),
-        ));
-    }
+    // Refused rather than coerced. An unrecognized word is an agent that has
+    // not read the vocabulary, and guessing which of the six it meant would
+    // invent a verdict nobody recorded; the refusal names all of them so the
+    // caller can correct itself.
+    let verdict = kanna_runtime_defaults::stage_verdict::StageVerdict::parse(&payload.status)
+        .map_err(|error| (axum::http::StatusCode::BAD_REQUEST, error))?;
     // A plan publishes the stages it chose in the same call that records the
     // plan itself. The two arguments are one operation: a plan visible without
     // its stages, or stages published under a plan that failed, are both
@@ -1944,7 +1944,7 @@ pub(super) async fn complete_stage(
         payload.expected_definition.clone(),
     ) {
         (Some(definition), Some(expected)) => {
-            if payload.status != "success" {
+            if !verdict.completes_stage() {
                 return Err((
                     axum::http::StatusCode::BAD_REQUEST,
                     "workflowDefinition may only accompany a successful stage completion"
@@ -1974,9 +1974,11 @@ pub(super) async fn complete_stage(
         ),
         None => None,
     };
-    let should_auto_advance = payload.status == "success";
+    let should_auto_advance = verdict.completes_stage();
     let stage_result_value = serde_json::json!({
-        "status": payload.status,
+        // The canonical spelling from the shared table, so the durable record
+        // never carries a word the vocabulary does not contain.
+        "status": verdict.as_str(),
         "summary": payload.summary,
         "metadata": payload.metadata,
     });
@@ -1998,7 +2000,7 @@ pub(super) async fn complete_stage(
     let completion_run_id = payload.run_id.clone();
     let (task_id, finished_run, already_closed, replayed, workflow_extended) = {
         let state = Arc::clone(&state);
-        let payload_status = payload.status;
+        let payload_verdict = verdict;
         let payload_summary = payload.summary;
         let payload_metadata = payload.metadata;
         let payload_run_id = payload.run_id;
@@ -2082,11 +2084,11 @@ pub(super) async fn complete_stage(
             {
                 return Ok((task_id, None, true, false, false));
             }
-            let run_status = if payload_status == "success" {
-                "succeeded"
-            } else {
-                "failed"
-            };
+            // The lifecycle column stays two-valued: the six-word verdict is
+            // recorded in the run's result, and widening this enum would change
+            // what every existing reader of `run.finished` and
+            // `latestRun.status` already means by it.
+            let run_status = payload_verdict.run_status();
             let current_run = resolve_action_run(&db, &task_id, payload_run_id.as_deref())?
                 .ok_or_else(|| {
                     (
@@ -2249,7 +2251,7 @@ pub(super) async fn complete_stage(
             } else {
                 record(&db)?;
             }
-            if payload_status == "success" {
+            if payload_verdict.completes_stage() {
                 if let Some(pr_url) =
                     pr_url_from_verdict(payload_metadata.as_ref(), &payload_summary)
                 {
