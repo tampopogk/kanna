@@ -129,7 +129,10 @@ Each pattern has:
 - **Resolves into** — the smaller patterns inside it, or the artifact it
   produces.
 - **Escalation** — what has to be observed for this pattern to become a more
-  expensive one. See "Escalation over selection".
+  expensive one, and which *direction* that move runs. A pattern needing
+  something ahead of where the task is grows the same task; one needing
+  something behind it becomes a new task from the branch. See "Escalation over
+  selection".
 
 ---
 
@@ -163,7 +166,10 @@ that needed it.
 **Escalation.** One trigger: **the place was not the place.** The moment the
 change cannot be made where you expected — the abstraction does not exist, the
 call site has four callers you did not know about, the test that should have
-covered it does not — stop and escalate to `The Shaped Delivery`. This is not a
+covered it does not — stop and escalate to `The Shaped Delivery`. If what is
+missing is only scrutiny, that is a review stage ahead of where the task is and
+the task grows. If what is missing is a decided shape, that belongs behind it,
+so the correction is a new task from this branch. Either way this is not a
 failure of the initial classification; entering here and being wrong is cheaper
 than entering higher and being right.
 
@@ -210,7 +216,8 @@ down rather than left as silence.
 reproduces somewhere other than where it was reported. A fault that cannot be
 reproduced after honest effort is not a fault yet — it is `The Open Problem`,
 and pretending otherwise produces speculative fixes that are indistinguishable
-from noise.
+from noise. Research belongs behind a fix rather than ahead of it, so that is a
+new task from this branch, not a stage bolted onto this one.
 
 ---
 
@@ -245,18 +252,22 @@ written, approved without reading, and diverged from silently.
 
 **Resolves into.** A plan artifact, then one or more `The Mechanical Change`
 inside the build. If the plan comes back saying the outcome itself is unclear,
-it resolves *backwards* into `The Open Problem`.
+it resolves into `The Open Problem` — which sits behind this one, so that is a
+new task from this branch rather than a stage added to this one.
 
 **Escalation.** Escalate to `The Open Problem` when the plan stage cannot
 converge on one shape because reasonable people would choose different outcomes
 — that is not a planning failure, it is a misclassification: the outcome was
-never actually agreed. Escalate to `The Engineering Rewrite` when the plan comes
-back and the answer is measured in quarters.
+never actually agreed, and a misclassification is corrected by starting the
+right task from this branch rather than by growing this one backwards. Escalate
+to `The Engineering Rewrite` when the plan comes back and the answer is measured
+in quarters.
 
 **De-escalation.** A plan that concludes "this is one function in one file"
 should drop to `The Mechanical Change` and skip its own review panel. This
-direction is rarer and much safer than escalation, and it is the one most
-systems forbid.
+direction is rarer and much safer than escalation, and it is the one the
+existing replacement mechanism already permits outright: a stage the task has
+not entered may simply be removed.
 
 ---
 
@@ -298,7 +309,9 @@ problem.
 
 **Escalation.** This pattern is usually *escalated into* rather than out of. It
 is reached from `The Shaped Delivery` when the outcome turns out not to be
-agreed, and from `The Reported Fault` when nothing reproduces. Escalating out of
+agreed, and from `The Reported Fault` when nothing reproduces. Both arrivals are
+new tasks cut from the branch of the task that discovered the
+misclassification, because research belongs behind the work, not ahead of it. Escalating out of
 it, upward, means only one thing: `The Engineering Rewrite`, and that transition
 needs the scrutiny described there.
 
@@ -465,9 +478,9 @@ Anything it exposes resolves into a *new* item, not into this one.
 
 **Escalation.** Escalate only when the smallest compliant change is genuinely
 impossible — the replacement API has no equivalent for something you rely on.
-That is `The Open Problem` under a deadline, which is the worst quadrant to be
-in and the reason forced moves should be started early rather than at the
-cutoff.
+That is `The Open Problem` under a deadline — and, being a backwards move, a new
+task from this branch. It is the worst quadrant to be in, and the reason forced
+moves should be started early rather than at the cutoff.
 
 ---
 
@@ -713,66 +726,122 @@ agent can act on without re-estimating.
 
 ```
 The Mechanical Change          no-review
-        ↓  the place was not the place
+        ↓  the place was not the place, and only scrutiny is missing
+        ↓  GROW — a review stage sits ahead of where the task is
 The Shaped Delivery (cheap)    single-reviewer
-        ↓  the shape needs deciding before it is built
+        ↓  the shape has to be decided before it is built
+        ↓  NEW TASK — a plan stage belongs behind where the task is
 The Shaped Delivery (gated)    plan-build-review
         ↓  the outcome itself is not agreed
-The Open Problem               research  →  grow the task with a plan stage
+        ↓  NEW TASK — research belongs behind the work
+The Open Problem               research
         ↓  the honest answer is measured in quarters
-The Engineering Rewrite        not a task; a decision record and a chain
+        ↓  NEITHER — this is not a task
+The Engineering Rewrite        a decision record and a chain of deliveries
 ```
 
-De-escalation runs the same ladder downward and is both rarer and safer. It is
-also, currently, the direction nothing supports.
+Running the other way, once an outcome is chosen, there is one routine forward
+move and it grows the same task:
 
-## What escalation looks like mechanically
+```
+The Open Problem  →  GROW — append a manual plan stage to the same task,
+                     which is the existing research-to-plan path
+```
 
-`kanna_replace_task_workflow` already makes this possible on an open task. It is
-a whole-definition replacement of the task's pinned `pipeline_def`, and it
-preserves stage, live session, worktree/branch, and spent revision rounds. Its
-contract is the interesting part for escalation:
+De-escalation runs the ladder downward, is both rarer and safer than
+escalation, and — unlike backwards escalation — is already legal, because a
+stage the task has not entered may be removed.
 
-- Current and historical main/post names must remain, with the same role, post
-  owner, and relative order.
-- Names absent from history and not currently occupied may be added, removed,
-  renamed, or reordered.
+## Direction decides the mechanism
 
-Which means: **escalation that adds stages the task has not yet reached is
-already legal; escalation that rewrites what already ran is not.** That is an
-unusually good match for what escalation actually needs — appending a review
-stage, or inserting a plan stage the task has not entered, is exactly the legal
-operation, and rewriting history is exactly the thing that should be illegal.
+There are two moves, and which applies is decided by **direction** — whether the
+missing stage belongs ahead of where the task is, or behind it. Each half reads
+as a contradiction of the other when stated alone, so here are both.
 
-Two mechanisms already in the repository are worth naming as precedent:
+**Work that needs something AHEAD of where it is grows the same task.** Append
+the stage; do not start anything new. This is the existing
+research-gains-a-plan-stage path: when the owner chooses an outcome, the task
+manager appends a manual `plan` stage to the *same* task with
+`kanna_replace_task_workflow`, leaving every existing stage byte-for-byte
+intact. That path exists precisely so the research task's durable record — its
+prompt, its input ledger, its run history — is what the plan is built on.
+`kanna_replace_task_workflow`'s contract permits exactly this and no more:
+current and historical stage names must remain with the same role and relative
+order, while names absent from history and not currently occupied may be added,
+removed, renamed, or reordered.
+
+**Work that needs something BEHIND it becomes a new task from the branch.** Do
+not invent an earlier stage, and do not try to re-enter one. Create a new task
+with `kanna_create_task`, passing the current task's branch as `base_ref` and
+the workflow that should have been chosen in the first place, then retire the
+old task. The owner's reasoning, which is the rule:
+
+> I think it makes sense to be able to change your workflow... That being said,
+> it's probably easier to realize that the workflow that was created was
+> incorrect and simply make a new task based on the task's branch and launch the
+> desired workflow that should have been made in the first place. That, I would
+> say, is a cleaner way to do it than making up earlier stages.
+
+**A task never escalates backwards.** No engine change is required for any of
+this: `kanna_create_task` with `base_ref` already does it today, and the
+committed work carries across because the branch does.
+
+### The cost of a replacement task, stated plainly
+
+A replacement task does **not** inherit the original's `task_input` ledger. Any
+owner or reviewer directive delivered to the old task mid-flight is invisible to
+the new one — and the new task's agents will read its prompt as the complete
+terms, because as far as their durable record is concerned, it is.
+
+So whoever makes the replacement must read `kanna_task_inputs` on the old task
+**first**, and carry every still-binding directive into the new prompt
+**verbatim**. This is not bookkeeping. Losing a directive this way is how a
+review agent once ordered an owner's mid-task design decision reverted: the
+directive had been issued and delivered, and nothing the reviewer could read
+contained it.
+
+That cost is also the argument for why the forward direction grows the task
+rather than replacing it. Growing preserves the terms automatically; replacing
+re-states them, and re-stating is a step a person can get wrong.
+
+## What already works this way
 
 - `plan-build-review`'s review stage routes findings to `plan` or to
-  `in progress` by their nature — level movement inside a pinned definition.
+  `in progress` by their nature — level movement inside one pinned definition,
+  between stages that definition already has.
 - The `research` → append-a-`plan`-stage path grows one task across a level
   boundary while preserving its prompt, input ledger, and run history, which is
-  precisely the property escalation needs: **the task's terms must survive the
-  escalation.** A replacement task loses them.
+  precisely the property the forward direction needs: **the task's terms must
+  survive the move.**
 
 ## Escalation per pattern, in one table
 
-| Pattern | Enter at | Escalation trigger (observed) | Escalates to |
-|---|---|---|---|
-| Mechanical Change | `no-review` | the place was not the place | Shaped Delivery |
-| Reported Fault | `no-review`, reproduce first | no reproduction, or it reproduces elsewhere | Open Problem |
-| Shaped Delivery (cheap) | `single-reviewer` | review finds the approach, not the code, is wrong | Shaped Delivery (gated) |
-| Shaped Delivery (gated) | `plan-build-review` | plan cannot converge on one shape | Open Problem |
-| Open Problem | `research` | answer is measured in quarters | Engineering Rewrite |
-| Exploratory Idea | timeboxed probe | finds a real problem (this is an *exit*, not an escalation) | Open Problem / Shaped Delivery |
-| Sales-Driven Feature | record, then the uncertainty pattern | origin does not escalate; the prediction is *revisited* | — |
-| Cross-Team Request | record, then the uncertainty pattern | a second consumer appears | Shaped Delivery, as an interface |
-| Forced Move | `no-review` | no compliant minimal change exists | Open Problem (under a deadline) |
-| Engineering Rewrite | — | entry should be hard; bias against | — |
+| Pattern | Enter at | Escalation trigger (observed) | Escalates to | Direction |
+|---|---|---|---|---|
+| Mechanical Change | `no-review` | the place was not the place | Shaped Delivery | grow, if only review is missing; new task, if a shape must be decided |
+| Reported Fault | `no-review`, reproduce first | no reproduction, or it reproduces elsewhere | Open Problem | new task |
+| Shaped Delivery (cheap) | `single-reviewer` | review finds the approach, not the code, is wrong | Shaped Delivery (gated) | new task |
+| Shaped Delivery (gated) | `plan-build-review` | plan cannot converge on one shape | Open Problem | new task |
+| Open Problem | `research` | answer is measured in quarters | Engineering Rewrite | neither — not a task |
+| Exploratory Idea | timeboxed probe | finds a real problem (this is an *exit*, not an escalation) | Open Problem / Shaped Delivery | new task, with the accountable origin named |
+| Sales-Driven Feature | record, then the uncertainty pattern | origin does not escalate; the prediction is *revisited* | — | — |
+| Cross-Team Request | record, then the uncertainty pattern | a second consumer appears | Shaped Delivery, as an interface | new task |
+| Forced Move | `no-review` | no compliant minimal change exists | Open Problem (under a deadline) | new task |
+| Engineering Rewrite | — | entry should be hard; bias against | — | — |
+
+Every escalation in that table is either a new task or not a task at all, with
+one exception — the mechanical change that turns out to want a review stage,
+which is the only rung where the missing stage sits ahead. The routine *forward*
+move is not escalation at all: it is `The Open Problem` resolving into
+`The Shaped Delivery` once an outcome is chosen, and it grows the same task.
 
 ---
 
 # Open questions
 
 These are left open on purpose. This draft resolves none of them by fiat.
+Question 3 has since been answered by the owner and is marked as answered
+rather than removed; the other nine stand.
 
 1. **Does origin belong on the task as data, or only in the prompt?** The claim
    above is that origin selects the accountability artifact. But three of the
@@ -786,12 +855,16 @@ These are left open on purpose. This draft resolves none of them by fiat.
    hard — something eventually has to *re-read* the record at the predicted
    time, and nothing in Kanna does deferred re-reading of anything.
 
-3. **Can a task escalate into a stage that sits ahead of the one it is in?**
-   Replacement can add an unoccupied stage name, but a task at `in progress`
-   that decides it needs a plan has to somehow enter a stage that is
-   structurally earlier. `request_revision` targets a named stage, which may be
-   the mechanism, or may not. This is the concrete blocker on the whole
-   escalation model and should be answered before anything is built.
+3. ~~**Can a task escalate into a stage that sits ahead of the one it is
+   in?**~~ **Answered by the owner, 2026-09-19.** It does not. A task never
+   escalates backwards: work needing a stage that belongs earlier becomes a new
+   task from the current task's branch, running the workflow that should have
+   been chosen, while work needing a stage ahead of where it is grows the same
+   task. The question is kept rather than deleted because it is a natural one to
+   re-ask — replacement *can* add an unoccupied stage name, so inventing an
+   earlier stage looks mechanically available, and the answer is that it is
+   cleaner not to. See "Direction decides the mechanism", including the
+   `task_input` ledger cost a replacement task carries.
 
 4. **Who is the external forcing function at this company's scale?** The
    Engineering Rewrite pattern assumes a party outside engineering with standing
