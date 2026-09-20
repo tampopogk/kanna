@@ -19,7 +19,9 @@ rust_library(
     crate_root = "src/lib.rs",
     crate_name = "kanna_tool_catalog",
     edition = "2021",
-    deps = all_crate_deps_for_cli(normal = True, package_name = "crates/kanna-tool-catalog"),
+    deps = all_crate_deps_for_cli(normal = True, package_name = "crates/kanna-tool-catalog") + [
+        "//crates/runtime-defaults:kanna_runtime_defaults",
+    ],
     proc_macro_deps = all_crate_deps_for_cli(proc_macro = True, package_name = "crates/kanna-tool-catalog"),
 )
 
@@ -30,7 +32,9 @@ rust_library(
     crate_root = "src/lib.rs",
     crate_name = "kanna_tool_catalog",
     edition = "2021",
-    deps = all_crate_deps_for_mcp(normal = True, package_name = "crates/kanna-tool-catalog"),
+    deps = all_crate_deps_for_mcp(normal = True, package_name = "crates/kanna-tool-catalog") + [
+        "//crates/runtime-defaults:kanna_runtime_defaults",
+    ],
     proc_macro_deps = all_crate_deps_for_mcp(proc_macro = True, package_name = "crates/kanna-tool-catalog"),
 )
 
@@ -41,6 +45,8 @@ rust_library(
     crate_root = "src/lib.rs",
     crate_name = "kanna_tool_catalog",
     edition = "2021",
-    deps = all_crate_deps_for_server(normal = True, package_name = "crates/kanna-tool-catalog"),
+    deps = all_crate_deps_for_server(normal = True, package_name = "crates/kanna-tool-catalog") + [
+        "//crates/runtime-defaults:kanna_runtime_defaults",
+    ],
     proc_macro_deps = all_crate_deps_for_server(proc_macro = True, package_name = "crates/kanna-tool-catalog"),
 )
