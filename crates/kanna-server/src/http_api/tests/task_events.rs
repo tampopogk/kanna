@@ -558,6 +558,31 @@ async fn task_discovery_labels_cross_machine_rows_includes_closed_and_auto_resol
         serde_json::from_slice(&found_body).expect("json found body");
     assert_eq!(found_body["id"], "remote-open");
 
+    // The forwarded request must carry the caller's own query string, not
+    // just the bare path: a brief, agent-facing read auto-resolved to the
+    // owning sibling must come back as the same brief, agent-facing
+    // projection that machine would have served directly, not the human-UI
+    // default `GetTaskQuery::default()` deserializes to when the query is
+    // dropped on the federated hop.
+    let found_brief = app
+        .clone()
+        .oneshot(
+            axum::http::Request::get("/v1/tasks/remote-open?brief=true&agentView=true")
+                .body(axum::body::Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("remote brief lookup response");
+    assert_eq!(found_brief.status(), axum::http::StatusCode::OK);
+    let found_brief_body = to_bytes(found_brief.into_body(), usize::MAX)
+        .await
+        .expect("read found brief body");
+    let found_brief_body: serde_json::Value =
+        serde_json::from_slice(&found_brief_body).expect("json found brief body");
+    assert_eq!(found_brief_body["view"], "brief");
+    assert_eq!(found_brief_body["briefVersion"], 1);
+    assert_eq!(found_brief_body["machineId"], "desktop-discovery-peer");
+
     let recent = get_json_body(&app, "/v1/tasks/recent?allMachines=true&includeClosed=true").await;
     assert!(recent["machineErrors"]
         .as_array()
@@ -677,6 +702,73 @@ async fn get_task_route_returns_not_found_when_no_reachable_sibling_has_the_task
     assert_eq!(response.status(), axum::http::StatusCode::NOT_FOUND);
 
     relay.abort();
+}
+
+/// A task genuinely absent everywhere is not the only kind of miss: a
+/// machine this desktop is paired with, but could not reach at all (no relay
+/// routing set up in this test, so `relay_and_lan_desktop_ids` never even
+/// includes it as a candidate to dial), must be named in the 404 rather than
+/// silently collapsed into "no such task" - `paired_but_unchecked` is what
+/// keeps those two readings distinct.
+#[tokio::test]
+async fn get_task_route_names_a_paired_but_unreachable_machine_in_its_not_found_body() {
+    use axum::body::to_bytes;
+    use tower::ServiceExt;
+
+    let source = test_state_with_seed("desktop-unreachable-source", "Source", |db| {
+        db.insert_test_repo("repo-source", "Source Repo")
+            .expect("insert source repo");
+    });
+
+    let peer_trust_store_path = source
+        .config()
+        .peer_trust_store_path()
+        .expect("peer trust store path");
+    let mut peer_trust_store = crate::peer_trust::PeerTrustStore::load(&peer_trust_store_path)
+        .expect("load empty peer trust store");
+    peer_trust_store
+        .upsert(crate::peer_trust::PeerDesktop {
+            desktop_id: "desktop-unreachable-peer".to_string(),
+            display_name: "Unreachable Peer".to_string(),
+            channel_public_key: "unreachable-peer-channel-key".to_string(),
+            transfer_peer_id: None,
+            transfer_public_key: None,
+            environment: source.config().environment.clone(),
+            account_uid: None,
+            provenance: crate::peer_trust::PeerProvenance::Verified,
+            identity_mismatch_at_unix_ms: None,
+            paired_at_unix_ms: 1,
+            last_seen_unix_ms: None,
+        })
+        .expect("pin unreachable peer");
+    peer_trust_store
+        .save(&peer_trust_store_path)
+        .expect("save peer trust store");
+
+    // Deliberately no `connect_test_relay_peer`: this source has no relay
+    // routing task at all, so the federation probe's own candidate list is
+    // empty and the paired peer above is never dialed - exactly the "known
+    // machine this attempt could not even reach to ask" case.
+    let app = router(Arc::clone(&source));
+
+    let response = app
+        .clone()
+        .oneshot(
+            axum::http::Request::get("/v1/tasks/nowhere-task")
+                .body(axum::body::Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("lookup response");
+    assert_eq!(response.status(), axum::http::StatusCode::NOT_FOUND);
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read body");
+    let body = String::from_utf8(body.to_vec()).expect("utf8 body");
+    assert!(
+        body.contains("desktop-unreachable-peer"),
+        "404 must name the paired machine it could not reach to confirm: {body}"
+    );
 }
 
 #[tokio::test]

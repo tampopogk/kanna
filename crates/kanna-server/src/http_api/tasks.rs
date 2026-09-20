@@ -303,7 +303,10 @@ pub(super) async fn get_task(
         // repeat itself with `machine_id`. `query.local_only` is how the one
         // federated hop this makes stops a remote server's own local miss
         // from recursing.
-        let path = super::task_federation::task_path(&task_id, "");
+        let path = super::task_federation::task_path(
+            &task_id,
+            &format!("?brief={}&agentView={}", query.brief, query.agent_view),
+        );
         let route = super::task_federation::resolve_task_route(
             &state,
             &task_id,
