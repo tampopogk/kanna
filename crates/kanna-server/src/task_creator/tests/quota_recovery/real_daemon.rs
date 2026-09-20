@@ -4,6 +4,7 @@
 //! is a FIFO-gated shell, never an installed provider or account.
 
 use super::*;
+use crate::test_fixture_binaries::{fixture_binary_or_skip, KANNA_DAEMON};
 use kanna_daemon::protocol::{Command as DaemonCommand, Event};
 use serde_json::{json, Value};
 use std::ffi::CString;
@@ -36,30 +37,11 @@ impl Drop for Successor {
 }
 
 impl RealDaemon {
-    async fn start() -> Self {
-        // Cross-crate tests do not receive CARGO_BIN_EXE_kanna-daemon. Match
-        // the existing server real-daemon fixture's split build-dir layout.
-        // Missing binaries fail; this test never builds or silently skips.
-        let binary = if let Some(path) = std::env::var_os("KANNA_DAEMON_TEST_BIN") {
-            PathBuf::from(path)
-        } else {
-            let exe = std::env::current_exe().unwrap();
-            let profile_dir = exe.parent().and_then(Path::parent).unwrap();
-            let root = Path::new(env!("CARGO_MANIFEST_DIR"))
-                .parent()
-                .and_then(Path::parent)
-                .unwrap();
-            [
-                root.join(".build")
-                    .join(profile_dir.file_name().unwrap())
-                    .join("kanna-daemon"),
-                profile_dir.join("kanna-daemon"),
-            ]
-            .into_iter()
-            .find(|path| path.is_file())
-            .expect("build kanna-daemon first or set KANNA_DAEMON_TEST_BIN")
-        };
-        assert!(binary.is_file(), "missing daemon binary: {binary:?}");
+    /// Cross-crate tests do not receive `CARGO_BIN_EXE_kanna-daemon`, so the
+    /// test itself resolves the binary with `fixture_binary_or_skip!` and
+    /// hands it here — a tree with no daemon built skips rather than failing
+    /// about its own build state.
+    async fn start(binary: PathBuf) -> Self {
         let dir = crate::test_paths::unique_test_dir("quota-provenance-daemon");
         std::fs::create_dir_all(&dir).unwrap();
         // Own the child before any fallible readiness assertion.
@@ -267,7 +249,8 @@ fn shell_quote(text: &str) -> String {
 
 #[tokio::test]
 async fn real_seed_and_quoted_output_do_not_park_but_current_refusal_parks_once() {
-    let mut daemon = RealDaemon::start().await;
+    let daemon_binary = fixture_binary_or_skip!(KANNA_DAEMON);
+    let mut daemon = RealDaemon::start(daemon_binary).await;
     let mut config = test_config("quota-real-provenance");
     config.daemon_dir = daemon.dir.join("relay").to_string_lossy().into_owned();
     let (repo_root, db) = init_quota_fixture_without_candidates("quota-real-provenance", &config);

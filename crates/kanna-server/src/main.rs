@@ -47,6 +47,8 @@ mod terminal_editor;
 mod terminal_watcher;
 mod terminal_window;
 #[cfg(test)]
+mod test_fixture_binaries;
+#[cfg(test)]
 mod test_paths;
 mod transfer_artifact;
 mod transfer_control;

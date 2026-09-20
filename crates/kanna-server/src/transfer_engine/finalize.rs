@@ -1590,6 +1590,7 @@ mod tests {
 #[cfg(test)]
 mod real_daemon_tests {
     use super::*;
+    use crate::test_fixture_binaries::{fixture_binary_or_skip, KANNA_DAEMON};
     use kanna_daemon::protocol::SessionInfo;
     use std::collections::HashMap;
     use std::os::unix::net::UnixStream;
@@ -1598,63 +1599,6 @@ mod real_daemon_tests {
     use std::time::Instant;
 
     const SESSION: &str = "task-finalize-real";
-
-    /// Finds the compiled `kanna-daemon` executable this test can spawn.
-    ///
-    /// `kanna-daemon` is an ordinary `path` dependency of this crate
-    /// (`crates/kanna-server/Cargo.toml`), not a `[[bin]]` artifact
-    /// dependency, so Cargo never populates `CARGO_BIN_EXE_kanna-daemon` for
-    /// this crate's own test binaries the way it does inside
-    /// `crates/daemon/tests/*.rs`, which belong to the daemon's own package.
-    /// `KANNA_DAEMON_TEST_BIN` is the explicit override for a caller that
-    /// built the daemon somewhere non-standard; otherwise this locates the
-    /// binary the same way Cargo already laid it out. Measured directly
-    /// against this workspace's actual `.cargo/config.toml`: `build-dir`
-    /// (`.build/cargo-build`) and `target-dir` (`.build`) are split, so this
-    /// test binary itself compiles under
-    /// `.build/cargo-build/<profile>/deps/<this test>` while a named
-    /// `[[bin]]` like `kanna-daemon` is copied to `.build/<profile>/` --
-    /// *not* to a sibling of this test binary's own directory. The profile
-    /// name (the directory that holds `deps/`) is the one thing shared by
-    /// both layouts, so it locates `kanna-daemon` under the workspace's
-    /// fixed `target-dir` rather than by walking up from wherever the test
-    /// harness happened to land. The plain sibling-of-this-binary layout is
-    /// kept as a fallback in case `build-dir` is ever unset.
-    fn resolve_daemon_binary() -> PathBuf {
-        if let Ok(path) = std::env::var("KANNA_DAEMON_TEST_BIN") {
-            let path = PathBuf::from(path);
-            assert!(
-                path.is_file(),
-                "KANNA_DAEMON_TEST_BIN does not name a file: {path:?}"
-            );
-            return path;
-        }
-        let exe = std::env::current_exe().expect("this test binary's own path");
-        let profile_dir = exe
-            .parent()
-            .and_then(Path::parent)
-            .expect("test binary has a profile directory two levels up from itself");
-        let mut candidates = Vec::new();
-        if let Some(profile) = profile_dir.file_name() {
-            let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
-                .parent()
-                .and_then(Path::parent)
-                .expect("crates/kanna-server has a workspace root two levels up");
-            candidates.push(repo_root.join(".build").join(profile).join("kanna-daemon"));
-        }
-        candidates.push(profile_dir.join("kanna-daemon"));
-        candidates
-            .into_iter()
-            .find(|candidate| candidate.is_file())
-            .unwrap_or_else(|| {
-                panic!(
-                    "kanna-daemon binary not found next to this test binary ({exe:?}); build it \
-                     first with `cargo build -p kanna-daemon` (it shares this workspace's \
-                     target-dir with kanna-server), or set KANNA_DAEMON_TEST_BIN to an \
-                     already-built binary's path"
-                )
-            })
-    }
 
     /// A real `kanna-daemon` child process, listening on its own socket
     /// directory. Never scripted: every reply in these tests came from the
@@ -1680,14 +1624,17 @@ mod real_daemon_tests {
         /// `label` only has to be unique within one test; `crate::test_paths`
         /// already makes the directory unique across every concurrent test
         /// and every concurrent worktree's gate on this machine.
-        fn start(label: &str) -> Self {
+        /// `binary` comes from `fixture_binary_or_skip!` in the test
+        /// itself: a tree with no `kanna-daemon` built skips these tests
+        /// rather than reporting seven failures about its own build state.
+        fn start(label: &str, binary: &Path) -> Self {
             let dir = crate::test_paths::unique_test_dir(&format!("kanna-finalize-real-{label}"));
             let socket_path = kanna_runtime_defaults::socket_path(&dir);
             let _ = std::fs::remove_file(&socket_path);
             let pid_path = dir.join("daemon.pid");
             let _ = std::fs::remove_file(&pid_path);
 
-            let mut command = StdCommand::new(resolve_daemon_binary());
+            let mut command = StdCommand::new(binary);
             command.env("KANNA_DAEMON_DIR", dir.to_str().expect("utf-8 daemon dir"));
             let child = command
                 .spawn()
@@ -1956,7 +1903,8 @@ mod real_daemon_tests {
     /// a specific `\r` byte was seen on the other side.
     #[tokio::test]
     async fn fast_preparation_without_busy_is_paste_framed_and_reaches_a_clean_quit() {
-        let daemon = RealDaemon::start("fast-idle");
+        let daemon_binary = fixture_binary_or_skip!(KANNA_DAEMON);
+        let daemon = RealDaemon::start("fast-idle", &daemon_binary);
         let log_path = daemon.dir.join("child-consumed.log");
         let script = "\
 printf '\\033[?2004h'
@@ -2017,7 +1965,8 @@ exit 0
     /// than an empty log file a non-reading script could never have falsified.
     #[tokio::test]
     async fn a_real_permission_prompt_is_never_typed_into() {
-        let daemon = RealDaemon::start("real-waiting");
+        let daemon_binary = fixture_binary_or_skip!(KANNA_DAEMON);
+        let daemon = RealDaemon::start("real-waiting", &daemon_binary);
         let log_path = daemon.dir.join("child-consumed.log");
         let script = "\
 printf '\\033[?2004h'
@@ -2065,7 +2014,8 @@ done
     /// an empty file.
     #[tokio::test]
     async fn a_stale_pid_is_fenced_by_the_real_daemon() {
-        let daemon = RealDaemon::start("real-pid-fence");
+        let daemon_binary = fixture_binary_or_skip!(KANNA_DAEMON);
+        let daemon = RealDaemon::start("real-pid-fence", &daemon_binary);
         let log_path = daemon.dir.join("child-consumed.log");
         let script = "\
 printf '\\033[?2004h'
@@ -2101,7 +2051,8 @@ done
     /// conversation on disk is already whole.
     #[tokio::test]
     async fn an_absent_real_session_finalizes_clean_without_typing_into_anything() {
-        let daemon = RealDaemon::start("real-absent");
+        let daemon_binary = fixture_binary_or_skip!(KANNA_DAEMON);
+        let daemon = RealDaemon::start("real-absent", &daemon_binary);
         let state = state_for(&daemon, "desktop-finalize-real-absent");
 
         let outcome =
@@ -2122,7 +2073,8 @@ done
     /// handles is a real one, not an injected mock error.
     #[tokio::test]
     async fn a_real_db_read_error_after_disappearance_degrades_rather_than_reading_clean() {
-        let daemon = RealDaemon::start("real-db-error");
+        let daemon_binary = fixture_binary_or_skip!(KANNA_DAEMON);
+        let daemon = RealDaemon::start("real-db-error", &daemon_binary);
         let state = state_for(&daemon, "desktop-finalize-real-db-error");
 
         // The session is absent (never spawned) -- the shape the swallowed
@@ -2158,7 +2110,8 @@ done
     /// `sleep`-only script could never have falsified.
     #[tokio::test]
     async fn a_preclaimed_wrap_up_against_a_real_session_never_touches_the_real_pty() {
-        let daemon = RealDaemon::start("real-preclaimed");
+        let daemon_binary = fixture_binary_or_skip!(KANNA_DAEMON);
+        let daemon = RealDaemon::start("real-preclaimed", &daemon_binary);
         let log_path = daemon.dir.join("child-consumed.log");
         let script = "\
 printf '\\033[?2004h'
@@ -2193,7 +2146,8 @@ done
     /// touched.
     #[tokio::test]
     async fn a_real_forced_kill_after_quit_is_recorded_as_a_degraded_finalization() {
-        let daemon = RealDaemon::start("real-forced-exit");
+        let daemon_binary = fixture_binary_or_skip!(KANNA_DAEMON);
+        let daemon = RealDaemon::start("real-forced-exit", &daemon_binary);
         let log_path = daemon.dir.join("child-consumed.log");
         let script = "\
 printf '\\033[?2004h'
