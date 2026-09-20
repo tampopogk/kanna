@@ -1414,7 +1414,21 @@ fn value_for_param(
         let rendered = string_value(&value, &param.name)?;
         if !enum_values.iter().any(|allowed| allowed == &rendered) {
             if tool.name == "kanna_complete_stage" && param.name == "status" {
-                return Err("status must be success or failure".to_string());
+                // The shared table words the refusal, so a caller that guessed
+                // is told the whole vocabulary rather than the two words this
+                // message used to name.
+                return Err(
+                    match kanna_runtime_defaults::stage_verdict::StageVerdict::parse(&rendered) {
+                        Err(refusal) => refusal,
+                        // Unreachable while the advertised enum matches the
+                        // shared table, which a contract test holds; falling
+                        // back keeps a catalog drift a refusal, not a panic.
+                        Ok(_) => format!(
+                            "status must be one of {}, got {rendered}",
+                            enum_values.join(", ")
+                        ),
+                    },
+                );
             }
             if tool.response_kind == ResponseKind::Wait && param.name == "until" {
                 return Err(format!(

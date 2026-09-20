@@ -286,6 +286,14 @@ pub(crate) struct TaskLatestRun {
     pub(crate) agent: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) status: Option<String>,
+    /// The word the agent recorded about its own work — `success`,
+    /// `unverified`, `partial`, `needs-input`, `declined` or `failure` — as
+    /// opposed to `status`, which is the engine's run lifecycle and collapses
+    /// every non-success verdict into `failed`. Absent from an older server,
+    /// and from a run that recorded no verdict; reported exactly as stored, so
+    /// a historic word outside the vocabulary passes through.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) verdict: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) summary: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

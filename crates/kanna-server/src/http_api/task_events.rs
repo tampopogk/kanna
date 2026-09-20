@@ -1360,6 +1360,10 @@ fn enrich_event_batch(
                 json!({
                     "id": run.id,
                     "status": run.status,
+                    // The agent's own word for what happened, beside the
+                    // engine's run lifecycle: `failed` alone cannot tell a
+                    // manager whether the stage crashed or was declined.
+                    "verdict": run.verdict,
                     "kind": run.kind,
                     "stage": run.stage,
                     "summarySnippet": run.summary.as_deref().map(summary_snippet),

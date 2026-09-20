@@ -1629,7 +1629,11 @@ fn preserves_validation_error_strings() {
             "kanna_complete_stage",
             &json!({ "task_id": "task-1", "status": "maybe", "summary": "done" })
         ),
-        Err("status must be success or failure".to_string())
+        Err(
+            "status must be one of success, unverified, partial, needs-input, declined, failure, \
+             got maybe"
+                .to_string()
+        )
     );
     assert_eq!(
         resolve_request(
@@ -2794,6 +2798,50 @@ fn raw_input_key_vocabulary_matches_the_shared_terminal_key_table() {
     for name in &advertised {
         assert!(description.contains(name.as_str()), "{name} undocumented");
     }
+}
+
+/// The stage-completion vocabulary an agent picks a word out of is the shared
+/// Rust table, not a second list that happens to agree today.
+///
+/// Three surfaces read it — the MCP schema, the CLI (which reaches
+/// `resolve_request` with no JSON-Schema validator in front of it), and the
+/// server that records the word — and they live in different crates. A word in
+/// one and not another is a completion that validates and then 400s, or a
+/// verdict an agent never learns it may use.
+#[test]
+fn complete_stage_vocabulary_matches_the_shared_stage_verdict_table() {
+    use kanna_runtime_defaults::stage_verdict::{stage_verdict_names, StageVerdict};
+
+    let catalog = bundled_catalog();
+    let status = catalog
+        .find_param("kanna_complete_stage", "status")
+        .expect("status parameter");
+    let advertised = status
+        .enum_values
+        .clone()
+        .expect("status declares a vocabulary");
+    assert_eq!(advertised, stage_verdict_names());
+
+    // `closed` left the vocabulary on 2026-09-19: closing a task is a
+    // lifecycle action and recording it as a verdict made "somebody stopped
+    // this" indistinguishable from "the agent failed".
+    assert!(!advertised.iter().any(|value| value == "closed"));
+
+    // An agent reads the description long before a schema validator tells it
+    // what it got wrong, so every word has to be teachable from the text.
+    let description = status.description.clone().expect("status description");
+    for verdict in advertised.iter() {
+        assert!(
+            description.contains(verdict.as_str()),
+            "{verdict} undocumented"
+        );
+    }
+    assert!(description.contains("no 'closed' status"));
+
+    // The two historic words keep their exact spelling, so a caller written
+    // against the old vocabulary still validates.
+    assert_eq!(StageVerdict::parse("success"), Ok(StageVerdict::Success));
+    assert_eq!(StageVerdict::parse("failure"), Ok(StageVerdict::Failure));
 }
 
 /// A closed vocabulary on a list constrains its items.

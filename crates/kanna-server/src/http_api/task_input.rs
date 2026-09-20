@@ -717,9 +717,12 @@ pub(crate) async fn handle_task_terminal_state(
         "agent session exited before recording a stage verdict (exit code {exit_code}); \
          use kanna_resume_task to recover provider context"
     );
-    // Keep the agent-facing three-word completion vocabulary on the durable
-    // run/event surfaces after removing PTY completion messages. The database
-    // run status remains its established succeeded/failed/cancelled enum.
+    // No agent recorded a verdict here — the session ended before one — so
+    // this is the server reporting what it observed, and the exit code is all
+    // it has. It stays `success`/`failure` rather than reaching for one of the
+    // words an agent chooses about its own work; widening it would change what
+    // this observation means, which is a bigger change than the vocabulary.
+    // The database run status remains its succeeded/failed/cancelled enum.
     let result = serde_json::json!({
         "status": if exit_code == 0 { "success" } else { "failure" },
         "summary": summary,

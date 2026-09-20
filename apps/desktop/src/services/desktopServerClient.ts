@@ -295,6 +295,17 @@ export interface DesktopTaskLatestRun {
   trigger?: "auto" | "operator" | "manager" | "unspecified";
   agent?: string | null;
   status: string;
+  /**
+   * The word the stage's agent used to say what happened: `success`,
+   * `unverified`, `partial`, `needs-input`, `declined` or `failure`.
+   *
+   * Distinct from `status`, which is the engine's run lifecycle and collapses
+   * every non-success verdict into `failed`. Absent when the run recorded no
+   * verdict — still running, or closed by something other than an agent.
+   * Reported exactly as recorded, so a historic value outside the vocabulary
+   * is possible and only `success` means the stage completed.
+   */
+  verdict?: string | null;
   summary: string | null;
   resumedFromRunId: string | null;
   resumeFallbackReason: string | null;

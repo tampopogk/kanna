@@ -434,6 +434,21 @@ pub struct TaskLatestRun {
     #[serde(default)]
     pub model: Option<String>,
     pub status: String,
+    /// The word the agent used to say what happened here, straight out of the
+    /// recorded result: `success`, `unverified`, `partial`, `needs-input`,
+    /// `declined` or `failure` (see `kanna_runtime_defaults::stage_verdict`).
+    ///
+    /// Separate from `status`, which is the engine's own run lifecycle and
+    /// collapses all five non-success verdicts into `failed`. Absent when the
+    /// run recorded no verdict at all — it is still running, it was closed by
+    /// something other than an agent (a spawn failure, a quota refusal, a
+    /// workspace teardown), or it predates any verdict being written.
+    ///
+    /// Reported verbatim and never coerced, so a row carrying the retired
+    /// `closed` or a word from a newer peer reads as what was actually
+    /// written. Only `success` means the stage completed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verdict: Option<String>,
     pub summary: Option<String>,
     pub resumed_from_run_id: Option<String>,
     pub resume_fallback_reason: Option<String>,
@@ -1725,10 +1740,19 @@ fn spawn_option_from_json(raw: Option<&str>, key: &str) -> Option<String> {
 }
 
 fn map_task_latest_run(run: crate::db::StageRun) -> TaskLatestRun {
-    let summary = run
+    let recorded = run
         .result
         .as_deref()
-        .and_then(|result| serde_json::from_str::<serde_json::Value>(result).ok())
+        .and_then(|result| serde_json::from_str::<serde_json::Value>(result).ok());
+    // Reported exactly as recorded. A historic `closed`, or a word a newer
+    // machine wrote before this one learned it, is history rather than an
+    // error, and rewriting it here would be this surface inventing a verdict.
+    let verdict = recorded
+        .as_ref()
+        .and_then(|result| result.get("status"))
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string);
+    let summary = recorded
         .and_then(|result| {
             result
                 .get("summary")
@@ -1748,6 +1772,7 @@ fn map_task_latest_run(run: crate::db::StageRun) -> TaskLatestRun {
         agent_provider: run.agent_provider,
         model: run.model,
         status: run.status,
+        verdict,
         summary,
         resumed_from_run_id: run.resumed_from_run_id,
         resume_fallback_reason: run.resume_fallback_reason,

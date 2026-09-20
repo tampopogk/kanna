@@ -255,7 +255,10 @@ describe("buildKannaRuntimeSystemPrompt", () => {
     expect(result).toContain("kanna-cli guide");
     expect(result).toContain("kanna_complete_stage");
     expect(result).toContain('kanna-cli stage-complete --task-id "$KANNA_TASK_ID"');
-    expect(result).toContain("record status `failure` with the reason");
+    expect(result).toContain("record the status that fits rather than stopping silently or defaulting to `failure`");
+    for (const verdict of ["success", "unverified", "partial", "needs-input", "declined", "failure"]) {
+      expect(result).toContain(`\`${verdict}\``);
+    }
     expect(result).toContain("Do not push a branch or create a pull request unless this stage's prompt explicitly tells you to");
     expect(result).toContain("Work only in this worktree");
     expect(result).toContain("Do not use the operating system's global `/tmp` for agent-created artifacts");
@@ -277,7 +280,10 @@ describe("buildKannaRuntimeSystemPrompt", () => {
     expect(result).toContain("This stage's transition is `manual`");
     expect(result).toContain("recording a successful result does not advance the workflow");
     expect(result).toContain("record completion only if this stage's prompt asks for it");
-    expect(result).toContain("record status `failure` with the reason");
+    expect(result).toContain("record the status that fits rather than stopping silently or defaulting to `failure`");
+    for (const verdict of ["success", "unverified", "partial", "needs-input", "declined", "failure"]) {
+      expect(result).toContain(`\`${verdict}\``);
+    }
     expect(result).not.toContain("--status success");
     expect(result).not.toContain("{{COMPLETION}}");
   });
@@ -292,8 +298,11 @@ describe("buildKannaRuntimeSystemPrompt", () => {
 
     expect(result).toContain("This stage's transition is `manual`");
     expect(result).not.toContain("record completion so Kanna can advance the workflow");
+    // The status is a placeholder, not `failure`: a manual stage that cannot
+    // report success has six words to choose between and handing it one is
+    // what trained every blocked agent to file a crash report.
     expect(result).toContain(
-      'kanna_complete_stage {"task_id": "$KANNA_TASK_ID", "status": "failure"'
+      'kanna_complete_stage {"task_id": "$KANNA_TASK_ID", "status": "..."'
     );
   });
 
