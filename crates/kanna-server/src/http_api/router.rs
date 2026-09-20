@@ -28,11 +28,12 @@ use super::preview::{close_task_preview, open_task_preview};
 use super::repo_browser::{list_task_directory, read_task_file_range};
 use super::repo_commands::{list_repo_commands, run_repo_command};
 use super::repos::{
-    add_repo, dependent_tasks_exist, doctor_repo, get_repo_agent_definition, get_repo_by_path,
-    get_repo_checkout, get_repo_kanna_definitions, get_repo_workflow_definition,
-    list_available_agent_providers, list_copilot_models, list_opencode_models,
-    list_recent_repo_workflows, list_repo_agents, list_repo_tasks, list_repos, patch_repo,
-    reconcile_repo_metadata, refresh_repo_origin, reorder_repos, start_repo_checkout,
+    add_repo, dependent_tasks_exist, doctor_repo, eject_repo_agent_definition,
+    get_repo_agent_definition, get_repo_by_path, get_repo_checkout, get_repo_kanna_definitions,
+    get_repo_workflow_definition, list_available_agent_providers, list_copilot_models,
+    list_opencode_models, list_recent_repo_workflows, list_repo_agents, list_repo_tasks,
+    list_repos, patch_repo, reconcile_repo_metadata, refresh_repo_origin, reorder_repos,
+    start_repo_checkout,
 };
 use super::secure_channel::SealedPairingContext;
 use super::secure_channel::SealedPeerPairingContext;
@@ -176,6 +177,10 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route(
             "/v1/repos/{repo_id}/kanna-definitions/agents/{agent_selector}",
             get(get_repo_agent_definition),
+        )
+        .route(
+            "/v1/repos/{repo_id}/kanna-definitions/agents/{agent_selector}/eject",
+            post(eject_repo_agent_definition),
         )
         .route(
             "/v1/repos/{repo_id}/recent-workflows",
@@ -324,6 +329,10 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route(
             "/v1/tasks/{task_id}/setup-logs/{run_id}",
             get(super::workspace_setup_logs::read),
+        )
+        .route(
+            "/v1/tasks/{task_id}/runs/{run_id}/resolved-prompt",
+            get(super::stage_run_prompts::read),
         )
         // Photo attachments ride in this route's JSON body, so it alone opts
         // out of axum's default 2 MiB limit. See

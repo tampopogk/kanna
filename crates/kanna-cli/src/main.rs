@@ -261,6 +261,44 @@ pub(crate) enum RepoAgentCommands {
         #[arg(long)]
         server_url: Option<String>,
     },
+    /// Print an agent's definition text: resolved (default) or raw source
+    Show {
+        /// The target repo ID; defaults to the calling task session's repository
+        #[arg(long)]
+        repo_id: Option<String>,
+
+        /// Agent definition name, from `repo agent list`
+        #[arg(long)]
+        agent: String,
+
+        /// Print the raw, unresolved AGENT.md/EXTEND.md source (partial
+        /// includes left as literal `{{> name}}` markers) instead of the
+        /// resolved definition a task actually runs
+        #[arg(long)]
+        raw: bool,
+
+        /// Override the local Kanna server base URL
+        #[arg(long)]
+        server_url: Option<String>,
+    },
+    /// Write an agent's fully-resolved AGENT.md into this repo's working tree
+    Eject {
+        /// The target repo ID; defaults to the calling task session's repository
+        #[arg(long)]
+        repo_id: Option<String>,
+
+        /// Agent definition name, from `repo agent list`
+        #[arg(long)]
+        agent: String,
+
+        /// Overwrite an existing `.kanna/agents/<name>/AGENT.md`
+        #[arg(long)]
+        force: bool,
+
+        /// Override the local Kanna server base URL
+        #[arg(long)]
+        server_url: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]

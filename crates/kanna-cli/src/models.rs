@@ -65,6 +65,13 @@ pub(crate) struct SignalAgentResponse {
     pub(crate) created: bool,
 }
 
+#[derive(Debug, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct EjectAgentRequest {
+    #[serde(default)]
+    pub(crate) force: bool,
+}
+
 #[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct MergeHandoffRequest {

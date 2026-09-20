@@ -1089,6 +1089,40 @@ async fn repo_definition_route_layers_a_repo_ship_procedure_onto_the_bundled_con
 }
 
 #[tokio::test]
+async fn repo_definition_route_raw_query_param_serves_unresolved_source_instead_of_the_merge() {
+    let (_temp, repo) = published_definitions_repo(
+        "ship-extension-raw",
+        &[(
+            ".kanna/agents/ship/EXTEND.md",
+            "---\nagent_provider: codex, claude\n---\nREPO_SHIP_PROCEDURE".to_string(),
+        )],
+    );
+    let app = manifest_router("definitions-ship-extension-raw", &repo);
+
+    // Wire-compatible: no `raw` param still serves the resolved, merged view.
+    let (status, resolved) =
+        json_response(&app, "/v1/repos/repo-1/kanna-definitions/agents/ship").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(resolved.get("definition").is_some());
+    assert!(resolved.get("source").is_none());
+
+    let (status, raw) = json_response(
+        &app,
+        "/v1/repos/repo-1/kanna-definitions/agents/ship?raw=true",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(raw.get("source").is_some(), "{raw}");
+    assert!(raw.get("definition").is_none(), "{raw}");
+    let agent_md = raw["source"]["agentMd"].as_str().unwrap();
+    let extend_md = raw["source"]["extendMd"].as_str().unwrap();
+    // The raw view is unmerged: the base and the extension are still two
+    // separate documents, and REPO_SHIP_PROCEDURE lives only in the extension.
+    assert!(!agent_md.contains("REPO_SHIP_PROCEDURE"), "{agent_md}");
+    assert!(extend_md.contains("REPO_SHIP_PROCEDURE"), "{extend_md}");
+}
+
+#[tokio::test]
 async fn repo_definition_routes_reject_unsafe_names_and_report_missing_resources() {
     let fixture = RemoteDefinitionsFixture::new("lookup-errors", "dev");
     let app = fixture.router("repo-1");

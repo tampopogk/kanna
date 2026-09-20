@@ -250,8 +250,10 @@ acknowledging transferred descriptors.
   globs select a provider plus an optional model), `workflows/{name}.json`,
   `agents/{name}/AGENT.md` (repo files override built-ins by name),
   `agents/{name}/EXTEND.md` (layers onto the resolved agent without rewriting
-  it — read only from the open repo, never from bundled resources), and
-  `tasks/{slug}/agent.md` templates. Its `config.schema.json` is the public
+  it — read only from the open repo, never from bundled resources),
+  `partials/{name}.md` (shared prompt fragments an `AGENT.md`/`EXTEND.md` body
+  includes by name; see below), and `tasks/{slug}/agent.md` templates. Its
+  `config.schema.json` is the public
   schema served at
   `https://schemas.kanna.build/config.schema.json`; merging a change to it on
   `main` publishes it automatically via
@@ -327,6 +329,35 @@ acknowledging transferred descriptors.
   declarations, recorded on the spawned `stage_run` and reported as
   `kanna_get_task`'s `latestRun.providerOverride`, and a run that reproduces a
   recorded run carries the record forward with the stamp.
+- **Agent prompts compose via partials, and the resolved text is inspectable.**
+  An `AGENT.md`/`EXTEND.md` body may include a shared fragment with
+  `{{> name}}` — Handlebars' partial-include marker, chosen because prompts
+  already use `$NAME`/`${NAME}` for the engine's own variable substitution
+  and no existing definition uses `{{`, so it cannot collide with either.
+  A partial resolves `.kanna/partials/{name}.md` in the repo's definition
+  snapshot, falling back to a bundled built-in — the same override-by-name
+  rule agents already follow — at the exact point `agent_optional` reads and
+  merges `AGENT.md`/`EXTEND.md`, before `$VAR` substitution ever runs. A
+  missing partial or a recursive/self-including chain fails the whole
+  definition with a clear error naming the missing or cyclic partial; neither
+  is silently emitted as nothing. Partials make the composed prompt *less*
+  obvious by construction, which is why `kanna-cli repo agent show --agent
+  <name>` (`kanna_show_agent`) always shows the fully-resolved text by
+  default — partials expanded, any `EXTEND.md` merged in — with `--raw` for
+  the unresolved source (partial markers left literal) a customer would
+  actually copy into `.kanna/agents/<name>/` to start overriding. Every stage
+  spawn persists that same fully-resolved prompt text to `stage_run_prompt`
+  (keyed by `run_id`, kept out of `get_task`/`get_tasks` like
+  `workspace_setup_run` beside it) so a strangely-behaving agent can be
+  debugged against what it was actually told; read it back with
+  `GET /v1/tasks/{task_id}/runs/{run_id}/resolved-prompt`.
+  `kanna-cli repo agent eject --agent <name>` (`kanna_eject_agent`) writes
+  that resolved text into `.kanna/agents/<name>/AGENT.md` in the open repo's
+  own working tree (loopback-only — it never routes to another machine), so
+  the file on disk becomes the whole prompt with nothing left to resolve; it
+  refuses when an `EXTEND.md` already exists for that agent (ejecting would
+  extend the result a second time on the next resolution) or when a file
+  already sits at the target path, unless `force` is set.
 - `config.json` has a machine-local companion, `.kanna/config.local.json`:
   gitignored, read from the **open repo's working tree** rather than the origin
   snapshot, and deep-merged over the committed config with local winning — so a

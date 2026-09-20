@@ -609,6 +609,7 @@ async fn acknowledged_stage_survives_db_failure_restart_and_can_complete() {
         },
         deferred_setup: None,
         setup_record: None,
+        resolved_prompt: String::new(),
         setup_timeout_signal: None,
     };
 
@@ -3751,6 +3752,7 @@ fn current_stage_spawn_fixture(
         },
         deferred_setup: None,
         setup_record: None,
+        resolved_prompt: String::new(),
         setup_timeout_signal: None,
     };
     (config, db, prepared)

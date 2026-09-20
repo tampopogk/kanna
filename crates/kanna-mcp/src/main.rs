@@ -1970,6 +1970,8 @@ mod tests {
                 "kanna_list_repo_tasks",
                 "kanna_doctor",
                 "kanna_list_agents",
+                "kanna_show_agent",
+                "kanna_eject_agent",
                 "kanna_create_task",
                 "kanna_signal_agent",
                 "kanna_signal_merge_handoff",

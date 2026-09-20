@@ -723,6 +723,32 @@
       ]
     },
     {
+      "name": "kanna_show_agent",
+      "description": "Read one agent definition's text, so extending or overriding a built-in is as clear as if the source were already in your working tree. By default this is the RESOLVED text a task actually runs: any repo EXTEND.md already merged in and every `{{> name}}` partial include already expanded, exactly what kanna_create_task's `agent` would spawn today. Pass raw true instead to see the unresolved source — the repo's own AGENT.md (or, absent one, the bundled built-in) and, when the repo layers one, its separate EXTEND.md, with partial includes left as literal `{{> name}}` markers — the file(s) you would actually copy into `.kanna/agents/<name>/` to start customizing. Resolved and raw are two views of the same underlying files, not two definitions.",
+      "method": "GET",
+      "path": "/v1/repos/{repo_id}/kanna-definitions/agents/{agent_selector}",
+      "response": "json",
+      "params": [
+        { "name": "machine_id", "description": "Machine id from kanna_list_machines. Omit it, or pass the current machine id, to use the local machine connected to this client.", "type": "string", "required": false, "location": "routing" },
+        { "name": "repo_id", "description": "Repository id from kanna_list_repos.", "type": "string", "required": true, "location": "path" },
+        { "name": "agent_selector", "description": "Agent name from kanna_list_agents (e.g. 'implement'). Definitions declaring `visibility: internal` still resolve here even though they are excluded from that listing.", "type": "string", "required": true, "location": "path" },
+        { "name": "raw", "description": "Serve the raw, unresolved AGENT.md/EXTEND.md source instead of the resolved, merged definition. Default false.", "type": "boolean", "required": false, "location": "query" }
+      ]
+    },
+    {
+      "name": "kanna_eject_agent",
+      "description": "Write an agent's fully-resolved AGENT.md — partials expanded, any repo EXTEND.md already merged in — into `.kanna/agents/<name>/AGENT.md` in this desktop's own open repository checkout, so a customer can edit exactly what ran instead of guessing at a bundled built-in they never had the source for. This is the mitigation for the same invisibility partials introduce: after ejecting, the file on disk IS the whole prompt, nothing left to resolve. Loopback-only: it writes to this machine's own working tree and cannot be routed to another machine. Refused when the repo already has an EXTEND.md for this agent (ejecting would extend the result a second time on the next resolution — remove or fold it in first) or when a file already sits at the target path, unless force is set.",
+      "method": "POST",
+      "path": "/v1/repos/{repo_id}/kanna-definitions/agents/{agent_selector}/eject",
+      "response": "json",
+      "params": [
+        { "name": "machine_id", "description": "Machine id from kanna_list_machines. Omit it, or pass the current machine id, to use the local machine connected to this client.", "type": "string", "required": false, "location": "routing" },
+        { "name": "repo_id", "description": "Repository id from kanna_list_repos.", "type": "string", "required": true, "location": "path" },
+        { "name": "agent_selector", "description": "Agent name from kanna_list_agents (e.g. 'implement').", "type": "string", "required": true, "location": "path" },
+        { "name": "force", "description": "Overwrite an existing `.kanna/agents/<name>/AGENT.md` in the working tree. Default false, which refuses rather than silently discarding a customization already there.", "type": "boolean", "required": false, "location": "body" }
+      ]
+    },
+    {
       "name": "kanna_create_task",
       "description": "Create a new Kanna task: forks a worktree and starts the workflow's first stage agent with the prompt. When called from a Kanna task session, repo_id defaults to the current task's repo. `agent` optionally names any resolved agent definition returned by kanna_list_agents to run the task's first stage with, overriding the workflow stage's own agent binding. Ordinary durable repository work is top-level by default, even when an orchestrator creates it. Set parent_task_id only for a genuine semantic subtask in a decomposition or fan-out. Observe completion through kanna_wait_events for fan-out or kanna_wait_task for a single task.",
       "method": "POST",

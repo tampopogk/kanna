@@ -535,6 +535,7 @@ pub(crate) async fn spawn_prepared_stage_run_for_api(
     mark_stage_operation_phase(db_path, &run_id, "spawn_ready")?;
     record_stage_transition_run(db_path, &prepared, &run_id)?;
     record_workspace_setup_for_run(db_path, &run_id, prepared.setup_record.as_ref());
+    record_resolved_prompt_for_run(db_path, &run_id, &prepared.resolved_prompt);
     bind_terminal_launch(db_path, &run_id, &prepared.session)?;
 
     let command = spawn_session_command(
@@ -732,6 +733,7 @@ fn record_stage_transition_failure(
         // A stage whose setup failed is the one whose Setup stream matters
         // most, so it is bound to the failure run this records.
         record_workspace_setup_for_run(db_path, &run_id, prepared.setup_record.as_ref());
+        record_resolved_prompt_for_run(db_path, &run_id, &prepared.resolved_prompt);
         Ok(())
     })();
     match record {
@@ -1888,6 +1890,7 @@ pub(crate) async fn rerun_prepared_stage_for_api(
     let completion_transition = prepared.completion_transition;
     let provider_session_id = prepared.provider_session_id.clone();
     let cwd = prepared.cwd.clone();
+    let resolved_prompt = prepared.resolved_prompt.clone();
     let run_id = generate_stage_run_id(&task_id);
     let mut completion_context =
         initialize_completion_context(&mut prepared.env, &task_id, &run_id, daemon.daemon_dir())?;
@@ -1906,6 +1909,7 @@ pub(crate) async fn rerun_prepared_stage_for_api(
             &cwd,
             provider_override.as_ref(),
             setup,
+            &resolved_prompt,
             &error,
         ) {
             Ok(()) => error,
@@ -1953,6 +1957,7 @@ pub(crate) async fn rerun_prepared_stage_for_api(
         &run_id,
     )?;
     record_workspace_setup_for_run(db_path, &run_id, setup_record.as_ref());
+    record_resolved_prompt_for_run(db_path, &run_id, &resolved_prompt);
 
     bind_terminal_launch(db_path, &run_id, &prepared.session)?;
 
@@ -2213,6 +2218,7 @@ fn record_spawned_stage_run(
             Some(prepared.completion_transition.as_str()),
             true,
         )?;
+        db.record_stage_run_prompt(run_id, &prepared.resolved_prompt)?;
         db.delete_create_task_intent(&prepared.created_task.task_id)
     })
     .map_err(|e| format!("db error: {}", e))
@@ -2278,7 +2284,9 @@ fn record_prepared_task_spawn_failure(
         cwd: Some(&prepared.cwd),
         resumed_from_run_id: None,
     })
-    .map_err(|e| format!("db error: {}", e))
+    .map_err(|e| format!("db error: {}", e))?;
+    db.record_stage_run_prompt(&run_id, &prepared.resolved_prompt)
+        .map_err(|e| format!("db error: {}", e))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2349,6 +2357,7 @@ fn record_rerun_stage_failure(
     cwd: &str,
     provider_override: Option<&crate::db::StageProviderOverride>,
     setup_record: Option<&crate::db::WorkspaceSetupOutcome>,
+    resolved_prompt: &str,
     error: &str,
 ) -> Result<(), String> {
     let db = Db::open(db_path).map_err(|e| format!("db error: {}", e))?;
@@ -2388,6 +2397,7 @@ fn record_rerun_stage_failure(
     // A rerun whose setup failed is exactly the one somebody needs the Setup
     // stream for, so it is bound to the failure run this records.
     record_workspace_setup_for_run(db_path, &run_id, setup_record);
+    record_resolved_prompt_for_run(db_path, &run_id, resolved_prompt);
     Ok(())
 }
 
@@ -4960,6 +4970,20 @@ fn record_workspace_setup_for_run(
     let result = Db::open(db_path).and_then(|db| db.record_workspace_setup_run(run_id, record));
     if let Err(error) = result {
         log::warn!("failed to record the workspace setup stream for run {run_id}: {error}");
+    }
+}
+
+/// Bind a run's fully-resolved prompt text to the stage run it was spawned
+/// with.
+///
+/// Best effort, same as `record_workspace_setup_for_run`: the run row is
+/// already durable, so losing this record costs a debugging aid, never a
+/// spawn.
+fn record_resolved_prompt_for_run(db_path: &str, run_id: &str, resolved_prompt: &str) {
+    let result =
+        Db::open(db_path).and_then(|db| db.record_stage_run_prompt(run_id, resolved_prompt));
+    if let Err(error) = result {
+        log::warn!("failed to record the resolved prompt for run {run_id}: {error}");
     }
 }
 
