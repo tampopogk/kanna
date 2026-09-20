@@ -151,6 +151,32 @@ pub(crate) fn is_routable_lan_address(address: &IpAddr) -> bool {
     }
 }
 
+/// Test-only: this host's first real, routable **IPv4** interface address,
+/// or `None` on a host that has no such interface.
+///
+/// A test that qualifies the LAN listener at a real interface address must
+/// pick an address whose family the listener actually binds, and every
+/// production bind - the general API router, this listener, and the preview
+/// proxy - uses `lan_host`, which defaults to `0.0.0.0`: the IPv4 wildcard.
+/// [`is_routable_lan_address`] deliberately accepts IPv6 globals too, because
+/// it answers the *discovery* question ("could a sibling ever reach this
+/// address?"), not the bind question; composing it with an unqualified
+/// `find` therefore selected an IPv6 global on any host that has one (an
+/// ISP-assigned prefix is enough) and then dialled it against an IPv4-only
+/// wildcard bind, which is structurally impossible and failed with
+/// `ConnectionRefused`. Narrowing the family here, rather than widening the
+/// tests' bind to `[::]`, keeps those tests pointed at exactly what
+/// production binds.
+#[cfg(test)]
+pub(crate) fn first_routable_ipv4_address() -> Option<IpAddr> {
+    if_addrs::get_if_addrs().ok().and_then(|interfaces| {
+        interfaces
+            .into_iter()
+            .map(|interface| interface.addr.ip())
+            .find(|address| address.is_ipv4() && is_routable_lan_address(address))
+    })
+}
+
 #[cfg(not(target_os = "macos"))]
 impl Drop for LanRoutingAdvertisement {
     fn drop(&mut self) {
