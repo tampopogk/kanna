@@ -257,6 +257,7 @@ filegroup(
         ".kanna/agents/**",
         ".kanna/workflows/**",
         ".kanna/tasks/**",
+        ".kanna/partials/**",
     ]),
 )
 
