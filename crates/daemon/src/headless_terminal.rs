@@ -86,6 +86,10 @@ pub struct HeadlessTerminal {
     /// cannot classify. The warning is the canary for the next vocabulary
     /// change and is worth exactly one line per session, not one per frame.
     warned_unclassified_footer: bool,
+    /// Test seam for the serializer degrading to visible text. The field only
+    /// exists under `cfg(test)`, so a production build always serializes.
+    #[cfg(test)]
+    forced_serialize_failure: bool,
 }
 
 unsafe impl Send for HeadlessTerminal {}
@@ -159,7 +163,24 @@ impl HeadlessTerminal {
             rows,
             cols,
             warned_unclassified_footer: false,
+            #[cfg(test)]
+            forced_serialize_failure: false,
         })
+    }
+
+    /// Make every later snapshot degrade to visible text, the way a serializer
+    /// failure does in the field.
+    #[cfg(test)]
+    pub fn force_serialize_failure(&mut self) {
+        self.forced_serialize_failure = true;
+    }
+
+    fn forced_serialize_failure_for_test(&self) -> Option<Box<dyn std::error::Error>> {
+        #[cfg(test)]
+        if self.forced_serialize_failure {
+            return Some("forced serialization failure".into());
+        }
+        None
     }
 
     pub fn write(&mut self, bytes: &[u8]) {
@@ -199,7 +220,11 @@ impl HeadlessTerminal {
             self.terminal.set_mode(Mode::SYNC_OUTPUT, false)?;
         }
         let mut used_visible_text_fallback = false;
-        let vt = match serialize_terminal(&self.terminal, None) {
+        let serialized = match self.forced_serialize_failure_for_test() {
+            Some(error) => Err(error),
+            None => serialize_terminal(&self.terminal, None),
+        };
+        let vt = match serialized {
             Ok(snapshot) => {
                 let mut vt = snapshot.serialized_candidate;
                 // Temporary compatibility for ghostty-xterm-compat-serialize

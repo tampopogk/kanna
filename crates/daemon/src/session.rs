@@ -1070,28 +1070,50 @@ impl SessionHandle {
         self.pty.lock().await.resize(cols, rows)?;
         let headless_result = {
             let mut state = self.state.lock().await;
-            // A shrink can discard rows from the screen-only projection.
-            // Resizing it back after a primary failure would not restore that
-            // evidence, so preserve its snapshot before changing either grid.
-            let result = state.notice_terminal.snapshot_with_metadata().and_then(|before| {
-                if before.used_visible_text_fallback {
-                    return Err("cannot preserve notice projection for resize rollback".into());
+            // A shrink can discard rows from the screen-only projection, so
+            // capture it before changing either grid. This snapshot is only
+            // rollback evidence for the unlikely case where the resize itself
+            // fails; it must never decide whether the resize is attempted.
+            // Refusing to resize because the evidence is imperfect trades an
+            // uncertain loss of notice detection for a certain unusable
+            // session stuck on the spawn grid. A snapshot that degraded to
+            // visible text still carries the projection's visible rows and
+            // cursor, which is the whole substance of a screen-only
+            // projection, so it stays usable as rollback evidence; only a
+            // snapshot that could not be taken at all leaves nothing behind.
+            let before = match state.notice_terminal.snapshot_with_metadata() {
+                Ok(before) => {
+                    if before.used_visible_text_fallback {
+                        log::warn!(
+                            "[notice] resize rollback evidence degraded to visible text; \
+                             a rollback would keep the visible rows and lose styling"
+                        );
+                    }
+                    Some(before.snapshot)
                 }
-                let resized = state.notice_terminal.resize(cols, rows)
-                    .and_then(|()| state.headless_terminal.resize(cols, rows));
-                match resized {
-                    Ok(()) => Ok(()),
-                    Err(error) => match HeadlessTerminal::notice_projection_from_snapshot(&before.snapshot) {
-                        Ok(previous_notice) => {
-                            state.notice_terminal = previous_notice;
-                            Err(error)
-                        }
-                        Err(rollback_error) => Err(format!(
-                            "terminal resize failed ({error}); notice projection rollback failed ({rollback_error})"
-                        ).into()),
-                    },
+                Err(error) => {
+                    log::warn!(
+                        "[notice] failed to snapshot the projection before resize: {error}; \
+                         a failed resize would rebuild it empty"
+                    );
+                    None
                 }
-            });
+            };
+            let resized = state
+                .notice_terminal
+                .resize(cols, rows)
+                .and_then(|()| state.headless_terminal.resize(cols, rows));
+            let result = match resized {
+                Ok(()) => Ok(()),
+                Err(error) => {
+                    roll_back_notice_projection(
+                        &mut state.notice_terminal,
+                        before.as_ref(),
+                        previous,
+                    );
+                    Err(error)
+                }
+            };
             state.notice_terminal.drain_pty_writes();
             result
         };
@@ -1810,6 +1832,44 @@ pub async fn pty_occupancy_snapshot(sessions: &Arc<Mutex<SessionManager>>) -> Pt
     PtyOccupancySnapshot::new(attribution)
 }
 
+/// Put the notice projection back on the grid the PTY is about to roll back
+/// to, after a resize that failed part-way. The projection is a derived
+/// screen-scrape, so losing its content costs notice detection only until the
+/// provider repaints; leaving it on a grid the PTY no longer uses would make
+/// every later scrape wrong, which is why the rebuild happens even when there
+/// is no snapshot to restore.
+fn roll_back_notice_projection(
+    notice_terminal: &mut HeadlessTerminal,
+    before: Option<&crate::protocol::TerminalSnapshot>,
+    previous: (u16, u16),
+) {
+    if let Some(snapshot) = before {
+        match HeadlessTerminal::notice_projection_from_snapshot(snapshot) {
+            Ok(projection) => {
+                *notice_terminal = projection;
+                return;
+            }
+            Err(error) => log::error!(
+                "[notice] failed to restore the projection snapshot after a failed resize: {error}"
+            ),
+        }
+    }
+    let (cols, rows) = previous;
+    match HeadlessTerminal::new_notice_projection(cols, rows) {
+        Ok(projection) => {
+            *notice_terminal = projection;
+            log::error!(
+                "[notice] rebuilt the projection empty on {cols}x{rows} after a failed resize; \
+                 notice detection is blind until the provider repaints"
+            );
+        }
+        Err(error) => log::error!(
+            "[notice] failed to rebuild the projection after a failed resize: {error}; \
+             it may disagree with the PTY grid until the session is replaced"
+        ),
+    }
+}
+
 fn status_detection_throttle() -> Duration {
     Duration::from_millis(STATUS_DETECTION_THROTTLE_MS)
 }
@@ -2012,6 +2072,98 @@ mod tests {
             assert!(state.notice_terminal.drain_pty_writes().is_empty());
         }
         handle.kill().await.unwrap();
+    }
+
+    /// A degraded notice snapshot is imperfect rollback evidence, not a reason
+    /// to leave the session on its spawn grid. Refusing here is what put
+    /// "cannot preserve notice projection for resize rollback" in front of
+    /// owners opening a shell.
+    #[tokio::test]
+    async fn resize_proceeds_when_the_notice_snapshot_degraded() {
+        let record = spawn_test_record(AgentProvider::Claude, SessionStatus::Busy).unwrap();
+        let handle = SessionHandle::new(record);
+        handle
+            .mirror_output(b"provider notice line", true)
+            .await
+            .unwrap();
+        {
+            let mut state = handle.state.lock().await;
+            state.notice_terminal.force_serialize_failure();
+            assert!(
+                state
+                    .notice_terminal
+                    .snapshot_with_metadata()
+                    .unwrap()
+                    .used_visible_text_fallback
+            );
+        }
+
+        handle.resize(240, 78).await.unwrap();
+
+        assert_eq!(handle.rows_cols().await, (78, 240));
+        {
+            let mut state = handle.state.lock().await;
+            assert_eq!(state.notice_terminal.dimensions(), (240, 78));
+            assert_eq!(state.headless_terminal.dimensions(), (240, 78));
+            assert!(state.notice_terminal.drain_pty_writes().is_empty());
+        }
+        handle.kill().await.unwrap();
+    }
+
+    /// The rollback the snapshot exists for. A headless resize that fails
+    /// leaves both projections on the grid the PTY is rolled back to, and a
+    /// snapshot that degraded to visible text still carries the rows notice
+    /// detection scrapes.
+    #[tokio::test]
+    async fn a_failed_resize_rolls_the_notice_projection_back_to_the_previous_grid() {
+        for degraded in [false, true] {
+            let record = spawn_test_record(AgentProvider::Claude, SessionStatus::Busy).unwrap();
+            let handle = SessionHandle::new(record);
+            handle
+                .mirror_output(b"provider notice line", true)
+                .await
+                .unwrap();
+            let before_lines = {
+                let mut state = handle.state.lock().await;
+                if degraded {
+                    state.notice_terminal.force_serialize_failure();
+                }
+                state.notice_terminal.debug_lines(24).unwrap()
+            };
+
+            // A zero column count is rejected by the headless terminal but
+            // accepted by TIOCSWINSZ, so the headless resize fails after the
+            // PTY has already moved.
+            let error = handle.resize(0, 24).await.unwrap_err();
+            // The caller hears why the resize failed, never that its rollback
+            // evidence was imperfect.
+            assert!(
+                !error.to_string().contains("notice projection"),
+                "degraded={degraded}: {error}"
+            );
+
+            assert_eq!(handle.rows_cols().await, (24, 80));
+            {
+                let mut state = handle.state.lock().await;
+                assert_eq!(
+                    state.notice_terminal.dimensions(),
+                    (80, 24),
+                    "degraded={degraded}"
+                );
+                assert_eq!(
+                    state.headless_terminal.dimensions(),
+                    (80, 24),
+                    "degraded={degraded}"
+                );
+                assert_eq!(
+                    state.notice_terminal.debug_lines(24).unwrap(),
+                    before_lines,
+                    "degraded={degraded}"
+                );
+                assert!(state.notice_terminal.drain_pty_writes().is_empty());
+            }
+            handle.kill().await.unwrap();
+        }
     }
 
     #[tokio::test]
