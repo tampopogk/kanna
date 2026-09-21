@@ -557,7 +557,6 @@ impl Db {
             .prepare("INSERT INTO schema_migrations (id) VALUES (?1)")?;
         super::create_contextless_completion_attempt_schema(&self.conn)?;
         super::create_human_review_schema(&self.conn)?;
-        super::create_standing_constraint_schema(&self.conn)?;
         for id in CURRENT_SCHEMA_MIGRATIONS {
             stmt.execute([id])?;
         }

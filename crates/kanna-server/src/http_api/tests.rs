@@ -319,7 +319,6 @@ mod relay_dispatch;
 mod repo_commands;
 mod repo_definitions;
 mod revision_status;
-mod standing_constraints;
 mod task_events;
 mod transfer_history_checkpoint;
 mod transfer_preparation_gate;

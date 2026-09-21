@@ -42,9 +42,6 @@ use super::signal_agent::{
     find_local_singletons, release_closed_singleton, signal_agent, signal_merge_handoff,
 };
 use super::snapshot::get_snapshot;
-use super::standing_constraints::{
-    clear_standing_constraint, list_standing_constraints, set_standing_constraint,
-};
 use super::state::{AppState, AuthenticatedHttpInvoke, HttpInvokeResponse, TunneledHttpInvoke};
 use super::status::status;
 use super::task_actions::{
@@ -213,14 +210,6 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route(
             "/v1/repo-singletons/{remote_url_hash}/{agent}",
             get(find_local_singletons),
-        )
-        .route(
-            "/v1/standing-constraints",
-            get(list_standing_constraints).post(set_standing_constraint),
-        )
-        .route(
-            "/v1/standing-constraints/{constraint_id}/clear",
-            post(clear_standing_constraint),
         )
         .route("/v1/task-events", get(wait_task_events))
         .route(

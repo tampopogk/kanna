@@ -671,9 +671,8 @@ Honestly, in order of how much it matters:
 
 1. **`The Decision Record` has no home in Kanna.** Nothing in the system records
    a product decision, its objection, its author, and its prediction. The
-   nearest relatives are not substitutes: `standing_constraint` is a durable
-   repository-scoped *constraint* ("don't"), not a record of a choice and what
-   it predicted; `human_review_decision` records authority to queue one PR.
+   nearest relative is not a substitute: `human_review_decision` records
+   authority to queue one PR, not a record of a choice and what it predicted.
    This is the single largest gap, and it is the response to the pattern the
    owner named first.
 
@@ -849,11 +848,11 @@ rather than removed; the other nine stand.
    record could be an ordinary document. Kanna may need an origin field, a tag,
    or nothing at all.
 
-2. **Where does a decision record live?** Candidates: a new durable table
-   alongside `standing_constraint`; a committed markdown file under `docs/`; a
-   closed task that is never deleted. The prediction field is what makes this
-   hard — something eventually has to *re-read* the record at the predicted
-   time, and nothing in Kanna does deferred re-reading of anything.
+2. **Where does a decision record live?** Candidates: a new durable table; a
+   committed markdown file under `docs/`; a closed task that is never deleted.
+   The prediction field is what makes this hard — something eventually has to
+   *re-read* the record at the predicted time, and nothing in Kanna does
+   deferred re-reading of anything.
 
 3. ~~**Can a task escalate into a stage that sits ahead of the one it is
    in?**~~ **Answered by the owner, 2026-09-19.** It does not. A task never

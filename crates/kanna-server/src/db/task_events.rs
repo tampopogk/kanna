@@ -209,23 +209,6 @@ pub enum TaskEventKind {
     /// decided. An `uncertain` outcome must be reconciled by a human, not
     /// resent — the merge master may already hold the request.
     HumanReviewDecisionDelivery,
-    /// A standing supervision constraint was declared for this repository — a
-    /// stand-down, a release gate, a policy, or a hold. Announced on the task
-    /// it names, or on the session that declared a repository-wide one, so a
-    /// sibling manager observes a constraint another session set instead of
-    /// discovering it by violating it.
-    ///
-    /// Advisory by construction: Kanna never reads `payload.text`, and this
-    /// event gates nothing. `payload.constraintId` names the durable
-    /// `standing_constraint` row, and `payload.declaredBy` is a declared,
-    /// unverified source in the same sense as the input ledger's.
-    StandingConstraintSet,
-    /// A standing constraint was explicitly cleared. The row itself is kept
-    /// and stays readable as history with its clear provenance, because an
-    /// absent constraint and a lifted one are otherwise indistinguishable to a
-    /// supervisor rebuilding its state. Clearing an already cleared constraint
-    /// emits nothing.
-    StandingConstraintCleared,
 }
 
 impl TaskEventKind {
@@ -261,8 +244,6 @@ impl TaskEventKind {
             Self::ReviewContextChanged => "task.review_context_changed",
             Self::HumanReviewDecisionRecorded => "task.human_review_decision",
             Self::HumanReviewDecisionDelivery => "task.human_review_decision_delivery",
-            Self::StandingConstraintSet => "task.standing_constraint_set",
-            Self::StandingConstraintCleared => "task.standing_constraint_cleared",
         }
     }
 
@@ -297,8 +278,6 @@ impl TaskEventKind {
         Self::ReviewContextChanged,
         Self::HumanReviewDecisionRecorded,
         Self::HumanReviewDecisionDelivery,
-        Self::StandingConstraintSet,
-        Self::StandingConstraintCleared,
     ];
 }
 
