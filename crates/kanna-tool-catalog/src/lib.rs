@@ -1190,21 +1190,12 @@ pub fn repo_context_task_id(
     remote_machine_id: Option<&str>,
 ) -> Result<Option<String>, String> {
     let create_task = tool_name == "kanna_create_task";
-    // Repository-scoped records a task session addresses by its own repository.
-    // They behave like `kanna_create_task`: the repository is not optional, so
-    // a caller with neither an explicit `repo_id` nor a task session is told
-    // that here rather than discovering it as a server-side deserialization
-    // failure.
-    let repo_scoped = matches!(
-        tool_name,
-        "kanna_standing_constraints" | "kanna_set_standing_constraint"
-    );
     let task_listing = matches!(
         tool_name,
         "kanna_get_tasks" | "kanna_list_recent_tasks" | "kanna_search_tasks"
     );
     let task_watch = tool_name == "kanna_wait_events";
-    if !create_task && !repo_scoped && !task_listing && !task_watch {
+    if !create_task && !task_listing && !task_watch {
         return Ok(None);
     }
 
@@ -1234,7 +1225,7 @@ pub fn repo_context_task_id(
 
     let task_id = match task_id.filter(|value| !value.trim().is_empty()) {
         Some(task_id) => task_id,
-        None if create_task || repo_scoped => {
+        None if create_task => {
             return Err("repo_id is required when KANNA_TASK_ID is not available".to_string())
         }
         None => return Ok(None),
@@ -1243,8 +1234,6 @@ pub fn repo_context_task_id(
     if let Some(machine_id) = remote_machine_id {
         let operation = if create_task {
             "creating a task"
-        } else if repo_scoped {
-            "reading or writing a repository's standing constraints"
         } else if task_listing {
             "listing tasks"
         } else {
@@ -1926,11 +1915,6 @@ mod subscription_relevance_tests {
             "task.lifecycle_failed",
             "task.lifecycle_operation_retired",
             "task.teardown_failed",
-            // A constraint another session declared or cleared changes what
-            // this one may do, so it stays visible by the default `_ => true`
-            // arm rather than being classified as routine progress.
-            "task.standing_constraint_set",
-            "task.standing_constraint_cleared",
             "future.observation_fault",
         ] {
             assert!(

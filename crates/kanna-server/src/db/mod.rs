@@ -38,7 +38,6 @@ mod settings;
 mod snapshot;
 pub(crate) mod stage_run_prompt;
 pub(crate) mod stage_runs;
-mod standing_constraints;
 pub(crate) mod terminal_archives;
 pub use terminal_archives::AgentTerminalAttempt;
 pub(crate) mod workspace_setup;
@@ -84,12 +83,6 @@ pub use serviced::TaskServicedWatermark;
 #[allow(unused_imports)]
 pub use stage_runs::{
     FinishedStageRun, ProviderOverrideSource, StageProviderOverride, StageTrigger,
-};
-#[allow(unused_imports)]
-pub use standing_constraints::{
-    clamp_cleared_constraint_tail, normalize_constraint_note, normalize_constraint_text,
-    NewStandingConstraint, StandingConstraint, StandingConstraintClear, StandingConstraintKind,
-    StandingConstraintSource,
 };
 #[allow(unused_imports)]
 pub use task_events::{
@@ -212,6 +205,7 @@ pub(crate) const CURRENT_SCHEMA_MIGRATIONS: &[&str] = &[
     "090_standing_constraint",
     "091_claude_channel",
     "092_stage_run_prompt",
+    "093_drop_standing_constraint",
 ];
 
 #[derive(Debug, Serialize)]
@@ -2571,15 +2565,8 @@ fn run_schema_migrations(conn: &Connection) -> Result<(), rusqlite::Error> {
     // task that has never been serviced must cost nothing to represent.
     run_migration(conn, "089_task_serviced_watermark", serviced::create_schema)?;
 
-    // Standing supervision constraints a manager must not lose to conversation
-    // compaction: stand-downs, release gates, policy, temporary holds. Scoped
-    // per repository rather than per manager task, because the constraint
-    // outlives the session that declared it and a stage fork replaces that
-    // session. Cleared rows are updated in place and kept — an absent row and
-    // a lifted gate would otherwise be the same observation. No foreign key on
-    // the task columns: a constraint is a record of a supervision decision and
-    // must survive the removal of the task it names, which a cascade would
-    // delete exactly backwards. Nothing in the server reads `text`.
+    // Recorded, immutable migration history — see `093_drop_standing_constraint`
+    // below, which removes what this created.
     run_migration(
         conn,
         "090_standing_constraint",
@@ -2604,6 +2591,16 @@ fn run_schema_migrations(conn: &Connection) -> Result<(), rusqlite::Error> {
             );
             "#,
         )
+    })?;
+
+    // Standing supervision constraints were removed entirely (owner decision,
+    // 2026-09-21): the task manager keeps its own plain-file ledger instead.
+    // Migration `090_standing_constraint` stays recorded and unedited — it is
+    // immutable history — so this drops what it created rather than rewriting
+    // it. Cleared rows are lost with the table; the 32 constraints active at
+    // removal time were dumped to disk by the task manager beforehand.
+    run_migration(conn, "093_drop_standing_constraint", |conn| {
+        conn.execute_batch("DROP TABLE IF EXISTS standing_constraint;")
     })?;
 
     Ok(())
@@ -2768,13 +2765,10 @@ fn create_event_subscription_schema(conn: &Connection) -> rusqlite::Result<()> {
     )
 }
 
-/// The durable standing-constraints record: stand-downs, release gates, holds
-/// and policies a supervisor must apply but that are state on no task.
-///
-/// Scoped per repository, because a constraint outlives the session that
-/// declared it and a stage fork replaces that session. No foreign key on the
-/// task columns — see [`crate::db::standing_constraints`] for why a cascade
-/// here would delete the record of a supervision decision exactly backwards.
+/// Migration `090_standing_constraint`'s original schema, kept only so that
+/// immutable migration's recorded id still has a function to run. The table
+/// it creates is dropped again by `093_drop_standing_constraint` — the whole
+/// standing-constraints mechanism was removed (owner decision, 2026-09-21).
 fn create_standing_constraint_schema(conn: &Connection) -> Result<(), rusqlite::Error> {
     conn.execute_batch(
         r#"
