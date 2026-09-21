@@ -1,3 +1,4 @@
+pub mod bonjour_services;
 pub mod database_access;
 pub mod linux_install;
 pub mod login_shell;

@@ -5,7 +5,8 @@ use std::collections::BTreeMap;
 use std::net::{IpAddr, SocketAddr, SocketAddrV4, SocketAddrV6};
 use thiserror::Error;
 
-pub const SERVICE_TYPE: &str = "_kanna-xfer._tcp.local.";
+pub const SERVICE_TYPE: &str =
+    kanna_runtime_defaults::bonjour_services::TASK_TRANSFER.registration_type;
 
 const PEER_ID_KEY: &str = "peer_id";
 const DISPLAY_NAME_KEY: &str = "display_name";

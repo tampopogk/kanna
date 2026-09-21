@@ -242,6 +242,16 @@ async fn e2e_mobile_controls_gate_direct_lan_but_preserve_tunneled_transport() {
             .and_then(|body| body.remove("secureChannelVersion")),
         Some(json!(1))
     );
+    // Bonjour health depends on the machine running the test; its own states
+    // are covered in `lan_visibility`'s tests.
+    let visibility = tunneled_body
+        .as_mut()
+        .and_then(|body| body.as_object_mut())
+        .and_then(|body| body.remove("lanVisibility"));
+    assert!(
+        visibility.is_some_and(|reported| reported.get("status").is_some()),
+        "status must say whether this machine is discoverable on the LAN"
+    );
     assert_eq!(
         tunneled_body,
         Some(json!({
