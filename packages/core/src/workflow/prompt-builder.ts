@@ -51,7 +51,22 @@ Kanna task operations (inspect tasks, create subtasks, send input to other tasks
 - Run \`kanna-cli guide\` for live task state, workflow semantics, and the full tool catalog.
 - This task's id is in the \`KANNA_TASK_ID\` environment variable. Use it for all task operations; it is stable across stages, unlike branch and worktree names.
 
-{{COMPLETION}}`;
+{{COMPLETION}}
+
+## Task attention badge
+
+Use \`kanna_set_task_attention {"task_id":"<id>"}\` for a concrete human action
+or decision, and say what you need in the existing agent conversation — the
+badge is a flag and carries no text. Use
+\`kanna_clear_task_attention {"task_id":"<id>"}\` when resolved or when the owner
+asks. Both accept \`machine_id\` for the owning machine. CLI equivalent:
+\`kanna-cli task set-attention --task-id <id>\`
+(or \`kanna-cli task clear-attention --task-id <id>\`).
+
+The badge is an explicit annotation, independent of unread output, detected
+questions, runtime and lifecycle. Do not set it merely because an agent is quiet.
+Reading or selecting the task does not clear it; there is no human dismiss button.
+It grants no approval, completion, or lifecycle authority.`;
 
 // Completion guidance depends on the stage's transition policy: only \`auto\`
 // stages advance when the agent records a successful result; \`manual\` stages
