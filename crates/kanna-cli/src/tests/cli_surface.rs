@@ -874,6 +874,7 @@ fn typed_cli_surfaces_match_catalog_tools_and_params() {
         .tools
         .iter()
         .map(|tool| tool.name.as_str())
+        .filter(|name| !TOOL_CALL_ONLY_TOOLS.contains(name))
         .collect::<BTreeSet<_>>();
     let typed_tool_names = typed.keys().copied().collect::<BTreeSet<_>>();
 
@@ -881,6 +882,9 @@ fn typed_cli_surfaces_match_catalog_tools_and_params() {
 
     let cli = crate::Cli::command();
     for tool in catalog.tools {
+        if TOOL_CALL_ONLY_TOOLS.contains(&tool.name.as_str()) {
+            continue;
+        }
         let surface = typed
             .get(tool.name.as_str())
             .expect("catalog tool should have typed CLI surface");

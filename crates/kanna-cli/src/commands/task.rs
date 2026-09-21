@@ -1415,6 +1415,18 @@ pub(crate) async fn run(command: TaskCommands) {
             )
             .await;
         }
+        TaskCommands::ConfirmEventChannel {
+            task_id,
+            channel_id,
+            server_url,
+        } => {
+            run_catalog_task_tool(
+                "kanna_confirm_event_channel",
+                &json!({"task_id":task_id, "channel_id":channel_id}),
+                server_url.as_deref(),
+            )
+            .await;
+        }
         TaskCommands::WaitEvents {
             task_id,
             parent_task_id,

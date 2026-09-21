@@ -1083,6 +1083,16 @@ pub(crate) enum TaskCommands {
         #[arg(long)]
         server_url: Option<String>,
     },
+    /// Answer a native-channel probe, proving this session can receive it
+    ConfirmEventChannel {
+        #[arg(long)]
+        task_id: String,
+        /// The exact channel_id carried by the probe being answered
+        #[arg(long)]
+        channel_id: String,
+        #[arg(long)]
+        server_url: Option<String>,
+    },
     /// Watch several tasks at once and return their events since a cursor
     WaitEvents {
         /// Task IDs (or branch names) to watch; repeat or comma-separate
