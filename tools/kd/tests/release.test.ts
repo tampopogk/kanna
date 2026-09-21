@@ -57,12 +57,31 @@ function createReleaseRepo(root: string): { repoRoot: string; privateKeyPath: st
   const tauriDir = join(repoRoot, "apps", "desktop", "src-tauri");
   mkdirSync(tauriDir, { recursive: true });
   writeFileSync(join(repoRoot, "VERSION"), "1.2.3\n");
+  writeFileSync(join(repoRoot, "VERSION_RC"), "1\n");
   writeFileSync(join(tauriDir, "tauri.conf.json"), '{\n  "version": "1.2.3"\n}\n');
   writeFileSync(join(tauriDir, "Cargo.toml"), '[package]\nname = "kanna"\nversion = "1.2.3"\n');
   writeFileSync(join(tauriDir, "Cargo.lock"), "# lock\n");
   const privateKeyPath = join(root, "updater-private.key");
   writeFileSync(privateKeyPath, "private key\n", { mode: 0o600 });
   return { repoRoot, privateKeyPath };
+}
+
+/**
+ * Put a release branch's committed candidate into the fixture worktree.
+ *
+ * A release branch states the version it ships under and which candidate of it
+ * this is, so a fixture shipping from one has to commit both — that pair is the
+ * whole input, and it is what the staging bundle combines at build time.
+ */
+function writeBranchCandidate(repoRoot: string, version: string, candidate: number): void {
+  // Mirrors the commit `kd release cut` composes: all four files agree on the
+  // series version, and the counter says which candidate of it this is.
+  writeFileSync(join(repoRoot, "VERSION"), `${version}\n`);
+  writeFileSync(join(repoRoot, "VERSION_RC"), `${candidate}\n`);
+  const tauriPath = join(repoRoot, "apps", "desktop", "src-tauri", "tauri.conf.json");
+  const cargoPath = join(repoRoot, "apps", "desktop", "src-tauri", "Cargo.toml");
+  writeFileSync(tauriPath, readFileSync(tauriPath, "utf8").replace(/"version": "[^"]*"/, `"version": "${version}"`));
+  writeFileSync(cargoPath, readFileSync(cargoPath, "utf8").replace(/^version = "[^"]*"/m, `version = "${version}"`));
 }
 
 function releaseEnv(privateKeyPath: string): NodeJS.ProcessEnv {
@@ -134,6 +153,41 @@ function isStagingChannelAssetsQuery(command: string, args: string[]): boolean {
     args.includes("--json") &&
     args.includes("assets")
   );
+}
+
+/** The commit `cutReleaseBranch` composes to set a new series' version. */
+const CUT_VERSION_COMMIT = "c077c077c077c077c077c077c077c077c077c077";
+
+/**
+ * Answers the git plumbing `cutReleaseBranch` uses to build that commit against
+ * a temporary index. A mocked runner that let these fall through would report
+ * success while pushing an empty ref, so they are answered explicitly here and
+ * proven for real in release-cut-version.test.ts.
+ */
+function cutVersionCommitPlumbing(
+  command: string,
+  args: string[]
+): { exitCode: number; stdout: string; stderr: string } | null {
+  if (command !== "git") return null;
+  const subcommand = args[0] ?? "";
+  if (subcommand === "read-tree" || subcommand === "update-index") {
+    return { exitCode: 0, stdout: "", stderr: "" };
+  }
+  if (subcommand === "hash-object") {
+    return { exitCode: 0, stdout: "b10bb10bb10bb10bb10bb10bb10bb10bb10bb10b\n", stderr: "" };
+  }
+  if (subcommand === "write-tree") {
+    return { exitCode: 0, stdout: "47ee47ee47ee47ee47ee47ee47ee47ee47ee47ee\n", stderr: "" };
+  }
+  if (subcommand === "commit-tree") {
+    return { exitCode: 0, stdout: `${CUT_VERSION_COMMIT}\n`, stderr: "" };
+  }
+  // The version-bearing manifests are absent from these fixtures, so the
+  // composer skips them; the real-git test covers the case where they exist.
+  if (subcommand === "cat-file" && args[1] === "-e") {
+    return { exitCode: 1, stdout: "", stderr: "path does not exist" };
+  }
+  return null;
 }
 
 function isProductionReleaseListQuery(command: string, args: string[]): boolean {
@@ -456,10 +510,14 @@ describe("release shipping", () => {
     }
   });
 
-  it("derives staging RC versions from the release branch series instead of VERSION", async () => {
+  it("takes a release-branch candidate from the committed version and counter, writing nothing", async () => {
     const root = await mkdtemp(join(tmpdir(), "kd-release-"));
     try {
       const { repoRoot, privateKeyPath } = createReleaseRepo(root);
+      // The branch states the version it ships under and which candidate this
+      // is. Nothing is counted at ship time, so rebuilding this commit yields
+      // this same candidate -- the RC number is a property of the commit.
+      writeBranchCandidate(repoRoot, "1.3.1", 3);
       const outputs = writeStagingReleaseBuildOutputs(repoRoot, ["arm64"]);
       const calls: CommandCall[] = [];
       const runner: CommandRunner = {
@@ -485,14 +543,14 @@ describe("release shipping", () => {
           if (key === "git ls-remote --tags origin v1.3.*") {
             return { exitCode: 0, stdout: "sha1\trefs/tags/v1.3.0\nsha2\trefs/tags/v1.3.0-staging.9\n", stderr: "" };
           }
-          if (key === "git ls-remote --tags origin v1.3.1-staging.*") {
-            return { exitCode: 0, stdout: "sha3\trefs/tags/v1.3.1-staging.2\n", stderr: "" };
-          }
           if (key === "git remote get-url origin") {
             return { exitCode: 0, stdout: "git@github.com:jemdiggity/kanna.git\n", stderr: "" };
           }
           if (command === "bazel" && args[0] === "build") {
-            expect(readVersionFiles(repoRoot)[0]).toBe("1.3.1-staging.3\n");
+            // VERSION on disk is the *release* version during the build. The
+            // staging bundle target combines it with VERSION_RC itself, so kd
+            // never writes the candidate string into the worktree.
+            expect(readVersionFiles(repoRoot)[0]).toBe("1.3.1\n");
             return { exitCode: 0, stdout: "", stderr: "" };
           }
           if (command === "bazel" && args[0] === "cquery") {
@@ -523,7 +581,59 @@ describe("release shipping", () => {
       });
 
       expect(result.version).toBe("1.3.1-staging.3");
-      expect(readVersionFiles(repoRoot)[0]).toBe("1.2.3\n");
+      // No bump, no build, no toss away: the committed files are untouched.
+      expect(readVersionFiles(repoRoot)[0]).toBe("1.3.1\n");
+      // The candidate number comes from the branch, never from counting tags.
+      expect(calls.some((call) => call.args.join(" ").includes("v1.3.1-staging.*"))).toBe(false);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses a release-branch candidate whose committed version already shipped", async () => {
+    const root = await mkdtemp(join(tmpdir(), "kd-release-stale-version-"));
+    try {
+      const { repoRoot, privateKeyPath } = createReleaseRepo(root);
+      // v1.3.0 is released and the branch still says 1.3.0: the candidate line
+      // was never started. Refused here, with the commit to make, rather than
+      // at promotion where the forward-version gate would reject it much later.
+      writeBranchCandidate(repoRoot, "1.3.0", 1);
+      const calls: CommandCall[] = [];
+      const runner: CommandRunner = {
+        async run(command, args, options) {
+          calls.push({ command, args, options });
+          if (isStagingChannelAssetsQuery(command, args)) return stagingChannelAssetsResponse(null);
+          const key = `${command} ${args.join(" ")}`;
+          if (key === "git status --porcelain") return { exitCode: 0, stdout: "", stderr: "" };
+          if (key === "git rev-parse --abbrev-ref HEAD") return { exitCode: 0, stdout: "release/1.3\n", stderr: "" };
+          if (key === "git rev-parse HEAD") return { exitCode: 0, stdout: "branchsha\n", stderr: "" };
+          if (key === "git ls-remote origin refs/heads/release/1.3") {
+            return { exitCode: 0, stdout: "branchsha\trefs/heads/release/1.3\n", stderr: "" };
+          }
+          if (key === "git fetch origin release/1.3") return { exitCode: 0, stdout: "", stderr: "" };
+          if (key === "git ls-remote --tags origin v1.3.*") {
+            return { exitCode: 0, stdout: "sha1\trefs/tags/v1.3.0\n", stderr: "" };
+          }
+          if (key === "git remote get-url origin") {
+            return { exitCode: 0, stdout: "git@github.com:jemdiggity/kanna.git\n", stderr: "" };
+          }
+          return { exitCode: 1, stdout: "", stderr: `unexpected command ${key}` };
+        }
+      };
+
+      await expect(
+        shipRelease({
+          repoRoot,
+          bump: "patch",
+          archLabels: ["arm64"],
+          release: false,
+          dryRun: true,
+          environment: "staging",
+          env: releaseEnv(privateKeyPath),
+          runner
+        })
+      ).rejects.toThrow(/commit VERSION 1\.3\.1 \(and VERSION_RC 1\) onto release\/1\.3/);
+      expect(calls.some((call) => call.command === "bazel")).toBe(false);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -533,6 +643,7 @@ describe("release shipping", () => {
     const root = await mkdtemp(join(tmpdir(), "kd-release-"));
     try {
       const { repoRoot, privateKeyPath } = createReleaseRepo(root);
+      writeBranchCandidate(repoRoot, "1.3.0", 1);
       const outputs = writeStagingReleaseBuildOutputs(repoRoot, ["arm64"]);
       const branchSha = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
       const calls: CommandCall[] = [];
@@ -1592,6 +1703,55 @@ describe("release promotion", () => {
     }
   });
 
+  it("promotes a committed-version candidate by tagging it, with no release commit", async () => {
+    const root = await mkdtemp(join(tmpdir(), "kd-release-promote-no-commit-"));
+    try {
+      const { repoRoot, privateKeyPath } = createReleaseRepo(root);
+      // The candidate's own commit already states 1.2.4, so promoting it is
+      // dropping the `-staging.3` suffix and nothing else.
+      writeBranchCandidate(repoRoot, "1.2.4", 3);
+      const outputs = writeReleaseBuildOutputs(repoRoot, ["arm64", "x86_64"]);
+      const calls: CommandCall[] = [];
+      const runner = promoteRunner({}, repoRoot, outputs, calls);
+
+      const result = await shipRelease(promoteInput(repoRoot, privateKeyPath, runner));
+
+      expect(result.version).toBe("1.2.4");
+      // No `release: v1.2.4` commit and nothing staged for one: the tag goes
+      // onto the very commit that soaked, not onto a child of it.
+      expect(calls.some((call) => call.command === "git" && call.args[0] === "commit")).toBe(false);
+      expect(calls.some((call) => call.command === "git" && call.args[0] === "add")).toBe(false);
+      expect(calls.some((call) => call.command === "git" && call.args.join(" ") === "tag v1.2.4")).toBe(true);
+      expect(calls.some((call) => call.command === "git" && call.args.join(" ") === "push origin v1.2.4")).toBe(true);
+      // Production ignores the candidate counter, so the build reads the
+      // committed files untouched -- the same commit built the RC.
+      expect(readVersionFiles(repoRoot)[0]).toBe("1.2.4\n");
+      expect(result.seriesBranch).toMatchObject({ branch: "release/1.2", commit: STAGING_COMMIT, created: true });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("still commits the version when promoting a candidate that did not carry it", async () => {
+    const root = await mkdtemp(join(tmpdir(), "kd-release-promote-derived-"));
+    try {
+      // A bare-main candidate's commit says 1.2.3 while it promotes to 1.2.4,
+      // so kd still has a version to write and still commits it. Removing that
+      // would ship a bundle stamped with the wrong version.
+      const { repoRoot, privateKeyPath } = createReleaseRepo(root);
+      const outputs = writeReleaseBuildOutputs(repoRoot, ["arm64", "x86_64"]);
+      const calls: CommandCall[] = [];
+      const runner = promoteRunner({}, repoRoot, outputs, calls);
+
+      await shipRelease(promoteInput(repoRoot, privateKeyPath, runner));
+
+      expect(calls.some((call) => call.command === "git" && call.args[0] === "commit")).toBe(true);
+      expect(readVersionFiles(repoRoot)[0]).toBe("1.2.4\n");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("is idempotent when the series branch already holds the released commit", async () => {
     const root = await mkdtemp(join(tmpdir(), "kd-release-series-branch-idempotent-"));
     try {
@@ -2560,6 +2720,8 @@ describe("release cut", () => {
         if (command === "git" && (args[0] === "fetch" || args[0] === "push" || args[0] === "tag")) {
           return { exitCode: 0, stdout: "", stderr: "" };
         }
+        const plumbing = cutVersionCommitPlumbing(command, args);
+        if (plumbing) return plumbing;
         return { exitCode: 1, stdout: "", stderr: `unexpected command ${key}` };
       }
     };
@@ -2572,14 +2734,24 @@ describe("release cut", () => {
       const calls: CommandCall[] = [];
       const result = await cutReleaseBranch({ repoRoot, bump: "minor", env: {}, runner: cutRunner({}, calls) });
 
+      // The branch tip is the version commit, not main's tip: cutting is when
+      // the series version is set, and it is set by that commit.
       expect(result).toEqual({
         branch: "release/1.3",
         version: "1.3.0",
-        commit: MAIN_SHA,
+        commit: CUT_VERSION_COMMIT,
+        trunkCommit: MAIN_SHA,
         trunkVersion: "1.2.3",
         abandoned: []
       });
-      expect(calls.some((call) => call.command === "git" && call.args.join(" ") === `push origin ${MAIN_SHA}:refs/heads/release/1.3`)).toBe(true);
+      expect(
+        calls.some((call) => call.command === "git" && call.args.join(" ") === `push origin ${CUT_VERSION_COMMIT}:refs/heads/release/1.3`)
+      ).toBe(true);
+      const composed = calls.find((call) => call.command === "git" && call.args[0] === "commit-tree");
+      expect(composed?.args).toEqual(expect.arrayContaining(["-p", MAIN_SHA, "-m", "release: cut 1.3.0"]));
+      // The version reaches the branch through a commit, never through the
+      // caller's worktree: nothing is checked out and nothing is written.
+      expect(calls.some((call) => call.command === "git" && ["checkout", "switch", "reset"].includes(call.args[0] ?? ""))).toBe(false);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -2601,7 +2773,7 @@ describe("release cut", () => {
 
       expect(result.branch).toBe("release/1.5");
       expect(result.version).toBe("1.5.0");
-      expect(calls.some((call) => call.command === "git" && call.args.join(" ") === `push origin ${MAIN_SHA}:refs/heads/release/1.5`)).toBe(true);
+      expect(calls.some((call) => call.command === "git" && call.args.join(" ") === `push origin ${CUT_VERSION_COMMIT}:refs/heads/release/1.5`)).toBe(true);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -2624,7 +2796,7 @@ describe("release cut", () => {
       expect(
         calls.some(
           (call) =>
-            call.command === "git" && call.args.join(" ") === `push origin ${MAIN_SHA}:refs/heads/release/0.3`
+            call.command === "git" && call.args.join(" ") === `push origin ${CUT_VERSION_COMMIT}:refs/heads/release/0.3`
         )
       ).toBe(true);
     } finally {
@@ -2688,7 +2860,8 @@ describe("release cut", () => {
       expect(result).toEqual({
         branch: "release/0.2",
         version: "0.2.0",
-        commit: MAIN_SHA,
+        commit: CUT_VERSION_COMMIT,
+        trunkCommit: MAIN_SHA,
         trunkVersion: "0.0.68",
         abandoned: [
           {
@@ -2711,7 +2884,7 @@ describe("release cut", () => {
       // never deleted, and no v0.1.0 production tag is created to advance VERSION.
       expect(pushes).toEqual([
         "push origin refs/tags/abandoned/release/0.1",
-        `push origin ${MAIN_SHA}:refs/heads/release/0.2`
+        `push origin ${CUT_VERSION_COMMIT}:refs/heads/release/0.2`
       ]);
       expect(calls.some((call) => call.command === "git" && call.args.includes("--delete"))).toBe(false);
     } finally {
@@ -4678,6 +4851,7 @@ describe("staging publish lineage gates", () => {
     const root = await mkdtemp(join(tmpdir(), "kd-release-"));
     try {
       const { repoRoot, privateKeyPath } = createReleaseRepo(root);
+      writeBranchCandidate(repoRoot, "1.3.0", 2);
       const outputs = writeStagingReleaseBuildOutputs(repoRoot, ["arm64"]);
       const calls: CommandCall[] = [];
       const runner = shipGateRunner(
@@ -4706,6 +4880,7 @@ describe("staging publish lineage gates", () => {
     const root = await mkdtemp(join(tmpdir(), "kd-release-"));
     try {
       const { repoRoot, privateKeyPath } = createReleaseRepo(root);
+      writeBranchCandidate(repoRoot, "1.3.0", 1);
       const outputs = writeStagingReleaseBuildOutputs(repoRoot, ["arm64"]);
       const calls: CommandCall[] = [];
       const runner = shipGateRunner(
@@ -4734,6 +4909,7 @@ describe("staging publish lineage gates", () => {
     const root = await mkdtemp(join(tmpdir(), "kd-release-"));
     try {
       const { repoRoot, privateKeyPath } = createReleaseRepo(root);
+      writeBranchCandidate(repoRoot, "0.1.0", 8);
       const calls: CommandCall[] = [];
       const runner = shipGateRunner(
         {
@@ -4753,7 +4929,8 @@ describe("staging publish lineage gates", () => {
         /diverged from the active channel/
       );
       expect(calls.some((call) => call.command === "bazel")).toBe(false);
-      expect(readVersionFiles(repoRoot)[0]).toBe("1.2.3\n");
+      // The refused ship left the branch's committed candidate exactly as it was.
+      expect(readVersionFiles(repoRoot)[0]).toBe("0.1.0\n");
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -5018,6 +5195,7 @@ describe("staging publish lineage gates", () => {
     const root = await mkdtemp(join(tmpdir(), "kd-release-"));
     try {
       const { repoRoot, privateKeyPath } = createReleaseRepo(root);
+      writeBranchCandidate(repoRoot, "0.1.0", 8);
       const outputs = writeStagingReleaseBuildOutputs(repoRoot, ["arm64"]);
       const calls: CommandCall[] = [];
       const channelBody = [
@@ -5045,6 +5223,9 @@ describe("staging publish lineage gates", () => {
 
       // The same record does not license a different destination.
       const otherCalls: CommandCall[] = [];
+      // The reset named release/0.1; a release/0.2 publish is a different
+      // branch, shipped from a worktree carrying that series' own version.
+      writeBranchCandidate(repoRoot, "0.2.0", 1);
       await expect(
         shipRelease(
           shipGateInput(repoRoot, privateKeyPath, shipGateRunner(fixture, repoRoot, outputs, otherCalls), "release/0.2")
@@ -5059,6 +5240,7 @@ describe("staging publish lineage gates", () => {
     const root = await mkdtemp(join(tmpdir(), "kd-release-recut-ship-"));
     try {
       const { repoRoot, privateKeyPath } = createReleaseRepo(root);
+      writeBranchCandidate(repoRoot, "1.3.0", 3);
       const outputs = writeStagingReleaseBuildOutputs(repoRoot, ["arm64", "x86_64"]);
       const calls: CommandCall[] = [];
       const recutNewTip = "9999999999999999999999999999999999999999";
@@ -5098,6 +5280,7 @@ describe("staging publish lineage gates", () => {
       expect(manifest.notes).toContain("Lineage-Recut-Authorization: 1.3-1");
       expect(calls.some((call) => call.command === "git" && call.args.includes("recut-applied/1.3-1"))).toBe(true);
 
+      writeBranchCandidate(repoRoot, "1.2.4", 3);
       await expect(
         shipRelease(
           shipGateInput(repoRoot, privateKeyPath, shipGateRunner(fixture, repoRoot, outputs, []), "release/1.2")
@@ -5112,6 +5295,7 @@ describe("staging publish lineage gates", () => {
     const root = await mkdtemp(join(tmpdir(), "kd-release-recut-retry-"));
     try {
       const { repoRoot, privateKeyPath } = createReleaseRepo(root);
+      writeBranchCandidate(repoRoot, "1.3.0", 3);
       const outputs = writeStagingReleaseBuildOutputs(repoRoot, ["arm64", "x86_64"]);
       const calls: CommandCall[] = [];
       const recutNewTip = "9999999999999999999999999999999999999999";

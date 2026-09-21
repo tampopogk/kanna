@@ -100,11 +100,11 @@ genrule(
     name = "tauri_staging_bazel_config",
     srcs = [
         "tauri.conf.json",
-        "//:VERSION",
+        "//:staging_version_file",
     ],
     outs = ["tauri.staging.bazel.conf.json"],
     cmd = """
-python3 - "$(location tauri.conf.json)" "$(location //:VERSION)" "$@" <<'PY'
+python3 - "$(location tauri.conf.json)" "$(location //:staging_version_file)" "$@" <<'PY'
 import json
 import os
 import pathlib
@@ -114,8 +114,12 @@ source_path = pathlib.Path(sys.argv[1])
 version_path = pathlib.Path(sys.argv[2])
 output_path = pathlib.Path(sys.argv[3])
 config = json.loads(source_path.read_text(encoding="utf-8"))
-# Same reason as the production config above: //:VERSION is the single source
-# of the version that reaches both the plist and the compiled PackageInfo.
+# Same reason as the production config above, with one difference: a staging
+# build's version is //:staging_version_file, VERSION combined with the
+# candidate counter. The staging bundle's version_file is that same generated
+# file, so the plist and the compiled PackageInfo still agree -- and the
+# updater, which compares PackageInfo.version against the feed, can tell one
+# candidate of a series from the next.
 config["version"] = version_path.read_text(encoding="utf-8").strip()
 config["productName"] = "Kanna Staging"
 config["identifier"] = "build.kanna.staging"

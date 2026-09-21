@@ -12,12 +12,16 @@ import { afterEach, describe, expect, it } from "vitest";
 // apps/desktop/src-tauri/src/lib.rs registers the plugin with no
 // `current_version` override.
 //
-// `syncVersionFiles()` in tools/kd/src/runtime/release.ts rewrites VERSION,
-// tauri.conf.json and Cargo.toml together, so during `kd release ship` the two
-// halves agree by accident. Any direct Bazel build picks up the committed
-// tauri.conf.json version instead, and the app's About menu then reports one
-// version while its updater believes another. These cases pin both halves to
-// //:VERSION so the accident is not what holds them together.
+// These cases pin both halves to one generated source so nothing accidental
+// holds them together. There are two such sources, and which one a bundle uses
+// is the whole version/RC design: a production bundle reads //:VERSION, while
+// a staging bundle reads //:staging_version_file -- VERSION combined with the
+// candidate counter in VERSION_RC. One commit therefore builds `X.Y.Z-staging.N`
+// and `X.Y.Z`, which is why promotion needs no version commit of its own.
+//
+// What must never come back is a bundle taking its version from the committed
+// tauri.conf.json, or hard-coding one: that is how the About menu and the
+// updater came apart before.
 
 const repoRoot = resolve(import.meta.dirname, "..", "..", "..");
 const desktopBuildPath = resolve(repoRoot, "apps", "desktop", "src-tauri", "BUILD.bazel");
@@ -123,10 +127,15 @@ function runConfigGenrule(rule: Genrule): Record<string, unknown> {
   };
   const versionPath = join(dir, "VERSION");
   writeFileSync(versionPath, "9.9.9\n");
+  // The staging config stamps from the generated combined file, so the fixture
+  // supplies what that genrule would have produced for the same VERSION.
+  const stagingVersionPath = join(dir, "VERSION_staging");
+  writeFileSync(stagingVersionPath, "9.9.9-staging.4\n");
   const outputPath = join(dir, rule.out.split("/").pop() as string);
 
   const command = rule.cmd.replace(/\$\(location ([^)]+)\)/g, (_, label: string) => {
     if (label === "//:VERSION") return versionPath;
+    if (label === "//:staging_version_file") return stagingVersionPath;
     // Every other input is a Tauri config: either the committed source or the
     // output of a sibling config genrule.
     const path = join(dir, `${label.replace(/[^A-Za-z0-9.]/g, "_")}.json`);
@@ -139,11 +148,33 @@ function runConfigGenrule(rule: Genrule): Record<string, unknown> {
 }
 
 describe("desktop bundle version wiring", () => {
-  it("stamps every generated Tauri config from //:VERSION", () => {
+  it("stamps every generated Tauri config from a generated version file", () => {
     for (const rule of tauriConfigGenrules()) {
-      expect(rule.srcs, `${rule.name} must depend on //:VERSION`).toContain("//:VERSION");
-      expect(runConfigGenrule(rule).version, `${rule.name} must stamp version from //:VERSION`).toBe("9.9.9");
+      const staging = rule.srcs.includes("//:staging_version_file");
+      expect(
+        staging || rule.srcs.includes("//:VERSION"),
+        `${rule.name} must depend on //:VERSION or //:staging_version_file`
+      ).toBe(true);
+      // A staging config carries the candidate counter; a production config is
+      // the bare release version. Both are stamped, neither is the committed one.
+      expect(runConfigGenrule(rule).version, `${rule.name} must stamp its version`).toBe(
+        staging ? "9.9.9-staging.4" : "9.9.9"
+      );
     }
+  });
+
+  it("gives the staging config the candidate counter and production the bare version", () => {
+    // The pairing that makes one commit buildable as both. If a staging config
+    // ever stamps the bare version, every candidate of a series reports the
+    // same version and installed staging clients stop updating between them.
+    const byStagingSource = tauriConfigGenrules().map((rule) => ({
+      name: rule.name,
+      staging: rule.srcs.includes("//:staging_version_file")
+    }));
+    expect(byStagingSource.filter((rule) => rule.staging).map((rule) => rule.name)).toEqual([
+      "tauri_staging_bazel_config"
+    ]);
+    expect(byStagingSource.filter((rule) => !rule.staging).length).toBeGreaterThan(0);
   });
 
   it("feeds the Tauri context codegen only version-stamped configs", () => {
@@ -165,13 +196,19 @@ describe("desktop bundle version wiring", () => {
     }
   });
 
-  it("stamps every macOS bundle plist from the same //:VERSION file", () => {
+  it("stamps every macOS bundle plist from a version file, matching its own config", () => {
     const source = readFileSync(rootBuildPath, "utf8");
     const bundles = [...source.matchAll(/\ntauri_bundle_inputs\(\n {4}name = "([^"]+)",\n([\s\S]*?)\n\)\n/g)];
 
     expect(bundles.length, "BUILD.bazel must declare tauri_bundle_inputs targets").toBeGreaterThan(0);
     for (const [, name, body] of bundles) {
-      expect(body, `${name} must take its plist version from the VERSION file`).toContain('version_file = "VERSION"');
+      // A staging bundle must read the same combined file its Tauri config
+      // does, or the plist and the compiled PackageInfo disagree again -- the
+      // exact split this file exists to prevent, just one layer along.
+      const stagingConfig = body.includes("tauri_staging_bazel_config");
+      expect(body, `${name} must take its plist version from a version file`).toContain(
+        stagingConfig ? 'version_file = ":staging_version_file"' : 'version_file = "VERSION"'
+      );
       expect(body, `${name} must not hard-code a plist version`).not.toMatch(/\n {4}version = "/);
     }
   });
