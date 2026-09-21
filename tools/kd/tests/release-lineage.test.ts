@@ -29,7 +29,8 @@ import {
   type PostPromotionTrunkRecord,
   type StagingCandidate
 } from "../src/runtime/release-lineage";
-import { hasProductionTagForSeries, parseUnmergedReleaseCommits } from "../src/runtime/release";
+import { hasProductionTagForSeries } from "../src/runtime/release-version";
+import { parseUnmergedReleaseCommits } from "../src/runtime/release-cut";
 import { DEFAULT_RELEASE_POLICY, parseReleasePolicy, readReleasePolicy } from "../src/runtime/release-policy";
 
 const ACTIVE: StagingCandidate = {

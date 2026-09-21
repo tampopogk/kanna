@@ -24,26 +24,26 @@ vi.mock("../src/runtime/updater-key", async (importOriginal) => {
 });
 import {
   bazelTargetForLabel,
-  compareVersions,
   createUpdaterBundle,
-  cutReleaseBranch,
+  releaseAssetName,
+  updaterAssetName,
+  updaterBundleTargetForLabel,
+  updaterSignatureName,
+  type ReleaseArchLabel
+} from "../src/runtime/release-artifacts";
+import {
+  compareVersions,
   deriveMainStagingBaseVersion,
   nextSeriesPatchVersion,
   parsePromotionVersions,
   parseReleaseBranchSeries,
-  releaseAssetName,
   releaseSeriesBranch,
-  releaseSeriesFromVersion,
-  releaseStatus,
-  resetStagingLineage,
-  shipRelease,
-  updaterAssetName,
-  updaterBundleTargetForLabel,
-  updaterSignatureName,
-  type ReleaseArchLabel,
-  type ReleaseResetStagingInput,
-  type ReleaseShipInput
-} from "../src/runtime/release";
+  releaseSeriesFromVersion
+} from "../src/runtime/release-version";
+import { cutReleaseBranch } from "../src/runtime/release-cut";
+import { releaseStatus } from "../src/runtime/release-status";
+import { resetStagingLineage, type ReleaseResetStagingInput } from "../src/runtime/release-channel";
+import { shipRelease, type ReleaseShipInput } from "../src/runtime/release-ship";
 import { parseLineageRecutRecord } from "../src/runtime/release-lineage";
 import { stagingVersionForWorktree } from "./staging-version-genrule";
 

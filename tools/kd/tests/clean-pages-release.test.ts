@@ -17,15 +17,15 @@ import type { CommandRunner } from "../src/runtime/process";
 import { buildConfigSchemaPages } from "../src/runtime/pages";
 import {
   bazelTargetForLabel,
-  bumpVersion,
   releaseAssetName,
-  releaseRepoSlug,
   signedAppTargetForLabel,
   updaterAssetName,
   updaterBundleTargetForLabel,
   updaterPlatformKey,
   updaterSignatureName
-} from "../src/runtime/release";
+} from "../src/runtime/release-artifacts";
+import { bumpVersion } from "../src/runtime/release-version";
+import { releaseRepoSlug } from "../src/runtime/release-command";
 
 function bazelRunner(outputBase: string): CommandRunner {
   return {
