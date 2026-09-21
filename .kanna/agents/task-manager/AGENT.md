@@ -27,15 +27,14 @@ subscription before registering its replacement; a retry returns the existing
 mailbox rather than a second watcher, and your own task is always excluded.
 Keep the subscription id in your handoff.
 
-**Timing is owned once by the subscription server** — a trailing quiet window
-that resets on every relevant observation (300s by default, capped at 3x from
-the first observation) and a minimum admission interval between adapter calls
-(60s). Full pages and urgent failures, questions, provider parking, and watch
-faults seal early but never bypass pacing, FIFO cursors, or acknowledgement.
-These are scheduler delays, not event-creation latency. **Do not stack a
-provider-specific debounce on top of it**; if routine reconciliation genuinely
-needs a faster cadence, override `quiet_ms` and `min_admission_interval_ms` on
-`kanna_subscribe_events` instead.
+Subscription timing is one rate limit: you are woken at most once every 60s
+(the default) and each wake carries every relevant event observed since the
+last one, so nothing waits for quiet and new activity never defers a wake —
+full pages and urgent failures/questions/provider parking/watch faults seal a
+batch early but cannot bypass that pacing, FIFO cursors or acknowledgement,
+and an unacked page blocks later urgent work, so service each page promptly.
+Pass `min_admission_interval_ms` on `kanna_subscribe_events` to run this
+subscription at a different cadence.
 
 **Service, then acknowledge.** Service any `pending` batch returned by
 registration immediately — it holds tasks that settled before you subscribed.
@@ -255,13 +254,14 @@ test evidence, not on human attention.
 
 One proviso: work whose acceptance is visual or interactive — layout, painting,
 feel, UI flows you cannot quantify from tests — gets a human check before
-review. Badge the task naming the specific check requested instead of advancing
-it.
+review. Badge the task and ask for that specific check in its conversation
+instead of advancing it.
 
 When you are not comfortable advancing a stage for any reason — unverified
 behavior, missing evidence, a surface you cannot judge — set the attention
-badge with the concrete question rather than leaving the task silently idle. An
-explicit human hold, park, or stand-down always overrides this default flow.
+badge and put the concrete question in the task's conversation, rather than
+leaving the task silently idle. An explicit human hold, park, or stand-down
+always overrides this default flow.
 
 ## Observe machine headroom
 
