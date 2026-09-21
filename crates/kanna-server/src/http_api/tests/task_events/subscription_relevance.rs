@@ -13,11 +13,18 @@ fn run_with_policy(db: &Db, id: &str, task: &str, stage: &str, policy: &str) {
         .unwrap();
 }
 
+/// The collector a live subscription hands `wait_subscription_events`: it
+/// accumulates until this subscription's rate limit next permits a wake.
+/// `minAdmissionIntervalMs` in a fixture's query stands in for the gate a
+/// live `Admission` would supply; without one the rate limit is already
+/// satisfied, so the first relevant observation seals at once.
 async fn selected(state: Arc<AppState>, query: Value) -> Value {
+    let gate = query
+        .get("minAdmissionIntervalMs")
+        .and_then(Value::as_u64)
+        .map(|ms| tokio::time::Instant::now() + Duration::from_millis(ms));
     let collection = Arc::new(std::sync::Mutex::new(
-        super::super::super::subscription_timing::Collection::from_query(
-            query.get("quietMs").and_then(Value::as_u64),
-        ),
+        super::super::super::subscription_timing::Collection::new(gate),
     ));
     super::super::super::task_events::wait_subscription_events(state, query, collection)
         .await
@@ -165,7 +172,7 @@ async fn mixed_filtered_pages_preserve_failure_after_stage_change_and_exact_cont
 }
 
 #[tokio::test(start_paused = true)]
-async fn excluded_events_neither_fill_batch_nor_start_its_debounce() {
+async fn excluded_events_neither_fill_a_batch_nor_seal_it_before_the_rate_limit() {
     let state = test_state_with_seed("selection-debounce", "Selection", seed_orchestration);
     let db = Db::open(&state.config().db_path).unwrap();
     noise(&db, 8);
@@ -173,11 +180,10 @@ async fn excluded_events_neither_fill_batch_nor_start_its_debounce() {
     q["timeoutSecs"] = json!(30);
     // `selected()` goes through `wait_subscription_events`, which always
     // selects subscription-timing mode — the generic `minEvents`/`debounceMs`
-    // below are inert there. `quietMs` is that mode's own equivalent of the
-    // debounce this test exercises.
+    // below are inert there. The rate-limit gate is that mode's only timing.
     q["minEvents"] = json!(2);
     q["debounceMs"] = json!(1000);
-    q["quietMs"] = json!(1_000);
+    q["minAdmissionIntervalMs"] = json!(3_000);
     let wait = tokio::spawn(selected(state, q));
     tokio::task::yield_now().await;
     tokio::time::advance(Duration::from_secs(2)).await;
@@ -191,8 +197,12 @@ async fn excluded_events_neither_fill_batch_nor_start_its_debounce() {
     tokio::task::yield_now().await;
     assert!(
         !wait.is_finished(),
-        "the hold starts at the first relevant event, not earlier noise"
+        "relevant events accumulate into the batch; neither they nor earlier \
+         noise seals it before the rate limit's gate"
     );
+    // Across the gate (t0 + 3000ms): both relevant events come back as one
+    // batch, and the second one did not defer the first by restarting any
+    // window.
     tokio::time::advance(Duration::from_secs(1)).await;
     let page = wait.await.unwrap();
     assert_eq!(page["waitOutcome"], "events");
@@ -496,12 +506,12 @@ async fn final_auto_completion_reaches_both_mailboxes_and_fresh_registration() {
                 &app,
                 "POST",
                 "/v1/event-subscriptions",
-                // Per-subscription quiet override, not the 300000ms global:
-                // the non-bootstrap branch's successful (non-urgent)
+                // Per-subscription rate-limit override, not the 60000ms
+                // global: the non-bootstrap branch's successful (non-urgent)
                 // run.finished event needs to seal within this test's
                 // real-time `await_subscription` budget.
                 json!({"taskId":"child-c", "localOnly":true, "delivery":delivery,
-                    "quietMs": 2_000}),
+                    "minAdmissionIntervalMs": 2_000}),
             )
             .await;
             assert_eq!(status, StatusCode::OK, "{initial}");

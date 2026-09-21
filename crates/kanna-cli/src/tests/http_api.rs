@@ -1299,7 +1299,6 @@ async fn subscribe_events_posts_diagnostic_filters_and_timing_overrides_in_the_r
         "diagnostic": true,
         "event_types": ["run.finished"],
         "exclude_event_types": ["task.activity_changed"],
-        "quiet_ms": 30_000,
         "min_admission_interval_ms": 60_000,
     });
     call_catalog_tool_with_task_id(&base_url, &catalog, "kanna_subscribe_events", &args, None)
@@ -1310,7 +1309,7 @@ async fn subscribe_events_posts_diagnostic_filters_and_timing_overrides_in_the_r
     assert!(request.starts_with("POST /v1/event-subscriptions HTTP/1.1"));
     assert!(
         request.contains(
-            r#"{"delivery":"input","diagnostic":true,"eventTypes":["run.finished"],"excludeEventTypes":["task.activity_changed"],"excludeTaskIds":[],"localOnly":false,"minAdmissionIntervalMs":60000,"quietMs":30000,"taskId":"task-123","taskIds":[]}"#
+            r#"{"delivery":"input","diagnostic":true,"eventTypes":["run.finished"],"excludeEventTypes":["task.activity_changed"],"excludeTaskIds":[],"localOnly":false,"minAdmissionIntervalMs":60000,"taskId":"task-123","taskIds":[]}"#
         ),
         "{request}"
     );

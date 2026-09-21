@@ -56,12 +56,11 @@ pub(super) struct SubscribeRequest {
     /// replacement for it.
     #[serde(default)]
     exclude_event_types: Vec<String>,
-    /// Per-subscription override of the collector's trailing-quiet hold — the
-    /// single collection-window pacing knob; see `subscription_timing::HOLD`.
-    /// Omitted keeps the manager-adopted default.
-    quiet_ms: Option<u64>,
-    /// Per-subscription override of the minimum spacing between adapter-call
-    /// admissions (the wake-rate gate, not the collection window).
+    /// Per-subscription override of this subscription's wake rate limit —
+    /// the one timing knob, which is both the minimum spacing between
+    /// adapter-call admissions and the window a batch accumulates over.
+    /// Omitted keeps the manager-adopted default. The retired `quiet_ms` is
+    /// now simply an unknown field, rejected like any other typo.
     min_admission_interval_ms: Option<u64>,
 }
 
@@ -108,19 +107,19 @@ async fn collect(
     task_events::wait_subscription_events(state, query, collection).await
 }
 
-/// A fresh, subscription-scoped collector seeded from the row's own
-/// (already-validated) quiet-hold override, falling back to the
-/// manager-adopted default when absent. A row persisted before the
-/// quiet/max-hold collapse may still carry a stored `maxHoldMs`; it is
-/// simply not read any more.
+/// A fresh, subscription-scoped collector that accumulates until this
+/// subscription's rate limit next permits a wake. `gate` is that instant,
+/// taken from the subscription's own `Admission`; `None` means the interval
+/// since the last wake has already elapsed, so the first relevant
+/// observation seals at once. A row persisted before this redesign may still
+/// carry a stored `quietMs` (or an even older `maxHoldMs`); neither is read
+/// any more.
 fn fresh_collection(
-    row: &EventSubscription,
+    gate: Option<tokio::time::Instant>,
 ) -> Arc<std::sync::Mutex<subscription_timing::Collection>> {
-    Arc::new(std::sync::Mutex::new(
-        subscription_timing::Collection::from_query(
-            row.query.get("quietMs").and_then(Value::as_u64),
-        ),
-    ))
+    Arc::new(std::sync::Mutex::new(subscription_timing::Collection::new(
+        gate,
+    )))
 }
 
 /// Query/body flag shared by every subscription endpoint: agent-facing callers
@@ -337,7 +336,7 @@ fn accept_page(
     //
     // This one page's `machineErrors` is not the complete, current truth
     // about every peer: `wait_aggregate_task_events` can seal a batch on
-    // this machine's own urgent/full/quiet criteria while a listed peer's
+    // this machine's own urgent/full/rate-limit criteria while a listed peer's
     // own retained leg is still pending in the registry (still running,
     // simply hasn't completed in this call) — that peer then appears in
     // neither `machineErrors` nor `confirmedMachines`. Treating that
@@ -462,21 +461,18 @@ pub(super) async fn subscribe(
     // actually govern the collector, but persist only the caller's explicit
     // overrides below — an untouched request keeps the exact query shape a
     // pre-existing row has, so registration-retry equality is unaffected.
-    let quiet_ms = request
-        .quiet_ms
-        .unwrap_or(subscription_timing::HOLD.as_millis() as u64);
     let min_admission_interval_ms = request
         .min_admission_interval_ms
         .unwrap_or(subscription_timing::ADMISSION_INTERVAL.as_millis() as u64);
     let floor_ms = subscription_timing::MIN_OVERRIDE.as_millis() as u64;
-    if quiet_ms < floor_ms || min_admission_interval_ms < floor_ms {
+    if min_admission_interval_ms < floor_ms {
         return Err((
             StatusCode::BAD_REQUEST,
-            format!("quiet_ms and min_admission_interval_ms must each be at least {floor_ms}ms"),
+            format!("min_admission_interval_ms must be at least {floor_ms}ms"),
         ));
     }
     // No ceiling by policy. `Duration::from_millis` accepts any `u64`, and so
-    // does the `Instant + Duration` arithmetic these values feed into
+    // does the `Instant + Duration` arithmetic this value feeds into
     // (`Collection::deadline`, `Admission`): a `u64` millisecond count can
     // never exceed `Duration`'s own (far larger) capacity, so there is no
     // reachable overflow to guard against here — confirmed empirically
@@ -512,9 +508,6 @@ pub(super) async fn subscribe(
         event_types.sort();
         event_types.dedup();
         query["eventTypes"] = json!(event_types.join(","));
-    }
-    if request.quiet_ms.is_some() {
-        query["quietMs"] = json!(quiet_ms);
     }
     if request.min_admission_interval_ms.is_some() {
         query["minAdmissionIntervalMs"] = json!(min_admission_interval_ms);
@@ -603,7 +596,7 @@ pub(super) async fn subscribe(
     // A single zero-timeout bootstrap check: whatever is already settled,
     // never a wait, so there is nothing here for a chained collection to own.
     let local_machine_id = state.config().desktop_id.clone();
-    let batch = collect(state.clone(), &row, 0, fresh_collection(&row))
+    let batch = collect(state.clone(), &row, 0, fresh_collection(None))
         .await
         .map_err(failure)?;
     accept_page(&mut row, batch, true, &local_machine_id);
@@ -751,6 +744,14 @@ async fn step(
             if !save(state, &mut row)? {
                 return Ok(Step::Iterate);
             }
+            // A poll subscriber owns its own wake mechanism, so there is no
+            // adapter call to pace and nothing is held back here. The rate
+            // limit still ticks, because it is also what makes the *next*
+            // batch a batch: without this, a poll subscription's collector
+            // would find its gate permanently open and seal on every single
+            // relevant event. Handing the page over is this delivery's
+            // admission, so it starts the interval exactly like a wake does.
+            admission.admitted();
         } else if row.wake_state == "pending" {
             if let Some(deadline) = admission.deadline() {
                 // Expiry is a scheduled admission, not a transport retry.
@@ -846,17 +847,21 @@ async fn step(
     // Recreating that wait for every local state edge exhausts its long-poll
     // permits even with only one subscription.
     //
-    // One native call is capped at MAX_WAIT_TIMEOUT_SECS (240s) regardless of
-    // this subscription's own quiet/max-hold window, which can exceed it
-    // (defaults are 300s each). `collection` is shared across every chained
-    // call below, so the true first relevant observation — and hence the
-    // subscription's own deadline — survives across calls instead of
-    // resetting each time a call returns merely because its own native
-    // receiver expired. A native "events" outcome means the subscription's
-    // own criteria (urgent, full page, or quiet/max-hold reached) were
+    // One native call is capped at MAX_WAIT_TIMEOUT_SECS (240s), which an
+    // overridden rate limit can exceed. `collection` is shared across every
+    // chained call below, so the events already observed — and the gate they
+    // are accumulating against — survive across calls instead of resetting
+    // each time a call returns merely because its own native receiver
+    // expired. A native "events" outcome means the subscription's own
+    // criteria (urgent, full page, or the rate limit's gate reached) were
     // genuinely satisfied; "timeout" means only that one call's own budget
     // ran out, so the chain continues with the advanced cursor.
-    let collection = fresh_collection(&row);
+    //
+    // The gate is an absolute instant, so re-entering `step` for an
+    // unrelated state notification rebuilds this collector against the same
+    // deadline rather than restarting a window — the trailing-quiet window
+    // this replaces silently restarted on every such re-entry.
+    let collection = fresh_collection(admission.deadline());
     let mut working_cursor = row.cursor.clone();
     // Each native call's own `events`/page-capacity accounting starts fresh
     // (its `collected` local is empty and its own `limit` is the full page
@@ -963,14 +968,13 @@ async fn step(
                 if batch["waitOutcome"] == "timeout" && !machine_errors_present {
                     // Whether this leg's own timeout also means the
                     // subscription is genuinely done cannot be decided from
-                    // how this call's timeout was originally sized: a later
-                    // relevant event observed mid-call can push the live
-                    // Collection's intrinsic deadline further out (quiet is
-                    // anchored to the latest observation), so a call sized to
-                    // the deadline as it stood at dispatch can still return
-                    // "timeout" well before the subscription's now-later
-                    // deadline. Re-read the live collection here, after the
-                    // call, rather than trusting a pre-call snapshot.
+                    // how this call's timeout was originally sized: a leg
+                    // dispatched before anything relevant had been observed
+                    // gets the full 240s receiver window, and the gate it
+                    // should actually have been measured against only became
+                    // readable once an event landed mid-call. Re-read the
+                    // live collection here, after the call, rather than
+                    // trusting a pre-call snapshot.
                     let live_deadline_reached = {
                         let guard = collection
                             .lock()
@@ -981,8 +985,8 @@ async fn step(
                     };
                     // A healthy peer succeeding with nothing new must not by
                     // itself cut this chain short — that is the normal case
-                    // every cycle, and doing so would defeat honoring a
-                    // quiet/max-hold window larger than one native call.
+                    // every cycle, and doing so would defeat honoring a rate
+                    // limit larger than one native call.
                     // Only a peer this subscription currently has recorded
                     // as stale coming back confirmed is coverage-relevant
                     // enough to stop and report now, exactly like a fresh

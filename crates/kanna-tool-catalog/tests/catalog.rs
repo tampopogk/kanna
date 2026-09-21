@@ -2920,8 +2920,8 @@ fn raw_input_description_separates_keys_from_delivered_messages() {
 /// `value_for_param` fills in a declared `default` for any omitted parameter
 /// and sends it on the wire (proven by `override_catalog_cannot_reintroduce_
 /// an_unsurvivable_wait_window`'s `defaulted`/`explicit` cases resolving to
-/// the same clamped value above). For `kanna_subscribe_events`'s timing
-/// overrides that would be a defect: the server distinguishes "omitted, keep
+/// the same clamped value above). For `kanna_subscribe_events`'s rate-limit
+/// override that would be a defect: the server distinguishes "omitted, keep
 /// whatever this subscription already has" from "explicit, persist as an
 /// override" purely by whether the key is present at all, so a resolver that
 /// injects the documented default turns every omission into an explicit
@@ -2954,30 +2954,32 @@ fn subscribe_events_timing_overrides_are_omitted_from_the_wire_when_not_given() 
             "task_id": "manager-1",
             "local_only": true,
             "delivery": "input",
-            "quiet_ms": 300_000,
             "min_admission_interval_ms": 60_000,
         }),
     )
     .expect("explicit subscribe request resolves");
-    assert_eq!(explicit.body["quietMs"], 300_000);
     assert_eq!(explicit.body["minAdmissionIntervalMs"], 60_000);
 
-    // `max_hold_ms` collapsed into `quiet_ms` and no longer exists: the
-    // server rejects it outright rather than silently ignoring it.
-    let rejected = resolve_request(
-        &catalog,
-        "kanna_subscribe_events",
-        &json!({
-            "task_id": "manager-1",
-            "local_only": true,
-            "delivery": "input",
-            "max_hold_ms": 300_000,
-        }),
-    );
-    assert!(
-        rejected.is_err(),
-        "max_hold_ms must be rejected, not silently accepted and ignored"
-    );
+    // The rate limit is the only timing knob left. `max_hold_ms` collapsed
+    // into `quiet_ms`, and `quiet_ms` itself went with the trailing-quiet
+    // mechanism: both are rejected outright rather than silently ignored,
+    // so a caller still passing one learns its timing is not being applied.
+    for retired in ["max_hold_ms", "quiet_ms"] {
+        let rejected = resolve_request(
+            &catalog,
+            "kanna_subscribe_events",
+            &json!({
+                "task_id": "manager-1",
+                "local_only": true,
+                "delivery": "input",
+                retired: 300_000,
+            }),
+        );
+        assert!(
+            rejected.is_err(),
+            "{retired} must be rejected, not silently accepted and ignored"
+        );
+    }
 }
 
 /// `diagnostic` reaches the wire the same way on all three subscription

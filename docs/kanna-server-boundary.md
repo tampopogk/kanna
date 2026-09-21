@@ -3555,63 +3555,78 @@ batch. Filtered initial snapshots still advance the existing settled-scan cursor
 acknowledgement does not alter human read state. No cursor format, relay protocol,
 mailbox backpressure or delivery retry contract changes.
 
-The owning subscription collector also applies one internal timing policy:
-**300000ms (5 minute) trailing quiet**, reset on every relevant observation so
-an ordinary batch collects for the full window from its latest relevant
-observation rather than sealing early on a short trailing-quiet gap, and
-**60000ms minimum between adapter-call admissions**. The 5-minute figure is an
-owner-specified value (superseding an earlier manager-proposed 30s/120s
-split); the 60s admission floor remains a manager-adopted engineering default,
-not measured tuning. Capacity remains 100, minimum one.
+The owning subscription collector applies one internal timing policy, and it
+is a **rate limit, not a quiet window**: a subscription is woken at most once
+every **60000ms**, and the batch that wake carries is every relevant event
+observed since the last admission. Nothing waits for silence and no
+observation defers anything — a busy repository wakes its manager exactly on
+the interval, and a quiet one wakes it as soon as the interval since the last
+wake has elapsed. The 60s figure remains a manager-adopted engineering
+default, not measured tuning. Capacity remains 100, minimum one.
 
-Trailing quiet alone has no upper bound: relevant events at intervals shorter
-than the quiet window keep pushing the deadline forward indefinitely, which
-would let ordinary sustained traffic on an active repository — `task.closed`,
-`task.pr_created`, `task.blocked`/`task.unblocked`, `task.awaiting_advance`,
-`task.merge_signaled`, or a parked successful `run.finished` are all relevant
-and non-urgent — defer a manager's wake for as long as that traffic continues.
-So the collector also caps the deadline at `first + HOLD_CAP_MULTIPLIER *
-quiet`, `HOLD_CAP_MULTIPLIER` fixed at 3 (15 minutes at the 5-minute default):
-the collection closes at the earliest of last relevant observation + quiet,
-first relevant observation + 3 × quiet, urgent attention, or a full page. This
-is the one hold knob's own hard cap, derived from it rather than a second
-configured value — an isolated burst still seals well below the cap on
-trailing quiet alone, since 3× is comfortably larger than one quiet window,
-and only sustained relevance ever reaches it.
+Owner decision, 2026-09-21: *"fix the trailing quiet. we don't want that.
+just rate-limiting."* Until then the collector held an ordinary batch for a
+**300000ms trailing-quiet window reset on every relevant observation**, plus
+a derived `HOLD_CAP_MULTIPLIER * quiet` hard cap that existed only because a
+resetting window has no upper bound of its own. Both are gone, along with the
+`quiet_ms` knob that configured them. What the quiet window actually bought
+was batching, and batching is what the rate limit already provides for free:
+the interval between two admissions is the window, so accumulation survives
+and only the sealing rule changed. What it cost was a lone event on an
+otherwise idle repository waiting out a full five minutes for silence it
+already had, and an active repository deferring a wake through three
+back-to-back windows before a cap it should never have needed cut in.
 
-The 300s and 900s figures exceed the fixed 240s native receiver window
+A collection's deadline is therefore its subscription's own next permitted
+admission instant, taken from that subscription's `Admission` when the
+collection is created and never moved afterwards. Two consequences beyond the
+latency fix: sustained relevant traffic cannot defer a wake at all, so no cap
+is needed to bound it; and `event_subscriptions::step` re-entering for an
+unrelated state notification rebuilds its collector against the same absolute
+deadline, where the trailing-quiet window silently restarted on every such
+re-entry. A **fresh registration owes no cooldown**, so its rate limit has
+trivially elapsed and its first relevant event is admitted at once — the
+leading edge; every wake after it is paced.
+
+An overridden interval can exceed the fixed 240s native receiver window
 (`kanna_tool_catalog::MAX_WAIT_TIMEOUT_SECS`), so a single native
-`wait_local_task_events`/`wait_aggregate_task_events` call cannot honor them
+`wait_local_task_events`/`wait_aggregate_task_events` call cannot honor it
 alone. `event_subscriptions::step` owns the true window instead: it shares one
 `subscription_timing::Collection` across as many chained native calls as it
-takes (each still capped at 240s, and each sized to the remaining time once
-the first relevant observation is known), and treats a native call's own
-`"waitOutcome": "timeout"` — its budget merely expiring — as "not yet", not
-"done". Only a native `"events"` outcome (urgent, a full page, or the
-collector's own quiet deadline or its hard cap reached) is genuinely final. A
-native call's own receiver therefore never truncates the subscription's real
-window, including when the first relevant event arrives late inside one call's own
-240s leg — the shared collection's first-observation instant survives into
-whatever calls follow. Peer legs and checkpoints are unaffected: chaining
+takes (each still capped at 240s, and each sized to the remaining time to the
+gate once something relevant has been observed), and treats a native call's
+own `"waitOutcome": "timeout"` — its budget merely expiring — as "not yet",
+not "done". Only a native `"events"` outcome (urgent, a full page, or the
+rate limit's gate reached) is genuinely final. A native call's own receiver
+therefore never truncates the subscription's real window, including when the
+first relevant event arrives late inside one call's own 240s leg — the shared
+collection's accumulated events and its gate survive into whatever calls
+follow. Peer legs and checkpoints are unaffected: chaining
 just re-invokes the same wait with an advanced cursor, which the existing
 aggregate session retention already reuses like any other retry.
 Failed run/main/post facts, lifecycle/teardown/merge-handoff failures, provider
 parking, confirmed input requests, watch/machine errors and unknown attention
-seal urgently. Urgency skips quiet debounce, never admission pacing, FIFO cursors,
-immutable pending pages, matching acknowledgement or adapter/run safety.
+seal urgently. Urgency seals a collection early, never admission pacing, FIFO
+cursors, immutable pending pages, matching acknowledgement or adapter/run
+safety: the rate limit stays authoritative, and an early seal buys a smaller
+batch rather than an earlier wake.
 
-The minimum admission interval applies to both adapters, including full pages and
+The rate limit applies to both adapters, including full pages and
 notification-triggered retries that provably delivered nothing. There are no
 accumulated burst credits: admissions are at least 60s apart (1/minute sustained).
+A `poll` subscription owns its own wake mechanism, so no adapter call is paced
+and its page is never held back; handing that page over is still its admission
+and starts the interval, which is what keeps its *next* collection a batch
+rather than a per-event seal.
 No adapter wake accompanies the immediately observed bootstrap. Timing is selected
 only by `wait_subscription_events` at the top-level collector, not by the wire
 relevance flag; peer legs and public native/MCP waits keep their existing timing.
-Collectors return normally at quiet, cap, capacity or fault boundaries to retain
-unfinished aggregate legs. Known observation faults do not wait for silent healthy
-peers. Admission cooldown uses a lifecycle-owned deadline wait and reloads the row
-before reserving `sending` with CAS; an acknowledgement before reservation cancels
-that scheduled wake. A transient transport failure still requires a notification
-before retry: cooldown expiry is not a generic retry loop.
+Collectors return normally at the rate-limit gate, capacity or fault boundaries to
+retain unfinished aggregate legs. Known observation faults do not wait for silent
+healthy peers. Admission cooldown uses a lifecycle-owned deadline wait and reloads
+the row before reserving `sending` with CAS; an acknowledgement before reservation
+cancels that scheduled wake. A transient transport failure still requires a
+notification before retry: cooldown expiry is not a generic retry loop.
 
 The JSON record adds optional-on-read `wakeAdmitted`, preserved through ack and
 protected against stale delivery writes. Live timing is monotonic and survives
@@ -3623,9 +3638,10 @@ but enforcing temporal pacing requires the new owning server.
 
 These are conditional scheduler-delay bounds **after observation in the current
 collecting page**, assuming healthy execution and available acknowledgement:
-ordinary collection adds at most 300s; an observed urgent page is eligible
-immediately if the admission slot is free, otherwise after its remaining
-cooldown (at most 60s). They are not universal event-creation-to-wake bounds.
+every page, ordinary or urgent, is eligible immediately if the admission slot
+is free and otherwise at the gate, so the bound is the subscription's own
+interval (60s by default) measured from its last wake, not from the
+observation. They are not universal event-creation-to-wake bounds.
 An unacknowledged page, older
 backlog, unavailable transport or stalled server can delay observation/delivery;
 a busy harness may consume admitted output later. No urgent page overtakes those
@@ -3752,68 +3768,67 @@ knobs that reuse existing ownership rather than adding a policy engine:
 same `TaskEventsQuery` filter `kanna_wait_events` already exposes — a query
 filter, never part of the cursor, additive to the subscription's fixed
 baseline exclusion (`task.activity_changed`, `task.runtime_settled`,
-`task.input_delivered`). `quiet_ms` and `min_admission_interval_ms` override
-that one subscription's collection window and admission floor (defaults
-300000/60000ms); each is rejected below a 1000ms floor. There is deliberately
+`task.input_delivered`). `min_admission_interval_ms` overrides that one
+subscription's rate limit (default 60000ms) and is rejected below a 1000ms
+floor. It is the only timing knob: since the collection window is the span
+between two admissions, raising it means fewer, larger batches and lowering
+it means more, smaller ones. There is deliberately
 no policy ceiling, and none is needed on correctness grounds either:
 `Duration::from_millis` accepts any `u64`, and so does the
-`Instant + Duration` arithmetic these values feed into
+`Instant + Duration` arithmetic this value feeds into
 (`Collection::intrinsic_deadline`, `Admission`) — a `u64` millisecond count
 can never exceed `Duration`'s own far larger capacity, confirmed empirically
 (`Instant::now().checked_add(Duration::from_millis(u64::MAX))` never returns
-`None`). An extreme `quiet_ms` is genuinely honored — the collector chains
-native calls to cover it, exactly like the default — not capped by the 240s
-native receiver; the derived hard cap (below) scales with it, so an extreme
-`quiet_ms` extends both together. An extreme `min_admission_interval_ms` just
-delays that subscription's own future admissions. Urgent-event handling is
-unaffected: an urgent batch still seals its collection immediately regardless
-of these overrides, gated only by the (possibly overridden) minimum admission
-interval — no new urgency taxonomy, no runtime retry loop.
+`None`). An extreme value is genuinely honored — the collector chains native
+calls to cover it, exactly like the default — not capped by the 240s native
+receiver; it just delays that subscription's own future wakes. Urgent-event
+handling is unaffected: an urgent batch still seals its collection immediately
+regardless of the override, gated only by the (possibly overridden) rate limit
+— no new urgency taxonomy, no runtime retry loop.
 
-`quiet_ms` used to be two knobs — `quiet` (deadline reset on each new relevant
-event) and `max_hold` (a hard cap from the *first* relevant event), with a
-deadline of `(last + quiet).min(first + max_hold)`. Shipped equal at
-300000/300000, `max_hold` always won that `min`, so `quiet` could never bind:
-every relevant event pushed `last` forward, but the deadline stayed pinned to
-`first + max_hold` regardless, and debouncing a steady trickle of events never
-actually happened. Collapsed to the one knob that was ever load-bearing — a
-*trailing*-quiet window (`Collection::intrinsic_deadline`'s `last + hold`
-term, recomputed and pushed out on every relevant observation, not fixed at
-the first one) — but a single knob still needs its own bound against the
-opposite failure: relevant events at intervals shorter than `hold` push
-`last + hold` forward without limit, so an initially unbounded collapse let
-ordinary sustained traffic on an active repository — `task.pr_created`,
-`task.closed`, `task.blocked`/`task.unblocked`, `task.awaiting_advance`,
-`task.merge_signaled`, a parked successful `run.finished` — defer a wake for
-as long as that traffic continued, measured directly by this branch's own
-`lone_noise_sustained_and_urgent_bursts_have_the_same_bounds_for_both_adapters`
-test. The fix is one *more* derived quantity from the same single knob, not a
-second configured one: `Collection::intrinsic_deadline` is
-`(last + hold).min(first + HOLD_CAP_MULTIPLIER * hold)`,
-`HOLD_CAP_MULTIPLIER` a fixed, documented `3` — trailing quiet still governs
-an isolated burst, which seals well below the cap, while sustained relevance
-is bounded to three `hold` windows (15 minutes at the 300000ms default) from
-its first relevant observation. `max_hold_ms` is retired: it is an unknown
-wire parameter, rejected the same way any other undeclared argument is, not
-silently ignored — the cap is derived, not a wire-accepted value.
+**Tuning is a prompt-layer decision, not new plumbing.** The knob an agent
+needs already exists on the subscribe call, so "the agent picks the rate
+limit" means the number lives in that agent's own prompt layer
+(`.kanna/agents/<name>/EXTEND.md`, or its `AGENT.md`) and the agent passes it
+when it subscribes. Nothing reads a rate limit from agent frontmatter, and
+nothing should without a case that prose cannot serve: frontmatter Kanna must
+parse, layer against `agentProviders`/`config.local.json` precedence, and
+validate is real cost, and a number an agent types into one tool call buys
+none of it back.
 
-These fields are additive and optional at the wire and in storage: a
-subscription that never sets them persists the exact `query` shape it always
+Two knobs preceded this one and both are retired. `max_hold_ms` (a hard cap
+from the *first* relevant event) collapsed into `quiet_ms` once it was found
+that, shipped equal at 300000/300000, the `(last + quiet).min(first +
+max_hold)` deadline let `max_hold` always win and `quiet` never bind.
+`quiet_ms` then configured the trailing-quiet window itself — and the
+`HOLD_CAP_MULTIPLIER * quiet` cap derived from it, which existed only because
+a window that resets on every observation has no upper bound of its own — and
+went with the mechanism on 2026-09-21. Both are now unknown wire parameters,
+rejected the same way any other undeclared argument is rather than accepted
+and silently ignored, which would leave a caller believing timing it named is
+being applied. Exactly one live subscription exists in this repository, so
+nothing was served by a release of pretending otherwise.
+
+This field is additive and optional at the wire and in storage: a
+subscription that never sets it persists the exact `query` shape it always
 has, so pre-existing rows and the registration-retry `existing.query != query`
 equality check are unaffected. A subscription's own value is read back from
-its persisted `query` on every collection (`quietMs`) and at worker (re)start
-(`minAdmissionIntervalMs`, bound once into that subscription's `Admission`); a
-row from before this feature shipped simply has no such keys and falls back to
-the global defaults, identical to its prior behavior. A row persisted with the
-retired `maxHoldMs` key (from before the collapse) is read back and ignored —
-`quietMs` alone governs its collection window from here on. This omission
+its persisted `query` at worker (re)start (`minAdmissionIntervalMs`, bound
+once into that subscription's `Admission`); a
+row from before this feature shipped simply has no such key and falls back to
+the global default, identical to its prior behavior. A row persisted with the
+retired `maxHoldMs` or `quietMs` key is read back and ignored — the rate
+limit alone governs its collection window from here on, and a re-registration
+that omits the retired key no longer matches such a row's stored `query`, so
+it is refused as a settings change until the subscription is unsubscribed.
+This omission
 contract depends on the request the server actually receives never carrying
-these keys unless the caller means to override — so the catalog declares no
-`default` for them: the shared MCP/CLI request resolver (`value_for_param`)
+this key unless the caller means to override — so the catalog declares no
+`default` for it: the shared MCP/CLI request resolver (`value_for_param`)
 fills in a declared default for any omitted parameter and sends it on the
 wire, which would turn every omitted knob into an explicit (if numerically
 identical) override, breaking retry and resume for every pre-existing row.
-Each description states its default in prose instead.
+The description states its default in prose instead.
 
 The first returned page is already observed by the registering caller. A later
 page receives one coalesced wake. Wakes contain only the subscription and batch

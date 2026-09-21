@@ -1361,7 +1361,6 @@ pub(crate) async fn run(command: TaskCommands) {
             diagnostic,
             event_types,
             exclude_event_types,
-            quiet_ms,
             min_admission_interval_ms,
             server_url,
         } => {
@@ -1377,9 +1376,6 @@ pub(crate) async fn run(command: TaskCommands) {
             }
             if !exclude_event_types.is_empty() {
                 args["exclude_event_types"] = json!(exclude_event_types);
-            }
-            if let Some(quiet_ms) = quiet_ms {
-                args["quiet_ms"] = json!(quiet_ms);
             }
             if let Some(min_admission_interval_ms) = min_admission_interval_ms {
                 args["min_admission_interval_ms"] = json!(min_admission_interval_ms);

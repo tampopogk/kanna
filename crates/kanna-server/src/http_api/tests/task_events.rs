@@ -5761,11 +5761,11 @@ async fn subscription_mailbox_bootstraps_once_persists_unacked_work_and_follows_
     start_run(&db, "parked-run", "child-a", "in progress");
     settle_runtime_tasks(&db, &["child-a", "child-c"]);
     let app = router(state.clone());
-    // Per-subscription quiet override, not the 300000ms global: this
+    // Per-subscription rate-limit override, not the 60000ms global: this
     // fixture's second (ordinary, non-urgent) settle event needs to seal
     // within this test's real-time `await_subscription` budget.
     let request = json!({"taskId":"child-c", "localOnly":true, "delivery":"poll",
-        "quietMs": 2_000});
+        "minAdmissionIntervalMs": 2_000});
     let (status, initial) =
         subscription_request(&app, "POST", "/v1/event-subscriptions", request.clone()).await;
     assert_eq!(status, StatusCode::OK, "{initial}");
@@ -5857,8 +5857,8 @@ async fn compact_default_response_omits_every_internal_cursor_location_but_keeps
     let id = initial["id"].as_str().unwrap().to_string();
     let service = tokio::spawn(super::super::event_subscriptions::run(state.clone()));
     // A full page (the 100-event capacity) seals immediately regardless of
-    // the 300000ms ordinary quiet/max-hold defaults, which this real-time
-    // test cannot afford to wait out — these events are ordinary, not urgent.
+    // the 60000ms ordinary rate-limit default, which this real-time test
+    // cannot afford to wait out — these events are ordinary, not urgent.
     for _ in 0..150 {
         db.append_task_event("child-a", crate::db::TaskEventKind::PrCreated, json!({}))
             .unwrap();

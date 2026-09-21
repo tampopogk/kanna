@@ -2612,7 +2612,8 @@ fn subscription_tools_register_acknowledge_and_stop_the_server_owned_mailbox() {
     // `diagnostic` carries a declared default (false), so an omitted call
     // still resolves it onto the wire — as a body field for subscribe/read,
     // as a query parameter for unsubscribe (its endpoint has no body). Unlike
-    // quiet_ms/max_hold_ms/min_admission_interval_ms, this is intentional:
+    // min_admission_interval_ms (or the retired quiet_ms/max_hold_ms before
+    // it), this is intentional:
     // `diagnostic` only selects the response shape and is never persisted
     // into the subscription's stored query, so there is no
     // omission-vs-override distinction for the server to lose.

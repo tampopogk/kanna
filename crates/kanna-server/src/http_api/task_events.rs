@@ -171,17 +171,11 @@ pub(super) struct TaskEventsQuery {
     /// Set only by the owning subscription call, never from peer wire input.
     #[serde(skip)]
     subscription_timing: bool,
-    /// Per-subscription override of the collector's trailing-quiet hold — the
-    /// one pacing knob `Collection` has left after collapsing the old
-    /// quiet/max-hold pair (see `subscription_timing::HOLD`). Validated and
-    /// persisted by `event_subscriptions::subscribe`. Inert unless
-    /// `subscription_timing` is set.
-    quiet_ms: Option<u64>,
     /// Shared across every chained native call within one subscription batch
-    /// cycle, so the hold's timing tracks the true first relevant observation
-    /// rather than resetting at each individual call's own (up to 240s)
-    /// native receiver window. Set only by `wait_subscription_events` via
-    /// `event_subscriptions::step`; always `None` for the public wait.
+    /// cycle, so the events already observed and the rate-limit gate they
+    /// are accumulating against survive each individual call's own (up to
+    /// 240s) native receiver window. Set only by `wait_subscription_events`
+    /// via `event_subscriptions::step`; always `None` for the public wait.
     #[serde(skip)]
     subscription_collection: Option<Arc<Mutex<super::subscription_timing::Collection>>>,
 }
@@ -1685,11 +1679,10 @@ fn collapse_events_to_task_state(
 
 /// Runs `f` against the query's shared collection when present — subscription
 /// mode, where the same `Collection` is reused across every chained native
-/// call in one batch cycle so the trailing-quiet hold tracks the true first
-/// relevant observation rather than resetting at each call's own native
-/// receiver window — or a throwaway local one otherwise (the public wait
-/// never sets `subscription_timing`, so that fallback is never actually
-/// consulted).
+/// call in one batch cycle so accumulated events and the rate-limit gate
+/// survive each call's own native receiver window — or a throwaway local one
+/// otherwise (the public wait never sets `subscription_timing`, so that
+/// fallback is never actually consulted).
 fn with_collection<R>(
     query: &TaskEventsQuery,
     f: impl FnOnce(&mut super::subscription_timing::Collection) -> R,
@@ -1701,9 +1694,7 @@ fn with_collection<R>(
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
             f(&mut guard)
         }
-        None => f(&mut super::subscription_timing::Collection::from_query(
-            query.quiet_ms,
-        )),
+        None => f(&mut super::subscription_timing::Collection::new(None)),
     }
 }
 
@@ -1861,9 +1852,7 @@ async fn wait_local_task_events(
         }
         let read_events = !batch.events.is_empty();
         if query.subscription_timing {
-            with_collection(&query, |c| {
-                c.observe(&batch.events, tokio::time::Instant::now())
-            });
+            with_collection(&query, |c| c.observe(&batch.events));
             #[cfg(test)]
             super::subscription_timing::observed(&state, batch.events.len());
         }
@@ -2917,9 +2906,7 @@ async fn wait_aggregate_task_events(
             limit,
         )?;
         if query.subscription_timing {
-            with_collection(&query, |c| {
-                c.observe(&events[before_count..], tokio::time::Instant::now())
-            });
+            with_collection(&query, |c| c.observe(&events[before_count..]));
             #[cfg(test)]
             super::subscription_timing::observed(&state, events.len() - before_count);
         }
