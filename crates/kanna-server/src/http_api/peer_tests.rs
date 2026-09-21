@@ -281,7 +281,7 @@ fn peer_key(state: &AppState) -> [u8; 32] {
     *state.peer_channel_identity().unwrap().public_key()
 }
 
-fn set_peer_legacy_refused(state: &AppState) {
+pub(super) fn set_peer_legacy_refused(state: &AppState) {
     let db = crate::db::Db::open(&state.config().db_path).unwrap();
     db.set_setting(
         super::secure_channel::DESKTOP_PEER_LEGACY_ACCESS_SETTING,
@@ -764,7 +764,7 @@ async fn the_pairing_string_binds_its_audience() {
 /// Answers this desktop's `list_active_desktops` requests from a fixed
 /// presence table for as long as the returned task lives - the relay's role
 /// in automatic enrollment, played locally.
-fn serve_relay_presence(
+pub(super) fn serve_relay_presence(
     state: &Arc<AppState>,
     presence: Vec<(String, Option<String>)>,
 ) -> tokio::task::JoinHandle<()> {

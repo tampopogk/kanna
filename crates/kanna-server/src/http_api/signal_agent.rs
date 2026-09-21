@@ -1110,10 +1110,7 @@ pub(super) async fn signal_agent_request(
                             &repo_id,
                             &agent,
                             &claim.machine_id,
-                            format!(
-                                "reservation {} cannot be verified: {error}",
-                                claim.task_id
-                            ),
+                            format!("reservation {} cannot be verified: {error}", claim.task_id),
                         )
                     })?
                     .response;
@@ -1380,9 +1377,36 @@ async fn resolve_singleton_owner(
             return Err((axum::http::StatusCode::SERVICE_UNAVAILABLE, reason));
         }
     }
+    observe_remote_singletons(state, repo_id, agent, &remote_url_hash, machine_ids).await?;
+    let remote_tasks = state.known_singleton_owners(&remote_url_hash, agent);
+    unique_singleton_owner(state, repo_id, agent, local_tasks, remote_tasks)
+        .map(|owner| (owner, Some(remote_url_hash)))
+}
+
+/// Asks every machine in the account's namespace what it holds for this
+/// repository's `agent` singleton, and records each answer.
+///
+/// Deliberately fail-closed on the first machine that cannot answer: an
+/// unverifiable namespace is uncertainty, and uncertainty is never
+/// permission to create a rival singleton - two merge singletons racing on
+/// one repository is far worse than a stalled handoff. That rule is only as
+/// good as `machine_ids`, which must name machines that are actually live
+/// participants in the account. A machine that is merely *remembered* - a
+/// LAN peer this desktop once paired with, still holding an unexpired trust
+/// grant but no longer reachable or signed in - would otherwise block every
+/// handoff in the repository for the whole 24h life of that grant. Keeping
+/// that list honest is `invoke_desktop`'s job, not this loop's: see
+/// `invoke_desktop::revoke_stale_lan_grant`.
+async fn observe_remote_singletons(
+    state: &Arc<AppState>,
+    repo_id: &str,
+    agent: &str,
+    remote_url_hash: &str,
+    machine_ids: Vec<String>,
+) -> Result<(), (axum::http::StatusCode, String)> {
     let path = format!(
         "/v1/repo-singletons/{}/{}",
-        encode_path_segment(&remote_url_hash),
+        encode_path_segment(remote_url_hash),
         encode_path_segment(agent)
     );
     for machine_id in machine_ids {
@@ -1432,11 +1456,9 @@ async fn resolve_singleton_owner(
                 local_repo_id: task.local_repo_id,
             })
             .collect::<Vec<_>>();
-        state.observe_singleton_owners(&remote_url_hash, agent, &machine_id, tasks);
+        state.observe_singleton_owners(remote_url_hash, agent, &machine_id, tasks);
     }
-    let remote_tasks = state.known_singleton_owners(&remote_url_hash, agent);
-    unique_singleton_owner(state, repo_id, agent, local_tasks, remote_tasks)
-        .map(|owner| (owner, Some(remote_url_hash)))
+    Ok(())
 }
 
 fn unique_singleton_owner(
@@ -1618,4 +1640,148 @@ fn spawn_signal_agent_task_detached(
             }
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::http_api::test_support::test_state_with_seed;
+
+    /// Relay routing is *available* - this desktop can see who is in the
+    /// account - but its request pump is gone, so an actual relay invoke
+    /// fails at once instead of sitting out the relay transport's own
+    /// multi-minute budget.
+    fn relay_present_but_not_serving(state: &Arc<AppState>) {
+        state.set_desktop_routing_available(true);
+        drop(
+            state
+                .take_desktop_relay_requests()
+                .expect("relay request receiver"),
+        );
+    }
+
+    /// Leaves `target` holding a usable outbound LAN grant with a discovered
+    /// candidate address nothing answers at - the shape of a machine that was
+    /// once paired over the LAN and is no longer there.
+    fn seed_unanswerable_lan_peer(state: &Arc<AppState>, target: &str) {
+        let config = state.config();
+        let now_ms = crate::machine_trust::unix_time_ms().unwrap();
+        // A real, parseable CA: a placeholder string would fail while
+        // *building* the pinned client, which never dials at all and so is
+        // the opposite of the dialled-and-unanswered case under test.
+        let trust_anchor_pem = crate::lan_tls_identity::load_or_create(
+            &crate::test_paths::unique_test_dir(target).join("lan-tls-identity.json"),
+            target,
+            &config.environment,
+        )
+        .expect("create target identity")
+        .ca_certificate_pem;
+
+        let store_path = config.machine_trust_store_path().unwrap();
+        let mut store =
+            crate::machine_trust::MachineTrustStore::load(&store_path).expect("load trust store");
+        store
+            .pending_or_create(
+                target,
+                "uid-1",
+                &config.environment,
+                &config.desktop_id,
+                || Ok(format!("secret-for-{target}")),
+                now_ms,
+            )
+            .expect("prepare pending");
+        store
+            .confirm_outbound(
+                target,
+                &format!("secret-for-{target}"),
+                &config.desktop_id,
+                Some(trust_anchor_pem),
+                now_ms + crate::machine_trust::LEASE_MS,
+            )
+            .expect("confirm outbound grant");
+        store.save(&store_path).expect("seed outbound grant");
+
+        // Nothing listens on port 1, so the dial fails at connect.
+        state.set_lan_candidate(target.to_string(), "127.0.0.1:1".parse().unwrap());
+    }
+
+    /// The production failure this task exists to close: one LAN peer holding
+    /// an unexpired grant it can no longer be dialled with made *every* merge
+    /// handoff in the repository 503, on every task, for the 24h life of that
+    /// grant. The scan itself is right to fail closed on a machine it cannot
+    /// verify; what was wrong is that a machine which is no longer a live
+    /// participant kept being handed to it. The call that discovers the stale
+    /// grant still fails - that is when it is learned - but it says so, and
+    /// the next scan is clean.
+    #[tokio::test]
+    async fn a_stale_grant_peer_stops_blocking_the_singleton_scan_after_it_is_proven_stale() {
+        let state = test_state_with_seed("desktop-singleton-scan", "Scan", |_| {});
+        state.set_authenticated_account_uid(Some("uid-1".to_string()));
+        relay_present_but_not_serving(&state);
+        seed_unanswerable_lan_peer(&state, "desktop-departed-peer");
+
+        let (machine_ids, _) =
+            super::super::invoke_desktop::relay_and_lan_desktop_ids(&state).await;
+        assert_eq!(
+            machine_ids,
+            vec!["desktop-departed-peer".to_string()],
+            "the grant alone puts the departed peer into the scan"
+        );
+
+        let (status, reason) =
+            observe_remote_singletons(&state, "repo-1", "merge", "remote-hash-1", machine_ids)
+                .await
+                .expect_err(
+                    "the first scan still fails closed: this is when the staleness is learned",
+                );
+        assert_eq!(status, axum::http::StatusCode::SERVICE_UNAVAILABLE);
+        assert!(
+            reason.contains("stale LAN trust"),
+            "the 503 must say the grant was dropped so a retry is worth making: {reason}"
+        );
+
+        let (machine_ids, _) =
+            super::super::invoke_desktop::relay_and_lan_desktop_ids(&state).await;
+        assert!(
+            machine_ids.is_empty(),
+            "a peer proven to answer neither route is no longer a participant: {machine_ids:?}"
+        );
+        observe_remote_singletons(&state, "repo-1", "merge", "remote-hash-1", machine_ids)
+            .await
+            .expect("with the departed peer gone the scan resolves a live namespace");
+    }
+
+    /// The half of the fail-closed contract that must survive untouched: a
+    /// machine that is genuinely in the account's namespace and simply cannot
+    /// be verified blocks the scan, every time it is asked. Nothing about the
+    /// stale-grant repair may turn "I could not ask" into "there is nobody to
+    /// ask" - two merge singletons racing on one repository is far worse than
+    /// a stalled handoff.
+    #[tokio::test]
+    async fn a_machine_that_cannot_be_verified_still_fails_the_scan_closed_every_time() {
+        let state = test_state_with_seed("desktop-unverifiable-scan", "Scan", |_| {});
+        state.set_authenticated_account_uid(Some("uid-1".to_string()));
+        relay_present_but_not_serving(&state);
+
+        // Relay listed this machine, so it is a participant; it holds no LAN
+        // grant of its own, so there is nothing to prove stale and nothing to
+        // drop.
+        let machine_ids = vec!["desktop-relay-listed-peer".to_string()];
+        for attempt in 1..=2 {
+            let (status, reason) = observe_remote_singletons(
+                &state,
+                "repo-1",
+                "merge",
+                "remote-hash-1",
+                machine_ids.clone(),
+            )
+            .await
+            .expect_err("an unverifiable participant must never resolve the scan");
+            assert_eq!(status, axum::http::StatusCode::SERVICE_UNAVAILABLE);
+            assert!(
+                !reason.contains("stale LAN trust"),
+                "nothing was proven stale on attempt {attempt}: {reason}"
+            );
+        }
+    }
 }
