@@ -17,7 +17,7 @@ use std::sync::Arc;
 pub(crate) const SESSION_INTERRUPTION_FEEDBACK: &str =
     "session ended without a recorded stage verdict";
 
-#[derive(Debug, serde::Deserialize)]
+#[derive(Debug, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct TaskInputRequest {
     input: String,
@@ -267,8 +267,40 @@ pub(super) async fn send_task_input(
     _access: PrivilegedTaskAccess,
     State(state): State<Arc<AppState>>,
     axum::extract::Path(task_id): axum::extract::Path<String>,
+    axum::extract::Query(local_only): axum::extract::Query<super::task_federation::LocalOnlyQuery>,
     Json(payload): Json<TaskInputRequest>,
 ) -> Result<Response, TaskInputHttpError> {
+    // The test-only delivery stub bypasses real task/DB resolution entirely
+    // (see `send_task_input_impl`'s own identical check below, which this
+    // route would otherwise never reach): it must be honored before the
+    // federation pre-check below, which does a real local lookup.
+    #[cfg(test)]
+    if state.task_input_sender.is_some() {
+        let strict_recording = payload.strict_recording;
+        return send_task_input_impl(state, task_id, payload, strict_recording).await;
+    }
+    // Delivery is auto-resolved only at this HTTP boundary - never inside
+    // `deliver_task_input` itself, which server-originated callers (engine
+    // wakes, singleton signals, merge handoffs) also use for input they
+    // already know is local. A task absent here is forwarded, verbatim, to
+    // whichever reachable sibling owns it; a local hit falls through to the
+    // exact delivery path this route always used.
+    let forward_body = serde_json::to_value(&payload).unwrap_or(serde_json::Value::Null);
+    let path = super::task_federation::task_path(&task_id, "/input");
+    match super::task_federation::resolve_task_route(
+        &state,
+        &task_id,
+        local_only.local_only,
+        "POST",
+        &path,
+        &forward_body,
+    )
+    .await
+    {
+        Ok(super::task_federation::TaskRoute::Remote(response)) => return Ok(response),
+        Ok(super::task_federation::TaskRoute::Local(_)) => {}
+        Err(error) => return Err(map_task_input_error(error)),
+    }
     let strict_recording = payload.strict_recording;
     send_task_input_impl(state, task_id, payload, strict_recording).await
 }

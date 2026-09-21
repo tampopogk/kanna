@@ -1190,10 +1190,38 @@ sequence space for every aggregated event.
 Task discovery follows the same explicit machine model. Recent-task and search
 routes accept `allMachines=true`; that response contains `tasks`, with a
 `machineId` on every row, plus `machineErrors` so a partial account view is
-never silent. Both routes accept `includeClosed=true`. A local task-detail miss
-checks reachable siblings and, when the id exists elsewhere, returns an error
-that names the owning machine and tells MCP callers to repeat
-`kanna_get_task` with that `machine_id`, rather than returning a bare 404.
+never silent. Both routes accept `includeClosed=true`.
+
+**A caller no longer has to already know which machine a task lives on.**
+Every task-scoped read and mutation route that names a task id by path
+(`GET /v1/tasks/{id}` and its `logs`; `input`, `raw-input`; `actions/`
+`advance-stage`, `rerun-stage`, `resume`, `replace-workflow`; the `attention`
+pair) auto-resolves when `machine_id` is omitted and the id is absent locally:
+`task_federation::resolve_task_route` (`crates/kanna-server/src/http_api/`)
+probes every currently reachable sibling — the same `relay_and_lan_desktop_ids`
++ `invoke_desktop` machinery `kanna_get_task`'s miss-probe always used,
+`localOnly=true` appended so a remote hop's own local miss can never
+recurse — and, on the first sibling that recognizes the id, forwards the
+*exact same request* there and returns its answer verbatim (success or the
+owning machine's own application error alike), rather than a bare 404 or a
+"retry with machine_id" hint. A task id is globally unique, so that first
+match is authoritative. `machine_id` remains a valid explicit override and
+disambiguator on every one of these routes — when given, the caller (CLI or
+MCP) still routes directly through `/v1/cloud/desktops/{id}/invoke` as
+before, bypassing this probe entirely. Three answers are kept distinct rather
+than folded into one 404: task genuinely absent everywhere reachable; a
+candidate reached but its delivery was `delivery_uncertain` (terminal, never
+silently retried, reported as 503 naming the machine); and a paired machine
+this attempt could not even reach to ask, named in the final 404 rather than
+indistinguishable from "no such task". The cost is at most one sequential
+probe round trip per currently-reachable sibling, paid only on a local miss
+— a local hit costs nothing extra. There is no persistent task-to-machine
+index; ownership is discovered live on every miss, the same tradeoff
+`kanna_wait_events`'s own MCP-side `discover_task_owners` fan-out already
+makes. `kanna-cli`'s dedicated `task get/logs/send-input/send-raw-input/`
+`advance-stage/rerun-stage/resume` subcommands gained `--machine-id` for
+parity with the MCP tools' long-standing `machine_id` param; omitting it now
+finds a remote task instead of the flat local 404 it used to return.
 
 `GET /v1/machine-stats` (`kanna_machine_stats`, `kanna-cli machine stats`) is
 an observational resource snapshot, not a scheduler or a safe-to-start quota.

@@ -9,7 +9,7 @@ use axum::extract::State;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use kanna_agent_protocol::StateChangeScope;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
 fn stage_action_error_status(error: &str) -> axum::http::StatusCode {
@@ -48,7 +48,7 @@ fn reject_unprepared_transfer(db: &crate::db::Db, task_id: &str) -> Result<(), S
     Ok(())
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct AdvanceStageRequest {
     expected_transition_revision: Option<String>,
@@ -338,7 +338,7 @@ pub(super) async fn set_task_workflow(
     Ok(Json(response))
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(super) struct ReplaceTaskWorkflowRequest {
     workflow_definition: serde_json::Value,
@@ -349,8 +349,9 @@ pub(super) struct ReplaceTaskWorkflowRequest {
 pub(super) async fn replace_task_workflow(
     State(state): State<Arc<AppState>>,
     axum::extract::Path(task_id): axum::extract::Path<String>,
+    axum::extract::Query(local_only): axum::extract::Query<super::task_federation::LocalOnlyQuery>,
     Json(payload): Json<ReplaceTaskWorkflowRequest>,
-) -> Result<Json<serde_json::Value>, (axum::http::StatusCode, String)> {
+) -> Result<Response, (axum::http::StatusCode, String)> {
     use axum::http::StatusCode;
     let source = payload.source.as_deref().unwrap_or("unspecified");
     if !["operator", "manager", "agent", "unspecified"].contains(&source) {
@@ -359,7 +360,21 @@ pub(super) async fn replace_task_workflow(
             "source must be operator, manager, agent, or unspecified (caller-declared)".into(),
         ));
     }
-    let task_id = resolve_task_id_for_mutation(&state, &task_id).await?;
+    let forward_body = serde_json::to_value(&payload).unwrap_or(serde_json::Value::Null);
+    let path = super::task_federation::task_path(&task_id, "/actions/replace-workflow");
+    let task_id = match super::task_federation::resolve_task_route(
+        &state,
+        &task_id,
+        local_only.local_only,
+        "POST",
+        &path,
+        &forward_body,
+    )
+    .await?
+    {
+        super::task_federation::TaskRoute::Local(id) => id,
+        super::task_federation::TaskRoute::Remote(response) => return Ok(response),
+    };
     let _task_mutation = state.begin_requested_task_mutation(&task_id).await;
     let response = {
         let state = Arc::clone(&state);
@@ -450,7 +465,7 @@ pub(super) async fn replace_task_workflow(
     if response["changed"] == true {
         state.publish_state_changed(StateChangeScope::Tasks);
     }
-    Ok(Json(response))
+    Ok(Json(response).into_response())
 }
 
 /// How a blocker resolved — determines the wording dependents receive.
@@ -1026,9 +1041,14 @@ pub(super) async fn advance_stage(
     _access: PrivilegedTaskAccess,
     State(state): State<Arc<AppState>>,
     axum::extract::Path(task_id): axum::extract::Path<String>,
+    axum::extract::Query(local_only): axum::extract::Query<super::task_federation::LocalOnlyQuery>,
     payload: Option<Json<AdvanceStageRequest>>,
 ) -> Result<Response, (axum::http::StatusCode, String)> {
     let payload = payload.map(|Json(payload)| payload);
+    let forward_body = payload
+        .as_ref()
+        .map(|payload| serde_json::to_value(payload).unwrap_or(serde_json::Value::Null))
+        .unwrap_or(serde_json::Value::Null);
     let trigger = match payload
         .as_ref()
         .and_then(|payload| payload.source.as_deref())
@@ -1054,7 +1074,20 @@ pub(super) async fn advance_stage(
             .and_then(|payload| payload.next_stage_provider_source.as_deref()),
     )
     .map_err(|message| (axum::http::StatusCode::BAD_REQUEST, message))?;
-    let task_id = resolve_task_id_for_mutation(&state, &task_id).await?;
+    let path = super::task_federation::task_path(&task_id, "/actions/advance-stage");
+    let task_id = match super::task_federation::resolve_task_route(
+        &state,
+        &task_id,
+        local_only.local_only,
+        "POST",
+        &path,
+        &forward_body,
+    )
+    .await?
+    {
+        super::task_federation::TaskRoute::Local(id) => id,
+        super::task_federation::TaskRoute::Remote(response) => return Ok(response),
+    };
     {
         let state = Arc::clone(&state);
         let guarded_task_id = task_id.clone();
@@ -1401,8 +1434,22 @@ fn execute_stage_transition_detached_holding(
 pub(super) async fn resume_task(
     State(state): State<Arc<AppState>>,
     axum::extract::Path(task_id): axum::extract::Path<String>,
-) -> Result<Json<crate::mobile_api::TaskActionResponse>, (axum::http::StatusCode, String)> {
-    let task_id = resolve_task_id_for_mutation(&state, &task_id).await?;
+    axum::extract::Query(local_only): axum::extract::Query<super::task_federation::LocalOnlyQuery>,
+) -> Result<Response, (axum::http::StatusCode, String)> {
+    let path = super::task_federation::task_path(&task_id, "/actions/resume");
+    let task_id = match super::task_federation::resolve_task_route(
+        &state,
+        &task_id,
+        local_only.local_only,
+        "POST",
+        &path,
+        &serde_json::Value::Null,
+    )
+    .await?
+    {
+        super::task_federation::TaskRoute::Local(id) => id,
+        super::task_federation::TaskRoute::Remote(response) => return Ok(response),
+    };
     let task_mutation = state.begin_requested_task_mutation(&task_id).await;
     let (latest_run_status, daemon_session_id) = {
         let state = Arc::clone(&state);
@@ -1484,7 +1531,8 @@ pub(super) async fn resume_task(
                     follow_task: None,
                     revision_budget: None,
                     workflow_extended: None,
-                }));
+                })
+                .into_response());
             }
             return Err((
                 axum::http::StatusCode::CONFLICT,
@@ -1559,20 +1607,35 @@ pub(super) async fn resume_task(
         follow_task: None,
         revision_budget: None,
         workflow_extended: None,
-    }))
+    })
+    .into_response())
 }
 
 pub(super) async fn rerun_stage(
     State(state): State<Arc<AppState>>,
     axum::extract::Path(task_id): axum::extract::Path<String>,
-) -> Result<Json<crate::mobile_api::TaskActionResponse>, (axum::http::StatusCode, String)> {
-    let task_id = resolve_task_id_for_mutation(&state, &task_id).await?;
+    axum::extract::Query(local_only): axum::extract::Query<super::task_federation::LocalOnlyQuery>,
+) -> Result<Response, (axum::http::StatusCode, String)> {
+    let path = super::task_federation::task_path(&task_id, "/actions/rerun-stage");
+    let task_id = match super::task_federation::resolve_task_route(
+        &state,
+        &task_id,
+        local_only.local_only,
+        "POST",
+        &path,
+        &serde_json::Value::Null,
+    )
+    .await?
+    {
+        super::task_federation::TaskRoute::Local(id) => id,
+        super::task_federation::TaskRoute::Remote(response) => return Ok(response),
+    };
     let task_mutation = state.begin_requested_task_mutation(&task_id).await;
 
     #[cfg(test)]
     if let Some(stage_rerunner) = state.stage_rerunner.clone() {
         return stage_rerunner(task_id)
-            .map(Json)
+            .map(|response| Json(response).into_response())
             .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e));
     }
 
@@ -1654,7 +1717,8 @@ pub(super) async fn rerun_stage(
         follow_task: None,
         revision_budget: None,
         workflow_extended: None,
-    }))
+    })
+    .into_response())
 }
 
 /// A pull-request URL carried by a stage-complete verdict: explicitly via

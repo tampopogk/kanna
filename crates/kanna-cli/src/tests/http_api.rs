@@ -136,10 +136,12 @@ async fn task_watch_starts_at_tail_advances_suppressed_cursor_and_exits_on_actio
             task_ids: vec!["task-a".to_string()],
             repo_id: None,
             exclude_task_ids: Vec::new(),
+            exclude_event_types: Vec::new(),
             cursor: None,
             all_events: false,
             budget_secs: None,
             follow: false,
+            include_current_activity: None,
         },
         &mut output,
     )
@@ -153,6 +155,16 @@ async fn task_watch_starts_at_tail_advances_suppressed_cursor_and_exits_on_actio
     assert!(!requests[0].contains("cursor="));
     assert!(requests[1].contains("cursor=cursor-1"));
     assert!(!requests[1].contains("from=now"));
+    // Neither poll forces the cold-start snapshot: omitting
+    // `include_current_activity` (the default, absent an explicit
+    // `--include-current-activity`) lets the server apply its own natural
+    // default instead - cursorless implies the snapshot, cursor'd implies
+    // edges only. A hardcoded `Some(true)` here once forced the snapshot on
+    // every poll regardless of cursor, which is exactly what made a re-armed
+    // watch (or this loop's own second-and-later poll) redeliver the whole
+    // already-actionable set every time.
+    assert!(!requests[0].contains("includeCurrentActivity"));
+    assert!(!requests[1].contains("includeCurrentActivity"));
 
     let lines = String::from_utf8(output).unwrap();
     let rows = lines
@@ -187,10 +199,12 @@ async fn task_watch_budget_expiry_is_a_distinct_successful_outcome() {
             task_ids: Vec::new(),
             repo_id: Some("repo-1".to_string()),
             exclude_task_ids: Vec::new(),
+            exclude_event_types: Vec::new(),
             cursor: None,
             all_events: false,
             budget_secs: Some(0),
             follow: false,
+            include_current_activity: None,
         },
         &mut output,
     )
@@ -225,10 +239,12 @@ async fn task_watch_all_and_follow_stream_before_quiet_exit() {
             task_ids: vec!["task-a".to_string()],
             repo_id: None,
             exclude_task_ids: Vec::new(),
+            exclude_event_types: Vec::new(),
             cursor: None,
             all_events: true,
             budget_secs: Some(0),
             follow: true,
+            include_current_activity: None,
         },
         &mut output,
     )
@@ -1155,6 +1171,54 @@ fn task_watch_self_exclusion_matches_catalog_policy() {
     );
 }
 
+/// `--exclude-event-type` and an explicit `--include-current-activity`
+/// reach the underlying `/v1/task-events` poll exactly like
+/// `kanna_wait_events`'s params of the same name, matching that MCP surface
+/// instead of leaving `task watch` structurally unable to filter event types
+/// or force edges-only.
+#[tokio::test]
+async fn task_watch_sends_exclude_event_types_and_an_explicit_include_current_activity_override() {
+    let response = http_json_response(
+        "200 OK",
+        &serde_json::json!({
+            "waitOutcome": "events",
+            "cursor": "cursor-1",
+            "events": [{ "seq": 1, "taskId": "task-a", "type": "task.awaiting_input", "payload": { "stage": "review" } }],
+            "hasMore": false
+        })
+        .to_string(),
+    );
+    let (base_url, server) = serve_single_http_response(response).await;
+    let mut output = Vec::new();
+    watch_task_events(
+        &base_url,
+        TaskWatchOptions {
+            task_ids: vec!["task-a".to_string()],
+            repo_id: None,
+            exclude_task_ids: Vec::new(),
+            exclude_event_types: vec!["task.activity_changed".to_string()],
+            cursor: None,
+            all_events: false,
+            budget_secs: None,
+            follow: false,
+            include_current_activity: Some(false),
+        },
+        &mut output,
+    )
+    .await
+    .expect("watch actionable event");
+
+    let request = server.await.expect("fixture server");
+    assert!(
+        request.contains("excludeEventTypes=task.activity_changed"),
+        "{request}"
+    );
+    assert!(
+        request.contains("includeCurrentActivity=false"),
+        "{request}"
+    );
+}
+
 /// The watch loop sends its effective exclusions on every poll, including the
 /// re-armed one, so the server — not the client — keeps the caller's own
 /// settled-runtime edges out of the batch that wakes it.
@@ -1190,10 +1254,12 @@ async fn task_watch_sends_its_exclusions_on_every_poll() {
             task_ids: Vec::new(),
             repo_id: Some("repo-1".to_string()),
             exclude_task_ids: vec!["manager-1".to_string(), "noisy".to_string()],
+            exclude_event_types: Vec::new(),
             cursor: None,
             all_events: false,
             budget_secs: None,
             follow: false,
+            include_current_activity: None,
         },
         &mut output,
     )
