@@ -11,6 +11,7 @@ use tokio::sync::{watch, Mutex};
 
 mod cloud_env;
 mod config;
+mod lifecycle_log;
 mod process;
 
 use config::{
@@ -21,6 +22,7 @@ use kanna_server_process::{
     server_pids_on_port, server_process_exists, stop_server_on_port, ServerProcessExitWatcher,
     ServerProcessIdentity,
 };
+use lifecycle_log::LifecycleLog;
 use process::find_sidecar;
 
 const LOCAL_SERVER_HOST: &str = "127.0.0.1";
@@ -111,6 +113,10 @@ pub struct MobileServerManager {
     client: reqwest::Client,
     status_request_timeout: std::time::Duration,
     status_startup_timeout: std::time::Duration,
+    /// Where this manager's start/adopt/replace/recover record goes. A
+    /// Finder-launched app has no stderr, so `eprintln!` alone left the
+    /// reason a desktop came up with no local server unrecoverable.
+    lifecycle_log: LifecycleLog,
 }
 
 #[derive(Debug)]
@@ -177,6 +183,7 @@ impl MobileServerManager {
         cloud_env: Option<DesktopCloudEnvironment>,
     ) -> Self {
         let config_path = server_config_path_for_app_data_dir(&app_data_dir);
+        let lifecycle_log = LifecycleLog::beside_server_config(&config_path);
         let (server_pid_tx, _) = watch::channel(None);
         Self {
             inner: Arc::new(Mutex::new(MobileServerState {
@@ -194,6 +201,7 @@ impl MobileServerManager {
             client: reqwest::Client::new(),
             status_request_timeout: STATUS_REQUEST_TIMEOUT,
             status_startup_timeout: STATUS_STARTUP_TIMEOUT,
+            lifecycle_log,
         }
     }
 
@@ -217,6 +225,17 @@ impl MobileServerManager {
     }
 
     pub async fn start(&self) -> Result<(), String> {
+        match self.start_inner().await {
+            Ok(()) => Ok(()),
+            Err(error) => {
+                self.lifecycle_log
+                    .record(&format!("kanna-server start failed: {error}"));
+                Err(error)
+            }
+        }
+    }
+
+    async fn start_inner(&self) -> Result<(), String> {
         // Held for the whole attempt: callers that arrive while a start is in flight wait
         // for it and observe the finished result, rather than being told the server is
         // ready while it is still binding its port.
@@ -282,6 +301,9 @@ impl MobileServerManager {
                                     state.desktop_name = status.desktop_name;
                                     self.server_pid_tx.send_replace(Some(server_pid));
                                     drop(state);
+                                    self.lifecycle_log.record(&format!(
+                                        "adopted running kanna-server pid {server_pid}"
+                                    ));
                                     self.observe_adopted_server(
                                         exit_watcher,
                                         identity,
@@ -292,14 +314,14 @@ impl MobileServerManager {
                                 Err(error) if identity.is_alive() => return Err(error),
                                 _ => {}
                             }
-                            eprintln!(
-                                "[mobile] adopted kanna-server pid {server_pid} exited during desktop handoff; starting a replacement"
-                            );
+                            self.lifecycle_log.record(&format!(
+                                "adopted kanna-server pid {server_pid} exited during desktop handoff; starting a replacement"
+                            ));
                         }
                         Err(error) if server_process_exists(server_pid) => return Err(error),
                         Err(_) => {
-                            eprintln!(
-                                "[mobile] kanna-server exited while its adopted process identity was being pinned; starting a replacement"
+                            self.lifecycle_log.record(
+                                "kanna-server exited while its adopted process identity was being pinned; starting a replacement",
                             );
                         }
                     },
@@ -309,7 +331,9 @@ impl MobileServerManager {
                         if !listener_pids.is_empty() {
                             return Err(error);
                         }
-                        eprintln!("[mobile] kanna-server listener exited before desktop adoption; starting a replacement");
+                        self.lifecycle_log.record(
+                            "kanna-server listener exited before desktop adoption; starting a replacement",
+                        );
                     }
                 }
             } else {
@@ -328,8 +352,17 @@ impl MobileServerManager {
         *self.server_identity.lock().await = None;
         *self.server_lock.lock().await = Some(claimed_lock);
 
-        let desktop_executable = std::env::current_exe()
-            .map_err(|error| format!("failed to resolve desktop executable: {error}"))?;
+        // Every exit below this point is past `state.started = true`, so each
+        // one has to clear it. A start that returns Err while leaving the flag
+        // set turns every later `start()` into a no-op that reports success
+        // for a server nobody ever spawned.
+        let desktop_executable = match std::env::current_exe() {
+            Ok(path) => path,
+            Err(error) => {
+                self.record_start_failure().await;
+                return Err(format!("failed to resolve desktop executable: {error}"));
+            }
+        };
         let transfer_identity_env = match resolve_transfer_identity_env(&config_path) {
             Ok(env) => env,
             Err(error) => {
@@ -355,9 +388,15 @@ impl MobileServerManager {
             }
         };
 
-        let server_pid = child
-            .id()
-            .ok_or_else(|| "spawned kanna-server has no process id".to_string())?;
+        let server_pid = match child.id() {
+            Some(pid) => pid,
+            None => {
+                let _ = child.kill().await;
+                let _ = child.wait().await;
+                self.record_start_failure().await;
+                return Err("spawned kanna-server has no process id".to_string());
+            }
+        };
         let status = match self.wait_for_status(&api_base_url, &mut child).await {
             Ok(status) => status,
             Err(error) => {
@@ -407,6 +446,8 @@ impl MobileServerManager {
         }
         *self.server_identity.lock().await = Some(identity.clone());
         self.server_pid_tx.send_replace(Some(server_pid));
+        self.lifecycle_log
+            .record(&format!("spawned kanna-server pid {server_pid}"));
         self.observe_owned_server(child, identity, desktop_name);
 
         Ok(())
@@ -439,7 +480,30 @@ impl MobileServerManager {
                         .await;
                 }
                 Err(error) => {
-                    eprintln!("[mobile] adopted kanna-server exit observer failed: {error}");
+                    // Losing the observer used to end here, with `started`
+                    // still true and a lost `eprintln!` as the only record —
+                    // so every later `start()` short-circuited Ok for a
+                    // server that was already gone, and the app session had
+                    // no local services for the rest of its life. If the
+                    // process is gone, recover exactly as an observed exit
+                    // does; if it is still there, keep it and let
+                    // `ensure_responsive` prove it on the next readiness
+                    // check rather than restarting a healthy server.
+                    let alive = identity.is_alive();
+                    manager.lifecycle_log.record(&format!(
+                        "adopted kanna-server pid {} exit observer failed: {error} (process {})",
+                        identity.pid,
+                        if alive { "still alive" } else { "already gone" },
+                    ));
+                    if !alive {
+                        manager
+                            .recover_after_server_exit(
+                                identity,
+                                desktop_name,
+                                "adopted kanna-server exited unobserved".to_string(),
+                            )
+                            .await;
+                    }
                 }
             }
         });
@@ -488,7 +552,7 @@ impl MobileServerManager {
         self.server_pid_tx.send_replace(None);
         drop(state);
         *self.server_lock.lock().await = None;
-        eprintln!("[mobile] {description}");
+        self.lifecycle_log.record(&description);
     }
 
     async fn recover_after_server_exit(
@@ -517,19 +581,62 @@ impl MobileServerManager {
             return;
         }
         *self.server_lock.lock().await = None;
-        eprintln!("[mobile] {description}; starting a verified replacement");
+        self.lifecycle_log
+            .record(&format!("{description}; starting a verified replacement"));
         if let Err(error) = self.start().await {
             let mut state = self.inner.lock().await;
             state.status = "error".to_string();
-            eprintln!("[mobile] kanna-server recovery failed after {description}: {error}");
+            drop(state);
+            // Nothing retries from here. The renderer's readiness gate owns
+            // that retry, and `ensure_responsive` repairs the state this
+            // left behind rather than a timer competing with it.
+            self.lifecycle_log.record(&format!(
+                "kanna-server recovery failed after {description}: {error}"
+            ));
         }
     }
 
+    /// The startup readiness gate. Unlike `start`, it proves the server
+    /// answers before reporting readiness, and a failed proof discards the
+    /// cached `started` flag so the retry behind it actually spawns one.
+    ///
+    /// `started` is published before the sidecar is listening and cleared by
+    /// observers that can themselves fail, so it is a claim, not a fact. When
+    /// it is stale every `start()` short-circuits Ok and the desktop reports
+    /// readiness for a server that does not exist — which is exactly how a
+    /// launch reached its workspace bootstrap with nothing listening.
     pub(crate) async fn ensure_responsive(&self) -> Result<(), String> {
         self.start().await?;
-        self.snapshot().await.map(|_| ()).map_err(|error| {
+        let Err(first_error) = self.probe_responsive().await else {
+            return Ok(());
+        };
+        self.lifecycle_log.record(&format!(
+            "kanna-server reported started but did not answer /v1/status ({first_error}); discarding that claim and starting a verified replacement"
+        ));
+        self.record_start_failure().await;
+        self.start().await?;
+        self.probe_responsive().await.map_err(|error| {
             format!("kanna-server readiness check failed after startup/adoption: {error}")
         })
+    }
+
+    /// A live `/v1/status` from the server this manager claims to have
+    /// started. `snapshot()` cannot answer this question: it reports a
+    /// *stopped* server as an ordinary `Ok` snapshot, which reads to a
+    /// readiness caller exactly like a responsive one.
+    async fn probe_responsive(&self) -> Result<(), String> {
+        let api_base_url = {
+            let state = self.inner.lock().await;
+            if !state.started {
+                return Err("kanna-server is not running".to_string());
+            }
+            state.api_base_url.clone()
+        };
+        let status = self.fetch_status(&api_base_url).await?;
+        let mut state = self.inner.lock().await;
+        state.status = status.state;
+        state.desktop_name = status.desktop_name;
+        Ok(())
     }
 
     pub async fn snapshot(&self) -> Result<MobileServerStatus, String> {
@@ -987,15 +1094,21 @@ const MAX_SERVER_STDERR_LOG_BYTES: u64 = 16 * 1024 * 1024;
 /// and keeping several files of history — is the durable record; this is a
 /// bounded tail.
 fn server_stderr_log(config_path: &Path) -> std::process::Stdio {
+    // Losing this capture is itself a lifecycle fact worth keeping: it is the
+    // difference between a crashed server that left a reason and one that
+    // left nothing.
+    let lifecycle = LifecycleLog::beside_server_config(config_path);
     let Some(dir) = config_path.parent() else {
-        eprintln!("[mobile] cannot derive kanna-server log directory; discarding server stderr");
+        lifecycle.record("cannot derive kanna-server log directory; discarding server stderr");
         return std::process::Stdio::null();
     };
     let path = dir.join("kanna-server-stderr.log");
     let (reader, writer) = match std::io::pipe() {
         Ok(pair) => pair,
         Err(err) => {
-            eprintln!("[mobile] failed to create stderr pipe: {err}; discarding server stderr");
+            lifecycle.record(&format!(
+                "failed to create stderr pipe: {err}; discarding server stderr"
+            ));
             return std::process::Stdio::null();
         }
     };
@@ -1003,7 +1116,9 @@ fn server_stderr_log(config_path: &Path) -> std::process::Stdio {
         .name("kanna-server-stderr".to_string())
         .spawn(move || drain_server_stderr(reader, &path))
     {
-        eprintln!("[mobile] failed to start stderr writer: {err}; discarding server stderr");
+        lifecycle.record(&format!(
+            "failed to start stderr writer: {err}; discarding server stderr"
+        ));
         return std::process::Stdio::null();
     }
     std::process::Stdio::from(writer)
@@ -1976,6 +2091,65 @@ mod tests {
         assert!(
             status_after_start,
             "start() returned before kanna-server answered /v1/status"
+        );
+    }
+
+    /// `started` is published before the sidecar listens and cleared by
+    /// observers that can themselves fail, so it is a claim, not a fact. A
+    /// stale one made every later `start()` a no-op that reported success for
+    /// a server nobody had spawned: the renderer was told local services were
+    /// ready and then failed every request against nothing, which is what
+    /// turned a launch into `[init] fatal: TypeError: Load failed`. The
+    /// readiness gate has to prove the claim and repair it.
+    #[tokio::test(flavor = "current_thread")]
+    #[allow(clippy::await_holding_lock)]
+    async fn readiness_discards_a_started_claim_with_no_live_server() {
+        let _guard = env_lock().lock().expect("env lock should not be poisoned");
+        let root = unique_test_root("stale-started-claim");
+        let port = free_loopback_port();
+        let app_data_dir = root.join("app-data");
+        let db_path = root.join("kanna-test.db");
+        let daemon_dir = root.join("daemon");
+        configure_process_test_env(port, &db_path, &daemon_dir);
+        create_test_database(&db_path);
+        let mut daemon = start_test_kanna_daemon(&daemon_dir).await;
+        let manager = MobileServerManager::new(app_data_dir.clone());
+        // Exactly what an adoption whose exit observer could not be armed, or
+        // a start that failed after publishing the flag, leaves behind.
+        manager.inner.lock().await.started = true;
+
+        let readiness = manager.ensure_responsive().await;
+
+        let answered = reqwest::get(format!("{}/v1/status", server_base_url(port)))
+            .await
+            .map(|response| response.status().is_success())
+            .unwrap_or(false);
+        let lifecycle = std::fs::read_to_string(
+            manager
+                .lifecycle_log
+                .path()
+                .expect("lifecycle log should have a path"),
+        )
+        .unwrap_or_default();
+        let _ = stop_server_on_port(port).await;
+        daemon.kill().await.expect("cleanup should stop daemon");
+        cleanup_process_test_env();
+        let _ = std::fs::remove_dir_all(&root);
+
+        readiness.expect("readiness should repair a stale started claim");
+        assert!(
+            answered,
+            "readiness reported ready with nothing listening on {port}"
+        );
+        // Without this the next occurrence is undiagnosable again: a
+        // Finder-launched app's stderr goes nowhere.
+        assert!(
+            lifecycle.contains("did not answer /v1/status"),
+            "the repair must leave a durable record; log was: {lifecycle}"
+        );
+        assert!(
+            lifecycle.contains("spawned kanna-server pid"),
+            "the replacement spawn must be recorded; log was: {lifecycle}"
         );
     }
 

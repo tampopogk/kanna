@@ -667,6 +667,7 @@ Two things to know when driving a worker:
 | Dev process output (vite, tauri, mobile) | `./kd dev log [mobile]`, or attach with `./kd dev up --attach` |
 | Daemon behavior, PTY sessions | `kanna-daemon.log` (current process), `kanna-daemon_*.log` (history), and `kanna-daemon-lifecycle.log` (startup/handoff audit) in the instance's daemon dir |
 | Server behavior, HTTP errors, stage transitions | `kanna-server.log` (symlink to the current process's file) and `kanna-server_*.log` (history) in the same directory. Both rotate at 32 MiB keeping 5 files, so one process holds at most ~192 MiB. `kanna-server-stderr.log` beside them holds only raw sidecar stderr — panics and pre-logger output |
+| A desktop that came up with no local server | `kanna-server-lifecycle.log`, beside the two above: the desktop's own record of every `kanna-server` start, adoption, replacement and recovery. It exists because a Finder-launched app has no stderr, so the `eprintln!` these used to be reached nothing at all |
 | Local API | `curl http://127.0.0.1:48120/v1/status` (main/production instance) |
 | Resolved instance config | `./kd env print` |
 | Silent agent CLI failures | The agent SDK captures stderr — check it |
