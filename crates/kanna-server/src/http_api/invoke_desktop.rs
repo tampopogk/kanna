@@ -2103,6 +2103,156 @@ mod tests {
         );
     }
 
+    /// Leaves `state` in the exact shape of the machine the production
+    /// failure was measured on: the legacy bearer route refused, so an
+    /// unpinned sibling has no route at all, plus a usable outbound grant and
+    /// a discovered candidate that keep it in `eligible_lan_desktop_ids`
+    /// regardless. The returned task plays the relay, answering the presence
+    /// listing `try_enroll` reads from `presence`.
+    fn departed_peer_with_the_legacy_route_refused(
+        config: &crate::config::Config,
+        state: &Arc<AppState>,
+        target: &str,
+        presence: Vec<(String, Option<String>)>,
+    ) -> tokio::task::JoinHandle<()> {
+        state.set_authenticated_account_uid(Some("uid-1".to_string()));
+        super::super::peer_tests::set_peer_legacy_refused(state);
+        // A placeholder anchor rather than a real minted CA: with the legacy
+        // route refused these tests never reach `attempt_lan_invoke`, so
+        // nothing ever parses it, and `eligible_lan_desktop_ids` does not
+        // look at it either. Saying so here is more honest than generating a
+        // key this path cannot use.
+        seed_outbound_grant(config, target, Some("never-dialled".to_string()));
+        state.set_lan_candidate(target.to_string(), unanswered_candidate());
+        super::super::peer_tests::serve_relay_presence(state, presence)
+    }
+
+    /// The measured production failure, end to end through the branch that
+    /// actually produced it.
+    ///
+    /// On that machine the legacy bearer route is off, so `invoke_desktop`
+    /// never reaches `attempt_lan_invoke` at all: it refuses at the branch
+    /// for an unpinned sibling, with `try_enroll` reporting `SiblingOffline`
+    /// because a live relay listed the account's desktops and this one was
+    /// not among them. The grant nevertheless kept the machine in every scan
+    /// for the rest of its 24h lease, and `signal_agent`'s fail-closed
+    /// singleton scan turned that into a repo-wide 503 on every merge
+    /// handoff.
+    #[tokio::test]
+    async fn a_sibling_the_relay_no_longer_lists_drops_out_with_the_legacy_route_refused() {
+        let config = lan_e2e_test_config("desktop-legacy-off-source");
+        let state = Arc::new(AppState::new(config.clone()));
+        // The served presence table deliberately omits the target: the
+        // account has other desktops, and this is not one of them.
+        let relay = departed_peer_with_the_legacy_route_refused(
+            &config,
+            &state,
+            "desktop-departed-sibling",
+            vec![(
+                "desktop-some-other-sibling".to_string(),
+                Some("a-key".to_string()),
+            )],
+        );
+
+        assert_eq!(
+            eligible_lan_desktop_ids(&state),
+            vec!["desktop-departed-sibling".to_string()],
+            "the grant alone makes the departed sibling eligible before anything is attempted"
+        );
+
+        let error = invoke_desktop(
+            Arc::clone(&state),
+            "desktop-departed-sibling".to_string(),
+            "GET".to_string(),
+            "/v1/status".to_string(),
+            serde_json::Value::Null,
+        )
+        .await
+        .expect_err("an unpinned sibling has no route with the legacy one refused");
+        assert!(
+            error.contains("peer_pairing_required"),
+            "this must be the unpinned-sibling branch, not a LAN dial: {error}"
+        );
+        // Verbatim from the measured production log, and the whole reason
+        // this branch may drop a grant at all: it is `SiblingOffline`, not
+        // some other refusal that happens to reach the same line.
+        assert!(
+            error.contains("that machine is not connected to your account right now"),
+            "the refusal must be SiblingOffline specifically: {error}"
+        );
+        assert!(
+            error.contains(STALE_LAN_TRUST_DROPPED),
+            "the refusal must say the stale grant was dropped so a retry is worth making: {error}"
+        );
+
+        assert!(
+            eligible_lan_desktop_ids(&state).is_empty(),
+            "a sibling the relay does not list, with no route to it, is not a LAN participant"
+        );
+        relay.abort();
+    }
+
+    /// The condition itself, which is what keeps the branch above honest:
+    /// only `SiblingOffline` - a live relay that listed the account's
+    /// desktops and did not name this one - may drop a grant. Here the relay
+    /// *does* list the sibling, just without an announced key, so enrollment
+    /// refuses for a reason that says nothing about whether the sibling is
+    /// present. Without this test, deleting `sibling_absent_from_account &&`
+    /// still passes every test in the crate.
+    #[tokio::test]
+    async fn a_sibling_the_relay_still_lists_keeps_its_grant_when_enrollment_refuses() {
+        let config = lan_e2e_test_config("desktop-listed-sibling-source");
+        let state = Arc::new(AppState::new(config.clone()));
+        // The target is listed but announces no key, while another entry does
+        // - the whole-listing shape `announced_key_for` uses to tell a
+        // keyless sibling apart from a relay that predates key presence.
+        let relay = departed_peer_with_the_legacy_route_refused(
+            &config,
+            &state,
+            "desktop-listed-sibling",
+            vec![
+                (
+                    "desktop-some-other-sibling".to_string(),
+                    Some("a-key".to_string()),
+                ),
+                ("desktop-listed-sibling".to_string(), None),
+            ],
+        );
+
+        let error = invoke_desktop(
+            Arc::clone(&state),
+            "desktop-listed-sibling".to_string(),
+            "GET".to_string(),
+            "/v1/status".to_string(),
+            serde_json::Value::Null,
+        )
+        .await
+        .expect_err("an unpinned sibling has no route with the legacy one refused");
+        assert!(
+            error.contains("peer_pairing_required"),
+            "this must be the unpinned-sibling branch, not a LAN dial: {error}"
+        );
+        // `SiblingAnnouncesNoKey`. Pinned so this test cannot quietly start
+        // refusing for some unrelated reason and stop covering the condition
+        // it exists for.
+        assert!(
+            error.contains("runs an older Kanna and cannot pair automatically yet"),
+            "the refusal must be the listed-but-keyless one, not SiblingOffline: {error}"
+        );
+        assert!(
+            !error.contains(STALE_LAN_TRUST_DROPPED),
+            "enrollment refusing for a reason that is not about the sibling's presence must not \
+             drop anything: {error}"
+        );
+
+        assert_eq!(
+            eligible_lan_desktop_ids(&state),
+            vec!["desktop-listed-sibling".to_string()],
+            "a sibling the relay still lists keeps its grant"
+        );
+        relay.abort();
+    }
+
     /// A target that answers its LAN gateway and rejects this desktop's
     /// bearer secret has said, itself, that the grant is dead. Proven over a
     /// real pinned-TLS socket against the real listener, with the target's
