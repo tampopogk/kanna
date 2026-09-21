@@ -8,7 +8,7 @@ import { prepareLinuxRelease } from "../src/runtime/linux-release-prepare";
 import { linuxSourceBazelArgs } from "../src/runtime/linux-release-source";
 import { nodeCommandRunner, type CommandRunner } from "../src/runtime/process";
 import { sha256 } from "../src/runtime/linux-release-artifacts";
-import { packageLayout } from "../src/runtime/linux-package";
+import { buildCopyrightFile, packageLayout } from "../src/runtime/linux-package";
 import { parseCliArgs } from "../src/cli";
 import { getTaskDefinition } from "../src/tasks/registry";
 
@@ -63,6 +63,11 @@ function fixture(mode: "normal" | "historical" | "stamp" | "dirty" = "normal") {
       Object.assign(fact, { sha256: sha256(bytes), machine: policy.architectures[architecture].elfMachine, interpreter: policy.architectures[architecture].interpreter });
     }
     writeFileSync(join(staged, "DEBIAN/control"), `Package: ${packageName}\nVersion: ${report.debianVersion}\nArchitecture: ${arch}\nDepends: ${report.depends.join(", ")}\nDescription: SYNTHETIC TEST ONLY\n`);
+    // The real rule ships this; without it the artifact gate refuses the
+    // package for the Policy 12.5 copyright file it is missing.
+    const doc = join(staged, packageLayout({ channel }).copyrightFile);
+    mkdirSync(dirname(doc), { recursive: true });
+    writeFileSync(doc, buildCopyrightFile(readFileSync(join(repo, "LICENSE"), "utf8")));
     execFileSync("/usr/bin/python3", [join(repo, "packaging/linux/artifact_tool.py"), "deb", staged, deb]);
     report.sha256 = sha256(readFileSync(deb));
     writeFileSync(`${deb}.json`, JSON.stringify(report));

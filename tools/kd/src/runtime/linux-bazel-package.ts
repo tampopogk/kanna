@@ -18,6 +18,7 @@ interface PackageManifest {
   resources: string[];
   icons: string[];
   policy: string;
+  license: string;
   tool: string;
   output: string;
   report: string;
@@ -65,7 +66,9 @@ try {
   const depends = dependsFromAudit(policy, audit);
   const root = join(work, "tree");
   stageLinuxPackageTree({ channel: input.channel, root, binariesDir, builtinResourcesDir: resourcesDir, iconsDir,
-    control: { version, architecture: input.architecture, stagingIteration: input.channel === "staging" ? input.iteration : undefined, depends } });
+    licenseText: readFileSync(input.license, "utf8"),
+    control: { version, architecture: input.architecture, stagingIteration: input.channel === "staging" ? input.iteration : undefined, depends,
+      sourceRevision: input.buildRevision || undefined, sourceTree: input.buildTree || undefined } });
   runTool(["deb", root, input.output]);
   const hash = (p: string) => createHash("sha256").update(readFileSync(p)).digest("hex");
   writeFileSync(input.report, JSON.stringify({ builder: "bazel", buildRevision: input.buildRevision, buildTree: input.buildTree, version, channel: input.channel,
