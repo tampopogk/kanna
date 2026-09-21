@@ -8,7 +8,8 @@ parallel, each isolated in its own worktree, and the line is observable and
 steerable from a desktop app, a phone, or another agent.
 
 `kd` is this repo's internal development CLI, also exposed as the `kd-mcp` MCP
-server — prefer it over shelling out to the underlying tools.
+server — prefer it over shelling out to the underlying tools. `./kd dev up` is
+the development entry point.
 
 No AI attribution: commits and pull requests in this repo must not carry a
 `Co-Authored-By:` trailer naming an AI or a "Generated with [Claude Code]"
