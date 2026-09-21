@@ -1,7 +1,7 @@
 {
   "$schema": "./schema.json",
   "name": "single-reviewer",
-  "description": "One review agent: implement (commit as post) -> review -> PR, with automatic revision requests for weak testing",
+  "description": "Use when you can describe the outcome you want but not yet the files you'll touch, and the shape is obvious enough that a plan gate would be ceremony — the default for ordinary product work. Implement (commit as post) -> one review agent -> PR, with automatic revision requests for weak testing. Not for changes small enough that the test suite alone is review (no-review), or for work whose approach needs deciding before anyone builds it (plan-build-review).",
   "revision_limit": 5,
   "stages": [
     {
