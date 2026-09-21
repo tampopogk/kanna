@@ -179,6 +179,38 @@ function readCurrentVersion(repoRoot: string): string {
   return readFileSync(join(repoRoot, "VERSION"), "utf8").trim();
 }
 
+export const RELEASE_CANDIDATE_FILE = "VERSION_RC";
+
+/**
+ * The candidate counter for the version in `VERSION`, committed beside it.
+ *
+ * A release branch carries the version it will ship under, so a candidate of
+ * that version is fully described by the two committed files and nothing has to
+ * be counted at ship time. That is what makes the RC number a property of the
+ * commit: rebuild the commit, get the same candidate. It also means a
+ * production build of that same commit simply ignores this file, which is why
+ * promotion has no version to write and needs no commit of its own.
+ */
+function readReleaseCandidateNumber(repoRoot: string): number {
+  const path = join(repoRoot, RELEASE_CANDIDATE_FILE);
+  if (!existsSync(path)) {
+    throw new Error(
+      `${RELEASE_CANDIDATE_FILE} is missing. A release branch carries its version in VERSION and its ` +
+        `candidate number in ${RELEASE_CANDIDATE_FILE}; commit one (starting at 1) before shipping a candidate.`
+    );
+  }
+  const raw = readFileSync(path, "utf8").trim();
+  if (!/^\d+$/.test(raw)) {
+    throw new Error(`${RELEASE_CANDIDATE_FILE} must hold a non-negative integer candidate number, not ${JSON.stringify(raw)}.`);
+  }
+  return Number.parseInt(raw, 10);
+}
+
+function writeReleaseVersionFiles(repoRoot: string, version: string, candidate: number): void {
+  syncVersionFiles(repoRoot, version);
+  writeFileSync(join(repoRoot, RELEASE_CANDIDATE_FILE), `${candidate}\n`);
+}
+
 function syncVersionFiles(repoRoot: string, version: string): void {
   writeFileSync(join(repoRoot, "VERSION"), `${version}\n`);
   const tauriPath = join(repoRoot, "apps", "desktop", "src-tauri", "tauri.conf.json");
@@ -209,8 +241,8 @@ function stagingTag(version: string): string {
   return version.startsWith("v") ? version : `v${version}`;
 }
 
-async function mustRun(runner: CommandRunner, command: string, args: string[], cwd: string, env?: NodeJS.ProcessEnv): Promise<string> {
-  const result = await runner.run(command, args, { cwd, env });
+async function mustRun(runner: CommandRunner, command: string, args: string[], cwd: string, env?: NodeJS.ProcessEnv, stdin?: string): Promise<string> {
+  const result = await runner.run(command, args, { cwd, env, ...(stdin === undefined ? {} : { stdin }) });
   if (result.exitCode !== 0) {
     throw new Error(result.stderr || result.stdout || `${command} ${args.join(" ")} failed`);
   }
@@ -377,6 +409,14 @@ interface StagingContext {
   commit: string;
   branchTip: string | null;
   versionFloor: MainStagingVersionFloor | null;
+  /**
+   * The exact candidate version, when the branch already commits it.
+   *
+   * A release branch carries VERSION and VERSION_RC, so its candidate is read
+   * rather than derived, and the build takes the same two files: kd never
+   * writes a version into the worktree to build one.
+   */
+  committedCandidateVersion?: string;
 }
 
 export interface MainStagingVersionFloor {
@@ -513,7 +553,35 @@ async function resolveStagingContext(input: ReleaseShipInput): Promise<StagingCo
     );
   }
   const tags = await mustRun(input.runner, "git", ["ls-remote", "--tags", "origin", `v${series.major}.${series.minor}.*`], input.repoRoot, input.env);
-  return { baseVersion: nextSeriesPatchVersion(tags, series), sourceBranch: branchName, commit: head, branchTip: branchSha, versionFloor: null };
+
+  // The branch states the version it ships under; kd does not invent one. A
+  // stale VERSION is refused here rather than at promotion, where the forward
+  // production-version gate would reject it much later and far less clearly.
+  const committedVersion = readCurrentVersion(input.repoRoot);
+  const committedSeries = releaseSeriesFromVersion(committedVersion);
+  if (committedSeries.major !== series.major || committedSeries.minor !== series.minor) {
+    throw new Error(
+      `${branchName} has VERSION ${committedVersion}, which is not in series ${series.major}.${series.minor}. ` +
+        `A release branch carries its own series' version; commit the right one before shipping a candidate.`
+    );
+  }
+  const expectedVersion = nextSeriesPatchVersion(tags, series);
+  if (compareVersions(committedVersion, expectedVersion) < 0) {
+    throw new Error(
+      `${branchName} has VERSION ${committedVersion}, but v${committedVersion} is already released. ` +
+        `Setting the version is part of starting a candidate line: commit VERSION ${expectedVersion} ` +
+        `(and ${RELEASE_CANDIDATE_FILE} 1) onto ${branchName} with the backport, then ship.`
+    );
+  }
+  const candidate = readReleaseCandidateNumber(input.repoRoot);
+  return {
+    baseVersion: committedVersion,
+    committedCandidateVersion: `${committedVersion}-staging.${candidate}`,
+    sourceBranch: branchName,
+    commit: head,
+    branchTip: branchSha,
+    versionFloor: null
+  };
 }
 
 const SOURCE_BRANCH_TRAILER = "Source-Branch:";
@@ -1812,10 +1880,18 @@ export async function shipRelease(input: ReleaseShipInput): Promise<ReleaseShipR
   let recutAuthorization: LineageRecutRecord | null = null;
   let versionFloor: MainStagingVersionFloor | null = null;
   let seriesBranch: ReleaseSeriesBranchOutcome | null = null;
+  // True when the build takes its version from the committed VERSION /
+  // VERSION_RC pair, so kd must not write either one to build.
+  let versionFromCommittedFiles = false;
   if (input.promoteFrom) {
     const promotion = await resolvePromotion(input, input.promoteFrom);
     version = promotion.version;
     promotionSourceCommit = promotion.sourceCommit;
+    // The candidate already committed this version, so promoting is dropping
+    // the `-staging.N` suffix and nothing else. Building writes no file and
+    // publishing adds no commit, which is what makes the commit that ships the
+    // same commit that soaked instead of a child of it.
+    versionFromCommittedFiles = readCurrentVersion(input.repoRoot) === version;
   } else if (environment === "staging") {
     const stagingContext = await resolveStagingContext(input);
     stagingSourceBranch = stagingContext.sourceBranch;
@@ -1836,7 +1912,9 @@ export async function shipRelease(input: ReleaseShipInput): Promise<ReleaseShipR
     const baseVersion = !input.bumpExplicit && activeBaseVersion
       ? activeBaseVersion
       : stagingContext.baseVersion;
-    version = await resolveNextStagingVersion(input, baseVersion, publishGate.active?.version ?? null);
+    version = stagingContext.committedCandidateVersion
+      ?? await resolveNextStagingVersion(input, baseVersion, publishGate.active?.version ?? null);
+    versionFromCommittedFiles = stagingContext.committedCandidateVersion !== undefined;
     if (recutAuthorization && input.release) {
       const reusable = await findReusableStagingCandidate(
         input,
@@ -1856,16 +1934,23 @@ export async function shipRelease(input: ReleaseShipInput): Promise<ReleaseShipR
 
   const bazelArgs = [input.dryRun ? "-c" : "--config=notarize", input.dryRun ? "opt" : "-c", ...(input.dryRun ? [] : ["opt"])];
   const targets = input.archLabels.flatMap((label) => [bazelTargetForLabel(label, input.dryRun, environment), updaterBundleTargetForLabel(label, environment)]);
-  const versionFileSnapshot = snapshotVersionFiles(input.repoRoot);
-  try {
-    syncVersionFiles(input.repoRoot, version);
+  if (versionFromCommittedFiles) {
+    // Build what is committed. The staging bundle targets combine VERSION with
+    // VERSION_RC themselves, so there is nothing to write and nothing to put
+    // back: no bump, no build, no toss away.
     await mustRun(input.runner, "bazel", ["build", ...bazelArgs, ...targets], input.repoRoot, input.env);
-  } catch (error) {
-    restoreVersionFiles(versionFileSnapshot);
-    throw error;
-  }
-  if (environment === "staging") {
-    restoreVersionFiles(versionFileSnapshot);
+  } else {
+    const versionFileSnapshot = snapshotVersionFiles(input.repoRoot);
+    try {
+      syncVersionFiles(input.repoRoot, version);
+      await mustRun(input.runner, "bazel", ["build", ...bazelArgs, ...targets], input.repoRoot, input.env);
+    } catch (error) {
+      restoreVersionFiles(versionFileSnapshot);
+      throw error;
+    }
+    if (environment === "staging") {
+      restoreVersionFiles(versionFileSnapshot);
+    }
   }
 
   if (!repoSlug) {
@@ -1970,8 +2055,14 @@ export async function shipRelease(input: ReleaseShipInput): Promise<ReleaseShipR
     }
     await pruneStagingChannelAssets(input, repoSlug);
   } else if (input.release) {
-    await mustRun(input.runner, "git", ["add", "-f", "VERSION", "apps/desktop/src-tauri/tauri.conf.json", "apps/desktop/src-tauri/Cargo.toml", "apps/desktop/src-tauri/Cargo.lock"], input.repoRoot, input.env);
-    await mustRun(input.runner, "git", ["commit", "-m", `release: v${version}`], input.repoRoot, input.env);
+    // A candidate whose own commit already states this version needs no release
+    // commit: the tag goes straight onto the commit that soaked. Only a build
+    // whose version kd had to write still commits it, which is what a bare-main
+    // production ship does.
+    if (!versionFromCommittedFiles) {
+      await mustRun(input.runner, "git", ["add", "-f", "VERSION", "apps/desktop/src-tauri/tauri.conf.json", "apps/desktop/src-tauri/Cargo.toml", "apps/desktop/src-tauri/Cargo.lock"], input.repoRoot, input.env);
+      await mustRun(input.runner, "git", ["commit", "-m", `release: v${version}`], input.repoRoot, input.env);
+    }
     await mustRun(input.runner, "git", ["tag", `v${version}`], input.repoRoot, input.env);
     // The series branch is part of releasing, so it lands before anything is
     // published: the exact released commit, created only when absent, and a
@@ -2040,7 +2131,10 @@ export interface AbandonedSeries {
 export interface ReleaseCutResult {
   branch: string;
   version: string;
+  /** The branch tip: the commit that sets the series version. */
   commit: string;
+  /** The `origin/main` tip the series was cut from; the version commit's parent. */
+  trunkCommit?: string;
   /** The `VERSION` recorded at `origin/main` when the branch was cut. */
   trunkVersion: string;
   abandoned: AbandonedSeries[];
@@ -2399,6 +2493,81 @@ export async function readAbandonedSeries(
  * must be named and reasoned for — so skipping a version is always a decision
  * someone wrote down, never a side effect of a flag.
  */
+/**
+ * The commit that starts a candidate line: `base` with the series version
+ * written into VERSION, the candidate counter reset to 1, and the two
+ * version-bearing manifests brought along.
+ *
+ * Setting the version is what cutting *is*. Before this the branch was cut at
+ * main's tip carrying main's stale VERSION, and the number was invented later —
+ * at promotion, by a `release: vX.Y.Z` commit made on top of the candidate,
+ * which is why the commit that shipped was never the commit that soaked.
+ *
+ * Built with plumbing against a temporary index instead of a checkout: `kd
+ * release cut` runs from whatever worktree the operator is in — in a Kanna task,
+ * one on an unrelated branch — and cutting a branch must not disturb it.
+ */
+async function composeSeriesVersionCommit(
+  input: ReleaseCutInput,
+  base: string,
+  version: string
+): Promise<string> {
+  const indexDir = mkdtempSync(join(tmpdir(), "kd-release-cut-"));
+  const env = { ...input.env, GIT_INDEX_FILE: join(indexDir, "index") };
+  try {
+    await mustRun(input.runner, "git", ["read-tree", base], input.repoRoot, env);
+
+    const updates: Array<{ path: string; contents: string }> = [
+      { path: "VERSION", contents: `${version}\n` },
+      { path: RELEASE_CANDIDATE_FILE, contents: "1\n" }
+    ];
+    // The bundle stamps its version from VERSION, so these two are not what the
+    // build reads — but a committed manifest that disagrees with the branch it
+    // sits on is a trap for anyone reading the tree, so keep them in step.
+    for (const manifest of [
+      { path: "apps/desktop/src-tauri/tauri.conf.json", pattern: /"version": "[^"]*"/, replacement: `"version": "${version}"` },
+      { path: "apps/desktop/src-tauri/Cargo.toml", pattern: /^version = "[^"]*"/m, replacement: `version = "${version}"` }
+    ]) {
+      const present = await input.runner.run("git", ["cat-file", "-e", `${base}:${manifest.path}`], {
+        cwd: input.repoRoot,
+        env: input.env
+      });
+      if (present.exitCode !== 0) continue;
+      const contents = await mustRun(input.runner, "git", ["show", `${base}:${manifest.path}`], input.repoRoot, input.env);
+      updates.push({ path: manifest.path, contents: `${contents.replace(manifest.pattern, manifest.replacement)}\n` });
+    }
+
+    for (const update of updates) {
+      const blob = await mustRun(
+        input.runner,
+        "git",
+        ["hash-object", "-w", "--stdin"],
+        input.repoRoot,
+        input.env,
+        update.contents
+      );
+      await mustRun(
+        input.runner,
+        "git",
+        ["update-index", "--add", "--cacheinfo", `100644,${blob},${update.path}`],
+        input.repoRoot,
+        env
+      );
+    }
+
+    const tree = await mustRun(input.runner, "git", ["write-tree"], input.repoRoot, env);
+    return await mustRun(
+      input.runner,
+      "git",
+      ["commit-tree", tree, "-p", base, "-m", `release: cut ${version}`],
+      input.repoRoot,
+      input.env
+    );
+  } finally {
+    rmSync(indexDir, { recursive: true, force: true });
+  }
+}
+
 export async function cutReleaseBranch(input: ReleaseCutInput): Promise<ReleaseCutResult> {
   if (input.recut) return recutReleaseBranch(input);
   await mustRun(input.runner, "git", ["fetch", "origin", "main"], input.repoRoot, input.env);
@@ -2560,11 +2729,13 @@ export async function cutReleaseBranch(input: ReleaseCutInput): Promise<ReleaseC
     await mustRun(input.runner, "git", ["push", "origin", `refs/tags/${tag}`], input.repoRoot, input.env);
   }
 
-  await mustRun(input.runner, "git", ["push", "origin", `${commit}:refs/heads/${branch}`], input.repoRoot, input.env);
+  const branchCommit = await composeSeriesVersionCommit(input, commit, targetVersion);
+  await mustRun(input.runner, "git", ["push", "origin", `${branchCommit}:refs/heads/${branch}`], input.repoRoot, input.env);
   return {
     branch,
     version: targetVersion,
-    commit,
+    commit: branchCommit,
+    trunkCommit: commit,
     trunkVersion,
     abandoned: pending.map((entry) => ({
       series: `${entry.candidate.series.major}.${entry.candidate.series.minor}`,
