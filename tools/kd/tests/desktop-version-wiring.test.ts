@@ -220,10 +220,16 @@ describe("desktop bundle version wiring", () => {
       name: rule.name,
       staging: rule.srcs.includes("//:staging_version_file")
     }));
-    expect(byStagingSource.filter((rule) => rule.staging).map((rule) => rule.name)).toEqual([
-      "tauri_staging_bazel_config"
-    ]);
+    expect(byStagingSource.length).toBeGreaterThan(0);
+    for (const rule of byStagingSource) {
+      // The flavor a config is for is in its name; the file it reads must
+      // agree with it. `tauri_linux_staging_config` re-stamped //:VERSION over
+      // the candidate version its own input already carried, which is how a
+      // Linux staging build reported the release version.
+      expect(rule.staging, `${rule.name} reads the wrong version file`).toBe(rule.name.includes("staging"));
+    }
     expect(byStagingSource.filter((rule) => !rule.staging).length).toBeGreaterThan(0);
+    expect(byStagingSource.filter((rule) => rule.staging).length).toBeGreaterThan(0);
   });
 
   it("feeds the Tauri context codegen only version-stamped configs", () => {
@@ -259,6 +265,93 @@ describe("desktop bundle version wiring", () => {
         stagingConfig ? 'version_file = ":staging_version_file"' : 'version_file = "VERSION"'
       );
       expect(body, `${name} must not hard-code a plist version`).not.toMatch(/\n {4}version = "/);
+    }
+  });
+});
+
+describe("a build's bundle version and the version it reports are one file", () => {
+  // The bundle version has two halves already covered above: the plist
+  // (`version_file`) and PackageInfo (the stamped Tauri config the updater
+  // compares). There is a third rule per flavor, and it is the one every human
+  // and every agent actually reads: the codegen genrule that substitutes
+  // `KANNA_VERSION` into the generated lib.rs. The About panel is built from
+  // that const, and it is also the `version` the desktop writes into
+  // server.toml -- which is what `/v1/status`, and so `kanna_info`, reports.
+  //
+  // The split that introduced //:staging_version_file converted the first two
+  // and not the third, so a shipped `0.4.2-staging.2` had a correct plist, a
+  // correct updater version, and an About panel and a `kanna_info` saying
+  // `0.4.2`. Nothing could tell which candidate a machine was soaking, on the
+  // channel whose whole purpose is soaking numbered candidates.
+  //
+  // So the invariant is not "each rule reads a version file" but "every
+  // version-bearing rule of one flavor reads the *same* one".
+
+  /** The single version file a rule's attributes name. */
+  function versionSourceOf(name: string, text: string): string {
+    if (text.includes("staging_version_file")) return "//:staging_version_file";
+    if (/"(?:\/\/:)?VERSION"/.test(text)) return "//:VERSION";
+    throw new Error(`${name} names no version file in: ${text.trim()}`);
+  }
+
+  /** The genrules that substitute KANNA_VERSION into a generated lib.rs. */
+  function libCodegenGenrules(): Genrule[] {
+    const rules = genrules(desktopBuildPath).filter((rule) => rule.out.endsWith("_bazel.rs"));
+    expect(rules.length, "expected generated-lib.rs genrules").toBeGreaterThan(1);
+    for (const rule of rules) {
+      expect(rule.cmd, `${rule.name} must substitute KANNA_VERSION`).toContain("KANNA_VERSION");
+    }
+    return rules;
+  }
+
+  /** Every rule that puts a version into a build, with the file it reads. */
+  function versionBearingRules(): { name: string; source: string }[] {
+    const rules = [...tauriConfigGenrules(), ...libCodegenGenrules()].map((rule) => ({
+      name: rule.name,
+      source: versionSourceOf(rule.name, rule.srcs),
+    }));
+
+    const bundles = [
+      ...readFileSync(rootBuildPath, "utf8").matchAll(
+        /\ntauri_bundle_inputs\(\n {4}name = "([^"]+)",\n([\s\S]*?)\n\)\n/g
+      ),
+    ];
+    expect(bundles.length, "BUILD.bazel must declare tauri_bundle_inputs targets").toBeGreaterThan(0);
+    for (const [, name, body] of bundles) {
+      const attribute = body.match(/\n {4}version_file = ([^\n]+),/)?.[1];
+      expect(attribute, `${name} must declare version_file`).toBeDefined();
+      rules.push({ name, source: versionSourceOf(name, attribute as string) });
+    }
+    return rules;
+  }
+
+  it.each([
+    { flavor: "staging", expected: "//:staging_version_file" },
+    { flavor: "production", expected: "//:VERSION" },
+  ])("stamps every $flavor rule from $expected", ({ flavor, expected }) => {
+    const mine = versionBearingRules().filter(
+      (rule) => rule.name.includes("staging") === (flavor === "staging")
+    );
+    // A bundle, its Tauri config, and its lib.rs codegen -- at least three.
+    expect(mine.length, `expected ${flavor} version-bearing rules`).toBeGreaterThanOrEqual(3);
+    for (const rule of mine) {
+      expect(rule.source, `${rule.name} disagrees with the rest of the ${flavor} build`).toBe(expected);
+    }
+  });
+
+  it("covers the codegen genrule, the config and the bundle in each flavor", () => {
+    // Without this the case above passes vacuously if a rule stops being
+    // parsed -- which is exactly how the missing consumer went unnoticed.
+    const names = versionBearingRules().map((rule) => rule.name);
+    for (const required of [
+      "kanna_desktop_lib_rs",
+      "kanna_desktop_staging_lib_rs",
+      "tauri_updater_bazel_config",
+      "tauri_staging_bazel_config",
+      "kanna_bundle_inputs_release_arm64",
+      "kanna_bundle_inputs_staging_arm64",
+    ]) {
+      expect(names, `${required} is not being checked`).toContain(required);
     }
   });
 });
