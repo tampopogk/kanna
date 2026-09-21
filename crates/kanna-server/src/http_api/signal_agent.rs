@@ -1751,6 +1751,38 @@ mod tests {
             .expect("with the departed peer gone the scan resolves a live namespace");
     }
 
+    /// The same departed peer in the configuration the production failure was
+    /// actually measured in: the legacy desktop-to-desktop route refused, so
+    /// an unpinned sibling has no route at all and `invoke_desktop` refuses
+    /// before it ever dials. `revoke_stale_lan_grant` still drops the grant
+    /// there, but only after the call that discovered it has already failed -
+    /// so the first singleton launch after a machine goes away paid a 503 and
+    /// only the second worked.
+    ///
+    /// Naming the legacy switch in the eligibility predicate removes the
+    /// premise: with no route to it the machine is never a LAN participant,
+    /// so it never enters the scan and no attempt is spent learning that it
+    /// cannot be reached. One attempt, not two.
+    #[tokio::test]
+    async fn a_sibling_with_no_route_never_enters_the_singleton_scan_at_all() {
+        let state = test_state_with_seed("desktop-singleton-scan-legacy-off", "Scan", |_| {});
+        state.set_authenticated_account_uid(Some("uid-1".to_string()));
+        relay_present_but_not_serving(&state);
+        super::super::peer_tests::set_peer_legacy_refused(&state);
+        seed_unanswerable_lan_peer(&state, "desktop-departed-peer");
+
+        let (machine_ids, _) =
+            super::super::invoke_desktop::relay_and_lan_desktop_ids(&state).await;
+        assert!(
+            machine_ids.is_empty(),
+            "a grant is not a route with the legacy path refused: {machine_ids:?}"
+        );
+
+        observe_remote_singletons(&state, "repo-1", "merge", "remote-hash-1", machine_ids)
+            .await
+            .expect("the very first scan must resolve, not fail closed on a machine with no route");
+    }
+
     /// The half of the fail-closed contract that must survive untouched: a
     /// machine that is genuinely in the account's namespace and simply cannot
     /// be verified blocks the scan, every time it is asked. Nothing about the

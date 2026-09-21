@@ -77,10 +77,13 @@ pub(super) async fn list_cloud_desktops(
     // unconditionally, alongside relay presence rather than instead of it,
     // and never affecting `relay_available`/`error`, which report relay's
     // own dimension exactly as before.
+    // No longer gated on the legacy switch here: `eligible_lan_desktop_ids`
+    // now consults it itself, and also counts a pinned peer, whose sealed
+    // session needs no legacy route at all. Gating it a second time would
+    // hide those pinned peers in exactly the configuration - legacy refused -
+    // where they are the only reachable LAN machines left.
     let legacy_allowed = state.legacy_peer_access_allowed();
-    if legacy_allowed {
-        ids.extend(super::invoke_desktop::eligible_lan_desktop_ids(&state));
-    }
+    ids.extend(super::invoke_desktop::eligible_lan_desktop_ids(&state));
     // A paired sibling with a LAN candidate is reachable without the relay.
     let paired: Vec<crate::peer_trust::PeerDesktop> = state
         .peer_trust_store()
