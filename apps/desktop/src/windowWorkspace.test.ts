@@ -7,6 +7,7 @@ import {
   normalizeTearOffWindowGeometry,
   removeWindowFromWorkspaceSnapshot,
   parseWindowBootstrap,
+  readWorkspaceSnapshot,
   reconcileWorkspaceSnapshot,
   resolveRestorableWindowGeometry,
   resolveWindowBootstrap,
@@ -334,6 +335,35 @@ describe("windowWorkspace", () => {
         sidebarWidth: 360,
       },
     ]);
+  });
+
+  // The read that killed a production launch: `main.ts` awaits this before it
+  // mounts anything, the request retries for 15 seconds and then throws, and
+  // the whole window died behind a "quit and reopen" screen — for a saved
+  // layout.
+  it("starts without a saved layout when the workspace snapshot cannot be read", async () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    updateDesktopServerClientHandlersForTests({
+      getSetting: async () => {
+        throw new TypeError("Load failed");
+      },
+    });
+
+    await expect(readWorkspaceSnapshot({} as never)).resolves.toEqual({ windows: [] });
+
+    const bootstrap = await resolveWindowBootstrap({} as never, {
+      windowId: "main",
+      selectedRepoId: "repo-opened-with",
+      selectedItemId: "task-opened-with",
+    });
+
+    expect(bootstrap).toMatchObject({
+      windowId: "main",
+      selectedRepoId: "repo-opened-with",
+      selectedItemId: "task-opened-with",
+    });
+    expect(warnSpy).toHaveBeenCalled();
+    warnSpy.mockRestore();
   });
 
   it("prefers the saved window selection over the launch parameters in the URL", async () => {

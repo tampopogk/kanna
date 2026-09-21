@@ -456,7 +456,19 @@ async function readOpenWorkspaceWindowIds(): Promise<Set<string> | null> {
 
 export async function readWorkspaceSnapshot(db: DbHandle): Promise<WorkspaceSnapshot> {
   void db;
-  const raw = await getDesktopSetting(WINDOW_WORKSPACE_SETTINGS_KEY);
+  // This is window geometry and selection, read through `kanna-server`. An
+  // unreachable server used to propagate out of here, through
+  // `resolveWindowBootstrap`, into `main.ts`'s bootstrap, and kill the launch
+  // outright — a fatal screen for a saved layout. An empty snapshot is already
+  // the legal answer for a missing or unparseable key; it is the right answer
+  // for an unreadable one too.
+  let raw: string | null = null;
+  try {
+    raw = await getDesktopSetting(WINDOW_WORKSPACE_SETTINGS_KEY);
+  } catch (error: unknown) {
+    console.warn("[windowWorkspace] workspace snapshot unavailable; starting without it:", error);
+    return { windows: [] };
+  }
   if (!raw) return { windows: [] };
 
   try {

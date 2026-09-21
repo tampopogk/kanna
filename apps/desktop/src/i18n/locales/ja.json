@@ -569,6 +569,9 @@
   "common": {
     "loading": "読み込み中..."
   },
+  "localServices": {
+    "unavailable": "Kanna のローカルサービスが応答していません。再試行しています…"
+  },
   "startup": {
     "preparing": "Kanna を起動しています…",
     "services": "ローカルサービスを起動しています…",

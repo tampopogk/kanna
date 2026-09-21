@@ -13,11 +13,12 @@ import {
   normalizeCodeThemePreference,
 } from "../theme/theme";
 import { normalizeAgentExecutionType } from "../stores/agentExecutionType";
+import { getDesktopSetting } from "../services/desktopServerClient";
 import {
-  ensureDesktopReady,
-  getDesktopSetting,
-  hasConfirmedDesktopReadiness,
-} from "../services/desktopServerClient";
+  localServicesState,
+  waitForLocalServices,
+  waitForLocalServicesStartupGrace,
+} from "../services/localServices";
 import {
   parsePairingCompletedEvent,
   parsePairingRequestedEvent,
@@ -173,6 +174,7 @@ export function useAppLifecycle({
 }: UseAppLifecycleOptions) {
   const appUnlisteners: Array<() => void> = [];
   const fatalInitializationError = ref<string | null>(null);
+  const localServices = localServicesState();
   let currentWindowClosePhase: "open" | "preparing" | "recovering" | "destroying" = "open";
   let resolveWindowMembershipInitialization: (() => void) | null = null;
   const windowMembershipInitialization = new Promise<void>((resolve) => {
@@ -352,9 +354,19 @@ export function useAppLifecycle({
     // usable" actually means. A rejection anywhere in it is a visible startup
     // failure rather than an unhandled rejection behind a blank window.
     try {
-      if (!hasConfirmedDesktopReadiness()) {
+      if (localServices.value !== "ready") {
         startup.enterPhase("services");
-        await ensureDesktopReady();
+        // Bounded only by how long the window is willing to stay a blank
+        // screen. Past that it stops covering the workspace and comes up
+        // degraded — the banner says local services are down and the retry is
+        // still running — rather than turning a late server into a dead end.
+        if (!await waitForLocalServicesStartupGrace()) {
+          startup.dispose();
+          // Everything below reads through `kanna-server`, so it waits for a
+          // server that answers instead of half-restoring against one that
+          // does not. The window is on screen and recovering while it waits.
+          await waitForLocalServices();
+        }
       }
       startup.enterPhase("restoring");
       try {
@@ -675,6 +687,7 @@ export function useAppLifecycle({
 
   return {
     fatalInitializationError,
+    localServices,
     focusAgentTerminal,
     requestCloseCurrentWindow,
   };

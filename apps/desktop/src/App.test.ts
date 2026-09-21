@@ -29,6 +29,7 @@ import {
   setDesktopReadinessConfirmedForTests,
   updateDesktopServerClientHandlersForTests,
 } from "./services/desktopServerClient";
+import { resetLocalServicesForTests } from "./services/localServices";
 import { createStartupScreen, type StartupController } from "./startup";
 
 /**
@@ -58,6 +59,21 @@ async function waitForCondition(predicate: () => boolean, attempts = 10): Promis
     if (predicate()) return;
     await flushPromises();
   }
+}
+
+/**
+ * Like `waitForCondition`, but lets real timers fire: `flushPromises` drains
+ * microtasks only, so a chain of it never reaches a `setTimeout`. Anything
+ * waiting on the local-service grace period or its retry delay needs this.
+ */
+async function waitForTimedCondition(predicate: () => boolean, timeoutMs = 2_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    await flushPromises();
+  }
+  if (!predicate()) throw new Error(`condition never held within ${timeoutMs}ms`);
 }
 
 interface Deferred<T> {
@@ -1330,8 +1346,13 @@ describe("App", () => {
       },
     });
     // `main.ts` crosses native readiness before mounting App.vue. Tests that
-    // exercise that gate explicitly reset this to false below.
+    // exercise that gate explicitly reset this below.
     setDesktopReadinessConfirmedForTests(true);
+    resetLocalServicesForTests({
+      ready: true,
+      retryDelayMs: 1,
+      startupGraceMs: 10,
+    });
     invokeMock.mockClear();
     toastInfoMock.mockClear();
     toastWarningMock.mockClear();
@@ -1521,6 +1542,7 @@ describe("App", () => {
       ensureDesktopReady: () => runtimeReady.promise,
     });
     setDesktopReadinessConfirmedForTests(false);
+    resetLocalServicesForTests({ retryDelayMs: 1, startupGraceMs: 10_000 });
     store.init.mockImplementationOnce(async () => snapshotReady.promise);
 
     const wrapper = await mountApp(SidebarWithRepoStub);
@@ -1546,25 +1568,95 @@ describe("App", () => {
     wrapper.unmount();
   });
 
-  it("leaves the failed service phase and recovery action visible", async () => {
-    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+  // A local server that does not answer used to end here: the workspace read
+  // behind it threw at its 15s budget and the window died behind a screen whose
+  // only advice was to quit and reopen. It is a degraded launch now.
+  it("comes up degraded instead of fatal when local services do not answer", async () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
     updateDesktopServerClientHandlersForTests({
       ensureDesktopReady: async () => {
         throw new Error("kanna-server recovery failed after adopted server exit");
       },
     });
     setDesktopReadinessConfirmedForTests(false);
+    resetLocalServicesForTests({ retryDelayMs: 1, startupGraceMs: 5 });
 
     const wrapper = await mountApp(SidebarWithRepoStub);
-
-    expect(startup.phase.value).toBe("failed");
-    expect(startup.state.failureDetail.value).toBe(
-      "startup.failedServices kanna-server recovery failed after adopted server exit",
+    await waitForTimedCondition(
+      () => wrapper.get(".app").attributes("inert") === undefined,
     );
-    expect(startup.active.value).toBe(true);
+
+    expect(startup.phase.value).not.toBe("failed");
+    expect(startup.state.failureDetail.value).toBeNull();
+    // The workspace is on screen and reachable, and it says what is missing.
+    expect(wrapper.find('[data-testid="local-services-banner"]').exists()).toBe(true);
+    // Nothing half-restores against a server that cannot answer.
     expect(store.init).not.toHaveBeenCalled();
 
-    errorSpy.mockRestore();
+    warnSpy.mockRestore();
+    wrapper.unmount();
+  });
+
+  // Same degraded launch, but with the readiness call still in flight when the
+  // grace expires rather than already rejected — the shape a sidecar that
+  // spawns and never binds produces. Nothing has thrown, so a banner keyed on
+  // a thrown error would leave this window uncovered and saying nothing.
+  it("shows the degraded banner while the readiness call is still in flight", async () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    let settle: (() => void) | undefined;
+    updateDesktopServerClientHandlersForTests({
+      ensureDesktopReady: () => new Promise<void>((resolve) => {
+        settle = resolve;
+      }),
+    });
+    setDesktopReadinessConfirmedForTests(false);
+    resetLocalServicesForTests({ retryDelayMs: 1, startupGraceMs: 5 });
+
+    const wrapper = await mountApp(SidebarWithRepoStub);
+    await waitForTimedCondition(
+      () => wrapper.get(".app").attributes("inert") === undefined,
+    );
+
+    // The call has not settled and still will not; the window says so anyway.
+    expect(settle).toBeTypeOf("function");
+    expect(wrapper.find('[data-testid="local-services-banner"]').exists()).toBe(true);
+    expect(startup.phase.value).not.toBe("failed");
+    // `store.init` is deliberately not asserted here. The preceding test's
+    // window is still parked in its own unbounded wait when this one resets
+    // the module, and abandoning that attempt releases it — so the shared mock
+    // picks up a call that belongs to the previous test, not to this window.
+    // The reject-shape test above owns that assertion.
+
+    warnSpy.mockRestore();
+    wrapper.unmount();
+  });
+
+  it("finishes restoring a degraded window once local services answer", async () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    let responsive = false;
+    updateDesktopServerClientHandlersForTests({
+      ensureDesktopReady: async () => {
+        if (!responsive) throw new Error("kanna-server is not running");
+      },
+    });
+    setDesktopReadinessConfirmedForTests(false);
+    resetLocalServicesForTests({ retryDelayMs: 1, startupGraceMs: 5 });
+
+    const wrapper = await mountApp(SidebarWithRepoStub);
+    await waitForTimedCondition(
+      () => wrapper.find('[data-testid="local-services-banner"]').exists(),
+    );
+
+    responsive = true;
+    await waitForTimedCondition(() => store.init.mock.calls.length === 1);
+    await waitForTimedCondition(
+      () => !wrapper.find('[data-testid="local-services-banner"]').exists(),
+    );
+
+    expect(startup.phase.value).not.toBe("failed");
+    expect(startup.state.failureDetail.value).toBeNull();
+
+    warnSpy.mockRestore();
     wrapper.unmount();
   });
 

@@ -472,5 +472,76 @@ describe("app launch", () => {
       expect(stopped.flow).toBe(false);
       await client.screenshot(resolve(evidence, "startup-failure.png"));
     });
+
+    // The condition that killed a production launch on 2026-09-20: local
+    // services not answering for longer than the window's first server-backed
+    // read could wait. That read sits in `main.ts` before anything mounts, so
+    // only a real launch proves the ordering — a unit test that never runs the
+    // bootstrap proves nothing about it.
+    it("comes up degraded and recovers when local services do not answer", async () => {
+      await client.executeSync(
+        `window.localStorage.setItem("kanna.e2e.localServicesOutage", "1");
+         delete window.__KANNA_E2E_LOCAL_SERVICES__;
+         if (window.__KANNA_E2E__) window.__KANNA_E2E__.ready = false;
+         location.reload();`,
+      );
+      await waitForPage<boolean>(
+        "return Boolean(window.__KANNA_E2E_LOCAL_SERVICES__);",
+        (installed) => installed,
+        "the launch took the simulated local-service outage",
+      );
+      // A reload is a new window: re-verify before touching it.
+      await assertNativeWindowIdentity(
+        client,
+        await resolveExpectedNativeWindowIdentity(resolve("../..")),
+        "app launch (local services down)",
+      );
+
+      // Longer than the 15s startup grace the window spends covered, plus the
+      // render behind it.
+      const degraded = await waitForPage<{
+        mounted: boolean;
+        fatal: boolean;
+        banner: string;
+        inert: boolean;
+      }>(
+        `const app = document.querySelector('.app');
+         const banner = document.querySelector('[data-testid="local-services-banner"]');
+         return {
+           mounted: Boolean(app),
+           fatal: Boolean(document.querySelector('[data-testid="startup-failure"]')),
+           banner: banner ? banner.innerText : "",
+           inert: Boolean(app && app.hasAttribute('inert')),
+         };`,
+        (state) => state.mounted && !state.inert && state.banner.length > 0,
+        "the window came up degraded instead of dying behind the startup screen",
+        45000,
+      );
+      // Not the dead end this replaced: no "quit and reopen", and the
+      // workspace is reachable rather than covered.
+      expect(degraded.fatal).toBe(false);
+      expect(degraded.inert).toBe(false);
+      expect(degraded.banner).toContain("local services");
+      await client.screenshot(resolve(evidence, "startup-local-services-degraded.png"));
+
+      await client.executeSync("window.__KANNA_E2E_LOCAL_SERVICES__.recover();");
+      // The retry backs off while it fails, so recovery is noticed within one
+      // backoff step rather than instantly.
+      await client.waitForAppReady(45000);
+
+      expect(
+        await client.executeSync<boolean>(
+          `return Boolean(document.querySelector('[data-testid="local-services-banner"]'));`,
+        ),
+      ).toBe(false);
+      // `ready` is raised at the readiness edge, past `store.init` — so the
+      // workspace finished restoring on its own, with no reload.
+      expect(
+        await client.executeSync<boolean>(
+          `return Boolean(document.querySelector('.sidebar'));`,
+        ),
+      ).toBe(true);
+      await client.screenshot(resolve(evidence, "startup-local-services-recovered.png"));
+    });
   });
 });

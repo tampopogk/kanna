@@ -121,6 +121,25 @@ What is worth your eye rather than an assertion: the speed of the flow, whether
 the wrap reads as seamless, and whether the status text sits comfortably beside
 it.
 
+**3. A launch whose local services never answer.** In the same inspector:
+
+```js
+localStorage.setItem("kanna.e2e.localServicesOutage", "1"); location.reload();
+```
+
+The window waits out its 15-second grace period on "Starting local services…"
+and then comes up *degraded*: the workspace is on screen and reachable, with a
+banner saying the local services are not responding and are being retried. It
+is deliberately not the failure state above — an unresponsive local server used
+to end the launch outright. Let it recover with:
+
+```js
+window.__KANNA_E2E_LOCAL_SERVICES__.recover();
+```
+
+and the workspace finishes restoring on its own, with no reload. Same DEV-only,
+one-shot flag semantics as the hold.
+
 ## What this evidence does not cover
 
 - **Reduced motion.** `prefers-reduced-motion` cannot be forced in the WebDriver
