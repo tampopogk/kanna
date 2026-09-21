@@ -1,6 +1,6 @@
 import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { bumpVersion, type ReleaseBump } from "./release";
+import { bumpVersion, type ReleaseBump } from "./release-version";
 
 export interface MobileVersionBumpInput {
   major: boolean;

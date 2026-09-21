@@ -127,12 +127,10 @@ import {
   listStagingRelayActiveDesktopIds,
   type StagingRelayActiveDesktopIdsInput
 } from "../runtime/staging-relay";
-import {
-  cutReleaseBranch,
-  releaseStatus,
-  resetStagingLineage,
-  shipRelease
-} from "../runtime/release";
+import { cutReleaseBranch } from "../runtime/release-cut";
+import { releaseStatus } from "../runtime/release-status";
+import { resetStagingLineage } from "../runtime/release-channel";
+import { shipRelease } from "../runtime/release-ship";
 import { linuxReleaseStatus, shipLinuxRelease, renewLinuxRelease } from "../runtime/linux-release";
 import { loadReleaseEnvironment } from "../runtime/release-env";
 import {

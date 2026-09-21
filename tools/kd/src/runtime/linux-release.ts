@@ -5,7 +5,8 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { join } from "node:path";
 import type { CommandRunner } from "./process";
 import { releasePlatform } from "./release-platform";
-import { compareVersions, releaseRepoSlug } from "./release";
+import { releaseRepoSlug } from "./release-command";
+import { compareVersions } from "./release-version";
 import { evaluateStagingPublishGate, type StagingLineageRelationship } from "./release-lineage";
 import { readReleasePolicy } from "./release-policy";
 import { linuxArchiveStorage } from "./linux-apt-storage";
