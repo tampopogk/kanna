@@ -56,10 +56,10 @@ impl Watch {
         Self::configured(delivery, false).await
     }
 
-    /// A subscription with its own quiet/admission-interval overrides, so a
-    /// test can exercise the collector's timing logic without depending on
-    /// the (much larger) global defaults or the fixed 240s native receiver
-    /// window.
+    /// A subscription with its own rate-limit override, so a test can
+    /// exercise the collector's timing logic at a cadence the fixed 240s
+    /// native receiver window does not dominate — or, above it, deliberately
+    /// force the native-call chaining that window makes necessary.
     async fn with_overrides(delivery: &'static str, overrides: Value) -> Self {
         Self::configured_with(delivery, false, overrides).await
     }
@@ -309,6 +309,19 @@ for line in sys.stdin:
             assert_eq!(self.db.count_task_inputs("child-c").unwrap(), 0);
         }
     }
+    /// A fresh registration owes no cooldown, so its rate limit has already
+    /// elapsed and its very first relevant event wakes the manager at once —
+    /// the leading edge, and the reason nothing here ever waits for quiet.
+    /// Spend it, so what follows is the ordinary paced case, and return the
+    /// instant it was admitted: every later gate is that instant plus this
+    /// subscription's own interval.
+    async fn spend_the_leading_edge(&mut self) -> Instant {
+        self.emit(TaskEventKind::PrCreated);
+        let (batch, admitted) = self.admitted().await;
+        self.delivered().await;
+        self.ack(batch).await;
+        admitted
+    }
     async fn ack(&self, batch: i64) {
         let (status, _) = subscription_request(
             &self.app,
@@ -322,25 +335,38 @@ for line in sys.stdin:
 }
 
 #[tokio::test(start_paused = true)]
-async fn both_adapters_trail_bursts_and_rate_gate_urgent_attention() {
+async fn both_adapters_batch_between_wakes_and_rate_gate_urgent_attention() {
     for delivery in ["input", "codex_app_server"] {
         let mut watch = Watch::new(delivery).await;
+        // Leading edge: a fresh registration's rate limit has trivially
+        // elapsed, so its first relevant event wakes the manager at once.
+        // Nothing waits for quiet.
         watch.emit(TaskEventKind::PrCreated);
+        let (leading, first) = watch.admitted().await;
+        watch.delivered().await;
+        assert_eq!(
+            watch.row().pending.unwrap()["events"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        watch.ack(leading).await;
+        // Now paced. Everything observed before the next admission is one
+        // batch, and a later event never defers it: the deadline is
+        // `first + 60s` whether the second event lands or not, where the
+        // trailing-quiet window this replaced would have pushed it out by
+        // another 800ms — and by a further 300s for every event after that.
+        watch.emit(TaskEventKind::TaskClosed);
         watch.observed().await;
         tokio::time::advance(Duration::from_millis(800)).await;
-        watch.emit(TaskEventKind::TaskClosed);
-        // Quiet is anchored to the latest observation (the collapsed single
-        // knob, replacing the old quiet/max-hold pair): this later event
-        // genuinely pushes sealing out to `last + 300s`, not `first + 300s`.
-        let second = watch.observed().await;
-        // 1ms short of the new deadline (second + 300s), then across it —
-        // was 299_199ms/1ms against the old first-anchored deadline before
-        // the second event started pushing it out by another 800ms.
-        tokio::time::advance(Duration::from_millis(299_999)).await;
+        watch.emit(TaskEventKind::PrCreated);
+        watch.observed().await;
+        tokio::time::advance(Duration::from_millis(59_199)).await;
         watch.no_admission();
         tokio::time::advance(Duration::from_millis(1)).await;
         let (batch, admitted) = watch.admitted().await;
-        assert_eq!(admitted, second + Duration::from_secs(300));
+        assert_eq!(admitted, first + Duration::from_secs(60));
         watch.delivered().await;
         assert_eq!(
             watch.row().pending.unwrap()["events"]
@@ -353,7 +379,8 @@ async fn both_adapters_trail_bursts_and_rate_gate_urgent_attention() {
         watch.emit(TaskEventKind::LifecycleFailed);
         watch.observed().await;
         until(|| watch.row().pending.is_some()).await;
-        // Urgent sealed immediately, but cannot bypass the previous admission.
+        // Urgent sealed immediately, but cannot bypass the previous
+        // admission: the rate limit stays authoritative.
         watch.no_admission();
         tokio::time::advance(Duration::from_secs(60)).await;
         let (_, next) = watch.admitted().await;
@@ -438,22 +465,20 @@ async fn ack_during_cooldown_invalidates_scheduled_wake_without_erasing_gate() {
 #[tokio::test(start_paused = true)]
 async fn lone_noise_sustained_and_urgent_bursts_have_the_same_bounds_for_both_adapters() {
     for delivery in ["input", "codex_app_server"] {
-        // Per-subscription overrides, not the 300000/60000ms global
-        // defaults: this test exercises the collector's quiet/admission
-        // arithmetic itself, which the fixed 240s native receiver window
-        // would otherwise dominate now that the defaults exceed it (any
-        // intervening real event — even an irrelevant one — triggers a
-        // re-check that can complete the batch at the receiver instead).
-        let mut watch = Watch::with_overrides(
-            delivery,
-            json!({"quietMs": 2_000, "minAdmissionIntervalMs": 1_000}),
-        )
-        .await;
+        // A per-subscription rate-limit override, not the 60000ms default:
+        // this test measures the collector's own arithmetic, which the fixed
+        // 240s native receiver window would otherwise dominate.
+        let mut watch =
+            Watch::with_overrides(delivery, json!({"minAdmissionIntervalMs": 2_000})).await;
+        let first = watch.spend_the_leading_edge().await;
+        // A lone relevant event plus irrelevant noise: the noise neither
+        // seals the batch nor defers it, and the one event it accompanies is
+        // admitted exactly at the gate.
         watch.emit(TaskEventKind::PrCreated);
-        let first = watch.observed().await;
+        watch.observed().await;
         for _ in 0..4 {
             tokio::time::advance(Duration::from_millis(400)).await;
-            watch.emit(TaskEventKind::RunStarted); // irrelevant, never resets quiet
+            watch.emit(TaskEventKind::RunStarted); // irrelevant
             tokio::task::yield_now().await;
         }
         watch.no_admission();
@@ -462,48 +487,46 @@ async fn lone_noise_sustained_and_urgent_bursts_have_the_same_bounds_for_both_ad
         assert_eq!(at - first, Duration::from_secs(2));
         watch.delivered().await;
         watch.ack(batch).await;
-        watch.emit(TaskEventKind::PrCreated);
-        let first = watch.observed().await;
-        // Continuous relevant events at intervals shorter than quietMs
-        // (2000ms) keep pushing the trailing-quiet deadline forward exactly
-        // as the collapsed single knob intends — each of these three still
-        // lands well inside the restored hard cap (first +
-        // HOLD_CAP_MULTIPLIER * quietMs = first + 6000ms), genuinely
-        // extending the live deadline past what it would otherwise have
-        // been.
+        // Sustained relevant traffic: continuous relevant events at
+        // intervals far shorter than the rate limit accumulate into one
+        // batch and defer the wake by exactly nothing. The trailing-quiet
+        // window this replaced pushed its deadline out on every one of
+        // these, and only a derived hard cap stopped that from running
+        // forever; there is nothing left here for a cap to bound.
         for _ in 0..3 {
-            tokio::time::advance(Duration::from_millis(1_600)).await;
+            tokio::time::advance(Duration::from_millis(500)).await;
             watch.emit(TaskEventKind::PrCreated);
             watch.observed().await;
             watch.no_admission();
         }
-        // After the 4th event (t0+4800), the naive last+quiet deadline would
-        // be t0+6800 — past the cap. Sustained relevance must not defer the
-        // batch beyond the cap the way it used to: admission happens at
-        // exactly the cap, t0+6000, with no further events and none of them
-        // individually urgent. `advance_to_deadline_and_admit` both proves
-        // nothing sealed before the cap and pins the exact instant it does.
-        let (batch, at) =
-            advance_to_deadline_and_admit(&mut watch, first + Duration::from_millis(6_000)).await;
+        let (batch, sustained) =
+            advance_to_deadline_and_admit(&mut watch, at + Duration::from_millis(2_000)).await;
         assert_eq!(
-            at - first,
-            Duration::from_millis(6_000),
-            "sustained relevant activity must seal at the hard cap (first + \
-             HOLD_CAP_MULTIPLIER * hold), not be deferred further by more of it: {:?}",
-            at - first
+            sustained - at,
+            Duration::from_millis(2_000),
+            "sustained relevant activity must seal at the rate limit, not be \
+             deferred by more of it: {:?}",
+            sustained - at
         );
         watch.delivered().await;
+        assert_eq!(
+            watch.row().pending.unwrap()["events"]
+                .as_array()
+                .unwrap()
+                .len(),
+            3
+        );
         watch.ack(batch).await;
-        tokio::time::advance(Duration::from_millis(1_500)).await;
-        watch.emit(TaskEventKind::PrCreated);
-        watch.observed().await;
-        tokio::time::advance(Duration::from_millis(200)).await;
+        // Urgent attention past an open gate is admitted on the spot: the
+        // rate limit is a floor on how close two wakes may be, never a
+        // delay added to an event that has waited out its own interval.
+        tokio::time::advance(Duration::from_millis(2_500)).await;
         watch.emit(TaskEventKind::AwaitingInput);
         let urgent_at = watch.observed().await;
         let (_, admitted) = watch.admitted().await;
         assert_eq!(
             admitted, urgent_at,
-            "urgent attention seals the ordinary burst with no quiet hold"
+            "urgent attention past the gate seals and wakes with no further hold"
         );
         watch.delivered().await;
     }
@@ -515,11 +538,12 @@ async fn retirement_during_collection_and_cooldown_cannot_dispatch_for_either_ad
         for cooldown in [false, true] {
             for close in [false, true] {
                 let mut watch = Watch::new(delivery).await;
+                // Spend the leading edge either way, so the ordinary event
+                // in the non-cooldown branch is genuinely mid-collection
+                // against a rate-limit gate rather than admitted on the
+                // spot the way a fresh registration's first event is.
+                watch.spend_the_leading_edge().await;
                 if cooldown {
-                    watch.emit(TaskEventKind::AwaitingInput);
-                    let (batch, _) = watch.admitted().await;
-                    watch.delivered().await;
-                    watch.ack(batch).await;
                     watch.emit(TaskEventKind::LifecycleFailed);
                 } else {
                     watch.emit(TaskEventKind::PrCreated);
@@ -671,18 +695,6 @@ async fn restart_during_actual_delivery_parks_uncertainty_without_repeated_wake(
     }
 }
 
-/// Advances the paused clock in 1s increments until at least `target`. A
-/// single large `advance()` can leave a background task's own periodic (here,
-/// 5s) recheck timer unpolled through several of its intermediate ticks
-/// instead of driving each one in turn — harmless when nothing of interest
-/// happens in between, but exactly the case a moving-deadline regression must
-/// step through faithfully rather than skip over.
-async fn advance_in_one_second_steps_to(target: Instant) {
-    while tokio::time::Instant::now() < target {
-        tokio::time::advance(Duration::from_secs(1)).await;
-    }
-}
-
 /// Advances to just before `deadline`, asserts nothing has been admitted yet,
 /// then steps across it and returns the admission. Computed relative to
 /// `tokio::time::Instant::now()` rather than a fixed literal, since prior
@@ -699,22 +711,26 @@ async fn advance_to_deadline_and_admit(watch: &mut Watch, deadline: Instant) -> 
 
 #[tokio::test(start_paused = true)]
 async fn a_relevant_event_observed_near_a_native_leg_start_survives_its_timeout() {
-    let mut watch = Watch::new("input").await;
+    // A 300s rate limit exceeds the fixed 240s native receiver, so honoring
+    // it at all requires chaining native calls.
+    let mut watch =
+        Watch::with_overrides("input", json!({"minAdmissionIntervalMs": 300_000})).await;
+    let wake = watch.spend_the_leading_edge().await;
     // Reproduces the finding's own example: an ordinary event observed near
     // the start of the first native call. That call must still expire at its
-    // own 240s receiver — well before the subscription's 300s intrinsic
-    // deadline — and re-issue a second call rather than losing the event it
-    // already has. The leg timeout is a self-paced barrier (the worker
-    // actually reporting a `"waitOutcome": "timeout"` re-issue), not an
-    // assumption from a single large `advance()`.
+    // own 240s receiver — well before the subscription's 300s gate — and
+    // re-issue a second call rather than losing the event it already has.
+    // The leg timeout is a self-paced barrier (the worker actually
+    // reporting a `"waitOutcome": "timeout"` re-issue), not an assumption
+    // from a single large `advance()`.
     tokio::task::yield_now().await;
     watch.emit(TaskEventKind::PrCreated);
-    let observed = watch.observed().await;
+    watch.observed().await;
     watch.leg_timed_out().await;
     watch.no_admission();
     let (_, admitted) =
-        advance_to_deadline_and_admit(&mut watch, observed + Duration::from_secs(300)).await;
-    assert_eq!(admitted - observed, Duration::from_secs(300));
+        advance_to_deadline_and_admit(&mut watch, wake + Duration::from_secs(300)).await;
+    assert_eq!(admitted - wake, Duration::from_secs(300));
     watch.delivered().await;
     assert_eq!(
         event_pairs(watch.row().pending.as_ref().unwrap()),
@@ -723,8 +739,10 @@ async fn a_relevant_event_observed_near_a_native_leg_start_survives_its_timeout(
 }
 
 #[tokio::test(start_paused = true)]
-async fn events_straddling_a_native_leg_boundary_are_all_retained_and_acked_together() {
-    let mut watch = Watch::new("input").await;
+async fn events_straddling_a_native_leg_boundary_are_retained_without_moving_the_deadline() {
+    let mut watch =
+        Watch::with_overrides("input", json!({"minAdmissionIntervalMs": 300_000})).await;
+    let wake = watch.spend_the_leading_edge().await;
     // One event lands inside leg 1; a second, different event lands only
     // after leg 1's own receiver has timed out and leg 2 has started. Both
     // must reach the eventual pending batch — a native "timeout" outcome is
@@ -737,64 +755,17 @@ async fn events_straddling_a_native_leg_boundary_are_all_retained_and_acked_toge
     watch.emit(TaskEventKind::TaskClosed);
     let second_observed = watch.observed().await;
     watch.no_admission();
-    // Quiet is anchored to the LATEST observation (the collapsed single
-    // knob), so the intrinsic deadline is second_observed + 300s, pushed out
-    // by the second (later) event rather than pinned to the first.
-    let (_, admitted) =
-        advance_to_deadline_and_admit(&mut watch, second_observed + Duration::from_secs(300)).await;
-    assert_eq!(admitted - second_observed, Duration::from_secs(300));
-    watch.delivered().await;
-    assert_eq!(
-        event_pairs(watch.row().pending.as_ref().unwrap()),
-        vec![
-            ("child-a".into(), "task.pr_created".into()),
-            ("child-a".into(), "task.closed".into()),
-        ]
-    );
-}
-
-#[tokio::test(start_paused = true)]
-async fn a_later_event_that_extends_the_live_quiet_deadline_mid_leg_is_not_sealed_early() {
-    // Quiet is anchored to the LATEST observation, so a second relevant event
-    // genuinely pushes the intrinsic deadline out — the collapsed single
-    // knob's whole point, replacing the old quiet/max-hold pair whose
-    // shipped-equal default meant this could never happen (max_hold, anchored
-    // to the first observation, always won or tied regardless of later
-    // events).
-    let mut watch = Watch::with_overrides("input", json!({"quietMs": 300_000})).await;
-    tokio::task::yield_now().await;
-    watch.emit(TaskEventKind::PrCreated);
-    let first_observed = watch.observed().await;
-    // Leg 1 dispatches with nothing observed yet (240s ceiling) and times out
-    // at its own receiver, well short of the then-current 300s intrinsic
-    // deadline.
-    watch.leg_timed_out().await;
-    // Leg 2 dispatches sized to that 300s deadline (60s remaining, clamped
-    // under the 240s ceiling). A second relevant event lands inside it,
-    // pushing the live intrinsic deadline out (last_observed + 300s quiet) —
-    // but leg 2's own receiver was already fixed at the stale 300s point when
-    // it was dispatched.
-    watch.emit(TaskEventKind::TaskClosed);
-    let second_observed = watch.observed().await;
-    let obsolete_deadline = first_observed + Duration::from_secs(300);
-    let live_deadline = second_observed + Duration::from_secs(300);
+    // The deadline is this subscription's own rate-limit gate, fixed at the
+    // last admission. The second event joins the batch and moves nothing:
+    // the trailing-quiet window this replaced would have re-anchored here
+    // and pushed the wake out by another full 300s.
+    let deadline = wake + Duration::from_secs(300);
     assert!(
-        live_deadline > obsolete_deadline,
-        "the second event must genuinely extend the deadline for this test to be meaningful"
+        second_observed > wake && second_observed < deadline,
+        "the second event must land mid-collection for this test to be meaningful"
     );
-    // Crossing leg 2's own (now-stale) receiver deadline must not seal or
-    // admit anything: the chain must re-evaluate the live collection instead
-    // of trusting how leg 2's timeout was originally sized. Stepped in 1s
-    // increments (rather than one large `advance()`) so the paused-clock
-    // runtime reliably drives the worker's own periodic recheck through each
-    // intermediate tick instead of skipping past them.
-    advance_in_one_second_steps_to(obsolete_deadline + Duration::from_secs(1)).await;
-    watch.no_admission();
-    // The chain keeps re-issuing (through however many further 240s-capped
-    // legs it takes) until the live deadline is actually reached.
-    advance_in_one_second_steps_to(live_deadline + Duration::from_secs(1)).await;
-    let (_, admitted) = watch.admitted().await;
-    assert_eq!(admitted, live_deadline);
+    let (_, admitted) = advance_to_deadline_and_admit(&mut watch, deadline).await;
+    assert_eq!(admitted, deadline);
     watch.delivered().await;
     assert_eq!(
         event_pairs(watch.row().pending.as_ref().unwrap()),
@@ -814,14 +785,16 @@ async fn a_later_event_that_extends_the_live_quiet_deadline_mid_leg_is_not_seale
 
 #[tokio::test(start_paused = true)]
 async fn page_capacity_accounting_survives_a_native_leg_boundary_and_seals_on_the_combined_total() {
-    let mut watch = Watch::new("input").await;
+    let mut watch =
+        Watch::with_overrides("input", json!({"minAdmissionIntervalMs": 300_000})).await;
+    let wake = watch.spend_the_leading_edge().await;
     // 60 events (well short of the 100-event page) fill leg 1; it can only
     // end on its own 240s receiver, since neither capacity nor the 300s
-    // quiet deadline are reached yet.
+    // rate-limit gate are reached yet.
     for _ in 0..60 {
         watch.emit(TaskEventKind::PrCreated);
     }
-    let observed = watch.observed().await;
+    watch.observed().await;
     watch.leg_timed_out().await;
     watch.no_admission();
     // 40 more events land in leg 2, completing the page at exactly 100. If
@@ -831,18 +804,22 @@ async fn page_capacity_accounting_survives_a_native_leg_boundary_and_seals_on_th
     for _ in 0..40 {
         watch.emit(TaskEventKind::PrCreated);
     }
-    let (_, admitted) = watch.admitted().await;
-    // Sealed by the combined page reaching capacity, far short of the 300s
-    // quiet deadline.
-    assert!(admitted - observed < Duration::from_secs(300));
-    watch.delivered().await;
+    until(|| watch.row().pending.is_some()).await;
+    let gate = wake + Duration::from_secs(300);
+    // Sealed by the combined page reaching capacity, far short of the gate.
+    assert!(tokio::time::Instant::now() < gate);
     assert_eq!(
-        watch.row().pending.unwrap()["events"]
+        watch.row().pending.as_ref().unwrap()["events"]
             .as_array()
             .unwrap()
             .len(),
         100
     );
+    // An early seal is still not an early wake: the rate limit stays
+    // authoritative for a full page exactly as it does for urgent attention.
+    let (_, admitted) = advance_to_deadline_and_admit(&mut watch, gate).await;
+    assert_eq!(admitted, gate);
+    watch.delivered().await;
 }
 
 #[tokio::test(start_paused = true)]

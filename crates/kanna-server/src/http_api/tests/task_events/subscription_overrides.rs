@@ -1,16 +1,18 @@
-//! Bounded per-subscription knobs: a validated quiet/admission override pair
-//! and the event_types/exclude_event_types filter passthrough. These reuse
-//! the subscription's own query/timing ownership — no new scheduler, no
-//! runtime retry loop.
+//! Bounded per-subscription knobs: the validated rate-limit override and
+//! the event_types/exclude_event_types filter passthrough. These reuse the
+//! subscription's own query/timing ownership — no new scheduler, no runtime
+//! retry loop.
 //!
-//! `quiet_ms` used to be paired with `max_hold_ms`, whose
-//! `min(last+quiet, first+max_hold)` deadline formula meant `max_hold`
-//! always won once the two were shipped equal (300000/300000) and `quiet`
-//! could never bind — the latent bug `kanna_wait_events`'s redesign fixed.
-//! Collapsed to the one knob that was ever load-bearing: a trailing-quiet
-//! hold from the last relevant observation, capped only by the wait's own
-//! outer timeout. `max_hold_ms` no longer exists; a caller that still sends
-//! it is rejected (`SubscribeRequest` denies unknown fields).
+//! `min_admission_interval_ms` is now the only timing knob. It was once one
+//! of three: `max_hold_ms` collapsed into `quiet_ms`, and `quiet_ms` — the
+//! trailing-quiet window that reset on every relevant observation — went
+//! with the mechanism itself (owner decision, 2026-09-21), because holding
+//! a lone event for a full quiet period is exactly the delay the wake
+//! pacing was asked to remove. Both retired names are now simply unknown
+//! fields, rejected like any other typo (`SubscribeRequest` denies unknown
+//! fields) rather than accepted and silently ignored: exactly one live
+//! subscription exists in this repository, so nothing is served by a
+//! release of pretending to honor timing that no longer exists.
 use super::*;
 use crate::db::TaskEventKind;
 
@@ -25,33 +27,27 @@ async fn invalid_timing_overrides_are_rejected_before_any_registration() {
     start_run(&db, "manager", "child-c", "in progress");
     let app = router(state.clone());
     let base = json!({"taskId":"child-c", "localOnly":true, "delivery":"poll"});
-    for (field, value, expectation) in [
-        ("quietMs", json!(999), "below the 1000ms floor"),
-        (
-            "minAdmissionIntervalMs",
-            json!(500),
-            "below the 1000ms floor",
-        ),
-    ] {
+    let mut body = base.clone();
+    body["minAdmissionIntervalMs"] = json!(500);
+    let (status, response) = subscribe(&app, body).await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "minAdmissionIntervalMs below the 1000ms floor: {response}"
+    );
+    // A retired knob is now simply an unknown field, rejected the same way
+    // as any other typo — never silently ignored, which would leave a
+    // caller believing timing it named is being applied.
+    for retired in ["maxHoldMs", "quietMs"] {
         let mut body = base.clone();
-        body[field] = value;
+        body[retired] = json!(10_000);
         let (status, response) = subscribe(&app, body).await;
         assert_eq!(
             status,
-            StatusCode::BAD_REQUEST,
-            "{field} {expectation}: {response}"
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "{retired} no longer exists: {response}"
         );
     }
-    // A retired knob is now simply an unknown field, rejected the same way
-    // as any other typo — never silently ignored.
-    let mut retired = base.clone();
-    retired["maxHoldMs"] = json!(10_000);
-    let (status, response) = subscribe(&app, retired).await;
-    assert_eq!(
-        status,
-        StatusCode::UNPROCESSABLE_ENTITY,
-        "maxHoldMs no longer exists: {response}"
-    );
     // Nothing was left half-registered by a rejected request.
     assert!(db.event_subscriptions().unwrap().is_empty());
 }
@@ -63,9 +59,9 @@ async fn there_is_no_reachable_overflow_so_an_extreme_override_is_accepted_not_p
     // (`Collection::intrinsic_deadline`, `Admission`): a `u64` millisecond
     // count can never exceed `Duration`'s own (far larger) capacity, so
     // registration has nothing to reject here — confirmed empirically, not
-    // just assumed. An extreme quiet_ms is genuinely honored (the collector
-    // chains native calls to cover it); an extreme min_admission_interval_ms
-    // just delays this subscription's own future admissions.
+    // just assumed. An extreme min_admission_interval_ms is genuinely
+    // honored — the collector chains native calls to cover it — and just
+    // delays this subscription's own future wakes.
     let state = test_state_with_seed("overrides-extreme", "Overrides", seed_orchestration);
     let db = Db::open(&state.config().db_path).unwrap();
     start_run(&db, "manager", "child-c", "in progress");
@@ -73,11 +69,10 @@ async fn there_is_no_reachable_overflow_so_an_extreme_override_is_accepted_not_p
     let (status, initial) = subscribe(
         &app,
         json!({"taskId":"child-c", "localOnly":true, "delivery":"poll",
-            "quietMs": u64::MAX, "minAdmissionIntervalMs": u64::MAX}),
+            "minAdmissionIntervalMs": u64::MAX}),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{initial}");
-    assert_eq!(initial["query"]["quietMs"], u64::MAX);
     assert_eq!(initial["query"]["minAdmissionIntervalMs"], u64::MAX);
     assert_eq!(db.event_subscriptions().unwrap().len(), 1);
 }
@@ -122,12 +117,11 @@ async fn explicit_overrides_are_persisted() {
     let (status, initial) = subscribe(
         &app,
         json!({"taskId":"child-c", "localOnly":true, "delivery":"poll",
-            "quietMs": 2_000, "minAdmissionIntervalMs": 1_000,
+            "minAdmissionIntervalMs": 1_000,
             "eventTypes": ["task.pr_created"], "excludeEventTypes": ["task.blocked"]}),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{initial}");
-    assert_eq!(initial["query"]["quietMs"], 2_000);
     assert_eq!(initial["query"]["minAdmissionIntervalMs"], 1_000);
     assert_eq!(initial["query"]["eventTypes"], "task.pr_created");
     // Additive to the fixed baseline, not a replacement for it.
@@ -143,23 +137,26 @@ async fn explicit_overrides_are_persisted() {
 }
 
 #[tokio::test]
-async fn a_quiet_override_seals_an_ordinary_batch_at_the_overridden_window() {
-    let state = test_state_with_seed("overrides-quiet", "Overrides", seed_orchestration);
+async fn an_ordinary_batch_seals_at_the_overridden_rate_limit() {
+    let state = test_state_with_seed("overrides-rate-limit", "Overrides", seed_orchestration);
     let db = Db::open(&state.config().db_path).unwrap();
     start_run(&db, "manager", "child-c", "in progress");
     let app = router(state.clone());
     let (status, initial) = subscribe(
         &app,
         json!({"taskId":"child-c", "localOnly":true, "delivery":"poll",
-            "quietMs": 1_000}),
+            "minAdmissionIntervalMs": 1_000}),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{initial}");
     assert!(initial["pending"].is_null());
     let id = initial["id"].as_str().unwrap().to_string();
     let service = tokio::spawn(super::super::super::event_subscriptions::run(state.clone()));
-    // Ordinary (non-urgent) event: without the override this would need the
-    // full 300000ms default to seal, which this real-time test cannot afford
+    // Ordinary (non-urgent) event: nothing here is urgent and the page is
+    // nowhere near full, so only the rate-limit gate can seal it. The worker
+    // starts after registration, so it arms one recovery cooldown at this
+    // subscription's own overridden interval; without the override that
+    // would be the 60000ms default, which this real-time test cannot afford
     // to wait out. The floor (1000ms) is the smallest legal override.
     db.append_task_event("child-a", TaskEventKind::PrCreated, json!({}))
         .unwrap();
@@ -235,8 +232,8 @@ async fn exclude_event_types_is_additive_to_the_fixed_baseline() {
 
 /// The exact minimal request an MCP/CLI caller sends when it does not ask
 /// for any timing override — the same shape `resolve_request` would build
-/// for a caller who never named `quiet_ms`/`max_hold_ms`/
-/// `min_admission_interval_ms`.
+/// for a caller who never named `min_admission_interval_ms` (nor either of
+/// the retired `quiet_ms`/`max_hold_ms`).
 fn resolved_minimal_subscribe(task_id: &str, delivery: &str) -> Value {
     kanna_tool_catalog::resolve_request(
         &kanna_tool_catalog::bundled_catalog(),
@@ -346,7 +343,7 @@ async fn an_explicit_timing_override_still_conflicts_with_a_differently_configur
         &kanna_tool_catalog::bundled_catalog(),
         "kanna_subscribe_events",
         &json!({"task_id": "child-c", "local_only": true, "delivery": "poll",
-            "quiet_ms": 2_000}),
+            "min_admission_interval_ms": 2_000}),
     )
     .expect("explicit subscribe request resolves")
     .body;

@@ -222,7 +222,6 @@ fn typed_tool_surfaces() -> BTreeMap<&'static str, TypedToolSurface> {
                     ("diagnostic", "diagnostic"),
                     ("event_types", "event_types"),
                     ("exclude_event_types", "exclude_event_types"),
-                    ("quiet_ms", "quiet_ms"),
                     ("min_admission_interval_ms", "min_admission_interval_ms"),
                 ],
             },

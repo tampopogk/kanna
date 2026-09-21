@@ -348,10 +348,9 @@ fn connect_gated_peer(
 // Bounded scheduling with a paused Tokio clock. Advancing virtual time lets
 // peer handlers and observers settle without sleeping for 240 real seconds.
 async fn until(mut condition: impl FnMut() -> bool) {
-    // An ordinary (non-urgent) batch's collection window is bounded by the
-    // 240s receiver deadline (quiet/max_hold are both 300s, so the receiver
-    // wins). 400s of virtual time comfortably covers that plus scheduler
-    // turns; the 1s step is coarse because this is a readiness gate, not a
+    // An ordinary (non-urgent) batch seals at this subscription's own
+    // rate-limit gate, which these fixtures set well inside 400s of virtual
+    // time; the 1s step is coarse because this is a readiness gate, not a
     // timing measurement — precise elapsed time is asserted elsewhere.
     for _ in 0..400 {
         if condition() {
@@ -415,7 +414,7 @@ impl Drop for WatchFixture {
 
 impl WatchFixture {
     fn request() -> Value {
-        Self::request_with(json!({"quietMs": 2_000}))
+        Self::request_with(json!({"minAdmissionIntervalMs": 2_000}))
     }
 
     fn request_with(overrides: Value) -> Value {
@@ -1470,7 +1469,7 @@ impl GatedPeerFixture {
 /// A peer's own retained leg completing is the *only* thing that may clear
 /// its recorded stale coverage — never a page that merely happens not to
 /// mention it, which is exactly what a native call sealed on this machine's
-/// own urgent/full/quiet criteria produces while that peer's leg is still
+/// own urgent/full/rate-limit criteria produces while that peer's leg is still
 /// pending in the registry. Deterministically drives that exact sequence
 /// through `connect_gated_peer`: establish and ACK a fault, hold the next
 /// leg genuinely pending (never resolving it, positive or negative) while
@@ -1704,7 +1703,7 @@ async fn subscription_remote_stale_coverage_survives_a_pending_leg_until_positiv
 /// would complete the batch on the spot and the re-arm this test exists to
 /// exercise would never happen. `task.pr_created` is explicitly non-urgent,
 /// so the single successful event leaves `ready` false until the
-/// subscription's own quiet/max-hold window elapses — guaranteeing the
+/// subscription's own rate-limit gate is reached — guaranteeing the
 /// re-arm deterministically, the same way `minEvents` would have on the
 /// public wait, without needing (or adding) any such field here.
 ///
@@ -1879,7 +1878,7 @@ async fn subscription_remote_same_call_success_then_failure_keeps_the_peer_stale
 }
 
 #[tokio::test(start_paused = true)]
-async fn ordinary_quiet_deadlines_and_notification_storms_keep_the_remote_leg() {
+async fn ordinary_rate_limit_deadlines_and_notification_storms_keep_the_remote_leg() {
     let (watch, _) = WatchFixture::new(false).await;
     for pr in [401, 402] {
         Db::open(&watch.source.config().db_path)
@@ -1922,7 +1921,7 @@ async fn ordinary_quiet_deadlines_and_notification_storms_keep_the_remote_leg() 
 
 #[tokio::test(start_paused = true)]
 async fn an_aggregate_event_observed_in_one_native_leg_survives_into_a_later_leg() {
-    // A 250s quiet window exceeds the fixed 240s native receiver, so the
+    // A 250s rate limit exceeds the fixed 240s native receiver, so the
     // aggregate wait must chain a second call — issuing a fresh peer long
     // poll — before the subscription's own deadline is reached. The local
     // event is only ever observed inside the first (240s) leg; if the chain
@@ -1930,7 +1929,7 @@ async fn an_aggregate_event_observed_in_one_native_leg_survives_into_a_later_leg
     // would either come back empty or, at best, only ever ack past it.
     let (watch, _) = WatchFixture::new_with(
         false,
-        WatchFixture::request_with(json!({"quietMs": 250_000})),
+        WatchFixture::request_with(json!({"minAdmissionIntervalMs": 250_000})),
     )
     .await;
     Db::open(&watch.source.config().db_path)
@@ -1964,16 +1963,18 @@ async fn an_aggregate_event_observed_in_one_native_leg_survives_into_a_later_leg
 }
 
 #[tokio::test(start_paused = true)]
-async fn an_aggregate_later_event_extends_the_live_deadline_mid_leg_and_is_not_sealed_early() {
-    // Quiet is anchored to the LATEST observation and controls the deadline
-    // on its own now (no paired max-hold ceiling). The first event's own leg
-    // (240s ceiling) times out well short of the initial 300s deadline; a
-    // second event lands only after that re-issued leg has been dispatched
-    // (sized to the now-stale 300s point), which must extend the live
-    // deadline rather than let the stale leg's own receiver seal the page.
+async fn an_aggregate_later_event_joins_the_batch_without_moving_the_rate_limit_deadline() {
+    // The deadline is the subscription's own rate-limit gate and nothing
+    // observed moves it — the opposite of the trailing-quiet window this
+    // replaced, where this second event would have pushed sealing out by
+    // another full 300s. The first event's own leg (240s ceiling) times out
+    // well short of the 300s gate; a second event lands only after that
+    // re-issued leg has been dispatched, and must join the same batch
+    // without the stale leg's own receiver sealing the page early or the
+    // new observation deferring it.
     let (watch, _) = WatchFixture::new_with(
         false,
-        WatchFixture::request_with(json!({"quietMs": 300_000})),
+        WatchFixture::request_with(json!({"minAdmissionIntervalMs": 300_000})),
     )
     .await;
     Db::open(&watch.source.config().db_path)
@@ -1990,8 +1991,7 @@ async fn an_aggregate_later_event_extends_the_live_deadline_mid_leg_and_is_not_s
     // Wait for the re-issued (second) long poll, proving leg 1's own 240s
     // receiver was crossed before the page could settle.
     until(|| watch.relay.counts.attempts.load(Ordering::SeqCst) >= 2).await;
-    // Not yet sealed: still short of even the original (soon-to-be-stale)
-    // 300s deadline, let alone the extended one.
+    // Not yet sealed: still short of the 300s gate.
     assert_ne!(watch.row().wake_state, "ready");
     Db::open(&watch.source.config().db_path)
         .unwrap()
@@ -2158,7 +2158,7 @@ async fn initial_discovery_fault_pins_local_tail_before_recovery() {
     let started = tokio::time::Instant::now();
     let fresh_collection = || {
         Arc::new(std::sync::Mutex::new(
-            super::super::super::subscription_timing::Collection::default(),
+            super::super::super::subscription_timing::Collection::new(None),
         ))
     };
     let fault = super::super::super::task_events::wait_subscription_events(

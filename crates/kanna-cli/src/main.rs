@@ -1050,12 +1050,9 @@ pub(crate) enum TaskCommands {
         /// Additional event types to drop, on top of the fixed baseline exclusion
         #[arg(long, value_delimiter = ',')]
         exclude_event_types: Vec<String>,
-        /// Override this subscription's trailing-quiet hold — the single
-        /// collection-window pacing knob, replacing the old quiet_ms/max_hold_ms
-        /// pair (default 300000ms)
-        #[arg(long)]
-        quiet_ms: Option<i64>,
-        /// Override the minimum spacing between adapter-call wake admissions (default 60000ms)
+        /// Override this subscription's wake rate limit — the one timing knob,
+        /// both the minimum spacing between wake admissions and the window each
+        /// batch accumulates over (default 60000ms)
         #[arg(long)]
         min_admission_interval_ms: Option<i64>,
         #[arg(long)]

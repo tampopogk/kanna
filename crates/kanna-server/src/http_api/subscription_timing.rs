@@ -4,101 +4,77 @@ use serde_json::Value;
 use std::time::Duration;
 use tokio::time::Instant;
 
-/// A lone event should collect for the full window below, not seal early on
-/// a short trailing-quiet gap. See docs/kanna-server-boundary.md.
-///
-/// This used to be two knobs — `quiet` (deadline resets on each new relevant
-/// event) and `max_hold` (a hard cap from the first relevant event) — whose
-/// deadline was `(last + quiet).min(first + max_hold)`. Shipped equal at
-/// 300000/300000, `max_hold` always won the `min` and `quiet` could never
-/// bind, so debouncing a steady trickle of events never actually happened:
-/// every relevant event pushed `last` forward, but the deadline stayed pinned
-/// to `first + max_hold` regardless. Collapsed to the one knob that was ever
-/// load-bearing — trailing quiet, reset on every relevant observation — with
-/// its own hard cap derived from it (`HOLD_CAP_MULTIPLIER` below) rather than
-/// a second configured knob, so a steady trickle of relevant events at
-/// intervals shorter than `hold` still seals within a bounded time of the
-/// first one instead of deferring indefinitely.
-pub(super) const HOLD: Duration = Duration::from_millis(300_000);
-/// The hard cap on a collection is `first + HOLD_CAP_MULTIPLIER * hold`
-/// (`hold` being the manager default above or a subscription's own
-/// validated override — there is no separate cap knob). An isolated burst
-/// still seals on trailing quiet, well below this cap; only sustained
-/// relevant activity — events arriving faster than `hold` apart, which keeps
-/// pushing `last + hold` forward — ever reaches it. 3 gives that steady
-/// trickle up to three `hold` windows (15 minutes at the 300000ms default)
-/// from its first relevant observation before the mailbox forces a seal,
-/// comfortably longer than any single `hold` window so quiet remains the
-/// binding rule for the ordinary case that motivated collapsing to one knob,
-/// while still bounding the delivery latency of the production manager-wake
-/// path under sustained traffic.
-pub(super) const HOLD_CAP_MULTIPLIER: u32 = 3;
+/// The one timing knob: a subscription admits a wake no more often than this,
+/// and the batch it delivers is everything observed since the last admission.
+/// Nothing waits for quiet and nothing resets on new activity, so a busy
+/// repository wakes its manager exactly on this interval while a quiet one
+/// wakes it as soon as the interval since the last wake has elapsed. Owner
+/// decision, 2026-09-21: the trailing-quiet window this replaces made a lone
+/// event wait out a full quiet period, which is precisely the delay it was
+/// asked to remove.
 pub(super) const ADMISSION_INTERVAL: Duration = Duration::from_millis(60_000);
-/// Floor for a per-subscription override of hold/admission spacing
+/// Floor for a per-subscription override of the admission interval
 /// (validated at registration in `event_subscriptions::subscribe`). Without
 /// one, a near-zero override would defeat the pacing this module exists to
 /// provide.
 pub(super) const MIN_OVERRIDE: Duration = Duration::from_millis(1_000);
 
+/// One subscription's accumulation of relevant events between two admissions.
+/// Batching is the whole point of this type — the rate limit says how often a
+/// manager may be woken, and everything observed while the gate is shut goes
+/// into the single batch that wake carries.
 #[derive(Debug)]
 pub(super) struct Collection {
-    first: Option<Instant>,
-    last: Option<Instant>,
+    /// The instant this subscription's rate limit next permits a wake, fixed
+    /// when the collection is created from the subscription's own
+    /// `Admission`. Unlike the trailing-quiet deadline it replaces, no
+    /// observation ever moves it: a collection restarted by an unrelated
+    /// state notification resumes against the same gate rather than
+    /// restarting its window, and sustained relevant traffic cannot defer a
+    /// wake at all, so no derived hard cap is needed to bound it.
+    gate: Instant,
+    observed: bool,
     urgent: bool,
-    hold: Duration,
 }
 
 impl Default for Collection {
     fn default() -> Self {
-        Self::new(HOLD)
+        Self::new(None)
     }
 }
 
 impl Collection {
-    pub(super) fn new(hold: Duration) -> Self {
+    /// `gate` is the subscription's next permitted admission instant
+    /// (`Admission::deadline`), or `None` when its rate limit is already
+    /// satisfied — a fresh registration, or one whose last wake is more than
+    /// an interval old. `None` therefore seals on the first relevant
+    /// observation: the interval since the last wake has elapsed, so there
+    /// is nothing left to wait for.
+    pub(super) fn new(gate: Option<Instant>) -> Self {
         Self {
-            first: None,
-            last: None,
+            gate: gate.unwrap_or_else(Instant::now),
+            observed: false,
             urgent: false,
-            hold,
         }
     }
 
-    /// Build from a subscription's own (already-validated) `hold_ms`
-    /// override, falling back to the manager-adopted default when absent —
-    /// including for a pre-existing row created before this override existed.
-    pub(super) fn from_query(hold_ms: Option<u64>) -> Self {
-        Self::new(hold_ms.map(Duration::from_millis).unwrap_or(HOLD))
-    }
-
-    pub(super) fn observe(&mut self, events: &[Value], now: Instant) {
+    pub(super) fn observe(&mut self, events: &[Value]) {
         if !events.is_empty() {
-            self.first.get_or_insert(now);
-            self.last = Some(now);
+            self.observed = true;
             self.urgent |= events.iter().any(urgent);
         }
     }
 
-    /// The subscription's own trailing-quiet deadline, capped against
-    /// sustained relevant activity, independent of any single native call's
-    /// receiver. `None` until something relevant has been observed. A caller
-    /// that chains several (up to 240s) native calls to honor a larger
-    /// window reads this to size each next request and to know when it has
-    /// genuinely finished, not merely run out of one call's own budget.
-    ///
-    /// `last + hold` alone resets on every relevant observation, so a steady
-    /// trickle of relevant events at intervals shorter than `hold` would
-    /// keep pushing it forward without limit. `first + HOLD_CAP_MULTIPLIER *
-    /// hold` is the hard cap that bounds that case; an isolated burst is
-    /// governed by the trailing-quiet term well before the cap is ever
-    /// reached, since `HOLD_CAP_MULTIPLIER` is comfortably greater than one.
+    /// The subscription's own rate-limit deadline, independent of any single
+    /// native call's receiver. `None` until something relevant has been
+    /// observed, so a collection with nothing to deliver blocks on the event
+    /// log rather than re-arming short calls against an already-elapsed
+    /// gate. A caller that chains several (up to 240s) native calls to honor
+    /// a larger interval reads this to size each next request and to know
+    /// when it has genuinely finished, not merely run out of one call's own
+    /// budget.
     pub(super) fn intrinsic_deadline(&self) -> Option<Instant> {
-        match (self.first, self.last) {
-            (Some(first), Some(last)) => {
-                Some((last + self.hold).min(first + self.hold * HOLD_CAP_MULTIPLIER))
-            }
-            _ => None,
-        }
+        self.observed.then_some(self.gate)
     }
 
     /// Capped by `receiver` (one native call's own hard budget) for sizing
@@ -109,17 +85,12 @@ impl Collection {
     }
 
     /// Whether the subscription's own criteria are genuinely satisfied:
-    /// urgent, a full page, or the intrinsic trailing-quiet deadline reached.
-    /// Deliberately ignores any single native call's own receiver — a caller
-    /// chaining several calls to cover a window larger than one call's budget
-    /// must not mistake "this call's budget ran out" for "done".
+    /// urgent, a full page, or the rate limit's gate reached. Deliberately
+    /// ignores any single native call's own receiver — a caller chaining
+    /// several calls to cover a window larger than one call's budget must not
+    /// mistake "this call's budget ran out" for "done".
     pub(super) fn ready(&self, count: usize, capacity: i64, now: Instant) -> bool {
-        count > 0
-            && (self.urgent
-                || count >= capacity as usize
-                || self
-                    .intrinsic_deadline()
-                    .is_some_and(|deadline| now >= deadline))
+        count > 0 && (self.urgent || count >= capacity as usize || now >= self.gate)
     }
 }
 
