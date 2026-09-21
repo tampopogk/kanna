@@ -95,14 +95,34 @@ describe("the Linux release check", () => {
   /**
    * The schema publish is continuous deployment of a public contract. A Linux
    * build failure must not be able to reach it — different concurrency group,
-   * and the Pages permissions scoped to the job that deploys.
+   * the Pages permissions scoped to the job that deploys, and no call from the
+   * deployment into this lane at all.
+   *
+   * That last one is not belt-and-braces. The deployment used to dispatch this
+   * workflow through `uses: ./.github/workflows/linux-release-check.yml`, with
+   * its own `contents: read` grant, and that was believed to be the separation.
+   * It is not: GitHub validates a reusable-workflow call when the *caller*
+   * starts, and a validation error fails the whole caller file rather than the
+   * job that caused it. `3ea467806` gave the `prepared-fetch` job below
+   * `contents: write` — more than the caller granted — and from 2026-09-15 to
+   * 2026-09-21 every push to `main` left the Pages workflow in
+   * `startup_failure`, its unrelated `deploy` job never ran, and
+   * https://schemas.kanna.build/config.schema.json served a schema six days
+   * stale. A `startup_failure` writes no job log, so nothing said why.
    */
   it("cannot block or borrow the schema deployment", () => {
     expect(workflow).toContain("group: linux-release-check-");
     expect(workflow).not.toContain("group: config-schema-pages");
     expect(pages).toMatch(/^permissions: \{\}$/m);
     expect(pages).toMatch(/deploy:[\s\S]*?permissions:\n {6}contents: read\n {6}pages: write/);
-    expect(pages).toContain("inputs.action == 'linux-build'");
+    // Asserted on what the deployment *runs*: the prose above the jobs records
+    // this outage on purpose, so a whole-file match would forbid documenting it.
+    const pagesSteps = pages
+      .split("\n")
+      .filter((line) => /^\s*-?\s*uses:/.test(line))
+      .join("\n");
+    expect(pagesSteps).not.toContain(LINUX_RELEASE_CHECK);
+    expect(pagesSteps).not.toMatch(/uses: \.\//);
   });
 
   /**

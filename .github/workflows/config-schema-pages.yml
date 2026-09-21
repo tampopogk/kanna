@@ -9,29 +9,40 @@ on:
       - ".github/workflows/config-schema-pages.yml"
       - "tools/kd/**"
   workflow_dispatch:
-    inputs:
-      action:
-        description: What to run. The default publishes the schema; `linux-build` runs the Linux release check instead and deploys nothing.
-        type: choice
-        default: publish-schema
-        options:
-          - publish-schema
-          - linux-build
 
 # Deliberately empty at the top level. The Pages write and OIDC permissions
-# belong to the job that deploys and nowhere else, so a Linux build dispatched
-# through this workflow cannot hold them.
+# belong to the job that deploys and nowhere else.
 permissions: {}
 
 concurrency:
   group: config-schema-pages
   cancel-in-progress: true
 
+# There is deliberately no Linux build job here, and no `uses:` of another
+# workflow in this file at all.
+#
+# This workflow used to carry a second `workflow_dispatch` option that called
+# `.github/workflows/linux-release-check.yml`, on the theory that giving that
+# job its own `contents: read` grant kept the build lane away from the
+# deployment. It did not. GitHub validates a reusable-workflow call when the
+# *caller* starts, and a validation error fails the whole file rather than the
+# job that caused it. So on 2026-09-15 `3ea467806` gave the callee's new
+# `prepared-fetch` job `contents: write` — more than this caller granted it —
+# and every push to `main` afterwards put this workflow in `startup_failure`.
+# The `deploy` job below never ran, and the public
+# https://schemas.kanna.build/config.schema.json contract served stale bytes for
+# six days with no job log to explain why.
+#
+# The entry point bought nothing either: `linux-release-check.yml` declares its
+# own `workflow_dispatch`, with the inputs this one could not pass
+# (`prepared_pair_asset_id`, `prepared_pair_sha256`,
+# `prepared_pair_evidence_dir`, `apt_interop_only`). `gh workflow run
+# linux-release-check.yml` is the better way in and always was.
+#
+# Do not add a `uses:` back. This workflow is continuous deployment of a public
+# contract; it must not be able to fail for a reason belonging to another lane.
 jobs:
   deploy:
-    # Never for a Linux build: that dispatch borrows this workflow's manual
-    # entry point, not its deployment.
-    if: github.event_name != 'workflow_dispatch' || inputs.action == 'publish-schema'
     permissions:
       contents: read
       pages: write
@@ -58,14 +69,3 @@ jobs:
           path: .build/pages-schema
       - id: deployment
         uses: actions/deploy-pages@v4
-
-  linux-build:
-    # The actual build lives in its own reusable workflow with its own
-    # triggers and its own read-only permissions; this is only a manual entry
-    # point into it. Keeping the two apart is what stops a Linux build failure
-    # from touching the schema publish, which is continuous deployment of a
-    # public contract.
-    if: github.event_name == 'workflow_dispatch' && inputs.action == 'linux-build'
-    permissions:
-      contents: read
-    uses: ./.github/workflows/linux-release-check.yml
