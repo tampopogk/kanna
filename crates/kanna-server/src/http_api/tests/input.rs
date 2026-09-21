@@ -549,6 +549,130 @@ async fn run_repo_command_routes_to_sibling_repo_singleton() {
     relay.abort();
 }
 
+/// The reported failure, literally: with the legacy desktop-to-desktop route
+/// refused, a machine discovered over LAN that holds an unexpired
+/// machine-trust grant but no pin has no route at all. It was enumerated as a
+/// reachable sibling anyway, `invoke_desktop` refused every call to it with
+/// `peer_pairing_required`, and the repository's `task-manager` could not be
+/// created.
+///
+/// `revoke_stale_lan_grant` already drops that grant once a call has proven
+/// it dead, so the *second* attempt succeeded. This asserts the first one
+/// does: nothing may be spent discovering that a machine the router cannot
+/// route to cannot be reached.
+#[tokio::test]
+async fn run_repo_command_ignores_an_unpinned_lan_machine_with_a_stale_grant() {
+    let source = test_state_with_seed("desktop-command-stale-grant", "Source Mac", |db| {
+        seed_remote_repo(db, "repo-source")
+    });
+    source.set_authenticated_account_uid(Some("uid-1".to_string()));
+    crate::http_api::peer_tests::set_peer_legacy_refused(&source);
+    {
+        let now_ms = crate::machine_trust::unix_time_ms().unwrap();
+        let store_path = source.config().machine_trust_store_path().unwrap();
+        let mut store = crate::machine_trust::MachineTrustStore::default();
+        store
+            .pending_or_create(
+                "desktop-stale-grant",
+                "uid-1",
+                &source.config().environment,
+                &source.config().desktop_id,
+                || Ok("secret".to_string()),
+                now_ms,
+            )
+            .unwrap();
+        store
+            .confirm_outbound(
+                "desktop-stale-grant",
+                "secret",
+                &source.config().desktop_id,
+                Some("fake-ca".to_string()),
+                now_ms + 86_400_000,
+            )
+            .unwrap();
+        store.save(&store_path).unwrap();
+    }
+    source.set_lan_candidate(
+        "desktop-stale-grant".to_string(),
+        "127.0.0.1:1".parse().unwrap(),
+    );
+
+    let claimed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let claimed_by_relay = Arc::clone(&claimed);
+    let mut requests = source
+        .take_desktop_relay_requests()
+        .expect("take source relay queue");
+    source.set_desktop_routing_available(true);
+    let relay = tokio::spawn(async move {
+        while let Some(request) = requests.recv().await {
+            match request {
+                crate::http_api::DesktopRelayRequest::PublishTaskSnapshot { response, .. } => {
+                    let _ = response.send(Ok(()));
+                }
+                crate::http_api::DesktopRelayRequest::ListRepoSingletons { response, .. } => {
+                    let _ = response.send(Ok(Vec::new()));
+                }
+                crate::http_api::DesktopRelayRequest::ListActive { response, .. } => {
+                    let _ = response.send(Ok(Vec::new()));
+                }
+                crate::http_api::DesktopRelayRequest::ClaimRepoSingleton { response, .. } => {
+                    claimed_by_relay.store(true, std::sync::atomic::Ordering::SeqCst);
+                    let _ = response.send(Err("claim refused by this test".to_string()));
+                }
+                crate::http_api::DesktopRelayRequest::Invoke { path, .. } => {
+                    panic!("an unpinned LAN machine must never be invoked: {path}")
+                }
+                _ => panic!("unexpected relay request during a stale-grant lookup"),
+            }
+        }
+    });
+
+    let catalog = super::router(Arc::clone(&source))
+        .oneshot(
+            Request::get("/v1/repos/repo-source/commands")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let catalog: serde_json::Value = from_slice(
+        &axum::body::to_bytes(catalog.into_body(), usize::MAX)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    let revision = catalog["revision"].as_str().unwrap().to_string();
+
+    let response = super::router(Arc::clone(&source))
+        .oneshot(
+            Request::post("/v1/repos/repo-source/commands/custom%3Atask-manager/run")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({ "catalogRevision": revision }).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let message = String::from_utf8(
+        axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap()
+            .to_vec(),
+    )
+    .unwrap();
+
+    assert!(
+        claimed.load(std::sync::atomic::Ordering::SeqCst),
+        "an unpinned LAN machine must not stand between this repo and its singleton: {message}"
+    );
+    assert!(
+        !message.contains("peer_pairing_required"),
+        "the machine the router cannot route to must never have been consulted: {message}"
+    );
+    relay.abort();
+}
+
 /// An account directory that cannot answer is uncertainty, not permission to
 /// create a rival singleton. The refusal must say so in the body: this is
 /// exactly the 503 the phone reported as a bare `LAN request failed (503)`.
