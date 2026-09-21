@@ -1271,6 +1271,7 @@ describe("release shipping", () => {
 
   it("pushes main and the tag before creating the GitHub release", async () => {
     const root = await mkdtemp(join(tmpdir(), "kd-release-"));
+    const releasedCommit = "cccccccccccccccccccccccccccccccccccccccc";
     try {
       const { repoRoot, privateKeyPath } = createReleaseRepo(root);
       const outputs = writeReleaseBuildOutputs(repoRoot, ["arm64", "x86_64"]);
@@ -1280,6 +1281,9 @@ describe("release shipping", () => {
           calls.push({ command, args, options });
           if (command === "git" && args.join(" ") === "status --porcelain") {
             return { exitCode: 0, stdout: "", stderr: "" };
+          }
+          if (command === "git" && args.join(" ") === "rev-parse HEAD") {
+            return { exitCode: 0, stdout: `${releasedCommit}\n`, stderr: "" };
           }
           if (command === "bazel" && args[0] === "build") {
             expect(readVersionFiles(repoRoot)).toEqual([
@@ -1308,7 +1312,7 @@ describe("release shipping", () => {
         }
       };
 
-      await shipRelease({
+      const result = await shipRelease({
         repoRoot,
         bump: "patch",
         archLabels: ["arm64", "x86_64"],
@@ -1331,6 +1335,20 @@ describe("release shipping", () => {
       expect(pushIndex).toBeGreaterThan(-1);
       expect(releaseCreateIndex).toBeGreaterThan(-1);
       expect(pushIndex).toBeLessThan(releaseCreateIndex);
+      // A direct production ship is a release too, so it leaves the same series
+      // branch behind — before the tag is pushed and before anything published.
+      const seriesPushIndex = calls.findIndex((call) =>
+        call.command === "git" &&
+        call.args.join(" ") === `push origin ${releasedCommit}:refs/heads/release/1.2`
+      );
+      expect(seriesPushIndex).toBeGreaterThan(-1);
+      expect(seriesPushIndex).toBeLessThan(pushIndex);
+      expect(result.seriesBranch).toEqual({
+        branch: "release/1.2",
+        commit: releasedCommit,
+        created: true,
+        detail: null
+      });
       expect(readVersionFiles(repoRoot)).toEqual([
         "1.2.4\n",
         '{\n  "version": "1.2.4"\n}\n',
@@ -1530,6 +1548,136 @@ describe("release promotion", () => {
         '{\n  "version": "1.2.4"\n}\n',
         '[package]\nname = "kanna"\nversion = "1.2.4"\n'
       ]);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("leaves the series branch behind at the released commit", async () => {
+    const root = await mkdtemp(join(tmpdir(), "kd-release-series-branch-"));
+    try {
+      const { repoRoot, privateKeyPath } = createReleaseRepo(root);
+      const outputs = writeReleaseBuildOutputs(repoRoot, ["arm64", "x86_64"]);
+      const calls: CommandCall[] = [];
+      const runner = promoteRunner({}, repoRoot, outputs, calls);
+
+      const result = await shipRelease(promoteInput(repoRoot, privateKeyPath, runner));
+
+      // Releasing 1.2.4 is what makes release/1.2 exist. Before this, a series
+      // promoted off a bare main RC published a tag and no branch, so there was
+      // nowhere to apply 1.2.5 from: `kd release cut` cuts at origin/main's tip.
+      expect(result.seriesBranch).toEqual({
+        branch: "release/1.2",
+        commit: STAGING_COMMIT,
+        created: true,
+        detail: null
+      });
+      const seriesPushIndex = calls.findIndex(
+        (call) => call.command === "git" && call.args.join(" ") === `push origin ${STAGING_COMMIT}:refs/heads/release/1.2`
+      );
+      const tagPushIndex = calls.findIndex((call) => call.command === "git" && call.args.join(" ") === "push origin v1.2.4");
+      const releaseCreateIndex = calls.findIndex(
+        (call) => call.command === "gh" && call.args[0] === "release" && call.args[1] === "create"
+      );
+      expect(seriesPushIndex).toBeGreaterThan(-1);
+      // Branch first: a failure to write it aborts before the tag or the
+      // GitHub release exist, instead of publishing a release with no branch.
+      expect(seriesPushIndex).toBeLessThan(tagPushIndex);
+      expect(seriesPushIndex).toBeLessThan(releaseCreateIndex);
+      // The branch is created, never forced: a promotion cannot rewind a series.
+      expect(calls.some((call) => call.command === "git" && call.args.includes("--force"))).toBe(false);
+      expect(calls.some((call) => call.command === "git" && call.args.some((arg) => arg.startsWith("+")))).toBe(false);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("is idempotent when the series branch already holds the released commit", async () => {
+    const root = await mkdtemp(join(tmpdir(), "kd-release-series-branch-idempotent-"));
+    try {
+      const { repoRoot, privateKeyPath } = createReleaseRepo(root);
+      const outputs = writeReleaseBuildOutputs(repoRoot, ["arm64", "x86_64"]);
+      const calls: CommandCall[] = [];
+      const runner = promoteRunner({
+        "git ls-remote origin refs/heads/release/1.2": {
+          exitCode: 0,
+          stdout: `${STAGING_COMMIT}\trefs/heads/release/1.2\n`,
+          stderr: ""
+        }
+      }, repoRoot, outputs, calls);
+
+      const result = await shipRelease(promoteInput(repoRoot, privateKeyPath, runner));
+
+      expect(result.seriesBranch).toEqual({
+        branch: "release/1.2",
+        commit: STAGING_COMMIT,
+        created: false,
+        detail: null
+      });
+      expect(
+        calls.some((call) => call.command === "git" && call.args[0] === "push" && call.args.join(" ").includes("refs/heads/release/1.2"))
+      ).toBe(false);
+      expect(calls.some((call) => call.command === "git" && call.args.join(" ") === "push origin v1.2.4")).toBe(true);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("reports an existing series branch that holds other work without moving it", async () => {
+    const root = await mkdtemp(join(tmpdir(), "kd-release-series-branch-existing-"));
+    const backportTip = "dddddddddddddddddddddddddddddddddddddddd";
+    try {
+      const { repoRoot, privateKeyPath } = createReleaseRepo(root);
+      const outputs = writeReleaseBuildOutputs(repoRoot, ["arm64", "x86_64"]);
+      const calls: CommandCall[] = [];
+      const runner = promoteRunner({
+        "git ls-remote origin refs/heads/release/1.2": {
+          exitCode: 0,
+          stdout: `${backportTip}\trefs/heads/release/1.2\n`,
+          stderr: ""
+        }
+      }, repoRoot, outputs, calls);
+
+      const result = await shipRelease(promoteInput(repoRoot, privateKeyPath, runner));
+
+      // The branch may legitimately carry backports past this release. It is
+      // reported, not rewound; the released commit stays reachable by its tag.
+      expect(result.seriesBranch).toMatchObject({
+        branch: "release/1.2",
+        commit: backportTip,
+        created: false
+      });
+      expect(result.seriesBranch?.detail).toMatch(/only ever creates a missing series branch/);
+      expect(
+        calls.some((call) => call.command === "git" && call.args[0] === "push" && call.args.join(" ").includes("refs/heads/release/1.2"))
+      ).toBe(false);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("publishes nothing when the series branch cannot be written", async () => {
+    const root = await mkdtemp(join(tmpdir(), "kd-release-series-branch-failure-"));
+    try {
+      const { repoRoot, privateKeyPath } = createReleaseRepo(root);
+      const outputs = writeReleaseBuildOutputs(repoRoot, ["arm64", "x86_64"]);
+      const calls: CommandCall[] = [];
+      const runner = promoteRunner({
+        [`git push origin ${STAGING_COMMIT}:refs/heads/release/1.2`]: {
+          exitCode: 1,
+          stdout: "",
+          stderr: "remote: refusing to create refs/heads/release/1.2\n"
+        }
+      }, repoRoot, outputs, calls);
+
+      await expect(shipRelease(promoteInput(repoRoot, privateKeyPath, runner))).rejects.toThrow(
+        /refusing to create refs\/heads\/release\/1\.2/
+      );
+      // Fail-closed: no production tag on origin and no GitHub release, so a
+      // retry completes the whole publication rather than patching up a
+      // half-released state.
+      expect(calls.some((call) => call.command === "git" && call.args.join(" ") === "push origin v1.2.4")).toBe(false);
+      expect(calls.some((call) => call.command === "gh" && call.args[0] === "release" && call.args[1] === "create")).toBe(false);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -1830,7 +1978,12 @@ describe("release promotion", () => {
       await expect(shipRelease(promoteInput(repoRoot, privateKeyPath, runner))).resolves.toMatchObject({ version: "1.2.4" });
       expect(calls.some((call) => call.command === "bazel" && call.args[0] === "build")).toBe(true);
       expect(calls.some((call) => call.command === "git" && call.args.join(" ") === "push origin v1.2.4")).toBe(true);
-      expect(calls.some((call) => call.command === "git" && call.args.includes("refs/heads/release/1.2"))).toBe(false);
+      // The series branch has advanced to B. Promoting historical A reads it and
+      // leaves it exactly there: a release only ever creates a missing branch,
+      // so an older candidate can never rewind a live one.
+      expect(
+        calls.some((call) => call.command === "git" && call.args[0] === "push" && call.args.join(" ").includes("refs/heads/release/1.2"))
+      ).toBe(false);
     } finally {
       await rm(root, { recursive: true, force: true });
     }

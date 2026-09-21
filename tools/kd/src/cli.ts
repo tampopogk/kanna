@@ -1848,6 +1848,7 @@ const helpTopics: Record<string, string[]> = {
     "A bare main staging ship continues an active unpromoted main RC; otherwise it starts the next minor series from the greater of VERSION and the greatest production semantic version. Pass a bump flag to override it.",
     "Patch RCs in a production series are shipped from release/X.Y; the result reports versionFloor when stale VERSION was raised.",
     "Publishing a newer RC does not erase an older candidate's own soak or eligibility; rollback and unauthorized divergent lineage still refuse.",
+    "A published production release creates release/X.Y at the released commit when it is missing, so the series has somewhere to take patches; an existing branch is never moved.",
     "Use --staging --rollback-to <version> to repoint the staging channel manifest without building."
   ],
   "release promote": [
@@ -1858,6 +1859,7 @@ const helpTopics: Record<string, string[]> = {
     "Rebuilds that exact commit with production identity, then tags, publishes, and repoints the updater manifest.",
     "Requires the checkout to be at the selected immutable RC commit, a valid historical staging lineage, a forward production version, and the",
     "release-policy.json soak window (default 24h) to have elapsed. --dry-run rehearses without publishing and runs the same gates.",
+    "Publishing creates release/X.Y at the released commit when it does not exist yet, before the tag is pushed; an existing branch is never moved.",
     "Branch tips and desktop-staging may advance while an RC soaks. Promotion publishes the production tag without rewinding either pointer.",
     "--override-soak <reason> is the explicit human override for the soak window only; it never waives lineage, identity, or version checks."
   ],

@@ -385,6 +385,18 @@ bugfixes.
   next candidate remains forward even though trunk did not receive that bump
   commit. The ship result reports `versionFloor` when that floor overrides stale
   `VERSION`.
+- **Releasing creates the branch.** A production publication pushes
+  `release/X.Y` at the exact commit it released, so a series always has
+  somewhere to receive its patches — including a series promoted straight off a
+  bare `main` RC, which is how `v0.4.0` shipped with no branch at all and left
+  `0.4.1` nowhere to go (`kd release cut` cuts at `origin/main`'s tip, and
+  `--recut` moves unreleased series only). It only ever *creates*: an existing
+  branch is read and reported, never moved, so promoting a historical candidate
+  cannot rewind a series that has since taken backports. The push happens
+  *before* the tag is pushed and the GitHub release is created, so a failure to
+  write the branch aborts the release rather than publishing one without a
+  branch; because it is create-only, a retry finds the branch already there and
+  completes. The ship result reports it as `seriesBranch`.
 - **The branch goes dormant after release.** Reuse it for `X.Y.1` hotfix RCs
   (the series versioning picks the next patch automatically); cut `release/X.(Y+1)`
   for the next feature release.

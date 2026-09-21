@@ -80,6 +80,19 @@ export interface ReleaseShipResult {
   latestJson: string;
   /** Present when stale trunk VERSION was raised to the production floor. */
   versionFloor?: MainStagingVersionFloor;
+  /** Present on a published production release: the series branch it left behind. */
+  seriesBranch?: ReleaseSeriesBranchOutcome;
+}
+
+/** What a published production release did about its own `release/X.Y` branch. */
+export interface ReleaseSeriesBranchOutcome {
+  branch: string;
+  /** Where the branch points now. Equals the released commit unless it already existed elsewhere. */
+  commit: string;
+  /** Whether this release created the branch or found it already on origin. */
+  created: boolean;
+  /** Set when an existing branch does not hold the released commit; a release never moves one. */
+  detail: string | null;
 }
 
 const STAGING_CHANNEL_TAG = "desktop-staging";
@@ -1695,6 +1708,80 @@ async function createUpdaterBundleWithSigningKey(
   }
 }
 
+/**
+ * Leaves `release/X.Y` behind at the commit a production release was cut from.
+ *
+ * A series branch is a *consequence* of releasing, not a separate ceremony
+ * somebody has to remember. Before this, the only code that pushed
+ * `refs/heads/release/*` was `kd release cut` and its recut, so a series
+ * promoted straight off a bare main RC — which is how `v0.4.0` shipped —
+ * published a tag and nothing else. The released commit was then reachable
+ * only by tag, with main already dozens of commits past it, and there was
+ * nowhere to apply `0.4.1`: `kd release cut` cuts at `origin/main`'s tip, and
+ * `--recut` moves unreleased series only.
+ *
+ * The branch is created *here*, at publication, rather than when the staging
+ * candidate is built, because that is when a release becomes real. Most RCs
+ * never promote; several RCs of one series are built from different commits;
+ * and an RC-time branch would point at a commit that the release itself then
+ * moves past (the production `release: vX.Y.Z` bump commit is a child of the
+ * RC). Releasing is the one moment with exactly one commit that deserves the
+ * name.
+ *
+ * Two rules keep it safe. It only ever *creates*: an existing branch is read
+ * and reported, never moved, so a live series carrying backports cannot be
+ * rewound by a promotion of an older candidate. And it runs *before* the tag
+ * is pushed and the GitHub release is created, so a failure to write the
+ * branch aborts the release before anything is published, instead of leaving
+ * the published-tag-without-a-branch state this exists to prevent. Because it
+ * is create-only, a retry after any later failure finds the branch already
+ * there and proceeds.
+ */
+async function ensureReleaseSeriesBranch(
+  context: ReleaseCommandContext,
+  version: string,
+  releasedCommit: string
+): Promise<ReleaseSeriesBranchOutcome> {
+  const branch = releaseSeriesBranch(releaseSeriesFromVersion(version));
+  if (!/^[0-9a-f]{40}$/i.test(releasedCommit)) {
+    throw new Error(
+      `Cannot resolve the commit v${version} is being released from (${JSON.stringify(releasedCommit)}), ` +
+        `so ${branch} cannot be created at it. Refusing to publish a release with no series branch.`
+    );
+  }
+  const existing = await mustRun(
+    context.runner,
+    "git",
+    ["ls-remote", "origin", `refs/heads/${branch}`],
+    context.repoRoot,
+    context.env
+  );
+  const existingSha = existing.trim().split(/\s+/)[0] ?? "";
+  if (existingSha) {
+    return {
+      branch,
+      commit: existingSha,
+      created: false,
+      detail:
+        existingSha.toLowerCase() === releasedCommit.toLowerCase()
+          ? null
+          : `${branch} already exists at ${existingSha}; v${version} was released from ${releasedCommit}. ` +
+            `Left where it is: a release only ever creates a missing series branch. For an ordinary patch ` +
+            `that is expected — the release commit is the branch tip's child and stays reachable by its tag — ` +
+            `and for a historical promotion it is the point, since the branch may already carry backports ` +
+            `past this release. Keep backporting onto ${branch} as usual.`
+    };
+  }
+  await mustRun(
+    context.runner,
+    "git",
+    ["push", "origin", `${releasedCommit}:refs/heads/${branch}`],
+    context.repoRoot,
+    context.env
+  );
+  return { branch, commit: releasedCommit, created: true, detail: null };
+}
+
 export async function shipRelease(input: ReleaseShipInput): Promise<ReleaseShipResult> {
   const environment = releaseEnvironment(input.environment);
   if (input.rollbackTo) {
@@ -1724,6 +1811,7 @@ export async function shipRelease(input: ReleaseShipInput): Promise<ReleaseShipR
   let postPromotionTrunk: PostPromotionTrunkRecord | null = null;
   let recutAuthorization: LineageRecutRecord | null = null;
   let versionFloor: MainStagingVersionFloor | null = null;
+  let seriesBranch: ReleaseSeriesBranchOutcome | null = null;
   if (input.promoteFrom) {
     const promotion = await resolvePromotion(input, input.promoteFrom);
     version = promotion.version;
@@ -1885,6 +1973,11 @@ export async function shipRelease(input: ReleaseShipInput): Promise<ReleaseShipR
     await mustRun(input.runner, "git", ["add", "-f", "VERSION", "apps/desktop/src-tauri/tauri.conf.json", "apps/desktop/src-tauri/Cargo.toml", "apps/desktop/src-tauri/Cargo.lock"], input.repoRoot, input.env);
     await mustRun(input.runner, "git", ["commit", "-m", `release: v${version}`], input.repoRoot, input.env);
     await mustRun(input.runner, "git", ["tag", `v${version}`], input.repoRoot, input.env);
+    // The series branch is part of releasing, so it lands before anything is
+    // published: the exact released commit, created only when absent, and a
+    // failure here aborts before the tag or the GitHub release exist.
+    const releasedCommit = await mustRun(input.runner, "git", ["rev-parse", "HEAD"], input.repoRoot, input.env);
+    seriesBranch = await ensureReleaseSeriesBranch(input, version, releasedCommit);
     // A promotion may select a historical RC after main, its source branch, and
     // desktop-staging have advanced. Publish the immutable production tag; do
     // not rewind or overwrite any moving branch/channel pointer. Ordinary
@@ -1905,7 +1998,8 @@ export async function shipRelease(input: ReleaseShipInput): Promise<ReleaseShipR
     dmgPaths,
     updaterPaths,
     latestJson,
-    ...(versionFloor ? { versionFloor } : {})
+    ...(versionFloor ? { versionFloor } : {}),
+    ...(seriesBranch ? { seriesBranch } : {})
   };
 }
 

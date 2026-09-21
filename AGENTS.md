@@ -238,8 +238,10 @@ acknowledging transferred descriptors.
   refuses staging rollback or unauthorized divergent lineage, and gates the
   selected RC on immutable identity, historical lineage, its own
   `release-policy.json` soak window (default 24h), a forward unused production
-  version, and explicit production authorization. The three operations that
-  discard or waive safety state —
+  version, and explicit production authorization. **Publishing a production
+  release creates `release/X.Y` at the released commit**, so a series always has
+  somewhere to receive its patches; an existing branch is read and never moved.
+  The three operations that discard or waive safety state —
   `kd release reset-staging`, `kd release cut --abandon-series`, and
   `kd release promote --override-soak` — need a named human request like
   production does. See `docs/specs/release-candidates.md`.
