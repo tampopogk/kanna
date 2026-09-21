@@ -1,6 +1,6 @@
 ## Keep Small Tasks Small
 
-Owner feedback (2026-09-10): a terminology rename and compact MCP response
+Owner feedback (2026-09-10): a terminology rename and a compact MCP response
 must not become hours of repeated builds, visual matrices, and review churn.
 Set a bounded acceptance bar from the requested behavior. Reuse exact-head or
 patch-equivalent evidence, and require a concrete reason before repeating a
@@ -12,10 +12,8 @@ every repository lane.
 When verification or scope grows beyond the request, intervene immediately:
 identify the remaining defect or proof, remove unrelated work and redundant
 checks, and carry the task through review and merge. Do not create additional
-research or tasks merely to explain procedural delay. Distinguish an
-agent working on the requested result from one repeatedly verifying unchanged
-code. Use observed runs, revisions, and diff growth to audit wasted work;
-do not invent token totals.
+research or tasks merely to explain procedural delay. Distinguish an agent
+working on the requested result from one repeatedly verifying unchanged code.
 
 ## Planning Model Selection
 
@@ -25,32 +23,32 @@ explicit supported effort remains an allowed planning alternative when it is
 actually available or explicitly selected. Respect real provider availability,
 keep provider, model, and effort together, and never compose Fable with Codex.
 Do not use Sol for planning absent a later owner instruction. This applies only
-to future planning; do not rerun or rewrite existing tasks or plans, and do not
-change builder, reviewer, or researcher selection for it.
+to future planning: do not rerun or rewrite existing tasks or plans, and do not
+change builder, reviewer, or researcher selection.
 
 ## Desktop UI Targeting
 
-Owner direction (2026-09-10): dev windows carry the task id in their native
-title. Require that exact id plus worktree/build identity before any agent UI
-interaction or visual evidence, and recheck after target/session changes.
-Generic `Kanna` / `build.kanna` lookups can launch production before inspection;
-forbid them for test selection. Use only an explicitly identified running
-worktree window or canonical isolated WebDriver endpoint. Missing/mismatched
-identity stops that UI path; it does not authorize an installed-app fallback.
-Carry this rule into active implementation/review directives immediately;
-future agents inherit the canonical rule in `AGENTS.md` once merged. On an
-incident, stop owned automation, preserve actual actions/identity evidence,
-and leave operator processes untouched. Installed production/staging testing
-requires a separate explicit human request naming the environment.
+Owner direction (2026-09-10): require the exact task id in the native window
+title, plus worktree/build identity, before any agent UI interaction or visual
+evidence, and recheck after target or session changes. Generic `Kanna` /
+`build.kanna` lookups can launch production before inspection — forbid them for
+test selection. Use only an explicitly identified running worktree window or
+the canonical isolated WebDriver endpoint. Missing or mismatched identity stops
+that UI path; it does not authorize an installed-app fallback. Carry this into
+active implementation and review directives immediately; future agents inherit
+the canonical rule in `AGENTS.md` once merged. On an incident, stop owned
+automation, preserve actual actions and identity evidence, and leave operator
+processes untouched. Installed production/staging testing requires a separate
+explicit human request naming the environment.
 
 ## Kanna Desktop Release Policy
 
-For this repository, production promotions and production mobile OTA publishes
-require an explicit human request. Staging is available to agents only within
-the repository's release runbook; operations that discard its candidate
-lineage still require the named human authorization that runbook specifies.
+Production promotions and production mobile OTA publishes require an explicit
+human request. Staging is available to agents only within the repository's
+release runbook; operations that discard its candidate lineage still require
+the named human authorization that runbook specifies.
 
 Never run `./kd release ship` directly in the manager session. Create and
 shepherd the Ship task, whose repo-local `ship` extension owns the release
-runbook and flag semantics. After any manual publish, run
-`./kd release status` and verify that the channel version actually moved.
+runbook and flag semantics. After any manual publish, run `./kd release status`
+and verify that the channel version actually moved.
