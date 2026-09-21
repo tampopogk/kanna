@@ -306,25 +306,30 @@ describe("desktop entry", () => {
 });
 
 /**
- * The copyright notice exists in three places and no build step derives one
- * from another: `rules_tauri`'s `make_plist.py` reads plist fragments and a
- * few `bundle.macOS` keys, so `bundle.copyright` never reaches a macOS bundle,
- * and the Linux `.deb` is assembled by `linux-package.ts` rather than by any
- * Tauri bundler. Nothing on a build machine notices them drifting apart —
- * which is exactly how macOS came to show a notice that Linux did not — so
- * they are compared directly.
+ * The notice is written out twice and no build step derives one copy from the
+ * other: the macOS bundle takes it from `Info.plist`, and the Linux `.deb` is
+ * assembled by `linux-package.ts` from `COPYRIGHT_NOTICE`. `bundle.copyright`
+ * in `tauri.conf.json` is not a third copy and deliberately stays unset —
+ * `rules_tauri`'s `make_plist.py` reads plist fragments and a few
+ * `bundle.macOS` keys and ignores it, no Tauri bundler assembles the `.deb`,
+ * and this repo has no Windows target, so setting it would feed nothing while
+ * still having to be kept in step. Nothing on a build machine notices the two
+ * real copies drifting apart — which is exactly how macOS came to show a
+ * notice that Linux did not — so they are compared directly.
  */
 describe("the copyright notice every platform shows", () => {
-  it("is the same string in the plist, the Tauri config and the Linux package", () => {
+  it("is the same string in the plist and the Linux package", () => {
     const plist = readFileSync(join(repoRoot, "apps", "desktop", "src-tauri", "Info.plist"), "utf8");
     const match = /<key>NSHumanReadableCopyright<\/key>\s*<string>([^<]*)<\/string>/.exec(plist);
     expect(match).not.toBeNull();
     expect((match as RegExpExecArray)[1]).toBe(COPYRIGHT_NOTICE);
+  });
 
+  it("is not also set in the Tauri config, where it would feed nothing", () => {
     const config = JSON.parse(readFileSync(join(repoRoot, "apps", "desktop", "src-tauri", "tauri.conf.json"), "utf8")) as {
       bundle: { copyright?: string };
     };
-    expect(config.bundle.copyright).toBe(COPYRIGHT_NOTICE);
+    expect(config.bundle.copyright).toBeUndefined();
   });
 
   /**
