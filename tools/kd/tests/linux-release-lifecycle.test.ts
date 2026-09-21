@@ -1,7 +1,7 @@
 /** Disposable disk + test-key proof. Fixtures are synthetic publication inputs;
  * these tests establish storage/lifecycle behavior, never installed acceptance. */
 import { mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { execFileSync, spawn } from "node:child_process";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import * as openpgp from "openpgp";
@@ -12,7 +12,7 @@ import { sha256, verifyLinuxArtifact, type CollectedLinuxArtifact } from "../src
 import { evaluateStagingPublishGate } from "../src/runtime/release-lineage";
 import { linuxReleaseStatus, shipLinuxRelease } from "../src/runtime/linux-release";
 import { linuxReleaseConfig } from "../src/runtime/linux-release-config";
-import { channelIdentity, packageLayout } from "../src/runtime/linux-package";
+import { buildCopyrightFile, channelIdentity, packageLayout } from "../src/runtime/linux-package";
 
 const repo = resolve(import.meta.dirname, "../../..");
 mkdirSync(join(repo, ".tmp"), { recursive: true });
@@ -185,8 +185,20 @@ describe("actual package bytes and stamped report", () => {
     }
     writeFileSync(join(tree, "DEBIAN/control"), `Package: ${channelIdentity("staging").packageName}\nVersion: ${report.debianVersion}\nArchitecture: arm64\nDepends: ${report.depends.join(", ")}\nDescription: TEST ONLY\n`);
     const debPath = join(directory, "kanna-staging_0.2.0~staging.1-1_arm64.deb");
-    execFileSync("/usr/bin/python3", [join(repo, "packaging/linux/artifact_tool.py"), "deb", tree, debPath]);
-    const bytes = readFileSync(debPath); report.sha256 = sha256(bytes);
+    const pack = () => {
+      execFileSync("/usr/bin/python3", [join(repo, "packaging/linux/artifact_tool.py"), "deb", tree, debPath]);
+      return readFileSync(debPath);
+    };
+    // The first Linux packages shipped no `/usr/share/doc` at all, which is a
+    // Debian Policy 12.5 violation as well as the copyright the owner found
+    // missing beside macOS's. The gate reads it back out of the archive.
+    const withoutCopyright = pack(); report.sha256 = sha256(withoutCopyright);
+    expect(() => verifyLinuxArtifact({ repoRoot: repo, source, version: "0.2.0", channel: "staging" as const, iteration: 1, architecture: "arm64" as const, debPath, bytes: withoutCopyright, report: jsonBytes(report) })).toThrow(/copyright/);
+
+    const doc = join(tree, packageLayout({ channel: "staging" }).copyrightFile);
+    mkdirSync(dirname(doc), { recursive: true });
+    writeFileSync(doc, buildCopyrightFile(readFileSync(join(repo, "LICENSE"), "utf8")));
+    const bytes = pack(); report.sha256 = sha256(bytes);
     const input = { repoRoot: repo, source, version: "0.2.0", channel: "staging" as const, iteration: 1, architecture: "arm64" as const, debPath, bytes, report: jsonBytes(report) };
     expect(verifyLinuxArtifact(input).identity.buildTree).toBe(source.tree);
     for (const change of [{ builder: "prototype" }, { auditOverridden: true }, { buildRevision: "c".repeat(40) }, { channel: "production" }, { architecture: "x86_64" }, { sha256: "d".repeat(64) }]) expect(() => verifyLinuxArtifact({ ...input, report: jsonBytes({ ...report, ...change }) })).toThrow();

@@ -39,6 +39,21 @@ export const INSTALLED_EXECUTABLES = [
 
 export const INSTALLED_ICON_SIZES = [32, 64, 128] as const;
 
+/**
+ * The copyright notice every platform shows.
+ *
+ * macOS carries it in `apps/desktop/src-tauri/Info.plist` as
+ * `NSHumanReadableCopyright`, because the Bazel plist generator
+ * (`rules_tauri`'s `make_plist.py`) reads plist fragments and a handful of
+ * `bundle.macOS` keys and nothing else — `bundle.copyright` in
+ * `tauri.conf.json` never reaches a bundle this repo actually ships. Linux
+ * has no bundler to inherit anything either: the `.deb` is assembled by this
+ * file. So the one string lives in three places by necessity, and a contract
+ * test in `tools/kd/tests/linux-package.test.ts` holds them in step — the
+ * same device the layout above already uses against its Rust mirror.
+ */
+export const COPYRIGHT_NOTICE = "Copyright © 2026 Tampopo GK. All rights reserved.";
+
 export interface ChannelIdentity {
   packageName: string;
   desktopEntryId: string;
@@ -122,6 +137,11 @@ export interface PackageLayout {
   resourceDir: string;
   desktopEntry: string;
   icon: (size: number) => string;
+  /** `/usr/share/doc/<package>` — Debian Policy 12.5's home for the copyright
+   *  file. Nothing in the runtime resolves it, which is why it is absent from
+   *  the Rust mirror: it is a packaging obligation, not a lookup path. */
+  docDir: string;
+  copyrightFile: string;
 }
 
 /** The installed paths, relative to a prefix. The Rust side computes the same
@@ -130,8 +150,11 @@ export function packageLayout(input: PackageLayoutInput): PackageLayout {
   const prefix = input.prefix ?? "/usr";
   const { packageName, desktopEntryId } = channelIdentity(input.channel);
   const libDir = join(prefix, "lib", packageName);
+  const docDir = join(prefix, "share", "doc", packageName);
   return {
     libDir,
+    docDir,
+    copyrightFile: join(docDir, "copyright"),
     desktopBinary: join(libDir, DESKTOP_BINARY_NAME),
     launcher: join(prefix, "bin", packageName),
     resourceDir: libDir,
@@ -151,6 +174,11 @@ export interface ControlInput {
    *  observe. */
   depends: string[];
   installedSizeKb: number;
+  /** The commit and tree the release was built from, when there is one.
+   *  Omitted for a developer build, where the absence is itself the answer:
+   *  nothing claims a provenance it does not have. */
+  sourceRevision?: string;
+  sourceTree?: string;
 }
 
 /**
@@ -180,7 +208,47 @@ export function buildDebControl(input: ControlInput): string {
       "Section: devel",
       "Priority: optional",
       "Homepage: https://kanna.build",
+      // Which source produced this package. Without it an installed build is
+      // anonymous — `dpkg -s kanna-staging` reports a version, and two builds
+      // of the same version are indistinguishable, so nobody debugging an
+      // installed machine can tell which tree they are looking at.
+      ...(input.sourceRevision ? [`Kanna-Source-Revision: ${input.sourceRevision}`] : []),
+      ...(input.sourceTree ? [`Kanna-Source-Tree: ${input.sourceTree}`] : []),
       `Description: ${description}`,
+    ].join("\n") + "\n"
+  );
+}
+
+/**
+ * `/usr/share/doc/<package>/copyright`.
+ *
+ * Debian Policy 12.5 makes this file mandatory — a package without it is
+ * uninstallable-by-policy and lintian rejects it — and it is also the only
+ * place a Linux user sees the notice macOS shows in Get Info. The first
+ * packages shipped neither, which is the parity gap this closes.
+ *
+ * The license text is passed in rather than inlined so the repo's `LICENSE`
+ * stays the single copy; DEP-5 wants it indented one space with blank lines
+ * written as a lone `.`.
+ */
+export function buildCopyrightFile(licenseText: string): string {
+  const body = licenseText
+    .replace(/\s+$/, "")
+    .split("\n")
+    .map((line) => (line.trim() === "" ? " ." : ` ${line}`))
+    .join("\n");
+  return (
+    [
+      "Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/",
+      // The project, not the channel: `kanna` and `kanna-staging` package the
+      // same upstream software.
+      "Upstream-Name: Kanna",
+      "Source: https://kanna.build",
+      "",
+      "Files: *",
+      `Copyright: ${COPYRIGHT_NOTICE}`,
+      "License: MIT",
+      body,
     ].join("\n") + "\n"
   );
 }
@@ -283,6 +351,9 @@ export interface StageTreeInput {
   builtinResourcesDir: string;
   /** Directory holding `<size>x<size>.png` icon sources. */
   iconsDir: string;
+  /** The repo's `LICENSE`, verbatim. Policy 12.5 wants the license itself in
+   *  the copyright file, not a reference to one. */
+  licenseText: string;
   control: Omit<ControlInput, "channel" | "installedSizeKb"> & { installedSizeKb?: number };
 }
 
@@ -335,6 +406,13 @@ export function stageLinuxPackageTree(input: StageTreeInput): StagedTree {
   mkdirSync(dirname(layout.desktopEntry), { recursive: true });
   writeFileSync(layout.desktopEntry, buildDesktopEntry(input.channel));
   installed.push(layout.desktopEntry);
+
+  if (input.licenseText.trim() === "") {
+    throw new Error("A package must ship its license: /usr/share/doc/<package>/copyright cannot be empty.");
+  }
+  mkdirSync(layout.docDir, { recursive: true });
+  writeFileSync(layout.copyrightFile, buildCopyrightFile(input.licenseText));
+  installed.push(layout.copyrightFile);
 
   for (const size of INSTALLED_ICON_SIZES) {
     const source = join(input.iconsDir, `${size}x${size}.png`);

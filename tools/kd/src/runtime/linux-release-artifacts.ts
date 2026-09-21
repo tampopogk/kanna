@@ -5,7 +5,7 @@ import { readFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { gunzipSync } from "node:zlib";
 import { buildLinuxPackageFromBazel } from "./linux-release-build";
-import { channelIdentity, debFileName, debianArchitecture, debianVersion, INSTALLED_EXECUTABLES, packageLayout, type LinuxChannel } from "./linux-package";
+import { channelIdentity, COPYRIGHT_NOTICE, debFileName, debianArchitecture, debianVersion, INSTALLED_EXECUTABLES, packageLayout, type LinuxChannel } from "./linux-package";
 import { auditArtifacts, readRuntimePolicy, type ElfFacts } from "./linux-elf-audit";
 import type { CommandRunner } from "./process";
 import type { AptPublicationArtifact } from "./linux-apt-publication";
@@ -104,6 +104,12 @@ export function verifyLinuxArtifact(input: {
     const installed = files.get(`${libDir}/${fact.path}`);
     if (!installed || sha256(installed) !== fact.sha256) throw new Error(`Packaged executable differs from audit: ${fact.path}.`);
   }
+  // Debian Policy 12.5 requires the copyright file, and it is the only place a
+  // Linux user sees the notice macOS shows in Get Info. The first packages
+  // shipped neither, so the release gate reads it back out of the archive
+  // rather than trusting the staging code that wrote it.
+  const copyright = files.get(packageLayout({ channel: input.channel }).copyrightFile.replace(/^\//, ""));
+  if (!copyright || !copyright.toString("utf8").includes(COPYRIGHT_NOTICE)) throw new Error("Linux package is missing its /usr/share/doc copyright notice.");
   const policy = readRuntimePolicy(input.repoRoot);
   if (auditArtifacts(policy, input.architecture, facts).findings.length || facts.some(f => f.interpreter !== policy.architectures[input.architecture].interpreter || f.needed.some(n => /^(libc\+\+|libc\+\+abi|libunwind)\.so/.test(n)))) throw new Error("Linux release runtime audit failed.");
   const fileName = basename(input.debPath);

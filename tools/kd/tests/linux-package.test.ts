@@ -5,15 +5,18 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   DESKTOP_BINARY_NAME,
   INSTALLED_EXECUTABLES,
+  buildCopyrightFile,
   buildDebControl,
   buildDesktopEntry,
   buildPostinst,
   buildPrerm,
   channelIdentity,
+  COPYRIGHT_NOTICE,
   debFileName,
   debianVersion,
   packageLayout,
   stageLinuxPackageTree,
+  type ControlInput,
 } from "../src/runtime/linux-package";
 
 const repoRoot = resolve(import.meta.dirname, "..", "..", "..");
@@ -94,6 +97,7 @@ describe("stageLinuxPackageTree", () => {
         binariesDir: binaries,
         builtinResourcesDir: resources,
         iconsDir: icons,
+        licenseText: "MIT License\n\nCopyright (c) 2026 Somebody\n\nPermission is hereby granted.\n",
         control: { version: "1.2.3", architecture: "x86_64", depends: ["libc6"] },
       },
     };
@@ -172,6 +176,35 @@ describe("stageLinuxPackageTree", () => {
     expect(modes.get(join(root, "DEBIAN", "postinst"))).toBe(0o755);
   });
 
+  /**
+   * The parity gap the owner reported: macOS showed a copyright in Get Info
+   * and Linux showed nothing, because the installed package had no
+   * `/usr/share/doc/<package>` directory at all. Debian Policy 12.5 makes the
+   * file mandatory, so this was a policy violation as well as a difference.
+   */
+  it("ships the mandatory copyright file carrying the same notice macOS shows", () => {
+    for (const channel of ["production", "staging"] as const) {
+      const { root, input } = fixture();
+      stageLinuxPackageTree({
+        ...input,
+        channel,
+        control: { ...input.control, stagingIteration: channel === "staging" ? 1 : undefined },
+      });
+      const path = join(root, "usr", "share", "doc", channelIdentity(channel).packageName, "copyright");
+      const text = readFileSync(path, "utf8");
+      expect(text).toContain(COPYRIGHT_NOTICE);
+      // Policy wants the license itself here, not a pointer to one.
+      expect(text).toContain("License: MIT");
+      expect(text).toContain(" Permission is hereby granted.");
+      expect(statSync(path).mode & 0o777).toBe(0o644);
+    }
+  });
+
+  it("refuses to build a package with no license to ship", () => {
+    const { input } = fixture();
+    expect(() => stageLinuxPackageTree({ ...input, licenseText: "  \n" })).toThrow(/copyright cannot be empty/);
+  });
+
   it("writes executable maintainer scripts", () => {
     const { root, input } = fixture();
     stageLinuxPackageTree(input);
@@ -234,6 +267,26 @@ describe("buildDebControl", () => {
     expect(control).not.toMatch(/^Replaces:/m);
   });
 
+  /**
+   * Which source produced this package. Without it `dpkg -s` reports a version
+   * and nothing else, so two builds of the same version are indistinguishable
+   * and nobody debugging an installed machine can tell which tree they have.
+   * A developer build has no revision to claim and so declares none.
+   */
+  it("records the source commit only when the build has one", () => {
+    const base: ControlInput = { channel: "production", version: "1.2.3", architecture: "arm64", depends: ["libc6"], installedSizeKb: 10 };
+    const stamped = buildDebControl({ ...base, sourceRevision: "a".repeat(40), sourceTree: "b".repeat(40) });
+    expect(stamped).toContain(`Kanna-Source-Revision: ${"a".repeat(40)}`);
+    expect(stamped).toContain(`Kanna-Source-Tree: ${"b".repeat(40)}`);
+    expect(buildDebControl(base)).not.toMatch(/^Kanna-Source-/m);
+    // apt republishes every control field, and its publication check refuses a
+    // field name or value that could inject a stanza.
+    for (const line of stamped.trimEnd().split("\n")) {
+      if (line.startsWith(" ")) continue;
+      expect(line).toMatch(/^[A-Za-z0-9][A-Za-z0-9-]*: /);
+    }
+  });
+
   it("names the file the way the pool and the manifest refer to it", () => {
     expect(debFileName({ channel: "production", version: "2.0.1", architecture: "x86_64" })).toBe(
       "kanna_2.0.1-1_amd64.deb"
@@ -249,6 +302,45 @@ describe("desktop entry", () => {
     expect(buildDesktopEntry("production")).toContain("StartupWMClass=build.kanna");
     expect(buildDesktopEntry("staging")).toContain("StartupWMClass=build.kanna.staging");
     expect(buildDesktopEntry("staging")).toContain("Name=Kanna Staging");
+  });
+});
+
+/**
+ * The copyright notice exists in three places and no build step derives one
+ * from another: `rules_tauri`'s `make_plist.py` reads plist fragments and a
+ * few `bundle.macOS` keys, so `bundle.copyright` never reaches a macOS bundle,
+ * and the Linux `.deb` is assembled by `linux-package.ts` rather than by any
+ * Tauri bundler. Nothing on a build machine notices them drifting apart —
+ * which is exactly how macOS came to show a notice that Linux did not — so
+ * they are compared directly.
+ */
+describe("the copyright notice every platform shows", () => {
+  it("is the same string in the plist, the Tauri config and the Linux package", () => {
+    const plist = readFileSync(join(repoRoot, "apps", "desktop", "src-tauri", "Info.plist"), "utf8");
+    const match = /<key>NSHumanReadableCopyright<\/key>\s*<string>([^<]*)<\/string>/.exec(plist);
+    expect(match).not.toBeNull();
+    expect((match as RegExpExecArray)[1]).toBe(COPYRIGHT_NOTICE);
+
+    const config = JSON.parse(readFileSync(join(repoRoot, "apps", "desktop", "src-tauri", "tauri.conf.json"), "utf8")) as {
+      bundle: { copyright?: string };
+    };
+    expect(config.bundle.copyright).toBe(COPYRIGHT_NOTICE);
+  });
+
+  /**
+   * DEP-5's continuation rule: every license line is indented one space and a
+   * blank line is a lone `.`, or the stanza ends early and the license is
+   * truncated in the shipped file.
+   */
+  it("indents the license as a DEP-5 continuation", () => {
+    const text = buildCopyrightFile("MIT License\n\nCopyright (c) 2026 Somebody\n");
+    const [header, ...rest] = text.split("License: MIT\n");
+    expect(header).toContain(`Copyright: ${COPYRIGHT_NOTICE}`);
+    for (const line of rest.join("").trimEnd().split("\n")) {
+      expect(line.startsWith(" ")).toBe(true);
+    }
+    expect(text).toContain("\n .\n");
+    expect(buildCopyrightFile("x")).toContain("Upstream-Name: Kanna");
   });
 });
 

@@ -29,6 +29,7 @@
     "active": true,
     "targets": "all",
     "createUpdaterArtifacts": true,
+    "copyright": "Copyright © 2026 Tampopo GK. All rights reserved.",
     "macOS": {
       "infoPlist": "Info.plist"
     },

@@ -168,6 +168,7 @@ export async function assembleLinuxPackage(input: LinuxPackageBuildInput): Promi
     binariesDir,
     builtinResourcesDir: join(input.repoRoot, ".kanna"),
     iconsDir: join(input.repoRoot, "apps", "desktop", "src-tauri", "icons"),
+    licenseText: readFileSync(join(input.repoRoot, "LICENSE"), "utf8"),
     control: {
       version: input.version,
       stagingIteration: input.stagingIteration,

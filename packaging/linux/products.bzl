@@ -78,6 +78,7 @@ def _linux_deb_impl(ctx):
         "resources": [f.path for f in ctx.files.resources],
         "icons": [f.path for f in ctx.files.icons],
         "policy": ctx.file.policy.path,
+        "license": ctx.file.license.path,
         "tool": ctx.executable._artifact_tool.path,
         "output": output.path,
         "report": report.path,
@@ -85,7 +86,7 @@ def _linux_deb_impl(ctx):
     ctx.actions.run(
         executable = ctx.executable._package_tool,
         arguments = [ctx.file._entry.path, manifest.path],
-        inputs = depset([manifest, ctx.file._entry, ctx.file.version, ctx.file.policy] + ctx.files.products + ctx.files.resources + ctx.files.icons + ctx.files._sources),
+        inputs = depset([manifest, ctx.file._entry, ctx.file.version, ctx.file.policy, ctx.file.license] + ctx.files.products + ctx.files.resources + ctx.files.icons + ctx.files._sources),
         tools = [ctx.attr._artifact_tool[DefaultInfo].files_to_run, ctx.attr._package_tool[DefaultInfo].files_to_run],
         outputs = [output, report],
         env = {"BAZEL_BINDIR": ctx.bin_dir.path, "JS_BINARY__NO_CD_BINDIR": "1"},
@@ -105,6 +106,10 @@ linux_deb = rule(
         "resources": attr.label(default = "//:kanna_builtin_resources"),
         "icons": attr.label(default = "//apps/desktop/src-tauri:icons"),
         "policy": attr.label(default = "//packaging/linux:runtime-policy.json", allow_single_file = True),
+        # Debian Policy 12.5 wants the license verbatim in the package's
+        # copyright file, so the repo's LICENSE is a build input rather than a
+        # second copy living in the packaging code.
+        "license": attr.label(default = "//:LICENSE", allow_single_file = True),
         "_sources": attr.label(default = "//tools/kd:linux_package_sources"),
         "_entry": attr.label(default = "//tools/kd:src/runtime/linux-bazel-package.ts", allow_single_file = True),
         "_package_tool": attr.label(default = "//tools/kd:linux_package_tool", cfg = "exec", executable = True),
