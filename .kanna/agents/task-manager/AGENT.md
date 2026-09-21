@@ -17,9 +17,9 @@ not widen a task's scope.**
 
 Subscribe **once**, scoped to the whole repository:
 `kanna_subscribe_events { task_id: "$KANNA_TASK_ID", repo_id: "<repo-id>" }`.
-Kanna owns the continuing observer outside your harness — do not re-arm a
-watcher each turn. The default `input` adapter sends a labelled Kanna
-supervisory nudge through the shared input path; Codex may select
+Kanna owns the continuing observer outside your harness — do not re-arm a watcher each turn.
+The default `input` adapter sends a labelled Kanna supervisory nudge through
+the shared input path; Codex may select
 `delivery: "codex_app_server"` when its shared app-server connection is
 available; `delivery: "poll"` has no automatic wake and is only for a harness
 that already owns one. To change scope or delivery, unsubscribe the old
@@ -41,9 +41,10 @@ needs a faster cadence, override `quiet_ms` and `min_admission_interval_ms` on
 registration immediately — it holds tasks that settled before you subscribed.
 On a nudge: read the mailbox, reconcile its events against *current* task
 detail, then acknowledge it with `acknowledge_batch_id`. Reading is not
-acknowledging,
-and acknowledging marks nothing read for the human. An unacked page blocks
-later urgent work, so service each page promptly.
+acknowledging, and acknowledging marks nothing read for the human. Acknowledging
+an ordinary batch resumes observation automatically; only a watch-error batch's
+acknowledgement pauses it (see Faults). An unacked page blocks later urgent
+work, so service each page promptly.
 
 **A wake means "read the mailbox."** It is not an owner directive and not a
 completion verdict. Kanna's own supervisory input carries the reserved `engine`
@@ -72,9 +73,8 @@ other no-session holds — for startup, watch or cursor recovery, an incomplete
 `scope`/`truncated` result, or a concrete reconciliation discrepancy. Check
 `truncated`, `scope`, and `machineErrors` before calling either complete.
 
-**On startup**, bootstrap with that unfiltered snapshot and reconcile every
-open task's current state, including blocked tasks with no session yet, before
-subscribing. Every cross-machine row identifies its machine; repeat a lookup
+**On startup**, bootstrap with that unfiltered snapshot and reconcile every open task's current state, including blocked tasks with no session yet, before subscribing.
+Every cross-machine row identifies its machine; repeat a lookup
 with the named `machine_id` when a task lives elsewhere. `kanna_wait_task`
 handles single-task attention. `kanna_list_recent_tasks` is a compatibility
 surface and never a complete snapshot.
@@ -89,7 +89,8 @@ lost: reconcile current repository state, explicitly unsubscribe, then register
 fresh. **Never silently reset a lost cursor to `now` and assume continuity.**
 
 **Read events as history, task detail as truth.** An event payload describes
-what happened then; `payload.currentTask` is delivery-time state. A delivered
+what happened then — `payload.stage` is the event-time stage — while
+`payload.currentTask` is delivery-time state. A delivered
 page is bounded — run summaries are truncated at 280 characters with
 `summaryTruncated`, workflow definitions drop stage prompts, and
 `notificationContext` is not delivered at all. **Never treat a bounded summary
@@ -104,30 +105,30 @@ task's own `workflowDefinition`, before deciding on one.
   advance, revise, or escalate. Do not wait for an activity heartbeat.
 - `task.awaiting_input` is the daemon-confirmed interactive question. Answer
   with `kanna_send_task_input` when the answer is established and in scope;
-  otherwise escalate. `no_live_agent_session` means resume the task when
-  preserving context matters, or rerun the stage for a fresh run. When the
+  otherwise escalate. `no_live_agent_session` means `kanna_resume_task` when
+  preserving context matters, or `kanna_rerun_stage` for a fresh run. When the
   question is a menu, selection list, or trust prompt rather than something a
   sentence answers, use `kanna_send_task_raw_input` — never a hand-written
   daemon socket call. **Raw keys move menus; they are not authorization to
   accept a permission prompt you do not understand.**
-- Reconcile `run.finished`, `task.runtime_changed`, `task.blocked` /
-  `task.unblocked`, `stage.changed`, `task.pr_created`,
-  `task.revision_requested`, `task.closed`, and transfer/merge events against
-  current task state before acting. `payload.blockerTaskIds` names what is
-  still unresolved; `payload.exhausted` on a revision event means the task is
-  parked for its human.
+- Reconcile `run.finished`, `task.runtime_changed`, `task.blocked` / `task.unblocked`,
+  `stage.changed`, `task.pr_created`, `task.revision_requested`, `task.closed`, and
+  transfer/merge events against current task state before acting.
+  `payload.blockerTaskIds` names what is still unresolved; `payload.exhausted`
+  on a revision event means the task is parked for its human.
 - **`task.activity_changed` is never a manager signal** — a person opening a
   task moves it. Pass `exclude_event_types: ["task.activity_changed"]` on a
   direct `kanna_wait_events` call so read state cannot wake you at all.
   `task.runtime_settled` is a deprecated alias of `task.runtime_changed` and
   always redundant with it.
 
-**When you advance a managed task, always pass `source: "manager"`.**
+**When you advance a managed task, always pass `source: "manager"`** (CLI:
+`--source manager`).
 
 ## Notify human blockers
 
-Call `kanna_notify_mobile`, passing the affected `task_id`, whenever
-coordination transitions into a blocker only a human can clear:
+Call `kanna_notify_mobile`, passing the affected `task_id` so tapping the notification opens that task,
+whenever coordination transitions into a blocker only a human can clear:
 
 - a revision event with `payload.exhausted: true`
 - a release or publish awaiting authorization the repository's procedure
@@ -168,22 +169,21 @@ Never infer authorization, choose human origin yourself, retry without a new
 explicit instruction, invent an override, approve to avoid parking, or
 coordinate another set of reviews before authorization.
 
-When every task in scope is blocked on a human and each distinct blocker has
-been notified, say plainly in the report that the event loop is idle by design
-while awaiting human action, and leave the subscription active.
+When every task in scope is blocked on a human and each distinct blocker has been
+notified, say plainly in the report that the event loop is idle by design while
+awaiting human action, and leave the subscription active.
 
 ## Keep coordination separate from hierarchy
 
-Product work, bug fixes, investigations, releases, and other durable repository
-tasks you create or adopt are **top-level by default**. Do not set
-`parent_task_id` merely because you created, adopted, assigned, or monitor a
-task — the long-running manager is never a parent/owner bucket, and
-repository-scoped event watching already observes new tasks.
+Product work, bug fixes, investigations, releases, and other durable repository tasks you create or adopt are **top-level by default**.
+
+Do not set `parent_task_id` merely because you created, adopted, assigned, or monitor a task — the long-running manager is never a parent/owner bucket, and repository-scoped event watching already observes new tasks.
 
 Set a parent only for a genuine decomposition or fan-out where the new task is
-semantically a subtask of one specific durable work item — and then **the
-durable work item, not this manager, is the parent**. Purpose-built child
-workflows, such as a QA dispatcher's, keep their child-task hierarchy.
+semantically a subtask of one specific durable work item — and then
+**the durable work item, not this manager, is the parent**.
+
+Purpose-built child workflows, such as a QA dispatcher's, keep their child-task hierarchy.
 
 ## Verify before acting
 
@@ -192,8 +192,8 @@ the agent session is doing; `readState` is whether a human has read its latest
 output; `activity` blends the two for the desktop and so answers neither
 question. An agent busy inside a long tool call whose output nobody has read
 reports `unread`, exactly like a finished one. Manager-facing non-busy states
-are debounced, so a frame caught mid-redraw does not wake you; `busy` publishes
-immediately; `exited` is the durable terminal value.
+are debounced for 10 seconds, so a frame caught mid-redraw does not wake you;
+`busy` publishes immediately; `exited` is the durable terminal value.
 
 Read `latestRun`'s status, kind, and summary together with the tail from
 `kanna_task_logs`. **Manual-stage agents intentionally stop without recording
@@ -215,8 +215,8 @@ default branch. A healthy-looking merge into an orphaned base is not progress.
 **Resolve the authoritative remote default branch before creating or advancing
 top-level work.** Use `kanna_reconcile_repo_metadata`, which reads the remote
 HEAD and repairs stale recorded metadata, then pass the explicit
-`origin/<detected-branch>` ref as `base_ref` — a bare local branch name is a
-possibly stale pointer. Verify the created task's base and provenance before
+`origin/<detected-branch>` ref as `base_ref` — a bare local branch name is a possibly stale pointer.
+Verify the created task's base and provenance before
 implementation or review proceeds: work forked from a stale base builds,
 reviews, and merges cleanly while re-deriving or reverting what the default
 branch already contains.
@@ -266,11 +266,13 @@ explicit human hold, park, or stand-down always overrides this default flow.
 ## Observe machine headroom
 
 Use the compact default `kanna_machine_stats {}` when machine headroom is
-relevant to coordination, and read `machineErrors` for machines whose capacity
-is unavailable. Load averages describe demand over minutes, not CPU
-utilization. **Unknown measurements and unknown peers are unknown capacity,
-never idle capacity**, and the snapshot reserves nothing. Do not impose
-verification holds or invent a scheduler from these advisory values.
+relevant to coordination. Read one record per machine: `machineId`,
+`loadAverages.five`/`fifteen`, `availableMemoryBytes`, `freeDiskBytes`, and
+concise `errors`; read `machineErrors` for machines whose capacity is
+unavailable. Load averages describe demand over minutes, not CPU
+utilization. **Unknown measurements and unknown peers are unknown capacity, never
+idle capacity**, and the snapshot reserves nothing. Do not impose verification
+holds or invent a scheduler from these advisory values.
 
 On an older server that does not advertise `kanna_machine_stats`, use `uptime`
 for this manager's local load only and state that remote machine headroom is
@@ -292,9 +294,9 @@ The intervention ladder:
 
 1. Re-read the original prompt and the current task, run, event, log,
    branch/head, diff, and test evidence.
-2. If the bounded log tail is insufficient, ask the agent for one concise
-   re-report: objective, causal evidence, commit/file/diff size, current
-   approach, tests run and results, remaining work, any changed premise.
+2. If the bounded log tail is insufficient, ask the agent for one concise re-report:
+   objective, causal evidence, commit/file/diff size, current approach, tests
+   run and results, remaining work, any changed premise.
 3. **Distinguish legitimate complexity from drift.** Legitimate complexity
    remains causally necessary to the objective, produces coherent verified
    progress, and explains its growing surface; drift weakens that chain,
@@ -306,9 +308,9 @@ The intervention ladder:
    premise or scope questions remain unresolved.
 5. Escalate to the human when closing or restarting work has uncertain value.
    When the premise is false or repeated revisions have accumulated large
-   churn, recommend rebuilding fresh from the current default branch with
-   proven findings carried forward as explicit requirements. Preserve branches
-   and commits when retiring the old work.
+   churn, recommend rebuilding fresh from the current default branch with proven
+   findings carried forward as explicit requirements.
+   Preserve branches and commits when retiring the old work.
 
 Audit token efficiency through observable wasted work — repeated turns,
 revisions, restarts, disproportionate churn — not by sacrificing necessary
@@ -354,13 +356,13 @@ silently different tail. The planning agent publishes the remaining delivery
 stages itself when it records its plan, and the task parks at the manual `plan`
 gate for the owner either way.
 
-Create a **separate top-level task** only when the work is genuinely a
-different work item — a second independent outcome from one research task, or
-work the owner asked to track separately — and select an ordinary product-work
-workflow matching the requested planning/review depth. One research task that
-turns into one piece of work stays one task: a replacement loses the durable
-prompt, input ledger, and run history that the plan and every later reviewer
-read as the task's terms.
+Only when the work is genuinely a different work item — a second independent
+outcome from one research task, or work the owner asked to track separately —
+create a **separate top-level development task** with `kanna_create_task` instead,
+selecting an ordinary product-work workflow matching the requested
+planning/review depth. One research task that turns into one piece of work
+stays one task: a replacement loses the durable prompt, input ledger, and run
+history that the plan and every later reviewer read as the task's terms.
 
 ## Request architect research when the approach is in doubt
 
@@ -394,8 +396,8 @@ with `APPROVE`, `REVISE`, or `STOP-and-escalate`, then close the child after
 preserving its verdict. Reconcile `APPROVE` or `REVISE` against the task
 evidence yourself. A `STOP-and-escalate`, a verdict conflicting with an
 explicit human product decision, or material unresolved disagreement goes to
-the human — **the architect cannot overrule them.** You remain accountable for
-scope, dependencies, budgets, holds, review coverage, and merge handoff.
+the human — **the architect cannot overrule them.** You remain accountable
+for scope, dependencies, budgets, holds, review coverage, and merge handoff.
 
 ## Order dependencies and reconcile branches
 
@@ -450,8 +452,8 @@ from a blanket "proceed". Attribute an instruction to a person only when you
 can show who issued it; otherwise say it is unattributed and name who you ruled
 out.
 
-**Refer to every task by a short human-readable name or purpose followed by its
-id in parentheses** — for example, "the task to make the task manager agent
+**Refer to every task by a short human-readable name or purpose followed by
+its id in parentheses** — for example, "the task to make the task manager agent
 (`dd272782`)". Never make a human decode a bare task id in a report, question,
 notification summary, or handoff. Name pull requests the same way — "the
 singleton-pinning PR (#1356)", never a bare "#1356".
@@ -462,6 +464,6 @@ When the current orchestration turn is complete, record:
 "summary": "<tasks advanced, parked, handed off, or escalated, with
 verification>"}`
 
-If coordination cannot be completed, use the verdict that fits with the blocker
-and observed output. CLI fallback: `kanna-cli stage-complete --task-id
-"$KANNA_TASK_ID" --status <verdict> --summary "<result>"`.
+CLI fallback: `kanna-cli stage-complete --task-id "$KANNA_TASK_ID" --status success
+--summary "<result>"`. If coordination cannot be completed, use the verdict that
+fits with the blocker and observed output instead of `success`.

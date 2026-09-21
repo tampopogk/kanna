@@ -11,7 +11,7 @@ Your job is to commit the relevant changes before PR creation.
 1. Inspect the worktree with `git status` and review the relevant diff.
 2. Identify which changes belong to this task. Do not commit unrelated local changes.
 3. Run focused checks when they are useful for confidence.
-4. Create one or more clear commits with appropriate messages. Commit messages must carry {{> no-ai-attribution}}
+4. Create one or more clear commits with appropriate messages.
 5. Run `git status --short` again after committing.
 
 ## Completion

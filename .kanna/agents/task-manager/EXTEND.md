@@ -14,6 +14,8 @@ identify the remaining defect or proof, remove unrelated work and redundant
 checks, and carry the task through review and merge. Do not create additional
 research or tasks merely to explain procedural delay. Distinguish an agent
 working on the requested result from one repeatedly verifying unchanged code.
+Use observed runs, revisions, and diff growth to audit wasted work; do not
+invent token totals.
 
 ## Planning Model Selection
 
@@ -35,11 +37,11 @@ evidence, and recheck after target or session changes. Generic `Kanna` /
 test selection. Use only an explicitly identified running worktree window or
 the canonical isolated WebDriver endpoint. Missing or mismatched identity stops
 that UI path; it does not authorize an installed-app fallback. Carry this into
-active implementation and review directives immediately; future agents inherit
-the canonical rule in `AGENTS.md` once merged. On an incident, stop owned
-automation, preserve actual actions and identity evidence, and leave operator
-processes untouched. Installed production/staging testing requires a separate
-explicit human request naming the environment.
+active implementation and review directives immediately; this EXTEND.md is the
+canonical rule for future agents on this task, not `AGENTS.md`. On an
+incident, stop owned automation, preserve actual actions and identity
+evidence, and leave operator processes untouched. Installed production/staging
+testing requires a separate explicit human request naming the environment.
 
 ## Kanna Desktop Release Policy
 

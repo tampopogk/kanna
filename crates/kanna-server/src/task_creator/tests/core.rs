@@ -3271,14 +3271,20 @@ fn repo_partial_overrides_the_built_in_of_the_same_name() {
 
 #[test]
 fn built_in_agent_resolves_its_partial_include_against_the_bundled_built_in() {
-    // `commit` ships with `{{> no-ai-attribution}}` in its bundled AGENT.md
-    // (see `.kanna/agents/commit/AGENT.md`); an empty repo has no override for
-    // either the agent or the partial, so this exercises the compiled
-    // built-in partial fallback end to end.
-    let repo_root = init_git_repo_without_provider_fixtures("partial-builtin-fallback");
-    publish_origin_main(&repo_root, "publish empty repo");
+    // `commit` no longer ships `{{> no-ai-attribution}}` — that policy is
+    // internal to this repo (see `AGENTS.md`) and must not ship to customer
+    // agent definitions. A repo can still opt in by adding the include
+    // itself, at which point the compiled built-in partial resolves it, so
+    // exercise that fallback end to end against a repo-authored agent that
+    // does include it.
+    let repo_root = write_agent_repo(
+        "partial-builtin-fallback",
+        "---\nname: reviewer\ndescription: Reviews changes\nagent_provider: claude\n---\n{{> no-ai-attribution}}",
+        None,
+    );
+    publish_origin_main(&repo_root, "publish partial builtin fallback fixture");
 
-    let definition = resolve_test_agent_definition(&repo_root, "commit").unwrap();
+    let definition = resolve_test_agent_definition(&repo_root, "reviewer").unwrap();
 
     assert!(
         definition.prompt.contains("Co-Authored-By"),
@@ -3396,7 +3402,9 @@ fn eject_writes_resolved_definition_and_requires_force_to_overwrite() {
     assert_eq!(result.path, ".kanna/agents/commit/AGENT.md");
     assert!(!result.overwritten);
     let written = std::fs::read_to_string(repo_root.join(&result.path)).unwrap();
-    assert!(written.contains("Co-Authored-By"), "{written}");
+    // `commit` no longer ships `{{> no-ai-attribution}}` — that policy is
+    // internal to this repo and must not ship to customer agent definitions.
+    assert!(!written.contains("Co-Authored-By"), "{written}");
     assert!(!written.contains("{{>"), "{written}");
 
     let error = eject_repo_agent_definition(&cache, &repo, "commit", false)
@@ -4118,20 +4126,20 @@ fn read_agent_definition_loads_builtin_task_manager_agent_with_codex_first() {
     assert!(definition.prompt.contains("kanna_wait_events"));
     assert!(definition
         .prompt
-        .contains("Scope the watch to the whole repository"));
+        .contains("scoped to the whole repository"));
     assert!(definition.prompt.contains("kanna_subscribe_events"));
     assert!(definition
         .prompt
-        .contains("tasks already settled before you subscribed"));
+        .contains("tasks that settled before you subscribed"));
     assert!(definition
         .prompt
-        .contains("Do not depend on remembering to background or re-arm a watcher each turn"));
+        .contains("do not re-arm a watcher each turn"));
     assert!(definition
         .prompt
-        .contains("A wake means “read the mailbox”"));
+        .contains("A wake means \"read the mailbox.\""));
     assert!(definition
         .prompt
-        .contains("manager-facing settled activity is server-debounced for 10 seconds"));
+        .contains("debounced for 10 seconds"));
     assert!(definition
         .prompt
         .contains("including blocked tasks with no session yet"));
@@ -4147,7 +4155,7 @@ fn read_agent_definition_loads_builtin_task_manager_agent_with_codex_first() {
     assert!(definition.prompt.contains("task.awaiting_input"));
     assert!(definition
         .prompt
-        .contains("`task.activity_changed` is the human read/unread display dimension"));
+        .contains("`task.activity_changed` is never a manager signal"));
     assert!(definition
         .prompt
         .contains("exclude_event_types: [\"task.activity_changed\"]"));
@@ -4162,11 +4170,11 @@ fn read_agent_definition_loads_builtin_task_manager_agent_with_codex_first() {
         .contains("Do not set `parent_task_id` merely because you created"));
     assert!(definition
         .prompt
-        .contains("The long-running manager is never a parent/owner bucket"));
+        .contains("the long-running manager is never a parent/owner bucket"));
     assert!(definition
         .prompt
-        .contains("\"parent_task_id\": \"<durable-work-item-id>\""));
-    assert!(definition.prompt.contains("purpose-built child workflows"));
+        .contains("the durable work item, not this manager, is the parent"));
+    assert!(definition.prompt.contains("Purpose-built child workflows"));
     assert!(definition.prompt.contains("latestRun"));
     assert!(definition.prompt.contains("MERGEABLE"));
     assert!(definition.prompt.contains("git rebase --onto"));
@@ -4174,13 +4182,13 @@ fn read_agent_definition_loads_builtin_task_manager_agent_with_codex_first() {
     assert!(definition.prompt.contains("payload.exhausted"));
     assert!(definition
         .prompt
-        .contains("Audit Premise, Scope, And Runaway Work"));
+        .contains("Audit premise, scope, and runaway work"));
     assert!(definition
         .prompt
         .contains("ask the agent for one concise re-report"));
     assert!(definition
         .prompt
-        .contains("independent, bounded, on-demand architect research task"));
+        .contains("a different tool from product"));
     assert!(definition
         .prompt
         .contains("\"workflow_name\": \"architect-research\""));
@@ -4188,18 +4196,18 @@ fn read_agent_definition_loads_builtin_task_manager_agent_with_codex_first() {
         .prompt
         .contains("\"parent_task_id\": \"<assessed-durable-work-item-id>\""));
     assert!(definition.prompt.contains("Do not add an `agent` override"));
-    assert!(definition.prompt.contains(
-        "Kanna's current task and log surfaces do not expose a reliable universal token counter"
-    ));
+    assert!(definition
+        .prompt
+        .contains("Kanna exposes no reliable universal token counter"));
     assert!(definition
         .prompt
         .contains("Preserve branches and commits when retiring the old work"));
     assert!(definition
         .prompt
-        .contains("Resolve the authoritative remote default-branch tip"));
+        .contains("Resolve the authoritative remote default branch"));
     assert!(definition
         .prompt
-        .contains("A bare local branch name is a possibly stale pointer"));
+        .contains("a bare local branch name is a possibly stale pointer"));
 
     let _ = std::fs::remove_dir_all(&repo_root);
 }
@@ -5064,7 +5072,7 @@ fn relocating_preserves_the_layered_agent_resolution_byte_for_byte() {
     let definition = resolve_test_agent_definition(&repo_root, "task-manager").unwrap();
     // The layering itself is unchanged: the built-in body is still there and
     // the repo extension still lands on top of it.
-    assert!(definition.prompt.contains("Run The Event Loop"));
+    assert!(definition.prompt.contains("Run the event loop"));
     assert!(definition
         .prompt
         .ends_with("Repo rule: never close an owner-requested consultation."));
@@ -5099,7 +5107,7 @@ fn relocating_preserves_the_layered_agent_resolution_byte_for_byte() {
 
     // Same bytes, different channel.
     assert_eq!(format!("{appended}\n\n{prompt}"), before);
-    assert!(appended.contains("Run The Event Loop"));
+    assert!(appended.contains("Run the event loop"));
     assert!(appended.ends_with("Repo rule: never close an owner-requested consultation."));
 
     let _ = std::fs::remove_dir_all(&repo_root);
