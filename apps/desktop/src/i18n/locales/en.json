@@ -567,6 +567,9 @@
   "common": {
     "loading": "Loading..."
   },
+  "localServices": {
+    "unavailable": "Kanna’s local services aren’t responding yet. Retrying…"
+  },
   "startup": {
     "preparing": "Starting Kanna…",
     "services": "Starting local services…",

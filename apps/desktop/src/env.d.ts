@@ -199,6 +199,9 @@ interface Window {
    * launch the driver asked to hold. See `holdStartupForE2E` in `main.ts`.
    */
   __KANNA_E2E_STARTUP_HOLD__?: { release: () => void; fail: () => void };
+  /** DEV/E2E only. Present when this launch is simulating an unresponsive
+   * `kanna-server`; `recover()` lets it answer again. */
+  __KANNA_E2E_LOCAL_SERVICES__?: { recover: () => void };
   /**
    * DEV/E2E-only control over the held readiness edge, present only in a launch
    * the driver asked to hold. See `holdReadinessForE2E` in `useAppLifecycle.ts`.

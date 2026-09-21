@@ -570,6 +570,9 @@
   "common": {
     "loading": "로딩 중..."
   },
+  "localServices": {
+    "unavailable": "Kanna의 로컬 서비스가 응답하지 않습니다. 다시 시도하는 중…"
+  },
   "startup": {
     "preparing": "Kanna를 시작하는 중…",
     "services": "로컬 서비스를 시작하는 중…",

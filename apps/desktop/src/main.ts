@@ -28,7 +28,7 @@ import {
   getSharedStreamClient,
   resetSharedStreamClientForTests,
 } from "./composables/desktopStreamClient";
-import { ensureDesktopReady } from "./services/desktopServerClient";
+import { waitForLocalServicesStartupGrace } from "./services/localServices";
 
 interface AppWithSetupState {
   _instance?: {
@@ -245,8 +245,16 @@ try {
   startup.enterPhase("services");
   const startupHold = holdStartupForE2E();
   if (startupHold) await startupHold;
-  await ensureDesktopReady();
-  const windowBootstrap = await resolveWindowBootstrap(db, parsedWindowBootstrap);
+  // A local server that is slow or absent is a degraded launch, never a fatal
+  // one. This wait cannot throw, and a window that outlasts the grace period
+  // comes up without its saved layout rather than not at all — the retry keeps
+  // running behind it, and `useAppLifecycle` picks readiness up when it lands.
+  const servicesReady = await waitForLocalServicesStartupGrace();
+  const windowBootstrap = await resolveWindowBootstrap(
+    db,
+    parsedWindowBootstrap,
+    servicesReady ? undefined : { windows: [] },
+  );
   startup.enterPhase("restoring");
   const tearOffContext = parseModalTearOffContext(window.location.search)
     ?? windowBootstrap.tearOffContext

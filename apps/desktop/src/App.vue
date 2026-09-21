@@ -533,6 +533,7 @@ const mainTabViews: MainTabViewsController = {
 let keyboardActions = {} as KeyboardActions;
 const {
   fatalInitializationError,
+  localServices,
   focusAgentTerminal,
   requestCloseCurrentWindow,
 } = useAppLifecycle({
@@ -645,6 +646,21 @@ const modalLayerController = {
     :inert="startupPending || undefined"
     :aria-hidden="startupPending || undefined"
   >
+    <!-- A window that waited out its local-service grace period is on screen
+         and still recovering. This says so without taking the workspace: the
+         alternative it replaced was a dead-end screen asking for a restart.
+         While the startup screen still covers the window it is saying the same
+         thing already, and a first failed attempt inside the grace period is
+         not yet a degraded launch. -->
+    <div
+      v-if="localServices === 'unavailable' && !startupPending"
+      class="local-services-banner"
+      data-testid="local-services-banner"
+      role="status"
+      aria-live="polite"
+    >
+      {{ t("localServices.unavailable") }}
+    </div>
     <div
       v-if="!sidebarHidden && (!isMobile || !store.selectedItemId)"
       class="sidebar-shell"
@@ -741,6 +757,24 @@ html, body, #app {
 .fatal-initialization-error p {
   max-width: 560px;
   color: var(--kn-text-secondary);
+}
+.local-services-banner {
+  position: fixed;
+  left: 50%;
+  /* Clear of the main panel's command hint strip, which owns the bottom edge. */
+  bottom: 56px;
+  transform: translateX(-50%);
+  z-index: 60;
+  max-width: min(520px, calc(100% - 32px));
+  padding: 8px 14px;
+  border: 1px solid var(--kn-border-strong);
+  border-radius: 8px;
+  background: var(--kn-bg-panel-raised);
+  color: var(--kn-text-secondary);
+  font-size: 12px;
+  line-height: 1.4;
+  text-align: center;
+  box-shadow: 0 6px 20px rgb(0 0 0 / 22%);
 }
 .sidebar-shell {
   position: relative;

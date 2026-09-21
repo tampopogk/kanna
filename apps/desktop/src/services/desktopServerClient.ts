@@ -139,10 +139,6 @@ export function setDesktopReadinessConfirmedForTests(confirmed: boolean): void {
   desktopReadinessConfirmed = confirmed;
 }
 
-export function hasConfirmedDesktopReadiness(): boolean {
-  return desktopReadinessConfirmed;
-}
-
 async function desktopServerBaseUrl(): Promise<string> {
   const { resolveCurrentKannaServerBaseUrl } = await import("./kannaServerBaseUrl");
   return await resolveCurrentKannaServerBaseUrl("fetching desktop snapshot");
