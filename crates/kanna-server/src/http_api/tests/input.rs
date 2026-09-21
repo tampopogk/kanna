@@ -549,12 +549,10 @@ async fn run_repo_command_routes_to_sibling_repo_singleton() {
     relay.abort();
 }
 
-/// The reported failure, literally: with the legacy desktop-to-desktop route
-/// refused, a machine discovered over LAN that holds an unexpired
-/// machine-trust grant but no pin has no route at all. It was enumerated as a
-/// reachable sibling anyway, `invoke_desktop` refused every call to it with
-/// `peer_pairing_required`, and the repository's `task-manager` could not be
-/// created.
+/// The reported failure, literally: a machine discovered over LAN that holds
+/// an unexpired machine-trust grant but no pin is not a sibling this desktop
+/// enumerates. It was enumerated as a reachable one anyway, every call to it
+/// failed, and the repository's `task-manager` could not be created.
 ///
 /// `revoke_stale_lan_grant` already drops that grant once a call has proven
 /// it dead, so the *second* attempt succeeded. This asserts the first one
@@ -566,7 +564,6 @@ async fn run_repo_command_ignores_an_unpinned_lan_machine_with_a_stale_grant() {
         seed_remote_repo(db, "repo-source")
     });
     source.set_authenticated_account_uid(Some("uid-1".to_string()));
-    crate::http_api::peer_tests::set_peer_legacy_refused(&source);
     {
         let now_ms = crate::machine_trust::unix_time_ms().unwrap();
         let store_path = source.config().machine_trust_store_path().unwrap();

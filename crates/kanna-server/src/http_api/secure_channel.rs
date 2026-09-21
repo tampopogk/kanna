@@ -30,15 +30,26 @@ use tokio::sync::{Mutex, Notify};
 pub(crate) const MOBILE_LEGACY_ACCESS_SETTING: &str = "mobile_legacy_access";
 pub(crate) const MOBILE_LEGACY_ACCESS_REFUSED: &str = "refused";
 
-/// Settings-table key for the desktop-to-desktop equivalent. `refused`
-/// turns off every legacy sibling path - the relay-attested `invoke`, the
-/// bearer-secret LAN machine-invoke listener and its relay-attested CA
-/// bootstrap, the Firestore transfer key and the sidecar's mDNS pairing -
-/// leaving only sealed peer sessions to pinned, human-paired siblings.
-/// Kept separate from the mobile switch because phones and desktops upgrade
-/// on different schedules.
-pub(crate) const DESKTOP_PEER_LEGACY_ACCESS_SETTING: &str = "desktop_peer_legacy_access";
-pub(crate) const DESKTOP_PEER_LEGACY_ACCESS_REFUSED: &str = "refused";
+/// Whether this desktop **accepts** a legacy desktop-to-desktop session:
+/// the relay-attested `invoke`, the bearer-secret LAN machine-invoke
+/// listener, and the relay-attested CA bootstrap that mints the secret that
+/// listener trusts. Each of those takes the relay's word for who the sender
+/// is, so a compromised relay can forge one.
+///
+/// It was the `desktop_peer_legacy_access` setting (default *on*) until
+/// 2026-09-20, with a Preferences → Machines switch. Every Mac that can
+/// pair runs 0.4.0 or later and pairs, so the switch is gone and the answer
+/// is permanently "no": a sibling reaches this desktop only through a
+/// sealed session to its pinned peer key. It stays as one named constant so
+/// that every `peer_legacy_access_refused` still points at one explanation.
+///
+/// Deliberately **inbound only**. The same setting also gated what this
+/// desktop *initiates* - `invoke_desktop`'s LAN/relay fallback to an
+/// unpinned sibling, the sidecar's mDNS transfer ceremony, and the
+/// renderer's Firestore-keyed cloud transfer proxies. Those are left
+/// alone: they are how a Mac that has not upgraded yet is still reached,
+/// and they retire by themselves as each sibling's own end starts refusing.
+pub(crate) const LEGACY_PEER_ACCESS_ALLOWED: bool = false;
 
 pub(crate) const PAIRING_CONFIRMATION_TTL: Duration = Duration::from_secs(180);
 
@@ -372,19 +383,6 @@ pub(crate) fn legacy_mobile_access_allowed(db: &crate::db::Db) -> bool {
         Ok(None) => true,
         Err(error) => {
             log::warn!("failed to read {MOBILE_LEGACY_ACCESS_SETTING}: {error}; refusing legacy mobile access");
-            false
-        }
-    }
-}
-
-/// Reads the desktop-peer legacy switch with the same fail-closed stance as
-/// `legacy_mobile_access_allowed`.
-pub(crate) fn legacy_peer_access_allowed(db: &crate::db::Db) -> bool {
-    match db.get_setting(DESKTOP_PEER_LEGACY_ACCESS_SETTING) {
-        Ok(Some(value)) => value.trim() != DESKTOP_PEER_LEGACY_ACCESS_REFUSED,
-        Ok(None) => true,
-        Err(error) => {
-            log::warn!("failed to read {DESKTOP_PEER_LEGACY_ACCESS_SETTING}: {error}; refusing legacy desktop-to-desktop access");
             false
         }
     }

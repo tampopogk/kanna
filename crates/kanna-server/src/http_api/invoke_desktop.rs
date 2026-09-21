@@ -162,43 +162,22 @@ pub(crate) async fn invoke_desktop(
     // that cannot be honoured is an error the caller sees, not a downgrade.
     // So is a trust store that cannot be read: whether the sibling is
     // pinned is then unknown, and unknown is not "unpaired".
-    let (enroll_refusal, sibling_absent_from_account) = match state.paired_peer(&desktop_id) {
+    match state.paired_peer(&desktop_id) {
         Ok(Some(_)) => return invoke_peer(&state, desktop_id, method, path, body).await,
         // Unpinned. Two desktops signed into one account are introduced by
         // the relay and pinned automatically, so the sealed route is
         // available on first contact without a ceremony; anything else keeps
-        // the behavior it had, with the reason attached.
+        // the behavior it had. Note that the sibling's own end refuses every
+        // legacy route from 0.4.0 on (`secure_channel::LEGACY_PEER_ACCESS_ALLOWED`),
+        // so what follows only ever reaches a desktop older than that.
         Ok(None) => match crate::peer_enrollment::try_enroll(&state, &desktop_id).await {
             Ok(_) => return invoke_peer(&state, desktop_id, method, path, body).await,
             Err(error) => {
-                // `SiblingOffline` is the one refusal that is a statement
-                // about the *sibling* rather than about this desktop or the
-                // relay: a live relay listed the account's connected
-                // desktops and this was not among them.
-                let absent = error == crate::peer_enrollment::PeerEnrollError::SiblingOffline;
-                (error.to_string(), absent)
+                log::debug!("[peer] {desktop_id} was not enrolled automatically: {error}")
             }
         },
         Err(error) => return Err(format!("peer_identity_unavailable: {error}")),
-    };
-    if !state.legacy_peer_access_allowed() {
-        // With the legacy bearer route off, an unpinned sibling is
-        // unreachable by every route this desktop has, so a leftover
-        // outbound LAN grant for it can never serve an invoke - yet
-        // `eligible_lan_desktop_ids` keeps counting it as a reachable LAN
-        // peer until the lease expires. Drop it here, where the failure is
-        // proven, but only when a live relay has said the sibling is not in
-        // the account: any other refusal leaves this desktop blind about
-        // whether the sibling is present, and an id dropped while blind is
-        // an id a fail-closed singleton scan stops asking.
-        let dropped = sibling_absent_from_account && revoke_stale_lan_grant(&state, &desktop_id);
-        return Err(format!(
-            "peer_pairing_required: this desktop is not paired with machine {desktop_id} and \
-             could not pair automatically ({enroll_refusal}); pair it from Preferences → Machines{}",
-            if dropped { STALE_LAN_TRUST_DROPPED } else { "" }
-        ));
     }
-
     let outcome = attempt_lan_invoke(&state, &desktop_id, &method, &path, &body).await;
     // A dial that failed at or before connect is proof the target did not
     // answer where discovery last saw it; the target's own 401/403 is proof
@@ -357,33 +336,30 @@ async fn invoke_peer(
 /// candidate address *and* an established trust relationship exist for it,
 /// the same two facts the dialer itself checks before ever dialing.
 ///
-/// It must name the same two routes `invoke_desktop` does, or it claims
-/// reachability the router will refuse:
+/// It must name the same routes `invoke_desktop` does, or it claims
+/// reachability the router will refuse. Since this desktop stopped accepting
+/// the legacy plaintext route (`secure_channel::LEGACY_PEER_ACCESS_ALLOWED`)
+/// there is exactly one: a **pinned** sibling, reached over its sealed peer
+/// session and dialed at exactly this discovered candidate with no
+/// machine-trust grant involved (`peer_channel::dial_peer`).
 ///
-/// - a **pinned** sibling is reached over its sealed peer session, dialed at
-///   exactly this discovered candidate with no machine-trust grant involved
-///   (`peer_channel::dial_peer`);
-/// - an **unpinned** one has only the legacy plaintext route, which
-///   `invoke_desktop` attempts solely while `legacy_peer_access_allowed`,
-///   and only with a currently-usable outbound grant under the exact binding
-///   [`attempt_lan_invoke`] itself requires (account, environment, local
-///   identity, protocol version, unexpired).
-///
-/// Testing the grant *alone* predated pinning by default, and became a lie
-/// the moment the route it describes was switched off: with legacy access
-/// refused an unpinned sibling has no route at all, yet every one of them was
-/// still enumerated as reachable while `invoke_desktop` refused all of them
-/// with `peer_pairing_required`. `signal_agent`'s deliberately fail-closed
-/// singleton scan then reported the first such machine as unverifiable, and a
-/// repository could not launch a singleton at all.
+/// Testing an outbound grant *as well* predated pinning by default, and
+/// became a lie the moment the route it describes was switched off: an
+/// unpinned sibling had no route at all, yet every one of them was still
+/// enumerated as reachable while `invoke_desktop` refused all of them.
+/// `signal_agent`'s deliberately fail-closed singleton scan then reported
+/// the first such machine as unverifiable, and a repository could not launch
+/// a singleton at all. With the switch gone the grant half has nothing left
+/// to be true about, so the predicate is pin-only rather than pinned-or-
+/// granted-while-permitted.
 ///
 /// That is the same defect [`revoke_stale_lan_grant`] repairs, one step
 /// earlier. Revocation makes eligibility honest *after* an attempt has
-/// disproved a grant, so the request that discovers it still fails; naming
-/// the legacy switch means the machine was never eligible to begin with, so
-/// no attempt is spent on it and the first request succeeds. The two
-/// compose: a grant an attempt disproved is still worth dropping, and the
-/// fan-out no longer depends on that having happened.
+/// disproved a grant, so the request that discovers it still fails; pinning
+/// alone means an unpinned machine was never eligible to begin with, so no
+/// attempt is spent on it and the first request succeeds. The two compose: a
+/// grant an attempt disproved is still worth dropping, and the fan-out no
+/// longer depends on that having happened.
 ///
 /// An unreadable pairing store omits the sealed half rather than assuming a
 /// pin. That decides only what to *enumerate*, never how to route, so its
@@ -399,60 +375,14 @@ pub(crate) fn eligible_lan_desktop_ids(state: &Arc<AppState>) -> Vec<String> {
         crate::peer_trust::PeerTrustStore::default()
     });
     let environment = state.config().environment.clone();
-    let legacy = legacy_lan_grants(state);
     candidates
         .into_iter()
         .filter(|desktop_id| {
             pinned
                 .peer_by_desktop_id(desktop_id, &environment)
                 .is_some()
-                || legacy
-                    .as_ref()
-                    .is_some_and(|legacy| legacy.covers(desktop_id))
         })
         .collect()
-}
-
-/// The legacy plaintext route's half of [`eligible_lan_desktop_ids`], loaded
-/// once per enumeration. `None` means that route cannot be taken at all -
-/// the switch is off, or its store is unusable - so nothing qualifies
-/// through it.
-struct LegacyLanGrants {
-    store: crate::machine_trust::MachineTrustStore,
-    account_uid: Option<String>,
-    environment: String,
-    local_desktop_id: String,
-    now_ms: u64,
-}
-
-impl LegacyLanGrants {
-    fn covers(&self, desktop_id: &str) -> bool {
-        self.store
-            .outbound_grant_for(
-                desktop_id,
-                self.account_uid.as_deref(),
-                &self.environment,
-                &self.local_desktop_id,
-                self.now_ms,
-            )
-            .is_some()
-    }
-}
-
-fn legacy_lan_grants(state: &Arc<AppState>) -> Option<LegacyLanGrants> {
-    if !state.legacy_peer_access_allowed() {
-        return None;
-    }
-    let store_path = state.config().machine_trust_store_path()?;
-    let now_ms = crate::machine_trust::unix_time_ms().ok()?;
-    let store = crate::machine_trust::MachineTrustStore::load_fail_closed(&store_path).ok()?;
-    Some(LegacyLanGrants {
-        store,
-        account_uid: state.authenticated_account_uid(),
-        environment: state.config().environment.clone(),
-        local_desktop_id: state.config().desktop_id.clone(),
-        now_ms,
-    })
 }
 
 /// The shared merge every list/wait/stats/signal fan-out consumer needs:
@@ -585,9 +515,11 @@ fn maybe_trigger_lan_bootstrap(
         // Signed out: there is no account to bootstrap trust under.
         return;
     };
-    if !state.legacy_peer_access_allowed() {
-        // The relay-attested CA bootstrap is the legacy trust root; with
-        // legacy desktop-to-desktop access off it is never requested.
+    if !super::secure_channel::LEGACY_PEER_ACCESS_ALLOWED {
+        // The relay is this bootstrap's trust root, and no desktop accepts
+        // one any more, so it is never requested. Grants minted before
+        // 2026-09-20 keep working until they expire; the LAN attempt above
+        // simply falls back to relay once there are none.
         return;
     }
     if !state.begin_lan_bootstrap_attempt(target_desktop_id) {
@@ -823,14 +755,15 @@ mod tests {
     }
 
     /// The full chain end to end over a real loopback TLS socket: a target's
-    /// real `lan_listener` accepts a connection from the real
-    /// `invoke_desktop` client path, completes a standard rustls handshake
-    /// pinned to the target's actual attested CA, authenticates the bearer
-    /// secret against the target's real `machine_trust` store, and dispatches
-    /// into the target's real router - proving the seam this task exists to
-    /// build, not a simulation of any part of it.
+    /// real `lan_listener` accepts a connection from the real LAN client
+    /// path and completes a standard rustls handshake pinned to the
+    /// target's actual attested CA. The listener then *refuses* with 401
+    /// `peer_legacy_access_refused`, because the bearer-secret sibling path
+    /// went with the legacy escape hatch on 2026-09-20 - a definite answer
+    /// that must never be mistaken for a connection failure and must never
+    /// fall back to relay.
     #[tokio::test]
-    async fn a_real_lan_invoke_completes_over_a_real_tls_socket_end_to_end() {
+    async fn a_real_lan_dial_reaches_the_real_listener_which_refuses_the_legacy_path() {
         let target_config = lan_e2e_test_config("desktop-target");
         let target_identity_path = target_config.lan_tls_identity_path().unwrap();
         let target_identity = crate::lan_tls_identity::load_or_create(
@@ -906,9 +839,7 @@ mod tests {
         .expect("invoke_desktop should complete");
 
         assert_eq!(routed.route, RouteProvenance::Lan, "{:?}", routed.response);
-        assert_eq!(routed.response.status, 200, "{:?}", routed.response);
-        let body = routed.response.body.expect("status response body");
-        assert_eq!(body["desktopId"], "desktop-target");
+        assert_eq!(routed.response.status, 401, "{:?}", routed.response);
     }
 
     /// Qualifies the pinned-TLS chain at the *same* real, routable interface
@@ -1020,9 +951,7 @@ mod tests {
             "same-address pinned-TLS dial to {candidate} did not route over LAN: {:?}",
             routed.response
         );
-        assert_eq!(routed.response.status, 200, "{:?}", routed.response);
-        let body = routed.response.body.expect("status response body");
-        assert_eq!(body["desktopId"], "desktop-target-real-addr");
+        assert_eq!(routed.response.status, 401, "{:?}", routed.response);
     }
 
     /// A real TLS handshake can succeed (the client trusts the target's
@@ -1518,11 +1447,12 @@ mod tests {
     /// source desktop points `relay_url` at a real closed local port
     /// (`ws://127.0.0.1:1`, nothing ever listens there) so a relay
     /// fallback attempt would be a genuine, real connection failure, not an
-    /// absent configuration - then proves the *actual dial* succeeds over
-    /// LAN regardless, with a definite 200 response, exactly the
-    /// assertion grant-persistence alone does not provide.
+    /// absent configuration - then proves the *actual dial* reaches the
+    /// target over LAN regardless and comes back with a definite answer
+    /// (401 since the legacy bearer path was closed), exactly the assertion
+    /// grant-persistence alone does not provide.
     #[tokio::test]
-    async fn a_real_lan_invoke_completes_while_relay_is_genuinely_unreachable() {
+    async fn a_real_lan_dial_reaches_the_target_while_relay_is_genuinely_unreachable() {
         let target_config = lan_e2e_test_config("desktop-relay-outage-target");
         let target_identity_path = target_config.lan_tls_identity_path().unwrap();
         let target_identity = crate::lan_tls_identity::load_or_create(
@@ -1607,13 +1537,11 @@ mod tests {
         assert_eq!(
             routed.route,
             RouteProvenance::Lan,
-            "an actual LAN operation must complete over LAN while relay is unreachable, not fall \
-             back and fail: {:?}",
+            "an actual LAN dial must answer definitely over LAN while relay is unreachable, not \
+             fall back and fail: {:?}",
             routed.response
         );
-        assert_eq!(routed.response.status, 200, "{:?}", routed.response);
-        let body = routed.response.body.expect("status response body");
-        assert_eq!(body["desktopId"], "desktop-relay-outage-target");
+        assert_eq!(routed.response.status, 401, "{:?}", routed.response);
     }
 
     /// A transparent byte-level pass-through in front of the *real* target
@@ -1772,7 +1700,7 @@ mod tests {
         .expect("invoke_desktop should complete through the capturing proxy");
 
         assert_eq!(routed.route, RouteProvenance::Lan, "{:?}", routed.response);
-        assert_eq!(routed.response.status, 200, "{:?}", routed.response);
+        assert_eq!(routed.response.status, 401, "{:?}", routed.response);
 
         let wire_bytes = captured
             .lock()
@@ -1805,17 +1733,14 @@ mod tests {
             .any(|window| window == needle)
     }
 
-    /// Finding #2's production wiring, proven through the actual routing
-    /// boundary rather than by manually seeding an outbound grant: with no
-    /// grant and no candidate for a target, `attempt_lan_invoke` itself must
-    /// kick off a real background bootstrap attempt using the real
-    /// `lan_bootstrap`/`machine_trust` code paths. The relay call inside it
-    /// fails fast (no relay connection in this test), but `request_bootstrap`
-    /// durably records its pending candidate *before* ever touching the
-    /// network - so that pending record's real presence on disk is direct
-    /// proof the production wiring ran, not a simulation of it.
+    /// The relay-attested CA bootstrap was what created an outbound LAN
+    /// grant when none existed, and the relay is its trust root - so it
+    /// went with the legacy desktop-to-desktop escape hatch on 2026-09-20.
+    /// A missing grant must now stay missing: `request_bootstrap` records
+    /// its pending candidate on disk *before* touching the network, so the
+    /// absence of that record is direct proof the wiring did not run.
     #[tokio::test]
-    async fn no_outbound_grant_triggers_a_real_background_bootstrap_attempt() {
+    async fn no_outbound_grant_no_longer_triggers_a_relay_attested_bootstrap() {
         let source_config = lan_e2e_test_config("desktop-bootstrap-source");
         let source_state = Arc::new(AppState::new(source_config.clone()));
         source_state.set_authenticated_account_uid(Some("uid-1".to_string()));
@@ -1841,26 +1766,16 @@ mod tests {
              nothing was dialled, so nothing was learned about the target"
         );
 
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-        loop {
-            if let Ok(store) =
-                crate::machine_trust::MachineTrustStore::load_fail_closed(&store_path)
-            {
-                if store
+        // Long enough that a spawned attempt would have recorded by now.
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        if let Ok(store) = crate::machine_trust::MachineTrustStore::load_fail_closed(&store_path) {
+            assert!(
+                !store
                     .pending
                     .iter()
-                    .any(|pending| pending.target_desktop_id == "desktop-bootstrap-target")
-                {
-                    break;
-                }
-            }
-            if std::time::Instant::now() > deadline {
-                panic!(
-                    "no pending bootstrap record appeared for desktop-bootstrap-target - \
-                     the production request_bootstrap wiring did not run"
-                );
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                    .any(|pending| pending.target_desktop_id == "desktop-bootstrap-target"),
+                "a pending bootstrap record appeared - the relay-attested bootstrap still runs"
+            );
         }
     }
 
@@ -1933,9 +1848,9 @@ mod tests {
     /// The enumeration must name the same routes [`invoke_desktop`] does, or
     /// it hands every fan-out consumer machines the router will refuse - and
     /// `signal_agent`'s fail-closed singleton scan turns one of those into a
-    /// repo-wide 503. A pin is a route in both configurations; a
-    /// machine-trust grant is one only while the legacy plaintext route it
-    /// belongs to is switched on.
+    /// repo-wide 503. A pin is the only such route left: no desktop accepts
+    /// the legacy plaintext one any more, and no new outbound grant is ever
+    /// minted for it, so a grant is not a route to claim.
     #[test]
     fn eligible_lan_desktop_ids_names_exactly_the_routes_the_router_has() {
         let config = lan_e2e_test_config("desktop-eligible-source");
@@ -1950,8 +1865,10 @@ mod tests {
             "desktop-candidate-only".to_string(),
             "127.0.0.1:2".parse().unwrap(),
         );
-        // A candidate and an unexpired grant, but no pin: the legacy route
-        // and only the legacy route.
+        // A candidate and an unexpired grant, but no pin. Grants minted
+        // before this desktop stopped bootstrapping them keep working
+        // outbound until their lease runs out, but they are not a route this
+        // enumeration may claim on their behalf.
         seed_outbound_grant(&config, "desktop-grant-only", Some("fake-ca".to_string()));
         state.set_lan_candidate(
             "desktop-grant-only".to_string(),
@@ -1960,28 +1877,11 @@ mod tests {
         // A pin with no candidate address has nowhere to be dialed.
         pin_lan_peer(&state, "desktop-pinned-undiscovered");
 
-        let mut with_legacy = eligible_lan_desktop_ids(&state);
-        with_legacy.sort();
-        assert_eq!(
-            with_legacy,
-            vec![
-                "desktop-grant-only".to_string(),
-                "desktop-pinned".to_string()
-            ],
-            "while the legacy route is on, a grant is a route and must still be enumerated"
-        );
-
-        // The configuration the production failure was measured in. The
-        // grant now buys nothing, because `invoke_desktop` refuses an
-        // unpinned sibling outright with `peer_pairing_required` - so
-        // enumerating it would cost a fail-closed scan an attempt, which is
-        // exactly the 503 that made a repository unable to launch one.
-        super::super::peer_tests::set_peer_legacy_refused(&state);
-
         assert_eq!(
             eligible_lan_desktop_ids(&state),
             vec!["desktop-pinned".to_string()],
-            "with no legacy route, only the pin is a route"
+            "only a pin is a route, so it is the only thing enumerated: a bare candidate, a \
+             grant without a pin, and a pin nothing discovered an address for are all omitted"
         );
     }
 
@@ -2025,7 +1925,7 @@ mod tests {
     /// budget.
     /// Whether `target`'s outbound LAN grant is still in the store. What
     /// [`revoke_stale_lan_grant`] actually promises, asserted directly:
-    /// eligibility is the pin, so it can no longer stand in for this.
+    /// eligibility is the pin, so it cannot stand in for this.
     fn has_outbound_grant(config: &crate::config::Config, target: &str) -> bool {
         let store_path = config.machine_trust_store_path().unwrap();
         let now_ms = crate::machine_trust::unix_time_ms().unwrap();
@@ -2079,7 +1979,7 @@ mod tests {
     /// with the relay unable to reach it either, must drop the peer out of
     /// eligibility instead.
     #[tokio::test]
-    async fn a_granted_peer_whose_dial_definitively_fails_drops_out_of_eligibility() {
+    async fn a_granted_peer_whose_dial_definitively_fails_loses_its_grant() {
         let config = lan_e2e_test_config("desktop-stale-grant-source");
         let state = Arc::new(AppState::new(config.clone()));
         state.set_authenticated_account_uid(Some("uid-1".to_string()));
@@ -2091,10 +1991,9 @@ mod tests {
         );
         state.set_lan_candidate("desktop-stale-peer".to_string(), unanswered_candidate());
 
-        assert_eq!(
-            eligible_lan_desktop_ids(&state),
-            vec!["desktop-stale-peer".to_string()],
-            "with the legacy route on, the grant alone makes the peer eligible"
+        assert!(
+            has_outbound_grant(&config, "desktop-stale-peer"),
+            "the grant is there to be disproved"
         );
 
         let error = invoke_desktop(
@@ -2112,8 +2011,8 @@ mod tests {
         );
 
         assert!(
-            eligible_lan_desktop_ids(&state).is_empty(),
-            "a peer proven unreachable on both routes must stop counting as a LAN participant"
+            !has_outbound_grant(&config, "desktop-stale-peer"),
+            "a peer proven unreachable on both routes keeps no credential"
         );
     }
 
@@ -2146,9 +2045,8 @@ mod tests {
         .await
         .expect_err("the relay is down and the dial failed");
 
-        assert_eq!(
-            eligible_lan_desktop_ids(&state),
-            vec!["desktop-lan-peer".to_string()],
+        assert!(
+            has_outbound_grant(&config, "desktop-lan-peer"),
             "a peer behind a relay outage must keep its grant"
         );
     }
@@ -2179,164 +2077,10 @@ mod tests {
         .await
         .expect_err("there is no attested anchor to dial with and no relay to fall back to");
 
-        assert_eq!(
-            eligible_lan_desktop_ids(&state),
-            vec!["desktop-unattested-peer".to_string()],
+        assert!(
+            has_outbound_grant(&config, "desktop-unattested-peer"),
             "nothing was attempted against the peer, so nothing was learned about it"
         );
-    }
-
-    /// Leaves `state` in the exact shape of the machine the production
-    /// failure was measured on: the legacy bearer route refused, so an
-    /// unpinned sibling has no route at all, plus a usable outbound grant and
-    /// a discovered candidate that keep it in `eligible_lan_desktop_ids`
-    /// regardless. The returned task plays the relay, answering the presence
-    /// listing `try_enroll` reads from `presence`.
-    fn departed_peer_with_the_legacy_route_refused(
-        config: &crate::config::Config,
-        state: &Arc<AppState>,
-        target: &str,
-        presence: Vec<(String, Option<String>)>,
-    ) -> tokio::task::JoinHandle<()> {
-        state.set_authenticated_account_uid(Some("uid-1".to_string()));
-        super::super::peer_tests::set_peer_legacy_refused(state);
-        // A placeholder anchor rather than a real minted CA: with the legacy
-        // route refused these tests never reach `attempt_lan_invoke`, so
-        // nothing ever parses it, and `eligible_lan_desktop_ids` does not
-        // look at it either. Saying so here is more honest than generating a
-        // key this path cannot use.
-        seed_outbound_grant(config, target, Some("never-dialled".to_string()));
-        state.set_lan_candidate(target.to_string(), unanswered_candidate());
-        super::super::peer_tests::serve_relay_presence(state, presence)
-    }
-
-    /// The measured production failure, end to end through the branch that
-    /// actually produced it.
-    ///
-    /// On that machine the legacy bearer route is off, so `invoke_desktop`
-    /// never reaches `attempt_lan_invoke` at all: it refuses at the branch
-    /// for an unpinned sibling, with `try_enroll` reporting `SiblingOffline`
-    /// because a live relay listed the account's desktops and this one was
-    /// not among them. The grant nevertheless kept the machine in every scan
-    /// for the rest of its 24h lease, and `signal_agent`'s fail-closed
-    /// singleton scan turned that into a repo-wide 503 on every merge
-    /// handoff.
-    #[tokio::test]
-    async fn a_sibling_the_relay_no_longer_lists_drops_out_with_the_legacy_route_refused() {
-        let config = lan_e2e_test_config("desktop-legacy-off-source");
-        let state = Arc::new(AppState::new(config.clone()));
-        // The served presence table deliberately omits the target: the
-        // account has other desktops, and this is not one of them.
-        let relay = departed_peer_with_the_legacy_route_refused(
-            &config,
-            &state,
-            "desktop-departed-sibling",
-            vec![(
-                "desktop-some-other-sibling".to_string(),
-                Some("a-key".to_string()),
-            )],
-        );
-
-        assert!(
-            has_outbound_grant(&config, "desktop-departed-sibling"),
-            "the departed sibling's grant is there to be disproved"
-        );
-        assert!(
-            eligible_lan_desktop_ids(&state).is_empty(),
-            "with the legacy route refused the grant is not a route, so the sibling is \
-             never enumerated - which is what stops this failure costing a scan an attempt"
-        );
-
-        let error = invoke_desktop(
-            Arc::clone(&state),
-            "desktop-departed-sibling".to_string(),
-            "GET".to_string(),
-            "/v1/status".to_string(),
-            serde_json::Value::Null,
-        )
-        .await
-        .expect_err("an unpinned sibling has no route with the legacy one refused");
-        assert!(
-            error.contains("peer_pairing_required"),
-            "this must be the unpinned-sibling branch, not a LAN dial: {error}"
-        );
-        // Verbatim from the measured production log, and the whole reason
-        // this branch may drop a grant at all: it is `SiblingOffline`, not
-        // some other refusal that happens to reach the same line.
-        assert!(
-            error.contains("that machine is not connected to your account right now"),
-            "the refusal must be SiblingOffline specifically: {error}"
-        );
-        assert!(
-            error.contains(STALE_LAN_TRUST_DROPPED),
-            "the refusal must say the stale grant was dropped so a retry is worth making: {error}"
-        );
-
-        assert!(
-            !has_outbound_grant(&config, "desktop-departed-sibling"),
-            "a sibling the relay does not list, with no route to it, keeps no credential"
-        );
-        relay.abort();
-    }
-
-    /// The condition itself, which is what keeps the branch above honest:
-    /// only `SiblingOffline` - a live relay that listed the account's
-    /// desktops and did not name this one - may drop a grant. Here the relay
-    /// *does* list the sibling, just without an announced key, so enrollment
-    /// refuses for a reason that says nothing about whether the sibling is
-    /// present. Without this test, deleting `sibling_absent_from_account &&`
-    /// still passes every test in the crate.
-    #[tokio::test]
-    async fn a_sibling_the_relay_still_lists_keeps_its_grant_when_enrollment_refuses() {
-        let config = lan_e2e_test_config("desktop-listed-sibling-source");
-        let state = Arc::new(AppState::new(config.clone()));
-        // The target is listed but announces no key, while another entry does
-        // - the whole-listing shape `announced_key_for` uses to tell a
-        // keyless sibling apart from a relay that predates key presence.
-        let relay = departed_peer_with_the_legacy_route_refused(
-            &config,
-            &state,
-            "desktop-listed-sibling",
-            vec![
-                (
-                    "desktop-some-other-sibling".to_string(),
-                    Some("a-key".to_string()),
-                ),
-                ("desktop-listed-sibling".to_string(), None),
-            ],
-        );
-
-        let error = invoke_desktop(
-            Arc::clone(&state),
-            "desktop-listed-sibling".to_string(),
-            "GET".to_string(),
-            "/v1/status".to_string(),
-            serde_json::Value::Null,
-        )
-        .await
-        .expect_err("an unpinned sibling has no route with the legacy one refused");
-        assert!(
-            error.contains("peer_pairing_required"),
-            "this must be the unpinned-sibling branch, not a LAN dial: {error}"
-        );
-        // `SiblingAnnouncesNoKey`. Pinned so this test cannot quietly start
-        // refusing for some unrelated reason and stop covering the condition
-        // it exists for.
-        assert!(
-            error.contains("runs an older Kanna and cannot pair automatically yet"),
-            "the refusal must be the listed-but-keyless one, not SiblingOffline: {error}"
-        );
-        assert!(
-            !error.contains(STALE_LAN_TRUST_DROPPED),
-            "enrollment refusing for a reason that is not about the sibling's presence must not \
-             drop anything: {error}"
-        );
-
-        assert!(
-            has_outbound_grant(&config, "desktop-listed-sibling"),
-            "a sibling the relay still lists keeps its grant"
-        );
-        relay.abort();
     }
 
     /// A target that answers its LAN gateway and rejects this desktop's
@@ -2375,10 +2119,9 @@ mod tests {
             Some(target_identity.ca_certificate_pem.clone()),
         );
         source_state.set_lan_candidate("desktop-rejecting-target".to_string(), candidate);
-        assert_eq!(
-            eligible_lan_desktop_ids(&source_state),
-            vec!["desktop-rejecting-target".to_string()],
-            "with the legacy route on, the grant alone makes the target eligible"
+        assert!(
+            has_outbound_grant(&source_config, "desktop-rejecting-target"),
+            "the grant is there for the target to reject"
         );
 
         let routed = invoke_desktop(
@@ -2398,8 +2141,8 @@ mod tests {
         );
 
         assert!(
-            eligible_lan_desktop_ids(&source_state).is_empty(),
-            "a credential the target itself rejected must stop counting as LAN eligibility"
+            !has_outbound_grant(&source_config, "desktop-rejecting-target"),
+            "a credential the target itself rejected must not be kept"
         );
     }
 

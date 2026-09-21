@@ -19,9 +19,6 @@ import { isTopModal } from '../composables/useModalZIndex'
 import MobileAccessPanel from './MobileAccessPanel.vue'
 import MachinesPanel from './MachinesPanel.vue'
 import {
-  DESKTOP_PEER_LEGACY_ACCESS_ALLOWED,
-  DESKTOP_PEER_LEGACY_ACCESS_REFUSED,
-  DESKTOP_PEER_LEGACY_ACCESS_SETTING,
   MOBILE_LEGACY_ACCESS_ALLOWED,
   MOBILE_LEGACY_ACCESS_REFUSED,
   MOBILE_LEGACY_ACCESS_SETTING,
@@ -129,11 +126,14 @@ const legacyAccessAllowed = ref(true)
 const legacyAccessBusy = ref(false)
 const peers = ref<DesktopPeer[]>([])
 const peersLoading = ref(false)
+// The list polls every 3s while the pane is open. Only the very first fetch
+// is a loading state a person should see: flagging every background refresh
+// made the empty pane flicker between "Loading" and "No machines paired yet"
+// on the poll interval.
+const peersEverLoaded = ref(false)
 const peersError = ref<string | null>(null)
 const peerChannelAvailable = ref(true)
 const relayPeerTunnelsAvailable = ref(true)
-const peerLegacyAccessAllowed = ref(true)
-const peerLegacyAccessBusy = ref(false)
 const peerOffer = ref<DesktopPeerPairingOffer | null>(null)
 const peerOfferPending = ref(false)
 const peerOfferError = ref<string | null>(null)
@@ -372,13 +372,12 @@ watch(activeTab, (tab) => {
 })
 
 async function refreshPeers() {
-  peersLoading.value = true
+  peersLoading.value = !peersEverLoaded.value
   try {
     const list = await fetchDesktopPeers()
     peers.value = list.peers
     peerChannelAvailable.value = list.peerChannelAvailable
     relayPeerTunnelsAvailable.value = list.relayPeerTunnelsAvailable
-    peerLegacyAccessAllowed.value = list.legacyAccessAllowed
     if (list.desktopName) mobileDesktopName.value = list.desktopName
     if (list.desktopId) mobileDesktopId.value = list.desktopId
     peersError.value = null
@@ -387,6 +386,7 @@ async function refreshPeers() {
     peersError.value = error instanceof Error ? error.message : String(error)
   } finally {
     peersLoading.value = false
+    peersEverLoaded.value = true
   }
 }
 
@@ -445,22 +445,6 @@ async function removePeer(desktopId: string) {
     peersError.value = error instanceof Error ? error.message : String(error)
   } finally {
     removingPeerDesktopId.value = null
-  }
-}
-
-async function setPeerLegacyAccess(allowed: boolean) {
-  if (peerLegacyAccessBusy.value) return
-  peerLegacyAccessBusy.value = true
-  try {
-    await putDesktopSetting(
-      DESKTOP_PEER_LEGACY_ACCESS_SETTING,
-      allowed ? DESKTOP_PEER_LEGACY_ACCESS_ALLOWED : DESKTOP_PEER_LEGACY_ACCESS_REFUSED,
-    )
-    peerLegacyAccessAllowed.value = allowed
-  } catch (error) {
-    console.error("[PreferencesPanel] failed to update legacy desktop-to-desktop access:", error)
-  } finally {
-    peerLegacyAccessBusy.value = false
   }
 }
 
@@ -856,14 +840,10 @@ defineExpose({ bringToFront, cycleTab, isOnTop })
           :pair-pending="peerPairPending"
           :pair-error="peerPairError"
           :pair-success="peerPairSuccess"
-          :legacy-access-allowed="peerLegacyAccessAllowed"
-          :legacy-access-busy="peerLegacyAccessBusy"
           :removing-desktop-id="removingPeerDesktopId"
           @create-offer="createPeerOffer"
           @pair="pairWithString"
           @remove-peer="removePeer"
-          @refresh="refreshPeers"
-          @set-legacy-access="setPeerLegacyAccess"
         />
       </div>
 

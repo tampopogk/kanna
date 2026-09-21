@@ -281,15 +281,6 @@ fn peer_key(state: &AppState) -> [u8; 32] {
     *state.peer_channel_identity().unwrap().public_key()
 }
 
-pub(super) fn set_peer_legacy_refused(state: &AppState) {
-    let db = crate::db::Db::open(&state.config().db_path).unwrap();
-    db.set_setting(
-        super::secure_channel::DESKTOP_PEER_LEGACY_ACCESS_SETTING,
-        super::secure_channel::DESKTOP_PEER_LEGACY_ACCESS_REFUSED,
-    )
-    .unwrap();
-}
-
 /// Pins `identity` on `state` as the sibling `desktop_id`, as a completed
 /// ceremony would have.
 fn pin_peer(state: &AppState, desktop_id: &str, identity: &Keypair) {
@@ -1222,12 +1213,14 @@ async fn a_transfer_identity_is_pinned_once_and_a_rotated_one_is_refused() {
     );
 }
 
+/// Legacy desktop-to-desktop access stopped being a setting on 2026-09-20.
+/// Every path by which this desktop *accepts* a sibling on the relay's word
+/// is refused, with nothing left to turn back on. What this desktop
+/// initiates is deliberately untouched - see
+/// `secure_channel::LEGACY_PEER_ACCESS_ALLOWED`.
 #[tokio::test]
-async fn the_legacy_gate_refuses_every_plaintext_sibling_path_when_off() {
+async fn every_inbound_plaintext_sibling_path_is_refused() {
     let state = state("gate");
-    assert!(state.legacy_peer_access_allowed(), "default on");
-    set_peer_legacy_refused(&state);
-    assert!(!state.legacy_peer_access_allowed());
 
     // The relay-attested CA bootstrap.
     let bootstrap = super::lan_bootstrap::bootstrap_lan_trust(
@@ -1259,93 +1252,18 @@ async fn the_legacy_gate_refuses_every_plaintext_sibling_path_when_off() {
         message.starts_with("peer_legacy_access_refused"),
         "{message}"
     );
-
-    // The renderer's Firestore-keyed external peers, the sidecar's mDNS
-    // pairing, and the renderer-credentialed cloud transfer proxy.
-    for operation in ["upsert-external-peer", "start-pairing", "accept-pairing"] {
-        let refused = super::transfer_sidecar::run_transfer_control(
-            DesktopLocalAccess,
-            State(Arc::clone(&state)),
-            axum::extract::Path(operation.into()),
-            None,
-        )
-        .await;
-        let (status, message) = refusal(refused);
-        assert_eq!(status, axum::http::StatusCode::FORBIDDEN, "{operation}");
-        assert!(
-            message.starts_with("peer_legacy_access_refused"),
-            "{message}"
-        );
-    }
-    let refused = super::transfer_sidecar::ensure_cloud_transfer_proxy(
-        DesktopLocalAccess,
-        State(Arc::clone(&state)),
-        axum::Json(
-            serde_json::from_value(serde_json::json!({
-                "peerId": "p", "desktopId": "d", "relayUrl": "ws://127.0.0.1:1", "idToken": "t"
-            }))
-            .unwrap(),
-        ),
-    )
-    .await;
-    let (status, _) = refusal(refused);
-    assert_eq!(status, axum::http::StatusCode::FORBIDDEN);
-
-    // The sidecar is spawned loopback-only with discovery disabled. The
-    // identity variables are process-global, and the real-sidecar fixtures
-    // set an explicit registry mode under the same guard.
-    {
-        let _guard = crate::test_sidecar_guard().await;
-        let prior_discovery = std::env::var("KANNA_TRANSFER_DISCOVERY").ok();
-        std::env::remove_var("KANNA_TRANSFER_DISCOVERY");
-        std::env::set_var(
-            "KANNA_TRANSFER_ROOT",
-            crate::test_paths::unique_test_path_string("gate-root"),
-        );
-        std::env::set_var("KANNA_TRANSFER_PEER_ID", "peer-gate");
-        std::env::set_var("KANNA_TRANSFER_DISPLAY_NAME", "Gate");
-        let env = crate::transfer_sidecar::build_transfer_sidecar_env(state.config()).unwrap();
-        assert!(env.contains(&(
-            "KANNA_TRANSFER_DISCOVERY".to_string(),
-            "disabled".to_string()
-        )));
-        match prior_discovery {
-            Some(value) => std::env::set_var("KANNA_TRANSFER_DISCOVERY", value),
-            None => std::env::remove_var("KANNA_TRANSFER_DISCOVERY"),
-        }
-    }
-
-    // An unpaired sibling cannot be invoked at all.
-    let error = super::invoke_desktop::invoke_desktop(
-        Arc::clone(&state),
-        "desktop-unpaired".into(),
-        "GET".into(),
-        "/v1/status".into(),
-        serde_json::Value::Null,
-    )
-    .await
-    .unwrap_err();
-    assert!(error.starts_with("peer_pairing_required"), "{error}");
-    // The machine list says so.
-    let machines =
-        super::cloud_desktops::list_cloud_desktops(DesktopLocalAccess, State(Arc::clone(&state)))
-            .await
-            .0;
-    let view = serde_json::to_value(&machines).unwrap();
-    assert_eq!(view["machines"][0]["encryption"], "local");
 }
 
 /// A TCP tap between two ends that records every byte in both directions,
 /// so a test can assert what an on-path observer could see.
 /// An unreadable peer trust store must not read as "nobody is paired":
-/// with the legacy gate allowed, that would route a pinned sibling over
-/// the plaintext LAN or relay path. The invoke fails with the identity
-/// error instead, and the sealed dial reports the same.
+/// that would report a pinned sibling as unpaired and ask for a pairing
+/// that already happened. The invoke fails with the identity error
+/// instead, and the sealed dial reports the same.
 #[tokio::test]
 async fn an_unreadable_trust_store_fails_closed_rather_than_falling_back_to_plaintext() {
     use std::os::unix::fs::PermissionsExt;
     let state = state("trust-store-unreadable");
-    assert!(state.legacy_peer_access_allowed(), "the legacy gate is on");
     let sibling = Keypair::generate().unwrap();
     pin_peer(&state, "desktop-sibling", &sibling);
     let store_path = state.config().peer_trust_store_path().unwrap();
@@ -1773,7 +1691,9 @@ async fn concurrent_settings_access_shares_one_connection_without_losing_writes(
         handles.push(tokio::spawn(async move {
             match i % 3 {
                 0 => {
-                    assert!(state.legacy_peer_access_allowed());
+                    state
+                        .with_settings_db(|db| db.get_setting("concurrency-probe"))
+                        .expect("shared settings connection accepts a concurrent read");
                 }
                 1 => {
                     assert!(state.legacy_mobile_access_allowed());

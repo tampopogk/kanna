@@ -111,11 +111,6 @@ export interface DesktopTransferMachineSync {
   setLanPeers(peers: LanTransferPeer[]): void;
   /** Sealed routes to paired siblings, as the server resolved them. */
   setPairedPeers(peers: PairedTransferPeer[]): void;
-  /**
-   * Whether legacy routes may be provisioned. Turning it off drops every
-   * Firestore-keyed cloud registration this window made.
-   */
-  setLegacyAccess(allowed: boolean): Promise<void>;
   setSignedInSession(
     session: DesktopAuthSession,
     currentDesktopId: string | null,
@@ -141,7 +136,13 @@ export function createDesktopTransferMachineSync(
   let cloudMachines: DesktopCloudTransferMachine[] = [];
   let lanPeers: LanTransferPeer[] = [];
   let pairedPeers: PairedTransferPeer[] = [];
-  let legacyAllowed = true;
+  // Legacy (Firestore-keyed cloud, mDNS-paired LAN) desktop-to-desktop
+  // routes stopped being a preference on 2026-09-20; outbound they are
+  // unchanged, so this is a constant rather than a setter. A sibling on
+  // 0.4.0 or later refuses them at its own end
+  // (`secure_channel::LEGACY_PEER_ACCESS_ALLOWED`), which is what retires
+  // them as the fleet upgrades.
+  const legacyAllowed = true;
   let localIdentity: DesktopCloudTransferIdentity | null = null;
   let localIdentitySession = -1;
   let publishedIdentitySession = -1;
@@ -387,12 +388,6 @@ export function createDesktopTransferMachineSync(
     },
     setPairedPeers(peers) {
       pairedPeers = peers;
-    },
-    async setLegacyAccess(allowed) {
-      if (legacyAllowed === allowed) return;
-      legacyAllowed = allowed;
-      const captured = ++generation;
-      await enqueueReconciliation(captured);
     },
     setSignedInSession(session, desktopId) {
       authSession = session;

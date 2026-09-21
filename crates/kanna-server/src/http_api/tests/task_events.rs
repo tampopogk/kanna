@@ -822,12 +822,39 @@ async fn get_task_route_names_a_discovered_but_undialable_machine_with_its_dispa
             .expect("save machine trust store");
     }
 
+    // A pin as well as the grant: eligibility is the pin now, so this is what
+    // makes the peer a LAN candidate `relay_and_lan_desktop_ids` reports.
+    {
+        let path = source
+            .config()
+            .peer_trust_store_path()
+            .expect("peer trust store path");
+        let mut store = crate::peer_trust::PeerTrustStore::load(&path).expect("load pairings");
+        store
+            .upsert(crate::peer_trust::PeerDesktop {
+                desktop_id: "desktop-undialable-peer".into(),
+                display_name: "Undialable peer".into(),
+                channel_public_key: kanna_secure_channel::Keypair::generate()
+                    .expect("generate identity")
+                    .encoded_public_key(),
+                transfer_peer_id: None,
+                transfer_public_key: None,
+                environment: source.config().environment.clone(),
+                account_uid: None,
+                provenance: crate::peer_trust::PeerProvenance::Verified,
+                identity_mismatch_at_unix_ms: None,
+                paired_at_unix_ms: 1,
+                last_seen_unix_ms: None,
+            })
+            .expect("pin the peer");
+        store.save(&path).expect("save pairings");
+    }
+
     // Deliberately no `connect_test_relay_peer` and nothing listening at the
-    // seeded candidate address: `desktop-undialable-peer` is discovered (an
-    // eligible LAN candidate `relay_and_lan_desktop_ids` will report), but
-    // every attempt to actually dispatch to it must fail - the LAN dial
-    // refuses at `127.0.0.1:1`, and the relay fallback has no routing task
-    // in this test to answer it either.
+    // seeded candidate address: `desktop-undialable-peer` is discovered, but
+    // every attempt to actually dispatch to it must fail - the dial refuses
+    // at `127.0.0.1:1`, and the relay fallback has no routing task in this
+    // test to answer it either.
     let app = router(Arc::clone(&source));
 
     let response = app
