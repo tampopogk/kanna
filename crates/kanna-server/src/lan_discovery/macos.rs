@@ -1,6 +1,9 @@
 use super::{ObservationBook, Resolution, ServiceKey, LAN_ROUTING_SERVICE_TYPE};
-use crate::bonjour::{supervise_native_dns_sd, NativeDnsSdRunResult};
+use crate::bonjour::{
+    dns_error as bonjour_dns_error, supervise_native_dns_sd, DnsSdFailure, NativeDnsSdRunResult,
+};
 use crate::http_api::AppState;
+use crate::lan_visibility::{self, Operation};
 use std::collections::HashMap;
 use std::ffi::{c_char, c_void, CStr, CString};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
@@ -154,7 +157,7 @@ enum Event {
 enum EventPrelude {
     Process,
     Ignore,
-    Retry(String),
+    Retry(DnsSdFailure),
 }
 
 struct BrowseContext {
@@ -379,12 +382,12 @@ struct NativeRef<C> {
 }
 
 impl<C> NativeRef<C> {
-    fn socket(&self) -> Result<libc::c_int, String> {
+    fn socket(&self) -> Result<libc::c_int, DnsSdFailure> {
         // SAFETY: raw is live for this owner's lifetime.
         let socket = unsafe { DNSServiceRefSockFD(self.raw) };
         (socket >= 0)
             .then_some(socket)
-            .ok_or_else(|| "macOS DNS-SD operation has no event socket".to_string())
+            .ok_or_else(|| DnsSdFailure::from("macOS DNS-SD operation has no event socket"))
     }
 }
 
@@ -447,16 +450,28 @@ impl Drop for Discovery {
 fn supervise(state: Arc<AppState>, stop: Receiver<()>, startup: SyncSender<()>) {
     let environment = state.config().environment.clone();
     let mut observations = ObservationBook::default();
+    let operation = Operation::browse(LAN_ROUTING_SERVICE_TYPE);
     supervise_native_dns_sd(
+        &operation,
+        "LAN routing discovery",
         &stop,
         RETRY_INTERVAL,
         || {
             observations.clear();
             observations.project(&state, &environment);
-            browse_once(&state, &environment, &stop, &startup, &mut observations)
+            browse_once(
+                &state,
+                &environment,
+                &operation,
+                &stop,
+                &startup,
+                &mut observations,
+            )
         },
-        |error| log::warn!("LAN routing discovery failed: {error}; retrying"),
     );
+    // This worker is stopping; its last observation no longer describes
+    // anything live.
+    lan_visibility::forget(&operation);
     observations.clear();
     observations.project(&state, &environment);
 }
@@ -464,6 +479,7 @@ fn supervise(state: Arc<AppState>, stop: Receiver<()>, startup: SyncSender<()>) 
 fn browse_once(
     state: &AppState,
     environment: &str,
+    operation: &Operation,
     stop: &Receiver<()>,
     startup: &SyncSender<()>,
     observations: &mut ObservationBook,
@@ -473,6 +489,11 @@ fn browse_once(
         Ok(value) => value,
         Err(error) => return NativeDnsSdRunResult::Retry(error),
     };
+    // mDNSResponder accepted the browse, which is the call that an
+    // authorization refusal rejects.
+    if lan_visibility::record_ok(operation) {
+        log::info!("LAN routing discovery recovered");
+    }
     let _ = startup.try_send(());
     let mut resources: HashMap<ServiceKey, ServiceResources> = HashMap::new();
 
@@ -504,7 +525,7 @@ fn browse_once(
             let socket = unsafe { DNSServiceRefSockFD(*service_ref) };
             if socket < 0 {
                 return NativeDnsSdRunResult::Retry(
-                    "macOS DNS-SD operation lost its event socket".to_string(),
+                    "macOS DNS-SD operation lost its event socket".into(),
                 );
             }
             pollfds.push(libc::pollfd {
@@ -522,14 +543,17 @@ fn browse_once(
             )
         };
         if result < 0 {
-            return NativeDnsSdRunResult::Retry(std::io::Error::last_os_error().to_string());
+            return NativeDnsSdRunResult::Retry(std::io::Error::last_os_error().to_string().into());
         }
         for (descriptor, service_ref) in pollfds.iter().zip(refs) {
             let terminal = descriptor.revents & (libc::POLLERR | libc::POLLHUP | libc::POLLNVAL);
             if terminal != 0 {
-                return NativeDnsSdRunResult::Retry(format!(
-                    "macOS mDNSResponder connection reported terminal poll events 0x{terminal:x}"
-                ));
+                return NativeDnsSdRunResult::Retry(
+                    format!(
+                        "macOS mDNSResponder connection reported terminal poll events 0x{terminal:x}"
+                    )
+                    .into(),
+                );
             }
             if descriptor.revents & libc::POLLIN != 0 {
                 // SAFETY: Each ref is live and exclusively processed here.
@@ -788,13 +812,13 @@ fn discard_failed_service(
     observations.project(state, environment);
 }
 
-fn start_browse(events: mpsc::Sender<Event>) -> Result<NativeRef<BrowseContext>, String> {
+fn start_browse(events: mpsc::Sender<Event>) -> Result<NativeRef<BrowseContext>, DnsSdFailure> {
     let registration_type = CString::new(
         LAN_ROUTING_SERVICE_TYPE
             .trim_end_matches(".local.")
             .to_string(),
     )
-    .map_err(|error| format!("invalid LAN routing service type: {error}"))?;
+    .map_err(|error| DnsSdFailure::from(format!("invalid LAN routing service type: {error}")))?;
     let domain = CString::new("local.").expect("static Bonjour domain has no NUL");
     let context = Box::into_raw(Box::new(BrowseContext { events }));
     let mut service_ref = ptr::null_mut();
@@ -816,13 +840,14 @@ fn start_resolve(
     events: mpsc::Sender<Event>,
     key: ServiceKey,
     generation: u64,
-) -> Result<NativeRef<ResolveContext>, String> {
+) -> Result<NativeRef<ResolveContext>, DnsSdFailure> {
     let name = CString::new(key.name.as_str())
-        .map_err(|error| format!("invalid discovered service name: {error}"))?;
+        .map_err(|error| DnsSdFailure::from(format!("invalid discovered service name: {error}")))?;
     let registration_type = CString::new(key.registration_type.as_str())
-        .map_err(|error| format!("invalid discovered service type: {error}"))?;
-    let domain = CString::new(key.domain.as_str())
-        .map_err(|error| format!("invalid discovered service domain: {error}"))?;
+        .map_err(|error| DnsSdFailure::from(format!("invalid discovered service type: {error}")))?;
+    let domain = CString::new(key.domain.as_str()).map_err(|error| {
+        DnsSdFailure::from(format!("invalid discovered service domain: {error}"))
+    })?;
     let context = Box::into_raw(Box::new(ResolveContext {
         events,
         key: key.clone(),
@@ -849,8 +874,9 @@ fn start_address(
     key: ServiceKey,
     generation: u64,
     host: &str,
-) -> Result<NativeRef<AddressContext>, String> {
-    let host = CString::new(host).map_err(|error| format!("invalid resolved hostname: {error}"))?;
+) -> Result<NativeRef<AddressContext>, DnsSdFailure> {
+    let host = CString::new(host)
+        .map_err(|error| DnsSdFailure::from(format!("invalid resolved hostname: {error}")))?;
     let context = Box::into_raw(Box::new(AddressContext {
         events,
         key: key.clone(),
@@ -877,9 +903,10 @@ fn start_query(
     browse_generation: u64,
     fullname: &str,
     record_type: u16,
-) -> Result<NativeRef<QueryContext>, String> {
-    let fullname = CString::new(fullname)
-        .map_err(|error| format!("invalid discovered service fullname: {error}"))?;
+) -> Result<NativeRef<QueryContext>, DnsSdFailure> {
+    let fullname = CString::new(fullname).map_err(|error| {
+        DnsSdFailure::from(format!("invalid discovered service fullname: {error}"))
+    })?;
     let context = Box::into_raw(Box::new(QueryContext {
         events,
         key: key.clone(),
@@ -907,7 +934,7 @@ fn native_ref<C>(
     context: *mut C,
     action: &str,
     error: DnsServiceError,
-) -> Result<NativeRef<C>, String> {
+) -> Result<NativeRef<C>, DnsSdFailure> {
     if error != DNS_SERVICE_ERR_NO_ERROR {
         // SAFETY: The operation failed synchronously, so no callback owns it.
         unsafe { drop(Box::from_raw(context)) };
@@ -918,9 +945,9 @@ fn native_ref<C>(
         // this defensive boundary on the Rust side before invoking another
         // FFI function with an invalid handle.
         unsafe { drop(Box::from_raw(context)) };
-        return Err(format!(
+        return Err(DnsSdFailure::from(format!(
             "failed to {action} through macOS mDNSResponder (missing DNS-SD reference)"
-        ));
+        )));
     }
     let reference = NativeRef {
         raw: service_ref,
@@ -930,8 +957,8 @@ fn native_ref<C>(
     Ok(reference)
 }
 
-fn dns_error(action: &str, error: DnsServiceError) -> String {
-    format!("failed to {action} through macOS mDNSResponder (DNS-SD error {error})")
+fn dns_error(action: &str, error: DnsServiceError) -> DnsSdFailure {
+    bonjour_dns_error(action, error)
 }
 
 #[cfg(test)]
@@ -955,38 +982,44 @@ mod tests {
     #[test]
     fn supervisor_retries_a_failed_generation() {
         let (_stop_sender, stop_receiver) = mpsc::sync_channel(1);
+        let operation = Operation::browse(LAN_ROUTING_SERVICE_TYPE);
         let attempts = Arc::new(Mutex::new(0));
         let observed = Arc::clone(&attempts);
         supervise_native_dns_sd(
+            &operation,
+            "LAN routing discovery",
             &stop_receiver,
             Duration::ZERO,
             move || {
                 let mut attempts = observed.lock().unwrap();
                 *attempts += 1;
                 if *attempts == 1 {
-                    NativeDnsSdRunResult::Retry("responder disconnected".to_string())
+                    NativeDnsSdRunResult::Retry("responder disconnected".into())
                 } else {
                     NativeDnsSdRunResult::Stopped
                 }
             },
-            |_| {},
         );
         assert_eq!(*attempts.lock().unwrap(), 2);
+        lan_visibility::forget(&operation);
     }
 
     #[test]
     fn cancellation_interrupts_recovery_wait() {
         let (stop_sender, stop_receiver) = mpsc::sync_channel(1);
         let (attempted, attempted_receiver) = mpsc::sync_channel(1);
+        let operation = Operation::browse(LAN_ROUTING_SERVICE_TYPE);
+        let supervised = operation.clone();
         let worker = std::thread::spawn(move || {
             supervise_native_dns_sd(
+                &supervised,
+                "LAN routing discovery",
                 &stop_receiver,
                 Duration::from_secs(60),
                 || {
                     let _ = attempted.try_send(());
-                    NativeDnsSdRunResult::Retry("responder disconnected".to_string())
+                    NativeDnsSdRunResult::Retry("responder disconnected".into())
                 },
-                |_| {},
             );
         });
         attempted_receiver
@@ -994,6 +1027,7 @@ mod tests {
             .expect("first generation attempted");
         stop_sender.send(()).unwrap();
         worker.join().unwrap();
+        lan_visibility::forget(&operation);
     }
 
     fn projected_service(

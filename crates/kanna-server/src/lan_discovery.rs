@@ -40,7 +40,8 @@ mod macos;
 /// code resolved in under a second once shortened. Matches the existing
 /// `_kanna-mobile._tcp.local.` (`bonjour::MOBILE_BONJOUR_SERVICE_TYPE`),
 /// which stays under the same limit.
-pub const LAN_ROUTING_SERVICE_TYPE: &str = "_kanna-lan._tcp.local.";
+pub const LAN_ROUTING_SERVICE_TYPE: &str =
+    kanna_runtime_defaults::bonjour_services::LAN_ROUTING.registration_type;
 
 /// This module's own TXT-record shape version - independent of
 /// `machine_trust::MACHINE_TRUST_PROTOCOL_VERSION` (a different record, a

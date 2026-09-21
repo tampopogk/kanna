@@ -17,6 +17,7 @@ mod ksp;
 mod lan_discovery;
 mod lan_tls;
 mod lan_tls_identity;
+mod lan_visibility;
 mod logging;
 mod opencode_models;
 pub(crate) use kanna_runtime_defaults::login_shell;
