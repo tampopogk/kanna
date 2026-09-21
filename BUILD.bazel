@@ -5,7 +5,27 @@ exports_files([
     "LICENSE",
     "MODULE.bazel",
     "VERSION",
+    "VERSION_RC",
 ])
+
+# The version a release ships under lives in VERSION, committed on the release
+# branch when the series is cut. VERSION_RC is the candidate counter for that
+# version, and only a staging build reads it: a staging bundle is version
+# `X.Y.Z-staging.N` while a production bundle of the very same commit is
+# `X.Y.Z`.
+#
+# That split is what lets one commit build both. Promotion then has no version
+# to write and needs no commit of its own, so the commit that ships is the
+# commit that soaked rather than a child of it.
+genrule(
+    name = "staging_version_file",
+    srcs = [
+        "VERSION",
+        "VERSION_RC",
+    ],
+    outs = ["VERSION_staging"],
+    cmd = "printf '%s-staging.%s\\n' \"$$(cat $(location VERSION))\" \"$$(cat $(location VERSION_RC))\" > $@",
+)
 
 load("@kanna_npm//:defs.bzl", "npm_link_all_packages")
 load("@rules_tauri//tauri:defs.bzl", "tauri_bundle_inputs", "tauri_macos_app")
@@ -462,7 +482,7 @@ tauri_bundle_inputs(
     info_plist_fragments = [":desktop_macos_info_plist"],
     bundle_id = "build.kanna.staging",
     product_name = "Kanna Staging",
-    version_file = "VERSION",
+    version_file = ":staging_version_file",
     target_triple = "aarch64-apple-darwin",
 )
 
@@ -533,7 +553,7 @@ tauri_bundle_inputs(
     info_plist_fragments = [":desktop_macos_info_plist"],
     bundle_id = "build.kanna.staging",
     product_name = "Kanna Staging",
-    version_file = "VERSION",
+    version_file = ":staging_version_file",
     target_triple = "x86_64-apple-darwin",
 )
 

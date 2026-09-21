@@ -385,9 +385,31 @@ bugfixes.
   next candidate remains forward even though trunk did not receive that bump
   commit. The ship result reports `versionFloor` when that floor overrides stale
   `VERSION`.
-- **The branch goes dormant after release.** Reuse it for `X.Y.1` hotfix RCs
-  (the series versioning picks the next patch automatically); cut `release/X.(Y+1)`
-  for the next feature release.
+- **Releasing creates the branch.** A production publication pushes
+  `release/X.Y` at the exact commit it released, so a series always has
+  somewhere to receive its patches — including a series promoted straight off a
+  bare `main` RC, which is how `v0.4.0` shipped with no branch at all and left
+  `0.4.1` nowhere to go (`kd release cut` cuts at `origin/main`'s tip, and
+  `--recut` moves unreleased series only). It only ever *creates*: an existing
+  branch is read and reported, never moved, so promoting a historical candidate
+  cannot rewind a series that has since taken backports. The push happens
+  *before* the tag is pushed and the GitHub release is created, so a failure to
+  write the branch aborts the release rather than publishing one without a
+  branch; because it is create-only, a retry finds the branch already there and
+  completes. The ship result reports it as `seriesBranch`.
+- **The branch states its own version, in two committed files.** `VERSION` holds
+  the version the branch will ship under; `VERSION_RC` holds the candidate
+  counter for it. A staging build is `VERSION`-staging-`VERSION_RC`, and a
+  production build of the very same commit is `VERSION` alone — the counter is
+  read only by the staging bundle. That is what lets one commit build both, and
+  why promoting adds no commit of its own.
+- **The branch goes dormant after release.** Reuse it for `X.Y.1` hotfix RCs.
+  Setting the version is part of starting a candidate line, so it is committed,
+  not inferred: land the backport together with `VERSION` at the next patch and
+  `VERSION_RC` at `1`, then ship. Each further candidate of that same patch is a
+  further commit bumping `VERSION_RC` — nothing advances it for you, and shipping
+  twice from one counter is refused with the file and the value named. Cut
+  `release/X.(Y+1)` for the next feature release.
 
 The current 0.3 migration is a recut-shaped repair: `release/0.3` remains at
 the `2d0e50d0…` commit used by `v0.3.0-staging.9`, while `desktop-staging` serves
