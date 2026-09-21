@@ -3731,6 +3731,7 @@ fn builtin_plan_build_review_workflow_and_plan_agent_resolve_from_compiled_resou
             &[
                 kanna_agent_protocol::AgentSelectionEntry::from("codex-gpt-6-astra-hi"),
                 kanna_agent_protocol::AgentSelectionEntry::from("claude-fable-hi"),
+                kanna_agent_protocol::AgentSelectionEntry::from("copilot-hi"),
             ][..]
         ),
     );
@@ -3752,6 +3753,7 @@ fn builtin_plan_build_review_workflow_and_plan_agent_resolve_from_compiled_resou
             &[
                 kanna_agent_protocol::AgentSelectionEntry::from("claude-opus-med"),
                 kanna_agent_protocol::AgentSelectionEntry::from("codex-gpt-6-astra-lo"),
+                kanna_agent_protocol::AgentSelectionEntry::from("copilot-med"),
             ][..]
         ),
     );
@@ -3764,6 +3766,7 @@ fn builtin_plan_build_review_workflow_and_plan_agent_resolve_from_compiled_resou
             &[
                 kanna_agent_protocol::AgentSelectionEntry::from("claude-haiku"),
                 kanna_agent_protocol::AgentSelectionEntry::from("codex-gpt-5.6-luna"),
+                kanna_agent_protocol::AgentSelectionEntry::from("copilot-lo"),
             ][..]
         ),
     );
@@ -3784,11 +3787,22 @@ fn builtin_plan_build_review_workflow_and_plan_agent_resolve_from_compiled_resou
             &[
                 kanna_agent_protocol::AgentSelectionEntry::from("claude-fable"),
                 kanna_agent_protocol::AgentSelectionEntry::from("codex-gpt-6-astra"),
+                kanna_agent_protocol::AgentSelectionEntry::from("copilot-med"),
             ][..]
         ),
     );
 
     let pr_stage = &workflow.stages[3];
+    assert_eq!(
+        pr_stage.agent_provider.as_deref(),
+        Some(
+            &[
+                kanna_agent_protocol::AgentSelectionEntry::from("claude-sonnet"),
+                kanna_agent_protocol::AgentSelectionEntry::from("codex"),
+                kanna_agent_protocol::AgentSelectionEntry::from("copilot-lo"),
+            ][..]
+        ),
+    );
     assert_eq!(
         pr_stage
             .post
@@ -3798,6 +3812,7 @@ fn builtin_plan_build_review_workflow_and_plan_agent_resolve_from_compiled_resou
             &[
                 kanna_agent_protocol::AgentSelectionEntry::from("claude-haiku"),
                 kanna_agent_protocol::AgentSelectionEntry::from("codex-gpt-5.6-luna"),
+                kanna_agent_protocol::AgentSelectionEntry::from("copilot-lo"),
             ][..]
         ),
     );

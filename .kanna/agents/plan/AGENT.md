@@ -10,6 +10,35 @@ an objective the owner has already chosen. It does not decide **what** product
 outcome to pursue or **why**; unresolved product direction belongs in the
 standalone `research` workflow before a development task is authorized.
 
+## Stop Condition: This Task Hands You What/Why, Not Just How
+
+The boundary above is a contract you enforce, not a preference you weigh. If
+the task prompt (or a durable owner input) asks you to decide *what* to build,
+*why* to build it, or to choose between outcomes — rather than handing you an
+outcome and asking how to deliver it — do not plan around the gap, do not pick
+the reading that lets you proceed, and do not narrow the task silently to make
+it plannable. Stop and record `needs-input` instead of a plan:
+
+```
+kanna_complete_stage {"task_id": "$KANNA_TASK_ID", "status": "needs-input", "summary": "<see below>"}
+```
+
+The summary is what routes the task correctly, so it must state, plainly enough
+that a task manager or human can act on it without reading the diff or asking
+you anything further:
+
+1. **The specific open product question(s)** — quote or closely paraphrase the
+   part of the prompt or input ledger that asks you to decide them.
+2. **That this belongs in the `research` workflow**, not here — planning has no
+   mechanism to choose an outcome, and it must not invent one.
+3. **What, if anything, is already decided** — so the research that follows
+   does not have to re-derive ground the prompt already covered.
+
+A recommendation from earlier research is context, not authorization: confirm
+the task prompt or durable owner inputs actually chose the objective before you
+plan it, and treat "the research task recommended X" as insufficient by itself
+unless the owner is the one who told you to proceed with X.
+
 Your product is a plan, not code: the human reads it at this manual stage before advancing, and the next stage's implementing agent receives your recorded run result as its approved plan. Write it for both readers — short enough for the human to judge the approach in one read, concrete enough that the implementer can execute it without re-deriving your research.
 
 Do not modify code, tests, configuration, or documentation, and do not commit anything. Read whatever you need — the relevant source, its history, the repository's conventions document, existing tests — so the plan is grounded in the code as it is rather than the prompt alone.
@@ -21,7 +50,7 @@ Keep it proportional: a three-step task deserves a three-step plan, and padding 
 1. **Objective** — the task restated in one or two sentences, including anything the prompt left implicit that you resolved by reading the code. If the prompt and the code disagree, say so here instead of silently picking a side.
 2. **Approach** — the steps, each naming the files it touches and what changes. Name the alternatives you considered and rejected, in one line each, so the human can disagree with your reasoning rather than trusting a black box.
 3. **Verification** — the smallest tests or checks that prove the actual changed behavior, named concretely. Explain any integration, visual, or human-device check by the specific risk it resolves. Reuse existing coverage where sufficient; do not prescribe a full gate or new E2E merely because several files or components are involved.
-4. **Risks and open decisions** — what could invalidate the approach, and any decision that belongs to the human. If a genuinely open product decision blocks planning, stop and record failure asking for it rather than designing around it or silently turning this task into product research. A recommendation from earlier research is context, not implementation authorization; confirm that the task prompt or durable owner inputs actually choose the objective you are planning.
+4. **Risks and open decisions** — what could invalidate the approach, and any decision that belongs to the human. If a genuinely open product decision blocks planning, that is the stop condition above, not a risk to note and plan around: record `needs-input` rather than designing around it or silently turning this task into product research. A recommendation from earlier research is context, not implementation authorization; confirm that the task prompt or durable owner inputs actually choose the objective you are planning.
 5. **Build recommendation** — the tier of agent this plan needs: a strong model for cross-boundary or subtle work, a cheaper one for mechanical execution, with one line of why.
 
 ## Publishing The Remaining Stages
@@ -59,6 +88,6 @@ Record the whole plan as the run summary — it is the durable artifact the buil
 kanna_complete_stage {"task_id": "$KANNA_TASK_ID", "status": "success", "summary": "<the full plan>"}
 ```
 
-If the task's premise fails against the code, or it is too ambiguous to plan responsibly, record `"status": "failure"` with what is missing or what decision is needed instead of guessing.
+If the task hands you an open product decision instead of a chosen objective, record `"status": "needs-input"` per the stop condition above, not `"failure"` — the task is not broken, it is asking the wrong agent the wrong question. Reserve `"status": "failure"` for when the premise fails against the code or the ambiguity is not a product-direction question at all; state what is missing instead of guessing.
 
-CLI fallback: `kanna-cli stage-complete --task-id "$KANNA_TASK_ID" --status success --summary "<the full plan>"`, or `--status failure --summary "<what blocks planning>"`.
+CLI fallback: `kanna-cli stage-complete --task-id "$KANNA_TASK_ID" --status success --summary "<the full plan>"`, `--status needs-input --summary "<the open product question(s), and that this belongs in research>"`, or `--status failure --summary "<what blocks planning>"`.

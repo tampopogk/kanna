@@ -1,7 +1,7 @@
 {
   "$schema": "./schema.json",
   "name": "plan-build-review",
-  "description": "Plan first: plan (manual gate) -> build (commit as post) -> review -> PR (approve post), automatic after the plan is approved, with per-stage provider selectors",
+  "description": "Use only when the outcome is already decided and what remains is deciding how to deliver it — the shape of the work, not whether or why to do it. If the product direction itself is still open, route to research first: the plan stage will not choose an outcome for you, and stops rather than try. Plan (manual gate) -> build (commit as post) -> review -> PR (approve post), automatic once the plan is approved; review routes findings back to plan when the approach itself is wrong, or to build when only the execution is. Skip the plan gate when the shape is already obvious enough to just build (single-reviewer).",
   "revision_limit": 5,
   "stages": [
     {
@@ -9,7 +9,7 @@
       "description": "Planning agent studies the task and records the implementation plan as its run result; the human reviews the plan before advancing to build",
       "agent": "plan",
       "prompt": "$TASK_PROMPT",
-      "agent_provider": ["codex-gpt-6-astra-hi", "claude-fable-hi"],
+      "agent_provider": ["codex-gpt-6-astra-hi", "claude-fable-hi", "copilot-hi"],
       "policy": { "transition": "manual" }
     },
     {
@@ -17,13 +17,13 @@
       "description": "Agent implements the approved plan, then commits as the stage's tail work",
       "agent": "implement",
       "prompt": "Implement the task following the approved plan below. Original task: $TASK_PROMPT\n\nApproved plan (previous stage result): $PREV_MAIN_RESULT",
-      "agent_provider": ["claude-opus-med", "codex-gpt-6-astra-lo"],
+      "agent_provider": ["claude-opus-med", "codex-gpt-6-astra-lo", "copilot-med"],
       "policy": { "transition": "auto", "revision_transition": "auto" },
       "post": {
         "name": "commit",
         "agent": "commit",
         "prompt": "Commit the relevant work for this task before review. Original task: $TASK_PROMPT. Previous implementation result: $PREV_MAIN_RESULT",
-        "agent_provider": ["claude-haiku", "codex-gpt-5.6-luna"]
+        "agent_provider": ["claude-haiku", "codex-gpt-5.6-luna", "copilot-lo"]
       }
     },
     {
@@ -31,7 +31,7 @@
       "description": "Review agent checks quality and coverage, choosing the revision target by the nature of the findings",
       "agent": "review",
       "prompt": "Review branch $BRANCH for task quality and test coverage against base $BASE_REF. Original task: $TASK_PROMPT. Previous implementation result: $PREV_MAIN_RESULT\n\nThis workflow has a separate plan stage before implementation, so choose the revision target stage by the nature of the blocking findings: implementation defects go back to \"in progress\" as usual, while findings that show the approach itself is structurally wrong — the plan cannot produce a correct result however well it is executed — go back to \"plan\", framed as what the revised plan must address.",
-      "agent_provider": ["claude-fable", "codex-gpt-6-astra"],
+      "agent_provider": ["claude-fable", "codex-gpt-6-astra", "copilot-med"],
       "policy": { "transition": "auto" }
     },
     {
@@ -39,13 +39,13 @@
       "description": "Agent creates a GitHub PR after review passes",
       "agent": "pr",
       "prompt": "Create a PR for the reviewed work on branch $BRANCH.",
-      "agent_provider": ["claude-sonnet", "codex"],
+      "agent_provider": ["claude-sonnet", "codex", "copilot-lo"],
       "policy": { "transition": "auto" },
       "post": {
         "name": "approve",
         "agent": "approve",
         "prompt": "Approve the PR for branch $BRANCH after PR creation and signal the merge master. Previous result: $PREV_RESULT",
-        "agent_provider": ["claude-haiku", "codex-gpt-5.6-luna"]
+        "agent_provider": ["claude-haiku", "codex-gpt-5.6-luna", "copilot-lo"]
       }
     }
   ]

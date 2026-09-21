@@ -1,7 +1,7 @@
 {
   "$schema": "./schema.json",
   "name": "no-review",
-  "description": "Simple: implement (commit as post) -> PR. No review stage.",
+  "description": "Use when you already know the change and the place it goes, and could describe the diff before opening the editor — the cost of being wrong about it is small. Implement (commit as post) -> PR; no review stage, the test suite is the reviewer. Not for work whose shape still needs deciding (plan-build-review) or that deserves a second reader before it ships (single-reviewer).",
   "stages": [
     {
       "name": "in progress",

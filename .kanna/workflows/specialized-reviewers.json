@@ -1,7 +1,7 @@
 {
   "$schema": "./schema.json",
   "name": "specialized-reviewers",
-  "description": "Specialty review panel: implement (commit as post) -> dispatched specialty reviews -> PR",
+  "description": "Use when a single change genuinely spans several specialty domains at once — security, migrations, concurrency, release — each needing its own dedicated reviewer rather than one generalist's best effort. Implement (commit as post) -> dispatched specialty review panel -> PR. Line count is not the trigger: most work, even large work, is better served by single-reviewer's one reviewer; reach for this only when the domains actually named are plural.",
   "revision_limit": 5,
   "stages": [
     {

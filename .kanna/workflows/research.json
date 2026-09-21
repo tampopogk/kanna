@@ -1,7 +1,7 @@
 {
   "$schema": "./schema.json",
   "name": "research",
-  "description": "Product research: explore what outcome to pursue and why, then pause for owner discussion without implementation. When the owner chooses an outcome and asks to proceed, the task manager appends a manual plan stage to this same task rather than starting a replacement one.",
+  "description": "Use when the outcome itself isn't decided — you can describe what's wrong but not what \"fixed\" looks like, or reasonable people would choose different outcomes. Explores what to pursue and why, then pauses for owner discussion without implementation; when the owner chooses an outcome and asks to proceed, the task manager appends a manual plan stage to this same task rather than starting a replacement one. Not for work whose outcome is already chosen — start at plan-build-review, or single-reviewer if the shape is also obvious, instead.",
   "stages": [
     {
       "name": "research",

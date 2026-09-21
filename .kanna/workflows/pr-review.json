@@ -1,7 +1,7 @@
 {
   "$schema": "./schema.json",
   "name": "pr-review",
-  "description": "Review open pull requests in Kanna: a PR review manager orders them and dispatches one child review task per PR",
+  "description": "Use when you want to work through the repository's existing open pull requests with a human reviewer, rather than start new development. A PR review manager orders the open PRs, proposes a review order, and dispatches one child review task per PR you accept. Not a task's own review stage — that lives inside single-reviewer, specialized-reviewers, and plan-build-review, and applies to a PR this task is about to open, not ones already open on the repo.",
   "stages": [
     {
       "name": "PR review",
