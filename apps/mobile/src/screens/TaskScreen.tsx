@@ -100,15 +100,14 @@ import {
   type TaskQuickReply
 } from "./taskQuickReplies";
 import {
-  taskAttentionAccessibilityLabel,
-  taskAttentionReason
+  TASK_ATTENTION_LABEL,
+  taskAttentionRequested
 } from "./taskPresentation";
 import { buildTaskWorkspaceModel } from "./taskWorkspace";
 import { useTerminalReconnectPresentation } from "./terminalReconnectPresentation";
 import { resolveMobileTerminalGeometry } from "../mobileTerminalGeometry";
 import {
   TASK_ATTENTION_BADGE,
-  TASK_ATTENTION_THEME,
   TASK_STAGE_STRIPE_WIDTH,
   resolveTaskStageTheme
 } from "../theme/taskStageTheme";
@@ -298,13 +297,10 @@ export function TaskScreen({
     terminalErrorMessage,
     taskCreationPhase
   });
-  // The explicit human-action badge. The list shows only that it is set; the
-  // reason itself lives here, where the reader arrives after the row sent
-  // them.
-  const attentionReason = taskAttentionReason(task);
-  const attentionLabel = attentionReason
-    ? taskAttentionAccessibilityLabel(attentionReason)
-    : null;
+  // The explicit human-action badge. It is a flag: what the agent wants is in
+  // the task's own conversation, not on the badge.
+  const attentionRequested = taskAttentionRequested(task);
+  const attentionLabel = attentionRequested ? TASK_ATTENTION_LABEL : null;
   const [attachment, setAttachment] = useState<PreparedImageAttachment | null>(
     null
   );
@@ -1170,7 +1166,7 @@ export function TaskScreen({
             )
           }
         >
-          {attentionReason ? (
+          {attentionRequested ? (
             <View
               accessible={false}
               style={[
@@ -1219,27 +1215,6 @@ export function TaskScreen({
                   {expandedPrompt}
                 </Text>
               </ScrollView>
-              {attentionReason ? (
-                <View accessible={false} style={styles.taskIdentity}>
-                  <Text
-                    accessible={false}
-                    style={[
-                      styles.taskIdLabel,
-                      { color: TASK_ATTENTION_THEME.chipLabel }
-                    ]}
-                  >
-                    Attention requested
-                  </Text>
-                  <Text
-                    accessible={false}
-                    selectable
-                    style={styles.attentionReason}
-                    testID={MOBILE_E2E_IDS.taskDetailAttentionReason}
-                  >
-                    {attentionReason}
-                  </Text>
-                </View>
-              ) : null}
               <View accessible={false} style={styles.taskIdentity}>
                 <Text accessible={false} style={styles.taskIdLabel}>
                   Task ID
@@ -1969,10 +1944,9 @@ const styles = StyleSheet.create({
     lineHeight: 16
   },
   /**
-   * The collapsed chip has no room for a sentence, so the badge is a glyph
-   * beside the stage and the reason waits inside the expanded chip. Font
-   * scaling is off for the glyph alone: it is a fixed-size dot, and the chip
-   * row it sits in is already height-bounded by the stage label.
+   * The badge is a flag, so it is a glyph beside the stage. Font scaling is off
+   * for the glyph alone: it is a fixed-size dot, and the chip row it sits in is
+   * already height-bounded by the stage label.
    */
   attentionMarker: {
     alignItems: "center",
@@ -1985,11 +1959,6 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: "800",
     lineHeight: 14
-  },
-  attentionReason: {
-    color: "#F0DCC4",
-    fontSize: 13,
-    lineHeight: 18
   },
   bottomChrome: {
     left: 14,

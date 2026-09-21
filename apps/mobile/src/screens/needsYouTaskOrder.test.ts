@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { TaskSummary } from "../lib/api/types";
 import {
+  ATTENTION_REQUESTED_LABEL,
   DETECTED_PROMPT_LABEL,
   needsYouCount,
   needsYouReason,
@@ -20,14 +21,14 @@ function task(id: string, overrides: Partial<TaskSummary> = {}): TaskSummary {
 describe("visibleNeedsYouTasks", () => {
   it("includes each open explicit request or detected wait once", () => {
     const tasks = [
-      task("explicit", { attentionReason: "Choose approach", runtimeState: "idle" }),
+      task("explicit", { attentionRequested: true, runtimeState: "idle" }),
       task("waiting", { runtimeState: "waiting", readState: "read" }),
-      task("both", { attentionReason: "Review result", runtimeState: "waiting" }),
+      task("both", { attentionRequested: true, runtimeState: "waiting" }),
       task("unread", { activity: "unread", readState: "unread", runtimeState: "idle" }),
       task("busy", { activity: "working", runtimeState: "busy" }),
       task("output", { waitingPromptSnippet: "Recent output", runtimeState: "idle" }),
       task("closed", {
-        attentionReason: "No longer actionable",
+        attentionRequested: true,
         runtimeState: "waiting",
         closedAt: "2026-09-14T12:00:00.000Z"
       })
@@ -43,9 +44,9 @@ describe("visibleNeedsYouTasks", () => {
 
   it("prefers the recorded request and labels detected waiting truthfully", () => {
     expect(needsYouReason(task("explicit", {
-      attentionReason: "  Pick a release window  ",
+      attentionRequested: true,
       runtimeState: "waiting"
-    }))).toBe("Pick a release window");
+    }))).toBe(ATTENTION_REQUESTED_LABEL);
     expect(needsYouReason(task("waiting", { runtimeState: "waiting" }))).toBe(
       DETECTED_PROMPT_LABEL
     );

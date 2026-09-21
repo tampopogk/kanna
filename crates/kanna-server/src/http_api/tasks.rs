@@ -967,7 +967,7 @@ fn persist_transferred_task_context(
         .map_err(|error| db_write_error("db error", error))?
         .is_none()
     {
-        db.set_task_attention(task_id, context.attention_reason.as_deref())
+        db.set_task_attention(task_id, context.attention_requested)
             .map_err(|error| db_write_error("could not import task attention", error))?;
     }
     db.upsert_transferred_task_context(
@@ -1830,7 +1830,7 @@ mod attention_import_tests {
     use super::*;
 
     #[test]
-    fn attention_import_preserves_annotation_without_overwriting_later_clear() {
+    fn attention_import_preserves_the_badge_without_overwriting_a_later_clear() {
         let path = Db::test_db_path("attention-import");
         let db = Db::open_for_tests(&path).unwrap();
         db.insert_test_repo("repo-attention", "Attention").unwrap();
@@ -1846,25 +1846,23 @@ mod attention_import_tests {
         let context = crate::mobile_api::TransferImportSummary {
             transfer_id: Some("transfer-attention".into()),
             workflow_definition: Some("{}".into()),
-            attention_reason: Some("Choose approach".into()),
+            attention_requested: true,
             ..Default::default()
         };
         persist_transferred_task_context(&db, "attention-task", Some(&context)).unwrap();
-        assert_eq!(
+        assert!(
             db.get_pipeline_item("attention-task")
                 .unwrap()
                 .unwrap()
-                .attention_reason
-                .as_deref(),
-            Some("Choose approach")
+                .attention_requested
         );
-        db.set_task_attention("attention-task", None).unwrap();
+        db.set_task_attention("attention-task", false).unwrap();
         persist_transferred_task_context(&db, "attention-task", Some(&context)).unwrap();
-        assert!(db
-            .get_pipeline_item("attention-task")
-            .unwrap()
-            .unwrap()
-            .attention_reason
-            .is_none());
+        assert!(
+            !db.get_pipeline_item("attention-task")
+                .unwrap()
+                .unwrap()
+                .attention_requested
+        );
     }
 }

@@ -53,12 +53,12 @@ describe("task attention through the catalog-backed CLI", () => {
   it("updates without refresh, survives reading/reload, and clears without reordering", async () => {
     const rows = () => client.executeSync<string[]>('return Array.from(document.querySelectorAll(".sidebar [data-task-id]")).map(el => el.dataset.taskId)');
     const before = await rows();
-    const set = await tool("kanna_set_task_attention", { task_id: "attention-fixture", reason: "Choose the approach" });
+    const set = await tool("kanna_set_task_attention", { task_id: "attention-fixture" });
     expect(set.changed).toBe(true);
     await client.waitForElement('[data-task-id="attention-fixture"] .task-attention-marker');
     await client.click(await client.findElement('.workflow-item[data-task-id="attention-fixture"]'));
     await client.waitForElement('.workflow-item.selected[data-task-id="attention-fixture"]');
-    expect(await client.executeSync('return document.querySelector(".task-attention-marker").getAttribute("aria-label")')).toBe("Agent requests attention: Choose the approach");
+    expect(await client.executeSync('return document.querySelector(".task-attention-marker").getAttribute("aria-label")')).toBe("Agent requests attention");
     await client.screenshot(resolve(evidence, "selected-badge.png"));
     expect(await rows()).toEqual(before);
     await client.reload({ dismissStartupShortcuts: false });
@@ -69,7 +69,7 @@ describe("task attention through the catalog-backed CLI", () => {
     await client.waitForElement('.workflow-item.selected[data-task-id="ordinary-fixture"]');
     expect(await rows()).toEqual(before);
     const clear = await tool("kanna_clear_task_attention", { task_id: "attention-fixture" });
-    expect(clear.attentionReason).toBeNull();
+    expect(clear.attentionRequested).toBe(false);
     await client.waitForNoElement(".task-attention-marker");
     await client.screenshot(resolve(evidence, "cleared-badge.png"));
     expect(await rows()).toEqual(before);

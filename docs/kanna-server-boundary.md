@@ -3943,19 +3943,26 @@ before removing worktrees. No editor save changes task stage or commits files.
 
 ### Explicit task attention annotation
 
-`PUT /v1/tasks/{task_id}/attention` accepts `{ "reason": "..." }`; `DELETE` on
-the same path clears it. Catalog-backed MCP/CLI tools `kanna_set_task_attention`
-and `kanna_clear_task_attention` use equivalent `POST` action routes
-`/actions/set-attention` and `/actions/clear-attention`, preserving existing
-machine routing. No live PTY is required. Reasons are trimmed and limited to
-1–240 Unicode scalar values. Responses contain `taskId`, `attentionReason`
-(string or null), and `changed`. Identical writes succeed without an event.
+The badge is a boolean by owner decision (2026-09-21): no desktop or mobile
+surface ever showed the reason it used to carry, so the note is gone and the
+flag remains. `PUT /v1/tasks/{task_id}/attention` sets it and `DELETE` on the
+same path clears it; neither reads a request body, so a peer still sending the
+old `{ "reason": "..." }` is answered rather than refused. Catalog-backed
+MCP/CLI tools `kanna_set_task_attention` and `kanna_clear_task_attention` use
+equivalent `POST` action routes `/actions/set-attention` and
+`/actions/clear-attention`, preserving existing machine routing. No live PTY is
+required. Responses contain `taskId`, `attentionRequested` (boolean), and
+`changed`. Identical writes succeed without an event.
 
-The durable task owns `attention_reason`. Actual changes atomically append
-`task.attention_changed` with `previousAttentionReason` and `attentionReason`,
-and publish the ordinary Tasks snapshot invalidation. Writes do not change
-timestamps/order, activity/read/runtime state, task input, approval or lifecycle.
-Close/reopen and stage transitions retain the annotation. Task detail (including
-brief), summaries, snapshots, LAN/cloud publications and supported transfers
-carry it. Explicit null propagates a clear; older producers may omit the metadata,
-and older relays or transfer peers may drop it. There is no mobile badge UI.
+The durable task owns `attention_requested`. Actual changes atomically append
+`task.attention_changed` with `previousAttentionRequested` and
+`attentionRequested`, and publish the ordinary Tasks snapshot invalidation.
+Writes do not change timestamps/order, activity/read/runtime state, task input,
+approval or lifecycle. Close/reopen and stage transitions retain the badge. Task
+detail (including brief), summaries, snapshots, LAN/cloud publications and
+supported transfers carry it. Older producers may omit the metadata, and older
+relays or transfer peers may drop it, which reads as unbadged. Migration
+`094_task_attention_flag` backfills the flag from any reason a row carried and
+then drops the column: the badges survive, the sentences behind them do not.
+Retained `task.attention_changed` events keep whatever shape they were written
+with.

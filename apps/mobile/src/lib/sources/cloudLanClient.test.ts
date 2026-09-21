@@ -146,7 +146,7 @@ describe("mergeCloudAndLanTasks", () => {
       activity: "unread",
       runtimeState: "busy",
       readState: "unread",
-      attentionReason: "Stale cloud request",
+      attentionRequested: true,
       activityRevision: 4,
       pinned: false,
       pinOrder: null,
@@ -170,7 +170,7 @@ describe("mergeCloudAndLanTasks", () => {
       activity: "idle",
       runtimeState: "waiting",
       readState: "read",
-      attentionReason: null,
+      attentionRequested: false,
       activityRevision: 5,
       pinned: true,
       pinOrder: 3
@@ -196,7 +196,7 @@ describe("mergeCloudAndLanTasks", () => {
         activity: "idle",
         runtimeState: "waiting",
         readState: "read",
-        attentionReason: null,
+        attentionRequested: false,
         activityRevision: 5,
         pinned: true,
         pinOrder: 3
@@ -496,12 +496,12 @@ describe("createCloudLanClient", () => {
     {
       description: "an authoritative explicit-attention clear",
       cloudState: {
-        attentionReason: "Stale cloud request",
+        attentionRequested: true,
         runtimeState: "idle" as const,
         readState: "unread" as const
       },
       lanState: {
-        attentionReason: null,
+        attentionRequested: false,
         runtimeState: "idle" as const,
         readState: "read" as const
       },
@@ -510,12 +510,12 @@ describe("createCloudLanClient", () => {
     {
       description: "an active explicit request",
       cloudState: {
-        attentionReason: null,
+        attentionRequested: false,
         runtimeState: "idle" as const,
         readState: "read" as const
       },
       lanState: {
-        attentionReason: "Approve the rollout",
+        attentionRequested: true,
         runtimeState: "idle" as const,
         readState: "unread" as const
       },
@@ -524,12 +524,12 @@ describe("createCloudLanClient", () => {
     {
       description: "positively detected waiting",
       cloudState: {
-        attentionReason: null,
+        attentionRequested: false,
         runtimeState: "idle" as const,
         readState: "unread" as const
       },
       lanState: {
-        attentionReason: null,
+        attentionRequested: false,
         runtimeState: "waiting" as const,
         readState: "read" as const
       },
@@ -575,7 +575,7 @@ describe("createCloudLanClient", () => {
         expect(tasks, phase).toHaveLength(1);
         expect(tasks[0], phase).toMatchObject({
           id: cloudTask.id,
-          attentionReason: lanState.attentionReason,
+          attentionRequested: lanState.attentionRequested,
           runtimeState: lanState.runtimeState,
           readState: lanState.readState
         });

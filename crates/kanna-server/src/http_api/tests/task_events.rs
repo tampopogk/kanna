@@ -642,9 +642,7 @@ async fn set_task_attention_route_auto_resolves_to_the_owning_sibling_machine() 
         .oneshot(
             axum::http::Request::put("/v1/tasks/remote-task/attention")
                 .header("content-type", "application/json")
-                .body(axum::body::Body::from(
-                    serde_json::json!({ "reason": "needs a human decision" }).to_string(),
-                ))
+                .body(axum::body::Body::from(serde_json::json!({}).to_string()))
                 .expect("request"),
         )
         .await
@@ -655,7 +653,7 @@ async fn set_task_attention_route_auto_resolves_to_the_owning_sibling_machine() 
         .expect("read body");
     let body: serde_json::Value = serde_json::from_slice(&body).expect("json body");
     assert_eq!(body["taskId"], "remote-task");
-    assert_eq!(body["attentionReason"], "needs a human decision");
+    assert_eq!(body["attentionRequested"], true);
     assert_eq!(body["changed"], true);
 
     // The mutation actually landed on the peer, not the source.
@@ -664,10 +662,7 @@ async fn set_task_attention_route_auto_resolves_to_the_owning_sibling_machine() 
         .get_pipeline_item("remote-task")
         .expect("read peer item")
         .expect("peer item exists");
-    assert_eq!(
-        peer_item.attention_reason.as_deref(),
-        Some("needs a human decision")
-    );
+    assert!(peer_item.attention_requested);
 
     relay.abort();
 }

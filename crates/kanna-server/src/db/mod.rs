@@ -59,7 +59,6 @@ pub use blockers::ReplaceTaskBlockersError;
 pub use lifecycle_operations::LifecycleOperationIntent;
 #[allow(unused_imports)]
 pub use operator_events::NewOperatorEvent;
-pub(crate) use pipeline_items::normalize_attention_reason;
 #[allow(unused_imports)]
 pub use pipeline_items::MergeSignalSource;
 #[allow(unused_imports)]
@@ -206,6 +205,7 @@ pub(crate) const CURRENT_SCHEMA_MIGRATIONS: &[&str] = &[
     "091_claude_channel",
     "092_stage_run_prompt",
     "093_drop_standing_constraint",
+    "094_task_attention_flag",
 ];
 
 #[derive(Debug, Serialize)]
@@ -251,7 +251,7 @@ pub struct PipelineItem {
     pub closed_at: Option<String>,
     pub pinned: Option<i64>,
     pub pin_order: Option<i64>,
-    pub attention_reason: Option<String>,
+    pub attention_requested: bool,
     pub display_name: Option<String>,
     pub last_output_preview: Option<String>,
     pub created_at: Option<String>,
@@ -352,7 +352,7 @@ pub struct SnapshotPipelineItem {
     pub activity_changed_at: Option<String>,
     pub unread_at: Option<String>,
     pub port_offset: Option<i64>,
-    pub attention_reason: Option<String>,
+    pub attention_requested: bool,
     pub display_name: Option<String>,
     pub last_output_preview: Option<String>,
     pub port_env: Option<String>,
@@ -1034,13 +1034,8 @@ fn run_migration(
     }
 }
 
-fn add_column(
-    conn: &Connection,
-    table: &str,
-    column: &str,
-    definition: &str,
-) -> Result<(), rusqlite::Error> {
-    let column_exists: i64 = conn.query_row(
+fn column_exists(conn: &Connection, table: &str, column: &str) -> Result<bool, rusqlite::Error> {
+    let found: i64 = conn.query_row(
         "SELECT EXISTS(
            SELECT 1
            FROM pragma_table_xinfo(?1)
@@ -1049,7 +1044,16 @@ fn add_column(
         params![table, column],
         |row| row.get(0),
     )?;
-    if column_exists != 0 {
+    Ok(found != 0)
+}
+
+fn add_column(
+    conn: &Connection,
+    table: &str,
+    column: &str,
+    definition: &str,
+) -> Result<(), rusqlite::Error> {
+    if column_exists(conn, table, column)? {
         return Ok(());
     }
 
@@ -2601,6 +2605,28 @@ fn run_schema_migrations(conn: &Connection) -> Result<(), rusqlite::Error> {
     // removal time were dumped to disk by the task manager beforehand.
     run_migration(conn, "093_drop_standing_constraint", |conn| {
         conn.execute_batch("DROP TABLE IF EXISTS standing_constraint;")
+    })?;
+
+    // The attention badge became a boolean by owner decision on 2026-09-21: no
+    // desktop or mobile surface ever showed the note, so the column and every
+    // projection of it go. A task badged today keeps its badge — the sentence
+    // behind it is discarded, which is the intended loss.
+    run_migration(conn, "094_task_attention_flag", |conn| {
+        add_column(
+            conn,
+            "pipeline_item",
+            "attention_requested",
+            "INTEGER NOT NULL DEFAULT 0",
+        )?;
+        if !column_exists(conn, "pipeline_item", "attention_reason")? {
+            return Ok(());
+        }
+        conn.execute_batch(
+            "UPDATE pipeline_item
+                SET attention_requested = 1
+              WHERE NULLIF(trim(attention_reason), '') IS NOT NULL",
+        )?;
+        conn.execute_batch("ALTER TABLE pipeline_item DROP COLUMN attention_reason")
     })?;
 
     Ok(())

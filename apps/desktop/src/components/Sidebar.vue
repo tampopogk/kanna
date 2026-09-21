@@ -74,7 +74,7 @@ const attentionFilter = ref<"all" | "unread" | "needs-you">("all");
 
 function needsHumanInput(item: SidebarTaskItem): boolean {
   return item.closed_at == null
-    && (Boolean(item.attention_reason?.trim()) || item.runtime_state === "waiting");
+    && (Boolean(item.attention_requested) || item.runtime_state === "waiting");
 }
 
 function matchesAttention(item: SidebarTaskItem): boolean {
@@ -264,8 +264,10 @@ function itemRowTooltip(item: SidebarTaskItem): string | undefined {
   return attention ? `${tooltip} — ${attention}` : tooltip;
 }
 
+// The badge is a flag, so the marker says only that an agent asked for a
+// human. What it wants is in the task's own conversation.
 function attentionLabel(item: SidebarTaskItem): string | undefined {
-  return item.attention_reason ? `Agent requests attention: ${item.attention_reason}` : undefined;
+  return item.attention_requested ? "Agent requests attention" : undefined;
 }
 
 function isRemoteTask(item: SidebarTaskItem): boolean {
@@ -881,7 +883,7 @@ defineExpose({ renameSelectedItem, focusSearch, searchQuery, matchesSearch, visi
                     }"
                     :title="itemRowTooltip(row.item)"
                   >
-                    <span v-if="row.item.attention_reason" class="task-attention-marker" role="img" :title="attentionLabel(row.item)" :aria-label="attentionLabel(row.item)">! </span>
+                    <span v-if="row.item.attention_requested" class="task-attention-marker" role="img" :title="attentionLabel(row.item)" :aria-label="attentionLabel(row.item)">! </span>
                     <span v-if="transferMarker(row.item)" class="transfer-task-marker" :class="`transfer-task-marker-${transferMarker(row.item)?.state}`" :aria-label="transferMarker(row.item)?.label" :title="transferMarkerTitle(row.item)" @click="onTransferMarkerClick($event, row.item)">{{ transferMarker(row.item)?.glyph }} </span><span v-if="isRemoteTask(row.item)" class="remote-task-marker" :aria-label="t('sidebar.remoteTaskTooltip')">&lt; </span><span v-if="row.item.runtime_state === 'waiting'" class="question-marker" title="Detected question / input prompt" aria-label="Detected question / input prompt">? </span>{{ itemTitle(row.item) }}</span>
                   <button
                     v-if="canDetachSubtask(row)"
@@ -991,7 +993,7 @@ defineExpose({ renameSelectedItem, focusSearch, searchQuery, matchesSearch, visi
                       }"
                       :title="itemRowTooltip(row.item)"
                     >
-                      <span v-if="row.item.attention_reason" class="task-attention-marker" role="img" :title="attentionLabel(row.item)" :aria-label="attentionLabel(row.item)">! </span>
+                      <span v-if="row.item.attention_requested" class="task-attention-marker" role="img" :title="attentionLabel(row.item)" :aria-label="attentionLabel(row.item)">! </span>
                       <span v-if="transferMarker(row.item)" class="transfer-task-marker" :class="`transfer-task-marker-${transferMarker(row.item)?.state}`" :aria-label="transferMarker(row.item)?.label" :title="transferMarkerTitle(row.item)" @click="onTransferMarkerClick($event, row.item)">{{ transferMarker(row.item)?.glyph }} </span><span v-if="isRemoteTask(row.item)" class="remote-task-marker" :aria-label="t('sidebar.remoteTaskTooltip')">&lt; </span><span v-if="row.item.runtime_state === 'waiting'" class="question-marker" title="Detected question / input prompt" aria-label="Detected question / input prompt">? </span>{{ itemTitle(row.item) }}</span>
                     <button
                       v-if="canDetachSubtask(row)"
@@ -1057,7 +1059,7 @@ defineExpose({ renameSelectedItem, focusSearch, searchQuery, matchesSearch, visi
                     }"
                     :title="itemRowTooltip(row.item)"
                   >
-                    <span v-if="row.item.attention_reason" class="task-attention-marker" role="img" :title="attentionLabel(row.item)" :aria-label="attentionLabel(row.item)">! </span>
+                    <span v-if="row.item.attention_requested" class="task-attention-marker" role="img" :title="attentionLabel(row.item)" :aria-label="attentionLabel(row.item)">! </span>
                     <span v-if="transferMarker(row.item)" class="transfer-task-marker" :class="`transfer-task-marker-${transferMarker(row.item)?.state}`" :aria-label="transferMarker(row.item)?.label" :title="transferMarkerTitle(row.item)" @click="onTransferMarkerClick($event, row.item)">{{ transferMarker(row.item)?.glyph }} </span><span v-if="isRemoteTask(row.item)" class="remote-task-marker" :aria-label="t('sidebar.remoteTaskTooltip')">&lt; </span><span v-if="row.item.runtime_state === 'waiting'" class="question-marker" title="Detected question / input prompt" aria-label="Detected question / input prompt">? </span>{{ itemTitle(row.item) }}</span>
                   <span
                     v-if="row.item.task_id && blockerNames?.[row.item.task_id]"
@@ -1119,7 +1121,7 @@ defineExpose({ renameSelectedItem, focusSearch, searchQuery, matchesSearch, visi
                   }"
                   :title="itemRowTooltip(item)"
                 >
-                  <span v-if="item.attention_reason" class="task-attention-marker" role="img" :title="attentionLabel(item)" :aria-label="attentionLabel(item)">! </span>
+                  <span v-if="item.attention_requested" class="task-attention-marker" role="img" :title="attentionLabel(item)" :aria-label="attentionLabel(item)">! </span>
                   <span v-if="transferMarker(item)" class="transfer-task-marker" :class="`transfer-task-marker-${transferMarker(item)?.state}`" :aria-label="transferMarker(item)?.label" :title="transferMarkerTitle(item)" @click="onTransferMarkerClick($event, item)">{{ transferMarker(item)?.glyph }} </span><span v-if="isRemoteTask(item)" class="remote-task-marker" :aria-label="t('sidebar.remoteTaskTooltip')">&lt; </span><span v-if="item.runtime_state === 'waiting'" class="question-marker" title="Detected question / input prompt" aria-label="Detected question / input prompt">? </span>{{ itemTitle(item) }}</span>
               </div>
             </div>

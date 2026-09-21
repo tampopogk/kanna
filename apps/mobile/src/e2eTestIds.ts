@@ -39,7 +39,6 @@ export const MOBILE_E2E_IDS = {
   taskDetailTitle: "mobile.task-detail-title",
   taskDetailTaskId: "mobile.task-detail-task-id",
   taskDetailAttentionMarker: "mobile.task-detail-attention-marker",
-  taskDetailAttentionReason: "mobile.task-detail-attention-reason",
   taskTitleButton: "mobile.task-title-button",
   taskExpandedPrompt: "mobile.task-expanded-prompt",
   taskExpandedTaskId: "mobile.task-expanded-task-id",

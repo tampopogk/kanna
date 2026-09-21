@@ -680,8 +680,6 @@ pub(crate) enum TaskCommands {
         #[arg(long)]
         task_id: String,
         #[arg(long)]
-        reason: String,
-        #[arg(long)]
         machine_id: Option<String>,
         #[arg(long)]
         server_url: Option<String>,

@@ -66,7 +66,7 @@ export interface PipelineItem {
   activity_changed_at: string | null;
   unread_at: string | null;
   port_offset: number | null;
-  attention_reason?: string | null;
+  attention_requested?: boolean;
   display_name: string | null;
   last_output_preview: string | null;
   port_env: string | null;

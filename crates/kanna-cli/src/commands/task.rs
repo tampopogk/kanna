@@ -942,14 +942,12 @@ pub(crate) async fn run(command: TaskCommands) {
         }
         TaskCommands::SetAttention {
             task_id,
-            reason,
             machine_id,
             server_url,
         } => {
             attention_command(
                 "kanna_set_task_attention",
                 &task_id,
-                Some(&reason),
                 machine_id.as_deref(),
                 server_url.as_deref(),
             )
@@ -996,7 +994,6 @@ pub(crate) async fn run(command: TaskCommands) {
             attention_command(
                 "kanna_clear_task_attention",
                 &task_id,
-                None,
                 machine_id.as_deref(),
                 server_url.as_deref(),
             )
@@ -1540,14 +1537,10 @@ fn bind_revision_request(request: &mut RequestRevisionRequest) -> Result<(), Str
 async fn attention_command(
     name: &str,
     task_id: &str,
-    reason: Option<&str>,
     machine_id: Option<&str>,
     server_url: Option<&str>,
 ) {
     let mut args = json!({"task_id": task_id});
-    if let Some(reason) = reason {
-        args["reason"] = json!(reason);
-    }
     if let Some(machine_id) = machine_id {
         args["machine_id"] = json!(machine_id);
     }

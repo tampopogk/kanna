@@ -615,17 +615,16 @@ describe("cloud task publication reconciliation", () => {
 });
 
 describe("explicit task attention publication", () => {
-  it("preserves explicit null clears and absence from older producers", () => {
-    for (const attentionReason of ["Choose 🦀", null]) {
-      const parsed = validateCloudTaskPublication(publication([task({ attentionReason })]), "desktop-1");
-      expect(parsed.tasks[0].attentionReason).toBe(attentionReason);
+  it("preserves explicit clears and absence from older producers", () => {
+    for (const attentionRequested of [true, false]) {
+      const parsed = validateCloudTaskPublication(publication([task({ attentionRequested })]), "desktop-1");
+      expect(parsed.tasks[0].attentionRequested).toBe(attentionRequested);
     }
-    expect(validateCloudTaskPublication(publication(), "desktop-1").tasks[0]).not.toHaveProperty("attentionReason");
+    expect(validateCloudTaskPublication(publication(), "desktop-1").tasks[0]).not.toHaveProperty("attentionRequested");
   });
-  it("validates Unicode character bounds", () => {
-    expect(validateCloudTaskPublication(publication([task({ attentionReason: "🦀".repeat(240) })]), "desktop-1").tasks[0].attentionReason).toBe("🦀".repeat(240));
-    for (const attentionReason of [42, "🦀".repeat(241)]) {
-      expect(() => validateCloudTaskPublication(publication([task({ attentionReason })]), "desktop-1")).toThrow();
+  it("refuses a badge that is not a boolean", () => {
+    for (const attentionRequested of [42, "Choose 🦀", null]) {
+      expect(() => validateCloudTaskPublication(publication([task({ attentionRequested })]), "desktop-1")).toThrow();
     }
   });
 });

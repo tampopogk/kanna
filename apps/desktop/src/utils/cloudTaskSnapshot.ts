@@ -21,7 +21,7 @@ export interface CloudTaskSnapshotInput {
     | "base_ref"
     | "pr_number"
     | "pr_url"
-    | "attention_reason"
+    | "attention_requested"
     | "display_name"
     | "has_running_post"
     | "last_output_preview"
@@ -51,7 +51,7 @@ export async function buildCloudTaskSnapshot(input: CloudTaskSnapshotInput) {
     title,
     promptSnippet: prompt ? prompt.slice(0, 500) : null,
     waitingPromptSnippet: input.item.last_output_preview?.trim() || null,
-    attentionReason: input.item.attention_reason,
+    attentionRequested: input.item.attention_requested,
     displayName: input.item.display_name,
     stage: input.item.stage,
     activity: input.item.activity,

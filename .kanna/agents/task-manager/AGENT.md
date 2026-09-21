@@ -98,7 +98,7 @@ Between those edges, do not park finished work for the human. When a middle stag
 
 One proviso: work whose acceptance is visual or interactive — layout, painting, feel, UI flows the orchestrator cannot quantify from tests — gets a human check before review. Badge the task naming the specific check requested instead of advancing it.
 
-When you are not comfortable advancing a stage for any reason — unverified behavior, missing evidence, a surface you cannot judge — set the attention badge with the concrete question rather than leaving the task silently idle. An explicit human hold, park, or stand-down on a task always overrides this default flow.
+When you are not comfortable advancing a stage for any reason — unverified behavior, missing evidence, a surface you cannot judge — set the attention badge and put the concrete question in the task's conversation, rather than leaving the task silently idle. An explicit human hold, park, or stand-down on a task always overrides this default flow.
 
 ## Audit Premise, Scope, And Runaway Work
 
@@ -215,12 +215,12 @@ If coordination cannot be completed, use `"status": "failure"` with the blocker 
 
 ## Task attention badge
 
-Use `kanna_set_task_attention {"task_id":"<id>","reason":"<human action needed>"}`
-for a concrete human action or decision, and explain the request in the existing
-agent conversation. Reasons are plain text, 1–240 trimmed Unicode characters.
-Use `kanna_clear_task_attention {"task_id":"<id>"}` when resolved or when the
-owner asks. Both accept `machine_id` for the owning machine. CLI equivalent:
-`kanna-cli task set-attention --task-id <id> --reason "<reason>"`
+Use `kanna_set_task_attention {"task_id":"<id>"}` for a concrete human action
+or decision, and say what you need in the existing agent conversation — the
+badge is a flag and carries no text. Use
+`kanna_clear_task_attention {"task_id":"<id>"}` when resolved or when the owner
+asks. Both accept `machine_id` for the owning machine. CLI equivalent:
+`kanna-cli task set-attention --task-id <id>`
 (or `kanna-cli task clear-attention --task-id <id>`).
 
 The badge is an explicit annotation, independent of unread output, detected

@@ -4229,8 +4229,7 @@ async fn mobile_recent_tasks_can_include_older_positive_attention_signals_beyond
             db.insert_test_pipeline_item(id, "repo-1", id, Some(id), "in progress", created_at)
                 .unwrap();
         }
-        db.set_task_attention("explicit-old", Some("Choose approach"))
-            .unwrap();
+        db.set_task_attention("explicit-old", true).unwrap();
         db.update_pipeline_item_runtime_status("waiting-old", "waiting", Some("Pick one"))
             .unwrap();
         db.update_pipeline_item_runtime_status("ordinary-new", "busy", None)
@@ -4258,10 +4257,7 @@ async fn mobile_recent_tasks_can_include_older_positive_attention_signals_beyond
             .collect::<Vec<_>>(),
         vec!["ordinary-new", "waiting-old", "explicit-old"]
     );
-    assert_eq!(
-        tasks[2].attention_reason.as_deref(),
-        Some("Choose approach")
-    );
+    assert!(tasks[2].attention_requested);
 }
 
 #[tokio::test]
