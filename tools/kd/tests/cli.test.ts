@@ -684,6 +684,13 @@ describe("kd CLI", () => {
     expect(error).toHaveBeenLastCalledWith("Unknown flag for mobile.ota.publish: --relay");
   });
 
+  /**
+   * Since 2026-09-20 the portal's public identifiers are committed per Firebase
+   * project, so blanking the operator's environment no longer starves a deploy.
+   * A repository with no `apps/web-portal/.env.<projectId>` still must, and the
+   * CLI must name that file rather than only the variable — the previous
+   * message sent an operator looking for an export nobody had.
+   */
   it("returns a nonzero exit code when a portal deploy lacks required configuration", async () => {
     const error = vi.spyOn(console, "error").mockImplementation(() => {});
     vi.spyOn(nodeCommandRunner, "run").mockImplementation(async (command, args) => {
@@ -713,13 +720,19 @@ describe("kd CLI", () => {
     ];
     const previousValues = portalEnvKeys.map((key) => process.env[key]);
     for (const key of portalEnvKeys) process.env[key] = "";
+    // The repository commits a file for every project it deploys, so starving
+    // the resolver means naming one it does not: `kanna-build` and
+    // `kanna-staging` are now configured with or without an operator export.
+    vi.stubEnv("KANNA_FIREBASE_STAGING_PROJECT", "kanna-unconfigured");
 
     try {
       await expect(runCli(["cloud", "deploy", "--staging", "--portal"])).resolves.toBe(1);
       expect(error).toHaveBeenLastCalledWith(
-        "cloud deploy requires KANNA_WEB_PORTAL_FIREBASE_API_KEY to build the account portal."
+        "cloud deploy requires KANNA_WEB_PORTAL_FIREBASE_API_KEY to build the account portal. " +
+        "Set it in the deploy environment or in apps/web-portal/.env.kanna-unconfigured."
       );
     } finally {
+      vi.unstubAllEnvs();
       portalEnvKeys.forEach((key, index) => {
         const previous = previousValues[index];
         if (previous === undefined) delete process.env[key];

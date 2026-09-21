@@ -1,5 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { parseEnv } from "node:util";
 import { cloudEnvironmentToKdEnvironment, resolveKdEnvironment, resolveRelayEntitlementEnforcement } from "./environment";
 import type { CommandRunner } from "./process";
 import { RELAY_STATS_TOKEN_SECRET_NAME } from "./relay-stats";
@@ -273,24 +274,62 @@ export async function ensurePublicFunctionInvokers(input: {
  */
 export const DEFAULT_WEB_PORTAL_CLOUD_PRICE = "$5/month";
 
+/**
+ * Repo-relative path of the committed public portal configuration for one
+ * Firebase project, mirroring `services/firebase-functions/.env.<projectId>`.
+ *
+ * Keyed by project id rather than by `CloudDeployEnvironment` because the
+ * values *are* the project's identity: the Firebase web API key and app id
+ * belong to that project, and the Stripe publishable key to the account that
+ * project bills through. An operator who re-points a deploy with
+ * `KANNA_FIREBASE_*_PROJECT` therefore gets that project's file or an honest
+ * error, never another project's identifiers.
+ */
+export function webPortalEnvFile(projectId: string): string {
+  return `apps/web-portal/.env.${projectId}`;
+}
+
+/**
+ * The committed public configuration for `projectId`, or an empty environment
+ * when the repository has no file for it. Read as a layer *beneath* the
+ * process environment, so an operator export still wins.
+ */
+function readWebPortalEnvFile(repoRoot: string, projectId: string): NodeJS.ProcessEnv {
+  const path = join(repoRoot, webPortalEnvFile(projectId));
+  if (!existsSync(path)) return {};
+  return parseEnv(readFileSync(path, "utf8")) as NodeJS.ProcessEnv;
+}
+
 export function resolveWebPortalBuildEnvironment(
+  repoRoot: string,
   env: NodeJS.ProcessEnv,
   projectId: string
 ): NodeJS.ProcessEnv {
+  const fileEnv = readWebPortalEnvFile(repoRoot, projectId);
+  // An empty or whitespace-only value is an absent one at either layer, which
+  // is how the optional keys below have always read the environment; a blanked
+  // export does not shadow the committed file into a deploy with no identifiers.
+  const configured = (key: string): string | undefined =>
+    env[key]?.trim() || fileEnv[key]?.trim() || undefined;
+
   const buildEnv: NodeJS.ProcessEnv = {
     ...env,
     VITE_FIREBASE_PROJECT_ID: projectId,
-    VITE_FIREBASE_AUTH_DOMAIN: env.KANNA_WEB_PORTAL_FIREBASE_AUTH_DOMAIN?.trim() || `${projectId}.firebaseapp.com`,
-    VITE_FIREBASE_FUNCTIONS_REGION: env.KANNA_WEB_PORTAL_FIREBASE_FUNCTIONS_REGION?.trim() || "us-central1",
+    VITE_FIREBASE_AUTH_DOMAIN: configured("KANNA_WEB_PORTAL_FIREBASE_AUTH_DOMAIN") || `${projectId}.firebaseapp.com`,
+    VITE_FIREBASE_FUNCTIONS_REGION: configured("KANNA_WEB_PORTAL_FIREBASE_FUNCTIONS_REGION") || "us-central1",
     VITE_FIREBASE_USE_EMULATORS: "false",
-    VITE_KANNA_CLOUD_PRICE: env.KANNA_WEB_PORTAL_CLOUD_PRICE?.trim() || DEFAULT_WEB_PORTAL_CLOUD_PRICE
+    VITE_KANNA_CLOUD_PRICE: configured("KANNA_WEB_PORTAL_CLOUD_PRICE") || DEFAULT_WEB_PORTAL_CLOUD_PRICE
   };
   for (const key of WEB_PORTAL_CONFIG_KEYS) {
     const source = `KANNA_WEB_PORTAL_${key}`;
-    const destination = `VITE_${key}`;
-    const value = env[source]?.trim();
-    if (!value) throw new Error(`cloud deploy requires ${source} to build the account portal.`);
-    buildEnv[destination] = value;
+    const value = configured(source);
+    if (!value) {
+      throw new Error(
+        `cloud deploy requires ${source} to build the account portal. ` +
+        `Set it in the deploy environment or in ${webPortalEnvFile(projectId)}.`
+      );
+    }
+    buildEnv[`VITE_${key}`] = value;
   }
   return buildEnv;
 }
@@ -455,7 +494,7 @@ export async function deployFirebaseCloud(input: CloudDeployInput & { relay?: bo
     }
   }
   if (portal) {
-    const portalBuildEnv = resolveWebPortalBuildEnvironment(input.env, projectId);
+    const portalBuildEnv = resolveWebPortalBuildEnvironment(input.repoRoot, input.env, projectId);
     await ensureAccountHostingSite({
       repoRoot: input.repoRoot,
       env: input.env,
