@@ -33,6 +33,7 @@ mod macos {
     // brokers every process through mDNSResponder instead; it is part of
     // libSystem, so signed builds retain no developer-machine dependency.
     use super::MOBILE_BONJOUR_SERVICE_TYPE;
+    use crate::lan_visibility::{self, FailureKind, Operation};
     use std::ffi::{c_char, c_void, CStr, CString};
     use std::ptr;
     use std::sync::mpsc::{self, Receiver, SyncSender};
@@ -55,9 +56,18 @@ mod macos {
     const DNS_SERVICE_FLAGS_ADD: DnsServiceFlags = 0x2;
     const DNS_SERVICE_FLAGS_NO_AUTO_RENAME: DnsServiceFlags = 0x8;
     const DNS_SERVICE_ERR_NO_ERROR: DnsServiceError = 0;
+    /// `kDNSServiceErr_NoAuth`. macOS answers with this when the bundle does
+    /// not declare the service type in `NSBonjourServices`, or when Local
+    /// Network access is off for the app. Neither heals by retrying.
+    pub(crate) const DNS_SERVICE_ERR_NO_AUTH: DnsServiceError = -65_555;
     const POLL_INTERVAL_MS: i32 = 250;
     const REGISTRATION_TIMEOUT: Duration = Duration::from_secs(5);
     const RETRY_INTERVAL: Duration = Duration::from_secs(5);
+    /// An authorization refusal is recoverable only by a person granting
+    /// access, so the loop stays alive to pick that up — at a minute, not at
+    /// five seconds. The five-second loop produced 68,233 identical warnings
+    /// on one machine in two days and changed nothing.
+    const UNAUTHORIZED_RETRY_INTERVAL: Duration = Duration::from_secs(60);
 
     unsafe extern "C" {
         fn DNSServiceRegister(
@@ -89,6 +99,9 @@ mod macos {
         txt_record: Vec<u8>,
         role: &'static str,
         thread_name: &'static str,
+        /// What this supervisor reports to [`crate::lan_visibility`], so a
+        /// refusal reaches `/v1/status` instead of only the log.
+        operation: Operation,
     }
 
     enum RegistrationEvent {
@@ -143,9 +156,65 @@ mod macos {
             .into_owned()
     }
 
+    /// A failed DNS-SD operation, carrying the responder's own code beside
+    /// the message.
+    ///
+    /// The code is the whole point: an authorization refusal and a transient
+    /// responder fault arrive at the same call site and read identically once
+    /// formatted, and only one of them has a remedy or will ever stop
+    /// repeating. Classifying by parsing the message back would be guessing at
+    /// our own formatting.
+    #[derive(Clone, Debug, Eq, PartialEq)]
+    pub(crate) struct DnsSdFailure {
+        message: String,
+        code: Option<DnsServiceError>,
+    }
+
+    impl DnsSdFailure {
+        pub(crate) fn with_code(message: String, code: DnsServiceError) -> Self {
+            Self {
+                message,
+                code: Some(code),
+            }
+        }
+
+        pub(crate) fn message(&self) -> &str {
+            &self.message
+        }
+
+        pub(crate) fn kind(&self) -> FailureKind {
+            if self.code == Some(DNS_SERVICE_ERR_NO_AUTH) {
+                FailureKind::Unauthorized
+            } else {
+                FailureKind::Transient
+            }
+        }
+    }
+
+    impl From<String> for DnsSdFailure {
+        fn from(message: String) -> Self {
+            Self {
+                message,
+                code: None,
+            }
+        }
+    }
+
+    impl From<&str> for DnsSdFailure {
+        fn from(message: &str) -> Self {
+            Self::from(message.to_string())
+        }
+    }
+
+    impl std::fmt::Display for DnsSdFailure {
+        fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            formatter.write_str(&self.message)
+        }
+    }
+
     pub(crate) enum NativeDnsSdRunResult {
         Stopped,
-        Retry(String),
+        Retry(DnsSdFailure),
     }
 
     pub struct Advertisement {
@@ -170,6 +239,7 @@ mod macos {
                 txt_record,
                 role: "mobile Bonjour",
                 thread_name: "kanna-mobile-bonjour",
+                operation: Operation::advertise(MOBILE_BONJOUR_SERVICE_TYPE),
             })
         }
 
@@ -196,6 +266,7 @@ mod macos {
                 txt_record,
                 role: "LAN routing Bonjour",
                 thread_name: "kanna-lan-routing-advertisement",
+                operation: Operation::advertise(service_type),
             })
         }
 
@@ -268,39 +339,59 @@ mod macos {
     ) where
         F: FnMut(&Config, &Receiver<()>, &SyncSender<()>) -> NativeDnsSdRunResult,
     {
-        supervise_native_dns_sd(
-            &stop,
-            retry_interval,
-            || attempt(&config, &stop, &startup),
-            |error| {
-                log::warn!(
-                    "{} advertisement failed for {} ({}, {}, port {}): {}; retrying",
-                    config.role,
-                    config.desktop_name,
-                    config.desktop_id,
-                    config.environment,
-                    config.port,
-                    error
-                );
-            },
+        let operation = config.operation.clone();
+        let context = format!(
+            "{} advertisement for {} ({}, {}, port {})",
+            config.role, config.desktop_name, config.desktop_id, config.environment, config.port
         );
+        supervise_native_dns_sd(&operation, &context, &stop, retry_interval, || {
+            attempt(&config, &stop, &startup)
+        });
+        // The supervisor has stopped, so its last observation is no longer a
+        // claim about anything. A withdrawn advertisement is not a fault.
+        lan_visibility::forget(&operation);
     }
 
     /// Shared ownership loop for native DNS-SD operations. Each caller owns
     /// its operation-specific references and callback contexts, while this
     /// one mechanism owns cancellable recovery after mDNSResponder failures.
     pub(crate) fn supervise_native_dns_sd(
+        operation: &Operation,
+        context: &str,
         stop: &Receiver<()>,
         retry_interval: Duration,
         mut attempt: impl FnMut() -> NativeDnsSdRunResult,
-        mut log_retry: impl FnMut(&str),
     ) {
         loop {
             match attempt() {
                 NativeDnsSdRunResult::Stopped => return,
-                NativeDnsSdRunResult::Retry(error) => {
-                    log_retry(&error);
-                    match stop.recv_timeout(retry_interval) {
+                NativeDnsSdRunResult::Retry(failure) => {
+                    let kind = failure.kind();
+                    let report = lan_visibility::record_failure(operation, kind, failure.message());
+                    // An authorization refusal is a standing condition, not an
+                    // event: retrying it faster cannot help, and logging it per
+                    // attempt buries every other line in the file.
+                    let wait = match kind {
+                        FailureKind::Unauthorized => UNAUTHORIZED_RETRY_INTERVAL,
+                        FailureKind::Transient => retry_interval,
+                    };
+                    if report.first {
+                        match kind {
+                            FailureKind::Unauthorized => log::warn!(
+                                "{context}: {} Retrying every {wait:?} in case access is granted.",
+                                lan_visibility::unauthorized_remedy(&operation.service_type)
+                            ),
+                            FailureKind::Transient => {
+                                log::warn!("{context} failed: {failure}; retrying every {wait:?}")
+                            }
+                        }
+                    } else {
+                        log::debug!(
+                            "{context} still failing after {} attempts: {failure}",
+                            report.consecutive
+                        );
+                    }
+                    match stop.recv_timeout(wait) {
                         Ok(()) | Err(mpsc::RecvTimeoutError::Disconnected) => return,
                         Err(mpsc::RecvTimeoutError::Timeout) => {}
                     }
@@ -317,22 +408,24 @@ mod macos {
         let name = match CString::new(config.desktop_id.as_str()) {
             Ok(value) => value,
             Err(error) => {
-                return NativeDnsSdRunResult::Retry(format!("invalid desktop id: {error}"));
+                return NativeDnsSdRunResult::Retry(format!("invalid desktop id: {error}").into());
             }
         };
         let registration_type = match CString::new(config.service_type.trim_end_matches(".local."))
         {
             Ok(value) => value,
             Err(error) => {
-                return NativeDnsSdRunResult::Retry(format!(
-                    "invalid Bonjour service type: {error}"
-                ));
+                return NativeDnsSdRunResult::Retry(
+                    format!("invalid Bonjour service type: {error}").into(),
+                );
             }
         };
         let domain = match CString::new("local.") {
             Ok(value) => value,
             Err(error) => {
-                return NativeDnsSdRunResult::Retry(format!("invalid Bonjour domain: {error}"));
+                return NativeDnsSdRunResult::Retry(
+                    format!("invalid Bonjour domain: {error}").into(),
+                );
             }
         };
         let (event_sender, event_receiver) = mpsc::channel();
@@ -375,9 +468,7 @@ mod macos {
             unsafe { DNSServiceRefDeallocate(service_ref) };
             // SAFETY: Deallocation prevents future callbacks.
             unsafe { drop(Box::from_raw(context_ptr)) };
-            return NativeDnsSdRunResult::Retry(
-                "Bonjour registration has no event socket".to_string(),
-            );
+            return NativeDnsSdRunResult::Retry("Bonjour registration has no event socket".into());
         }
 
         let mut published = false;
@@ -396,10 +487,12 @@ mod macos {
             // SAFETY: `descriptor` points to one initialized pollfd.
             let poll_result = unsafe { libc::poll(&mut descriptor, 1, POLL_INTERVAL_MS) };
             if poll_result < 0 {
-                break NativeDnsSdRunResult::Retry(std::io::Error::last_os_error().to_string());
+                break NativeDnsSdRunResult::Retry(
+                    std::io::Error::last_os_error().to_string().into(),
+                );
             }
             if let Some(error) = terminal_poll_error(descriptor.revents) {
-                break NativeDnsSdRunResult::Retry(error);
+                break NativeDnsSdRunResult::Retry(error.into());
             }
             if poll_result > 0 && descriptor.revents & libc::POLLIN != 0 {
                 // SAFETY: Only this worker thread processes and deallocates the
@@ -427,6 +520,13 @@ mod macos {
                             config.environment,
                             config.port
                         );
+                        if lan_visibility::record_ok(&config.operation) {
+                            log::info!(
+                                "{} advertisement for {} recovered",
+                                config.role,
+                                config.desktop_id
+                            );
+                        }
                         if !published {
                             let _ = startup.try_send(());
                             published = true;
@@ -448,7 +548,7 @@ mod macos {
                         NativeDnsSdRunResult::Retry(dns_error("registration callback", error))
                     }
                     RegistrationEvent::Removed => NativeDnsSdRunResult::Retry(
-                        "registration was removed by mDNSResponder".to_string(),
+                        "registration was removed by mDNSResponder".into(),
                     ),
                     RegistrationEvent::Published { .. } => continue,
                 };
@@ -475,8 +575,11 @@ mod macos {
         }
     }
 
-    fn dns_error(action: &str, error: DnsServiceError) -> String {
-        format!("failed to {action} through macOS mDNSResponder (DNS-SD error {error})")
+    pub(crate) fn dns_error(action: &str, error: DnsServiceError) -> DnsSdFailure {
+        DnsSdFailure::with_code(
+            format!("failed to {action} through macOS mDNSResponder (DNS-SD error {error})"),
+            error,
+        )
     }
 
     #[cfg(test)]
@@ -495,6 +598,7 @@ mod macos {
                 txt_record: encode_txt(&[("desktopId", "desktop-test")]).unwrap(),
                 role: "mobile Bonjour",
                 thread_name: "kanna-mobile-bonjour",
+                operation: Operation::advertise(MOBILE_BONJOUR_SERVICE_TYPE),
             };
             let (stop_sender, stop_receiver) = mpsc::sync_channel(1);
             let (startup_sender, startup_receiver) = mpsc::sync_channel(1);
@@ -510,7 +614,7 @@ mod macos {
                         let mut count = attempt_counts.lock().unwrap();
                         *count += 1;
                         if *count == 1 {
-                            NativeDnsSdRunResult::Retry("mDNSResponder unavailable".to_string())
+                            NativeDnsSdRunResult::Retry("mDNSResponder unavailable".into())
                         } else {
                             let _ = startup.try_send(());
                             drop(count);
@@ -527,6 +631,83 @@ mod macos {
             stop_sender.send(()).unwrap();
             worker.join().unwrap();
             assert_eq!(*attempts.lock().unwrap(), 2);
+        }
+
+        #[test]
+        fn an_authorization_refusal_is_retried_slowly_and_warned_about_once() {
+            let operation = Operation::advertise("_kanna-lan._tcp.local.");
+            lan_visibility::forget(&operation);
+            let (stop_sender, stop_receiver) = mpsc::sync_channel(1);
+            let attempts = Arc::new(Mutex::new(0u32));
+            let attempt_counts = Arc::clone(&attempts);
+            let supervised = operation.clone();
+            let worker = std::thread::spawn(move || {
+                supervise_native_dns_sd(
+                    &supervised,
+                    "test advertisement",
+                    &stop_receiver,
+                    Duration::from_millis(1),
+                    || {
+                        *attempt_counts.lock().unwrap() += 1;
+                        NativeDnsSdRunResult::Retry(dns_error("register", DNS_SERVICE_ERR_NO_AUTH))
+                    },
+                );
+            });
+
+            // A transient failure would be retried at the 1ms interval the
+            // caller asked for. An unauthorized one waits a minute, so exactly
+            // one attempt has run by the time the supervisor is stopped.
+            //
+            // The registry is process-global, so this reads back its own
+            // operation rather than the aggregate a sibling test also writes.
+            let reported = |operation: &Operation| {
+                lan_visibility::snapshot()
+                    .operations
+                    .into_iter()
+                    .find(|entry| {
+                        entry.action == operation.action
+                            && entry.service_type == operation.service_type
+                    })
+            };
+            let deadline = std::time::Instant::now() + Duration::from_secs(2);
+            let observed = loop {
+                if let Some(entry) = reported(&operation) {
+                    if entry.state == "unauthorized" {
+                        break entry;
+                    }
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "refusal never reached the status registry"
+                );
+                std::thread::yield_now();
+            };
+            assert!(observed
+                .detail
+                .expect("a refusal keeps the responder's own message")
+                .contains("-65555"));
+            assert!(lan_visibility::unauthorized_remedy(&operation.service_type)
+                .contains("NSBonjourServices"));
+            stop_sender.send(()).unwrap();
+            worker.join().unwrap();
+            assert_eq!(*attempts.lock().unwrap(), 1);
+            lan_visibility::forget(&operation);
+        }
+
+        #[test]
+        fn a_transient_failure_is_not_classified_as_unauthorized() {
+            assert_eq!(
+                dns_error("register", DNS_SERVICE_ERR_NO_AUTH).kind(),
+                FailureKind::Unauthorized
+            );
+            assert_eq!(
+                dns_error("register", -65_563).kind(),
+                FailureKind::Transient
+            );
+            assert_eq!(
+                DnsSdFailure::from("mDNSResponder unavailable").kind(),
+                FailureKind::Transient
+            );
         }
 
         #[test]
@@ -803,7 +984,7 @@ pub use macos::Advertisement as MobileBonjourAdvertisement;
 #[cfg(target_os = "macos")]
 pub(crate) use macos::Advertisement as NativeBonjourAdvertisement;
 #[cfg(target_os = "macos")]
-pub(crate) use macos::{supervise_native_dns_sd, NativeDnsSdRunResult};
+pub(crate) use macos::{dns_error, supervise_native_dns_sd, DnsSdFailure, NativeDnsSdRunResult};
 
 #[cfg(not(target_os = "macos"))]
 pub struct MobileBonjourAdvertisement {

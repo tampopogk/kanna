@@ -112,6 +112,15 @@ pub struct MobileServerStatus {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_providers: Option<Vec<AgentProvider>>,
     pub write_path_health: crate::workspace_commands::WritePathHealth,
+    /// Whether other machines can currently find this one by Bonjour, and the
+    /// remedy when they cannot.
+    ///
+    /// A LAN client that cannot reach a desktop directly falls back to the
+    /// relay and works, so the failure has no symptom of its own — which is
+    /// how a Mac stayed undiscoverable for ten days. Absent on builds older
+    /// than this field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lan_visibility: Option<crate::lan_visibility::LanVisibility>,
 }
 
 pub struct MobileApi {
@@ -2081,6 +2090,7 @@ pub fn build_mobile_server_status(
                 .collect(),
         ),
         write_path_health: crate::workspace_commands::write_path_health(),
+        lan_visibility: Some(crate::lan_visibility::snapshot()),
     }
 }
 

@@ -1315,6 +1315,23 @@ mod tests {
                 .and_then(|body| body.remove("secureChannelVersion")),
             Some(serde_json::json!(1))
         );
+        // Whether Bonjour is currently working is a property of the machine
+        // running the test — and of whichever Bonjour tests have already run
+        // in this process — so its presence and shape are what this asserts.
+        // The states it can report are covered in `lan_visibility`'s own tests.
+        let visibility = status_body
+            .as_object_mut()
+            .and_then(|body| body.remove("lanVisibility"));
+        assert!(
+            visibility.is_some_and(|reported| reported
+                .get("status")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|status| matches!(
+                    status,
+                    "ok" | "unauthorized" | "failing" | "unknown"
+                ))),
+            "status must say whether this machine is discoverable on the LAN"
+        );
 
         let response = super::RelayMessage::Response {
             id,
