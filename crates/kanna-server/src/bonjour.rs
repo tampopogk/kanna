@@ -11,7 +11,8 @@ use std::thread::JoinHandle;
 #[cfg(not(target_os = "macos"))]
 use std::time::{Duration, Instant};
 
-pub const MOBILE_BONJOUR_SERVICE_TYPE: &str = "_kanna-mobile._tcp.local.";
+pub const MOBILE_BONJOUR_SERVICE_TYPE: &str =
+    kanna_runtime_defaults::bonjour_services::MOBILE_PAIRING.registration_type;
 // `mdns-sd` has no native interface-notification API. Its platform-neutral
 // daemon checks interfaces every five seconds and emits IpAdd/IpDel events;
 // the supervisor consumes those events instead of adding another address poll.
