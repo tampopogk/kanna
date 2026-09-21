@@ -17,6 +17,14 @@ import { ensureDesktopReady } from "./desktopServerClient";
  * waited out its grace period comes up degraded and says so, and readiness
  * lands on its own whenever the server answers. Nothing here papers over a
  * dead server — `unavailable` is a state the app reports on screen.
+ *
+ * `unavailable` is the *window's* verdict — "I stopped waiting and local
+ * services are not ready" — not "the last attempt threw". Those are different
+ * facts and conflating them hid a whole failure shape: a sidecar that spawns
+ * but never binds its port leaves `ensure_desktop_ready` pending for its full
+ * status budget, so nothing rejects, and a window that reported only thrown
+ * errors sat there uncovered and silent for the difference. The thrown error,
+ * when there is one, is `localServicesFailure()`.
  */
 export type LocalServicesState = "pending" | "ready" | "unavailable";
 
@@ -51,6 +59,14 @@ let startupGraceSpent = false;
 
 const E2E_LOCAL_SERVICES_OUTAGE_KEY = "kanna.e2e.localServicesOutage";
 let e2eOutageActive = false;
+let releaseE2EOutage: (() => void) | null = null;
+
+/** Hold the readiness attempt until the driver recovers it. */
+function e2eOutageHold(): Promise<void> {
+  return new Promise<void>((resolve) => {
+    releaseE2EOutage = resolve;
+  });
+}
 
 /**
  * DEV/E2E only. Simulates a `kanna-server` that is not answering for a whole
@@ -59,6 +75,11 @@ let e2eOutageActive = false;
  * attempt — `main.ts` waits on it before anything is on screen — so it is
  * taken from `localStorage` at page load. One-shot: the flag is consumed as it
  * is read, so a driver that never recovers cannot wedge the next launch.
+ *
+ * It *hangs* rather than refusing, because that is the measured shape: a
+ * sidecar that spawns but never binds keeps `ensure_desktop_ready` pending for
+ * its whole status budget instead of rejecting. A seam that threw instantly
+ * would exercise the one path this window was already reporting correctly.
  */
 function installE2EOutage(): void {
   if (!import.meta.env.DEV) return;
@@ -75,6 +96,8 @@ function installE2EOutage(): void {
   window.__KANNA_E2E_LOCAL_SERVICES__ = {
     recover: () => {
       e2eOutageActive = false;
+      releaseE2EOutage?.();
+      releaseE2EOutage = null;
     },
   };
 }
@@ -109,7 +132,8 @@ function startAttempt(): Promise<void> {
     let delayMs = retryDelayMs;
     while (!superseded()) {
       try {
-        if (e2eOutageActive) throw new Error("E2E local-service outage");
+        if (e2eOutageActive) await e2eOutageHold();
+        if (superseded()) return;
         await ensureDesktopReady();
         if (superseded()) return;
         lastFailure.value = null;
@@ -161,7 +185,13 @@ export async function waitForLocalServicesStartupGrace(): Promise<boolean> {
   } finally {
     if (graceTimer !== undefined) clearTimeout(graceTimer);
   }
-  if (!isReady()) startupGraceSpent = true;
+  if (!isReady()) {
+    startupGraceSpent = true;
+    // Not conditional on anything having thrown: the readiness call can still
+    // be in flight here, and `lastFailure` still null. The window has stopped
+    // covering its workspace either way, and what it shows has to say so.
+    state.value = "unavailable";
+  }
   return isReady();
 }
 
@@ -195,4 +225,6 @@ export function resetLocalServicesForTests(
   startupGraceMs = options.startupGraceMs ?? LOCAL_SERVICES_STARTUP_GRACE_MS;
   startupGraceSpent = false;
   e2eOutageActive = false;
+  releaseE2EOutage?.();
+  releaseE2EOutage = null;
 }

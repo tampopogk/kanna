@@ -51,6 +51,30 @@ describe("localServices", () => {
     expect(localServicesFailure().value).toBe("kanna-server is not running");
   });
 
+  // The shape the banner used to miss entirely. A sidecar that spawns but
+  // never binds its port keeps `ensure_desktop_ready` pending for its whole
+  // status budget, so nothing ever rejects: `lastFailure` stays null and the
+  // old "the last attempt threw" condition left the window silent.
+  it("reports unavailable when the grace expires with readiness still in flight", async () => {
+    let settle: (() => void) | undefined;
+    updateDesktopServerClientHandlersForTests({
+      ensureDesktopReady: () => new Promise<void>((resolve) => {
+        settle = resolve;
+      }),
+    });
+
+    expect(await waitForLocalServicesStartupGrace()).toBe(false);
+
+    // Still in flight — this is the verdict of the window, not of the call.
+    expect(settle).toBeTypeOf("function");
+    expect(localServicesState().value).toBe("unavailable");
+    expect(localServicesFailure().value).toBeNull();
+
+    settle?.();
+    expect(await waitForLocalServices()).toBe(true);
+    expect(localServicesState().value).toBe("ready");
+  });
+
   it("keeps retrying past the grace period and recovers on its own", async () => {
     let attempts = 0;
     let responsive = false;

@@ -1597,6 +1597,40 @@ describe("App", () => {
     wrapper.unmount();
   });
 
+  // Same degraded launch, but with the readiness call still in flight when the
+  // grace expires rather than already rejected — the shape a sidecar that
+  // spawns and never binds produces. Nothing has thrown, so a banner keyed on
+  // a thrown error would leave this window uncovered and saying nothing.
+  it("shows the degraded banner while the readiness call is still in flight", async () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    let settle: (() => void) | undefined;
+    updateDesktopServerClientHandlersForTests({
+      ensureDesktopReady: () => new Promise<void>((resolve) => {
+        settle = resolve;
+      }),
+    });
+    setDesktopReadinessConfirmedForTests(false);
+    resetLocalServicesForTests({ retryDelayMs: 1, startupGraceMs: 5 });
+
+    const wrapper = await mountApp(SidebarWithRepoStub);
+    await waitForTimedCondition(
+      () => wrapper.get(".app").attributes("inert") === undefined,
+    );
+
+    // The call has not settled and still will not; the window says so anyway.
+    expect(settle).toBeTypeOf("function");
+    expect(wrapper.find('[data-testid="local-services-banner"]').exists()).toBe(true);
+    expect(startup.phase.value).not.toBe("failed");
+    // `store.init` is deliberately not asserted here. The preceding test's
+    // window is still parked in its own unbounded wait when this one resets
+    // the module, and abandoning that attempt releases it — so the shared mock
+    // picks up a call that belongs to the previous test, not to this window.
+    // The reject-shape test above owns that assertion.
+
+    warnSpy.mockRestore();
+    wrapper.unmount();
+  });
+
   it("finishes restoring a degraded window once local services answer", async () => {
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
     let responsive = false;
