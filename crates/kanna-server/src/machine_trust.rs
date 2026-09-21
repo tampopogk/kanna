@@ -312,6 +312,29 @@ impl MachineTrustStore {
         })
     }
 
+    /// Drops the outbound grant for `target_desktop_id`, returning whether
+    /// there was one to drop.
+    ///
+    /// Not a lifecycle purge like [`retain_account`](Self::retain_account),
+    /// and not an expiry: this is the one case where a routing attempt has
+    /// *proven* a grant stale, and the grant must stop counting the target as
+    /// a reachable LAN peer before its lease runs out. An unexpired grant is
+    /// the only thing `invoke_desktop::eligible_lan_desktop_ids` tests, so a
+    /// target that answers neither its discovered LAN address nor the relay
+    /// otherwise stays in every machine fan-out for the rest of its 24h
+    /// lease - which is how one signed-out sibling turned every merge-handoff
+    /// singleton scan in a repository into a 503.
+    ///
+    /// The `pending` record, if any, is deliberately left alone: it is
+    /// bootstrap idempotence, not trust, and dropping it would mint a second
+    /// candidate secret on the target the next time one is requested.
+    pub fn revoke_outbound(&mut self, target_desktop_id: &str) -> bool {
+        let before = self.outbound.len();
+        self.outbound
+            .retain(|grant| grant.target_desktop_id != target_desktop_id);
+        before != self.outbound.len()
+    }
+
     /// Idempotently upserts an inbound grant for a caller that authenticated
     /// itself over the relay bootstrap. Distinct from
     /// `pairing::PairingStore::add_trusted_device`: this never touches the
@@ -478,6 +501,69 @@ mod tests {
         assert!(reloaded.outbound.is_empty());
         assert_eq!(reloaded.inbound[0].source_desktop_id, "desktop-a");
         assert_eq!(reloaded.pending[0].candidate_secret, "candidate-secret");
+    }
+
+    #[test]
+    fn revoke_outbound_drops_only_that_targets_grant_and_leaves_pending_alone() {
+        let mut store = MachineTrustStore::default();
+        for target in ["desktop-gone", "desktop-here"] {
+            store
+                .pending_or_create(
+                    target,
+                    "uid-1",
+                    ENV,
+                    LOCAL,
+                    || Ok(format!("s-{target}")),
+                    1_000,
+                )
+                .expect("pending create");
+            store
+                .confirm_outbound(target, &format!("s-{target}"), LOCAL, None, 9_000)
+                .expect("confirm");
+        }
+        store.accept_inbound("desktop-gone", "hash", "uid-1", ENV, LOCAL, 1_000);
+        // A bootstrap for a third target is still in flight.
+        store
+            .pending_or_create(
+                "desktop-booting",
+                "uid-1",
+                ENV,
+                LOCAL,
+                || Ok("s-booting".to_string()),
+                1_000,
+            )
+            .expect("pending create");
+
+        assert!(store.revoke_outbound("desktop-gone"));
+        assert!(
+            !store.revoke_outbound("desktop-gone"),
+            "revoking again must report that there was nothing left to revoke"
+        );
+
+        assert!(store
+            .outbound_grant_for("desktop-gone", Some("uid-1"), ENV, LOCAL, 2_000)
+            .is_none());
+        assert!(
+            store
+                .outbound_grant_for("desktop-here", Some("uid-1"), ENV, LOCAL, 2_000)
+                .is_some(),
+            "an unrelated target's grant must be untouched"
+        );
+        assert!(
+            store.verify_inbound("desktop-gone", "unused", Some("uid-1"), ENV, LOCAL, 2_000)
+                || store
+                    .inbound
+                    .iter()
+                    .any(|grant| grant.source_desktop_id == "desktop-gone"),
+            "revoking an outbound grant must not touch what this desktop accepts inbound"
+        );
+        assert!(
+            store
+                .pending
+                .iter()
+                .any(|pending| pending.target_desktop_id == "desktop-booting"),
+            "an in-flight bootstrap is idempotence, not trust, and must survive"
+        );
     }
 
     #[test]
