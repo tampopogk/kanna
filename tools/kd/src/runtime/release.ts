@@ -206,9 +206,32 @@ function readReleaseCandidateNumber(repoRoot: string): number {
   return Number.parseInt(raw, 10);
 }
 
-function writeReleaseVersionFiles(repoRoot: string, version: string, candidate: number): void {
-  syncVersionFiles(repoRoot, version);
-  writeFileSync(join(repoRoot, RELEASE_CANDIDATE_FILE), `${candidate}\n`);
+/**
+ * Splits a published version into the two values the build reads.
+ *
+ * The staging bundle composes its version as `VERSION`-staging-`VERSION_RC`, so
+ * writing a fully-suffixed string into VERSION stamps the suffix twice: an RC
+ * published as `0.5.0-staging.3` built as `0.5.0-staging.3-staging.1`, which
+ * compares *greater* than the feed it is supposed to update from, so no
+ * installed staging client would ever move. Every path that writes a version
+ * goes through here, so what kd publishes and what Bazel stamps cannot drift.
+ */
+export function splitPublishedVersion(version: string): { base: string; candidate: number } {
+  const match = /^(\d+\.\d+\.\d+)-staging\.(\d+)$/.exec(version.trim().replace(/^v/, ""));
+  if (!match) return { base: version, candidate: 0 };
+  return { base: match[1] ?? version, candidate: Number.parseInt(match[2] ?? "0", 10) };
+}
+
+/**
+ * Writes the version files so that a build of this worktree produces exactly
+ * `version` — the base in VERSION and the candidate counter in VERSION_RC.
+ */
+function writeReleaseVersionFiles(repoRoot: string, version: string): void {
+  const { base, candidate } = splitPublishedVersion(version);
+  syncVersionFiles(repoRoot, base);
+  // A production build reads VERSION alone and ignores the counter, so the
+  // counter is written only when the version being built names a candidate.
+  if (candidate > 0) writeFileSync(join(repoRoot, RELEASE_CANDIDATE_FILE), `${candidate}\n`);
 }
 
 function syncVersionFiles(repoRoot: string, version: string): void {
@@ -222,18 +245,29 @@ function syncVersionFiles(repoRoot: string, version: string): void {
 function versionFilePaths(repoRoot: string): string[] {
   return [
     join(repoRoot, "VERSION"),
+    join(repoRoot, RELEASE_CANDIDATE_FILE),
     join(repoRoot, "apps", "desktop", "src-tauri", "tauri.conf.json"),
     join(repoRoot, "apps", "desktop", "src-tauri", "Cargo.toml")
   ];
 }
 
 function snapshotVersionFiles(repoRoot: string): Array<{ path: string; contents: string }> {
-  return versionFilePaths(repoRoot).map((path) => ({ path, contents: readFileSync(path, "utf8") }));
+  // A file the checkout does not carry is restored by removing it again, so a
+  // ship never leaves one behind in a tree that did not have it.
+  return versionFilePaths(repoRoot)
+    .filter((path) => existsSync(path))
+    .map((path) => ({ path, contents: readFileSync(path, "utf8") }));
 }
 
-function restoreVersionFiles(snapshot: Array<{ path: string; contents: string }>): void {
+function restoreVersionFiles(repoRoot: string, snapshot: Array<{ path: string; contents: string }>): void {
+  const restored = new Set(snapshot.map((file) => file.path));
   for (const file of snapshot) {
     writeFileSync(file.path, file.contents);
+  }
+  // A file the build created but the checkout never carried is removed, not
+  // left behind for the next ship's clean-worktree check to trip over.
+  for (const path of versionFilePaths(repoRoot)) {
+    if (!restored.has(path) && existsSync(path)) rmSync(path);
   }
 }
 
@@ -1400,8 +1434,31 @@ export async function assertStagingPublishAllowed(
   };
 }
 
-function assertStagingVersionAdvances(version: string, active: StagingCandidate | null): void {
+function assertStagingVersionAdvances(
+  version: string,
+  active: StagingCandidate | null,
+  committedFrom?: string
+): void {
   if (!active || compareVersions(version, active.version) > 0) return;
+  if (committedFrom) {
+    // A release-branch candidate is stated by its two committed files, so the
+    // generic guidance below — continue the series, or pass --minor/--major —
+    // cannot move it. Nothing advances VERSION_RC on its own, so say which
+    // file is the lever and what to put in it.
+    const serving = splitPublishedVersion(active.version);
+    const proposed = splitPublishedVersion(version);
+    const remedy = serving.base === proposed.base
+      ? `Commit ${RELEASE_CANDIDATE_FILE} ${serving.candidate + 1} onto ${committedFrom} — alongside the backport it ` +
+        `is a candidate for — and ship again.`
+      : `${STAGING_CHANNEL_TAG} is serving v${active.version}, a different version line, so no candidate number ` +
+        `for v${proposed.base} advances it. Ship that line's next patch, or release the channel deliberately ` +
+        `(kd release reset-staging).`;
+    throw new Error(
+      `Refusing to republish v${version}: ${STAGING_CHANNEL_TAG}/${STAGING_MANIFEST_NAME} already serves ` +
+        `v${active.version}. ${committedFrom} states its candidate in ${RELEASE_CANDIDATE_FILE} and nothing ` +
+        `advances it for you. ${remedy}`
+    );
+  }
   throw new Error(
     `Refusing to roll the staging channel version back or republish it: derived v${version}, but ` +
       `${STAGING_CHANNEL_TAG}/${STAGING_MANIFEST_NAME} currently serves v${active.version}. ` +
@@ -1926,7 +1983,11 @@ export async function shipRelease(input: ReleaseShipInput): Promise<ReleaseShipR
       );
       if (reusable) version = reusable;
     }
-    assertStagingVersionAdvances(version, publishGate.active);
+    assertStagingVersionAdvances(
+      version,
+      publishGate.active,
+      stagingContext.committedCandidateVersion ? stagingContext.sourceBranch : undefined
+    );
   } else {
     const sourceVersion = readCurrentVersion(input.repoRoot);
     version = bumpVersion(sourceVersion, input.bump);
@@ -1942,14 +2003,16 @@ export async function shipRelease(input: ReleaseShipInput): Promise<ReleaseShipR
   } else {
     const versionFileSnapshot = snapshotVersionFiles(input.repoRoot);
     try {
-      syncVersionFiles(input.repoRoot, version);
+      // Both files, always: the staging bundle builds VERSION plus VERSION_RC,
+      // so writing the suffixed string into VERSION alone would stamp it twice.
+      writeReleaseVersionFiles(input.repoRoot, version);
       await mustRun(input.runner, "bazel", ["build", ...bazelArgs, ...targets], input.repoRoot, input.env);
     } catch (error) {
-      restoreVersionFiles(versionFileSnapshot);
+      restoreVersionFiles(input.repoRoot, versionFileSnapshot);
       throw error;
     }
     if (environment === "staging") {
-      restoreVersionFiles(versionFileSnapshot);
+      restoreVersionFiles(input.repoRoot, versionFileSnapshot);
     }
   }
 
@@ -2320,7 +2383,13 @@ async function recutReleaseBranch(input: ReleaseCutInput): Promise<ReleaseCutRes
   if (mergeOnly === null) {
     throw new Error(`Cannot recut ${branch}: merge-resolution hygiene could not be verified; refusing to risk losing branch-only work.`);
   }
-  const offending = [...unmerged.commits, ...mergeOnly];
+  const offending: ReleaseBranchCommit[] = [];
+  for (const commit of [...unmerged.commits, ...mergeOnly]) {
+    // kd's own series version commit is branch-only by construction; every
+    // other branch-only commit is real work a recut would discard.
+    if (await isSeriesVersionCommit(input, commit.sha)) continue;
+    offending.push(commit);
+  }
   if (offending.length > 0) {
     const listed = offending.slice(0, UNMERGED_COMMIT_REPORT_LIMIT).map((commit) => `${commit.sha} ${commit.subject}`).join("\n");
     throw new Error(`Cannot recut ${branch}: it contains ${offending.length} branch-only commit(s) not present on origin/main by patch identity. Backport them first; recut would lose:\n${listed}`);
@@ -2330,13 +2399,17 @@ async function recutReleaseBranch(input: ReleaseCutInput): Promise<ReleaseCutRes
   const ordinal = Math.max(0, ...parseRecutArchiveOrdinals(archiveRefs, branch)) + 1;
   const archiveTag = recutArchiveTag(branch, ordinal);
   const recutAt = new Date(input.now ?? Date.now()).toISOString();
+  // A recut lands the same shape a cut does: origin/main's tip plus the commit
+  // that states the series version. Pushing mainTip bare left the branch
+  // carrying trunk's VERSION, and the next ship refused it as out of series.
+  const newTip = await composeSeriesVersionCommit(input, mainTip, requested);
   const record: LineageRecutRecord = {
     recutId: `${seriesLabel}-${ordinal}`,
     recutAt,
     series: seriesLabel,
     branch,
     oldTip: oldTip.toLowerCase(),
-    newTip: mainTip.toLowerCase(),
+    newTip: newTip.toLowerCase(),
     archiveTag,
     fromVersion: activeCandidate?.version ?? null,
     fromCommit: activeCandidate?.commit ?? null,
@@ -2347,7 +2420,7 @@ async function recutReleaseBranch(input: ReleaseCutInput): Promise<ReleaseCutRes
   };
   const trunkVersion = (await mustRun(input.runner, "git", ["show", "origin/main:VERSION"], input.repoRoot, input.env)).trim();
   if (input.dryRun) {
-    return { branch, version: requested, commit: mainTip, trunkVersion, abandoned: [], recut: { id: record.recutId, archiveTag, oldTip, newTip: mainTip, applied: false } };
+    return { branch, version: requested, commit: newTip, trunkCommit: mainTip, trunkVersion, abandoned: [], recut: { id: record.recutId, archiveTag, oldTip, newTip, applied: false } };
   }
 
   await revalidateRecutPlan(input, repoSlug, branch, mainTip, oldTip, productionTags, activeCandidate, "before archive tag");
@@ -2357,15 +2430,15 @@ async function recutReleaseBranch(input: ReleaseCutInput): Promise<ReleaseCutRes
   await mustRun(
     input.runner,
     "git",
-    ["push", "origin", `--force-with-lease=refs/heads/${branch}:${oldTip}`, `${mainTip}:refs/heads/${branch}`],
+    ["push", "origin", `--force-with-lease=refs/heads/${branch}:${oldTip}`, `${newTip}:refs/heads/${branch}`],
     input.repoRoot,
     input.env
   );
-  await revalidateRecutPlan(input, repoSlug, branch, mainTip, mainTip, productionTags, activeCandidate, "before channel write");
+  await revalidateRecutPlan(input, repoSlug, branch, mainTip, newTip, productionTags, activeCandidate, "before channel write");
   await ensureStagingGithubRelease(input, repoSlug);
   const body = composeStagingChannelRecutBody(await readStagingChannelBody(input, repoSlug), record);
   await mustRun(input.runner, "gh", ["release", "edit", STAGING_CHANNEL_TAG, "--repo", repoSlug, "--notes", body], input.repoRoot, input.env);
-  return { branch, version: requested, commit: mainTip, trunkVersion, abandoned: [], recut: { id: record.recutId, archiveTag, oldTip, newTip: mainTip, applied: true } };
+  return { branch, version: requested, commit: newTip, trunkCommit: mainTip, trunkVersion, abandoned: [], recut: { id: record.recutId, archiveTag, oldTip, newTip, applied: true } };
 }
 
 export function compareVersions(left: string, right: string): number {
@@ -2507,6 +2580,44 @@ export async function readAbandonedSeries(
  * release cut` runs from whatever worktree the operator is in — in a Kanna task,
  * one on an unrelated branch — and cutting a branch must not disturb it.
  */
+/** The paths a series version commit is allowed to touch, and nothing else. */
+const SERIES_VERSION_COMMIT_PATHS = new Set([
+  "VERSION",
+  RELEASE_CANDIDATE_FILE,
+  "apps/desktop/src-tauri/tauri.conf.json",
+  "apps/desktop/src-tauri/Cargo.toml"
+]);
+
+/**
+ * Is this the series version commit kd composed when it cut or recut the
+ * branch?
+ *
+ * The recut hygiene gate refuses to move a branch carrying work origin/main
+ * does not have, and it is right to — that is the check standing between a
+ * recut and silently discarding a backport. But cutting now writes the series
+ * version onto the branch, and that commit is branch-only by construction and
+ * always will be, so without this exemption every branch `cut` creates is
+ * immediately un-recuttable: exactly the operation the owner asked for by name.
+ *
+ * Recognised by kd's own subject *and* by touching nothing outside the version
+ * files, so a genuine backport that happens to borrow the subject line is still
+ * counted and still refuses.
+ */
+async function isSeriesVersionCommit(input: ReleaseCommandContext, sha: string): Promise<boolean> {
+  const subject = await input.runner.run("git", ["log", "-1", "--format=%s", sha], {
+    cwd: input.repoRoot,
+    env: input.env
+  });
+  if (subject.exitCode !== 0 || !/^release: cut \d+\.\d+\.\d+$/.test(subject.stdout.trim())) return false;
+  const changed = await input.runner.run("git", ["show", "--name-only", "--format=", sha], {
+    cwd: input.repoRoot,
+    env: input.env
+  });
+  if (changed.exitCode !== 0) return false;
+  const paths = changed.stdout.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  return paths.length > 0 && paths.every((path) => SERIES_VERSION_COMMIT_PATHS.has(path));
+}
+
 async function composeSeriesVersionCommit(
   input: ReleaseCutInput,
   base: string,

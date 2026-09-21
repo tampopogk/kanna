@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { nodeCommandRunner } from "../src/runtime/process";
 import { cutReleaseBranch } from "../src/runtime/release";
+import type { CommandRunner } from "../src/runtime/process";
 
 /**
  * Cutting a series is the moment its version is set, and the commit that does
@@ -41,6 +42,131 @@ function createOriginAndClone(root: string): { repoRoot: string; origin: string 
   git(repoRoot, "push", "-q", "-u", "origin", "main");
   return { repoRoot, origin };
 }
+
+/**
+ * Real git, mocked GitHub.
+ *
+ * A recut is git plumbing whose failure is invisible to a fully mocked runner —
+ * a mock happily reports success while pushing a ref that carries the wrong
+ * tree — so git runs for real against a real remote. Only the `gh` calls are
+ * answered from a fixture, as an uninitialized staging channel, because the
+ * test must not reach GitHub.
+ */
+function realGitMockedGithub(): CommandRunner {
+  return {
+    async run(command, args, options) {
+      // The remote is a local bare repo, but the slug derived from it only ever
+      // addresses the mocked `gh` calls, so name one git never has to resolve.
+      if (command === "git" && args.join(" ") === "remote get-url origin") {
+        return { exitCode: 0, stdout: "git@github.com:jemdiggity/kanna.git\n", stderr: "" };
+      }
+      if (command === "git") return nodeCommandRunner.run(command, args, options);
+      if (command === "gh") {
+        // `release view desktop-staging` 404s: the channel has no candidate, so
+        // the recut's confirmation is the literal "empty".
+        if (args[0] === "release" && args[1] === "view") {
+          return { exitCode: 1, stdout: "", stderr: "release not found\n" };
+        }
+        return { exitCode: 0, stdout: "", stderr: "" };
+      }
+      throw new Error(`unexpected command in recut fixture: ${command} ${args.join(" ")}`);
+    }
+  };
+}
+
+describe("release cut --recut keeps the series version", () => {
+  it("recuts a branch it cut, landing the version commit on the new main tip", async () => {
+    const root = await mkdtemp(join(tmpdir(), "kd-release-recut-version-"));
+    try {
+      const { repoRoot } = createOriginAndClone(root);
+      const runner = realGitMockedGithub();
+
+      const cut = await cutReleaseBranch({ repoRoot, bump: "minor", version: "0.3.0", env: process.env, runner });
+
+      // main moves on, which is the whole reason to recut.
+      writeFileSync(join(repoRoot, "trunk-work.txt"), "later trunk work\n");
+      git(repoRoot, "add", "-A");
+      git(repoRoot, "commit", "-qm", "more trunk work");
+      git(repoRoot, "push", "-q", "origin", "main");
+      const newTrunkTip = git(repoRoot, "rev-parse", "HEAD");
+
+      const recut = await cutReleaseBranch({
+        repoRoot,
+        bump: "minor",
+        version: "0.3.0",
+        recut: true,
+        reason: "series moved to pick up later trunk work",
+        confirmRecut: "empty",
+        confirmOldTip: cut.commit,
+        env: process.env,
+        runner
+      });
+
+      // Before this, the freshly cut branch was un-recuttable: its own
+      // `release: cut 0.3.0` commit is branch-only by construction, so the
+      // hygiene gate counted it as work a recut would lose.
+      expect(recut.recut?.applied).toBe(true);
+      expect(recut.recut?.oldTip).toBe(cut.commit.toLowerCase());
+      expect(recut.commit).toBe(recut.recut?.newTip);
+      expect(recut.trunkCommit).toBe(newTrunkTip);
+
+      git(repoRoot, "fetch", "-q", "origin", "release/0.3");
+      const branchTip = git(repoRoot, "rev-parse", "FETCH_HEAD");
+      expect(branchTip).toBe(recut.commit);
+      // The moved branch still states its series version. Pushing main's tip
+      // bare left trunk's VERSION there, and the next ship refused the branch
+      // as out of series.
+      expect(git(repoRoot, "show", `${branchTip}:VERSION`)).toBe("0.3.0");
+      expect(git(repoRoot, "show", `${branchTip}:VERSION_RC`)).toBe("1");
+      expect(git(repoRoot, "rev-parse", `${branchTip}^`)).toBe(newTrunkTip);
+      expect(git(repoRoot, "log", "-1", "--format=%s", branchTip)).toBe("release: cut 0.3.0");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("still refuses a branch carrying a genuine backport", async () => {
+    const root = await mkdtemp(join(tmpdir(), "kd-release-recut-backport-"));
+    try {
+      const { repoRoot } = createOriginAndClone(root);
+      const runner = realGitMockedGithub();
+      const cut = await cutReleaseBranch({ repoRoot, bump: "minor", version: "0.3.0", env: process.env, runner });
+
+      // A real fix on the branch and nowhere else. The exemption is for kd's
+      // own version commit only; this must refuse exactly as it did before.
+      git(repoRoot, "fetch", "-q", "origin", "release/0.3");
+      git(repoRoot, "checkout", "-q", "-B", "backport", "FETCH_HEAD");
+      writeFileSync(join(repoRoot, "hotfix.txt"), "a fix that exists only here\n");
+      git(repoRoot, "add", "-A");
+      git(repoRoot, "commit", "-qm", "fix something on the branch only");
+      git(repoRoot, "push", "-q", "origin", "HEAD:refs/heads/release/0.3");
+      const branchTip = git(repoRoot, "rev-parse", "HEAD");
+      git(repoRoot, "checkout", "-q", "main");
+
+      writeFileSync(join(repoRoot, "trunk-work.txt"), "later trunk work\n");
+      git(repoRoot, "add", "-A");
+      git(repoRoot, "commit", "-qm", "more trunk work");
+      git(repoRoot, "push", "-q", "origin", "main");
+
+      await expect(
+        cutReleaseBranch({
+          repoRoot,
+          bump: "minor",
+          version: "0.3.0",
+          recut: true,
+          reason: "trying to move a branch that carries real work",
+          confirmRecut: "empty",
+          confirmOldTip: branchTip,
+          env: process.env,
+          runner
+        })
+      ).rejects.toThrow(/branch-only commit\(s\) not present on origin\/main[\s\S]*fix something on the branch only/);
+      expect(cut.commit).not.toBe(branchTip);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+});
 
 describe("release cut sets the series version", () => {
   it("pushes a branch whose tip commits VERSION and the candidate counter", async () => {

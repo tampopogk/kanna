@@ -397,9 +397,19 @@ bugfixes.
   write the branch aborts the release rather than publishing one without a
   branch; because it is create-only, a retry finds the branch already there and
   completes. The ship result reports it as `seriesBranch`.
-- **The branch goes dormant after release.** Reuse it for `X.Y.1` hotfix RCs
-  (the series versioning picks the next patch automatically); cut `release/X.(Y+1)`
-  for the next feature release.
+- **The branch states its own version, in two committed files.** `VERSION` holds
+  the version the branch will ship under; `VERSION_RC` holds the candidate
+  counter for it. A staging build is `VERSION`-staging-`VERSION_RC`, and a
+  production build of the very same commit is `VERSION` alone — the counter is
+  read only by the staging bundle. That is what lets one commit build both, and
+  why promoting adds no commit of its own.
+- **The branch goes dormant after release.** Reuse it for `X.Y.1` hotfix RCs.
+  Setting the version is part of starting a candidate line, so it is committed,
+  not inferred: land the backport together with `VERSION` at the next patch and
+  `VERSION_RC` at `1`, then ship. Each further candidate of that same patch is a
+  further commit bumping `VERSION_RC` — nothing advances it for you, and shipping
+  twice from one counter is refused with the file and the value named. Cut
+  `release/X.(Y+1)` for the next feature release.
 
 The current 0.3 migration is a recut-shaped repair: `release/0.3` remains at
 the `2d0e50d0…` commit used by `v0.3.0-staging.9`, while `desktop-staging` serves

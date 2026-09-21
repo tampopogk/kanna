@@ -3,6 +3,8 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { splitPublishedVersion } from "../src/runtime/release";
+import { runStagingVersionGenrule } from "./staging-version-genrule";
 
 // A macOS bundle carries the version twice. `make_plist.py` stamps
 // CFBundleShortVersionString from the `version_file` attribute (//:VERSION),
@@ -115,7 +117,10 @@ function tauriConfigGenrules(): Genrule[] {
  * `$(location ...)` and `$@`, then handing the result to bash -- against a
  * fixture whose committed config version is deliberately stale.
  */
-function runConfigGenrule(rule: Genrule): Record<string, unknown> {
+function runConfigGenrule(
+  rule: Genrule,
+  versions: { version?: string; stagingVersion?: string } = {}
+): Record<string, unknown> {
   const dir = mkdtempSync(join(tmpdir(), "kd-desktop-version-wiring-"));
   temporaries.push(dir);
 
@@ -126,11 +131,11 @@ function runConfigGenrule(rule: Genrule): Record<string, unknown> {
     plugins: { updater: { endpoints: ["https://example.invalid/latest.json"] } },
   };
   const versionPath = join(dir, "VERSION");
-  writeFileSync(versionPath, "9.9.9\n");
+  writeFileSync(versionPath, `${versions.version ?? "9.9.9"}\n`);
   // The staging config stamps from the generated combined file, so the fixture
   // supplies what that genrule would have produced for the same VERSION.
   const stagingVersionPath = join(dir, "VERSION_staging");
-  writeFileSync(stagingVersionPath, "9.9.9-staging.4\n");
+  writeFileSync(stagingVersionPath, `${versions.stagingVersion ?? "9.9.9-staging.4"}\n`);
   const outputPath = join(dir, rule.out.split("/").pop() as string);
 
   const command = rule.cmd.replace(/\$\(location ([^)]+)\)/g, (_, label: string) => {
@@ -146,6 +151,50 @@ function runConfigGenrule(rule: Genrule): Record<string, unknown> {
   execFileSync("bash", ["-c", command.replaceAll("$@", outputPath)], { cwd: dir, encoding: "utf8" });
   return JSON.parse(readFileSync(outputPath, "utf8")) as Record<string, unknown>;
 }
+
+/**
+ * The version kd writes into the worktree for a build that must publish
+ * `published`. This is kd's own split, not a restatement of it, so the two
+ * halves cannot drift apart in the one direction that matters.
+ */
+function versionFilesFor(published: string): { version: string; candidate: string } {
+  const { base, candidate } = splitPublishedVersion(published);
+  return { version: base, candidate: String(candidate) };
+}
+
+describe("the version kd writes is the version Bazel stamps", () => {
+  // The fault this pins is an interaction, so it drives the real genrule with
+  // the real file contents rather than a hand-written fixture: kd wrote the
+  // fully-suffixed string into VERSION on the bare-main path, the genrule
+  // appended the counter again, and a bundle published as 0.5.0-staging.3 was
+  // built as 0.5.0-staging.3-staging.1 -- semver-greater than its own feed, so
+  // no installed staging client would ever update to any candidate.
+  it.each([
+    { published: "0.5.0-staging.3", path: "a bare-main candidate" },
+    { published: "0.4.1-staging.2", path: "a release-branch candidate" },
+    { published: "1.10.0-staging.11", path: "multi-digit components" }
+  ])("round-trips $path through the real genrule", ({ published }) => {
+    const files = versionFilesFor(published);
+    expect(runStagingVersionGenrule(files.version, files.candidate)).toBe(published);
+  });
+
+  it("carries that same string into the staging config the updater compares", () => {
+    const published = "0.5.0-staging.3";
+    const files = versionFilesFor(published);
+    const stagingVersion = runStagingVersionGenrule(files.version, files.candidate);
+    const staging = tauriConfigGenrules().find((rule) => rule.srcs.includes("//:staging_version_file"));
+    expect(staging, "expected a staging Tauri config genrule").toBeDefined();
+
+    const config = runConfigGenrule(staging as Genrule, { version: files.version, stagingVersion });
+    expect(config.version).toBe(published);
+  });
+
+  it("leaves a production version untouched, counter and all", () => {
+    // A production build reads VERSION directly, so the published version is
+    // written whole and the counter beside it is never consulted.
+    expect(versionFilesFor("0.4.1")).toEqual({ version: "0.4.1", candidate: "0" });
+  });
+});
 
 describe("desktop bundle version wiring", () => {
   it("stamps every generated Tauri config from a generated version file", () => {

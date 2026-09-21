@@ -45,6 +45,7 @@ import {
   type ReleaseShipInput
 } from "../src/runtime/release";
 import { parseLineageRecutRecord } from "../src/runtime/release-lineage";
+import { stagingVersionForWorktree } from "./staging-version-genrule";
 
 interface CommandCall {
   command: string;
@@ -186,6 +187,16 @@ function cutVersionCommitPlumbing(
   // composer skips them; the real-git test covers the case where they exist.
   if (subcommand === "cat-file" && args[1] === "-e") {
     return { exitCode: 1, stdout: "", stderr: "path does not exist" };
+  }
+  // How a recut decides whether a branch-only commit is kd's own series version
+  // commit. These fixtures' commits are ordinary work, so they answer as such
+  // and the hygiene gate keeps refusing them; release-cut-version.test.ts drives
+  // the real predicate against real commits.
+  if (subcommand === "log" && args.includes("--format=%s")) {
+    return { exitCode: 0, stdout: "work that exists only on the branch\n", stderr: "" };
+  }
+  if (subcommand === "show" && args.includes("--name-only")) {
+    return { exitCode: 0, stdout: "crates/kanna-server/src/lib.rs\n", stderr: "" };
   }
   return null;
 }
@@ -419,6 +430,8 @@ describe("release shipping", () => {
 
   it("uses staging artifact names and Bazel targets when shipping staging", async () => {
     const root = await mkdtemp(join(tmpdir(), "kd-release-"));
+    // What Bazel would stamp from the files kd wrote, captured during the build.
+    let stampedStagingVersion: string | null = null;
     try {
       const { repoRoot, privateKeyPath } = createReleaseRepo(root);
       const outputs = writeStagingReleaseBuildOutputs(repoRoot, ["arm64"]);
@@ -443,11 +456,17 @@ describe("release shipping", () => {
             expect(args).toContain("//:kanna_signed_dmg_staging_arm64");
             expect(args).toContain("//:kanna_updater_bundle_staging_arm64");
             expect(args).not.toContain("//:kanna_signed_dmg_release_arm64");
+            // kd writes the base version and the candidate counter separately;
+            // the staging bundle recombines them. Writing the suffixed string
+            // into VERSION stamped it twice (0.5.0-staging.3-staging.1), which
+            // is semver-greater than the feed, so no installed staging client
+            // could ever update. Run the real genrule over what was written.
             expect(readVersionFiles(repoRoot)).toEqual([
-              "1.3.0-staging.1\n",
-              '{\n  "version": "1.3.0-staging.1"\n}\n',
-              '[package]\nname = "kanna"\nversion = "1.3.0-staging.1"\n'
+              "1.3.0\n",
+              '{\n  "version": "1.3.0"\n}\n',
+              '[package]\nname = "kanna"\nversion = "1.3.0"\n'
             ]);
+            stampedStagingVersion = stagingVersionForWorktree(repoRoot);
             return { exitCode: 0, stdout: "", stderr: "" };
           }
           if (command === "git" && args.join(" ") === "remote get-url origin") {
@@ -505,6 +524,12 @@ describe("release shipping", () => {
         '{\n  "version": "1.2.3"\n}\n',
         '[package]\nname = "kanna"\nversion = "1.2.3"\n'
       ]);
+      // The bundle's version and the published version are the same string.
+      // They are produced by different halves -- kd writes two files, Bazel
+      // recombines them -- so nothing but this comparison holds them together.
+      expect(stampedStagingVersion).toBe(result.version);
+      // And the ship put the checkout back exactly as it found it.
+      expect(readFileSync(join(repoRoot, "VERSION_RC"), "utf8")).toBe("1\n");
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -585,6 +610,85 @@ describe("release shipping", () => {
       expect(readVersionFiles(repoRoot)[0]).toBe("1.3.1\n");
       // The candidate number comes from the branch, never from counting tags.
       expect(calls.some((call) => call.args.join(" ").includes("v1.3.1-staging.*"))).toBe(false);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("names VERSION_RC and the value to commit when a second candidate would repeat the first", async () => {
+    const root = await mkdtemp(join(tmpdir(), "kd-release-second-candidate-"));
+    try {
+      const { repoRoot, privateKeyPath } = createReleaseRepo(root);
+      // The branch shipped 1.3.1-staging.1. The next backport lands, the
+      // operator ships again, and VERSION_RC still says 1 — nothing advances
+      // it. Before this the refusal offered a bare ship or --minor/--major,
+      // neither of which can move a branch candidate.
+      writeBranchCandidate(repoRoot, "1.3.1", 1);
+      const calls: CommandCall[] = [];
+      const runner: CommandRunner = {
+        async run(command, args, options) {
+          calls.push({ command, args, options });
+          const key = `${command} ${args.join(" ")}`;
+          if (isStagingChannelAssetsQuery(command, args)) return stagingChannelAssetsResponse(["latest-staging.json"]);
+          if (command === "gh" && args[0] === "release" && args[1] === "download") {
+            const dirIndex = args.indexOf("--dir");
+            writeFileSync(join(args[dirIndex + 1] ?? "", "latest-staging.json"), '{"version":"1.3.1-staging.1"}\n');
+            return { exitCode: 0, stdout: "", stderr: "" };
+          }
+          if (command === "gh" && args.join(" ").startsWith("release view v1.3.1-staging.1")) {
+            return {
+              exitCode: 0,
+              stdout: JSON.stringify({
+                tagName: "v1.3.1-staging.1",
+                targetCommitish: "branchsha0000000000000000000000000000000",
+                body: "Staging updater manifest for v1.3.1-staging.1\n\nSource-Branch: release/1.3",
+                publishedAt: "2026-09-20T00:00:00Z",
+                isPrerelease: true
+              }),
+              stderr: ""
+            };
+          }
+          if (key === "git status --porcelain") return { exitCode: 0, stdout: "", stderr: "" };
+          if (key === "git rev-parse --abbrev-ref HEAD") return { exitCode: 0, stdout: "release/1.3\n", stderr: "" };
+          if (key === "git rev-parse HEAD") return { exitCode: 0, stdout: "branchsha\n", stderr: "" };
+          if (key === "git ls-remote origin refs/heads/release/1.3") {
+            return { exitCode: 0, stdout: "branchsha\trefs/heads/release/1.3\n", stderr: "" };
+          }
+          if (key === "git fetch origin release/1.3") return { exitCode: 0, stdout: "", stderr: "" };
+          if (key === "git ls-remote --tags origin v1.3.*") {
+            return { exitCode: 0, stdout: "sha1\trefs/tags/v1.3.0\n", stderr: "" };
+          }
+          if (key === "git remote get-url origin") {
+            return { exitCode: 0, stdout: "git@github.com:jemdiggity/kanna.git\n", stderr: "" };
+          }
+          if (command === "git" && (args[0] === "fetch" || args[0] === "merge-base")) {
+            return { exitCode: 0, stdout: "", stderr: "" };
+          }
+          if (command === "gh" && args[0] === "release" && args[1] === "list") {
+            return { exitCode: 0, stdout: JSON.stringify([{ tagName: "v1.3.1-staging.1", createdAt: "2026-09-20T00:00:00Z" }]), stderr: "" };
+          }
+          if (command === "gh" && args[0] === "release" && args[1] === "view") {
+            return { exitCode: 0, stdout: JSON.stringify({ body: "" }), stderr: "" };
+          }
+          if (command === "git" && args[0] === "ls-remote") return { exitCode: 0, stdout: "", stderr: "" };
+          return { exitCode: 1, stdout: "", stderr: `unexpected command ${key}` };
+        }
+      };
+
+      const shipping = shipRelease({
+        repoRoot,
+        bump: "patch",
+        archLabels: ["arm64"],
+        release: false,
+        dryRun: true,
+        environment: "staging",
+        env: releaseEnv(privateKeyPath),
+        runner
+      });
+
+      await expect(shipping).rejects.toThrow(/VERSION_RC/);
+      await expect(shipping).rejects.toThrow(/Commit VERSION_RC 2 onto release\/1\.3/);
+      expect(calls.some((call) => call.command === "bazel")).toBe(false);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -5654,7 +5758,11 @@ describe("release branch recut", () => {
         if (key.startsWith("gh release view desktop-staging")) return { exitCode: 0, stdout: "", stderr: "" };
         if (key.startsWith("gh release edit desktop-staging")) return { exitCode: 0, stdout: "", stderr: "" };
         if (key.startsWith("git push origin --force-with-lease=")) {
-          branchTip = MAIN_TIP;
+          // The branch lands at the commit the refspec names — the composed
+          // series version commit, not main's tip, which is what leaves the
+          // moved branch still stating its own version.
+          const refspec = args.find((arg) => arg.includes(":refs/heads/")) ?? "";
+          branchTip = refspec.split(":")[0] || MAIN_TIP;
           return { exitCode: 0, stdout: "", stderr: "" };
         }
         if (key.startsWith("git push origin refs/tags/recut/")) {
@@ -5662,6 +5770,8 @@ describe("release branch recut", () => {
           return { exitCode: 0, stdout: "", stderr: "" };
         }
         if (key.startsWith("git tag -a") || key.startsWith("git push origin")) return { exitCode: 0, stdout: "", stderr: "" };
+        const plumbing = cutVersionCommitPlumbing(command, args);
+        if (plumbing) return plumbing;
         throw new Error(`unexpected command ${key}`);
       }
     };
@@ -5682,7 +5792,18 @@ describe("release branch recut", () => {
         env: {},
         runner: recutRunner(calls)
       });
-      expect(result.recut).toMatchObject({ archiveTag: "recut/release/0.3-1", oldTip: OLD_TIP, newTip: MAIN_TIP, applied: true });
+      // The branch moves to the composed series version commit, whose parent is
+      // main's tip — the same shape `cut` produces, so the moved branch still
+      // states its own version instead of inheriting trunk's.
+      expect(result.recut).toMatchObject({
+        archiveTag: "recut/release/0.3-1",
+        oldTip: OLD_TIP,
+        newTip: CUT_VERSION_COMMIT,
+        applied: true
+      });
+      expect(result.trunkCommit).toBe(MAIN_TIP);
+      const composed = calls.find((call) => call.command === "git" && call.args[0] === "commit-tree");
+      expect(composed?.args).toEqual(expect.arrayContaining(["-p", MAIN_TIP, "-m", "release: cut 0.3.0"]));
       const tagPush = calls.findIndex((call) => call.command === "git" && call.args.includes("refs/tags/recut/release/0.3-1"));
       const branchPush = calls.findIndex((call) => call.command === "git" && call.args.some((arg) => arg.includes("refs/heads/release/0.3")) && call.args.includes("--force-with-lease=refs/heads/release/0.3:" + OLD_TIP));
       expect(tagPush).toBeGreaterThanOrEqual(0);

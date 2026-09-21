@@ -1847,6 +1847,9 @@ const helpTopics: Record<string, string[]> = {
     "A staging publish must be a descendant of the candidate the channel already serves, except for a verified and recorded forward-main resumption after promotion; a release/X.Y RC must build that branch's remote tip exactly.",
     "A bare main staging ship continues an active unpromoted main RC; otherwise it starts the next minor series from the greater of VERSION and the greatest production semantic version. Pass a bump flag to override it.",
     "Patch RCs in a production series are shipped from release/X.Y; the result reports versionFloor when stale VERSION was raised.",
+    "A release/X.Y branch states its candidate in two committed files: VERSION (the version it ships under) and VERSION_RC (the candidate counter).",
+    "A staging build is VERSION-staging.VERSION_RC and a production build of the same commit is VERSION alone, so one commit builds both and promoting adds no commit.",
+    "Nothing advances VERSION_RC for you: commit the next counter alongside each backport. Shipping twice from one counter is refused, naming the file and the value.",
     "Publishing a newer RC does not erase an older candidate's own soak or eligibility; rollback and unauthorized divergent lineage still refuse.",
     "A published production release creates release/X.Y at the released commit when it is missing, so the series has somewhere to take patches; an existing branch is never moved.",
     "Use --staging --rollback-to <version> to repoint the staging channel manifest without building."
