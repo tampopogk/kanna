@@ -11,7 +11,8 @@ import {
 } from "./mobile-ota-certificate";
 import type { CommandRunner } from "./process";
 import { formatSourceRef, resolveSourceRef, type ResolvedSourceRef } from "./source-ref";
-import { assertStagingPublishAllowed, compareVersions } from "./release";
+import { assertStagingPublishAllowed } from "./release-gate";
+import { compareVersions } from "./release-version";
 import { isReleaseBranchName } from "./release-lineage";
 
 export type MobileOtaPlatform = "ios" | "android";

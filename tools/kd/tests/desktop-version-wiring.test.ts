@@ -3,7 +3,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { splitPublishedVersion } from "../src/runtime/release";
+import { splitPublishedVersion } from "../src/runtime/release-version";
 import { runStagingVersionGenrule } from "./staging-version-genrule";
 
 // A macOS bundle carries the version twice. `make_plist.py` stamps

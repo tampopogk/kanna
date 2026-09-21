@@ -180,9 +180,21 @@ describe("Kanna repository cache defaults", () => {
 
   it("keeps the compiler cache out of release configuration", () => {
     expect(JSON.stringify(config)).not.toContain("release ship");
-    const releaseSource = readFileSync(resolve(root, "tools/kd/src/runtime/release.ts"), "utf8");
-    expect(releaseSource).not.toContain("rust-cache");
-    expect(releaseSource).not.toContain("kache");
+    const releaseModules = [
+      "release-command",
+      "release-version",
+      "release-artifacts",
+      "release-channel",
+      "release-gate",
+      "release-ship",
+      "release-cut",
+      "release-status"
+    ];
+    for (const moduleName of releaseModules) {
+      const releaseSource = readFileSync(resolve(root, `tools/kd/src/runtime/${moduleName}.ts`), "utf8");
+      expect(releaseSource).not.toContain("rust-cache");
+      expect(releaseSource).not.toContain("kache");
+    }
   });
 });
 

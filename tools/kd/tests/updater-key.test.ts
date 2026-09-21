@@ -3,7 +3,7 @@ import { chmod, mkdir, readFile, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import type { CommandRunner } from "../src/runtime/process";
-import { shipRelease } from "../src/runtime/release";
+import { shipRelease } from "../src/runtime/release-ship";
 import {
   assertUpdaterSigningKeyMatchesPublicKey,
   preflightUpdaterSigningKey,

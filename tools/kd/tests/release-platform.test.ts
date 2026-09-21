@@ -61,7 +61,7 @@ describe("release platforms", () => {
    * production.
    */
   it("reproduces the macOS channel names the release engine already uses", () => {
-    const release = readFileSync(resolve(repoRoot, "tools/kd/src/runtime/release.ts"), "utf8");
+    const release = readFileSync(resolve(repoRoot, "tools/kd/src/runtime/release-channel.ts"), "utf8");
     const macos = releasePlatform("macos");
     expect(release).toContain(`const STAGING_CHANNEL_TAG = "${macos.stagingChannelTag}";`);
     expect(release).toContain(`const STAGING_MANIFEST_NAME = "${macos.manifestName}";`);

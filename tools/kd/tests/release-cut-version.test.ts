@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { nodeCommandRunner } from "../src/runtime/process";
-import { cutReleaseBranch } from "../src/runtime/release";
+import { cutReleaseBranch } from "../src/runtime/release-cut";
 import type { CommandRunner } from "../src/runtime/process";
 
 /**

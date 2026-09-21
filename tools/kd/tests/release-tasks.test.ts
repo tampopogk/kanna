@@ -8,12 +8,26 @@ const releaseMocks = vi.hoisted(() => ({
   shipRelease: vi.fn()
 }));
 
-vi.mock("../src/runtime/release", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../src/runtime/release")>();
+vi.mock("../src/runtime/release-cut", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../src/runtime/release-cut")>();
   return {
     ...actual,
-    cutReleaseBranch: releaseMocks.cutReleaseBranch,
-    releaseStatus: releaseMocks.releaseStatus,
+    cutReleaseBranch: releaseMocks.cutReleaseBranch
+  };
+});
+
+vi.mock("../src/runtime/release-status", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../src/runtime/release-status")>();
+  return {
+    ...actual,
+    releaseStatus: releaseMocks.releaseStatus
+  };
+});
+
+vi.mock("../src/runtime/release-ship", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../src/runtime/release-ship")>();
+  return {
+    ...actual,
     shipRelease: releaseMocks.shipRelease
   };
 });
