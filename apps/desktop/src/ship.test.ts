@@ -1,15 +1,50 @@
 import { createHash } from "node:crypto";
 import { inflateSync } from "node:zlib";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
 const repoRoot = resolve(process.cwd(), "../..");
+const releaseRuntimeDir = resolve(repoRoot, "tools/kd/src/runtime");
 const defaultTauriIconSha256 =
   "3dc10493b7de48a61de58f768f8a5708d3a44a068c148cedf0502b9b9b71ba5d";
 
 function sha256(buffer: Buffer): string {
   return createHash("sha256").update(buffer).digest("hex");
+}
+
+/**
+ * `tools/kd/src/runtime/release.ts` was split into coherent `release-*.ts`
+ * modules, so each assertion below reads whichever module now owns the concern
+ * it covers rather than one catch-all file.
+ */
+function readReleaseRuntime(...modules: string[]): string {
+  return modules
+    .map((name) => readFileSync(resolve(releaseRuntimeDir, name), "utf8"))
+    .join("\n");
+}
+
+/**
+ * Negative guards against the retired shell-script release path have to hold
+ * for the whole release runtime, not for one module: pointing them at a single
+ * file would let the old form reappear in a sibling and go unnoticed.
+ */
+function readWholeReleaseRuntime(): string {
+  const modules = readdirSync(releaseRuntimeDir)
+    .filter(
+      (name) =>
+        (name === "release.ts" || name.startsWith("release-")) &&
+        name.endsWith(".ts") &&
+        !name.endsWith(".test.ts"),
+    )
+    .sort();
+
+  // If the modules are ever renamed out from under this glob the guards would
+  // silently scan nothing, which is worse than a loud failure.
+  expect(modules).toContain("release-ship.ts");
+  expect(modules).toContain("release-artifacts.ts");
+
+  return readReleaseRuntime(...modules);
 }
 
 interface DecodedPng {
@@ -200,38 +235,32 @@ describe("kd release workflow", () => {
   });
 
   it("uses the VERSION file as the source of truth for the target version", () => {
-    const releaseRuntime = readFileSync(
-      resolve(repoRoot, "tools/kd/src/runtime/release.ts"),
-      "utf8",
-    );
+    const releaseVersion = readReleaseRuntime("release-version.ts");
+    const releaseShip = readReleaseRuntime("release-ship.ts");
 
-    expect(releaseRuntime).toContain("function readCurrentVersion");
-    expect(releaseRuntime).toContain('join(repoRoot, "VERSION")');
-    expect(releaseRuntime).toContain("bumpVersion(sourceVersion, input.bump)");
+    expect(releaseVersion).toContain("function readCurrentVersion");
+    expect(releaseVersion).toContain('join(repoRoot, "VERSION")');
+    expect(releaseShip).toContain("bumpVersion(sourceVersion, input.bump)");
   });
 
   it("resolves GitHub release metadata from gh and remote URLs", () => {
-    const releaseRuntime = readFileSync(
-      resolve(repoRoot, "tools/kd/src/runtime/release.ts"),
-      "utf8",
-    );
+    const releaseShip = readReleaseRuntime("release-ship.ts");
 
-    expect(releaseRuntime).toContain("releaseRepoSlug(remoteUrl)");
-    expect(releaseRuntime).toContain("releases/generate-notes");
-    expect(releaseRuntime).not.toContain(
+    expect(releaseShip).toContain("releaseRepoSlug(remoteUrl)");
+    expect(releaseShip).toContain("releases/generate-notes");
+    expect(readWholeReleaseRuntime()).not.toContain(
       "https://github.com/jemdiggity/kanna-tauri/releases/tag/v$VERSION",
     );
   });
 
   it("resolves final Bazel outputs with cquery instead of assuming a bazel-bin path", () => {
-    const releaseRuntime = readFileSync(
-      resolve(repoRoot, "tools/kd/src/runtime/release.ts"),
-      "utf8",
-    );
+    const releaseArtifacts = readReleaseRuntime("release-artifacts.ts");
 
-    expect(releaseRuntime).toContain('"cquery"');
-    expect(releaseRuntime).toContain("--output=files");
-    expect(releaseRuntime).not.toContain('DMG_SOURCE="$BAZEL_BIN/release/');
+    expect(releaseArtifacts).toContain('"cquery"');
+    expect(releaseArtifacts).toContain("--output=files");
+    expect(readWholeReleaseRuntime()).not.toContain(
+      'DMG_SOURCE="$BAZEL_BIN/release/',
+    );
   });
 
   it("sources desktop_crates from the narrow desktop workspace manifest", () => {
@@ -294,13 +323,12 @@ describe("release bundle naming", () => {
   });
 
   it("uses the same dmg asset name in dry-run and release without signed in the filename", () => {
-    const releaseRuntime = readFileSync(
-      resolve(repoRoot, "tools/kd/src/runtime/release.ts"),
-      "utf8",
-    );
+    const releaseArtifacts = readReleaseRuntime("release-artifacts.ts");
 
-    expect(releaseRuntime).toContain("Kanna_${version}_${label}.dmg");
-    expect(releaseRuntime).not.toContain("Kanna_${version}_${label}-signed.dmg");
+    expect(releaseArtifacts).toContain("Kanna_${version}_${label}.dmg");
+    expect(readWholeReleaseRuntime()).not.toContain(
+      "Kanna_${version}_${label}-signed.dmg",
+    );
   });
 
   it("does not emit signed in bazel dmg output filenames", () => {
@@ -337,10 +365,7 @@ describe("release bundle naming", () => {
       resolve(repoRoot, "BUILD.bazel"),
       "utf8",
     );
-    const releaseRuntime = readFileSync(
-      resolve(repoRoot, "tools/kd/src/runtime/release.ts"),
-      "utf8",
-    );
+    const releaseChannel = readReleaseRuntime("release-channel.ts");
 
     expect(rootBuild).toContain('name = "kanna_bundle_inputs_staging_arm64"');
     expect(rootBuild).toContain('name = "kanna_bundle_inputs_staging_x86_64"');
@@ -351,7 +376,7 @@ describe("release bundle naming", () => {
     expect(rootBuild).toContain('output_name = "release/staging/Kanna-Staging-arm64.dmg"');
     expect(rootBuild).toContain('output_name = "release/staging/Kanna-Staging-x86_64.dmg"');
     expect(rootBuild).toContain('"Kanna Staging.app": "160,175"');
-    expect(releaseRuntime).toContain("latest-staging.json");
+    expect(releaseChannel).toContain("latest-staging.json");
   });
 
   it("uses the custom macOS app icon for Bazel app and DMG builds", () => {
@@ -461,37 +486,35 @@ describe("desktop version wiring", () => {
 
 describe("updater release assets", () => {
   it("requires updater signing inputs before publishing a release", () => {
-    const releaseRuntime = readFileSync(
-      resolve(repoRoot, "tools/kd/src/runtime/release.ts"),
-      "utf8",
-    );
+    const releaseShip = readReleaseRuntime("release-ship.ts");
     const updaterKeyRuntime = readFileSync(
       resolve(repoRoot, "tools/kd/src/runtime/updater-key.ts"),
       "utf8",
     );
 
-    expect(releaseRuntime).toContain("preflightUpdaterSigningKey");
+    expect(releaseShip).toContain("preflightUpdaterSigningKey");
     expect(updaterKeyRuntime).toContain("KANNA_UPDATER_PUBKEY");
     expect(updaterKeyRuntime).toContain("TAURI_PRIVATE_KEY_PATH");
     expect(updaterKeyRuntime).toContain("TAURI_PRIVATE_KEY_PASSWORD");
   });
 
   it("creates architecture-specific updater tarballs and signatures", () => {
-    const releaseRuntime = readFileSync(
-      resolve(repoRoot, "tools/kd/src/runtime/release.ts"),
-      "utf8",
-    );
+    const releaseArtifacts = readReleaseRuntime("release-artifacts.ts");
 
-    expect(releaseRuntime).toContain("Kanna_${version}_${label}.app.tar.gz");
-    expect(releaseRuntime).toContain("updaterBundleTargetForLabel");
-    expect(releaseRuntime).toContain('"tauri", "signer", "sign"');
-    expect(releaseRuntime).toContain("const generatedSig = `${bundlePath}.sig`");
-    expect(releaseRuntime).toContain("generatedSig !== signaturePath");
-    expect(releaseRuntime).toContain("renameSync(generatedSig, signaturePath)");
-    expect(releaseRuntime).not.toContain(
+    expect(releaseArtifacts).toContain("Kanna_${version}_${label}.app.tar.gz");
+    expect(releaseArtifacts).toContain("updaterBundleTargetForLabel");
+    expect(releaseArtifacts).toContain('"tauri", "signer", "sign"');
+    expect(releaseArtifacts).toContain(
+      "const generatedSig = `${bundlePath}.sig`",
+    );
+    expect(releaseArtifacts).toContain("generatedSig !== signaturePath");
+    expect(releaseArtifacts).toContain(
+      "renameSync(generatedSig, signaturePath)",
+    );
+    expect(releaseArtifacts).toContain("updaterSignatureName");
+    expect(readWholeReleaseRuntime()).not.toContain(
       'pnpm --dir "$ROOT/apps/desktop" exec tauri signer sign "$bundle_path" > "$signature_path"',
     );
-    expect(releaseRuntime).toContain("updaterSignatureName");
   });
 
   it("builds updater tarballs inside Bazel so app directory modes are normalized before release signing", () => {
@@ -508,17 +531,16 @@ describe("updater release assets", () => {
   });
 
   it("publishes a latest.json manifest alongside the release assets", () => {
-    const releaseRuntime = readFileSync(
-      resolve(repoRoot, "tools/kd/src/runtime/release.ts"),
-      "utf8",
-    );
+    const releaseShip = readReleaseRuntime("release-ship.ts");
+    const releaseArtifacts = readReleaseRuntime("release-artifacts.ts");
 
-    expect(releaseRuntime).toContain("writeLatestJson");
-    expect(releaseRuntime).toContain("Dry-run updater manifest");
-    expect(releaseRuntime).toContain("latest.json");
-    expect(releaseRuntime).toContain("darwin-aarch64");
-    expect(releaseRuntime).toContain("darwin-x86_64");
-    expect(releaseRuntime).toContain('"release", "create"');
-    expect(releaseRuntime).toContain('"release", "upload"');
+    expect(releaseArtifacts).toContain("writeLatestJson");
+    expect(releaseArtifacts).toContain("darwin-aarch64");
+    expect(releaseArtifacts).toContain("darwin-x86_64");
+    expect(releaseShip).toContain("writeLatestJson");
+    expect(releaseShip).toContain("Dry-run updater manifest");
+    expect(releaseShip).toContain("latest.json");
+    expect(releaseShip).toContain('"release", "create"');
+    expect(releaseShip).toContain('"release", "upload"');
   });
 });
