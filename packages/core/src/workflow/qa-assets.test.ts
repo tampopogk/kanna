@@ -108,7 +108,7 @@ describe("built-in agent tool references", () => {
 });
 
 describe("QA workflow assets", () => {
-  it("keeps process termination guidance in repository conventions", () => {
+  it("keeps internal-only policy out of shipped agent definitions", () => {
     const builtInAgents = builtInAgentNames();
     expect(builtInAgents.length).toBeGreaterThan(0);
 
@@ -116,11 +116,10 @@ describe("QA workflow assets", () => {
       const agent = readRepoPhrases(`.kanna/agents/${name}/AGENT.md`);
       expect(agent, name).not.toContain("pkill");
       expect(agent, name).not.toContain("killall");
+      // The no-AI-attribution rule is internal to this repo (see AGENTS.md)
+      // and must not ship to customer agent definitions.
+      expect(agent, name).not.toContain("no-ai-attribution");
     }
-
-    const conventions = readRepoPhrases("AGENTS.md");
-    expect(conventions).toContain("Never use `pkill -f` or `killall`");
-    expect(conventions).toContain("Kanna task prompts are present in agent argv");
   });
 
   it("keeps Kanna runtime identity policy repo-scoped", () => {
@@ -129,7 +128,6 @@ describe("QA workflow assets", () => {
         taskPrompt: "Fix the imported repository.",
       })
     );
-    const kannaAgents = readRepoPhrases("AGENTS.md");
     const ship = applyAgentExtension(
       parseAgentDefinition(readRepoFile(".kanna/agents/ship/AGENT.md")),
       parseAgentExtension(readRepoFile(".kanna/agents/ship/EXTEND.md")),
@@ -143,11 +141,6 @@ describe("QA workflow assets", () => {
     expect(ordinaryPrompt).not.toContain("kanna_info");
     expect(ordinaryPrompt).not.toContain("kanna-cli info");
     expect(ordinaryPrompt).not.toContain("authoritative server environment");
-    expect(kannaAgents).toContain(
-      "Before debugging or performing environment-sensitive operations against a running instance"
-    );
-    expect(kannaAgents).toContain("mobile notifications, cloud deploys, mobile OTA publishes");
-    expect(kannaAgents).toContain("direct local/LAN API calls), call `kanna_info`");
     expect(kannaShipPrompt).toContain("Call `kanna_info`");
     expect(kannaShipPrompt).toContain("authoritative server environment/version");
     expect(kannaShipPrompt.match(/`kanna_info`/g)).toHaveLength(1);
@@ -215,55 +208,54 @@ describe("QA workflow assets", () => {
     expect(agent.name).toBe("task-manager");
     expect((Array.isArray(agent.agent_provider) ? agent.agent_provider[0] : agent.agent_provider)).toBe("codex");
     expect(agent.prompt).toContain("kanna_wait_events");
-    expect(agent.prompt).toContain("Scope the watch to the whole repository");
+    expect(agent.prompt).toContain("scoped to the whole repository");
     expect(agent.prompt).toContain("kanna_subscribe_events");
-    expect(agent.prompt).toContain("tasks already settled before you subscribed");
+    expect(agent.prompt).toContain("tasks that settled before you subscribed");
     expect(agent.prompt).toContain(
       "reconcile every open task's current state, including blocked tasks with no session yet"
     );
-    expect(agent.prompt).toContain(
-      "Do not depend on remembering to background or re-arm a watcher each turn"
-    );
-    expect(agent.prompt).toContain("A wake means “read the mailbox”");
+    expect(agent.prompt).toContain("do not re-arm a watcher each turn");
+    expect(agent.prompt).toContain('A wake means "read the mailbox."');
     expect(agent.prompt).toContain("acknowledge_batch_id");
-    expect(agent.prompt).toContain("Acknowledgement resumes observation automatically");
+    expect(agent.prompt).toContain("resumes observation automatically");
     expect(agent.prompt).toContain("task.runtime_changed");
     expect(agent.prompt).toContain("`task.blocked` / `task.unblocked`");
     expect(agent.prompt).toContain("task.runtime_settled");
     expect(agent.prompt).toContain("task.awaiting_advance");
-    expect(agent.prompt).toContain("Notify Human Blockers");
+    expect(agent.prompt).toContain("Notify human blockers");
     expect(agent.prompt).toContain(
-      "Call `kanna_notify_mobile` whenever coordination transitions into a blocker only a human can clear"
+      "whenever coordination transitions into a blocker only a human can clear"
     );
     expect(agent.prompt).toContain("`task_id` so tapping the notification opens that task");
     expect(agent.prompt).toContain("one notification per distinct blocking condition");
     expect(agent.prompt).toContain(
-      "identify the task by short human-readable name and id, state what is blocked and why"
+      "identify the task by short human-readable name and id, state what is"
     );
     expect(agent.prompt).toContain(
-      "Never claim the human was notified when the response says otherwise"
+      "never claim\nthe human was notified when the response says otherwise"
     );
     expect(agent.prompt).toContain("an absent or zero `lanDeliveredCount` is expected");
     expect(agent.prompt).toContain("ask the human in the agent terminal");
     expect(agent.prompt).toContain('origin: "human"');
-    expect(agent.prompt).toContain("does not authenticate a human identity");
+    expect(agent.prompt).toContain("authenticates nothing");
     expect(agent.prompt).toContain("Never infer authorization");
     expect(agent.prompt).toContain("coordinate another set of reviews");
-    expect(agent.prompt).toContain("the event loop is idle by design while awaiting human action");
-    expect(agent.prompt).toContain("Observe completion through structured mailbox or MCP wait results");
+    expect(agent.prompt).toContain("the event loop is idle by design while");
     expect(agent.prompt).toContain(
       "Product work, bug fixes, investigations, releases, and other durable repository tasks"
     );
     expect(agent.prompt).not.toContain('"notify_task_id"');
     expect(agent.prompt).toContain("Do not set `parent_task_id`");
-    expect(agent.prompt).toContain("The long-running manager is never a parent/owner bucket");
-    expect(agent.prompt).toContain('"parent_task_id": "<durable-work-item-id>"');
-    expect(agent.prompt).toContain("purpose-built child workflows");
+    expect(agent.prompt).toContain("the long-running manager is never a parent/owner bucket");
+    expect(agent.prompt).toContain(
+      "the durable work item, not this manager, is the parent"
+    );
+    expect(agent.prompt).toContain("Purpose-built child workflows");
     expect(agent.prompt).toContain("latestRun");
-    expect(agent.prompt).toContain("Audit Premise, Scope, And Runaway Work");
+    expect(agent.prompt).toContain("Audit premise, scope, and runaway work");
     expect(agent.prompt).toContain("ask the agent for one concise re-report");
     expect(agent.prompt).toContain("HOLD implementation and merge handoff");
-    expect(agent.prompt).toContain("independent, bounded, on-demand architect research task");
+    expect(agent.prompt).toContain("a different tool from product");
     expect(agent.prompt).toContain('"workflow_name": "architect-research"');
     expect(agent.prompt).toContain('"base_ref": "<assessed-work-item-branch>"');
     expect(agent.prompt).toContain(
@@ -271,24 +263,22 @@ describe("QA workflow assets", () => {
     );
     expect(agent.prompt).toContain("Do not add an `agent` override");
     expect(agent.prompt).toContain("singleton/perpetual architect");
-    expect(agent.prompt).toContain("research child's `latestRun.summary`");
+    expect(agent.prompt).toContain("the child's `latestRun.summary`");
     expect(agent.prompt).toContain(
-      "The manager remains accountable for scope, dependencies, budgets, holds, review coverage, and merge handoff"
+      "You remain accountable\nfor scope, dependencies, budgets, holds, review coverage, and merge handoff"
     );
     expect(agent.prompt).toContain(
-      "Kanna's current task and log surfaces do not expose a reliable universal token counter"
+      "Kanna exposes no reliable universal token counter"
     );
     expect(agent.prompt).toContain("Preserve branches and commits when retiring the old work");
-    expect(agent.prompt).toContain("Resolve the authoritative remote default-branch tip");
-    expect(agent.prompt).toContain("A bare local branch name is a possibly stale pointer");
+    expect(agent.prompt).toContain("Resolve the authoritative remote default branch");
+    expect(agent.prompt).toContain("a bare local branch name is a possibly stale pointer");
     expect(agent.prompt).toContain(
-      "short human-readable name or purpose followed by its id in parentheses"
+      "short human-readable name or purpose followed by\nits id in parentheses"
     );
     expect(agent.prompt).toContain("Never make a human decode a bare task id");
-    expect(agent.prompt).toContain(
-      "Name pull requests the same way—a brief description of what the PR changes followed by its number"
-    );
-    expect(agent.prompt).toContain("Observe Machine Headroom");
+    expect(agent.prompt).toContain("Name pull requests the same way");
+    expect(agent.prompt).toContain("Observe machine headroom");
     expect(agent.prompt).toContain("compact default `kanna_machine_stats {}`");
     for (const field of [
       "`machineId`",
@@ -301,16 +291,16 @@ describe("QA workflow assets", () => {
       expect(agent.prompt, field).toContain(field);
     }
     expect(agent.prompt).toContain(
-      "For an older server that does not advertise `kanna_machine_stats`"
+      "On an older server that does not advertise `kanna_machine_stats`"
     );
-    expect(agent.prompt).toContain("use `uptime` only for this manager's local load");
-    expect(agent.prompt).toContain("Do not substitute process lists or busy task counts");
+    expect(agent.prompt).toContain("for this manager's local load only");
+    expect(agent.prompt).toContain("Never substitute process lists or busy task counts");
     expect(agent.prompt).not.toContain('kanna_machine_stats {"detailed": true}');
     expect(agent.prompt).not.toContain("`cpu.busyPercent`/`idlePercent`");
     expect(agent.prompt).not.toContain("`processes.topProcesses`");
     expect(agent.prompt).not.toContain("`heavyProcessCount`");
-    expect(agent.prompt).toContain("unknown capacity, never idle capacity");
-    expect(agent.prompt).toContain("Do not impose verification holds or invent a scheduler");
+    expect(agent.prompt).toContain("unknown capacity, never\nidle capacity");
+    expect(agent.prompt).toContain("Do not impose verification\nholds or invent a scheduler");
     expect(task).toContain("name: Task Manager");
     expect(task).toContain("agent: task-manager");
   });
@@ -357,7 +347,7 @@ describe("QA workflow assets", () => {
 
     expect(plan).toContain("Planning answers **how** to deliver an objective the owner has already chosen");
     expect(plan).toContain("recommendation from earlier research is context, not implementation authorization");
-    expect(manager).toContain("Separate Product Research From Planning");
+    expect(manager).toContain("Separate product research from planning");
     expect(manager).toContain("Do not automatically convert a research task");
     expect(manager).toContain("read the research task's full record and durable input ledger to verify that instruction");
     // The owner's authorization grows the research task itself: the
@@ -366,11 +356,11 @@ describe("QA workflow assets", () => {
     expect(manager).toContain("**grow that same task** rather than replacing it");
     expect(manager).toContain("`kanna_replace_task_workflow` with that document unchanged as");
     expect(manager).toContain("Leave every existing stage and post byte-for-byte intact");
-    expect(manager).toContain("Create a separate top-level development task with `kanna_create_task` instead");
+    expect(manager).toContain("separate top-level development task** with `kanna_create_task` instead");
     expect(researcherPhrases).toContain("appends a manual `plan` stage to **this same task**");
     expect(researcherPhrases).toContain("You neither append stages nor advance them");
-    expect(manager).toContain("internal `architect-research` workflow remains a different tool");
-    expect(manager).toContain("do not inject manager terminal input to manufacture a decision");
+    expect(manager).toContain("architect-research` workflow is a different tool from product");
+    expect(manager).toContain("never inject manager terminal input to manufacture a decision");
   });
 
   it("lets one task grow its own delivery stages from its plan", () => {

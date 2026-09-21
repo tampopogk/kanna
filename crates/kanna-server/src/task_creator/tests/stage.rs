@@ -380,11 +380,11 @@ fn prepare_task_manager_singleton_ships_its_body_as_system_prompt() {
     let (flags, positional) = split_claude_command(&command);
 
     assert!(
-        flags.contains("Run The Event Loop"),
+        flags.contains("Run the event loop"),
         "task-manager body should ride the system prompt: {command}"
     );
     assert!(
-        !positional.contains("Run The Event Loop"),
+        !positional.contains("Run the event loop"),
         "task-manager body should not be the first user message: {command}"
     );
     assert!(
