@@ -21,7 +21,7 @@
 //! ordering for a fact no human surface shows.
 //!
 //! **This is not a second source of truth about blocked state.** The attention
-//! badge (`pipeline_item.attention_reason`) and `task_blocker` stay
+//! badge (`pipeline_item.attention_requested`) and `task_blocker` stay
 //! authoritative for "a human owes this task something". The watermark only
 //! answers "has the manager looked at this since it last changed", and the
 //! filter below reads the badge directly rather than caching anything about it
@@ -86,7 +86,7 @@ pub(super) const UNSERVICED_WORK_PREDICATE: &str = r#"
         )
     )
     AND (
-        NULLIF(trim(pipeline_item.attention_reason), '') IS NULL
+        pipeline_item.attention_requested = 0
         OR EXISTS (
             SELECT 1 FROM task_event e
             WHERE e.task_id = pipeline_item.id
@@ -95,7 +95,12 @@ pub(super) const UNSERVICED_WORK_PREDICATE: &str = r#"
                       SELECT MAX(badge.seq) FROM task_event badge
                       WHERE badge.task_id = pipeline_item.id
                         AND badge.type = 'task.attention_changed'
-                        AND json_extract(badge.payload, '$.attentionReason') IS NOT NULL
+                        -- Retained pre-boolean events carry the reason string
+                        -- instead of the flag; a raise is still a raise.
+                        AND (
+                            json_extract(badge.payload, '$.attentionRequested') = 1
+                            OR json_extract(badge.payload, '$.attentionReason') IS NOT NULL
+                        )
                   ), 0),
                   COALESCE((
                       SELECT w.serviced_event_seq FROM task_serviced_watermark w
@@ -105,7 +110,7 @@ pub(super) const UNSERVICED_WORK_PREDICATE: &str = r#"
               AND (
                   (
                       e.type = 'task.attention_changed'
-                      AND json_extract(e.payload, '$.attentionReason') IS NULL
+                      AND json_extract(e.payload, '$.attentionRequested') = 0
                   )
                   OR (
                       e.type = 'task.input_delivered'

@@ -5552,7 +5552,7 @@ describe("App", () => {
         tags: "[]",
         pinned: 0,
         pin_order: null,
-        attention_reason: "Choose an approach",
+        attention_requested: true,
         activity: "idle",
         created_at: "2026-04-17T10:05:00.000Z",
         updated_at: "2026-04-17T10:05:00.000Z",

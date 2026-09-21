@@ -27,12 +27,12 @@ Kanna task operations (inspect tasks, create subtasks, send input to other tasks
 
 ## Task attention badge
 
-Use `kanna_set_task_attention {"task_id":"<id>","reason":"<human action needed>"}`
-for a concrete human action or decision, and explain the request in the existing
-agent conversation. Reasons are plain text, 1–240 trimmed Unicode characters.
-Use `kanna_clear_task_attention {"task_id":"<id>"}` when resolved or when the
-owner asks. Both accept `machine_id` for the owning machine. CLI equivalent:
-`kanna-cli task set-attention --task-id <id> --reason "<reason>"`
+Use `kanna_set_task_attention {"task_id":"<id>"}` for a concrete human action
+or decision, and say what you need in the existing agent conversation — the
+badge is a flag and carries no text. Use
+`kanna_clear_task_attention {"task_id":"<id>"}` when resolved or when the owner
+asks. Both accept `machine_id` for the owning machine. CLI equivalent:
+`kanna-cli task set-attention --task-id <id>`
 (or `kanna-cli task clear-attention --task-id <id>`).
 
 The badge is an explicit annotation, independent of unread output, detected

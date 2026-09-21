@@ -1398,7 +1398,7 @@ fn task_state_snapshot_row(task: &crate::mobile_api::TaskDetail, caused_by: &[St
         "currentState": true,
         "unread": task.activity.as_deref() == Some("unread"),
         "blockedByTaskIds": task.blocked_by_task_ids,
-        "attentionReason": task.attention_reason,
+        "attentionRequested": task.attention_requested,
         "providerParked": task.provider_rejection.as_ref()
             .is_some_and(|rejection| rejection.recovery.starts_with("parked-")),
         "providerCapacityNoticed": task.provider_capacity_notice.is_some(),
@@ -1428,7 +1428,7 @@ fn task_is_actionable(task: &crate::mobile_api::TaskDetail) -> bool {
         Some("idle" | "waiting" | "exited")
     ) || task.activity.as_deref() == Some("unread")
         || !task.blocked_by_task_ids.is_empty()
-        || task.attention_reason.is_some()
+        || task.attention_requested
         || task
             .provider_rejection
             .as_ref()

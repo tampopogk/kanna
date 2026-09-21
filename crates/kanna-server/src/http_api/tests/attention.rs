@@ -50,13 +50,13 @@ async fn attention_set_persist_read_transition_clear_and_noop() {
         app.clone(),
         "PUT",
         "/v1/tasks/attention-task/attention",
-        serde_json::json!({"reason":"  Choose 🦀  "}),
+        serde_json::json!({}),
     )
     .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(
         value,
-        serde_json::json!({"taskId":"attention-task", "attentionReason":"Choose 🦀", "changed":true})
+        serde_json::json!({"taskId":"attention-task", "attentionRequested":true, "changed":true})
     );
     assert!(matches!(
         events.try_recv().unwrap(),
@@ -67,20 +67,22 @@ async fn attention_set_persist_read_transition_clear_and_noop() {
     ));
     let mut updated =
         serde_json::to_value(db.get_pipeline_item("attention-task").unwrap()).unwrap();
-    updated["attention_reason"] = serde_json::Value::Null;
+    assert_eq!(updated["attention_requested"], serde_json::json!(true));
+    updated["attention_requested"] = serde_json::json!(false);
     assert_eq!(
         updated, original,
-        "annotation must not reorder or mutate task state"
+        "the badge must not reorder or mutate task state"
     );
     assert_eq!(db.latest_task_event_seq().unwrap(), cursor + 1);
     let (_, noop) = request(
         app.clone(),
         "POST",
         "/v1/tasks/attention-task/actions/set-attention",
-        serde_json::json!({"reason":"Choose 🦀"}),
+        serde_json::json!({}),
     )
     .await;
     assert_eq!(noop["changed"], false);
+    assert_eq!(noop["attentionRequested"], true);
     assert!(events.try_recv().is_err());
     assert_eq!(db.latest_task_event_seq().unwrap(), cursor + 1);
     for path in [
@@ -89,16 +91,11 @@ async fn attention_set_persist_read_transition_clear_and_noop() {
     ] {
         let (status, detail) = request(app.clone(), "GET", path, serde_json::Value::Null).await;
         assert_eq!(status, StatusCode::OK);
-        assert_eq!(detail["attentionReason"], "Choose 🦀");
+        assert_eq!(detail["attentionRequested"], true);
     }
     drop(db);
     let db = Db::open(&state.config.db_path).unwrap();
-    assert_eq!(
-        db.ui_snapshot().unwrap().entries[0].items[0]
-            .attention_reason
-            .as_deref(),
-        Some("Choose 🦀")
-    );
+    assert!(db.ui_snapshot().unwrap().entries[0].items[0].attention_requested);
     db.update_pipeline_item_activity("attention-task", "unread")
         .unwrap();
     assert_eq!(
@@ -114,22 +111,13 @@ async fn attention_set_persist_read_transition_clear_and_noop() {
     );
     db.update_pipeline_item_stage("attention-task", "review")
         .unwrap();
-    assert_eq!(
+    assert!(
         db.get_pipeline_item("attention-task")
             .unwrap()
             .unwrap()
-            .attention_reason
-            .as_deref(),
-        Some("Choose 🦀")
+            .attention_requested,
+        "a stage transition retains the badge"
     );
-    let (_, replacement) = request(
-        app.clone(),
-        "PUT",
-        "/v1/tasks/attention-task/attention",
-        serde_json::json!({"reason":"Review result"}),
-    )
-    .await;
-    assert_eq!(replacement["attentionReason"], "Review result");
     let (_, clear) = request(
         app.clone(),
         "DELETE",
@@ -138,7 +126,7 @@ async fn attention_set_persist_read_transition_clear_and_noop() {
     )
     .await;
     assert_eq!(clear["changed"], true);
-    assert!(clear["attentionReason"].is_null());
+    assert_eq!(clear["attentionRequested"], false);
     let (_, clear) = request(
         app,
         "POST",
@@ -147,13 +135,13 @@ async fn attention_set_persist_read_transition_clear_and_noop() {
     )
     .await;
     assert_eq!(clear["changed"], false);
-    assert!(db.ui_snapshot().unwrap().entries[0].items[0]
-        .attention_reason
-        .is_none());
+    assert!(!db.ui_snapshot().unwrap().entries[0].items[0].attention_requested);
 }
 
+/// The badge is a flag, so a write carries no body to validate. A peer still
+/// running the reason-carrying client is answered rather than refused.
 #[tokio::test]
-async fn attention_rejects_invalid_input_and_missing_task() {
+async fn attention_ignores_a_request_body_and_reports_a_missing_task() {
     let app = test_router_with_seed("attention-invalid", "Attention", |db| {
         db.insert_test_repo("repo-attention", "Attention").unwrap();
         db.insert_test_pipeline_item(
@@ -166,46 +154,30 @@ async fn attention_rejects_invalid_input_and_missing_task() {
         )
         .unwrap();
     });
-    for reason in ["".to_string(), " \n ".to_string(), "🦀".repeat(241)] {
+    for body in [
+        serde_json::json!({}),
+        serde_json::json!({"reason":""}),
+        serde_json::json!({"reason":"\u{1F980}".repeat(241)}),
+    ] {
         assert_eq!(
             request(
                 app.clone(),
                 "PUT",
                 "/v1/tasks/attention-task/attention",
-                serde_json::json!({"reason":reason})
+                body
             )
             .await
             .0,
-            StatusCode::BAD_REQUEST
+            StatusCode::OK
         );
     }
-    assert!(request(
-        app.clone(),
-        "PUT",
-        "/v1/tasks/attention-task/attention",
-        serde_json::json!({})
-    )
-    .await
-    .0
-    .is_client_error());
-    assert_eq!(
-        request(
-            app.clone(),
-            "PUT",
-            "/v1/tasks/attention-task/attention",
-            serde_json::json!({"reason":"🦀".repeat(240)})
-        )
-        .await
-        .0,
-        StatusCode::OK
-    );
     for method in ["PUT", "DELETE"] {
         assert_eq!(
             request(
                 app.clone(),
                 method,
                 "/v1/tasks/missing/attention",
-                serde_json::json!({"reason":"Choose"})
+                serde_json::json!({})
             )
             .await
             .0,

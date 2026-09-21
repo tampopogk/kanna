@@ -1863,18 +1863,18 @@ describe("createSessionStore", () => {
       activity: "idle",
       runtimeState: "idle",
       readState: "read",
-      attentionReason: "Choose approach"
+      attentionRequested: true
     };
     store.setRecentTasks([task]);
     publishes = 0;
 
-    store.setRecentTasks([{ ...task, attentionReason: null }]);
+    store.setRecentTasks([{ ...task, attentionRequested: false }]);
     expect(publishes).toBe(1);
-    expect(store.getState().recentTasks[0]?.attentionReason).toBeNull();
+    expect(store.getState().recentTasks[0]?.attentionRequested).toBe(false);
 
     store.setRecentTasks([{
       ...task,
-      attentionReason: null,
+      attentionRequested: false,
       runtimeState: "waiting"
     }]);
     expect(publishes).toBe(2);

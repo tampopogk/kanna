@@ -229,7 +229,7 @@ fn open_creates_and_migrates_fresh_profile_database() {
             |row| row.get(0),
         )
         .expect("latest migration");
-    assert_eq!(latest_migration, "093_drop_standing_constraint");
+    assert_eq!(latest_migration, "094_task_attention_flag");
     assert_eq!(
         index_columns(&db.conn, "idx_pipeline_item_parent_created_id"),
         vec!["parent_task_id", "created_at", "id"],
@@ -5443,19 +5443,17 @@ fn attention_event_failure_rolls_back_annotation() {
     )
     .unwrap();
     db.conn.execute_batch("CREATE TRIGGER refuse_attention BEFORE INSERT ON task_event WHEN NEW.type = 'task.attention_changed' BEGIN SELECT RAISE(ABORT, 'test refusal'); END;").unwrap();
-    assert!(db
-        .set_task_attention("attention-task", Some("Choose"))
-        .is_err());
-    assert!(db
-        .get_pipeline_item("attention-task")
-        .unwrap()
-        .unwrap()
-        .attention_reason
-        .is_none());
+    assert!(db.set_task_attention("attention-task", true).is_err());
+    assert!(
+        !db.get_pipeline_item("attention-task")
+            .unwrap()
+            .unwrap()
+            .attention_requested
+    );
 }
 
 #[test]
-fn attention_migration_restart_and_close_reopen_preserve_annotation() {
+fn attention_migration_restart_and_close_reopen_preserve_the_badge() {
     let path = temp_db_path();
     let db = Db::open_migrated(path.to_str().unwrap()).unwrap();
     db.insert_test_repo("attention-repo", "Attention").unwrap();
@@ -5468,18 +5466,67 @@ fn attention_migration_restart_and_close_reopen_preserve_annotation() {
         "2026-09-13 00:00:00",
     )
     .unwrap();
-    db.set_task_attention("attention-task", Some("Choose"))
-        .unwrap();
+    db.set_task_attention("attention-task", true).unwrap();
     db.close_pipeline_item("attention-task").unwrap();
     assert!(db.ui_snapshot().unwrap().entries[0].items.is_empty());
     drop(db);
     let db = Db::open_migrated(path.to_str().unwrap()).unwrap();
     db.reopen_pipeline_item("attention-task").unwrap();
-    assert_eq!(
-        db.ui_snapshot().unwrap().entries[0].items[0]
-            .attention_reason
-            .as_deref(),
-        Some("Choose")
+    assert!(db.ui_snapshot().unwrap().entries[0].items[0].attention_requested);
+}
+
+/// A row badged before the badge became a boolean keeps its badge; the reason
+/// behind it is discarded with the column, which is the intended loss. A reason
+/// that was only whitespace was never a badge and must not become one.
+#[test]
+fn attention_flag_migration_backfills_standing_badges_and_drops_the_reason() {
+    let path = temp_db_path();
+    let db = Db::open_migrated(path.to_str().unwrap()).unwrap();
+    db.insert_test_repo("attention-repo", "Attention").unwrap();
+    for id in ["badged", "blank", "unbadged"] {
+        db.insert_test_pipeline_item(
+            id,
+            "attention-repo",
+            "Prompt",
+            None,
+            "in progress",
+            "2026-09-20 00:00:00",
+        )
+        .unwrap();
+    }
+    // Rewind to the schema 085 left behind, reasons and all.
+    db.conn
+        .execute_batch(
+            "ALTER TABLE pipeline_item DROP COLUMN attention_requested;
+             ALTER TABLE pipeline_item ADD COLUMN attention_reason TEXT;
+             UPDATE pipeline_item SET attention_reason = 'Choose approach' WHERE id = 'badged';
+             UPDATE pipeline_item SET attention_reason = '   ' WHERE id = 'blank';
+             DELETE FROM schema_migrations WHERE id = '094_task_attention_flag';",
+        )
+        .unwrap();
+    drop(db);
+
+    let db = Db::open_migrated(path.to_str().unwrap()).unwrap();
+    assert!(
+        db.get_pipeline_item("badged")
+            .unwrap()
+            .unwrap()
+            .attention_requested
+    );
+    for id in ["blank", "unbadged"] {
+        assert!(
+            !db.get_pipeline_item(id)
+                .unwrap()
+                .unwrap()
+                .attention_requested,
+            "{id} carried no badge"
+        );
+    }
+    assert!(
+        db.conn
+            .prepare("SELECT attention_reason FROM pipeline_item")
+            .is_err(),
+        "the reason column is dropped, not merely unread"
     );
 }
 
@@ -5497,14 +5544,13 @@ fn main_and_archive_migrations_upgrade_either_branch_without_losing_data() {
             db.conn
                 .execute_batch(
                     "DROP TABLE task_transfer_workflow_claim;
-                 ALTER TABLE pipeline_item DROP COLUMN attention_reason;
+                 ALTER TABLE pipeline_item DROP COLUMN attention_requested;
                  DELETE FROM schema_migrations WHERE id IN
-                 ('084_task_transfer_workflow_claim', '085_task_attention_reason');",
+                 ('084_task_transfer_workflow_claim', '094_task_attention_flag');",
                 )
                 .unwrap();
         } else {
-            db.set_task_attention("task-a", Some("Keep this reason"))
-                .unwrap();
+            db.set_task_attention("task-a", true).unwrap();
             db.conn.execute_batch(
                 "INSERT INTO task_transfer_workflow_claim (pipeline_item_id,transfer_id) VALUES ('task-a','transfer-a');
                  DROP TABLE agent_terminal_attempt;
@@ -5519,7 +5565,7 @@ fn main_and_archive_migrations_upgrade_either_branch_without_losing_data() {
             for id in [
                 "084_agent_terminal_attempt",
                 "084_task_transfer_workflow_claim",
-                "085_task_attention_reason",
+                "094_task_attention_flag",
             ] {
                 assert!(super::has_migration(&db.conn, id).unwrap());
             }
@@ -5532,21 +5578,21 @@ fn main_and_archive_migrations_upgrade_either_branch_without_losing_data() {
                     serde_json::to_value(Some(&snapshot)).unwrap()
                 );
                 db.conn
-                    .prepare("SELECT attention_reason FROM pipeline_item")
+                    .prepare("SELECT attention_requested FROM pipeline_item")
                     .unwrap();
                 db.conn
                     .prepare("SELECT transfer_id FROM task_transfer_workflow_claim")
                     .unwrap();
             } else {
-                let reason: String = db
+                let badged: bool = db
                     .conn
                     .query_row(
-                        "SELECT attention_reason FROM pipeline_item WHERE id='task-a'",
+                        "SELECT attention_requested FROM pipeline_item WHERE id='task-a'",
                         [],
                         |r| r.get(0),
                     )
                     .unwrap();
-                assert_eq!(reason, "Keep this reason");
+                assert!(badged);
                 let transfer: String = db.conn.query_row("SELECT transfer_id FROM task_transfer_workflow_claim WHERE pipeline_item_id='task-a'", [], |r| r.get(0)).unwrap();
                 assert_eq!(transfer, "transfer-a");
                 db.bind_agent_terminal_attempt("run-task-a-1").unwrap();
@@ -6063,8 +6109,7 @@ fn attention_badged_tasks_re_enter_the_work_set_only_on_human_action() {
         ("task-manager", "2026-09-17 09:04:00"),
     ] {
         seed_idle_task(&db, id, created_at);
-        db.set_task_attention(id, Some("owner decision needed"))
-            .expect("badge task");
+        db.set_task_attention(id, true).expect("badge task");
     }
 
     assert!(
@@ -6099,7 +6144,7 @@ fn attention_badged_tasks_re_enter_the_work_set_only_on_human_action() {
     assert!(unserviced_idle_work_set(&db).is_empty());
 
     // Three positive human actions, each on its own task.
-    db.set_task_attention("task-cleared", None)
+    db.set_task_attention("task-cleared", false)
         .expect("clear badge");
     db.record_task_input(
         "task-operator",
@@ -6119,7 +6164,12 @@ fn attention_badged_tasks_re_enter_the_work_set_only_on_human_action() {
 
     // A badge raised after the human action puts the task back out of reach:
     // evidence is counted from the badge now standing, not from any older one.
-    db.set_task_attention("task-operator", Some("second question"))
+    // The badge is a flag, so raising a new one means clearing the standing
+    // badge first - and that clear is itself human evidence the later raise
+    // must still outrank.
+    db.set_task_attention("task-operator", false)
+        .expect("clear badge");
+    db.set_task_attention("task-operator", true)
         .expect("re-badge task");
     assert_eq!(
         unserviced_idle_work_set(&db),

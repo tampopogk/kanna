@@ -11,7 +11,7 @@ import type { TaskSummary } from "../lib/api/types";
 import { isTaskBlocked } from "../lib/api/taskIdentity";
 import {
   buildTaskListItemModel,
-  taskAttentionAccessibilityLabel
+  TASK_ATTENTION_LABEL
 } from "../screens/taskPresentation";
 import {
   TASK_ATTENTION_BADGE,
@@ -90,9 +90,7 @@ export function TaskCard({
   // before the row's own identity — and ahead of the unread treatment on the
   // title, which is a different claim the reader must still be able to hear
   // separately.
-  const attentionLabel = model.attentionReason
-    ? taskAttentionAccessibilityLabel(model.attentionReason)
-    : null;
+  const attentionLabel = model.attentionRequested ? TASK_ATTENTION_LABEL : null;
   const accessibilityLabel = [
     isSubtask ? "Subtask" : null,
     attentionLabel,
@@ -102,9 +100,9 @@ export function TaskCard({
     shortId ? `Task ID ${shortId}` : null,
     repoLabel,
     model.stageLabel,
-    // The needs-you list already passes the reason as this row's context, and
-    // saying it twice in one utterance helps nobody.
-    contextLabel === model.attentionReason ? null : contextLabel,
+    // The needs-you list already passes the same label as this row's context,
+    // and saying it twice in one utterance helps nobody.
+    contextLabel === attentionLabel ? null : contextLabel,
     contextLabel ? null : model.waitingPromptSnippet
   ]
     .filter((part): part is string => Boolean(part))
@@ -209,7 +207,7 @@ export function TaskCard({
               {model.stageLabel}
             </Text>
           </View>
-          {model.attentionReason ? (
+          {model.attentionRequested ? (
             <View
               accessibilityLabel={attentionLabel ?? undefined}
               accessibilityRole="text"

@@ -2725,9 +2725,9 @@ fn attention_tools_set_locally_and_clear_on_owning_machine() {
         ExpectedRequest {
             method: "POST",
             path: "/v1/tasks/task-1/actions/set-attention",
-            body: Some(json!({"reason":"Choose approach"})),
+            body: Some(json!({})),
             response_status: "200 OK",
-            response_body: json!({"attentionReason":"Choose approach","changed":true}),
+            response_body: json!({"attentionRequested":true,"changed":true}),
         },
         ExpectedRequest {
             method: "GET",
@@ -2743,21 +2743,18 @@ fn attention_tools_set_locally_and_clear_on_owning_machine() {
                 json!({"method":"POST", "path":"/v1/tasks/task-1/actions/clear-attention", "body":{}}),
             ),
             response_status: "200 OK",
-            response_body: json!({"status":200,"body":{"attentionReason":null,"changed":true},"error":null}),
+            response_body: json!({"status":200,"body":{"attentionRequested":false,"changed":true},"error":null}),
         },
     ]);
     let responses = run_kanna_mcp(
         &base_url,
         &[
             json!({"jsonrpc":"2.0","id":1,"method":"initialize"}),
-            json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"kanna_set_task_attention","arguments":{"task_id":"task-1","reason":"Choose approach"}}}),
+            json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"kanna_set_task_attention","arguments":{"task_id":"task-1"}}}),
             json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"kanna_clear_task_attention","arguments":{"task_id":"task-1","machine_id":"remote"}}}),
         ],
     );
-    assert_eq!(
-        tool_text(&responses[1])["attentionReason"],
-        "Choose approach"
-    );
-    assert!(tool_text(&responses[2])["attentionReason"].is_null());
+    assert_eq!(tool_text(&responses[1])["attentionRequested"], json!(true));
+    assert_eq!(tool_text(&responses[2])["attentionRequested"], json!(false));
     assert_eq!(server.join().unwrap().len(), 3);
 }

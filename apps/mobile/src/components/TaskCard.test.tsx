@@ -658,11 +658,11 @@ describe("TaskCard", () => {
       repoId: "repo-1",
       title: "Ship the staging build",
       stage: "in progress",
-      attentionReason: "Owner must approve the release",
+      attentionRequested: true,
       ...overrides
     });
 
-    it("marks a badged row with its own pill and announces the reason", () => {
+    it("marks a badged row with its own pill and announces the badge", () => {
       if (!TaskCard) throw new Error("TaskCard was not loaded");
       const tree = TaskCard({
         task: badgedTask(),
@@ -676,19 +676,15 @@ describe("TaskCard", () => {
       );
       expect(pill).not.toBeNull();
       expect(textContent(pill)).toBe("attention");
-      expect(pill?.props?.accessibilityLabel).toBe(
-        "Attention requested: Owner must approve the release"
-      );
-      expect(tree.props?.accessibilityLabel).toContain(
-        "Attention requested: Owner must approve the release"
-      );
+      expect(pill?.props?.accessibilityLabel).toBe("Attention requested");
+      expect(tree.props?.accessibilityLabel).toContain("Attention requested");
     });
 
-    it("renders no pill for an unset or whitespace-only reason", () => {
+    it("renders no pill for an unset badge", () => {
       if (!TaskCard) throw new Error("TaskCard was not loaded");
-      for (const attentionReason of [undefined, null, "   "]) {
+      for (const attentionRequested of [undefined, false]) {
         const tree = TaskCard({
-          task: badgedTask({ attentionReason }),
+          task: badgedTask({ attentionRequested }),
           onPress: vi.fn()
         }) as ElementNode;
 
@@ -706,17 +702,17 @@ describe("TaskCard", () => {
     // state. A row wearing one must never be mistaken for a row wearing the
     // other, and a row wearing both must show both.
     it.each([
-      ["badged and read", "Owner must approve the release", "idle", true, "normal"],
-      ["unread and unbadged", null, "unread", false, "bold"],
-      ["badged and unread", "Owner must approve the release", "unread", true, "bold"]
+      ["badged and read", true, "idle", true, "normal"],
+      ["unread and unbadged", false, "unread", false, "bold"],
+      ["badged and unread", true, "unread", true, "bold"]
     ] as const)(
       "keeps attention and unread separable on a %s row",
-      (_label, attentionReason, activity, expectsPill, expectedFontWeight) => {
+      (_label, attentionRequested, activity, expectsPill, expectedFontWeight) => {
         if (!TaskCard) throw new Error("TaskCard was not loaded");
         const tree = TaskCard({
           task: badgedTask({
             activity: activity as TaskActivity,
-            attentionReason,
+            attentionRequested,
             readState: activity === "unread" ? "unread" : "read"
           }),
           onPress: vi.fn()

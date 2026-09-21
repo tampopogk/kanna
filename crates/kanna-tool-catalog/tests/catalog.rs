@@ -2168,7 +2168,7 @@ fn reconcile_resolves_on_any_actionable_signal_even_while_busy() {
         "runtimeState": "busy",
         "closedAt": null,
         "latestRun": { "status": "running" },
-        "attentionReason": "owner flagged this for review",
+        "attentionRequested": true,
     });
     assert!(
         task_value_matches_wait_until(&badged_while_busy, WaitUntil::Reconcile),
@@ -2221,7 +2221,7 @@ fn reconcile_resolves_on_any_actionable_signal_even_while_busy() {
         "closedAt": null,
         "latestRun": { "status": "running" },
         "blockedByTaskIds": [],
-        "attentionReason": null,
+        "attentionRequested": false,
         "providerRejection": null,
         "providerCapacityNotice": null,
     });
@@ -3105,9 +3105,9 @@ fn attention_tools_use_existing_action_transport_and_machine_routing() {
     for (name, args, path, body) in [
         (
             "kanna_set_task_attention",
-            json!({"task_id":"task 1","reason":"Choose", "machine_id":"remote"}),
+            json!({"task_id":"task 1", "machine_id":"remote"}),
             "/v1/tasks/task%201/actions/set-attention",
-            json!({"reason":"Choose"}),
+            json!({}),
         ),
         (
             "kanna_clear_task_attention",

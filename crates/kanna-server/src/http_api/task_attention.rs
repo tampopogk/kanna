@@ -9,17 +9,11 @@ use axum::{
 use kanna_agent_protocol::StateChangeScope;
 use std::sync::Arc;
 
-#[derive(serde::Deserialize, serde::Serialize)]
-#[serde(deny_unknown_fields)]
-pub(super) struct SetAttentionRequest {
-    reason: String,
-}
-
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct AttentionResponse {
     task_id: String,
-    attention_reason: Option<String>,
+    attention_requested: bool,
     changed: bool,
 }
 
@@ -27,22 +21,15 @@ pub(super) async fn set_task_attention(
     State(state): State<Arc<AppState>>,
     Path(task_id): Path<String>,
     Query(local_only): Query<super::task_federation::LocalOnlyQuery>,
-    Json(request): Json<SetAttentionRequest>,
 ) -> Result<Response, (StatusCode, String)> {
-    let reason = crate::db::normalize_attention_reason(&request.reason)
-        .map_err(|message| (StatusCode::BAD_REQUEST, message))?;
-    let forward_body = serde_json::to_value(&SetAttentionRequest {
-        reason: reason.clone(),
-    })
-    .unwrap_or(serde_json::Value::Null);
     write_attention(
         &state,
         &task_id,
         local_only.local_only,
         "PUT",
         "/attention",
-        &forward_body,
-        Some(reason),
+        &serde_json::json!({}),
+        true,
     )
     .await
 }
@@ -59,7 +46,7 @@ pub(super) async fn clear_task_attention(
         "DELETE",
         "/attention",
         &serde_json::Value::Null,
-        None,
+        false,
     )
     .await
 }
@@ -71,7 +58,7 @@ async fn write_attention(
     method: &str,
     path_suffix: &str,
     forward_body: &serde_json::Value,
-    attention_reason: Option<String>,
+    attention_requested: bool,
 ) -> Result<Response, (StatusCode, String)> {
     let path = super::task_federation::task_path(task_id, path_suffix);
     let task_id = match super::task_federation::resolve_task_route(
@@ -89,14 +76,14 @@ async fn write_attention(
     };
     let db = Db::open(&state.config.db_path).map_err(|e| db_write_error("db error", e))?;
     let changed = db
-        .set_task_attention(&task_id, attention_reason.as_deref())
+        .set_task_attention(&task_id, attention_requested)
         .map_err(|e| db_write_error("db error", e))?;
     if changed {
         state.publish_state_changed(StateChangeScope::Tasks);
     }
     Ok(Json(AttentionResponse {
         task_id,
-        attention_reason,
+        attention_requested,
         changed,
     })
     .into_response())

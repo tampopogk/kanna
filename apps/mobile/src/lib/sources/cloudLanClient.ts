@@ -182,10 +182,10 @@ export function mergeCloudAndLanTasks({
         mergedTask.readState = lanTask.readState;
       }
       // Explicit attention is a third independent dimension. In particular,
-      // null from the live owner is an authoritative agent clear and must not
-      // fall back to a stale cloud reason.
-      if (lanTask.attentionReason !== undefined) {
-        mergedTask.attentionReason = lanTask.attentionReason;
+      // false from the live owner is an authoritative agent clear and must not
+      // fall back to a stale cloud badge.
+      if (lanTask.attentionRequested !== undefined) {
+        mergedTask.attentionRequested = lanTask.attentionRequested;
       }
       if (lanTask.activityRevision !== undefined) {
         mergedTask.activityRevision = lanTask.activityRevision;
@@ -334,7 +334,7 @@ function mergeCloudWithPreservedLanProjection(
     }
     // This branch runs when a previously accepted live LAN projection cannot
     // be refreshed. Keep its independent runtime/read/attention dimensions,
-    // including an authoritative null attention clear, instead of allowing a
+    // including an authoritative attention clear, instead of allowing a
     // stale cloud snapshot to reverse the last accepted owner state.
     if (preservedTask.runtimeState !== undefined) {
       mergedTask.runtimeState = preservedTask.runtimeState;
@@ -342,8 +342,8 @@ function mergeCloudWithPreservedLanProjection(
     if (preservedTask.readState !== undefined) {
       mergedTask.readState = preservedTask.readState;
     }
-    if (preservedTask.attentionReason !== undefined) {
-      mergedTask.attentionReason = preservedTask.attentionReason;
+    if (preservedTask.attentionRequested !== undefined) {
+      mergedTask.attentionRequested = preservedTask.attentionRequested;
     }
     if (preservedTask.activityRevision !== undefined) {
       mergedTask.activityRevision = preservedTask.activityRevision;

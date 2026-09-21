@@ -9,12 +9,13 @@ export interface TaskListItemModel {
   waitingPromptSnippet: string | null;
   isWaitingPromptPlaceholder: boolean;
   /**
-   * The explicit human-action annotation an agent set on the task, or null
-   * when none is set. Deliberately not derived from read or runtime state: a
-   * badged task is one somebody asked a human to act on, which is a different
-   * claim from "this task has output nobody has read".
+   * Whether an agent set the explicit human-action badge on the task.
+   * Deliberately not derived from read or runtime state: a badged task is one
+   * somebody asked a human to act on, which is a different claim from "this
+   * task has output nobody has read". The badge carries no text - what is
+   * wanted is in the task's own conversation.
    */
-  attentionReason: string | null;
+  attentionRequested: boolean;
 }
 
 export function truncateVisibleText(value: string, limit: number): string {
@@ -58,20 +59,13 @@ function daemonWaitingPromptRepresentation(value: string): string {
   return `${characters.slice(0, WAITING_PROMPT_LIMIT - 1).join("")}…`;
 }
 
-/**
- * The task's attention badge, trimmed, or null when it carries none. A reason
- * that is only whitespace is not a badge — the server bounds a real one to
- * 1-240 trimmed characters.
- */
-export function taskAttentionReason(task: TaskSummary): string | null {
-  const reason = task.attentionReason?.trim();
-  return reason ? reason : null;
+/** Whether the task carries the explicit human-action badge. */
+export function taskAttentionRequested(task: TaskSummary): boolean {
+  return task.attentionRequested === true;
 }
 
 /** What a screen reader says for the attention indicator. */
-export function taskAttentionAccessibilityLabel(reason: string): string {
-  return `Attention requested: ${reason}`;
-}
+export const TASK_ATTENTION_LABEL = "Attention requested";
 
 export function buildTaskListItemModel(task: TaskSummary): TaskListItemModel {
   const storedTitle = (task.title ?? "").trim() ? task.title : "";
@@ -92,6 +86,6 @@ export function buildTaskListItemModel(task: TaskSummary): TaskListItemModel {
       ? truncateVisibleText(prompt, WAITING_PROMPT_LIMIT)
       : "…",
     isWaitingPromptPlaceholder: !prompt && !isDuplicatePrompt,
-    attentionReason: taskAttentionReason(task)
+    attentionRequested: taskAttentionRequested(task)
   };
 }

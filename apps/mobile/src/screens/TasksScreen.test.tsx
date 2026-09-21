@@ -320,7 +320,7 @@ describe("TasksScreen", () => {
         repoId: "repo-a",
         title: "Task A",
         stage: "review",
-        attentionReason: "Review choice",
+        attentionRequested: true,
         createdAt: "2026-07-15T08:00:00.000Z"
       },
       {
@@ -397,7 +397,7 @@ describe("TasksScreen", () => {
         title: "Working 1",
         stage: "in progress",
         activity: "working" as const,
-        attentionReason: "Choose approach"
+        attentionRequested: true
       },
       {
         id: "unread-1",
@@ -483,7 +483,7 @@ describe("TasksScreen", () => {
         repoId: "repo-b",
         title: "Explicit request",
         stage: "review",
-        attentionReason: "Approve the rollout"
+        attentionRequested: true
       },
       {
         id: "cloud:desktop-a:repo-a:task-waiting",
@@ -511,7 +511,7 @@ describe("TasksScreen", () => {
     const cards = collectElements(renderedList, SwipeableTaskCard);
 
     expect(cards.map((card) => card.props?.contextLabel)).toEqual([
-      "Approve the rollout",
+      "Attention requested",
       "Detected question / input prompt"
     ]);
     cards[0]?.props?.onPress?.();
@@ -530,7 +530,7 @@ describe("TasksScreen", () => {
         title: "Fix login",
         stage: "review",
         activity: "unread" as const,
-        attentionReason: "Review"
+        attentionRequested: true
       },
       {
         id: "task-lan",
@@ -538,7 +538,7 @@ describe("TasksScreen", () => {
         title: "Fix login",
         stage: "review",
         activity: "unread" as const,
-        attentionReason: "Review"
+        attentionRequested: true
       },
       {
         id: "task-unknown",
@@ -546,7 +546,7 @@ describe("TasksScreen", () => {
         title: "Fix login",
         stage: "review",
         activity: "unread" as const,
-        attentionReason: "Review"
+        attentionRequested: true
       }
     ];
 
@@ -796,7 +796,7 @@ describe("TasksScreen", () => {
               stage: "review",
               activity: "unread",
               activityRevision,
-              attentionReason: "Choose"
+              attentionRequested: true
             },
             {
               id: "task-fresh",
@@ -991,7 +991,7 @@ describe("TasksScreen", () => {
         title: "Task",
         stage: "review",
         activity: "unread",
-        attentionReason: "Review"
+        attentionRequested: true
       }],
       []
     );

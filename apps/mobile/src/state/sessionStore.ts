@@ -660,7 +660,8 @@ export function createSessionStore(): SessionStore {
         task.title === other.title &&
         (task.prompt ?? null) === (other.prompt ?? null) &&
         task.stage === other.stage &&
-        (task.attentionReason ?? null) === (other.attentionReason ?? null) &&
+        (task.attentionRequested ?? false) ===
+          (other.attentionRequested ?? false) &&
         (task.closedAt ?? null) === (other.closedAt ?? null) &&
         (task.createdAt ?? null) === (other.createdAt ?? null) &&
         (task.activity ?? "idle") === (other.activity ?? "idle") &&

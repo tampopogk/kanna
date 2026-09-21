@@ -1392,7 +1392,7 @@ async fn attention_catalog_cli_set_and_clear_use_declared_routes() {
     for (name, args, action) in [
         (
             "kanna_set_task_attention",
-            json!({"task_id":"task-1","reason":"Choose"}),
+            json!({"task_id":"task-1"}),
             "set-attention",
         ),
         (

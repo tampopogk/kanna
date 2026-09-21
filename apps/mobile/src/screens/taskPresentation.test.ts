@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   buildTaskListItemModel,
-  taskAttentionAccessibilityLabel,
-  taskAttentionReason
+  TASK_ATTENTION_LABEL,
+  taskAttentionRequested
 } from "./taskPresentation";
 
 describe("buildTaskListItemModel", () => {
@@ -20,7 +20,7 @@ describe("buildTaskListItemModel", () => {
       title: "Current editable title",
       waitingPromptSnippet: "Ready for review",
       isWaitingPromptPlaceholder: false,
-      attentionReason: null
+      attentionRequested: false
     });
   });
 
@@ -148,41 +148,39 @@ describe("buildTaskListItemModel", () => {
   });
 });
 
-describe("taskAttentionReason", () => {
-  it("reports a trimmed reason for a badged task", () => {
+describe("taskAttentionRequested", () => {
+  it("reports the badge a task carries", () => {
     const task = {
       id: "task-1",
       repoId: "repo-1",
       title: "Ship the staging build",
       stage: "in progress",
-      attentionReason: "  Owner must approve the release  "
+      attentionRequested: true
     };
 
-    expect(taskAttentionReason(task)).toBe("Owner must approve the release");
-    expect(buildTaskListItemModel(task).attentionReason).toBe(
-      "Owner must approve the release"
-    );
+    expect(taskAttentionRequested(task)).toBe(true);
+    expect(buildTaskListItemModel(task).attentionRequested).toBe(true);
   });
 
-  it.each([undefined, null, "", "   "])(
+  it.each([undefined, false])(
     "reports no badge for %p",
-    (attentionReason) => {
+    (attentionRequested) => {
       const task = {
         id: "task-1",
         repoId: "repo-1",
         title: "Ship the staging build",
         stage: "in progress",
-        attentionReason
+        attentionRequested
       };
 
-      expect(taskAttentionReason(task)).toBeNull();
-      expect(buildTaskListItemModel(task).attentionReason).toBeNull();
+      expect(taskAttentionRequested(task)).toBe(false);
+      expect(buildTaskListItemModel(task).attentionRequested).toBe(false);
     }
   );
 
-  // Attention is the explicit human-action annotation, never a restatement of
-  // read or runtime state: an unread, waiting, never-read task carries no
-  // badge unless somebody set one.
+  // Attention is the explicit human-action badge, never a restatement of read
+  // or runtime state: an unread, waiting, never-read task carries no badge
+  // unless somebody set one.
   it("stays independent of unread and runtime state", () => {
     expect(
       buildTaskListItemModel({
@@ -193,13 +191,11 @@ describe("taskAttentionReason", () => {
         activity: "unread",
         readState: "unread",
         runtimeState: "waiting"
-      }).attentionReason
-    ).toBeNull();
+      }).attentionRequested
+    ).toBe(false);
   });
 
   it("spells the badge out for a screen reader", () => {
-    expect(taskAttentionAccessibilityLabel("Owner must approve")).toBe(
-      "Attention requested: Owner must approve"
-    );
+    expect(TASK_ATTENTION_LABEL).toBe("Attention requested");
   });
 });

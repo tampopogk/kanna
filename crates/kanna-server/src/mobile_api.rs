@@ -132,7 +132,7 @@ pub struct MobileApi {
 #[serde(rename_all = "camelCase")]
 pub struct TaskSummary {
     #[serde(default)]
-    pub attention_reason: Option<String>,
+    pub attention_requested: bool,
     pub id: String,
     pub repo_id: String,
     pub repo_name: Option<String>,
@@ -188,7 +188,7 @@ pub struct TaskSummary {
 #[serde(rename_all = "camelCase")]
 pub struct TaskDetail {
     #[serde(default)]
-    pub attention_reason: Option<String>,
+    pub attention_requested: bool,
     /// Exact durable snapshot, also used as the replacement concurrency fence.
     pub workflow_definition: Option<serde_json::Value>,
     pub id: String,
@@ -571,7 +571,7 @@ impl CreateTaskRecoverySnapshot {
 #[serde(rename_all = "camelCase")]
 pub struct TransferImportSummary {
     #[serde(default)]
-    pub attention_reason: Option<String>,
+    pub attention_requested: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub head_oid: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1547,7 +1547,7 @@ fn map_task_summary(
         .unwrap_or_else(|| item.id.clone());
     let waiting_prompt_snippet = item.last_output_preview.clone();
     TaskSummary {
-        attention_reason: item.attention_reason,
+        attention_requested: item.attention_requested,
         id: item.id,
         repo_id: item.repo_id,
         repo_name,
@@ -1692,7 +1692,7 @@ fn map_task_detail(
         .or(item.agent_provider);
     ports.sort_by(|left, right| left.port.cmp(&right.port).then(left.name.cmp(&right.name)));
     TaskDetail {
-        attention_reason: item.attention_reason,
+        attention_requested: item.attention_requested,
         workflow_definition: item
             .pipeline_def
             .as_deref()

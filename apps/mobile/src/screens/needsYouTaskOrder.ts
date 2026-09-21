@@ -1,6 +1,7 @@
 import type { TaskSummary } from "../lib/api/types";
 
 export const DETECTED_PROMPT_LABEL = "Detected question / input prompt";
+export const ATTENTION_REQUESTED_LABEL = "Attention requested";
 
 /**
  * A task needs the human only when one of the two positive signals says so.
@@ -9,12 +10,11 @@ export const DETECTED_PROMPT_LABEL = "Detected question / input prompt";
  */
 export function taskNeedsYou(task: TaskSummary): boolean {
   return task.closedAt == null &&
-    (Boolean(task.attentionReason?.trim()) || task.runtimeState === "waiting");
+    (task.attentionRequested === true || task.runtimeState === "waiting");
 }
 
 export function needsYouReason(task: TaskSummary): string | null {
-  const explicitReason = task.attentionReason?.trim();
-  if (explicitReason) return explicitReason;
+  if (task.attentionRequested === true) return ATTENTION_REQUESTED_LABEL;
   return task.runtimeState === "waiting" ? DETECTED_PROMPT_LABEL : null;
 }
 

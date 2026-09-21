@@ -667,7 +667,7 @@ pub(crate) fn task_matches_wait_until(task: &TaskDetail, until: WaitUntil) -> bo
                 .and_then(|run| run.status.as_deref()),
             unread: task.activity.as_deref() == Some("unread"),
             blocked: !task.blocked_by_task_ids.is_empty(),
-            badged: task.attention_reason.is_some(),
+            badged: task.attention_requested,
             provider_parked: task
                 .provider_rejection
                 .as_ref()

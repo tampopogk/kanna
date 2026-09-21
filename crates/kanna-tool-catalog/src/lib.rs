@@ -582,8 +582,9 @@ pub fn wait_task_state(task: &Value) -> WaitTaskState<'_> {
             .and_then(Value::as_array)
             .is_some_and(|blockers| !blockers.is_empty()),
         badged: task
-            .get("attentionReason")
-            .is_some_and(|reason| !reason.is_null()),
+            .get("attentionRequested")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
         provider_parked: task
             .get("providerRejection")
             .and_then(|rejection| rejection.get("recovery"))

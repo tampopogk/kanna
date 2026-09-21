@@ -1697,7 +1697,7 @@ fn build_create_request_from_payload(
         setup_cmds: None,
         task_template: None,
         transfer_import: Some(crate::mobile_api::TransferImportSummary {
-            attention_reason: payload.task.attention_reason.clone(),
+            attention_requested: payload.task.attention_requested,
             head_oid: payload.task.head_oid.clone(),
             transfer_id: Some(transfer_id.to_string()),
             source_machine,
