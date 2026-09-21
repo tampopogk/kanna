@@ -596,8 +596,24 @@ fn typed_tool_surfaces() -> BTreeMap<&'static str, TypedToolSurface> {
                 ],
             },
         ),
+        (
+            "kanna_confirm_event_channel",
+            TypedToolSurface {
+                command_path: &["task", "confirm-event-channel"],
+                param_args: &[("task_id", "task_id"), ("channel_id", "channel_id")],
+            },
+        ),
     ])
 }
+
+/// Catalog tools with no typed CLI subcommand, by design rather than by
+/// omission: each one's own catalog description names the generic
+/// `tool call` passthrough as its CLI form instead of a subcommand. A new
+/// catalog tool must still gain a typed surface above unless it is named
+/// here, so an un-surfaced addition keeps failing
+/// `typed_cli_surfaces_match_catalog_tools_and_params` rather than silently
+/// passing.
+const TOOL_CALL_ONLY_TOOLS: &[&str] = &["kanna_doctor"];
 
 fn command_for_path<'a>(command: &'a Command, path: &[&str]) -> Option<&'a Command> {
     let mut current = command;
