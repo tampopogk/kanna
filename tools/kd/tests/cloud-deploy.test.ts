@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -6,6 +7,7 @@ import { parseCliArgs, runCli } from "../src/cli";
 import {
   buildRelayDeployPlan,
   buildRelayProvisionPlan,
+  DEFAULT_WEB_PORTAL_CLOUD_PRICE,
   deployRelayCloud,
   deployFirebaseCloud,
   ensureAccountHostingSite,
@@ -15,10 +17,12 @@ import {
   resolveFirebaseProject,
   resolveProductionFirebaseProject,
   resolveWebPortalBuildEnvironment,
-  warnIfRelayStatsSecretIamMissing
+  warnIfRelayStatsSecretIamMissing,
+  webPortalEnvFile
 } from "../src/runtime/cloud-deploy";
 import { nodeCommandRunner, type CommandRunner } from "../src/runtime/process";
 
+const REPO_ROOT = resolve(import.meta.dirname, "..", "..", "..");
 const HEAD_COMMIT = "1f2e3d4c5b6a79880123456789abcdef01234567";
 const SHORT_COMMIT = HEAD_COMMIT.slice(0, 12);
 const SOURCE = { ref: "release/0.2", commit: HEAD_COMMIT, shortCommit: SHORT_COMMIT };
@@ -183,7 +187,7 @@ describe("cloud deploy runtime", () => {
   });
 
   it("builds the portal with environment-scoped public Firebase and Stripe configuration", () => {
-    const buildEnv = resolveWebPortalBuildEnvironment({
+    const buildEnv = resolveWebPortalBuildEnvironment("/repo", {
       ...PORTAL_ENV,
       KANNA_WEB_PORTAL_CLOUD_PRICE: "$12/month"
     }, "kanna-staging");
@@ -202,14 +206,87 @@ describe("cloud deploy runtime", () => {
   it("defaults the portal price to the launch price when the deploy names none", () => {
     // Owner ruling, 2026-08-21 (`docs/specs/accounts-and-billing.md`): ¥500 /
     // $5 / €5 / £5 a month, of which the portal headline is the USD face.
-    const buildEnv = resolveWebPortalBuildEnvironment(PORTAL_ENV, "kanna-staging");
+    const buildEnv = resolveWebPortalBuildEnvironment("/repo", PORTAL_ENV, "kanna-staging");
 
     expect(buildEnv.VITE_KANNA_CLOUD_PRICE).toBe("$5/month");
   });
 
-  it("refuses to build a deploy with missing portal configuration", () => {
-    expect(() => resolveWebPortalBuildEnvironment({}, "kanna-staging"))
-      .toThrow("cloud deploy requires KANNA_WEB_PORTAL_FIREBASE_API_KEY");
+  it("refuses to build a deploy with missing portal configuration, naming the file it looked in", () => {
+    // `/repo` has no committed configuration, so neither layer supplies a key.
+    expect(() => resolveWebPortalBuildEnvironment("/repo", {}, "kanna-staging"))
+      .toThrow(
+        "cloud deploy requires KANNA_WEB_PORTAL_FIREBASE_API_KEY to build the account portal. " +
+        "Set it in the deploy environment or in apps/web-portal/.env.kanna-staging."
+      );
+  });
+
+  /**
+   * A production deploy failed halfway on 2026-09-20 because these three
+   * identifiers lived only in the previous deployer's shell and died with it.
+   * They are public — Vite compiles them into the bundle Hosting serves to
+   * every visitor — so they are committed per Firebase project, and a deploy
+   * needs nothing in the operator's environment.
+   */
+  describe("the committed per-project portal configuration", () => {
+    it("supplies every required key for both deployable projects", () => {
+      for (const projectId of ["kanna-build", "kanna-staging"]) {
+        const buildEnv = resolveWebPortalBuildEnvironment(REPO_ROOT, {}, projectId);
+
+        expect(buildEnv.VITE_FIREBASE_API_KEY).toMatch(/^AIzaSy/);
+        expect(buildEnv.VITE_FIREBASE_APP_ID).toMatch(/^1:\d+:web:[0-9a-f]+$/);
+        expect(buildEnv.VITE_FIREBASE_PROJECT_ID).toBe(projectId);
+        expect(buildEnv.VITE_FIREBASE_AUTH_DOMAIN).toBe(`${projectId}.firebaseapp.com`);
+        expect(buildEnv.VITE_FIREBASE_FUNCTIONS_REGION).toBe("us-central1");
+        expect(buildEnv.VITE_KANNA_CLOUD_PRICE).toBe(DEFAULT_WEB_PORTAL_CLOUD_PRICE);
+      }
+    });
+
+    it("resolves staging and production to different identifiers, and staging to a test Stripe key", () => {
+      const production = resolveWebPortalBuildEnvironment(REPO_ROOT, {}, "kanna-build");
+      const staging = resolveWebPortalBuildEnvironment(REPO_ROOT, {}, "kanna-staging");
+
+      expect(staging.VITE_FIREBASE_API_KEY).not.toBe(production.VITE_FIREBASE_API_KEY);
+      expect(staging.VITE_FIREBASE_APP_ID).not.toBe(production.VITE_FIREBASE_APP_ID);
+      // Tampopo LLC's sandbox account acct_1Swy1rI0Oqa4EKBj vs live
+      // acct_1Swxz4RSDDrR2YPq (`docs/specs/accounts-and-billing.md`). Billing a
+      // staging click to the live account is the failure this pins shut.
+      expect(staging.VITE_STRIPE_PUBLISHABLE_KEY).toMatch(/^pk_test_51Swy1rI0Oqa4EKBj/);
+      expect(production.VITE_STRIPE_PUBLISHABLE_KEY).toMatch(/^pk_live_51Swxz4RSDDrR2YPq/);
+    });
+
+    it("lets an operator export override the committed file", () => {
+      const buildEnv = resolveWebPortalBuildEnvironment(
+        REPO_ROOT,
+        { KANNA_WEB_PORTAL_STRIPE_PUBLISHABLE_KEY: "pk_test_operator_override" },
+        "kanna-build"
+      );
+
+      expect(buildEnv.VITE_STRIPE_PUBLISHABLE_KEY).toBe("pk_test_operator_override");
+      // The keys the operator did not name still come from the file.
+      expect(buildEnv.VITE_FIREBASE_API_KEY).toMatch(/^AIzaSy/);
+    });
+
+    it("still throws for a project the repository has no file for", () => {
+      expect(() => resolveWebPortalBuildEnvironment(REPO_ROOT, {}, "kanna-local"))
+        .toThrow("apps/web-portal/.env.kanna-local");
+    });
+
+    /**
+     * `.gitignore` excludes `/.env.release.local` today, but a broadened `.env*`
+     * pattern added by reflex would silently un-commit the configuration and
+     * put the next deploy back where 2026-09-20 left it — with no error until
+     * a deploy is half done.
+     */
+    it("is tracked by git and not excluded by any ignore rule", () => {
+      for (const projectId of ["kanna-build", "kanna-staging"]) {
+        const path = webPortalEnvFile(projectId);
+        const ignored = spawnSync("git", ["check-ignore", "-q", "--no-index", path], { cwd: REPO_ROOT });
+        expect({ path, ignored: ignored.status === 0 }).toEqual({ path, ignored: false });
+
+        const tracked = spawnSync("git", ["ls-files", "--error-unmatch", path], { cwd: REPO_ROOT });
+        expect({ path, tracked: tracked.status === 0 }).toEqual({ path, tracked: true });
+      }
+    });
   });
 
   it("resolves the account hosting site from the Firebase target configuration", () => {
@@ -369,7 +446,7 @@ describe("cloud deploy runtime", () => {
       runner,
       environment: "staging",
       portal: true
-    })).rejects.toThrow("cloud deploy requires KANNA_WEB_PORTAL_FIREBASE_API_KEY");
+    })).rejects.toThrow("Set it in the deploy environment or in apps/web-portal/.env.kanna-staging.");
   });
 
   it("refuses cloud deploys without an explicit environment", async () => {
