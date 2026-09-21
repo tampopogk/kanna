@@ -287,17 +287,23 @@ PY
 """,
 )
 
+# The version the app itself reports -- the About panel's short version and
+# the `version` kd's server.toml gets from `KANNA_VERSION` -- is substituted
+# into this copy of lib.rs, because the Bazel libraries take the generated
+# context rather than running build.rs. It must read the same file the
+# staging bundle's `version_file` and Tauri config do, or the bundle says
+# `X.Y.Z-staging.N` while everything a human or an agent reads says `X.Y.Z`.
 genrule(
     name = "kanna_desktop_staging_lib_rs",
     srcs = [
         ":full_staging_context_rust_support",
-        "//:VERSION",
+        "//:staging_version_file",
         "src/lib.rs",
     ],
     tools = ["//tools/bazel:normalize_tauri_context.py"],
     outs = ["src/lib_staging_bazel.rs"],
     cmd = """
-python3 - "$(location src/lib.rs)" "$(location :full_staging_context_rust_support)" "$(location //:VERSION)" "$(location //tools/bazel:normalize_tauri_context.py)" "$@" <<'PY'
+python3 - "$(location src/lib.rs)" "$(location :full_staging_context_rust_support)" "$(location //:staging_version_file)" "$(location //tools/bazel:normalize_tauri_context.py)" "$@" <<'PY'
 import json
 import pathlib
 import re
@@ -376,6 +382,10 @@ cargo_build_script(
         "KANNA_BUILD_COMMIT": "",
         "KANNA_BUILD_TASK_ID": "",
         "KANNA_BUILD_WORKTREE": "",
+        # Only the non-codegen `kanna_desktop_lib` reaches build.rs, and no
+        # bundle uses it -- every shipped binary takes its KANNA_VERSION from
+        # one of the lib.rs codegen genrules above. So this is the bare
+        # release version, and a flavor is never selected here.
         "KANNA_VERSION_FILE": "$(location //:VERSION)",
         "TAURI_CONFIG": "{\"bundle\":{\"externalBin\":[],\"resources\":[]}}",
     },
@@ -558,10 +568,10 @@ PYCODE
 
 genrule(
     name = "tauri_linux_staging_config",
-    srcs = [":tauri_staging_bazel_config", "//:VERSION"],
+    srcs = [":tauri_staging_bazel_config", "//:staging_version_file"],
     outs = ["tauri.linux.staging.conf.json"],
     cmd = """
-python3 - "$(location :tauri_staging_bazel_config)" "$(location //:VERSION)" "$@" <<'PYCODE'
+python3 - "$(location :tauri_staging_bazel_config)" "$(location //:staging_version_file)" "$@" <<'PYCODE'
 import json, pathlib, sys
 config = json.loads(pathlib.Path(sys.argv[1]).read_text())
 config["version"] = pathlib.Path(sys.argv[2]).read_text().strip()
