@@ -271,10 +271,29 @@ describe("AgentMessageView", () => {
 
     // Defaults to the best (first) model without the user picking anything.
     const select = wrapper.get('[data-testid="model-select"]');
-    expect((select.element as HTMLSelectElement).value).toBe("claude-opus-4-8");
+    expect((select.element as HTMLSelectElement).value).toBe("claude-opus-5-5");
     expect(setModel).not.toHaveBeenCalled();
 
     await select.setValue("claude-haiku-4-5-20251001");
     expect(setModel).toHaveBeenCalledWith("claude-haiku-4-5-20251001");
+  });
+
+  it.each([
+    ["claude", "claude-opus-4-8", "claude-opus-5-5", "Opus 5.5"],
+    ["codex", "gpt-5.5", "gpt-6-astra", "GPT-6 Astra"],
+    ["codex", "gpt-5.5", "gpt-6-sol", "GPT-6 Sol"],
+    ["codex", "gpt-5.5", "gpt-6-luna", "GPT-6 Luna"],
+  ] as const)("offers %s releases without changing the running %s model", async (agentProvider, runningModel, model, label) => {
+    events.value = [{ seq: 1, event: { type: "turn_started", model: runningModel } }];
+    const wrapper = mount(AgentMessageView, {
+      props: { sessionId: "task-1", agentProvider },
+    });
+    const select = wrapper.get('[data-testid="model-select"]');
+    expect((select.element as HTMLSelectElement).value).toBe(runningModel);
+    expect(wrapper.get(`option[value="${model}"]`).text()).toBe(label);
+    expect(setModel).not.toHaveBeenCalled();
+    await select.setValue(model);
+    expect(setModel).toHaveBeenCalledExactlyOnceWith(model);
+    wrapper.unmount();
   });
 });

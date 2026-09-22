@@ -3,6 +3,27 @@ import { buildAgentCommand } from "./agentCommand";
 
 describe("buildAgentCommand", () => {
   it.each([
+    ["claude", "claude-opus-5-5", "max", "--model claude-opus-5-5", "--effort 'max'"],
+    ["codex", "gpt-6-astra", "ultra", "-m gpt-6-astra", "-c 'model_reasoning_effort=\"ultra\"'"],
+    ["codex", "gpt-6-sol", "ultra", "-m gpt-6-sol", "-c 'model_reasoning_effort=\"ultra\"'"],
+    ["codex", "gpt-6-luna", "max", "-m gpt-6-luna", "-c 'model_reasoning_effort=\"max\"'"],
+  ] as const)("passes %s model %s and effort %s to the native CLI", async (provider, model, effort, modelFlag, effortFlag) => {
+    const command = await buildAgentCommand(provider, {
+      taskId: "task-1",
+      prompt: "Ship it",
+      permissionFlags: [],
+      runtimeSystemPrompt: "system",
+      runtimeUserPrompt: "Ship it",
+      model,
+      effort,
+      createSessionId: () => "session-1",
+      persistAgentSessionId: async () => {},
+    });
+    expect(command.agentCmd).toContain(modelFlag);
+    expect(command.agentCmd).toContain(effortFlag);
+  });
+
+  it.each([
     ["claude", "--effort 'xhigh'"],
     ["codex", "-c 'model_reasoning_effort=\"xhigh\"'"],
     ["copilot", "--effort='xhigh'"],
