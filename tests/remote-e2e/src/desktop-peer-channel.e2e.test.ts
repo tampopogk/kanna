@@ -47,7 +47,6 @@ interface Peer {
 interface PeerList {
   desktopId: string;
   peerChannelAvailable: boolean;
-  legacyAccessAllowed: boolean;
   relayPeerTunnelsAvailable: boolean;
   peers: Peer[];
 }

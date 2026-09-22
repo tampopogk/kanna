@@ -236,7 +236,7 @@ describe("paired peers (sealed routes)", () => {
     ])).toEqual([paired()]);
   });
 
-  it("stops provisioning Firestore-keyed cloud routes when legacy access is turned off", async () => {
+  it("registers only the unpaired same-account machine from Firestore", async () => {
     const upsert = vi.fn(async () => undefined);
     const removeExternalPeer = vi.fn(async () => undefined);
     const removeProxy = vi.fn(async () => undefined);
@@ -270,9 +270,11 @@ describe("paired peers (sealed routes)", () => {
       ["peer-b", "paired-peer"],
       ["peer-legacy", "same-account-cloud"],
     ]);
-    await sync.setLegacyAccess(false);
-    expect(removeExternalPeer).toHaveBeenCalledWith({ peerId: "peer-legacy" });
-    expect(removeProxy).toHaveBeenCalledWith({ peerId: "peer-legacy" });
-    expect(sync.getTransferMachines().map((machine) => machine.peerId)).toEqual(["peer-b"]);
+    // Legacy desktop-to-desktop access stopped being a setting on
+    // 2026-09-20; outbound registration is unchanged, so there is no switch
+    // left to turn it off here. A sibling on 0.4.0 or later refuses the
+    // route at its own end instead.
+    expect(removeExternalPeer).not.toHaveBeenCalled();
+    expect(removeProxy).not.toHaveBeenCalled();
   });
 });

@@ -63,9 +63,9 @@ async fn handle_invoke(
     if let Err(error) = validate_lan_invoke_request(&request) {
         return Err((StatusCode::BAD_REQUEST, error));
     }
-    if !state.legacy_peer_access_allowed() {
+    if !crate::http_api::secure_channel::LEGACY_PEER_ACCESS_ALLOWED {
         // The bearer-secret listener is the legacy sibling path; sealed
-        // peer sessions are the only sibling route once it is off.
+        // peer sessions are the only sibling route.
         return Err((
             StatusCode::UNAUTHORIZED,
             "peer_legacy_access_refused: this desktop only accepts end-to-end encrypted sibling sessions; pair the machines from Preferences → Machines".to_string(),

@@ -946,22 +946,6 @@ impl AppState {
         op(guard.as_ref().expect("settings db populated above"))
     }
 
-    /// Whether legacy (relay-attested, bearer-secret, Firestore-keyed)
-    /// desktop-to-desktop access is still permitted. See
-    /// `http_api::secure_channel::DESKTOP_PEER_LEGACY_ACCESS_SETTING`.
-    pub(crate) fn legacy_peer_access_allowed(&self) -> bool {
-        match self.with_settings_db(|db| Ok(super::secure_channel::legacy_peer_access_allowed(db)))
-        {
-            Ok(allowed) => allowed,
-            Err(error) => {
-                log::warn!(
-                    "failed to open the settings database: {error}; refusing legacy desktop-to-desktop access"
-                );
-                false
-            }
-        }
-    }
-
     /// Loads the peer trust store, fail-closed on an unusable file.
     pub(crate) fn peer_trust_store(&self) -> Result<crate::peer_trust::PeerTrustStore, String> {
         let path = self

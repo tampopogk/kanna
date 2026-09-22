@@ -710,8 +710,10 @@ in `docs/task-specs/c9f5721b.md` and enforced by the router authorization tests.
 LAN-paired route set, but `PUT` and `DELETE /v1/settings/{key}` are
 `DesktopLocalAccess`, alongside `PUT /v1/settings/cloud-transfer-identity`.
 Settings are this desktop's own controls, not shared task state:
-`mobile_legacy_access` and `desktop_peer_legacy_access` decide whether it still
-accepts the pre-E2EE paths at all, and `terminalEditorCommand` is the command
+`mobile_legacy_access` decides whether it still accepts the pre-E2EE mobile
+paths at all (the desktop-to-desktop equivalent stopped being a setting on
+2026-09-20 and is now permanently refused inbound), and `terminalEditorCommand`
+is the command
 line `terminal_editor::editor_choices` resolves to the executable the daemon
 spawns the next time the person here opens a file in a terminal editor. So a
 paired phone, a paired sibling desktop and an account-authenticated relay invoke
@@ -1012,15 +1014,18 @@ re-enrolling, and the ceremony upgrades a record to `verified`. So
 `peer_pairing_required` is unreachable for two signed-in same-account
 desktops that are both online on this build; every other refusal now names
 its reason. For a sibling that cannot be enrolled — signed out, another
-account, an older Kanna, an older relay — and only while
-`desktop_peer_legacy_access` is on, the local server submits the
+account, an older Kanna, an older relay — the local server still submits the
 request through its existing desktop-authenticated relay socket; the relay
 resolves that credential to one user and routes only to a desktop socket
 registered under the same user, stamping the sender's identity — a relay
-that is compromised can forge exactly that, which is why the switch exists.
+that is compromised can forge exactly that, which is why, since 2026-09-20,
+every desktop *receiving* such an invoke refuses it
+(`peer_legacy_access_refused`, 401). The outbound attempt is left in place so
+a sibling still running an older build is reachable until it upgrades; the
+switch that used to turn the receiving side back on is gone.
 No raw server URL, device secret, desktop secret, or Firebase token enters
 the MCP arguments. `kanna_list_machines` reports each machine's
-`encryption` (`local`, `e2ee`, `legacy`, `pairingRequired`) and, for an
+`encryption` (`local`, `e2ee`, `legacy`) and, for an
 `e2ee` machine, the `provenance` its pin was born with (`verified` for the
 ceremony, `account` for automatic enrollment) plus `identityChanged`.
 `encryption` is deliberately unchanged by provenance: both kinds of pin
@@ -1472,7 +1477,7 @@ reachable only by whoever held a private stdio pipe.
   do while a lifecycle event might be among them.
 - `POST /v1/transfers/cloud-proxies`, `DELETE /v1/transfers/cloud-proxies`,
   `DELETE /v1/transfers/cloud-proxies/{peer_id}` — the *legacy* outbound cloud
-  transfer tunnels, refused once `desktop_peer_legacy_access` is off. They
+  transfer tunnels. They
   ride a relay tunnel the renderer's Firebase `id_token` opens to a sibling
   whose transfer key was read from Firestore. A **paired** sibling takes a
   different route the server owns entirely (`peer_transfer_proxy`): a

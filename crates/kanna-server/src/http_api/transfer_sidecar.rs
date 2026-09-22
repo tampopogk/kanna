@@ -41,23 +41,6 @@ pub(super) async fn run_transfer_control(
             "unsupported transfer control operation {operation}"
         )));
     }
-    // The desktop's own external-peer registrations carry a transfer key it
-    // read from Firestore, and the sidecar's pairing is the mDNS (plaintext
-    // LAN) ceremony: both are the legacy trust paths. With legacy
-    // desktop-to-desktop access off, the only external peers are the sealed
-    // routes this server registers itself, and pairing is the peer string.
-    if matches!(
-        operation.as_str(),
-        "upsert-external-peer" | "start-pairing" | "accept-pairing"
-    ) && !state.legacy_peer_access_allowed()
-    {
-        return Err((
-            axum::http::StatusCode::FORBIDDEN,
-            format!(
-                "peer_legacy_access_refused: {operation} is a legacy transfer trust path; pair the machines from Preferences → Machines"
-            ),
-        ));
-    }
     let params = body.map(|Json(value)| value).unwrap_or(Value::Null);
     let params = if params.is_null() { json!({}) } else { params };
     state
@@ -175,15 +158,6 @@ pub(super) async fn ensure_cloud_transfer_proxy(
     State(state): State<Arc<AppState>>,
     Json(request): Json<CloudTransferProxyRequest>,
 ) -> Result<Json<Value>, (axum::http::StatusCode, String)> {
-    if !state.legacy_peer_access_allowed() {
-        // A renderer-credentialed relay tunnel to an unpinned sibling is
-        // the legacy cloud transfer path; paired siblings get a sealed
-        // route from `peer_transfer_proxy` instead.
-        return Err((
-            axum::http::StatusCode::FORBIDDEN,
-            "peer_legacy_access_refused: cloud transfer proxies are a legacy trust path; pair the machines from Preferences → Machines".to_string(),
-        ));
-    }
     let endpoint = crate::cloud_transfer_proxy::ensure_cloud_transfer_proxy_in_state(
         state.cloud_transfer_proxies(),
         request.peer_id,

@@ -23,7 +23,6 @@ import {
 import { createConfiguredDesktopLanTerminalClient } from "../services/desktopLanTerminal";
 import {
   fetchClosedTaskIdentities,
-  fetchDesktopPeers,
   fetchTransferTargets,
   putDesktopCloudTransferIdentity,
   type DesktopCloudTransferIdentity,
@@ -655,17 +654,15 @@ export function useAppCloudWorkspace({ db, store, toast, windowWorkspace }: UseA
   }
 
   /**
-   * The sealed routes to paired siblings and the legacy switch, both owned
-   * by the server. Read whenever the picker refreshes its peers, so a
-   * machine paired from Preferences → Machines appears without a restart
-   * and a switched-off legacy path stops offering Firestore-keyed routes.
-   * A failed refresh rejects; the caller's unhandled rejection reaches the
-   * frontend log through main.ts's forwarding.
+   * The sealed routes to paired siblings, as the server resolved them. Read
+   * whenever the picker refreshes its peers, so a machine paired from
+   * Preferences → Machines appears without a restart. A failed refresh
+   * rejects; the caller's unhandled rejection reaches the frontend log
+   * through main.ts's forwarding.
    */
   async function refreshSealedTransferRoutes(): Promise<void> {
-    const [targets, peers] = await Promise.all([fetchTransferTargets(), fetchDesktopPeers()]);
+    const targets = await fetchTransferTargets();
     transferMachineSync.setPairedPeers(pairedTransferPeersFromTargets(targets));
-    await transferMachineSync.setLegacyAccess(peers.legacyAccessAllowed);
     transferMachineRevision.value += 1;
   }
 
