@@ -8,6 +8,7 @@ import en from "../../i18n/locales/en.json";
 import ja from "../../i18n/locales/ja.json";
 import ko from "../../i18n/locales/ko.json";
 import type { PipelineItem } from "../../types/kanna";
+import { acknowledgeTaskUiSlot, reconcileTaskUiSlots } from "../../stores/taskUiSlots";
 import type { TaskUiSlot } from "../../types/taskUi";
 import { computed, ref, nextTick } from "vue";
 import { performDesktopViewOpen, parseDesktopViewOpenCommand, type DesktopViewOpenCommand } from "../../composables/desktopViewOpen";
@@ -1168,6 +1169,75 @@ describe("MainPanel", () => {
       expect(wrapper.find('[data-workspace-pane-id]').exists()).toBe(false);
     } finally { wrapper.unmount(); }
   });
+
+  it.each(["failure before hydration", "failure after hydration", "success"] as const)(
+    "keeps the correct creation selection through %s and resets on task switch",
+    async ordering => {
+      const failed = { phase: "Task creation failed", status: "failed", output: "FINAL_STDERR", error: "exit 23" };
+      const succeeded = { phase: "Task created", status: "succeeded", output: "SETUP_DONE" };
+      let finishErrorFetch!: (value: typeof failed) => void;
+      readTaskCreationProgressMock.mockResolvedValueOnce(ordering === "success" ? succeeded
+        : ordering === "failure before hydration" ? failed
+        : { phase: "Running setup", status: "running", output: "FIRST" });
+      if (ordering !== "success") {
+        readTaskCreationProgressMock.mockImplementationOnce(() => new Promise(resolve => { finishErrorFetch = resolve; }));
+      }
+      const tabs = useMainTabs({ scopeKey: computed(() => "item:a9360001") });
+      let slot = creatingSlot(null);
+      slot = { ...slot, draft: { ...slot.draft, creation_task_id: "a9360001" } };
+      const { default: MainPanel } = await import("../MainPanel.vue");
+      const wrapper = mount(MainPanel, {
+        props: {
+          uiSlot: slot, hasRepos: true,
+          views: { tabs, modals: { activeTaskViewIsRemote: computed(() => false) }, store: { items: [], worktreePaths: {} }, preferences: {} } as unknown as MainTabViewsController,
+        },
+        attachTo: document.body,
+        global: {
+          plugins: [createI18n({ legacy: false, locale: "en", messages: { en } })],
+          mocks: { $t: (key: string) => key },
+          stubs: { TaskHeader: true, TerminalTabs: true, CloudTerminalCache: true },
+        },
+      });
+      try {
+        await flushPromises();
+        expect(wrapper.get('[data-testid="creation-progress"]').isVisible()).toBe(true);
+        if (ordering !== "success") {
+          slot = { ...slot, draft: { ...slot.draft, creation_error: "exit 23" } };
+          await wrapper.setProps({ uiSlot: slot });
+          await flushPromises();
+          expect(readTaskCreationProgressMock).toHaveBeenCalledTimes(2);
+          if (ordering === "failure before hydration") {
+            // The final-error fetch settles before reloadSnapshot hydrates the slot.
+            finishErrorFetch(failed);
+            await flushPromises();
+            expect(wrapper.get('[data-testid="creation-progress"]').text()).toContain("FINAL_STDERR");
+          }
+        }
+        const slots = ordering === "success" ? acknowledgeTaskUiSlot([slot], slot.slot_id, "a9360001") : [slot];
+        const [hydrated] = reconcileTaskUiSlots(slots, [durableTask({ id: "a9360001" })]);
+        expect(hydrated.state).toBe("ready");
+        await wrapper.setProps({ uiSlot: hydrated });
+        await flushPromises();
+        if (ordering === "failure after hydration") {
+          finishErrorFetch(failed);
+          await flushPromises();
+        }
+        const creation = wrapper.get('[data-testid="creation-progress"]');
+        expect(creation.isVisible()).toBe(ordering !== "success");
+        expect(wrapper.get('.agent-live-content').isVisible()).toBe(ordering === "success");
+        expect(wrapper.get<HTMLSelectElement>('select[aria-label="Agent stage output"]').element.value)
+          .toBe(ordering === "success" ? "" : "creation:");
+        if (ordering !== "success") expect(creation.text()).toContain("FINAL_STDERR");
+
+        readTaskCreationProgressMock.mockResolvedValue(null);
+        await wrapper.setProps({ uiSlot: readySlot(durableTask({ id: "different-task" })) });
+        await flushPromises();
+        expect(wrapper.get<HTMLSelectElement>('select[aria-label="Agent stage output"]').element.value).toBe("");
+        expect(wrapper.get('[data-testid="creation-progress"]').isVisible()).toBe(false);
+        expect(wrapper.get('.agent-live-content').isVisible()).toBe(true);
+      } finally { wrapper.unmount(); }
+    },
+  );
 
   it("reads creation and stored setup from the selector and asks no remote desktop for one", async () => {
     readTaskCreationProgressMock.mockResolvedValue({ status: "succeeded", output: "fetch and setup transcript" });

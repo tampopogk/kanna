@@ -802,7 +802,13 @@ watch(
       agentAttempts.value = [];
       agentSetupRuns.value = [];
       agentHistoryStatus.value = "";
-      selectedAttempt.value = "";
+      // A failed snapshot can arrive before the durable task is hydrated.
+      // Preserve its selection across that acknowledgement, not task/source switches.
+      const hydratingSelectedCreation = previous?.[0] === null
+        && taskId === completedCreationTask.value
+        && !props.cloudTask && !agentHistoryRemoteRoute.value
+        && selectedAttempt.value === CREATION_SELECTION;
+      if (!hydratingSelectedCreation) selectedAttempt.value = "";
     }
     if (taskId) {
       void loadAgentAttempts(taskId, sourceKey);
