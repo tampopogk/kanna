@@ -157,6 +157,8 @@ const {
   toRef(props, "repoRoot"),
   toRef(props, "remoteDirectoryLoader"),
   toRef(props, "remoteContentLoader"),
+  computed(() => `${props.remoteDesktopId ?? ""}\u0000${props.remoteTaskId ?? ""}`),
+  computed(() => !props.suspended),
 );
 
 const { effectiveCodeTheme } = useThemeRuntime();
