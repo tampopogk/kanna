@@ -100,14 +100,15 @@ export function reconcileTaskUiSlots(
   const tasksById = new Map(tasks.map((task) => [task.id, task]));
   const reposWithUnacknowledgedCreatingSlots = new Set(
     slots
-      .filter((slot) => slot.state === "creating" && slot.task_id === null)
+      .filter((slot) => slot.state === "creating" && slot.task_id === null && !slot.draft.creation_error)
       .map((slot) => slot.draft.repo_id),
   );
   const claimedTaskIds = new Set<string>();
   const reconciled: TaskUiSlot[] = [];
 
   for (const slot of slots) {
-    const task = slot.task_id ? tasksById.get(slot.task_id) : undefined;
+    const taskId = slot.task_id ?? (slot.draft.creation_error ? slot.draft.creation_task_id : undefined);
+    const task = taskId ? tasksById.get(taskId) : undefined;
     if (task) {
       claimedTaskIds.add(task.id);
       const readySlot: ReadyTaskUiSlot = {

@@ -188,3 +188,17 @@ it('labels teardown and setup streams beside the agent attempts they belong to',
   expect(wrapper.get('.stage-name').text()).toBe('Setup · in progress');
   wrapper.unmount();
 });
+
+ it('offers one initial Setup transcript while retaining later stage setup', async () => {
+  const setup = (runId: string) => ({ runId, status: 'succeeded', exitCode: 0, timedOut: false, truncated: false, commands: ['setup'], output: 'ok', durationMs: 1, finishedAt: runId });
+  const wrapper = mount(MainTabBar, { props: { tabs: [{id:'agent',kind:'agent'}], activeTabId:'agent', creationOutput:true,
+    agentAttempts: [attempt('initial','build',{archived:true}), attempt('later','review',{live:true})],
+    agentSetupRuns: [setup('initial'),setup('later')], selectedAttempt:'creation:',
+  } });
+  expect(optionValues(wrapper)).toEqual(['', 'setup:later', 'initial', 'creation:']);
+  expect(wrapper.get('.stage-name').text()).toBe('Setup');
+  expect(wrapper.findAll('option').at(-1)?.text()).toBe('Setup');
+  await wrapper.setProps({creationOutput:false,selectedAttempt:''});
+  expect(optionValues(wrapper)).toEqual(['', 'setup:later', 'initial', 'setup:initial']);
+  wrapper.unmount();
+});

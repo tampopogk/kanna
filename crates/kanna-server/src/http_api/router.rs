@@ -312,6 +312,10 @@ pub fn router(state: Arc<AppState>) -> Router {
             get(super::terminal_archives::read),
         )
         .route(
+            "/v1/tasks/{task_id}/creation-progress",
+            get(super::workspace_setup_logs::creation),
+        )
+        .route(
             "/v1/tasks/{task_id}/setup-logs",
             get(super::workspace_setup_logs::list),
         )

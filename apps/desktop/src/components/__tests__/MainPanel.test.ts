@@ -21,6 +21,7 @@ const readTaskFileMock = vi.fn();
 const listTaskDirectoryMock = vi.fn();
 const listAgentTerminalAttemptsMock = vi.fn().mockResolvedValue([]);
 const readAgentTerminalArchiveMock = vi.fn().mockResolvedValue(null);
+const readTaskCreationProgressMock = vi.fn().mockResolvedValue(null);
 const listWorkspaceSetupRunsMock = vi.fn().mockResolvedValue([]);
 const readWorkspaceSetupRunMock = vi.fn().mockResolvedValue(null);
 
@@ -93,11 +94,14 @@ function readySlot(task = durableTask()): TaskUiSlot {
   };
 }
 
+vi.mock("../ReadOnlyTerminal.vue", () => ({ default: { props: ["output"], template: '<pre>{{ output }}</pre>' } }));
+
 vi.mock("../../invoke", () => ({
   invoke: invokeMock,
 }));
 
 vi.mock("../../services/desktopServerClient", () => ({
+  readTaskCreationProgress: readTaskCreationProgressMock,
   fetchDesktopTaskDetail: fetchTaskDetailMock,
   listAgentTerminalAttempts: listAgentTerminalAttemptsMock,
   openTerminalEditor: openTerminalEditorMock,
@@ -120,6 +124,8 @@ describe("MainPanel", () => {
     listAgentTerminalAttemptsMock.mockResolvedValue([]);
     readAgentTerminalArchiveMock.mockReset();
     readAgentTerminalArchiveMock.mockResolvedValue(null);
+    readTaskCreationProgressMock.mockReset();
+    readTaskCreationProgressMock.mockResolvedValue(null);
     listWorkspaceSetupRunsMock.mockReset();
     listWorkspaceSetupRunsMock.mockResolvedValue([]);
     readWorkspaceSetupRunMock.mockReset();
@@ -1136,7 +1142,35 @@ describe("MainPanel", () => {
     wrapper.unmount();
   });
 
-  it("reads a stored setup stream from the selector and asks no remote desktop for one", async () => {
+  it("shows live creation before an agent tab scope exists", async () => {
+    readTaskCreationProgressMock.mockResolvedValue({ phase: "Git fetch origin", status: "running", output: "fetch is running" });
+    const tabs = useMainTabs({ scopeKey: computed(() => "repo:repo-1") });
+    const slot = creatingSlot(null);
+    slot.draft = { ...slot.draft, creation_task_id: "a9360001" };
+    const { default: MainPanel } = await import("../MainPanel.vue");
+    const wrapper = mount(MainPanel, {
+      props: {
+        uiSlot: slot, hasRepos: true,
+        views: { tabs, modals: { activeTaskViewIsRemote: computed(() => false) }, store: { items: [], worktreePaths: {} }, preferences: {} } as unknown as MainTabViewsController,
+      },
+      attachTo: document.body,
+      global: {
+        plugins: [createI18n({ legacy: false, locale: "en", messages: { en } })],
+        mocks: { $t: (key: string) => key },
+        stubs: { TaskHeader: true, TerminalTabs: true, CloudTerminalCache: true },
+      },
+    });
+    try {
+      await flushPromises();
+      expect(wrapper.get('[data-testid="main-tab-panel-agent"]').isVisible()).toBe(true);
+      expect(wrapper.get('[data-testid="creation-progress"]').isVisible()).toBe(true);
+      expect(wrapper.text()).toContain("fetch is running");
+      expect(wrapper.find('[data-workspace-pane-id]').exists()).toBe(false);
+    } finally { wrapper.unmount(); }
+  });
+
+  it("reads creation and stored setup from the selector and asks no remote desktop for one", async () => {
+    readTaskCreationProgressMock.mockResolvedValue({ status: "succeeded", output: "fetch and setup transcript" });
     listAgentTerminalAttemptsMock.mockResolvedValue([
       { id: "run-1", stage: "in progress", kind: "main", startedAt: "earlier", cwd: "/repo/task-a",
         live: true, archived: false, recordedLaunch: true, observedExitCode: null },
@@ -1177,8 +1211,21 @@ describe("MainPanel", () => {
       // already finished and is the one history item on offer.
       const selector = wrapper.get('select[aria-label="Agent stage output"]');
       expect(selector.findAll("option").map(option => option.attributes("value")))
-        .toEqual(["", "setup:run-1"]);
-      expect(selector.findAll("option")[1].text()).toBe("Setup · in progress · 2026-09-18 10:00:00");
+        .toEqual(["", "creation:"]);
+      const creation = wrapper.get('[data-testid="creation-progress"]');
+      expect(creation.isVisible()).toBe(false);
+      await selector.setValue("creation:");
+      expect(creation.isVisible()).toBe(true);
+      expect(creation.text()).toContain("fetch and setup transcript");
+      expect(wrapper.get(".agent-live-content").isVisible()).toBe(false);
+      expect(readAgentTerminalArchiveMock).not.toHaveBeenCalled();
+      await selector.setValue("");
+      expect(creation.isVisible()).toBe(false);
+      expect(selector.findAll("option")[1].text()).toBe("Setup");
+      // Once the full creation transcript is unavailable, durable setup
+      // history remains selectable.
+      wrapper.findComponent({ name: "TaskCreationProgress" }).vm.$emit("completed", null);
+      await flushPromises();
 
       await selector.setValue("setup:run-1");
       await flushPromises();

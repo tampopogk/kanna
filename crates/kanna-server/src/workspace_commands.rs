@@ -636,6 +636,7 @@ fn drain_into(
         match reader.read(&mut buffer) {
             Ok(0) => return true,
             Ok(count) => {
+                crate::creation_progress::append(&buffer[..count]);
                 let remaining = max_bytes.saturating_sub(output.len());
                 let kept = remaining.min(count);
                 output.extend_from_slice(&buffer[..kept]);

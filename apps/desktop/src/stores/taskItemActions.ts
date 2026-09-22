@@ -69,6 +69,7 @@ export function createTaskItemActions(
       selectedAtStart: context.state.selectedItemId.value,
     });
 
+    const creationTaskId = opts?.requestedTaskId ?? crypto.randomUUID().replaceAll("-", "").slice(0, 8);
     const creatingSlot = buildCreatingTaskUiSlot({
       slotId,
       repoId,
@@ -79,6 +80,7 @@ export function createTaskItemActions(
       agentType: effectiveAgentType,
       requestedAgentProviders,
     });
+    creatingSlot.draft.creation_task_id = creationTaskId;
     context.state.taskUiSlots.value = [
       creatingSlot,
       ...context.state.taskUiSlots.value.filter((slot) => slot.slot_id !== slotId),
@@ -97,6 +99,7 @@ export function createTaskItemActions(
     }
 
     let createdTaskId: string | null = null;
+    let creationRequested = false;
     try {
       const realE2eAgentOverride = await resolveRealE2eAgentOverride({
         agentType: effectiveAgentType,
@@ -112,8 +115,9 @@ export function createTaskItemActions(
         throw new Error("No valid base branch selected");
       }
 
+      creationRequested = true;
       const created = await createDesktopTask({
-        requestedTaskId: opts?.requestedTaskId,
+        requestedTaskId: creationTaskId,
         repoId,
         prompt: effectivePrompt,
         displayName,
@@ -140,6 +144,17 @@ export function createTaskItemActions(
       });
       createdTaskId = created.taskId;
     } catch (error) {
+      if (creationRequested) {
+        // Keep the diagnostic selected, including failures before a durable task exists.
+        creatingSlot.draft.creation_error = String(error);
+        context.state.taskUiSlots.value = context.state.taskUiSlots.value.map(slot =>
+          slot.slot_id === slotId ? { ...slot, draft: { ...slot.draft, creation_error: String(error) } } : slot);
+        context.state.pendingCreateVisibility.delete(slotId);
+        try { await reloadSnapshot(); } catch (reloadError) {
+          console.error("[store] failed to hydrate failed task:", reloadError);
+        }
+        throw error;
+      }
       context.state.pendingCreateVisibility.delete(slotId);
       context.state.taskUiSlots.value = removeTaskUiSlot(context.state.taskUiSlots.value, slotId);
       context.state.taskUiSlots.value = reconcileTaskUiSlots(
