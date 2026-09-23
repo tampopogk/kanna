@@ -45,6 +45,7 @@ pub use stage_run_prompt::StageRunPrompt;
 pub use workspace_setup::{WorkspaceSetupOutcome, WorkspaceSetupRun};
 mod task_events;
 mod task_inputs;
+pub(crate) mod task_store;
 #[cfg(test)]
 mod test_support;
 #[cfg(test)]
@@ -207,6 +208,7 @@ pub(crate) const CURRENT_SCHEMA_MIGRATIONS: &[&str] = &[
     "093_drop_standing_constraint",
     "094_task_attention_flag",
     "095_mutation_provenance",
+    "096_task_ledger_bridge",
 ];
 
 #[derive(Debug, Serialize)]
@@ -2649,6 +2651,14 @@ fn run_schema_migrations(conn: &Connection) -> Result<(), rusqlite::Error> {
         add_column(conn, "stage_run", "result_declared_role", "TEXT")?;
         add_column(conn, "stage_run", "result_channel_identity", "TEXT")?;
         add_column(conn, "task_input", "channel_identity", "TEXT")
+    })?;
+
+    // Spec §16.1 (T0): the outbox that mirrors results, tool inputs,
+    // transitions and workflow replacements into the on-disk task ledger.
+    // Schema only: importing existing history touches the filesystem and runs
+    // from the runtime's startup reconciliation, not from a migration.
+    run_migration(conn, "096_task_ledger_bridge", |conn| {
+        conn.execute_batch(task_store::SCHEMA)
     })?;
 
     Ok(())

@@ -776,6 +776,10 @@ pub struct CompleteStageRequest {
     #[serde(default)]
     pub completion_attempt_key: Option<String>,
     pub status: String,
+    /// The result message (spec §7). `summary` is the established spelling;
+    /// `message` is accepted as an alias. Its first line is the one-line
+    /// summary surfaces show; an empty one is refused.
+    #[serde(alias = "message")]
     pub summary: String,
     pub metadata: Option<serde_json::Value>,
     /// Remaining stages a planning stage publishes for its own task, in the

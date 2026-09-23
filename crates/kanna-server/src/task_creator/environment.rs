@@ -137,8 +137,24 @@ pub(super) fn build_spawn_env(
         "KANNA_COPILOT_WAKE_PLUGIN",
         kanna_tool_catalog::KANNA_STAGE_RUN_ID_ENV,
         kanna_tool_catalog::KANNA_COMPLETION_CONTEXT_ENV,
+        crate::task_store::LEDGER_PATH_ENV,
     ] {
         env.remove(key);
+    }
+    // The task directory: `task.json` and the ordered `ledger/` the session
+    // reads earlier results and inputs from (spec §7). Engine-owned, like
+    // the task id, so a repo cannot point it elsewhere.
+    if let Some(task_dir) = crate::task_store::task_dir_for_db_path(&config.db_path, task_id) {
+        if let Err(error) = std::fs::create_dir_all(task_dir.join("ledger")) {
+            log::warn!(
+                "cannot create task directory {}: {error}",
+                task_dir.display()
+            );
+        }
+        env.insert(
+            crate::task_store::LEDGER_PATH_ENV.to_string(),
+            task_dir.to_string_lossy().to_string(),
+        );
     }
     env.insert("KANNA_WORKTREE".to_string(), "1".to_string());
     env.insert("KANNA_TASK_ID".to_string(), task_id.to_string());

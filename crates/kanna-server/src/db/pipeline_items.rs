@@ -15,6 +15,9 @@ pub struct WorkflowReplacement<'a> {
     pub source: &'a str,
     pub superseded_run_ids: &'a [String],
     pub changed_execution_stages: &'a [String],
+    /// The ledger result this replacement was published with (a plan's own
+    /// completion). Its plan entry joins that result's operation.
+    pub ledger_result_id: Option<&'a str>,
 }
 
 const MANAGER_ACTIVITY_DEBOUNCE_SECONDS: u64 = 10;
@@ -935,6 +938,10 @@ impl Db {
                 "parentTaskId": item.parent_task_id,
             }),
         )?;
+        // A task born after the ledger bridge has no history to import, and
+        // its `task.json` (prompt, pinned workflow, links) exists from birth.
+        self.mark_task_ledger_backfilled(item.id, 0)?;
+        self.mark_task_snapshot_dirty(item.id)?;
         Ok(())
     }
 
@@ -1060,7 +1067,7 @@ impl Db {
         if rows_affected == 0 {
             return Err(rusqlite::Error::QueryReturnedNoRows);
         }
-        Ok(())
+        self.mark_task_snapshot_dirty(id)
     }
 
     pub fn update_pipeline_item_activity(
@@ -1368,6 +1375,7 @@ impl Db {
                 TaskEventKind::TaskClosed,
                 json!({ "stage": db.pipeline_item_stage(&pipeline_item_id)? }),
             )?;
+            db.mark_task_snapshot_dirty(&pipeline_item_id)?;
             // Closing resolves this task as a blocker, which is how most
             // dependents become unblocked.
             db.sync_blocked_events_for_dependents(&pipeline_item_id)?;
@@ -1406,6 +1414,7 @@ impl Db {
                 rusqlite::Error::QueryReturnedNoRows,
             ));
         }
+        self.mark_task_snapshot_dirty(&pipeline_item_id)?;
         // Reopening un-resolves this task as a blocker; dependents that were
         // released by the close go back to blocked.
         self.sync_blocked_events_for_dependents(&pipeline_item_id)?;
@@ -1424,12 +1433,12 @@ impl Db {
             "UPDATE pipeline_item
              SET display_name = ?, updated_at = datetime('now')
              WHERE id = ?",
-            (display_name, pipeline_item_id),
+            (display_name, &pipeline_item_id),
         )?;
         if rows_affected == 0 {
             return Err(rusqlite::Error::QueryReturnedNoRows);
         }
-        Ok(())
+        self.mark_task_snapshot_dirty(&pipeline_item_id)
     }
 
     /// Replace the task's current workflow and pinned definition atomically
@@ -1525,6 +1534,7 @@ impl Db {
             if rows_affected == 0 {
                 return Err(rusqlite::Error::QueryReturnedNoRows);
             }
+            let event_floor = db.ledger_event_floor()?;
             db.append_task_event(
                 id,
                 TaskEventKind::WorkflowChanged,
@@ -1546,8 +1556,81 @@ impl Db {
                     "changedExecutionStages": edit.map(|edit| edit.changed_execution_stages).unwrap_or(&[]),
                 }),
             )?;
+            db.enqueue_workflow_replacement_entry(
+                id,
+                expected_stage,
+                current.0.as_deref(),
+                workflow_name,
+                current.1.as_deref(),
+                workflow_def,
+                edit,
+                event_floor,
+            )?;
             Ok(true)
         })
+    }
+
+    /// Mirror a workflow selection or replacement as a `plan` ledger entry.
+    /// `event_floor` (the event sequence before this write) only makes the
+    /// source identity unique; the `task.workflow_changed` event keeps being
+    /// appended with the write, as before the ledger existed.
+    #[allow(clippy::too_many_arguments)]
+    fn enqueue_workflow_replacement_entry(
+        &self,
+        id: &str,
+        stage: &str,
+        from_workflow: Option<&str>,
+        to_workflow: &str,
+        before: Option<&str>,
+        after: &str,
+        edit: Option<WorkflowReplacement<'_>>,
+        event_floor: i64,
+    ) -> Result<(), rusqlite::Error> {
+        let result_id = edit.and_then(|edit| edit.ledger_result_id);
+        let operation_id = match result_id {
+            Some(result_id) => self
+                .conn
+                .query_row(
+                    "SELECT operation_id FROM task_ledger_entry WHERE entry_id = ?",
+                    [result_id],
+                    |row| row.get::<_, Option<String>>(0),
+                )
+                .optional()?
+                .flatten(),
+            None => None,
+        };
+        let parse = |definition: &str| {
+            serde_json::from_str::<serde_json::Value>(definition).unwrap_or(serde_json::Value::Null)
+        };
+        let source_id = format!("{id}:workflow:{event_floor}");
+        self.enqueue_ledger_entry(super::task_store::NewLedgerEntry {
+            task_id: id,
+            kind: super::task_store::LedgerEntryKind::Plan,
+            operation_id: operation_id.as_deref(),
+            source_kind: "workflow_replacement",
+            source_id: &source_id,
+            source_origin: None,
+            historical: false,
+            recorded_at: None,
+            run_id: None,
+            declared_role: None,
+            body: json!({
+                "operation": if edit.is_some() { "replace" } else { "select" },
+                "source": edit.map(|edit| edit.source).unwrap_or("unspecified"),
+                "stage": stage,
+                "from_workflow": from_workflow,
+                "to_workflow": to_workflow,
+                "before": before.map(parse),
+                "after": parse(after),
+                "superseded_run_ids": edit.map(|edit| edit.superseded_run_ids).unwrap_or(&[]),
+                "changed_execution_stages": edit.map(|edit| edit.changed_execution_stages).unwrap_or(&[]),
+                "result_id": result_id,
+            }),
+            message: None,
+            hold_events_after: None,
+            reserved_sequence: None,
+        })?;
+        Ok(())
     }
 
     #[cfg(test)]
@@ -1608,6 +1691,7 @@ impl Db {
         if from_stage == Some(to_stage) {
             return Ok(());
         }
+        let event_floor = self.ledger_event_floor()?;
         self.append_task_event(
             id,
             TaskEventKind::StageChanged,
@@ -1619,7 +1703,39 @@ impl Db {
                 "declaredRole": trigger.as_str(),
                 "channelIdentity": channel.to_json(),
             }),
-        )
+        )?;
+        // The same real transition, mirrored into the ledger. Its trigger is
+        // the newest result recorded since the previous transition, resolved
+        // in this transaction; none is borrowed from an earlier stage.
+        let triggering_result_id = self.ledger_transition_trigger(id)?;
+        let source_id = format!("{id}:stage:{event_floor}");
+        self.enqueue_ledger_entry(super::task_store::NewLedgerEntry {
+            task_id: id,
+            kind: super::task_store::LedgerEntryKind::Transition,
+            operation_id: None,
+            source_kind: "stage_change",
+            source_id: &source_id,
+            source_origin: None,
+            historical: false,
+            recorded_at: None,
+            run_id: None,
+            declared_role: super::task_store::declared_transition_role(trigger.as_str()).as_deref(),
+            body: json!({
+                "from_stage": from_stage,
+                "to_stage": to_stage,
+                "branch": branch,
+                "trigger": trigger.as_str(),
+                "operation": "stage_change",
+                "triggering_result_id": triggering_result_id,
+                // Exit routing is T1's; today's engine names no exit.
+                "exit": serde_json::Value::Null,
+                "exit_source": serde_json::Value::Null,
+            }),
+            message: None,
+            hold_events_after: None,
+            reserved_sequence: None,
+        })?;
+        Ok(())
     }
 
     /// Record the task's pull request once an agent reports it (the pr
@@ -1663,6 +1779,9 @@ impl Db {
                         &db.conn, &repo_id, pr_number, pr_url,
                     )?;
                 }
+            }
+            if rows_affected > 0 {
+                db.mark_task_snapshot_dirty(id)?;
             }
             // A task parked at `pr` with a PR recorded counts as resolved, so
             // this write can release its dependents.

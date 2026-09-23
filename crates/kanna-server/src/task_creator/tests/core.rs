@@ -4124,9 +4124,7 @@ fn read_agent_definition_loads_builtin_task_manager_agent_with_codex_first() {
         Some("codex")
     );
     assert!(definition.prompt.contains("kanna_wait_events"));
-    assert!(definition
-        .prompt
-        .contains("scoped to the whole repository"));
+    assert!(definition.prompt.contains("scoped to the whole repository"));
     assert!(definition.prompt.contains("kanna_subscribe_events"));
     assert!(definition
         .prompt
@@ -4137,9 +4135,7 @@ fn read_agent_definition_loads_builtin_task_manager_agent_with_codex_first() {
     assert!(definition
         .prompt
         .contains("A wake means \"read the mailbox.\""));
-    assert!(definition
-        .prompt
-        .contains("debounced for 10 seconds"));
+    assert!(definition.prompt.contains("debounced for 10 seconds"));
     assert!(definition
         .prompt
         .contains("including blocked tasks with no session yet"));
@@ -4186,9 +4182,7 @@ fn read_agent_definition_loads_builtin_task_manager_agent_with_codex_first() {
     assert!(definition
         .prompt
         .contains("ask the agent for one concise re-report"));
-    assert!(definition
-        .prompt
-        .contains("a different tool from product"));
+    assert!(definition.prompt.contains("a different tool from product"));
     assert!(definition
         .prompt
         .contains("\"workflow_name\": \"architect-research\""));
@@ -4772,6 +4766,7 @@ fn build_agent_command_adds_claude_kanna_preamble_as_system_prompt() {
         Some("auto"),
         "operator",
         Some("/tmp/kanna-mcp.json"),
+        None,
     );
 
     let command = super::build_agent_command(
@@ -4883,6 +4878,7 @@ fn singleton_claude_pty_delivers_the_agent_body_as_system_prompt() {
         "singleton-task-manager",
         Some("manual"),
         "unspecified",
+        None,
         None,
     );
     let command = super::build_agent_command(
@@ -5113,6 +5109,80 @@ fn relocating_preserves_the_layered_agent_resolution_byte_for_byte() {
     let _ = std::fs::remove_dir_all(&repo_root);
 }
 
+/// Pinned to the same fixture and literal text as the `buildKannaLedgerSection`
+/// tests in packages/core/src/workflow/prompt-builder.test.ts.
+#[test]
+fn ledger_preamble_matches_the_typescript_builder() {
+    let intro = "Task ledger: `/home/u/.kanna/repos/repo-1/tasks/task-1` (also in `KANNA_TASK_LEDGER_PATH`). It holds this task's `task.json` and, under `ledger/`, its recorded results, tool-delivered inputs, stage transitions and workflow replacements as ordered files. Read an earlier entry there when you need it.";
+    let trigger_section = format!(
+        "{intro}\n\nResult that caused this session: ledger entry `task-1-000003` (`ledger/000003-result.md`), status `success`, recorded by stage `plan` (run `run-7`, branch `task-1-2`, commit `0123abc`). Its message follows verbatim.\n\n-----BEGIN RESULT MESSAGE-----\nPlan ready.\n\nUse {{{{COMPLETION}}}} and $& and $PREV_RESULT literally.\n-----END RESULT MESSAGE-----"
+    );
+    let ledger = crate::task_store::SessionLedger {
+        task_dir: "/home/u/.kanna/repos/repo-1/tasks/task-1".into(),
+        trigger: Some(crate::task_store::TriggeringResult {
+            entry_id: "task-1-000003".into(),
+            file: "ledger/000003-result.md".into(),
+            status: "success".into(),
+            stage: Some("plan".into()),
+            run_id: Some("run-7".into()),
+            branch: Some("task-1-2".into()),
+            committed_sha: Some("0123abc".into()),
+            message: "Plan ready.\n\nUse {{COMPLETION}} and $& and $PREV_RESULT literally.".into(),
+        }),
+    };
+    let preamble = super::build_kanna_preamble(
+        &AgentProvider::Claude,
+        "task-1",
+        "in progress",
+        "plan-build-review",
+        Some("auto"),
+        "auto",
+        None,
+        Some(&ledger),
+    );
+    assert!(preamble.contains(&format!(
+        "This stage was entered by: auto\n\n{trigger_section}\n\nKanna is a desktop app"
+    )));
+    assert!(preamble.contains("Use {{COMPLETION}} and $& and $PREV_RESULT literally."));
+    assert_eq!(
+        preamble
+            .matches("This stage's transition is `auto`")
+            .count(),
+        1
+    );
+
+    let untriggered = super::build_kanna_preamble(
+        &AgentProvider::Claude,
+        "task-1",
+        "in progress",
+        "plan-build-review",
+        Some("auto"),
+        "auto",
+        None,
+        Some(&crate::task_store::SessionLedger {
+            task_dir: "/home/u/.kanna/repos/repo-1/tasks/task-1".into(),
+            trigger: None,
+        }),
+    );
+    assert!(untriggered.contains(&format!(
+        "{intro}\n\nNo recorded result caused this session.\n\nKanna is a desktop app"
+    )));
+
+    // A session with no task ledger renders exactly the pre-ledger preamble.
+    let legacy = super::build_kanna_preamble(
+        &AgentProvider::Claude,
+        "task-1",
+        "in progress",
+        "plan-build-review",
+        Some("auto"),
+        "auto",
+        None,
+        None,
+    );
+    assert!(!legacy.contains("{{LEDGER}}"));
+    assert!(legacy.contains("This stage was entered by: auto\n\nKanna is a desktop app"));
+}
+
 #[test]
 fn build_kanna_preamble_renders_transition_specific_completion_guidance() {
     let auto = super::build_kanna_preamble(
@@ -5122,6 +5192,7 @@ fn build_kanna_preamble_renders_transition_specific_completion_guidance() {
         "qa",
         Some("auto"),
         "auto",
+        None,
         None,
     );
     assert!(auto.contains("This stage's transition is `auto`"));
@@ -5136,6 +5207,7 @@ fn build_kanna_preamble_renders_transition_specific_completion_guidance() {
         "default",
         Some("manual"),
         "operator",
+        None,
         None,
     );
     assert!(manual.contains("This stage's transition is `manual`"));
@@ -5165,6 +5237,7 @@ fn build_kanna_preamble_renders_transition_specific_completion_guidance() {
         None,
         "unspecified",
         None,
+        None,
     );
     assert!(default.contains("This stage's transition is `manual`"));
 }
@@ -5178,6 +5251,7 @@ fn build_agent_command_launches_antigravity_with_prepended_kanna_context() {
         "default",
         Some("manual"),
         "operator",
+        None,
         None,
     );
 
@@ -5505,6 +5579,7 @@ fn build_kanna_preamble_names_automatic_and_fallback_mcp_providers() {
         None,
         "unspecified",
         Some("/tmp/kanna-mcp.json"),
+        None,
     );
     assert!(codex.contains("Codex is launched with Kanna MCP registration"));
     assert!(codex.contains("Kanna MCP tools should be available automatically"));
@@ -5517,6 +5592,7 @@ fn build_kanna_preamble_names_automatic_and_fallback_mcp_providers() {
         None,
         "unspecified",
         Some("/tmp/kanna-mcp.json"),
+        None,
     );
     assert!(antigravity.contains("Antigravity CLI MCP registration is not wired"));
     assert!(antigravity.contains("use the `kanna-cli` fallback for Kanna task operations"));

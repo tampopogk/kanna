@@ -357,7 +357,10 @@ async fn deliver_server_task_input_with_recording(
         // A strict ledger failure occurs after acknowledged PTY delivery.
         // Preserve its code so singleton callers cannot classify it as safe
         // to resend merely because the durable record could not be written.
-        Err((status, Json(failure))) if failure.reason == "task_input_record_failed" => {
+        Err((status, Json(failure)))
+            if failure.reason == "task_input_record_failed"
+                || failure.reason == "task_input_publication_pending" =>
+        {
             Err((status, format!("{}: {}", failure.reason, failure.message)))
         }
         Err((status, Json(failure))) => Err((status, failure.message)),
@@ -452,6 +455,17 @@ async fn deliver_task_input(
     expected_run: Option<String>,
     strict_recording: bool,
 ) -> Result<Response, TaskInputHttpError> {
+    // A tool-delivered input is a ledger entry the next session may read; an
+    // empty one says nothing and is refused before anything is typed. An
+    // attachment alone is not empty: the delivered text names its path.
+    if payload.input.trim().is_empty() && payload.attachment.is_none() {
+        return Err(task_input_http_error(
+            axum::http::StatusCode::BAD_REQUEST,
+            "empty_input",
+            "task input is empty; nothing was delivered".to_string(),
+            None,
+        ));
+    }
     let task_id = super::task_actions::resolve_task_id_for_mutation(&state, &task_id)
         .await
         .map_err(map_task_input_error)?;
@@ -694,9 +708,38 @@ async fn deliver_task_input(
     let record_message = task_input_message(&delivered_input).to_string();
     let recorded = tokio::task::spawn_blocking(move || {
         let db = Db::open(&db_path)?;
-        db.record_task_input(&record_task_id, source, &channel, &record_message)
+        let record = db.record_task_input(&record_task_id, source, &channel, &record_message)?;
+        // The input's ledger file is published before the delivery is
+        // acknowledged. A failure leaves it pending, retried by the
+        // publisher from the stored row — never by typing the text again.
+        let publication = record
+            .is_some()
+            .then(|| crate::task_store::flush_task(&db, &db_path, &record_task_id).err())
+            .flatten();
+        Ok::<_, rusqlite::Error>((record, publication))
     })
     .await;
+    let recorded = match recorded {
+        Ok(Ok((record, Some(publication_error)))) => {
+            log::warn!(
+                "task input reached task {task_id} and was recorded, but its ledger entry is pending: {publication_error}"
+            );
+            if strict_recording {
+                return Err(task_input_http_error(
+                    axum::http::StatusCode::SERVICE_UNAVAILABLE,
+                    "task_input_publication_pending",
+                    format!(
+                        "terminal input reached task {task_id} and its durable record was written, but its ledger entry is not yet published: {publication_error}. Do not resend; Kanna publishes it from the record."
+                    ),
+                    None,
+                ));
+            }
+            Ok(Ok(record))
+        }
+        Ok(Ok((record, None))) => Ok(Ok(record)),
+        Ok(Err(error)) => Ok(Err(error)),
+        Err(error) => Err(error),
+    };
     match recorded {
         Ok(Ok(Some(_))) => {}
         Ok(Ok(None)) if strict_recording => {

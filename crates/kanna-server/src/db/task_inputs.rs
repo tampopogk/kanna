@@ -279,6 +279,19 @@ impl Db {
                 "truncated": truncated,
             }),
         )?;
+        // The ledger's copy of this tool-delivered input, committed with the
+        // row and published before the delivery is acknowledged.
+        self.enqueue_task_input_entry(
+            task_id,
+            id,
+            run_id.as_deref(),
+            stage.as_deref(),
+            source,
+            message,
+            None,
+            None,
+            None,
+        )?;
         Ok(Some(TaskInputRecord {
             id,
             task_id: task_id.to_string(),
@@ -290,6 +303,62 @@ impl Db {
             delivered_at,
             origin: None,
         }))
+    }
+
+    /// Enqueue the `input` ledger entry mirroring one `task_input` row. The
+    /// row id is the source identity, so a replayed import finds it again.
+    #[allow(clippy::too_many_arguments)]
+    fn enqueue_task_input_entry(
+        &self,
+        task_id: &str,
+        input_id: i64,
+        run_id: Option<&str>,
+        stage: Option<&str>,
+        source: &str,
+        message: &str,
+        origin: Option<&TaskInputOrigin>,
+        historical_at: Option<&str>,
+        hold_events_after: Option<i64>,
+    ) -> Result<(), rusqlite::Error> {
+        let delivered_at: String = match historical_at {
+            Some(at) => at.to_string(),
+            None => self.conn.query_row(
+                "SELECT strftime('%Y-%m-%dT%H:%M:%SZ', delivered_at) FROM task_input WHERE id = ?",
+                [input_id],
+                |row| row.get(0),
+            )?,
+        };
+        let source_id = input_id.to_string();
+        let declared_role = super::task_store::declared_input_role(source);
+        self.enqueue_ledger_entry(super::task_store::NewLedgerEntry {
+            task_id,
+            kind: super::task_store::LedgerEntryKind::Input,
+            operation_id: None,
+            source_kind: "task_input",
+            source_id: &source_id,
+            source_origin: origin.map(|origin| {
+                json!({
+                    "peer_id": origin.peer_id,
+                    "task_id": origin.task_id,
+                    "input_id": origin.input_id,
+                    "run_id": origin.run_id,
+                })
+            }),
+            historical: historical_at.is_some(),
+            recorded_at: historical_at,
+            run_id,
+            declared_role: declared_role.as_deref(),
+            body: json!({
+                "input_id": input_id,
+                "source": source,
+                "stage": stage,
+                "delivered_at": delivered_at,
+            }),
+            message: Some(message),
+            hold_events_after,
+            reserved_sequence: None,
+        })?;
+        Ok(())
     }
 
     /// Append one delivered input and announce it.
@@ -400,6 +469,23 @@ impl Db {
                         input.origin.run_id.as_deref(),
                     ],
                 )?;
+                if inserted == 1 {
+                    // Imported history enters the same ledger, keeping the
+                    // origin machine's identity beside the local row id.
+                    let input_id = db.conn.last_insert_rowid();
+                    let delivered_at = super::task_store::sqlite_time_to_iso(&input.delivered_at);
+                    db.enqueue_task_input_entry(
+                        task_id,
+                        input_id,
+                        None,
+                        input.stage.as_deref(),
+                        &input.source,
+                        &input.message,
+                        Some(&input.origin),
+                        Some(&delivered_at),
+                        None,
+                    )?;
+                }
                 if inserted == 0 {
                     let existing: (Option<String>, String, String, String, Option<String>) =
                         db.conn.query_row(

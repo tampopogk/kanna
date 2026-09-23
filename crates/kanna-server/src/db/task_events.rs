@@ -653,6 +653,24 @@ impl Db {
         Ok(())
     }
 
+    /// Re-append an event a ledger entry held until its file was published.
+    /// The type and payload are the ones the original mutation wrote; only
+    /// the sequence and timestamp are new, which is what keeps the cursor's
+    /// no-skip guarantee.
+    pub(crate) fn append_raw_task_event(
+        &self,
+        task_id: &str,
+        event_type: &str,
+        payload: Option<&str>,
+    ) -> Result<(), rusqlite::Error> {
+        self.conn.execute(
+            "INSERT INTO task_event (task_id, type, payload) VALUES (?, ?, ?)",
+            rusqlite::params![task_id, event_type, payload],
+        )?;
+        APPENDED.notify_waiters();
+        Ok(())
+    }
+
     /// Highest allocated sequence number, or 0 for an empty log. Read this
     /// *before* querying events so the cursor handed back never outruns the
     /// rows actually returned.
