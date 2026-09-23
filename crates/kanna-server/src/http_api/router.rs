@@ -18,6 +18,7 @@ use super::lan_trust::{
 use super::lan_trust::{TrustedLanDeviceAccess, TrustedPeerDesktopAccess};
 use super::machine_stats::machine_stats;
 use super::mobile_notifications::{mobile_push_registration, notify_mobile};
+use super::mutation_provenance::attach_dispatched_channel_identity;
 use super::operator_events::post_operator_events;
 use super::pairing::{
     claim_pairing_session, confirm_pending_pairing, create_pairing_session, mobile_builds,
@@ -35,8 +36,8 @@ use super::repos::{
     list_repos, patch_repo, reconcile_repo_metadata, refresh_repo_origin, reorder_repos,
     start_repo_checkout,
 };
-use super::secure_channel::SealedPairingContext;
 use super::secure_channel::SealedPeerPairingContext;
+use super::secure_channel::{SealedPairingContext, StreamOrigin};
 use super::settings::{delete_setting, get_setting, put_cloud_transfer_identity, put_setting};
 use super::signal_agent::{
     find_local_singletons, release_closed_singleton, signal_agent, signal_merge_handoff,
@@ -82,6 +83,9 @@ use super::transfers::{
     wait_cloud_transfer_refresh_commands,
 };
 use super::window_workspace::mutate_window_workspace;
+use crate::mutation_provenance::{
+    ChannelIdentity, PairedDeviceEvidence, PeerDesktopEvidence, SecureChannelTransport,
+};
 use axum::body::Body;
 use axum::http::Request;
 use axum::response::IntoResponse;
@@ -746,7 +750,17 @@ pub async fn dispatch_http_invoke(
     path: &str,
     body: serde_json::Value,
 ) -> HttpInvokeResponse {
-    dispatch_http_invoke_with_access(state, method, path, body, false, None, None).await
+    dispatch_http_invoke_with_access(
+        state,
+        method,
+        path,
+        body,
+        false,
+        None,
+        None,
+        ChannelIdentity::Unknown,
+    )
+    .await
 }
 
 pub async fn dispatch_authenticated_http_invoke(
@@ -755,7 +769,20 @@ pub async fn dispatch_authenticated_http_invoke(
     path: &str,
     body: serde_json::Value,
 ) -> HttpInvokeResponse {
-    dispatch_http_invoke_with_access(state, method, path, body, true, None, None).await
+    // Authenticated, but by nothing this dispatch can name: a legacy KSP
+    // socket or a relay message without an account. The channel stays
+    // unknown rather than borrowing the relay's account-level identity.
+    dispatch_http_invoke_with_access(
+        state,
+        method,
+        path,
+        body,
+        true,
+        None,
+        None,
+        ChannelIdentity::Unknown,
+    )
+    .await
 }
 
 pub async fn dispatch_authenticated_relay_http_invoke(
@@ -766,6 +793,10 @@ pub async fn dispatch_authenticated_relay_http_invoke(
     path: &str,
     body: serde_json::Value,
 ) -> HttpInvokeResponse {
+    let channel = ChannelIdentity::RelayAccount {
+        account_uid: actor.clone(),
+        source_desktop_id: source_desktop_id.clone(),
+    };
     dispatch_http_invoke_with_access(
         state,
         method,
@@ -774,6 +805,7 @@ pub async fn dispatch_authenticated_relay_http_invoke(
         true,
         Some(actor),
         source_desktop_id,
+        channel,
     )
     .await
 }
@@ -793,6 +825,14 @@ pub async fn dispatch_authenticated_lan_http_invoke(
     body: serde_json::Value,
 ) -> HttpInvokeResponse {
     let actor = state.authenticated_account_uid();
+    // Same `AuthenticatedHttpInvoke` marker as a relay invoke, but a
+    // different channel: the bearer secret proved a sibling desktop, and
+    // the account is this desktop's own, not a relay attestation.
+    let channel = ChannelIdentity::PeerDesktop {
+        desktop_id: source_desktop_id.clone(),
+        evidence: PeerDesktopEvidence::LanMachineTrust,
+        account_uid: actor.clone(),
+    };
     dispatch_http_invoke_with_access(
         state,
         method,
@@ -801,6 +841,7 @@ pub async fn dispatch_authenticated_lan_http_invoke(
         true,
         actor,
         Some(source_desktop_id),
+        channel,
     )
     .await
 }
@@ -816,13 +857,21 @@ pub async fn dispatch_sealed_device_http_invoke(
     state: Arc<AppState>,
     device_id: String,
     pairing: SealedPairingContext,
+    origin: StreamOrigin,
     method: &str,
     path: &str,
     body: serde_json::Value,
 ) -> HttpInvokeResponse {
+    let channel = ChannelIdentity::PairedDevice {
+        device_id: device_id.clone(),
+        evidence: PairedDeviceEvidence::SecureChannel {
+            transport: secure_channel_transport(origin),
+        },
+    };
     dispatch_http_invoke_with_extensions(state, method, path, body, move |extensions| {
         extensions.insert(TrustedLanDeviceAccess::new(device_id));
         extensions.insert(pairing);
+        attach_dispatched_channel_identity(extensions, channel);
     })
     .await
 }
@@ -840,15 +889,31 @@ pub async fn dispatch_sealed_device_http_invoke(
 pub async fn dispatch_sealed_peer_http_invoke(
     state: Arc<AppState>,
     desktop_id: String,
+    origin: StreamOrigin,
     method: &str,
     path: &str,
     body: serde_json::Value,
 ) -> HttpInvokeResponse {
+    let channel = ChannelIdentity::PeerDesktop {
+        desktop_id: desktop_id.clone(),
+        evidence: PeerDesktopEvidence::SecureChannel {
+            transport: secure_channel_transport(origin),
+        },
+        account_uid: None,
+    };
     dispatch_http_invoke_with_extensions(state, method, path, body, move |extensions| {
         extensions.insert(TrustedPeerDesktopAccess::new(desktop_id));
         extensions.insert(super::task_files::AuthenticatedTaskFileAccess);
+        attach_dispatched_channel_identity(extensions, channel);
     })
     .await
+}
+
+fn secure_channel_transport(origin: StreamOrigin) -> SecureChannelTransport {
+    match origin {
+        StreamOrigin::Lan => SecureChannelTransport::Lan,
+        StreamOrigin::RelayTunnel => SecureChannelTransport::Relay,
+    }
 }
 
 /// Dispatches a request from a sealed peer session whose static key is not
@@ -883,6 +948,7 @@ pub async fn dispatch_sealed_pairing_http_invoke(
     .await
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn dispatch_http_invoke_with_access(
     state: Arc<AppState>,
     method: &str,
@@ -891,6 +957,7 @@ async fn dispatch_http_invoke_with_access(
     authenticated_file_access: bool,
     authenticated_human_actor: Option<String>,
     source_desktop_id: Option<String>,
+    channel: ChannelIdentity,
 ) -> HttpInvokeResponse {
     dispatch_http_invoke_with_extensions(state, method, path, body, move |extensions| {
         if authenticated_file_access {
@@ -900,6 +967,7 @@ async fn dispatch_http_invoke_with_access(
             });
             extensions.insert(super::task_files::AuthenticatedTaskFileAccess);
         }
+        attach_dispatched_channel_identity(extensions, channel);
     })
     .await
 }

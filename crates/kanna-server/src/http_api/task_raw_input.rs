@@ -30,8 +30,10 @@
 //!   prompt it does not understand is making that mistake on its own authority.
 
 use super::lan_trust::PrivilegedTaskAccess;
+use super::mutation_provenance::RequestChannel;
 use super::state::AppState;
 use crate::db::{Db, RawInputWriteRecord, TaskInputSource};
+use crate::mutation_provenance::ChannelIdentity;
 use axum::extract::State;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
@@ -391,6 +393,7 @@ pub(super) async fn send_task_raw_input(
     State(state): State<Arc<AppState>>,
     axum::extract::Path(task_id): axum::extract::Path<String>,
     axum::extract::Query(local_only): axum::extract::Query<super::task_federation::LocalOnlyQuery>,
+    RequestChannel(channel): RequestChannel,
     Json(payload): Json<RawInputRequest>,
 ) -> Result<Response, RawInputHttpError> {
     let forward_body = serde_json::to_value(&payload).unwrap_or(serde_json::Value::Null);
@@ -640,7 +643,16 @@ pub(super) async fn send_task_raw_input(
         None => "written",
         Some((_, Json(body))) => body.reason,
     };
-    record_raw_input(&state, &task_id, source, session_pid, status, &writes).await;
+    record_raw_input(
+        &state,
+        &task_id,
+        source,
+        &channel,
+        session_pid,
+        status,
+        &writes,
+    )
+    .await;
 
     match failure {
         Some(error) => Err(error),
@@ -666,10 +678,12 @@ async fn record_raw_input(
     state: &AppState,
     task_id: &str,
     source: TaskInputSource,
+    channel: &ChannelIdentity,
     session_pid: u32,
     status: &str,
     writes: &[RawInputWrite],
 ) {
+    let channel = channel.clone();
     let db_path = state.config.db_path.clone();
     let logged_id = task_id.to_string();
     let task_id = task_id.to_string();
@@ -685,8 +699,15 @@ async fn record_raw_input(
         .collect::<Vec<_>>();
     let recorded = tokio::task::spawn_blocking(move || -> Result<bool, String> {
         let db = Db::open(&db_path).map_err(|error| format!("db error: {error}"))?;
-        db.append_raw_input_event(&task_id, source.as_str(), session_pid, &status, &records)
-            .map_err(|error| format!("db error: {error}"))
+        db.append_raw_input_event(
+            &task_id,
+            source.as_str(),
+            &channel,
+            session_pid,
+            &status,
+            &records,
+        )
+        .map_err(|error| format!("db error: {error}"))
     })
     .await;
     match recorded {

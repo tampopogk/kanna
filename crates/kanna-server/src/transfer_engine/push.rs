@@ -1682,6 +1682,8 @@ mod tests {
             completion_transition: None,
             trigger: "unspecified".into(),
             provider_override: None,
+            entry_channel_identity: Default::default(),
+            result_provenance: None,
             started_at: "2026-08-21 00:00:00".into(),
             finished_at: None,
         }

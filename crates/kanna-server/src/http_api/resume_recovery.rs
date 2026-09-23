@@ -198,6 +198,9 @@ pub(super) async fn recover_rejected_claude_resume(
             return RejectedResumeRecovery::RelaunchFailed(format!("daemon error: {error}"))
         }
     };
+    // A recovery replacement is the engine's own restart, not the caller's.
+    let mut prepared = prepared;
+    prepared.set_entry_channel(crate::mutation_provenance::ChannelIdentity::Server);
     match crate::task_creator::spawn_prepared_stage_run_for_api(
         &config.db_path,
         &mut daemon,

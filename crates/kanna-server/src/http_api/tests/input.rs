@@ -2600,6 +2600,7 @@ async fn catalog_task_inputs_tool_reaches_the_recorded_instruction_history() {
         db.record_task_input(
             "task 1",
             crate::db::TaskInputSource::Operator,
+            &crate::mutation_provenance::ChannelIdentity::Unknown,
             "Keep the new flag — I changed my mind mid-task.",
         )
         .unwrap()
@@ -2654,9 +2655,12 @@ async fn catalog_task_inputs_tool_reaches_the_recorded_instruction_history() {
         .map(String::as_str)
         .collect::<Vec<_>>();
     keys.sort_unstable();
+    // `channelIdentity` is additive: kanna-cli's struct ignores unknown keys,
+    // so it keeps deserializing this record unchanged.
     assert_eq!(
         keys,
         [
+            "channelIdentity",
             "deliveredAt",
             "id",
             "message",

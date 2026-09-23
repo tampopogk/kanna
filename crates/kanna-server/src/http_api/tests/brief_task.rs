@@ -87,6 +87,7 @@ fn fixture() -> axum::Router {
         db.record_task_input(
             "brief-task",
             crate::db::TaskInputSource::Operator,
+            &crate::mutation_provenance::ChannelIdentity::Unknown,
             "Durable owner directive",
         )
         .unwrap();

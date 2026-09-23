@@ -23,6 +23,7 @@ mod opencode_models;
 pub(crate) use kanna_runtime_defaults::login_shell;
 mod machine_trust;
 mod mobile_api;
+mod mutation_provenance;
 mod pairing;
 mod peer_channel;
 mod peer_enrollment;

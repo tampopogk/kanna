@@ -3343,6 +3343,7 @@ mod tests {
             run_id: Some("source-run".into()),
             stage: Some("in progress".into()),
             source: "manager".into(),
+            channel_identity: Default::default(),
             message: "preserve this imported directive".into(),
             delivered_at: "2026-09-10 12:00:00".into(),
             origin: None,
@@ -3610,6 +3611,7 @@ mod tests {
             db.record_task_input(
                 &task_id_for_daemon,
                 crate::db::TaskInputSource::Manager,
+                &crate::mutation_provenance::ChannelIdentity::Unknown,
                 "destination directive after first Spawn",
             )
             .unwrap()

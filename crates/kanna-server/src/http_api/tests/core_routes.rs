@@ -5064,6 +5064,13 @@ async fn list_task_children_route_returns_open_and_closed_direct_children_with_v
                     "stage": "review",
                     "kind": "main",
                     "trigger": "unspecified",
+                    // The fixture's runs were entered before any channel was
+                    // recorded, and closed by the server's own finish.
+                    "entryChannelIdentity": { "kind": "unknown" },
+                    "resultProvenance": {
+                        "declaredRole": "engine",
+                        "channelIdentity": { "kind": "server" }
+                    },
                     "agent": "review-security",
                     "agentProvider": "claude",
                     "model": null,
@@ -5087,6 +5094,13 @@ async fn list_task_children_route_returns_open_and_closed_direct_children_with_v
                     "stage": "review",
                     "kind": "main",
                     "trigger": "unspecified",
+                    // The fixture's runs were entered before any channel was
+                    // recorded, and closed by the server's own finish.
+                    "entryChannelIdentity": { "kind": "unknown" },
+                    "resultProvenance": {
+                        "declaredRole": "engine",
+                        "channelIdentity": { "kind": "server" }
+                    },
                     "agent": "review-compat",
                     "agentProvider": "claude",
                     "model": null,
@@ -8946,6 +8960,7 @@ async fn settings_mutation_refuses_every_remote_caller_and_admits_loopback() {
                         handshake_hash: [9u8; 32],
                         origin: crate::http_api::secure_channel::StreamOrigin::Lan,
                     },
+                    crate::http_api::secure_channel::StreamOrigin::Lan,
                     method,
                     path,
                     body.clone(),
@@ -8957,6 +8972,7 @@ async fn settings_mutation_refuses_every_remote_caller_and_admits_loopback() {
                 crate::http_api::dispatch_sealed_peer_http_invoke(
                     Arc::clone(&state),
                     "sibling-desktop".to_string(),
+                    crate::http_api::secure_channel::StreamOrigin::Lan,
                     method,
                     path,
                     body.clone(),

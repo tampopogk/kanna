@@ -1,10 +1,12 @@
 use super::lan_trust::PrivilegedTaskAccess;
+use super::mutation_provenance::RequestChannel;
 use super::state::{db_write_error, AppState};
 use super::task_blockers::{
     resolve_existing_task_id, start_dependents_unblocked_by_close_with_daemon,
 };
 use super::task_input::submit_task_input;
 use crate::db::{Db, StageTrigger};
+use crate::mutation_provenance::{ChannelIdentity, MutationProvenance, AGENT_DECLARED_ROLE};
 use axum::extract::State;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
@@ -240,6 +242,7 @@ pub(super) async fn set_task_parent(
 pub(super) async fn set_task_workflow(
     State(state): State<Arc<AppState>>,
     axum::extract::Path(task_id): axum::extract::Path<String>,
+    RequestChannel(channel): RequestChannel,
     Json(payload): Json<crate::mobile_api::SetTaskWorkflowRequest>,
 ) -> Result<Json<crate::mobile_api::SetTaskWorkflowResponse>, (axum::http::StatusCode, String)> {
     let workflow_name = payload.workflow_name.trim().to_string();
@@ -316,6 +319,7 @@ pub(super) async fn set_task_workflow(
                     &snapshot.definition_json,
                     item.revision_rounds,
                     snapshot.revision_limit,
+                    &channel,
                 )
                 .map_err(|error| db_write_error("db error", error))?;
             Ok((
@@ -350,6 +354,7 @@ pub(super) async fn replace_task_workflow(
     State(state): State<Arc<AppState>>,
     axum::extract::Path(task_id): axum::extract::Path<String>,
     axum::extract::Query(local_only): axum::extract::Query<super::task_federation::LocalOnlyQuery>,
+    RequestChannel(channel): RequestChannel,
     Json(payload): Json<ReplaceTaskWorkflowRequest>,
 ) -> Result<Response, (axum::http::StatusCode, String)> {
     use axum::http::StatusCode;
@@ -442,6 +447,7 @@ pub(super) async fn replace_task_workflow(
                         superseded_run_ids: &superseded,
                         changed_execution_stages: &validated.changed_execution_stages,
                     }),
+                    &channel,
                 )
                 .map_err(|error| db_write_error("db error", error))?;
             let definition_value = serde_json::from_str::<serde_json::Value>(
@@ -1042,6 +1048,7 @@ pub(super) async fn advance_stage(
     State(state): State<Arc<AppState>>,
     axum::extract::Path(task_id): axum::extract::Path<String>,
     axum::extract::Query(local_only): axum::extract::Query<super::task_federation::LocalOnlyQuery>,
+    RequestChannel(channel): RequestChannel,
     payload: Option<Json<AdvanceStageRequest>>,
 ) -> Result<Response, (axum::http::StatusCode, String)> {
     let payload = payload.map(|Json(payload)| payload);
@@ -1224,9 +1231,12 @@ pub(super) async fn advance_stage(
         })
         .await?
     };
-    let Some(transition) = transition else {
+    let Some(mut transition) = transition else {
         return Ok(Json(response).into_response());
     };
+    // The declared `source` is already the transition's trigger; the channel
+    // is what this server verified about the request that asked for it.
+    transition.set_entry_channel(channel);
     if let crate::task_creator::PreparedStageTransition::Post(prepared) = transition {
         // Unlike a stage swap, a live-session post cannot kill the HTTP
         // caller. Await it so the desktop action receives the daemon's exact
@@ -1435,6 +1445,7 @@ pub(super) async fn resume_task(
     State(state): State<Arc<AppState>>,
     axum::extract::Path(task_id): axum::extract::Path<String>,
     axum::extract::Query(local_only): axum::extract::Query<super::task_federation::LocalOnlyQuery>,
+    RequestChannel(channel): RequestChannel,
 ) -> Result<Response, (axum::http::StatusCode, String)> {
     let path = super::task_federation::task_path(&task_id, "/actions/resume");
     let task_id = match super::task_federation::resolve_task_route(
@@ -1592,6 +1603,8 @@ pub(super) async fn resume_task(
         })
         .await?
     };
+    let mut prepared = prepared;
+    prepared.set_entry_channel(channel);
     execute_stage_transition_detached_holding(
         Arc::clone(&state),
         task_id.clone(),
@@ -1615,6 +1628,7 @@ pub(super) async fn rerun_stage(
     State(state): State<Arc<AppState>>,
     axum::extract::Path(task_id): axum::extract::Path<String>,
     axum::extract::Query(local_only): axum::extract::Query<super::task_federation::LocalOnlyQuery>,
+    RequestChannel(channel): RequestChannel,
 ) -> Result<Response, (axum::http::StatusCode, String)> {
     let path = super::task_federation::task_path(&task_id, "/actions/rerun-stage");
     let task_id = match super::task_federation::resolve_task_route(
@@ -1656,6 +1670,8 @@ pub(super) async fn rerun_stage(
         })
         .await?
     };
+    let mut prepared = prepared;
+    prepared.set_entry_channel(channel);
     // Detached for the same reason as execute_stage_transition_detached: the
     // rerun kills the session that may carry this very request. Driven from
     // the blocking pool for the same reason as well — the rerun records runs
@@ -1981,6 +1997,7 @@ fn plan_stage_transition(definition: &serde_json::Value, stage: &str) -> Option<
 pub(super) async fn complete_stage(
     State(state): State<Arc<AppState>>,
     axum::extract::Path(task_id): axum::extract::Path<String>,
+    RequestChannel(channel): RequestChannel,
     Json(payload): Json<crate::mobile_api::CompleteStageRequest>,
 ) -> Result<Json<crate::mobile_api::TaskActionResponse>, (axum::http::StatusCode, String)> {
     let task_id = resolve_task_id_for_mutation(&state, &task_id).await?;
@@ -2062,6 +2079,12 @@ pub(super) async fn complete_stage(
     let completion_attempt_key = payload.completion_attempt_key.clone();
     let completion_attempt_key_for_record = completion_attempt_key.clone();
     let completion_run_id = payload.run_id.clone();
+    // `complete-stage` carries no declared source: the operation itself is an
+    // agent's report on its own stage, so that convention is the declared
+    // role. The channel is what this server verified, and neither is
+    // evidence of which process actually made the call. A replayed retry
+    // returns before anything is written, so the first recording stands.
+    let result_provenance = MutationProvenance::new(AGENT_DECLARED_ROLE, channel);
     let (task_id, finished_run, already_closed, replayed, workflow_extended) = {
         let state = Arc::clone(&state);
         let payload_verdict = verdict;
@@ -2281,10 +2304,12 @@ pub(super) async fn complete_stage(
                 if let Some(key) = contextless_key {
                     db.finish_contextless_stage_run(
                         key, &payload_run_id, run_status, &stage_result, &payload_summary,
+                        &result_provenance,
                     )
                 } else {
-                    db.finish_stage_run(
+                    db.finish_stage_run_with_provenance(
                         &payload_run_id, run_status, Some(&stage_result), Some(&payload_summary),
+                        &result_provenance,
                     )
                 }
                 .map_err(|e| db_write_error("db error", e))?;
@@ -2298,12 +2323,13 @@ pub(super) async fn complete_stage(
                         extension.validated.snapshot.revision_limit,
                         Some(crate::db::WorkflowReplacement {
                             expected_definition: &extension.previous_definition,
-                            source: "agent",
+                            source: AGENT_DECLARED_ROLE,
                             superseded_run_ids: &extension.validated.superseded_run_ids,
                             changed_execution_stages: &extension
                                 .validated
                                 .changed_execution_stages,
                         }),
+                        &result_provenance.channel_identity,
                     )
                     .map_err(|e| db_write_error("db error", e))?;
                 }
@@ -2419,7 +2445,7 @@ pub(super) async fn complete_stage(
         })
         .await?
     };
-    let Some(transition) = transition else {
+    let Some(mut transition) = transition else {
         state.publish_state_changed(StateChangeScope::Tasks);
         // Parked at a manual-transition stage. When that stage is `pr` and
         // the PR exists, the task's work is final enough for dependents:
@@ -2435,6 +2461,10 @@ pub(super) async fn complete_stage(
         }));
     };
 
+    // The transition a verdict triggers is the engine applying the stage's
+    // policy, not the caller: it records the server's channel, while the
+    // result above keeps the caller's.
+    transition.set_entry_channel(ChannelIdentity::Server);
     let response = crate::mobile_api::TaskActionResponse {
         task_id: task_id.clone(),
         follow_task: None,
@@ -2606,6 +2636,7 @@ async fn unblock_dependents_of_pr_resolved_blocker(state: &Arc<AppState>, task_i
 pub(super) async fn request_revision(
     State(state): State<Arc<AppState>>,
     axum::extract::Path(task_id): axum::extract::Path<String>,
+    RequestChannel(channel): RequestChannel,
     Json(payload): Json<crate::mobile_api::RequestRevisionRequest>,
 ) -> Result<Json<crate::mobile_api::TaskActionResponse>, (axum::http::StatusCode, String)> {
     let task_id = resolve_task_id_for_mutation(&state, &task_id).await?;
@@ -2625,6 +2656,10 @@ pub(super) async fn request_revision(
     }
 
     let origin = payload.origin.unwrap_or_default();
+    // The declared `origin` is the role of the verdict this records and of
+    // the request event; the run it starts keeps its own trigger vocabulary
+    // and carries the same verified channel.
+    let provenance = MutationProvenance::new(recorded_revision_role(origin), channel);
     // The reviewer's findings live in `prompt`; `summary` is only the headline
     // shown to the user. An agent that sends an empty `prompt` starts an agent
     // with nothing to act on and burns a budgeted round proving it, so the
@@ -2672,7 +2707,7 @@ pub(super) async fn request_revision(
             };
 
             if origin.is_agent() && budget.limit > 0 && budget.rounds >= budget.limit {
-                return park_exhausted_revision(&db, source_task_id, &payload, budget);
+                return park_exhausted_revision(&db, source_task_id, &payload, budget, &provenance);
             }
 
             // Only a capped agent round is announced to the revising agent as
@@ -2692,7 +2727,7 @@ pub(super) async fn request_revision(
             } else {
                 &payload.prompt
             };
-            let prepared = crate::task_creator::prepare_revision_task_for_api(
+            let mut prepared = crate::task_creator::prepare_revision_task_for_api(
                 &db,
                 &state.config,
                 &source_task_id,
@@ -2701,6 +2736,7 @@ pub(super) async fn request_revision(
                 round,
             )
             .map_err(|error| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, error))?;
+            prepared.set_entry_channel(provenance.channel_identity.clone());
             let stage_result = revision_stage_result(&payload.summary, &payload.metadata)?;
             // The event reports the budget this revision leaves behind: an
             // agent round consumes one, a human request resets the counter,
@@ -2716,6 +2752,7 @@ pub(super) async fn request_revision(
                 },
                 budget.limit,
                 false,
+                &provenance,
             );
             let finalized = db.with_immediate_transaction(|db| -> rusqlite::Result<i64> {
                 let rounds = if origin.is_agent() {
@@ -2726,11 +2763,12 @@ pub(super) async fn request_revision(
                     0
                 };
                 if let Some(run_id) = payload.run_id.as_deref() {
-                    db.finish_stage_run(
+                    db.finish_stage_run_with_provenance(
                         run_id,
                         "failed",
                         Some(&stage_result),
                         Some(&payload.summary),
+                        &provenance,
                     )?;
                 }
                 db.append_task_event(
@@ -2873,11 +2911,21 @@ fn recorded_revision_origin(
     }
 }
 
+/// The declared role a revision records: the caller's own `origin` label.
+fn recorded_revision_role(origin: crate::mobile_api::RevisionOrigin) -> &'static str {
+    if origin.is_agent() {
+        "agent"
+    } else {
+        "human"
+    }
+}
+
 fn park_exhausted_revision(
     db: &Db,
     source_task_id: String,
     payload: &crate::mobile_api::RequestRevisionRequest,
     budget: crate::task_creator::RevisionBudget,
+    provenance: &MutationProvenance,
 ) -> Result<RevisionOutcome, (axum::http::StatusCode, String)> {
     let parked_summary = format!(
         "Parked for human review: this task's automatic revision budget \
@@ -2890,11 +2938,12 @@ fn park_exhausted_revision(
     // The requested changes stay on the run as feedback so nothing the
     // reviewer found is lost when the loop stops.
     if let Some(run_id) = payload.run_id.as_deref() {
-        db.finish_stage_run(
+        db.finish_stage_run_with_provenance(
             run_id,
             "failed",
             Some(&parked_result),
             Some(&payload.prompt),
+            provenance,
         )
         .map_err(|error| db_write_error("db error", error))?;
     }
@@ -2905,7 +2954,7 @@ fn park_exhausted_revision(
                 format!("db error: {}", e),
             )
         })?;
-    append_revision_requested_event(db, &source_task_id, payload, &budget, true)?;
+    append_revision_requested_event(db, &source_task_id, payload, &budget, true, provenance)?;
     // Recorded as a review verdict that started nothing (`applied = false`):
     // a parked request is churn the reviewer asked for but the task never
     // spent, and averaging it in with real rounds would overstate revisions.
@@ -2931,11 +2980,18 @@ fn append_revision_requested_event(
     payload: &crate::mobile_api::RequestRevisionRequest,
     budget: &crate::task_creator::RevisionBudget,
     exhausted: bool,
+    provenance: &MutationProvenance,
 ) -> Result<(), (axum::http::StatusCode, String)> {
     db.append_task_event(
         task_id,
         crate::db::TaskEventKind::RevisionRequested,
-        revision_requested_event_payload(payload, budget.rounds, budget.limit, exhausted),
+        revision_requested_event_payload(
+            payload,
+            budget.rounds,
+            budget.limit,
+            exhausted,
+            provenance,
+        ),
     )
     .map_err(|e| {
         (
@@ -2950,6 +3006,7 @@ fn revision_requested_event_payload(
     rounds: i64,
     limit: i64,
     exhausted: bool,
+    provenance: &MutationProvenance,
 ) -> serde_json::Value {
     serde_json::json!({
         "targetStage": payload.target_stage,
@@ -2958,6 +3015,8 @@ fn revision_requested_event_payload(
         "rounds": rounds,
         "limit": limit,
         "exhausted": exhausted,
+        "declaredRole": provenance.declared_role,
+        "channelIdentity": provenance.channel_identity.to_json(),
     })
 }
 

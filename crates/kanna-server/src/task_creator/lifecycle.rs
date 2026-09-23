@@ -9,6 +9,7 @@ use super::worktree::remove_prepared_worktree;
 use crate::daemon_client::{DaemonClient, SpawnDeliveryError, SpawnSubmission};
 use crate::db::{Db, NewStageRun};
 use crate::http_api::{try_submit_task_input, TaskInputError};
+use crate::mutation_provenance::ChannelIdentity;
 use crate::session_replacements::SessionReplacements;
 use kanna_daemon::protocol::{
     AgentSpawnParams, Command as DaemonCommand, Event as DaemonEvent, TerminalSnapshot,
@@ -656,6 +657,7 @@ fn record_stage_transition_run(
             Some(prepared.trigger),
             prepared.provider_override.as_ref(),
             prepared.replaces_run_id.as_deref(),
+            Some(&prepared.entry_channel),
         )?;
         if let Some(reason) = prepared.resume_fallback_reason.as_deref() {
             db.set_stage_run_resume_fallback_reason(run_id, reason)?;
@@ -724,6 +726,7 @@ fn record_stage_transition_failure(
             Some(prepared.trigger),
             prepared.provider_override.as_ref(),
             prepared.replaces_run_id.as_deref(),
+            Some(&prepared.entry_channel),
         )
         .map_err(|db_error| format!("db error: {db_error}"))?;
         if let Some(reason) = prepared.resume_fallback_reason.as_deref() {
@@ -1016,6 +1019,10 @@ struct PostOperationPayload {
     run_stage: String,
     completion_transition: String,
     trigger: String,
+    /// The verified channel the transition that dispatched this post arrived
+    /// on. Intents persisted before it existed read as unknown.
+    #[serde(default)]
+    entry_channel: ChannelIdentity,
     agent: Option<String>,
     agent_provider: Option<String>,
     model: Option<String>,
@@ -1044,6 +1051,11 @@ struct StageOperationPayload {
     provider_session_id: Option<String>,
     completion_transition: String,
     trigger: String,
+    /// The verified channel the transition arrived on, replayed onto the
+    /// `stage.changed` event if restart reconciliation lands the transition.
+    /// Intents persisted before it existed read as unknown.
+    #[serde(default)]
+    entry_channel: ChannelIdentity,
     /// Only a newly forked workspace is safe to delete when a spawn is known
     /// to have stopped before submission. Older payloads omitted this field;
     /// defaulting to false preserves resumed workspaces during upgrade.
@@ -1083,6 +1095,7 @@ fn persist_stage_operation_intent(
         provider_session_id: prepared.provider_session_id.clone(),
         completion_transition: prepared.completion_transition.as_str().to_string(),
         trigger: prepared.trigger.as_str().to_string(),
+        entry_channel: prepared.entry_channel.clone(),
         rollback_on_failure,
     };
     let payload_json = serde_json::to_string(&payload)
@@ -1140,6 +1153,7 @@ fn persist_post_operation_intent(
         run_stage: prepared.run_stage.clone(),
         completion_transition: prepared.fallback.completion_transition.as_str().to_string(),
         trigger: prepared.fallback.trigger.as_str().to_string(),
+        entry_channel: prepared.fallback.entry_channel.clone(),
         agent,
         agent_provider,
         model,
@@ -1203,7 +1217,7 @@ fn finalize_post_operation(
                     db.finish_stage_run(inherited_run_id, "succeeded", None, None)?;
                 }
             }
-            db.insert_stage_run_with_completion_binding_and_trigger(
+            db.insert_stage_run_with_provenance(
                 NewStageRun {
                     id: &payload.run_id,
                     task_id: &payload.task_id,
@@ -1224,6 +1238,9 @@ fn finalize_post_operation(
                 completion_transition,
                 true,
                 parse_stage_trigger(&payload.trigger),
+                None,
+                None,
+                Some(&payload.entry_channel),
             )?;
         }
         if !db.update_lifecycle_operation_phase(intent_id, "committed")? {
@@ -1635,6 +1652,7 @@ fn reconcile_stage_operation_payload(
                     &payload.next_stage,
                     branch,
                     trigger,
+                    &payload.entry_channel,
                 )?;
                 db.upsert_worktree(
                     &format!("wt-{}", payload.task_id),
@@ -1648,6 +1666,7 @@ fn reconcile_stage_operation_payload(
                     &payload.task_id,
                     &payload.next_stage,
                     trigger,
+                    &payload.entry_channel,
                 )?;
             }
             _ => {
@@ -1751,6 +1770,7 @@ fn reconcile_stage_operation_db(
                     &prepared.next_stage,
                     &workspace.branch,
                     prepared.trigger,
+                    &prepared.entry_channel,
                 )?;
                 db.upsert_worktree(
                     &format!("wt-{}", prepared.task_id),
@@ -1764,6 +1784,7 @@ fn reconcile_stage_operation_db(
                     &prepared.task_id,
                     &prepared.next_stage,
                     prepared.trigger,
+                    &prepared.entry_channel,
                 )?;
             }
         }
@@ -1887,6 +1908,7 @@ pub(crate) async fn rerun_prepared_stage_for_api(
     let model = prepared.model.clone();
     let effort = prepared.effort.clone();
     let provider_override = prepared.provider_override.clone();
+    let entry_channel = prepared.entry_channel.clone();
     let completion_transition = prepared.completion_transition;
     let provider_session_id = prepared.provider_session_id.clone();
     let cwd = prepared.cwd.clone();
@@ -1908,6 +1930,7 @@ pub(crate) async fn rerun_prepared_stage_for_api(
             provider_session_id.as_deref(),
             &cwd,
             provider_override.as_ref(),
+            &entry_channel,
             setup,
             &resolved_prompt,
             &error,
@@ -1954,6 +1977,7 @@ pub(crate) async fn rerun_prepared_stage_for_api(
         provider_session_id.as_deref(),
         &cwd,
         provider_override.as_ref(),
+        &entry_channel,
         &run_id,
     )?;
     record_workspace_setup_for_run(db_path, &run_id, setup_record.as_ref());
@@ -2304,6 +2328,7 @@ fn record_rerun_stage_run(
     provider_session_id: Option<&str>,
     cwd: &str,
     provider_override: Option<&crate::db::StageProviderOverride>,
+    entry_channel: &ChannelIdentity,
     run_id: &str,
 ) -> Result<(), String> {
     let db = Db::open(db_path).map_err(|e| format!("db error: {}", e))?;
@@ -2336,6 +2361,7 @@ fn record_rerun_stage_run(
             // A rerun is a deliberate redo, not a recovery: it must stay
             // lineage-free so no-redo semantics are never inherited.
             None,
+            Some(entry_channel),
         )?;
         db.delete_create_task_intent(task_id)
     })
@@ -2356,6 +2382,7 @@ fn record_rerun_stage_failure(
     provider_session_id: Option<&str>,
     cwd: &str,
     provider_override: Option<&crate::db::StageProviderOverride>,
+    entry_channel: &ChannelIdentity,
     setup_record: Option<&crate::db::WorkspaceSetupOutcome>,
     resolved_prompt: &str,
     error: &str,
@@ -2392,6 +2419,7 @@ fn record_rerun_stage_failure(
         None,
         provider_override,
         None,
+        Some(entry_channel),
     )
     .map_err(|e| format!("db error: {}", e))?;
     // A rerun whose setup failed is exactly the one somebody needs the Setup
@@ -3708,6 +3736,7 @@ mod lifecycle_operation_tests {
             provider_session_id: None,
             completion_transition: "manual".to_string(),
             trigger: "operator".to_string(),
+            entry_channel: Default::default(),
             rollback_on_failure,
         }
     }
@@ -3801,6 +3830,7 @@ mod lifecycle_operation_tests {
             run_stage: "commit".to_string(),
             completion_transition: "manual".to_string(),
             trigger: "unspecified".to_string(),
+            entry_channel: Default::default(),
             agent: Some("implement".to_string()),
             agent_provider: Some("codex".to_string()),
             model: None,
@@ -3927,6 +3957,7 @@ mod lifecycle_operation_tests {
             provider_session_id: None,
             completion_transition: "manual".to_string(),
             trigger: "operator".to_string(),
+            entry_channel: Default::default(),
             rollback_on_failure: false,
         };
         db.insert_lifecycle_operation_intent(
@@ -4253,6 +4284,35 @@ mod lifecycle_operation_tests {
         reconcile_closed_task_stage_intent("spawn_ready").await;
     }
 
+    /// An intent persisted before channel identity existed still reconciles:
+    /// the missing field reads as unknown rather than refusing the payload.
+    #[test]
+    fn a_legacy_stage_intent_without_an_entry_channel_reads_as_unknown() {
+        let stage: StageOperationPayload = serde_json::from_value(serde_json::json!({
+            "version": 2, "task_id": "t", "session_id": "t", "run_id": "r",
+            "next_stage": "review", "run_stage": "review", "branch": null,
+            "worktree_path": null, "cwd": "/work", "provider_session_id": null,
+            "completion_transition": "manual", "trigger": "operator"
+        }))
+        .unwrap();
+        assert_eq!(
+            stage.entry_channel,
+            crate::mutation_provenance::ChannelIdentity::Unknown
+        );
+        let post: PostOperationPayload = serde_json::from_value(serde_json::json!({
+            "version": 1, "task_id": "t", "session_id": "t", "message": "m",
+            "run_id": "r", "inherited_run_id": null, "run_stage": "commit",
+            "completion_transition": "auto", "trigger": "auto", "agent": null,
+            "agent_provider": null, "model": null, "effort": null,
+            "provider_session_id": null, "cwd": null
+        }))
+        .unwrap();
+        assert_eq!(
+            post.entry_channel,
+            crate::mutation_provenance::ChannelIdentity::Unknown
+        );
+    }
+
     /// An unreadable trigger is unauthenticated provenance, not authority.
     /// Before it degraded, reconciliation returned an error over it and the
     /// intent survived every boot — one of the poisoned shapes that blocked a
@@ -4328,6 +4388,7 @@ mod lifecycle_operation_tests {
             run_stage: "commit".to_string(),
             completion_transition: "from-the-future".to_string(),
             trigger: "operator".to_string(),
+            entry_channel: Default::default(),
             agent: Some("implement".to_string()),
             agent_provider: Some("codex".to_string()),
             model: None,
@@ -4480,6 +4541,7 @@ mod lifecycle_operation_tests {
             run_stage: "commit".to_string(),
             completion_transition: "manual".to_string(),
             trigger: "unspecified".to_string(),
+            entry_channel: Default::default(),
             agent: Some("implement".to_string()),
             agent_provider: Some("codex".to_string()),
             model: None,

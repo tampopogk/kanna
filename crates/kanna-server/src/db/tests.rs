@@ -229,7 +229,7 @@ fn open_creates_and_migrates_fresh_profile_database() {
             |row| row.get(0),
         )
         .expect("latest migration");
-    assert_eq!(latest_migration, "094_task_attention_flag");
+    assert_eq!(latest_migration, "095_mutation_provenance");
     assert_eq!(
         index_columns(&db.conn, "idx_pipeline_item_parent_created_id"),
         vec!["parent_task_id", "created_at", "id"],
@@ -2205,15 +2205,29 @@ fn contextless_completion_binding_commits_atomically_with_verdict() {
         .unwrap();
     }
     let result = r#"{"status":"success","summary":"done"}"#;
-    db.finish_contextless_stage_run("key", "run-original", "succeeded", result, "done")
-        .unwrap();
+    db.finish_contextless_stage_run(
+        "key",
+        "run-original",
+        "succeeded",
+        result,
+        "done",
+        &crate::mutation_provenance::MutationProvenance::engine(),
+    )
+    .unwrap();
     // A duplicate binding must roll back the run update and durable event.
     let event_count: i64 = db
         .conn
         .query_row("SELECT COUNT(*) FROM task_event", [], |row| row.get(0))
         .unwrap();
     assert!(db
-        .finish_contextless_stage_run("key", "run-next", "succeeded", result, "done")
+        .finish_contextless_stage_run(
+            "key",
+            "run-next",
+            "succeeded",
+            result,
+            "done",
+            &crate::mutation_provenance::MutationProvenance::engine()
+        )
         .is_err());
     let next = db.stage_run("run-next").unwrap().unwrap();
     assert_eq!(next.status, "running");
@@ -4080,6 +4094,7 @@ fn recorded_task_inputs_carry_their_text_source_and_live_run() {
         .record_task_input(
             "task-1",
             super::TaskInputSource::Operator,
+            &crate::mutation_provenance::ChannelIdentity::Unknown,
             "there shouldn't be a pin/unpin button, just swiping",
         )
         .expect("record")
@@ -4128,9 +4143,14 @@ fn task_inputs_read_back_in_delivery_order_with_every_source() {
         (super::TaskInputSource::Manager, "second"),
         (super::TaskInputSource::Unspecified, "third"),
     ] {
-        db.record_task_input("task-1", source, message)
-            .expect("record")
-            .expect("task exists");
+        db.record_task_input(
+            "task-1",
+            source,
+            &crate::mutation_provenance::ChannelIdentity::Unknown,
+            message,
+        )
+        .expect("record")
+        .expect("task exists");
     }
     db.conn
         .execute(
@@ -4322,12 +4342,22 @@ fn recording_a_task_input_appends_a_previewed_event() {
     .expect("task");
 
     let long_message = "x".repeat(500);
-    db.record_task_input("task-1", super::TaskInputSource::Manager, &long_message)
-        .expect("record")
-        .expect("task exists");
-    db.record_task_input("task-1", super::TaskInputSource::Operator, "short")
-        .expect("record")
-        .expect("task exists");
+    db.record_task_input(
+        "task-1",
+        super::TaskInputSource::Manager,
+        &crate::mutation_provenance::ChannelIdentity::Unknown,
+        &long_message,
+    )
+    .expect("record")
+    .expect("task exists");
+    db.record_task_input(
+        "task-1",
+        super::TaskInputSource::Operator,
+        &crate::mutation_provenance::ChannelIdentity::Unknown,
+        "short",
+    )
+    .expect("record")
+    .expect("task exists");
 
     let head = db.latest_task_event_seq().expect("head");
     let events = db
@@ -4365,8 +4395,13 @@ fn recording_an_input_for_an_unknown_task_reports_no_record() {
     let db = Db::open_migrated(path.to_str().expect("utf8 path")).expect("open migrated db");
 
     assert_eq!(
-        db.record_task_input("missing-task", super::TaskInputSource::Unspecified, "hello",)
-            .expect("record"),
+        db.record_task_input(
+            "missing-task",
+            super::TaskInputSource::Unspecified,
+            &crate::mutation_provenance::ChannelIdentity::Unknown,
+            "hello"
+        )
+        .expect("record"),
         None
     );
     assert_eq!(db.count_task_inputs("missing-task").expect("count"), 0);
@@ -5860,6 +5895,8 @@ fn stage_run_teardown_kind_migration_keeps_rows_that_reference_it() {
             DROP TABLE stage_run;
             ALTER TABLE stage_run_pre_087 RENAME TO stage_run;
             DELETE FROM schema_migrations WHERE id = '087_stage_run_teardown_kind';
+            -- The pre-087 shape predates the provenance columns too.
+            DELETE FROM schema_migrations WHERE id = '095_mutation_provenance';
             PRAGMA foreign_keys = ON;
             "#,
         )
@@ -6138,6 +6175,7 @@ fn attention_badged_tasks_re_enter_the_work_set_only_on_human_action() {
     db.record_task_input(
         "task-manager",
         crate::db::TaskInputSource::Manager,
+        &crate::mutation_provenance::ChannelIdentity::Unknown,
         "status?",
     )
     .expect("manager input");
@@ -6149,6 +6187,7 @@ fn attention_badged_tasks_re_enter_the_work_set_only_on_human_action() {
     db.record_task_input(
         "task-operator",
         crate::db::TaskInputSource::Operator,
+        &crate::mutation_provenance::ChannelIdentity::Unknown,
         "go ahead",
     )
     .expect("operator input");
@@ -6178,4 +6217,145 @@ fn attention_badged_tasks_re_enter_the_work_set_only_on_human_action() {
 
     drop(db);
     let _ = std::fs::remove_file(&path);
+}
+
+/// The provenance migration is additive: rows written before it keep their
+/// declared labels and read as an unknown channel, with nothing backfilled
+/// from those labels, and it applies once.
+#[test]
+fn mutation_provenance_migration_leaves_history_unknown_without_backfilling() {
+    use crate::mutation_provenance::ChannelIdentity;
+    let path = temp_db_path();
+    let db = Db::open_migrated(path.to_str().unwrap()).unwrap();
+    db.insert_test_repo("repo-1", "Repo One").unwrap();
+    db.insert_test_pipeline_item(
+        "task-1",
+        "repo-1",
+        "Prompt",
+        None,
+        "in progress",
+        "2026-09-22 00:00:00",
+    )
+    .unwrap();
+    // Rewind to the pre-095 shape with history written by an older build.
+    db.conn
+        .execute_batch(
+            "ALTER TABLE stage_run DROP COLUMN entry_channel_identity;
+             ALTER TABLE stage_run DROP COLUMN result_declared_role;
+             ALTER TABLE stage_run DROP COLUMN result_channel_identity;
+             ALTER TABLE task_input DROP COLUMN channel_identity;
+             DELETE FROM schema_migrations WHERE id = '095_mutation_provenance';
+             INSERT INTO stage_run (id, task_id, stage, kind, status, result, trigger)
+               VALUES ('run-old', 'task-1', 'in progress', 'main', 'succeeded',
+                       '{\"status\":\"success\",\"summary\":\"old\"}', 'operator');
+             INSERT INTO task_input (task_id, stage, source, message)
+               VALUES ('task-1', 'in progress', 'operator', 'old directive');",
+        )
+        .unwrap();
+    drop(db);
+
+    for _ in 0..2 {
+        let db = Db::open_migrated(path.to_str().unwrap()).unwrap();
+        assert!(super::has_migration(&db.conn, "095_mutation_provenance").unwrap());
+        let run = db.stage_run("run-old").unwrap().unwrap();
+        assert_eq!(run.trigger, "operator");
+        assert_eq!(run.entry_channel_identity, ChannelIdentity::Unknown);
+        let result = run
+            .result_provenance
+            .expect("a recorded result has provenance");
+        assert_eq!(result.declared_role, "unspecified");
+        assert_eq!(result.channel_identity, ChannelIdentity::Unknown);
+        let inputs = db.list_task_inputs("task-1", 10).unwrap();
+        assert_eq!(inputs[0].source, "operator");
+        assert_eq!(inputs[0].channel_identity, ChannelIdentity::Unknown);
+    }
+}
+
+/// A run's entry and its result are separate mutations: recording a verdict
+/// writes the result pair and leaves the entry channel as it was; a result
+/// the server writes itself is recorded as the engine's.
+#[test]
+fn a_result_never_overwrites_the_entry_it_follows() {
+    use crate::mutation_provenance::{
+        ChannelIdentity, LocalProcessEvidence, MutationProvenance, PeerDesktopEvidence,
+        SecureChannelTransport,
+    };
+    let path = temp_db_path();
+    let db = Db::open_migrated(path.to_str().unwrap()).unwrap();
+    db.insert_test_repo("repo-1", "Repo One").unwrap();
+    db.insert_test_pipeline_item(
+        "task-1",
+        "repo-1",
+        "Prompt",
+        None,
+        "in progress",
+        "2026-09-22 00:00:00",
+    )
+    .unwrap();
+    let entry = ChannelIdentity::LocalProcess {
+        evidence: LocalProcessEvidence::Loopback,
+    };
+    let run = |id: &'static str, status: &'static str, result: Option<&'static str>| NewStageRun {
+        id,
+        task_id: "task-1",
+        stage: "in progress",
+        kind: "main",
+        agent: None,
+        agent_provider: Some("claude"),
+        model: None,
+        effort: None,
+        status,
+        result,
+        feedback: None,
+        session_id: Some("task-1"),
+        provider_session_id: None,
+        cwd: None,
+        resumed_from_run_id: None,
+    };
+    db.insert_stage_run_with_provenance(
+        run("run-1", "running", None),
+        Some("manual"),
+        true,
+        Some(super::StageTrigger::Operator),
+        None,
+        None,
+        Some(&entry),
+    )
+    .unwrap();
+    assert!(db
+        .stage_run("run-1")
+        .unwrap()
+        .unwrap()
+        .result_provenance
+        .is_none());
+    let sibling = ChannelIdentity::PeerDesktop {
+        desktop_id: "desk-2".into(),
+        evidence: PeerDesktopEvidence::SecureChannel {
+            transport: SecureChannelTransport::Lan,
+        },
+        account_uid: None,
+    };
+    db.finish_stage_run_with_provenance(
+        "run-1",
+        "succeeded",
+        Some(r#"{"status":"success"}"#),
+        None,
+        &MutationProvenance::new("agent", sibling.clone()),
+    )
+    .unwrap();
+    let finished = db.stage_run("run-1").unwrap().unwrap();
+    assert_eq!(finished.trigger, "operator");
+    assert_eq!(finished.entry_channel_identity, entry);
+    assert_eq!(
+        finished.result_provenance,
+        Some(MutationProvenance::new("agent", sibling))
+    );
+
+    // A spawn failure is inserted already carrying the server's own result.
+    db.insert_stage_run(run("run-2", "failed", Some("failed to start")))
+        .unwrap();
+    assert_eq!(
+        db.stage_run("run-2").unwrap().unwrap().result_provenance,
+        Some(MutationProvenance::engine())
+    );
 }

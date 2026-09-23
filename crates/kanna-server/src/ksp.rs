@@ -3529,12 +3529,15 @@ async fn dispatch_ksp_request(
             match authority.as_deref() {
                 None => dispatch_authenticated_http_invoke(state, &method, &path, body).await,
                 Some(SealedSessionAuthority::Device {
-                    device_id, pairing, ..
+                    device_id,
+                    pairing,
+                    origin,
                 }) => {
                     crate::http_api::dispatch_sealed_device_http_invoke(
                         state,
                         device_id.clone(),
                         pairing.clone(),
+                        *origin,
                         &method,
                         &path,
                         body,
@@ -3551,10 +3554,13 @@ async fn dispatch_ksp_request(
                     )
                     .await
                 }
-                Some(SealedSessionAuthority::PeerDesktop { desktop_id, .. }) => {
+                Some(SealedSessionAuthority::PeerDesktop {
+                    desktop_id, origin, ..
+                }) => {
                     crate::http_api::dispatch_sealed_peer_http_invoke(
                         state,
                         desktop_id.clone(),
+                        *origin,
                         &method,
                         &path,
                         body,

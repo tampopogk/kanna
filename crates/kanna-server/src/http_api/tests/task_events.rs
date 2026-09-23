@@ -6575,6 +6575,7 @@ async fn a_manager_watching_a_child_wakes_on_its_own_delivery_to_that_child() {
         db.record_task_input(
             "child-a",
             crate::db::TaskInputSource::Manager,
+            &crate::mutation_provenance::ChannelIdentity::Unknown,
             "please rerun the failing test",
         )
         .expect("record manager input");
@@ -6615,6 +6616,7 @@ async fn a_manager_watching_a_child_wakes_on_its_own_delivery_to_that_child() {
         db.record_task_input(
             "child-a",
             crate::db::TaskInputSource::Operator,
+            &crate::mutation_provenance::ChannelIdentity::Unknown,
             "and please look at the flake too",
         )
         .expect("record operator input");
@@ -6653,8 +6655,13 @@ async fn min_interval_consolidates_the_burst_that_follows_a_send() {
 
     {
         let db = Db::open(&db_path).expect("open db");
-        db.record_task_input("child-a", crate::db::TaskInputSource::Manager, "carry on")
-            .expect("record manager input");
+        db.record_task_input(
+            "child-a",
+            crate::db::TaskInputSource::Manager,
+            &crate::mutation_provenance::ChannelIdentity::Unknown,
+            "carry on",
+        )
+        .expect("record manager input");
     }
     // Cursorless defaults to `now`: this delivery, already durable before the
     // wait below even starts, is not replayed. That is the ordinary

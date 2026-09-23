@@ -4,6 +4,7 @@ use super::{
     ReopenPipelineItemError, TaskEventKind, TaskListOrder, TaskListSort, TaskStageSource,
     TaskStateSummary,
 };
+use crate::mutation_provenance::ChannelIdentity;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::json;
 
@@ -1437,6 +1438,7 @@ impl Db {
     /// task at another workflow does not alter the repo's sticky new-task
     /// default. (`pipeline`, `pipeline_def`, and `initial_pipeline` are the
     /// legacy storage column names for the task's workflow.)
+    #[allow(clippy::too_many_arguments)]
     pub fn update_pipeline_item_pipeline(
         &self,
         id: &str,
@@ -1445,6 +1447,7 @@ impl Db {
         workflow_def: &str,
         revision_rounds: i64,
         revision_limit: i64,
+        channel: &ChannelIdentity,
     ) -> Result<bool, rusqlite::Error> {
         self.replace_task_workflow(
             id,
@@ -1454,10 +1457,15 @@ impl Db {
             revision_rounds,
             revision_limit,
             None,
+            channel,
         )
     }
 
     /// Shared atomic pin boundary for named switches and inline replacements.
+    ///
+    /// `channel` is the verified channel the edit arrived on. A named switch
+    /// (`edit: None`) declares no role and records `unspecified`, as its event
+    /// always has; an inline replacement records its declared `source`.
     #[allow(clippy::too_many_arguments)]
     pub fn replace_task_workflow(
         &self,
@@ -1468,6 +1476,7 @@ impl Db {
         revision_rounds: i64,
         revision_limit: i64,
         edit: Option<WorkflowReplacement<'_>>,
+        channel: &ChannelIdentity,
     ) -> Result<bool, rusqlite::Error> {
         // Joins the caller's transaction when there is one: publishing a plan
         // writes the run verdict and this workflow in the same commit, so a
@@ -1528,6 +1537,8 @@ impl Db {
                     "revisionRounds": revision_rounds,
                     "revisionLimit": revision_limit,
                     "source": edit.map(|edit| edit.source).unwrap_or("unspecified"),
+                    "declaredRole": edit.map(|edit| edit.source).unwrap_or("unspecified"),
+                    "channelIdentity": channel.to_json(),
                     "operation": if edit.is_some() { "replace" } else { "select" },
                     "beforeDefinition": current.1.as_ref().and_then(|value| serde_json::from_str::<serde_json::Value>(value).ok()),
                     "afterDefinition": serde_json::from_str::<serde_json::Value>(workflow_def).ok(),
@@ -1541,14 +1552,23 @@ impl Db {
 
     #[cfg(test)]
     pub fn update_pipeline_item_stage(&self, id: &str, stage: &str) -> Result<(), rusqlite::Error> {
-        self.update_pipeline_item_stage_with_trigger(id, stage, super::StageTrigger::Unspecified)
+        self.update_pipeline_item_stage_with_trigger(
+            id,
+            stage,
+            super::StageTrigger::Unspecified,
+            &ChannelIdentity::Unknown,
+        )
     }
 
+    /// Move the task's stage. `trigger` is the transition's declared role and
+    /// `channel` the verified channel it arrived on; both land on the
+    /// `stage.changed` event.
     pub fn update_pipeline_item_stage_with_trigger(
         &self,
         id: &str,
         stage: &str,
         trigger: super::StageTrigger,
+        channel: &ChannelIdentity,
     ) -> Result<(), rusqlite::Error> {
         self.in_immediate_transaction_if_needed(|db| {
             let from_stage = db.pipeline_item_stage(id)?;
@@ -1559,7 +1579,14 @@ impl Db {
             if rows_affected == 0 {
                 return Err(rusqlite::Error::QueryReturnedNoRows);
             }
-            db.append_stage_changed_event(id, from_stage.as_deref(), stage, None, trigger)?;
+            db.append_stage_changed_event(
+                id,
+                from_stage.as_deref(),
+                stage,
+                None,
+                trigger,
+                channel,
+            )?;
             // Reaching (or leaving) `pr` with a PR recorded flips whether this
             // task still blocks its dependents.
             db.sync_blocked_events_for_dependents(id)
@@ -1576,6 +1603,7 @@ impl Db {
         to_stage: &str,
         branch: Option<&str>,
         trigger: super::StageTrigger,
+        channel: &ChannelIdentity,
     ) -> Result<(), rusqlite::Error> {
         if from_stage == Some(to_stage) {
             return Ok(());
@@ -1588,6 +1616,8 @@ impl Db {
                 "toStage": to_stage,
                 "branch": branch,
                 "trigger": trigger.as_str(),
+                "declaredRole": trigger.as_str(),
+                "channelIdentity": channel.to_json(),
             }),
         )
     }
@@ -1731,6 +1761,7 @@ impl Db {
         stage: &str,
         branch: &str,
         trigger: super::StageTrigger,
+        channel: &ChannelIdentity,
     ) -> Result<(), rusqlite::Error> {
         self.in_immediate_transaction_if_needed(|db| {
             let from_stage = db.pipeline_item_stage(id)?;
@@ -1741,7 +1772,14 @@ impl Db {
             if rows_affected == 0 {
                 return Err(rusqlite::Error::QueryReturnedNoRows);
             }
-            db.append_stage_changed_event(id, from_stage.as_deref(), stage, Some(branch), trigger)?;
+            db.append_stage_changed_event(
+                id,
+                from_stage.as_deref(),
+                stage,
+                Some(branch),
+                trigger,
+                channel,
+            )?;
             db.sync_blocked_events_for_dependents(id)
         })
     }

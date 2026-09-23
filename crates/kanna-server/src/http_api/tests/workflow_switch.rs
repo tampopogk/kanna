@@ -5,7 +5,7 @@ use serde_json::Value;
 use std::path::Path;
 use std::process::Command;
 
-fn seed_workflow_task(
+pub(super) fn seed_workflow_task(
     db: &Db,
     repo_path: &str,
     task_id: &str,
@@ -89,7 +89,7 @@ async fn set_workflow_via_legacy_surface(
     (status, String::from_utf8(body.to_vec()).unwrap())
 }
 
-fn workflow_test_repo(label: &str) -> (tempfile::TempDir, String) {
+pub(super) fn workflow_test_repo(label: &str) -> (tempfile::TempDir, String) {
     let temp = tempfile::Builder::new()
         .prefix(&format!("kanna-dynamic-workflow-{label}-"))
         .tempdir()
@@ -464,7 +464,7 @@ async fn replace_workflow(
     )
 }
 
-fn replacement_fixture(label: &str) -> (tempfile::TempDir, Arc<AppState>, Value) {
+pub(super) fn replacement_fixture(label: &str) -> (tempfile::TempDir, Arc<AppState>, Value) {
     let (temp, repo_path) = workflow_test_repo(label);
     let before = serde_json::json!({"name": "pinned", "stages": [
         {"name": "review", "agent": "review", "agent_provider": ["claude-fable", "codex-gpt-6-astra"], "policy": {"transition": "manual"}},
@@ -727,7 +727,7 @@ fn plan_publication_fixture_with_barrier(label: &str) -> BarrieredFixture {
     }
 }
 
-fn plan_publication_fixture(label: &str) -> (tempfile::TempDir, Arc<AppState>, Value) {
+pub(super) fn plan_publication_fixture(label: &str) -> (tempfile::TempDir, Arc<AppState>, Value) {
     let (temp, repo_path) = workflow_test_repo(label);
     let before = serde_json::json!({"name": "research", "stages": [
         {"name": "research", "agent": "researcher", "prompt": "$TASK_PROMPT",
@@ -785,7 +785,7 @@ fn plan_publication_fixture(label: &str) -> (tempfile::TempDir, Arc<AppState>, V
     (temp, state, before)
 }
 
-fn single_reviewer_suffix(before: &Value) -> Value {
+pub(super) fn single_reviewer_suffix(before: &Value) -> Value {
     let mut after = before.clone();
     after["revision_limit"] = serde_json::json!(3);
     let stages = after["stages"].as_array_mut().unwrap();

@@ -401,6 +401,9 @@ async fn start_fallback(
             return finish_with(&db, rejection, QuotaRecovery::ParkedFallbackFailed, None);
         }
     };
+    // A recovery replacement is the engine's own restart, not the caller's.
+    let mut prepared = prepared;
+    prepared.set_entry_channel(crate::mutation_provenance::ChannelIdentity::Server);
     let spawned = crate::task_creator::spawn_prepared_stage_run_for_api(
         &config.db_path,
         &mut daemon,

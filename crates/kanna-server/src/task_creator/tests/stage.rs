@@ -590,6 +590,7 @@ async fn acknowledged_stage_survives_db_failure_restart_and_can_complete() {
         effort: None,
         completion_transition: WorkflowStageTransition::Manual,
         trigger: crate::db::StageTrigger::Unspecified,
+        entry_channel: Default::default(),
         provider_override: None,
         feedback: None,
         provider_session_id: None,
@@ -3733,6 +3734,7 @@ fn current_stage_spawn_fixture(
         effort: None,
         completion_transition: WorkflowStageTransition::Manual,
         trigger: crate::db::StageTrigger::Operator,
+        entry_channel: Default::default(),
         provider_override: None,
         feedback: None,
         provider_session_id: None,
@@ -4419,6 +4421,7 @@ fn edited_workflow_spawn_case(seed_run: bool) {
             superseded_run_ids: &validated.superseded_run_ids,
             changed_execution_stages: &validated.changed_execution_stages,
         }),
+        &crate::mutation_provenance::ChannelIdentity::Unknown,
     )
     .unwrap();
     let rerun = prepare_rerun_stage_for_api(&db, &config, "task-1").unwrap();

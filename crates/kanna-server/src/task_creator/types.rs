@@ -201,6 +201,9 @@ pub(crate) struct PreparedStageRerun {
     /// Carried forward from the run this rerun reproduces, so the durable
     /// record keeps naming whoever picked the model it respawns with.
     pub(super) provider_override: Option<crate::db::StageProviderOverride>,
+    /// The verified channel the rerun request arrived on. Preparation leaves
+    /// it unknown; the caller that knows the channel sets it.
+    pub(super) entry_channel: crate::mutation_provenance::ChannelIdentity,
     pub(super) completion_transition: WorkflowStageTransition,
     pub(super) provider_session_id: Option<String>,
     pub(super) cwd: String,
@@ -216,6 +219,31 @@ pub(crate) struct PreparedStageRerun {
     /// The fully-resolved prompt this rerun was actually given, bound to its
     /// stage run once that row exists. See `crate::db::stage_run_prompt`.
     pub(super) resolved_prompt: String,
+}
+
+impl PreparedStageRerun {
+    pub(crate) fn set_entry_channel(
+        &mut self,
+        channel: crate::mutation_provenance::ChannelIdentity,
+    ) {
+        self.entry_channel = channel;
+    }
+}
+
+impl PreparedStageTransition {
+    /// Record the channel this transition's entry arrived on. A post carries
+    /// it on the run it records (live dispatch or fresh fallback alike); a
+    /// close records no stage run to carry it.
+    pub(crate) fn set_entry_channel(
+        &mut self,
+        channel: crate::mutation_provenance::ChannelIdentity,
+    ) {
+        match self {
+            Self::Run(prepared) => prepared.set_entry_channel(channel),
+            Self::Post(prepared) => prepared.fallback.set_entry_channel(channel),
+            Self::Close { .. } => {}
+        }
+    }
 }
 
 /// A stage-run workspace forked from the task's committed tip: swaps get a
@@ -315,6 +343,11 @@ pub(crate) struct PreparedStageRunSpawn {
     /// How this run's stage was entered. This is caller-declared for explicit
     /// advances and server-owned for automatic policy transitions.
     pub(super) trigger: crate::db::StageTrigger,
+    /// The verified channel the entry arrived on, recorded beside `trigger`
+    /// on the run and its `stage.changed` event. Preparation cannot know it
+    /// and leaves it unknown; the caller that received the request (or the
+    /// engine, for its own transitions) sets it before execution.
+    pub(super) entry_channel: crate::mutation_provenance::ChannelIdentity,
     /// The provider override the advance that started this run carried, with
     /// the source that declared it. Recorded on the run so the durable record
     /// says who picked this stage's model.
@@ -397,6 +430,13 @@ pub(crate) struct PreparedWorkspaceTeardown {
 impl PreparedStageRunSpawn {
     pub(crate) fn session_id(&self) -> &str {
         &self.session_id
+    }
+
+    pub(crate) fn set_entry_channel(
+        &mut self,
+        channel: crate::mutation_provenance::ChannelIdentity,
+    ) {
+        self.entry_channel = channel;
     }
 
     #[cfg(test)]

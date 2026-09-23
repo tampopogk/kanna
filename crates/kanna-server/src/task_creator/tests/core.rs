@@ -8796,6 +8796,8 @@ fn transfer_source_stage_run() -> crate::db::StageRun {
         completion_transition: Some("manual".to_string()),
         trigger: "unspecified".to_string(),
         provider_override: None,
+        entry_channel_identity: Default::default(),
+        result_provenance: None,
         started_at: "2026-09-16 00:00:00".to_string(),
         finished_at: None,
     }

@@ -4680,15 +4680,19 @@ async fn advance_stage_route_records_stage_run_for_spawned_next_task() {
     drop(db);
 
     let app = super::router(Arc::new(super::AppState::new(config.clone())));
-    let response_task = tokio::spawn(async move {
-        app.oneshot(
-            Request::post("/v1/tasks/source-1/actions/advance-stage")
+    let response_task =
+        tokio::spawn(async move {
+            // A real desktop-loopback caller: its channel is recorded beside the
+            // `operator` it declares, and neither stands in for the other.
+            let mut request = Request::post("/v1/tasks/source-1/actions/advance-stage")
                 .header("content-type", "application/json")
                 .body(Body::from(r#"{"source":"operator"}"#))
-                .unwrap(),
-        )
-        .await
-    });
+                .unwrap();
+            request.extensions_mut().insert(axum::extract::ConnectInfo(
+                std::net::SocketAddr::from(([127, 0, 0, 1], 50_000)),
+            ));
+            app.oneshot(request).await
+        });
 
     // Wait until setup has reached its explicit gate before checking the
     // response. The ordering, rather than a sub-second response time, proves
@@ -4760,6 +4764,19 @@ async fn advance_stage_route_records_stage_run_for_spawned_next_task() {
         .find(|event| event.event_type == "stage.changed")
         .expect("stage.changed event");
     assert_eq!(stage_changed.payload["trigger"], "operator");
+    let loopback = crate::mutation_provenance::ChannelIdentity::LocalProcess {
+        evidence: crate::mutation_provenance::LocalProcessEvidence::Loopback,
+    };
+    assert_eq!(runs[0].entry_channel_identity, loopback);
+    assert!(runs[0].result_provenance.is_none());
+    assert_eq!(stage_changed.payload["declaredRole"], "operator");
+    assert_eq!(stage_changed.payload["channelIdentity"], loopback.to_json());
+    let run_started = events
+        .iter()
+        .find(|event| event.event_type == "run.started")
+        .expect("run.started event");
+    assert_eq!(run_started.payload["declaredRole"], "operator");
+    assert_eq!(run_started.payload["channelIdentity"], loopback.to_json());
 
     daemon_server.await.unwrap();
     if created_sidecar {
