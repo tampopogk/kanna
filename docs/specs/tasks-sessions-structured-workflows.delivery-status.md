@@ -24,7 +24,7 @@ final review gates as manager; children return reviewed local commits only.
 | T3 commit transitions / roleless gates | — | — | needs T1, T2 review | not created | — | — |
 | T4 stage dependency edges | — | — | needs T1, T2 review | not created | — | — |
 | T5 subtask joins | — | — | needs T4 review | not created | — | — |
-| T7 artifact remote | `a07d574f` | increment 1: two homes publish/fetch/comment via one Git remote (CLI/API) | parent `01f5c8972` (T6 dc9c09bfa, T8 7c06a0de4, T8b a00800e67) | in progress | — | — |
+| T7 artifact remote | `a07d574f` | increment 1: two homes publish/fetch/comment via one Git remote (CLI/API) | parent `01f5c8972` (T6 dc9c09bfa, T8 7c06a0de4, T8b a00800e67) | reviewed (round 3), integrated, closed | `1019f2221`, `225525c97`, `373127ab4` | merge after `6ea23d959` |
 | T9 transfer | — | — | needs T1–T5, T8 (T6) review | not created | — | — |
 | T10 definitions | — | — | needs T3, T5, T6 review | not created | — | — |
 | T11 task/session UI | — | — | needs T0 (first), T2–T4 review | not created | — | — |
@@ -62,3 +62,5 @@ final review gates as manager; children return reviewed local commits only.
 - 2026-09-23: T7 review round 2 at `225525c97`: bounded git and push race confirmed fixed; new blocking — previous_links_with_provenance reads metadata tip twice without the lock, so a concurrent fetch import can reopen the planted-previous-link disclosure. Non-blocking: setsid descendant leaks one reader thread + 2 fds until exit. Revision 2/5.
 - 2026-09-23: T8c build `364fe7578` (real declared_role + ChannelIdentity in every ledger entry kind; backfill/imports tagged unknown); advanced to single review.
 - 2026-09-23: T12 review round 3 at `991759502`: security pass; in-tree navigation fixed on WebKit; perf/UI fail — buildArtifactSite eagerly renders every reachable page before first display. Revision 3/5.
+- 2026-09-23: T7 passed panel review round 3 at `373127ab4` (single-snapshot provenance read under the repository lock). Merged cleanly into parent (after T0). Combined check: kanna-server artifact/route-audit/local_config/task_store 92 passed; tool-catalog all pass; kanna-mcp artifact_sharing (two real servers, MCP + CLI) passed after building kanna-server. T7 closed. Non-blocking follow-ups carried: setsid descendant drain leak; no byte cap before fetch validation; redact() misses userinfo with '/'; incoming/<nonce> not swept after crash; per-link fetch deadline; golden record-commit and pre-T7 repo fixtures. Owner decision still open: committed repo config may set artifacts.remote.
+- 2026-09-23: T6b build `8ba365b24` (result artifact references bound in the ledger; retention sweep with gc --prune=now under the repo flock; T6 follow-ups incl. sandboxed shell page). Before review, T6b is asked to merge the parent tip containing T7 and make T7 fetch/import/push hold the flock against the sweep.
