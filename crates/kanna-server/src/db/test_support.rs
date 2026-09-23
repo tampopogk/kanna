@@ -565,6 +565,8 @@ impl Db {
             .execute_batch(super::revisions::STAGE_BUDGET_SCHEMA)?;
         self.conn
             .execute_batch(super::worktrees::STAGE_WORKSPACE_SCHEMA)?;
+        self.conn
+            .execute_batch(super::transition_commits::TRANSITION_COMMIT_SCHEMA)?;
         create_blocker_revision_triggers(&self.conn)?;
         let mut stmt = self
             .conn

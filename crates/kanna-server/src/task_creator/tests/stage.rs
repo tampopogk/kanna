@@ -592,6 +592,7 @@ async fn acknowledged_stage_survives_db_failure_restart_and_can_complete() {
         trigger: crate::db::StageTrigger::Unspecified,
         entry_channel: Default::default(),
         entry_exit: None,
+        transition_commit: None,
         provider_override: None,
         feedback: None,
         provider_session_id: None,
@@ -1086,6 +1087,7 @@ fn prepare_advance_stage_uses_stored_workflow_snapshot_for_existing_task() {
     let run = match prepare_advance_stage_for_api(&db, &config, "task-1").unwrap() {
         PreparedStageTransition::Run(run) => run,
         PreparedStageTransition::Post(_) => panic!("expected stage swap, got post dispatch"),
+        PreparedStageTransition::Gate(_) => panic!("unexpected gate entry"),
         PreparedStageTransition::Close { .. } => panic!("expected in-place stage run"),
     };
 
@@ -1208,6 +1210,7 @@ fn prepare_advance_stage_applies_repo_agent_extension() {
     let run = match prepare_advance_stage_for_api(&db, &config, "task-1").unwrap() {
         PreparedStageTransition::Run(run) => run,
         PreparedStageTransition::Post(_) => panic!("expected stage swap, got post dispatch"),
+        PreparedStageTransition::Gate(_) => panic!("unexpected gate entry"),
         PreparedStageTransition::Close { .. } => panic!("expected in-place stage run"),
     };
 
@@ -1341,6 +1344,7 @@ fn prepare_advance_stage_substitutes_previous_stage_run_result_before_legacy_sta
     let run = match prepare_advance_stage_for_api(&db, &config, "task-1").unwrap() {
         PreparedStageTransition::Run(run) => run,
         PreparedStageTransition::Post(_) => panic!("expected stage swap, got post dispatch"),
+        PreparedStageTransition::Gate(_) => panic!("unexpected gate entry"),
         PreparedStageTransition::Close { .. } => panic!("expected in-place stage run"),
     };
 
@@ -1583,6 +1587,7 @@ async fn prepare_advance_stage_forks_workspace_and_reinforces_rereview_verdict()
     let run = match prepare_advance_stage_for_api(&db, &config, "task-1").unwrap() {
         PreparedStageTransition::Run(run) => run,
         PreparedStageTransition::Post(_) => panic!("expected stage swap, got post dispatch"),
+        PreparedStageTransition::Gate(_) => panic!("unexpected gate entry"),
         PreparedStageTransition::Close { .. } => {
             panic!("stage advance must spawn a new run in place")
         }
@@ -1922,6 +1927,7 @@ fn stage_advance_takes_the_local_entry_over_the_stamp_with_a_coherent_pair() {
     let run = match prepare_advance_stage_for_api(&db, &config, "task-1").unwrap() {
         PreparedStageTransition::Run(run) => run,
         PreparedStageTransition::Post(_) => panic!("expected stage swap, got post dispatch"),
+        PreparedStageTransition::Gate(_) => panic!("unexpected gate entry"),
         PreparedStageTransition::Close { .. } => panic!("expected stage swap, got close"),
     };
 
@@ -1989,6 +1995,7 @@ async fn prompt_only_stage_provider_overrides_source_task_provider_in_daemon_spa
     let run = match prepare_advance_stage_for_api(&db, &config, "task-1").unwrap() {
         PreparedStageTransition::Run(run) => run,
         PreparedStageTransition::Post(_) => panic!("expected stage swap, got post dispatch"),
+        PreparedStageTransition::Gate(_) => panic!("unexpected gate entry"),
         PreparedStageTransition::Close { .. } => panic!("expected stage swap, got close"),
     };
     let fake_daemon = spawn_fake_daemon_fork_transition(config.daemon_dir.clone(), 1).await;
@@ -2130,6 +2137,7 @@ async fn stage_transition_tears_down_departed_stage_environment_before_repo_tear
     let run = match prepare_advance_stage_for_api(&db, &config, "task-1").unwrap() {
         PreparedStageTransition::Run(run) => run,
         PreparedStageTransition::Post(_) => panic!("expected stage swap, got post dispatch"),
+        PreparedStageTransition::Gate(_) => panic!("unexpected gate entry"),
         PreparedStageTransition::Close { .. } => panic!("expected stage run"),
     };
     let fork_worktree = run.forked_workspace().unwrap().worktree_path.clone();
@@ -2578,6 +2586,7 @@ fn prepare_advance_stage_at_final_stage_prepares_close() {
         .unwrap();
 
     match prepare_advance_stage_for_api(&db, &config, "task-1").unwrap() {
+        PreparedStageTransition::Gate(_) => panic!("unexpected gate entry"),
         PreparedStageTransition::Close { task_id, .. } => assert_eq!(task_id, "task-1"),
         PreparedStageTransition::Run(_) | PreparedStageTransition::Post(_) => {
             panic!("advancing past the final stage must close the task")
@@ -2668,6 +2677,7 @@ fn prepare_auto_stage_completion_spawns_next_run_in_same_task() {
     let run = match prepared {
         Some(PreparedStageTransition::Run(run)) => run,
         Some(PreparedStageTransition::Post(_)) => panic!("expected stage swap, got post dispatch"),
+        Some(PreparedStageTransition::Gate(_)) => panic!("unexpected gate entry"),
         Some(PreparedStageTransition::Close { .. }) => panic!("expected in-place stage run"),
         None => panic!("expected auto transition"),
     };
@@ -2881,6 +2891,7 @@ fn workflow_null_task_uses_no_review_across_lifecycle_paths_when_repo_defines_de
     let post = match prepare_advance_stage_for_api(&db, &config, "task-1").unwrap() {
         PreparedStageTransition::Post(post) => post,
         PreparedStageTransition::Run(_) => panic!("no-review advance should dispatch its post"),
+        PreparedStageTransition::Gate(_) => panic!("unexpected gate entry"),
         PreparedStageTransition::Close { .. } => {
             panic!("repo-authored default must not close a workflow-null task")
         }
@@ -2931,6 +2942,7 @@ fn prepare_advance_stage_dispatches_post_into_running_session() {
     let post = match prepare_advance_stage_for_api(&db, &config, "task-1").unwrap() {
         PreparedStageTransition::Post(post) => post,
         PreparedStageTransition::Run(_) => panic!("expected post dispatch, got stage swap"),
+        PreparedStageTransition::Gate(_) => panic!("unexpected gate entry"),
         PreparedStageTransition::Close { .. } => panic!("expected post dispatch, got close"),
     };
 
@@ -3026,6 +3038,7 @@ fn prepare_advance_stage_swaps_after_succeeded_post() {
     let run = match prepare_advance_stage_for_api(&db, &config, "task-1").unwrap() {
         PreparedStageTransition::Run(run) => run,
         PreparedStageTransition::Post(_) => panic!("post already succeeded; expected swap"),
+        PreparedStageTransition::Gate(_) => panic!("unexpected gate entry"),
         PreparedStageTransition::Close { .. } => panic!("expected swap, got close"),
     };
     assert_eq!(run.next_stage, "pr");
@@ -3071,6 +3084,7 @@ fn prepare_advance_stage_redispatches_failed_post() {
     match prepare_advance_stage_for_api(&db, &config, "task-1").unwrap() {
         PreparedStageTransition::Post(post) => assert_eq!(post.run_stage, "commit"),
         PreparedStageTransition::Run(_) => panic!("failed post must be re-dispatched"),
+        PreparedStageTransition::Gate(_) => panic!("unexpected gate entry"),
         PreparedStageTransition::Close { .. } => panic!("expected post dispatch, got close"),
     }
 
@@ -3097,6 +3111,7 @@ fn stage_completion_of_post_run_swaps_past_manual_gate() {
                 "expected swap after post completion, got {}",
                 match other {
                     Some(PreparedStageTransition::Post(_)) => "post dispatch",
+                    Some(PreparedStageTransition::Gate(_)) => panic!("unexpected gate entry"),
                     Some(PreparedStageTransition::Close { .. }) => "close",
                     None => "park",
                     Some(PreparedStageTransition::Run(_)) => unreachable!(),
@@ -3391,6 +3406,7 @@ fn legacy_task_parked_at_folded_post_stage_advances_past_owner() {
     let run = match prepare_advance_stage_for_api(&db, &config, "task-1").unwrap() {
         PreparedStageTransition::Run(run) => run,
         PreparedStageTransition::Post(_) => panic!("folded post position must swap past owner"),
+        PreparedStageTransition::Gate(_) => panic!("unexpected gate entry"),
         PreparedStageTransition::Close { .. } => panic!("expected swap, got close"),
     };
     assert_eq!(run.next_stage, "pr");
@@ -3744,6 +3760,7 @@ fn current_stage_spawn_fixture(
         trigger: crate::db::StageTrigger::Operator,
         entry_channel: Default::default(),
         entry_exit: None,
+        transition_commit: None,
         provider_override: None,
         feedback: None,
         provider_session_id: None,
@@ -5352,4 +5369,165 @@ fn task_branch_numbers_parse_only_the_tasks_own_workspace_names() {
     assert_eq!(task_branch_number("ab12", "task-ab12-"), None);
     assert_eq!(task_branch_number("ab12", "task-ab12-x"), None);
     assert_eq!(task_branch_number("ab12", "feature/ab12"), None);
+}
+
+fn write_exit_commit_workflow(repo_root: &std::path::Path) {
+    std::fs::create_dir_all(repo_root.join(".kanna/workflows")).unwrap();
+    std::fs::write(
+        repo_root.join(".kanna/workflows/default.json"),
+        serde_json::json!({
+            "name": "default",
+            "routing": "exits",
+            "stages": [
+                { "name": "in progress", "agent": "implement", "prompt": "$TASK_PROMPT",
+                  "exit_commit": true, "policy": { "transition": "manual" } },
+                { "name": "stakeholder", "policy": { "transition": "manual" } },
+                { "name": "pr", "agent": "pr", "prompt": "Open the PR",
+                  "policy": { "transition": "manual" } }
+            ]
+        })
+        .to_string(),
+    )
+    .unwrap();
+    publish_origin_main(repo_root, "publish exit_commit workflow");
+}
+
+fn running_main_run(db: &Db, stage: &str) {
+    db.insert_stage_run(NewStageRun {
+        id: "run-main",
+        task_id: "task-1",
+        stage,
+        kind: "main",
+        agent: Some("implement"),
+        agent_provider: Some("claude"),
+        model: None,
+        effort: None,
+        status: "running",
+        result: None,
+        feedback: None,
+        session_id: Some("task-1"),
+        provider_session_id: None,
+        cwd: None,
+        resumed_from_run_id: None,
+    })
+    .unwrap();
+}
+
+/// `exit_commit` rides the post delivery machinery as the transition's
+/// commit step: advancing prepares one instruction for the live session and
+/// a commit-agent fallback in the same workspace, both bound to the one
+/// transition the advance asked for (its exit is the operator's), under a
+/// run name of its own stage rather than a declared post's.
+#[test]
+fn advancing_an_exit_commit_stage_prepares_its_commit_step() {
+    let repo_root = init_git_repo("advance-exit-commit");
+    write_exit_commit_workflow(&repo_root);
+    let config = test_config("advance-exit-commit");
+    let db = Db::open_for_tests(&config.db_path).unwrap();
+    seed_stage_advance_task(&db, &repo_root, "claude");
+    running_main_run(&db, "in progress");
+
+    let post = match prepare_advance_stage_for_api(&db, &config, "task-1").unwrap() {
+        PreparedStageTransition::Post(post) => post,
+        _ => panic!("an exit_commit stage commits before it transitions"),
+    };
+    assert_eq!(post.run_stage, "in progress commit");
+    assert!(post.message.contains("Commit the work"), "{}", post.message);
+    let commit = post.commit.clone().expect("bound to its transition");
+    assert_eq!(commit.stage, "in progress");
+    let exit = commit.exit.expect("the operator's advance");
+    assert_eq!(exit.exit.as_deref(), Some("advance"));
+    assert_eq!(exit.source, crate::db::TransitionExit::OPERATOR);
+    assert_eq!(post.fallback.transition_commit, post.commit);
+    assert_eq!(post.fallback.stage_agent.as_deref(), Some("commit"));
+    assert!(
+        matches!(
+            post.fallback.workspace,
+            super::super::types::PreparedRunWorkspace::Current
+        ),
+        "the dead-session fallback commits in the stage's own workspace"
+    );
+
+    let _ = std::fs::remove_dir_all(&repo_root);
+}
+
+/// A declared post of a legacy workflow keeps dispatching exactly as it did:
+/// it is not a commit step and binds no transition.
+#[test]
+fn a_legacy_post_is_not_a_commit_step() {
+    let repo_root = init_git_repo("legacy-post-unbound");
+    write_post_workflow_fixtures(&repo_root);
+    let config = test_config("legacy-post-unbound");
+    let db = Db::open_for_tests(&config.db_path).unwrap();
+    seed_post_workflow_task(&config, &db, &repo_root);
+    running_main_run(&db, "in progress");
+
+    let post = match prepare_advance_stage_for_api(&db, &config, "task-1").unwrap() {
+        PreparedStageTransition::Post(post) => post,
+        _ => panic!("expected post dispatch"),
+    };
+    assert_eq!(post.run_stage, "commit");
+    assert!(post.commit.is_none());
+    assert!(post.fallback.transition_commit.is_none());
+
+    let _ = std::fs::remove_dir_all(&repo_root);
+}
+
+/// Advancing into a stage with no role forks its workspace from the
+/// triggering commit and prepares its setup, and never an agent session;
+/// resume, rerun and revision refuse it, since it has no session.
+#[test]
+fn a_stage_with_no_role_is_entered_as_a_gate_and_refuses_session_restarts() {
+    let repo_root = init_git_repo("advance-into-gate");
+    write_exit_commit_workflow(&repo_root);
+    let config = test_config("advance-into-gate");
+    let db = Db::open_for_tests(&config.db_path).unwrap();
+    seed_stage_advance_task(&db, &repo_root, "claude");
+    running_main_run(&db, "in progress");
+    // The commit step already ran for this visit.
+    db.insert_stage_run(NewStageRun {
+        id: "run-commit",
+        task_id: "task-1",
+        stage: "in progress commit",
+        kind: "post",
+        agent: Some("commit"),
+        agent_provider: Some("claude"),
+        model: None,
+        effort: None,
+        status: "succeeded",
+        result: None,
+        feedback: None,
+        session_id: Some("task-1"),
+        provider_session_id: None,
+        cwd: None,
+        resumed_from_run_id: None,
+    })
+    .unwrap();
+
+    let gate = match prepare_advance_stage_for_api(&db, &config, "task-1").unwrap() {
+        PreparedStageTransition::Gate(gate) => gate,
+        _ => panic!("a stage with no role is entered as a gate"),
+    };
+    assert_eq!(gate.next_stage, "stakeholder");
+    assert!(matches!(
+        gate.workspace,
+        super::super::types::PreparedRunWorkspace::Forked(_)
+    ));
+    assert!(std::path::Path::new(&gate.cwd).exists());
+    super::super::lifecycle::roll_back_prepared_workspace(&gate.workspace).unwrap();
+
+    // Parked at the gate, nothing can restart a session there.
+    Connection::open(&config.db_path)
+        .unwrap()
+        .execute(
+            "UPDATE pipeline_item SET stage = 'stakeholder' WHERE id = 'task-1'",
+            [],
+        )
+        .unwrap();
+    let error = prepare_revision_task_for_api(&db, &config, "task-1", "stakeholder", "again", None)
+        .err()
+        .expect("a revision into a gate is refused");
+    assert!(error.contains("has no role"), "{error}");
+
+    let _ = std::fs::remove_dir_all(&repo_root);
 }

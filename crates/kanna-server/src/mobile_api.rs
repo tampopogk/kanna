@@ -486,6 +486,36 @@ pub struct TaskLatestRun {
     /// from before session identity was recorded, and from older peers.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session: Option<crate::db::StageRunSession>,
+    /// Set when this run is the commit step of a transition (spec §5): a
+    /// phase of leaving `stage`, not a stage or a declared post. Absent for
+    /// every other run and from older peers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub commit_step: Option<TransitionCommitStep>,
+}
+
+/// A commit step as task detail shows it.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct TransitionCommitStep {
+    /// The stage the transition leaves.
+    pub stage: String,
+    /// The exit the transition takes, and who chose it (named-exit routing).
+    pub exit: Option<String>,
+    pub exit_source: Option<String>,
+    /// `requested` until the step's result arrives, then `succeeded` (the
+    /// transition fired on it) or `failed` (the task parked).
+    pub state: String,
+}
+
+impl From<crate::db::TransitionCommit> for TransitionCommitStep {
+    fn from(commit: crate::db::TransitionCommit) -> Self {
+        Self {
+            stage: commit.stage,
+            exit: commit.exit.as_ref().and_then(|exit| exit.exit.clone()),
+            exit_source: commit.exit.map(|exit| exit.source),
+            state: commit.state,
+        }
+    }
 }
 
 fn default_stage_trigger() -> String {
@@ -1323,6 +1353,11 @@ impl MobileApi {
                 ._db
                 .stage_run_session(&run.id)
                 .map_err(|e| format!("db error: {e}"))?;
+            run.commit_step = self
+                ._db
+                .transition_commit(&run.id)
+                .map_err(|e| format!("db error: {e}"))?
+                .map(TransitionCommitStep::from);
         }
         Ok(Some(detail))
     }
@@ -1874,6 +1909,7 @@ fn map_task_latest_run(run: crate::db::StageRun) -> TaskLatestRun {
         resume_fallback_reason: run.resume_fallback_reason,
         finished_at: run.finished_at,
         session: None,
+        commit_step: None,
     }
 }
 

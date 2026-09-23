@@ -95,7 +95,7 @@
             "policy": {
               "transition": "manual"
             },
-            "exit_commit": true
+            "future_field": true
           }
         ]
       }
@@ -334,7 +334,7 @@
       "rejects": "lowercase"
     },
     {
-      "name": "a stage without a role",
+      "name": "a stage without a role first",
       "valid": false,
       "definition": {
         "name": "x",
@@ -348,10 +348,46 @@
           }
         ]
       },
-      "rejects": "requires every stage to name its agent"
+      "rejects": "cannot be the first stage"
     },
     {
-      "name": "an unsupported execution field",
+      "name": "a stage without a role after an agent stage",
+      "valid": true,
+      "definition": {
+        "name": "x",
+        "routing": "exits",
+        "stages": [
+          {
+            "name": "in progress",
+            "agent": "implement",
+            "policy": {
+              "transition": "manual"
+            }
+          },
+          {
+            "name": "stakeholder",
+            "setup": [
+              "./mail-reviewers"
+            ],
+            "teardown": [
+              "./close-window"
+            ],
+            "policy": {
+              "transition": "manual"
+            }
+          },
+          {
+            "name": "pr",
+            "agent": "pr",
+            "policy": {
+              "transition": "manual"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "a stage without a role on an auto transition",
       "valid": false,
       "definition": {
         "name": "x",
@@ -362,12 +398,233 @@
             "agent": "implement",
             "policy": {
               "transition": "manual"
-            },
-            "exit_commit": true
+            }
+          },
+          {
+            "name": "stakeholder",
+            "policy": {
+              "transition": "auto"
+            }
           }
         ]
       },
-      "rejects": "exit_commit"
+      "rejects": "must be manual"
+    },
+    {
+      "name": "a stage without a role declaring exits",
+      "valid": false,
+      "definition": {
+        "name": "x",
+        "routing": "exits",
+        "stages": [
+          {
+            "name": "in progress",
+            "agent": "implement",
+            "policy": {
+              "transition": "manual"
+            }
+          },
+          {
+            "name": "stakeholder",
+            "exits": {
+              "again": "in progress"
+            },
+            "policy": {
+              "transition": "manual"
+            }
+          }
+        ]
+      },
+      "rejects": "no session can name an exit"
+    },
+    {
+      "name": "a stage without a role with a prompt",
+      "valid": false,
+      "definition": {
+        "name": "x",
+        "routing": "exits",
+        "stages": [
+          {
+            "name": "in progress",
+            "agent": "implement",
+            "policy": {
+              "transition": "manual"
+            }
+          },
+          {
+            "name": "stakeholder",
+            "prompt": "Look",
+            "policy": {
+              "transition": "manual"
+            }
+          }
+        ]
+      },
+      "rejects": "runs no agent"
+    },
+    {
+      "name": "a loop into a stage without a role",
+      "valid": false,
+      "definition": {
+        "name": "x",
+        "routing": "exits",
+        "stages": [
+          {
+            "name": "in progress",
+            "agent": "implement",
+            "policy": {
+              "transition": "manual"
+            }
+          },
+          {
+            "name": "stakeholder",
+            "policy": {
+              "transition": "manual"
+            }
+          },
+          {
+            "name": "review",
+            "agent": "review",
+            "exits": {
+              "restake": "stakeholder"
+            },
+            "policy": {
+              "transition": "manual"
+            }
+          }
+        ]
+      },
+      "rejects": "loops into such a stage"
+    },
+    {
+      "name": "an empty agent",
+      "valid": false,
+      "definition": {
+        "name": "x",
+        "routing": "exits",
+        "stages": [
+          {
+            "name": "in progress",
+            "agent": "implement",
+            "policy": {
+              "transition": "manual"
+            }
+          },
+          {
+            "name": "review",
+            "agent": " ",
+            "policy": {
+              "transition": "manual"
+            }
+          }
+        ]
+      },
+      "rejects": "agent must name a role"
+    },
+    {
+      "name": "exit_commit on a named-exit stage",
+      "valid": true,
+      "definition": {
+        "name": "x",
+        "routing": "exits",
+        "stages": [
+          {
+            "name": "in progress",
+            "agent": "implement",
+            "exit_commit": true,
+            "policy": {
+              "transition": "manual"
+            }
+          },
+          {
+            "name": "review",
+            "agent": "review",
+            "policy": {
+              "transition": "manual"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "exit_commit with a post",
+      "valid": false,
+      "definition": {
+        "name": "x",
+        "routing": "exits",
+        "stages": [
+          {
+            "name": "in progress",
+            "agent": "implement",
+            "exit_commit": true,
+            "post": {
+              "name": "commit",
+              "prompt": "Commit"
+            },
+            "policy": {
+              "transition": "manual"
+            }
+          }
+        ]
+      },
+      "rejects": "cannot be combined with a post"
+    },
+    {
+      "name": "exit_commit without routing exits",
+      "valid": false,
+      "definition": {
+        "name": "legacy",
+        "stages": [
+          {
+            "name": "in progress",
+            "agent": "implement",
+            "exit_commit": true,
+            "policy": {
+              "transition": "manual"
+            }
+          }
+        ]
+      },
+      "rejects": "belong to named-exit routing"
+    },
+    {
+      "name": "stage setup without routing exits",
+      "valid": false,
+      "definition": {
+        "name": "legacy",
+        "stages": [
+          {
+            "name": "in progress",
+            "agent": "implement",
+            "setup": [
+              "./x"
+            ],
+            "policy": {
+              "transition": "manual"
+            }
+          }
+        ]
+      },
+      "rejects": "belong to named-exit routing"
+    },
+    {
+      "name": "a stage field this build does not know",
+      "valid": false,
+      "definition": {
+        "name": "x",
+        "routing": "exits",
+        "stages": [
+          {
+            "name": "in progress",
+            "agent": "implement",
+            "future_field": true,
+            "policy": {
+              "transition": "manual"
+            }
+          }
+        ]
+      },
+      "rejects": "future_field"
     },
     {
       "name": "a negative stage budget",

@@ -208,10 +208,18 @@ function validateWorkflowRouting(def: WorkflowDefinition): string[] {
         stage.budget !== undefined ||
         stage.policy?.loop_transition !== undefined
     );
+  const usesTransitionFields = def.stages.some(
+    (stage) => stage.exit_commit === true || stage.setup !== undefined || stage.teardown !== undefined
+  );
   if (def.routing !== "exits") {
     if (usesExitFields) {
       errors.push(
         'exits, budget and loop_transition belong to named-exit routing; declare "routing": "exits" to use them'
+      );
+    }
+    if (usesTransitionFields) {
+      errors.push(
+        'exit_commit and stage setup/teardown belong to named-exit routing; declare "routing": "exits" to use them (a legacy workflow commits through a post and runs scripts through its environments)'
       );
     }
     return errors;
@@ -232,10 +240,41 @@ function validateWorkflowRouting(def: WorkflowDefinition): string[] {
         `Stage "${stage.name}": routing "exits" uses policy.loop_transition; revision_transition is the legacy revision policy`
       );
     }
-    if (!stage.agent || stage.agent.trim() === "") {
+    if (stage.agent !== undefined && stage.agent.trim() === "") {
       errors.push(
-        `Stage "${stage.name}": routing "exits" requires every stage to name its agent; stages without a role are not supported yet`
+        `Stage "${stage.name}": agent must name a role; omit it for a stage without a role`
       );
+    }
+    if (stage.exit_commit && stage.post !== undefined) {
+      errors.push(
+        `Stage "${stage.name}": exit_commit is the commit step of this stage's transition and cannot be combined with a post`
+      );
+    }
+    for (const field of ["setup", "teardown"] as const) {
+      if ((stage[field] ?? []).some((command) => command.trim() === "")) {
+        errors.push(`Stage "${stage.name}": ${field} commands must not be empty`);
+      }
+    }
+    // A stage with no role enters, runs setup and parks until a person or
+    // manager advances it (spec §5); the shapes this build does not run are
+    // refused, mirroring the server.
+    if (stage.agent === undefined) {
+      const refuse = (reason: string) =>
+        errors.push(`stage '${stage.name}' has no role, so ${reason}`);
+      if (index === 0) {
+        refuse("it cannot be the first stage yet: task creation starts the first stage's agent");
+      } else if (
+        stage.policy?.transition !== "manual" ||
+        (stage.policy?.loop_transition !== undefined && stage.policy.loop_transition !== "manual")
+      ) {
+        refuse("it parks until a person or manager advances it; its transition must be manual");
+      } else if (stage.exits !== undefined) {
+        refuse("no session can name an exit; it declares none");
+      } else if (stage.exit_commit || stage.post !== undefined) {
+        refuse("no session can run a commit step or post on its way out");
+      } else if (stage.prompt !== undefined || stage.agent_provider !== undefined) {
+        refuse("it runs no agent; prompt and agent_provider do not apply");
+      }
     }
     for (const [exit, destination] of Object.entries(stage.exits ?? {})) {
       if (!EXIT_NAME.test(exit)) {
@@ -250,6 +289,10 @@ function validateWorkflowRouting(def: WorkflowDefinition): string[] {
         errors.push(
           `Stage "${stage.name}": exit "${exit}" leads to "${destination}", which is not this stage or an earlier stage of the workflow`
         );
+      } else if (def.stages.slice(0, index + 1).find((candidate) => candidate.name === destination)?.agent === undefined) {
+        errors.push(
+          `Stage "${stage.name}": exit "${exit}" leads to "${destination}", a stage without a role; loops into such a stage are not supported yet`
+        );
       }
     }
   });
@@ -260,10 +303,9 @@ function validateWorkflowRouting(def: WorkflowDefinition): string[] {
  * Keys a routing "exits" document may use at each level: exactly what
  * `.kanna/workflows/schema.json` defines (a parity test holds the two
  * together), plus the legacy stage spellings the loader rewrites. A named-exit
- * workflow opts into a contract whose remaining execution fields
- * (`exit_commit`, per-stage `setup`/`teardown`) are not executed yet, so an
- * unknown key there is refused rather than silently dropped. Legacy
- * definitions keep their historical tolerance.
+ * workflow opts into a contract whose fields this build either runs or
+ * refuses, so an unknown key there is refused rather than silently dropped.
+ * Legacy definitions keep their historical tolerance.
  */
 export const WORKFLOW_ROOT_KEYS = [
   "$schema", "name", "description", "visibility", "routing", "budget", "plan_context",
@@ -271,7 +313,7 @@ export const WORKFLOW_ROOT_KEYS = [
 ] as const;
 export const WORKFLOW_STAGE_KEYS = [
   "name", "description", "agent", "prompt", "agent_provider", "environment", "exits",
-  "budget", "policy", "post",
+  "budget", "policy", "post", "exit_commit", "setup", "teardown",
 ] as const;
 export const WORKFLOW_POST_KEYS = [
   "name", "description", "agent", "prompt", "agent_provider",
@@ -510,6 +552,24 @@ function extractStages(obj: Record<string, unknown>): WorkflowStage[] {
     const stageBudget = parseBudget(s["budget"], `Stage "${name || "(unnamed)"}"`);
     if (stageBudget !== undefined) {
       stage.budget = stageBudget;
+    }
+    if (s["exit_commit"] !== undefined && s["exit_commit"] !== null) {
+      if (typeof s["exit_commit"] !== "boolean") {
+        throw validationError(
+          `Stage "${name || "(unnamed)"}" has an invalid exit_commit ${formatRawValue(s["exit_commit"])}; must be true or false`
+        );
+      }
+      stage.exit_commit = s["exit_commit"];
+    }
+    for (const field of ["setup", "teardown"] as const) {
+      const commands = s[field];
+      if (commands === undefined || commands === null) continue;
+      if (!Array.isArray(commands) || commands.some((command) => typeof command !== "string")) {
+        throw validationError(
+          `Stage "${name || "(unnamed)"}" has an invalid ${field} ${formatRawValue(commands)}; must be an array of commands`
+        );
+      }
+      stage[field] = [...(commands as string[])];
     }
 
     const post = extractPost(s["post"], stage.name || "(unnamed)");

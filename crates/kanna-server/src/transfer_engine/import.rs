@@ -3991,14 +3991,14 @@ mod stored_workflow_tests {
     #[test]
     fn a_field_this_version_does_not_know_is_refused() {
         let failure = assert_destination_preserves_workflow(Some(
-            r#"{"name":"new","stages":[{"name":"plan","policy":{"transition":"manual"},"exit_commit":true}],"future_contract":{}}"#,
+            r#"{"name":"new","stages":[{"name":"plan","policy":{"transition":"manual"},"future_stage_field":true}],"future_contract":{}}"#,
         ))
         .expect_err("a newer document must not be silently trimmed");
         let super::ImportFailure::Terminal(reason) = failure else {
             panic!("an unknown field is a terminal refusal, not a retry");
         };
         assert!(reason.contains("future_contract"), "{reason}");
-        assert!(reason.contains("stages[0].exit_commit"), "{reason}");
+        assert!(reason.contains("stages[0].future_stage_field"), "{reason}");
     }
 
     /// `plan_context` is the field this build added, so it must not be the

@@ -2968,3 +2968,244 @@ async fn revision_rerun_and_resume_share_the_session_start_path() {
 
     let _ = std::fs::remove_dir_all(&repo_root);
 }
+
+/// Entry into a stage with no role whose setup had started when the server
+/// stopped. The setup's commands may have acted on the world and nothing says
+/// whether they finished, so restart lands the entry and parks the task there
+/// with that reported: it neither fails the entry (the setup may have run)
+/// nor runs setup again (it may have run already).
+#[tokio::test]
+async fn restart_parks_a_gate_whose_setup_outcome_is_unknown() {
+    let (repo_root, config, db) = init_recovery_fixture("gate-setup-ambiguous");
+    let gate = repo_root.join(".kanna-worktrees/task-recovery-task-2");
+    run_git_fixture(
+        &repo_root,
+        &[
+            "worktree",
+            "add",
+            "-b",
+            "task-recovery-task-2",
+            gate.to_string_lossy().as_ref(),
+            "task-recovery",
+        ],
+    );
+    let gate_path = gate.to_string_lossy().to_string();
+    db.insert_stage_run(NewStageRun {
+        id: "run-gate",
+        task_id: "recovery-task",
+        stage: "stakeholder",
+        kind: "main",
+        agent: None,
+        agent_provider: None,
+        model: None,
+        effort: None,
+        status: "running",
+        result: None,
+        feedback: None,
+        session_id: None,
+        provider_session_id: None,
+        cwd: Some(&gate_path),
+        resumed_from_run_id: None,
+    })
+    .unwrap();
+    db.insert_lifecycle_operation_intent(
+        "run-gate",
+        "recovery-task",
+        "stage_spawn",
+        "submitted",
+        &gate_intent_payload(&gate_path),
+    )
+    .unwrap();
+
+    let listing = spawn_listing_fake_daemon(config.daemon_dir.clone()).await;
+    let mut daemon = DaemonClient::connect(&config.daemon_dir).await.unwrap();
+    crate::task_creator::reconcile_lifecycle_operations_on_startup(
+        &mut daemon,
+        &config.db_path,
+        &db,
+    )
+    .await;
+    listing.await.unwrap();
+
+    let item = db.get_pipeline_item("recovery-task").unwrap().unwrap();
+    assert_eq!(item.stage.as_deref(), Some("stakeholder"));
+    assert_eq!(item.branch.as_deref(), Some("task-recovery-task-2"));
+    assert_eq!(
+        item.activity.as_deref(),
+        Some("unread"),
+        "parked for a person"
+    );
+    assert!(db.list_lifecycle_operation_intents().unwrap().is_empty());
+    assert!(
+        gate.exists(),
+        "the workspace its setup may have written is kept"
+    );
+    assert_eq!(db.stage_run("run-gate").unwrap().unwrap().status, "running");
+    let reported = db
+        .list_task_events(
+            &crate::db::TaskEventScope::Tasks(vec!["recovery-task".to_string()]),
+            0,
+            i64::MAX,
+            20,
+        )
+        .unwrap()
+        .into_iter()
+        .find(|event| event.event_type == "task.lifecycle_failed")
+        .expect("the unknown setup outcome is reported on the task");
+    assert_eq!(reported.payload["operation"], "stage_setup");
+    assert_eq!(reported.payload["stage"], "stakeholder");
+    assert!(reported.payload["error"]
+        .as_str()
+        .unwrap()
+        .contains("not run again"));
+
+    let _ = std::fs::remove_dir_all(&repo_root);
+}
+
+/// Before its setup started nothing external happened, so an interrupted
+/// gate entry is failed like any unsubmitted stage spawn: the task stays
+/// where it was and the fresh fork is removed.
+#[tokio::test]
+async fn restart_fails_a_gate_entry_that_never_started_its_setup() {
+    let (repo_root, config, db) = init_recovery_fixture("gate-setup-unstarted");
+    let gate = repo_root.join(".kanna-worktrees/task-recovery-task-2");
+    run_git_fixture(
+        &repo_root,
+        &[
+            "worktree",
+            "add",
+            "-b",
+            "task-recovery-task-2",
+            gate.to_string_lossy().as_ref(),
+            "task-recovery",
+        ],
+    );
+    db.insert_lifecycle_operation_intent(
+        "run-gate",
+        "recovery-task",
+        "stage_spawn",
+        "prepared",
+        &gate_intent_payload(&gate.to_string_lossy()),
+    )
+    .unwrap();
+
+    let listing = spawn_listing_fake_daemon(config.daemon_dir.clone()).await;
+    let mut daemon = DaemonClient::connect(&config.daemon_dir).await.unwrap();
+    crate::task_creator::reconcile_lifecycle_operations_on_startup(
+        &mut daemon,
+        &config.db_path,
+        &db,
+    )
+    .await;
+    listing.await.unwrap();
+
+    let item = db.get_pipeline_item("recovery-task").unwrap().unwrap();
+    assert_eq!(item.stage.as_deref(), Some("in progress"));
+    assert_eq!(item.branch.as_deref(), Some("task-recovery"));
+    assert!(db.list_lifecycle_operation_intents().unwrap().is_empty());
+    assert!(!gate.exists(), "the unused fork is rolled back");
+
+    let _ = std::fs::remove_dir_all(&repo_root);
+}
+
+fn gate_intent_payload(gate_path: &str) -> String {
+    serde_json::json!({
+        "version": 2,
+        "task_id": "recovery-task",
+        "session_id": "recovery-task",
+        "run_id": "run-gate",
+        "next_stage": "stakeholder",
+        "run_stage": "stakeholder",
+        "branch": "task-recovery-task-2",
+        "worktree_path": gate_path,
+        "cwd": gate_path,
+        "provider_session_id": null,
+        "completion_transition": "manual",
+        "trigger": "operator",
+        "entry_exit": { "exit": "advance", "source": "operator" },
+        "rollback_on_failure": true,
+        "gate": true,
+    })
+    .to_string()
+}
+
+/// A commit step whose instruction crossed the socket before the server
+/// stopped. Restart binds the delivery the daemon may have accepted exactly
+/// once — the commit run and the one transition it is for — and sends the
+/// session nothing: the listing daemon answers only `List`.
+#[tokio::test]
+async fn restart_binds_an_unacknowledged_commit_step_once() {
+    let (repo_root, config, db) = init_recovery_fixture("commit-step-ack");
+    let worktree = repo_root.join(".kanna-worktrees/task-recovery");
+    let payload = serde_json::json!({
+        "version": 1,
+        "task_id": "recovery-task",
+        "session_id": "recovery-task",
+        "message": "Commit the work that belongs to this task",
+        "run_id": "run-commit",
+        "inherited_run_id": "run-killed-mid-turn",
+        "run_stage": "in progress commit",
+        "completion_transition": "auto",
+        "trigger": "operator",
+        "agent": "implement",
+        "agent_provider": "claude",
+        "model": null,
+        "effort": null,
+        "provider_session_id": null,
+        "cwd": worktree.to_string_lossy(),
+        "commit": {
+            "stage": "in progress",
+            "exit": { "exit": "advance", "source": "operator" },
+        },
+    });
+    db.insert_lifecycle_operation_intent(
+        "run-commit",
+        "recovery-task",
+        "post",
+        "submitted",
+        &payload.to_string(),
+    )
+    .unwrap();
+
+    let listing = spawn_listing_fake_daemon(config.daemon_dir.clone()).await;
+    let mut daemon = DaemonClient::connect(&config.daemon_dir).await.unwrap();
+    crate::task_creator::reconcile_lifecycle_operations_on_startup(
+        &mut daemon,
+        &config.db_path,
+        &db,
+    )
+    .await;
+    assert!(matches!(
+        listing.await.unwrap(),
+        kanna_daemon::protocol::Command::List
+    ));
+    // Nothing is left to reconcile on the next boot.
+    crate::task_creator::reconcile_lifecycle_operations_on_startup(
+        &mut daemon,
+        &config.db_path,
+        &db,
+    )
+    .await;
+
+    assert!(db.list_lifecycle_operation_intents().unwrap().is_empty());
+    let posts = db
+        .list_stage_runs_for_task("recovery-task")
+        .unwrap()
+        .into_iter()
+        .filter(|run| run.kind == "post")
+        .collect::<Vec<_>>();
+    assert_eq!(posts.len(), 1, "the commit step is bound once");
+    assert_eq!(posts[0].id, "run-commit");
+    assert_eq!(posts[0].status, "running");
+    let commit = db.transition_commit("run-commit").unwrap().unwrap();
+    assert_eq!(commit.state, "requested");
+    assert_eq!(commit.stage, "in progress");
+    assert_eq!(commit.exit.unwrap().source, "operator");
+    assert_eq!(
+        db.stage_run("run-killed-mid-turn").unwrap().unwrap().status,
+        "succeeded",
+        "the stage's own run hands over to its commit step"
+    );
+
+    let _ = std::fs::remove_dir_all(&repo_root);
+}

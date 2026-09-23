@@ -76,11 +76,12 @@ use worktree::{
 };
 
 pub(crate) use definitions::ResolvedAgentDefinition;
+pub(crate) use definitions::ADVANCE_EXIT;
 pub(crate) use definitions::DEFAULT_REVISION_LIMIT;
 pub(crate) use environment::{resolve_agent_executable, warm_login_shell_path};
 pub(crate) use lifecycle::{
-    daemon_session_presence, dispatch_prepared_post_for_api, finish_teardown_run,
-    kill_session_replacing, prepared_task_id, prepared_task_worktree,
+    daemon_session_presence, dispatch_prepared_post_for_api, enter_prepared_gate_for_api,
+    finish_teardown_run, kill_session_replacing, prepared_task_id, prepared_task_worktree,
     prune_completion_contexts_on_startup, reconcile_lifecycle_operations_on_startup,
     remove_completion_contexts, rerun_prepared_stage_for_api, resolve_legacy_completion_retry_run,
     rollback_prepared_stage_run_for_api, rollback_prepared_task_for_api,
@@ -96,8 +97,8 @@ pub(crate) use merge::prepare_merge_agent_for_api;
 pub use merge::run_merge_agent;
 pub(crate) use prompt::RevisionRound;
 pub(crate) use stages::{
-    describe_current_stage_exits, exit_leading_to, resolve_result_exit, resolve_stage_budget_limit,
-    task_routes_by_exits, ResolvedResultExit,
+    current_stage_is_roleless, describe_current_stage_exits, exit_leading_to, resolve_result_exit,
+    resolve_stage_budget_limit, task_routes_by_exits, ResolvedResultExit,
 };
 pub(crate) use stages::{
     main_completion_continuation, prepare_advance_stage_for_api_with_intent,
@@ -863,6 +864,9 @@ pub(crate) fn prepare_rerun_stage_for_api(
             }
         };
     let current_stage = &current_stage;
+    if workflow.is_roleless_stage(current_stage) {
+        return Err(stages::roleless_restart_refusal(&current_stage.name));
+    }
     let agent = match current_stage.agent.as_deref() {
         Some(agent_name) => Some(definitions.agent(agent_name)?),
         None => None,
@@ -1091,12 +1095,7 @@ pub(crate) fn prepare_rerun_stage_for_api(
         &kanna_server_base_url(config),
         &mut spawn_env,
     )?;
-    let stage_setup = current_stage
-        .environment
-        .as_deref()
-        .and_then(|name| workflow.environments.as_ref()?.get(name))
-        .and_then(|environment| environment.setup.clone())
-        .unwrap_or_default();
+    let stage_setup = current_stage.setup_commands(&workflow);
     let defer_headless_setup = agent_type == AgentSessionType::Agent && !stage_setup.is_empty();
     let stage_run_model = model.clone();
     let resolved_prompt = prompt.clone();
@@ -1694,14 +1693,7 @@ pub(in crate::task_creator) fn prepare_stage_run_spawn(
         // session, so rerunning stage setup here would cause eager side
         // effects even when the fallback is never spawned.
         if run_kind != "post" {
-            setup.extend(
-                target_stage
-                    .environment
-                    .as_deref()
-                    .and_then(|name| workflow.environments.as_ref()?.get(name))
-                    .and_then(|environment| environment.setup.clone())
-                    .unwrap_or_default(),
-            );
+            setup.extend(target_stage.setup_commands(workflow));
         }
         let permission_mode = agent
             .as_ref()
@@ -1843,6 +1835,7 @@ pub(in crate::task_creator) fn prepare_stage_run_spawn(
         trigger,
         entry_channel: crate::mutation_provenance::ChannelIdentity::Unknown,
         entry_exit: None,
+        transition_commit: None,
         provider_override,
         feedback,
         provider_session_id,
@@ -1859,6 +1852,104 @@ pub(in crate::task_creator) fn prepare_stage_run_spawn(
         resolved_prompt: final_prompt,
         #[cfg(test)]
         setup_timeout_signal: None,
+    })
+}
+
+/// Prepare entry into a stage with no role (spec §5): fork its workspace
+/// from the triggering result's commit and resolve the setup it runs there.
+/// Nothing is started; `lifecycle::enter_prepared_gate_for_api` runs the
+/// setup and parks the task in the stage without spawning an agent.
+#[allow(clippy::too_many_arguments)]
+pub(in crate::task_creator) fn prepare_gate_entry(
+    db: &Db,
+    config: &Config,
+    repo: &Repo,
+    definitions: &RepoDefinitions,
+    task_id: &str,
+    workflow: &definitions::WorkflowDefinition,
+    target_stage: &WorkflowStage,
+    workspace_spec: RunWorkspaceSpec,
+    branch: &str,
+    departed_stage: &str,
+    trigger: crate::db::StageTrigger,
+) -> Result<types::PreparedGateEntry, String> {
+    let RunWorkspaceSpec::Fork {
+        branch: fork_branch,
+        start_point,
+        report,
+    } = workspace_spec
+    else {
+        return Err(format!(
+            "stage '{}' has no role and is entered only through a fresh workspace",
+            target_stage.name
+        ));
+    };
+    let current_worktree = session::current_workspace_path(db, &repo.path, task_id, branch);
+    let start_point = start_point.unwrap_or_else(|| {
+        resume::current_branch(&current_worktree).unwrap_or_else(|| branch.to_string())
+    });
+    let worktree_path = format!("{}/.kanna-worktrees/{}", repo.path, fork_branch);
+    create_worktree(&repo.path, &fork_branch, &worktree_path, Some(&start_point))?;
+    let workspace = PreparedRunWorkspace::Forked(ForkedWorkspace {
+        branch: fork_branch.clone(),
+        worktree_path: worktree_path.clone(),
+    });
+    let prepared = (|| {
+        let repo_config = definitions.config();
+        let port_env = claim_task_ports(db, task_id, repo_config)?;
+        let env = build_spawn_env(config, task_id, &port_env, &worktree_path, repo_config)?;
+        // A fresh fork runs the repository's worktree setup, then the stage's.
+        let mut setup = repo_config.setup.clone().unwrap_or_default();
+        setup.extend(target_stage.setup_commands(workflow));
+        let session_id = db
+            .resolve_task_terminal_session_id(task_id)
+            .map_err(|e| format!("db error: {e}"))?
+            .unwrap_or_else(|| task_id.to_string());
+        Ok::<_, String>((env, setup, session_id))
+    })();
+    let (env, setup, session_id) = match prepared {
+        Ok(prepared) => prepared,
+        Err(error) => {
+            return Err(match lifecycle::roll_back_prepared_workspace(&workspace) {
+                Ok(None) => error,
+                Ok(Some(preserved)) => format!("{error}; {preserved}"),
+                Err(rollback_error) => {
+                    format!("{error}; fork preparation rollback failed: {rollback_error}")
+                }
+            });
+        }
+    };
+    let session_identity = session::session_identity(
+        db,
+        task_id,
+        &target_stage.name,
+        &worktree_path,
+        &fork_branch,
+        report,
+    );
+    let workspace_teardown = prepare_workspace_teardown(
+        db,
+        config,
+        repo,
+        definitions,
+        task_id,
+        workflow,
+        departed_stage,
+        branch,
+    );
+    Ok(types::PreparedGateEntry {
+        task_id: task_id.to_string(),
+        session_id,
+        next_stage: target_stage.name.clone(),
+        workspace,
+        cwd: worktree_path,
+        env,
+        setup,
+        session_identity,
+        workspace_teardown,
+        trigger,
+        entry_channel: crate::mutation_provenance::ChannelIdentity::Unknown,
+        entry_exit: None,
     })
 }
 
@@ -2199,19 +2290,15 @@ fn stage_environment_teardown(
     workflow: &definitions::WorkflowDefinition,
     stage_name: &str,
 ) -> Vec<String> {
-    let environment_name = match definitions::resolve_stage_position(workflow, stage_name) {
+    match definitions::resolve_stage_position(workflow, stage_name) {
         Some(definitions::StagePosition::Stage(index)) => {
-            workflow.stages[index].environment.as_ref()
+            workflow.stages[index].teardown_commands(workflow)
         }
         Some(definitions::StagePosition::Post { owner }) => {
-            workflow.stages[owner].environment.as_ref()
+            workflow.stages[owner].teardown_commands(workflow)
         }
-        None => None,
-    };
-    environment_name
-        .and_then(|name| workflow.environments.as_ref()?.get(name))
-        .and_then(|environment| environment.teardown.clone())
-        .unwrap_or_default()
+        None => Vec::new(),
+    }
 }
 
 /// Build the daemon spawn for a stage run's agent session. Claude and Copilot
@@ -2571,6 +2658,9 @@ pub(crate) fn prepare_singleton_agent_task_for_api(
                 loop_transition: None,
             },
             post: None,
+            exit_commit: false,
+            setup: None,
+            teardown: None,
         }],
         environments: None,
         revision_limit: None,
@@ -2840,6 +2930,9 @@ completion with status success so Kanna can run the commit post and close this i
                 )),
                 agent_provider: None,
             }),
+            exit_commit: false,
+            setup: None,
+            teardown: None,
         }],
         environments: None,
         revision_limit: None,
@@ -3252,12 +3345,7 @@ pub(crate) fn prepare_start_dormant_task_for_api(
     let max_budget_usd = create_request
         .as_ref()
         .and_then(|request| request.max_budget_usd);
-    let stage_setup = stage
-        .environment
-        .as_deref()
-        .and_then(|name| workflow.environments.as_ref()?.get(name))
-        .and_then(|environment| environment.setup.clone())
-        .unwrap_or_default();
+    let stage_setup = stage.setup_commands(&workflow);
     let setup = new_task_setup_cmds(
         repo_config,
         &stage_setup,
@@ -4128,12 +4216,7 @@ restart or repeat work solely because task ownership moved."
         provider_candidates,
         requested_agent_type: request.agent_type,
         initial_terminal_geometry: request.initial_terminal_geometry,
-        stage_setup: stage
-            .environment
-            .as_deref()
-            .and_then(|name| workflow.environments.as_ref()?.get(name))
-            .and_then(|environment| environment.setup.clone())
-            .unwrap_or_default(),
+        stage_setup: stage.setup_commands(&workflow),
         final_prompt,
         agent_instructions,
         tuning,
