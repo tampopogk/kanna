@@ -6,13 +6,16 @@
 //! provider transcripts moved with a task; nothing here touches the working
 //! repository's index, objects or history.
 //!
-//! This increment publishes, reads, opens and annotates artifacts. Binding
-//! them to ledger results and enforcing retention are later checkpoints; the
-//! policy is recorded on each version so that enforcement is additive.
+//! Artifacts are published, read, opened and annotated here; a result names
+//! them through its `artifacts` map (bound in the store and recorded in its
+//! ledger entry), and a periodic sweep enforces each version's retention
+//! policy without ever removing a record.
 
 pub(crate) mod store;
 pub(crate) mod types;
 
+#[cfg(test)]
+mod retention_tests;
 #[cfg(test)]
 mod tests;
 

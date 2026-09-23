@@ -17,9 +17,22 @@
 //!   the control API or the network.
 //! - Only GET and HEAD, only this listener's own `Host`, no other trees, no
 //!   repository paths, no control endpoints.
+//! - Artifact content is never a top-level document. A sandboxed document
+//!   may still navigate *itself*, and a top-level one could so reach any
+//!   loopback service (the control API included) or carry its capability
+//!   away in a URL. So a top-level navigation (`Sec-Fetch-Dest: document`)
+//!   is answered with a fixed shell that frames the same URL in an
+//!   `<iframe sandbox="allow-scripts">`: the frame cannot navigate the top
+//!   (no `allow-top-navigation`) or open popups, and the shell's `frame-src`
+//!   confines every navigation of the frame to this listener. Requests with
+//!   no `Sec-Fetch-Dest` (non-browser clients) get the content as before.
 //!
 //! Sessions end on explicit close, after `IDLE_TTL` without a request, or at
-//! `HARD_TTL`, and with the server process.
+//! `HARD_TTL`, and with the server process. Ending stops accepting at once,
+//! lets in-flight responses drain for at most the drain deadline, then
+//! aborts every connection the listener accepted, so a client that stops
+//! reading cannot keep a session's task alive. At most `MAX_SESSIONS`
+//! previews are open at a time.
 
 use crate::artifacts::store::ArtifactStore;
 use crate::artifacts::{random_hex, ArtifactError};
@@ -36,23 +49,62 @@ use axum::Router;
 use serde::Serialize;
 use sha2::{Digest as _, Sha256};
 use std::collections::HashMap;
+use std::future::{Future, IntoFuture as _};
+use std::net::SocketAddr;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::pin::Pin;
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::task::{Context, Poll};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use tokio::net::TcpListener;
-use tokio::sync::{oneshot, Mutex};
+use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
+use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::{oneshot, watch, Mutex};
 
 const CAPABILITY_PREFIX: &str = "/a/";
 const IDLE_TTL: Duration = Duration::from_secs(15 * 60);
 const HARD_TTL: Duration = Duration::from_secs(60 * 60);
 const EXPIRY_POLL: Duration = Duration::from_secs(5);
+/// How long responses in flight may finish after a session ends.
+const DRAIN_DEADLINE: Duration = Duration::from_secs(5);
+/// Previews open at once. Each is a listener and a task; opening one more
+/// is refused until one is closed or expires.
+const MAX_SESSIONS: usize = 16;
 
 type PreviewKey = (String, String);
 
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub(super) struct ArtifactPreviewSessions {
     sessions: Arc<Mutex<HashMap<PreviewKey, PreviewHandle>>>,
+    max_sessions: usize,
+    drain_deadline: Duration,
+    /// Serve tasks still running, closed or not.
+    live: Arc<AtomicUsize>,
+}
+
+impl Default for ArtifactPreviewSessions {
+    fn default() -> Self {
+        Self {
+            sessions: Arc::default(),
+            max_sessions: MAX_SESSIONS,
+            drain_deadline: DRAIN_DEADLINE,
+            live: Arc::default(),
+        }
+    }
+}
+
+/// Why a preview could not be opened.
+#[derive(Debug)]
+pub(super) enum PreviewOpenError {
+    /// `MAX_SESSIONS` previews are already open.
+    Limit(usize),
+    Failed(String),
+}
+
+impl From<String> for PreviewOpenError {
+    fn from(message: String) -> Self {
+        Self::Failed(message)
+    }
 }
 
 struct PreviewHandle {
@@ -103,13 +155,28 @@ pub(super) struct OpenedArtifactPreview {
 }
 
 impl ArtifactPreviewSessions {
+    #[cfg(test)]
+    pub(super) fn with_limits(max_sessions: usize, drain_deadline: Duration) -> Self {
+        Self {
+            max_sessions,
+            drain_deadline,
+            ..Self::default()
+        }
+    }
+
+    /// Serve tasks still running, including ones draining after a close.
+    #[cfg(test)]
+    pub(super) fn live_listeners(&self) -> usize {
+        self.live.load(Ordering::Acquire)
+    }
+
     pub(super) async fn open(
         &self,
         repo_id: String,
         artifact_id: String,
         repository_path: PathBuf,
         entrypoint: String,
-    ) -> Result<OpenedArtifactPreview, String> {
+    ) -> Result<OpenedArtifactPreview, PreviewOpenError> {
         let key = (repo_id.clone(), artifact_id.clone());
         let mut sessions = self.sessions.lock().await;
         if let Some(handle) = sessions.get(&key) {
@@ -120,6 +187,15 @@ impl ArtifactPreviewSessions {
                     .store(unix_seconds(), Ordering::Release);
                 return Ok(opened(&handle.session));
             }
+        }
+        // An expired session still in the map is on its way out and does
+        // not count; the one this open replaces does not either.
+        let open = sessions
+            .iter()
+            .filter(|(other, handle)| **other != key && handle.session.is_current())
+            .count();
+        if open >= self.max_sessions {
+            return Err(PreviewOpenError::Limit(self.max_sessions));
         }
 
         let listener = TcpListener::bind(("127.0.0.1", 0))
@@ -156,25 +232,63 @@ impl ArtifactPreviewSessions {
 
         let registry = self.clone();
         let served = Arc::clone(&session);
+        let drain_deadline = self.drain_deadline;
+        self.live.fetch_add(1, Ordering::AcqRel);
         tokio::spawn(async move {
             let app = Router::new()
                 .route("/", any(serve_artifact_request))
                 .route("/{*path}", any(serve_artifact_request))
                 .with_state(Arc::clone(&served));
+            let (abort, aborted) = watch::channel(false);
+            let (stop, stopped) = oneshot::channel::<()>();
+            let server = axum::serve(
+                TrackedListener {
+                    inner: listener,
+                    aborted,
+                },
+                app,
+            )
+            .with_graceful_shutdown(async move {
+                let _ = stopped.await;
+            })
+            .into_future();
+            tokio::pin!(server);
             let expiring = Arc::clone(&served);
-            let shutdown = async move {
-                tokio::select! {
-                    _ = cancelled => {},
-                    _ = wait_for_expiry(expiring) => {},
+            let ended = tokio::select! {
+                result = &mut server => Some(result),
+                _ = cancelled => None,
+                _ = wait_for_expiry(expiring) => None,
+            };
+            let result = match ended {
+                Some(result) => result,
+                None => {
+                    // Stop accepting and let responses in flight finish, but
+                    // only until the deadline: then every accepted connection
+                    // is aborted, which ends the server whatever its clients
+                    // are (or are not) doing.
+                    let _ = stop.send(());
+                    match tokio::time::timeout(drain_deadline, &mut server).await {
+                        Ok(result) => result,
+                        Err(_) => {
+                            let _ = abort.send(true);
+                            match tokio::time::timeout(drain_deadline, &mut server).await {
+                                Ok(result) => result,
+                                Err(_) => {
+                                    log::warn!(
+                                        "artifact preview listener did not stop after aborting its connections"
+                                    );
+                                    Ok(())
+                                }
+                            }
+                        }
+                    }
                 }
             };
-            if let Err(error) = axum::serve(listener, app)
-                .with_graceful_shutdown(shutdown)
-                .await
-            {
+            if let Err(error) = result {
                 log::warn!("artifact preview listener stopped with an error: {error}");
             }
             registry.remove_if_current(&key, &served).await;
+            registry.live.fetch_sub(1, Ordering::AcqRel);
         });
         Ok(opened(&session))
     }
@@ -237,9 +351,58 @@ fn content_security_policy(port: u16) -> Result<HeaderValue, String> {
          img-src {origins} data: blob:; font-src {origins} data:; media-src {origins} data: blob:; \
          frame-src {origins}; child-src {origins}; connect-src 'none'; worker-src 'none'; \
          manifest-src 'none'; object-src 'none'; form-action 'none'; base-uri 'none'; \
-         frame-ancestors 'none'"
+         frame-ancestors {}",
+        shell_origins(port)
     ))
     .map_err(|error| format!("invalid artifact preview policy: {error}"))
+}
+
+/// This listener's own origins: the only place the top-level shell lives.
+fn shell_origins(port: u16) -> String {
+    format!("http://127.0.0.1:{port} http://localhost:{port}")
+}
+
+/// The top-level document a browser navigation receives instead of the
+/// content. Kanna-authored and script-free; it frames `path` (this request's
+/// own path, so the frame's request carries the capability) sandboxed.
+fn shell_response(session: &PreviewSession, path_and_query: &str, head: bool) -> Response {
+    let escaped = path_and_query
+        .replace('&', "&amp;")
+        .replace('"', "&quot;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;");
+    let html = format!(
+        "<!doctype html><meta charset=utf-8><title>Kanna artifact preview</title>\
+         <style>html,body,iframe{{margin:0;border:0;width:100%;height:100%;display:block}}</style>\
+         <iframe sandbox=\"allow-scripts\" referrerpolicy=\"no-referrer\" src=\"{escaped}\"></iframe>"
+    );
+    let origins = shell_origins(session.port);
+    let policy = format!(
+        "default-src 'none'; script-src 'none'; style-src 'unsafe-inline'; \
+         frame-src {origins}; child-src {origins}; form-action 'none'; base-uri 'none'; \
+         frame-ancestors 'none'"
+    );
+    let mut response = if head {
+        Response::new(Body::empty())
+    } else {
+        Response::new(Body::from(html))
+    };
+    let headers = response.headers_mut();
+    headers.insert(
+        CONTENT_TYPE,
+        HeaderValue::from_static("text/html; charset=utf-8"),
+    );
+    if let Ok(policy) = HeaderValue::from_str(&policy) {
+        headers.insert(CONTENT_SECURITY_POLICY, policy);
+    }
+    headers.insert(X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff"));
+    headers.insert(REFERRER_POLICY, HeaderValue::from_static("no-referrer"));
+    headers.insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    headers.insert(
+        "cross-origin-opener-policy",
+        HeaderValue::from_static("same-origin"),
+    );
+    response
 }
 
 async fn serve_artifact_request(
@@ -283,6 +446,18 @@ async fn serve_artifact_request(
     session
         .last_activity
         .store(unix_seconds(), Ordering::Release);
+    let top_level = request
+        .headers()
+        .get("sec-fetch-dest")
+        .is_some_and(|dest| dest.as_bytes().eq_ignore_ascii_case(b"document"));
+    if top_level {
+        let path_and_query = request
+            .uri()
+            .path_and_query()
+            .map(|value| value.as_str())
+            .unwrap_or("/");
+        return shell_response(&session, path_and_query, request.method() == Method::HEAD);
+    }
     let base = format!("{CAPABILITY_PREFIX}{}/", session.capability);
     let Some(raw_path) = file_path.filter(|path| !path.is_empty()) else {
         return redirect(&format!("{base}{}", encode_path(&session.entrypoint)));
@@ -449,6 +624,111 @@ fn secret_matches(presented: &str, expected: &str) -> bool {
             difference | (left ^ right)
         })
         == 0
+}
+
+/// The preview's listener, handing out connections that can all be aborted
+/// at once when the drain deadline passes.
+struct TrackedListener {
+    inner: TcpListener,
+    aborted: watch::Receiver<bool>,
+}
+
+impl axum::serve::Listener for TrackedListener {
+    type Io = AbortableStream;
+    type Addr = SocketAddr;
+
+    async fn accept(&mut self) -> (Self::Io, Self::Addr) {
+        let (stream, address) = axum::serve::Listener::accept(&mut self.inner).await;
+        (AbortableStream::new(stream, self.aborted.clone()), address)
+    }
+
+    fn local_addr(&self) -> std::io::Result<Self::Addr> {
+        self.inner.local_addr()
+    }
+}
+
+/// A connection that fails every read and write once its listener is
+/// aborted. The abort signal is polled alongside the socket, so a response
+/// parked on a full send buffer (a client that stopped reading) is woken and
+/// ends too.
+struct AbortableStream {
+    inner: TcpStream,
+    aborted: Pin<Box<dyn Future<Output = ()> + Send>>,
+    dead: bool,
+}
+
+impl AbortableStream {
+    fn new(inner: TcpStream, mut aborted: watch::Receiver<bool>) -> Self {
+        Self {
+            inner,
+            aborted: Box::pin(async move {
+                if aborted.wait_for(|aborted| *aborted).await.is_err() {
+                    // The session is gone without aborting: never fire.
+                    std::future::pending::<()>().await;
+                }
+            }),
+            dead: false,
+        }
+    }
+
+    fn check(&mut self, context: &mut Context<'_>) -> std::io::Result<()> {
+        if !self.dead && self.aborted.as_mut().poll(context).is_ready() {
+            self.dead = true;
+        }
+        if self.dead {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::ConnectionAborted,
+                "artifact preview session ended",
+            ));
+        }
+        Ok(())
+    }
+}
+
+impl AsyncRead for AbortableStream {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        context: &mut Context<'_>,
+        buffer: &mut ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        if let Err(error) = self.check(context) {
+            return Poll::Ready(Err(error));
+        }
+        Pin::new(&mut self.inner).poll_read(context, buffer)
+    }
+}
+
+impl AsyncWrite for AbortableStream {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        context: &mut Context<'_>,
+        bytes: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
+        if let Err(error) = self.check(context) {
+            return Poll::Ready(Err(error));
+        }
+        Pin::new(&mut self.inner).poll_write(context, bytes)
+    }
+
+    fn poll_flush(
+        mut self: Pin<&mut Self>,
+        context: &mut Context<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        if let Err(error) = self.check(context) {
+            return Poll::Ready(Err(error));
+        }
+        Pin::new(&mut self.inner).poll_flush(context)
+    }
+
+    fn poll_shutdown(
+        mut self: Pin<&mut Self>,
+        context: &mut Context<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        if self.dead {
+            return Poll::Ready(Ok(()));
+        }
+        Pin::new(&mut self.inner).poll_shutdown(context)
+    }
 }
 
 async fn wait_for_expiry(session: Arc<PreviewSession>) {

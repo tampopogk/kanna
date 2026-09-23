@@ -35,9 +35,12 @@ impl ArtifactContentKind {
     }
 }
 
-/// Repository retention policy recorded on each version. This increment
-/// records the policy and retains all content regardless; collection is a
-/// later checkpoint that needs the ledger's reference contract.
+/// Repository retention policy recorded on each version and enforced by the
+/// retention sweep (`store::ArtifactStore::sweep_retention`): `keep` never
+/// collects, `30-days` collects 30 days after the producing task closed, and
+/// `discard-on-close` collects once it closed (after a short grace so an
+/// undone close finds its content). Content still named by an open task is
+/// never collected, and collecting only removes content: every record stays.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum ArtifactRetention {
     #[default]
@@ -166,6 +169,41 @@ pub(crate) struct ArtifactDecision {
     pub(crate) what: String,
 }
 
+/// A result naming one stored tree: written when a result that carries the
+/// reference is accepted, before the result itself is recorded. While the
+/// binding task is open, retention never collects the tree.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ArtifactBinding {
+    pub(crate) schema_version: u32,
+    pub(crate) record_id: String,
+    pub(crate) repo_id: String,
+    pub(crate) about_artifact_id: String,
+    pub(crate) created_at: String,
+    pub(crate) task_id: String,
+    /// The name the result gave the reference.
+    pub(crate) name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) run_id: Option<String>,
+}
+
+/// Retention removed a tree's content. The version records, annotations and
+/// bindings stay, so a reader can still say what was produced.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ArtifactExpiry {
+    pub(crate) schema_version: u32,
+    pub(crate) record_id: String,
+    pub(crate) repo_id: String,
+    pub(crate) about_artifact_id: String,
+    /// When the content ref was deleted.
+    pub(crate) created_at: String,
+    /// The retention policies of the versions that allowed collection.
+    pub(crate) policies: Vec<ArtifactRetention>,
+    /// The retention ref that was deleted and the commit it held.
+    pub(crate) storage: ArtifactStorage,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ArtifactFileEntry {
@@ -187,6 +225,14 @@ pub(crate) struct ArtifactDetail {
     pub(crate) versions: Vec<ArtifactVersion>,
     pub(crate) comments: Vec<ArtifactComment>,
     pub(crate) decisions: Vec<ArtifactDecision>,
+    /// Results that named this tree.
+    pub(crate) bindings: Vec<ArtifactBinding>,
+    /// True when retention collected the content: produced, no longer
+    /// retained. `retained` false without this is content lost otherwise.
+    pub(crate) expired: bool,
+    /// Every collection of this tree, oldest first (a tree republished after
+    /// it expired can expire again).
+    pub(crate) expirations: Vec<ArtifactExpiry>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]

@@ -678,3 +678,716 @@ async fn a_configured_location_inside_the_working_repository_is_refused() {
     assert!(outside.join("HEAD").exists());
     assert!(!env2.home.join(".kanna").exists());
 }
+
+// ---------------------------------------------------------------------------
+// T6b: result references, retention, preview lifecycle and isolation
+// ---------------------------------------------------------------------------
+
+const SHA_A: &str = "1111111111111111111111111111111111111111";
+const SHA_B: &str = "2222222222222222222222222222222222222222";
+
+fn insert_running_run(env: &ArtifactEnv, run_id: &str) {
+    let db = Db::open(&env.state.config().db_path).unwrap();
+    db.insert_stage_run(crate::db::NewStageRun {
+        id: run_id,
+        task_id: "task-a",
+        stage: "in progress",
+        kind: "main",
+        agent: Some("implement"),
+        agent_provider: Some("claude"),
+        model: None,
+        effort: None,
+        status: "running",
+        result: None,
+        feedback: None,
+        session_id: Some("task-a"),
+        provider_session_id: None,
+        cwd: Some(&env.workspace.to_string_lossy()),
+        resumed_from_run_id: None,
+    })
+    .unwrap();
+}
+
+fn result_entries(env: &ArtifactEnv) -> Vec<crate::task_store::LedgerFile> {
+    let db_path = env.state.config().db_path.clone();
+    let db = Db::open(&db_path).unwrap();
+    let dir = crate::task_store::task_dir_for(&db, &db_path, "task-a").unwrap();
+    crate::task_store::read_ledger(&dir)
+        .unwrap()
+        .into_iter()
+        .filter(|file| file.kind == crate::db::task_store::LedgerEntryKind::Result)
+        .collect()
+}
+
+async fn complete(env: &ArtifactEnv, body: Value) -> (StatusCode, Value) {
+    call(
+        &env.app,
+        "POST",
+        "/v1/tasks/task-a/actions/complete-stage",
+        Some(body),
+    )
+    .await
+}
+
+#[tokio::test]
+async fn a_result_records_its_named_artifact_references_in_the_ledger_entry() {
+    let env = setup("result-refs", None);
+    insert_running_run(&env, "run-refs");
+    let (status, published) = publish(&env.app, json!({ "path": "mock", "kind": "mockup" })).await;
+    assert_eq!(status, StatusCode::CREATED, "{published}");
+    let id = published["artifactId"].as_str().unwrap().to_string();
+
+    let (status, body) = complete(
+        &env,
+        json!({
+            "runId": "run-refs",
+            "status": "unverified",
+            "summary": "mockup ready\n\nNot checked on a phone.",
+            "artifacts": {
+                "mockup": id,
+                "base": { "type": "commit", "repoId": "repo-a", "sha": SHA_A },
+                "pull request": { "type": "pr", "url": "https://github.com/o/r/pull/7", "headSha": SHA_B },
+            },
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    // The published file on disk carries the references.
+    let results = result_entries(&env);
+    assert_eq!(results.len(), 1);
+    assert_eq!(
+        results[0].envelope["artifacts"],
+        json!({
+            "mockup": { "type": "stored", "repoId": "repo-a", "artifactId": id, "kind": "mockup" },
+            "base": { "type": "commit", "repoId": "repo-a", "sha": SHA_A },
+            "pull request": { "type": "pr", "url": "https://github.com/o/r/pull/7", "headSha": SHA_B },
+        })
+    );
+    // The stored content knows the result named it.
+    let (_, detail) = call(
+        &env.app,
+        "GET",
+        &format!("/v1/repos/repo-a/artifacts/{id}"),
+        None,
+    )
+    .await;
+    assert_eq!(detail["bindings"].as_array().unwrap().len(), 1, "{detail}");
+    assert_eq!(detail["bindings"][0]["taskId"], "task-a");
+    assert_eq!(detail["bindings"][0]["name"], "mockup");
+    assert_eq!(detail["bindings"][0]["runId"], "run-refs");
+    assert_eq!(detail["expired"], false);
+}
+
+#[tokio::test]
+async fn an_unresolvable_reference_refuses_the_result_and_records_nothing() {
+    let env = setup("result-refused", None);
+    insert_running_run(&env, "run-refused");
+    let (_, published) = publish(&env.app, json!({ "path": "mock", "kind": "mockup" })).await;
+    let id = published["artifactId"].as_str().unwrap().to_string();
+    let never = "0123456789abcdef0123456789abcdef01234567";
+
+    for (label, artifacts) in [
+        ("never published", json!({ "mockup": id, "ghost": never })),
+        ("malformed id", json!({ "mockup": "abc123" })),
+        (
+            "another repository",
+            json!({ "x": { "type": "stored", "repoId": "repo-b", "artifactId": id, "kind": "mockup" } }),
+        ),
+        (
+            "wrong kind",
+            json!({ "x": { "type": "stored", "repoId": "repo-a", "artifactId": id, "kind": "report" } }),
+        ),
+        (
+            "short commit",
+            json!({ "x": { "type": "commit", "repoId": "repo-a", "sha": "1111" } }),
+        ),
+        (
+            "pr without url",
+            json!({ "x": { "type": "pr", "url": "javascript:alert(1)", "headSha": SHA_B } }),
+        ),
+        ("not a map", json!(["mockup"])),
+        ("empty name", json!({ "": id })),
+    ] {
+        let (status, body) = complete(
+            &env,
+            json!({
+                "runId": "run-refused",
+                "status": "unverified",
+                "summary": "done",
+                "artifacts": artifacts,
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{label}: {body}");
+        assert!(
+            body.as_str()
+                .unwrap_or_default()
+                .contains("nothing was recorded"),
+            "{label}: {body}"
+        );
+    }
+
+    let db = Db::open(&env.state.config().db_path).unwrap();
+    let run = db.stage_run("run-refused").unwrap().unwrap();
+    assert_eq!(run.status, "running");
+    assert_eq!(run.result, None);
+    assert!(result_entries(&env).is_empty());
+    let (_, detail) = call(
+        &env.app,
+        "GET",
+        &format!("/v1/repos/repo-a/artifacts/{id}"),
+        None,
+    )
+    .await;
+    assert_eq!(
+        detail["bindings"],
+        json!([]),
+        "a refused result bound content"
+    );
+
+    // The established spelling without references still works and records
+    // an empty map.
+    let (status, body) = complete(
+        &env,
+        json!({ "runId": "run-refused", "status": "unverified", "summary": "done" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let results = result_entries(&env);
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].envelope["artifacts"], json!({}));
+    let run = db.stage_run("run-refused").unwrap().unwrap();
+    let stored: Value = serde_json::from_str(run.result.as_deref().unwrap()).unwrap();
+    assert!(stored.get("artifacts").is_none(), "{stored}");
+}
+
+#[tokio::test]
+async fn the_retention_sweep_reads_task_lifecycle_from_the_database() {
+    let env = setup(
+        "retention-sweep",
+        Some(json!({ "artifacts": { "retention": "discard-on-close" } })),
+    );
+    let (_, published) = publish(&env.app, json!({ "path": "mock", "kind": "mockup" })).await;
+    let id = published["artifactId"].as_str().unwrap().to_string();
+    assert_eq!(published["version"]["retention"], "discard-on-close");
+    let later = std::time::SystemTime::now() + std::time::Duration::from_secs(3 * 60 * 60);
+
+    // Open producer: kept.
+    let swept = crate::http_api::artifacts::sweep_artifact_retention(&env.state, later);
+    assert_eq!(swept.len(), 1);
+    assert_eq!(swept[0].0, "repo-a");
+    assert!(swept[0].1.as_ref().unwrap().expired.is_empty());
+
+    Db::open(&env.state.config().db_path)
+        .unwrap()
+        .close_pipeline_item("task-a")
+        .unwrap();
+    // Just closed: still inside the grace an undone close relies on.
+    let swept = crate::http_api::artifacts::sweep_artifact_retention(
+        &env.state,
+        std::time::SystemTime::now(),
+    );
+    assert!(swept[0].1.as_ref().unwrap().expired.is_empty());
+    let swept = crate::http_api::artifacts::sweep_artifact_retention(&env.state, later);
+    assert_eq!(swept[0].1.as_ref().unwrap().expired, vec![id.clone()]);
+
+    let (status, detail) = call(
+        &env.app,
+        "GET",
+        &format!("/v1/repos/repo-a/artifacts/{id}"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{detail}");
+    assert_eq!(detail["retained"], false);
+    assert_eq!(detail["expired"], true);
+    assert_eq!(detail["versions"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        detail["expirations"][0]["policies"],
+        json!(["discard-on-close"])
+    );
+    let (status, body) = call(
+        &env.app,
+        "POST",
+        &format!("/v1/repos/repo-a/artifacts/{id}/preview"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+    assert_eq!(body["error"], "artifact_content_missing");
+}
+
+fn repository_path(env: &ArtifactEnv) -> PathBuf {
+    env.home.join(".kanna/repos/repo-a/artifacts.git")
+}
+
+#[tokio::test]
+async fn previews_beyond_the_cap_are_refused_until_one_closes() {
+    use crate::http_api::artifact_preview::{ArtifactPreviewSessions, PreviewOpenError};
+    let env = setup("preview-cap", None);
+    write(&env.workspace.join("one.md"), b"one");
+    write(&env.workspace.join("two.md"), b"two");
+    let mut ids = Vec::new();
+    for path in ["mock", "one.md", "two.md"] {
+        let (_, published) = publish(&env.app, json!({ "path": path, "kind": "document" })).await;
+        ids.push((
+            published["artifactId"].as_str().unwrap().to_string(),
+            published["version"]["entrypoint"]
+                .as_str()
+                .unwrap()
+                .to_string(),
+        ));
+    }
+    let sessions = ArtifactPreviewSessions::with_limits(2, std::time::Duration::from_secs(1));
+    let open = |index: usize| {
+        let (id, entrypoint) = ids[index].clone();
+        let sessions = sessions.clone();
+        let path = repository_path(&env);
+        async move { sessions.open("repo-a".into(), id, path, entrypoint).await }
+    };
+    open(0).await.unwrap();
+    open(1).await.unwrap();
+    // Reopening an open one is not a new session.
+    open(1).await.unwrap();
+    assert!(matches!(open(2).await, Err(PreviewOpenError::Limit(2))));
+    assert!(sessions.close("repo-a", &ids[0].0).await);
+    open(2).await.unwrap();
+    sessions.close("repo-a", &ids[1].0).await;
+    sessions.close("repo-a", &ids[2].0).await;
+}
+
+/// Send a request for a large file and never read the response.
+async fn stall_a_large_download(url: &str) -> (tokio::net::TcpStream, usize) {
+    use tokio::io::AsyncWriteExt;
+    let url = reqwest::Url::parse(url).unwrap();
+    let port = url.port().unwrap();
+    let mut stream = tokio::net::TcpStream::connect(("127.0.0.1", port))
+        .await
+        .unwrap();
+    stream
+        .write_all(
+            format!(
+                "GET {} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n\r\n",
+                url.path()
+            )
+            .as_bytes(),
+        )
+        .await
+        .unwrap();
+    // Long enough for the response to fill every buffer and park.
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    (stream, BIG_FILE_BYTES)
+}
+
+const BIG_FILE_BYTES: usize = 15 * 1024 * 1024;
+
+async fn assert_cut_short(mut stream: tokio::net::TcpStream, expected: usize) {
+    use tokio::io::AsyncReadExt;
+    let mut received = Vec::new();
+    let read = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        stream.read_to_end(&mut received),
+    )
+    .await
+    .expect("the aborted connection never ended");
+    // Reset or EOF are both an end; either way it came up short.
+    let _ = read;
+    assert!(
+        received.len() < expected,
+        "the stalled response was delivered in full ({} bytes), so the test did not stall it",
+        received.len()
+    );
+}
+
+async fn await_no_live_listeners(
+    sessions: &crate::http_api::artifact_preview::ArtifactPreviewSessions,
+    within: std::time::Duration,
+) {
+    let deadline = tokio::time::Instant::now() + within;
+    while sessions.live_listeners() > 0 {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "a preview listener outlived its drain deadline"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+}
+
+#[tokio::test]
+async fn a_stalled_reader_cannot_outlive_a_closed_or_expired_preview() {
+    use crate::http_api::artifact_preview::ArtifactPreviewSessions;
+    let env = setup("preview-drain", None);
+    let big = (0..BIG_FILE_BYTES)
+        .map(|index| (index * 7919 % 251) as u8)
+        .collect::<Vec<_>>();
+    write(&env.workspace.join("big.bin"), &big);
+    let (status, published) =
+        publish(&env.app, json!({ "path": "big.bin", "kind": "media" })).await;
+    assert_eq!(status, StatusCode::CREATED, "{published}");
+    let id = published["artifactId"].as_str().unwrap().to_string();
+    let drain = std::time::Duration::from_millis(300);
+    let sessions = ArtifactPreviewSessions::with_limits(4, drain);
+
+    // Explicit close.
+    let opened = sessions
+        .open(
+            "repo-a".into(),
+            id.clone(),
+            repository_path(&env),
+            "big.bin".into(),
+        )
+        .await
+        .unwrap();
+    let url = serde_json::to_value(&opened).unwrap()["url"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let (stream, expected) = stall_a_large_download(&url).await;
+    assert_eq!(sessions.live_listeners(), 1);
+    assert!(sessions.close("repo-a", &id).await);
+    // Still draining right after the close...
+    assert_eq!(sessions.live_listeners(), 1);
+    // ...and gone within the deadline plus the abort.
+    await_no_live_listeners(&sessions, drain * 2 + std::time::Duration::from_secs(2)).await;
+    assert_cut_short(stream, expected).await;
+
+    // Idle expiry takes the same path (the expiry poll is five seconds).
+    let opened = sessions
+        .open(
+            "repo-a".into(),
+            id.clone(),
+            repository_path(&env),
+            "big.bin".into(),
+        )
+        .await
+        .unwrap();
+    let url = serde_json::to_value(&opened).unwrap()["url"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let (stream, expected) = stall_a_large_download(&url).await;
+    sessions.expire_for_tests("repo-a", &id).await;
+    await_no_live_listeners(&sessions, drain * 2 + std::time::Duration::from_secs(8)).await;
+    assert_cut_short(stream, expected).await;
+}
+
+#[tokio::test]
+async fn a_top_level_navigation_receives_the_sandboxing_shell_not_the_content() {
+    let env = setup("preview-shell", None);
+    let (_, published) = publish(&env.app, json!({ "path": "mock", "kind": "mockup" })).await;
+    let id = published["artifactId"].as_str().unwrap().to_string();
+    let (_, opened) = call(
+        &env.app,
+        "POST",
+        &format!("/v1/repos/repo-a/artifacts/{id}/preview"),
+        None,
+    )
+    .await;
+    let url = opened["url"].as_str().unwrap().to_string();
+    let port = reqwest::Url::parse(&url).unwrap().port().unwrap();
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap();
+
+    let shell = client
+        .get(&url)
+        .header("Sec-Fetch-Dest", "document")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(shell.status(), 200);
+    let policy = shell.headers()["content-security-policy"]
+        .to_str()
+        .unwrap()
+        .to_string();
+    assert!(
+        policy.contains(&format!(
+            "frame-src http://127.0.0.1:{port} http://localhost:{port}"
+        )),
+        "{policy}"
+    );
+    assert!(policy.contains("script-src 'none'"), "{policy}");
+    let path = reqwest::Url::parse(&url).unwrap().path().to_string();
+    let html = shell.text().await.unwrap();
+    assert!(
+        html.contains(&format!(
+            "<iframe sandbox=\"allow-scripts\" referrerpolicy=\"no-referrer\" src=\"{path}\">"
+        )),
+        "{html}"
+    );
+    assert!(
+        !html.contains("site.css"),
+        "the shell leaked content: {html}"
+    );
+
+    // A framed request, or one from a client that sends no fetch metadata,
+    // gets the content, which only the preview's own origins may frame.
+    for dest in [Some("iframe"), None] {
+        let mut request = client.get(&url);
+        if let Some(dest) = dest {
+            request = request.header("Sec-Fetch-Dest", dest);
+        }
+        let content = request.send().await.unwrap();
+        assert_eq!(content.status(), 200);
+        let policy = content.headers()["content-security-policy"]
+            .to_str()
+            .unwrap()
+            .to_string();
+        assert!(policy.starts_with("sandbox allow-scripts;"), "{policy}");
+        assert!(
+            policy.ends_with(&format!(
+                "frame-ancestors http://127.0.0.1:{port} http://localhost:{port}"
+            )),
+            "{policy}"
+        );
+        assert_eq!(content.bytes().await.unwrap().as_ref(), INDEX_HTML);
+    }
+    env.state.artifact_previews.close("repo-a", &id).await;
+}
+
+// ---------------------------------------------------------------------------
+// Browser-level isolation
+// ---------------------------------------------------------------------------
+
+/// A Chromium-family browser for the browser-level test: `KANNA_TEST_CHROME`,
+/// else Playwright's headless shell, else an installed Chrome or Chromium.
+fn find_browser() -> Option<PathBuf> {
+    if let Some(path) = std::env::var_os("KANNA_TEST_CHROME") {
+        return Some(PathBuf::from(path));
+    }
+    let mut candidates = Vec::new();
+    for cache in [
+        std::env::var_os("PLAYWRIGHT_BROWSERS_PATH").map(PathBuf::from),
+        std::env::var_os("HOME")
+            .map(|home| PathBuf::from(home).join("Library/Caches/ms-playwright")),
+        std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".cache/ms-playwright")),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        let Ok(entries) = std::fs::read_dir(cache) else {
+            continue;
+        };
+        let mut shells = entries
+            .flatten()
+            .map(|entry| entry.path())
+            .filter(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.starts_with("chromium_headless_shell-"))
+            })
+            .collect::<Vec<_>>();
+        shells.sort();
+        for shell in shells.into_iter().rev() {
+            for platform in [
+                "chrome-headless-shell-mac-arm64",
+                "chrome-headless-shell-mac-x64",
+                "chrome-headless-shell-linux64",
+                "chrome-linux",
+            ] {
+                candidates.push(shell.join(platform).join("chrome-headless-shell"));
+                candidates.push(shell.join(platform).join("headless_shell"));
+            }
+        }
+    }
+    candidates.extend([
+        PathBuf::from("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"),
+        PathBuf::from("/Applications/Chromium.app/Contents/MacOS/Chromium"),
+        PathBuf::from("/usr/bin/google-chrome"),
+        PathBuf::from("/usr/bin/chromium"),
+        PathBuf::from("/usr/bin/chromium-browser"),
+    ]);
+    candidates.into_iter().find(|path| path.is_file())
+}
+
+/// A stand-in for the control port: records the request line of every
+/// connection it receives and answers 200.
+async fn control_port_canary() -> (u16, Arc<std::sync::Mutex<Vec<String>>>) {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let hits = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let recorded = Arc::clone(&hits);
+    tokio::spawn(async move {
+        while let Ok((mut stream, _)) = listener.accept().await {
+            let recorded = Arc::clone(&recorded);
+            tokio::spawn(async move {
+                let mut buffer = vec![0_u8; 4096];
+                let read = stream.read(&mut buffer).await.unwrap_or(0);
+                let line = String::from_utf8_lossy(&buffer[..read])
+                    .lines()
+                    .next()
+                    .unwrap_or_default()
+                    .to_string();
+                recorded.lock().unwrap().push(line);
+                let _ = stream
+                    .write_all(
+                        b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok",
+                    )
+                    .await;
+            });
+        }
+    });
+    (port, hits)
+}
+
+/// Serve `html` top-level with the preview's pre-T6b posture (a sandboxed
+/// document of its own): the positive control proving the probe navigates.
+async fn unshielded_page(html: String) -> u16 {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
+    let port = listener.local_addr().unwrap().port();
+    tokio::spawn(async move {
+        while let Ok((mut stream, _)) = listener.accept().await {
+            let html = html.clone();
+            tokio::spawn(async move {
+                let mut buffer = vec![0_u8; 4096];
+                let _ = stream.read(&mut buffer).await;
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\n\
+                     Content-Security-Policy: sandbox allow-scripts; default-src 'none'; script-src 'unsafe-inline'; connect-src 'none'; frame-ancestors 'none'\r\n\
+                     Content-Length: {}\r\nConnection: close\r\n\r\n{html}",
+                    html.len()
+                );
+                let _ = stream.write_all(response.as_bytes()).await;
+            });
+        }
+    });
+    port
+}
+
+/// Load `url` top-level in a headless browser, give its timers five virtual
+/// seconds, and return the browser's log. A browser that dumps the page but
+/// does not exit (desktop Chrome's updater can keep it up) is killed after
+/// a bounded wait; the page had its time either way.
+async fn load_in_browser(browser: &Path, profile: &Path, url: &str) -> String {
+    let log = profile.with_extension("log");
+    std::fs::create_dir_all(profile).unwrap();
+    let mut child = tokio::process::Command::new(browser)
+        .args([
+            "--headless=new",
+            "--no-first-run",
+            "--no-default-browser-check",
+            "--disable-gpu",
+            "--disable-extensions",
+            "--disable-background-networking",
+            "--use-mock-keychain",
+            "--password-store=basic",
+            "--enable-logging=stderr",
+            "--v=0",
+            "--virtual-time-budget=5000",
+        ])
+        .arg(format!("--user-data-dir={}", profile.display()))
+        .arg("--dump-dom")
+        .arg(url)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::fs::File::create(&log).unwrap())
+        .kill_on_drop(true)
+        .spawn()
+        .expect("the browser did not start");
+    if tokio::time::timeout(std::time::Duration::from_secs(20), child.wait())
+        .await
+        .is_err()
+    {
+        let _ = child.kill().await;
+    }
+    std::fs::read_to_string(&log).unwrap_or_default()
+}
+
+/// Hostile preview content tries every way a document navigates the top
+/// level or itself to the control port. Through the preview none reaches
+/// it; the same page served as its own top-level document does, which is
+/// what proves the probe would notice.
+#[tokio::test]
+async fn preview_content_cannot_navigate_to_the_control_port_in_a_real_browser() {
+    let Some(browser) = find_browser() else {
+        assert!(
+            std::env::var_os("KANNA_REQUIRE_BROWSER_TESTS").is_none(),
+            "KANNA_REQUIRE_BROWSER_TESTS is set but no browser was found"
+        );
+        eprintln!("SKIPPED: no Chrome/Chromium found (set KANNA_TEST_CHROME)");
+        return;
+    };
+    let env = setup("preview-browser", None);
+    let (control_port, hits) = control_port_canary().await;
+    let target = format!("http://127.0.0.1:{control_port}/v1/tasks");
+    let hostile = format!(
+        "<!doctype html><meta http-equiv=refresh content=\"2;url={target}?via=refresh\">\
+         <p>hostile</p><script>\
+         const leak = encodeURIComponent(location.href);\
+         try {{ top.location.href = '{target}?via=top&leak=' + leak; }} catch (e) {{ console.log('top refused: ' + e); }}\
+         setTimeout(() => {{ try {{ window.open('{target}?via=open'); }} catch (e) {{}} }}, 100);\
+         setTimeout(() => {{ location.href = '{target}?via=self&leak=' + leak; }}, 300);\
+         </script>"
+    );
+    write(
+        &env.workspace.join("hostile/index.html"),
+        hostile.as_bytes(),
+    );
+    let (status, published) =
+        publish(&env.app, json!({ "path": "hostile", "kind": "mockup" })).await;
+    assert_eq!(status, StatusCode::CREATED, "{published}");
+    let id = published["artifactId"].as_str().unwrap().to_string();
+    let (_, opened) = call(
+        &env.app,
+        "POST",
+        &format!("/v1/repos/repo-a/artifacts/{id}/preview"),
+        None,
+    )
+    .await;
+    let url = opened["url"].as_str().unwrap().to_string();
+    let profile = env.root.join("browser-profile");
+
+    // Positive control: served as its own top-level document, the page does
+    // reach the stand-in control port.
+    let control = unshielded_page(hostile.clone()).await;
+    let control_log = load_in_browser(
+        &browser,
+        &profile.join("control"),
+        &format!("http://127.0.0.1:{control}/"),
+    )
+    .await;
+    let reached = hits.lock().unwrap().clone();
+    eprintln!(
+        "browser {}: unshielded page reached the control port with {reached:?}",
+        browser.display()
+    );
+    assert!(
+        !reached.is_empty(),
+        "the unshielded page never navigated, so this probe proves nothing; browser log:\n{control_log}"
+    );
+    hits.lock().unwrap().clear();
+
+    let log = load_in_browser(&browser, &profile.join("preview"), &url).await;
+    let reached = hits.lock().unwrap().clone();
+    assert!(
+        reached.is_empty(),
+        "preview content navigated to the control port: {reached:?}\nbrowser log:\n{log}"
+    );
+    eprintln!(
+        "through the preview: {:?}",
+        log.lines()
+            .filter(|line| line.contains("CONSOLE")
+                || line.contains("Refused")
+                || line.contains("sandbox"))
+            .collect::<Vec<_>>()
+    );
+    // The framed content did run and was refused, rather than never
+    // loading: the sandbox refused the top navigation, and the shell's
+    // frame-src refused the frame navigating itself.
+    assert!(
+        log.contains("top refused"),
+        "no sign the hostile content ran inside the preview; browser log:\n{log}"
+    );
+    assert!(
+        log.contains("frame-src"),
+        "the frame's self-navigation was not refused by the shell's frame-src; browser log:\n{log}"
+    );
+    env.state.artifact_previews.close("repo-a", &id).await;
+}

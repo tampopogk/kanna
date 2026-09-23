@@ -390,6 +390,12 @@ environment, and nothing about an outage needs them changed.
 | `setup`, `teardown`, `test` | replace. Arrays never concatenate: a local `setup` is the whole setup list. |
 | `artifacts` | field by field: a local `repositoryPath` or `retention` replaces only that field. |
 
+**Downgrade.** A Kanna server that predates artifact support rejects an
+`artifacts` block in `config.local.json` — its local allowlist does not know
+the key, so definition resolution fails and names the file — while it ignores
+the same block in the committed `config.json`. Remove the local block before
+running an older build against the checkout.
+
 There is no delete: to drop a committed `agentProviders` entry, replace it with
 the value you want instead.
 

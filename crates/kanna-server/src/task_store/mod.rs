@@ -49,7 +49,7 @@
 //! | `run_id`, `session_ref` | the stage run, and the session reference; until T2 the reference is `{kind: "stage_run", id: <run id>}` |
 //! | `declared_role` | a role the caller declared (`operator`, `manager`), else null. Reserved for the gate operator's declared role |
 //! | `channel_identity` | reserved for T8's verified channel; always null (unknown) here, never inferred from a source label or transport |
-//! | `artifacts` | reserved for T6's named artifact references (name → reference); `{}` here |
+//! | `artifacts` | T6's named artifact references a result carried: name → tagged reference (`{"type": "stored", "repoId", "artifactId", "kind"}`, `{"type": "commit", "repoId", "sha"}` or `{"type": "pr", "url", "headSha"}`). Stored references resolved in the artifact repository when the result was accepted. `{}` for every other entry |
 //!
 //! and one kind-specific object named after the kind:
 //!
