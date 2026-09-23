@@ -160,11 +160,41 @@ fn record_join(
     Ok((join, members, parent.repo_id))
 }
 
+/// Why a member was not created now, although nothing failed.
+enum MemberSkip {
+    /// Its task already exists, or it already resolved: nothing is owed.
+    Done,
+    /// Its parent closed; no child is created under a closed task.
+    ParentClosed,
+}
+
+/// Durable state under the member's single-flight guard: a caller's snapshot
+/// may be stale (a sweep lists members before creating them in turn), and
+/// creating over an existing task would take the create path's repair
+/// branch and restart a child whose result was already delivered.
+fn member_skip(
+    db: &Db,
+    join: &TaskJoin,
+    member: &TaskJoinMember,
+) -> rusqlite::Result<Option<MemberSkip>> {
+    let resolved = db
+        .task_join_member(&member.child_task_id)?
+        .is_none_or(|current| current.resolved_at.is_some());
+    if resolved || db.get_pipeline_item(&member.child_task_id)?.is_some() {
+        return Ok(Some(MemberSkip::Done));
+    }
+    let parent_open = db
+        .get_pipeline_item(&join.parent_task_id)?
+        .is_some_and(|parent| parent.closed_at.is_none());
+    Ok((!parent_open).then_some(MemberSkip::ParentClosed))
+}
+
 /// Create one member's task from its recorded spec, under the same
 /// single-flight guard a `PUT /v1/tasks/{id}` takes. Returns the error when
 /// it was not created; a creation that fails before any task row exists
-/// resolves the member as `not_created` so its parent is told.
-async fn create_member(
+/// resolves the member as `not_created` so its parent is told. A member
+/// that is already created or resolved is left alone.
+pub(super) async fn create_member(
     state: &Arc<AppState>,
     join: &TaskJoin,
     repo_id: &str,
@@ -179,6 +209,20 @@ async fn create_member(
             member.child_task_id
         ));
     };
+    let skip = {
+        let db = Db::open(&state.config.db_path).map_err(|e| format!("db error: {e}"))?;
+        member_skip(&db, join, member).map_err(|e| format!("db error: {e}"))?
+    };
+    match skip {
+        Some(MemberSkip::Done) => return Ok(()),
+        Some(MemberSkip::ParentClosed) => {
+            return Err(format!(
+                "parent task {} is closed; subtask {} was not created",
+                join.parent_task_id, member.child_task_id
+            ))
+        }
+        None => {}
+    }
     let created = super::tasks::create_task_with_requested_id(
         Arc::clone(state),
         request,
@@ -485,7 +529,41 @@ async fn type_notice(state: &Arc<AppState>, parent_task_id: &str, message: &str)
 /// resolved the member.
 pub(super) fn spawn_join_notices(state: &Arc<AppState>) {
     let state = Arc::clone(state);
-    tokio::spawn(async move { deliver_join_notices_with_retries(&state).await });
+    tokio::spawn(async move {
+        release_parked_completions(&state).await;
+        deliver_join_notices_with_retries(&state).await
+    });
+}
+
+/// A parent whose completion parked on dependency edges before it created a
+/// join was held by that join too; once every child has resolved, readiness
+/// decides the parked completion again.
+async fn release_parked_completions(state: &Arc<AppState>) {
+    let parents = {
+        let state = Arc::clone(state);
+        tokio::task::spawn_blocking(move || {
+            Db::open(&state.config.db_path).and_then(|db| db.parents_released_by_joins())
+        })
+        .await
+    };
+    let parents = match parents {
+        Ok(Ok(parents)) => parents,
+        Ok(Err(error)) => {
+            log::error!("cannot list parents released by their joins: {error}");
+            return;
+        }
+        Err(error) => {
+            log::error!("join release worker failed: {error}");
+            return;
+        }
+    };
+    for parent in parents {
+        if let Err(error) =
+            super::stage_dependencies::ensure_dependencies_ready(state, &parent).await
+        {
+            log::error!("parked completion of {parent} could not proceed after its join: {error}");
+        }
+    }
 }
 
 /// One sweep, then — while transient failures left notices owed — a few

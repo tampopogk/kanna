@@ -319,6 +319,18 @@ pub(crate) fn prepare_stage_completion_for_api_with_trigger(
     if identity.source_task.closed_at.is_some() {
         return Ok(None);
     }
+    // A completion replayed later (a parked dependency wait, an owed ledger
+    // continuation) is progression too: a join the task created meanwhile
+    // (T5) holds it until every child has resolved.
+    let waiting_children = db
+        .unresolved_join_children(source_task_id)
+        .map_err(|e| format!("db error: {}", e))?;
+    if !waiting_children.is_empty() {
+        return Err(subtask_join_pending_error(
+            source_task_id,
+            &waiting_children,
+        ));
+    }
     let loaded = load_stage_transition_source(db, config, identity, source_task_id)?;
     let context = StageTransitionContext {
         source_task: &loaded.source_task,

@@ -557,3 +557,133 @@ async fn status_advertises_subtask_joins() {
     );
     kanna_tool_catalog::confirm_subtask_joins_supported(&status).unwrap();
 }
+
+/// Records a join whose one member has no task yet, as a launch does
+/// between recording the join and creating its children.
+fn record_uncreated_member(fixture: &JoinFixture, child_id: &str) {
+    let parent_sha = head_of(&fixture.parent_worktree);
+    fixture
+        .db()
+        .create_task_join(&crate::db::NewTaskJoin {
+            id: format!("join-{child_id}"),
+            parent_task_id: PARENT.to_string(),
+            parent_stage: Some("in progress".to_string()),
+            parent_run_id: Some("parent-run".to_string()),
+            base_sha: parent_sha,
+            base_branch: Some(PARENT.to_string()),
+            members: vec![crate::db::NewJoinMember {
+                child_task_id: child_id.to_string(),
+                spec: child("pending").to_string(),
+            }],
+        })
+        .unwrap();
+}
+
+#[tokio::test]
+async fn closing_a_parent_whose_member_is_not_created_yet_is_refused() {
+    let _sidecar_guard = crate::test_sidecar_guard().await;
+    let fixture = join_fixture("close-uncreated");
+    record_uncreated_member(&fixture, "c0ffee02");
+    assert!(fixture
+        .db()
+        .get_pipeline_item("c0ffee02")
+        .unwrap()
+        .is_none());
+
+    let (status, body) = fixture
+        .post(
+            &format!("/v1/tasks/{PARENT}/actions/close"),
+            serde_json::json!({}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert!(body.contains("c0ffee02"), "{body}");
+    let parent = fixture.db().get_pipeline_item(PARENT).unwrap().unwrap();
+    assert!(parent.closed_at.is_none());
+}
+
+/// A member snapshot taken before its task existed (a sweep lists members,
+/// then creates them in turn) must not recreate — and so restart — a child
+/// that exists by the time its turn comes, nor one whose result was already
+/// delivered.
+#[tokio::test]
+async fn creating_a_member_whose_task_exists_starts_nothing() {
+    let _sidecar_guard = crate::test_sidecar_guard().await;
+    let fixture = join_fixture("stale-member");
+    record_uncreated_member(&fixture, "c0ffee03");
+    let db = fixture.db();
+    let join = db.task_join("join-c0ffee03").unwrap().unwrap();
+    let stale = db.task_join_member("c0ffee03").unwrap().unwrap();
+
+    // The sweep creates it once.
+    super::super::subtask_joins::resume_subtask_joins(Arc::clone(&fixture.state)).await;
+    assert_eq!(spawn_count(&fixture.commands), 1);
+    let runs = db.list_stage_runs_for_task("c0ffee03").unwrap().len();
+    assert!(runs > 0);
+
+    // A stale snapshot of the same member creates nothing more.
+    super::super::subtask_joins::create_member(&fixture.state, &join, "repo-1", &stale)
+        .await
+        .unwrap();
+    assert_eq!(spawn_count(&fixture.commands), 1);
+    assert_eq!(db.list_stage_runs_for_task("c0ffee03").unwrap().len(), runs);
+
+    // Nor once its result was delivered.
+    let (status, body) = fixture.complete("c0ffee03", "success", "done").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    super::super::subtask_joins::create_member(&fixture.state, &join, "repo-1", &stale)
+        .await
+        .unwrap();
+    super::super::subtask_joins::resume_subtask_joins(Arc::clone(&fixture.state)).await;
+    assert_eq!(spawn_count(&fixture.commands), 1);
+    assert_eq!(db.list_stage_runs_for_task("c0ffee03").unwrap().len(), runs);
+    let member = db.task_join_member("c0ffee03").unwrap().unwrap();
+    assert_eq!(member.outcome.as_deref(), Some("result"));
+}
+
+/// A completion that parked on dependency edges before the parent created a
+/// join is held by that join as well: preparing it is refused and the
+/// readiness sweep keeps waiting until every child has resolved.
+#[tokio::test]
+async fn a_parked_completion_waits_for_a_join_created_after_it() {
+    let _sidecar_guard = crate::test_sidecar_guard().await;
+    let fixture = join_fixture("parked-completion");
+    let db = fixture.db();
+    db.record_dependency_wait(
+        PARENT,
+        "in progress",
+        "next",
+        &serde_json::json!({ "kind": "main" }),
+    )
+    .unwrap();
+    record_uncreated_member(&fixture, "c0ffee04");
+
+    let refused = crate::task_creator::prepare_stage_completion_for_api_with_trigger(
+        &db,
+        &fixture.state.config,
+        PARENT,
+        Some("main"),
+        None,
+        None,
+        None,
+    )
+    .err()
+    .expect("the join holds the parked completion");
+    assert!(refused.starts_with("task is blocked:"), "{refused}");
+    assert!(refused.contains("c0ffee04"), "{refused}");
+
+    let moved = super::super::stage_dependencies::ensure_dependencies_ready(&fixture.state, PARENT)
+        .await
+        .unwrap();
+    assert!(!moved, "the readiness sweep keeps waiting");
+    let parent = db.get_pipeline_item(PARENT).unwrap().unwrap();
+    assert_eq!(parent.stage.as_deref(), Some("in progress"));
+    assert!(db.dependency_wait(PARENT).unwrap().is_some());
+    assert!(db.parents_released_by_joins().unwrap().is_empty());
+
+    // Once the member resolves, the parked completion is released to the
+    // readiness sweep again.
+    db.resolve_join_member_not_created("c0ffee04", "gave up")
+        .unwrap();
+    assert_eq!(db.parents_released_by_joins().unwrap(), vec![PARENT]);
+}

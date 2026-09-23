@@ -495,6 +495,26 @@ impl Db {
         self.sync_blocked_event(&join.parent_task_id)
     }
 
+    /// Open parents with a completion parked on dependency edges (T4) whose
+    /// joins have all resolved: the join no longer holds that completion,
+    /// so readiness decides it again.
+    pub(crate) fn parents_released_by_joins(&self) -> Result<Vec<String>, rusqlite::Error> {
+        let mut stmt = self.conn.prepare(
+            "SELECT DISTINCT task_join.parent_task_id FROM task_join
+             JOIN task_dependency_wait wait ON wait.task_id = task_join.parent_task_id
+             JOIN pipeline_item parent ON parent.id = task_join.parent_task_id
+             WHERE parent.closed_at IS NULL
+               AND NOT EXISTS (
+                   SELECT 1 FROM task_join_member member
+                   JOIN task_join other ON other.id = member.join_id
+                   WHERE other.parent_task_id = task_join.parent_task_id
+                     AND member.resolved_at IS NULL)
+             ORDER BY task_join.parent_task_id",
+        )?;
+        let rows = stmt.query_map([], |row| row.get(0))?;
+        rows.collect()
+    }
+
     /// Delivered outcomes whose notice has not been typed into the parent's
     /// session, for open parents, oldest first.
     pub(crate) fn pending_join_notices(&self) -> Result<Vec<PendingJoinNotice>, rusqlite::Error> {

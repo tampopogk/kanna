@@ -907,18 +907,27 @@ pub(super) async fn close_task(
 }
 
 /// Close is refused while the task has open children (spec §3), naming
-/// them, whether or not they belong to a subtask join.
+/// them, whether or not they belong to a subtask join — and while a join
+/// member it is waiting on has no task yet (recorded, not yet created).
 fn refuse_close_with_open_children(
     db: &Db,
     task_id: &str,
 ) -> Result<(), (axum::http::StatusCode, String)> {
-    let open_children = db
+    let mut open_children = db
         .list_pipeline_item_children(task_id)
         .map_err(|e| db_write_error("db error", e))?
         .into_iter()
         .filter(|child| child.closed_at.is_none())
         .map(|child| child.id)
         .collect::<Vec<_>>();
+    for member in db
+        .unresolved_join_children(task_id)
+        .map_err(|e| db_write_error("db error", e))?
+    {
+        if !open_children.contains(&member) {
+            open_children.push(member);
+        }
+    }
     if open_children.is_empty() {
         return Ok(());
     }
