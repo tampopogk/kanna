@@ -206,6 +206,7 @@ fn setup_home(label: &str, options: HomeOptions) -> ArtifactEnv {
                 follow_task: None,
                 revision_budget: None,
                 workflow_extended: None,
+                routing: None,
             })
         }));
         Arc::new(state)
