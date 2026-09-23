@@ -66,12 +66,37 @@ impl Db {
         exit: Option<&TransitionExit>,
     ) -> Result<(), rusqlite::Error> {
         let exit = exit.map(|exit| exit.to_json().to_string());
+        // A new commit step supersedes any earlier one still requested (its
+        // run was replaced by a rerun and can never be current again), so a
+        // task never holds more than one requested commit step.
+        self.conn.execute(
+            "UPDATE transition_commit SET state = 'failed', settled_at = datetime('now')
+             WHERE task_id = ? AND state = 'requested' AND run_id <> ?",
+            rusqlite::params![task_id, run_id],
+        )?;
         self.conn.execute(
             "INSERT OR IGNORE INTO transition_commit (run_id, task_id, stage, exit)
              VALUES (?, ?, ?, ?)",
             rusqlite::params![run_id, task_id, stage, exit],
         )?;
         Ok(())
+    }
+
+    /// Move a requested commit step from the run a restart replaced to its
+    /// replacement, inside the caller's write transaction. `false` when the
+    /// step is not requested any more (it settled), so a restart can never
+    /// revive a settled step.
+    pub(crate) fn rekey_requested_transition_commit(
+        &self,
+        replaced_run_id: &str,
+        replacement_run_id: &str,
+    ) -> Result<bool, rusqlite::Error> {
+        let changed = self.conn.execute(
+            "UPDATE transition_commit SET run_id = ?
+             WHERE run_id = ? AND state = 'requested'",
+            rusqlite::params![replacement_run_id, replaced_run_id],
+        )?;
+        Ok(changed == 1)
     }
 
     /// The commit step `run_id` runs, if it is one.

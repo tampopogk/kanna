@@ -705,12 +705,24 @@ fn record_stage_transition_run(
             db.set_stage_run_resume_fallback_reason(run_id, reason)?;
         }
         if let Some(commit) = prepared.transition_commit.as_ref() {
-            db.insert_transition_commit(
-                run_id,
-                &prepared.task_id,
-                &commit.stage,
-                commit.exit.as_ref(),
-            )?;
+            match prepared.replaces_run_id.as_deref() {
+                // A restart of a commit step carries its operation: the one
+                // requested row moves to the replacement run, or the restart
+                // is refused because the step settled meanwhile.
+                Some(replaced) => {
+                    if !db.rekey_requested_transition_commit(replaced, run_id)? {
+                        return Err(rusqlite::Error::InvalidParameterName(format!(
+                            "commit step {replaced} settled before its restart was recorded"
+                        )));
+                    }
+                }
+                None => db.insert_transition_commit(
+                    run_id,
+                    &prepared.task_id,
+                    &commit.stage,
+                    commit.exit.as_ref(),
+                )?,
+            }
         }
         super::session::record_session_start(
             db,

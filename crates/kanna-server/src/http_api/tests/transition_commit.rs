@@ -717,3 +717,158 @@ async fn a_lost_commit_acknowledgement_commits_once_and_transitions_once() {
         1
     );
 }
+
+impl CommitFixture {
+    async fn resume(&self) -> (StatusCode, String) {
+        post_json(
+            &self.app,
+            &format!("/v1/tasks/{TASK}/actions/resume"),
+            serde_json::json!({}),
+        )
+        .await
+    }
+
+    fn commit_rows(&self) -> Vec<crate::db::TransitionCommit> {
+        let db = self.db();
+        db.list_stage_runs_for_task(TASK)
+            .unwrap()
+            .into_iter()
+            .filter_map(|run| db.transition_commit(&run.id).unwrap())
+            .collect()
+    }
+}
+
+/// The commit step is dispatched into the live session, the session dies,
+/// and the task is resumed: the replacement run is the same commit step,
+/// bound to the same transition.
+async fn resume_a_dead_commit_step(fixture: &CommitFixture) -> (String, String) {
+    record_implementation(fixture).await;
+    let (status, text) = fixture.advance().await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    let original = fixture.commit_run().id;
+    // The daemon lists no sessions: the live session is gone.
+    let (status, text) = fixture.resume().await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    fixture.settle().await;
+    let replacement = fixture.commit_run();
+    assert_ne!(replacement.id, original, "a replacement run was spawned");
+    assert_eq!(replacement.stage, "in progress commit");
+    let rows = fixture.commit_rows();
+    assert_eq!(rows.len(), 1, "one commit step for the one transition");
+    assert_eq!(rows[0].run_id, replacement.id);
+    assert_eq!(rows[0].state, "requested");
+    assert_eq!(rows[0].stage, "in progress");
+    assert_eq!(rows[0].exit.as_ref().unwrap().source, "operator");
+    assert!(fixture.db().transition_commit(&original).unwrap().is_none());
+    (original, replacement.id)
+}
+
+#[tokio::test]
+async fn a_resumed_commit_step_that_fails_parks_and_cannot_be_corrected_into_a_transition() {
+    let _sidecar_guard = crate::test_sidecar_guard().await;
+    let fixture = commit_fixture("resume-fail", commit_workflow("manual"), Session::Live);
+    let (_, replacement) = resume_a_dead_commit_step(&fixture).await;
+    let spawned = spawns(&fixture.commands).len();
+
+    let (status, body) = fixture
+        .complete(serde_json::json!({
+            "runId": replacement,
+            "status": "failure",
+            "summary": "Cannot tell which changes belong to the task",
+        }))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    fixture.settle().await;
+    let db = fixture.db();
+    assert_eq!(
+        db.get_pipeline_item(TASK)
+            .unwrap()
+            .unwrap()
+            .stage
+            .as_deref(),
+        Some("in progress")
+    );
+    assert!(fixture.entries(LedgerEntryKind::Transition).is_empty());
+    assert_eq!(spawns(&fixture.commands).len(), spawned, "nothing started");
+    assert_eq!(
+        db.transition_commit(&replacement).unwrap().unwrap().state,
+        "failed"
+    );
+
+    let (status, body) = fixture
+        .complete(serde_json::json!({
+            "runId": replacement,
+            "status": "success",
+            "summary": "Actually committed",
+        }))
+        .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    fixture.settle().await;
+    assert!(fixture.entries(LedgerEntryKind::Transition).is_empty());
+    assert_eq!(spawns(&fixture.commands).len(), spawned);
+    assert!(fixture
+        .commit_rows()
+        .iter()
+        .all(|row| row.state != "requested"));
+
+    // The settled step is not restarted either.
+    let (status, text) = fixture.resume().await;
+    assert_ne!(status, StatusCode::OK, "{text}");
+    assert!(text.contains("already settled"), "{text}");
+}
+
+#[tokio::test]
+async fn a_resumed_commit_step_that_succeeds_fires_one_transition_from_its_commit() {
+    let _sidecar_guard = crate::test_sidecar_guard().await;
+    let fixture = commit_fixture("resume-ok", commit_workflow("manual"), Session::Live);
+    let (original, replacement) = resume_a_dead_commit_step(&fixture).await;
+
+    // A late result from the replaced run authorizes nothing.
+    let (status, body) = fixture
+        .complete(serde_json::json!({
+            "runId": original,
+            "status": "success",
+            "summary": "From the dead session",
+        }))
+        .await;
+    assert_ne!(status, StatusCode::OK, "{body}");
+
+    let committed = fixture.commit_in_workspace("resumed.txt");
+    let (status, body) = fixture
+        .complete(serde_json::json!({
+            "runId": replacement,
+            "status": "success",
+            "summary": "Committed resumed.txt",
+        }))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let db = fixture.db();
+    wait_for_running_task_stage(&db, TASK, "review").await;
+    fixture.settle().await;
+    crate::http_api::task_actions::resume_ledger_continuations(Arc::clone(&fixture.state)).await;
+    fixture.settle().await;
+
+    let transitions = fixture.entries(LedgerEntryKind::Transition);
+    assert_eq!(transitions.len(), 1, "exactly one transition");
+    assert_eq!(transitions[0].body()["to_stage"], "review");
+    assert_eq!(transitions[0].body()["exit_source"], "operator");
+    let review_runs = db
+        .list_stage_runs_for_task(TASK)
+        .unwrap()
+        .into_iter()
+        .filter(|run| run.stage == "review")
+        .collect::<Vec<_>>();
+    assert_eq!(review_runs.len(), 1);
+    assert_eq!(
+        head(Path::new(review_runs[0].cwd.as_deref().unwrap())),
+        committed
+    );
+    let rows = fixture.commit_rows();
+    assert_eq!(
+        rows.iter().filter(|row| row.state == "succeeded").count(),
+        1,
+        "{rows:?}"
+    );
+    assert!(rows.iter().all(|row| row.state != "requested"), "{rows:?}");
+    assert_eq!(rows[0].committed_sha.as_deref(), Some(committed.as_str()));
+}

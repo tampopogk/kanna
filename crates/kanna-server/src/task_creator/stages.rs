@@ -1751,6 +1751,27 @@ fn prepare_stage_restart(
     // it and cannot carry this; without a separate pointer the chain back to a
     // recorded verdict breaks at the first fallback.
     prepared.replaces_run_id = Some(run.id.clone());
+    // A restarted commit step is the same operation: the replacement run
+    // takes over the one requested transition (the row is re-keyed to it when
+    // it is recorded), so its result settles that transition exactly once. A
+    // step that already settled authorizes nothing more.
+    if let Some(commit) = db
+        .transition_commit(&run.id)
+        .map_err(|error| format!("db error: {error}"))?
+    {
+        if commit.state != crate::db::TransitionCommit::REQUESTED {
+            return Err(format!(
+                "run {} is the commit step of the transition out of '{}', which already \
+                 settled ({}); it is not restarted. Advance the task to request a new commit \
+                 step.",
+                commit.run_id, commit.stage, commit.state
+            ));
+        }
+        prepared.transition_commit = Some(TransitionCommitRequest {
+            stage: commit.stage,
+            exit: commit.exit,
+        });
+    }
     Ok(prepared)
 }
 
