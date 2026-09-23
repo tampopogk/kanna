@@ -1918,12 +1918,12 @@ export function createCloudLanClient(
       }
       return route.client.recordArtifactDecision(route.repoId, artifactId, input);
     },
-    pushArtifact: async (repoId, artifactId) => {
+    pushArtifact: async (repoId, artifactId, binding) => {
       const route = routeForRepo(repoId);
       if (route.source === "unavailable") {
         throw new Error(route.message);
       }
-      return route.client.pushArtifact(route.repoId, artifactId);
+      return route.client.pushArtifact(route.repoId, artifactId, binding);
     },
     fetchArtifact: async (repoId, artifactId) => {
       const route = routeForRepo(repoId);

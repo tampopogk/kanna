@@ -1015,7 +1015,8 @@ async fn sharing_needs_a_usable_configured_remote() {
     assert_eq!(status, StatusCode::CONFLICT, "{body}");
     assert_eq!(body["error"], "artifact_remote_invalid");
 
-    // The remote is configuration, never a request parameter.
+    // The remote is configuration, never a request parameter: a body naming
+    // one is refused outright (only a fingerprint binding is accepted).
     let (status, _) = call(
         &env.app,
         "POST",
@@ -1023,7 +1024,7 @@ async fn sharing_needs_a_usable_configured_remote() {
         Some(json!({ "remote": "/tmp/elsewhere.git" })),
     )
     .await;
-    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(status, StatusCode::BAD_REQUEST);
 
     for action in ["push", "fetch"] {
         let request = Request::builder()
@@ -1075,6 +1076,8 @@ async fn the_artifact_remote_route_reports_what_push_and_fetch_will_use() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
+    let fingerprint = body["fingerprint"].as_str().unwrap().to_string();
+    assert_eq!(fingerprint.len(), 64, "{body}");
     assert_eq!(
         body,
         json!({
@@ -1083,6 +1086,7 @@ async fn the_artifact_remote_route_reports_what_push_and_fetch_will_use() {
             "remote": "https://***@host.example/team/a.git",
             "source": "machine-local",
             "configFile": ".kanna/config.local.json",
+            "fingerprint": fingerprint,
         })
     );
     assert!(!body.to_string().contains("pa/ss"));
@@ -1197,8 +1201,10 @@ async fn section_14_two_accounts_share_review_through_one_remote_without_pairing
                 "remote": remote_path,
                 "source": "machine-local",
                 "configFile": ".kanna/config.local.json",
+                "fingerprint": body["fingerprint"],
             })
         );
+        assert!(body["fingerprint"].is_string(), "{body}");
     }
     let (status, body) = call(
         &committed.app,
@@ -2108,4 +2114,117 @@ async fn preview_content_cannot_navigate_to_the_control_port_in_a_real_browser()
         "the frame's self-navigation was not refused by the shell's frame-src; browser log:\n{log}"
     );
     env.state.artifact_previews.close("repo-a", &id).await;
+}
+
+/// The configuration moves the remote between the client's read of it and its
+/// push. A push bound to the remote the reader approved is refused before any
+/// remote is contacted; an unbound push keeps today's behaviour.
+#[tokio::test]
+async fn a_push_bound_to_the_approved_remote_is_refused_when_the_config_moved_it() {
+    let env = setup("push-bound-remote", None);
+    let approved_remote = env.root.join("approved.git");
+    let moved_remote = env.root.join("moved.git");
+    run_git(&env.root, &["init", "--bare", "--quiet", "approved.git"]);
+    run_git(&env.root, &["init", "--bare", "--quiet", "moved.git"]);
+    let local = env.repo.join(".kanna/config.local.json");
+    std::fs::create_dir_all(local.parent().unwrap()).unwrap();
+    let configure = |remote: &Path| {
+        std::fs::write(
+            &local,
+            json!({ "artifacts": { "remote": remote.to_str().unwrap() } }).to_string(),
+        )
+        .unwrap();
+        let db = Db::open(&env.state.config().db_path).unwrap();
+        let repo = db.get_repo("repo-a").unwrap().unwrap();
+        // Stand in for the definitions cache expiring.
+        env.state.repo_definitions.invalidate(&repo);
+    };
+    configure(&approved_remote);
+    let (status, published) = publish(&env.app, json!({ "path": "mock", "kind": "mockup" })).await;
+    assert_eq!(status, StatusCode::CREATED, "{published}");
+    let id = published["artifactId"].as_str().unwrap().to_string();
+
+    let (_, shown) = call(&env.app, "GET", "/v1/repos/repo-a/artifact-remote", None).await;
+    assert_eq!(shown["remote"], approved_remote.to_str().unwrap());
+    let approval = json!({ "remoteFingerprint": shown["fingerprint"] });
+
+    // A pull or a local edit moves the remote before the push arrives.
+    configure(&moved_remote);
+    let (status, body) = call(
+        &env.app,
+        "POST",
+        &format!("/v1/repos/repo-a/artifacts/{id}/push"),
+        Some(approval.clone()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(body["error"], "artifact_remote_changed");
+    assert_eq!(body["reason"], "artifact_remote_changed");
+    assert_eq!(body["remote"], moved_remote.to_str().unwrap());
+    assert_eq!(body["source"], "machine-local");
+    assert_ne!(body["fingerprint"], shown["fingerprint"]);
+    for remote in [&approved_remote, &moved_remote] {
+        assert_eq!(
+            run_git_output(remote, &["for-each-ref"]),
+            "",
+            "{} was contacted",
+            remote.display()
+        );
+    }
+
+    // A fingerprint the server never issued is refused the same way.
+    configure(&approved_remote);
+    let (status, body) = call(
+        &env.app,
+        "POST",
+        &format!("/v1/repos/repo-a/artifacts/{id}/push"),
+        Some(json!({ "remoteFingerprint": "0".repeat(64) })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(body["error"], "artifact_remote_changed");
+
+    // A malformed body is refused outright, not treated as no binding.
+    let (status, body) = call(
+        &env.app,
+        "POST",
+        &format!("/v1/repos/repo-a/artifacts/{id}/push"),
+        Some(json!({ "remote": shown["remote"] })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(run_git_output(&approved_remote, &["for-each-ref"]), "");
+
+    // The approved remote, still in force, is pushed to.
+    let (status, body) = call(
+        &env.app,
+        "POST",
+        &format!("/v1/repos/repo-a/artifacts/{id}/push"),
+        Some(approval),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(!run_git_output(&approved_remote, &["for-each-ref"]).is_empty());
+
+    // `{}` (what kanna_push_artifact sends) binds nothing either.
+    let (status, body) = call(
+        &env.app,
+        "POST",
+        &format!("/v1/repos/repo-a/artifacts/{id}/push"),
+        Some(json!({})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    // No body: pushed to whatever the configuration names now, as before.
+    configure(&moved_remote);
+    let (status, body) = call(
+        &env.app,
+        "POST",
+        &format!("/v1/repos/repo-a/artifacts/{id}/push"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["remote"], moved_remote.to_str().unwrap());
 }

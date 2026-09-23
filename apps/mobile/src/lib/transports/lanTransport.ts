@@ -41,7 +41,8 @@ import type {
   ArtifactDetail,
   ArtifactFileContent,
   ArtifactCommentInput,
-  ArtifactDecisionInput
+  ArtifactDecisionInput,
+  ArtifactPushBinding
 } from "../api/types";
 import { parseAgentProviderInventory } from "../api/agentProviders";
 
@@ -490,7 +491,8 @@ export function createLanTransport(
       artifactPost(repoId, artifactId, "/comments", input),
     recordArtifactDecision: (repoId: string, artifactId: string, input: ArtifactDecisionInput) =>
       artifactPost(repoId, artifactId, "/decisions", input),
-    pushArtifact: (repoId: string, artifactId: string) => artifactPost(repoId, artifactId, "/push"),
+    pushArtifact: (repoId: string, artifactId: string, binding?: ArtifactPushBinding) =>
+      artifactPost(repoId, artifactId, "/push", binding),
     fetchArtifact: (repoId: string, artifactId: string) => artifactPost(repoId, artifactId, "/fetch"),
     readTaskDiff: (
       taskId: string,

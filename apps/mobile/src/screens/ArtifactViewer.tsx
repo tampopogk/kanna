@@ -24,6 +24,7 @@ import type {
   ArtifactDetail,
   ArtifactFetchOutcome,
   ArtifactFileContent,
+  ArtifactPushBinding,
   ArtifactPushOutcome,
   ArtifactRemoteInfo
 } from "../lib/api/types";
@@ -77,7 +78,7 @@ export interface ArtifactViewerActions {
   getArtifactRemote(repoId: string): Promise<ArtifactRemoteInfo>;
   recordArtifactComment(repoId: string, artifactId: string, input: ArtifactCommentInput): Promise<ArtifactComment>;
   recordArtifactDecision(repoId: string, artifactId: string, input: ArtifactDecisionInput): Promise<ArtifactDecision>;
-  pushArtifact(repoId: string, artifactId: string): Promise<ArtifactPushOutcome>;
+  pushArtifact(repoId: string, artifactId: string, binding?: ArtifactPushBinding): Promise<ArtifactPushOutcome>;
   fetchArtifact(repoId: string, artifactId: string): Promise<ArtifactFetchOutcome>;
 }
 
@@ -100,9 +101,18 @@ export function resetConfirmedArtifactRemotesForTests(): void {
   confirmedRemotes.clear();
 }
 
-function sameRemote(a: ArtifactRemoteInfo, b: ArtifactRemoteInfo): boolean {
-  return a.remote === b.remote && a.source === b.source && a.configFile === b.configFile &&
-    a.configured === b.configured && !a.error === !b.error;
+function remoteUsable(info: ArtifactRemoteInfo | null): boolean {
+  return Boolean(info?.configured && info.remote && info.source && info.fingerprint && !info.error);
+}
+
+/** A desktop refusal's machine-readable reason, through a transport's wrapping. */
+function refusalReason(error: unknown): string | null {
+  for (let current = error, depth = 0; current && depth < 4; depth += 1) {
+    const reason = (current as { reason?: unknown }).reason;
+    if (typeof reason === "string" && reason) return reason;
+    current = (current as { cause?: unknown }).cause;
+  }
+  return null;
 }
 
 function remoteKey(repoId: string, info: ArtifactRemoteInfo): string {
@@ -216,6 +226,15 @@ export function ArtifactViewer({
   actionsRef.current = actions;
   /** The tree id on screen now, for answers that arrive after the reader moved on. */
   const currentIdRef = useRef("");
+  /**
+   * Issued, increasing, to every answer that sets the version on screen (a
+   * detail read, a fetch applying its result). An answer lands only while its
+   * token is still the latest, so a slower, older read never overwrites a
+   * newer one.
+   */
+  const viewToken = useRef(0);
+  /** The push in flight; Cancel marks it so its answer changes nothing. */
+  const pushIntent = useRef<{ cancelled: boolean } | null>(null);
   const canShare = Boolean(actions);
 
   const [input, setInput] = useState(initialArtifactId ?? "");
@@ -286,7 +305,7 @@ export function ArtifactViewer({
       setDetailState({ status: "idle" });
       return;
     }
-    let active = true;
+    const token = ++viewToken.current;
     const artifactId = currentId;
     setDetailState({ status: "loading", artifactId });
     setTarget(null);
@@ -298,10 +317,10 @@ export function ArtifactViewer({
     );
     void getArtifactRef.current(repoId, artifactId).then(
       (loaded) => {
-        if (active) setDetailState({ status: "content", artifactId, detail: loaded });
+        if (token === viewToken.current) setDetailState({ status: "content", artifactId, detail: loaded });
       },
       (error: unknown) => {
-        if (active) {
+        if (token === viewToken.current) {
           setDetailState({
             status: "unavailable",
             artifactId,
@@ -311,9 +330,6 @@ export function ArtifactViewer({
         }
       }
     );
-    return () => {
-      active = false;
-    };
   }, [currentId, repoId]);
 
   useEffect(() => {
@@ -396,50 +412,77 @@ export function ArtifactViewer({
 
   /** The remote shown changed since the reader last saw it; they must look again. */
   const [remoteChanged, setRemoteChanged] = useState(false);
-
-  /**
-   * Resolve the remote again right before a push. The desktop resolves the
-   * repository's configuration at push time, and a pull or an edit can change
-   * it after this panel loaded; a push only goes ahead when the remote now in
-   * force is the one the reader saw (and confirmed). Otherwise the panel shows
-   * the new one and asks again.
-   */
-  const guardedPush = async (shown: ArtifactRemoteInfo, accepted: boolean) => {
-    const artifactId = currentId;
-    if (!actions || !shown.remote || !artifactId || remoteBusy) return;
-    setRemoteBusy("push");
-    setRemoteOutcome(null);
-    try {
-      const fresh = await actions.getArtifactRemote(repoId);
-      if (!sameRemote(fresh, shown)) {
-        setRemoteInfo(fresh);
-        setRemoteChanged(true);
-        setConfirmingPush(Boolean(fresh.configured && fresh.remote && fresh.source && !fresh.error));
-        return;
-      }
-      setRemoteChanged(false);
-      if (!accepted) {
-        setConfirmingPush(true);
-        return;
-      }
-      setConfirmingPush(false);
-      const outcome = await actions.pushArtifact(repoId, artifactId);
-      confirmedRemotes.add(remoteKey(repoId, shown));
-      setRemoteOutcome({ kind: "push", outcome });
-    } catch (error) {
-      setRemoteOutcome({ kind: "error", action: "push", message: errorMessage(error) });
-    } finally {
-      setRemoteBusy(null);
-    }
-  };
+  /** The reader withdrew a push before it answered. */
+  const [pushCancelled, setPushCancelled] = useState(false);
 
   const requestPush = () => {
-    if (!remoteInfo?.remote || !currentId || remoteBusy) return;
-    void guardedPush(remoteInfo, confirmedRemotes.has(remoteKey(repoId, remoteInfo)));
+    if (!remoteUsable(remoteInfo) || !currentId || remoteBusy) return;
+    setPushCancelled(false);
+    if (confirmedRemotes.has(remoteKey(repoId, remoteInfo!))) void startPush(remoteInfo!);
+    else setConfirmingPush(true);
   };
 
   const acceptPush = () => {
-    if (remoteInfo) void guardedPush(remoteInfo, true);
+    if (remoteUsable(remoteInfo) && currentId && !remoteBusy) void startPush(remoteInfo!);
+  };
+
+  /**
+   * Cancel whichever step of a push is in flight. A request already sent over
+   * the sealed LAN channel or the relay cannot be withdrawn; its answer is
+   * ignored, and a push the desktop already started may still complete.
+   */
+  const cancelPush = () => {
+    if (pushIntent.current) {
+      pushIntent.current.cancelled = true;
+      pushIntent.current = null;
+      setPushCancelled(true);
+      setRemoteBusy(null);
+    }
+    setConfirmingPush(false);
+  };
+
+  /**
+   * Push bound to the remote shown: the desktop resolves its configuration at
+   * push time and refuses (`artifact_remote_changed`) if it no longer names
+   * the remote this fingerprint identifies, before contacting any remote. The
+   * panel then shows the remote now in force and asks again.
+   */
+  const startPush = async (shown: ArtifactRemoteInfo) => {
+    const artifactId = currentId;
+    if (!actions || !shown.fingerprint || !artifactId) return;
+    const intent = { cancelled: false };
+    pushIntent.current = intent;
+    setRemoteBusy("push");
+    setRemoteOutcome(null);
+    setRemoteChanged(false);
+    try {
+      const outcome = await actions.pushArtifact(repoId, artifactId, { remoteFingerprint: shown.fingerprint });
+      if (intent.cancelled) return;
+      setConfirmingPush(false);
+      confirmedRemotes.add(remoteKey(repoId, shown));
+      setRemoteOutcome({ kind: "push", outcome });
+    } catch (error) {
+      if (intent.cancelled) return;
+      if (refusalReason(error) === "artifact_remote_changed") {
+        try {
+          const fresh = await actions.getArtifactRemote(repoId);
+          if (intent.cancelled) return;
+          setRemoteInfo(fresh);
+          setRemoteChanged(true);
+          setConfirmingPush(remoteUsable(fresh));
+        } catch (refresh) {
+          if (!intent.cancelled) setRemoteInfoError(errorMessage(refresh));
+        }
+        return;
+      }
+      setConfirmingPush(false);
+      setRemoteOutcome({ kind: "error", action: "push", message: errorMessage(error) });
+    } finally {
+      if (pushIntent.current === intent) {
+        pushIntent.current = null;
+        setRemoteBusy(null);
+      }
+    }
   };
 
   /** Fetch the hash in the id field (or the one on screen) and show it. */
@@ -453,17 +496,21 @@ export function ArtifactViewer({
     setRemoteOutcome(null);
     try {
       const outcome = await actions.fetchArtifact(repoId, artifactId);
-      // The reader moved to another version while this was on the wire: the
-      // answer is about a screen that is gone, so it changes nothing.
-      if (currentIdRef.current !== startedOn) return;
-      setRemoteOutcome({ kind: "fetch", outcome });
-      if (artifactId === startedOn) {
+      if (currentIdRef.current === artifactId) {
+        // The fetched version is on screen (still, or again): its answer is
+        // the newest view of it, so it takes a token that any read started
+        // before it cannot beat.
+        viewToken.current += 1;
         setDetailState({ status: "content", artifactId, detail: outcome.detail });
-      } else {
+        setRemoteOutcome({ kind: "fetch", outcome });
+      } else if (currentIdRef.current === startedOn) {
+        // A typed hash fetched from the version still on screen: open it.
+        setRemoteOutcome({ kind: "fetch", outcome });
         setNewer([]);
         setCurrentId(artifactId);
         setInput(artifactId);
       }
+      // Otherwise the reader moved elsewhere: the answer changes nothing.
     } catch (error) {
       if (currentIdRef.current === startedOn) {
         setRemoteOutcome({ kind: "error", action: "fetch", message: errorMessage(error) });
@@ -796,17 +843,20 @@ export function ArtifactViewer({
                     The artifact remote changed since this panel loaded. Nothing was pushed; check where it goes now.
                   </Text>
                 ) : null}
-                {confirmingPush && remoteInfo?.remote ? (
-                  <View style={styles.confirm} testID="artifact-viewer-push-confirm">
+                {(confirmingPush || remoteBusy === "push") && remoteInfo?.remote ? (
+                  <View
+                    style={styles.confirm}
+                    testID={confirmingPush ? "artifact-viewer-push-confirm" : "artifact-viewer-push-progress"}
+                  >
                     <Text style={styles.recordBody}>
                       Push {currentId.slice(0, 12)}, its earlier versions and all their comments and decisions to {remoteInfo.remote}?
                     </Text>
                     <Text style={styles.recordAuthor}>{remoteSource}</Text>
                     <View style={styles.formRow}>
                       <Pressable accessibilityRole="button" disabled={remoteBusy !== null} onPress={acceptPush} style={styles.button} testID="artifact-viewer-push-accept">
-                        <Text style={styles.buttonText}>Push</Text>
+                        <Text style={styles.buttonText}>{remoteBusy === "push" ? "Pushing…" : "Push"}</Text>
                       </Pressable>
-                      <Pressable accessibilityRole="button" onPress={() => setConfirmingPush(false)} style={styles.button}>
+                      <Pressable accessibilityRole="button" onPress={cancelPush} style={styles.button} testID="artifact-viewer-push-cancel">
                         <Text style={styles.buttonText}>Cancel</Text>
                       </Pressable>
                     </View>
@@ -820,9 +870,14 @@ export function ArtifactViewer({
                     style={[styles.button, styles.formButton, (!remoteReady || !retained || remoteBusy !== null) && styles.disabled]}
                     testID="artifact-viewer-push"
                   >
-                    <Text style={styles.buttonText}>{remoteBusy === "push" ? "Pushing…" : "Push this version"}</Text>
+                    <Text style={styles.buttonText}>Push this version</Text>
                   </Pressable>
                 )}
+                {pushCancelled ? (
+                  <Text style={styles.meta} testID="artifact-viewer-push-cancelled">
+                    Push cancelled here. If the desktop had already started it, it may still complete; push again to see where the remote stands.
+                  </Text>
+                ) : null}
                 {remoteOutcome ? (
                   <View style={styles.confirm} testID="artifact-viewer-remote-outcome">
                     {remoteOutcome.kind === "push" ? (

@@ -4107,8 +4107,8 @@ export function createMobileController(
       return client.recordArtifactDecision(repoId, artifactId, input);
     },
 
-    pushArtifact(repoId, artifactId) {
-      return client.pushArtifact(repoId, artifactId);
+    pushArtifact(repoId, artifactId, binding) {
+      return client.pushArtifact(repoId, artifactId, binding);
     },
 
     fetchArtifact(repoId, artifactId) {

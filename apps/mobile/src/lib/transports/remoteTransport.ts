@@ -42,6 +42,7 @@ import type {
   ArtifactDecision,
   ArtifactDecisionInput,
   ArtifactFetchOutcome,
+  ArtifactPushBinding,
   ArtifactPushOutcome,
   ArtifactRemoteInfo,
 } from "../api/types";
@@ -1026,8 +1027,8 @@ export function createRemoteTransport({
       artifactPost<ArtifactComment>(repoId, artifactId, "/comments", input),
     recordArtifactDecision: (repoId: string, artifactId: string, input: ArtifactDecisionInput) =>
       artifactPost<ArtifactDecision>(repoId, artifactId, "/decisions", input),
-    pushArtifact: (repoId: string, artifactId: string) =>
-      artifactPost<ArtifactPushOutcome>(repoId, artifactId, "/push", null),
+    pushArtifact: (repoId: string, artifactId: string, binding?: ArtifactPushBinding) =>
+      artifactPost<ArtifactPushOutcome>(repoId, artifactId, "/push", binding ?? null),
     fetchArtifact: (repoId: string, artifactId: string) =>
       artifactPost<ArtifactFetchOutcome>(repoId, artifactId, "/fetch", null),
     readTaskDiff: (taskId: string, diffRequest?: TaskDiffRequest) =>

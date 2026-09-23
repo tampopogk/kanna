@@ -78,6 +78,16 @@ let conflictingRefs: string[];
 let notOnRemote: Set<string>;
 /** The anchored stylesheet read, held open so a test can move on while it is in flight. */
 let holdFileRead: { signal?: AbortSignal } | null;
+/** Requests held open until the test answers them (or they are aborted). */
+let held: { path: string; signal?: AbortSignal; answer: () => void }[];
+let holdPaths: Set<string>;
+/** Remotes a push actually went to. */
+let pushedTo: string[];
+
+/** What the mock server issues as the fingerprint of the remote in force. */
+function fingerprintOf(info: Record<string, unknown>): string {
+  return `fp:${String(info.remote)}|${String(info.source)}`;
+}
 let fetchMock: ReturnType<typeof vi.fn>;
 
 function json(body: unknown, status = 200) {
@@ -99,10 +109,23 @@ beforeEach(() => {
   conflictingRefs = [];
   notOnRemote = new Set();
   holdFileRead = null;
+  held = [];
+  holdPaths = new Set();
+  pushedTo = [];
   setDesktopServerClientHandlersForTests({ ensureMobileServer: async () => {} });
   fetchMock = vi.fn(async (url: string, init: RequestInit) => {
     const path = new URL(url).pathname;
-    if (path === "/v1/repos/repo-1/artifact-remote") return json(remoteInfo);
+    const suffix = path.endsWith("/artifact-remote") ? "remote" : path.endsWith("/push") ? "push" : "";
+    if (holdPaths.has(suffix)) {
+      // Answered later with whatever the server state is then.
+      await new Promise<void>((resolve, reject) => {
+        held.push({ path: suffix, signal: init.signal ?? undefined, answer: resolve });
+        init.signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")));
+      });
+    }
+    if (path === "/v1/repos/repo-1/artifact-remote") {
+      return json(remoteInfo.configured && remoteInfo.remote ? { ...remoteInfo, fingerprint: fingerprintOf(remoteInfo) } : remoteInfo);
+    }
     const match = path.match(/^\/v1\/repos\/repo-1\/artifacts\/([0-9a-f]{40})(\/.*)?$/);
     if (!match) return json({ error: "unexpected" }, 500);
     const [, id, rest = ""] = match;
@@ -111,6 +134,16 @@ beforeEach(() => {
     if (rest === "/preview") return json({ repoId: "repo-1", artifactId: id, entrypoint: "index.html", url: PREVIEWS[id], expiresAt: 0, idleTimeoutSecs: 900 });
     if (rest === "/preview/close") return json({ closed: true });
     if (rest === "/push") {
+      // Compare and push, as the server does: a bound push goes only to the
+      // remote its fingerprint names.
+      const binding = init.body ? JSON.parse(String(init.body)) as { remoteFingerprint?: string } : {};
+      if (binding.remoteFingerprint && binding.remoteFingerprint !== fingerprintOf(remoteInfo)) {
+        return json({
+          error: "artifact_remote_changed", message: `the artifact remote is now ${String(remoteInfo.remote)}; nothing was pushed`,
+          remote: remoteInfo.remote, source: remoteInfo.source, fingerprint: fingerprintOf(remoteInfo),
+        }, 409);
+      }
+      pushedTo.push(String(remoteInfo.remote));
       if (conflictingRefs.length) {
         return json({ error: "artifact_remote_conflict", message: `artifact remote ${REMOTE} already holds different objects under ${conflictingRefs.join(", ")}; nothing there was overwritten`, remote: REMOTE, refs: conflictingRefs }, 409);
       }
@@ -428,7 +461,7 @@ describe("ArtifactViewer", () => {
     expect(calls().some(call => call.path.endsWith("/preview"))).toBe(false);
   });
 
-  it("does not push when the remote changed after the confirmation was shown, and asks again", async () => {
+  it("binds the push to the remote shown: a changed config is refused and asked about again", async () => {
     const wrapper = await mountAt(V2);
     await vi.waitFor(() => expect(wrapper.find('[data-testid="artifact-remote-url"]').exists()).toBe(true));
     await wrapper.get('[data-testid="artifact-push"]').trigger("click");
@@ -439,12 +472,16 @@ describe("ArtifactViewer", () => {
     remoteInfo = { ...remoteInfo, remote: moved };
     await wrapper.get('[data-testid="artifact-push-confirm-accept"]').trigger("click");
     await vi.waitFor(() => expect(wrapper.find('[data-testid="artifact-remote-changed"]').exists()).toBe(true));
-    expect(calls().some(call => call.path.endsWith("/push"))).toBe(false);
+    // The push named the fingerprint of the remote shown, and was refused.
+    const push = fetchMock.mock.calls.find(([url]) => String(url).endsWith("/push"));
+    expect(JSON.parse(String(push?.[1].body))).toEqual({ remoteFingerprint: `fp:${REMOTE}|committed` });
+    expect(pushedTo).toEqual([]);
+    expect(wrapper.find('[data-testid="artifact-remote-outcome"]').exists()).toBe(false);
     expect(wrapper.get('[data-testid="artifact-remote-url"]').text()).toBe(moved);
     expect(wrapper.get('[data-testid="artifact-push-confirm"]').text()).toContain(moved);
-    // Accepting the new remote pushes to it.
+    // Accepting the remote now shown pushes to it.
     await wrapper.get('[data-testid="artifact-push-confirm-accept"]').trigger("click");
-    await vi.waitFor(() => expect(calls().filter(call => call.path.endsWith("/push"))).toHaveLength(1));
+    await vi.waitFor(() => expect(pushedTo).toEqual([moved]));
     expect(wrapper.find('[data-testid="artifact-remote-changed"]').exists()).toBe(false);
   });
 
@@ -455,11 +492,50 @@ describe("ArtifactViewer", () => {
     // This machine's local config now names another remote.
     remoteInfo = { ...remoteInfo, remote: "/Volumes/shared/other.git", source: "machine-local", configFile: ".kanna/config.local.json" };
     await wrapper.get('[data-testid="artifact-push"]').trigger("click");
-    await vi.waitFor(() => expect(wrapper.find('[data-testid="artifact-push-confirm"]').exists()).toBe(true));
-    expect(calls().some(call => call.path.endsWith("/push"))).toBe(false);
-    expect(wrapper.get('[data-testid="artifact-remote-changed"]').exists()).toBe(true);
+    await vi.waitFor(() => expect(wrapper.find('[data-testid="artifact-remote-changed"]').exists()).toBe(true));
+    expect(pushedTo).toEqual([]);
     expect(wrapper.get('[data-testid="artifact-push-confirm"]').text()).toContain("/Volumes/shared/other.git");
     expect(wrapper.get('[data-testid="artifact-remote-source"]').attributes("data-source")).toBe("machine-local");
+  });
+
+  it("Cancel while the push request is out aborts it and reports nothing as pushed", async () => {
+    holdPaths.add("push");
+    const wrapper = await mountAt(V2);
+    await vi.waitFor(() => expect(wrapper.find('[data-testid="artifact-remote-url"]').exists()).toBe(true));
+    await wrapper.get('[data-testid="artifact-push"]').trigger("click");
+    await vi.waitFor(() => expect(wrapper.find('[data-testid="artifact-push-confirm"]').exists()).toBe(true));
+    await wrapper.get('[data-testid="artifact-push-confirm-accept"]').trigger("click");
+    await vi.waitFor(() => expect(held.map(request => request.path)).toEqual(["push"]));
+    // Cancel stays reachable while the push is out.
+    await wrapper.get('[data-testid="artifact-push-cancel"]').trigger("click");
+    expect(held[0].signal?.aborted).toBe(true);
+    await flushPromises();
+    expect(pushedTo).toEqual([]);
+    expect(wrapper.find('[data-testid="artifact-push-confirm"]').exists()).toBe(false);
+    expect(wrapper.find('[data-testid="artifact-remote-outcome"]').exists()).toBe(false);
+    expect(wrapper.find('[data-testid="artifact-push-cancelled"]').exists()).toBe(true);
+    expect(localStorage.getItem("kanna.artifactRemotesConfirmed")).toBeNull();
+    // The panel is usable again.
+    expect(wrapper.get('[data-testid="artifact-push"]').attributes("disabled")).toBeUndefined();
+  });
+
+  it("Cancel while the changed remote is being read again aborts that read and asks nothing", async () => {
+    const wrapper = await mountAt(V2);
+    await vi.waitFor(() => expect(wrapper.find('[data-testid="artifact-remote-url"]').exists()).toBe(true));
+    await wrapper.get('[data-testid="artifact-push"]').trigger("click");
+    await vi.waitFor(() => expect(wrapper.find('[data-testid="artifact-push-confirm"]').exists()).toBe(true));
+    remoteInfo = { ...remoteInfo, remote: "ssh://elsewhere.example/artifacts.git" };
+    holdPaths.add("remote");
+    await wrapper.get('[data-testid="artifact-push-confirm-accept"]').trigger("click");
+    await vi.waitFor(() => expect(held.map(request => request.path)).toEqual(["remote"]));
+    await wrapper.get('[data-testid="artifact-push-cancel"]').trigger("click");
+    expect(held[0].signal?.aborted).toBe(true);
+    await flushPromises();
+    expect(pushedTo).toEqual([]);
+    // The cancelled confirmation does not come back.
+    expect(wrapper.find('[data-testid="artifact-push-confirm"]').exists()).toBe(false);
+    expect(wrapper.find('[data-testid="artifact-remote-changed"]').exists()).toBe(false);
+    expect(wrapper.get('[data-testid="artifact-remote-url"]').text()).toBe(REMOTE);
   });
 
   it("shows a failed fetch in the not-found state", async () => {

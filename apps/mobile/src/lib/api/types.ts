@@ -557,6 +557,15 @@ export interface ArtifactCommentInput {
   anchor?: { path?: string; position?: string; excerpt?: string };
 }
 
+/**
+ * Binds a push to the remote the reader approved: the `fingerprint` of the
+ * remote info shown. The desktop refuses with reason `artifact_remote_changed`
+ * if its configuration now names another remote.
+ */
+export interface ArtifactPushBinding {
+  remoteFingerprint: string;
+}
+
 /** A decision about one exact tree id. It is a record; it moves no task. */
 export interface ArtifactDecisionInput {
   who: string;

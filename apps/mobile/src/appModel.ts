@@ -1648,8 +1648,8 @@ function createTrustedLanFallbackClient({
       (await resolveClient(desktopId)).recordArtifactComment(repoId, artifactId, input),
     recordArtifactDecision: async (repoId, artifactId, input) =>
       (await resolveClient(desktopId)).recordArtifactDecision(repoId, artifactId, input),
-    pushArtifact: async (repoId, artifactId) =>
-      (await resolveClient(desktopId)).pushArtifact(repoId, artifactId),
+    pushArtifact: async (repoId, artifactId, binding) =>
+      (await resolveClient(desktopId)).pushArtifact(repoId, artifactId, binding),
     fetchArtifact: async (repoId, artifactId) =>
       (await resolveClient(desktopId)).fetchArtifact(repoId, artifactId),
     observeTaskTerminal: (taskId, listener) =>
@@ -1895,7 +1895,7 @@ function createDelegatingClient(getClient: () => KannaClient): KannaClient {
       getClient().recordArtifactComment(repoId, artifactId, input),
     recordArtifactDecision: (repoId, artifactId, input) =>
       getClient().recordArtifactDecision(repoId, artifactId, input),
-    pushArtifact: (repoId, artifactId) => getClient().pushArtifact(repoId, artifactId),
+    pushArtifact: (repoId, artifactId, binding) => getClient().pushArtifact(repoId, artifactId, binding),
     fetchArtifact: (repoId, artifactId) => getClient().fetchArtifact(repoId, artifactId),
     observeTaskTerminal: (taskId, listener) =>
       getClient().observeTaskTerminal(taskId, listener),

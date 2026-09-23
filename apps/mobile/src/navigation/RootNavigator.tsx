@@ -718,7 +718,7 @@ function TaskDetailRoute({
         controller.recordArtifactComment(...args),
       recordArtifactDecision: (...args: Parameters<typeof controller.recordArtifactDecision>) =>
         controller.recordArtifactDecision(...args),
-      pushArtifact: (repoId: string, artifactId: string) => controller.pushArtifact(repoId, artifactId),
+      pushArtifact: (...args: Parameters<typeof controller.pushArtifact>) => controller.pushArtifact(...args),
       fetchArtifact: (repoId: string, artifactId: string) => controller.fetchArtifact(repoId, artifactId)
     }),
     [controller]

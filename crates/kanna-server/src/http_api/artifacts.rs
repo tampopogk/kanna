@@ -8,7 +8,8 @@
 //! Push and fetch share one artifact with another Kanna home through the
 //! repository's configured `artifacts.remote`; the remote is never a request
 //! parameter, so a caller cannot direct content anywhere configuration did
-//! not name.
+//! not name. A push may name the remote's fingerprint, only to be refused if
+//! the configuration now names another.
 
 use super::lan_trust::PrivilegedTaskAccess;
 use super::state::AppState;
@@ -250,15 +251,67 @@ pub(super) async fn record_artifact_decision(
     .await
 }
 
+/// The remote the reader approved, as the `fingerprint` that
+/// `GET .../artifact-remote` reported for it. Optional: a push without a body
+/// goes to whatever the configuration names at push time, as before.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(super) struct PushArtifactRequest {
+    /// Absent (`{}`, as `kanna_push_artifact` sends): no binding.
+    #[serde(default)]
+    remote_fingerprint: Option<String>,
+}
+
+/// The optional push body. Read from raw bytes: an older client posts no
+/// body (or `null`, over the relay), sometimes with a JSON content type.
+fn push_request(body: &[u8]) -> Result<Option<PushArtifactRequest>, Refusal> {
+    if body.iter().all(u8::is_ascii_whitespace) {
+        return Ok(None);
+    }
+    serde_json::from_slice::<Option<PushArtifactRequest>>(body).map_err(|error| {
+        refusal(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            &format!("push body must be {{\"remoteFingerprint\": \"...\"}} or empty: {error}"),
+        )
+    })
+}
+
 pub(super) async fn push_artifact(
     _access: PrivilegedTaskAccess,
     State(state): State<Arc<AppState>>,
     Path((repo_id, artifact_id)): Path<(String, String)>,
+    body: axum::body::Bytes,
 ) -> Response {
     blocking("artifact push", move || {
+        let approved = push_request(&body)?;
         parse_object_id(&artifact_id).map_err(artifact_error)?;
         let (repo, path, policy) = repository_location(&state, &repo_id)?;
         let remote = configured_remote(&state, &repo, &path, &policy)?;
+        // Compare and push: the configuration can change between the
+        // client's read of the remote and this push (a pull, a local edit).
+        // A push bound to the remote the reader approved goes nowhere else;
+        // a mismatch is refused before any remote is contacted.
+        if let Some(approved) = approved.and_then(|request| request.remote_fingerprint) {
+            let (source, config_file) = remote_source_labels(&policy);
+            let fingerprint = remote.fingerprint(source).map_err(artifact_error)?;
+            if approved != fingerprint {
+                let body = json!({
+                    "error": "artifact_remote_changed",
+                    // Mobile transports surface a refusal's `reason`.
+                    "reason": "artifact_remote_changed",
+                    "message": format!(
+                        "the artifact remote is now {} (from {config_file}), not the one that was approved; nothing was pushed",
+                        remote.display()
+                    ),
+                    "remote": remote.display(),
+                    "source": source,
+                    "configFile": config_file,
+                    "fingerprint": fingerprint,
+                });
+                return Err(Box::new((StatusCode::CONFLICT, Json(body)).into_response()));
+            }
+        }
         let store = ArtifactStore::open_existing(&path, &repo.id)
             .map_err(artifact_error)?
             .ok_or_else(|| {
@@ -312,6 +365,10 @@ pub(super) struct ArtifactRemoteStatus {
     /// the same code.
     #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<ArtifactRemoteStatusError>,
+    /// Opaque identity of this remote and source, to hand back with a push
+    /// (`remoteFingerprint`) so it goes only to the remote shown.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    fingerprint: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -335,20 +392,18 @@ pub(super) async fn get_artifact_remote(
                 source: None,
                 config_file: None,
                 error: None,
+                fingerprint: None,
             })
             .into_response());
         };
-        let (source, config_file) = match policy.remote_source {
-            Some(crate::task_creator::ArtifactRemoteSource::MachineLocal) => {
-                ("machine-local", ".kanna/config.local.json")
-            }
-            Some(crate::task_creator::ArtifactRemoteSource::Committed) | None => {
-                ("committed", ".kanna/config.json")
-            }
-        };
-        let (remote, error) =
+        let (source, config_file) = remote_source_labels(&policy);
+        let (remote, error, fingerprint) =
             match ArtifactRemote::parse(configured, state.artifact_storage.home(), &path) {
-                Ok(remote) => (Some(remote.display().to_string()), None),
+                Ok(remote) => (
+                    Some(remote.display().to_string()),
+                    None,
+                    Some(remote.fingerprint(source).map_err(artifact_error)?),
+                ),
                 // The message names the remote only through `redact`.
                 Err(error) => (
                     None,
@@ -356,6 +411,7 @@ pub(super) async fn get_artifact_remote(
                         code: error.code(),
                         message: error.to_string(),
                     }),
+                    None,
                 ),
             };
         Ok(Json(ArtifactRemoteStatus {
@@ -365,10 +421,25 @@ pub(super) async fn get_artifact_remote(
             source: Some(source),
             config_file: Some(config_file),
             error,
+            fingerprint,
         })
         .into_response())
     })
     .await
+}
+
+/// How a resolved `artifacts.remote` is attributed: its layer and the file.
+fn remote_source_labels(
+    policy: &crate::task_creator::RepoArtifactPolicy,
+) -> (&'static str, &'static str) {
+    match policy.remote_source {
+        Some(crate::task_creator::ArtifactRemoteSource::MachineLocal) => {
+            ("machine-local", ".kanna/config.local.json")
+        }
+        Some(crate::task_creator::ArtifactRemoteSource::Committed) | None => {
+            ("committed", ".kanna/config.json")
+        }
+    }
 }
 
 fn repository_location(

@@ -150,14 +150,27 @@ function classifyRemote(error: unknown): never {
 }
 
 /** Where a push of this repository's artifacts would go, and which config file chose it. */
-export async function fetchArtifactRemoteInfo(repoId: string): Promise<ArtifactRemoteInfo> {
-  return requestDesktopServerJson<ArtifactRemoteInfo>(`/v1/repos/${encodeURIComponent(repoId)}/artifact-remote`);
+export async function fetchArtifactRemoteInfo(repoId: string, signal?: AbortSignal): Promise<ArtifactRemoteInfo> {
+  return requestDesktopServerJson<ArtifactRemoteInfo>(`/v1/repos/${encodeURIComponent(repoId)}/artifact-remote`, { signal });
 }
 
-/** Push one artifact, its earlier versions and all their records to the configured remote. */
-export async function pushArtifact(repoId: string, artifactId: string): Promise<ArtifactPushOutcome> {
-  return requestDesktopServerJson<ArtifactPushOutcome>(artifactPath(repoId, artifactId, "/push"), { method: "POST" })
-    .catch(classifyRemote);
+/**
+ * Push one artifact, its earlier versions and all their records to the
+ * configured remote. `remoteFingerprint` (from the remote info shown) binds
+ * the push: the server refuses with `artifact_remote_changed` if the
+ * configuration now names another remote.
+ */
+export async function pushArtifact(
+  repoId: string,
+  artifactId: string,
+  binding?: { remoteFingerprint: string },
+  signal?: AbortSignal,
+): Promise<ArtifactPushOutcome> {
+  return requestDesktopServerJson<ArtifactPushOutcome>(artifactPath(repoId, artifactId, "/push"), {
+    method: "POST",
+    ...(binding ? { body: binding } : {}),
+    signal,
+  }).catch(classifyRemote);
 }
 
 /** Fetch one artifact by hash from the configured remote. Received decisions change no task. */

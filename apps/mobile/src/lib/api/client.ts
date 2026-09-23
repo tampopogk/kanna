@@ -20,6 +20,7 @@ import type {
   ArtifactDetail,
   ArtifactFetchOutcome,
   ArtifactFileContent,
+  ArtifactPushBinding,
   ArtifactPushOutcome,
   ArtifactRemoteInfo,
   CreateTaskRequest,
@@ -277,7 +278,7 @@ export interface KannaTransport {
   recordArtifactComment(repoId: string, artifactId: string, input: ArtifactCommentInput): Promise<ArtifactComment>;
   recordArtifactDecision(repoId: string, artifactId: string, input: ArtifactDecisionInput): Promise<ArtifactDecision>;
   /** Push one artifact, its earlier versions and their records to the configured remote. */
-  pushArtifact(repoId: string, artifactId: string): Promise<ArtifactPushOutcome>;
+  pushArtifact(repoId: string, artifactId: string, binding?: ArtifactPushBinding): Promise<ArtifactPushOutcome>;
   /** Fetch one artifact by hash from the configured remote. */
   fetchArtifact(repoId: string, artifactId: string): Promise<ArtifactFetchOutcome>;
   observeTaskTerminal(
@@ -374,7 +375,7 @@ export interface KannaClient {
   recordArtifactComment(repoId: string, artifactId: string, input: ArtifactCommentInput): Promise<ArtifactComment>;
   recordArtifactDecision(repoId: string, artifactId: string, input: ArtifactDecisionInput): Promise<ArtifactDecision>;
   /** Push one artifact, its earlier versions and their records to the configured remote. */
-  pushArtifact(repoId: string, artifactId: string): Promise<ArtifactPushOutcome>;
+  pushArtifact(repoId: string, artifactId: string, binding?: ArtifactPushBinding): Promise<ArtifactPushOutcome>;
   /** Fetch one artifact by hash from the configured remote. */
   fetchArtifact(repoId: string, artifactId: string): Promise<ArtifactFetchOutcome>;
   observeTaskTerminal(
@@ -535,7 +536,7 @@ export function createKannaClient(transport: KannaTransport): KannaClient {
       transport.recordArtifactComment(repoId, artifactId, input),
     recordArtifactDecision: (repoId, artifactId, input) =>
       transport.recordArtifactDecision(repoId, artifactId, input),
-    pushArtifact: (repoId, artifactId) => transport.pushArtifact(repoId, artifactId),
+    pushArtifact: (repoId, artifactId, binding) => transport.pushArtifact(repoId, artifactId, binding),
     fetchArtifact: (repoId, artifactId) => transport.fetchArtifact(repoId, artifactId),
     observeTaskTerminal: (taskId, listener) =>
       transport.observeTaskTerminal(taskId, listener),

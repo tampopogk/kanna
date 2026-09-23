@@ -664,7 +664,8 @@
       "missing": "Earlier versions neither the remote nor this machine holds:",
       "pushFailed": "Push failed.",
       "fetchFailed": "Fetch failed.",
-      "changed": "The artifact remote changed since this panel loaded. Nothing was pushed; check where it goes now."
+      "changed": "The artifact remote changed since this panel loaded. Nothing was pushed; check where it goes now.",
+      "pushCancelled": "Push cancelled here. If the desktop had already started it, it may still complete; push again to see where the remote stands."
     }
   }
 }

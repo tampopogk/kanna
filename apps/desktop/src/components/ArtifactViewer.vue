@@ -269,62 +269,81 @@ const remoteSourceLabel = computed(() => {
 
 /** The remote shown changed since the reader last saw it; they must look again. */
 const remoteChanged = ref(false);
+/** The reader withdrew a push before it answered. */
+const pushCancelled = ref(false);
+/** One push in flight, from acceptance to its answer: Cancel aborts it. */
+let pushController: AbortController | null = null;
 
-function sameRemote(a: ArtifactRemoteInfo, b: ArtifactRemoteInfo): boolean {
-  return a.remote === b.remote && a.source === b.source && a.configFile === b.configFile
-    && a.configured === b.configured && !a.error === !b.error;
+function remoteUsable(info: ArtifactRemoteInfo | null): boolean {
+  return Boolean(info?.configured && info.remote && info.source && info.fingerprint && !info.error);
 }
 
-/**
- * Resolve the remote again right before a push. The server resolves the
- * repository's configuration at push time, and a pull or an edit can change
- * it after this panel loaded; a push only goes ahead when the remote now in
- * force is the one the reader saw (and confirmed). Otherwise the panel shows
- * the new one and asks again.
- */
-async function remoteStillShown(shown: ArtifactRemoteInfo): Promise<boolean> {
-  const repoId = props.repoId;
-  const fresh = await fetchArtifactRemoteInfo(repoId);
-  if (repoId !== props.repoId) return false;
-  if (sameRemote(fresh, shown)) return true;
-  remoteInfo.value = fresh;
-  remoteChanged.value = true;
-  confirmingPush.value = Boolean(fresh.configured && fresh.remote && fresh.source && !fresh.error);
-  return false;
-}
-
-async function requestPush() {
+function requestPush() {
   const info = remoteInfo.value;
-  if (!info?.remote || !info.source || !currentId.value || remoteBusy.value) return;
-  await guardedPush(info, isArtifactRemoteConfirmed(props.repoId, info.remote, info.source));
+  if (!remoteUsable(info) || !currentId.value || remoteBusy.value) return;
+  pushCancelled.value = false;
+  if (isArtifactRemoteConfirmed(props.repoId, info!.remote!, info!.source!)) void startPush(info!);
+  else confirmingPush.value = true;
 }
 
 /** The reader accepted the remote in the confirmation. */
-async function acceptPush() {
+function acceptPush() {
   const info = remoteInfo.value;
-  if (!info?.remote || !info.source || !currentId.value || remoteBusy.value) return;
-  await guardedPush(info, true);
+  if (!remoteUsable(info) || !currentId.value || remoteBusy.value) return;
+  void startPush(info!);
 }
 
-async function guardedPush(shown: ArtifactRemoteInfo, accepted: boolean) {
+function cancelPush() {
+  if (pushController) {
+    pushController.abort();
+    pushCancelled.value = true;
+  }
+  confirmingPush.value = false;
+}
+
+/**
+ * Push bound to the remote shown. The server resolves the configuration at
+ * push time and refuses (`artifact_remote_changed`) if it no longer names the
+ * remote this fingerprint identifies, before contacting any remote; the panel
+ * then shows the remote now in force and asks again. Cancel aborts whichever
+ * request is in flight. A push the desktop server already started may still
+ * complete; nothing here reports it as done.
+ */
+async function startPush(shown: ArtifactRemoteInfo) {
+  const repoId = props.repoId;
   const artifactId = currentId.value;
+  const controller = new AbortController();
+  pushController = controller;
   remoteBusy.value = "push";
   remoteOutcome.value = null;
+  remoteChanged.value = false;
   try {
-    if (!(await remoteStillShown(shown))) return;
-    remoteChanged.value = false;
-    if (!accepted) {
-      confirmingPush.value = true;
+    const outcome = await pushArtifact(repoId, artifactId, { remoteFingerprint: shown.fingerprint! }, controller.signal);
+    if (controller.signal.aborted) return;
+    confirmingPush.value = false;
+    rememberArtifactRemoteConfirmed(repoId, shown.remote!, shown.source!);
+    if (artifactId === currentId.value) remoteOutcome.value = { kind: "push", outcome };
+  } catch (cause) {
+    if (controller.signal.aborted) return;
+    if (cause instanceof ArtifactRemoteError && cause.code === "artifact_remote_changed") {
+      try {
+        const fresh = await fetchArtifactRemoteInfo(repoId, controller.signal);
+        if (controller.signal.aborted || repoId !== props.repoId) return;
+        remoteInfo.value = fresh;
+        remoteChanged.value = true;
+        confirmingPush.value = remoteUsable(fresh);
+      } catch (refresh) {
+        if (!controller.signal.aborted) remoteInfoError.value = messageOf(refresh);
+      }
       return;
     }
     confirmingPush.value = false;
-    const outcome = await pushArtifact(props.repoId, artifactId);
-    rememberArtifactRemoteConfirmed(props.repoId, shown.remote!, shown.source!);
-    if (artifactId === currentId.value) remoteOutcome.value = { kind: "push", outcome };
-  } catch (cause) {
     if (artifactId === currentId.value) remoteOutcome.value = remoteFailure("push", cause);
   } finally {
-    remoteBusy.value = null;
+    if (pushController === controller) {
+      pushController = null;
+      remoteBusy.value = null;
+    }
   }
 }
 
@@ -498,17 +517,20 @@ const UNAVAILABLE_KEYS: Record<ArtifactUnavailableReason | "error", string> = {
             <p v-if="remoteInfo.error" role="alert" data-testid="artifact-remote-invalid">{{ remoteInfo.error.message }}</p>
           </template>
           <p v-if="remoteChanged" role="alert" data-testid="artifact-remote-changed">{{ t("artifactViewer.remote.changed") }}</p>
-          <div v-if="confirmingPush && remoteInfo?.remote" class="artifact-confirm" role="alertdialog" data-testid="artifact-push-confirm">
+          <div v-if="(confirmingPush || remoteBusy === 'push') && remoteInfo?.remote" class="artifact-confirm" role="alertdialog" :data-testid="confirmingPush ? 'artifact-push-confirm' : 'artifact-push-progress'">
             <p>{{ t("artifactViewer.remote.confirmPush", { id: shortId(currentId), remote: remoteInfo.remote }) }}</p>
             <p><strong>{{ remoteSourceLabel }}</strong></p>
             <div class="artifact-confirm-actions">
-              <button type="button" data-testid="artifact-push-confirm-accept" :disabled="remoteBusy !== null" @click="acceptPush">{{ t("artifactViewer.remote.confirmAccept") }}</button>
-              <button type="button" @click="confirmingPush = false">{{ t("artifactViewer.remote.confirmCancel") }}</button>
+              <button type="button" data-testid="artifact-push-confirm-accept" :disabled="remoteBusy !== null" @click="acceptPush">
+                {{ remoteBusy === "push" ? t("artifactViewer.remote.pushing") : t("artifactViewer.remote.confirmAccept") }}
+              </button>
+              <button type="button" data-testid="artifact-push-cancel" @click="cancelPush">{{ t("artifactViewer.remote.confirmCancel") }}</button>
             </div>
           </div>
           <button v-else type="button" data-testid="artifact-push" :disabled="!remoteReady || !retained || remoteBusy !== null" @click="requestPush">
-            {{ remoteBusy === "push" ? t("artifactViewer.remote.pushing") : t("artifactViewer.remote.push") }}
+            {{ t("artifactViewer.remote.push") }}
           </button>
+          <p v-if="pushCancelled" class="muted" data-testid="artifact-push-cancelled">{{ t("artifactViewer.remote.pushCancelled") }}</p>
           <div v-if="remoteOutcome" class="artifact-outcome" data-testid="artifact-remote-outcome" :data-kind="remoteOutcome.kind">
             <template v-if="remoteOutcome.kind === 'push'">
               <p>{{ t("artifactViewer.remote.pushed", { remote: remoteOutcome.outcome.remote, created: remoteOutcome.outcome.createdRefs.length, upToDate: remoteOutcome.outcome.upToDateRefs }) }}</p>

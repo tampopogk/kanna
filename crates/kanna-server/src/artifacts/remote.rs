@@ -200,29 +200,67 @@ impl ArtifactRemote {
     pub(crate) fn display(&self) -> &str {
         &self.display
     }
+
+    /// An opaque identity for this remote as configured from `source`: a
+    /// client hands it back with a push so the push goes only to the remote
+    /// the reader approved. Keyed with a per-process secret, so it names the
+    /// URL (credentials included) without letting anyone who sees it test
+    /// guesses of a password against it.
+    pub(crate) fn fingerprint(&self, source: &str) -> Result<String, ArtifactError> {
+        use sha2::{Digest, Sha256};
+        static KEY: std::sync::OnceLock<Result<String, String>> = std::sync::OnceLock::new();
+        let key = KEY
+            .get_or_init(|| random_hex(32))
+            .as_ref()
+            .map_err(|error| ArtifactError::Storage(error.clone()))?;
+        Ok(format!(
+            "{:x}",
+            Sha256::digest(format!("{key}\0{source}\0{}", self.url).as_bytes())
+        ))
+    }
 }
 
-/// Drop `user:password@` from a URL. scp-style `user@host:path` keeps its
-/// user name, which is not a secret.
+/// The remote as it may be shown: no URL credentials.
 ///
-/// A password may contain '/' and '@', so the authority cannot be found by
-/// the first '/'. Any '@' after `://` makes everything from there through
-/// the last '@' before the first '/' that follows the first '@' credentials.
-/// That over-redacts a URL whose path contains '@' (`https://host/p@x` shows
-/// as `https://***@x`), which is the safe side: an ambiguous
-/// credential-bearing value is never echoed.
+/// A URL is parsed and rebuilt without its userinfo. A local path, or
+/// scp-like `user@host:path`, has no password: git reads the user as an SSH
+/// login name, so it is shown as written.
+///
+/// A password may itself contain '@' or '/', which a parser takes as the end
+/// of the userinfo or authority and leaves in the host or path
+/// (`https://user:pa@ss/word@host/repo` parses as host `ss`). So a rebuilt URL
+/// that still has an '@' after the scheme, or a value that does not parse
+/// but has one, is ambiguous, and nothing up to its last '@' is shown. That
+/// over-redacts a URL whose path contains '@' (`https://host/p@x` shows as
+/// `https://***@x`), which is the safe side.
 fn redact(url: &str) -> String {
     let Some((scheme, rest)) = url.split_once("://") else {
         return url.to_string();
     };
-    let Some(first_at) = rest.find('@') else {
-        return url.to_string();
+    let hide_through_last_at = || {
+        rest.rsplit_once('@')
+            .map(|(_, after)| format!("{scheme}://***@{after}"))
     };
-    let slash = rest[first_at..]
-        .find('/')
-        .map_or(rest.len(), |offset| first_at + offset);
-    let last_at = rest[..slash].rfind('@').unwrap_or(first_at);
-    format!("{scheme}://***@{}", &rest[last_at + 1..])
+    let Ok(mut parsed) = reqwest::Url::parse(url) else {
+        return hide_through_last_at().unwrap_or_else(|| url.to_string());
+    };
+    let had_credentials = !parsed.username().is_empty() || parsed.password().is_some();
+    // Both setters only fail for URLs that cannot carry userinfo, which then
+    // has none to remove.
+    let _ = parsed.set_username("");
+    let _ = parsed.set_password(None);
+    let rebuilt = parsed.to_string();
+    let after_scheme = rebuilt
+        .split_once("://")
+        .map_or(rebuilt.as_str(), |(_, after)| after);
+    if after_scheme.contains('@') {
+        return hide_through_last_at().unwrap_or(rebuilt);
+    }
+    if had_credentials {
+        format!("{}://***@{after_scheme}", parsed.scheme())
+    } else {
+        rebuilt
+    }
 }
 
 // ---------------------------------------------------------------------------

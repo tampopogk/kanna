@@ -567,10 +567,24 @@ describe("ArtifactViewer (mobile) reads", () => {
 const REMOTE = "ssh://git.example.com/team/artifacts.git";
 const FETCHED = "5".repeat(40);
 
-function sharingActions(overrides: Partial<ArtifactViewerActions> = {}) {
+/** The desktop's configuration as the mocked desktop resolves it at each call. */
+interface MockRemote {
+  remote: string;
+  source: "committed" | "machine-local";
+  configFile: string;
+  /** Remotes a push actually went to. */
+  pushedTo: string[];
+}
+
+function sharingActions(overrides: Partial<ArtifactViewerActions> = {}, server: MockRemote = {
+  remote: REMOTE, source: "committed", configFile: ".kanna/config.json", pushedTo: []
+}) {
+  const fingerprint = () => `fp:${server.remote}|${server.source}`;
   const actions = {
+    server,
     getArtifactRemote: vi.fn(async (repoId: string) => ({
-      repoId, configured: true, remote: REMOTE, source: "committed" as const, configFile: ".kanna/config.json"
+      repoId, configured: true, remote: server.remote, source: server.source, configFile: server.configFile,
+      fingerprint: fingerprint()
     })),
     recordArtifactComment: vi.fn(async (repoId: string, artifactId: string, input: { author: string; body: string; anchor?: object }) => ({
       schemaVersion: 1, recordId: "c-new", repoId, aboutArtifactId: artifactId, createdAt: "2026-09-23T13:00:00Z", ...input
@@ -578,9 +592,15 @@ function sharingActions(overrides: Partial<ArtifactViewerActions> = {}) {
     recordArtifactDecision: vi.fn(async (repoId: string, artifactId: string, input: { who: string; what: string }) => ({
       schemaVersion: 1, recordId: "d-new", repoId, aboutArtifactId: artifactId, createdAt: "2026-09-23T13:00:00Z", ...input
     })),
-    pushArtifact: vi.fn(async (_repoId: string, artifactId: string) => ({
-      remote: REMOTE, artifactId, artifactIds: [artifactId, V1], createdRefs: ["refs/kanna/artifacts/shared/content/x/y"], upToDateRefs: 2
-    })),
+    pushArtifact: vi.fn(async (_repoId: string, artifactId: string, binding?: { remoteFingerprint: string }) => {
+      // Compare and push, as the desktop does; the relay wraps the refusal.
+      if (binding && binding.remoteFingerprint !== fingerprint()) {
+        const refusal = Object.assign(new Error("Remote desktop request failed with status 409."), { reason: "artifact_remote_changed" });
+        throw Object.assign(new Error("Remote desktop request failed"), { cause: refusal });
+      }
+      server.pushedTo.push(server.remote);
+      return { remote: server.remote, artifactId, artifactIds: [artifactId, V1], createdRefs: ["refs/kanna/artifacts/shared/content/x/y"], upToDateRefs: 2 };
+    }),
     fetchArtifact: vi.fn(async (_repoId: string, artifactId: string) => {
       DETAILS[artifactId] ??= detail(artifactId);
       return {
@@ -681,7 +701,7 @@ describe("ArtifactViewer (mobile) recording and sharing", () => {
     expect(actions.pushArtifact).not.toHaveBeenCalled();
     expect(text(byTestId("artifact-viewer-push-confirm")[0])).toContain(REMOTE);
     await press("artifact-viewer-push-accept");
-    expect(actions.pushArtifact).toHaveBeenCalledWith("repo-1", V2);
+    expect(actions.pushArtifact).toHaveBeenCalledWith("repo-1", V2, { remoteFingerprint: `fp:${REMOTE}|committed` });
     expect(text(byTestId("artifact-viewer-remote-outcome")[0])).toContain("1 refs created, 2 already up to date");
     // Once pushed there, the next push goes without asking.
     await press("artifact-viewer-push");
@@ -762,40 +782,140 @@ describe("ArtifactViewer (mobile) recording and sharing", () => {
     expect(readArtifactFile).not.toHaveBeenCalledWith("repo-1", V2, "../secret");
   });
 
-  it("does not push when the remote changed after the confirmation was shown, and asks again", async () => {
-    let current = { repoId: "repo-1", configured: true, remote: REMOTE, source: "committed" as const, configFile: ".kanna/config.json" };
-    const actions = sharingActions({ getArtifactRemote: vi.fn(async () => current) });
+  it("binds the push to the remote shown: a changed config is refused and asked about again", async () => {
+    const actions = sharingActions();
     await openSharing(V2, actions);
     await press("artifact-viewer-push");
     expect(text(byTestId("artifact-viewer-push-confirm")[0])).toContain(REMOTE);
     // A pull changes the committed config while the confirmation is open.
     const moved = "ssh://elsewhere.example/artifacts.git";
-    current = { ...current, remote: moved };
+    actions.server.remote = moved;
     await press("artifact-viewer-push-accept");
-    expect(actions.pushArtifact).not.toHaveBeenCalled();
+    expect(actions.pushArtifact).toHaveBeenCalledWith("repo-1", V2, { remoteFingerprint: `fp:${REMOTE}|committed` });
+    expect(actions.server.pushedTo).toEqual([]);
     expect(byTestId("artifact-viewer-remote-changed")).toHaveLength(1);
+    expect(byTestId("artifact-viewer-remote-outcome")).toHaveLength(0);
     expect(text(byTestId("artifact-viewer-remote-url")[0])).toBe(moved);
     expect(text(byTestId("artifact-viewer-push-confirm")[0])).toContain(moved);
-    // Accepting the remote now shown pushes.
+    // Accepting the remote now shown pushes to it.
     await press("artifact-viewer-push-accept");
-    expect(actions.pushArtifact).toHaveBeenCalledTimes(1);
+    expect(actions.server.pushedTo).toEqual([moved]);
     expect(byTestId("artifact-viewer-remote-changed")).toHaveLength(0);
   });
 
   it("does not skip the confirmation on a remembered remote once the config chose another", async () => {
-    let current = { repoId: "repo-1", configured: true, remote: REMOTE, source: "committed" as "committed" | "machine-local", configFile: ".kanna/config.json" };
-    const actions = sharingActions({ getArtifactRemote: vi.fn(async () => current) });
+    const actions = sharingActions();
+    await openSharing(V2, actions);
+    await press("artifact-viewer-push");
+    await press("artifact-viewer-push-accept");
+    expect(actions.server.pushedTo).toEqual([REMOTE]);
+    // The desktop's local config now names another remote.
+    Object.assign(actions.server, { remote: "/Volumes/shared/other.git", source: "machine-local", configFile: ".kanna/config.local.json" });
+    await press("artifact-viewer-push");
+    expect(actions.server.pushedTo).toEqual([REMOTE]);
+    expect(byTestId("artifact-viewer-remote-changed")).toHaveLength(1);
+    expect(text(byTestId("artifact-viewer-push-confirm")[0])).toContain("/Volumes/shared/other.git");
+    expect(text(byTestId("artifact-viewer-remote-source")[0])).toContain("machine-local");
+  });
+
+  it("Cancel while the push request is out ignores its answer and reports nothing as pushed", async () => {
+    let answer = () => undefined as void;
+    const actions = sharingActions();
+    const push = actions.pushArtifact;
+    actions.pushArtifact = vi.fn((...args: Parameters<typeof push>) =>
+      new Promise<Awaited<ReturnType<typeof push>>>((resolve, reject) => {
+        answer = () => void push(...args).then(resolve, reject);
+      }));
     await openSharing(V2, actions);
     await press("artifact-viewer-push");
     await press("artifact-viewer-push-accept");
     expect(actions.pushArtifact).toHaveBeenCalledTimes(1);
-    // The desktop's local config now names another remote.
-    current = { ...current, remote: "/Volumes/shared/other.git", source: "machine-local", configFile: ".kanna/config.local.json" };
+    // Cancel is still there, and enabled, while the push is out.
+    expect(byTestId("artifact-viewer-push-cancel")[0].props.disabled).toBeFalsy();
+    await press("artifact-viewer-push-cancel");
+    expect(byTestId("artifact-viewer-push-confirm")).toHaveLength(0);
+    expect(byTestId("artifact-viewer-push-cancelled")).toHaveLength(1);
+    answer();
+    await flush();
+    expect(byTestId("artifact-viewer-remote-outcome")).toHaveLength(0);
+    expect(byTestId("artifact-viewer-push-confirm")).toHaveLength(0);
+    // Not remembered: the next push asks again.
     await press("artifact-viewer-push");
-    expect(actions.pushArtifact).toHaveBeenCalledTimes(1);
-    expect(byTestId("artifact-viewer-remote-changed")).toHaveLength(1);
-    expect(text(byTestId("artifact-viewer-push-confirm")[0])).toContain("/Volumes/shared/other.git");
-    expect(text(byTestId("artifact-viewer-remote-source")[0])).toContain("machine-local");
+    expect(byTestId("artifact-viewer-push-confirm")).toHaveLength(1);
+  });
+
+  it("Cancel while the changed remote is being read again asks nothing", async () => {
+    let answer = () => undefined as void;
+    const actions = sharingActions();
+    await openSharing(V2, actions);
+    await press("artifact-viewer-push");
+    actions.server.remote = "ssh://elsewhere.example/artifacts.git";
+    const read = actions.getArtifactRemote;
+    actions.getArtifactRemote = vi.fn((repoId: string) =>
+      new Promise<Awaited<ReturnType<typeof read>>>((resolve) => {
+        answer = () => void read(repoId).then(resolve);
+      }));
+    await press("artifact-viewer-push-accept");
+    expect(actions.getArtifactRemote).toHaveBeenCalledTimes(1);
+    await press("artifact-viewer-push-cancel");
+    answer();
+    await flush();
+    expect(actions.server.pushedTo).toEqual([]);
+    // The cancelled confirmation does not come back, and the old remote stays.
+    expect(byTestId("artifact-viewer-push-confirm")).toHaveLength(0);
+    expect(byTestId("artifact-viewer-remote-changed")).toHaveLength(0);
+    expect(text(byTestId("artifact-viewer-remote-url")[0])).toBe(REMOTE);
+  });
+
+  it("keeps a fetch's imported records when an older read of the same version answers last (A, B, A)", async () => {
+    const api = client();
+    const reads: Array<{ artifactId: string; answer: () => void }> = [];
+    const getArtifact = vi.fn((repoId: string, artifactId: string) => {
+      // Reads answer with the store as it is when they are answered… except
+      // the one read held back below, which carries the state from when it
+      // was made: before the fetch imported anything.
+      if (artifactId === V2 && getArtifact.mock.calls.filter((call) => call[1] === V2).length === 2) {
+        const stale = structuredClone(DETAILS[V2]);
+        return new Promise<ArtifactDetail>((resolve) => {
+          reads.push({ artifactId, answer: () => resolve(stale) });
+        });
+      }
+      return api.getArtifact(repoId, artifactId);
+    });
+    let finishFetch = () => undefined as void;
+    const actions = sharingActions();
+    const imported = {
+      schemaVersion: 1, recordId: "c-imported", repoId: "repo-1", aboutArtifactId: V2,
+      createdAt: "2026-09-23T14:00:00Z", author: "B", body: "imported from the remote"
+    };
+    actions.fetchArtifact = vi.fn((_repoId: string, artifactId: string) =>
+      new Promise((resolve) => {
+        finishFetch = () => resolve({
+          remote: REMOTE, artifactId, fetched: [artifactId], contentRetained: [], recordsImported: 1,
+          refused: [], missing: [],
+          detail: { ...DETAILS[V2], comments: [...DETAILS[V2].comments, imported] }
+        });
+      })) as ArtifactViewerActions["fetchArtifact"];
+    await act(async () => {
+      renderer = create(
+        <ArtifactViewer repoId="repo-1" initialArtifactId={V2} getArtifact={getArtifact}
+          readArtifactFile={api.readArtifactFile} actions={actions} onClose={() => undefined} />
+      );
+    });
+    await flush();
+    // Fetch A; go to B; come back to A (that read is held); the fetch answers;
+    // then the older read of A answers last.
+    await press("artifact-viewer-fetch");
+    await press("artifact-viewer-previous");
+    await press("artifact-viewer-newer");
+    expect(reads.map((read) => read.artifactId)).toEqual([V2]);
+    finishFetch();
+    await flush();
+    reads[0].answer();
+    await flush();
+    expect(text(byTestId("artifact-viewer-current-id")[0])).toContain(V2.slice(0, 12));
+    expect(byTestId("artifact-viewer-comment").map(text).join("\n")).toContain("imported from the remote");
+    expect(text(byTestId("artifact-viewer-remote-outcome")[0])).toContain("1 records imported");
   });
 
   it("shows a failed fetch in the not-found state", async () => {

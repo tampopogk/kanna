@@ -208,4 +208,10 @@ export interface ArtifactRemoteInfo {
   configFile?: string;
   /** The configured value is present but unusable. */
   error?: { code: string; message: string };
+  /**
+   * Opaque identity of this remote and source. Sent back with a push as
+   * `remoteFingerprint`, it binds the push to this remote: the server refuses
+   * with `artifact_remote_changed` if its configuration now names another.
+   */
+  fingerprint?: string;
 }

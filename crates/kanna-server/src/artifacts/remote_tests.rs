@@ -738,6 +738,49 @@ fn a_password_containing_a_slash_is_redacted_from_the_display() {
             "https://***@host/repo.git",
             Some("word"),
         ),
+        // A password with '@' before a '/': nothing up to the last '@' shows.
+        (
+            "https://user:pa@ss/word@host/repo.git",
+            "https://***@host/repo.git",
+            Some("ss/word"),
+        ),
+        (
+            "ssh://user:pa@ss/word@host:2222/repo.git",
+            "ssh://***@host:2222/repo.git",
+            Some("ss/word"),
+        ),
+        // A password ending in "@ss/".
+        (
+            "https://user:pa@ss/@host/repo.git",
+            "https://***@host/repo.git",
+            Some("ss/"),
+        ),
+        // Hostile shapes a parser reads differently from the writer's intent.
+        (
+            "https://user:p%40ss@host/a.git",
+            "https://***@host/a.git",
+            Some("p%40ss"),
+        ),
+        (
+            "https://:secret@host/a.git",
+            "https://***@host/a.git",
+            Some("secret"),
+        ),
+        (
+            "https://token@host/a.git",
+            "https://***@host/a.git",
+            Some("token"),
+        ),
+        (
+            "https://user:secret@host:99999/a.git",
+            "https://***@host:99999/a.git",
+            Some("secret"),
+        ),
+        (
+            "https://user:se@cret@host/a.git#x@y",
+            "https://***@y",
+            Some("cret"),
+        ),
         // An '@' in a path is indistinguishable from credentials: hidden.
         ("https://host:8080/p@x", "https://***@x", None),
         ("https://host/team/a.git", "https://host/team/a.git", None),
