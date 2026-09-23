@@ -204,4 +204,4 @@ Listed so the planning stage can see what can proceed in parallel; no order or e
 - Stages without an agent are allowed; their setup and teardown scripts do the work (mail the reviewers, open the window).
 - No prompt variables for results; the engine delivers the triggering result and the ledger to every session.
 - Dependency base: whatever the upstream task committed when it left the named stage.
-- "Workflow" is the word; "template" is not used. Intake workflows and release workflows share one schema; the PR is the boundary between them.
+- "Workflow" is the concrete thing a task runs. "Template" may be used loosely for the shape a workflow follows (mechanical, shaped, planned, designed, research, merge window, and so on); the words are interchangeable in conversation, and there is no separate template object in V1. Intake workflows and release workflows share one schema; the PR is the boundary between them.
