@@ -8472,3 +8472,458 @@ async fn a_legacy_result_variable_workflow_still_runs_beside_the_ledger() {
     assert!(!command_line.contains("$PREV_RESULT"));
     assert!(command_line.contains("Legacy review of: {"));
 }
+
+/// A scripted daemon that accepts any number of connections for the life of
+/// a test and records every command: sessions do not exist until spawned,
+/// kills find nothing, spawns succeed.
+fn spawn_recording_daemon(
+    daemon_dir: &Path,
+) -> Arc<std::sync::Mutex<Vec<kanna_daemon::protocol::Command>>> {
+    use kanna_daemon::protocol::{Command as DaemonCommand, Event as DaemonEvent};
+    use tokio::io::{AsyncWriteExt, BufReader};
+    use tokio::net::UnixListener;
+
+    let socket_path = daemon_socket_path_for_dir(&daemon_dir.to_string_lossy());
+    let _ = std::fs::remove_file(&socket_path);
+    let listener = UnixListener::bind(&socket_path).unwrap();
+    let commands = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let recorded = Arc::clone(&commands);
+    tokio::spawn(async move {
+        while let Ok((stream, _)) = listener.accept().await {
+            let recorded = Arc::clone(&recorded);
+            tokio::spawn(async move {
+                let (read_half, mut write_half) = stream.into_split();
+                let mut reader = BufReader::new(read_half);
+                while let Some(command) =
+                    read_test_daemon_command_optional(&mut reader, &mut write_half).await
+                {
+                    if super::answer_terminal_carryover_probe(&command, &mut write_half).await {
+                        continue;
+                    }
+                    let response = match &command {
+                        DaemonCommand::List => DaemonEvent::SessionList {
+                            sessions: Vec::new(),
+                        },
+                        DaemonCommand::Spawn { session_id, .. }
+                        | DaemonCommand::SpawnAgent { session_id, .. } => {
+                            DaemonEvent::SessionCreated {
+                                session_id: session_id.clone(),
+                            }
+                        }
+                        _ => DaemonEvent::Error {
+                            code: Some(kanna_daemon::protocol::ErrorCode::SessionNotFound),
+                            message: "session not found".to_string(),
+                        },
+                    };
+                    recorded.lock().unwrap().push(command);
+                    write_half
+                        .write_all(
+                            format!("{}\n", serde_json::to_string(&response).unwrap()).as_bytes(),
+                        )
+                        .await
+                        .unwrap();
+                }
+            });
+        }
+    });
+    commands
+}
+
+fn spawn_count(commands: &std::sync::Mutex<Vec<kanna_daemon::protocol::Command>>) -> usize {
+    commands
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|command| {
+            matches!(
+                command,
+                kanna_daemon::protocol::Command::Spawn { .. }
+                    | kanna_daemon::protocol::Command::SpawnAgent { .. }
+            )
+        })
+        .count()
+}
+
+fn ledger_fixture_config(label: &str, daemon_dir: &Path) -> Config {
+    let (kanna_cli_path, _) = ensure_test_kanna_cli_sidecar();
+    Config {
+        relay_url: "wss://relay.example".to_string(),
+        device_token: "device-token".to_string(),
+        firebase_project_id: "kanna-local".to_string(),
+        firebase_auth_emulator_url: None,
+        firebase_firestore_emulator_host: None,
+        daemon_dir: daemon_dir.to_string_lossy().to_string(),
+        db_path: Db::test_db_path(&format!("ledger-fence-{label}")),
+        kanna_cli_path: Some(kanna_cli_path.to_string_lossy().to_string()),
+        desktop_id: "desktop-1".to_string(),
+        desktop_secret: Some("desktop-secret".to_string()),
+        desktop_name: "Studio Mac".to_string(),
+        version: "test-version".to_string(),
+        environment: "development".to_string(),
+        lan_host: "127.0.0.1".to_string(),
+        lan_port: 48120,
+        transfer_port: 4455,
+        lan_routing_port: 4460,
+        activity_event_debounce_seconds: 300,
+        pairing_store_path: crate::test_paths::unique_test_file("kanna-pairings-fence", "json"),
+    }
+}
+
+async fn post_json(
+    app: &axum::Router,
+    path: &str,
+    body: serde_json::Value,
+) -> (StatusCode, String) {
+    let response = app
+        .clone()
+        .oneshot(
+            Request::post(path)
+                .header("content-type", "application/json")
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = response.status();
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    (status, String::from_utf8_lossy(&bytes).to_string())
+}
+
+/// A completion whose publication failed owes its transition only while the
+/// task is still where it left it. An operator who advances the task in the
+/// meantime supersedes it: resuming continuations afterwards must not
+/// dispatch a second transition against the new stage.
+#[tokio::test]
+async fn an_owed_completion_transition_is_superseded_by_an_operator_advance() {
+    let _sidecar_guard = crate::test_sidecar_guard().await;
+    let repo_root = crate::test_paths::unique_test_path("kanna-ledger-fence-advance");
+    init_test_git_repo(&repo_root);
+    std::fs::create_dir_all(repo_root.join(".kanna/agents/reviewer")).unwrap();
+    std::fs::write(
+        repo_root.join(".kanna/workflows/default.json"),
+        serde_json::json!({
+            "stages": [
+                { "name": "in progress", "transition": "auto" },
+                { "name": "review", "transition": "manual", "agent": "reviewer", "prompt": "Review." },
+                { "name": "pr", "transition": "manual", "agent": "reviewer", "prompt": "Open it." },
+            ]
+        })
+        .to_string(),
+    )
+    .unwrap();
+    std::fs::write(
+        repo_root.join(".kanna/agents/reviewer/AGENT.md"),
+        "---\nname: Reviewer\ndescription: Test review agent\nagent_provider: claude\n---\nReview the task.",
+    )
+    .unwrap();
+    for args in [
+        vec!["add", ".kanna"],
+        vec!["commit", "-qm", "add workflow"],
+        vec!["branch", "task-source"],
+    ] {
+        assert!(Command::new("git")
+            .args(&args)
+            .current_dir(&repo_root)
+            .status()
+            .unwrap()
+            .success());
+    }
+    super::publish_test_origin_main(&repo_root);
+    let daemon_dir = crate::test_paths::unique_test_path("kanna-ledger-fence-advance-d");
+    std::fs::create_dir_all(&daemon_dir).unwrap();
+    let commands = spawn_recording_daemon(&daemon_dir);
+    let config = ledger_fixture_config("advance", &daemon_dir);
+    let db = Db::open_for_tests(&config.db_path).unwrap();
+    db.insert_test_repo_with_path("repo-1", &repo_root.to_string_lossy(), "Repo One")
+        .unwrap();
+    db.insert_test_pipeline_item(
+        "source-1",
+        "repo-1",
+        "Implement it",
+        Some("Implement it"),
+        "in progress",
+        "2026-09-22 00:00:00",
+    )
+    .unwrap();
+    db.update_test_pipeline_item_stage_context(
+        "source-1",
+        "task-source",
+        "default",
+        None,
+        "claude",
+    )
+    .unwrap();
+    db.insert_stage_run(crate::db::NewStageRun {
+        id: "run-impl",
+        task_id: "source-1",
+        stage: "in progress",
+        kind: "main",
+        agent: Some("implement"),
+        agent_provider: Some("claude"),
+        model: None,
+        effort: None,
+        status: "running",
+        result: None,
+        feedback: None,
+        session_id: Some("source-1"),
+        provider_session_id: None,
+        cwd: Some(&repo_root.to_string_lossy()),
+        resumed_from_run_id: None,
+    })
+    .unwrap();
+    drop(db);
+
+    let state = Arc::new(super::AppState::new(config.clone()));
+    let app = super::router(Arc::clone(&state));
+    crate::task_store::inject_fault(
+        &crate::task_store::root_for_db(&config.db_path),
+        crate::task_store::FlushFault::BeforePublish(1),
+    );
+    let (status, body) = post_json(
+        &app,
+        "/v1/tasks/source-1/actions/complete-stage",
+        serde_json::json!({ "runId": "run-impl", "status": "success", "summary": "implemented" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
+    let db = Db::open(&config.db_path).unwrap();
+    assert!(db.has_ledger_continuation("source-1").unwrap());
+
+    // The operator advances instead of waiting for the owed transition.
+    let (status, body) = post_json(
+        &app,
+        "/v1/tasks/source-1/actions/advance-stage",
+        serde_json::json!({ "source": "operator" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    wait_for_running_task_stage(&db, "source-1", "review").await;
+    assert!(!db.has_ledger_continuation("source-1").unwrap());
+
+    // Resuming continuations must not start anything further.
+    crate::http_api::task_actions::resume_ledger_continuations(Arc::clone(&state)).await;
+    crate::http_api::wait_for_task_mutation_to_finish(&state, "source-1").await;
+    assert_eq!(spawn_count(&commands), 1);
+    let item = db.get_pipeline_item("source-1").unwrap().unwrap();
+    assert_eq!(item.stage.as_deref(), Some("review"));
+    let runs = db.list_stage_runs_for_task("source-1").unwrap();
+    assert_eq!(runs.iter().filter(|run| run.stage == "review").count(), 1);
+    assert!(runs.iter().all(|run| run.stage != "pr"));
+    let results = ledger_files(&config.db_path, "source-1")
+        .into_iter()
+        .filter(|file| file.kind == crate::db::task_store::LedgerEntryKind::Result)
+        .count();
+    assert_eq!(results, 1);
+    let _ = std::fs::remove_dir_all(&daemon_dir);
+    let _ = std::fs::remove_dir_all(&repo_root);
+}
+
+/// Even without an intervening advance, a continuation whose run is no
+/// longer the task's latest is discarded rather than dispatched.
+#[tokio::test]
+async fn a_continuation_for_a_replaced_run_is_discarded_not_dispatched() {
+    let state = ledger_completion_state("ledger-fence-stale-run", None);
+    let db_path = state.config.db_path.clone();
+    let root = crate::task_store::root_for_db(&db_path);
+    let app = super::router(Arc::clone(&state));
+    crate::task_store::inject_fault(&root, crate::task_store::FlushFault::BeforePublish(1));
+    let (status, body) = post_completion(
+        &app,
+        serde_json::json!({ "runId": "run-1", "status": "success", "summary": "done" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
+    let db = Db::open(&db_path).unwrap();
+    // Another run of the stage replaced the one that completed.
+    db.insert_stage_run(crate::db::NewStageRun {
+        id: "run-2",
+        task_id: "task-1",
+        stage: "in progress",
+        kind: "main",
+        agent: Some("implement"),
+        agent_provider: Some("claude"),
+        model: None,
+        effort: None,
+        status: "running",
+        result: None,
+        feedback: None,
+        session_id: Some("task-1"),
+        provider_session_id: None,
+        cwd: None,
+        resumed_from_run_id: None,
+    })
+    .unwrap();
+    crate::http_api::task_actions::resume_ledger_continuations(Arc::clone(&state)).await;
+    assert!(!db.has_ledger_continuation("task-1").unwrap());
+    // Nothing was prepared against the stage: no transition failure was
+    // recorded and the task did not move.
+    assert_eq!(
+        db.count_task_events_of_type_for_tests("task-1", "task.lifecycle_failed")
+            .unwrap(),
+        0
+    );
+    assert_eq!(
+        db.get_pipeline_item("task-1")
+            .unwrap()
+            .unwrap()
+            .stage
+            .as_deref(),
+        Some("in progress")
+    );
+    // The accepted result itself was still published.
+    assert_eq!(ledger_files(&db_path, "task-1").len(), 1);
+}
+
+/// A revision whose reviewer result cannot be published yet has already
+/// spent its round and finished the reviewer's run. The reviser it owes is
+/// started later from the durable continuation — exactly once, without
+/// spending another round.
+#[tokio::test]
+async fn a_revision_waiting_on_its_ledger_starts_the_reviser_once_from_the_continuation() {
+    let _sidecar_guard = crate::test_sidecar_guard().await;
+    let repo_root = crate::test_paths::unique_test_path("kanna-ledger-revision-owed");
+    init_test_git_repo(&repo_root);
+    std::fs::write(
+        repo_root.join(".kanna/workflows/reviewable.json"),
+        serde_json::json!({
+            "name": "reviewable",
+            "revision_limit": 5,
+            "stages": [
+                { "name": "in progress", "prompt": "$TASK_PROMPT", "policy": { "transition": "manual" } },
+                { "name": "review", "policy": { "transition": "auto" } }
+            ]
+        })
+        .to_string(),
+    )
+    .unwrap();
+    for args in [
+        vec!["add", ".kanna/workflows/reviewable.json"],
+        vec!["commit", "-qm", "add reviewable workflow"],
+    ] {
+        assert!(Command::new("git")
+            .args(&args)
+            .current_dir(&repo_root)
+            .status()
+            .unwrap()
+            .success());
+    }
+    publish_test_origin_main(&repo_root);
+    let source_worktree = commit_branch_change(
+        &repo_root,
+        "task-revision-owed",
+        "work.txt",
+        "reviewed work",
+    );
+    let daemon_dir = crate::test_paths::unique_test_path("kanna-ledger-revision-owed-d");
+    std::fs::create_dir_all(&daemon_dir).unwrap();
+    let commands = spawn_recording_daemon(&daemon_dir);
+    let config = ledger_fixture_config("revision", &daemon_dir);
+    let db = Db::open_for_tests(&config.db_path).unwrap();
+    db.insert_test_repo_with_path("repo-1", &repo_root.to_string_lossy(), "Repo One")
+        .unwrap();
+    db.insert_test_pipeline_item(
+        "revision-owed",
+        "repo-1",
+        "Implement reviewed work",
+        Some("Reviewed work"),
+        "review",
+        "2026-09-22 10:00:00",
+    )
+    .unwrap();
+    db.update_test_pipeline_item_stage_context(
+        "revision-owed",
+        "task-revision-owed",
+        "reviewable",
+        None,
+        "claude",
+    )
+    .unwrap();
+    db.upsert_worktree(
+        "wt-revision-owed",
+        "revision-owed",
+        &source_worktree.to_string_lossy(),
+        "task-revision-owed",
+    )
+    .unwrap();
+    db.insert_stage_run(crate::db::NewStageRun {
+        id: "review-run",
+        task_id: "revision-owed",
+        stage: "review",
+        kind: "main",
+        agent: Some("review"),
+        agent_provider: Some("claude"),
+        model: None,
+        effort: None,
+        status: "running",
+        result: None,
+        feedback: None,
+        session_id: Some("revision-owed"),
+        provider_session_id: None,
+        cwd: Some(&source_worktree.to_string_lossy()),
+        resumed_from_run_id: None,
+    })
+    .unwrap();
+    drop(db);
+
+    let state = Arc::new(super::AppState::new(config.clone()));
+    let app = super::router(Arc::clone(&state));
+    // The reviewer's result is the task's first ledger entry.
+    crate::task_store::inject_fault(
+        &crate::task_store::root_for_db(&config.db_path),
+        crate::task_store::FlushFault::BeforePublish(1),
+    );
+    let (status, body) = post_json(
+        &app,
+        "/v1/tasks/revision-owed/actions/request-revision",
+        serde_json::json!({
+            "runId": "review-run",
+            "targetStage": "in progress",
+            "summary": "Review found a focused defect",
+            "prompt": "Fix the focused defect",
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(body.contains("Do not request it again"), "{body}");
+    crate::http_api::wait_for_task_mutation_to_finish(&state, "revision-owed").await;
+    let db = Db::open(&config.db_path).unwrap();
+    assert_eq!(spawn_count(&commands), 0, "no reviser before publication");
+    assert!(db.has_ledger_continuation("revision-owed").unwrap());
+    assert_eq!(db.task_revision_rounds("revision-owed").unwrap(), 1);
+    assert_eq!(
+        db.stage_run("review-run").unwrap().unwrap().status,
+        "failed"
+    );
+    assert!(ledger_files(&config.db_path, "revision-owed").is_empty());
+
+    // The fault fired once; the publisher's resume path finishes the job.
+    crate::http_api::task_actions::resume_ledger_continuations(Arc::clone(&state)).await;
+    wait_for_running_task_stage(&db, "revision-owed", "in progress").await;
+    crate::http_api::wait_for_task_mutation_to_finish(&state, "revision-owed").await;
+    // A second resume has nothing left to do.
+    crate::http_api::task_actions::resume_ledger_continuations(Arc::clone(&state)).await;
+    crate::http_api::wait_for_task_mutation_to_finish(&state, "revision-owed").await;
+
+    assert_eq!(spawn_count(&commands), 1, "exactly one reviser starts");
+    assert!(!db.has_ledger_continuation("revision-owed").unwrap());
+    assert_eq!(
+        db.task_revision_rounds("revision-owed").unwrap(),
+        1,
+        "the round is spent once"
+    );
+    let runs = db.list_stage_runs_for_task("revision-owed").unwrap();
+    assert_eq!(
+        runs.iter().filter(|run| run.stage == "in progress").count(),
+        1
+    );
+    let results = ledger_files(&config.db_path, "revision-owed")
+        .into_iter()
+        .filter(|file| file.kind == crate::db::task_store::LedgerEntryKind::Result)
+        .collect::<Vec<_>>();
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].body()["request"]["kind"], "revision_request");
+    let _ = std::fs::remove_dir_all(&daemon_dir);
+    let _ = std::fs::remove_dir_all(&repo_root);
+}

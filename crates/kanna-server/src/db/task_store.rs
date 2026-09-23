@@ -178,9 +178,12 @@ pub struct LedgerContinuation {
     pub payload: Value,
 }
 
-/// The only continuation kind today: dispatch the stage transition a recorded
-/// completion asked for.
+/// Dispatch the stage transition a recorded completion asked for.
 pub const STAGE_COMPLETION_CONTINUATION: &str = "stage_completion";
+
+/// Start the reviser an accepted revision request owes (its round is already
+/// spent and the reviewer's run already finished).
+pub const REVISION_CONTINUATION: &str = "revision";
 
 pub fn ledger_entry_id(task_id: &str, sequence: i64) -> String {
     format!("{task_id}-{sequence:06}")

@@ -620,10 +620,12 @@ async fn deliver_human_review_merge_request(
 /// session for one human decision.
 fn classify_delivery_failure(reason: &str) -> crate::db::ReviewDecisionDelivery {
     // A ledger failure follows acknowledged delivery: even though recording
-    // failed, retrying would submit the same human authorization twice.
+    // (or publishing the recorded input to the task ledger) failed, retrying
+    // would submit the same human authorization twice.
     if reason.contains("delivery_uncertain")
         || reason.contains("input_held_by_draft")
         || reason.contains("task_input_record_failed")
+        || reason.contains("task_input_publication_pending")
     {
         crate::db::ReviewDecisionDelivery::Uncertain
     } else {

@@ -3942,6 +3942,76 @@ mod human_review_merge_authorization {
         let _ = std::fs::remove_file(config.db_path);
     }
 
+    /// The row insert succeeded and only its task-ledger file failed after
+    /// the daemon acknowledged the MERGE text. That is still a delivery
+    /// whose outcome must not be repeated: the decision is uncertain and a
+    /// retried decision is refused before anything is typed again.
+    #[tokio::test]
+    async fn does_not_resend_acknowledged_input_when_its_ledger_publication_failed() {
+        let unique = format!("human-review-publication-failed-{}", unique_test_suffix());
+        let daemon_dir = std::env::temp_dir().join(format!("{unique}-daemon"));
+        std::fs::create_dir_all(&daemon_dir).unwrap();
+        let socket_path = daemon_socket_path_for_dir(&daemon_dir.to_string_lossy());
+        let listener = UnixListener::bind(&socket_path).unwrap();
+        let daemon_server = spawn_live_session_daemon(listener, "task-merge", 2);
+        let config = merge_test_config(&unique, &daemon_dir);
+        let db = Db::open_for_tests(&config.db_path).unwrap();
+        db.insert_test_repo("repo-1", "Repo One").unwrap();
+        seed_review_child(&db, "task-review");
+        seed_merge_singleton(&db);
+        // The merge master's first ledger entry is the delivered MERGE input.
+        crate::task_store::inject_fault(
+            &crate::task_store::root_for_db(&config.db_path),
+            crate::task_store::FlushFault::BeforePublish(1),
+        );
+
+        let app = super::super::router(Arc::new(super::super::AppState::new(config.clone())));
+        for expected_status in [StatusCode::SERVICE_UNAVAILABLE, StatusCode::CONFLICT] {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::post("/v1/tasks/task-review/actions/queue-reviewed-pr")
+                        .header("content-type", "application/json")
+                        .body(Body::from(queue_body(1, REVIEWED_HEAD)))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), expected_status);
+            let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            let body = String::from_utf8(body.to_vec()).unwrap();
+            if expected_status == StatusCode::SERVICE_UNAVAILABLE {
+                assert!(body.contains("task_input_publication_pending"), "{body}");
+            } else {
+                assert!(body.contains("do not send this again"), "{body}");
+            }
+            let decision = db
+                .latest_human_review_decision("task-review")
+                .unwrap()
+                .unwrap();
+            assert_eq!(decision.delivery_status, "uncertain");
+            assert_eq!(
+                db.count_test_human_review_decisions("task-review").unwrap(),
+                1
+            );
+            // The durable row exists; only its ledger file was pending.
+            assert_eq!(db.count_task_inputs("task-merge").unwrap(), 1);
+        }
+
+        assert!(matches!(
+            daemon_server.await.unwrap().as_slice(),
+            [DaemonCommand::List, DaemonCommand::SubmitInputIfSession { session_id, expected_pid: 42, .. }]
+                if session_id == "task-merge"
+        ));
+        drop(app);
+        drop(db);
+        let _ = std::fs::remove_file(socket_path);
+        let _ = std::fs::remove_dir_all(daemon_dir);
+        let _ = std::fs::remove_file(config.db_path);
+    }
+
     /// Drive one request against a live fake daemon, returning the HTTP
     /// response and every line the merge singleton's session was sent.
     async fn post_queue_request(

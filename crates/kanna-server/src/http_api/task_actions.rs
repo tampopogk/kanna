@@ -319,6 +319,9 @@ pub(super) async fn set_task_workflow(
                 )
                 .map_err(|error| db_write_error("db error", error))?;
             if changed {
+                // An owed transition was computed against the old workflow.
+                db.clear_ledger_continuation(&task_id)
+                    .map_err(|error| db_write_error("db error", error))?;
                 crate::task_store::flush_task_best_effort(&db, &state.config.db_path, &task_id);
             }
             Ok((
@@ -449,6 +452,9 @@ pub(super) async fn replace_task_workflow(
                 )
                 .map_err(|error| db_write_error("db error", error))?;
             if changed {
+                // An owed transition was computed against the old workflow.
+                db.clear_ledger_continuation(&task_id)
+                    .map_err(|error| db_write_error("db error", error))?;
                 crate::task_store::flush_task_best_effort(&db, &state.config.db_path, &task_id);
             }
             let definition_value = serde_json::from_str::<serde_json::Value>(
@@ -1217,7 +1223,7 @@ pub(super) async fn advance_stage(
             {
                 return Ok(None);
             }
-            crate::task_creator::prepare_advance_stage_for_api_with_intent(
+            let prepared = crate::task_creator::prepare_advance_stage_for_api_with_intent(
                 &db,
                 &state.config,
                 &task_id,
@@ -1226,8 +1232,12 @@ pub(super) async fn advance_stage(
                     provider_override,
                 },
             )
-            .map(Some)
-            .map_err(|e| (stage_action_error_status(&e), e))
+            .map_err(|e| (stage_action_error_status(&e), e))?;
+            // An explicit advance supersedes whatever transition an earlier
+            // completion or revision still owed this task.
+            db.clear_ledger_continuation(&task_id)
+                .map_err(|e| db_write_error("db error", e))?;
+            Ok(Some(prepared))
         })
         .await?
     };
@@ -1677,8 +1687,13 @@ pub(super) async fn rerun_stage(
             })?;
             reject_unprepared_transfer(&db, &task_id)
                 .map_err(|error| (axum::http::StatusCode::CONFLICT, error))?;
-            crate::task_creator::prepare_rerun_stage_for_api(&db, &state.config, &task_id)
-                .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e))
+            let prepared =
+                crate::task_creator::prepare_rerun_stage_for_api(&db, &state.config, &task_id)
+                    .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e))?;
+            // A rerun supersedes any transition still owed to the run it replaces.
+            db.clear_ledger_continuation(&task_id)
+                .map_err(|e| db_write_error("db error", e))?;
+            Ok(prepared)
         })
         .await?
     };
@@ -2353,6 +2368,12 @@ pub(super) async fn complete_stage(
                 // A corrected verdict replaces whatever the earlier one asked
                 // the engine to do next.
                 if payload_verdict.completes_stage() {
+                    // The task's stage, not the run's: a post run is named
+                    // after its post, while the task stays at the owning stage.
+                    let task_stage = db
+                        .get_pipeline_item(&task_id)
+                        .map_err(|e| db_write_error("db error", e))?
+                        .and_then(|item| item.stage);
                     db.put_ledger_continuation(
                         &task_id,
                         &result_entry.operation_id,
@@ -2362,6 +2383,11 @@ pub(super) async fn complete_stage(
                             "completionTransition": current_run.completion_transition,
                             "trigger": current_run.trigger,
                             "resultId": result_entry.entry_id,
+                            // The fence: this transition is owed only while
+                            // the task is still at this stage with this run
+                            // as its latest.
+                            "runId": current_run.id,
+                            "stage": task_stage,
                         }),
                     )
                 } else {
@@ -2455,16 +2481,9 @@ pub(super) async fn complete_stage(
         // could not be published the first time: it publishes what is still
         // pending and dispatches the transition the original still owes,
         // exactly once. It never answers success ahead of the file.
-        if let Some(finished_run) =
-            settle_completion_publication(&state, &task_id, replayed).await?
-        {
-            dispatch_completion_transition(
-                Arc::clone(&state),
-                task_id.clone(),
-                finished_run,
-                task_mutation,
-            )
-            .await?;
+        if let Some(owed) = settle_ledger_continuation(&state, &task_id, replayed).await? {
+            dispatch_owed_transition(Arc::clone(&state), task_id.clone(), owed, task_mutation)
+                .await?;
         }
         return Ok(Json(crate::mobile_api::TaskActionResponse {
             task_id,
@@ -2477,19 +2496,18 @@ pub(super) async fn complete_stage(
     // Durable completion is announced, and its transition dispatched, only
     // once the result's ledger entry is on disk. A failure here leaves the
     // accepted result and its continuation pending; nothing is re-recorded.
-    let owed = settle_completion_publication(&state, &task_id, true).await?;
+    let owed = settle_ledger_continuation(&state, &task_id, true).await?;
     let response = crate::mobile_api::TaskActionResponse {
         task_id: task_id.clone(),
         follow_task: None,
         revision_budget: None,
         workflow_extended,
     };
-    let Some(finished_run) = owed.filter(|_| should_auto_advance) else {
+    let Some(owed) = owed.filter(|_| should_auto_advance) else {
         state.publish_state_changed(StateChangeScope::Tasks);
         return Ok(Json(response));
     };
-    dispatch_completion_transition(Arc::clone(&state), task_id, finished_run, task_mutation)
-        .await?;
+    dispatch_owed_transition(Arc::clone(&state), task_id, owed, task_mutation).await?;
     Ok(Json(response))
 }
 
@@ -2550,16 +2568,32 @@ fn enqueue_completion_result(
     })
 }
 
+/// A transition an accepted operation still owes, taken from its durable
+/// ledger continuation once that operation's entries are published.
+enum OwedTransition {
+    Completion(crate::db::FinishedStageRun),
+    Revision {
+        target_stage: String,
+        prompt: String,
+        round: Option<crate::task_creator::RevisionRound>,
+    },
+}
+
 /// Publish the task's pending ledger entries and, when `claim` is set, take
-/// the stage transition a recorded completion still owes.
-async fn settle_completion_publication(
+/// the transition an accepted completion or revision still owes.
+///
+/// A continuation is fenced to the stage and run that recorded it. If the
+/// task has since moved (an operator advanced it, a rerun or another
+/// transition replaced the run) the continuation is stale: it is consumed
+/// and discarded, never dispatched against the task's current stage.
+async fn settle_ledger_continuation(
     state: &Arc<AppState>,
     task_id: &str,
     claim: bool,
-) -> Result<Option<crate::db::FinishedStageRun>, (axum::http::StatusCode, String)> {
+) -> Result<Option<OwedTransition>, (axum::http::StatusCode, String)> {
     let state = Arc::clone(state);
     let task_id = task_id.to_string();
-    super::blocking::run_handler_blocking("stage completion publication", move || {
+    super::blocking::run_handler_blocking("ledger continuation publication", move || {
         let db = Db::open(&state.config.db_path).map_err(|e| db_write_error("db error", e))?;
         crate::task_store::flush_task(&db, &state.config.db_path, &task_id).map_err(|error| {
             (
@@ -2581,35 +2615,139 @@ async fn settle_completion_publication(
         else {
             return Ok(None);
         };
-        Ok(completion_continuation_run(&continuation))
+        if !continuation_still_owed(&db, &continuation)
+            .map_err(|e| db_write_error("db error", e))?
+        {
+            log::warn!(
+                "discarding stale {} continuation {} for task {task_id}: the task moved on",
+                continuation.kind,
+                continuation.operation_id
+            );
+            return Ok(None);
+        }
+        Ok(owed_transition(&continuation))
     })
     .await
 }
 
-fn completion_continuation_run(
+/// Is the task still where the continuation's operation left it?
+fn continuation_still_owed(
+    db: &Db,
     continuation: &crate::db::task_store::LedgerContinuation,
-) -> Option<crate::db::FinishedStageRun> {
-    if continuation.kind != crate::db::task_store::STAGE_COMPLETION_CONTINUATION {
-        log::error!(
-            "dropping unknown ledger continuation {} for task {}",
-            continuation.kind,
-            continuation.task_id
-        );
-        return None;
+) -> rusqlite::Result<bool> {
+    let Some(item) = db.get_pipeline_item(&continuation.task_id)? else {
+        return Ok(false);
+    };
+    if item.closed_at.is_some() {
+        return Ok(false);
     }
     let payload = &continuation.payload;
-    Some(crate::db::FinishedStageRun {
-        kind: payload.get("kind")?.as_str()?.to_string(),
-        completion_transition: payload
-            .get("completionTransition")
+    // Every continuation is written with its fence; one without it cannot be
+    // proven current.
+    let Some(stage) = payload.get("stage").and_then(serde_json::Value::as_str) else {
+        return Ok(false);
+    };
+    if item.stage.as_deref() != Some(stage) {
+        return Ok(false);
+    }
+    match payload.get("runId").and_then(serde_json::Value::as_str) {
+        Some(run_id) => Ok(db
+            .latest_stage_run(&continuation.task_id)?
+            .is_some_and(|latest| latest.id == run_id)),
+        None => Ok(true),
+    }
+}
+
+fn owed_transition(
+    continuation: &crate::db::task_store::LedgerContinuation,
+) -> Option<OwedTransition> {
+    let payload = &continuation.payload;
+    let text = |key: &str| {
+        payload
+            .get(key)
             .and_then(serde_json::Value::as_str)
-            .map(str::to_string),
-        trigger: payload
-            .get("trigger")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or("unspecified")
-            .to_string(),
-    })
+            .map(str::to_string)
+    };
+    match continuation.kind.as_str() {
+        crate::db::task_store::STAGE_COMPLETION_CONTINUATION => {
+            Some(OwedTransition::Completion(crate::db::FinishedStageRun {
+                kind: text("kind")?,
+                completion_transition: text("completionTransition"),
+                trigger: text("trigger").unwrap_or_else(|| "unspecified".to_string()),
+            }))
+        }
+        crate::db::task_store::REVISION_CONTINUATION => Some(OwedTransition::Revision {
+            target_stage: text("targetStage")?,
+            prompt: text("prompt")?,
+            round: payload.get("round").and_then(|round| {
+                Some(crate::task_creator::RevisionRound {
+                    number: round.get("number")?.as_i64()?,
+                    limit: round.get("limit")?.as_i64()?,
+                })
+            }),
+        }),
+        other => {
+            log::error!(
+                "dropping unknown ledger continuation {other} for task {}",
+                continuation.task_id
+            );
+            None
+        }
+    }
+}
+
+/// Dispatch an owed transition under the caller's task mutation lease.
+async fn dispatch_owed_transition(
+    state: Arc<AppState>,
+    task_id: String,
+    owed: OwedTransition,
+    task_mutation: super::state::RequestedTaskMutation,
+) -> Result<(), (axum::http::StatusCode, String)> {
+    match owed {
+        OwedTransition::Completion(finished_run) => {
+            dispatch_completion_transition(state, task_id, finished_run, task_mutation).await
+        }
+        OwedTransition::Revision {
+            target_stage,
+            prompt,
+            round,
+        } => {
+            // The round was spent and the reviewer's run finished when the
+            // revision was accepted; only the reviser's spawn is still owed.
+            let prepared = {
+                let state = Arc::clone(&state);
+                let task_id = task_id.clone();
+                super::blocking::run_handler_blocking("owed revision prepare", move || {
+                    let db = Db::open(&state.config.db_path)
+                        .map_err(|e| db_write_error("db error", e))?;
+                    crate::task_creator::prepare_revision_task_for_api(
+                        &db,
+                        &state.config,
+                        &task_id,
+                        &target_stage,
+                        &prompt,
+                        round,
+                    )
+                    .map_err(|e| {
+                        record_stage_transition_failure(&state, &task_id, &e);
+                        (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e)
+                    })
+                })
+                .await?
+            };
+            execute_stage_transition_detached_holding(
+                Arc::clone(&state),
+                task_id,
+                crate::task_creator::PreparedStageTransition::Run(Box::new(prepared)),
+                StageTransitionOwnership {
+                    task_mutation: Some(task_mutation),
+                    requested_operation: None,
+                },
+            );
+            state.publish_state_changed(StateChangeScope::Tasks);
+            Ok(())
+        }
+    }
 }
 
 /// Prepare and dispatch the transition a published completion asked for.
@@ -2692,12 +2830,12 @@ pub(crate) async fn resume_ledger_continuations(state: Arc<AppState>) {
     };
     for task_id in task_ids {
         let task_mutation = state.begin_requested_task_mutation(&task_id).await;
-        match settle_completion_publication(&state, &task_id, true).await {
-            Ok(Some(finished_run)) => {
-                if let Err((_, error)) = dispatch_completion_transition(
+        match settle_ledger_continuation(&state, &task_id, true).await {
+            Ok(Some(owed)) => {
+                if let Err((_, error)) = dispatch_owed_transition(
                     Arc::clone(&state),
                     task_id.clone(),
-                    finished_run,
+                    owed,
                     task_mutation,
                 )
                 .await
@@ -3032,6 +3170,30 @@ pub(super) async fn request_revision(
                 if let Some(review) = review_result.as_ref() {
                     review.enqueue(db, &source_task_id, &payload, origin, event_floor)?;
                 }
+                // The reviser's spawn is owed from this commit on, whatever
+                // happens to the detached worker: the round is spent and the
+                // reviewer's run is finished. The continuation is what lets
+                // the publisher start the reviser if publication has to wait,
+                // fenced to the stage and reviewer run this request saw. It
+                // supersedes any transition an earlier completion still owed.
+                let source_stage = db
+                    .get_pipeline_item(&source_task_id)?
+                    .and_then(|item| item.stage);
+                db.put_ledger_continuation(
+                    &source_task_id,
+                    &format!("revision:{source_task_id}:{event_floor}"),
+                    crate::db::task_store::REVISION_CONTINUATION,
+                    &serde_json::json!({
+                        "stage": source_stage,
+                        "runId": payload.run_id,
+                        "targetStage": payload.target_stage,
+                        "prompt": revision_prompt,
+                        "round": round.map(|round| serde_json::json!({
+                            "number": round.number,
+                            "limit": round.limit,
+                        })),
+                    }),
+                )?;
                 Ok(rounds)
             });
             let rounds = match finalized {
@@ -3103,20 +3265,45 @@ pub(super) async fn request_revision(
             prepared,
             budget,
         } => {
-            // Ownership moves into the worker: the task stays claimed until
-            // the revision has actually landed, not just until this response.
-            execute_stage_transition_detached_holding(
-                Arc::clone(&state),
-                source_task_id.clone(),
-                crate::task_creator::PreparedStageTransition::Run(prepared),
-                StageTransitionOwnership {
-                    task_mutation: Some(task_mutation),
-                    requested_operation: Some(revision_in_flight),
-                },
-            );
+            // The reviser starts only once the reviewer's result is on disk,
+            // and only by whoever claims the revision's continuation. Holding
+            // the lease, this request normally does both; if publication has
+            // to wait, the prepared workspace is rolled back and the publisher
+            // starts the reviser from the continuation later — the round was
+            // spent once and is not spent again.
+            let owned = match settle_ledger_continuation(&state, &source_task_id, true).await {
+                Ok(Some(OwedTransition::Revision { .. })) => true,
+                Ok(_) => false,
+                Err((_, error)) => {
+                    log::warn!("revision of {source_task_id} waits for its ledger: {error}");
+                    false
+                }
+            };
+            if owned {
+                // Ownership moves into the worker: the task stays claimed until
+                // the revision has actually landed, not just until this response.
+                execute_stage_transition_detached_holding(
+                    Arc::clone(&state),
+                    source_task_id.clone(),
+                    crate::task_creator::PreparedStageTransition::Run(prepared),
+                    StageTransitionOwnership {
+                        task_mutation: Some(task_mutation),
+                        requested_operation: Some(revision_in_flight),
+                    },
+                );
+            } else {
+                let _ = crate::task_creator::rollback_prepared_stage_run_for_api(
+                    &prepared,
+                    "revision start deferred until its ledger entry is published".to_string(),
+                );
+            }
             state.publish_state_changed(StateChangeScope::Tasks);
 
-            let message = if budget.limit > 0 && origin.is_agent() {
+            let message = if !owned {
+                "Revision accepted; the revising session starts once the reviewer's result is \
+                 published to the task ledger. Do not request it again."
+                    .to_string()
+            } else if budget.limit > 0 && origin.is_agent() {
                 format!(
                     "Revision round {rounds} of {limit} started.",
                     rounds = budget.rounds,
