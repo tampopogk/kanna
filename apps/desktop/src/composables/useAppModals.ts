@@ -612,6 +612,11 @@ export function useAppModals({
     mainTabs?.openTab({ kind: "image", imageUrl });
   }
 
+  /** An artifact of this machine's repository, by tree id; without one, the tab asks for it. */
+  function openArtifact(repoId: string, artifactId?: string) {
+    mainTabs?.openTab({ kind: "artifact", artifactRepoId: repoId, ...(artifactId ? { artifactId } : {}) });
+  }
+
 
   // Only dialogs are left to restore focus after; the main area's views are
   // tabs, and a tab never took focus away from anything to begin with.
@@ -691,6 +696,7 @@ export function useAppModals({
     openFilePreview,
     selectFileFromPicker,
     openImageUrlPreview,
+    openArtifact,
     getCurrentPreviewRecall,
   };
 }

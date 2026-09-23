@@ -199,3 +199,49 @@ pub(crate) struct PublishedArtifact {
     /// version record was written.
     pub(crate) content_created: bool,
 }
+
+/// A ref on an artifact remote that was not imported, and why.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ArtifactRefusedRef {
+    #[serde(rename = "ref")]
+    pub(crate) ref_name: String,
+    pub(crate) reason: String,
+}
+
+/// What pushing one artifact to the repository's artifact remote did.
+/// `remote` never carries URL credentials.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ArtifactPushOutcome {
+    pub(crate) remote: String,
+    pub(crate) artifact_id: String,
+    /// The pushed id first, then every earlier version its `previous` links
+    /// reach in this repository; each went with all of its records.
+    pub(crate) artifact_ids: Vec<String>,
+    /// Remote refs this push created.
+    pub(crate) created_refs: Vec<String>,
+    /// Remote refs that already held exactly these objects.
+    pub(crate) up_to_date_refs: usize,
+}
+
+/// What fetching one artifact id from the repository's artifact remote did.
+/// Received records are data: importing a decision changes no task.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ArtifactFetchOutcome {
+    pub(crate) remote: String,
+    pub(crate) artifact_id: String,
+    /// Ids the remote held something for: the requested id, then earlier
+    /// versions reached through `previous`.
+    pub(crate) fetched: Vec<String>,
+    /// Trees this fetch newly retained here.
+    pub(crate) content_retained: Vec<String>,
+    pub(crate) records_imported: usize,
+    pub(crate) refused: Vec<ArtifactRefusedRef>,
+    /// Earlier versions named by a `previous` link whose content neither the
+    /// remote nor this repository holds.
+    pub(crate) missing: Vec<String>,
+    /// The requested artifact as this repository now knows it.
+    pub(crate) detail: ArtifactDetail,
+}

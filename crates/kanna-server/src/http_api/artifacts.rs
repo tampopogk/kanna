@@ -4,21 +4,28 @@
 //! Publishing is task-scoped because the bytes come from that task's
 //! workspace. Everything else is repository-scoped: an artifact belongs to
 //! the working repository's artifact store, not to the task that made it.
+//!
+//! Push and fetch share one artifact with another Kanna home through the
+//! repository's configured `artifacts.remote`; the remote is never a request
+//! parameter, so a caller cannot direct content anywhere configuration did
+//! not name.
 
 use super::lan_trust::PrivilegedTaskAccess;
 use super::state::AppState;
 use super::task_blockers::resolve_existing_task_id;
+use crate::artifacts::remote::{self, ArtifactRemote};
 use crate::artifacts::store::{
     parse_object_id, ArtifactStore, CommentRequest, DecisionRequest, PublishLimits, PublishRequest,
 };
 use crate::artifacts::types::{ArtifactAnchor, ArtifactContentKind};
 use crate::artifacts::{resolve_repository_path, ArtifactError};
 use crate::db::{Db, Repo};
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
-use serde::Deserialize;
+use base64::Engine as _;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::sync::Arc;
 
@@ -51,6 +58,27 @@ pub(super) struct AnchorRequest {
     position: Option<String>,
     #[serde(default)]
     excerpt: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(super) struct ArtifactFileQuery {
+    path: String,
+}
+
+/// One file of a retained tree, for a client that cannot reach this machine's
+/// loopback preview listener (a phone over LAN or relay) and renders the
+/// artifact itself. Bounded like a task file download, because the whole body
+/// crosses the relay as one message.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct ArtifactFileContent {
+    repo_id: String,
+    artifact_id: String,
+    path: String,
+    media_type: String,
+    size: u64,
+    data_base64: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -132,6 +160,46 @@ pub(super) async fn get_artifact(
     .await
 }
 
+pub(super) async fn read_artifact_file(
+    _access: PrivilegedTaskAccess,
+    State(state): State<Arc<AppState>>,
+    Path((repo_id, artifact_id)): Path<(String, String)>,
+    Query(query): Query<ArtifactFileQuery>,
+) -> Response {
+    blocking("artifact file read", move || {
+        let store = existing_store(&state, &repo_id, &artifact_id)?;
+        let blob = store
+            .read_file(&artifact_id, &query.path)
+            .map_err(artifact_error)?;
+        let size = blob.bytes.len() as u64;
+        if size > crate::task_files::MAX_TASK_FILE_BYTES {
+            let mut body = json!({
+                "error": "file_too_large",
+                "message": format!(
+                    "{} exceeds the {} byte limit for reading one artifact file",
+                    blob.path,
+                    crate::task_files::MAX_TASK_FILE_BYTES
+                ),
+            });
+            body["artifactId"] = json!(artifact_id);
+            body["path"] = json!(blob.path);
+            return Err(Box::new(
+                (StatusCode::PAYLOAD_TOO_LARGE, Json(body)).into_response(),
+            ));
+        }
+        Ok(Json(ArtifactFileContent {
+            repo_id,
+            artifact_id,
+            media_type: super::artifact_preview::media_type(&blob.path),
+            size,
+            data_base64: base64::engine::general_purpose::STANDARD.encode(&blob.bytes),
+            path: blob.path,
+        })
+        .into_response())
+    })
+    .await
+}
+
 pub(super) async fn record_artifact_comment(
     _access: PrivilegedTaskAccess,
     State(state): State<Arc<AppState>>,
@@ -179,6 +247,86 @@ pub(super) async fn record_artifact_decision(
         Ok((StatusCode::CREATED, Json(decision)).into_response())
     })
     .await
+}
+
+pub(super) async fn push_artifact(
+    _access: PrivilegedTaskAccess,
+    State(state): State<Arc<AppState>>,
+    Path((repo_id, artifact_id)): Path<(String, String)>,
+) -> Response {
+    blocking("artifact push", move || {
+        parse_object_id(&artifact_id).map_err(artifact_error)?;
+        let (repo, path, policy) = repository_location(&state, &repo_id)?;
+        let remote = configured_remote(&state, &repo, &path, &policy)?;
+        let store = ArtifactStore::open_existing(&path, &repo.id)
+            .map_err(artifact_error)?
+            .ok_or_else(|| {
+                artifact_error(ArtifactError::NotFound {
+                    repo_id: repo.id.clone(),
+                    artifact_id: artifact_id.clone(),
+                })
+            })?;
+        let outcome = remote::push(&store, &remote, &artifact_id).map_err(artifact_error)?;
+        Ok(Json(outcome).into_response())
+    })
+    .await
+}
+
+pub(super) async fn fetch_artifact(
+    _access: PrivilegedTaskAccess,
+    State(state): State<Arc<AppState>>,
+    Path((repo_id, artifact_id)): Path<(String, String)>,
+) -> Response {
+    blocking("artifact fetch", move || {
+        parse_object_id(&artifact_id).map_err(artifact_error)?;
+        let (repo, path, policy) = repository_location(&state, &repo_id)?;
+        let remote = configured_remote(&state, &repo, &path, &policy)?;
+        // Receiving is how a home that never published anything gets its
+        // first artifact, so this is the one read path that creates the store.
+        let store = ArtifactStore::open_or_create(&path, &repo.id).map_err(artifact_error)?;
+        let outcome = remote::fetch(&store, &remote, &artifact_id).map_err(artifact_error)?;
+        Ok(Json(outcome).into_response())
+    })
+    .await
+}
+
+fn repository_location(
+    state: &AppState,
+    repo_id: &str,
+) -> Result<
+    (
+        Repo,
+        std::path::PathBuf,
+        crate::task_creator::RepoArtifactPolicy,
+    ),
+    Refusal,
+> {
+    let db = open_db(state)?;
+    let repo = find_repo(&db, repo_id)?;
+    let policy = policy(state, &repo)?;
+    let path = resolve_repository_path(
+        &state.artifact_storage,
+        &repo.id,
+        std::path::Path::new(&repo.path),
+        policy.repository_path.as_deref(),
+    )
+    .map_err(artifact_error)?;
+    Ok((repo, path, policy))
+}
+
+fn configured_remote(
+    state: &AppState,
+    repo: &Repo,
+    store_path: &std::path::Path,
+    policy: &crate::task_creator::RepoArtifactPolicy,
+) -> Result<ArtifactRemote, Refusal> {
+    let configured = policy.remote.as_deref().ok_or_else(|| {
+        artifact_error(ArtifactError::RemoteNotConfigured {
+            repo_id: repo.id.clone(),
+        })
+    })?;
+    ArtifactRemote::parse(configured, state.artifact_storage.home(), store_path)
+        .map_err(artifact_error)
 }
 
 pub(super) async fn open_artifact_preview(
@@ -362,6 +510,11 @@ pub(super) fn artifact_status(error: &ArtifactError) -> StatusCode {
         ArtifactError::WorkspaceUnavailable(_) | ArtifactError::Location(_) => StatusCode::CONFLICT,
         ArtifactError::TooLarge(_) => StatusCode::PAYLOAD_TOO_LARGE,
         ArtifactError::Storage(_) => StatusCode::INTERNAL_SERVER_ERROR,
+        ArtifactError::NotOnRemote { .. } => StatusCode::NOT_FOUND,
+        ArtifactError::RemoteNotConfigured { .. }
+        | ArtifactError::InvalidRemote(_)
+        | ArtifactError::RemoteConflict { .. } => StatusCode::CONFLICT,
+        ArtifactError::RemoteFailed(_) => StatusCode::BAD_GATEWAY,
     }
 }
 
@@ -386,6 +539,20 @@ fn artifact_error(error: ArtifactError) -> Refusal {
         ArtifactError::FileNotFound { artifact_id, path } => {
             body["artifactId"] = json!(artifact_id);
             body["path"] = json!(path);
+        }
+        ArtifactError::NotOnRemote {
+            remote,
+            artifact_id,
+        } => {
+            body["remote"] = json!(remote);
+            body["artifactId"] = json!(artifact_id);
+        }
+        ArtifactError::RemoteConflict { remote, refs } => {
+            body["remote"] = json!(remote);
+            body["refs"] = json!(refs);
+        }
+        ArtifactError::RemoteNotConfigured { repo_id } => {
+            body["repoId"] = json!(repo_id);
         }
         _ => {}
     }

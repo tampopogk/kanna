@@ -14,7 +14,12 @@
 //!   identity, which is kept beside it.
 //! - **Frozen payload.** The bytes that will be written are rendered at
 //!   enqueue time. Publication never re-reads mutable rows or git state, so a
-//!   late flush cannot change what the entry says happened.
+//!   late flush cannot change what the entry says happened. This is also
+//!   where each entry's `declared_role` and `channel_identity` (T8's
+//!   [`crate::mutation_provenance::MutationProvenance`]) are frozen in:
+//!   historical/backfilled entries always freeze an explicit
+//!   [`crate::mutation_provenance::ChannelIdentity::Unknown`], never a value
+//!   inferred from a declared label or a transport.
 //! - **Held announcements.** A result entry takes the task events its
 //!   originating mutation appended for the same task (`run.finished`,
 //!   `task.revision_requested`) and re-appends them only when the entry is
@@ -26,6 +31,7 @@
 //!   follow immediately.
 
 use super::{Db, TaskEventKind};
+use crate::mutation_provenance::ChannelIdentity;
 use rusqlite::{params, OptionalExtension};
 use serde_json::{json, Value};
 
@@ -135,9 +141,13 @@ pub struct NewLedgerEntry<'a> {
     /// When the fact happened, for historical entries. `None` is now.
     pub recorded_at: Option<&'a str>,
     pub run_id: Option<&'a str>,
-    /// A role the caller genuinely declared (`operator`, `manager`), never
-    /// inferred from a transport or a source label.
+    /// A role the caller genuinely declared (`operator`, `manager`, `agent`),
+    /// never inferred from a transport or a source label.
     pub declared_role: Option<&'a str>,
+    /// The channel this server verified the mutation arrived on (T8). Always
+    /// explicit: [`ChannelIdentity::Unknown`] for historical/backfilled
+    /// entries, never guessed from `declared_role` or the transport.
+    pub channel_identity: &'a ChannelIdentity,
     pub body: Value,
     /// Verbatim message body for result and input entries.
     pub message: Option<&'a str>,
@@ -354,7 +364,7 @@ impl Db {
                     None => Value::Null,
                 },
                 "declared_role": entry.declared_role,
-                "channel_identity": Value::Null,
+                "channel_identity": entry.channel_identity.to_json(),
                 "artifacts": {},
                 entry.kind.as_str(): body,
             });
@@ -996,6 +1006,7 @@ impl Db {
                     recorded_at: Some(&recorded_at),
                     run_id: entry.run_id.as_deref(),
                     declared_role: entry.declared_role.as_deref(),
+                    channel_identity: &ChannelIdentity::Unknown,
                     body: entry.body,
                     message: entry.message.as_deref(),
                     hold_events_after: None,
@@ -1204,6 +1215,13 @@ pub(crate) fn declared_input_role(source: &str) -> Option<String> {
 
 pub(crate) fn declared_transition_role(trigger: &str) -> Option<String> {
     matches!(trigger, "operator" | "manager").then(|| trigger.to_string())
+}
+
+/// A workflow edit's declared `source` additionally allows `agent` (the
+/// `complete-stage` convention label for a combined verdict-and-publish); a
+/// bare `unspecified` declares no role, same as elsewhere.
+pub(crate) fn declared_workflow_role(source: &str) -> Option<String> {
+    matches!(source, "operator" | "manager" | "agent").then(|| source.to_string())
 }
 
 fn is_missing_ledger_table(error: &rusqlite::Error) -> bool {

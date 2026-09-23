@@ -400,6 +400,10 @@ vi.mock("../screens/RepoExplorer", () => ({ RepoExplorer: "RepoExplorer" }));
 vi.mock("../screens/VisualCompanionModal", () => ({
   VisualCompanionModal: "VisualCompanionModal"
 }));
+vi.mock("../screens/ArtifactViewer", () => ({
+  ArtifactViewer: "ArtifactViewer"
+}));
+
 vi.mock("../screens/TaskPreviewModal", () => ({
   TaskPreviewModal: "TaskPreviewModal"
 }));
@@ -1687,10 +1691,14 @@ describe("RootNavigator task action integration", () => {
   });
 
   it.each([
-    [false, { mentionedFilesLabel: "Mentioned Files (0)" }],
+    [false, { mentionedFilesLabel: "Mentioned Files (0)", artifactsAvailable: true }],
     [
       true,
-      { mentionedFilesLabel: "Mentioned Files (0)", previewAvailable: true }
+      {
+        mentionedFilesLabel: "Mentioned Files (0)",
+        previewAvailable: true,
+        artifactsAvailable: true
+      }
     ]
   ] as const)(
     "gates the task Preview action on controller capability (%s)",

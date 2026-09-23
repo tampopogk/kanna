@@ -14,7 +14,9 @@ import type {
   TaskFileMentionResolution,
   TaskInputAttachment,
   TaskPreviewOpenResult,
-  TaskSummary
+  TaskSummary,
+  ArtifactDetail,
+  ArtifactFileContent
 } from "../lib/api/types";
 import type {
   KannaClient,
@@ -142,6 +144,8 @@ export interface MobileController {
     mentions: readonly TaskFileMentionInput[]
   ): Promise<TaskFileMentionResolution>;
   readTaskDiff(taskId: string, request?: TaskDiffRequest): Promise<TaskDiffContent>;
+  getArtifact(repoId: string, artifactId: string): Promise<ArtifactDetail>;
+  readArtifactFile(repoId: string, artifactId: string, path: string): Promise<ArtifactFileContent>;
   canOpenTaskPreview?(taskId: string): boolean;
   openTaskPreview(taskId: string, portName?: string): Promise<TaskPreviewOpenResult>;
   closeTaskPreview(taskId: string): Promise<void>;
@@ -4076,6 +4080,14 @@ export function createMobileController(
 
     readTaskFile(taskId, path) {
       return client.readTaskFile(taskId, path);
+    },
+
+    getArtifact(repoId, artifactId) {
+      return client.getArtifact(repoId, artifactId);
+    },
+
+    readArtifactFile(repoId, artifactId, path) {
+      return client.readArtifactFile(repoId, artifactId, path);
     },
 
     downloadTaskFile(taskId, path) {

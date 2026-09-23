@@ -1,7 +1,7 @@
 use super::analytics::get_repo_analytics;
 use super::artifacts::{
-    close_artifact_preview, get_artifact, open_artifact_preview, publish_artifact,
-    record_artifact_comment, record_artifact_decision,
+    close_artifact_preview, fetch_artifact, get_artifact, open_artifact_preview, publish_artifact,
+    push_artifact, read_artifact_file, record_artifact_comment, record_artifact_decision,
 };
 use super::backup::create_backup;
 use super::cloud_desktops::{invoke_cloud_desktop, list_cloud_desktops};
@@ -423,6 +423,10 @@ pub fn router(state: Arc<AppState>) -> Router {
             get(get_artifact),
         )
         .route(
+            "/v1/repos/{repo_id}/artifacts/{artifact_id}/files",
+            get(read_artifact_file),
+        )
+        .route(
             "/v1/repos/{repo_id}/artifacts/{artifact_id}/comments",
             post(record_artifact_comment),
         )
@@ -437,6 +441,14 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route(
             "/v1/repos/{repo_id}/artifacts/{artifact_id}/preview/close",
             post(close_artifact_preview),
+        )
+        .route(
+            "/v1/repos/{repo_id}/artifacts/{artifact_id}/push",
+            post(push_artifact),
+        )
+        .route(
+            "/v1/repos/{repo_id}/artifacts/{artifact_id}/fetch",
+            post(fetch_artifact),
         )
         .route(
             "/v1/tasks/{task_id}/actions/run-merge-agent",

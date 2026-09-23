@@ -287,6 +287,7 @@ impl Db {
             run_id.as_deref(),
             stage.as_deref(),
             source,
+            channel,
             message,
             None,
             None,
@@ -315,6 +316,7 @@ impl Db {
         run_id: Option<&str>,
         stage: Option<&str>,
         source: &str,
+        channel: &ChannelIdentity,
         message: &str,
         origin: Option<&TaskInputOrigin>,
         historical_at: Option<&str>,
@@ -348,6 +350,7 @@ impl Db {
             recorded_at: historical_at,
             run_id,
             declared_role: declared_role.as_deref(),
+            channel_identity: channel,
             body: json!({
                 "input_id": input_id,
                 "source": source,
@@ -480,6 +483,10 @@ impl Db {
                         None,
                         input.stage.as_deref(),
                         &input.source,
+                        // A transferred input's channel was verified by the
+                        // origin machine, not this one; this server never
+                        // reconstructs a channel it did not itself verify.
+                        &ChannelIdentity::Unknown,
                         &input.message,
                         Some(&input.origin),
                         Some(&delivered_at),
