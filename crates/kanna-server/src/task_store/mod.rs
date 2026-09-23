@@ -93,6 +93,12 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, LazyLock, Mutex};
 use tokio::sync::Notify;
 
+// The offline rebuild has no production caller yet: this increment proves it
+// against fixtures, and a later T13 increment decides its entry point.
+#[cfg_attr(not(test), allow(dead_code))]
+pub mod rebuild;
+#[cfg(test)]
+mod rebuild_tests;
 #[cfg(test)]
 mod tests;
 
