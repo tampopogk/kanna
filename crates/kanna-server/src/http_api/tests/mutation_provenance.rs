@@ -233,6 +233,7 @@ async fn each_transport_records_its_verified_channel_beside_a_declared_operator(
                 let response = crate::http_api::routes::dispatch_authenticated_lan_http_invoke(
                     Arc::clone(&state),
                     "desk-lan".into(),
+                    Some("uid-verified".into()),
                     "POST",
                     path,
                     body,
@@ -243,7 +244,7 @@ async fn each_transport_records_its_verified_channel_beside_a_declared_operator(
                     ChannelIdentity::PeerDesktop {
                         desktop_id: "desk-lan".into(),
                         evidence: PeerDesktopEvidence::LanMachineTrust,
-                        account_uid: state.authenticated_account_uid(),
+                        account_uid: Some("uid-verified".into()),
                     },
                 )
             }
@@ -572,4 +573,49 @@ async fn delivered_input_records_the_declared_source_and_the_verified_channel() 
 
     let _ = std::fs::remove_file(socket_path);
     let _ = std::fs::remove_dir_all(daemon_dir);
+}
+
+/// The LAN machine-invoke secret is verified under the account current at
+/// header extraction, and the body is read before dispatch. An account switch
+/// in that window must not relabel the credential: the recorded channel names
+/// the account the extractor verified, never the one current at dispatch.
+#[tokio::test]
+async fn a_lan_machine_invoke_records_the_account_it_was_verified_under() {
+    let (_temp, state, before) = replacement_fixture("provenance-lan-account-switch");
+    state.set_authenticated_account_uid(Some("uid-a".into()));
+    let mut after = before.clone();
+    after["stages"][1]["description"] = serde_json::json!("edited across an account switch");
+    let request = serde_json::json!({
+        "method": "POST",
+        "path": "/v1/tasks/task-1/actions/replace-workflow",
+        "body": {
+            "workflowDefinition": after,
+            "expectedDefinition": before,
+            "source": "operator",
+        },
+    });
+    // Verified under A; the desktop switches to B before the dispatch.
+    state.set_authenticated_account_uid(Some("uid-b".into()));
+    let response = crate::http_api::lan_listener::handle_invoke_for_test(
+        "desk-lan",
+        Some("uid-a"),
+        axum::extract::State(Arc::clone(&state)),
+        request,
+    )
+    .await
+    .expect("the LAN invoke gateway admits the verified caller");
+    assert_eq!(response["status"], 200, "{response}");
+
+    let events = task_events(&state, "task-1", "task.workflow_changed");
+    assert_eq!(events.len(), 1, "{events:#?}");
+    assert_eq!(events[0]["declaredRole"], "operator");
+    assert_eq!(events[0]["channelIdentity"]["accountUid"], "uid-a");
+    assert_eq!(
+        channel(&events[0]["channelIdentity"]),
+        ChannelIdentity::PeerDesktop {
+            desktop_id: "desk-lan".into(),
+            evidence: PeerDesktopEvidence::LanMachineTrust,
+            account_uid: Some("uid-a".into()),
+        }
+    );
 }

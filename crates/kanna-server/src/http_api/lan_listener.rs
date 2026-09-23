@@ -74,6 +74,7 @@ async fn handle_invoke(
     let response = super::routes::dispatch_authenticated_lan_http_invoke(
         state,
         source.source_desktop_id,
+        source.verified_account_uid,
         &request.method,
         &request.path,
         request.body,
@@ -91,6 +92,7 @@ async fn handle_invoke(
 #[cfg(test)]
 pub(super) async fn handle_invoke_for_test(
     source_desktop_id: &str,
+    verified_account_uid: Option<&str>,
     state: State<Arc<AppState>>,
     request: serde_json::Value,
 ) -> Result<serde_json::Value, (StatusCode, String)> {
@@ -99,6 +101,7 @@ pub(super) async fn handle_invoke_for_test(
     handle_invoke(
         LanMachineInvokeAuthenticated {
             source_desktop_id: source_desktop_id.to_string(),
+            verified_account_uid: verified_account_uid.map(str::to_string),
         },
         state,
         Json(request),

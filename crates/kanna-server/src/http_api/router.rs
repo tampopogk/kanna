@@ -817,9 +817,13 @@ pub async fn dispatch_authenticated_relay_http_invoke(
 /// message does - `LanMachineInvokeAuthenticated` already proved the
 /// caller's secret verifies under exactly that account), and
 /// `source_desktop_id` is the verified device id from that same check.
+/// `verified_account_uid` is the account that check verified the secret
+/// under; the recorded channel names it rather than re-reading the current
+/// account, which a sign-out or account switch can change in between.
 pub async fn dispatch_authenticated_lan_http_invoke(
     state: Arc<AppState>,
     source_desktop_id: String,
+    verified_account_uid: Option<String>,
     method: &str,
     path: &str,
     body: serde_json::Value,
@@ -831,7 +835,7 @@ pub async fn dispatch_authenticated_lan_http_invoke(
     let channel = ChannelIdentity::PeerDesktop {
         desktop_id: source_desktop_id.clone(),
         evidence: PeerDesktopEvidence::LanMachineTrust,
-        account_uid: actor.clone(),
+        account_uid: verified_account_uid,
     };
     dispatch_http_invoke_with_access(
         state,

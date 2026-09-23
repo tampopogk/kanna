@@ -1249,6 +1249,7 @@ async fn the_legacy_gate_refuses_every_plaintext_sibling_path_when_off() {
     // The bearer-secret LAN machine-invoke listener.
     let refused = super::lan_listener::handle_invoke_for_test(
         "desktop-sibling",
+        None,
         State(Arc::clone(&state)),
         serde_json::json!({ "method": "GET", "path": "/v1/status", "body": null }),
     )
