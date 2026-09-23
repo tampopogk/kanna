@@ -318,6 +318,7 @@ mod input;
 mod machine_stats_routes;
 mod merge_singleton_identity;
 mod mutation_provenance;
+mod qa_dispatch_fixture;
 mod raw_input;
 mod recent_workflows;
 mod relay_dispatch;

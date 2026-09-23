@@ -452,6 +452,69 @@ export interface TaskLatestRun {
   resumedFromRunId?: string | null;
   resumeFallbackReason?: string | null;
   finishedAt?: string | null;
+  /** The session identity T2 recorded when this run started (spec §16.8,
+   * T11b). Absent on a server predating it, or a run that recorded none. */
+  session?: StageRunSession | null;
+  /** The transition-commit step bound to this run's exit (spec, T3), when
+   * one is pending, running, or has finished. */
+  commitStep?: TransitionCommitStep | null;
+}
+
+/** Where a session's provider transcript lives (spec §6, T2). */
+export interface TranscriptRef {
+  provider: string;
+  sessionId: string;
+  path?: string | null;
+}
+
+/** The identity a stage session records when it starts (spec §6, T2). */
+export interface StageRunSession {
+  workspaceId?: string | null;
+  branch?: string | null;
+  name?: string | null;
+  transcript?: TranscriptRef | null;
+  workspaceReport?: string | null;
+}
+
+/** A commit step bound to a named-exit transition (spec, T3). */
+export interface TransitionCommitStep {
+  stage: string;
+  exit?: string | null;
+  exitSource?: string | null;
+  /** `requested` | `succeeded` | `failed`. */
+  state: string;
+}
+
+/** One historical stage-run session for this task, oldest first (T11b). */
+export interface TaskSessionHistoryEntry {
+  runId: string;
+  stage: string;
+  status: string;
+  startedAt: string;
+  finishedAt?: string | null;
+  session: StageRunSession;
+}
+
+/** One stage-dependency edge into this task, dependent side (spec §9, T4). */
+export interface TaskStageDependency {
+  upstreamTaskId: string;
+  upstreamStage: string;
+  dependentStage: string;
+  position: number;
+  consumedResultId?: string | null;
+  consumedSha?: string | null;
+  consumedAt?: string | null;
+  /** Set when a newer upstream result superseded what this edge had already
+   * consumed (`task.dependency_superseded`). */
+  supersededResultId?: string | null;
+  supersededSha?: string | null;
+  supersededAt?: string | null;
+}
+
+/** This task's recorded automatic-advance dependency wait (spec §9, T4). */
+export interface TaskDependencyWait {
+  fromStage: string;
+  toStage: string;
 }
 
 /**
@@ -541,6 +604,20 @@ export interface TaskDetail extends TaskSummary {
   reviewContext?: TaskReviewContext | null;
   /** The most recent human merge authorization recorded on this task. */
   humanReviewDecision?: HumanReviewDecision | null;
+  /** Every prior stage-run session for this task, oldest first (T11b).
+   * Absent on a server predating it. */
+  sessionHistory?: TaskSessionHistoryEntry[];
+  /** Stage-dependency edges into this task's current stage (spec §9, T4),
+   * dependent side, in edge order. Absent on a server predating it; empty
+   * for a task that only has legacy `blockedByTaskIds`. */
+  stageDependencies?: TaskStageDependency[];
+  /** This task's recorded automatic-advance dependency wait (T4). */
+  dependencyWait?: TaskDependencyWait | null;
+  /** True when the task's current stage has no agent role and its latest
+   * run is parked waiting for a person to decide (spec's roleless Gate
+   * stage, T3). Absent when the current stage has a role, when there is no
+   * latest run yet, or on a server predating this field. */
+  gateParked?: boolean | null;
 }
 
 // Artifact descriptors are owned by the artifact store (T6) and defined once in

@@ -787,6 +787,10 @@ function TaskDetailRoute({
     state.selectedTaskLatestRun?.taskId === task.id
       ? state.selectedTaskLatestRun.latestRun
       : null;
+  const selectedTaskDetailState =
+    state.selectedTaskLatestRun?.taskId === task.id
+      ? state.selectedTaskLatestRun
+      : null;
   const previewTaskId = resolveDurableTaskId(state, routeTaskId);
   const fileAccessScopeKey = [
     state.auth.status === "signedIn" ? state.auth.user.uid : "signed-out",
@@ -801,6 +805,10 @@ function TaskDetailRoute({
       e2eTaskSnapshotMarker={e2eTaskSnapshotMarker}
       task={task}
       latestRun={latestRun}
+      sessionHistory={selectedTaskDetailState?.sessionHistory ?? null}
+      stageDependencies={selectedTaskDetailState?.stageDependencies ?? null}
+      dependencyWait={selectedTaskDetailState?.dependencyWait ?? null}
+      gateParked={selectedTaskDetailState?.gateParked ?? null}
       terminalErrorMessage={state.taskTerminalErrorMessage}
       terminalOutput={state.taskTerminalOutput}
       terminalOutputEpoch={state.taskTerminalOutputEpoch}

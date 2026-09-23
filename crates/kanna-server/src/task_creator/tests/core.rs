@@ -3196,6 +3196,14 @@ fn bundled_definition_formula_agents_resolve_from_compiled_resources() {
         "workflow-factory",
         "agent-factory",
         "task-manager",
+        // T10c: qa-dispatcher and the specialty reviewers.
+        "qa-dispatcher",
+        "review-ui",
+        "review-security",
+        "review-perf",
+        "review-concurrency",
+        "review-migration",
+        "review-compat",
     ] {
         let definition = resolve_test_agent_definition(&repo_root, name).unwrap();
         assert!(!definition.description.trim().is_empty(), "{name}");
@@ -4267,6 +4275,10 @@ fn read_agent_definition_loads_builtin_task_manager_agent_with_codex_first() {
         .prompt
         .contains("`task.blocked` / `task.unblocked`"));
     assert!(definition.prompt.contains("`task.runtime_settled`"));
+    assert!(definition.prompt.contains("`task.dependency_superseded`"));
+    assert!(definition
+        .prompt
+        .contains("Never rerun or rebase the dependent task silently"));
     assert!(definition.prompt.contains("`task.awaiting_advance`"));
     assert!(definition.prompt.contains("`payload.currentTask`"));
     assert!(definition.prompt.contains("event-time stage"));
@@ -6278,7 +6290,11 @@ fn prepare_task_binds_specialty_agent_on_specialty_review_workflow() {
     match prepared.session {
         PreparedSessionSpawn::Pty { args, .. } => {
             let command = args.join(" ");
-            assert!(command.contains("specialty security review agent"));
+            // review-security (T10 definition formula) no longer frames itself
+            // with "You are a specialty security review agent"; its identity
+            // is the frontmatter `role`, and its body opens with its own
+            // security-specific review policy instead.
+            assert!(command.contains("Trace untrusted input"));
             assert!(command.contains("Specialty review dispatched from task parent-1."));
         }
         _ => panic!("expected pty session"),

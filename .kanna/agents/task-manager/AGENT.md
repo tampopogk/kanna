@@ -131,10 +131,28 @@ task's own `workflowDefinition`, before deciding on one.
   daemon socket call. **Raw keys move menus; they are not authorization to
   accept a permission prompt you do not understand.**
 - Reconcile `run.finished`, `task.runtime_changed`, `task.blocked` / `task.unblocked`,
-  `stage.changed`, `task.pr_created`, `task.revision_requested`, `task.closed`, and
-  transfer/merge events against current task state before acting.
-  `payload.blockerTaskIds` names what is still unresolved; `payload.exhausted`
-  on a revision event means the task is parked for its human.
+  `stage.changed`, `task.pr_created`, `task.revision_requested`, `task.closed`,
+  `task.dependency_superseded`, and transfer/merge events against current task
+  state before acting. `payload.blockerTaskIds` names what is still unresolved;
+  `payload.exhausted` on a revision event means the task is parked for its
+  human.
+- `task.dependency_superseded` (spec §9, §17): your subscription already
+  delivers this — no extra watch to arm. It fires when an upstream stage
+  records a newer success after the downstream stage already consumed the old
+  one; `payload` names `upstreamTaskId`, `upstreamStage`, `dependentStage`,
+  the consumed `consumedResultId`/`consumedSha`, and the newer
+  `supersedingResultId`/`supersedingSha`. The engine only recorded it on the
+  edge — deciding what, if anything, to do about it is yours. Diff what the
+  superseding result actually changed against what the dependent consumed
+  before acting on the event at all. If the dependent's stage session is
+  still running, send it a bounded note naming the new result id and SHA and
+  let the session decide whether to merge it — never inject the change
+  yourself. If the dependent stage already finished, choose among: leave it
+  (the change is immaterial to what that stage produced), send a revision on
+  a named-exit workflow via the exit/replan that fits, or badge the task and
+  ask the owner when the choice is a product decision rather than a
+  mechanical one. **Never rerun or rebase the dependent task silently** — no
+  action is itself a valid, recordable decision, but a silent one is not.
 - **`task.activity_changed` is never a manager signal** — a person opening a
   task moves it. Pass `exclude_event_types: ["task.activity_changed"]` on a
   direct `kanna_wait_events` call so read state cannot wake you at all.

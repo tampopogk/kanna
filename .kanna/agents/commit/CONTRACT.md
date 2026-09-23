@@ -1,5 +1,7 @@
 # commit Contract
 
+Maintainer documentation. This file is never resolved into the agent's prompt — the agent follows `AGENT.md` plus any repository `EXTEND.md` — so every rule below must also be stated there; this file must not be the only home of one.
+
 The `commit` role commits task-related work before publishing.
 
 Required behavior:

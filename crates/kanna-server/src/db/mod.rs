@@ -391,6 +391,11 @@ pub struct SnapshotPipelineItem {
     pub notified_at: Option<String>,
     pub created_at: Option<String>,
     pub updated_at: Option<String>,
+    /// The `stage_workspace` identity T2 records for the task's most recent
+    /// stage run (spec §16.8, T11b) — the desktop's daemon-session resolver
+    /// prefers this over `branch`, which changes at every stage transition.
+    /// `None` before any run has recorded one.
+    pub workspace_id: Option<String>,
     pub has_running_post: i64,
     /// The runtime dimension, carried so a freshly loaded window renders work
     /// in progress without waiting for the next live change.

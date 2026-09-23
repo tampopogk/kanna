@@ -5362,7 +5362,10 @@ fn named_exit_routing_fixtures_match_the_typescript_loader() {
 
 #[test]
 fn a_legacy_definition_round_trips_without_any_routing_field() {
-    let legacy = include_str!("../../../../../.kanna/workflows/specialized-reviewers.json");
+    // `specialized-reviewers.json` moved to named-exit routing (T10c); `no-review.json`
+    // is still a legacy-routed workflow with the same revision_transition: auto shape
+    // this test exercises.
+    let legacy = include_str!("../../../../../.kanna/workflows/no-review.json");
     let parsed = super::super::definitions::parse_workflow_definition(legacy).unwrap();
     assert!(!parsed.routes_by_exits());
     let stored = serde_json::to_string(&parsed).unwrap();

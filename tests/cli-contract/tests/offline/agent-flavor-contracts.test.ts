@@ -137,8 +137,9 @@ describe("bundled agent flavor contracts", () => {
   }
 
   it("setup GitHub preset selects a built-in workflow instead of authoring one", () => {
+    // Policy assertions read the prompt: CONTRACT.md is maintainer
+    // documentation the engine never resolves into the agent's prompt.
     const setupAgent = read(join(agentsRoot, "setup", "AGENT.md"));
-    const setupContract = read(join(agentsRoot, "setup", "CONTRACT.md"));
     const setupConfig = parseJsonFenceAfter(
       setupAgent,
       "`.kanna/config.json` selects the workflow and stock flavors",
@@ -150,7 +151,7 @@ describe("bundled agent flavor contracts", () => {
     expect(setupConfig.workflow).toBe("no-review");
     expect(BUILTIN_WORKFLOWS).toContain(setupConfig.workflow);
     expect(setupAgent).not.toContain("github-flow.json");
-    expect(setupContract).toContain("not author a workflow file of its own");
+    expect(setupAgent).toContain("not author a workflow file of its own");
     for (const name of BUILTIN_WORKFLOWS) {
       expect(setupAgent, `offers ${name}`).toContain(`\`${name}\``);
     }
@@ -159,12 +160,13 @@ describe("bundled agent flavor contracts", () => {
     // stock preset that opened one would strand at the merge master.
     expect(setupConfig.flavors).toMatchObject({ merge: "github" });
     expect(setupConfig.flavors).not.toHaveProperty("pr");
-    expect(setupContract).toContain("must not select `pr@draft-pr`");
+    expect(setupAgent).toContain("must not select `pr@draft-pr`");
   });
 
   it("keeps every setup answer combination internally composable", () => {
+    // Policy assertions read the prompt: CONTRACT.md is maintainer
+    // documentation the engine never resolves into the agent's prompt.
     const setupAgent = read(join(agentsRoot, "setup", "AGENT.md"));
-    const setupContract = read(join(agentsRoot, "setup", "CONTRACT.md"));
     const approveAgent = read(join(agentsRoot, "approve", "AGENT.md"));
 
     // The constraint every rule below derives from: approve resolves the PR
@@ -184,16 +186,15 @@ describe("bundled agent flavor contracts", () => {
     // push-only publishes no PR, so pairing it with a built-in would hand
     // approve a PR that does not exist.
     expect(setupAgent).toContain("Never select a built-in workflow with push-only");
-    expect(setupContract).toContain("must never be paired with a built-in workflow");
 
     // Manual merge: nothing consumes the signal, so the post must go too.
-    expect(setupContract).toContain(
+    expect(setupAgent).toContain(
       "Manual merge likewise requires omitting the `approve` post",
     );
 
     // Draft + merge agent is only coherent with the readying extension.
     expect(setupAgent).toContain(".kanna/agents/approve/EXTEND.md");
-    expect(setupContract).toContain("readies the draft before signaling");
+    expect(setupAgent).toContain("readies the draft before signaling");
 
     // The rule set must be closed, so an unlisted combination is a question
     // for the user rather than an invented fourth shape.
@@ -261,12 +262,9 @@ describe("bundled agent flavor contracts", () => {
     const REQUEST_PREFIX = "MERGE <head> -> <base>";
 
     const approveAgent = read(join(agentsRoot, "approve", "AGENT.md"));
-    const approveContract = read(join(agentsRoot, "approve", "CONTRACT.md"));
     const mergeGithub = read(join(agentsRoot, "merge", "flavors", "github", "AGENT.md"));
 
     expect(approveAgent).toContain("kanna_signal_merge_handoff");
-    expect(approveContract).toContain("kanna_signal_merge_handoff");
-    expect(approveContract).toContain(REQUEST_PREFIX);
     expect(mergeGithub).toContain(REQUEST_PREFIX);
     expect(mergeGithub).not.toContain("KANNA_MERGE_HANDOFF");
 

@@ -1150,7 +1150,10 @@ async fn get_task_route_reports_child_task_ids_including_closed_children() {
     assert_eq!(by_branch.child_task_ids, detail.child_task_ids);
 }
 
-async fn get_task_detail(app: &axum::Router, task_id: &str) -> crate::mobile_api::TaskDetail {
+pub(super) async fn get_task_detail(
+    app: &axum::Router,
+    task_id: &str,
+) -> crate::mobile_api::TaskDetail {
     let response = app
         .clone()
         .oneshot(

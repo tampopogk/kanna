@@ -336,3 +336,124 @@ describe("TaskHeader latest result (T11a)", () => {
     expect(wrapper.find('[data-testid="latest-result"]').exists()).toBe(false);
   });
 });
+
+describe("TaskHeader session, gate and dependency state (T11b)", () => {
+  it("shows the latest run's session name", async () => {
+    const { default: TaskHeader } = await import("../TaskHeader.vue");
+    const wrapper = mount(TaskHeader, {
+      props: {
+        item: makeItem(),
+        latestRun: { id: "run-1", summary: null, session: { name: "in progress: Fix port ordering" } },
+      },
+      global: { mocks: { $t: (key: string, fallback?: string) => fallback ?? key } },
+    });
+
+    expect(wrapper.get('[data-testid="session-name"]').text()).toContain("in progress: Fix port ordering");
+  });
+
+  it("omits the session name when the server predates it", async () => {
+    const { default: TaskHeader } = await import("../TaskHeader.vue");
+    const wrapper = mount(TaskHeader, {
+      props: { item: makeItem(), latestRun: { id: "run-1", summary: null } },
+      global: { mocks: { $t: (key: string, fallback?: string) => fallback ?? key } },
+    });
+
+    expect(wrapper.find('[data-testid="session-name"]').exists()).toBe(false);
+  });
+
+  it("lists prior stage-run sessions under a history toggle, excluding the current run", async () => {
+    const { default: TaskHeader } = await import("../TaskHeader.vue");
+    const wrapper = mount(TaskHeader, {
+      props: {
+        item: makeItem(),
+        latestRun: { id: "run-2", summary: null, session: { name: "review: Fix port ordering" } },
+        sessionHistory: [
+          { runId: "run-1", stage: "in progress", session: { name: "in progress: Fix port ordering" } },
+          { runId: "run-2", stage: "review", session: { name: "review: Fix port ordering" } },
+        ],
+      },
+      global: { mocks: { $t: (key: string, fallback?: string) => fallback ?? key } },
+    });
+
+    const entries = wrapper.findAll('[data-testid="session-history"] .session-history-entry');
+    expect(entries).toHaveLength(1);
+    expect(entries[0].text()).toContain("in progress: Fix port ordering");
+  });
+
+  it("shows a pending commit step", async () => {
+    const { default: TaskHeader } = await import("../TaskHeader.vue");
+    const wrapper = mount(TaskHeader, {
+      props: {
+        item: makeItem(),
+        latestRun: { summary: null, commitStep: { state: "requested" } },
+      },
+      global: { mocks: { $t: (key: string, fallback?: string) => fallback ?? key } },
+    });
+
+    expect(wrapper.get('[data-testid="commit-step"]').text()).toContain("requested");
+  });
+
+  it("shows a parked-gate notice when a person, not a session, must decide", async () => {
+    const { default: TaskHeader } = await import("../TaskHeader.vue");
+    const wrapper = mount(TaskHeader, {
+      props: { item: makeItem(), gateParked: true },
+      global: { mocks: { $t: (key: string, fallback?: string) => fallback ?? key } },
+    });
+
+    expect(wrapper.find('[data-testid="gate-parked"]').exists()).toBe(true);
+  });
+
+  it("shows no parked-gate notice when the current stage has a role", async () => {
+    const { default: TaskHeader } = await import("../TaskHeader.vue");
+    const wrapper = mount(TaskHeader, {
+      props: { item: makeItem(), gateParked: false },
+      global: { mocks: { $t: (key: string, fallback?: string) => fallback ?? key } },
+    });
+
+    expect(wrapper.find('[data-testid="gate-parked"]').exists()).toBe(false);
+  });
+
+  it("shows which upstream stage a dependency wait is holding for", async () => {
+    const { default: TaskHeader } = await import("../TaskHeader.vue");
+    const wrapper = mount(TaskHeader, {
+      props: {
+        item: makeItem(),
+        dependencyWait: { fromStage: "in progress", toStage: "review" },
+      },
+      global: { mocks: { $t: (key: string, fallback?: string) => fallback ?? key } },
+    });
+
+    const wait = wrapper.get('[data-testid="dependency-wait"]');
+    expect(wait.text()).toContain("in progress");
+    expect(wait.text()).toContain("review");
+  });
+
+  it("notices a superseded dependency without discarding what was actually consumed", async () => {
+    const { default: TaskHeader } = await import("../TaskHeader.vue");
+    const wrapper = mount(TaskHeader, {
+      props: {
+        item: makeItem(),
+        stageDependencies: [
+          { upstreamTaskId: "task-a", upstreamStage: "plan", supersededAt: "2026-09-23T00:00:00Z" },
+          { upstreamTaskId: "task-b", upstreamStage: "plan", supersededAt: null },
+        ],
+      },
+      global: { mocks: { $t: (key: string, fallback?: string) => fallback ?? key } },
+    });
+
+    const notice = wrapper.get('[data-testid="dependency-superseded"]');
+    expect(notice.text()).toContain("task-a");
+    expect(notice.text()).not.toContain("task-b");
+  });
+
+  it("shows no dependency notices when the server predates T4 projections", async () => {
+    const { default: TaskHeader } = await import("../TaskHeader.vue");
+    const wrapper = mount(TaskHeader, {
+      props: { item: makeItem() },
+      global: { mocks: { $t: (key: string, fallback?: string) => fallback ?? key } },
+    });
+
+    expect(wrapper.find('[data-testid="dependency-wait"]').exists()).toBe(false);
+    expect(wrapper.find('[data-testid="dependency-superseded"]').exists()).toBe(false);
+  });
+});

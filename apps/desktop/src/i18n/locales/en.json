@@ -516,7 +516,13 @@
     "branchLabel": "branch:",
     "prPrefix": "PR #",
     "stageAdvancePending": "Stage change pending",
-    "exitLabel": "exit:"
+    "exitLabel": "exit:",
+    "sessionLabel": "session:",
+    "sessionHistoryLabel": "History",
+    "commitStepLabel": "commit:",
+    "gateParked": "Waiting for a person to decide",
+    "dependencyWait": "Waiting on {fromStage} → {toStage} dependencies",
+    "dependencySuperseded": "A newer result from {upstreamTaskId} ({upstreamStage}) was not used"
   },
   "app": {
     "selectRepoFirst": "Select a repository first",

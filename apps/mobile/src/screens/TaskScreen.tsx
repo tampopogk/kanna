@@ -31,11 +31,14 @@ import type {
   TaskPreviewOpenResult,
   TaskSummary,
   TaskLatestRun,
+  TaskSessionHistoryEntry,
+  TaskStageDependency,
+  TaskDependencyWait,
   ArtifactDetail,
   ArtifactFileContent,
   ArtifactReference
 } from "../lib/api/types";
-import { isTaskBlocked, type BlockerTaskRef } from "../lib/api/taskIdentity";
+import { isTaskBlockedWithoutSession, type BlockerTaskRef } from "../lib/api/taskIdentity";
 import {
   ImageAttachmentError,
   type PreparedImageAttachment
@@ -131,6 +134,15 @@ interface TaskScreenProps {
   /** The task's most recent recorded result (spec §16.8), when task detail
    * has reported one; absent on an older server or before detail loads. */
   latestRun?: TaskLatestRun | null;
+  /** Every prior stage-run session for this task, oldest first (T11b). */
+  sessionHistory?: TaskSessionHistoryEntry[] | null;
+  /** Stage-dependency edges into this task's current stage (spec §9, T4). */
+  stageDependencies?: TaskStageDependency[] | null;
+  /** This task's recorded automatic-advance dependency wait (T4). */
+  dependencyWait?: TaskDependencyWait | null;
+  /** True when the current stage has no agent role and a person, not a
+   * session, must decide (spec's roleless Gate stage, T3). */
+  gateParked?: boolean | null;
   desktopWorkspace?: boolean;
   blockerTasks?: readonly BlockerTaskRef[];
   e2eTaskSnapshotMarker?: string;
@@ -234,6 +246,10 @@ function composerInputFailureMessage(
 export function TaskScreen({
   task,
   latestRun = null,
+  sessionHistory = null,
+  stageDependencies = null,
+  dependencyWait = null,
+  gateParked = null,
   desktopWorkspace = false,
   blockerTasks = [],
   e2eTaskSnapshotMarker,
@@ -302,7 +318,17 @@ export function TaskScreen({
       (latestRun.verdict ||
         latestRun.summary ||
         latestRun.exit ||
+        latestRun.commitStep ||
         (latestRun.artifacts && Object.keys(latestRun.artifacts).length > 0))
+  );
+  const sessionName = latestRun?.session?.name || null;
+  // The latest run's own session is shown by `sessionName`; the history
+  // list is what came before, oldest first as recorded (T11b).
+  const priorSessionHistory = (sessionHistory ?? []).filter(
+    (entry) => entry.runId !== latestRun?.id && entry.session.name
+  );
+  const supersededDependencies = (stageDependencies ?? []).filter(
+    (dependency) => dependency.supersededAt
   );
   const [draftInput, setDraftInput] = useState("");
   // A transient transport reconnect does not invalidate the authoritative
@@ -410,7 +436,11 @@ export function TaskScreen({
   const windowHeightRef = useRef(windowHeight);
   windowHeightRef.current = windowHeight;
   const isAgentTask = task.agentType === "agent";
-  const isBlocked = isTaskBlocked(task);
+  // Blocked with a live session (a T4 later-stage wait, or a T5 join wait,
+  // while the current stage already has a session) is not this: the
+  // terminal/composer stay attached for that, using `runtimeState` — the
+  // server-provided session signal — rather than `blockedByTaskIds` alone.
+  const isBlocked = isTaskBlockedWithoutSession(task);
   // Callers pass resolved blocker summaries; fall back to bare ids so the
   // placeholder stays truthful when a blocker is not in the collections.
   const blockedRefs: readonly BlockerTaskRef[] = blockerTasks.length
@@ -1271,6 +1301,69 @@ export function TaskScreen({
                   {expandedTaskId}
                 </Text>
               </View>
+              {sessionName ? (
+                <Text
+                  accessible={false}
+                  selectable
+                  style={styles.sessionName}
+                  testID={MOBILE_E2E_IDS.taskSessionName}
+                >
+                  {sessionName}
+                </Text>
+              ) : null}
+              {priorSessionHistory.length ? (
+                <View accessible={false}>
+                  <Text
+                    accessible={false}
+                    style={styles.sessionHistoryToggle}
+                    testID={MOBILE_E2E_IDS.taskSessionHistoryToggle}
+                  >
+                    {`History (${priorSessionHistory.length})`}
+                  </Text>
+                  {priorSessionHistory.map((entry) => (
+                    <Text
+                      accessible={false}
+                      key={entry.runId}
+                      selectable
+                      style={styles.sessionHistoryEntry}
+                      testID={MOBILE_E2E_IDS.taskSessionHistoryEntry(entry.runId)}
+                    >
+                      {`${entry.stage}: ${entry.session.name}`}
+                    </Text>
+                  ))}
+                </View>
+              ) : null}
+              {gateParked ? (
+                <Text
+                  accessible={false}
+                  style={styles.gateParked}
+                  testID={MOBILE_E2E_IDS.taskGateParked}
+                >
+                  Waiting for a person to decide
+                </Text>
+              ) : null}
+              {dependencyWait ? (
+                <Text
+                  accessible={false}
+                  style={styles.dependencyNotice}
+                  testID={MOBILE_E2E_IDS.taskDependencyWait}
+                >
+                  {`Waiting on ${dependencyWait.fromStage} → ${dependencyWait.toStage} dependencies`}
+                </Text>
+              ) : null}
+              {supersededDependencies.length ? (
+                <View accessible={false} testID={MOBILE_E2E_IDS.taskDependencySuperseded}>
+                  {supersededDependencies.map((dependency) => (
+                    <Text
+                      accessible={false}
+                      key={`${dependency.upstreamTaskId}:${dependency.upstreamStage}`}
+                      style={styles.dependencyNotice}
+                    >
+                      {`A newer result from ${dependency.upstreamTaskId} (${dependency.upstreamStage}) was not used`}
+                    </Text>
+                  ))}
+                </View>
+              ) : null}
               {hasLatestResult && latestRun ? (
                 <View style={styles.latestResult} testID={MOBILE_E2E_IDS.taskLatestResult}>
                   {latestRun.verdict ? (
@@ -1299,6 +1392,15 @@ export function TaskScreen({
                       testID={MOBILE_E2E_IDS.taskLatestResultExit}
                     >
                       {`exit: ${latestRun.exit}`}
+                    </Text>
+                  ) : null}
+                  {latestRun.commitStep ? (
+                    <Text
+                      accessible={false}
+                      style={styles.latestResultCommitStep}
+                      testID={MOBILE_E2E_IDS.taskLatestResultCommitStep}
+                    >
+                      {`commit: ${latestRun.commitStep.state}`}
                     </Text>
                   ) : null}
                   {latestRun.artifacts
@@ -2081,6 +2183,40 @@ const styles = StyleSheet.create({
   latestResultArtifactChipLabel: {
     color: "#7FA7D9",
     fontSize: 11
+  },
+  latestResultCommitStep: {
+    color: "#9BB0CC",
+    fontSize: 11
+  },
+  sessionName: {
+    color: "#9BB0CC",
+    fontSize: 11,
+    marginTop: 4
+  },
+  sessionHistoryToggle: {
+    color: "#7FA7D9",
+    fontSize: 11,
+    marginTop: 2
+  },
+  sessionHistoryEntry: {
+    color: "#9BB0CC",
+    fontSize: 11,
+    marginTop: 2
+  },
+  gateParked: {
+    backgroundColor: "#3A2E12",
+    borderRadius: 4,
+    color: "#E0B84B",
+    fontSize: 12,
+    fontWeight: "600",
+    marginTop: 6,
+    paddingHorizontal: 8,
+    paddingVertical: 4
+  },
+  dependencyNotice: {
+    color: "#9BB0CC",
+    fontSize: 11,
+    marginTop: 4
   },
   /**
    * The badge is a flag, so it is a glyph beside the stage. Font scaling is off

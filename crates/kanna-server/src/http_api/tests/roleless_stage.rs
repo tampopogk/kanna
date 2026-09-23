@@ -2,8 +2,8 @@
 //! endpoints: entering runs setup and parks without an agent, and a person
 //! leaving records the gate's result and runs its teardown.
 use super::actions::{
-    commit_branch_change, ledger_files, ledger_fixture_config, post_json, spawn_recording_daemon,
-    wait_for_running_task_stage,
+    commit_branch_change, get_task_detail, ledger_files, ledger_fixture_config, post_json,
+    spawn_recording_daemon, wait_for_running_task_stage,
 };
 use super::*;
 use crate::db::task_store::LedgerEntryKind;
@@ -257,6 +257,10 @@ async fn a_stage_with_no_role_runs_setup_parks_and_records_the_operator_who_leav
     let item = db.get_pipeline_item(TASK).unwrap().unwrap();
     assert_eq!(item.activity.as_deref(), Some("unread"));
     assert!(db.list_lifecycle_operation_intents().unwrap().is_empty());
+
+    // T11b: task detail says a person, not a session, must decide.
+    let detail = get_task_detail(&fixture.app, TASK).await;
+    assert_eq!(detail.gate_parked, Some(true));
     let entry = fixture.entries(LedgerEntryKind::Transition).pop().unwrap();
     assert_eq!(entry.body()["to_stage"], "stakeholder");
     assert_eq!(entry.body()["exit_source"], "operator");
@@ -323,6 +327,18 @@ async fn a_stage_with_no_role_runs_setup_parks_and_records_the_operator_who_leav
         head(&gate_workspace)
     );
     assert_eq!(fixture.agent_spawns(), 1, "only the review agent started");
+    // T11b: departed onto a stage with a role, so the parked signal clears,
+    // and the review run's own session joins the task's session history.
+    let detail = get_task_detail(&fixture.app, TASK).await;
+    assert_eq!(detail.gate_parked, Some(false));
+    assert!(
+        detail
+            .session_history
+            .iter()
+            .any(|entry| entry.stage == "review"),
+        "{:?}",
+        detail.session_history
+    );
     let teardowns = fixture.teardown_spawns();
     assert_eq!(teardowns.len(), 1, "{teardowns:?}");
     assert!(
