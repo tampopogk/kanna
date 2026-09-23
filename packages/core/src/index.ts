@@ -13,6 +13,9 @@ export * from "./config/types.js";
 export * from "./config/parser.js";
 export * from "./config/repo-config.js";
 
+// Artifacts (spec §8 descriptor types)
+export * from "./artifacts/types.js";
+
 // Custom Tasks
 export * from "./config/custom-tasks.js";
 

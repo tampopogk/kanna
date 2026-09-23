@@ -5,6 +5,7 @@ import {
   parseAgentSelection,
   validateSelectionSiblings,
 } from "./agent-providers.js";
+import { ARTIFACT_RETENTION_POLICIES, type ArtifactRetention } from "../artifacts/types.js";
 
 /**
  * Built-in stage display order used when no repo-level override is configured.
@@ -44,6 +45,12 @@ export interface RepoAgentProviderPreference {
   autocompact?: string;
 }
 
+export interface RepoArtifactsConfig {
+  /** Artifact store location; defaults to `~/.kanna/repos/<repo-id>/artifacts.git`. */
+  repositoryPath?: string;
+  retention?: ArtifactRetention;
+}
+
 export interface RepoConfig {
   workflow?: string;
   setup?: string[];
@@ -57,6 +64,7 @@ export interface RepoConfig {
   reserved_ports?: number[];
   stage_order?: string[];
   workspace?: RepoWorkspaceConfig;
+  artifacts?: RepoArtifactsConfig;
 }
 
 export function parseRepoConfig(json: string): RepoConfig {
@@ -248,6 +256,23 @@ export function parseRepoConfig(json: string): RepoConfig {
 
     if (Object.keys(workspace).length > 0) {
       config.workspace = workspace;
+    }
+  }
+
+  if (raw.artifacts && typeof raw.artifacts === "object" && !Array.isArray(raw.artifacts)) {
+    const artifactsRaw = raw.artifacts as Record<string, unknown>;
+    const artifacts: RepoArtifactsConfig = {};
+    if (typeof artifactsRaw.repositoryPath === "string" && artifactsRaw.repositoryPath.trim().length > 0) {
+      artifacts.repositoryPath = artifactsRaw.repositoryPath.trim();
+    }
+    if (
+      typeof artifactsRaw.retention === "string" &&
+      (ARTIFACT_RETENTION_POLICIES as readonly string[]).includes(artifactsRaw.retention)
+    ) {
+      artifacts.retention = artifactsRaw.retention as ArtifactRetention;
+    }
+    if (Object.keys(artifacts).length > 0) {
+      config.artifacts = artifacts;
     }
   }
 

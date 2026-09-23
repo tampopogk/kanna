@@ -631,6 +631,30 @@ pub(crate) fn resolve_available_agent_providers(
         .map_err(|error| error.to_string())
 }
 
+/// A repository's artifact storage policy, from the same resolved
+/// configuration (committed config plus the machine-local layer) that task
+/// launch uses.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct RepoArtifactPolicy {
+    pub(crate) repository_path: Option<String>,
+    pub(crate) retention: crate::artifacts::ArtifactRetention,
+}
+
+pub(crate) fn load_repo_artifact_policy(
+    cache: &RepoDefinitionsCache,
+    repo: &Repo,
+) -> Result<RepoArtifactPolicy, String> {
+    cache
+        .with_definitions(repo, |definitions| {
+            let artifacts = definitions.config().artifacts.clone().unwrap_or_default();
+            Ok(RepoArtifactPolicy {
+                repository_path: artifacts.repository_path,
+                retention: artifacts.retention.unwrap_or_default(),
+            })
+        })
+        .map_err(|error| error.to_string())
+}
+
 /// Resolve discovery with the same repository environment and executable rules
 /// as task launch, without creating a task or running its setup commands.
 pub(crate) fn opencode_inventory_context(

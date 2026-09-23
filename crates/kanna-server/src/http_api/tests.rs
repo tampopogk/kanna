@@ -307,6 +307,7 @@ async fn await_measuring_runtime_drift<T>(
 }
 
 mod actions;
+mod artifacts;
 mod brief_task;
 mod core_routes;
 mod create_task;

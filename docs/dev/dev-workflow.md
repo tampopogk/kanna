@@ -371,7 +371,7 @@ over the resolved `config.json`, with local winning:
 (Strict JSON — no comments, and never committed.)
 
 **What it may set.** Only `agentProviders`, `workflow`, `ports`, `setup`,
-`teardown`, and `test` — this machine's plumbing. `vars` and `flavors` are
+`teardown`, `test`, and `artifacts` — this machine's plumbing. `vars` and `flavors` are
 excluded because they feed stage prompts and agent selection: a task created
 under a local value for either has a prompt no other machine can reproduce, and
 nothing durable records why. That also breaks task transfer, where the
@@ -388,6 +388,7 @@ environment, and nothing about an outage needs them changed.
 | `agentProviders`, `ports` | entry by entry: a local entry replaces the committed entry of the same name; unnamed committed entries survive. One level deep — a named entry is replaced whole, not field by field. |
 | `workflow` | replaces. |
 | `setup`, `teardown`, `test` | replace. Arrays never concatenate: a local `setup` is the whole setup list. |
+| `artifacts` | field by field: a local `repositoryPath` or `retention` replaces only that field. |
 
 There is no delete: to drop a committed `agentProviders` entry, replace it with
 the value you want instead.

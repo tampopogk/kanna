@@ -1,4 +1,5 @@
 mod agent_inventory;
+mod artifacts;
 mod bonjour;
 mod channel_identity;
 mod cloud_task_publisher;
