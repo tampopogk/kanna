@@ -150,29 +150,27 @@ impl ArtifactRemote {
     }
 }
 
-/// Drop `user:password@` from a URL authority. scp-style `user@host:path`
-/// keeps its user name, which is not a secret.
+/// Drop `user:password@` from a URL. scp-style `user@host:path` keeps its
+/// user name, which is not a secret.
+///
+/// A password may contain '/' and '@', so the authority cannot be found by
+/// the first '/'. Any '@' after `://` makes everything from there through
+/// the last '@' before the first '/' that follows the first '@' credentials.
+/// That over-redacts a URL whose path contains '@' (`https://host/p@x` shows
+/// as `https://***@x`), which is the safe side: an ambiguous
+/// credential-bearing value is never echoed.
 fn redact(url: &str) -> String {
     let Some((scheme, rest)) = url.split_once("://") else {
         return url.to_string();
     };
-    let authority_end = rest.find('/').unwrap_or(rest.len());
-    let (authority, path) = rest.split_at(authority_end);
-    if let Some((_, host)) = authority.rsplit_once('@') {
-        return format!("{scheme}://***@{host}{path}");
-    }
-    // A password may itself contain '/', which ends the apparent authority
-    // early: `user:pa/ss@host` splits as `user:pa` + `/ss@host`. A colon
-    // followed by something other than a port number, with an '@' later on,
-    // is that case; everything through the first '@' is credentials.
-    let after_colon = authority.split_once(':').map(|(_, after)| after);
-    let is_port = |text: &str| !text.is_empty() && text.bytes().all(|byte| byte.is_ascii_digit());
-    if after_colon.is_some_and(|after| !is_port(after)) {
-        if let Some((_, host)) = path.split_once('@') {
-            return format!("{scheme}://***@{host}");
-        }
-    }
-    url.to_string()
+    let Some(first_at) = rest.find('@') else {
+        return url.to_string();
+    };
+    let slash = rest[first_at..]
+        .find('/')
+        .map_or(rest.len(), |offset| first_at + offset);
+    let last_at = rest[..slash].rfind('@').unwrap_or(first_at);
+    format!("{scheme}://***@{}", &rest[last_at + 1..])
 }
 
 // ---------------------------------------------------------------------------

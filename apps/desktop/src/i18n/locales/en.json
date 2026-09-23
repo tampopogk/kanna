@@ -663,7 +663,8 @@
       "refused": "Refused refs:",
       "missing": "Earlier versions neither the remote nor this machine holds:",
       "pushFailed": "Push failed.",
-      "fetchFailed": "Fetch failed."
+      "fetchFailed": "Fetch failed.",
+      "changed": "The artifact remote changed since this panel loaded. Nothing was pushed; check where it goes now."
     }
   }
 }

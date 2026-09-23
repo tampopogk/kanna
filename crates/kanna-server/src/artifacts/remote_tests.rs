@@ -693,42 +693,76 @@ fn remote_configuration_refuses_helpers_options_and_relative_paths() {
     );
 }
 
-/// A password may contain '/', which ends the apparent URL authority before
-/// the '@'. The display must still drop it, while a port, an scp-style user
-/// name and an '@' that is only part of a path stay as written.
+/// A password may contain '/', '@' or only digits. The display must drop all
+/// of it; an '@' in a path is redacted too rather than risk echoing a secret,
+/// and an scp-style user name stays as written.
 #[test]
 fn a_password_containing_a_slash_is_redacted_from_the_display() {
     let root = Path::new("/srv/home");
     let store = Path::new("/srv/home/.kanna/repos/r/artifacts.git");
-    for (configured, display) in [
+    for (configured, display, secret) in [
         (
             "https://user:pa/ss@host/repo.git",
             "https://***@host/repo.git",
+            Some("pa/ss"),
         ),
         (
             "https://user:p/a/s/s@example.com/team/a.git",
             "https://***@example.com/team/a.git",
+            Some("p/a/s/s"),
         ),
-        ("ssh://git:x/y@host:2222/a.git", "ssh://***@host:2222/a.git"),
-        // A password that begins with '/' leaves nothing after the colon.
-        ("https://user:/secret@host/a.git", "https://***@host/a.git"),
-        // A port is not a password: the '@' belongs to the path.
-        ("https://host:8080/p@x", "https://host:8080/p@x"),
-        ("https://host/team/p@x.git", "https://host/team/p@x.git"),
-        ("user@host:path/a.git", "user@host:path/a.git"),
+        (
+            "ssh://git:x/y@host:2222/a.git",
+            "ssh://***@host:2222/a.git",
+            Some("x/y"),
+        ),
+        (
+            "https://user:/secret@host/a.git",
+            "https://***@host/a.git",
+            Some("secret"),
+        ),
+        // Digits after the colon are a password here, not a port.
+        (
+            "https://user:123/secret@host/repo.git",
+            "https://***@host/repo.git",
+            Some("123/secret"),
+        ),
+        (
+            "https://user:123@host/repo.git",
+            "https://***@host/repo.git",
+            Some("123"),
+        ),
+        // A password containing both '/' and '@'.
+        (
+            "https://user:pa/ss@word@host/repo.git",
+            "https://***@host/repo.git",
+            Some("word"),
+        ),
+        // An '@' in a path is indistinguishable from credentials: hidden.
+        ("https://host:8080/p@x", "https://***@x", None),
+        ("https://host/team/a.git", "https://host/team/a.git", None),
+        ("user@host:path/a.git", "user@host:path/a.git", None),
         (
             "git@github.com:team/artifacts.git",
             "git@github.com:team/artifacts.git",
+            None,
         ),
     ] {
         let remote = ArtifactRemote::parse(configured, root, store).unwrap();
         assert_eq!(remote.display(), display, "{configured}");
+        if let Some(secret) = secret {
+            assert!(!remote.display().contains(secret), "{configured}");
+            // A refusal names the remote through the same redaction.
+            let refused = configured
+                .replacen("https://", "ftp://", 1)
+                .replacen("ssh://", "ftp://", 1);
+            let message = ArtifactRemote::parse(&refused, root, store)
+                .unwrap_err()
+                .to_string();
+            assert!(!message.contains(secret), "{message}");
+            assert!(message.contains("ftp://***@"), "{message}");
+        }
     }
-    // A refusal names the remote through the same redaction.
-    let error = ArtifactRemote::parse("ftp://user:pa/ss@host/repo.git", root, store).unwrap_err();
-    let message = error.to_string();
-    assert!(!message.contains("pa/ss"), "{message}");
-    assert!(message.contains("ftp://***@host/repo.git"), "{message}");
 }
 
 /// A peer with write access plants a well-formed version record for a
