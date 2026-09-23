@@ -470,6 +470,12 @@ pub struct TaskLatestRun {
     pub resumed_from_run_id: Option<String>,
     pub resume_fallback_reason: Option<String>,
     pub finished_at: Option<String>,
+    /// The session this run is (spec §6): its stage workspace, the branch it
+    /// checked out there, its name, its transcript reference, and any
+    /// workspace state its start preserved and reported. Absent for runs
+    /// from before session identity was recorded, and from older peers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session: Option<crate::db::StageRunSession>,
 }
 
 fn default_stage_trigger() -> String {
@@ -1302,6 +1308,12 @@ impl MobileApi {
             },
         );
         detail.runtime_settled = runtime_settled;
+        if let Some(run) = detail.latest_run.as_mut() {
+            run.session = self
+                ._db
+                .stage_run_session(&run.id)
+                .map_err(|e| format!("db error: {e}"))?;
+        }
         Ok(Some(detail))
     }
 
@@ -1835,6 +1847,7 @@ fn map_task_latest_run(run: crate::db::StageRun) -> TaskLatestRun {
         resumed_from_run_id: run.resumed_from_run_id,
         resume_fallback_reason: run.resume_fallback_reason,
         finished_at: run.finished_at,
+        session: None,
     }
 }
 

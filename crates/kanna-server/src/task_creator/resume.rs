@@ -224,6 +224,34 @@ fn resolve_provider_session_id(
     }
 }
 
+/// The provider half of a resume, for a session that re-enters the
+/// directory its conversation was held in (spec §6 "Loop back"): the
+/// provider must support resuming and its transcript for that directory must
+/// exist. The directory's HEAD may have moved to the loop's input on a new
+/// branch; that is the point of reusing the directory, not a reason to start
+/// over.
+pub(super) fn prepare_resume_session(
+    provider_name: Option<&str>,
+    source_agent_type: Option<&str>,
+    cwd: &str,
+    provider_session_id: Option<&str>,
+) -> Result<(AgentProvider, String), String> {
+    let provider_name =
+        provider_name.ok_or_else(|| "previous run recorded no agent provider".to_string())?;
+    let provider = AgentProvider::from_str(provider_name)
+        .map_err(|_| format!("unsupported provider recorded on previous run: {provider_name}"))?;
+    if super::provider::normalize_agent_type(source_agent_type)
+        == Some(AgentSessionType::Agent.as_str())
+    {
+        return Err("headless agent sessions do not yet support recovery respawn".to_string());
+    }
+    if !Path::new(cwd).is_dir() {
+        return Err("previous run's worktree is gone".to_string());
+    }
+    let provider_session_id = resolve_provider_session_id(provider, cwd, provider_session_id)?;
+    Ok((provider, provider_session_id))
+}
+
 /// Validate and materialize the workspace/provider half of a resume. Callers
 /// supply the message and stage policy, but revision and death recovery share
 /// every safety check here.

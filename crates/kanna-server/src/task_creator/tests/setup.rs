@@ -766,14 +766,12 @@ async fn timed_out_stage_fork_setup_kills_group_records_failure_and_removes_fork
     config.kanna_cli_path = Some(kanna_cli.path().to_string_lossy().to_string());
     let db = Db::open_for_tests(&config.db_path).unwrap();
     seed_source_task(&config, &db, &repo_root, "agent");
-    let fork_branch =
-        super::super::worktree::next_fork_branch(&repo_root.to_string_lossy(), "task-1").unwrap();
-    let fork_path = repo_root.join(".kanna-worktrees").join(&fork_branch);
-
     let mut run = match prepare_advance_stage_for_api(&db, &config, "task-1").unwrap() {
         PreparedStageTransition::Run(run) => run,
         _ => panic!("expected stage run"),
     };
+    let fork_branch = run.forked_workspace().expect("fork").branch.clone();
+    let fork_path = repo_root.join(".kanna-worktrees").join(&fork_branch);
     // What this test proves is what the timeout path *does*, not how long the
     // budget is. The assertions below all depend on setup having reached its
     // `printf` and having spawned the signal-proof grandchild first, and a

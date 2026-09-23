@@ -428,14 +428,20 @@ pub(crate) async fn spawn_prepared_stage_run_for_api(
         .as_ref()
         .map(|teardown| teardown.session_id.clone());
 
-    if let Err(error) = super::finish_deferred_stage_setup(&mut prepared) {
-        let error = rollback_prepared_stage_fork(&prepared, error);
-        return Err(record_stage_transition_failure(db_path, &prepared, error));
-    }
-    if prepared.repository_setup_pending {
-        let db = Db::open(db_path).map_err(|error| format!("db error: {error}"))?;
-        db.mark_task_worktree_setup_complete(&task_id)
-            .map_err(|error| format!("db error: {error}"))?;
+    // A revisited stage directory is switched to its new branch only after
+    // the sessions Kanna runs there are stopped (below), and its setup runs
+    // on that branch, so both wait until then.
+    let revisits_workspace = matches!(prepared.workspace, PreparedRunWorkspace::Revisited(_));
+    if !revisits_workspace {
+        if let Err(error) = super::finish_deferred_stage_setup(&mut prepared) {
+            let error = rollback_prepared_stage_fork(&prepared, error);
+            return Err(record_stage_transition_failure(db_path, &prepared, error));
+        }
+        if prepared.repository_setup_pending {
+            let db = Db::open(db_path).map_err(|error| format!("db error: {error}"))?;
+            db.mark_task_worktree_setup_complete(&task_id)
+                .map_err(|error| format!("db error: {error}"))?;
+        }
     }
 
     // The operation is written before the outgoing run is accepted and its
@@ -524,6 +530,40 @@ pub(crate) async fn spawn_prepared_stage_run_for_api(
                     "failed to replace workspace teardown session {teardown_session_id}: {error}"
                 );
             }
+        }
+    }
+
+    // Every other session Kanna runs in the revisited directory — a
+    // teardown left by the stage that forked away from it, a setup, an
+    // editor — is found by the directory itself and stopped. If any cannot
+    // be stopped the revisit is refused before anything in it changes.
+    if let PreparedRunWorkspace::Revisited(revisited) = &prepared.workspace {
+        let directory = revisited.workspace.worktree_path.clone();
+        if let Err(error) =
+            stop_sessions_in_directory(daemon, replacements, db_path, &task_id, &directory).await
+        {
+            if let Err(abort_error) = abort_lifecycle_operation(db_path, &run_id) {
+                log::warn!("failed to clear rejected stage operation {run_id}: {abort_error}");
+            }
+            let error = rollback_prepared_stage_fork(&prepared, error);
+            return Err(record_stage_transition_failure(db_path, &prepared, error));
+        }
+    }
+
+    // Every session Kanna runs for this task or in the revisited directory is
+    // stopped now, so none of them can commit while the directory is checked
+    // and switched.
+    if revisits_workspace {
+        let started = check_out_revisited_workspace(&mut prepared).and_then(|()| {
+            super::finish_deferred_stage_setup(&mut prepared)?;
+            Ok(())
+        });
+        if let Err(error) = started {
+            if let Err(abort_error) = abort_lifecycle_operation(db_path, &run_id) {
+                log::warn!("failed to clear rejected stage operation {run_id}: {abort_error}");
+            }
+            let error = rollback_prepared_stage_fork(&prepared, error);
+            return Err(record_stage_transition_failure(db_path, &prepared, error));
         }
     }
 
@@ -663,6 +703,16 @@ fn record_stage_transition_run(
         if let Some(reason) = prepared.resume_fallback_reason.as_deref() {
             db.set_stage_run_resume_fallback_reason(run_id, reason)?;
         }
+        super::session::record_session_start(
+            db,
+            run_id,
+            &prepared.task_id,
+            &prepared.next_stage,
+            &prepared.cwd,
+            &prepared.agent_provider,
+            prepared.provider_session_id.as_deref(),
+            &prepared.session_identity,
+        )?;
         // The intent deliberately stays `spawn_ready` here. The run row and
         // its completion artifact must exist before Spawn can make the child
         // observable, but recording them submits nothing: the phase advances
@@ -746,13 +796,179 @@ fn record_stage_transition_failure(
     }
 }
 
-fn rollback_prepared_stage_fork(prepared: &PreparedStageRunSpawn, error: String) -> String {
-    if let PreparedRunWorkspace::Forked(fork) = &prepared.workspace {
-        if let Err(rollback_err) = remove_prepared_worktree(&fork.worktree_path, &fork.branch) {
-            return format!("{error}; fork rollback failed: {rollback_err}");
+/// Undo what preparing a run did to disk, when the run never started. A
+/// fresh fork is removed; a revisited stage directory is returned to the
+/// branch it had and keeps everything else. Every other workspace predates
+/// the preparation and is left alone. Spent branch numbers stay spent.
+///
+/// `Ok(Some(report))` means a revisited directory was used after its
+/// checkout and was preserved rather than undone; the report says what was
+/// kept and belongs in the failure the caller records.
+pub(super) fn roll_back_prepared_workspace(
+    workspace: &PreparedRunWorkspace,
+) -> Result<Option<String>, String> {
+    match workspace {
+        PreparedRunWorkspace::Forked(fork) => {
+            remove_prepared_worktree(&fork.worktree_path, &fork.branch).map(|()| None)
+        }
+        PreparedRunWorkspace::Revisited(revisited) if !revisited.checked_out => Ok(None),
+        PreparedRunWorkspace::Revisited(revisited) => {
+            super::worktree::restore_revisited_workspace(&revisit_checkout(revisited))
+        }
+        PreparedRunWorkspace::Current
+        | PreparedRunWorkspace::Resumed(_)
+        | PreparedRunWorkspace::Recreated(_) => Ok(None),
+    }
+}
+
+/// Whether a session's working directory is `directory` or inside it.
+fn session_in_directory(cwd: &str, directory: &str) -> bool {
+    if super::resume::same_cwd(cwd, directory) || std::path::Path::new(cwd).starts_with(directory) {
+        return true;
+    }
+    let canonical =
+        |path: &str| std::fs::canonicalize(path).unwrap_or_else(|_| std::path::PathBuf::from(path));
+    canonical(cwd).starts_with(canonical(directory))
+}
+
+/// Stop every session Kanna runs in a retained workspace directory, selected
+/// by the directory rather than by any branch name: sessions the task's
+/// records place there (runs, their workspace, terminal sessions), the
+/// directory's own teardown (`td-<directory name>`), and every live daemon
+/// session whose working directory is inside it. Any session that cannot be
+/// stopped — or a daemon that cannot list its sessions — is an error, so the
+/// caller never switches a directory something may still be writing to.
+pub(super) async fn stop_sessions_in_directory(
+    daemon: &mut DaemonClient,
+    replacements: &SessionReplacements,
+    db_path: &str,
+    task_id: &str,
+    directory: &str,
+) -> Result<Vec<String>, String> {
+    let refuse =
+        |why: String| format!("{why}; the revisit was refused and {directory} was left untouched");
+    let mut sessions = std::collections::BTreeSet::new();
+    {
+        let db = Db::open(db_path).map_err(|error| refuse(format!("db error: {error}")))?;
+        sessions.extend(
+            db.task_session_ids_in_directory(
+                task_id,
+                directory,
+                &super::session::stage_workspace_id(directory),
+            )
+            .map_err(|error| refuse(format!("db error: {error}")))?,
+        );
+    }
+    if let Some(name) = std::path::Path::new(directory)
+        .file_name()
+        .and_then(|name| name.to_str())
+    {
+        sessions.insert(format!("td-{name}"));
+    }
+    match daemon
+        .send_command_retrying_successor(&DaemonCommand::List)
+        .await
+    {
+        Ok(DaemonEvent::SessionList { sessions: live }) => sessions.extend(
+            live.into_iter()
+                .filter(|session| crate::terminal_editor::session_is_live(&session.state))
+                .filter(|session| session_in_directory(&session.cwd, directory))
+                .map(|session| session.session_id),
+        ),
+        Ok(other) => {
+            return Err(refuse(format!(
+                "cannot list the daemon's sessions: unexpected response {other:?}"
+            )))
+        }
+        Err(error) => {
+            return Err(refuse(format!(
+                "cannot list the daemon's sessions: {error}"
+            )))
         }
     }
-    error
+    for session in &sessions {
+        kill_session_replacing(daemon, replacements, session)
+            .await
+            .map_err(|error| refuse(format!("cannot stop session {session}: {error}")))?;
+    }
+    // The teardowns stopped here are over: settle their runs so their
+    // supervisors stand down rather than acting on the directory later.
+    let db = Db::open(db_path).map_err(|error| refuse(format!("db error: {error}")))?;
+    for (run_id, _) in db
+        .running_teardown_runs_in_directory(task_id, directory)
+        .map_err(|error| refuse(format!("db error: {error}")))?
+    {
+        db.finish_stage_run_without_work(
+            &run_id,
+            "cancelled",
+            Some("stopped because the task re-entered this workspace"),
+            None,
+            crate::db::no_work_termination::WORKSPACE_TEARDOWN,
+        )
+        .map_err(|error| refuse(format!("db error: {error}")))?;
+    }
+    Ok(sessions.into_iter().collect())
+}
+
+fn revisit_checkout(
+    revisited: &super::types::RevisitedWorkspace,
+) -> super::worktree::RevisitCheckout<'_> {
+    super::worktree::RevisitCheckout {
+        worktree_path: &revisited.workspace.worktree_path,
+        new_branch: &revisited.workspace.branch,
+        start_point: &revisited.start_point,
+        previous_branch: revisited.previous_branch.as_deref(),
+        previous_head: &revisited.previous_head,
+        observed_dirty: revisited.observed_dirty,
+    }
+}
+
+/// Switch a revisited stage directory to its new branch. The spawn calls
+/// this only after it has stopped the sessions Kanna runs for the task, so
+/// no Kanna-owned process can commit between the check and the switch.
+///
+/// The directory must still be what the revisit plan saw; if it is not, it
+/// is left untouched and no session starts. Commits that reached the
+/// previous branch inside the switch itself stay there and are reported on
+/// the session's `workspace_report`.
+pub(super) fn check_out_revisited_workspace(
+    prepared: &mut PreparedStageRunSpawn,
+) -> Result<(), String> {
+    let PreparedRunWorkspace::Revisited(revisited) = &mut prepared.workspace else {
+        return Ok(());
+    };
+    if revisited.checked_out {
+        return Ok(());
+    }
+    let checkout = revisit_checkout(revisited);
+    if let Err(changed) = super::worktree::revalidate_revisit(
+        checkout.worktree_path,
+        checkout.previous_branch,
+        checkout.previous_head,
+        checkout.observed_dirty,
+    ) {
+        return Err(format!(
+            "{changed}; it was preserved untouched and no session was started"
+        ));
+    }
+    let moved = super::worktree::check_out_revisit(&checkout)?;
+    revisited.checked_out = true;
+    if let Some(moved) = moved {
+        let report = &mut prepared.session_identity.workspace_report;
+        *report = Some(match report.take() {
+            Some(existing) => format!("{existing}; {moved}"),
+            None => moved,
+        });
+    }
+    Ok(())
+}
+
+fn rollback_prepared_stage_fork(prepared: &PreparedStageRunSpawn, error: String) -> String {
+    match roll_back_prepared_workspace(&prepared.workspace) {
+        Ok(None) => error,
+        Ok(Some(preserved)) => format!("{error}; {preserved}"),
+        Err(rollback_err) => format!("{error}; fork rollback failed: {rollback_err}"),
+    }
 }
 
 pub(crate) fn rollback_prepared_stage_run_for_api(
@@ -804,6 +1020,7 @@ pub(crate) async fn spawn_prepared_workspace_teardown_best_effort(
             tokio::spawn(supervise_teardown_session(
                 daemon_dir,
                 session_id,
+                recorded.then_some(run_id),
                 db_path,
                 task_id,
                 std::time::Duration::from_secs(10 * 60),
@@ -884,24 +1101,73 @@ pub(crate) fn finish_teardown_run(db_path: &str, run_id: &str, status: &str, res
     }
 }
 
+/// Whether a teardown's run has already been settled — by the exit
+/// handler, or by a revisit that stopped its session. A supervisor whose run
+/// is settled has nothing left to supervise.
+fn teardown_run_settled(db_path: &str, run_id: Option<&str>) -> bool {
+    let Some(run_id) = run_id else {
+        return false;
+    };
+    Db::open(db_path)
+        .and_then(|db| db.stage_run(run_id))
+        .ok()
+        .flatten()
+        .is_some_and(|run| run.status != "running")
+}
+
+/// The pid the daemon reports for `session_id`: `Ok(None)` when it holds no
+/// such session, `Err(())` when the daemon could not be asked.
+async fn daemon_session_pid(daemon_dir: &str, session_id: &str) -> Result<Option<u32>, ()> {
+    let mut daemon = DaemonClient::connect(daemon_dir).await.map_err(|_| ())?;
+    match daemon.send_command(&DaemonCommand::List).await {
+        Ok(DaemonEvent::SessionList { sessions }) => Ok(sessions
+            .iter()
+            .find(|session| session.session_id == session_id)
+            .map(|session| session.pid)),
+        Ok(other) => {
+            log::warn!(
+                "unexpected daemon response while checking task session {session_id}: {other:?}"
+            );
+            Err(())
+        }
+        Err(error) => {
+            log::warn!("failed to check task session {session_id}: {error}");
+            Err(())
+        }
+    }
+}
+
+/// Watch one teardown session and kill it at its hard deadline.
+///
+/// The supervisor only ever acts on the session it started: its unique
+/// session id, the run it is recorded as (`run_id`, when the run row was
+/// written) and the pid the daemon first reported for it. When that run has
+/// been settled, or the id now names a different process, it stops without
+/// killing anything or recording a failure.
 async fn supervise_teardown_session(
     daemon_dir: String,
     session_id: String,
+    run_id: Option<String>,
     db_path: String,
     task_id: String,
     soft_timeout: std::time::Duration,
     hard_timeout: std::time::Duration,
 ) {
     tokio::time::sleep(soft_timeout).await;
-    match daemon_session_presence(&daemon_dir, &session_id).await {
-        DaemonSessionPresence::Absent => return,
-        DaemonSessionPresence::Present => {
+    if teardown_run_settled(&db_path, run_id.as_deref()) {
+        return;
+    }
+    let mut observed_pid = None;
+    match daemon_session_pid(&daemon_dir, &session_id).await {
+        Ok(None) => return,
+        Ok(Some(pid)) => {
+            observed_pid = Some(pid);
             log::warn!(
                 "workspace teardown session {session_id} exceeded soft threshold of {}s",
                 soft_timeout.as_secs()
             );
         }
-        DaemonSessionPresence::Unknown => {
+        Err(()) => {
             log::warn!(
                 "could not determine whether workspace teardown session {session_id} exceeded its \
                  soft threshold; preserving hard-deadline supervision"
@@ -912,9 +1178,20 @@ async fn supervise_teardown_session(
     let retry_interval = std::time::Duration::from_secs(1);
     let mut timeout_logged = false;
     loop {
-        if daemon_session_presence(&daemon_dir, &session_id).await == DaemonSessionPresence::Absent
-        {
+        if teardown_run_settled(&db_path, run_id.as_deref()) {
             return;
+        }
+        match daemon_session_pid(&daemon_dir, &session_id).await {
+            Ok(None) => return,
+            Ok(Some(pid)) if observed_pid.is_some_and(|observed| observed != pid) => {
+                log::warn!(
+                    "workspace teardown session {session_id} is now pid {pid}, not the process \
+                     this supervisor started; leaving it alone"
+                );
+                return;
+            }
+            Ok(Some(pid)) => observed_pid = Some(pid),
+            Err(()) => {}
         }
         if !timeout_logged {
             timeout_logged = true;
@@ -1075,19 +1352,17 @@ fn persist_stage_operation_intent(
     run_id: &str,
     phase: &str,
 ) -> Result<(), String> {
-    let (branch, worktree_path, rollback_on_failure) = match &prepared.workspace {
-        PreparedRunWorkspace::Forked(workspace) => (
+    // Only a fresh fork is deleted by restart recovery. A revisited stage
+    // directory is retained whatever happens: the new branch it checked out
+    // costs nothing to leave, and the directory may hold the stage's work.
+    let (branch, worktree_path) = match prepared.workspace.moved_to() {
+        Some(workspace) => (
             Some(workspace.branch.clone()),
             Some(workspace.worktree_path.clone()),
-            true,
         ),
-        PreparedRunWorkspace::Resumed(workspace) | PreparedRunWorkspace::Recreated(workspace) => (
-            Some(workspace.branch.clone()),
-            Some(workspace.worktree_path.clone()),
-            false,
-        ),
-        PreparedRunWorkspace::Current => (None, None, false),
+        None => (None, None),
     };
+    let rollback_on_failure = matches!(prepared.workspace, PreparedRunWorkspace::Forked(_));
     let payload = StageOperationPayload {
         version: 2,
         task_id: prepared.task_id.clone(),
@@ -1770,10 +2045,8 @@ fn reconcile_stage_operation_db(
         if !open {
             return Err(rusqlite::Error::QueryReturnedNoRows);
         }
-        match &prepared.workspace {
-            PreparedRunWorkspace::Forked(workspace)
-            | PreparedRunWorkspace::Resumed(workspace)
-            | PreparedRunWorkspace::Recreated(workspace) => {
+        match prepared.workspace.moved_to() {
+            Some(workspace) => {
                 db.update_pipeline_item_stage_and_branch_with_exit(
                     &prepared.task_id,
                     &prepared.next_stage,
@@ -1789,7 +2062,7 @@ fn reconcile_stage_operation_db(
                     &workspace.branch,
                 )?;
             }
-            PreparedRunWorkspace::Current => {
+            None => {
                 db.update_pipeline_item_stage_with_exit(
                     &prepared.task_id,
                     &prepared.next_stage,
@@ -1981,6 +2254,7 @@ pub(crate) async fn rerun_prepared_stage_for_api(
     // before Spawn can make the child observable.
     record_rerun_stage_run(
         db_path,
+        &prepared.session_identity,
         &task_id,
         &stage,
         run_kind,
@@ -2259,6 +2533,26 @@ fn record_spawned_stage_run(
             Some(prepared.completion_transition.as_str()),
             true,
         )?;
+        // The creation workspace is the first stage's workspace; its session
+        // is recorded through the same start path every later session uses.
+        let session = super::session::session_identity(
+            db,
+            &prepared.created_task.task_id,
+            &prepared.created_task.stage,
+            &prepared.cwd,
+            &prepared.branch,
+            None,
+        );
+        super::session::record_session_start(
+            db,
+            run_id,
+            &prepared.created_task.task_id,
+            &prepared.created_task.stage,
+            &prepared.cwd,
+            &prepared.agent_provider,
+            prepared.provider_session_id.as_deref(),
+            &session,
+        )?;
         db.record_stage_run_prompt(run_id, &prepared.resolved_prompt)?;
         db.delete_create_task_intent(&prepared.created_task.task_id)
     })
@@ -2333,6 +2627,7 @@ fn record_prepared_task_spawn_failure(
 #[allow(clippy::too_many_arguments)]
 fn record_rerun_stage_run(
     db_path: &str,
+    session: &crate::db::StageRunSession,
     task_id: &str,
     stage: &str,
     run_kind: &'static str,
@@ -2379,6 +2674,20 @@ fn record_rerun_stage_run(
             // lineage-free so no-redo semantics are never inherited.
             None,
             Some(entry_channel),
+        )?;
+        let session_stage = db
+            .get_pipeline_item(task_id)?
+            .and_then(|item| item.stage)
+            .unwrap_or_else(|| stage.to_string());
+        super::session::record_session_start(
+            db,
+            run_id,
+            task_id,
+            &session_stage,
+            cwd,
+            agent_provider,
+            provider_session_id,
+            session,
         )?;
         db.delete_create_task_intent(task_id)
     })
@@ -4904,6 +5213,7 @@ mod teardown_deadline_tests {
             supervise_teardown_session(
                 daemon_dir.to_string_lossy().to_string(),
                 "td-task-1".to_string(),
+                None,
                 db_path.clone(),
                 task_id.to_string(),
                 std::time::Duration::from_millis(20),
@@ -4918,6 +5228,226 @@ mod teardown_deadline_tests {
             .expect("deadline monitor should issue Kill")
             .unwrap();
         assert_teardown_event(&db_path, task_id, "td-task-1", "timed out after 0s");
+        let _ = std::fs::remove_file(db_path);
+        let _ = std::fs::remove_dir_all(daemon_dir);
+    }
+
+    /// A daemon that reports `live` (session id, pid) on every List —
+    /// `later_pid` replaces the pid from the second List on — and records
+    /// every Kill it receives instead of acting on it.
+    fn spawn_teardown_daemon(
+        label: &str,
+        live: Vec<(&'static str, u32)>,
+        later_pid: Option<u32>,
+    ) -> (
+        std::path::PathBuf,
+        std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+        tokio::task::JoinHandle<()>,
+    ) {
+        let daemon_dir = std::env::temp_dir().join(format!("kanna-{label}-{}", std::process::id()));
+        std::fs::create_dir_all(&daemon_dir).unwrap();
+        let socket_path = kanna_runtime_defaults::socket_path(&daemon_dir);
+        let _ = std::fs::remove_file(&socket_path);
+        let listener = UnixListener::bind(&socket_path).unwrap();
+        let kills = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let recorded = std::sync::Arc::clone(&kills);
+        let server = tokio::spawn(async move {
+            let mut lists = 0;
+            loop {
+                let Ok((stream, _)) = listener.accept().await else {
+                    return;
+                };
+                let (read, mut write) = stream.into_split();
+                let mut reader = BufReader::new(read);
+                let mut line = String::new();
+                if reader.read_line(&mut line).await.unwrap_or(0) == 0 {
+                    continue;
+                }
+                let response = match serde_json::from_str(line.trim()).unwrap() {
+                    DaemonCommand::List => {
+                        lists += 1;
+                        DaemonEvent::SessionList {
+                            sessions: live
+                                .iter()
+                                .map(|(session_id, pid)| SessionInfo {
+                                    session_id: session_id.to_string(),
+                                    pid: if lists > 1 {
+                                        later_pid.unwrap_or(*pid)
+                                    } else {
+                                        *pid
+                                    },
+                                    cwd: "/tmp".to_string(),
+                                    state: SessionState::Active,
+                                    idle_seconds: 0,
+                                    status: SessionStatus::Busy,
+                                    status_observed: true,
+                                    kind: SessionKind::Pty,
+                                    composer_text: None,
+                                    composer_attestation: Default::default(),
+                                    attempt_id: None,
+                                })
+                                .collect(),
+                        }
+                    }
+                    DaemonCommand::Kill { session_id } => {
+                        recorded.lock().unwrap().push(session_id);
+                        DaemonEvent::Ok
+                    }
+                    other => panic!("unexpected daemon command {other:?}"),
+                };
+                write
+                    .write_all(
+                        format!("{}\n", serde_json::to_string(&response).unwrap()).as_bytes(),
+                    )
+                    .await
+                    .unwrap();
+            }
+        });
+        (daemon_dir, kills, server)
+    }
+
+    fn insert_teardown_run(db_path: &str, task_id: &str, run_id: &str, session_id: &str) {
+        let db = Db::open(db_path).unwrap();
+        db.insert_stage_run(NewStageRun {
+            id: run_id,
+            task_id,
+            stage: "in progress",
+            kind: crate::db::stage_runs::TEARDOWN_RUN_KIND,
+            agent: None,
+            agent_provider: None,
+            model: None,
+            effort: None,
+            status: "running",
+            result: None,
+            feedback: None,
+            session_id: Some(session_id),
+            provider_session_id: None,
+            cwd: Some("/work/task-dir"),
+            resumed_from_run_id: None,
+        })
+        .unwrap();
+    }
+
+    fn teardown_failures(db_path: &str, task_id: &str) -> usize {
+        Db::open(db_path)
+            .unwrap()
+            .list_task_events(
+                &TaskEventScope::Tasks(vec![task_id.to_string()]),
+                0,
+                i64::MAX,
+                50,
+            )
+            .unwrap()
+            .iter()
+            .filter(|event| event.event_type == "task.teardown_failed")
+            .count()
+    }
+
+    async fn supervise(
+        daemon_dir: &std::path::Path,
+        session_id: &str,
+        run_id: &str,
+        db_path: &str,
+        task_id: &str,
+    ) {
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            supervise_teardown_session(
+                daemon_dir.to_string_lossy().to_string(),
+                session_id.to_string(),
+                Some(run_id.to_string()),
+                db_path.to_string(),
+                task_id.to_string(),
+                std::time::Duration::from_millis(20),
+                std::time::Duration::from_millis(50),
+            ),
+        )
+        .await
+        .expect("the supervisor stands down");
+    }
+
+    /// Teardown A in a directory goes stale; the task re-enters the directory
+    /// (stopping A) and departs again, starting teardown B there. When A's
+    /// supervisor wakes it must leave B alone: it acts only on the session it
+    /// started, and B has a name of its own.
+    #[tokio::test]
+    async fn a_stale_teardown_supervisor_leaves_the_next_teardown_in_its_directory_running() {
+        let task_id = "task-teardown-stale";
+        let db_path = teardown_event_db("teardown-stale-supervisor", task_id);
+        insert_teardown_run(&db_path, task_id, "run-a", "td-task-dir-run-a");
+        insert_teardown_run(&db_path, task_id, "run-b", "td-task-dir-run-b");
+        let (daemon_dir, kills, server) =
+            spawn_teardown_daemon("teardown-stale", vec![("td-task-dir-run-b", 77)], None);
+
+        supervise(&daemon_dir, "td-task-dir-run-a", "run-a", &db_path, task_id).await;
+
+        server.abort();
+        assert!(
+            kills.lock().unwrap().is_empty(),
+            "{:?}",
+            kills.lock().unwrap()
+        );
+        assert_eq!(teardown_failures(&db_path, task_id), 0);
+        let _ = std::fs::remove_file(db_path);
+        let _ = std::fs::remove_dir_all(daemon_dir);
+    }
+
+    /// Two teardowns that share a session id — the pre-change naming — in the
+    /// same directory: the first run was settled (a revisit stopped it)
+    /// before its supervisor's deadline, so that supervisor must not kill
+    /// the second session or record a failure against the task.
+    #[tokio::test]
+    async fn a_settled_teardown_run_stands_its_supervisor_down() {
+        let task_id = "task-teardown-settled";
+        let db_path = teardown_event_db("teardown-settled-supervisor", task_id);
+        insert_teardown_run(&db_path, task_id, "run-a", "td-task-dir");
+        insert_teardown_run(&db_path, task_id, "run-b", "td-task-dir");
+        Db::open(&db_path)
+            .unwrap()
+            .finish_stage_run_without_work(
+                "run-a",
+                "cancelled",
+                Some("stopped because the task re-entered this workspace"),
+                None,
+                crate::db::no_work_termination::WORKSPACE_TEARDOWN,
+            )
+            .unwrap();
+        let (daemon_dir, kills, server) =
+            spawn_teardown_daemon("teardown-settled", vec![("td-task-dir", 77)], None);
+
+        supervise(&daemon_dir, "td-task-dir", "run-a", &db_path, task_id).await;
+
+        server.abort();
+        assert!(
+            kills.lock().unwrap().is_empty(),
+            "{:?}",
+            kills.lock().unwrap()
+        );
+        assert_eq!(teardown_failures(&db_path, task_id), 0);
+        let _ = std::fs::remove_file(db_path);
+        let _ = std::fs::remove_dir_all(daemon_dir);
+    }
+
+    /// The id the supervisor watches now belongs to a different process than
+    /// the one it saw at its soft probe: it was not the one this supervisor
+    /// started, so it is left running and no failure is recorded.
+    #[tokio::test]
+    async fn a_teardown_supervisor_never_kills_a_different_process_under_its_id() {
+        let task_id = "task-teardown-pid";
+        let db_path = teardown_event_db("teardown-pid-supervisor", task_id);
+        insert_teardown_run(&db_path, task_id, "run-a", "td-task-dir-run-a");
+        let (daemon_dir, kills, server) =
+            spawn_teardown_daemon("teardown-pid", vec![("td-task-dir-run-a", 77)], Some(78));
+
+        supervise(&daemon_dir, "td-task-dir-run-a", "run-a", &db_path, task_id).await;
+
+        server.abort();
+        assert!(
+            kills.lock().unwrap().is_empty(),
+            "{:?}",
+            kills.lock().unwrap()
+        );
+        assert_eq!(teardown_failures(&db_path, task_id), 0);
         let _ = std::fs::remove_file(db_path);
         let _ = std::fs::remove_dir_all(daemon_dir);
     }
@@ -4985,6 +5515,7 @@ mod teardown_deadline_tests {
             supervise_teardown_session(
                 daemon_dir.to_string_lossy().to_string(),
                 "td-task-transient".to_string(),
+                None,
                 "/tmp/kanna-missing-teardown-transient-test.db".to_string(),
                 "task-transient".to_string(),
                 std::time::Duration::from_millis(20),
