@@ -39,7 +39,8 @@ final review gates as manager; children return reviewed local commits only.
 | T11b session/gate/dependency UI | `43be5d42` | T11 remainder (single reviewer, sonnet) | parent `3b11ea341` (T2, T3, T4) | in progress | — | — |
 | T12 artifact viewer | `6d3d22f8` | increment 1: local open-by-hash desktop/mobile, anchors, isolation; remote + §14 walkthrough → T12b | parent `01f5c8972` (T6 dc9c09bfa, T8/T8b) | reviewed (round 4), integrated, closed | `beffdbe8b` … `f38895884` | T12 merge commit |
 | T13a inventory + offline rebuild | `e3991858` | T13 increment 1: authority inventory, projector, fixture round trip (panel) | parent `e69577ba6`, merged `b70608f54` | reviewed (round 1), integrated, closed | `0d4a8a1c7`, `710ecb046`, `1c20d3622` | T13a merge commit |
-| T13 remainder (cutover) | — | — | needs T1–T12, T14 review | not created | — | — |
+| T13b close disk-rebuild gaps | `fa7ef515` | make every non-statistical durable fact rebuildable from disk; SQLite still authoritative (panel; opus) | parent `dd681af2f` | in progress | — | — |
+| T13c authority cutover | — | disk authoritative, SQL projection, retire legacy writers, rollback path | needs T13b + T10c/T11b review | not created | — | — |
 | T14 release workflow | `6b069969` | first increment + card (panel incl. release/security) | parent `c05999e0f` (T3 2f91f9ad2, T8/T8b) | reviewed (round 3), integrated, closed | `0145b8de3`, `16c0065db`, `4d2feac1e`, `c9a782a9b` | T14 merge commit |
 
 ## Log
@@ -165,3 +166,4 @@ final review gates as manager; children return reviewed local commits only.
 - 2026-09-23: T10c review round 2 at `673475709`: status mapping fixed, join fixture added; four qa-dispatcher policy items still not restored under the owner decision (compat). Revision 2/5.
 - 2026-09-23: T10f passed panel review round 1 at `8af2aaded`. Merged cleanly; task_creator/repo_definitions/task_manager 470 pass; core workflow 253 pass (2 pre-existing). T10f closed. Follow-up carried: manager policy for task.dependency_superseded.
 - 2026-09-23: T11b committed its work (`7ccf6ac7e`) and merged parent `668e0af0c` (`413f7c579`); server 148, desktop 78 + vue-tsc, mobile 2326 + tsc pass on the merged tree. Advanced to single review.
+- 2026-09-23: T13b `fa7ef515` created from parent `dd681af2f`; T13 remainder split into T13b (rebuild gaps) and T13c (cutover).
