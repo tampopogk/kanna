@@ -42,6 +42,7 @@ mod snapshot;
 pub(crate) mod stage_edges;
 pub(crate) mod stage_run_prompt;
 pub(crate) mod stage_runs;
+pub(crate) mod subtask_joins;
 pub(crate) mod terminal_archives;
 pub use terminal_archives::AgentTerminalAttempt;
 pub(crate) mod workspace_setup;
@@ -93,6 +94,7 @@ pub use stage_runs::{
     FinishedStageRun, ProviderOverrideSource, StageProviderOverride, StageRunSession, StageTrigger,
     TranscriptRef,
 };
+pub use subtask_joins::{NewJoinMember, NewTaskJoin, TaskJoin, TaskJoinMember};
 #[allow(unused_imports)]
 pub use task_events::{
     appended as task_event_appended, TaskEvent, TaskEventFilters, TaskEventKind, TaskEventScope,
@@ -223,6 +225,7 @@ pub(crate) const CURRENT_SCHEMA_MIGRATIONS: &[&str] = &[
     "098_stage_workspaces",
     "099_transition_commit",
     "100_task_stage_edges",
+    "101_subtask_joins",
 ];
 
 #[derive(Debug, Serialize)]
@@ -2709,6 +2712,12 @@ fn run_schema_migrations(conn: &Connection) -> Result<(), rusqlite::Error> {
     // readiness; edges are only ever created by new requests.
     run_migration(conn, "100_task_stage_edges", |conn| {
         conn.execute_batch(stage_edges::SCHEMA)
+    })?;
+
+    // Spec §9/§16.4 (T5): subtask join cohorts. Only children created in a
+    // join are members; existing parent/child rows are untouched.
+    run_migration(conn, "101_subtask_joins", |conn| {
+        conn.execute_batch(subtask_joins::SCHEMA)
     })?;
 
     Ok(())

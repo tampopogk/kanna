@@ -391,6 +391,11 @@ pub(crate) async fn run_server_services(
     tokio::spawn(
         http_api::stage_dependencies::resume_stage_dependency_readiness(Arc::clone(&http_state)),
     );
+    // Join members a restart interrupted before creating, and subtask
+    // results whose notice the parent's session never got.
+    tokio::spawn(http_api::subtask_joins::resume_subtask_joins(Arc::clone(
+        &http_state,
+    )));
     tokio::spawn(run_task_ledger_publisher(Arc::clone(&http_state)));
     tokio::spawn(run_artifact_retention_sweeper(Arc::clone(&http_state)));
     let protected_input_maintenance = maintain_protected_input_generations(

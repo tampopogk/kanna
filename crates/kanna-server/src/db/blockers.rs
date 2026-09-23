@@ -255,11 +255,16 @@ impl Db {
 
     /// Every task holding `task_id` right now: its unresolved legacy
     /// blockers, then the upstreams of stage edges (T4) holding it at the
-    /// stage it is waiting to enter. The one set behind `task.blocked` and
+    /// stage it is waiting to enter, then the children of its subtask joins
+    /// (T5) that have not resolved. The one set behind `task.blocked` and
     /// every `blockedByTaskIds` a client reads.
     pub fn list_blocking_task_ids(&self, task_id: &str) -> Result<Vec<String>, rusqlite::Error> {
         let mut blocker_task_ids = self.list_open_task_blocker_ids(task_id)?;
-        for upstream in self.list_waiting_stage_edge_upstreams(task_id)? {
+        for upstream in self
+            .list_waiting_stage_edge_upstreams(task_id)?
+            .into_iter()
+            .chain(self.unresolved_join_children(task_id)?)
+        {
             if !blocker_task_ids.contains(&upstream) {
                 blocker_task_ids.push(upstream);
             }

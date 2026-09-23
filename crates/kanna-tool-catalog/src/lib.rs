@@ -401,6 +401,8 @@ struct SafeServerStatus {
     #[serde(default)]
     stage_dependencies_version: Option<u8>,
     #[serde(default)]
+    subtask_joins_version: Option<u8>,
+    #[serde(default)]
     agent_api_tools: Option<Vec<String>>,
     #[serde(default)]
     write_path_health: Option<SafeWritePathHealth>,
@@ -762,6 +764,7 @@ pub fn runtime_info_snapshot(
                     "capabilityVersions": {
                         "kspStream": status.ksp_stream_version,
                         "stageDependencies": status.stage_dependencies_version,
+                        "subtaskJoins": status.subtask_joins_version,
                     },
                     "writePathHealth": status.write_path_health,
                 });
@@ -1853,6 +1856,45 @@ pub fn confirm_stage_dependencies_supported(status: &Value) -> Result<(), String
          stageDependenciesVersion {STAGE_DEPENDENCIES_VERSION}, so it would ignore `dependencies` \
          and start an ordinary task with no stage gate and no recorded base. Upgrade that server, \
          or create the task without dependencies. No task was created."
+    ))
+}
+
+/// The subtask-join contract (spec §9, T5) a server serves: children created
+/// in a join from the parent's committed SHA, each result delivered once as a
+/// parent input, the parent held until every child resolves. Advertised as
+/// `subtaskJoinsVersion` on `GET /v1/status`.
+pub const SUBTASK_JOINS_VERSION: u8 = 1;
+
+/// Does this request need the target server to serve subtask joins? Creating
+/// children in a join or reading join state does: a server that predates
+/// them has no such routes, and a client must not read that as "no join".
+pub fn requires_subtask_joins(request: &ResolvedRequest) -> bool {
+    let Some(rest) = request.path.strip_prefix("/v1/tasks/") else {
+        return false;
+    };
+    let route = rest.split('?').next().unwrap_or(rest);
+    match request.method {
+        Method::Post => route.ends_with("/subtasks"),
+        Method::Get => route.ends_with("/joins"),
+        _ => false,
+    }
+}
+
+/// Refuse, before anything is created or read, unless the target server's
+/// `GET /v1/status` confirms it serves subtask joins.
+pub fn confirm_subtask_joins_supported(status: &Value) -> Result<(), String> {
+    let advertised = status
+        .get("subtaskJoinsVersion")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    if advertised >= u64::from(SUBTASK_JOINS_VERSION) {
+        return Ok(());
+    }
+    Err(format!(
+        "subtask_joins_unsupported: the destination server did not confirm subtaskJoinsVersion \
+         {SUBTASK_JOINS_VERSION}, so it cannot create children in a join, hold the parent until \
+         they resolve, or report join state. Upgrade that server, or create the children with \
+         kanna_create_task and parent_task_id and reconcile them yourself. Nothing was created."
     ))
 }
 

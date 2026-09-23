@@ -86,6 +86,12 @@ pub struct MobileServerStatus {
     /// `dependencies` unless this is present.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stage_dependencies_version: Option<u8>,
+    /// Version of the subtask-join contract (T5): `POST
+    /// /v1/tasks/{id}/subtasks` and `GET /v1/tasks/{id}/joins`. Absent on a
+    /// build that predates them, so a client refuses to call either rather
+    /// than read a missing route as an empty join.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subtask_joins_version: Option<u8>,
     /// This desktop's secure-channel public key (unpadded base64url X25519),
     /// present when the desktop can serve end-to-end encrypted sessions.
     /// Read over plaintext LAN it is *not* a trust anchor - a typed-code
@@ -2210,6 +2216,7 @@ pub fn build_mobile_server_status(
         ksp_stream_version: Some(2),
         task_input_attachment_version: Some(TASK_INPUT_ATTACHMENT_VERSION),
         stage_dependencies_version: Some(kanna_tool_catalog::STAGE_DEPENDENCIES_VERSION),
+        subtask_joins_version: Some(kanna_tool_catalog::SUBTASK_JOINS_VERSION),
         channel_public_key: None,
         secure_channel_version: None,
         agent_providers: Some(crate::agent_inventory::installed_agent_providers()),

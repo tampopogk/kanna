@@ -152,6 +152,14 @@ pub enum TaskEventKind {
     /// `consumedResultId`/`consumedSha` and the newer
     /// `supersedingResultId`/`supersedingSha`.
     DependencySuperseded,
+    /// A child created in one of this task's subtask joins resolved (spec
+    /// §9, T5): it recorded its first result, closed without one, or could
+    /// not be created. Its outcome was delivered once into this task's
+    /// input ledger in the same transaction. `payload` names the `joinId`,
+    /// `childTaskId`, `outcome` (`result`, `closed`, `not_created`), the
+    /// child's `resultId`/`status`/`stage`/`committedSha`, the delivered
+    /// `inputId`, and `resolved`/`total`/`joinComplete`.
+    SubtaskResultDelivered,
     /// A provider refused this task's turn because the allowance for the
     /// scope it named is spent. A *positive* match on the provider's own
     /// rejection output, never inferred from a session going quiet, and the
@@ -247,6 +255,7 @@ impl TaskEventKind {
             Self::TaskBlocked => "task.blocked",
             Self::TaskUnblocked => "task.unblocked",
             Self::DependencySuperseded => "task.dependency_superseded",
+            Self::SubtaskResultDelivered => "task.subtask_result",
             Self::ProviderQuotaRejected => "task.provider_quota_rejected",
             Self::ProviderQuotaParked => "task.provider_quota_parked",
             Self::ProviderCapacityRefused => "task.provider_capacity_refused",
@@ -282,6 +291,7 @@ impl TaskEventKind {
         Self::TaskBlocked,
         Self::TaskUnblocked,
         Self::DependencySuperseded,
+        Self::SubtaskResultDelivered,
         Self::ProviderQuotaRejected,
         Self::ProviderQuotaParked,
         Self::ProviderCapacityRefused,

@@ -1660,3 +1660,33 @@ async fn create_with_dependencies_proceeds_when_the_server_advertises_them() {
     assert!(requests[1].starts_with("POST /v1/tasks "));
     assert!(requests[1].contains(r#""dependencies":[{"taskId":"task-a","stage":"plan"}]"#));
 }
+
+/// Creating children in a join, or reading join state, against a server that
+/// does not advertise subtask joins is refused after the status read alone:
+/// nothing that could create a task is sent.
+#[tokio::test]
+async fn subtask_join_tools_are_refused_by_a_server_without_subtask_joins() {
+    let (base_url, requests) = serve_status_recording_requests(pre_t4_status()).await;
+    let catalog = kanna_tool_catalog::bundled_catalog();
+    for (tool, args) in [
+        (
+            "kanna_create_subtasks",
+            json!({ "task_id": "task-p", "children": [{ "prompt": "Review security" }] }),
+        ),
+        ("kanna_get_task_joins", json!({ "task_id": "task-p" })),
+    ] {
+        let refused = call_catalog_tool_with_task_id(&base_url, &catalog, tool, &args, None)
+            .await
+            .unwrap_err();
+        assert!(
+            refused.contains("subtask_joins_unsupported"),
+            "{tool}: {refused}"
+        );
+    }
+    let seen = requests.lock().unwrap().clone();
+    assert!(!seen.is_empty(), "the status was consulted");
+    assert!(
+        seen.iter().all(|line| line.starts_with("GET /v1/status ")),
+        "nothing but the status read was sent: {seen:?}"
+    );
+}

@@ -435,6 +435,18 @@ impl Db {
                 )));
             }
             db.mark_task_snapshot_dirty(entry.task_id)?;
+            // A join member's first result resolves it and is delivered to
+            // its parent in this same transaction (T5).
+            if entry.kind == LedgerEntryKind::Result && !entry.historical {
+                if let Some(result) = envelope.get(entry.kind.as_str()) {
+                    db.resolve_join_member_on_result(
+                        entry.task_id,
+                        &entry_id,
+                        result,
+                        entry.message.unwrap_or(""),
+                    )?;
+                }
+            }
             crate::task_store::wake_publisher();
             Ok(LedgerEntryRef {
                 sequence,
@@ -801,6 +813,9 @@ impl Db {
                 // each consumed and what superseded it. `dependencies`
                 // above keeps listing the legacy task-level blockers.
                 "stage_dependencies": self.stage_edge_links(task_id)?,
+                // T5 subtask joins this task created, with each member's
+                // outcome and the input that delivered it.
+                "subtask_joins": self.subtask_join_links(task_id)?,
                 "pr": item.pr_url.as_ref().map(|url| json!({
                     "url": url,
                     "number": item.pr_number,

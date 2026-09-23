@@ -44,6 +44,7 @@ mod stage_run_prompts;
 mod state;
 mod status;
 mod subscription_timing;
+pub(crate) mod subtask_joins;
 pub(crate) mod task_actions;
 pub(crate) mod task_activity;
 mod task_agent_session;

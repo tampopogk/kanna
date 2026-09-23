@@ -300,6 +300,17 @@
       ]
     },
     {
+      "name": "kanna_get_task_joins",
+      "description": "Read the subtask joins this task created with kanna_create_subtasks, and whether it is blocked on them. Each join names its baseSha (the parent commit every child forked from) and each member child's state: running, resolved (its outcome — result, closed or not_created — with the child's resultId, status, stage and committedSha, and the inputId it was delivered to this task as), creating, or stalled (no result and no live session: nothing counts it until it is resumed with kanna_resume_task, rerun with kanna_rerun_stage, or closed with kanna_close_task; `actions` lists which apply). Only members count toward a join; other children never satisfy it. Requires a server advertising subtaskJoinsVersion 1.",
+      "method": "GET",
+      "path": "/v1/tasks/{task_id}/joins",
+      "response": "json",
+      "params": [
+        { "name": "machine_id", "description": "Machine id from kanna_list_machines. Omit it, or pass the current machine id, to use the local machine connected to this client.", "type": "string", "required": false, "location": "routing" },
+        { "name": "task_id", "description": "Task id (stable across stages) or one of the task's branch names (task-{id} or task-{id}-{n}).", "type": "string", "required": true, "location": "path" }
+      ]
+    },
+    {
       "name": "kanna_wait_task",
       "description": "Wait for one task to need reconciliation. The default until=reconcile resolves immediately for observed non-busy runtime that survived the server debounce, including an agent parked without recording a verdict, or for recorded termination — and also the instant the task gains an unresolved blocker, gains an attention badge, or is reported provider-parked or provider-capacity-noticed, even while its agent is still busy: those are durable facts, not a flickering transition, so none of them wait out a settling window the way runtime does. Unread is the one exception: activity stays unread for a busy task too — sending input to a stopped child and immediately waiting on it produces exactly that shape — so unread only resolves reconcile once the runtime is no longer busy; an unconditional unread check would resolve on an actively running agent and keep doing so on every call. Explicit until=finished requires a closed task, terminal latest run, or exited session; until=closed requires closure. Resolving reconcile does not declare success or advance a manual gate. For continuous management use kanna_subscribe_events so observation does not depend on a harness background wait. Bounded waits return the latest detail with waitOutcome=timeout when their window expires.",
       "method": "GET",
@@ -722,6 +733,18 @@
         { "name": "review_context", "description": "For a pull-request review task, the PR this task reviews, as an object: prUrl (required, absolute URL), headSha (required, the exact commit being reviewed), baseRef (required, the branch the PR merges into), and optionally headRepo (owner/name, for a fork PR), headRef (the PR's own head branch), baseSha, producingTaskId and producingMachineId (the Kanna task that produced the PR, when there is one), triageParentTaskId and triageRank (legacy field names for the PR review manager task and accepted review order), and relatedPrUrls (other open PRs touching overlapping files, or the PR this one is stacked on). This is candidate information about the forge and confers NO approval: it exists so the operator's own merge control, and later the merge agent, have a durable PR identity. Without it a review child names only its task-* branch and the local pr/<n> ref it forked from, neither of which the forge can merge. Never put the review task's own branch in headRef.", "type": "object", "required": false, "location": "body", "key": "reviewContext" },
         { "name": "blocker_task_ids", "description": "Task ids that must finish before this task; it shows as blocked until they do.", "type": "string_array", "required": false, "location": "body", "key": "blockerTaskIds" },
         { "name": "dependencies", "description": "Stage dependency edges, in order: an array of objects {taskId, stage, dependentStage?}. The new task's dependentStage (default: the stage it starts in) waits until task taskId leaves its stage `stage` with a success result — for that task's final stage, until it closes. The task is created unstarted and enters its first stage once every edge into it is satisfied, forked from the commit the first such edge's result recorded (never the upstream's current branch tip); further first-stage edges are listed to its session to merge itself, and the engine merges nothing. Edges into later stages only hold that stage. A newer upstream result later is announced as task.dependency_superseded and changes nothing. Refused: an unknown task or stage, a cycle, a stage the upstream already left without a recorded success result, and combining with blocker_task_ids.", "type": "object_array", "required": false, "location": "body" }
+      ]
+    },
+    {
+      "name": "kanna_create_subtasks",
+      "description": "Create child tasks of task_id in one join (spec: parallel work is subtasks). Every child forks from task_id's committed HEAD at this call (uncommitted edits are not included), recorded as the join's baseSha; each is a task with its own workspace, branch and session, parented to task_id. The engine then holds task_id: it reads as blocked on the children (blockedByTaskIds, task.blocked) and a successful kanna_complete_stage or kanna_advance_stage is refused until every child in the join has resolved, while its session keeps running. Each child resolves once, on its first recorded result of any status (or on closing without one); that result's message is delivered once into task_id's inputs (source subtask_join, see kanna_task_inputs), announced as task.subtask_result, and typed into its live session. A child whose session dies without a result stays unresolved until resumed, rerun or closed. The engine merges and aggregates nothing — the parent combines the results. Read progress with kanna_get_task_joins. Requires a server advertising subtaskJoinsVersion 1; closing a task with open children is refused.",
+      "method": "POST",
+      "path": "/v1/tasks/{task_id}/subtasks",
+      "response": "json",
+      "params": [
+        { "name": "machine_id", "description": "Machine id from kanna_list_machines. Omit it, or pass the current machine id, to use the local machine connected to this client.", "type": "string", "required": false, "location": "routing" },
+        { "name": "task_id", "description": "Task id (stable across stages) or one of the task's branch names (task-{id} or task-{id}-{n}).", "type": "string", "required": true, "location": "path" },
+        { "name": "children", "description": "The children to create, in order: an array of objects {prompt, displayName?, workflowName?, agent?, agentProvider?, model?, effort?, permissionMode?, allowedTools?}, with the same meanings as on kanna_create_task. Repository, parent and fork point are the join's; any other field is refused. At most 32.", "type": "object_array", "required": true, "location": "body" }
       ]
     },
     {

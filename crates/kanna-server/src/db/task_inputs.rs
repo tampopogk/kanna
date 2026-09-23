@@ -222,7 +222,7 @@ impl Db {
         Ok(true)
     }
 
-    fn insert_delivered_task_input(
+    pub(super) fn insert_delivered_task_input(
         &self,
         task_id: &str,
         source: &str,

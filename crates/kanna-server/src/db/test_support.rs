@@ -568,6 +568,7 @@ impl Db {
         self.conn
             .execute_batch(super::transition_commits::TRANSITION_COMMIT_SCHEMA)?;
         self.conn.execute_batch(super::stage_edges::SCHEMA)?;
+        self.conn.execute_batch(super::subtask_joins::SCHEMA)?;
         create_blocker_revision_triggers(&self.conn)?;
         let mut stmt = self
             .conn

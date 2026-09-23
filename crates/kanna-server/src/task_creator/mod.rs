@@ -105,14 +105,20 @@ pub(crate) use stages::{
     prepare_fresh_restart_after_rejected_resume, prepare_provider_fallback_for_api,
     prepare_resume_task_for_api, prepare_revision_task_for_api,
     prepare_stage_completion_for_api_with_trigger, resolve_revision_budget, resolve_revision_limit,
-    resolve_stage_transition, stage_declares_merge_approve_post, RevisionBudget,
-    StageAdvanceIntent,
+    resolve_stage_transition, stage_declares_merge_approve_post, subtask_join_pending_error,
+    RevisionBudget, StageAdvanceIntent,
 };
 #[cfg(test)]
 pub(crate) use stages::{prepare_advance_stage_for_api, prepare_stage_completion_for_api};
 pub(crate) use worktree::{local_branch_exists, resolve_current_source_worktree_branch};
 
 pub(crate) const FALLBACK_WORKFLOW_NAME: &str = "no-review";
+
+/// A fresh task id, as task creation generates one — for callers that must
+/// record the id before the task exists (a subtask join's members).
+pub(crate) fn generate_new_task_id() -> Result<String, String> {
+    generate_task_id()
+}
 
 #[derive(Clone, Debug)]
 pub(crate) enum DefinitionLookupError {
