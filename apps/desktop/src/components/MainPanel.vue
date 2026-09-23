@@ -44,6 +44,7 @@ import TreeExplorerModal from "./TreeExplorerModal.vue";
 import CommitGraphModal from "./CommitGraphModal.vue";
 import AnalyticsModal from "./AnalyticsModal.vue";
 import ImageUrlPreviewModal from "./ImageUrlPreviewModal.vue";
+import ArtifactViewer from "./ArtifactViewer.vue";
 import { AGENT_TAB_ID, mainTabScopeKeyForTask, type MainTab } from "../composables/useMainTabs";
 import type { RemoteDirectoryEntry } from "../composables/useTreeExplorer";
 import type { SplitRect } from "../composables/taskPaneLayout";
@@ -1238,6 +1239,13 @@ function dismissCommandHint() {
           embedded
           :active="activeTabId === tab.id"
           @close="closeTab(tab.id)"
+        />
+        <ArtifactViewer
+          v-else-if="tab.kind === 'artifact' && tab.artifactRepoId"
+          v-show="viewVisible(tab.id)"
+          :repo-id="tab.artifactRepoId"
+          :artifact-id="tab.artifactId"
+          :visible="viewVisible(tab.id)"
         />
       </div>
       <TaskPreviewCache

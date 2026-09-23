@@ -864,6 +864,10 @@ function TaskDetailRoute({
           ? controller.readTaskDiff(durableTaskId, request)
           : Promise.reject(new Error("Task creation is still in progress."));
       }}
+      onGetArtifact={(repoId, artifactId) => controller.getArtifact(repoId, artifactId)}
+      onReadArtifactFile={(repoId, artifactId, path) =>
+        controller.readArtifactFile(repoId, artifactId, path)
+      }
       taskPreviewRouteAvailable={
         previewTaskId
           ? (controller.canOpenTaskPreview?.(previewTaskId) ?? false)

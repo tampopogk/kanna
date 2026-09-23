@@ -14,11 +14,12 @@ use crate::artifacts::store::{
 use crate::artifacts::types::{ArtifactAnchor, ArtifactContentKind};
 use crate::artifacts::{resolve_repository_path, ArtifactError};
 use crate::db::{Db, Repo};
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
-use serde::Deserialize;
+use base64::Engine as _;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::sync::Arc;
 
@@ -51,6 +52,27 @@ pub(super) struct AnchorRequest {
     position: Option<String>,
     #[serde(default)]
     excerpt: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(super) struct ArtifactFileQuery {
+    path: String,
+}
+
+/// One file of a retained tree, for a client that cannot reach this machine's
+/// loopback preview listener (a phone over LAN or relay) and renders the
+/// artifact itself. Bounded like a task file download, because the whole body
+/// crosses the relay as one message.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct ArtifactFileContent {
+    repo_id: String,
+    artifact_id: String,
+    path: String,
+    media_type: String,
+    size: u64,
+    data_base64: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -128,6 +150,46 @@ pub(super) async fn get_artifact(
         let store = existing_store(&state, &repo_id, &artifact_id)?;
         let detail = store.detail(&artifact_id).map_err(artifact_error)?;
         Ok(Json(detail).into_response())
+    })
+    .await
+}
+
+pub(super) async fn read_artifact_file(
+    _access: PrivilegedTaskAccess,
+    State(state): State<Arc<AppState>>,
+    Path((repo_id, artifact_id)): Path<(String, String)>,
+    Query(query): Query<ArtifactFileQuery>,
+) -> Response {
+    blocking("artifact file read", move || {
+        let store = existing_store(&state, &repo_id, &artifact_id)?;
+        let blob = store
+            .read_file(&artifact_id, &query.path)
+            .map_err(artifact_error)?;
+        let size = blob.bytes.len() as u64;
+        if size > crate::task_files::MAX_TASK_FILE_BYTES {
+            let mut body = json!({
+                "error": "file_too_large",
+                "message": format!(
+                    "{} exceeds the {} byte limit for reading one artifact file",
+                    blob.path,
+                    crate::task_files::MAX_TASK_FILE_BYTES
+                ),
+            });
+            body["artifactId"] = json!(artifact_id);
+            body["path"] = json!(blob.path);
+            return Err(Box::new(
+                (StatusCode::PAYLOAD_TOO_LARGE, Json(body)).into_response(),
+            ));
+        }
+        Ok(Json(ArtifactFileContent {
+            repo_id,
+            artifact_id,
+            media_type: super::artifact_preview::media_type(&blob.path),
+            size,
+            data_base64: base64::engine::general_purpose::STANDARD.encode(&blob.bytes),
+            path: blob.path,
+        })
+        .into_response())
     })
     .await
 }

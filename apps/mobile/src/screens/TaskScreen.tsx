@@ -29,7 +29,9 @@ import type {
   TaskInputAttachment,
   TaskPort,
   TaskPreviewOpenResult,
-  TaskSummary
+  TaskSummary,
+  ArtifactDetail,
+  ArtifactFileContent
 } from "../lib/api/types";
 import { isTaskBlocked, type BlockerTaskRef } from "../lib/api/taskIdentity";
 import {
@@ -65,6 +67,7 @@ import type {
 import { AgentMessageView } from "./AgentMessageView";
 import { TaskDiffPreview } from "./TaskDiffPreview";
 import { TaskPreviewModal } from "./TaskPreviewModal";
+import { ArtifactViewer } from "./ArtifactViewer";
 import { TaskFilePreview } from "./TaskFilePreview";
 import { TaskMentionedFiles } from "./TaskMentionedFiles";
 import { RepoExplorer } from "./RepoExplorer";
@@ -164,6 +167,9 @@ interface TaskScreenProps {
   onListTaskDirectory(path: string, showAllFiles?: boolean, offset?: number, filter?: string): Promise<RepoDirectoryListing>;
   onReadTaskFileRange(path: string, startLine: number, lineCount: number, metadataOnly?: boolean, startByte?: number): Promise<RepoFileRange>;
   onReadTaskDiff(request: TaskDiffRequest): Promise<TaskDiffContent>;
+  /** Artifacts of this task's repository, by tree id; absent where unsupported. */
+  onGetArtifact?(repoId: string, artifactId: string): Promise<ArtifactDetail>;
+  onReadArtifactFile?(repoId: string, artifactId: string, path: string): Promise<ArtifactFileContent>;
   taskPreviewRouteAvailable?: boolean;
   onOpenTaskPreview?(portName?: string): Promise<TaskPreviewOpenResult>;
   onCloseTaskPreview?(): Promise<void>;
@@ -256,6 +262,8 @@ export function TaskScreen({
   onListTaskDirectory,
   onReadTaskFileRange,
   onReadTaskDiff,
+  onGetArtifact,
+  onReadArtifactFile,
   taskPreviewRouteAvailable = true,
   onOpenTaskPreview = () =>
     Promise.reject(new Error("This desktop does not support dev-server preview.")),
@@ -359,6 +367,7 @@ export function TaskScreen({
   );
   const [diffModalTaskId, setDiffModalTaskId] = useState<string | null>(null);
   const [previewModalTaskId, setPreviewModalTaskId] = useState<string | null>(null);
+  const [artifactViewerTaskId, setArtifactViewerTaskId] = useState<string | null>(null);
   const [explorerTaskId, setExplorerTaskId] = useState<string | null>(null);
   const [terminalDirectInputEnabled, setTerminalDirectInputEnabled] =
     useState(false);
@@ -758,6 +767,9 @@ export function TaskScreen({
       {
         mentionedFilesLabel: mentionedFilesActionLabel(activeMentionedFiles),
         ...(previewAvailable ? { previewAvailable: true } : {}),
+        ...(taskCreationPhase === "idle" && onGetArtifact && onReadArtifactFile
+          ? { artifactsAvailable: true }
+          : {}),
         ...(taskCreationPhase !== "idle" ? { taskCreation: true } : {})
       },
       (action: TaskAction) => {
@@ -777,6 +789,9 @@ export function TaskScreen({
             break;
           case "view-diff":
             setDiffModalTaskId(task.id);
+            break;
+          case "open-artifact":
+            setArtifactViewerTaskId(task.id);
             break;
           case "advance-stage":
             onAdvanceTaskStage();
@@ -1651,6 +1666,14 @@ export function TaskScreen({
           onSendEvent={(sessionId, revision, event) =>
             onSendCompanionEvent?.(sessionId, revision, event)
           }
+        />
+      ) : null}
+      {artifactViewerTaskId === task.id && onGetArtifact && onReadArtifactFile ? (
+        <ArtifactViewer
+          repoId={task.repoId}
+          getArtifact={onGetArtifact}
+          readArtifactFile={onReadArtifactFile}
+          onClose={() => setArtifactViewerTaskId(null)}
         />
       ) : null}
       {previewModalTaskId === task.id ? (

@@ -163,6 +163,10 @@ vi.mock("./VisualCompanionModal", () => ({
   VisualCompanionModal: "VisualCompanionModal"
 }));
 
+vi.mock("./ArtifactViewer", () => ({
+  ArtifactViewer: "ArtifactViewer"
+}));
+
 vi.mock("./TaskPreviewModal", () => ({
   TaskPreviewModal: "TaskPreviewModal"
 }));

@@ -66,6 +66,27 @@ describe("showTaskActionMenu", () => {
     );
   });
 
+  it("offers opening an artifact by tree id when the client can read artifacts", () => {
+    const onSelect = vi.fn();
+    showTaskActionMenu(
+      { mentionedFilesLabel: "Mentioned Files (0)", artifactsAvailable: true },
+      onSelect
+    );
+
+    const [sheet, choose] = nativeMocks.actionSheet.mock.calls[0];
+    expect(sheet.options).toEqual([
+      "Browse Files",
+      "Mentioned Files (0)",
+      "View Diff",
+      "Open Artifact…",
+      "Advance Stage",
+      "Close Task",
+      "Cancel"
+    ]);
+    choose(3);
+    expect(onSelect).toHaveBeenCalledWith("open-artifact");
+  });
+
   it("offers dev-server preview only when a declared port is available", () => {
     showTaskActionMenu(
       {

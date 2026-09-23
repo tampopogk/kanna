@@ -1,7 +1,7 @@
 use super::analytics::get_repo_analytics;
 use super::artifacts::{
     close_artifact_preview, get_artifact, open_artifact_preview, publish_artifact,
-    record_artifact_comment, record_artifact_decision,
+    read_artifact_file, record_artifact_comment, record_artifact_decision,
 };
 use super::backup::create_backup;
 use super::cloud_desktops::{invoke_cloud_desktop, list_cloud_desktops};
@@ -421,6 +421,10 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route(
             "/v1/repos/{repo_id}/artifacts/{artifact_id}",
             get(get_artifact),
+        )
+        .route(
+            "/v1/repos/{repo_id}/artifacts/{artifact_id}/files",
+            get(read_artifact_file),
         )
         .route(
             "/v1/repos/{repo_id}/artifacts/{artifact_id}/comments",
