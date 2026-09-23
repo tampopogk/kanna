@@ -42,6 +42,8 @@ pub(super) struct RepoConfig {
     pub(super) stage_order: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) workspace: Option<RepoWorkspaceConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) artifacts: Option<RepoArtifactsConfig>,
     /// Provenance of the machine-local `.kanna/config.local.json` layer merged
     /// over the committed config, or `None` when no local file applies. It is
     /// recorded during resolution rather than read from either file, so it
@@ -53,6 +55,21 @@ pub(super) struct RepoConfig {
         skip_serializing_if = "Option::is_none"
     )]
     pub(super) local_override: Option<LocalConfigOverride>,
+}
+
+/// Where this repository's artifact repository lives and which retention
+/// policy new artifact versions record (spec §8). Both fields are optional;
+/// the artifact module supplies the defaults.
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+pub(super) struct RepoArtifactsConfig {
+    #[serde(
+        rename = "repositoryPath",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub(super) repository_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) retention: Option<crate::artifacts::ArtifactRetention>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -1143,6 +1160,26 @@ fn repo_config_from_object(raw: &serde_json::Map<String, serde_json::Value>) -> 
             (env.is_some() || path.is_some()).then_some(RepoWorkspaceConfig { env, path })
         });
 
+    let artifacts = raw
+        .get("artifacts")
+        .and_then(serde_json::Value::as_object)
+        .and_then(|artifacts_raw| {
+            let repository_path = artifacts_raw
+                .get("repositoryPath")
+                .and_then(serde_json::Value::as_str)
+                .map(str::trim)
+                .filter(|path| !path.is_empty())
+                .map(str::to_string);
+            let retention = artifacts_raw
+                .get("retention")
+                .and_then(serde_json::Value::as_str)
+                .and_then(crate::artifacts::ArtifactRetention::parse);
+            (repository_path.is_some() || retention.is_some()).then_some(RepoArtifactsConfig {
+                repository_path,
+                retention,
+            })
+        });
+
     RepoConfig {
         // `pipeline` is the retired spelling of the `workflow` key; repo
         // configs written before the rename must keep loading.
@@ -1162,6 +1199,7 @@ fn repo_config_from_object(raw: &serde_json::Map<String, serde_json::Value>) -> 
         reserved_ports: integer_array("reserved_ports", |value| (1..=65535).contains(&value)),
         stage_order: string_array("stage_order"),
         workspace,
+        artifacts,
         local_override: None,
     }
 }

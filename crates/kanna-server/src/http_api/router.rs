@@ -1,4 +1,8 @@
 use super::analytics::get_repo_analytics;
+use super::artifacts::{
+    close_artifact_preview, get_artifact, open_artifact_preview, publish_artifact,
+    record_artifact_comment, record_artifact_decision,
+};
 use super::backup::create_backup;
 use super::cloud_desktops::{invoke_cloud_desktop, list_cloud_desktops};
 use super::cloud_relay::{reconnect_cloud_relay, sign_out_desktop_cloud_account};
@@ -408,6 +412,27 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route(
             "/v1/tasks/{task_id}/preview",
             post(open_task_preview).delete(close_task_preview),
+        )
+        .route("/v1/tasks/{task_id}/artifacts", post(publish_artifact))
+        .route(
+            "/v1/repos/{repo_id}/artifacts/{artifact_id}",
+            get(get_artifact),
+        )
+        .route(
+            "/v1/repos/{repo_id}/artifacts/{artifact_id}/comments",
+            post(record_artifact_comment),
+        )
+        .route(
+            "/v1/repos/{repo_id}/artifacts/{artifact_id}/decisions",
+            post(record_artifact_decision),
+        )
+        .route(
+            "/v1/repos/{repo_id}/artifacts/{artifact_id}/preview",
+            post(open_artifact_preview),
+        )
+        .route(
+            "/v1/repos/{repo_id}/artifacts/{artifact_id}/preview/close",
+            post(close_artifact_preview),
         )
         .route(
             "/v1/tasks/{task_id}/actions/run-merge-agent",

@@ -76,6 +76,12 @@ fn bundled_catalog_parses_and_declares_all_tools() {
             "kanna_is_dependent_tasks_exist",
             "kanna_complete_stage",
             "kanna_request_revision",
+            "kanna_publish_artifact",
+            "kanna_get_artifact",
+            "kanna_open_artifact",
+            "kanna_close_artifact",
+            "kanna_record_artifact_comment",
+            "kanna_record_artifact_decision",
         ]
     );
 }
@@ -921,6 +927,54 @@ fn resolves_expected_requests_for_every_bundled_tool() {
             ResponseKind::Json,
             "/v1/transfers/actions/pull-task",
             json!({ "sourceTaskId": "task-1", "sourceMachine": "peer-primary" }),
+        ),
+        (
+            "kanna_publish_artifact",
+            json!({ "task_id": "task-1", "path": "mockups/login", "kind": "mockup", "previous": "0123456789abcdef0123456789abcdef01234567" }),
+            Method::Post,
+            ResponseKind::Json,
+            "/v1/tasks/task-1/artifacts",
+            json!({ "path": "mockups/login", "kind": "mockup", "previous": "0123456789abcdef0123456789abcdef01234567" }),
+        ),
+        (
+            "kanna_get_artifact",
+            json!({ "repo_id": "repo-1", "artifact_id": "0123456789abcdef0123456789abcdef01234567" }),
+            Method::Get,
+            ResponseKind::Json,
+            "/v1/repos/repo-1/artifacts/0123456789abcdef0123456789abcdef01234567",
+            json!({}),
+        ),
+        (
+            "kanna_open_artifact",
+            json!({ "repo_id": "repo-1", "artifact_id": "0123456789abcdef0123456789abcdef01234567" }),
+            Method::Post,
+            ResponseKind::Json,
+            "/v1/repos/repo-1/artifacts/0123456789abcdef0123456789abcdef01234567/preview",
+            json!({}),
+        ),
+        (
+            "kanna_close_artifact",
+            json!({ "repo_id": "repo-1", "artifact_id": "0123456789abcdef0123456789abcdef01234567" }),
+            Method::Post,
+            ResponseKind::Json,
+            "/v1/repos/repo-1/artifacts/0123456789abcdef0123456789abcdef01234567/preview/close",
+            json!({}),
+        ),
+        (
+            "kanna_record_artifact_comment",
+            json!({ "repo_id": "repo-1", "artifact_id": "0123456789abcdef0123456789abcdef01234567", "author": "designer", "body": "too dark", "anchor": { "path": "css/site.css", "excerpt": "#123" } }),
+            Method::Post,
+            ResponseKind::Json,
+            "/v1/repos/repo-1/artifacts/0123456789abcdef0123456789abcdef01234567/comments",
+            json!({ "author": "designer", "body": "too dark", "anchor": { "path": "css/site.css", "excerpt": "#123" } }),
+        ),
+        (
+            "kanna_record_artifact_decision",
+            json!({ "repo_id": "repo-1", "artifact_id": "0123456789abcdef0123456789abcdef01234567", "who": "owner", "what": "ship v2" }),
+            Method::Post,
+            ResponseKind::Json,
+            "/v1/repos/repo-1/artifacts/0123456789abcdef0123456789abcdef01234567/decisions",
+            json!({ "who": "owner", "what": "ship v2" }),
         ),
     ];
 
@@ -3251,4 +3305,52 @@ fn subscription_descriptions_state_what_a_bounded_delivered_page_carries() {
             "{name} must keep pointing at the verbatim escape hatch"
         );
     }
+}
+
+#[test]
+fn artifact_tools_name_exact_ids_and_state_that_retention_is_not_yet_enforced() {
+    let catalog = bundled_catalog();
+    let description = |name: &str| {
+        catalog
+            .tools
+            .iter()
+            .find(|tool| tool.name == name)
+            .unwrap_or_else(|| panic!("{name} declared"))
+            .description
+            .clone()
+    };
+    let publish = description("kanna_publish_artifact");
+    assert!(publish.contains("tree id"), "{publish}");
+    assert!(publish.contains("not yet enforced"), "{publish}");
+    assert!(
+        publish.contains("outside the working repository"),
+        "{publish}"
+    );
+    for name in [
+        "kanna_record_artifact_comment",
+        "kanna_record_artifact_decision",
+    ] {
+        assert!(
+            description(name).contains("not a verified identity"),
+            "{name}"
+        );
+    }
+    let kind = catalog
+        .find_param("kanna_publish_artifact", "kind")
+        .unwrap();
+    assert_eq!(
+        kind.enum_values.as_deref(),
+        Some(
+            ["document", "mockup", "media", "report"]
+                .map(String::from)
+                .as_slice()
+        )
+    );
+    let error = resolve_request(
+        &catalog,
+        "kanna_publish_artifact",
+        &json!({ "task_id": "t", "path": "p", "kind": "diagram" }),
+    )
+    .unwrap_err();
+    assert!(error.contains("kind must be one of"), "{error}");
 }

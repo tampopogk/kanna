@@ -1992,6 +1992,12 @@ mod tests {
                 "kanna_is_dependent_tasks_exist",
                 "kanna_complete_stage",
                 "kanna_request_revision",
+                "kanna_publish_artifact",
+                "kanna_get_artifact",
+                "kanna_open_artifact",
+                "kanna_close_artifact",
+                "kanna_record_artifact_comment",
+                "kanna_record_artifact_decision",
             ]
         );
     }

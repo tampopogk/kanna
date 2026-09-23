@@ -613,7 +613,15 @@ fn typed_tool_surfaces() -> BTreeMap<&'static str, TypedToolSurface> {
 /// here, so an un-surfaced addition keeps failing
 /// `typed_cli_surfaces_match_catalog_tools_and_params` rather than silently
 /// passing.
-const TOOL_CALL_ONLY_TOOLS: &[&str] = &["kanna_doctor"];
+const TOOL_CALL_ONLY_TOOLS: &[&str] = &[
+    "kanna_doctor",
+    "kanna_publish_artifact",
+    "kanna_get_artifact",
+    "kanna_open_artifact",
+    "kanna_close_artifact",
+    "kanna_record_artifact_comment",
+    "kanna_record_artifact_decision",
+];
 
 fn command_for_path<'a>(command: &'a Command, path: &[&str]) -> Option<&'a Command> {
     let mut current = command;

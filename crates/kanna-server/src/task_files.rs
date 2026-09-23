@@ -197,7 +197,7 @@ fn read_bounded_task_file(
     Ok((path, bytes))
 }
 
-fn task_file_media_type(path: &str) -> &'static str {
+pub(crate) fn task_file_media_type(path: &str) -> &'static str {
     let extension = Path::new(path)
         .extension()
         .and_then(|extension| extension.to_str())

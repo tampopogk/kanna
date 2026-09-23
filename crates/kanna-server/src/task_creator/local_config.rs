@@ -92,6 +92,13 @@ const OVERRIDABLE_KEYS: &[OverridableKey] = &[
         merge: LocalMerge::Replace,
         validate: validate_string_array,
     },
+    // Where this machine keeps artifact storage is plumbing. Merged field by
+    // field, so a local `repositoryPath` keeps the committed `retention`.
+    OverridableKey {
+        name: "artifacts",
+        merge: LocalMerge::Entries,
+        validate: validate_artifacts,
+    },
 ];
 
 /// Provenance of an applied local layer, carried on the resolved
@@ -253,6 +260,37 @@ fn validate_ports(value: &Value) -> Result<(), String> {
                 "entry `{name}` must be a port number between 1 and {}",
                 u16::MAX
             ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_artifacts(value: &Value) -> Result<(), String> {
+    let entries = value.as_object().ok_or_else(|| {
+        "must be an object with optional `repositoryPath` and `retention`".to_string()
+    })?;
+    for (name, entry) in entries {
+        match name.as_str() {
+            "repositoryPath" => {
+                if entry.as_str().is_none_or(|path| path.trim().is_empty()) {
+                    return Err("`repositoryPath` must be a non-empty path".to_string());
+                }
+            }
+            "retention" => {
+                if !entry.as_str().is_some_and(|value| {
+                    crate::artifacts::ArtifactRetention::parse(value).is_some()
+                }) {
+                    return Err(format!(
+                        "`retention` must be one of {}",
+                        crate::artifacts::ArtifactRetention::ALL.join(", ")
+                    ));
+                }
+            }
+            other => {
+                return Err(format!(
+                    "has unknown field `{other}` (expected `repositoryPath` or `retention`)"
+                ))
+            }
         }
     }
     Ok(())
@@ -459,7 +497,7 @@ mod tests {
             "{error}"
         );
         assert!(
-            error.contains("agentProviders, workflow, ports, setup, teardown, test"),
+            error.contains("agentProviders, workflow, ports, setup, teardown, test, artifacts"),
             "{error}"
         );
         assert_eq!(config["vars"], json!({"OWNER": "kanna"}));
@@ -514,6 +552,51 @@ mod tests {
                 error.contains(".kanna/config.local.json"),
                 "{local}: {error}"
             );
+        }
+    }
+
+    #[test]
+    fn artifacts_merge_field_by_field_and_reject_unknown_values() {
+        let temp = tempfile::tempdir().unwrap();
+        write_local(
+            temp.path(),
+            &json!({"artifacts": {"repositoryPath": "/Volumes/fast/artifacts.git"}}).to_string(),
+        );
+        let mut config = committed();
+        config.insert(
+            "artifacts".to_string(),
+            json!({"repositoryPath": "~/committed.git", "retention": "30-days"}),
+        );
+
+        let applied = apply_local_config_override(temp.path(), &mut config)
+            .unwrap()
+            .expect("local artifacts override applies");
+
+        assert_eq!(applied.keys(), ["artifacts"]);
+        assert_eq!(
+            config["artifacts"],
+            json!({"repositoryPath": "/Volumes/fast/artifacts.git", "retention": "30-days"}),
+            "a local location must keep the committed retention policy"
+        );
+
+        for (local, expected) in [
+            (
+                json!({"artifacts": {"retention": "forever"}}),
+                "`retention` must be one of keep, 30-days, discard-on-close",
+            ),
+            (
+                json!({"artifacts": {"repositoryPath": " "}}),
+                "`repositoryPath` must be a non-empty path",
+            ),
+            (
+                json!({"artifacts": {"remote": "origin"}}),
+                "unknown field `remote`",
+            ),
+            (json!({"artifacts": "~/a.git"}), "must be an object"),
+        ] {
+            write_local(temp.path(), &local.to_string());
+            let error = apply_local_config_override(temp.path(), &mut committed()).unwrap_err();
+            assert!(error.contains(expected), "{local}: {error}");
         }
     }
 

@@ -1412,3 +1412,109 @@ async fn attention_catalog_cli_set_and_clear_use_declared_routes() {
         );
     }
 }
+
+/// The artifact tools have no typed subcommand; `tool call` is their CLI. This
+/// drives the whole publish → read → open → annotate-an-older-id → close flow
+/// through it and pins each wire request, plus how a missing artifact reads.
+#[tokio::test]
+async fn artifact_tools_round_trip_through_tool_call_and_surface_missing_ids() {
+    let catalog = kanna_tool_catalog::bundled_catalog();
+    let older = "1111111111111111111111111111111111111111";
+    let newer = "2222222222222222222222222222222222222222";
+    let flow = [
+        (
+            "kanna_publish_artifact",
+            serde_json::json!({ "task_id": "task-a", "path": "mock", "kind": "mockup", "previous": older }),
+            "POST /v1/tasks/task-a/artifacts HTTP/1.1".to_string(),
+            Some(serde_json::json!({ "path": "mock", "kind": "mockup", "previous": older })),
+            serde_json::json!({ "artifactId": newer, "version": { "previous": older } }),
+        ),
+        (
+            "kanna_get_artifact",
+            serde_json::json!({ "repo_id": "repo-a", "artifact_id": newer }),
+            format!("GET /v1/repos/repo-a/artifacts/{newer} HTTP/1.1"),
+            None,
+            serde_json::json!({ "artifactId": newer, "versions": [{ "previous": older }] }),
+        ),
+        (
+            "kanna_open_artifact",
+            serde_json::json!({ "repo_id": "repo-a", "artifact_id": newer }),
+            format!("POST /v1/repos/repo-a/artifacts/{newer}/preview HTTP/1.1"),
+            Some(serde_json::json!({})),
+            serde_json::json!({ "url": "http://127.0.0.1:1/a/cap/index.html" }),
+        ),
+        (
+            "kanna_record_artifact_comment",
+            serde_json::json!({ "repo_id": "repo-a", "artifact_id": older, "author": "designer", "body": "too dark", "anchor": { "path": "css/site.css" } }),
+            format!("POST /v1/repos/repo-a/artifacts/{older}/comments HTTP/1.1"),
+            Some(
+                serde_json::json!({ "author": "designer", "body": "too dark", "anchor": { "path": "css/site.css" } }),
+            ),
+            serde_json::json!({ "aboutArtifactId": older }),
+        ),
+        (
+            "kanna_record_artifact_decision",
+            serde_json::json!({ "repo_id": "repo-a", "artifact_id": older, "who": "owner", "what": "superseded" }),
+            format!("POST /v1/repos/repo-a/artifacts/{older}/decisions HTTP/1.1"),
+            Some(serde_json::json!({ "who": "owner", "what": "superseded" })),
+            serde_json::json!({ "aboutArtifactId": older }),
+        ),
+        (
+            "kanna_close_artifact",
+            serde_json::json!({ "repo_id": "repo-a", "artifact_id": newer }),
+            format!("POST /v1/repos/repo-a/artifacts/{newer}/preview/close HTTP/1.1"),
+            Some(serde_json::json!({})),
+            serde_json::json!({ "closed": true }),
+        ),
+    ];
+    for (tool, args, request_line, body, response) in flow {
+        let (base_url, server) = serve_http_responses(vec![http_json_response(
+            "201 Created",
+            &response.to_string(),
+        )])
+        .await;
+        let (_, value) =
+            call_catalog_tool_with_task_id(&base_url, &catalog, tool, &args, Some("task-a"))
+                .await
+                .unwrap_or_else(|error| panic!("{tool}: {error}"));
+        assert_eq!(value, response, "{tool}");
+        let requests = server.await.expect("fixture server");
+        assert!(
+            requests[0].starts_with(&request_line),
+            "{tool}: {}",
+            requests[0]
+        );
+        if let Some(body) = body {
+            let sent = requests[0].split("\r\n\r\n").nth(1).unwrap_or_default();
+            assert_eq!(
+                serde_json::from_str::<serde_json::Value>(sent).unwrap(),
+                body,
+                "{tool}"
+            );
+        }
+    }
+
+    let missing = serde_json::json!({
+        "error": "artifact_not_found",
+        "message": format!("artifact {newer} was not found in repository repo-a"),
+        "repoId": "repo-a",
+        "artifactId": newer,
+    });
+    let (base_url, server) = serve_http_responses(vec![http_json_response(
+        "404 Not Found",
+        &missing.to_string(),
+    )])
+    .await;
+    let error = call_catalog_tool_with_task_id(
+        &base_url,
+        &catalog,
+        "kanna_get_artifact",
+        &serde_json::json!({ "repo_id": "repo-a", "artifact_id": newer }),
+        None,
+    )
+    .await
+    .unwrap_err();
+    server.await.expect("fixture server");
+    assert!(error.contains("artifact_not_found"), "{error}");
+    assert!(error.contains(newer), "{error}");
+}

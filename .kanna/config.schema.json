@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://schemas.kanna.build/config.schema.json",
   "title": "Kanna Repo Config",
-  "description": "`.kanna/config.json` is the shared repository contract. `.kanna/config.local.json` is read from the open checkout's working tree, never from the origin snapshot, and is deep-merged over the committed file with local values winning. Local config may contain only `agentProviders`, `workflow`, `ports`, `setup`, `teardown`, and `test`; an unknown key, invalid JSON, or invalid value fails definition resolution and names the file. `agentProviders` and `ports` merge entry by entry, with a local entry replacing the committed entry of the same name. Every other permitted key replaces wholesale, and arrays never concatenate. Keep local config gitignored and do not put task-defining fields such as `vars`, `flavors`, `workspace`, `stage_order`, or reserved ports in it.",
+  "description": "`.kanna/config.json` is the shared repository contract. `.kanna/config.local.json` is read from the open checkout's working tree, never from the origin snapshot, and is deep-merged over the committed file with local values winning. Local config may contain only `agentProviders`, `workflow`, `ports`, `setup`, `teardown`, `test`, and `artifacts`; an unknown key, invalid JSON, or invalid value fails definition resolution and names the file. `agentProviders`, `ports`, and `artifacts` merge entry by entry, with a local entry replacing the committed entry of the same name. Every other permitted key replaces wholesale, and arrays never concatenate. Keep local config gitignored and do not put task-defining fields such as `vars`, `flavors`, `workspace`, `stage_order`, or reserved ports in it.",
   "type": "object",
   "additionalProperties": false,
   "properties": {
@@ -160,6 +160,25 @@
       "description": "`ports` maps environment-variable names to base ports; Kanna reserves task-specific ports and exports the resolved values so parallel worktrees do not collide. `vars` provides committed string substitutions for agent prompts. `workspace`, `stage_order`, `reserved_ports`, and `reserved_port_offsets` are committed task semantics and cannot appear in local config.",
       "items": {
         "type": "string"
+      }
+    },
+    "artifacts": {
+      "type": "object",
+      "description": "`artifacts` configures the repository's artifact store: a bare Git repository outside the working repository that holds published mockups, documents, media, and reports addressed by their Git tree id. `repositoryPath` defaults to `~/.kanna/repos/<repo-id>/artifacts.git`; a relative path resolves against the repository root, `~/` against the home directory, and any location inside the working repository, its Git directory, or one of its worktrees is refused. `retention` is `keep` (the default), `30-days`, or `discard-on-close`; it is recorded on each published version, and all content is currently retained regardless. Local config may set either field, and a local field replaces only that field.",
+      "additionalProperties": false,
+      "properties": {
+        "repositoryPath": {
+          "type": "string",
+          "minLength": 1
+        },
+        "retention": {
+          "type": "string",
+          "enum": [
+            "keep",
+            "30-days",
+            "discard-on-close"
+          ]
+        }
       }
     },
     "workspace": {

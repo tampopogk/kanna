@@ -1032,6 +1032,248 @@
         { "name": "origin", "description": "Caller-declared revision origin. Omit for the normal agent-budgeted path. Pass 'human' only to relay an explicit human instruction in the conversation to continue revisions; it resets the exhausted budget through the existing human recovery path. This declaration is not authenticated human identity and must never be self-authorized by an agent.", "type": "string", "required": false, "location": "body", "enum": ["agent", "human"] },
         { "name": "metadata", "description": "Optional structured data (e.g. review findings) stored on the revision request.", "type": "object", "required": false, "location": "body" }
       ]
+    },
+    {
+      "name": "kanna_publish_artifact",
+      "description": "Publish a file or directory from a task's workspace as an immutable artifact in the repository's local artifact store (a bare Git repository outside the working repository; nothing is committed to the working repo). The artifact id is the Git tree id of the content: identical bytes always yield the same id, and every publication records its own version (kind, entrypoint, previous, producing task, retention policy). A directory's relative layout is kept, so an HTML mockup's relative CSS/JS/image references keep working. Symlinks, special files, .git entries and paths outside the workspace are refused, as are payloads over the size limits. Retention policy is recorded but not yet enforced: all content is kept. The path is read on the machine that owns the task. CLI: kanna-cli tool call kanna_publish_artifact --arg task_id=<id> --arg path=<dir> --arg kind=mockup.",
+      "method": "POST",
+      "path": "/v1/tasks/{task_id}/artifacts",
+      "response": "json",
+      "params": [
+        {
+          "name": "machine_id",
+          "description": "Machine id from kanna_list_machines. Omit it, or pass the current machine id, to use the local machine connected to this client.",
+          "type": "string",
+          "required": false,
+          "location": "routing"
+        },
+        {
+          "name": "task_id",
+          "description": "Task whose workspace holds the content (usually your own KANNA_TASK_ID).",
+          "type": "string",
+          "required": true,
+          "location": "path"
+        },
+        {
+          "name": "path",
+          "description": "File or directory relative to the task workspace root.",
+          "type": "string",
+          "required": true,
+          "location": "body"
+        },
+        {
+          "name": "kind",
+          "description": "What the content is. A mockup needs an HTML entrypoint.",
+          "type": "string",
+          "required": true,
+          "location": "body",
+          "enum": [
+            "document",
+            "mockup",
+            "media",
+            "report"
+          ]
+        },
+        {
+          "name": "entrypoint",
+          "description": "File to open, relative to the published directory. Defaults to index.html when present, or the file itself when publishing one file.",
+          "type": "string",
+          "required": false,
+          "location": "body"
+        },
+        {
+          "name": "previous",
+          "description": "Artifact id this version supersedes. Must already be published to the same repository; it is a metadata link and does not change this artifact's id.",
+          "type": "string",
+          "required": false,
+          "location": "body"
+        }
+      ]
+    },
+    {
+      "name": "kanna_get_artifact",
+      "description": "Read one artifact by exact id: whether its content is still retained, its file list, every version record (with previous links), and the comments and decisions recorded about exactly this id. Comments on an older version stay on that version. A missing id returns artifact_not_found naming the repository and id. CLI: kanna-cli tool call kanna_get_artifact --arg repo_id=<id> --arg artifact_id=<tree-id>.",
+      "method": "GET",
+      "path": "/v1/repos/{repo_id}/artifacts/{artifact_id}",
+      "response": "json",
+      "params": [
+        {
+          "name": "machine_id",
+          "description": "Machine id from kanna_list_machines. Omit it, or pass the current machine id, to use the local machine connected to this client.",
+          "type": "string",
+          "required": false,
+          "location": "routing"
+        },
+        {
+          "name": "repo_id",
+          "description": "Repository id the artifact was published to (repoId in kanna_publish_artifact's result or kanna_get_task).",
+          "type": "string",
+          "required": true,
+          "location": "path"
+        },
+        {
+          "name": "artifact_id",
+          "description": "Exact artifact id: the full 40-character tree id. Abbreviations, branch names and working-repository commit SHAs are refused.",
+          "type": "string",
+          "required": true,
+          "location": "path"
+        }
+      ]
+    },
+    {
+      "name": "kanna_open_artifact",
+      "description": "Open an artifact for viewing: returns a loopback browser url serving exactly this tree, read-only, from the artifact store, starting at its entrypoint. The url is a short-lived bearer link for this one artifact (idle timeout 15 minutes, at most one hour); it launches nothing. Pages run sandboxed: scripts and styles from the artifact work, but they cannot reach Kanna or the network, submit forms, or open popups. Opening again while the preview is live returns the same url. CLI: kanna-cli tool call kanna_open_artifact --arg repo_id=<id> --arg artifact_id=<tree-id>.",
+      "method": "POST",
+      "path": "/v1/repos/{repo_id}/artifacts/{artifact_id}/preview",
+      "response": "json",
+      "params": [
+        {
+          "name": "machine_id",
+          "description": "Machine id from kanna_list_machines. Omit it, or pass the current machine id, to use the local machine connected to this client.",
+          "type": "string",
+          "required": false,
+          "location": "routing"
+        },
+        {
+          "name": "repo_id",
+          "description": "Repository id the artifact was published to (repoId in kanna_publish_artifact's result or kanna_get_task).",
+          "type": "string",
+          "required": true,
+          "location": "path"
+        },
+        {
+          "name": "artifact_id",
+          "description": "Exact artifact id: the full 40-character tree id. Abbreviations, branch names and working-repository commit SHAs are refused.",
+          "type": "string",
+          "required": true,
+          "location": "path"
+        }
+      ]
+    },
+    {
+      "name": "kanna_close_artifact",
+      "description": "Close an artifact's browser preview so its url stops working. Returns closed:false when no preview was open. CLI: kanna-cli tool call kanna_close_artifact --arg repo_id=<id> --arg artifact_id=<tree-id>.",
+      "method": "POST",
+      "path": "/v1/repos/{repo_id}/artifacts/{artifact_id}/preview/close",
+      "response": "json",
+      "params": [
+        {
+          "name": "machine_id",
+          "description": "Machine id from kanna_list_machines. Omit it, or pass the current machine id, to use the local machine connected to this client.",
+          "type": "string",
+          "required": false,
+          "location": "routing"
+        },
+        {
+          "name": "repo_id",
+          "description": "Repository id the artifact was published to (repoId in kanna_publish_artifact's result or kanna_get_task).",
+          "type": "string",
+          "required": true,
+          "location": "path"
+        },
+        {
+          "name": "artifact_id",
+          "description": "Exact artifact id: the full 40-character tree id. Abbreviations, branch names and working-repository commit SHAs are refused.",
+          "type": "string",
+          "required": true,
+          "location": "path"
+        }
+      ]
+    },
+    {
+      "name": "kanna_record_artifact_comment",
+      "description": "Record a comment about one exact artifact id (use an older id to comment on an older version). The author is caller-declared text, not a verified identity. An anchor path must name a file in the artifact. Comments are stored with the artifact, not the task, and never move a task. CLI: kanna-cli tool call kanna_record_artifact_comment --arg repo_id=<id> --arg artifact_id=<tree-id> --arg author=<name> --arg body=<text>.",
+      "method": "POST",
+      "path": "/v1/repos/{repo_id}/artifacts/{artifact_id}/comments",
+      "response": "json",
+      "params": [
+        {
+          "name": "machine_id",
+          "description": "Machine id from kanna_list_machines. Omit it, or pass the current machine id, to use the local machine connected to this client.",
+          "type": "string",
+          "required": false,
+          "location": "routing"
+        },
+        {
+          "name": "repo_id",
+          "description": "Repository id the artifact was published to (repoId in kanna_publish_artifact's result or kanna_get_task).",
+          "type": "string",
+          "required": true,
+          "location": "path"
+        },
+        {
+          "name": "artifact_id",
+          "description": "Exact artifact id: the full 40-character tree id. Abbreviations, branch names and working-repository commit SHAs are refused.",
+          "type": "string",
+          "required": true,
+          "location": "path"
+        },
+        {
+          "name": "author",
+          "description": "Caller-declared author name.",
+          "type": "string",
+          "required": true,
+          "location": "body"
+        },
+        {
+          "name": "body",
+          "description": "Comment text (at most 64 KiB).",
+          "type": "string",
+          "required": true,
+          "location": "body"
+        },
+        {
+          "name": "anchor",
+          "description": "Optional { path, position, excerpt }: the artifact file, a caller-defined position (line, selector, region) and the quoted text it refers to.",
+          "type": "object",
+          "required": false,
+          "location": "body"
+        }
+      ]
+    },
+    {
+      "name": "kanna_record_artifact_decision",
+      "description": "Record a decision about one exact artifact id: who decided what. Who is caller-declared text, not a verified identity, and recording a decision does not approve, advance or otherwise change any task. CLI: kanna-cli tool call kanna_record_artifact_decision --arg repo_id=<id> --arg artifact_id=<tree-id> --arg who=<name> --arg what=<decision>.",
+      "method": "POST",
+      "path": "/v1/repos/{repo_id}/artifacts/{artifact_id}/decisions",
+      "response": "json",
+      "params": [
+        {
+          "name": "machine_id",
+          "description": "Machine id from kanna_list_machines. Omit it, or pass the current machine id, to use the local machine connected to this client.",
+          "type": "string",
+          "required": false,
+          "location": "routing"
+        },
+        {
+          "name": "repo_id",
+          "description": "Repository id the artifact was published to (repoId in kanna_publish_artifact's result or kanna_get_task).",
+          "type": "string",
+          "required": true,
+          "location": "path"
+        },
+        {
+          "name": "artifact_id",
+          "description": "Exact artifact id: the full 40-character tree id. Abbreviations, branch names and working-repository commit SHAs are refused.",
+          "type": "string",
+          "required": true,
+          "location": "path"
+        },
+        {
+          "name": "who",
+          "description": "Caller-declared name of who decided.",
+          "type": "string",
+          "required": true,
+          "location": "body"
+        },
+        {
+          "name": "what",
+          "description": "The decision (at most 64 KiB).",
+          "type": "string",
+          "required": true,
+          "location": "body"
+        }
+      ]
     }
   ],
   "guides": [
@@ -1051,7 +1293,7 @@
         },
         {
           "title": "Committed and local layers",
-          "body": "`.kanna/config.json` is the shared repository contract. `.kanna/config.local.json` is read from the open checkout's working tree, never from the origin snapshot, and is deep-merged over the committed file with local values winning. Local config may contain only `agentProviders`, `workflow`, `ports`, `setup`, `teardown`, and `test`; an unknown key, invalid JSON, or invalid value fails definition resolution and names the file. `agentProviders` and `ports` merge entry by entry, with a local entry replacing the committed entry of the same name. Every other permitted key replaces wholesale, and arrays never concatenate. Keep local config gitignored and do not put task-defining fields such as `vars`, `flavors`, `workspace`, `stage_order`, or reserved ports in it.",
+          "body": "`.kanna/config.json` is the shared repository contract. `.kanna/config.local.json` is read from the open checkout's working tree, never from the origin snapshot, and is deep-merged over the committed file with local values winning. Local config may contain only `agentProviders`, `workflow`, `ports`, `setup`, `teardown`, `test`, and `artifacts`; an unknown key, invalid JSON, or invalid value fails definition resolution and names the file. `agentProviders`, `ports`, and `artifacts` merge entry by entry, with a local entry replacing the committed entry of the same name. Every other permitted key replaces wholesale, and arrays never concatenate. Keep local config gitignored and do not put task-defining fields such as `vars`, `flavors`, `workspace`, `stage_order`, or reserved ports in it.",
           "schemaPaths": [""]
         },
         {
@@ -1073,6 +1315,11 @@
           "title": "Provider, model, and effort resolution",
           "body": "`agentProviders` maps exact agent names or `*` globs to a provider name or to `{ provider, model, effort }`; `provider` may be an ordered candidate list. Exact keys beat globs. Among matching globs, the most non-`*` characters wins and lexical order breaks ties. Selection precedence is: explicit task or stage override; matching `agentProviders` entry (including the local layer); layered `AGENT.md`/`EXTEND.md` frontmatter; global default provider. A rerun, resume, revision, or recovery reproduces the recorded run's provider as an explicit override, while a plain stage advance re-resolves the chain and uses the task's stamp only as the final fallback. Provider-specific model and effort values are layer-coherent: Kanna never combines them across providers or layers. It walks the same chain and takes the first value from a layer that would itself select the resolved provider. In an ordered provider list, model and effort belong only to the leading candidate; fallback candidates use a lower coherent layer or their own stamped/default values. `autocompact` follows the same coherence rule and is Claude-only.",
           "schemaPaths": ["/properties/agentProviders"]
+        },
+        {
+          "title": "Artifact storage",
+          "body": "`artifacts` configures the repository's artifact store: a bare Git repository outside the working repository that holds published mockups, documents, media, and reports addressed by their Git tree id. `repositoryPath` defaults to `~/.kanna/repos/<repo-id>/artifacts.git`; a relative path resolves against the repository root, `~/` against the home directory, and any location inside the working repository, its Git directory, or one of its worktrees is refused. `retention` is `keep` (the default), `30-days`, or `discard-on-close`; it is recorded on each published version, and all content is currently retained regardless. Local config may set either field, and a local field replaces only that field.",
+          "schemaPaths": ["/properties/artifacts"]
         }
       ]
     },

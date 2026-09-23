@@ -206,6 +206,19 @@ pub(crate) fn test_state_with_seed(
     Arc::new(AppState::new(config))
 }
 
+/// A seeded state whose default artifact repositories live under `home`,
+/// so artifact tests never touch the real `~/.kanna`.
+pub(crate) fn test_state_with_artifact_home(
+    desktop_id: &str,
+    home: &std::path::Path,
+    seed: impl FnOnce(&Db),
+) -> Arc<AppState> {
+    let state = test_state_with_seed(desktop_id, "Artifacts", seed);
+    let mut state = Arc::try_unwrap(state).unwrap_or_else(|_| unreachable!("fresh test state"));
+    state.artifact_storage = crate::artifacts::ArtifactStorageContext::with_home(home);
+    Arc::new(state)
+}
+
 /// A state whose daemon socket is test-local, for tests that script a fake
 /// daemon and need the code under test to dial *that* one.
 pub(crate) fn test_state_with_daemon_dir(
