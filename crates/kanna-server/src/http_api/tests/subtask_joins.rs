@@ -718,3 +718,171 @@ async fn a_release_task_waiting_on_a_join_is_not_closed() {
         .closed_at
         .is_none());
 }
+
+/// Pins a parent workflow whose `in progress` stage advances automatically
+/// into a `next` stage, so an owed or parked completion has somewhere to go.
+fn pin_two_stage_parent(fixture: &JoinFixture) {
+    fixture
+        .db()
+        .update_test_pipeline_item_pipeline_def(
+            PARENT,
+            &serde_json::json!({
+                "name": TEST_PROVIDER_NEUTRAL_WORKFLOW,
+                "stages": [
+                    { "name": "in progress", "prompt": "$TASK_PROMPT",
+                      "policy": { "transition": "auto" } },
+                    { "name": "next", "prompt": "Carry on.",
+                      "policy": { "transition": "manual" } }
+                ]
+            })
+            .to_string(),
+        )
+        .unwrap();
+}
+
+async fn wait_for_parent_stage(fixture: &JoinFixture, stage: &str) {
+    for _ in 0..100 {
+        if fixture
+            .db()
+            .get_pipeline_item(PARENT)
+            .unwrap()
+            .unwrap()
+            .stage
+            .as_deref()
+            == Some(stage)
+        {
+            crate::http_api::wait_for_task_mutation_to_finish(&fixture.state, PARENT).await;
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    panic!("parent never reached stage {stage}");
+}
+
+/// An automatic completion whose ledger continuation was still owed when the
+/// parent created a join is not lost to a replay while the join is pending:
+/// the continuation stays unclaimed, and the transition is dispatched exactly
+/// once when the join resolves.
+#[tokio::test]
+async fn an_owed_continuation_survives_a_pending_join_and_dispatches_once() {
+    let _sidecar_guard = crate::test_sidecar_guard().await;
+    let fixture = join_fixture("owed-continuation");
+    pin_two_stage_parent(&fixture);
+    let db = fixture.db();
+    db.finish_stage_run("parent-run", "succeeded", Some("done"), Some("done"))
+        .unwrap();
+    db.put_ledger_continuation(
+        PARENT,
+        "op-owed",
+        crate::db::task_store::STAGE_COMPLETION_CONTINUATION,
+        &serde_json::json!({
+            "kind": "main",
+            "completionTransition": null,
+            "trigger": "unspecified",
+            "resultId": null,
+            "runId": "parent-run",
+            "stage": "in progress",
+            "generation": db.task_run_generation(PARENT).unwrap(),
+            "exit": null,
+        }),
+    )
+    .unwrap();
+    record_uncreated_member(&fixture, "c0ffee06");
+
+    // The publisher's (or startup's) replay runs while the join is pending.
+    crate::http_api::task_actions::resume_ledger_continuations(Arc::clone(&fixture.state)).await;
+    assert!(
+        db.has_ledger_continuation(PARENT).unwrap(),
+        "kept, not lost"
+    );
+    assert_eq!(
+        db.get_pipeline_item(PARENT)
+            .unwrap()
+            .unwrap()
+            .stage
+            .as_deref(),
+        Some("in progress")
+    );
+    assert_eq!(spawn_count(&fixture.commands), 0);
+
+    // The join resolves; the owed transition is dispatched, once.
+    assert!(db
+        .resolve_join_member_not_created("c0ffee06", "gave up")
+        .unwrap());
+    assert_eq!(db.parents_released_by_joins().unwrap(), vec![PARENT]);
+    super::super::subtask_joins::release_parked_completions(&fixture.state).await;
+    wait_for_parent_stage(&fixture, "next").await;
+    assert!(!db.has_ledger_continuation(PARENT).unwrap());
+    let spawned = spawn_count(&fixture.commands);
+    assert_eq!(spawned, 1);
+
+    super::super::subtask_joins::release_parked_completions(&fixture.state).await;
+    crate::http_api::task_actions::resume_ledger_continuations(Arc::clone(&fixture.state)).await;
+    super::super::subtask_joins::resume_subtask_joins(Arc::clone(&fixture.state)).await;
+    assert_eq!(
+        spawn_count(&fixture.commands),
+        spawned,
+        "dispatched exactly once"
+    );
+    assert_eq!(
+        db.get_pipeline_item(PARENT)
+            .unwrap()
+            .unwrap()
+            .stage
+            .as_deref(),
+        Some("next")
+    );
+}
+
+/// Startup recovery resolves a member whose creation fails before any task
+/// exists; that can release a completion the join held, so the startup pass
+/// re-decides the parent instead of leaving it parked until another trigger.
+#[tokio::test]
+async fn startup_recovery_releases_a_completion_its_join_held() {
+    let _sidecar_guard = crate::test_sidecar_guard().await;
+    let fixture = join_fixture("startup-release");
+    pin_two_stage_parent(&fixture);
+    let db = fixture.db();
+    db.finish_stage_run("parent-run", "succeeded", Some("done"), Some("done"))
+        .unwrap();
+    db.record_dependency_wait(
+        PARENT,
+        "in progress",
+        "next",
+        &serde_json::json!({ "kind": "main" }),
+    )
+    .unwrap();
+    let parent_sha = head_of(&fixture.parent_worktree);
+    db.create_task_join(&crate::db::NewTaskJoin {
+        id: "join-startup".to_string(),
+        parent_task_id: PARENT.to_string(),
+        parent_stage: Some("in progress".to_string()),
+        parent_run_id: Some("parent-run".to_string()),
+        base_sha: parent_sha,
+        base_branch: Some(PARENT.to_string()),
+        members: vec![crate::db::NewJoinMember {
+            child_task_id: "c0ffee07".to_string(),
+            spec: serde_json::json!({
+                "prompt": "broken",
+                "workflowName": "no-such-workflow",
+                "agentProvider": "claude"
+            })
+            .to_string(),
+        }],
+    })
+    .unwrap();
+    // The T4 startup sweep sees the join and keeps waiting.
+    assert!(
+        !super::super::stage_dependencies::ensure_dependencies_ready(&fixture.state, PARENT)
+            .await
+            .unwrap()
+    );
+
+    let restarted = Arc::new(AppState::new(fixture.state.config.clone()));
+    super::super::subtask_joins::resume_subtask_joins(Arc::clone(&restarted)).await;
+    let member = db.task_join_member("c0ffee07").unwrap().unwrap();
+    assert_eq!(member.outcome.as_deref(), Some("not_created"));
+    wait_for_parent_stage(&fixture, "next").await;
+    assert!(db.dependency_wait(PARENT).unwrap().is_none());
+    assert_eq!(spawn_count(&fixture.commands), 1);
+}

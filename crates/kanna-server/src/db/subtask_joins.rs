@@ -495,15 +495,18 @@ impl Db {
         self.sync_blocked_event(&join.parent_task_id)
     }
 
-    /// Open parents with a completion parked on dependency edges (T4) whose
-    /// joins have all resolved: the join no longer holds that completion,
-    /// so readiness decides it again.
+    /// Open parents whose joins have all resolved and that still owe a
+    /// transition the join held: a completion parked on dependency edges
+    /// (T4), or an unclaimed ledger continuation (T0). Each is decided again.
     pub(crate) fn parents_released_by_joins(&self) -> Result<Vec<String>, rusqlite::Error> {
         let mut stmt = self.conn.prepare(
             "SELECT DISTINCT task_join.parent_task_id FROM task_join
-             JOIN task_dependency_wait wait ON wait.task_id = task_join.parent_task_id
              JOIN pipeline_item parent ON parent.id = task_join.parent_task_id
              WHERE parent.closed_at IS NULL
+               AND (EXISTS (SELECT 1 FROM task_dependency_wait wait
+                            WHERE wait.task_id = task_join.parent_task_id)
+                    OR EXISTS (SELECT 1 FROM task_ledger_continuation owed
+                               WHERE owed.task_id = task_join.parent_task_id))
                AND NOT EXISTS (
                    SELECT 1 FROM task_join_member member
                    JOIN task_join other ON other.id = member.join_id

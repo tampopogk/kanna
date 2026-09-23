@@ -3693,24 +3693,30 @@ pub(crate) async fn resume_ledger_continuations(state: Arc<AppState>) {
         }
     };
     for task_id in task_ids {
-        let task_mutation = state.begin_requested_task_mutation(&task_id).await;
-        match settle_ledger_continuation(&state, &task_id, true).await {
-            Ok(Some(owed)) => {
-                if let Err((_, error)) = dispatch_owed_transition(
-                    Arc::clone(&state),
-                    task_id.clone(),
-                    owed,
-                    task_mutation,
-                )
-                .await
-                {
-                    log::error!("owed stage transition for {task_id} failed: {error}");
-                }
+        resume_ledger_continuation(&state, &task_id).await;
+    }
+}
+
+/// One task's share of [`resume_ledger_continuations`]: publish, claim and
+/// dispatch its owed transition under its mutation lease, if it is due.
+pub(crate) async fn resume_ledger_continuation(state: &Arc<AppState>, task_id: &str) {
+    let task_mutation = state.begin_requested_task_mutation(task_id).await;
+    match settle_ledger_continuation(state, task_id, true).await {
+        Ok(Some(owed)) => {
+            if let Err((_, error)) = dispatch_owed_transition(
+                Arc::clone(state),
+                task_id.to_string(),
+                owed,
+                task_mutation,
+            )
+            .await
+            {
+                log::error!("owed stage transition for {task_id} failed: {error}");
             }
-            Ok(None) => {}
-            Err((_, error)) => {
-                log::warn!("ledger continuation for {task_id} still pending: {error}")
-            }
+        }
+        Ok(None) => {}
+        Err((_, error)) => {
+            log::warn!("ledger continuation for {task_id} still pending: {error}")
         }
     }
 }

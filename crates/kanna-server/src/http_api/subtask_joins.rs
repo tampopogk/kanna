@@ -535,10 +535,10 @@ pub(super) fn spawn_join_notices(state: &Arc<AppState>) {
     });
 }
 
-/// A parent whose completion parked on dependency edges before it created a
-/// join was held by that join too; once every child has resolved, readiness
-/// decides the parked completion again.
-async fn release_parked_completions(state: &Arc<AppState>) {
+/// A parent that owed a transition before it created a join — a completion
+/// parked on dependency edges, or a ledger continuation left unclaimed while
+/// the join held it — has it decided again once every child has resolved.
+pub(super) async fn release_parked_completions(state: &Arc<AppState>) {
     let parents = {
         let state = Arc::clone(state);
         tokio::task::spawn_blocking(move || {
@@ -558,6 +558,9 @@ async fn release_parked_completions(state: &Arc<AppState>) {
         }
     };
     for parent in parents {
+        // A continuation the join kept unclaimed first, then a parked
+        // completion; each is claimed or re-decided once, under the lease.
+        super::task_actions::resume_ledger_continuation(state, &parent).await;
         if let Err(error) =
             super::stage_dependencies::ensure_dependencies_ready(state, &parent).await
         {
@@ -697,5 +700,8 @@ pub(crate) async fn resume_subtask_joins(state: Arc<AppState>) {
         Ok(Err(error)) => log::error!("cannot list uncreated subtask join members: {error}"),
         Err(error) => log::error!("subtask join resume worker failed: {error}"),
     }
+    // Member recovery can resolve the last member (a creation that failed
+    // before any task existed), so owed transitions it held are re-decided.
+    release_parked_completions(&state).await;
     deliver_join_notices_with_retries(&state).await;
 }

@@ -887,7 +887,8 @@ impl Db {
     }
 
     /// Take the task's continuation, but only once every entry it waited for
-    /// is published. Taking it deletes it, so exactly one caller dispatches.
+    /// is published and no subtask join holds the task. Taking it deletes
+    /// it, so exactly one caller dispatches.
     pub(crate) fn claim_ledger_continuation(
         &self,
         task_id: &str,
@@ -900,6 +901,12 @@ impl Db {
                 |row| row.get(0),
             )?;
             if pending > 0 {
+                return Ok(None);
+            }
+            // The transition it owes is progression, which a subtask join
+            // the task created meanwhile (T5) holds: the continuation stays
+            // until every child has resolved, then is claimed as usual.
+            if !db.unresolved_join_children(task_id)?.is_empty() {
                 return Ok(None);
             }
             let continuation = db
