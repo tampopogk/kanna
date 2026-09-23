@@ -22,11 +22,11 @@ final review gates as manager; children return reviewed local commits only.
 | T3 commit transitions / roleless gates | — | — | needs T1, T2 review | not created | — | — |
 | T4 stage dependency edges | — | — | needs T1, T2 review | not created | — | — |
 | T5 subtask joins | — | — | needs T4 review | not created | — | — |
-| T7 artifact remote | — | — | needs T6, T8 review | not created | — | — |
+| T7 artifact remote | `a07d574f` | increment 1: two homes publish/fetch/comment via one Git remote (CLI/API) | parent `01f5c8972` (T6 dc9c09bfa, T8 7c06a0de4, T8b a00800e67) | in progress | — | — |
 | T9 transfer | — | — | needs T1–T5, T8 (T6) review | not created | — | — |
 | T10 definitions | — | — | needs T3, T5, T6 review | not created | — | — |
 | T11 task/session UI | — | — | needs T0 (first), T2–T4 review | not created | — | — |
-| T12 artifact viewer | — | — | needs T6 (T7, T8) review | not created | — | — |
+| T12 artifact viewer | `6d3d22f8` | increment 1: local open-by-hash desktop/mobile, anchors, isolation; remote + §14 walkthrough after T7.review | parent `01f5c8972` (T6 dc9c09bfa, T8/T8b) | in progress | — | — |
 | T13 disk authority / migration | — | — | needs T1–T12, T14 review | not created | — | — |
 | T14 release workflow | — | — | needs T3, T8 review | not created | — | — |
 
@@ -46,3 +46,4 @@ final review gates as manager; children return reviewed local commits only.
 - 2026-09-23: T8b build committed `7863ff1f0` (account_boundary module; relay/LAN-machine/sealed-peer same-account enforcement; legacy pin diagnostics + re-pair; federation unreachable owner → 503; tolerant ChannelIdentity decode). 178 scoped tests pass; 4 full-suite failures reported as base/TMPDIR artifacts (to be confirmed in review). Advanced to panel review. Out-of-scope follow-up: daemon socket mode follows process umask and daemon input has no uid check (crates/daemon/src/socket.rs).
 - 2026-09-23: T8b review round 1 failed: compat — stream-client does not treat `peer_account_boundary` as a connection refusal (silent reconnect loop instead of the re-enrollment diagnostic). Security ABA race and pre-existing plaintext claim error judged non-blocking; 325 scoped tests pass. Auto revision 1/5. Follow-ups: routing-generation snapshot for relay_confirms_sibling; structured claim_pairing_offer error body; document one-sided re-enrollment; old-reader/new-writer peer_trust fixture.
 - 2026-09-23: T8b passed round 2 at `a00800e67` (stream-client treats peer_account_boundary as refusal; 86 stream-client tests, tsc clean; 325 scoped server tests from round 1). Merged as `bab127907` (tree = reviewed + manifest). T8b closed. Remaining T8 work: write channel_identity into T0's ledger envelope after T0.review (parent-owned small step or T0 follow-up).
+- 2026-09-23: T7 (`a07d574f`) and T12 (`6d3d22f8`) created from parent `01f5c8972` after T6/T8/T8b review; build-first on specialized-reviewers, claude opus medium, tails edited to panel final manual review.
