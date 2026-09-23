@@ -984,10 +984,12 @@ pub(super) async fn migrate_merge_singleton(
     state: &Arc<AppState>,
     task_id: &str,
 ) -> Result<crate::task_creator::MergeSingletonMigration, String> {
-    // Handoff delivery takes this same lease, so no handoff can start a turn
-    // between the session check below and the replacement.
+    // Transitions, revisions, workflow edits and singleton input delivery all
+    // take this lease, so none of them interleaves with the check and the
+    // replacement. A turn in the merge master's session is not excluded: the
+    // replacement keeps the merge window's execution binding, supersedes no
+    // run and sends the daemon nothing, so the session cannot tell.
     let _task_mutation = state.begin_requested_task_mutation(task_id).await;
-    let session = merge_master_session_quiescence(state, task_id).await;
     let state = Arc::clone(state);
     let task_id = task_id.to_string();
     super::blocking::run_handler_blocking("merge master migration", move || {
@@ -1001,52 +1003,11 @@ pub(super) async fn migrate_merge_singleton(
             &db,
             &state.config.db_path,
             &task_id,
-            session,
         )
         .map_err(|error| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, error))
     })
     .await
     .map_err(|(_, error)| error)
-}
-
-/// Whether the merge master's session is between turns, asked of the daemon.
-///
-/// The merge master records its result at the end of every turn, and a later
-/// handoff starts a new turn in the same session without reopening a run, so
-/// a terminal run says nothing about whether it is working now. Only the live
-/// session does: an active session must have an observed idle status. A
-/// session the daemon does not list (or lists as exited) is running no turn.
-/// A daemon that cannot be asked is not evidence of idleness.
-async fn merge_master_session_quiescence(state: &AppState, task_id: &str) -> Result<(), String> {
-    use kanna_daemon::protocol::{
-        Command as DaemonCommand, Event as DaemonEvent, SessionState, SessionStatus,
-    };
-    let mut daemon = crate::daemon_client::DaemonClient::connect(&state.config.daemon_dir)
-        .await
-        .map_err(|error| format!("its session cannot be checked: daemon unreachable: {error}"))?;
-    let sessions = match daemon.send_command(&DaemonCommand::List).await {
-        Ok(DaemonEvent::SessionList { sessions }) => sessions,
-        Ok(other) => {
-            return Err(format!(
-                "its session cannot be checked: unexpected daemon response {other:?}"
-            ))
-        }
-        Err(error) => return Err(format!("its session cannot be checked: {error}")),
-    };
-    let Some(session) = sessions
-        .iter()
-        .find(|session| session.session_id == task_id)
-    else {
-        return Ok(());
-    };
-    match (&session.state, session.status_observed, &session.status) {
-        (SessionState::Exited(_), _, _) => Ok(()),
-        (SessionState::Active, true, SessionStatus::Idle) => Ok(()),
-        (SessionState::Active, false, _) => {
-            Err("its session has no observed status yet".to_string())
-        }
-        (state, _, status) => Err(format!("its session is mid-turn ({state:?}, {status:?})")),
-    }
 }
 
 /// A task may close before its first cloud publication, while its claim is

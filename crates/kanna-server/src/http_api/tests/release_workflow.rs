@@ -347,14 +347,10 @@ async fn a_live_merge_master_moves_onto_the_release_workflow_only_at_a_quiescent
     assert_eq!(runs.len(), 1);
     assert_eq!(runs[0].id, "merge-run");
     assert_eq!(runs[0].session_id.as_deref(), Some(MASTER));
-    let sent: Vec<String> = fixture.commands.lock().unwrap()[commands_before..]
-        .iter()
-        .filter(|command| !matches!(command, DaemonCommand::List))
-        .map(|command| format!("{command:?}"))
-        .collect();
-    assert!(
-        sent.is_empty(),
-        "migration only asks the daemon for its sessions: {sent:?}"
+    assert_eq!(
+        fixture.commands.lock().unwrap().len(),
+        commands_before,
+        "migration sends the daemon nothing"
     );
     // Recorded as a workflow change made by the server.
     crate::task_store::flush_task(&db, &fixture.db_path, MASTER).unwrap();
@@ -592,25 +588,21 @@ fn spawn_live_session_daemon(
     commands
 }
 
-/// A merge master that has recorded a turn keeps a terminal run while a later
-/// handoff starts a new turn in the same session; migration must wait for the
-/// session, not the run, to be between turns.
+/// A merge master mid-turn -- its first turn recorded, a handoff delivered and
+/// being worked on, the run terminal because a handoff reopens none -- moves
+/// onto the release workflow without its run being superseded, its session
+/// being touched, or the handoff being lost; the result it records for that
+/// turn afterwards lands on the same run and parks at the merge window.
 #[tokio::test]
-async fn a_merge_master_mid_turn_after_a_handoff_is_not_migrated_until_its_session_is_idle() {
+async fn a_merge_master_mid_turn_migrates_without_touching_its_session() {
     use kanna_daemon::protocol::SessionStatus;
     let _sidecar_guard = crate::test_sidecar_guard().await;
-    let status = Arc::new(std::sync::Mutex::new(SessionStatus::Idle));
-    let daemon_status = Arc::clone(&status);
+    let status = Arc::new(std::sync::Mutex::new(SessionStatus::Busy));
     let fixture = ReleaseFixture::with_daemon("mid-turn", move |dir| {
-        spawn_live_session_daemon(dir, daemon_status)
+        spawn_live_session_daemon(dir, status)
     });
-    let before = fixture.pinned();
 
-    // First turn recorded: the run is terminal from here on.
     fixture.complete("in progress", "Merged PR 91").await;
-    assert_eq!(fixture.run_for("in progress").status, "succeeded");
-
-    // A handoff arrives and the merge master starts working on it.
     let (status_code, text) = fixture.hand_off().await;
     assert_eq!(status_code, StatusCode::OK, "{text}");
     assert_eq!(
@@ -618,43 +610,86 @@ async fn a_merge_master_mid_turn_after_a_handoff_is_not_migrated_until_its_sessi
         1,
         "the handoff reached the session"
     );
-    *status.lock().unwrap() = SessionStatus::Busy;
-    assert_eq!(
-        fixture.run_for("in progress").status,
-        "succeeded",
-        "the new turn reopened no run"
-    );
-    assert!(matches!(
-        fixture.migrate().await,
-        MergeSingletonMigration::Deferred(reason) if reason.contains("mid-turn")
-    ));
-    assert_eq!(fixture.pinned(), before, "nothing changed mid-turn");
+    let handoffs_recorded = || {
+        fixture
+            .db()
+            .list_task_inputs(MASTER, 100)
+            .unwrap()
+            .into_iter()
+            .filter(|input| input.message.starts_with("MERGE feature/login -> main"))
+            .count()
+    };
+    assert_eq!(handoffs_recorded(), 1);
+    assert_eq!(fixture.run_for("in progress").status, "succeeded");
+    let commands_before = fixture.commands.lock().unwrap().len();
 
-    // Waiting on a prompt is still mid-turn.
-    *status.lock().unwrap() = SessionStatus::Waiting;
-    assert!(matches!(
-        fixture.migrate().await,
-        MergeSingletonMigration::Deferred(_)
-    ));
-    assert_eq!(fixture.pinned(), before);
-
-    // The turn ends; the session is idle at its composer.
-    *status.lock().unwrap() = SessionStatus::Idle;
     assert_eq!(fixture.migrate().await, MergeSingletonMigration::Migrated);
     assert_eq!(fixture.pinned().1["name"], "release");
+    assert_eq!(
+        fixture.commands.lock().unwrap().len(),
+        commands_before,
+        "migration sends the session nothing"
+    );
+    let runs = fixture.db().list_stage_runs_for_task(MASTER).unwrap();
+    assert_eq!(runs.len(), 1, "no run superseded or started");
+    assert_eq!(runs[0].id, "merge-run");
+    assert_eq!(runs[0].session_id.as_deref(), Some(MASTER));
+    assert_eq!(handoffs_recorded(), 1, "the delivered handoff is kept");
+
+    // The turn ends: its result is recorded on the same run and the task
+    // parks at the manual merge window, as it did under the old workflow.
+    fixture.complete("in progress", "Merged PR 123").await;
+    let item = fixture.db().get_pipeline_item(MASTER).unwrap().unwrap();
+    assert_eq!(item.stage.as_deref(), Some("in progress"));
+    let run = fixture.run_for("in progress");
+    assert_eq!(run.id, "merge-run");
+    assert!(run.result.unwrap_or_default().contains("Merged PR 123"));
+    assert_eq!(
+        fixture.db().list_stage_runs_for_task(MASTER).unwrap().len(),
+        1
+    );
 }
 
-/// A daemon that cannot be asked is not evidence that the session is idle.
+/// A transition or revision holds the task-mutation lease while it works.
+/// The migration waits for the lease rather than interleaving, and then finds
+/// the transition it accepted still owed and leaves the workflow alone.
 #[tokio::test]
-async fn a_merge_master_whose_daemon_cannot_be_asked_is_not_migrated() {
+async fn a_concurrent_transition_under_the_lease_defers_the_migration() {
     let _sidecar_guard = crate::test_sidecar_guard().await;
-    let fixture =
-        ReleaseFixture::with_daemon("no-daemon", |_| Arc::new(std::sync::Mutex::new(Vec::new())));
+    let fixture = ReleaseFixture::new("lease");
     fixture.complete("in progress", "Merged PR 91").await;
     let before = fixture.pinned();
+
+    let transition = fixture.state.begin_requested_task_mutation(MASTER).await;
+    let state = Arc::clone(&fixture.state);
+    let migration = tokio::spawn(async move {
+        super::super::signal_agent::migrate_merge_singleton(&state, MASTER).await
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    assert!(
+        !migration.is_finished(),
+        "the migration waits for the lease"
+    );
+    // What the transition leaves behind when it lets go: the move it
+    // accepted, owed to the task.
+    fixture
+        .db()
+        .put_ledger_continuation(
+            MASTER,
+            "op-advance",
+            "transition",
+            &serde_json::json!({ "stage": "in progress" }),
+        )
+        .unwrap();
+    drop(transition);
+
     assert!(matches!(
-        fixture.migrate().await,
-        MergeSingletonMigration::Deferred(reason) if reason.contains("cannot be checked")
+        migration.await.unwrap().unwrap(),
+        MergeSingletonMigration::Deferred(reason) if reason.contains("owed")
     ));
-    assert_eq!(fixture.pinned(), before);
+    assert_eq!(fixture.pinned(), before, "the workflow was left alone");
+
+    // Once the transition has settled, the migration goes ahead.
+    fixture.db().clear_ledger_continuation(MASTER).unwrap();
+    assert_eq!(fixture.migrate().await, MergeSingletonMigration::Migrated);
 }
