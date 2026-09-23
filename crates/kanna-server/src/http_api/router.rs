@@ -810,6 +810,11 @@ pub async fn dispatch_authenticated_http_invoke(
     .await
 }
 
+/// Dispatches a relay invoke. `actor` is the account this desktop's relay
+/// connection authenticated as when the invoke arrived; it acts only while
+/// this desktop is still signed in to exactly that account, so a sign-out or
+/// an account switch revokes every invoke still in flight on the old
+/// connection (`crate::account_boundary`).
 pub async fn dispatch_authenticated_relay_http_invoke(
     state: Arc<AppState>,
     actor: String,
@@ -818,6 +823,16 @@ pub async fn dispatch_authenticated_relay_http_invoke(
     path: &str,
     body: serde_json::Value,
 ) -> HttpInvokeResponse {
+    if let Err(refusal) = crate::account_boundary::relay_invoke_account(
+        Some(&actor),
+        state.authenticated_account_uid().as_deref(),
+    ) {
+        log::warn!(
+            "refusing relay invoke {method} {}: {refusal}",
+            loggable_path(path)
+        );
+        return account_boundary_response(&refusal);
+    }
     let channel = ChannelIdentity::RelayAccount {
         account_uid: actor.clone(),
         source_desktop_id: source_desktop_id.clone(),
@@ -837,14 +852,13 @@ pub async fn dispatch_authenticated_relay_http_invoke(
 
 /// Dispatches a call that arrived on the dedicated LAN machine-invoke
 /// listener, already authenticated by `LanMachineInvokeAuthenticated`'s
-/// bearer-secret check. The actor is this desktop's own current account
-/// (a LAN caller does not carry a separate account claim the way a relay
-/// message does - `LanMachineInvokeAuthenticated` already proved the
-/// caller's secret verifies under exactly that account), and
-/// `source_desktop_id` is the verified device id from that same check.
-/// `verified_account_uid` is the account that check verified the secret
-/// under; the recorded channel names it rather than re-reading the current
-/// account, which a sign-out or account switch can change in between.
+/// bearer-secret check. `source_desktop_id` is the verified device id from
+/// that check and `verified_account_uid` the account it verified the secret
+/// under. That verified account is both the authorization actor and the
+/// recorded channel's account - never a fresh read of the current account,
+/// which a sign-out or account switch can change while the gateway awaited
+/// the body. If the current account is no longer that one, the credential no
+/// longer holds and the call is refused (`crate::account_boundary`).
 pub async fn dispatch_authenticated_lan_http_invoke(
     state: Arc<AppState>,
     source_desktop_id: String,
@@ -853,14 +867,27 @@ pub async fn dispatch_authenticated_lan_http_invoke(
     path: &str,
     body: serde_json::Value,
 ) -> HttpInvokeResponse {
-    let actor = state.authenticated_account_uid();
+    let actor = match crate::account_boundary::lan_invoke_account(
+        &source_desktop_id,
+        verified_account_uid.as_deref(),
+        state.authenticated_account_uid().as_deref(),
+    ) {
+        Ok(actor) => actor,
+        Err(refusal) => {
+            log::warn!(
+                "refusing LAN machine invoke {method} {} from {source_desktop_id}: {refusal}",
+                loggable_path(path)
+            );
+            return account_boundary_response(&refusal);
+        }
+    };
     // Same `AuthenticatedHttpInvoke` marker as a relay invoke, but a
     // different channel: the bearer secret proved a sibling desktop, and
     // the account is this desktop's own, not a relay attestation.
     let channel = ChannelIdentity::PeerDesktop {
         desktop_id: source_desktop_id.clone(),
         evidence: PeerDesktopEvidence::LanMachineTrust,
-        account_uid: verified_account_uid,
+        account_uid: Some(actor.clone()),
     };
     dispatch_http_invoke_with_access(
         state,
@@ -868,7 +895,7 @@ pub async fn dispatch_authenticated_lan_http_invoke(
         path,
         body,
         true,
-        actor,
+        Some(actor),
         Some(source_desktop_id),
         channel,
     )
@@ -915,6 +942,11 @@ pub async fn dispatch_sealed_device_http_invoke(
 /// `SealedPeerPairingContext`: the peer pairing claim is for a key that is
 /// *not yet* paired, and a paired sibling must not be able to consume
 /// another desktop's pairing offer.
+///
+/// The session was admitted only for a sibling in this desktop's account;
+/// each request re-checks that against the pin as it stands now, so a
+/// sign-out or account switch refuses the next request even before the
+/// account-transition purge closes the session.
 pub async fn dispatch_sealed_peer_http_invoke(
     state: Arc<AppState>,
     desktop_id: String,
@@ -923,12 +955,39 @@ pub async fn dispatch_sealed_peer_http_invoke(
     path: &str,
     body: serde_json::Value,
 ) -> HttpInvokeResponse {
+    let peer = match state.paired_peer(&desktop_id) {
+        Ok(Some(peer)) => peer,
+        Ok(None) => {
+            return refused_invoke(
+                axum::http::StatusCode::UNAUTHORIZED,
+                format!("desktop {desktop_id} is no longer a paired peer"),
+            )
+        }
+        Err(error) => {
+            return refused_invoke(
+                axum::http::StatusCode::SERVICE_UNAVAILABLE,
+                format!("peer trust store unavailable: {error}"),
+            )
+        }
+    };
+    if let Err(refusal) =
+        crate::account_boundary::peer_standing(&peer, state.authenticated_account_uid().as_deref())
+    {
+        log::warn!(
+            "refusing sealed peer request {method} {} from {desktop_id}: {refusal}",
+            loggable_path(path)
+        );
+        return account_boundary_response(&refusal);
+    }
+    // The account the pin proves the sibling shares, which the check above
+    // just held against the current one.
+    let account_uid = peer.same_account_evidence().map(str::to_string);
     let channel = ChannelIdentity::PeerDesktop {
         desktop_id: desktop_id.clone(),
         evidence: PeerDesktopEvidence::SecureChannel {
             transport: secure_channel_transport(origin),
         },
-        account_uid: None,
+        account_uid,
     };
     dispatch_http_invoke_with_extensions(state, method, path, body, move |extensions| {
         extensions.insert(TrustedPeerDesktopAccess::new(desktop_id));
@@ -936,6 +995,28 @@ pub async fn dispatch_sealed_peer_http_invoke(
         attach_dispatched_channel_identity(extensions, channel);
     })
     .await
+}
+
+/// An invoke refused before it reached the router, shaped like a route's own
+/// refusal (`response_to_http_invoke`): the text is both body and error.
+fn refused_invoke(status: axum::http::StatusCode, message: String) -> HttpInvokeResponse {
+    HttpInvokeResponse {
+        status: status.as_u16(),
+        body: Some(serde_json::Value::String(message.clone())),
+        error: Some(message),
+    }
+}
+
+fn account_boundary_response(
+    refusal: &crate::account_boundary::AccountBoundaryRefusal,
+) -> HttpInvokeResponse {
+    refused_invoke(refusal.status(), refusal.to_string())
+}
+
+/// A dispatched path for a log line, without its query (which may carry a
+/// credential-shaped value; see `loggable_target`).
+fn loggable_path(path: &str) -> &str {
+    path.split('?').next().unwrap_or(path)
 }
 
 fn secure_channel_transport(origin: StreamOrigin) -> SecureChannelTransport {

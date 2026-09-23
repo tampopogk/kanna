@@ -4,6 +4,9 @@ use std::sync::{Condvar, Mutex as StdMutex};
 use std::time::Duration;
 use tokio_tungstenite::tungstenite::Message as TungsteniteMessage;
 
+/// The account this desktop and its relay connection are signed in to.
+const RELAY_ACCOUNT: &str = "account-uid-1";
+
 /// Relay HTTP invokes used to be dispatched inline in the relay read loop:
 /// a slow invoke (task lifecycle preparation runs synchronous git/SQLite
 /// work) both occupied a Tokio runtime worker and head-of-line blocked every
@@ -21,6 +24,7 @@ async fn relay_http_invoke_dispatch_is_concurrent_and_off_the_runtime() {
         db.insert_test_repo_with_path("repo-1", &repo_root.to_string_lossy(), "Repo One")
             .unwrap();
     });
+    state.set_authenticated_account_uid(Some(RELAY_ACCOUNT.to_string()));
 
     // Hold the repository definition load open until released, so the first
     // invoke stays in flight while the second one races past it.
@@ -82,7 +86,7 @@ async fn relay_http_invoke_dispatch_is_concurrent_and_off_the_runtime() {
             method: "GET".to_string(),
             path: "/v1/repos/repo-1/kanna-definitions".to_string(),
             body: serde_json::Value::Null,
-            authenticated_user_id: None,
+            authenticated_user_id: Some(RELAY_ACCOUNT.to_string()),
             source_desktop_id: None,
         },
     )
@@ -106,7 +110,7 @@ async fn relay_http_invoke_dispatch_is_concurrent_and_off_the_runtime() {
             method: "GET".to_string(),
             path: "/v1/status".to_string(),
             body: serde_json::Value::Null,
-            authenticated_user_id: None,
+            authenticated_user_id: Some(RELAY_ACCOUNT.to_string()),
             source_desktop_id: None,
         },
     )
@@ -144,6 +148,7 @@ async fn relay_http_invoke_dispatch_is_concurrent_and_off_the_runtime() {
 #[tokio::test(flavor = "current_thread")]
 async fn relay_http_invoke_dispatch_rejects_when_saturated() {
     let state = super::test_state_with_seed("desktop-relay-sat", "Studio Mac", |_db| {});
+    state.set_authenticated_account_uid(Some(RELAY_ACCOUNT.to_string()));
 
     let tcp = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
@@ -187,7 +192,7 @@ async fn relay_http_invoke_dispatch_rejects_when_saturated() {
             method: "GET".to_string(),
             path: "/v1/status".to_string(),
             body: serde_json::Value::Null,
-            authenticated_user_id: None,
+            authenticated_user_id: Some(RELAY_ACCOUNT.to_string()),
             source_desktop_id: None,
         },
     )
@@ -216,6 +221,7 @@ async fn relay_http_invoke_dispatch_rejects_when_saturated() {
 #[tokio::test(flavor = "current_thread")]
 async fn relay_http_invoke_dispatch_accepts_a_source_desktop_id_alongside_the_account() {
     let state = super::test_state_with_seed("desktop-relay-provenance", "Studio Mac", |_db| {});
+    state.set_authenticated_account_uid(Some(RELAY_ACCOUNT.to_string()));
 
     let tcp = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
@@ -254,7 +260,7 @@ async fn relay_http_invoke_dispatch_accepts_a_source_desktop_id_alongside_the_ac
             method: "GET".to_string(),
             path: "/v1/status".to_string(),
             body: serde_json::Value::Null,
-            authenticated_user_id: Some("account-uid-1".to_string()),
+            authenticated_user_id: Some(RELAY_ACCOUNT.to_string()),
             source_desktop_id: Some("desktop-source".to_string()),
         },
     )
@@ -289,6 +295,7 @@ async fn relay_http_long_poll_does_not_saturate_short_invokes() {
         )
         .expect("insert task");
     });
+    state.set_authenticated_account_uid(Some(RELAY_ACCOUNT.to_string()));
 
     let tcp = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
@@ -327,7 +334,7 @@ async fn relay_http_long_poll_does_not_saturate_short_invokes() {
             method: "GET".to_string(),
             path: "/v1/task-events?taskIds=task-relay-wait&cursor=0&timeoutSecs=1".to_string(),
             body: serde_json::Value::Null,
-            authenticated_user_id: None,
+            authenticated_user_id: Some(RELAY_ACCOUNT.to_string()),
             source_desktop_id: None,
         },
     )
@@ -344,7 +351,7 @@ async fn relay_http_long_poll_does_not_saturate_short_invokes() {
             method: "GET".to_string(),
             path: "/v1/status".to_string(),
             body: serde_json::Value::Null,
-            authenticated_user_id: None,
+            authenticated_user_id: Some(RELAY_ACCOUNT.to_string()),
             source_desktop_id: None,
         },
     )
@@ -364,6 +371,126 @@ async fn relay_http_long_poll_does_not_saturate_short_invokes() {
         .expect("relay frame channel closed");
     assert_eq!(long_poll_response["id"], "long-poll");
     assert_eq!(long_poll_response["status"], 200);
+
+    sink.lock().await.close().await.expect("close ws");
+    relay_server.abort();
+}
+
+/// A relay invoke acts as the account its connection authenticated, and only
+/// while this desktop is still signed in to exactly that account. A
+/// connection that authenticated none, an account switch, and a sign-out
+/// each refuse the invoke by name before any route runs - including a
+/// privileged task route and a forged relay-attested source desktop.
+#[tokio::test(flavor = "current_thread")]
+async fn relay_invokes_are_refused_outside_the_signed_in_account() {
+    let state = super::test_state_with_seed("desktop-relay-boundary", "Studio Mac", |db| {
+        db.insert_test_repo("repo-boundary", "Boundary Repo")
+            .expect("insert repo");
+        db.insert_test_pipeline_item(
+            "task-boundary",
+            "repo-boundary",
+            "boundary",
+            Some("Boundary"),
+            "in progress",
+            "2026-09-23 00:00:00",
+        )
+        .expect("insert task");
+    });
+
+    let tcp = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind relay stand-in");
+    let addr = tcp.local_addr().expect("local addr");
+    let (frames_tx, mut frames_rx) = tokio::sync::mpsc::unbounded_channel::<serde_json::Value>();
+    let relay_server = tokio::spawn(async move {
+        let (stream, _) = tcp.accept().await.expect("accept ws");
+        let mut ws =
+            tokio_tungstenite::accept_async(tokio_tungstenite::MaybeTlsStream::Plain(stream))
+                .await
+                .expect("ws handshake");
+        while let Some(Ok(message)) = ws.next().await {
+            if let TungsteniteMessage::Text(text) = message {
+                let frame: serde_json::Value =
+                    serde_json::from_str(&text).expect("parse relay frame");
+                if frames_tx.send(frame).is_err() {
+                    return;
+                }
+            }
+        }
+    });
+    let (ws, _) = tokio_tungstenite::connect_async(format!("ws://{addr}"))
+        .await
+        .expect("connect ws");
+    let (sink, _read) = ws.split();
+    let sink = Arc::new(tokio::sync::Mutex::new(sink));
+    let permits = Arc::new(crate::relay::RelayHttpInvokePermits::new(4));
+
+    // (desktop's current account, the connection's account, forged source,
+    //  expected status, expected refusal code)
+    let cases = [
+        (Some(RELAY_ACCOUNT), Some(RELAY_ACCOUNT), None, 200, None),
+        (
+            Some(RELAY_ACCOUNT),
+            None,
+            None,
+            401,
+            Some("relay_account_unattested"),
+        ),
+        (
+            Some("account-uid-2"),
+            Some(RELAY_ACCOUNT),
+            None,
+            403,
+            Some("relay_account_changed"),
+        ),
+        (
+            None,
+            Some(RELAY_ACCOUNT),
+            None,
+            403,
+            Some("account_signed_out"),
+        ),
+        // A relay-attested source desktop does not rescue a stale account.
+        (
+            Some("account-uid-2"),
+            Some(RELAY_ACCOUNT),
+            Some("desktop-forged"),
+            403,
+            Some("relay_account_changed"),
+        ),
+    ];
+    for (index, (current, connection, source, status, code)) in cases.into_iter().enumerate() {
+        state.set_authenticated_account_uid(current.map(str::to_string));
+        crate::relay::dispatch_relay_http_invoke(
+            Arc::clone(&state),
+            Arc::clone(&sink),
+            Arc::clone(&permits),
+            crate::relay::RelayHttpInvokeRequest {
+                id: crate::relay_client::RelayId::String(format!("case-{index}")),
+                method: "GET".to_string(),
+                path: "/v1/tasks/task-boundary".to_string(),
+                body: serde_json::Value::Null,
+                authenticated_user_id: connection.map(str::to_string),
+                source_desktop_id: source.map(str::to_string),
+            },
+        )
+        .await
+        .expect("dispatch");
+        let response = tokio::time::timeout(Duration::from_secs(5), frames_rx.recv())
+            .await
+            .expect("response should arrive")
+            .expect("relay frame channel closed");
+        assert_eq!(response["id"], format!("case-{index}"));
+        assert_eq!(response["status"], status, "case {index}: {response}");
+        if let Some(code) = code {
+            assert!(
+                response["error"]
+                    .as_str()
+                    .is_some_and(|error| error.starts_with(code)),
+                "case {index}: {response}"
+            );
+        }
+    }
 
     sink.lock().await.close().await.expect("close ws");
     relay_server.abort();

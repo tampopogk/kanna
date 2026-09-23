@@ -37,8 +37,11 @@
 //! account change purges the records of the old account
 //! (`retain_account`), so a machine handed to another account does not keep
 //! sibling authority the first account established. A pairing made while
-//! signed out carries no account and survives sign-in - it is LAN trust the
-//! person established by hand, and the relay never routes it anyway.
+//! signed out carries no account and survives sign-in, but a record that
+//! does not prove the sibling shares this desktop's account
+//! ([`PeerDesktop::same_account_evidence`]) carries no sibling authority:
+//! `crate::account_boundary` refuses it by name, with the re-pairing that
+//! restores it, rather than reading it as same-account.
 
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -102,6 +105,13 @@ pub struct PeerDesktop {
     /// default.
     #[serde(default)]
     pub provenance: PeerProvenance,
+    /// When the relay, speaking for `account_uid`, listed this desktop id
+    /// with exactly `channel_public_key` - the evidence that the sibling
+    /// itself is signed in to this desktop's account, not merely that this
+    /// desktop was. Absent on a ceremony record written before the ceremony
+    /// checked it; see [`PeerDesktop::same_account_evidence`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account_verified_at_unix_ms: Option<u64>,
     /// When a handshake against this pin last failed against a *different*
     /// key. Sticky: it survives until a handshake succeeds again or the
     /// record is replaced, because an identity change is exactly the event
@@ -111,6 +121,29 @@ pub struct PeerDesktop {
     pub paired_at_unix_ms: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_seen_unix_ms: Option<u64>,
+}
+
+impl PeerDesktop {
+    /// The account this record proves the sibling shares with this desktop,
+    /// or `None` when the record carries no such evidence.
+    ///
+    /// Evidence is the relay listing the sibling's desktop id with exactly
+    /// the pinned key under `account_uid`. Automatic enrollment only ever
+    /// pins after that check (`peer_enrollment`, and the responder in
+    /// `http_api::peers`), so an `Account` record has it by construction
+    /// even when it predates the stamp. A `Verified` record has it only when
+    /// the ceremony stamped it: a ceremony run while signed out carries no
+    /// account at all, and one run before the ceremony checked the relay
+    /// recorded only *this* desktop's account, which says nothing about the
+    /// sibling's. Neither is ever read as same-account
+    /// (`crate::account_boundary`).
+    pub fn same_account_evidence(&self) -> Option<&str> {
+        let account = self.account_uid.as_deref()?;
+        match self.provenance {
+            PeerProvenance::Account => Some(account),
+            PeerProvenance::Verified => self.account_verified_at_unix_ms.map(|_| account),
+        }
+    }
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -337,6 +370,7 @@ mod tests {
             environment: "development".into(),
             account_uid: account.map(str::to_string),
             provenance: PeerProvenance::Verified,
+            account_verified_at_unix_ms: None,
             identity_mismatch_at_unix_ms: None,
             paired_at_unix_ms: 1,
             last_seen_unix_ms: None,
@@ -472,6 +506,30 @@ mod tests {
         assert_eq!(store.peers.len(), 1);
         assert_eq!(store.peers[0].provenance, PeerProvenance::Verified);
         assert_eq!(store.peers[0].identity_mismatch_at_unix_ms, None);
+    }
+
+    /// Only a record that proves the sibling's account is same-account: an
+    /// automatic pin by construction, a ceremony pin only when stamped.
+    #[test]
+    fn same_account_evidence_is_never_inferred_from_this_desktops_account_alone() {
+        let signed_out_ceremony = peer("desktop-a", "ka", None);
+        assert_eq!(signed_out_ceremony.same_account_evidence(), None);
+
+        let legacy_ceremony = peer("desktop-b", "kb", Some("uid-1"));
+        assert_eq!(legacy_ceremony.same_account_evidence(), None);
+
+        let mut stamped_ceremony = peer("desktop-c", "kc", Some("uid-1"));
+        stamped_ceremony.account_verified_at_unix_ms = Some(5);
+        assert_eq!(stamped_ceremony.same_account_evidence(), Some("uid-1"));
+
+        let mut automatic = peer("desktop-d", "kd", Some("uid-1"));
+        automatic.provenance = PeerProvenance::Account;
+        assert_eq!(automatic.same_account_evidence(), Some("uid-1"));
+
+        // A stamp without an account is not evidence of any account.
+        let mut stamp_only = peer("desktop-e", "ke", None);
+        stamp_only.account_verified_at_unix_ms = Some(5);
+        assert_eq!(stamp_only.same_account_evidence(), None);
     }
 
     #[test]

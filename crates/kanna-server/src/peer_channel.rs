@@ -96,6 +96,10 @@ pub(crate) enum PeerDialError {
     /// The handshake against the pinned key failed: a rotated key or an
     /// impostor answered.
     IdentityMismatch(String),
+    /// The pinned record, on this side or the sibling's, does not place
+    /// the two desktops in one account (`crate::account_boundary`). Never a
+    /// changed key: nothing is flagged, and re-pairing is the repair.
+    AccountBoundary(String),
     /// No route reached the sibling at all.
     Unreachable(String),
     /// The pooled session was retired before the request was sent; the
@@ -110,6 +114,7 @@ impl PeerDialError {
             Self::IdentityUnavailable(_) => "peer_identity_unavailable",
             Self::UpgradeRequired(_) => "peer_upgrade_required",
             Self::IdentityMismatch(_) => "peer_identity_mismatch",
+            Self::AccountBoundary(_) => crate::ksp::PEER_ACCOUNT_BOUNDARY_CODE,
             Self::Unreachable(_) | Self::SessionEnded => "peer_unreachable",
         }
     }
@@ -137,6 +142,7 @@ impl std::fmt::Display for PeerDialError {
                 formatter,
                 "the paired machine's identity changed; remove it and pair again: {detail}"
             ),
+            Self::AccountBoundary(detail) => formatter.write_str(detail),
             Self::Unreachable(detail) => write!(formatter, "peer unreachable: {detail}"),
             Self::SessionEnded => formatter.write_str("peer unreachable: the sealed session ended"),
         }
@@ -286,7 +292,17 @@ pub(crate) async fn dial_peer(
         .paired_peer(desktop_id)
         .map_err(PeerDialError::IdentityUnavailable)?
     {
-        Some(peer) => peer,
+        // A pin that does not place the sibling in this desktop's current
+        // account is not dialed as a sibling: nothing of this account's -
+        // a request, a keystroke, a transfer - goes to it.
+        Some(peer) => {
+            crate::account_boundary::peer_standing(
+                &peer,
+                state.authenticated_account_uid().as_deref(),
+            )
+            .map_err(|refusal| PeerDialError::AccountBoundary(refusal.to_string()))?;
+            peer
+        }
         // No pin yet. For two desktops signed into one account this is not a
         // dead end any more: the relay introduces them and both sides end up
         // pinned, so `peer_pairing_required` becomes unreachable for the
@@ -432,17 +448,23 @@ async fn complete_handshake(
         // Kanna, or its identity failed to load) or it refused the
         // handshake, which against a pinned key means the key is not the
         // one it holds.
-        let code = serde_json::from_str::<serde_json::Value>(&reply)
-            .ok()
-            .and_then(|value| {
-                value
-                    .get("code")
-                    .and_then(|code| code.as_str())
-                    .map(str::to_string)
-            });
+        let refusal = serde_json::from_str::<serde_json::Value>(&reply).ok();
+        let field = |name: &str| {
+            refusal
+                .as_ref()
+                .and_then(|value| value.get(name))
+                .and_then(|value| value.as_str())
+                .map(str::to_string)
+        };
         let _ = ws.close(None).await;
-        return Err(match code.as_deref() {
+        return Err(match field("code").as_deref() {
             Some("secure_channel_refused") => PeerDialError::IdentityMismatch(reply),
+            Some(crate::ksp::PEER_ACCOUNT_BOUNDARY_CODE) => {
+                PeerDialError::AccountBoundary(format!(
+                    "that machine refused: {}",
+                    field("message").unwrap_or(reply)
+                ))
+            }
             _ => PeerDialError::UpgradeRequired(reply),
         });
     }

@@ -915,6 +915,7 @@ async fn legacy_bearer_credentials_stop_verifying_when_legacy_access_is_off() {
 #[tokio::test]
 async fn a_relay_invoke_cannot_claim_a_pairing_code() {
     let state = state("relay-claim");
+    state.set_authenticated_account_uid(Some("user-1".into()));
     let active = pairing_domain::create_active_pairing_session(state.config()).unwrap();
     let code = active.session.code.clone();
     *state.pairing_session.lock().await = Some(active);

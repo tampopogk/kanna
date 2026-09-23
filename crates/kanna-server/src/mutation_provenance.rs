@@ -34,11 +34,6 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub(crate) enum ChannelIdentity {
-    /// No verified channel evidence: a legacy record, an in-process dispatch
-    /// with no identity attached, a tunnel whose caller proved nothing about
-    /// itself, or a request without a socket peer.
-    #[default]
-    Unknown,
     /// This server's own engine: automatic policy transitions, subscription
     /// wakes, merge handoffs, recovery. Never assigned to a request.
     Server,
@@ -57,8 +52,10 @@ pub(crate) enum ChannelIdentity {
         desktop_id: String,
         evidence: PeerDesktopEvidence,
         /// The account the caller was verified under, when the evidence
-        /// carries one (the LAN machine-trust secret is bound to this
-        /// desktop's current account).
+        /// carries one: the account the LAN machine-trust secret was
+        /// verified under, or the account a sealed session's pin proves the
+        /// sibling shares (`crate::account_boundary`). Absent on rows written
+        /// before either was recorded.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         account_uid: Option<String>,
     },
@@ -71,6 +68,16 @@ pub(crate) enum ChannelIdentity {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         source_desktop_id: Option<String>,
     },
+    /// No verified channel evidence: a legacy record, an in-process dispatch
+    /// with no identity attached, a tunnel whose caller proved nothing about
+    /// itself, or a request without a socket peer.
+    ///
+    /// Also what any `kind` this build does not know decodes as, so a payload
+    /// carrying an identity from a newer peer still decodes - and the
+    /// identity it cannot read is never guessed at.
+    #[default]
+    #[serde(other)]
+    Unknown,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -229,6 +236,28 @@ mod tests {
             }
             .to_json(),
             serde_json::json!({ "kind": "localProcess", "evidence": "loopback" })
+        );
+    }
+
+    /// A newer peer's identity kind inside a wire payload decodes as
+    /// `Unknown` without failing the payload around it.
+    #[test]
+    fn an_unknown_kind_on_the_wire_decodes_as_unknown_and_keeps_the_payload() {
+        let decoded: MutationProvenance = serde_json::from_value(serde_json::json!({
+            "declaredRole": "operator",
+            "channelIdentity": { "kind": "orgServer", "orgId": "org-1" },
+        }))
+        .expect("an unknown kind must not fail the payload");
+        assert_eq!(decoded.declared_role, "operator");
+        assert_eq!(decoded.channel_identity, ChannelIdentity::Unknown);
+        // Known kinds still decode exactly, and `Unknown` still encodes as
+        // its own kind.
+        let known: ChannelIdentity =
+            serde_json::from_value(serde_json::json!({ "kind": "server" })).unwrap();
+        assert_eq!(known, ChannelIdentity::Server);
+        assert_eq!(
+            ChannelIdentity::Unknown.to_json(),
+            serde_json::json!({ "kind": "unknown" })
         );
     }
 

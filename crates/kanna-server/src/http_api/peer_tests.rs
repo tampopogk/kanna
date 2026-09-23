@@ -252,9 +252,24 @@ fn state_with_transfer_port(label: &str, transfer_port: u16) -> Arc<AppState> {
     let _ = crate::db::Db::open_for_tests(&config.db_path).expect("open test db");
     let state = Arc::new(AppState::new(config));
     state.peer_channel_identity().expect("peer identity");
+    // Every test desktop is signed in to the owner's account unless a test
+    // signs it out: sibling authority exists only within one account. Set
+    // before relay access, because an account change resets that access.
+    state.set_authenticated_account_uid(Some(OWNER_ACCOUNT.to_string()));
     state.set_relay_access(RelayAccess::Enforced(entitlement(true)));
     state
 }
+
+/// Changes the signed-in account and restores the relay access the change
+/// resets, so a relay-origin session meets the account boundary rather than
+/// the relay's own entitlement gate.
+fn switch_account(state: &AppState, account: Option<&str>) {
+    state.set_authenticated_account_uid(account.map(str::to_string));
+    state.set_relay_access(RelayAccess::Enforced(entitlement(true)));
+}
+
+/// The account the test desktops and their pinned siblings share.
+const OWNER_ACCOUNT: &str = "uid-1";
 
 fn entitlement(active: bool) -> RelayEntitlement {
     RelayEntitlement {
@@ -291,8 +306,27 @@ pub(super) fn set_peer_legacy_refused(state: &AppState) {
 }
 
 /// Pins `identity` on `state` as the sibling `desktop_id`, as a completed
-/// ceremony would have.
+/// ceremony between two desktops of the owner's account would have: the
+/// relay confirmed the sibling's key under that account.
 fn pin_peer(state: &AppState, desktop_id: &str, identity: &Keypair) {
+    pin_peer_record(state, desktop_id, identity, Some(OWNER_ACCOUNT), Some(1));
+}
+
+/// Pins a ceremony record as it was written before the ceremony checked the
+/// sibling's account: `account` is this desktop's own account at pairing
+/// time (`None` for a pairing made while signed out), and nothing proves
+/// the sibling's.
+fn pin_legacy_peer(state: &AppState, desktop_id: &str, identity: &Keypair, account: Option<&str>) {
+    pin_peer_record(state, desktop_id, identity, account, None);
+}
+
+fn pin_peer_record(
+    state: &AppState,
+    desktop_id: &str,
+    identity: &Keypair,
+    account: Option<&str>,
+    account_verified_at_unix_ms: Option<u64>,
+) {
     let path = state.config().peer_trust_store_path().unwrap();
     let mut store = PeerTrustStore::load(&path).unwrap();
     store
@@ -303,8 +337,9 @@ fn pin_peer(state: &AppState, desktop_id: &str, identity: &Keypair) {
             transfer_peer_id: None,
             transfer_public_key: None,
             environment: "development".into(),
-            account_uid: None,
+            account_uid: account.map(str::to_string),
             provenance: crate::peer_trust::PeerProvenance::Verified,
+            account_verified_at_unix_ms,
             identity_mismatch_at_unix_ms: None,
             paired_at_unix_ms: 1,
             last_seen_unix_ms: None,
@@ -545,6 +580,14 @@ async fn the_pairing_ceremony_pins_the_handshake_key_and_refuses_a_wrong_secret_
     assert_eq!(parsed.desktop_id, issuer.config().desktop_id);
 
     let claimant = Keypair::generate().unwrap();
+    // The owner's account lists the claimant with exactly its key.
+    let _relay = serve_relay_presence(
+        &issuer,
+        vec![(
+            "desktop-claimant".to_string(),
+            Some(claimant.encoded_public_key()),
+        )],
+    );
     let mut sibling = SealedSibling::establish(
         &issuer,
         StreamOrigin::RelayTunnel,
@@ -603,6 +646,8 @@ async fn the_pairing_ceremony_pins_the_handshake_key_and_refuses_a_wrong_secret_
     assert_eq!(pinned.desktop_id, "desktop-claimant");
     assert_eq!(pinned.transfer_peer_id.as_deref(), Some("peer-claimant"));
     assert_eq!(pinned.transfer_public_key.as_deref(), Some("tkey-claimant"));
+    // The relay's confirmation is the pin's account evidence.
+    assert_eq!(pinned.same_account_evidence(), Some(OWNER_ACCOUNT));
     // The offer is consumed.
     let response = sibling
         .request(
@@ -655,6 +700,8 @@ async fn the_pairing_ceremony_pins_the_handshake_key_and_refuses_a_wrong_secret_
     assert_eq!(view["peers"][0]["desktopId"], "desktop-claimant");
     assert_eq!(view["peers"][0]["encryption"], "e2ee");
     assert_eq!(view["peers"][0]["transferIdentityPinned"], true);
+    assert_eq!(view["peers"][0]["accountStanding"], "sameAccount");
+    assert!(view["peers"][0].get("accountDiagnostic").is_none());
 }
 
 /// Re-pairing is how a rotated key on either side becomes trusted again: a
@@ -666,6 +713,13 @@ async fn a_pairing_hello_from_an_already_pinned_key_is_pairing_only_and_replaces
     let issuer = state("repair");
     let claimant = Keypair::generate().unwrap();
     pin_peer(&issuer, "desktop-claimant", &claimant);
+    let _relay = serve_relay_presence(
+        &issuer,
+        vec![(
+            "desktop-claimant".to_string(),
+            Some(claimant.encoded_public_key()),
+        )],
+    );
     let offer = super::peers::create_pairing_offer(DesktopLocalAccess, State(Arc::clone(&issuer)))
         .await
         .unwrap()
@@ -942,6 +996,7 @@ async fn an_account_enrollment_claim_needs_the_relay_to_publish_this_sessions_ke
 #[tokio::test]
 async fn enrollment_is_refused_while_signed_out_and_never_replaces_a_pin() {
     let responder = state("enroll-refusals");
+    responder.set_authenticated_account_uid(None);
     let sibling_identity = Keypair::generate().unwrap();
     let _relay = serve_relay_presence(
         &responder,
@@ -1813,4 +1868,352 @@ fn error_frame_keys_are_sorted_on_the_wire() {
         r#"{"code":"peer_pairing_required","message":"this desktop is not paired with that machine","type":"error"}"#,
         "the client must not depend on the discriminant's position in this frame"
     );
+}
+
+/// Opens a sibling session and expects it refused on the account boundary:
+/// in the clear, with its own code (never `secure_channel_refused`, which the
+/// dialer reads as a changed key), naming neither machine.
+async fn expect_account_refusal(
+    state: &Arc<AppState>,
+    origin: StreamOrigin,
+    identity: &Keypair,
+    intent: HelloIntent,
+    service: Option<&str>,
+    code: &str,
+) {
+    let refused =
+        SealedSibling::establish(state, origin, identity, "desktop-sibling", intent, service).await;
+    let reply = match refused {
+        Ok(_) => panic!("{origin:?} {intent:?}: a session outside the account must be refused"),
+        Err(reply) => reply,
+    };
+    let frame: serde_json::Value = serde_json::from_str(&reply).expect("a clear-text refusal");
+    assert_eq!(frame["code"], "peer_account_boundary", "{reply}");
+    let message = frame["message"].as_str().unwrap();
+    assert!(message.starts_with(code), "{reply}");
+    assert!(!message.contains("desktop-sibling Mac"), "{reply}");
+}
+
+/// Records written before the ceremony checked the sibling's account - one
+/// made while signed out, one made while signed in but proving only this
+/// desktop's account - carry no sibling authority on any transport or
+/// intent, are reported by name with their repair, and are never flagged as
+/// a changed key. Re-pairing while both are in one account restores access.
+#[tokio::test]
+async fn a_pin_without_account_evidence_is_refused_by_name_until_it_is_paired_again() {
+    for (label, pinned_account) in [
+        ("legacy-signed-out", None),
+        ("legacy-signed-in", Some(OWNER_ACCOUNT)),
+    ] {
+        let state = state(label);
+        let sibling_identity = Keypair::generate().unwrap();
+        pin_legacy_peer(&state, "desktop-sibling", &sibling_identity, pinned_account);
+        for origin in [StreamOrigin::Lan, StreamOrigin::RelayTunnel] {
+            expect_account_refusal(
+                &state,
+                origin,
+                &sibling_identity,
+                HelloIntent::PeerSession,
+                None,
+                "peer_account_evidence_missing",
+            )
+            .await;
+            expect_account_refusal(
+                &state,
+                origin,
+                &sibling_identity,
+                HelloIntent::PeerTunnel,
+                Some("task-transfer"),
+                "peer_account_evidence_missing",
+            )
+            .await;
+        }
+        // Even a request that did get in is refused by the dispatcher.
+        let response = crate::http_api::dispatch_sealed_peer_http_invoke(
+            Arc::clone(&state),
+            "desktop-sibling".into(),
+            StreamOrigin::Lan,
+            "GET",
+            "/v1/tasks/recent",
+            serde_json::Value::Null,
+        )
+        .await;
+        assert_eq!(response.status, 403, "{:?}", response.body);
+        let error = response.error.unwrap();
+        assert!(
+            error.starts_with("peer_account_evidence_missing: paired machine \"desktop-sibling Mac\" (desktop-sibling)"),
+            "{error}"
+        );
+        let store = state.peer_trust_store().unwrap();
+        assert_eq!(
+            store.peers[0].identity_mismatch_at_unix_ms, None,
+            "an account refusal is not a changed key"
+        );
+        // The machine list names the record and the action that restores it.
+        let list = super::peers::list_peers(DesktopLocalAccess, State(Arc::clone(&state)))
+            .await
+            .unwrap()
+            .0;
+        let view = serde_json::to_value(&list).unwrap();
+        assert_eq!(
+            view["peers"][0]["accountStanding"],
+            "peer_account_evidence_missing"
+        );
+        let diagnostic = view["peers"][0]["accountDiagnostic"].as_str().unwrap();
+        assert!(
+            diagnostic.contains("\"desktop-sibling Mac\" (desktop-sibling)"),
+            "{diagnostic}"
+        );
+        assert!(
+            diagnostic.contains("unpair \"desktop-sibling Mac\""),
+            "{diagnostic}"
+        );
+        assert!(
+            diagnostic.contains("pair them again with a pairing string"),
+            "{diagnostic}"
+        );
+
+        // Re-enrollment: a pairing hello from the pinned key is still
+        // admitted, and a claim the owner's account confirms replaces the
+        // record with one that carries the evidence.
+        let _relay = serve_relay_presence(
+            &state,
+            vec![(
+                "desktop-sibling".to_string(),
+                Some(sibling_identity.encoded_public_key()),
+            )],
+        );
+        let offer =
+            super::peers::create_pairing_offer(DesktopLocalAccess, State(Arc::clone(&state)))
+                .await
+                .unwrap()
+                .0;
+        let parsed = crate::peer_pairing::parse_pairing_string(&offer.pairing_string).unwrap();
+        let mut pairing = SealedSibling::establish(
+            &state,
+            StreamOrigin::Lan,
+            &sibling_identity,
+            "desktop-sibling",
+            HelloIntent::PeerPairing,
+            None,
+        )
+        .await
+        .unwrap();
+        pairing.auth().await;
+        let response = pairing
+            .request(
+                1,
+                "POST",
+                "/v1/peers/pairing/claim",
+                serde_json::json!({
+                    "code": parsed.code, "secret": parsed.secret, "desktopId": "desktop-sibling",
+                    "desktopName": "desktop-sibling Mac", "environment": "development"
+                }),
+            )
+            .await;
+        assert_eq!(response["status"], 200, "{response}");
+        pairing.sibling.ended().await;
+        let mut restored = SealedSibling::establish(
+            &state,
+            StreamOrigin::Lan,
+            &sibling_identity,
+            "desktop-sibling",
+            HelloIntent::PeerSession,
+            None,
+        )
+        .await
+        .expect("a re-paired sibling is admitted");
+        restored.auth().await;
+        let response = restored
+            .request(1, "GET", "/v1/tasks/recent", serde_json::Value::Null)
+            .await;
+        assert_eq!(response["status"], 200, "{label}: {response}");
+    }
+}
+
+/// Sign-out and an account change revoke a same-account sibling on every
+/// transport: a live session's next request is refused before the
+/// account-transition purge has closed it, no new session is admitted, and
+/// signing back in to the pin's account restores it.
+#[tokio::test]
+async fn sign_out_and_an_account_change_revoke_sibling_control() {
+    let state = state("account-transitions");
+    let sibling_identity = Keypair::generate().unwrap();
+    pin_peer(&state, "desktop-sibling", &sibling_identity);
+    for origin in [StreamOrigin::Lan, StreamOrigin::RelayTunnel] {
+        switch_account(&state, Some(OWNER_ACCOUNT));
+        let mut live = SealedSibling::establish(
+            &state,
+            origin,
+            &sibling_identity,
+            "desktop-sibling",
+            HelloIntent::PeerSession,
+            None,
+        )
+        .await
+        .unwrap();
+        live.auth().await;
+        let response = live
+            .request(1, "GET", "/v1/tasks/recent", serde_json::Value::Null)
+            .await;
+        assert_eq!(response["status"], 200, "{origin:?}: {response}");
+
+        for (current, code) in [
+            (None, "account_signed_out"),
+            (Some("uid-2"), "peer_account_changed"),
+        ] {
+            switch_account(&state, current);
+            let response = live
+                .request(2, "GET", "/v1/tasks/recent", serde_json::Value::Null)
+                .await;
+            assert_eq!(
+                response["status"], 403,
+                "{origin:?} {current:?}: {response}"
+            );
+            assert!(
+                response["body"]["error"]
+                    .as_str()
+                    .or(response["body"].as_str())
+                    .is_some_and(|error| error.starts_with(code)),
+                "{origin:?} {current:?}: {response}"
+            );
+            expect_account_refusal(
+                &state,
+                origin,
+                &sibling_identity,
+                HelloIntent::PeerSession,
+                None,
+                code,
+            )
+            .await;
+        }
+        live.sibling.ended().await;
+    }
+    switch_account(&state, Some(OWNER_ACCOUNT));
+    let mut restored = SealedSibling::establish(
+        &state,
+        StreamOrigin::Lan,
+        &sibling_identity,
+        "desktop-sibling",
+        HelloIntent::PeerSession,
+        None,
+    )
+    .await
+    .unwrap();
+    restored.auth().await;
+    let response = restored
+        .request(1, "GET", "/v1/tasks/recent", serde_json::Value::Null)
+        .await;
+    assert_eq!(response["status"], 200, "{response}");
+}
+
+/// Machines never pair across accounts. A pairing claim the owner's account
+/// does not confirm - the claimant is not listed, is listed under another
+/// key, or this desktop is signed out - is refused before the offer is
+/// touched, so the string still works once both are in one account.
+#[tokio::test]
+async fn a_pairing_claim_the_account_does_not_confirm_pins_nothing_and_spends_nothing() {
+    let issuer = state("cross-account-claim");
+    let claimant = Keypair::generate().unwrap();
+    let impostor_key = Keypair::generate().unwrap().encoded_public_key();
+    // The relay lists the claimant's id under a different key.
+    let _relay = serve_relay_presence(
+        &issuer,
+        vec![("desktop-claimant".to_string(), Some(impostor_key))],
+    );
+    let offer = super::peers::create_pairing_offer(DesktopLocalAccess, State(Arc::clone(&issuer)))
+        .await
+        .unwrap()
+        .0;
+    let parsed = crate::peer_pairing::parse_pairing_string(&offer.pairing_string).unwrap();
+    let claim = |desktop_id: &str| {
+        serde_json::json!({
+            "code": parsed.code, "secret": parsed.secret, "desktopId": desktop_id,
+            "desktopName": "Claimant Mac", "environment": "development"
+        })
+    };
+    for (id, signed_in, desktop_id) in [
+        (1, true, "desktop-claimant"),
+        (2, true, "desktop-unlisted"),
+        (3, false, "desktop-claimant"),
+    ] {
+        switch_account(&issuer, signed_in.then_some(OWNER_ACCOUNT));
+        let mut sibling = SealedSibling::establish(
+            &issuer,
+            StreamOrigin::Lan,
+            &claimant,
+            desktop_id,
+            HelloIntent::PeerPairing,
+            None,
+        )
+        .await
+        .unwrap();
+        sibling.auth().await;
+        let response = sibling
+            .request(id, "POST", "/v1/peers/pairing/claim", claim(desktop_id))
+            .await;
+        assert_eq!(response["status"], 403, "{desktop_id}: {response}");
+        assert!(
+            response["body"]["error"]
+                .as_str()
+                .or(response["body"].as_str())
+                .is_some_and(|error| error.starts_with("peer_pairing_account_unconfirmed")),
+            "{response}"
+        );
+        sibling.sibling.ended().await;
+    }
+    assert!(issuer.peer_trust_store().unwrap().peers.is_empty());
+    assert!(
+        issuer.peer_pairing_offer.lock().await.is_some(),
+        "an account refusal spends no offer"
+    );
+}
+
+/// Forged source on a sealed session: authority comes from the key the
+/// handshake authenticated, never from the desktop id a hello declares. A
+/// legacy pin that names a proven sibling's id is refused at the handshake,
+/// and an unpinned key naming it gets pairing-only authority - neither
+/// borrows the proven sibling's standing.
+#[tokio::test]
+async fn a_hello_naming_a_proven_sibling_does_not_borrow_its_standing() {
+    let state = state("forged-source");
+    let proven = Keypair::generate().unwrap();
+    pin_peer(&state, "desktop-sibling", &proven);
+    let legacy = Keypair::generate().unwrap();
+    pin_legacy_peer(&state, "desktop-legacy", &legacy, Some(OWNER_ACCOUNT));
+    let stranger = Keypair::generate().unwrap();
+
+    for origin in [StreamOrigin::Lan, StreamOrigin::RelayTunnel] {
+        let refused = SealedSibling::establish(
+            &state,
+            origin,
+            &legacy,
+            "desktop-sibling",
+            HelloIntent::PeerSession,
+            None,
+        )
+        .await;
+        let reply = match refused {
+            Ok(_) => panic!("{origin:?}: a pin cannot claim another sibling's id"),
+            Err(reply) => reply,
+        };
+        assert!(reply.contains("secure_channel_refused"), "{reply}");
+
+        let mut impostor = SealedSibling::establish(
+            &state,
+            origin,
+            &stranger,
+            "desktop-sibling",
+            HelloIntent::PeerSession,
+            None,
+        )
+        .await
+        .unwrap();
+        impostor.auth().await;
+        let response = impostor
+            .request(1, "GET", "/v1/tasks/recent", serde_json::Value::Null)
+            .await;
+        assert_eq!(response["status"], 401, "{origin:?}: {response}");
+        impostor.sibling.ended().await;
+    }
 }

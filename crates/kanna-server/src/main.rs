@@ -1,3 +1,4 @@
+mod account_boundary;
 mod agent_inventory;
 mod artifacts;
 mod bonjour;

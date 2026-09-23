@@ -1864,6 +1864,9 @@ pub(crate) async fn dispatch_relay_http_invoke(
         let dispatched = tokio::task::spawn_blocking(move || {
             handle.block_on(async move {
                 match authenticated_user_id {
+                    // The account this connection authenticated as; the
+                    // dispatcher refuses it unless it is still the account
+                    // this desktop is signed in to.
                     Some(actor) => {
                         http_api::dispatch_authenticated_relay_http_invoke(
                             http_state,
@@ -1875,11 +1878,17 @@ pub(crate) async fn dispatch_relay_http_invoke(
                         )
                         .await
                     }
+                    // A connection that authenticated no account attests
+                    // nothing, so it carries no task control.
                     None => {
-                        http_api::dispatch_authenticated_http_invoke(
-                            http_state, &method, &path, body,
-                        )
-                        .await
+                        let refusal =
+                            crate::account_boundary::AccountBoundaryRefusal::RelayAccountUnattested;
+                        log::warn!("Refusing relay HTTP invoke {method}: {refusal}");
+                        http_api::HttpInvokeResponse {
+                            status: refusal.status().as_u16(),
+                            body: Some(serde_json::Value::String(refusal.to_string())),
+                            error: Some(refusal.to_string()),
+                        }
                     }
                 }
             })

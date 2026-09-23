@@ -8864,6 +8864,9 @@ async fn settings_mutation_refuses_every_remote_caller_and_admits_loopback() {
             .unwrap();
         db.set_test_setting("ideCommand", "code").unwrap();
     });
+    // Signed in to the relay-attested caller's account, so that caller is
+    // refused by the route's own authority rather than the account boundary.
+    state.set_authenticated_account_uid(Some("account-uid".to_string()));
     let pairing_path = PathBuf::from(&state.config().pairing_store_path);
     let mut store = crate::pairing::PairingStore::default();
     store.add_trusted_device(

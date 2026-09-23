@@ -362,7 +362,9 @@ async fn invoke_peer(
 ///
 /// - a **pinned** sibling is reached over its sealed peer session, dialed at
 ///   exactly this discovered candidate with no machine-trust grant involved
-///   (`peer_channel::dial_peer`);
+///   (`peer_channel::dial_peer`) - but only a pin that places the sibling in
+///   this desktop's current account, because `dial_peer` refuses any other
+///   (`crate::account_boundary`), and signing out therefore empties this half;
 /// - an **unpinned** one has only the legacy plaintext route, which
 ///   `invoke_desktop` attempts solely while `legacy_peer_access_allowed`,
 ///   and only with a currently-usable outbound grant under the exact binding
@@ -399,13 +401,17 @@ pub(crate) fn eligible_lan_desktop_ids(state: &Arc<AppState>) -> Vec<String> {
         crate::peer_trust::PeerTrustStore::default()
     });
     let environment = state.config().environment.clone();
+    let current_account_uid = state.authenticated_account_uid();
     let legacy = legacy_lan_grants(state);
     candidates
         .into_iter()
         .filter(|desktop_id| {
             pinned
                 .peer_by_desktop_id(desktop_id, &environment)
-                .is_some()
+                .is_some_and(|peer| {
+                    crate::account_boundary::peer_standing(peer, current_account_uid.as_deref())
+                        .is_ok()
+                })
                 || legacy
                     .as_ref()
                     .is_some_and(|legacy| legacy.covers(desktop_id))
@@ -1905,8 +1911,9 @@ mod tests {
         );
     }
 
-    /// Pins `desktop_id` as a paired sibling of `state`, which is the one
-    /// fact that makes a discovered LAN candidate routable.
+    /// Pins `desktop_id` as a paired sibling of `state` in account `uid-1`,
+    /// which - while `state` is signed in to that account - is the one fact
+    /// that makes a discovered LAN candidate routable.
     fn pin_lan_peer(state: &Arc<AppState>, desktop_id: &str) {
         let path = state.config().peer_trust_store_path().unwrap();
         let mut store = crate::peer_trust::PeerTrustStore::load(&path).unwrap();
@@ -1920,8 +1927,9 @@ mod tests {
                 transfer_peer_id: None,
                 transfer_public_key: None,
                 environment: state.config().environment.clone(),
-                account_uid: None,
+                account_uid: Some("uid-1".to_string()),
                 provenance: crate::peer_trust::PeerProvenance::Verified,
+                account_verified_at_unix_ms: Some(1),
                 identity_mismatch_at_unix_ms: None,
                 paired_at_unix_ms: 1,
                 last_seen_unix_ms: None,
@@ -2403,11 +2411,13 @@ mod tests {
         );
     }
 
-    /// A pin made while signed out is still a pin, and a sealed session needs
-    /// no account credential to dial one over the LAN - so signing out must
-    /// not empty this list the way the account-bound grant lookup did.
+    /// Sibling authority exists only within one account, so a signed-out
+    /// desktop has no sibling to dial: `dial_peer` refuses every pin, and the
+    /// enumeration must not claim otherwise. Signing back in to the pin's
+    /// account restores it; a pin whose record never proved the sibling's
+    /// account is never enumerated.
     #[test]
-    fn eligible_lan_desktop_ids_keeps_a_pinned_peer_while_signed_out() {
+    fn eligible_lan_desktop_ids_names_only_pins_in_the_current_account() {
         let config = lan_e2e_test_config("desktop-eligible-signed-out");
         let state = Arc::new(AppState::new(config));
         // Deliberately never calling set_authenticated_account_uid.
@@ -2417,11 +2427,26 @@ mod tests {
             "127.0.0.1:2".parse().unwrap(),
         );
         pin_lan_peer(&state, "desktop-pinned");
+        assert!(eligible_lan_desktop_ids(&state).is_empty());
 
+        state.set_authenticated_account_uid(Some("uid-1".to_string()));
         assert_eq!(
             eligible_lan_desktop_ids(&state),
             vec!["desktop-pinned".to_string()]
         );
+        state.set_authenticated_account_uid(Some("uid-2".to_string()));
+        assert!(eligible_lan_desktop_ids(&state).is_empty());
+
+        // A legacy record: pinned while signed in, but with nothing proving
+        // the sibling's account.
+        state.set_authenticated_account_uid(Some("uid-1".to_string()));
+        let path = state.config().peer_trust_store_path().unwrap();
+        let mut store = crate::peer_trust::PeerTrustStore::load(&path).unwrap();
+        for peer in &mut store.peers {
+            peer.account_verified_at_unix_ms = None;
+        }
+        store.save(&path).unwrap();
+        assert!(eligible_lan_desktop_ids(&state).is_empty());
     }
 
     /// Every list/wait/stats/signal fan-out consumer (`task_events`,
