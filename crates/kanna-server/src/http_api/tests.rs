@@ -322,10 +322,12 @@ mod relay_dispatch;
 mod repo_commands;
 mod repo_definitions;
 mod revision_status;
+mod roleless_stage;
 mod task_events;
 mod transfer_history_checkpoint;
 mod transfer_preparation_gate;
 mod transfers;
+mod transition_commit;
 mod workflow_switch;
 
 mod attention;

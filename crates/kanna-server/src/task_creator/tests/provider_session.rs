@@ -209,6 +209,7 @@ async fn killed_codex_transition_exit_lands_on_the_implementation_run_and_the_re
     let prepared = match prepare_advance_stage_for_api(&db, &config, TASK_ID).unwrap() {
         PreparedStageTransition::Run(run) => run,
         PreparedStageTransition::Post(_) => panic!("the commit post already ran for this stage"),
+        PreparedStageTransition::Gate(_) => panic!("unexpected gate entry"),
         PreparedStageTransition::Close { .. } => panic!("expected the review stage, not a close"),
     };
     assert_eq!(prepared.next_stage, "review");

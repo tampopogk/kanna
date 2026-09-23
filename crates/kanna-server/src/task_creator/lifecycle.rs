@@ -2,8 +2,9 @@ use super::environment::{
     resolve_headless_agent_executable, run_workspace_setup_commands_captured,
 };
 use super::types::{
-    CreatedTask, PreparedPostDispatch, PreparedRunWorkspace, PreparedSessionSpawn,
-    PreparedStageRerun, PreparedStageRunSpawn, PreparedTaskSpawn, PreparedWorkspaceTeardown,
+    CreatedTask, PreparedGateEntry, PreparedPostDispatch, PreparedRunWorkspace,
+    PreparedSessionSpawn, PreparedStageRerun, PreparedStageRunSpawn, PreparedTaskSpawn,
+    PreparedWorkspaceTeardown,
 };
 use super::worktree::remove_prepared_worktree;
 use crate::daemon_client::{DaemonClient, SpawnDeliveryError, SpawnSubmission};
@@ -703,6 +704,14 @@ fn record_stage_transition_run(
         if let Some(reason) = prepared.resume_fallback_reason.as_deref() {
             db.set_stage_run_resume_fallback_reason(run_id, reason)?;
         }
+        if let Some(commit) = prepared.transition_commit.as_ref() {
+            db.insert_transition_commit(
+                run_id,
+                &prepared.task_id,
+                &commit.stage,
+                commit.exit.as_ref(),
+            )?;
+        }
         super::session::record_session_start(
             db,
             run_id,
@@ -723,6 +732,306 @@ fn record_stage_transition_run(
         Ok(())
     })
     .map_err(|e| format!("db error: {e}"))
+}
+
+/// What a restart does with a stage entry whose setup had started: the
+/// setup's commands may have acted on the world (mailed a reviewer, opened a
+/// window), and nothing proves whether they finished.
+const GATE_SETUP_AMBIGUOUS: &str = "the server stopped while this stage's setup was running, \
+     so whether its commands ran to the end is unknown; they were not run again. The task is \
+     parked here for a person to check and advance.";
+
+fn gate_rollback(prepared: &PreparedGateEntry, error: String) -> String {
+    match roll_back_prepared_workspace(&prepared.workspace) {
+        Ok(None) => error,
+        Ok(Some(preserved)) => format!("{error}; {preserved}"),
+        Err(rollback_err) => format!("{error}; fork rollback failed: {rollback_err}"),
+    }
+}
+
+fn persist_gate_operation_intent(
+    db_path: &str,
+    prepared: &PreparedGateEntry,
+    run_id: &str,
+) -> Result<(), String> {
+    let (branch, worktree_path) = match prepared.workspace.moved_to() {
+        Some(workspace) => (
+            Some(workspace.branch.clone()),
+            Some(workspace.worktree_path.clone()),
+        ),
+        None => (None, None),
+    };
+    let payload = StageOperationPayload {
+        version: 2,
+        task_id: prepared.task_id.clone(),
+        session_id: prepared.session_id.clone(),
+        run_id: run_id.to_string(),
+        next_stage: prepared.next_stage.clone(),
+        run_stage: prepared.next_stage.clone(),
+        branch,
+        worktree_path,
+        cwd: prepared.cwd.clone(),
+        provider_session_id: None,
+        completion_transition: super::definitions::WorkflowStageTransition::Manual
+            .as_str()
+            .to_string(),
+        trigger: prepared.trigger.as_str().to_string(),
+        entry_channel: prepared.entry_channel.clone(),
+        entry_exit: prepared.entry_exit.clone(),
+        rollback_on_failure: matches!(prepared.workspace, PreparedRunWorkspace::Forked(_)),
+        gate: true,
+    };
+    let payload_json = serde_json::to_string(&payload)
+        .map_err(|error| format!("could not serialize gate operation intent: {error}"))?;
+    let db = Db::open(db_path).map_err(|error| format!("db error: {error}"))?;
+    db.insert_lifecycle_operation_intent(
+        run_id,
+        &prepared.task_id,
+        "stage_spawn",
+        "prepared",
+        &payload_json,
+    )
+    .map_err(|error| format!("db error: {error}"))
+}
+
+/// Record the run a stage with no role parks on, before its setup runs, and
+/// mark the operation `submitted` in the same transaction: from here on the
+/// setup may act on the world, so a restart must not assume it did not.
+fn record_gate_run(
+    db_path: &str,
+    prepared: &PreparedGateEntry,
+    run_id: &str,
+) -> Result<(), String> {
+    let db = Db::open(db_path).map_err(|e| format!("db error: {e}"))?;
+    db.with_immediate_transaction(|db| -> rusqlite::Result<()> {
+        db.insert_stage_run_with_provenance(
+            NewStageRun {
+                id: run_id,
+                task_id: &prepared.task_id,
+                stage: &prepared.next_stage,
+                kind: "main",
+                agent: None,
+                agent_provider: None,
+                model: None,
+                effort: None,
+                status: "running",
+                result: None,
+                feedback: None,
+                session_id: None,
+                provider_session_id: None,
+                cwd: Some(&prepared.cwd),
+                resumed_from_run_id: None,
+            },
+            Some(super::definitions::WorkflowStageTransition::Manual.as_str()),
+            true,
+            Some(prepared.trigger),
+            None,
+            None,
+            Some(&prepared.entry_channel),
+        )?;
+        super::session::record_session_start(
+            db,
+            run_id,
+            &prepared.task_id,
+            &prepared.next_stage,
+            &prepared.cwd,
+            "",
+            None,
+            &prepared.session_identity,
+        )?;
+        if !db.update_lifecycle_operation_phase(run_id, "submitted")? {
+            return Err(rusqlite::Error::QueryReturnedNoRows);
+        }
+        Ok(())
+    })
+    .map_err(|e| format!("db error: {e}"))
+}
+
+/// Land entry into a stage with no role: the task moves to the stage and its
+/// workspace and parks there with no agent session. `reason` is recorded on
+/// the task when the entry is landed without knowing how its setup ended.
+fn land_gate_entry(
+    db_path: &str,
+    payload: &StageOperationPayload,
+    reason: Option<&str>,
+) -> Result<(), String> {
+    let db = &Db::open(db_path).map_err(|e| format!("db error: {e}"))?;
+    let trigger =
+        parse_stage_trigger(&payload.trigger).unwrap_or(crate::db::StageTrigger::Unspecified);
+    db.with_immediate_transaction(|db| -> rusqlite::Result<()> {
+        if db
+            .get_pipeline_item(&payload.task_id)?
+            .is_none_or(|item| item.closed_at.is_some())
+        {
+            return Err(rusqlite::Error::QueryReturnedNoRows);
+        }
+        match (payload.branch.as_deref(), payload.worktree_path.as_deref()) {
+            (Some(branch), Some(worktree_path)) => {
+                db.update_pipeline_item_stage_and_branch_with_exit(
+                    &payload.task_id,
+                    &payload.next_stage,
+                    branch,
+                    trigger,
+                    &payload.entry_channel,
+                    payload.entry_exit.as_ref(),
+                )?;
+                db.upsert_worktree(
+                    &format!("wt-{}", payload.task_id),
+                    &payload.task_id,
+                    worktree_path,
+                    branch,
+                )?;
+            }
+            _ => {
+                return Err(rusqlite::Error::InvalidParameterName(
+                    "a stage with no role is entered through a fresh workspace".into(),
+                ))
+            }
+        }
+        // Parked for a person: nothing is working, and the result is theirs.
+        db.update_pipeline_item_activity(&payload.task_id, "unread")?;
+        db.update_pipeline_item_agent_session_id(&payload.task_id, None)?;
+        if let Some(reason) = reason {
+            db.append_task_event(
+                &payload.task_id,
+                crate::db::TaskEventKind::LifecycleFailed,
+                serde_json::json!({
+                    "operation": "stage_setup",
+                    "stage": payload.next_stage,
+                    "runId": payload.run_id,
+                    "error": reason,
+                }),
+            )?;
+        }
+        db.delete_lifecycle_operation_intent(&payload.run_id)?;
+        Ok(())
+    })
+    .map_err(|error| {
+        if matches!(error, rusqlite::Error::QueryReturnedNoRows) {
+            format!(
+                "task {} closed before stage transition landed",
+                payload.task_id
+            )
+        } else {
+            format!("db error: {error}")
+        }
+    })?;
+    crate::task_store::flush_task_best_effort(db, db_path, &payload.task_id);
+    Ok(())
+}
+
+/// Enter a stage with no role (spec §5): stop the outgoing session, run the
+/// stage's setup in its fresh workspace, and park the task there without an
+/// agent. The operation is durable before anything is stopped; once setup
+/// starts it is `submitted`, and a restart from then on lands the entry and
+/// parks with the setup's outcome reported unknown instead of running it
+/// again — external scripts are never promised to run exactly once.
+pub(crate) async fn enter_prepared_gate_for_api(
+    db_path: &str,
+    daemon: &mut DaemonClient,
+    replacements: &SessionReplacements,
+    prepared: PreparedGateEntry,
+) -> Result<crate::mobile_api::TaskActionResponse, String> {
+    let task_id = prepared.task_id.clone();
+    match release_lifecycle_operation_for_task(daemon, db_path, &task_id).await {
+        Ok(true) => {}
+        Ok(false) => {
+            return Err(gate_rollback(
+                &prepared,
+                format!("task {task_id} already has a lifecycle operation awaiting reconciliation"),
+            ))
+        }
+        Err(error) => return Err(gate_rollback(&prepared, error)),
+    }
+    let run_id = generate_stage_run_id(&task_id);
+    if let Err(error) = persist_gate_operation_intent(db_path, &prepared, &run_id) {
+        return Err(gate_rollback(&prepared, error));
+    }
+    let abort = |error: String| {
+        if let Err(abort_error) = abort_lifecycle_operation(db_path, &run_id) {
+            log::warn!("failed to clear rejected gate operation {run_id}: {abort_error}");
+        }
+        gate_rollback(&prepared, error)
+    };
+
+    // The departing stage's session stops before anything of the next stage
+    // starts, exactly as a stage spawn replaces it.
+    let outgoing_run_id = {
+        let db = Db::open(db_path).map_err(|e| abort(format!("db error: {e}")))?;
+        let outgoing = db
+            .latest_main_stage_run_id_for_session(&task_id, &prepared.session_id)
+            .map_err(|e| abort(format!("db error: {e}")))?;
+        db.finish_latest_running_stage_run(&task_id, "succeeded", None, None)
+            .map_err(|e| abort(format!("db error: {e}")))?;
+        outgoing
+    };
+    if let Err(error) = kill_session_replacing_for_run(
+        daemon,
+        replacements,
+        &prepared.session_id,
+        outgoing_run_id.as_deref(),
+    )
+    .await
+    {
+        return Err(abort(error));
+    }
+    if let Err(error) =
+        kill_session_replacing(daemon, replacements, &format!("shell-wt-{task_id}")).await
+    {
+        return Err(abort(error));
+    }
+    if let Some(teardown) = prepared.workspace_teardown.as_ref() {
+        if let Err(error) = kill_session_replacing(daemon, replacements, &teardown.session_id).await
+        {
+            log::warn!(
+                "failed to replace workspace teardown session {}: {error}",
+                teardown.session_id
+            );
+        }
+    }
+
+    if let Err(error) = record_gate_run(db_path, &prepared, &run_id) {
+        return Err(abort(error));
+    }
+    let setup =
+        run_workspace_setup_commands_captured(&prepared.setup, &prepared.cwd, &prepared.env);
+    let failure = match setup {
+        Ok(Some(result)) => {
+            record_workspace_setup_for_run(db_path, &run_id, Some(&result.record));
+            result.failure
+        }
+        Ok(None) => None,
+        Err(error) => Some(error),
+    };
+    if let Some(error) = failure {
+        // Setup ran and reported failure: a known outcome, not an ambiguous
+        // one. The task stays where it was with the failure visible, as a
+        // stage whose agent could not start would.
+        let error = format!("setup of stage '{}' failed: {error}", prepared.next_stage);
+        fail_bound_stage_run(db_path, &task_id, &run_id, &error);
+        return Err(abort(error));
+    }
+    let payload = parse_gate_payload(db_path, &run_id)?;
+    land_gate_entry(db_path, &payload, None)?;
+    spawn_prepared_workspace_teardown_best_effort(daemon, prepared.workspace_teardown).await;
+    Ok(crate::mobile_api::TaskActionResponse {
+        task_id,
+        follow_task: None,
+        revision_budget: None,
+        workflow_extended: None,
+        routing: None,
+    })
+}
+
+fn parse_gate_payload(db_path: &str, run_id: &str) -> Result<StageOperationPayload, String> {
+    let db = Db::open(db_path).map_err(|e| format!("db error: {e}"))?;
+    let intent = db
+        .list_lifecycle_operation_intents()
+        .map_err(|e| format!("db error: {e}"))?
+        .into_iter()
+        .find(|intent| intent.id == run_id)
+        .ok_or_else(|| format!("gate operation {run_id} disappeared before it landed"))?;
+    parse_operation_payload(&intent)
 }
 
 fn fail_bound_stage_run(db_path: &str, task_id: &str, run_id: &str, error: &str) {
@@ -1307,6 +1616,11 @@ struct PostOperationPayload {
     effort: Option<String>,
     provider_session_id: Option<String>,
     cwd: Option<String>,
+    /// Set when this post is a stage's commit step: recorded with the run
+    /// when the delivery is committed, on this boot or on restart
+    /// reconciliation of an uncertain acknowledgement.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    commit: Option<super::types::TransitionCommitRequest>,
 }
 
 /// Everything reconciliation needs to finish, or refuse, one stage spawn.
@@ -1344,6 +1658,10 @@ struct StageOperationPayload {
     /// defaulting to false preserves resumed workspaces during upgrade.
     #[serde(default)]
     rollback_on_failure: bool,
+    /// Entry into a stage with no role: nothing is spawned, and a submitted
+    /// operation means its setup started (see `enter_prepared_gate_for_api`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    gate: bool,
 }
 
 fn persist_stage_operation_intent(
@@ -1379,6 +1697,7 @@ fn persist_stage_operation_intent(
         entry_channel: prepared.entry_channel.clone(),
         entry_exit: prepared.entry_exit.clone(),
         rollback_on_failure,
+        gate: false,
     };
     let payload_json = serde_json::to_string(&payload)
         .map_err(|error| format!("could not serialize stage operation intent: {error}"))?;
@@ -1442,6 +1761,7 @@ fn persist_post_operation_intent(
         effort,
         provider_session_id,
         cwd,
+        commit: prepared.commit.clone(),
     };
     let payload_json = serde_json::to_string(&payload)
         .map_err(|error| format!("could not serialize post operation intent: {error}"))?;
@@ -1523,6 +1843,14 @@ fn finalize_post_operation(
                 None,
                 None,
                 Some(&payload.entry_channel),
+            )?;
+        }
+        if let Some(commit) = payload.commit.as_ref() {
+            db.insert_transition_commit(
+                &payload.run_id,
+                &payload.task_id,
+                &commit.stage,
+                commit.exit.as_ref(),
             )?;
         }
         if !db.update_lifecycle_operation_phase(intent_id, "committed")? {
@@ -1698,6 +2026,10 @@ fn reconcile_lifecycle_operation(
                     );
                     return;
                 }
+                if payload.gate {
+                    reconcile_gate_operation(db_path, intent, &payload);
+                    return;
+                }
                 let Some(sessions) = sessions else {
                     // An unavailable daemon does not prove that the child
                     // is absent. Leave the intent durable for the next
@@ -1819,6 +2151,46 @@ fn reconcile_lifecycle_operation(
             intent,
             &format!("unknown lifecycle operation kind {kind}"),
         ),
+    }
+}
+
+/// Restart reconciliation of entry into a stage with no role. Before setup
+/// started (`prepared`) nothing external happened: the entry is failed and
+/// its fresh fork removed. Once setup started (`submitted`) its effects are
+/// unknown: the entry lands and the task parks with that reported, and the
+/// setup is never run a second time.
+fn reconcile_gate_operation(
+    db_path: &str,
+    intent: &crate::db::LifecycleOperationIntent,
+    payload: &StageOperationPayload,
+) {
+    let db = match Db::open(db_path) {
+        Ok(db) => db,
+        Err(error) => {
+            log::error!(
+                "failed to open database for gate operation {}: {error}",
+                intent.id
+            );
+            return;
+        }
+    };
+    let result = if intent.phase == "submitted" {
+        land_gate_entry(db_path, payload, Some(GATE_SETUP_AMBIGUOUS)).or_else(|error| {
+            // A task closed meanwhile has nowhere to park; keep the
+            // workspace, whose setup may have written to it.
+            log::warn!("gate operation {} could not land: {error}", intent.id);
+            fail_lifecycle_operation(&db, intent, payload, FailedStageWorkspace::Keep)
+        })
+    } else {
+        fail_lifecycle_operation(
+            &db,
+            intent,
+            payload,
+            FailedStageWorkspace::RollBackFreshFork,
+        )
+    };
+    if let Err(error) = result {
+        log::error!("failed to reconcile gate operation {}: {error}", intent.id);
     }
 }
 
@@ -4065,6 +4437,7 @@ mod lifecycle_operation_tests {
             entry_channel: Default::default(),
             entry_exit: None,
             rollback_on_failure,
+            gate: false,
         }
     }
 
@@ -4164,6 +4537,7 @@ mod lifecycle_operation_tests {
             effort: None,
             provider_session_id: None,
             cwd: Some("/work/current".to_string()),
+            commit: None,
         };
         db.insert_lifecycle_operation_intent(
             "run-post",
@@ -4286,6 +4660,7 @@ mod lifecycle_operation_tests {
             trigger: "operator".to_string(),
             entry_channel: Default::default(),
             entry_exit: None,
+            gate: false,
             rollback_on_failure: false,
         };
         db.insert_lifecycle_operation_intent(
@@ -4723,6 +5098,7 @@ mod lifecycle_operation_tests {
             effort: None,
             provider_session_id: None,
             cwd: Some("/work/current".to_string()),
+            commit: None,
         };
         db.insert_lifecycle_operation_intent(
             "run-post",
@@ -4876,6 +5252,7 @@ mod lifecycle_operation_tests {
             effort: None,
             provider_session_id: None,
             cwd: Some("/work/current".to_string()),
+            commit: None,
         };
         db.insert_lifecycle_operation_intent(
             "run-post",

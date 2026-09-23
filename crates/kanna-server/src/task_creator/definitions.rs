@@ -323,6 +323,12 @@ impl WorkflowDefinition {
         self.revision_limit.unwrap_or(DEFAULT_REVISION_LIMIT)
     }
 
+    /// True when `stage` has no role under named-exit routing (spec §5). A
+    /// legacy stage without `agent` runs the default agent, as it always has.
+    pub(crate) fn is_roleless_stage(&self, stage: &WorkflowStage) -> bool {
+        self.routes_by_exits() && stage.is_roleless()
+    }
+
     /// True when results route by named exits rather than the legacy
     /// revision adapter.
     pub(crate) fn routes_by_exits(&self) -> bool {
@@ -409,6 +415,87 @@ pub(super) struct WorkflowStage {
     pub(super) policy: WorkflowStagePolicy,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) post: Option<WorkflowPost>,
+    /// Routing `exits` only: this stage's forward transition starts with the
+    /// commit step (spec §5) — the live session is told to commit and record
+    /// its result, or a short commit session runs in the same workspace when
+    /// it is dead — and the transition fires on that result.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub(super) exit_commit: bool,
+    /// Routing `exits` only: commands run in the stage's workspace when the
+    /// stage is entered, after the environment's setup.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) setup: Option<Vec<String>>,
+    /// Routing `exits` only: commands run in the stage's workspace when the
+    /// task leaves it, after the environment's teardown.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) teardown: Option<Vec<String>>,
+}
+
+/// Name, agent and prompt of the commit step a stage's `exit_commit` adds to
+/// its forward transition. The name is the run-history label of its run,
+/// unique per stage so recovery resolves the run back to its own stage. It runs through the post delivery machinery (live
+/// session first, a fresh commit session in the same workspace when the
+/// session is dead), but it is a phase of the transition, not a declared post.
+pub(super) fn commit_step_name(stage: &str) -> String {
+    format!("{stage} commit")
+}
+pub(super) const COMMIT_STEP_AGENT: &str = "commit";
+pub(super) const COMMIT_STEP_PROMPT: &str = "The task is leaving this stage. Commit the work \
+     that belongs to this task in this workspace now (leave unrelated local changes alone), then \
+     record your result again: its message is what the next stage receives, so carry forward \
+     what that stage must know about this stage's work and say what you committed. Record \
+     `failure` if task work remains that you cannot safely commit; the task then stays here.";
+
+impl WorkflowStage {
+    /// Names no agent. Only a named-exit workflow reads that as a stage with
+    /// no role; see [`WorkflowDefinition::is_roleless_stage`].
+    fn is_roleless(&self) -> bool {
+        self.agent.is_none()
+    }
+
+    /// The work a forward transition out of this stage runs in the stage's
+    /// session before it fires: the declared post, or the commit step that
+    /// `exit_commit` asks for. A workflow cannot declare both.
+    pub(super) fn transition_post(&self) -> Option<std::borrow::Cow<'_, WorkflowPost>> {
+        if let Some(post) = self.post.as_ref() {
+            return Some(std::borrow::Cow::Borrowed(post));
+        }
+        self.exit_commit.then(|| {
+            std::borrow::Cow::Owned(WorkflowPost {
+                name: commit_step_name(&self.name),
+                description: Some("Commit step of this stage's transition".to_string()),
+                agent: Some(COMMIT_STEP_AGENT.to_string()),
+                prompt: Some(COMMIT_STEP_PROMPT.to_string()),
+                agent_provider: None,
+            })
+        })
+    }
+
+    /// Setup commands entering this stage runs: its environment's, then its
+    /// own.
+    pub(super) fn setup_commands(&self, workflow: &WorkflowDefinition) -> Vec<String> {
+        let mut commands = self
+            .environment
+            .as_deref()
+            .and_then(|name| workflow.environments.as_ref()?.get(name))
+            .and_then(|environment| environment.setup.clone())
+            .unwrap_or_default();
+        commands.extend(self.setup.iter().flatten().cloned());
+        commands
+    }
+
+    /// Teardown commands leaving this stage runs: its environment's, then its
+    /// own.
+    pub(super) fn teardown_commands(&self, workflow: &WorkflowDefinition) -> Vec<String> {
+        let mut commands = self
+            .environment
+            .as_deref()
+            .and_then(|name| workflow.environments.as_ref()?.get(name))
+            .and_then(|environment| environment.teardown.clone())
+            .unwrap_or_default();
+        commands.extend(self.teardown.iter().flatten().cloned());
+        commands
+    }
 }
 
 /// Tail work of a stage, injected into the stage's running agent session when
@@ -499,8 +586,7 @@ pub(super) fn resolve_stage_position(
         .iter()
         .position(|stage| {
             stage
-                .post
-                .as_ref()
+                .transition_post()
                 .is_some_and(|post| post.name == stage_name)
         })
         .map(|owner| StagePosition::Post { owner })
@@ -511,7 +597,7 @@ pub(super) fn resolve_stage_position(
 /// tasks parked at a folded post name. Post success always advances, so the
 /// synthetic policy is `auto`.
 pub(super) fn post_as_stage(owner: &WorkflowStage) -> Option<WorkflowStage> {
-    owner.post.as_ref().map(|post| WorkflowStage {
+    owner.transition_post().map(|post| WorkflowStage {
         name: post.name.clone(),
         description: post.description.clone(),
         agent: post.agent.clone(),
@@ -526,6 +612,9 @@ pub(super) fn post_as_stage(owner: &WorkflowStage) -> Option<WorkflowStage> {
             loop_transition: None,
         },
         post: None,
+        exit_commit: false,
+        setup: None,
+        teardown: None,
     })
 }
 
@@ -561,6 +650,10 @@ struct RawWorkflowStage {
     mode: Option<RawWorkflowStageExecution>,
     post: Option<RawWorkflowPost>,
     post_action: Option<RawWorkflowPostAction>,
+    #[serde(default)]
+    exit_commit: bool,
+    setup: Option<Vec<String>>,
+    teardown: Option<Vec<String>>,
 }
 
 #[derive(Deserialize)]
@@ -1486,9 +1579,9 @@ pub(super) fn parse_workflow_definition(content: &str) -> Result<WorkflowDefinit
     let workflow = normalize_workflow_definition(raw)
         .map_err(|error| format!("invalid workflow definition: {error}"))?;
     // A legacy definition keeps its historical tolerance of fields this build
-    // ignores. A named-exit definition opts into a contract whose remaining
-    // execution fields (exit_commit, per-stage setup/teardown) this build does
-    // not run yet, so an unknown field there is refused, not dropped.
+    // ignores. A named-exit definition opts into a contract whose fields this
+    // build either runs or refuses, so an unknown field there is refused, not
+    // dropped.
     if workflow.routes_by_exits() {
         let unknown = super::workflow_edit::unknown_workflow_fields(content);
         if !unknown.is_empty() {
@@ -2281,6 +2374,9 @@ fn normalize_workflow_definition(raw: RawWorkflowDefinition) -> Result<WorkflowD
             mode,
             post,
             post_action,
+            exit_commit,
+            setup,
+            teardown,
         } = stage;
 
         let (transition, revision_transition, loop_transition, continues) = match policy {
@@ -2350,6 +2446,9 @@ fn normalize_workflow_definition(raw: RawWorkflowDefinition) -> Result<WorkflowD
                 loop_transition,
             },
             post,
+            exit_commit,
+            setup,
+            teardown,
         });
     }
 
@@ -2391,11 +2490,23 @@ fn validate_workflow_routing(workflow: &WorkflowDefinition) -> Result<(), String
                 || stage.budget.is_some()
                 || stage.policy.loop_transition.is_some()
         });
+    let uses_transition_fields = workflow
+        .stages
+        .iter()
+        .any(|stage| stage.exit_commit || stage.setup.is_some() || stage.teardown.is_some());
     if !workflow.routes_by_exits() {
         if uses_exit_fields {
             return Err(
                 "exits, budget and loop_transition belong to named-exit routing; declare \
                  \"routing\": \"exits\" to use them"
+                    .into(),
+            );
+        }
+        if uses_transition_fields {
+            return Err(
+                "exit_commit and stage setup/teardown belong to named-exit routing; declare \
+                 \"routing\": \"exits\" to use them (a legacy workflow commits through a \
+                 post and runs scripts through its environments)"
                     .into(),
             );
         }
@@ -2432,20 +2543,68 @@ fn validate_workflow_routing(workflow: &WorkflowDefinition) -> Result<(), String
                 stage.name
             ));
         }
-        // A stage with no role enters, runs setup and parks (spec §5). This
-        // engine would spawn a default agent there instead, so such a stage
-        // is refused until roleless gates exist rather than run as something
-        // it does not say.
         if stage
             .agent
             .as_deref()
-            .is_none_or(|agent| agent.trim().is_empty())
+            .is_some_and(|agent| agent.trim().is_empty())
         {
             return Err(format!(
-                "stage '{}': routing \"exits\" requires every stage to name its agent; \
-                 stages without a role are not supported yet",
+                "stage '{}': agent must name a role; omit it for a stage without a role",
                 stage.name
             ));
+        }
+        if stage.exit_commit && stage.post.is_some() {
+            return Err(format!(
+                "stage '{}': exit_commit is the commit step of this stage's transition and \
+                 cannot be combined with a post",
+                stage.name
+            ));
+        }
+        for (field, commands) in [("setup", &stage.setup), ("teardown", &stage.teardown)] {
+            if commands
+                .iter()
+                .flatten()
+                .any(|command| command.trim().is_empty())
+            {
+                return Err(format!(
+                    "stage '{}': {field} commands must not be empty",
+                    stage.name
+                ));
+            }
+        }
+        // A stage with no role enters, runs setup and parks until a person or
+        // manager advances it (spec §5). The shapes that would need a session
+        // to decide something, or a way in this build does not run, are
+        // refused rather than run as something the definition does not say.
+        if stage.is_roleless() {
+            let refuse =
+                |reason: &str| Err(format!("stage '{}' has no role, so {reason}", stage.name));
+            if index == 0 {
+                return refuse(
+                    "it cannot be the first stage yet: task creation starts the first \
+                     stage's agent",
+                );
+            }
+            if stage.policy.transition != WorkflowStageTransition::Manual
+                || stage
+                    .policy
+                    .loop_transition
+                    .is_some_and(|transition| transition != WorkflowStageTransition::Manual)
+            {
+                return refuse(
+                    "it parks until a person or manager advances it; its transition must be \
+                     manual",
+                );
+            }
+            if stage.exits.is_some() {
+                return refuse("no session can name an exit; it declares none");
+            }
+            if stage.exit_commit || stage.post.is_some() {
+                return refuse("no session can run a commit step or post on its way out");
+            }
+            if stage.prompt.is_some() || stage.agent_provider.is_some() {
+                return refuse("it runs no agent; prompt and agent_provider do not apply");
+            }
         }
         for (exit, destination) in stage.exits.iter().flatten() {
             let valid_name = exit
@@ -2478,6 +2637,15 @@ fn validate_workflow_routing(workflow: &WorkflowDefinition) -> Result<(), String
                 .iter()
                 .position(|candidate| &candidate.name == destination)
             {
+                // A loop re-enters its destination with a new session; a
+                // stage without a role has none to re-enter in this build.
+                Some(target) if workflow.stages[target].is_roleless() => {
+                    return Err(format!(
+                        "stage '{}': exit '{exit}' leads to '{destination}', a stage without a \
+                         role; loops into such a stage are not supported yet",
+                        stage.name
+                    ))
+                }
                 Some(_) => {}
                 None => {
                     return Err(format!(
