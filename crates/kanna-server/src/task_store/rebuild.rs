@@ -95,7 +95,17 @@ pub const NOT_REBUILT: &[NotRebuilt] = &[
     },
     NotRebuilt {
         fact: "task.worktree",
-        reason: "workspace records (path, branch, setup state) are T2's; not in the ledger yet",
+        reason: "the task's worktree row (path, branch, setup state) is not in the ledger",
+        compared: true,
+    },
+    NotRebuilt {
+        fact: "task.stage_workspace",
+        reason: "T2's stage_workspace rows (directory path per stage) are not in the ledger; session_ref names only the workspace id",
+        compared: true,
+    },
+    NotRebuilt {
+        fact: "task.branch_counter",
+        reason: "T2's task_branch_counter is not in the ledger; T2 re-seeds it above repository refs and every branch the task's records name, so only numbers spent by attempts that left no branch, directory or record can be reissued",
         compared: true,
     },
     NotRebuilt {
@@ -105,7 +115,7 @@ pub const NOT_REBUILT: &[NotRebuilt] = &[
     },
     NotRebuilt {
         fact: "run.session",
-        reason: "agent, provider, model, effort, session ids, cwd, resume/replace links, entry trigger and channel: session facts are T2's and not in result entries",
+        reason: "agent, provider, model, effort, provider session id, cwd, resume/replace links, entry trigger and channel, and T2's workspace_report: not in any ledger entry (T2's session_ref restores workspace id, session branch, name and transcript)",
         compared: true,
     },
     NotRebuilt {
@@ -126,6 +136,16 @@ pub const NOT_REBUILT: &[NotRebuilt] = &[
     NotRebuilt {
         fact: "run.feedback",
         reason: "a revision request's findings are only inside the joined ledger message; complete-stage feedback rebuilds exactly",
+        compared: true,
+    },
+    NotRebuilt {
+        fact: "run.result_declared_role",
+        reason: "a backfilled (historical) result records no declared role, by T0's rule that history is never attributed after the fact; live results rebuild exactly",
+        compared: true,
+    },
+    NotRebuilt {
+        fact: "run.result_channel",
+        reason: "a backfilled (historical) result records the channel as unknown, by the same rule; live results rebuild exactly",
         compared: true,
     },
     NotRebuilt {
@@ -323,10 +343,14 @@ fn validate_entry(file: &LedgerFile, task_id: &str) -> Result<(), String> {
     version_of(&file.envelope, name)?;
     let envelope = &file.envelope;
     if envelope.get("sequence").and_then(Value::as_i64) != Some(file.sequence) {
-        return Err(format!("{name}: envelope sequence does not match the file name"));
+        return Err(format!(
+            "{name}: envelope sequence does not match the file name"
+        ));
     }
     if envelope.get("kind").and_then(Value::as_str) != Some(file.kind.as_str()) {
-        return Err(format!("{name}: envelope kind does not match the file name"));
+        return Err(format!(
+            "{name}: envelope kind does not match the file name"
+        ));
     }
     if envelope.get("task_id").and_then(Value::as_str) != Some(task_id) {
         return Err(format!("{name}: envelope belongs to another task"));
@@ -338,10 +362,13 @@ fn validate_entry(file: &LedgerFile, task_id: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// A task directory that could not be read, and why.
+pub type Unreadable = (PathBuf, String);
+
 /// Every task directory under a store root, ordered by repo then task id.
 /// Directories that cannot be read are returned separately rather than
 /// dropped silently.
-pub fn scan_store(root: &Path) -> Result<(Vec<TaskDirectory>, Vec<(PathBuf, String)>), String> {
+pub fn scan_store(root: &Path) -> Result<(Vec<TaskDirectory>, Vec<Unreadable>), String> {
     let sorted_dirs = |dir: &Path| -> Result<Vec<PathBuf>, String> {
         let mut dirs = match std::fs::read_dir(dir) {
             Ok(listing) => listing
@@ -409,6 +436,40 @@ pub struct StageRunRow {
     pub finished_at: String,
     pub result_declared_role: Option<String>,
     pub result_channel_identity: Option<String>,
+    /// T2's session identity, from the envelope's `session_ref`.
+    pub workspace_id: Option<String>,
+    pub session_branch: Option<String>,
+    pub session_name: Option<String>,
+    pub transcript_ref: Option<String>,
+}
+
+/// T2's session identity as `session_ref` carries it beside T0's `{kind,
+/// id}`; `None` for a reference with none of it (T0's shape).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct SessionIdentity {
+    workspace_id: Option<String>,
+    branch: Option<String>,
+    name: Option<String>,
+    transcript_ref: Option<String>,
+}
+
+fn session_identity(envelope: &Value) -> Option<SessionIdentity> {
+    let reference = envelope.get("session_ref").filter(|r| r.is_object())?;
+    let transcript = reference.get("transcript").and_then(|transcript| {
+        Some(crate::db::TranscriptRef {
+            provider: text(transcript, "provider")?,
+            session_id: text(transcript, "session_id")?,
+            path: text(transcript, "path"),
+        })
+    });
+    let identity = SessionIdentity {
+        workspace_id: text(reference, "workspace_id"),
+        branch: text(reference, "branch"),
+        name: text(reference, "name"),
+        // The column's own encoding, as T2's writer stores it.
+        transcript_ref: transcript.and_then(|transcript| serde_json::to_string(&transcript).ok()),
+    };
+    (identity != SessionIdentity::default()).then_some(identity)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -567,6 +628,7 @@ fn project_task(directory: &TaskDirectory, projection: &mut Projection) {
 
     let mut runs: BTreeMap<String, StageRunRow> = BTreeMap::new();
     let mut first_mention: BTreeMap<String, String> = BTreeMap::new();
+    let mut sessions: BTreeMap<String, SessionIdentity> = BTreeMap::new();
     let mut budgets: BTreeMap<String, BudgetRow> = BTreeMap::new();
     let mut referenced_runs: Vec<(String, String)> = Vec::new();
     let mut historical = 0i64;
@@ -580,6 +642,11 @@ fn project_task(directory: &TaskDirectory, projection: &mut Projection) {
             first_mention
                 .entry(run_id.clone())
                 .or_insert_with(|| iso_to_sqlite_time(&at));
+            // Written once when the session starts, so every entry of the run
+            // carries the same identity; the first one that has it is kept.
+            if let Some(identity) = session_identity(envelope) {
+                sessions.entry(run_id.clone()).or_insert(identity);
+            }
         }
         if envelope.get("historical").and_then(Value::as_bool) == Some(true) {
             historical += 1;
@@ -614,6 +681,10 @@ fn project_task(directory: &TaskDirectory, projection: &mut Projection) {
                         finished_at: iso_to_sqlite_time(&at),
                         result_declared_role: text(envelope, "declared_role"),
                         result_channel_identity: json_column(envelope.get("channel_identity")),
+                        workspace_id: None,
+                        session_branch: None,
+                        session_name: None,
+                        transcript_ref: None,
                     },
                 );
                 if let Some(budget) = body.get("budget").filter(|budget| budget.is_object()) {
@@ -703,6 +774,12 @@ fn project_task(directory: &TaskDirectory, projection: &mut Projection) {
     }
     for (run_id, row) in runs.iter_mut() {
         row.started_at = first_mention.get(run_id).cloned().unwrap_or_default();
+        if let Some(identity) = sessions.remove(run_id) {
+            row.workspace_id = identity.workspace_id;
+            row.session_branch = identity.branch;
+            row.session_name = identity.name;
+            row.transcript_ref = identity.transcript_ref;
+        }
     }
     for (run_id, file_name) in referenced_runs {
         if !runs.contains_key(&run_id) {
@@ -764,7 +841,11 @@ pub fn project(directories: &[TaskDirectory]) -> Projection {
         .collect();
     // The schema refuses references to rows that are not rebuilt; they are
     // reported rather than invented.
-    let tasks: BTreeSet<String> = projection.tasks.iter().map(|task| task.id.clone()).collect();
+    let tasks: BTreeSet<String> = projection
+        .tasks
+        .iter()
+        .map(|task| task.id.clone())
+        .collect();
     let runs: BTreeSet<String> = projection
         .stage_runs
         .iter()
@@ -786,7 +867,9 @@ pub fn project(directories: &[TaskDirectory]) -> Projection {
         }
     }
     projection.diagnostics.extend(notes);
-    projection.inputs.sort_by(|a, b| (&a.task_id, a.id).cmp(&(&b.task_id, b.id)));
+    projection
+        .inputs
+        .sort_by(|a, b| (&a.task_id, a.id).cmp(&(&b.task_id, b.id)));
     projection
 }
 
@@ -801,7 +884,7 @@ pub struct RebuildReport {
     pub budgets: usize,
     /// Task directories that could not be read, and why. Their tasks are not
     /// in the rebuilt database.
-    pub unreadable: Vec<(PathBuf, String)>,
+    pub unreadable: Vec<Unreadable>,
     pub diagnostics: Vec<String>,
 }
 
@@ -820,7 +903,8 @@ pub fn rebuild_into_new_database(root: &Path, target: &Path) -> Result<RebuildRe
     let target_path = target
         .to_str()
         .ok_or_else(|| format!("{} is not a UTF-8 path", target.display()))?;
-    let db = crate::db::Db::open_migrated(target_path).map_err(|error| format!("open target: {error}"))?;
+    let db = crate::db::Db::open_migrated(target_path)
+        .map_err(|error| format!("open target: {error}"))?;
     if !db
         .is_empty_for_disk_rebuild()
         .map_err(|error| format!("inspect target: {error}"))?

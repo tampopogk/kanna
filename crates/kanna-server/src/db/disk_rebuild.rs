@@ -87,15 +87,20 @@ impl Db {
                 db.conn.execute(
                     "INSERT INTO stage_run
                         (id, task_id, stage, kind, status, result, feedback, started_at,
-                         finished_at, result_declared_role, result_channel_identity)
-                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                         finished_at, result_declared_role, result_channel_identity,
+                         workspace_id, session_branch, session_name, transcript_ref)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                      ON CONFLICT(id) DO UPDATE SET
                         task_id = excluded.task_id, stage = excluded.stage,
                         kind = excluded.kind, status = excluded.status,
                         result = excluded.result, feedback = excluded.feedback,
                         started_at = excluded.started_at, finished_at = excluded.finished_at,
                         result_declared_role = excluded.result_declared_role,
-                        result_channel_identity = excluded.result_channel_identity",
+                        result_channel_identity = excluded.result_channel_identity,
+                        workspace_id = excluded.workspace_id,
+                        session_branch = excluded.session_branch,
+                        session_name = excluded.session_name,
+                        transcript_ref = excluded.transcript_ref",
                     params![
                         run.id,
                         run.task_id,
@@ -108,6 +113,10 @@ impl Db {
                         run.finished_at,
                         run.result_declared_role,
                         run.result_channel_identity,
+                        run.workspace_id,
+                        run.session_branch,
+                        run.session_name,
+                        run.transcript_ref,
                     ],
                 )?;
             }
@@ -149,7 +158,12 @@ impl Db {
                      VALUES (?, ?, ?, ?)
                      ON CONFLICT(task_id, stage) DO UPDATE SET
                         spent = excluded.spent, updated_at = excluded.updated_at",
-                    params![budget.task_id, budget.stage, budget.spent, budget.updated_at],
+                    params![
+                        budget.task_id,
+                        budget.stage,
+                        budget.spent,
+                        budget.updated_at
+                    ],
                 )?;
             }
             // The outbox, already published: the files are what it describes.
@@ -196,11 +210,7 @@ impl Db {
                      ON CONFLICT(task_id) DO UPDATE SET
                         imported_entries = excluded.imported_entries,
                         completed_at = excluded.completed_at",
-                    params![
-                        marker.task_id,
-                        marker.historical_entries,
-                        marker.marked_at
-                    ],
+                    params![marker.task_id, marker.historical_entries, marker.marked_at],
                 )?;
             }
             Ok(())
@@ -215,7 +225,14 @@ impl Db {
     pub(crate) fn disk_rebuild_dump_for_tests(&self) -> Vec<String> {
         let tables: Vec<String> = self
             .conn
-            .prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name")
+            // Written by the migrations that created the file, stamped with
+            // when they ran (`schema_migrations`, and settings such as when
+            // analytics coverage started); a rebuild writes neither.
+            .prepare(
+                "SELECT name FROM sqlite_master
+                 WHERE type = 'table' AND name NOT IN ('schema_migrations', 'settings')
+                 ORDER BY name",
+            )
             .unwrap()
             .query_map([], |row| row.get(0))
             .unwrap()
@@ -223,7 +240,10 @@ impl Db {
             .unwrap();
         let mut dump = Vec::new();
         for table in tables {
-            let mut statement = self.conn.prepare(&format!("SELECT * FROM \"{table}\"")).unwrap();
+            let mut statement = self
+                .conn
+                .prepare(&format!("SELECT * FROM \"{table}\""))
+                .unwrap();
             let columns = statement.column_count();
             let mut rows: Vec<String> = statement
                 .query_map([], |row| {

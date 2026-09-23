@@ -81,9 +81,12 @@ impl TaskFiles {
         for (key, value) in extra.as_object().cloned().unwrap_or_default() {
             envelope[key] = value;
         }
-        let bytes = render_ledger_entry(&envelope, message.or(kind.has_message_body().then_some("")));
+        let bytes =
+            render_ledger_entry(&envelope, message.or(kind.has_message_body().then_some("")));
         std::fs::write(
-            self.dir.join("ledger").join(ledger_file_name(sequence, kind)),
+            self.dir
+                .join("ledger")
+                .join(ledger_file_name(sequence, kind)),
             bytes,
         )
         .unwrap();
@@ -236,7 +239,10 @@ fn results_project_one_stage_run_each_and_a_correction_wins() {
     let implement = runs[0].1;
     assert_eq!(implement.status, "succeeded");
     assert_eq!(implement.kind, "main");
-    assert_eq!(implement.feedback.as_deref(), Some("Implemented\n\nthe parser"));
+    assert_eq!(
+        implement.feedback.as_deref(),
+        Some("Implemented\n\nthe parser")
+    );
     let result: Value = serde_json::from_str(&implement.result).unwrap();
     assert_eq!(
         result,
@@ -280,7 +286,8 @@ fn an_explicit_exit_and_artifacts_are_part_of_the_projected_result() {
     assert_eq!(result["artifacts"]["diff"]["sha"], "abc");
     assert_eq!(run.result_declared_role.as_deref(), Some("agent"));
     // Written verbatim, so evidence this build does not model is kept.
-    let channel: Value = serde_json::from_str(run.result_channel_identity.as_deref().unwrap()).unwrap();
+    let channel: Value =
+        serde_json::from_str(run.result_channel_identity.as_deref().unwrap()).unwrap();
     assert_eq!(channel["future"], 1);
 }
 
@@ -311,10 +318,9 @@ fn inputs_keep_their_row_ids_origin_and_delivery_time() {
     // and the schema's foreign key forbids keeping a dangling one.
     assert_eq!(input.run_id, None);
     assert!(projection.stage_runs.is_empty());
-    assert!(projection
-        .diagnostics
-        .iter()
-        .any(|note| note.contains("run run-live is named by") && note.contains("recorded no result")));
+    assert!(projection.diagnostics.iter().any(
+        |note| note.contains("run run-live is named by") && note.contains("recorded no result")
+    ));
 }
 
 #[test]
@@ -380,7 +386,11 @@ fn dependencies_and_links_come_from_task_json() {
             ("t-1".to_string(), "t-b".to_string())
         ]
     );
-    let task = projection.tasks.iter().find(|task| task.id == "t-1").unwrap();
+    let task = projection
+        .tasks
+        .iter()
+        .find(|task| task.id == "t-1")
+        .unwrap();
     assert_eq!(task.parent_task_id.as_deref(), Some("t-parent"));
     assert_eq!(task.pr_number, Some(7));
     assert_eq!(task.workflow_name.as_deref(), Some("flow"));
@@ -411,9 +421,17 @@ fn a_stale_task_json_is_reported_not_corrected() {
 fn projection_is_independent_of_directory_order() {
     let root = store_root("order");
     let mut a = TaskFiles::new(&root, task_json("t-a", "review"));
-    a.result("r-a", json!({ "status": "success", "stage": "in progress" }), "a");
+    a.result(
+        "r-a",
+        json!({ "status": "success", "stage": "in progress" }),
+        "a",
+    );
     let mut b = TaskFiles::new(&root, task_json("t-b", "review"));
-    b.result("r-b", json!({ "status": "success", "stage": "in progress" }), "b");
+    b.result(
+        "r-b",
+        json!({ "status": "success", "stage": "in progress" }),
+        "b",
+    );
     let forward = project(&[read(&a.dir), read(&b.dir)]);
     let backward = project(&[read(&b.dir), read(&a.dir)]);
     assert_eq!(forward, backward);
@@ -455,7 +473,13 @@ fn a_rebuild_writes_only_a_new_database_and_reapplying_changes_nothing() {
     let _ = std::fs::remove_file(&target);
     let report = rebuild_into_new_database(&root, &target).unwrap();
     assert_eq!(
-        (report.tasks, report.stage_runs, report.inputs, report.budgets, report.ledger_entries),
+        (
+            report.tasks,
+            report.stage_runs,
+            report.inputs,
+            report.budgets,
+            report.ledger_entries
+        ),
         (1, 1, 1, 1, 2)
     );
     let error = rebuild_into_new_database(&root, &target).unwrap_err();
@@ -473,4 +497,59 @@ fn a_rebuild_writes_only_a_new_database_and_reapplying_changes_nothing() {
     assert!(db.tasks_needing_ledger_backfill().unwrap().is_empty());
     assert_eq!(db.ledger_published_through("t-1").unwrap(), 2);
     assert_eq!(db.stage_budget_spent("t-1", "in progress").unwrap(), 1);
+}
+
+#[test]
+fn a_session_identity_in_session_ref_projects_onto_its_run() {
+    let root = store_root("session");
+    let mut files = TaskFiles::new(&root, task_json("t-1", "review"));
+    let session_ref = json!({
+        "kind": "stage_run", "id": "run-1",
+        "workspace_id": "ws-1", "branch": "task-t-1-2", "name": "t-1 review",
+        "transcript": { "provider": "claude", "session_id": "sess-9", "path": null },
+    });
+    files.entry(
+        LedgerEntryKind::Input,
+        json!({ "input_id": 1, "source": "operator", "stage": "review",
+                "delivered_at": "2026-09-23T10:01:00Z" }),
+        json!({ "run_id": "run-1", "session_ref": session_ref }),
+        Some("look again"),
+    );
+    files.result(
+        "run-other",
+        json!({ "status": "success", "stage": "in progress" }),
+        "T0-shaped reference",
+    );
+    files.entry(
+        LedgerEntryKind::Result,
+        json!({ "status": "success", "stage": "review", "run_kind": "main" }),
+        json!({ "run_id": "run-1", "session_ref": session_ref }),
+        Some("fine"),
+    );
+    let projection = project(&[read(&files.dir)]);
+    let run = projection
+        .stage_runs
+        .iter()
+        .find(|run| run.id == "run-1")
+        .unwrap();
+    assert_eq!(run.workspace_id.as_deref(), Some("ws-1"));
+    assert_eq!(run.session_branch.as_deref(), Some("task-t-1-2"));
+    assert_eq!(run.session_name.as_deref(), Some("t-1 review"));
+    let transcript: crate::db::TranscriptRef =
+        serde_json::from_str(run.transcript_ref.as_deref().unwrap()).unwrap();
+    assert_eq!(transcript.session_id, "sess-9");
+    // A run from before session identity keeps nothing invented.
+    let other = projection
+        .stage_runs
+        .iter()
+        .find(|run| run.id == "run-other")
+        .unwrap();
+    assert_eq!(
+        (
+            &other.workspace_id,
+            &other.session_branch,
+            &other.transcript_ref
+        ),
+        (&None, &None, &None)
+    );
 }
