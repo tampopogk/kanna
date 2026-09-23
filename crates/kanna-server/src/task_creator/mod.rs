@@ -2074,7 +2074,16 @@ fn prepare_workspace_teardown_with_extra(
     let port_env = claim_task_ports(db, task_id, repo_config).ok()?;
     let mut spawn_env =
         build_spawn_env(config, task_id, &port_env, &worktree_path, repo_config).ok()?;
-    let session_id = format!("td-{branch}");
+    // Keyed by the workspace directory, not the branch: a loop can check a
+    // new branch out in the directory while this teardown is still running,
+    // and whatever stops the directory's sessions must still find it. For a
+    // fork the directory name is the branch it was created on, so the name
+    // is unchanged there.
+    let workspace_name = std::path::Path::new(&worktree_path)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(branch);
+    let session_id = format!("td-{workspace_name}");
     // A durable identity for the detached cleanup session, stamped into its
     // environment so the daemon binds its terminal archive to this run.
     // `build_spawn_env` strips the key precisely so no session inherits

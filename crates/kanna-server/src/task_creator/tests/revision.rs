@@ -1480,11 +1480,18 @@ async fn preparing_a_revisit_leaves_the_retained_directory_untouched() {
     let _ = std::fs::remove_dir_all(&repo_root);
 }
 
-/// Fake daemon that, whenever it is told to kill a session, records which
-/// branch the retained directory has checked out at that moment.
+/// What the retained directory has checked out: its branch, or `HEAD` when
+/// detached.
+fn checked_out_ref(worktree: &std::path::Path) -> String {
+    run_git_fixture(worktree, &["rev-parse", "--abbrev-ref", "HEAD"])
+}
+
+/// Fake daemon holding `live` sessions. Whenever it is told to kill one it
+/// records what the watched directory had checked out at that moment.
 async fn spawn_fake_daemon_observing_checkout(
     daemon_dir: String,
     watched: std::path::PathBuf,
+    live: Vec<(String, String)>,
 ) -> tokio::task::JoinHandle<Vec<(String, String)>> {
     let socket_path = test_daemon_socket_path(&daemon_dir);
     let _ = std::fs::remove_file(&socket_path);
@@ -1494,17 +1501,31 @@ async fn spawn_fake_daemon_observing_checkout(
         let (read_half, mut write_half) = stream.into_split();
         let mut reader = BufReader::new(read_half);
         let mut kills = Vec::new();
+        let mut live = live;
         loop {
             let command = read_fake_daemon_command(&mut reader, &mut write_half).await;
             if answer_terminal_carryover_probe(&command, &mut write_half).await {
                 continue;
             }
             let (response, done) = match &command {
+                kanna_daemon::protocol::Command::List => (
+                    kanna_daemon::protocol::Event::SessionList {
+                        sessions: live
+                            .iter()
+                            .map(|(session_id, cwd)| {
+                                serde_json::from_value(serde_json::json!({
+                                    "session_id": session_id, "pid": 123, "cwd": cwd,
+                                    "state": "Active", "idle_seconds": 0, "status": "idle"
+                                }))
+                                .unwrap()
+                            })
+                            .collect(),
+                    },
+                    false,
+                ),
                 kanna_daemon::protocol::Command::Kill { session_id, .. } => {
-                    kills.push((
-                        session_id.clone(),
-                        run_git_fixture(&watched, &["branch", "--show-current"]),
-                    ));
+                    kills.push((session_id.clone(), checked_out_ref(&watched)));
+                    live.retain(|(live_id, _)| live_id != session_id);
                     (kanna_daemon::protocol::Event::Ok, false)
                 }
                 kanna_daemon::protocol::Command::Spawn { session_id, .. }
@@ -1528,15 +1549,45 @@ async fn spawn_fake_daemon_observing_checkout(
     })
 }
 
-/// The outgoing agent session, the task's shell and the retained
-/// directory's `td-<branch>` teardown are the processes Kanna runs that can
-/// write to it. All are stopped before the directory is checked and
-/// switched, so none can commit in between.
-#[tokio::test]
-async fn the_tasks_sessions_are_stopped_before_the_revisit_checkout() {
-    let config = test_config("revisit-stop-before-checkout");
-    let (repo_root, db) = init_resume_revision_fixture("revisit-stop-before-checkout", &config);
+/// Every session Kanna runs that can write to the retained directory is
+/// stopped before the directory is checked and switched: the outgoing agent,
+/// the task's shell, a teardown the task recorded there, and any live daemon
+/// session working inside it. They are found by the directory, so whatever
+/// the directory has checked out — `leave` puts it on another branch or a
+/// detached HEAD at the same commit first — none is missed, and nothing it
+/// holds is lost.
+async fn assert_directory_sessions_stopped_before_checkout(
+    label: &str,
+    leave: impl FnOnce(&std::path::Path),
+) {
+    let config = test_config(label);
+    let (repo_root, db) = init_resume_revision_fixture(label, &config);
     let impl_worktree = repo_root.join(".kanna-worktrees/task-impl");
+    let impl_path = impl_worktree.to_string_lossy().to_string();
+    let input = run_git_fixture(&impl_worktree, &["rev-parse", "HEAD"]);
+    leave(&impl_worktree);
+    let before = checked_out_ref(&impl_worktree);
+    // The teardown the task started when it forked away from the directory,
+    // as the departure records it.
+    db.insert_stage_run(NewStageRun {
+        id: "run-td-impl",
+        task_id: "review-task",
+        stage: "in progress",
+        kind: crate::db::stage_runs::TEARDOWN_RUN_KIND,
+        agent: None,
+        agent_provider: None,
+        model: None,
+        effort: None,
+        status: "running",
+        result: None,
+        feedback: None,
+        session_id: Some("td-recorded-at-departure"),
+        provider_session_id: None,
+        cwd: Some(&impl_path),
+        resumed_from_run_id: None,
+    })
+    .unwrap();
+
     let prepared = prepare_revision_task_for_api(
         &db,
         &config,
@@ -1546,12 +1597,24 @@ async fn the_tasks_sessions_are_stopped_before_the_revisit_checkout() {
         None,
     )
     .unwrap();
-    let branch = prepared.revisited_workspace().unwrap().branch.clone();
+    let branch = prepared
+        .revisited_workspace()
+        .expect("the directory at the input is re-entered")
+        .branch
+        .clone();
     let agent_session = prepared.session_id().to_string();
 
-    let fake_daemon =
-        spawn_fake_daemon_observing_checkout(config.daemon_dir.clone(), impl_worktree.clone())
-            .await;
+    // A live session the records do not name, working inside the directory.
+    let live = vec![(
+        "td-named-for-another-branch".to_string(),
+        format!("{impl_path}/subdir"),
+    )];
+    let fake_daemon = spawn_fake_daemon_observing_checkout(
+        config.daemon_dir.clone(),
+        impl_worktree.clone(),
+        live,
+    )
+    .await;
     let mut daemon = DaemonClient::connect(&config.daemon_dir).await.unwrap();
     spawn_prepared_stage_run_for_api(
         &config.db_path,
@@ -1563,19 +1626,19 @@ async fn the_tasks_sessions_are_stopped_before_the_revisit_checkout() {
     .unwrap();
     let kills = fake_daemon.await.unwrap();
 
-    // The implement directory's own teardown, started when the task forked
-    // away from it, is stopped too.
     for session in [
-        agent_session,
-        "shell-wt-review-task".to_string(),
-        "td-task-impl".to_string(),
+        agent_session.as_str(),
+        "shell-wt-review-task",
+        "td-task-impl",
+        "td-recorded-at-departure",
+        "td-named-for-another-branch",
     ] {
         let (_, checked_out) = kills
             .iter()
-            .find(|(killed, _)| *killed == session)
+            .find(|(killed, _)| killed == session)
             .unwrap_or_else(|| panic!("{session} was stopped: {kills:?}"));
         assert_eq!(
-            checked_out, "task-impl",
+            *checked_out, before,
             "{session} was stopped before the directory was switched"
         );
     }
@@ -1583,6 +1646,114 @@ async fn the_tasks_sessions_are_stopped_before_the_revisit_checkout() {
         run_git_fixture(&impl_worktree, &["branch", "--show-current"]),
         branch
     );
+    assert_eq!(
+        run_git_fixture(&impl_worktree, &["rev-parse", "HEAD"]),
+        input
+    );
+    // The branch the directory was on keeps its commit.
+    if before != "HEAD" {
+        assert_eq!(run_git_fixture(&repo_root, &["rev-parse", &before]), input);
+    }
+    let _ = std::fs::remove_dir_all(&repo_root);
+}
+
+#[tokio::test]
+async fn directory_sessions_are_stopped_before_the_revisit_checkout_on_the_recorded_branch() {
+    assert_directory_sessions_stopped_before_checkout("revisit-stop-recorded-branch", |_| {}).await;
+}
+
+#[tokio::test]
+async fn directory_sessions_are_stopped_before_the_revisit_checkout_on_another_branch() {
+    assert_directory_sessions_stopped_before_checkout("revisit-stop-other-branch", |dir| {
+        run_git_fixture(dir, &["switch", "-c", "elsewhere"]);
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn directory_sessions_are_stopped_before_the_revisit_checkout_when_detached() {
+    assert_directory_sessions_stopped_before_checkout("revisit-stop-detached", |dir| {
+        run_git_fixture(dir, &["switch", "--detach"]);
+    })
+    .await;
+}
+
+/// A session in the directory that cannot be stopped refuses the revisit:
+/// nothing in the directory is switched.
+#[tokio::test]
+async fn a_revisit_is_refused_when_a_directory_session_cannot_be_stopped() {
+    let config = test_config("revisit-stop-refused");
+    let (repo_root, db) = init_resume_revision_fixture("revisit-stop-refused", &config);
+    let impl_worktree = repo_root.join(".kanna-worktrees/task-impl");
+    let prepared = prepare_revision_task_for_api(
+        &db,
+        &config,
+        "review-task",
+        "in progress",
+        "Address the review.",
+        None,
+    )
+    .unwrap();
+    let branch = prepared.revisited_workspace().unwrap().branch.clone();
+
+    let socket_path = test_daemon_socket_path(&config.daemon_dir);
+    let _ = std::fs::remove_file(&socket_path);
+    let listener = UnixListener::bind(&socket_path).unwrap();
+    let fake_daemon = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.unwrap();
+        let (read_half, mut write_half) = stream.into_split();
+        let mut reader = BufReader::new(read_half);
+        while let Some(command) =
+            read_fake_daemon_command_optional(&mut reader, &mut write_half).await
+        {
+            if answer_terminal_carryover_probe(&command, &mut write_half).await {
+                continue;
+            }
+            let response = match &command {
+                kanna_daemon::protocol::Command::List => {
+                    kanna_daemon::protocol::Event::SessionList {
+                        sessions: Vec::new(),
+                    }
+                }
+                kanna_daemon::protocol::Command::Kill { session_id }
+                    if session_id == "td-task-impl" =>
+                {
+                    kanna_daemon::protocol::Event::Error {
+                        code: None,
+                        message: "cannot stop".to_string(),
+                    }
+                }
+                kanna_daemon::protocol::Command::Kill { .. } => kanna_daemon::protocol::Event::Ok,
+                other => panic!("unexpected daemon command: {other:?}"),
+            };
+            write_half
+                .write_all(format!("{}\n", serde_json::to_string(&response).unwrap()).as_bytes())
+                .await
+                .unwrap();
+        }
+    });
+    let mut daemon = DaemonClient::connect(&config.daemon_dir).await.unwrap();
+    let error = spawn_prepared_stage_run_for_api(
+        &config.db_path,
+        &mut daemon,
+        &crate::session_replacements::SessionReplacements::default(),
+        prepared,
+    )
+    .await
+    .expect_err("a session that cannot be stopped refuses the revisit");
+    drop(daemon);
+    fake_daemon.await.unwrap();
+
+    assert!(error.contains("td-task-impl"), "{error}");
+    assert!(error.contains("revisit was refused"), "{error}");
+    assert_eq!(
+        run_git_fixture(&impl_worktree, &["branch", "--show-current"]),
+        "task-impl"
+    );
+    assert!(!crate::task_creator::local_branch_exists(
+        &repo_root.to_string_lossy(),
+        &branch
+    ));
     let _ = std::fs::remove_dir_all(&repo_root);
 }
 

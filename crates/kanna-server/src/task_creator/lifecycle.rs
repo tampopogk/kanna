@@ -533,26 +533,26 @@ pub(crate) async fn spawn_prepared_stage_run_for_api(
         }
     }
 
-    // A stage that forked away from the revisited directory started its
-    // detached `td-<branch>` teardown there, and it may still be running.
-    // It is stopped like the shell: the checkout never runs beside it.
+    // Every other session Kanna runs in the revisited directory — a
+    // teardown left by the stage that forked away from it, a setup, an
+    // editor — is found by the directory itself and stopped. If any cannot
+    // be stopped the revisit is refused before anything in it changes.
     if let PreparedRunWorkspace::Revisited(revisited) = &prepared.workspace {
-        if let Some(previous_branch) = revisited.previous_branch.as_deref() {
-            let retained_teardown = format!("td-{previous_branch}");
-            if let Err(error) =
-                kill_session_replacing(daemon, replacements, &retained_teardown).await
-            {
-                if let Err(abort_error) = abort_lifecycle_operation(db_path, &run_id) {
-                    log::warn!("failed to clear rejected stage operation {run_id}: {abort_error}");
-                }
-                return Err(rollback_prepared_stage_fork(&prepared, error));
+        let directory = revisited.workspace.worktree_path.clone();
+        if let Err(error) =
+            stop_sessions_in_directory(daemon, replacements, db_path, &task_id, &directory).await
+        {
+            if let Err(abort_error) = abort_lifecycle_operation(db_path, &run_id) {
+                log::warn!("failed to clear rejected stage operation {run_id}: {abort_error}");
             }
+            let error = rollback_prepared_stage_fork(&prepared, error);
+            return Err(record_stage_transition_failure(db_path, &prepared, error));
         }
     }
 
-    // Every session Kanna runs for this task — the outgoing agent, the task's
-    // shell and the retained directory's teardown — is stopped now, so none of
-    // them can commit while the revisited directory is checked and switched.
+    // Every session Kanna runs for this task or in the revisited directory is
+    // stopped now, so none of them can commit while the directory is checked
+    // and switched.
     if revisits_workspace {
         let started = check_out_revisited_workspace(&mut prepared).and_then(|()| {
             super::finish_deferred_stage_setup(&mut prepared)?;
@@ -818,6 +818,79 @@ pub(super) fn roll_back_prepared_workspace(
         | PreparedRunWorkspace::Resumed(_)
         | PreparedRunWorkspace::Recreated(_) => Ok(None),
     }
+}
+
+/// Whether a session's working directory is `directory` or inside it.
+fn session_in_directory(cwd: &str, directory: &str) -> bool {
+    if super::resume::same_cwd(cwd, directory) || std::path::Path::new(cwd).starts_with(directory) {
+        return true;
+    }
+    let canonical =
+        |path: &str| std::fs::canonicalize(path).unwrap_or_else(|_| std::path::PathBuf::from(path));
+    canonical(cwd).starts_with(canonical(directory))
+}
+
+/// Stop every session Kanna runs in a retained workspace directory, selected
+/// by the directory rather than by any branch name: sessions the task's
+/// records place there (runs, their workspace, terminal sessions), the
+/// directory's own teardown (`td-<directory name>`), and every live daemon
+/// session whose working directory is inside it. Any session that cannot be
+/// stopped — or a daemon that cannot list its sessions — is an error, so the
+/// caller never switches a directory something may still be writing to.
+pub(super) async fn stop_sessions_in_directory(
+    daemon: &mut DaemonClient,
+    replacements: &SessionReplacements,
+    db_path: &str,
+    task_id: &str,
+    directory: &str,
+) -> Result<Vec<String>, String> {
+    let refuse =
+        |why: String| format!("{why}; the revisit was refused and {directory} was left untouched");
+    let mut sessions = std::collections::BTreeSet::new();
+    {
+        let db = Db::open(db_path).map_err(|error| refuse(format!("db error: {error}")))?;
+        sessions.extend(
+            db.task_session_ids_in_directory(
+                task_id,
+                directory,
+                &super::session::stage_workspace_id(directory),
+            )
+            .map_err(|error| refuse(format!("db error: {error}")))?,
+        );
+    }
+    if let Some(name) = std::path::Path::new(directory)
+        .file_name()
+        .and_then(|name| name.to_str())
+    {
+        sessions.insert(format!("td-{name}"));
+    }
+    match daemon
+        .send_command_retrying_successor(&DaemonCommand::List)
+        .await
+    {
+        Ok(DaemonEvent::SessionList { sessions: live }) => sessions.extend(
+            live.into_iter()
+                .filter(|session| crate::terminal_editor::session_is_live(&session.state))
+                .filter(|session| session_in_directory(&session.cwd, directory))
+                .map(|session| session.session_id),
+        ),
+        Ok(other) => {
+            return Err(refuse(format!(
+                "cannot list the daemon's sessions: unexpected response {other:?}"
+            )))
+        }
+        Err(error) => {
+            return Err(refuse(format!(
+                "cannot list the daemon's sessions: {error}"
+            )))
+        }
+    }
+    for session in &sessions {
+        kill_session_replacing(daemon, replacements, session)
+            .await
+            .map_err(|error| refuse(format!("cannot stop session {session}: {error}")))?;
+    }
+    Ok(sessions.into_iter().collect())
 }
 
 fn revisit_checkout(

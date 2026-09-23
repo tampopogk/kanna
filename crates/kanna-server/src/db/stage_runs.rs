@@ -700,6 +700,30 @@ impl Db {
         Ok(())
     }
 
+    /// Daemon session ids of every session this task's records place in a
+    /// workspace directory — agent, post and teardown runs recorded there,
+    /// runs whose session named the directory's workspace, and terminal
+    /// sessions opened in it — whatever branch the directory is on now.
+    pub fn task_session_ids_in_directory(
+        &self,
+        task_id: &str,
+        directory: &str,
+        workspace_id: &str,
+    ) -> Result<Vec<String>, rusqlite::Error> {
+        let mut stmt = self.conn.prepare(
+            "SELECT session_id FROM stage_run
+             WHERE task_id = ?1 AND session_id IS NOT NULL
+               AND (cwd = ?2 OR workspace_id = ?3)
+             UNION
+             SELECT daemon_session_id FROM terminal_session
+             WHERE pipeline_item_id = ?1 AND cwd = ?2 AND daemon_session_id IS NOT NULL",
+        )?;
+        let rows = stmt.query_map(rusqlite::params![task_id, directory, workspace_id], |row| {
+            row.get::<_, String>(0)
+        })?;
+        rows.collect()
+    }
+
     /// Record the identity a session started with (spec §6): the stage
     /// workspace it runs in, the branch it checked out there, its name, where
     /// its provider transcript lives, and any workspace state the start
