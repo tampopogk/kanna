@@ -5577,6 +5577,76 @@ fn advancing_an_exit_commit_stage_prepares_its_commit_step() {
     let _ = std::fs::remove_dir_all(&repo_root);
 }
 
+/// The bundled `mechanical` workflow (T10, spec §10: "implement → pr(M)")
+/// runs end to end from nothing but the ledger/preamble context the engine
+/// delivers: no `.kanna/workflows/mechanical.json` or agent override is
+/// written to the repo, so this resolves the real compiled-in definitions.
+/// Its "in progress" stage advances through the `exit_commit` commit step
+/// exactly like the synthetic exit_commit fixture above, and its final "pr"
+/// stage declares `policy.handoff: merge` instead of a legacy `approve` post.
+#[test]
+fn mechanical_workflow_runs_its_commit_step_and_hands_off_to_merge_with_no_result_variables() {
+    let repo_root = init_git_repo("mechanical-e2e");
+    publish_origin_main(&repo_root, "publish bare repo for the mechanical workflow");
+    let config = test_config("mechanical-e2e");
+    let db = Db::open_for_tests(&config.db_path).unwrap();
+    seed_stage_advance_task(&db, &repo_root, "claude");
+    db.update_test_pipeline_item_stage_context(
+        "task-1",
+        "task-source",
+        "mechanical",
+        None,
+        "claude",
+    )
+    .unwrap();
+    running_main_run(&db, "in progress");
+
+    let definitions_repo = crate::db::Repo {
+        id: format!("repo-{}", repo_root.display()),
+        path: repo_root.to_string_lossy().into_owned(),
+        name: "Mechanical fixture".to_string(),
+        default_branch: Some("main".to_string()),
+        default_branch_source: None,
+        remote_url_hash: None,
+        hidden: None,
+        sort_order: None,
+        created_at: None,
+        last_opened_at: None,
+    };
+    let definitions =
+        super::super::definitions::RepoDefinitions::resolve(&definitions_repo).unwrap();
+    let mechanical = definitions.workflow("mechanical").unwrap();
+    assert_eq!(mechanical.stages.len(), 2);
+    let pr_stage = &mechanical.stages[1];
+    assert_eq!(pr_stage.name, "pr");
+    assert_eq!(
+        pr_stage.policy.handoff,
+        Some(super::super::definitions::WorkflowHandoff::Merge),
+        "the final stage hands off to the merge master instead of an approve post"
+    );
+    for agent_name in ["implement", "pr"] {
+        let agent = definitions.agent(agent_name).unwrap();
+        for var in ["$PREV_RESULT", "$PREV_MAIN_RESULT", "$PLAN_RESULT"] {
+            assert!(
+                !agent.prompt.contains(var),
+                "{agent_name} must not reference {var}; the engine delivers results through the ledger"
+            );
+        }
+    }
+
+    let post = match prepare_advance_stage_for_api(&db, &config, "task-1").unwrap() {
+        PreparedStageTransition::Post(post) => post,
+        _ => panic!("mechanical's exit_commit stage commits before it transitions"),
+    };
+    assert_eq!(post.run_stage, "in progress commit");
+    let commit = post.commit.clone().expect("bound to its transition");
+    assert_eq!(commit.stage, "in progress");
+    let exit = commit.exit.expect("the operator's advance");
+    assert_eq!(exit.exit.as_deref(), Some("advance"));
+
+    let _ = std::fs::remove_dir_all(&repo_root);
+}
+
 /// A declared post of a legacy workflow keeps dispatching exactly as it did:
 /// it is not a commit step and binds no transition.
 #[test]

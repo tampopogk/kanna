@@ -1,7 +1,8 @@
 import { describe, it, expect } from "vitest";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import {
   applyAgentExtension,
+  checkDefinitionFormula,
   parseAgentDefinition,
   parseAgentExtension,
   validateAgentDefinition,
@@ -254,9 +255,13 @@ describe("validateAgentDefinition", () => {
     );
     const result = parseAgentDefinition(content);
 
-    expect(result.prompt).toContain("Do not push a branch or create a pull request");
-    expect(result.prompt).toContain("kanna_complete_stage");
-    expect(result.prompt).toContain("kanna-cli stage-complete");
+    expect(result.prompt).toContain("Push a branch or open a PR");
+    // Definition-formula agent (T10, spec §12): the mechanical
+    // kanna_complete_stage/kanna-cli call syntax is engine mechanics the
+    // runtime preamble already injects (kanna-task-environment.md's
+    // {{COMPLETION}} section), so it must not be duplicated here.
+    expect(result.prompt).not.toContain("kanna_complete_stage");
+    expect(result.prompt).not.toContain("kanna-cli stage-complete");
   });
 
   it("returns error for invalid permission_mode value", () => {
@@ -480,4 +485,68 @@ it("keeps structured frontmatter literals and rejects conflicting EXTEND tuning"
 it("refuses EXTEND attaching a different structured harness to inherited sibling tuning", () => {
   const base = parseAgentDefinition("---\nname: test\ndescription: Test\nagent_provider: codex\nmodel: gpt-6-astra\n---\nWork");
   expect(() => applyAgentExtension(base, { prompt: "", agent_provider: { harness: "opencode" } })).toThrow(/conflicting selection/);
+});
+
+describe("definition formula (spec §12, T10)", () => {
+  const FORMULA_TEXT = [
+    "## Produces\nsomething", "## Reads\nsomething", "## Must not\nsomething", "## Stop when\nsomething",
+  ].join("\n\n");
+  const pad = (lines: number) => "extra\n".repeat(lines);
+
+  it("resolves role/providers as description/agent_provider aliases", () => {
+    const def = parseAgentDefinition(
+      `---\nname: test\nrole: A one-sentence role\nproviders: claude, codex\n---\n${FORMULA_TEXT}\n${pad(8)}`
+    );
+    expect(def.description).toBe("A one-sentence role");
+    expect(def.agent_provider).toEqual(["claude", "codex"]);
+  });
+
+  it("prefers legacy description/agent_provider when both are present", () => {
+    const def = parseAgentDefinition(
+      `---\nname: test\ndescription: Legacy\nrole: Formula\nagent_provider: claude\nproviders: codex\n---\n${FORMULA_TEXT}\n${pad(8)}`
+    );
+    expect(def.description).toBe("Legacy");
+    expect(def.agent_provider).toEqual(["claude"]);
+  });
+
+  it("does not enforce the formula on legacy (description/agent_provider) definitions", () => {
+    expect(() =>
+      parseAgentDefinition("---\nname: test\ndescription: Legacy\nagent_provider: claude\n---\nOne short line.")
+    ).not.toThrow();
+  });
+
+  it("rejects a formula definition (role declared) that is too short", () => {
+    expect(() =>
+      parseAgentDefinition("---\nname: test\nrole: A role\n---\n## Produces\nx\n## Reads\ny\n## Must not\nz\n## Stop when\nw")
+    ).toThrow(/15-40 lines/);
+  });
+
+  it("rejects a formula definition missing a required section", () => {
+    expect(() =>
+      parseAgentDefinition(`---\nname: test\nrole: A role\n---\n## Produces\nx\n\n## Reads\ny\n${pad(20)}`)
+    ).toThrow(/## Must not/);
+  });
+
+  it("rejects a formula definition referencing a legacy result variable", () => {
+    expect(() =>
+      parseAgentDefinition(
+        `---\nname: test\nrole: A role\n---\n${FORMULA_TEXT}\nUses $PREV_MAIN_RESULT.\n${pad(6)}`
+      )
+    ).toThrow(/PREV_MAIN_RESULT/);
+  });
+
+  it("checks every bundled definition that declares role/providers against the formula", () => {
+    const agentsDir = new URL("../../../../.kanna/agents/", import.meta.url);
+    for (const name of readdirSync(agentsDir)) {
+      const path = new URL(`${name}/AGENT.md`, agentsDir);
+      let content: string;
+      try {
+        content = readFileSync(path, "utf8");
+      } catch {
+        continue;
+      }
+      if (!/^\s*role:|^\s*providers:/m.test(content.split(/\n---/)[0] ?? "")) continue;
+      expect(checkDefinitionFormula(content), name).toEqual([]);
+    }
+  });
 });
