@@ -362,6 +362,9 @@ pub(crate) struct RevisitedWorkspace {
     pub(super) previous_branch: Option<String>,
     pub(super) previous_head: String,
     pub(super) observed_dirty: bool,
+    /// Set once the spawn has checked the new branch out; before that a
+    /// rollback has nothing to undo.
+    pub(super) checked_out: bool,
 }
 
 impl PreparedRunWorkspace {

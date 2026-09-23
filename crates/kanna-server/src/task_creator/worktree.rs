@@ -266,29 +266,6 @@ pub(super) fn is_ancestor(repo_path: &str, ancestor: &str, descendant: &str) -> 
         .unwrap_or(false)
 }
 
-/// Check out a newly allocated branch at `start_point` in an existing
-/// workspace. The caller has established that this moves nothing it must
-/// not: the workspace is either already at `start_point` (uncommitted
-/// changes stay where they are) or clean and behind it.
-pub(super) fn check_out_new_branch(
-    worktree_path: &str,
-    branch: &str,
-    start_point: &str,
-) -> Result<(), String> {
-    let output = Command::new("git")
-        .args(["switch", "--no-track", "-c", branch, start_point])
-        .current_dir(worktree_path)
-        .output()
-        .map_err(|error| format!("failed to run git switch: {error}"))?;
-    if !output.status.success() {
-        return Err(format!(
-            "failed to check out {branch} in {worktree_path}: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        ));
-    }
-    Ok(())
-}
-
 /// Confirm a retained workspace is still in the state a revisit plan
 /// observed, immediately before its branch is switched. Anything that moved
 /// in between — a commit, a branch change, new local changes — means the
@@ -337,8 +314,8 @@ fn short(commit: &str) -> &str {
     &commit[..commit.len().min(12)]
 }
 
-/// The revisit a failed spawn has to undo: the branch it checked out, where
-/// it started, and what the directory had before.
+/// One revisit's branch change in a retained workspace: the branch it
+/// checks out, where that branch starts, and what the directory had before.
 pub(super) struct RevisitCheckout<'a> {
     pub(super) worktree_path: &'a str,
     pub(super) new_branch: &'a str,
@@ -348,15 +325,104 @@ pub(super) struct RevisitCheckout<'a> {
     pub(super) observed_dirty: bool,
 }
 
-/// Undo [`check_out_new_branch`] after a failed spawn: return the workspace
+fn git_in(worktree_path: &str, args: &[&str]) -> Result<std::process::Output, String> {
+    Command::new("git")
+        .args(args)
+        .current_dir(worktree_path)
+        .output()
+        .map_err(|error| format!("failed to run git {}: {error}", args.join(" ")))
+}
+
+fn git_line(worktree_path: &str, args: &[&str]) -> Option<String> {
+    let output = git_in(worktree_path, args).ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    (!text.is_empty()).then_some(text)
+}
+
+fn git_checked(worktree_path: &str, args: &[&str]) -> Result<(), String> {
+    let output = git_in(worktree_path, args)?;
+    if output.status.success() {
+        return Ok(());
+    }
+    Err(format!(
+        "git {} failed in {worktree_path}: {}",
+        args.join(" "),
+        String::from_utf8_lossy(&output.stderr).trim()
+    ))
+}
+
+/// Create the revisit's branch and check it out.
+///
+/// The ref is created by compare-and-swap at the recorded input — it must
+/// not already exist — so the branch can never be pointed at anything but
+/// its start point, nor take over a branch someone else made. After the
+/// switch, whatever the directory held just before it (the previous branch's
+/// tip, or HEAD@{1} for a detached HEAD) is compared with what the plan saw.
+/// A commit that landed in between is not lost — it stays on its branch — and
+/// the returned report names it so the session does not silently start from
+/// a stale point.
+pub(super) fn check_out_revisit(checkout: &RevisitCheckout<'_>) -> Result<Option<String>, String> {
+    let RevisitCheckout {
+        worktree_path,
+        new_branch,
+        start_point,
+        previous_branch,
+        previous_head,
+        ..
+    } = *checkout;
+    let reference = format!("refs/heads/{new_branch}");
+    git_checked(worktree_path, &["update-ref", &reference, start_point, ""])?;
+    if let Err(error) = git_checked(worktree_path, &["switch", "--no-guess", new_branch]) {
+        // Nothing was checked out; drop the ref only while it is still the
+        // one this call made.
+        let _ = git_in(
+            worktree_path,
+            &["update-ref", "-d", &reference, start_point],
+        );
+        return Err(error);
+    }
+    let before_switch = match previous_branch {
+        Some(branch) => git_line(
+            worktree_path,
+            &[
+                "rev-parse",
+                "--verify",
+                "-q",
+                &format!("refs/heads/{branch}"),
+            ],
+        ),
+        None => git_line(worktree_path, &["rev-parse", "--verify", "-q", "HEAD@{1}"]),
+    };
+    Ok(before_switch
+        .filter(|head| head != previous_head)
+        .map(|head| {
+            let range = format!("{previous_head}..{head}");
+            let commits = git_line(worktree_path, &["rev-list", "--oneline", &range])
+                .unwrap_or_else(|| short(&head).to_string());
+            format!(
+                "{} moved from {} to {} after this revisit was planned; this session starts \
+                 at {} without: {}",
+                previous_branch.unwrap_or("the detached HEAD"),
+                short(previous_head),
+                short(&head),
+                short(start_point),
+                commits.replace('\n', "; "),
+            )
+        }))
+}
+
+/// Undo [`check_out_revisit`] after a failed spawn: return the workspace
 /// to what it had checked out and delete the unused branch. The directory
 /// itself is retained; its number stays spent.
 ///
-/// A shell, editor or outgoing agent may have used the directory between the
-/// checkout and the failure. The undo runs only while the directory is
-/// exactly as the checkout left it — the new branch checked out, still at
-/// its start point, with no local changes the plan did not already see.
-/// Otherwise nothing is touched and `Ok(Some(report))` says what was kept.
+/// The caller has stopped the sessions Kanna runs in the directory. The
+/// guard below keeps the undo from touching a directory someone still used
+/// after the checkout; [`undo_revisit_checkout`] then makes the ref change
+/// itself compare-and-swap, so a commit that lands after the guard's read is
+/// still never deleted.
 pub(super) fn restore_revisited_workspace(
     checkout: &RevisitCheckout<'_>,
 ) -> Result<Option<String>, String> {
@@ -364,9 +430,8 @@ pub(super) fn restore_revisited_workspace(
         worktree_path,
         new_branch,
         start_point,
-        previous_branch,
-        previous_head,
         observed_dirty,
+        ..
     } = *checkout;
     let state = workspace_git_state(worktree_path)?;
     let mut changes = Vec::new();
@@ -386,47 +451,64 @@ pub(super) fn restore_revisited_workspace(
         changes.push("it has uncommitted changes made after the checkout".to_string());
     }
     if !changes.is_empty() {
-        return Ok(Some(format!(
-            "retained workspace {worktree_path} was used after {new_branch} was checked out              ({}); the branch and directory were preserved untouched",
-            changes.join("; ")
+        return Ok(Some(preserved_report(
+            worktree_path,
+            new_branch,
+            &changes.join("; "),
         )));
     }
-    let mut args = vec!["switch"];
+    undo_revisit_checkout(checkout)
+}
+
+fn preserved_report(worktree_path: &str, new_branch: &str, what: &str) -> String {
+    format!(
+        "retained workspace {worktree_path} was used after {new_branch} was checked out \
+         ({what}); the branch and directory were preserved untouched"
+    )
+}
+
+/// The switch-and-delete step of a rollback. The branch is deleted with
+/// compare-and-swap: only while it still points at its start point. If it
+/// moved — a commit landed on it — the deletion is refused, the directory is
+/// switched back onto it, and the branch is kept and reported.
+pub(super) fn undo_revisit_checkout(
+    checkout: &RevisitCheckout<'_>,
+) -> Result<Option<String>, String> {
+    let RevisitCheckout {
+        worktree_path,
+        new_branch,
+        start_point,
+        previous_branch,
+        previous_head,
+        ..
+    } = *checkout;
     match previous_branch {
-        Some(branch) => args.push(branch),
-        None => {
-            args.push("--detach");
-            args.push(previous_head);
-        }
+        Some(branch) => git_checked(worktree_path, &["switch", "--no-guess", branch])?,
+        None => git_checked(worktree_path, &["switch", "--detach", previous_head])?,
     }
-    let output = Command::new("git")
-        .args(&args)
-        .current_dir(worktree_path)
-        .output()
-        .map_err(|error| format!("failed to run git switch: {error}"))?;
-    if !output.status.success() {
-        return Err(format!(
-            "failed to restore {worktree_path}: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        ));
+    let reference = format!("refs/heads/{new_branch}");
+    if git_checked(
+        worktree_path,
+        &["update-ref", "-d", &reference, start_point],
+    )
+    .is_ok()
+    {
+        return Ok(None);
     }
-    // Verified above to still sit at the start point this revisit chose,
-    // which another ref already holds, so deleting it drops no commit.
-    let output = Command::new("git")
-        .args(["branch", "-D", new_branch])
-        .current_dir(worktree_path)
-        .output()
-        .map_err(|error| format!("failed to run git branch delete: {error}"))?;
-    if !output.status.success() {
-        let message = String::from_utf8_lossy(&output.stderr);
-        if !message.contains("not found") {
-            return Err(format!(
-                "failed to delete unused branch {new_branch}: {}",
-                message.trim()
-            ));
-        }
-    }
-    Ok(None)
+    let Some(tip) = git_line(worktree_path, &["rev-parse", "--verify", "-q", &reference]) else {
+        // Gone already: nothing held on it can be lost by this call.
+        return Ok(None);
+    };
+    git_checked(worktree_path, &["switch", "--no-guess", new_branch])?;
+    Ok(Some(preserved_report(
+        worktree_path,
+        new_branch,
+        &format!(
+            "{new_branch} moved from {} to {}",
+            short(start_point),
+            short(&tip)
+        ),
+    )))
 }
 
 pub(super) fn generate_task_id() -> Result<String, String> {

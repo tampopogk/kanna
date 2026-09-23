@@ -1538,25 +1538,11 @@ pub(in crate::task_creator) fn prepare_stage_run_spawn(
         }
         RunWorkspaceSpec::Revisit(revisit) => {
             workspace_report = revisit.report;
-            // The plan read this directory before the branch number was
-            // reserved; a writer may have used it since. Switch only if it is
-            // still exactly what the plan saw, otherwise leave it alone and
-            // say why no session was started. The next attempt plans afresh.
-            if let Err(changed) = worktree::revalidate_revisit(
-                &revisit.worktree_path,
-                revisit.previous_branch.as_deref(),
-                &revisit.previous_head,
-                revisit.observed_dirty,
-            ) {
-                return Err(format!(
-                    "{changed}; it was preserved untouched and no session was started"
-                ));
-            }
-            worktree::check_out_new_branch(
-                &revisit.worktree_path,
-                &revisit.branch,
-                &revisit.start_point,
-            )?;
+            // Nothing in the directory changes here. The branch is checked
+            // out by the spawn, after it has stopped the sessions Kanna runs
+            // in this directory (`lifecycle::check_out_revisited_workspace`),
+            // so no process Kanna controls can commit between the check of
+            // the directory and the switch.
             let (resume_session_id, resumed_from_run_id) = match revisit.resume {
                 Some(resume) => (
                     Some(resume.provider_session_id),
@@ -1574,6 +1560,7 @@ pub(in crate::task_creator) fn prepare_stage_run_spawn(
                     previous_branch: revisit.previous_branch,
                     previous_head: revisit.previous_head,
                     observed_dirty: revisit.observed_dirty,
+                    checked_out: false,
                 }),
                 resume_session_id,
                 resumed_from_run_id,

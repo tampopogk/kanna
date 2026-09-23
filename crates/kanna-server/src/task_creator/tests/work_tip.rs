@@ -324,13 +324,15 @@ async fn each_review_fork_carries_every_previous_revision_round_commit() {
         .revisited_workspace()
         .expect("a clean implement workspace behind the tip is re-entered");
     let revision_worktree = std::path::PathBuf::from(&revision_workspace.worktree_path);
-    assert!(
-        branch_contains(&repo_root, &revision_workspace.branch, &round_one),
-        "the revision fork must contain round 1's commit {round_one}",
-    );
+    let revision_branch = revision_workspace.branch.clone();
+    // The spawn checks the branch out once the task's sessions are stopped.
     spawn_prepared_stage_run_for_api(&config.db_path, &mut daemon, &replacements, revision)
         .await
         .unwrap();
+    assert!(
+        branch_contains(&repo_root, &revision_branch, &round_one),
+        "the revision fork must contain round 1's commit {round_one}",
+    );
 
     let round_two = commit_in(&revision_worktree, "round-two.txt", "round two fix");
     record_finished_run(

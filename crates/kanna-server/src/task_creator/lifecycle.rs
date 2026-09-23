@@ -428,14 +428,20 @@ pub(crate) async fn spawn_prepared_stage_run_for_api(
         .as_ref()
         .map(|teardown| teardown.session_id.clone());
 
-    if let Err(error) = super::finish_deferred_stage_setup(&mut prepared) {
-        let error = rollback_prepared_stage_fork(&prepared, error);
-        return Err(record_stage_transition_failure(db_path, &prepared, error));
-    }
-    if prepared.repository_setup_pending {
-        let db = Db::open(db_path).map_err(|error| format!("db error: {error}"))?;
-        db.mark_task_worktree_setup_complete(&task_id)
-            .map_err(|error| format!("db error: {error}"))?;
+    // A revisited stage directory is switched to its new branch only after
+    // the sessions Kanna runs there are stopped (below), and its setup runs
+    // on that branch, so both wait until then.
+    let revisits_workspace = matches!(prepared.workspace, PreparedRunWorkspace::Revisited(_));
+    if !revisits_workspace {
+        if let Err(error) = super::finish_deferred_stage_setup(&mut prepared) {
+            let error = rollback_prepared_stage_fork(&prepared, error);
+            return Err(record_stage_transition_failure(db_path, &prepared, error));
+        }
+        if prepared.repository_setup_pending {
+            let db = Db::open(db_path).map_err(|error| format!("db error: {error}"))?;
+            db.mark_task_worktree_setup_complete(&task_id)
+                .map_err(|error| format!("db error: {error}"))?;
+        }
     }
 
     // The operation is written before the outgoing run is accepted and its
@@ -524,6 +530,23 @@ pub(crate) async fn spawn_prepared_stage_run_for_api(
                     "failed to replace workspace teardown session {teardown_session_id}: {error}"
                 );
             }
+        }
+    }
+
+    // Every session Kanna runs for this task — the outgoing agent and the
+    // task's shell — is stopped now, so none of them can commit while the
+    // revisited directory is checked and switched.
+    if revisits_workspace {
+        let started = check_out_revisited_workspace(&mut prepared).and_then(|()| {
+            super::finish_deferred_stage_setup(&mut prepared)?;
+            Ok(())
+        });
+        if let Err(error) = started {
+            if let Err(abort_error) = abort_lifecycle_operation(db_path, &run_id) {
+                log::warn!("failed to clear rejected stage operation {run_id}: {abort_error}");
+            }
+            let error = rollback_prepared_stage_fork(&prepared, error);
+            return Err(record_stage_transition_failure(db_path, &prepared, error));
         }
     }
 
@@ -770,20 +793,67 @@ pub(super) fn roll_back_prepared_workspace(
         PreparedRunWorkspace::Forked(fork) => {
             remove_prepared_worktree(&fork.worktree_path, &fork.branch).map(|()| None)
         }
+        PreparedRunWorkspace::Revisited(revisited) if !revisited.checked_out => Ok(None),
         PreparedRunWorkspace::Revisited(revisited) => {
-            super::worktree::restore_revisited_workspace(&super::worktree::RevisitCheckout {
-                worktree_path: &revisited.workspace.worktree_path,
-                new_branch: &revisited.workspace.branch,
-                start_point: &revisited.start_point,
-                previous_branch: revisited.previous_branch.as_deref(),
-                previous_head: &revisited.previous_head,
-                observed_dirty: revisited.observed_dirty,
-            })
+            super::worktree::restore_revisited_workspace(&revisit_checkout(revisited))
         }
         PreparedRunWorkspace::Current
         | PreparedRunWorkspace::Resumed(_)
         | PreparedRunWorkspace::Recreated(_) => Ok(None),
     }
+}
+
+fn revisit_checkout(
+    revisited: &super::types::RevisitedWorkspace,
+) -> super::worktree::RevisitCheckout<'_> {
+    super::worktree::RevisitCheckout {
+        worktree_path: &revisited.workspace.worktree_path,
+        new_branch: &revisited.workspace.branch,
+        start_point: &revisited.start_point,
+        previous_branch: revisited.previous_branch.as_deref(),
+        previous_head: &revisited.previous_head,
+        observed_dirty: revisited.observed_dirty,
+    }
+}
+
+/// Switch a revisited stage directory to its new branch. The spawn calls
+/// this only after it has stopped the sessions Kanna runs for the task, so
+/// no Kanna-owned process can commit between the check and the switch.
+///
+/// The directory must still be what the revisit plan saw; if it is not, it
+/// is left untouched and no session starts. Commits that reached the
+/// previous branch inside the switch itself stay there and are reported on
+/// the session's `workspace_report`.
+pub(super) fn check_out_revisited_workspace(
+    prepared: &mut PreparedStageRunSpawn,
+) -> Result<(), String> {
+    let PreparedRunWorkspace::Revisited(revisited) = &mut prepared.workspace else {
+        return Ok(());
+    };
+    if revisited.checked_out {
+        return Ok(());
+    }
+    let checkout = revisit_checkout(revisited);
+    if let Err(changed) = super::worktree::revalidate_revisit(
+        checkout.worktree_path,
+        checkout.previous_branch,
+        checkout.previous_head,
+        checkout.observed_dirty,
+    ) {
+        return Err(format!(
+            "{changed}; it was preserved untouched and no session was started"
+        ));
+    }
+    let moved = super::worktree::check_out_revisit(&checkout)?;
+    revisited.checked_out = true;
+    if let Some(moved) = moved {
+        let report = &mut prepared.session_identity.workspace_report;
+        *report = Some(match report.take() {
+            Some(existing) => format!("{existing}; {moved}"),
+            None => moved,
+        });
+    }
+    Ok(())
 }
 
 fn rollback_prepared_stage_fork(prepared: &PreparedStageRunSpawn, error: String) -> String {
