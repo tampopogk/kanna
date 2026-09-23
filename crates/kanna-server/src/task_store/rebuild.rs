@@ -1,12 +1,14 @@
-//! Offline rebuild of SQL projections from task directories (spec §11,
-//! §16.11 — component T13, first and second increments).
+//! Rebuild of SQL projections from task directories (spec §11, §16.11 —
+//! component T13, first to third increments).
 //!
 //! Reads `<root>/repos/<repo-id>/repo.json` and
 //! `<root>/repos/<repo-id>/tasks/<task-id>/` (`task.json` and the published
-//! `ledger/`) with a versioned reader, projects them deterministically, and
-//! writes the projection into a **new** database created with the current
-//! schema. It never opens an existing database: SQLite stays authoritative,
-//! and this is a dry run whose output is compared against it.
+//! `ledger/`) with a versioned reader and projects them deterministically.
+//! A rebuild writes the projection into a **new** database created with the
+//! current schema, never into an existing one. Under disk authority (T13c,
+//! [`super::authority`]) a missing database is rebuilt this way, scoped to
+//! the installation's own repositories, and a live database is reconciled
+//! from the projection of the tasks the disk is ahead for.
 //! `docs/2026-09-23-disk-authority-inventory.md` says which disk record owns
 //! each table; [`NOT_REBUILT`] lists what a rebuilt database lacks by design.
 //!
@@ -327,7 +329,7 @@ fn carried_table(name: &str) -> Option<&'static CarriedTable> {
 }
 
 /// Is this `task.json`/`repo.json` a tombstone for a removed record?
-fn is_tombstone(bytes: &[u8]) -> bool {
+pub(crate) fn is_tombstone(bytes: &[u8]) -> bool {
     serde_json::from_slice::<Value>(bytes)
         .ok()
         .and_then(|value| value.get(REMOVED_KEY).and_then(Value::as_bool))
@@ -432,6 +434,9 @@ pub struct RepoRecord {
     pub registration: Map<String, Value>,
     pub sidebar_order: Option<i64>,
     pub snapshot_revision: i64,
+    /// The installation that wrote it (T13c): the database whose repository
+    /// this is. Absent in a `repo.json` written before the field existed.
+    pub installation: Option<String>,
 }
 
 pub fn parse_repo_record(bytes: &[u8]) -> Result<RepoRecord, String> {
@@ -466,6 +471,7 @@ pub fn parse_repo_record(bytes: &[u8]) -> Result<RepoRecord, String> {
             .get("snapshot_revision")
             .and_then(Value::as_i64)
             .unwrap_or(0),
+        installation: text(&value, "installation"),
     })
 }
 
@@ -479,6 +485,72 @@ pub struct StoreScan {
     /// Tombstoned tasks and repositories: removed from their database,
     /// never rebuilt.
     pub removed: Vec<PathBuf>,
+}
+
+impl StoreScan {
+    /// Only what `installation` wrote (T13c): the repositories whose
+    /// `repo.json` names it, and the task directories under them. Several
+    /// installations can share a store root (production and staging both
+    /// use `~/.kanna`), and a database rebuilt or reconciled from disk must
+    /// never take in another's tasks. Returns the other repositories' ids,
+    /// unstamped ones included; their tasks, tombstones and unreadable
+    /// entries are left out.
+    pub fn for_installation(self, installation: &str) -> (StoreScan, Vec<String>) {
+        let ours: BTreeSet<String> = self
+            .repos
+            .iter()
+            .filter(|record| record.installation.as_deref() == Some(installation))
+            .map(|record| record.repo_id.clone())
+            .collect();
+        let repo_of = |path: &Path| -> Option<String> {
+            // `<root>/repos/<repo-id>/repo.json` or `.../<repo-id>/tasks/<task-id>`.
+            let mut components = path
+                .components()
+                .rev()
+                .map(|component| component.as_os_str().to_string_lossy().to_string());
+            let last = components.next()?;
+            if last == "repo.json" {
+                components.next()
+            } else {
+                components.nth(1)
+            }
+        };
+        let mut foreign: BTreeSet<String> = self
+            .repos
+            .iter()
+            .filter(|record| !ours.contains(&record.repo_id))
+            .map(|record| record.repo_id.clone())
+            .collect();
+        foreign.extend(
+            self.tasks
+                .iter()
+                .map(|task| task.snapshot.repo_id.clone())
+                .filter(|repo| !ours.contains(repo)),
+        );
+        let scoped = StoreScan {
+            tasks: self
+                .tasks
+                .into_iter()
+                .filter(|task| ours.contains(&task.snapshot.repo_id))
+                .collect(),
+            repos: self
+                .repos
+                .into_iter()
+                .filter(|record| ours.contains(&record.repo_id))
+                .collect(),
+            unreadable: self
+                .unreadable
+                .into_iter()
+                .filter(|(path, _)| repo_of(path).is_some_and(|repo| ours.contains(&repo)))
+                .collect(),
+            removed: self
+                .removed
+                .into_iter()
+                .filter(|path| repo_of(path).is_some_and(|repo| ours.contains(&repo)))
+                .collect(),
+        };
+        (scoped, foreign.into_iter().collect())
+    }
 }
 
 /// Every task directory under a store root, ordered by repo then task id.
@@ -1405,15 +1477,35 @@ fn project_state(
 /// Project task directories into rows. Pure and deterministic: the same
 /// directories in any order give the same projection.
 pub fn project(directories: &[TaskDirectory]) -> Projection {
-    project_records(directories, &[])
+    project_records(directories, &[], &KnownRows::default())
 }
 
 /// [`project`] over a whole scanned store, repository records included.
 pub fn project_store(scan: &StoreScan) -> Projection {
-    project_records(&scan.tasks, &scan.repos)
+    project_records(&scan.tasks, &scan.repos, &KnownRows::default())
 }
 
-fn project_records(directories: &[TaskDirectory], repos: &[RepoRecord]) -> Projection {
+/// Rows a database already holds that a projection's rows may name (T13c).
+/// A rebuild into a new database knows only what it projects; reconciling
+/// some tasks of a live database keeps their references to tasks, runs and
+/// joins the database holds and the projected directories do not.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct KnownRows {
+    pub tasks: BTreeSet<String>,
+    pub runs: BTreeSet<String>,
+    pub joins: BTreeSet<String>,
+}
+
+/// [`project_store`], resolving references against `known` as well.
+pub fn project_store_onto(scan: &StoreScan, known: &KnownRows) -> Projection {
+    project_records(&scan.tasks, &scan.repos, known)
+}
+
+fn project_records(
+    directories: &[TaskDirectory],
+    repos: &[RepoRecord],
+    known: &KnownRows,
+) -> Projection {
     let mut ordered: Vec<&TaskDirectory> = directories.iter().collect();
     ordered.sort_by(|a, b| {
         (&a.snapshot.repo_id, &a.snapshot.task_id).cmp(&(&b.snapshot.repo_id, &b.snapshot.task_id))
@@ -1466,6 +1558,7 @@ fn project_records(directories: &[TaskDirectory], repos: &[RepoRecord]) -> Proje
         .tasks
         .iter()
         .map(|task| task.id.clone())
+        .chain(known.tasks.iter().cloned())
         .collect();
     let carried_ids = |projection: &Projection, table: &str, column: &str| -> BTreeSet<String> {
         projection
@@ -1480,8 +1573,10 @@ fn project_records(directories: &[TaskDirectory], repos: &[RepoRecord]) -> Proje
         .iter()
         .map(|run| run.id.clone())
         .chain(carried_ids(&projection, "stage_run", "id"))
+        .chain(known.runs.iter().cloned())
         .collect();
-    let joins = carried_ids(&projection, "task_join", "id");
+    let mut joins = carried_ids(&projection, "task_join", "id");
+    joins.extend(known.joins.iter().cloned());
     let mut notes = Vec::new();
     projection.carried.retain(|carried| {
         let row = Value::Object(carried.row.clone());
@@ -1557,7 +1652,21 @@ pub fn rebuild_into_new_database(root: &Path, target: &Path) -> Result<RebuildRe
             target.display()
         ));
     }
-    let scan = scan_store_records(root)?;
+    rebuild_scan_into_new_database(scan_store_records(root)?, target)
+}
+
+/// [`rebuild_into_new_database`] from an already scanned (and possibly
+/// scoped, see [`StoreScan::for_installation`]) store.
+pub fn rebuild_scan_into_new_database(
+    scan: StoreScan,
+    target: &Path,
+) -> Result<RebuildReport, String> {
+    if target.exists() {
+        return Err(format!(
+            "{} already exists; a rebuild only writes a new database",
+            target.display()
+        ));
+    }
     let projection = project_store(&scan);
     let target_path = target
         .to_str()

@@ -22,8 +22,7 @@ mod blockers;
 pub(crate) mod claude_channel;
 pub(crate) mod copilot_wake;
 mod create_intents;
-// Used only by the offline rebuild (`crate::task_store::rebuild`).
-#[cfg_attr(not(test), allow(dead_code))]
+mod disk_authority;
 mod disk_rebuild;
 mod event_subscriptions;
 mod lifecycle_operations;

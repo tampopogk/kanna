@@ -1,0 +1,627 @@
+//! SQLite half of disk authority (spec §11, §16.11 — T13 third increment).
+//! [`crate::task_store::authority`] decides which tasks the database must
+//! take from disk; this reads the facts it compares and writes a projection
+//! over the rows of those tasks only.
+//!
+//! Reconciling a task makes its rows exactly what its directory projects:
+//! rows the directory does not hold are removed, rows it holds are written
+//! (updated in place when the row exists, keeping its rowid), and the
+//! ledger rows become the directory's files, published. Nothing is
+//! executed: owed work is restored as rows, and restart reconciliation
+//! resumes it as it would after a crash. Statistics and transient rows of
+//! the task are left alone, except where removing a run the directory does
+//! not know cascades to them.
+
+use super::disk_rebuild::{
+    insert_row, primary_key, upsert_budget, upsert_input, upsert_published_ledger_row,
+    upsert_stage_run,
+};
+use super::task_state::{json_to_sql, CARRIED_TABLES};
+use super::Db;
+use crate::task_store::rebuild::{CarriedRow, Projection, RepoRecord};
+use rusqlite::{params, OptionalExtension};
+use serde_json::{Map, Value};
+use std::collections::{BTreeMap, BTreeSet};
+
+/// One `task_ledger_entry` row, as the authority check compares it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SqlLedgerRow {
+    pub sequence: i64,
+    /// `None` for a sequence only reserved.
+    pub kind: Option<String>,
+    pub payload: Option<Vec<u8>>,
+    pub published: bool,
+}
+
+/// A task as the database holds it, for the authority check.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SqlTask {
+    pub id: String,
+    pub repo_id: String,
+    pub closed: bool,
+}
+
+/// What reconciling tasks from disk changed.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct ReconcileChanges {
+    pub rows_written: usize,
+    pub rows_removed: usize,
+    /// Ledger entries the database had committed that the directory does
+    /// not hold (or holds with other bytes): `(task, sequence)`. Disk is the
+    /// record; they are dropped.
+    pub discarded_entries: Vec<(String, i64)>,
+}
+
+/// Tables whose counter never goes down: a sequence or branch number the
+/// database handed out stays spent even when disk never recorded it.
+const HIGH_WATER_COLUMNS: &[(&str, &str)] = &[
+    ("task_ledger_sequence", "high_water"),
+    ("task_branch_counter", "last_allocated"),
+];
+
+fn row_object(value: &Value) -> Map<String, Value> {
+    value.as_object().cloned().unwrap_or_default()
+}
+
+fn rowid_of(row: &Map<String, Value>) -> Option<i64> {
+    row.get("rowid").and_then(Value::as_i64)
+}
+
+/// The live row `wanted` is: the one under its rowid, else the one with its
+/// primary key.
+fn matching<'a>(
+    wanted: &Map<String, Value>,
+    live: &'a [Map<String, Value>],
+    key: &[String],
+) -> Option<&'a Map<String, Value>> {
+    if let Some(rowid) = rowid_of(wanted) {
+        if let Some(row) = live.iter().find(|row| rowid_of(row) == Some(rowid)) {
+            return Some(row);
+        }
+    }
+    if key.is_empty() || !key.iter().all(|column| wanted.contains_key(column)) {
+        return None;
+    }
+    live.iter().find(|row| {
+        key.iter()
+            .all(|column| row.get(column) == wanted.get(column))
+    })
+}
+
+fn update_row(
+    db: &Db,
+    table: &str,
+    rowid: i64,
+    columns: &Map<String, Value>,
+) -> Result<(), rusqlite::Error> {
+    let mut assignments = Vec::new();
+    let mut values = Vec::new();
+    for (column, value) in columns {
+        assignments.push(format!("\"{column}\" = ?"));
+        values.push(json_to_sql(value).map_err(|error| {
+            rusqlite::Error::InvalidParameterName(format!("{table}.{column}: {error}"))
+        })?);
+    }
+    if assignments.is_empty() {
+        return Ok(());
+    }
+    values.push(rusqlite::types::Value::Integer(rowid));
+    db.conn.execute(
+        &format!(
+            "UPDATE \"{table}\" SET {} WHERE rowid = ?",
+            assignments.join(", ")
+        ),
+        rusqlite::params_from_iter(values),
+    )?;
+    Ok(())
+}
+
+impl Db {
+    /// Now, as the ledger writes times.
+    pub(crate) fn current_utc_timestamp(&self) -> Result<String, rusqlite::Error> {
+        self.conn
+            .query_row("SELECT strftime('%Y-%m-%dT%H:%M:%fZ', 'now')", [], |row| {
+                row.get(0)
+            })
+    }
+
+    pub(crate) fn sql_tasks_for_authority(&self) -> Result<Vec<SqlTask>, rusqlite::Error> {
+        let mut statement = self
+            .conn
+            .prepare("SELECT id, repo_id, closed_at IS NOT NULL FROM pipeline_item ORDER BY id")?;
+        let rows = statement.query_map([], |row| {
+            Ok(SqlTask {
+                id: row.get(0)?,
+                repo_id: row.get(1)?,
+                closed: row.get(2)?,
+            })
+        })?;
+        rows.collect()
+    }
+
+    pub(crate) fn sql_repo_ids(&self) -> Result<Vec<String>, rusqlite::Error> {
+        let mut statement = self.conn.prepare("SELECT id FROM repo ORDER BY id")?;
+        let rows = statement.query_map([], |row| row.get(0))?;
+        rows.collect()
+    }
+
+    /// Run and join ids the database holds, which a projection of some of
+    /// its tasks may name.
+    pub(crate) fn sql_run_and_join_ids(
+        &self,
+    ) -> Result<(BTreeSet<String>, BTreeSet<String>), rusqlite::Error> {
+        let ids = |sql: &str| -> Result<BTreeSet<String>, rusqlite::Error> {
+            let mut statement = self.conn.prepare(sql)?;
+            let rows = statement.query_map([], |row| row.get(0))?;
+            rows.collect()
+        };
+        Ok((
+            ids("SELECT id FROM stage_run")?,
+            ids("SELECT id FROM task_join")?,
+        ))
+    }
+
+    pub(crate) fn ledger_rows_for_authority(
+        &self,
+        task_id: &str,
+    ) -> Result<Vec<SqlLedgerRow>, rusqlite::Error> {
+        let mut statement = self.conn.prepare(
+            "SELECT sequence, kind, payload, published_at IS NOT NULL FROM task_ledger_entry
+             WHERE task_id = ? ORDER BY sequence",
+        )?;
+        let rows = statement.query_map([task_id], |row| {
+            Ok(SqlLedgerRow {
+                sequence: row.get(0)?,
+                kind: row.get(1)?,
+                payload: row.get(2)?,
+                published: row.get(3)?,
+            })
+        })?;
+        rows.collect()
+    }
+
+    /// An operation holds a reservation on the task: it is mid-flight.
+    pub(crate) fn has_ledger_reservation(&self, task_id: &str) -> Result<bool, rusqlite::Error> {
+        self.conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM task_ledger_entry WHERE task_id = ? AND kind IS NULL)",
+            [task_id],
+            |row| row.get(0),
+        )
+    }
+
+    /// Before switching to disk authority, owe a record for everything the
+    /// disk must hold: a `task.json` for every task never published (closed
+    /// tasks that predate migration 103 have none), and every `repo.json`,
+    /// so each is rewritten naming this installation. Returns how many
+    /// tasks were owed.
+    pub(crate) fn owe_every_disk_record(&self) -> Result<usize, rusqlite::Error> {
+        self.with_immediate_transaction(|db| {
+            db.conn.execute(
+                "INSERT OR IGNORE INTO task_ledger_snapshot (task_id, revision, published_revision)
+                 SELECT id, 0, 0 FROM pipeline_item WHERE true",
+                [],
+            )?;
+            let tasks = db.conn.execute(
+                "UPDATE task_ledger_snapshot SET revision = revision + 1
+                 WHERE published_revision = 0",
+                [],
+            )?;
+            db.conn.execute(
+                "INSERT INTO repo_disk_snapshot (repo_id) SELECT id FROM repo WHERE true
+                 ON CONFLICT(repo_id) DO UPDATE SET revision = revision + 1",
+                [],
+            )?;
+            Ok(tasks)
+        })
+    }
+
+    /// Owe `repo.json` again (it does not name this installation).
+    pub(crate) fn owe_repo_disk_record(&self, repo_id: &str) -> Result<(), rusqlite::Error> {
+        self.conn.execute(
+            "INSERT INTO repo_disk_snapshot (repo_id) SELECT id FROM repo WHERE id = ?1
+             ON CONFLICT(repo_id) DO UPDATE SET revision = revision + 1",
+            [repo_id],
+        )?;
+        Ok(())
+    }
+
+    /// The disk lost records this database published (a restored or
+    /// damaged store): owe them again. Ledger rows are republished from
+    /// their stored bytes, and `task.json` is rewritten.
+    pub(crate) fn reowe_disk_publication(
+        &self,
+        task_id: &str,
+        missing: &[i64],
+    ) -> Result<(), rusqlite::Error> {
+        self.with_immediate_transaction(|db| {
+            for sequence in missing {
+                db.conn.execute(
+                    "UPDATE task_ledger_entry SET published_at = NULL, publish_error = NULL
+                     WHERE task_id = ? AND sequence = ? AND kind IS NOT NULL",
+                    params![task_id, sequence],
+                )?;
+            }
+            db.mark_task_snapshot_dirty(task_id)
+        })
+    }
+
+    /// Raise the snapshot revision to one the disk already holds, so the
+    /// next `task.json` this database writes is newer than it. One that was
+    /// owed stays owed.
+    pub(crate) fn raise_task_snapshot_revision(
+        &self,
+        task_id: &str,
+        disk_revision: i64,
+    ) -> Result<(), rusqlite::Error> {
+        self.conn.execute(
+            "UPDATE task_ledger_snapshot
+             SET revision = CASE WHEN revision > published_revision
+                                 THEN MAX(revision, ?2) + 1 ELSE MAX(revision, ?2) END,
+                 published_revision = MAX(published_revision, ?2)
+             WHERE task_id = ?1",
+            params![task_id, disk_revision],
+        )?;
+        Ok(())
+    }
+
+    /// A repository registration from `repo.json`: inserted when the
+    /// database lacks it, updated when `repo.json` is newer than what this
+    /// database published and differs from it. Returns whether it wrote.
+    pub(crate) fn sync_repo_from_disk(&self, record: &RepoRecord) -> Result<bool, rusqlite::Error> {
+        self.with_immediate_transaction(|db| {
+            let present: bool = db.conn.query_row(
+                "SELECT EXISTS(SELECT 1 FROM repo WHERE id = ?)",
+                [&record.repo_id],
+                |row| row.get(0),
+            )?;
+            let (revision, _) = db.repo_disk_revisions(&record.repo_id)?.unwrap_or((0, 0));
+            let wrote = if !present {
+                insert_row(db, "repo", &record.registration)?;
+                true
+            } else if record.snapshot_revision > revision {
+                let live = db
+                    .repo_disk_record(&record.repo_id)?
+                    .and_then(|live| live.get("registration").cloned())
+                    .map(|live| row_object(&live))
+                    .unwrap_or_default();
+                let mut changed = record.registration.clone();
+                changed.retain(|column, value| {
+                    column != "id" && column != "last_opened_at" && live.get(column) != Some(value)
+                });
+                let rowid: i64 = db.conn.query_row(
+                    "SELECT rowid FROM repo WHERE id = ?",
+                    [&record.repo_id],
+                    |row| row.get(0),
+                )?;
+                update_row(db, "repo", rowid, &changed)?;
+                !changed.is_empty()
+            } else {
+                false
+            };
+            if !wrote {
+                return Ok(false);
+            }
+            let hash = record
+                .registration
+                .get("remote_url_hash")
+                .and_then(Value::as_str);
+            if let (Some(hash), Some(order)) = (hash, record.sidebar_order) {
+                db.conn.execute(
+                    "INSERT INTO repo_sidebar_order (remote_url_hash, sort_order) VALUES (?, ?)
+                     ON CONFLICT(remote_url_hash) DO UPDATE SET sort_order = excluded.sort_order",
+                    params![hash, order],
+                )?;
+            }
+            // What disk holds is current; this database's next write owes
+            // a newer record.
+            db.conn.execute(
+                "INSERT INTO repo_disk_snapshot (repo_id, revision, published_revision)
+                 VALUES (?1, ?2, ?2)
+                 ON CONFLICT(repo_id) DO UPDATE SET
+                    revision = MAX(revision, excluded.revision),
+                    published_revision = excluded.published_revision,
+                    publish_error = NULL",
+                params![record.repo_id, record.snapshot_revision.max(1)],
+            )?;
+            Ok(true)
+        })
+    }
+
+    /// Make the rows of `targets` exactly what `projection` holds for them,
+    /// in one transaction. `disk_revisions` is each target's `task.json`
+    /// revision: afterwards the database owes a `task.json` newer than it,
+    /// written from the reconciled rows.
+    pub(crate) fn reconcile_tasks_from_projection(
+        &self,
+        targets: &BTreeSet<String>,
+        projection: &Projection,
+        disk_revisions: &BTreeMap<String, i64>,
+    ) -> Result<ReconcileChanges, rusqlite::Error> {
+        self.with_immediate_transaction(|db| {
+            let mut changes = ReconcileChanges::default();
+            let wanted = |table: &str, task: &str| -> Vec<&CarriedRow> {
+                projection
+                    .carried
+                    .iter()
+                    .filter(|carried| carried.table == table && carried.task_id == task)
+                    .collect()
+            };
+            // Runs and budgets the projection derived from newer ledger
+            // entries rather than carried rows: kept, then upserted below.
+            let derived_runs: BTreeSet<&str> = projection
+                .stage_runs
+                .iter()
+                .filter(|run| targets.contains(&run.task_id))
+                .map(|run| run.id.as_str())
+                .collect();
+            let derived_budgets: BTreeSet<(&str, &str)> = projection
+                .budgets
+                .iter()
+                .filter(|budget| targets.contains(&budget.task_id))
+                .map(|budget| (budget.task_id.as_str(), budget.stage.as_str()))
+                .collect();
+            let derived = |table: &str, task: &str, row: &Map<String, Value>| {
+                let text = |column: &str| row.get(column).and_then(Value::as_str).unwrap_or("");
+                match table {
+                    "stage_run" => derived_runs.contains(text("id")),
+                    "task_stage_budget" => derived_budgets.contains(&(task, text("stage"))),
+                    _ => false,
+                }
+            };
+            let live_rows = |table: &super::task_state::CarriedTable,
+                             task: &str|
+             -> Result<Vec<Map<String, Value>>, rusqlite::Error> {
+                Ok(db
+                    .carried_rows(table, task)?
+                    .iter()
+                    .map(row_object)
+                    .collect())
+            };
+
+            // The task rows first: every other carried row names one.
+            for task in targets {
+                for carried in wanted("pipeline_item", task) {
+                    let rowid: Option<i64> = db
+                        .conn
+                        .query_row("SELECT rowid FROM pipeline_item WHERE id = ?", [task], |row| {
+                            row.get(0)
+                        })
+                        .optional()?;
+                    match rowid {
+                        Some(rowid) => {
+                            let live = live_rows(&CARRIED_TABLES[0], task)?;
+                            let mut changed = carried.row.clone();
+                            changed.remove("rowid");
+                            changed.retain(|column, value| {
+                                live.first().and_then(|row| row.get(column)) != Some(value)
+                            });
+                            if !changed.is_empty() {
+                                update_row(db, "pipeline_item", rowid, &changed)?;
+                                changes.rows_written += 1;
+                            }
+                        }
+                        None => {
+                            insert_row(db, "pipeline_item", &carried.row)?;
+                            changes.rows_written += 1;
+                        }
+                    }
+                }
+            }
+            // Rows the directory does not hold, children before parents.
+            for table in CARRIED_TABLES.iter().skip(1).rev() {
+                let key = primary_key(db, table.table)?;
+                for task in targets {
+                    let wanted: Vec<Map<String, Value>> = wanted(table.table, task)
+                        .into_iter()
+                        .map(|carried| carried.row.clone())
+                        .collect();
+                    for live in live_rows(table, task)? {
+                        let kept = wanted
+                            .iter()
+                            .any(|row| matching(row, std::slice::from_ref(&live), &key).is_some())
+                            || derived(table.table, task, &live);
+                        if kept {
+                            continue;
+                        }
+                        if let Some(rowid) = rowid_of(&live) {
+                            db.conn.execute(
+                                &format!("DELETE FROM \"{}\" WHERE rowid = ?", table.table),
+                                [rowid],
+                            )?;
+                            changes.rows_removed += 1;
+                        }
+                    }
+                }
+            }
+            // Rows the directory holds, parents before children, re-read
+            // after the removals (a removed run takes its prompt with it).
+            for table in CARRIED_TABLES.iter().skip(1) {
+                let key = primary_key(db, table.table)?;
+                let high_water = HIGH_WATER_COLUMNS
+                    .iter()
+                    .find(|(name, _)| *name == table.table)
+                    .map(|(_, column)| *column);
+                for task in targets {
+                    let live = live_rows(table, task)?;
+                    for carried in wanted(table.table, task) {
+                        let mut row = carried.row.clone();
+                        match matching(&row, &live, &key) {
+                            Some(existing) => {
+                                if let Some(column) = high_water {
+                                    let live_mark = existing.get(column).and_then(Value::as_i64);
+                                    let disk_mark = row.get(column).and_then(Value::as_i64);
+                                    if let (Some(live_mark), Some(disk_mark)) = (live_mark, disk_mark)
+                                    {
+                                        row.insert(column.into(), live_mark.max(disk_mark).into());
+                                    }
+                                }
+                                let rowid = rowid_of(existing).unwrap_or_default();
+                                let mut changed = row.clone();
+                                changed.retain(|column, value| existing.get(column) != Some(value));
+                                if !changed.is_empty() {
+                                    update_row(db, table.table, rowid, &changed)?;
+                                    changes.rows_written += 1;
+                                }
+                            }
+                            None => {
+                                insert_row(db, table.table, &row)?;
+                                changes.rows_written += 1;
+                            }
+                        }
+                    }
+                }
+            }
+            // What the directory holds outside `state`.
+            for run in projection
+                .stage_runs
+                .iter()
+                .filter(|run| targets.contains(&run.task_id))
+            {
+                upsert_stage_run(db, run)?;
+                changes.rows_written += 1;
+            }
+            for budget in projection
+                .budgets
+                .iter()
+                .filter(|budget| targets.contains(&budget.task_id))
+            {
+                upsert_budget(db, budget)?;
+                changes.rows_written += 1;
+            }
+            for task in targets {
+                let blockers: BTreeSet<&str> = projection
+                    .blockers
+                    .iter()
+                    .filter(|(blocked, _)| blocked == task)
+                    .map(|(_, blocker)| blocker.as_str())
+                    .collect();
+                for live in db.list_task_blocker_ids(task)? {
+                    if !blockers.contains(live.as_str()) {
+                        db.conn.execute(
+                            "DELETE FROM task_blocker WHERE blocked_item_id = ? AND blocker_item_id = ?",
+                            params![task, live],
+                        )?;
+                        changes.rows_removed += 1;
+                    }
+                }
+                for blocker in blockers {
+                    changes.rows_written += db.conn.execute(
+                        "INSERT OR IGNORE INTO task_blocker (blocked_item_id, blocker_item_id)
+                         SELECT ?1, id FROM pipeline_item WHERE id = ?2",
+                        params![task, blocker],
+                    )?;
+                }
+
+                // The ledger: the directory's files, published. A row with
+                // the same bytes keeps its place (and, if its publication
+                // was never acknowledged, releases what it held now); any
+                // other row the database committed is dropped.
+                let disk: BTreeMap<i64, &crate::task_store::rebuild::LedgerRow> = projection
+                    .ledger
+                    .iter()
+                    .filter(|entry| &entry.task_id == task)
+                    .map(|entry| (entry.sequence, entry))
+                    .collect();
+                let mut same = BTreeSet::new();
+                for live in db.ledger_rows_for_authority(task)? {
+                    let on_disk = disk.get(&live.sequence);
+                    if live.kind.is_some()
+                        && on_disk.is_some_and(|entry| live.payload.as_deref() == Some(&entry.payload[..]))
+                    {
+                        same.insert(live.sequence);
+                        if !live.published {
+                            db.acknowledge_ledger_entry(task, live.sequence)?;
+                        }
+                        continue;
+                    }
+                    if live.kind.is_some() {
+                        changes.discarded_entries.push((task.clone(), live.sequence));
+                    }
+                    db.conn.execute(
+                        "DELETE FROM task_ledger_entry WHERE task_id = ? AND sequence = ?",
+                        params![task, live.sequence],
+                    )?;
+                    changes.rows_removed += 1;
+                }
+                for (sequence, entry) in &disk {
+                    if !same.contains(sequence) {
+                        upsert_published_ledger_row(db, entry)?;
+                        changes.rows_written += 1;
+                    }
+                }
+                let inputs: BTreeMap<i64, &crate::task_store::rebuild::InputRow> = projection
+                    .inputs
+                    .iter()
+                    .filter(|input| &input.task_id == task)
+                    .map(|input| (input.id, input))
+                    .collect();
+                let live_inputs: Vec<i64> = {
+                    let mut statement =
+                        db.conn.prepare("SELECT id FROM task_input WHERE task_id = ?")?;
+                    let rows = statement.query_map([task], |row| row.get(0))?;
+                    rows.collect::<Result<_, _>>()?
+                };
+                for id in live_inputs {
+                    if !inputs.contains_key(&id) {
+                        db.conn.execute("DELETE FROM task_input WHERE id = ?", [id])?;
+                        changes.rows_removed += 1;
+                    }
+                }
+                for input in inputs.values() {
+                    upsert_input(db, input)?;
+                }
+
+                // Current as the directory holds it; the rows are now at
+                // least as new, so a newer task.json is owed from them.
+                let disk_revision = disk_revisions.get(task).copied().unwrap_or(0);
+                db.conn.execute(
+                    "UPDATE task_ledger_snapshot
+                     SET revision = MAX(revision, ?2) + 1, published_revision = ?2,
+                         publish_error = NULL
+                     WHERE task_id = ?1",
+                    params![task, disk_revision],
+                )?;
+                if let Some(marker) = projection.markers.iter().find(|marker| &marker.task_id == task)
+                {
+                    db.conn.execute(
+                        "INSERT OR IGNORE INTO task_ledger_backfill
+                            (task_id, imported_entries, completed_at)
+                         VALUES (?, ?, ?)",
+                        params![marker.task_id, marker.historical_entries, marker.marked_at],
+                    )?;
+                }
+            }
+            Ok(changes)
+        })
+    }
+}
+
+#[cfg(test)]
+impl Db {
+    /// PRAGMA integrity and foreign-key checks, as one list of problems.
+    pub(crate) fn consistency_problems_for_tests(&self) -> Vec<String> {
+        let mut problems: Vec<String> = self
+            .conn
+            .prepare("PRAGMA quick_check")
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(0))
+            .unwrap()
+            .map(Result::unwrap)
+            .filter(|line| line != "ok")
+            .collect();
+        let mut statement = self.conn.prepare("PRAGMA foreign_key_check").unwrap();
+        let violations = statement
+            .query_map([], |row| {
+                Ok(format!(
+                    "foreign key: {} rowid {:?} -> {}",
+                    row.get::<_, String>(0)?,
+                    row.get::<_, Option<i64>>(1)?,
+                    row.get::<_, String>(2)?
+                ))
+            })
+            .unwrap()
+            .map(Result::unwrap);
+        problems.extend(violations);
+        problems
+    }
+}

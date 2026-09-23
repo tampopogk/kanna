@@ -8,11 +8,14 @@ authority. Tables that hold statistics or transient live state are
 exceptions: they need no disk authority, and a database rebuilt from disk
 starts them empty.
 
-SQLite is still authoritative. The first increment (T13a) wrote this
-inventory and an offline rebuild; the second (T13b) put every other
-durable fact of a task on disk, so the rebuild now restores all of it.
-Neither changes who is authoritative: no writer was retired and nothing
-reads the disk records at runtime except the rebuild.
+The first increment (T13a) wrote this inventory and an offline rebuild;
+the second (T13b) put every other durable fact of a task on disk, so the
+rebuild restores all of it. The third (T13c) makes the authority a
+persisted, per-installation mode: `sql` (the default, as before) or `disk`,
+switched at a checkpointed quiescent boundary and rolled back the same
+way ("Storage authority" below). No writer was retired: in both modes every
+mutation still commits its rows and its ledger entry in one SQLite
+transaction, and the mode decides which side wins a disagreement.
 
 The code is the list: `crate::db::task_state::CARRIED_TABLES` (with each
 column carried or left out for a reason) and `NOT_CARRIED_TABLES`. A test
@@ -25,7 +28,8 @@ authority is.
 | record | where | holds |
 |---|---|---|
 | **task directory** | `~/.kanna/repos/<repo-id>/tasks/<task-id>/` | `task.json` (a replaceable snapshot, now with `state`: the task's rows of every carried table) and the immutable `ledger/` entries: `result` (including engine-observed endings), `input`, `transition`, `plan` |
-| **repo directory** | `~/.kanna/repos/<repo-id>/` | `repo.json` (registration and sidebar order), `artifacts.git` (T6) |
+| **repo directory** | `~/.kanna/repos/<repo-id>/` | `repo.json` (registration, sidebar order, and since T13c the `installation` that wrote it), `artifacts.git` (T6) |
+| **authority record** | `~/.kanna/authority/<installation>.json` | the installation's storage authority mode, a requested switch, a switch in progress, and its recent checkpoints (T13c) |
 | **local config** | the repo's `.kanna/config.json` / `config.local.json`, the app's local config | repo policy, workflow and agent definitions |
 | **protected secret store** | the OS keychain / protected credential files | pairing secrets, device tokens, account credentials. No carried column holds a secret; an incoming transfer's claim token is left out |
 
@@ -279,6 +283,113 @@ not rebuilt, with the reason above.
 `queued_task_input` is no longer listed: migration `067_remove_input_hold_state`
 dropped it.
 
+## Storage authority (T13c)
+
+`crates/kanna-server/src/task_store/authority.rs`. Every installation has
+a mode:
+
+- **`sql`** (default): SQLite is authoritative; the task directories are
+  its published projection. On disagreement the database wins and the
+  publisher rewrites the disk. This is every installation until an
+  operator switches it.
+- **`disk`**: the task directories are authoritative; SQLite is a
+  projection of them. On disagreement the disk wins.
+
+**Installation.** `installation` is derived from the database path (the
+first 16 hex digits of its SHA-256). Production and staging both publish
+under `~/.kanna`, so each writes its own authority record there, and every
+`repo.json` names the installation that wrote it. A rebuild or
+reconciliation takes in only the repositories stamped with its own
+installation and the task directories under them; the others are reported
+as foreign and never read. A `repo.json` an older build rewrote without the
+stamp is owed again at the next `disk`-mode startup.
+
+**What `disk` mode does.**
+
+- At startup, after migrations and before any service can schedule,
+  dispatch or accept a mutation, every task directory is compared with the
+  database. A task whose directory holds what the database never had (a
+  ledger entry it lacks or holds with other bytes, a `task.json` at a
+  revision the database never reached with other rows, or no row at all)
+  has its rows replaced by the projection of its directory, in one
+  transaction: rows the directory does not hold are removed, rows it holds
+  are written, ledger rows become its files, published, and committed
+  entries the directory contradicts are dropped and reported. The branch
+  counter and the ledger sequence high-water mark are never lowered.
+  Nothing is executed: owed transitions, lifecycle intents, commit steps,
+  edge waits, join members and transfer claims come back as rows, and the
+  restart reconciliation that follows resumes them as after a crash (a
+  claimed incoming transfer is re-claimed under a new token; its token
+  never reaches disk). A task the disk tombstones is removed. A record the
+  disk lost (a ledger file or `task.json` the database published) is owed
+  and written again.
+- A missing database is rebuilt from the installation's records before the
+  server opens it (a WAL or shared-memory file left beside it is removed
+  first). What a rebuilt database lacks is the table below.
+- At runtime, when the publisher finds a ledger file already holding other
+  bytes, or a `task.json` at a revision beyond the database's, it writes
+  nothing over it: the task is flagged and reconciled from its directory
+  under the task's mutation lease (deferred while an operation holds a
+  ledger reservation on it).
+
+**Switching to `disk`.** Ask for it; the next server start performs it:
+
+```sh
+kanna-server storage-authority disk      # or KANNA_STORAGE_AUTHORITY=disk
+kanna-server storage-authority status    # mode, request, switch, last checkpoint
+```
+
+The subcommand reads the server's config (`KANNA_SERVER_CONFIG`, else the
+app's `server.toml`) and writes only the authority record. At startup the
+switch records a checkpoint after each step:
+
+| checkpoint | after | mode |
+|---|---|---|
+| `to_disk.begin` | the switch is recorded | sql |
+| `to_disk.drained` | stale reservations released, pre-ledger history imported, a record owed for every task never published (closed tasks that predate the disk records) and every repository (restamped), the outbox drained with nothing left owed | sql |
+| `to_disk.repo_verified` | one per repository: each of its tasks has a current `task.json` whose `state` and dependencies equal its rows, ledger files equal its published rows byte for byte, and `repo.json` equals the registration | sql |
+| `to_disk.verified` | every repository verified, no task directory or tombstone the database does not account for | sql |
+| `to_disk.commit` | the mode is `disk` | disk |
+
+A kill at any point resumes at the next start by re-running the steps, all
+idempotent. Any difference refuses the switch (`to_disk.refused`, with the
+problems in the checkpoint and the log): the installation stays `sql`, the
+request stays, and the next start tries again once the cause is gone.
+
+**Rolling back to `sql`.** `kanna-server storage-authority sql` (or
+`KANNA_STORAGE_AUTHORITY=sql`), then restart:
+
+| checkpoint | after | mode |
+|---|---|---|
+| `to_sql.begin` | the rollback is recorded | as before |
+| `to_sql.reconciled` | from `disk` mode only: the database reconciled from disk and the outbox drained, so it holds everything the disk does | disk |
+| `to_sql.commit` | the mode is `sql` | sql |
+
+From a switch that never committed, nothing changed who was authoritative,
+so the rollback only records itself. From `disk` mode, rollback is
+supported for as long as every mutation still writes SQLite first, which is
+true of this build and every build until that write path is retired (T13d
+must end this window explicitly). Run the rollback before starting a build
+older than T13c on a `disk` installation: an older build ignores the
+authority record and runs as `sql`, which is safe (it writes both sides the
+same way) but does not stamp `repo.json`.
+
+`KANNA_STORAGE_AUTHORITY` is applied at every start; while it is set, a
+subcommand request the other way is overridden at the next start.
+
+**Peers and clients.** Nothing on the wire changes. Transfer, federation,
+the mobile and desktop APIs, and a peer that knows nothing of disk mode
+behave exactly as against a `sql` installation.
+
+**Exceptions.** Secrets stay in their protected stores (no carried column,
+authority record or `repo.json` holds one). Statistics and transient
+live-session state stay SQL-only, and a rebuilt database starts them empty.
+
+**Cost.** A `disk`-mode startup reads every task directory of the
+installation (as a rebuild does) and compares it with the rows. A switch
+publishes a `task.json` for every task never published, closed ones
+included, once.
+
 ## Still open
 
 - **No downgrade fence for any migration.** `schema_migrations` records
@@ -286,6 +397,12 @@ dropped it.
   The task directory has the same exposure: the rebuild's reader refuses an
   unknown `schema_version` or `state` version, the server's own publisher
   and delivery do not. Found in T1's review.
-- Making disk authoritative, retiring SQL writers, restart reconciliation
-  from disk, a rollback path, peer compatibility, and an entry point for the
-  rebuild outside tests.
+- Retiring the SQL-first write path, result prompt variables, the
+  posts/revision API and input-only ledger reads (T13d). Until then disk
+  mode keeps SQLite written first by every mutation, which is what makes
+  rollback always possible.
+- A committed SQL change not yet published when the database is lost is
+  lost in `disk` mode too (the publication window above): the outbox is the
+  disk records' write-ahead journal and lives in the database.
+- The switch is not performed while the server runs; it waits for the next
+  start.

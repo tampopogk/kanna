@@ -43,6 +43,10 @@
 //!
 //! **`repos/<repo-id>/repo.json`** (T13) — the repository's registration and
 //! sidebar order, rewritten the same way; a tombstone once unregistered.
+//! Since T13c it names the `installation` that wrote it, so installations
+//! sharing a root (production and staging) never take in each other's
+//! tasks. Which side is authoritative, SQLite or these records, is the
+//! installation's storage authority mode ([`authority`]).
 //!
 //! **`ledger/NNNNNN-<kind>.<ext>`** — immutable. `NNNNNN` is the per-task
 //! sequence, zero-padded to six digits (order by the number, not the text,
@@ -125,8 +129,10 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, LazyLock, Mutex};
 use tokio::sync::Notify;
 
-// The offline rebuild has no production caller yet: this increment proves it
-// against fixtures, and a later T13 increment decides its entry point.
+pub mod authority;
+// Disk authority (T13c) rebuilds a missing database and reconciles from
+// disk; the rest of the rebuild (the unscoped entry points, the list of what
+// a rebuild lacks) is read by tests and people.
 #[cfg_attr(not(test), allow(dead_code))]
 pub mod rebuild;
 #[cfg(test)]
@@ -178,6 +184,7 @@ fn default_root_for_db(db_path: &str) -> PathBuf {
 /// holds a database path publishes to the same place.
 pub fn configure(config: &crate::config::Config) {
     let root = root_for_config(config);
+    authority::register(&root, &config.db_path);
     if let Ok(mut roots) = ROOTS.lock() {
         roots.insert(config.db_path.clone(), root);
     }
@@ -389,6 +396,13 @@ pub fn flush_task_at(db: &Db, root: &Path, task_id: &str) -> Result<FlushOutcome
             return fail("injected failure before publication".into());
         }
         if let Err(error) = publish_immutable(&ledger, &file_name, &payload) {
+            // Disk authority (T13c): the disk already holds another entry
+            // under this sequence, so the database is behind it.
+            if error.contains("already exists with different content")
+                && authority::mode_for_root(root) == authority::Mode::Disk
+            {
+                authority::flag_divergence(root, task_id, &error);
+            }
             return fail(error);
         }
         if take_fault(root, |fault| {
@@ -411,6 +425,23 @@ pub fn flush_task_at(db: &Db, root: &Path, task_id: &str) -> Result<FlushOutcome
                 let error = "injected failure before task.json".to_string();
                 let _ = db.record_task_snapshot_error(task_id, &error);
                 return Err(error);
+            }
+            // Disk authority (T13c): a task.json at a revision this
+            // database never reached was written from rows it does not
+            // hold; it is reconciled from, never written over.
+            if authority::mode_for_root(root) == authority::Mode::Disk {
+                let on_disk = std::fs::read(dir.join("task.json"))
+                    .ok()
+                    .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+                    .and_then(|value| value.get("snapshot_revision").and_then(Value::as_i64));
+                if let Some(on_disk) = on_disk.filter(|on_disk| *on_disk > revision) {
+                    let error = format!(
+                        "task.json on disk is at revision {on_disk}, beyond the database's {revision}"
+                    );
+                    authority::flag_divergence(root, task_id, &error);
+                    let _ = db.record_task_snapshot_error(task_id, &error);
+                    return Err(error);
+                }
             }
             let facts = db
                 .task_snapshot_facts(task_id)
@@ -506,12 +537,17 @@ pub fn flush_repo_at(db: &Db, root: &Path, repo_id: &str) -> Result<(), String> 
     }
     // A removed repository has no row here any more; its tombstone is
     // written from the removal outbox.
-    let Some(record) = db
+    let Some(mut record) = db
         .repo_disk_record(repo_id)
         .map_err(|error| format!("db error: {error}"))?
     else {
         return Ok(());
     };
+    // The installation that owns the repository (T13c), so one sharing
+    // this root never rebuilds or reconciles it as its own.
+    if let Some(installation) = authority::installation_for_root(root) {
+        record["installation"] = Value::String(installation);
+    }
     let mut bytes =
         serde_json::to_vec_pretty(&record).map_err(|error| format!("render repo.json: {error}"))?;
     bytes.push(b'\n');

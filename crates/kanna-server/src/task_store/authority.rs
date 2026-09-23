@@ -1,0 +1,1430 @@
+//! Storage authority: which record wins, SQLite or the task directories
+//! (spec §11, §16.11 — component T13, third increment).
+//!
+//! Every installation has a persisted **authority mode**:
+//!
+//! - `sql` (the default): SQLite is authoritative and the task directories
+//!   are its published projection, as since T0. On disagreement the
+//!   database wins and the publisher rewrites the disk.
+//! - `disk`: the task directories (`task.json`, the ledger, `repo.json`)
+//!   are authoritative and SQLite is a projection of them. On disagreement
+//!   the disk wins: at every startup, and whenever the publisher finds the
+//!   disk ahead of the database, the database is reconciled from the disk.
+//!   A missing database is rebuilt from the disk before the server opens
+//!   it.
+//!
+//! The write path is the same in both modes and there is only ever one
+//! writer: a mutation commits its rows and its ledger entry in one SQLite
+//! transaction (the outbox, which is the disk records' write-ahead journal)
+//! and the publisher writes them out within seconds. The mode decides only
+//! which side a disagreement resolves to. Retiring the SQL-first write path
+//! is a later increment (T13d).
+//!
+//! # Record
+//!
+//! `<root>/authority/<installation>.json`, replaced atomically:
+//! `{schema_version, installation, database, mode, requested, switch,
+//! checkpoints}`. `installation` is derived from the database path, so a
+//! store root shared by several installations (production and staging both
+//! use `~/.kanna`) holds one record each, and every `repo.json` names the
+//! installation that wrote it: a rebuild or reconciliation takes in only its
+//! own repositories and their tasks. A record that does not exist means
+//! `sql`.
+//!
+//! # Switching
+//!
+//! A switch is requested (`kanna-server storage-authority disk|sql`, or
+//! `KANNA_STORAGE_AUTHORITY=disk|sql` in the server's environment) and
+//! performed at the next startup, after the database is migrated and before
+//! any service can schedule, dispatch or accept a mutation: the quiescent
+//! boundary for every task and repository at once, so the two directions
+//! never run a writer concurrently. Each step records a checkpoint before
+//! the next begins; a restart at any checkpoint resumes by re-running the
+//! steps, all of which are idempotent.
+//!
+//! `sql` → `disk`:
+//! 1. `to_disk.begin` — the switch is recorded; still `sql`.
+//! 2. `to_disk.drained` — stale reservations released, pre-ledger history
+//!    backfilled, a record owed for every task never published (closed
+//!    tasks that predate the disk records) and every repository, and the
+//!    outbox drained with nothing left owed.
+//! 3. `to_disk.repo_verified` (one per repository) — every task of the
+//!    repository has a current `task.json` whose `state` equals its rows,
+//!    its ledger files equal its published rows, and `repo.json` equals the
+//!    registration. Any difference refuses the switch (`to_disk.refused`).
+//! 4. `to_disk.verified` — every repository verified, and no task directory
+//!    or tombstone the database does not account for.
+//! 5. `to_disk.commit` — the mode is `disk`.
+//!
+//! `disk` → `sql` (rollback), from any checkpoint of a switch or from
+//! `disk` mode:
+//! 1. `to_sql.begin`.
+//! 2. `to_sql.reconciled` — from `disk` mode only: the database is
+//!    reconciled from the disk and the outbox drained, so it holds
+//!    everything the disk does.
+//! 3. `to_sql.commit` — the mode is `sql`.
+//!
+//! Rollback from `disk` mode is supported for as long as every mutation
+//! still writes SQLite first, which is true of this build and every build
+//! until the SQL-first write path is retired.
+
+use super::rebuild::{
+    project_store_onto, rebuild_scan_into_new_database, scan_store_records, KnownRows,
+    RebuildReport, StoreScan, TaskDirectory,
+};
+use super::{flush_all, replace_atomically, root_for_db};
+use crate::db::task_state::CARRIED_TABLES;
+use crate::db::Db;
+use serde::{Deserialize, Serialize};
+use serde_json::{json, Map, Value};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::path::{Path, PathBuf};
+use std::sync::{LazyLock, Mutex};
+
+/// Requests a switch at startup: `disk` or `sql`.
+pub const AUTHORITY_ENV: &str = "KANNA_STORAGE_AUTHORITY";
+
+/// The authority record's own version. Anything else is refused.
+pub const RECORD_SCHEMA_VERSION: u64 = 1;
+
+/// Checkpoints kept in the record, newest last.
+const CHECKPOINT_HISTORY: usize = 64;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Mode {
+    Sql,
+    Disk,
+}
+
+impl Mode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Mode::Sql => "sql",
+            Mode::Disk => "disk",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim() {
+            "sql" => Some(Mode::Sql),
+            "disk" => Some(Mode::Disk),
+            _ => None,
+        }
+    }
+}
+
+/// The installation a database path is: stable for as long as the database
+/// lives at that path, and distinct for every installation sharing a root.
+pub fn installation_id(db_path: &str) -> String {
+    use sha2::{Digest, Sha256};
+    Sha256::digest(db_path.as_bytes())
+        .iter()
+        .take(8)
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+// ---------------------------------------------------------------------------
+// This process's view: installation and mode per store root
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone)]
+struct Registered {
+    installation: String,
+    mode: Mode,
+}
+
+static REGISTRY: LazyLock<Mutex<HashMap<PathBuf, Registered>>> = LazyLock::new(Default::default);
+
+/// Tasks the publisher found the disk ahead of the database for, by root.
+static DIVERGED: LazyLock<Mutex<BTreeSet<(PathBuf, String)>>> = LazyLock::new(Default::default);
+
+/// Name the installation that publishes under `root`. Its mode stays what
+/// it was (`sql` until [`start`] says otherwise).
+pub fn register(root: &Path, db_path: &str) {
+    let mut registry = REGISTRY.lock().unwrap_or_else(|poison| poison.into_inner());
+    let installation = installation_id(db_path);
+    registry
+        .entry(root.to_path_buf())
+        .and_modify(|registered| registered.installation = installation.clone())
+        .or_insert(Registered {
+            installation,
+            mode: Mode::Sql,
+        });
+}
+
+fn set_mode(root: &Path, db_path: &str, mode: Mode) {
+    register(root, db_path);
+    let mut registry = REGISTRY.lock().unwrap_or_else(|poison| poison.into_inner());
+    if let Some(registered) = registry.get_mut(root) {
+        registered.mode = mode;
+    }
+}
+
+/// The installation that publishes under `root`, if one registered: the
+/// publisher stamps it into every `repo.json`.
+pub fn installation_for_root(root: &Path) -> Option<String> {
+    REGISTRY
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner())
+        .get(root)
+        .map(|registered| registered.installation.clone())
+}
+
+/// The mode this process runs `root` in.
+pub fn mode_for_root(root: &Path) -> Mode {
+    REGISTRY
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner())
+        .get(root)
+        .map_or(Mode::Sql, |registered| registered.mode)
+}
+
+/// The publisher found the disk ahead of the database for this task (a
+/// ledger file it would have written already holds other bytes, or
+/// `task.json` is newer than any revision the database reached). In `disk`
+/// mode the task is reconciled from the disk before anything is written
+/// over it.
+pub(crate) fn flag_divergence(root: &Path, task_id: &str, why: &str) {
+    log::warn!("task {task_id}: the disk is ahead of the database ({why}); reconciling from disk");
+    DIVERGED
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner())
+        .insert((root.to_path_buf(), task_id.to_string()));
+    super::wake_publisher();
+}
+
+pub(crate) fn diverged_tasks(root: &Path) -> Vec<String> {
+    DIVERGED
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner())
+        .iter()
+        .filter(|(flagged, _)| flagged == root)
+        .map(|(_, task)| task.clone())
+        .collect()
+}
+
+fn clear_divergence(root: &Path, task_id: &str) {
+    DIVERGED
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner())
+        .remove(&(root.to_path_buf(), task_id.to_string()));
+}
+
+// ---------------------------------------------------------------------------
+// Record
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AuthorityRecord {
+    pub schema_version: u64,
+    pub installation: String,
+    /// The database path the installation id was derived from.
+    pub database: String,
+    pub mode: Mode,
+    /// A switch asked for and not yet performed.
+    pub requested: Option<Mode>,
+    /// A switch in progress.
+    pub switch: Option<SwitchProgress>,
+    /// The most recent checkpoints, oldest first.
+    pub checkpoints: Vec<Checkpoint>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SwitchProgress {
+    pub target: Mode,
+    /// The mode the switch started from.
+    pub from: Mode,
+    pub started_at: String,
+    /// The last checkpoint the switch passed.
+    pub phase: String,
+    /// `to_disk`: each verified repository's tasks and the `task.json`
+    /// revision they were verified at.
+    #[serde(default)]
+    pub verified_repos: BTreeMap<String, BTreeMap<String, i64>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Checkpoint {
+    pub checkpoint: String,
+    pub at: String,
+    /// The authoritative mode once the checkpoint was recorded.
+    pub mode: Mode,
+    #[serde(default)]
+    pub detail: Value,
+}
+
+impl AuthorityRecord {
+    fn new(db_path: &str) -> Self {
+        Self {
+            schema_version: RECORD_SCHEMA_VERSION,
+            installation: installation_id(db_path),
+            database: db_path.to_string(),
+            mode: Mode::Sql,
+            requested: None,
+            switch: None,
+            checkpoints: Vec::new(),
+        }
+    }
+
+    fn checkpoint(&mut self, at: String, name: &str, detail: Value) {
+        if let Some(switch) = &mut self.switch {
+            switch.phase = name.to_string();
+        }
+        self.checkpoints.push(Checkpoint {
+            checkpoint: name.to_string(),
+            at,
+            mode: self.mode,
+            detail,
+        });
+        let excess = self.checkpoints.len().saturating_sub(CHECKPOINT_HISTORY);
+        self.checkpoints.drain(..excess);
+    }
+}
+
+pub fn record_path(root: &Path, installation: &str) -> PathBuf {
+    root.join("authority").join(format!("{installation}.json"))
+}
+
+/// The installation's record; `sql` with nothing requested when none was
+/// ever written. An unreadable record is an error, never a guess: it may
+/// say `disk`.
+pub fn load_record(root: &Path, db_path: &str) -> Result<AuthorityRecord, String> {
+    let path = record_path(root, &installation_id(db_path));
+    let bytes = match std::fs::read(&path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(AuthorityRecord::new(db_path))
+        }
+        Err(error) => return Err(format!("read {}: {error}", path.display())),
+    };
+    let record: AuthorityRecord =
+        serde_json::from_slice(&bytes).map_err(|error| format!("{}: {error}", path.display()))?;
+    if record.schema_version != RECORD_SCHEMA_VERSION {
+        return Err(format!(
+            "{} has schema_version {}; this build understands {RECORD_SCHEMA_VERSION}",
+            path.display(),
+            record.schema_version
+        ));
+    }
+    if record.installation != installation_id(db_path) {
+        return Err(format!(
+            "{} names installation {}, not this database's",
+            path.display(),
+            record.installation
+        ));
+    }
+    Ok(record)
+}
+
+fn save_record(root: &Path, record: &AuthorityRecord) -> Result<(), String> {
+    let mut bytes = serde_json::to_vec_pretty(record)
+        .map_err(|error| format!("render authority record: {error}"))?;
+    bytes.push(b'\n');
+    let path = record_path(root, &record.installation);
+    let dir = path.parent().unwrap_or(root);
+    let name = path
+        .file_name()
+        .map(|name| name.to_string_lossy().to_string())
+        .unwrap_or_default();
+    replace_atomically(dir, &name, &bytes)
+}
+
+/// Ask for `mode` at the next startup. Writes only the record.
+pub fn request(db_path: &str, mode: Mode) -> Result<AuthorityRecord, String> {
+    let root = root_for_db(db_path);
+    let mut record = load_record(&root, db_path)?;
+    record.requested = (record.mode != mode || record.switch.is_some()).then_some(mode);
+    save_record(&root, &record)?;
+    Ok(record)
+}
+
+/// `kanna-server storage-authority [status|disk|sql]`.
+pub fn run_cli(config: &crate::config::Config, args: &[String]) -> Result<String, String> {
+    super::configure(config);
+    let db_path = config.db_path.as_str();
+    let root = root_for_db(db_path);
+    let describe = |record: &AuthorityRecord| {
+        let mut lines = vec![
+            format!("installation: {}", record.installation),
+            format!("database: {}", record.database),
+            format!("task store: {}", root.display()),
+            format!("mode: {}", record.mode.as_str()),
+        ];
+        if let Some(requested) = record.requested {
+            lines.push(format!(
+                "requested: {} (performed at the next server start)",
+                requested.as_str()
+            ));
+        }
+        if let Some(switch) = &record.switch {
+            lines.push(format!(
+                "switch in progress: {} -> {} at {}",
+                switch.from.as_str(),
+                switch.target.as_str(),
+                switch.phase
+            ));
+        }
+        if let Some(last) = record.checkpoints.last() {
+            lines.push(format!(
+                "last checkpoint: {} at {}",
+                last.checkpoint, last.at
+            ));
+        }
+        lines.join("\n")
+    };
+    match args.first().map(String::as_str) {
+        None | Some("status") => Ok(describe(&load_record(&root, db_path)?)),
+        Some(value) => match Mode::parse(value) {
+            Some(mode) => Ok(describe(&request(db_path, mode)?)),
+            None => Err(format!(
+                "usage: kanna-server storage-authority [status|disk|sql] (got {value:?})"
+            )),
+        },
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Test crash points
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+static STOPS: LazyLock<Mutex<HashMap<PathBuf, String>>> = LazyLock::new(Default::default);
+
+/// Stop the next [`start`] under `root` right after it records the first
+/// checkpoint whose name starts with `checkpoint`, as if the process died
+/// there. Fires once.
+#[cfg(test)]
+pub(crate) fn stop_after(root: &Path, checkpoint: &str) {
+    STOPS
+        .lock()
+        .unwrap()
+        .insert(root.to_path_buf(), checkpoint.to_string());
+}
+
+/// What a stopped [`start`] returns.
+#[cfg(test)]
+pub const INTERRUPTED: &str = "interrupted after checkpoint";
+
+#[cfg(test)]
+fn stop_point(root: &Path, checkpoint: &str) -> Result<(), String> {
+    let mut stops = STOPS.lock().unwrap();
+    if stops
+        .get(root)
+        .is_some_and(|prefix| checkpoint.starts_with(prefix.as_str()))
+    {
+        stops.remove(root);
+        return Err(format!("{INTERRUPTED} {checkpoint}"));
+    }
+    Ok(())
+}
+
+#[cfg(not(test))]
+fn stop_point(_root: &Path, _checkpoint: &str) -> Result<(), String> {
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Comparing a task directory with the database
+// ---------------------------------------------------------------------------
+
+/// A task's directory against its rows.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct Compared {
+    /// `(revision, published_revision)`; `None` when the database does not
+    /// hold the task.
+    sql: Option<(i64, i64)>,
+    disk_revision: i64,
+    has_state: bool,
+    /// `state` and `links.dependencies` equal the rows (quiet columns
+    /// aside).
+    state_equal: bool,
+    /// On disk, not committed in the database.
+    disk_only: Vec<i64>,
+    /// Committed in both with other bytes.
+    differing: Vec<i64>,
+    /// Published by the database, absent from disk.
+    published_missing: Vec<i64>,
+    /// Committed and unpublished, absent from disk (the outbox).
+    pending: Vec<i64>,
+    /// Committed and unpublished, already on disk with the same bytes.
+    pending_on_disk: Vec<i64>,
+    reservations: Vec<i64>,
+}
+
+impl Compared {
+    /// Disk and database agree exactly, and nothing is owed.
+    fn exact(&self) -> bool {
+        self.sql
+            .is_some_and(|(revision, published)| revision == published)
+            && self.has_state
+            && self.state_equal
+            && self.disk_only.is_empty()
+            && self.differing.is_empty()
+            && self.published_missing.is_empty()
+            && self.pending.is_empty()
+            && self.pending_on_disk.is_empty()
+            && self.reservations.is_empty()
+    }
+
+    fn differences(&self) -> Vec<String> {
+        let mut notes = Vec::new();
+        match self.sql {
+            None => notes.push("the database does not hold the task".to_string()),
+            Some((revision, published)) if revision != published => notes.push(format!(
+                "task.json is owed (revision {revision}, published {published})"
+            )),
+            Some(_) => {}
+        }
+        if !self.has_state {
+            notes.push("task.json has no state".into());
+        } else if !self.state_equal {
+            notes.push("task.json state differs from the rows".into());
+        }
+        let mut list = |label: &str, sequences: &[i64]| {
+            if !sequences.is_empty() {
+                notes.push(format!("{label}: {sequences:?}"));
+            }
+        };
+        list("ledger entries only on disk", &self.disk_only);
+        list("ledger entries that differ", &self.differing);
+        list(
+            "published ledger entries missing on disk",
+            &self.published_missing,
+        );
+        list("unpublished ledger entries", &self.pending);
+        list("unacknowledged ledger entries", &self.pending_on_disk);
+        list("ledger reservations", &self.reservations);
+        notes
+    }
+}
+
+/// Carried rows without their quiet columns, which move with unrelated
+/// writes and owe no record.
+fn comparable(tables: &Map<String, Value>) -> Map<String, Value> {
+    tables
+        .iter()
+        .map(|(table, rows)| {
+            let quiet = CARRIED_TABLES
+                .iter()
+                .find(|carried| carried.table == table)
+                .map_or(&[][..], |carried| carried.quiet);
+            let rows = rows
+                .as_array()
+                .map(|rows| {
+                    rows.iter()
+                        .map(|row| {
+                            let mut row = row.as_object().cloned().unwrap_or_default();
+                            row.retain(|column, _| !quiet.contains(&column.as_str()));
+                            Value::Object(row)
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            (table.clone(), Value::Array(rows))
+        })
+        .collect()
+}
+
+fn compare_task(db: &Db, directory: &TaskDirectory) -> Result<Compared, rusqlite::Error> {
+    let snapshot = &directory.snapshot;
+    let task_id = snapshot.task_id.as_str();
+    let mut compared = Compared {
+        disk_revision: snapshot.snapshot_revision,
+        has_state: snapshot.state.is_some(),
+        ..Compared::default()
+    };
+    if db.get_pipeline_item(task_id)?.is_none() {
+        compared.disk_only = directory
+            .entries
+            .iter()
+            .map(|entry| entry.file.sequence)
+            .collect();
+        return Ok(compared);
+    }
+    compared.sql = Some(db.task_snapshot_revisions(task_id)?.unwrap_or((0, 0)));
+    if let Some(disk_tables) = &snapshot.state {
+        let sql_state = db.task_state_record(task_id)?;
+        let sql_tables = sql_state
+            .get("tables")
+            .and_then(Value::as_object)
+            .cloned()
+            .unwrap_or_default();
+        let mut disk_dependencies = snapshot.dependencies.clone();
+        disk_dependencies.sort();
+        disk_dependencies.dedup();
+        compared.state_equal = comparable(disk_tables) == comparable(&sql_tables)
+            && db.list_task_blocker_ids(task_id)? == disk_dependencies;
+    }
+    let disk: BTreeMap<i64, &[u8]> = directory
+        .entries
+        .iter()
+        .map(|entry| (entry.file.sequence, entry.bytes.as_slice()))
+        .collect();
+    let mut committed = BTreeSet::new();
+    for row in db.ledger_rows_for_authority(task_id)? {
+        if row.kind.is_none() {
+            compared.reservations.push(row.sequence);
+            continue;
+        }
+        committed.insert(row.sequence);
+        match disk.get(&row.sequence) {
+            Some(bytes) if row.payload.as_deref() == Some(*bytes) => {
+                if !row.published {
+                    compared.pending_on_disk.push(row.sequence);
+                }
+            }
+            Some(_) => compared.differing.push(row.sequence),
+            None if row.published => compared.published_missing.push(row.sequence),
+            None => compared.pending.push(row.sequence),
+        }
+    }
+    compared.disk_only = disk
+        .keys()
+        .copied()
+        .filter(|sequence| !committed.contains(sequence))
+        .collect();
+    Ok(compared)
+}
+
+/// What `disk` mode does about a task directory.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Verdict {
+    /// Nothing for the disk to correct; the database may be ahead (its
+    /// outbox), which the publisher writes out.
+    InSync,
+    /// Identical rows, but `task.json` carries a revision the database
+    /// never reached (it was restored from an older copy): raise it.
+    CountersBehind(i64),
+    /// The disk holds what the database does not: reconcile from it.
+    DiskAhead(Vec<String>),
+    /// The database published what the disk no longer holds: publish again.
+    DiskBehind(Vec<i64>),
+    /// The disk is ahead, but its `task.json` predates `state` and cannot
+    /// be projected exactly.
+    Unreconcilable(String),
+}
+
+fn verdict(compared: &Compared) -> Verdict {
+    let Some((revision, published)) = compared.sql else {
+        return if compared.has_state {
+            Verdict::DiskAhead(vec!["the database does not hold the task".into()])
+        } else {
+            Verdict::Unreconcilable("the database does not hold the task".into())
+        };
+    };
+    let mut ahead = Vec::new();
+    if !compared.disk_only.is_empty() {
+        ahead.push(format!(
+            "ledger entries {:?} are on disk, not in the database",
+            compared.disk_only
+        ));
+    }
+    if !compared.differing.is_empty() {
+        ahead.push(format!(
+            "ledger entries {:?} differ from the database's",
+            compared.differing
+        ));
+    }
+    // A revision the database never reached was written by a database
+    // this one does not descend from; the same revision with other rows
+    // was changed on disk. Anything else is the database being ahead.
+    if compared.has_state && !compared.state_equal {
+        if compared.disk_revision > revision {
+            ahead.push(format!(
+                "task.json revision {} is newer than the database's {revision}",
+                compared.disk_revision
+            ));
+        } else if compared.disk_revision == revision && revision == published {
+            ahead.push(format!(
+                "task.json differs from the rows at the same revision {revision}"
+            ));
+        }
+    }
+    if !ahead.is_empty() {
+        return if compared.has_state {
+            Verdict::DiskAhead(ahead)
+        } else {
+            Verdict::Unreconcilable(format!("{}; task.json has no state", ahead.join("; ")))
+        };
+    }
+    if !compared.published_missing.is_empty() || compared.disk_revision < published {
+        return Verdict::DiskBehind(compared.published_missing.clone());
+    }
+    if compared.disk_revision > revision {
+        return Verdict::CountersBehind(compared.disk_revision);
+    }
+    Verdict::InSync
+}
+
+// ---------------------------------------------------------------------------
+// Reconciling the database from disk
+// ---------------------------------------------------------------------------
+
+/// What reconciling a database from its disk records did.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ReconcileReport {
+    /// Tasks whose rows were replaced from their directory, and why.
+    pub reconciled: Vec<(String, Vec<String>)>,
+    /// Tasks whose records the disk lost, owed again from the database.
+    pub republished: Vec<String>,
+    /// Tasks the disk records as removed, removed from the database.
+    pub removed: Vec<String>,
+    /// Repository registrations taken from `repo.json`.
+    pub repos: Vec<String>,
+    /// Ledger entries the database committed that the disk contradicts or
+    /// lacks, dropped: `(task, sequence)`.
+    pub discarded_entries: Vec<(String, i64)>,
+    /// Tasks that could not be reconciled, and why.
+    pub failed: Vec<(String, String)>,
+    /// Directories and records that could not be read.
+    pub unreadable: Vec<(PathBuf, String)>,
+    /// Repositories under the root that belong to another installation.
+    pub foreign_repos: Vec<String>,
+    pub diagnostics: Vec<String>,
+}
+
+impl ReconcileReport {
+    fn log(&self) {
+        for (task, reasons) in &self.reconciled {
+            log::warn!("task {task} reconciled from disk: {}", reasons.join("; "));
+        }
+        for task in &self.republished {
+            log::warn!("task {task}: disk lost published records; owed again from the database");
+        }
+        for task in &self.removed {
+            log::warn!("task {task} is removed on disk; removed from the database");
+        }
+        for (task, sequence) in &self.discarded_entries {
+            log::warn!("task {task}: ledger entry {sequence} the disk does not hold was dropped");
+        }
+        for (task, error) in &self.failed {
+            log::error!("task {task} could not be reconciled from disk: {error}");
+        }
+        for (path, error) in &self.unreadable {
+            log::error!("{} is unreadable: {error}", path.display());
+        }
+        for note in &self.diagnostics {
+            log::info!("reconcile: {note}");
+        }
+    }
+}
+
+fn task_id_of_tombstone(path: &Path) -> Option<String> {
+    let parent = path.parent()?.file_name()?.to_string_lossy().to_string();
+    (parent == "tasks").then(|| {
+        path.file_name()
+            .map(|name| name.to_string_lossy().to_string())
+    })?
+}
+
+/// Make the database agree with the disk (`disk` mode): every task the
+/// disk is ahead for is reconciled from its directory, every record the
+/// disk lost is owed again, and the outbox is drained. `only` limits it to
+/// some tasks (the publisher's divergence); `None` is the whole
+/// installation, repositories included.
+pub fn reconcile_from_disk(
+    db: &Db,
+    db_path: &str,
+    only: Option<&BTreeSet<String>>,
+) -> Result<ReconcileReport, String> {
+    let root = root_for_db(db_path);
+    let installation = installation_id(db_path);
+    let db_error = |error: rusqlite::Error| format!("db error: {error}");
+    let (scan, foreign) = scan_store_records(&root)?.for_installation(&installation);
+    let mut report = ReconcileReport {
+        unreadable: scan.unreadable.clone(),
+        foreign_repos: foreign,
+        ..ReconcileReport::default()
+    };
+    let wanted = |task: &str| only.is_none_or(|only| only.contains(task));
+    // Removals the database committed and has not yet tombstoned on disk:
+    // the outbox is the disk's journal, so they stand, and the publisher
+    // writes their tombstones below.
+    let removing: BTreeSet<(String, String)> = db
+        .pending_disk_removals()
+        .map_err(db_error)?
+        .into_iter()
+        .map(|(kind, id, _)| (kind, id))
+        .collect();
+    let removing_task = |task: &str| removing.contains(&("task".to_string(), task.to_string()));
+    if only.is_none() {
+        for record in &scan.repos {
+            if removing.contains(&("repo".to_string(), record.repo_id.clone())) {
+                continue;
+            }
+            if db.sync_repo_from_disk(record).map_err(db_error)? {
+                report.repos.push(record.repo_id.clone());
+            }
+        }
+        // A repo.json this installation did not stamp (an older build
+        // rewrote it) is owed again, so the disk names its owner.
+        for repo in db.sql_repo_ids().map_err(db_error)? {
+            if scan.repos.iter().any(|record| record.repo_id == repo) {
+                continue;
+            }
+            let on_disk = std::fs::read(super::repo_dir(&root, &repo).join("repo.json"));
+            if on_disk.is_ok_and(|bytes| super::rebuild::is_tombstone(&bytes)) {
+                // Unregistered on disk and registered here: never
+                // resurrected by a rewrite, never removed with its tasks by
+                // a reconciliation. An operator decides.
+                report.diagnostics.push(format!(
+                    "repo {repo} is registered in the database but tombstoned on disk; left as it is"
+                ));
+                continue;
+            }
+            db.owe_repo_disk_record(&repo).map_err(db_error)?;
+        }
+    }
+    let sql_tasks = db.sql_tasks_for_authority().map_err(db_error)?;
+    let mut targets = BTreeSet::new();
+    let mut disk_revisions = BTreeMap::new();
+    let mut reasons: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for directory in scan
+        .tasks
+        .iter()
+        .filter(|dir| wanted(&dir.snapshot.task_id) && !removing_task(&dir.snapshot.task_id))
+    {
+        let task_id = directory.snapshot.task_id.clone();
+        let compared = compare_task(db, directory).map_err(db_error)?;
+        match verdict(&compared) {
+            Verdict::InSync => {}
+            Verdict::CountersBehind(disk_revision) => {
+                db.raise_task_snapshot_revision(&task_id, disk_revision)
+                    .map_err(db_error)?;
+            }
+            Verdict::DiskAhead(why) => {
+                targets.insert(task_id.clone());
+                disk_revisions.insert(task_id.clone(), directory.snapshot.snapshot_revision);
+                reasons.insert(task_id, why);
+            }
+            Verdict::DiskBehind(missing) => {
+                db.reowe_disk_publication(&task_id, &missing)
+                    .map_err(db_error)?;
+                report.republished.push(task_id);
+            }
+            Verdict::Unreconcilable(why) => report.failed.push((task_id, why)),
+        }
+    }
+    let on_disk: BTreeSet<&str> = scan
+        .tasks
+        .iter()
+        .map(|dir| dir.snapshot.task_id.as_str())
+        .collect();
+    let mut tombstoned = BTreeSet::new();
+    for path in &scan.removed {
+        let Some(task_id) = task_id_of_tombstone(path) else {
+            continue;
+        };
+        tombstoned.insert(task_id.clone());
+        if wanted(&task_id) && sql_tasks.iter().any(|task| task.id == task_id) {
+            db.delete_task_creation_artifacts(&task_id)
+                .map_err(db_error)?;
+            report.removed.push(task_id);
+        }
+    }
+    if only.is_none() {
+        // The database published a task.json the disk no longer has.
+        let ours: BTreeSet<&str> = scan
+            .repos
+            .iter()
+            .map(|repo| repo.repo_id.as_str())
+            .collect();
+        for task in &sql_tasks {
+            if on_disk.contains(task.id.as_str())
+                || tombstoned.contains(&task.id)
+                || !ours.contains(task.repo_id.as_str())
+            {
+                continue;
+            }
+            let published = db
+                .task_snapshot_revisions(&task.id)
+                .map_err(db_error)?
+                .is_some_and(|(_, published)| published > 0);
+            if published {
+                let missing: Vec<i64> = db
+                    .ledger_rows_for_authority(&task.id)
+                    .map_err(db_error)?
+                    .into_iter()
+                    .filter(|row| row.published)
+                    .map(|row| row.sequence)
+                    .collect();
+                db.reowe_disk_publication(&task.id, &missing)
+                    .map_err(db_error)?;
+                report.republished.push(task.id.clone());
+            }
+        }
+    }
+    if !targets.is_empty() {
+        let (runs, joins) = db.sql_run_and_join_ids().map_err(db_error)?;
+        let known = KnownRows {
+            tasks: sql_tasks.iter().map(|task| task.id.clone()).collect(),
+            runs,
+            joins,
+        };
+        let project = |tasks: &BTreeSet<String>| {
+            let subset = StoreScan {
+                tasks: scan
+                    .tasks
+                    .iter()
+                    .filter(|dir| tasks.contains(&dir.snapshot.task_id))
+                    .cloned()
+                    .collect(),
+                repos: scan.repos.clone(),
+                ..StoreScan::default()
+            };
+            project_store_onto(&subset, &known)
+        };
+        let projection = project(&targets);
+        report.diagnostics.extend(projection.diagnostics.clone());
+        match db.reconcile_tasks_from_projection(&targets, &projection, &disk_revisions) {
+            Ok(changes) => {
+                report.discarded_entries.extend(changes.discarded_entries);
+                for task in &targets {
+                    report
+                        .reconciled
+                        .push((task.clone(), reasons.remove(task).unwrap_or_default()));
+                }
+            }
+            // One task's rows may be what refuses the rest: try each alone.
+            Err(together) => {
+                report.diagnostics.push(format!(
+                    "reconciling {} tasks together failed ({together}); reconciling each alone",
+                    targets.len()
+                ));
+                for task in &targets {
+                    let alone = BTreeSet::from([task.clone()]);
+                    match db.reconcile_tasks_from_projection(
+                        &alone,
+                        &project(&alone),
+                        &disk_revisions,
+                    ) {
+                        Ok(changes) => {
+                            report.discarded_entries.extend(changes.discarded_entries);
+                            report
+                                .reconciled
+                                .push((task.clone(), reasons.remove(task).unwrap_or_default()));
+                        }
+                        Err(error) => report.failed.push((task.clone(), db_error(error))),
+                    }
+                }
+            }
+        }
+    }
+    for (task, _) in &report.reconciled {
+        clear_divergence(&root, task);
+    }
+    // A flagged task found in sync (or removed) needs nothing more; one that
+    // failed stays flagged, and is retried at the publisher's next pass.
+    for task in only.into_iter().flatten() {
+        if !report.failed.iter().any(|(failed, _)| failed == task) {
+            clear_divergence(&root, task);
+        }
+    }
+    for (task, error) in flush_all(db, db_path) {
+        report.diagnostics.push(format!(
+            "{task} is pending publication after reconciling: {error}"
+        ));
+    }
+    Ok(report)
+}
+
+// ---------------------------------------------------------------------------
+// Switching
+// ---------------------------------------------------------------------------
+
+/// Whether everything the disk must hold equals the database.
+#[derive(Debug, Default)]
+struct Verification {
+    /// Per repository: its tasks verified exact (with the `task.json`
+    /// revision each was verified at), and its problems.
+    repos: BTreeMap<String, (BTreeMap<String, i64>, Vec<String>)>,
+    /// Problems no repository of the database accounts for.
+    unaccounted: Vec<String>,
+}
+
+impl Verification {
+    fn problems(&self) -> Vec<String> {
+        self.repos
+            .values()
+            .flat_map(|(_, problems)| problems.iter().cloned())
+            .chain(self.unaccounted.iter().cloned())
+            .collect()
+    }
+}
+
+fn verify_disk_equals_database(db: &Db, db_path: &str) -> Result<Verification, String> {
+    let root = root_for_db(db_path);
+    let db_error = |error: rusqlite::Error| format!("db error: {error}");
+    let (scan, _) = scan_store_records(&root)?.for_installation(&installation_id(db_path));
+    let mut verification = Verification::default();
+    for repo in db.sql_repo_ids().map_err(db_error)? {
+        let (_, problems) = verification.repos.entry(repo.clone()).or_default();
+        let Some(record) = scan.repos.iter().find(|record| record.repo_id == repo) else {
+            problems.push(format!(
+                "repo {repo}: no readable repo.json naming this installation"
+            ));
+            continue;
+        };
+        let live = db
+            .repo_disk_record(&repo)
+            .map_err(db_error)?
+            .unwrap_or(Value::Null);
+        let quiet = |registration: &Map<String, Value>| {
+            let mut registration = registration.clone();
+            registration.remove("last_opened_at");
+            registration
+        };
+        let live_registration = live
+            .get("registration")
+            .and_then(Value::as_object)
+            .map(quiet)
+            .unwrap_or_default();
+        if quiet(&record.registration) != live_registration
+            || live.get("sidebar_order").and_then(Value::as_i64) != record.sidebar_order
+        {
+            problems.push(format!(
+                "repo {repo}: repo.json differs from the registration"
+            ));
+        }
+    }
+    let directories: BTreeMap<&str, &TaskDirectory> = scan
+        .tasks
+        .iter()
+        .map(|dir| (dir.snapshot.task_id.as_str(), dir))
+        .collect();
+    let sql_tasks = db.sql_tasks_for_authority().map_err(db_error)?;
+    let unreadable = |task: &str| {
+        scan.unreadable
+            .iter()
+            .find(|(path, _)| path.file_name().is_some_and(|name| name == task))
+            .map(|(_, error)| error.clone())
+    };
+    for task in &sql_tasks {
+        let (verified, problems) = verification.repos.entry(task.repo_id.clone()).or_default();
+        let Some(directory) = directories.get(task.id.as_str()) else {
+            problems.push(match unreadable(&task.id) {
+                Some(error) => format!("task {}: its directory is unreadable: {error}", task.id),
+                None => format!("task {}: no task directory", task.id),
+            });
+            continue;
+        };
+        let compared = compare_task(db, directory).map_err(db_error)?;
+        if compared.exact() {
+            verified.insert(task.id.clone(), compared.disk_revision);
+        } else {
+            problems.push(format!(
+                "task {}: {}",
+                task.id,
+                compared.differences().join("; ")
+            ));
+        }
+    }
+    // A directory the database does not hold would be rebuilt into a task
+    // it never had. One with no readable task.json is never rebuilt, so it
+    // is only reported.
+    for (id, directory) in &directories {
+        if !sql_tasks.iter().any(|task| task.id == *id) {
+            verification.unaccounted.push(format!(
+                "task directory {id} (repo {}) is not a task of this database",
+                directory.snapshot.repo_id
+            ));
+        }
+    }
+    for (path, error) in &scan.unreadable {
+        let known = path
+            .file_name()
+            .is_some_and(|name| sql_tasks.iter().any(|task| name == task.id.as_str()));
+        if !known {
+            log::warn!(
+                "{} is unreadable and not a task of this database; a rebuild skips it: {error}",
+                path.display()
+            );
+        }
+    }
+    for path in &scan.removed {
+        if let Some(id) = task_id_of_tombstone(path) {
+            if let Some(task) = sql_tasks.iter().find(|task| task.id == id) {
+                verification
+                    .repos
+                    .entry(task.repo_id.clone())
+                    .or_default()
+                    .1
+                    .push(format!(
+                        "task {id}: held by the database but tombstoned on disk"
+                    ));
+            }
+        }
+    }
+    Ok(verification)
+}
+
+/// Idempotent: releases what no operation can own at startup, imports
+/// pre-ledger history, owes every record, and publishes.
+fn drain(db: &Db, db_path: &str) -> Result<Value, String> {
+    let db_error = |error: rusqlite::Error| format!("db error: {error}");
+    let released = db.release_stale_ledger_reservations().map_err(db_error)?;
+    for task_id in db.tasks_needing_ledger_backfill().map_err(db_error)? {
+        db.backfill_task_ledger(&task_id).map_err(db_error)?;
+    }
+    let owed = db.owe_every_disk_record().map_err(db_error)?;
+    let failures = flush_all(db, db_path);
+    if !failures.is_empty() {
+        return Err(failures
+            .iter()
+            .map(|(task, error)| format!("{task}: {error}"))
+            .collect::<Vec<_>>()
+            .join("; "));
+    }
+    let pending = db.ledger_tasks_with_pending_work().map_err(db_error)?;
+    let repos = db.repos_with_pending_disk_record().map_err(db_error)?;
+    let removals = db.pending_disk_removals().map_err(db_error)?;
+    if !pending.is_empty() || !repos.is_empty() || !removals.is_empty() {
+        return Err(format!(
+            "still owed after publishing: tasks {pending:?}, repositories {repos:?}, removals {}",
+            removals.len()
+        ));
+    }
+    Ok(json!({ "released_reservations": released, "first_records_owed": owed }))
+}
+
+/// What [`start`] left the installation in.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StartOutcome {
+    pub mode: Mode,
+    /// `disk` mode's reconciliation at this startup.
+    pub reconcile: Option<ReconcileReport>,
+    /// Why a requested switch to `disk` was refused, if it was.
+    pub refused: Vec<String>,
+}
+
+struct Switch<'a> {
+    db: &'a Db,
+    db_path: &'a str,
+    root: PathBuf,
+    record: AuthorityRecord,
+}
+
+impl Switch<'_> {
+    fn now(&self) -> Result<String, String> {
+        self.db
+            .current_utc_timestamp()
+            .map_err(|error| format!("db error: {error}"))
+    }
+
+    /// Record a checkpoint durably, then (in tests) stop if asked to.
+    fn checkpoint(&mut self, name: &str, detail: Value) -> Result<(), String> {
+        let at = self.now()?;
+        self.record.checkpoint(at, name, detail);
+        save_record(&self.root, &self.record)?;
+        log::info!(
+            "storage authority checkpoint {name} (authoritative: {})",
+            self.record.mode.as_str()
+        );
+        stop_point(&self.root, name)
+    }
+
+    fn begin(&mut self, target: Mode) -> Result<(), String> {
+        let started_at = self.now()?;
+        self.record.switch = Some(SwitchProgress {
+            target,
+            from: self.record.mode,
+            started_at,
+            phase: String::new(),
+            verified_repos: BTreeMap::new(),
+        });
+        let name = match target {
+            Mode::Disk => "to_disk.begin",
+            Mode::Sql => "to_sql.begin",
+        };
+        self.checkpoint(name, json!({ "from": self.record.mode }))
+    }
+
+    fn switch_to_disk(&mut self) -> Result<Vec<String>, String> {
+        if self.record.switch.is_none() {
+            self.begin(Mode::Disk)?;
+        }
+        let drained = match drain(self.db, self.db_path) {
+            Ok(drained) => drained,
+            Err(error) => return self.refuse(vec![format!("the outbox did not drain: {error}")]),
+        };
+        self.checkpoint("to_disk.drained", drained)?;
+        let verification = verify_disk_equals_database(self.db, self.db_path)?;
+        let before = self
+            .record
+            .switch
+            .as_ref()
+            .map(|switch| switch.verified_repos.clone())
+            .unwrap_or_default();
+        for (repo, (tasks, problems)) in &verification.repos {
+            if !problems.is_empty() {
+                continue;
+            }
+            // A task verified at an earlier attempt and changed since (an
+            // older build ran in between) was verified again just now.
+            let changed: Vec<&String> = before
+                .get(repo)
+                .map(|earlier| {
+                    tasks
+                        .iter()
+                        .filter(|(task, revision)| {
+                            earlier
+                                .get(*task)
+                                .is_some_and(|earlier| earlier != *revision)
+                        })
+                        .map(|(task, _)| task)
+                        .collect()
+                })
+                .unwrap_or_default();
+            if let Some(switch) = &mut self.record.switch {
+                switch.verified_repos.insert(repo.clone(), tasks.clone());
+            }
+            self.checkpoint(
+                "to_disk.repo_verified",
+                json!({ "repo": repo, "tasks": tasks.len(), "changed_since_last_attempt": changed }),
+            )?;
+        }
+        let problems = verification.problems();
+        if !problems.is_empty() {
+            return self.refuse(problems);
+        }
+        let verified: BTreeMap<&String, usize> = verification
+            .repos
+            .iter()
+            .map(|(repo, (tasks, _))| (repo, tasks.len()))
+            .collect();
+        let tasks: usize = verified.values().sum();
+        self.checkpoint(
+            "to_disk.verified",
+            json!({ "repos": verified.len(), "tasks": tasks }),
+        )?;
+        self.record.mode = Mode::Disk;
+        self.record.switch = None;
+        if self.record.requested == Some(Mode::Disk) {
+            self.record.requested = None;
+        }
+        self.checkpoint(
+            "to_disk.commit",
+            json!({ "repos": verified.len(), "tasks": tasks }),
+        )?;
+        Ok(Vec::new())
+    }
+
+    /// The switch to `disk` cannot be made safely: stay `sql`. The request
+    /// stays, so the next startup tries again once the cause is fixed.
+    fn refuse(&mut self, problems: Vec<String>) -> Result<Vec<String>, String> {
+        for problem in &problems {
+            log::error!("switch to disk authority refused: {problem}");
+        }
+        self.record.switch = None;
+        self.checkpoint(
+            "to_disk.refused",
+            json!({ "problems": problems.iter().take(50).collect::<Vec<_>>(),
+                    "count": problems.len() }),
+        )?;
+        Ok(problems)
+    }
+
+    fn roll_back_to_sql(&mut self) -> Result<Option<ReconcileReport>, String> {
+        if self
+            .record
+            .switch
+            .as_ref()
+            .is_none_or(|switch| switch.target != Mode::Sql)
+        {
+            self.begin(Mode::Sql)?;
+        }
+        let mut report = None;
+        if self.record.mode == Mode::Disk {
+            let reconciled = reconcile_from_disk(self.db, self.db_path, None)?;
+            reconciled.log();
+            if !reconciled.failed.is_empty() {
+                return Err(format!(
+                    "rollback to sql waits: {} tasks could not be reconciled from disk",
+                    reconciled.failed.len()
+                ));
+            }
+            let pending = self
+                .db
+                .ledger_tasks_with_pending_work()
+                .map_err(|error| format!("db error: {error}"))?;
+            if !pending.is_empty() {
+                return Err(format!(
+                    "rollback to sql waits: tasks {pending:?} are still owed publication"
+                ));
+            }
+            self.checkpoint(
+                "to_sql.reconciled",
+                json!({ "reconciled": reconciled.reconciled.len(),
+                        "republished": reconciled.republished.len() }),
+            )?;
+            report = Some(reconciled);
+        }
+        self.record.mode = Mode::Sql;
+        self.record.switch = None;
+        if self.record.requested == Some(Mode::Sql) {
+            self.record.requested = None;
+        }
+        self.checkpoint("to_sql.commit", json!({}))?;
+        Ok(report)
+    }
+}
+
+/// Startup: perform or resume a requested switch, then, in `disk` mode,
+/// reconcile the database from the disk. Runs after migrations and before
+/// any service starts. `request` (from [`AUTHORITY_ENV`]) is persisted as
+/// the record's request first.
+pub fn start(db: &Db, db_path: &str, request: Option<Mode>) -> Result<StartOutcome, String> {
+    let root = root_for_db(db_path);
+    register(&root, db_path);
+    let mut switch = Switch {
+        db,
+        db_path,
+        root: root.clone(),
+        record: load_record(&root, db_path)?,
+    };
+    set_mode(&root, db_path, switch.record.mode);
+    if let Some(request) = request {
+        if switch.record.requested != Some(request)
+            && (switch.record.mode != request || switch.record.switch.is_some())
+        {
+            switch.record.requested = Some(request);
+            save_record(&root, &switch.record)?;
+        }
+    }
+    let mut outcome = StartOutcome {
+        mode: switch.record.mode,
+        reconcile: None,
+        refused: Vec::new(),
+    };
+    let in_progress = switch
+        .record
+        .switch
+        .as_ref()
+        .map(|progress| progress.target);
+    let requested = switch.record.requested;
+    let result = match (in_progress, requested) {
+        // Rolling back (or asked to, mid-switch): finish the rollback.
+        (Some(Mode::Sql), _) | (Some(Mode::Disk), Some(Mode::Sql)) => switch
+            .roll_back_to_sql()
+            .map(|report| outcome.reconcile = report),
+        (Some(Mode::Disk), _) => switch
+            .switch_to_disk()
+            .map(|refused| outcome.refused = refused),
+        (None, Some(Mode::Disk)) if switch.record.mode == Mode::Sql => switch
+            .switch_to_disk()
+            .map(|refused| outcome.refused = refused),
+        (None, Some(Mode::Sql)) if switch.record.mode == Mode::Disk => switch
+            .roll_back_to_sql()
+            .map(|report| outcome.reconcile = report),
+        (None, Some(_)) => {
+            // Already in the requested mode.
+            switch.record.requested = None;
+            save_record(&root, &switch.record)
+        }
+        (None, None) => Ok(()),
+    };
+    set_mode(&root, db_path, switch.record.mode);
+    outcome.mode = switch.record.mode;
+    result?;
+    if outcome.mode == Mode::Disk {
+        let report = reconcile_from_disk(db, db_path, None)?;
+        report.log();
+        outcome.reconcile = Some(report);
+    }
+    Ok(outcome)
+}
+
+/// A switch requested through [`AUTHORITY_ENV`], if any.
+pub fn requested_from_env() -> Result<Option<Mode>, String> {
+    match std::env::var(AUTHORITY_ENV) {
+        Ok(value) if value.trim().is_empty() => Ok(None),
+        Ok(value) => Mode::parse(&value)
+            .map(Some)
+            .ok_or_else(|| format!("{AUTHORITY_ENV} must be sql or disk, not {value:?}")),
+        Err(_) => Ok(None),
+    }
+}
+
+/// Rebuild a missing database from this installation's disk records.
+pub fn rebuild_missing_database(db_path: &str) -> Result<RebuildReport, String> {
+    let root = root_for_db(db_path);
+    let (scan, foreign) = scan_store_records(&root)?.for_installation(&installation_id(db_path));
+    // A WAL or shared-memory file left beside a deleted database belongs to
+    // it, not to the one about to be created.
+    for suffix in ["-wal", "-shm"] {
+        let stale = PathBuf::from(format!("{db_path}{suffix}"));
+        if stale.exists() {
+            log::warn!("removing {} left by the missing database", stale.display());
+            std::fs::remove_file(&stale)
+                .map_err(|error| format!("remove {}: {error}", stale.display()))?;
+        }
+    }
+    let mut report = rebuild_scan_into_new_database(scan, Path::new(db_path))?;
+    if !foreign.is_empty() {
+        report.diagnostics.push(format!(
+            "{} repositories under {} belong to another installation and were left out",
+            foreign.len(),
+            root.display()
+        ));
+    }
+    Ok(report)
+}
+
+/// Open the server's database under its storage authority: rebuild it from
+/// disk first when it is missing in `disk` mode, migrate it, then [`start`].
+pub fn open_database(config: &crate::config::Config) -> Result<Db, String> {
+    super::configure(config);
+    let db_path = config.db_path.as_str();
+    let root = root_for_db(db_path);
+    register(&root, db_path);
+    let record = load_record(&root, db_path)?;
+    let request = requested_from_env()?;
+    if record.mode == Mode::Disk && !Path::new(db_path).exists() {
+        log::warn!(
+            "database {db_path} is missing and the disk is authoritative: rebuilding it from {}",
+            root.display()
+        );
+        let report = rebuild_missing_database(db_path)?;
+        log::warn!(
+            "rebuilt {} tasks ({} ledger entries, {} carried rows) from disk; {} unreadable",
+            report.tasks,
+            report.ledger_entries,
+            report.carried_rows,
+            report.unreadable.len()
+        );
+        for (path, error) in &report.unreadable {
+            log::error!("{} could not be rebuilt: {error}", path.display());
+        }
+        for note in &report.diagnostics {
+            log::info!("rebuild: {note}");
+        }
+    }
+    let db = Db::open_migrated(db_path).map_err(|error| format!("open {db_path}: {error}"))?;
+    match start(&db, db_path, request) {
+        Ok(outcome) => log::info!(
+            "storage authority: {}{}",
+            outcome.mode.as_str(),
+            if outcome.refused.is_empty() {
+                String::new()
+            } else {
+                format!(
+                    " (switch to disk refused: {} problems)",
+                    outcome.refused.len()
+                )
+            }
+        ),
+        // The write path is the same in both modes, so the server runs on
+        // in whichever mode the record holds; the next startup retries.
+        Err(error) => log::error!(
+            "storage authority startup did not complete ({error}); running as {}",
+            mode_for_root(&root).as_str()
+        ),
+    }
+    Ok(db)
+}
+
+#[cfg(test)]
+#[path = "authority_tests.rs"]
+mod tests;

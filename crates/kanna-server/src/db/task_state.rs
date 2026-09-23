@@ -1018,7 +1018,11 @@ pub fn json_to_sql(value: &Value) -> Result<rusqlite::types::Value, String> {
 }
 
 impl Db {
-    fn carried_rows(&self, table: &CarriedTable, key: &str) -> Result<Vec<Value>, rusqlite::Error> {
+    pub(super) fn carried_rows(
+        &self,
+        table: &CarriedTable,
+        key: &str,
+    ) -> Result<Vec<Value>, rusqlite::Error> {
         let columns = table
             .columns
             .iter()
