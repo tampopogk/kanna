@@ -1,6 +1,47 @@
 use super::{pipeline_items::update_open_pipeline_item_activity, Db, WorktreeRecord};
 use rusqlite::OptionalExtension;
 
+/// Schema of migration `098_stage_workspaces` (spec §6, component T2).
+///
+/// `task_branch_counter.last_allocated` is the highest `task-<id>-<n>` number
+/// ever handed out for the task. It only grows: a number is spent when it is
+/// reserved, before any git work, so neither a failed attempt nor a deleted
+/// branch can make it available again.
+///
+/// `stage_workspace` names the directory each stage ran in and the branch its
+/// latest session checked out there. A stage re-entered by a loop reuses its
+/// row's directory; a stage whose directory could not be reused gets a new row
+/// and the old one stays, so the retained directory is still on record.
+pub(super) const STAGE_WORKSPACE_SCHEMA: &str = r#"
+    CREATE TABLE IF NOT EXISTS task_branch_counter (
+        task_id TEXT PRIMARY KEY REFERENCES pipeline_item(id) ON DELETE CASCADE,
+        last_allocated INTEGER NOT NULL,
+        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE TABLE IF NOT EXISTS stage_workspace (
+        id TEXT PRIMARY KEY,
+        task_id TEXT NOT NULL REFERENCES pipeline_item(id) ON DELETE CASCADE,
+        stage TEXT NOT NULL,
+        path TEXT NOT NULL,
+        branch TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_stage_workspace_task_stage
+        ON stage_workspace(task_id, stage);
+"#;
+
+/// One stage's workspace: the directory, and the branch its latest session
+/// checked out there.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StageWorkspaceRecord {
+    pub id: String,
+    pub task_id: String,
+    pub stage: String,
+    pub path: String,
+    pub branch: String,
+}
+
 impl Db {
     pub fn list_open_task_worktree_paths(&self) -> Result<Vec<(String, String)>, rusqlite::Error> {
         let mut stmt = self.conn.prepare(
@@ -238,4 +279,128 @@ impl Db {
             Ok(())
         })
     }
+
+    /// Reserve the task's next branch number. `floor` is the highest number
+    /// the caller found already in use (refs, directories, recorded rows);
+    /// the reservation is strictly above both it and every number this task
+    /// has ever been given, and is durable when this returns.
+    pub fn reserve_task_branch_number(
+        &self,
+        task_id: &str,
+        floor: i64,
+    ) -> Result<i64, rusqlite::Error> {
+        self.with_immediate_transaction(|db| {
+            let last: Option<i64> = db
+                .conn
+                .query_row(
+                    "SELECT last_allocated FROM task_branch_counter WHERE task_id = ?",
+                    [task_id],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            let next = last.unwrap_or(0).max(floor) + 1;
+            db.conn.execute(
+                "INSERT INTO task_branch_counter (task_id, last_allocated)
+                 VALUES (?1, ?2)
+                 ON CONFLICT(task_id) DO UPDATE SET
+                   last_allocated = excluded.last_allocated,
+                   updated_at = datetime('now')",
+                rusqlite::params![task_id, next],
+            )?;
+            Ok(next)
+        })
+    }
+
+    #[cfg(test)]
+    pub fn task_branch_counter(&self, task_id: &str) -> Result<Option<i64>, rusqlite::Error> {
+        self.conn
+            .query_row(
+                "SELECT last_allocated FROM task_branch_counter WHERE task_id = ?",
+                [task_id],
+                |row| row.get(0),
+            )
+            .optional()
+    }
+
+    /// Every branch name the task's own records mention: the current branch,
+    /// worktree rows, stage workspaces, session branches and the directory
+    /// names of recorded run cwds. The counter floor is taken over these and
+    /// the repository's refs.
+    pub fn task_recorded_branch_names(
+        &self,
+        task_id: &str,
+    ) -> Result<Vec<String>, rusqlite::Error> {
+        let mut stmt = self.conn.prepare(
+            "SELECT branch FROM pipeline_item WHERE id = ?1 AND branch IS NOT NULL
+             UNION SELECT branch FROM worktree WHERE pipeline_item_id = ?1
+             UNION SELECT path FROM worktree WHERE pipeline_item_id = ?1
+             UNION SELECT branch FROM stage_workspace WHERE task_id = ?1
+             UNION SELECT path FROM stage_workspace WHERE task_id = ?1
+             UNION SELECT session_branch FROM stage_run
+                   WHERE task_id = ?1 AND session_branch IS NOT NULL
+             UNION SELECT cwd FROM stage_run WHERE task_id = ?1 AND cwd IS NOT NULL",
+        )?;
+        let rows = stmt.query_map([task_id], |row| row.get::<_, String>(0))?;
+        rows.map(|row| {
+            row.map(|value| {
+                // Paths contribute their directory name, which is the branch
+                // the workspace was created on.
+                std::path::Path::new(&value)
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .map(str::to_string)
+                    .unwrap_or(value)
+            })
+        })
+        .collect()
+    }
+
+    /// Record the workspace a stage session starts in. Called in the same
+    /// transaction that moves the task onto it.
+    pub fn upsert_stage_workspace(
+        &self,
+        id: &str,
+        task_id: &str,
+        stage: &str,
+        path: &str,
+        branch: &str,
+    ) -> Result<(), rusqlite::Error> {
+        self.conn.execute(
+            "INSERT INTO stage_workspace (id, task_id, stage, path, branch)
+             VALUES (?, ?, ?, ?, ?)
+             ON CONFLICT(id) DO UPDATE SET
+               stage = excluded.stage,
+               path = excluded.path,
+               branch = excluded.branch,
+               updated_at = datetime('now')",
+            (id, task_id, stage, path, branch),
+        )?;
+        Ok(())
+    }
+
+    /// Every workspace recorded for a task, oldest first.
+    pub fn list_stage_workspaces(
+        &self,
+        task_id: &str,
+    ) -> Result<Vec<StageWorkspaceRecord>, rusqlite::Error> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, task_id, stage, path, branch FROM stage_workspace
+             WHERE task_id = ?
+             ORDER BY created_at ASC, rowid ASC",
+        )?;
+        let rows = stmt.query_map([task_id], stage_workspace_from_row)?;
+        rows.collect()
+    }
+}
+
+fn stage_workspace_from_row(
+    row: &rusqlite::Row<'_>,
+) -> Result<StageWorkspaceRecord, rusqlite::Error> {
+    Ok(StageWorkspaceRecord {
+        id: row.get(0)?,
+        task_id: row.get(1)?,
+        stage: row.get(2)?,
+        path: row.get(3)?,
+        branch: row.get(4)?,
+    })
 }

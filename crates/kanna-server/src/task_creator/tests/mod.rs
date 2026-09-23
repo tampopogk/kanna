@@ -497,6 +497,13 @@ async fn spawn_fake_daemon_fork_transition(
             }
             let response = match &command {
                 kanna_daemon::protocol::Command::Kill { .. } => kanna_daemon::protocol::Event::Ok,
+                // A revisit lists live sessions to find the ones in its
+                // directory; this daemon runs none.
+                kanna_daemon::protocol::Command::List => {
+                    kanna_daemon::protocol::Event::SessionList {
+                        sessions: Vec::new(),
+                    }
+                }
                 kanna_daemon::protocol::Command::Spawn { session_id, .. }
                 | kanna_daemon::protocol::Command::SpawnAgent { session_id, .. } => {
                     spawns += 1;

@@ -206,6 +206,9 @@ pub(crate) struct PreparedStageRerun {
     pub(super) entry_channel: crate::mutation_provenance::ChannelIdentity,
     pub(super) completion_transition: WorkflowStageTransition,
     pub(super) provider_session_id: Option<String>,
+    /// The session identity this rerun records (spec §6). Boxed: the
+    /// prepared rerun travels inside request-handler enums by value.
+    pub(super) session_identity: Box<crate::db::StageRunSession>,
     pub(super) cwd: String,
     pub(super) env: HashMap<String, String>,
     /// Reruns execute setup only after the prior session is killed; a
@@ -269,19 +272,58 @@ pub(crate) struct ForkedWorkspace {
 pub(super) enum RunWorkspaceSpec {
     /// Keep the task's current workspace (post fallbacks, reruns).
     Current,
-    /// Fork a fresh branch + worktree from the task's committed tip.
-    Fork { branch: String },
+    /// Fork a fresh branch + worktree. `start_point` is the recorded input
+    /// commit (the triggering result's SHA); without one the fork follows
+    /// the task's current workspace branch, as every fork did before inputs
+    /// were recorded. `report` is what the fork left behind (see
+    /// `session::fork_input_report`).
+    Fork {
+        branch: String,
+        start_point: Option<String>,
+        report: Option<String>,
+    },
     /// Adopt a previous run's workspace and resume its agent-CLI session.
     Resume(ResumeWorkspaceSpec),
+    /// Re-enter a stage's retained directory on a newly allocated branch
+    /// (spec §6 "Loop back"), resuming its conversation when possible.
+    Revisit(RevisitWorkspaceSpec),
     /// Recreate the task's current branch after close removed its worktree.
     /// This is restored durable task state, not a disposable stage fork.
-    Recreate { branch: String },
+    Recreate {
+        branch: String,
+        worktree_path: String,
+    },
     /// Finish initializing a checkout created by an earlier recovery attempt.
     /// Its branch and contents are retained; only repository setup is retried.
     FinishRecreate {
         branch: String,
         worktree_path: String,
     },
+}
+
+/// A loop back into a stage's retained directory. The branch is already
+/// reserved from the task's counter; the checkout happens in
+/// `prepare_stage_run_spawn`, and a failed spawn restores `previous_*`.
+pub(super) struct RevisitWorkspaceSpec {
+    pub(super) worktree_path: String,
+    /// The newly allocated `task-<id>-<n>` branch this session checks out.
+    pub(super) branch: String,
+    /// The input commit the new branch starts at.
+    pub(super) start_point: String,
+    pub(super) previous_branch: Option<String>,
+    pub(super) previous_head: String,
+    /// Whether the plan saw uncommitted changes. With `previous_*` it is the
+    /// state the checkout re-validates and the rollback compares against.
+    pub(super) observed_dirty: bool,
+    /// Retained state the revisit kept in place and reports.
+    pub(super) report: Option<String>,
+    /// The conversation to resume there, when its transcript is present.
+    pub(super) resume: Option<RevisitResume>,
+}
+
+pub(super) struct RevisitResume {
+    pub(super) provider_session_id: String,
+    pub(super) resumed_from_run_id: String,
 }
 
 pub(super) struct ResumeWorkspaceSpec {
@@ -316,6 +358,35 @@ pub(crate) enum PreparedRunWorkspace {
     /// close. Repository setup runs for the new checkout, and a failed spawn
     /// keeps it available for another recovery attempt.
     Recreated(ForkedWorkspace),
+    /// A stage's retained directory re-entered on a new branch. Moves the
+    /// task's branch and worktree record like a fork; a failed spawn checks
+    /// the previous branch back out and deletes the new one, and the
+    /// directory is never removed.
+    Revisited(RevisitedWorkspace),
+}
+
+pub(crate) struct RevisitedWorkspace {
+    pub(super) workspace: ForkedWorkspace,
+    pub(super) start_point: String,
+    pub(super) previous_branch: Option<String>,
+    pub(super) previous_head: String,
+    pub(super) observed_dirty: bool,
+    /// Set once the spawn has checked the new branch out; before that a
+    /// rollback has nothing to undo.
+    pub(super) checked_out: bool,
+}
+
+impl PreparedRunWorkspace {
+    /// The workspace the run moves the task onto, when it moves it at all.
+    pub(super) fn moved_to(&self) -> Option<&ForkedWorkspace> {
+        match self {
+            Self::Forked(workspace) | Self::Resumed(workspace) | Self::Recreated(workspace) => {
+                Some(workspace)
+            }
+            Self::Revisited(revisited) => Some(&revisited.workspace),
+            Self::Current => None,
+        }
+    }
 }
 
 /// A new stage run spawned on an existing task: same task id, but a swap runs
@@ -378,6 +449,8 @@ pub(crate) struct PreparedStageRunSpawn {
     pub(super) replaces_run_id: Option<String>,
     /// Why a requested resume became a fresh provider conversation.
     pub(super) resume_fallback_reason: Option<String>,
+    /// The session identity this run records (spec §6).
+    pub(super) session_identity: crate::db::StageRunSession,
     pub(super) cwd: String,
     pub(super) env: HashMap<String, String>,
     /// Ordered bytes seeded into a replacement PTY's terminal history before
@@ -485,5 +558,24 @@ impl PreparedStageRunSpawn {
             PreparedRunWorkspace::Resumed(workspace) => Some(workspace),
             _ => None,
         }
+    }
+
+    /// The retained stage directory a loop back re-entered on a new branch.
+    #[cfg(test)]
+    pub(crate) fn revisited_workspace(&self) -> Option<&ForkedWorkspace> {
+        match &self.workspace {
+            PreparedRunWorkspace::Revisited(revisited) => Some(&revisited.workspace),
+            _ => None,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn session_identity(&self) -> &crate::db::StageRunSession {
+        &self.session_identity
+    }
+
+    #[cfg(test)]
+    pub(crate) fn cwd(&self) -> &str {
+        &self.cwd
     }
 }

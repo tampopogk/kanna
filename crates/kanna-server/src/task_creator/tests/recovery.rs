@@ -2830,3 +2830,141 @@ async fn a_resumed_merge_master_is_not_left_with_an_empty_instructions_block() {
 
     let _ = std::fs::remove_dir_all(&repo_root);
 }
+
+/// Spec §6 / T2: after a loop back the task's branch no longer names its
+/// directory. A revision, a rerun and a recovery all start their session
+/// through the same path — the workspace record, not a path built from the
+/// branch — and record the same identity; every existing API field still
+/// resolves the directory the agent is working in.
+#[tokio::test]
+async fn revision_rerun_and_resume_share_the_session_start_path() {
+    let config = test_config("session-start-path");
+    let (repo_root, db) =
+        super::revision::init_resume_revision_fixture("session-start-path", &config);
+    let impl_worktree = repo_root.join(".kanna-worktrees/task-impl");
+    let impl_path = impl_worktree.to_string_lossy().to_string();
+    let claude_config_dir = repo_root.join("claude-config");
+    super::revision::write_resume_transcript(&claude_config_dir, &impl_worktree);
+
+    // --- Revision: the implement directory on a new branch.
+    let revision = {
+        let _env_guard = super::CLAUDE_CONFIG_DIR_LOCK.lock().unwrap();
+        std::env::set_var("CLAUDE_CONFIG_DIR", &claude_config_dir);
+        let prepared = prepare_revision_task_for_api(
+            &db,
+            &config,
+            "review-task",
+            "in progress",
+            "Tighten the error handling.",
+            None,
+        );
+        std::env::remove_var("CLAUDE_CONFIG_DIR");
+        prepared.unwrap()
+    };
+    let branch = revision
+        .revisited_workspace()
+        .expect("revision re-enters the implement directory")
+        .branch
+        .clone();
+    assert_ne!(branch, "task-impl");
+    assert_eq!(revision.cwd(), impl_path);
+    let fake_daemon = spawn_fake_daemon_fork_transition(config.daemon_dir.clone(), 1).await;
+    let mut daemon = DaemonClient::connect(&config.daemon_dir).await.unwrap();
+    spawn_prepared_stage_run_for_api(
+        &config.db_path,
+        &mut daemon,
+        &crate::session_replacements::SessionReplacements::default(),
+        revision,
+    )
+    .await
+    .unwrap();
+    fake_daemon.await.unwrap();
+
+    let revision_run = db.latest_stage_run("review-task").unwrap().unwrap();
+    let session = db
+        .stage_run_session(&revision_run.id)
+        .unwrap()
+        .expect("the revision recorded its session");
+    assert_eq!(session.workspace_id.as_deref(), Some("ws-task-impl"));
+    assert_eq!(session.branch.as_deref(), Some(branch.as_str()));
+    assert_eq!(session.name.as_deref(), Some("In progress: Original task"));
+    let transcript = session.transcript.expect("transcript reference");
+    assert_eq!(transcript.provider, "claude");
+    assert_eq!(transcript.session_id, super::revision::RESUME_SESSION_UUID);
+    let workspaces = db.list_stage_workspaces("review-task").unwrap();
+    assert!(workspaces
+        .iter()
+        .any(|workspace| workspace.id == "ws-task-impl"
+            && workspace.stage == "in progress"
+            && workspace.path == impl_path
+            && workspace.branch == branch));
+
+    // --- Existing API fields resolve the directory, by task id and by the
+    // branch a legacy client may still hold as its session id.
+    assert_eq!(
+        db.get_task_worktree_path("review-task").unwrap().as_deref(),
+        Some(impl_path.as_str())
+    );
+    assert!(db
+        .list_open_task_worktree_paths()
+        .unwrap()
+        .contains(&("review-task".to_string(), impl_path.clone())));
+    let api = crate::mobile_api::MobileApi::new(config.clone(), Db::open(&config.db_path).unwrap());
+    for key in ["review-task", branch.as_str()] {
+        let detail = api.get_task(key).unwrap().expect("task detail");
+        assert_eq!(detail.worktree_path.as_deref(), Some(impl_path.as_str()));
+        assert_eq!(detail.branch.as_deref(), Some(branch.as_str()));
+        let latest = detail.latest_run.expect("latest run");
+        assert_eq!(
+            latest
+                .session
+                .and_then(|session| session.workspace_id)
+                .as_deref(),
+            Some("ws-task-impl")
+        );
+    }
+
+    // --- Rerun: same directory, same branch, same identity.
+    let rerun = prepare_rerun_stage_for_api(&db, &config, "review-task").unwrap();
+    assert_eq!(rerun.cwd, impl_path);
+    assert_eq!(
+        rerun.session_identity.workspace_id.as_deref(),
+        Some("ws-task-impl")
+    );
+    assert_eq!(
+        rerun.session_identity.branch.as_deref(),
+        Some(branch.as_str())
+    );
+    assert!(
+        !repo_root.join(".kanna-worktrees").join(&branch).exists(),
+        "no directory is created for the branch name"
+    );
+
+    // --- Recovery of the interrupted revision: the same again.
+    db.finish_stage_run(&revision_run.id, "failed", None, Some("session died"))
+        .unwrap();
+    let restart = {
+        let _env_guard = super::CLAUDE_CONFIG_DIR_LOCK.lock().unwrap();
+        std::env::set_var("CLAUDE_CONFIG_DIR", &claude_config_dir);
+        let prepared = prepare_resume_task_for_api(&db, &config, "review-task");
+        std::env::remove_var("CLAUDE_CONFIG_DIR");
+        prepared.unwrap()
+    };
+    assert_eq!(restart.cwd(), impl_path);
+    assert_eq!(
+        restart.session_identity().workspace_id.as_deref(),
+        Some("ws-task-impl")
+    );
+    assert_eq!(
+        restart.session_identity().branch.as_deref(),
+        Some(branch.as_str())
+    );
+    assert!(
+        restart.resume_fallback_reason.is_none(),
+        "{:?}",
+        restart.resume_fallback_reason
+    );
+    assert!(!repo_root.join(".kanna-worktrees").join(&branch).exists());
+
+    let _ = std::fs::remove_dir_all(&repo_root);
+}

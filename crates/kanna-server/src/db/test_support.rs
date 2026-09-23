@@ -252,7 +252,12 @@ impl Db {
                 finished_at TEXT,
                 entry_channel_identity TEXT,
                 result_declared_role TEXT,
-                result_channel_identity TEXT
+                result_channel_identity TEXT,
+                workspace_id TEXT,
+                session_branch TEXT,
+                session_name TEXT,
+                transcript_ref TEXT,
+                workspace_report TEXT
             );
             CREATE INDEX idx_stage_run_task_started ON stage_run(task_id, started_at);
 
@@ -558,6 +563,8 @@ impl Db {
         self.conn.execute_batch(super::task_store::SCHEMA)?;
         self.conn
             .execute_batch(super::revisions::STAGE_BUDGET_SCHEMA)?;
+        self.conn
+            .execute_batch(super::worktrees::STAGE_WORKSPACE_SCHEMA)?;
         create_blocker_revision_triggers(&self.conn)?;
         let mut stmt = self
             .conn

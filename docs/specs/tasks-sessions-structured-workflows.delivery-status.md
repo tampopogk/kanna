@@ -18,20 +18,22 @@ final review gates as manager; children return reviewed local commits only.
 | T8 provenance | `d06e30e1` | first increment (channel identity capture); account boundary split to T8b | `task-482a02db-3` @ `9a4198da8` | increment 1 reviewed (round 2), integrated, closed | `65e1943e5`, `7c06a0de4` | `a609c5aec` |
 | T8b same-account boundary | `216cf1c2` | account-boundary enforcement + T8 follow-ups (build-first, specialized-reviewers; build gate manual) | parent `e679678d0` (T6+T8 integrated) | reviewed (round 2), integrated, closed | `7863ff1f0`, `a00800e67` | `bab127907` |
 | T1 workflow contract | `e3ef840c` | first increment + card | parent `cc8125f85` (T0 472068345 + T6/T8/T8b), merged `df6ee9040` | reviewed (round 1), integrated, closed | `0c4780b56`, `257e08f5a` | T1 merge commit |
-| T2 stage workspaces | `cb28da39` | first increment + card | parent `cc8125f85` (T0 472068345 + T6/T8/T8b) | in progress | — | — |
+| T2 stage workspaces | `cb28da39` | first increment + card | parent `cc8125f85` (T0 472068345 + T6/T8/T8b), merged `b1334e528` | reviewed (round 6), integrated, closed | `742b8b0d6` … `e9d863ab0` | T2 merge commit |
 | T6b artifact result refs + retention | `d6fb5ce0` | T6 checkpoint 2 + T6 follow-ups | parent `cc8125f85` (+ merged `918d8c8fa`) | reviewed (round 2), integrated, closed | `8ba365b24`, `cc04f99ba`, `fd6f7e2e9` | T6b merge commit |
 | T8c ledger channel identity | `7049470b` | T8 ledger fill (single reviewer, sonnet) | parent `cc8125f85` | reviewed, integrated, closed | `364fe7578` | merge after `918d8c8fa` |
 | T12b artifact remote controls + §14 | `f73ff638` | remote controls, mobile recording, T12 follow-ups, §14 walkthrough doc + device checklist (human checks outstanding) | parent `8885864f6` (T7 373127ab4, T12 f38895884) | reviewed (round 3), integrated, closed; human checks outstanding | `517e55f60` … `48162c567` | T12b merge commit |
 | Fix: stage-complete --artifacts | `72b57433` | correction for T6b's missing typed CLI option (single reviewer, sonnet) | parent `c2620957b` | reviewed, integrated, closed | `87f633358` | `4c92ead01` |
-| T3 commit transitions / roleless gates | — | — | needs T1, T2 review | not created | — | — |
-| T4 stage dependency edges | — | — | needs T1, T2 review | not created | — | — |
+| T3 commit transitions / roleless gates | `f7fc3a78` | first increment + card | parent `b70608f54` (T1 257e08f5a, T2 e9d863ab0) | in progress | — | — |
+| T4 stage dependency edges | `c6db4bb4` | first increment + card | parent `b70608f54` (T1 257e08f5a, T2 e9d863ab0) | in progress | — | — |
 | T5 subtask joins | — | — | needs T4 review | not created | — | — |
 | T7 artifact remote | `a07d574f` | increment 1: two homes publish/fetch/comment via one Git remote (CLI/API) | parent `01f5c8972` (T6 dc9c09bfa, T8 7c06a0de4, T8b a00800e67) | reviewed (round 3), integrated, closed | `1019f2221`, `225525c97`, `373127ab4` | merge after `6ea23d959` |
 | T9 transfer | — | — | needs T1–T5, T8 (T6) review | not created | — | — |
 | T10 definitions | — | — | needs T3, T5, T6 review | not created | — | — |
-| T11 task/session UI | — | — | needs T0 (first), T2–T4 review | not created | — | — |
+| T11a latest result UI | `c719f2d9` | T11 increment 1: latest result/exit/artifact refs on desktop+mobile (single reviewer, sonnet); session name after T2 | parent `e69577ba6` | in progress | — | — |
+| T11 remainder (session/gate/dependency UI) | — | — | needs T2–T4 review | not created | — | — |
 | T12 artifact viewer | `6d3d22f8` | increment 1: local open-by-hash desktop/mobile, anchors, isolation; remote + §14 walkthrough → T12b | parent `01f5c8972` (T6 dc9c09bfa, T8/T8b) | reviewed (round 4), integrated, closed | `beffdbe8b` … `f38895884` | T12 merge commit |
-| T13 disk authority / migration | — | — | needs T1–T12, T14 review | not created | — | — |
+| T13a inventory + offline rebuild | `e3991858` | T13 increment 1: authority inventory, projector, fixture round trip (panel) | parent `e69577ba6` | in progress | — | — |
+| T13 remainder (cutover) | — | — | needs T1–T12, T14 review | not created | — | — |
 | T14 release workflow | — | — | needs T3, T8 review | not created | — | — |
 
 ## Log
@@ -93,3 +95,6 @@ final review gates as manager; children return reviewed local commits only.
 - OUTSTANDING HUMAN CHECKS (owner): (1) §14 two-account walkthrough, two signed-in accounts on two unpaired machines with a real shared remote; (2) physical iOS and Android react-native-webview checks — both in docs/2026-09-23-section-14-two-account-artifact-walkthrough.md. Until performed, §14/V1 acceptance is unverified.
 - 2026-09-23: T2 review round 5 at `02e091e8e`: round-4 findings closed; new blocker caused by the parent's round-4 guidance — td-<directory> teardown naming lets a stale teardown supervisor kill a later teardown in the same directory. Revision 5/5 (budget now spent; a further failure parks T2 for the owner). Parent correction: unique teardown identity per operation recorded against the workspace; supervisors kill only their own session id/pid.
 - 2026-09-23: OWNER AUTHORIZATION (in the parent session): up to 5 additional revision rounds for T2 (`cb28da39`). When T2's budget is exhausted and it parks, the parent relays this with kanna_request_revision origin "human" (resets the budget).
+- 2026-09-23: T11a `c719f2d9` and T13a `e3991858` created from parent `e69577ba6` (both unblocked by T0; cutover/session parts remain gated).
+- 2026-09-23: T2 passed panel review round 6 at `e9d863ab0` (within the original budget; the owner's extra rounds were not needed). Merged into parent; resolved with T1: migrations 097_stage_exit_budget then 098_stage_workspaces (both schemas in test_support; latest-migration assert 098); lifecycle reconcile uses T2's `moved_to()` with T1's `_with_exit` stage updates carrying entry_exit; stage/revision test files keep both sides' appended tests. Parent fix: `task_branch_counter` is test-only → #[cfg(test)] (T2's branch carried the dead-code warning). Combined check: FULL kanna-server bin suite 2218 passed, 1 failed (ksp bounded_request_saturation, pre-existing at base); clippy clean (pre-existing lints allowed); rustfmt clean on resolved files; desktop sessions/composables vitest 662 + vue-tsc; core and mobile tsc. T2 closed. Follow-ups: desktop shell spawn bypasses the server lease (sessions.ts:269, src-tauri daemon.rs:35) so a shell opened in the sub-second revisit window is not quiesced — needs a daemon-side directory fence or lease-backed spawn; supervisor pid sampled at soft deadline; teardown run settlement by exact cwd vs canonicalized sweep; pre-098 DB reopen test.
+- 2026-09-23: T3 `f7fc3a78` and T4 `c6db4bb4` created from parent `b70608f54` after T1+T2 review. T11a and T13a told to merge the T2 integration.

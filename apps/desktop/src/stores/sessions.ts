@@ -312,6 +312,7 @@ export function createSessionsApi(context: StoreContext): SessionsApi {
       if (!worktreePath || (setupCmds.length === 0 && !repoConfig)) {
         try {
           const repo = context.state.repos.value.find((candidate) => candidate.id === item.repo_id);
+          worktreePath ??= context.state.worktreePaths.value[item.id];
           if (repo && item.branch) {
             worktreePath ??= `${repo.path}/.kanna-worktrees/${item.branch}`;
           }
