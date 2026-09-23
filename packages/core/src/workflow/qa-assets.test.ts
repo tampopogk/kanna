@@ -52,6 +52,19 @@ function usesDefinitionFormula(agentBody: string): boolean {
   return /^role:|^providers:/m.test(frontmatter);
 }
 
+/**
+ * The detailed policy prose for an agent: for a definition-formula agent
+ * (T10e), the compressed 15-40-line AGENT.md points to CONTRACT.md for it;
+ * for a legacy agent, AGENT.md still carries it directly.
+ */
+function detailPhrases(name: string): string {
+  const agentPath = `.kanna/agents/${name}/AGENT.md`;
+  if (usesDefinitionFormula(readRepoFile(agentPath))) {
+    return readRepoPhrases(`.kanna/agents/${name}/CONTRACT.md`);
+  }
+  return readRepoPhrases(agentPath);
+}
+
 describe("built-in agent completion protocol", () => {
   const agentNames = builtInAgentNames().filter(
     (name) => !usesDefinitionFormula(readRepoFile(`.kanna/agents/${name}/AGENT.md`))
@@ -365,10 +378,14 @@ describe("QA workflow assets", () => {
   it("keeps product research public, standalone, and distinct from planning", () => {
     const researcherFile = readRepoFile(".kanna/agents/researcher/AGENT.md");
     const researcher = parseAgentDefinition(researcherFile);
-    const researcherPhrases = readRepoPhrases(".kanna/agents/researcher/AGENT.md");
+    // T10e: researcher opts into spec §12's definition formula, so the
+    // detailed grounding/exploration/presentation policy this test checks
+    // moved into CONTRACT.md — the compressed AGENT.md keeps only the
+    // 15-40-line formula body and points there for detail.
+    const researcherPhrases = readRepoPhrases(".kanna/agents/researcher/CONTRACT.md");
     const researchFile = readRepoFile(".kanna/workflows/research.json");
     const research = parseWorkflowJson(researchFile);
-    const plan = readRepoPhrases(".kanna/agents/plan/AGENT.md");
+    const plan = readRepoPhrases(".kanna/agents/plan/CONTRACT.md");
     const manager = readRepoPhrases(".kanna/agents/task-manager/AGENT.md");
 
     expect(researcher.name).toBe("researcher");
@@ -413,7 +430,10 @@ describe("QA workflow assets", () => {
   });
 
   it("lets one task grow its own delivery stages from its plan", () => {
-    const plan = readRepoPhrases(".kanna/agents/plan/AGENT.md");
+    // T10e: this detail moved to CONTRACT.md; `$PLAN_RESULT` in particular is
+    // a definition-formula forbidden token, so plan's own compressed
+    // AGENT.md can no longer name it directly.
+    const plan = readRepoPhrases(".kanna/agents/plan/CONTRACT.md");
     const research = JSON.parse(
       readRepoFile(".kanna/workflows/research.json")
     ) as { description?: string };
@@ -465,10 +485,14 @@ describe("QA workflow assets", () => {
     expect(architect.name).toBe("architect");
     expect(file).toContain("visibility: internal");
     expect(architect.prompt).toContain("kanna_get_task");
-    expect(architect.prompt).toContain(
-      'kanna_complete_stage {"task_id": "$KANNA_TASK_ID"'
-    );
-    expect(architect.prompt).toContain("kanna-cli stage-complete");
+    // T10e: architect now opts into spec §12's definition formula, so the
+    // literal `kanna_complete_stage`/`kanna-cli stage-complete` call syntax
+    // moves to the runtime preamble like every other formula agent (see
+    // "leaves completion mechanics to the runtime preamble" above); its own
+    // APPROVE/REVISE/STOP-and-escalate vocabulary maps to success/failure in
+    // prose instead, and the verdict template detail lives in CONTRACT.md.
+    expect(architect.prompt).not.toContain("kanna_complete_stage");
+    expect(architect.prompt).not.toContain("kanna-cli stage-complete");
     expect(architect.prompt).toContain("The task manager remains accountable");
     expect(architect.prompt).toContain(
       "must begin with exactly one of `APPROVE`, `REVISE`, or `STOP-and-escalate`"
@@ -578,7 +602,7 @@ describe("QA workflow assets", () => {
     expect(reviewers).toContain("review-ui");
 
     for (const name of reviewers) {
-      const agent = readRepoPhrases(`.kanna/agents/${name}/AGENT.md`);
+      const agent = detailPhrases(name);
       expect(agent, name).toContain("## Scope Discipline");
       expect(agent, name).toContain("caused by this diff");
       expect(agent, name).toContain("Follow-ups (non-blocking):");
@@ -594,7 +618,7 @@ describe("QA workflow assets", () => {
     // Only the agents that can request a revision need to understand the
     // budget; specialty reviewers only record verdicts.
     for (const name of ["review", "qa-dispatcher"]) {
-      const agent = readRepoPhrases(`.kanna/agents/${name}/AGENT.md`);
+      const agent = detailPhrases(name);
       expect(agent, name).toContain("revisionRounds");
       expect(agent, name).toContain("revisionLimit");
       expect(agent, name).toContain("parks the task for its human");
@@ -934,13 +958,22 @@ describe("QA workflow assets", () => {
     expect(schema.properties.revision_limit).toMatchObject({ type: "integer", minimum: 0 });
   });
 
-  it("teaches the current revision limit in the workflow factory", () => {
+  it("teaches the current revision limit through the workflow guide topic the factory reads", () => {
+    // T10e: workflow-factory/AGENT.md no longer duplicates the mechanical
+    // schema (spec §12's formula body must not hold content that breaks
+    // silently when the engine changes); it directs to `kanna_guide
+    // {"topic":"workflows"}` instead, whose catalog entry is this file.
     const workflowFactory = readRepoPhrases(".kanna/agents/workflow-factory/AGENT.md");
+    expect(workflowFactory).toContain('kanna_guide {"topic":"workflows"}');
 
-    expect(workflowFactory).toContain('"revision_limit": 5');
-    expect(workflowFactory).toContain("Defaults to 5; `0` disables the cap");
-    expect(workflowFactory).not.toContain('"revision_limit": 3');
-    expect(workflowFactory).not.toContain("Defaults to 3; `0` disables the cap");
+    const catalog = JSON.parse(readRepoFile("crates/kanna-tool-catalog/src/catalog.json")) as {
+      guides?: Array<{ topic: string; sections: Array<{ body?: string }> }>;
+    };
+    const workflowsGuide = catalog.guides?.find((g) => g.topic === "workflows");
+    const guideText = (workflowsGuide?.sections ?? []).map((s) => s.body ?? "").join(" ");
+
+    expect(guideText).toContain("`revision_limit` (default 5 agent-requested rounds; `0` means unlimited)");
+    expect(guideText).not.toContain("default 3 agent-requested rounds");
   });
 
   it("resolves PR head/base refs with gh pr view even when task metadata has the URL", () => {

@@ -3174,15 +3174,29 @@ fn agent_definition_formula_rejects_a_legacy_result_variable() {
     let _ = std::fs::remove_dir_all(&repo_root);
 }
 
-/// Both bundled T10 agents (`implement`, `pr`) resolve through the same path
-/// production task creation uses, proving the formula check passes for them
-/// as shipped and that resolution needs no local override.
+/// Bundled T10/T10e formula agents resolve through the same path production
+/// task creation uses, proving the formula check passes for them as shipped
+/// and that resolution needs no local override. `implement`/`pr` are T10's
+/// first increment; the rest are T10e's conversion (spec §12) — `review`
+/// carries its own repo `EXTEND.md`, so it also proves the resolved
+/// (post-merge) check passes with that extension applied.
 #[test]
 fn bundled_definition_formula_agents_resolve_from_compiled_resources() {
     let repo_root = init_git_repo_without_provider_fixtures("formula-builtins");
     publish_origin_main(&repo_root, "publish empty repo for formula builtins");
 
-    for name in ["implement", "pr"] {
+    for name in [
+        "implement",
+        "pr",
+        "plan",
+        "architect",
+        "researcher",
+        "review",
+        "commit",
+        "setup",
+        "workflow-factory",
+        "agent-factory",
+    ] {
         let definition = resolve_test_agent_definition(&repo_root, name).unwrap();
         assert!(!definition.description.trim().is_empty(), "{name}");
         assert!(!definition.agent_providers.is_empty(), "{name}");
