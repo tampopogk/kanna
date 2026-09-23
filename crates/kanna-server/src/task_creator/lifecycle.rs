@@ -533,9 +533,26 @@ pub(crate) async fn spawn_prepared_stage_run_for_api(
         }
     }
 
-    // Every session Kanna runs for this task — the outgoing agent and the
-    // task's shell — is stopped now, so none of them can commit while the
-    // revisited directory is checked and switched.
+    // A stage that forked away from the revisited directory started its
+    // detached `td-<branch>` teardown there, and it may still be running.
+    // It is stopped like the shell: the checkout never runs beside it.
+    if let PreparedRunWorkspace::Revisited(revisited) = &prepared.workspace {
+        if let Some(previous_branch) = revisited.previous_branch.as_deref() {
+            let retained_teardown = format!("td-{previous_branch}");
+            if let Err(error) =
+                kill_session_replacing(daemon, replacements, &retained_teardown).await
+            {
+                if let Err(abort_error) = abort_lifecycle_operation(db_path, &run_id) {
+                    log::warn!("failed to clear rejected stage operation {run_id}: {abort_error}");
+                }
+                return Err(rollback_prepared_stage_fork(&prepared, error));
+            }
+        }
+    }
+
+    // Every session Kanna runs for this task — the outgoing agent, the task's
+    // shell and the retained directory's teardown — is stopped now, so none of
+    // them can commit while the revisited directory is checked and switched.
     if revisits_workspace {
         let started = check_out_revisited_workspace(&mut prepared).and_then(|()| {
             super::finish_deferred_stage_setup(&mut prepared)?;

@@ -1528,9 +1528,10 @@ async fn spawn_fake_daemon_observing_checkout(
     })
 }
 
-/// The outgoing agent session and the task's shell are the processes Kanna
-/// runs that can write to the retained directory. Both are stopped before
-/// the directory is checked and switched, so neither can commit in between.
+/// The outgoing agent session, the task's shell and the retained
+/// directory's `td-<branch>` teardown are the processes Kanna runs that can
+/// write to it. All are stopped before the directory is checked and
+/// switched, so none can commit in between.
 #[tokio::test]
 async fn the_tasks_sessions_are_stopped_before_the_revisit_checkout() {
     let config = test_config("revisit-stop-before-checkout");
@@ -1562,7 +1563,13 @@ async fn the_tasks_sessions_are_stopped_before_the_revisit_checkout() {
     .unwrap();
     let kills = fake_daemon.await.unwrap();
 
-    for session in [agent_session, "shell-wt-review-task".to_string()] {
+    // The implement directory's own teardown, started when the task forked
+    // away from it, is stopped too.
+    for session in [
+        agent_session,
+        "shell-wt-review-task".to_string(),
+        "td-task-impl".to_string(),
+    ] {
         let (_, checked_out) = kills
             .iter()
             .find(|(killed, _)| *killed == session)
