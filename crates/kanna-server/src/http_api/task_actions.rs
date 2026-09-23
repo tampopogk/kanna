@@ -2109,13 +2109,19 @@ pub(super) async fn complete_stage(
         None => None,
     };
     let should_auto_advance = verdict.completes_stage();
-    let stage_result_value = serde_json::json!({
+    let mut stage_result_value = serde_json::json!({
         // The canonical spelling from the shared table, so the durable record
         // never carries a word the vocabulary does not contain.
         "status": verdict.as_str(),
         "summary": payload.summary,
         "metadata": payload.metadata,
     });
+    // Only when given, so a result without references keeps the exact
+    // stored shape (and replay identity) it has always had. With them, a
+    // retry naming different artifacts is a different result.
+    if let Some(artifacts) = payload.artifacts.as_ref() {
+        stage_result_value["artifacts"] = artifacts.clone();
+    }
     let stage_result = serde_json::to_string(&stage_result_value).map_err(|e| {
         (
             axum::http::StatusCode::BAD_REQUEST,
@@ -2144,6 +2150,7 @@ pub(super) async fn complete_stage(
         let payload_summary = payload.summary;
         let payload_metadata = payload.metadata;
         let payload_run_id = payload.run_id;
+        let payload_artifacts = payload.artifacts;
         let workflow_extension = workflow_extension.clone();
         let requested_digest = requested_digest.clone();
         super::blocking::run_handler_blocking("stage completion record", move || {
@@ -2333,6 +2340,20 @@ pub(super) async fn complete_stage(
             // result, so this is the only time it is read.
             let observed = crate::task_store::observe_workspace(current_run.cwd.as_deref())
                 .map_err(|error| (axum::http::StatusCode::CONFLICT, error))?;
+            // Named artifact references resolve now, before anything about
+            // the result is recorded; an unresolvable one refuses it whole.
+            let recorded_artifacts = payload_artifacts
+                .as_ref()
+                .map(|raw| {
+                    super::artifacts::bind_result_artifacts(
+                        &state,
+                        &db,
+                        &task_id,
+                        &current_run.id,
+                        raw,
+                    )
+                })
+                .transpose()?;
             // One transaction, so a plan is never durably successful without
             // the stages it published, and a rejected extension leaves no
             // recorded verdict for the planner to discover later. The ledger
@@ -2387,6 +2408,7 @@ pub(super) async fn complete_stage(
                     payload_metadata.as_ref(),
                     &stage_result,
                     requested_digest.as_deref(),
+                    recorded_artifacts.as_ref(),
                     event_floor,
                     &result_provenance,
                 )
@@ -2557,6 +2579,7 @@ fn enqueue_completion_result(
     metadata: Option<&serde_json::Value>,
     stage_result: &str,
     requested_digest: Option<&str>,
+    artifacts: Option<&serde_json::Value>,
     event_floor: i64,
     provenance: &MutationProvenance,
 ) -> rusqlite::Result<crate::db::task_store::LedgerEntryRef> {
@@ -2572,32 +2595,35 @@ fn enqueue_completion_result(
     hasher.update(requested_digest.unwrap_or("").as_bytes());
     let digest = format!("{:x}", hasher.finalize());
     let operation_id = format!("complete-stage:{source_id}:{}", &digest[..16]);
-    db.enqueue_ledger_entry(crate::db::task_store::NewLedgerEntry {
-        task_id,
-        kind: crate::db::task_store::LedgerEntryKind::Result,
-        operation_id: Some(&operation_id),
-        source_kind: "stage_run",
-        source_id: &source_id,
-        source_origin: None,
-        historical: false,
-        recorded_at: None,
-        run_id: Some(&run.id),
-        declared_role: Some(&provenance.declared_role),
-        channel_identity: &provenance.channel_identity,
-        body: crate::task_store::result_body(
-            status,
-            run,
-            observed,
-            metadata,
-            serde_json::json!({
-                "kind": "complete_stage",
-                "publishesWorkflow": requested_digest.is_some(),
-            }),
-        ),
-        message: Some(message),
-        hold_events_after: Some(event_floor),
-        reserved_sequence: None,
-    })
+    db.enqueue_ledger_entry_with_artifacts(
+        crate::db::task_store::NewLedgerEntry {
+            task_id,
+            kind: crate::db::task_store::LedgerEntryKind::Result,
+            operation_id: Some(&operation_id),
+            source_kind: "stage_run",
+            source_id: &source_id,
+            source_origin: None,
+            historical: false,
+            recorded_at: None,
+            run_id: Some(&run.id),
+            declared_role: Some(&provenance.declared_role),
+            channel_identity: &provenance.channel_identity,
+            body: crate::task_store::result_body(
+                status,
+                run,
+                observed,
+                metadata,
+                serde_json::json!({
+                    "kind": "complete_stage",
+                    "publishesWorkflow": requested_digest.is_some(),
+                }),
+            ),
+            message: Some(message),
+            hold_events_after: Some(event_floor),
+            reserved_sequence: None,
+        },
+        artifacts,
+    )
 }
 
 /// A transition an accepted operation still owes, taken from its durable

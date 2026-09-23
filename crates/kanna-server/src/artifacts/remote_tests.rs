@@ -901,6 +901,10 @@ fn a_planted_previous_link_never_pulls_an_unshared_tree_into_a_push() {
 /// Two overlapping pushes of the same records: a pre-receive hook on the
 /// remote holds both after ref advertisement, so the second to update finds
 /// every name already created by the first. Both must succeed.
+///
+/// The two pushes come from two homes holding the same records (B received
+/// them through a staging remote): pushes from one home hold its repository
+/// lock for their whole window, so they no longer overlap each other.
 #[test]
 fn racing_pushes_of_the_same_records_both_succeed() {
     use std::os::unix::fs::PermissionsExt;
@@ -917,6 +921,18 @@ fn racing_pushes_of_the_same_records_both_succeed() {
     .unwrap()
     .artifact_id;
     comment(&homes.a, &id, "alice", "raced comment");
+    git(
+        &homes.fixture.root,
+        &["init", "--bare", "--quiet", "staging.git"],
+    );
+    let staging = ArtifactRemote::parse(
+        homes.fixture.root.join("staging.git").to_str().unwrap(),
+        &homes.fixture.root,
+        &homes.fixture.root.join("a/artifacts.git"),
+    )
+    .unwrap();
+    push(&homes.a, &staging, &id).unwrap();
+    fetch(&homes.b, &staging, &id).unwrap();
 
     let log = homes.fixture.root.join("pre-receive.log");
     let hook = homes.remote_path.join("hooks/pre-receive");
@@ -931,16 +947,16 @@ fn racing_pushes_of_the_same_records_both_succeed() {
     .unwrap();
     std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
 
-    let store_path = homes.fixture.root.join("a/artifacts.git");
     let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
-    let pushes = (0..2)
-        .map(|_| {
+    let pushes = [("a", "repo-a"), ("b", "repo-b")]
+        .into_iter()
+        .map(|(home, repo_id)| {
             let barrier = std::sync::Arc::clone(&barrier);
             let remote = homes.remote.clone();
-            let store_path = store_path.clone();
+            let store_path = homes.fixture.root.join(home).join("artifacts.git");
             let id = id.clone();
             std::thread::spawn(move || {
-                let store = ArtifactStore::open_existing(&store_path, "repo-a")
+                let store = ArtifactStore::open_existing(&store_path, repo_id)
                     .unwrap()
                     .unwrap();
                 barrier.wait();

@@ -17,7 +17,12 @@ export const ARTIFACT_CONTENT_KINDS = ["document", "mockup", "media", "report"] 
 export type ArtifactContentKind = (typeof ARTIFACT_CONTENT_KINDS)[number];
 
 export const ARTIFACT_RETENTION_POLICIES = ["keep", "30-days", "discard-on-close"] as const;
-/** Recorded on each version; enforcement is a later checkpoint. */
+/**
+ * Recorded on each version and enforced by the server's retention sweep:
+ * `keep` never collects, `30-days` collects 30 days after the producing task
+ * closed, `discard-on-close` once it closed. Content an open task still names
+ * is never collected, and collection removes content only, never records.
+ */
 export type ArtifactRetention = (typeof ARTIFACT_RETENTION_POLICIES)[number];
 
 /**
@@ -82,6 +87,29 @@ export interface ArtifactDecision {
   what: string;
 }
 
+/** A result that named this tree (spec §7 `artifacts`). */
+export interface ArtifactBinding {
+  schemaVersion: number;
+  recordId: string;
+  repoId: string;
+  aboutArtifactId: ArtifactId;
+  createdAt: string;
+  taskId: string;
+  name: string;
+  runId?: string;
+}
+
+/** Retention removed this tree's content; its records stay. */
+export interface ArtifactExpiry {
+  schemaVersion: number;
+  recordId: string;
+  repoId: string;
+  aboutArtifactId: ArtifactId;
+  createdAt: string;
+  policies: ArtifactRetention[];
+  storage: ArtifactStorage;
+}
+
 export interface ArtifactFileEntry {
   path: string;
   size: number;
@@ -97,6 +125,11 @@ export interface ArtifactDetail {
   versions: ArtifactVersion[];
   comments: ArtifactComment[];
   decisions: ArtifactDecision[];
+  /** Absent from servers that predate result binding. */
+  bindings?: ArtifactBinding[];
+  /** Produced, no longer retained: retention collected the content. */
+  expired?: boolean;
+  expirations?: ArtifactExpiry[];
 }
 
 export interface PublishedArtifact {

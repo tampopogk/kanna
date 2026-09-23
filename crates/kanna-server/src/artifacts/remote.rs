@@ -30,9 +30,17 @@
 //! Received objects are data. Fetching lands them under a private
 //! `incoming/` namespace, each ref is validated (shape, bounds, record
 //! schema, canonical record commit), and only then imported into the local
-//! refs, under the repository lock, by [`ArtifactStore::import`]. A received
-//! decision is a record like any other: nothing here reads one, and nothing
-//! reads one to move a task.
+//! refs by [`ArtifactStore::import`]. A received decision is a record like
+//! any other: nothing here reads one, and nothing reads one to move a task.
+//!
+//! Both directions hold the repository lock for their whole window, network
+//! transfer included. Retention (`ArtifactStore::sweep_retention`) deletes
+//! content refs and then prunes every unreachable object under that same
+//! lock, and both directions have objects no local ref protects: a fetch's
+//! objects before `git fetch` writes its `incoming/` refs and again between
+//! validation and import, and a push's canonical record commits, built for
+//! the push and never referenced locally. Holding the lock also means a push
+//! never sends content retention collected while it was running.
 
 use super::store::{
     declared_text, kanna_signature, normalize_artifact_path, parse_object_id, storage,
@@ -53,7 +61,7 @@ use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 pub(super) const SHARED_PREFIX: &str = "refs/kanna/artifacts/shared/";
-const INCOMING_PREFIX: &str = "refs/kanna/artifacts/incoming/";
+const INCOMING_PREFIX: &str = super::store::INCOMING_REF_PREFIX;
 const RECORD_FILE_NAME: &str = "record.json";
 /// A record blob larger than this is refused unread. Generous: the largest
 /// valid record is a comment of [`MAX_TEXT_BYTES`] plus a bounded anchor.
@@ -63,6 +71,50 @@ const MAX_CHAIN: usize = 256;
 /// Refspecs per `git push`, to stay far below any argv limit.
 const PUSH_BATCH: usize = 200;
 const GIT_TIMEOUT: Duration = Duration::from_secs(300);
+
+/// Test-only pause points inside the windows where objects exist without a
+/// local ref: a test parks a push or fetch there and proves that a retention
+/// sweep cannot run until it moves on.
+#[cfg(test)]
+pub(crate) mod pause {
+    use std::collections::HashMap;
+    use std::path::{Path, PathBuf};
+    use std::sync::mpsc::{channel, Receiver, Sender};
+    use std::sync::{LazyLock, Mutex};
+
+    type Key = (PathBuf, &'static str);
+    /// Signals the pause was reached; waits to be released.
+    type Armed = (Sender<()>, Receiver<()>);
+    static ARMED: LazyLock<Mutex<HashMap<Key, Armed>>> = LazyLock::new(Default::default);
+
+    /// Arm `point` for the repository at `path`, once. Returns a receiver
+    /// that fires when the operation reaches it, and a sender that lets it go.
+    pub(crate) fn arm(path: &Path, point: &'static str) -> (Receiver<()>, Sender<()>) {
+        let (reached, on_reach) = channel();
+        let (release, on_release) = channel();
+        ARMED
+            .lock()
+            .unwrap()
+            .insert((path.to_path_buf(), point), (reached, on_release));
+        (on_reach, release)
+    }
+
+    pub(super) fn at(path: &Path, point: &'static str) {
+        let armed = ARMED.lock().unwrap().remove(&(path.to_path_buf(), point));
+        if let Some((reached, release)) = armed {
+            let _ = reached.send(());
+            let _ = release.recv();
+        }
+    }
+}
+
+#[cfg(test)]
+fn pause_at(store: &ArtifactStore, point: &'static str) {
+    pause::at(store.path(), point);
+}
+
+#[cfg(not(test))]
+fn pause_at(_store: &ArtifactStore, _point: &'static str) {}
 
 /// A validated `artifacts.remote`.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -184,6 +236,9 @@ pub(crate) fn push(
     remote: &ArtifactRemote,
     artifact_id: &str,
 ) -> Result<ArtifactPushOutcome, ArtifactError> {
+    // For the whole push: the record commits built below are unreferenced
+    // until the remote holds them, and no content may expire mid-push.
+    let _lock = store.lock()?;
     // `detail` reports a malformed, foreign-typed or unknown id exactly as a
     // local read would.
     store.detail(artifact_id)?;
@@ -208,6 +263,8 @@ pub(crate) fn push(
         }
     }
 
+    // The record commits above exist only as unreferenced objects now.
+    pause_at(store, "push-before-send");
     let mut created = Vec::new();
     let mut up_to_date = 0;
     // (remote ref, git's reason)
@@ -430,6 +487,10 @@ pub(crate) fn fetch(
         if !visited.insert(artifact) || visited.len() > MAX_CHAIN {
             continue;
         }
+        // From before `git fetch` writes the first object until the import
+        // has given every accepted one a local ref: nothing in between may
+        // be pruned by a retention sweep.
+        let _lock = store.lock()?;
         let received = fetch_one(store, remote, artifact)?;
         if artifact == requested {
             if !received.any_refs {
@@ -459,11 +520,11 @@ pub(crate) fn fetch(
             }
         }
         refused.extend(received.refused);
+        // The private namespace is gone: nothing but the lock protects what
+        // arrived until the import below gives it local refs.
+        pause_at(store, "fetch-before-import");
         if received.any_refs {
-            let report = {
-                let _lock = store.lock()?;
-                store.import(&received.content, &received.records)?
-            };
+            let report = store.import(&received.content, &received.records)?;
             fetched.push(artifact.to_string());
             content_retained.extend(report.content_retained.iter().map(Oid::to_string));
             records_imported += report.records_imported;
@@ -496,7 +557,9 @@ pub(crate) fn fetch(
 }
 
 /// Fetch `content/<id>/*` and `records/<id>/*` into a private namespace,
-/// validate every ref that arrived, and remove the namespace again.
+/// validate every ref that arrived, and remove the namespace again. The
+/// caller holds the repository lock until it has imported what it keeps:
+/// once the namespace is gone nothing else protects those objects.
 fn fetch_one(
     store: &ArtifactStore,
     remote: &ArtifactRemote,
@@ -761,11 +824,18 @@ fn validate_record(
 /// `<13-digit milliseconds>-<16 lowercase hex>`, as `new_record_identity`
 /// writes them.
 fn is_record_id(value: &str) -> bool {
-    let Some((millis, suffix)) = value.split_once('-') else {
+    let Some((order, suffix)) = value.split_once('-') else {
         return false;
     };
-    millis.len() == 13
-        && millis.bytes().all(|byte| byte.is_ascii_digit())
+    // `<13-digit millis>` (T6 increment 1) or `s<12-digit sequence>` (the
+    // persisted record sequence), then 16 lowercase hex.
+    let order_ok = match order.strip_prefix('s') {
+        Some(sequence) => {
+            sequence.len() == 12 && sequence.bytes().all(|byte| byte.is_ascii_digit())
+        }
+        None => order.len() == 13 && order.bytes().all(|byte| byte.is_ascii_digit()),
+    };
+    order_ok
         && suffix.len() == 16
         && suffix
             .bytes()

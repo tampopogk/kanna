@@ -6,11 +6,11 @@
 //! provider transcripts moved with a task; nothing here touches the working
 //! repository's index, objects or history.
 //!
-//! This increment publishes, reads, opens and annotates artifacts, and shares
-//! them with another Kanna home through an ordinary Git remote (`remote`).
-//! Binding them to ledger results and enforcing retention are later
-//! checkpoints; the policy is recorded on each version so that enforcement is
-//! additive.
+//! Artifacts are published, read, opened and annotated here, and shared with
+//! another Kanna home through an ordinary Git remote (`remote`). A result
+//! names them through its `artifacts` map (bound in the store and recorded in
+//! its ledger entry), and a periodic sweep enforces retention without ever
+//! removing a record.
 
 pub(crate) mod remote;
 pub(crate) mod store;
@@ -18,6 +18,10 @@ pub(crate) mod types;
 
 #[cfg(test)]
 mod remote_tests;
+#[cfg(test)]
+mod retention_tests;
+#[cfg(test)]
+mod sharing_retention_tests;
 #[cfg(test)]
 mod tests;
 

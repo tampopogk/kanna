@@ -3326,7 +3326,7 @@ fn subscription_descriptions_state_what_a_bounded_delivered_page_carries() {
 }
 
 #[test]
-fn artifact_tools_name_exact_ids_and_state_that_retention_is_not_yet_enforced() {
+fn artifact_tools_name_exact_ids_and_state_how_retention_is_enforced() {
     let catalog = bundled_catalog();
     let description = |name: &str| {
         catalog
@@ -3339,7 +3339,20 @@ fn artifact_tools_name_exact_ids_and_state_that_retention_is_not_yet_enforced() 
     };
     let publish = description("kanna_publish_artifact");
     assert!(publish.contains("tree id"), "{publish}");
-    assert!(publish.contains("not yet enforced"), "{publish}");
+    assert!(
+        publish.contains("enforced after the producing task closes"),
+        "{publish}"
+    );
+    assert!(
+        publish.contains("produced, no longer retained"),
+        "{publish}"
+    );
+    let artifacts = catalog
+        .find_param("kanna_complete_stage", "artifacts")
+        .expect("complete_stage accepts named artifact references");
+    assert!(!artifacts.required);
+    let described = artifacts.description.as_deref().unwrap_or_default();
+    assert!(described.contains("nothing is recorded"), "{described}");
     assert!(
         publish.contains("outside the working repository"),
         "{publish}"

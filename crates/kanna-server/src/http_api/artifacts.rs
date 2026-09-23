@@ -15,9 +15,10 @@ use super::state::AppState;
 use super::task_blockers::resolve_existing_task_id;
 use crate::artifacts::remote::{self, ArtifactRemote};
 use crate::artifacts::store::{
-    parse_object_id, ArtifactStore, CommentRequest, DecisionRequest, PublishLimits, PublishRequest,
+    parse_object_id, ArtifactStore, BindingRequest, CommentRequest, DecisionRequest, PublishLimits,
+    PublishRequest, RetentionSweep, TaskLifecycle,
 };
-use crate::artifacts::types::{ArtifactAnchor, ArtifactContentKind};
+use crate::artifacts::types::{ArtifactAnchor, ArtifactContentKind, ArtifactReference};
 use crate::artifacts::{resolve_repository_path, ArtifactError};
 use crate::db::{Db, Repo};
 use axum::extract::{Path, Query, State};
@@ -446,7 +447,14 @@ pub(super) async fn open_artifact_preview(
         .await
     {
         Ok(opened) => Json(opened).into_response(),
-        Err(message) => *refusal(
+        Err(super::artifact_preview::PreviewOpenError::Limit(limit)) => *refusal(
+            StatusCode::TOO_MANY_REQUESTS,
+            "preview_limit",
+            &format!(
+                "{limit} artifact previews are already open; close one (kanna_close_artifact) or let one expire"
+            ),
+        ),
+        Err(super::artifact_preview::PreviewOpenError::Failed(message)) => *refusal(
             StatusCode::INTERNAL_SERVER_ERROR,
             "preview_unavailable",
             &message,
@@ -464,6 +472,304 @@ pub(super) async fn close_artifact_preview(
     }
     let closed = state.artifact_previews.close(&repo_id, &artifact_id).await;
     Json(json!({ "repoId": repo_id, "artifactId": artifact_id, "closed": closed })).into_response()
+}
+
+/// Most names one result may carry.
+pub(crate) const MAX_RESULT_ARTIFACTS: usize = 64;
+const MAX_REFERENCE_TEXT_BYTES: usize = 2048;
+
+/// Resolve and bind the `artifacts` map of a result `complete_stage` is
+/// about to accept, returning the object its ledger entry records.
+///
+/// `raw` maps a name to either a bare tree id (stored content in the task's
+/// own repository) or one of T6's tagged references (`stored`, `commit`,
+/// `pr`). Everything is validated before anything is written, and stored
+/// content must resolve in the task's artifact repository — published there
+/// and still retained — or the whole result is refused with nothing
+/// recorded. Accepted stored references are bound to the task in the
+/// artifact repository, which is what keeps them from retention while the
+/// task is open; that binding is written before the result, so a failure
+/// after it can only keep content longer, never lose it.
+pub(super) fn bind_result_artifacts(
+    state: &AppState,
+    db: &Db,
+    task_id: &str,
+    run_id: &str,
+    raw: &serde_json::Value,
+) -> Result<serde_json::Value, (StatusCode, String)> {
+    let refuse = |message: String| {
+        (
+            StatusCode::BAD_REQUEST,
+            format!("{message}; nothing was recorded"),
+        )
+    };
+    let entries = raw.as_object().ok_or_else(|| {
+        refuse("`artifacts` must be an object mapping a name to an artifact reference".into())
+    })?;
+    if entries.len() > MAX_RESULT_ARTIFACTS {
+        return Err(refuse(format!(
+            "`artifacts` names {} references; at most {MAX_RESULT_ARTIFACTS} are allowed",
+            entries.len()
+        )));
+    }
+    let item = db
+        .get_pipeline_item(task_id)
+        .map_err(|error| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("db error: {error}"),
+            )
+        })?
+        .ok_or_else(|| (StatusCode::NOT_FOUND, format!("task not found: {task_id}")))?;
+    let mut parsed = Vec::with_capacity(entries.len());
+    for (name, value) in entries {
+        let invalid_name = name.trim().is_empty()
+            || name.trim() != name
+            || name.len() > crate::artifacts::store::MAX_DECLARED_NAME_BYTES
+            || name.chars().any(char::is_control);
+        if invalid_name {
+            return Err(refuse(format!(
+                "artifact name {:?} must be non-empty trimmed text of at most {} bytes without control characters",
+                name.chars().take(80).collect::<String>(),
+                crate::artifacts::store::MAX_DECLARED_NAME_BYTES
+            )));
+        }
+        let reference = match value {
+            serde_json::Value::String(id) => ArtifactReference::Stored {
+                repo_id: item.repo_id.clone(),
+                artifact_id: id.clone(),
+                kind: ArtifactContentKind::Document,
+            },
+            serde_json::Value::Object(_) => {
+                serde_json::from_value::<ArtifactReference>(value.clone()).map_err(|error| {
+                    refuse(format!("artifact {name:?} is not a reference: {error}"))
+                })?
+            }
+            _ => {
+                return Err(refuse(format!(
+                    "artifact {name:?} must be a tree id or a reference object"
+                )))
+            }
+        };
+        let declared_kind = matches!(value, serde_json::Value::Object(_));
+        validate_external_reference(name, &reference, &item.repo_id).map_err(refuse)?;
+        parsed.push((name.as_str(), reference, declared_kind));
+    }
+    let requests = parsed
+        .iter()
+        .filter_map(|(name, reference, declared_kind)| match reference {
+            ArtifactReference::Stored {
+                artifact_id, kind, ..
+            } => Some(BindingRequest {
+                name,
+                artifact_id,
+                kind: declared_kind.then_some(*kind),
+            }),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let mut bound = Vec::new();
+    if !requests.is_empty() {
+        let repo = find_repo(db, &item.repo_id).map_err(|_| {
+            (
+                StatusCode::CONFLICT,
+                format!("task repository {} is not registered", item.repo_id),
+            )
+        })?;
+        let policy = crate::task_creator::load_repo_artifact_policy(&state.repo_definitions, &repo)
+            .map_err(|error| {
+                (
+                    StatusCode::CONFLICT,
+                    format!("repository configuration could not be resolved: {error}"),
+                )
+            })?;
+        let path = resolve_repository_path(
+            &state.artifact_storage,
+            &repo.id,
+            std::path::Path::new(&repo.path),
+            policy.repository_path.as_deref(),
+        )
+        .map_err(|error| refuse(error.to_string()))?;
+        let store = ArtifactStore::open_existing(&path, &repo.id)
+            .map_err(|error| refuse(error.to_string()))?
+            .ok_or_else(|| {
+                refuse(format!(
+                    "repository {} has no artifact store, so artifact {} does not resolve",
+                    repo.id, requests[0].artifact_id
+                ))
+            })?;
+        bound = store
+            .bind_to_result(task_id, Some(run_id), &requests)
+            .map_err(|error| match error {
+                ArtifactError::Storage(message) => (StatusCode::INTERNAL_SERVER_ERROR, message),
+                other => refuse(format!("artifact reference does not resolve: {other}")),
+            })?;
+    }
+    let mut bound = bound.into_iter();
+    let mut recorded = serde_json::Map::new();
+    for (name, reference, _) in parsed {
+        let reference = match reference {
+            ArtifactReference::Stored { .. } => bound.next().ok_or_else(|| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "artifact binding lost a reference".to_string(),
+                )
+            })?,
+            other => other,
+        };
+        recorded.insert(
+            name.to_string(),
+            serde_json::to_value(reference).map_err(|error| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("cannot encode artifact reference: {error}"),
+                )
+            })?,
+        );
+    }
+    Ok(serde_json::Value::Object(recorded))
+}
+
+/// Shape checks for every reference kind. Stored content must be in the
+/// task's own repository; commits and PRs name content that lives elsewhere
+/// and are recorded as given once well formed.
+fn validate_external_reference(
+    name: &str,
+    reference: &ArtifactReference,
+    task_repo_id: &str,
+) -> Result<(), String> {
+    let is_sha = |value: &str| {
+        (value.len() == 40 || value.len() == 64)
+            && value
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    };
+    match reference {
+        ArtifactReference::Stored {
+            repo_id,
+            artifact_id,
+            ..
+        } => {
+            if repo_id != task_repo_id {
+                return Err(format!(
+                    "artifact {name:?} is stored in repository {repo_id}; a result may only name stored artifacts of its own repository ({task_repo_id})"
+                ));
+            }
+            parse_object_id(artifact_id)
+                .map(|_| ())
+                .map_err(|error| format!("artifact {name:?}: {error}"))
+        }
+        ArtifactReference::Commit { repo_id, sha } => {
+            if repo_id.trim().is_empty() || repo_id.len() > MAX_REFERENCE_TEXT_BYTES {
+                return Err(format!("commit reference {name:?} needs a repoId"));
+            }
+            if !is_sha(sha) {
+                return Err(format!(
+                    "commit reference {name:?} needs a full lowercase commit sha"
+                ));
+            }
+            Ok(())
+        }
+        ArtifactReference::Pr { url, head_sha } => {
+            let scheme_ok = url.starts_with("https://") || url.starts_with("http://");
+            if !scheme_ok
+                || url.len() > MAX_REFERENCE_TEXT_BYTES
+                || url.chars().any(char::is_whitespace)
+            {
+                return Err(format!("pr reference {name:?} needs an http(s) url"));
+            }
+            if !is_sha(head_sha) {
+                return Err(format!(
+                    "pr reference {name:?} needs a full lowercase headSha"
+                ));
+            }
+            Ok(())
+        }
+    }
+}
+
+/// Enforce retention in every registered repository's artifact store.
+/// Repositories without a store, or whose location no longer resolves, are
+/// skipped; one failing repository never stops the others.
+pub(crate) fn sweep_artifact_retention(
+    state: &AppState,
+    now: std::time::SystemTime,
+) -> Vec<(String, Result<RetentionSweep, String>)> {
+    let db = match Db::open(&state.config().db_path) {
+        Ok(db) => db,
+        Err(error) => return vec![(String::new(), Err(format!("db error: {error}")))],
+    };
+    let repos = match db.list_repos() {
+        Ok(repos) => repos,
+        Err(error) => return vec![(String::new(), Err(format!("db error: {error}")))],
+    };
+    let lifecycle = |task_id: &str| match db.get_pipeline_item(task_id) {
+        Ok(Some(item)) => match item.closed_at.as_deref() {
+            None => TaskLifecycle::Open,
+            Some(closed_at) => match parse_sqlite_utc(closed_at) {
+                Some(at) => TaskLifecycle::Closed { at },
+                None => TaskLifecycle::Unknown,
+            },
+        },
+        _ => TaskLifecycle::Unknown,
+    };
+    let mut outcomes = Vec::new();
+    for repo in repos {
+        let Ok(policy) =
+            crate::task_creator::load_repo_artifact_policy(&state.repo_definitions, &repo)
+        else {
+            continue;
+        };
+        let Ok(path) = resolve_repository_path(
+            &state.artifact_storage,
+            &repo.id,
+            std::path::Path::new(&repo.path),
+            policy.repository_path.as_deref(),
+        ) else {
+            continue;
+        };
+        let store = match ArtifactStore::open_existing(&path, &repo.id) {
+            Ok(Some(store)) => store,
+            Ok(None) => continue,
+            Err(error) => {
+                outcomes.push((repo.id.clone(), Err(error.to_string())));
+                continue;
+            }
+        };
+        outcomes.push((
+            repo.id.clone(),
+            store
+                .sweep_retention(now, policy.retention, &lifecycle)
+                .map_err(|error| error.to_string()),
+        ));
+    }
+    outcomes
+}
+
+/// `YYYY-MM-DD HH:MM:SS[.fff]` (SQLite `datetime('now')`, UTC).
+fn parse_sqlite_utc(value: &str) -> Option<std::time::SystemTime> {
+    let value = value.trim().trim_end_matches('Z');
+    let (date, time) = value.split_once([' ', 'T'])?;
+    let mut date = date.split('-').map(|part| part.parse::<i64>().ok());
+    let (year, month, day) = (date.next()??, date.next()??, date.next()??);
+    let time = time.split('.').next()?;
+    let mut time = time.split(':').map(|part| part.parse::<i64>().ok());
+    let (hour, minute, second) = (time.next()??, time.next()??, time.next()??);
+    if !(1..=12).contains(&month) || !(1..=31).contains(&day) {
+        return None;
+    }
+    // Howard Hinnant's days-from-civil.
+    let year = if month <= 2 { year - 1 } else { year };
+    let era = year.div_euclid(400);
+    let year_of_era = year - era * 400;
+    let month_index = (month + 9) % 12;
+    let day_of_year = (153 * month_index + 2) / 5 + day - 1;
+    let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
+    let days = era * 146_097 + day_of_era - 719_468;
+    let seconds = days * 86_400 + hour * 3_600 + minute * 60 + second;
+    u64::try_from(seconds)
+        .ok()
+        .map(|seconds| std::time::UNIX_EPOCH + std::time::Duration::from_secs(seconds))
 }
 
 async fn blocking(

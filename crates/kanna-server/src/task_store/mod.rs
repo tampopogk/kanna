@@ -49,7 +49,7 @@
 //! | `run_id`, `session_ref` | the stage run, and the session reference; until T2 the reference is `{kind: "stage_run", id: <run id>}` |
 //! | `declared_role` | a role the caller declared (`operator`, `manager`, `agent`), else null |
 //! | `channel_identity` | T8's verified channel ([`crate::mutation_provenance::ChannelIdentity`]) the mutation arrived on; historical/backfilled entries always carry the explicit tagged `unknown`, never a value inferred from a source label or transport |
-//! | `artifacts` | reserved for T6's named artifact references (name → reference); `{}` here |
+//! | `artifacts` | T6's named artifact references a result carried: name → tagged reference (`{"type": "stored", "repoId", "artifactId", "kind"}`, `{"type": "commit", "repoId", "sha"}` or `{"type": "pr", "url", "headSha"}`). Stored references resolved in the artifact repository when the result was accepted. `{}` for every other entry |
 //!
 //! and one kind-specific object named after the kind:
 //!
