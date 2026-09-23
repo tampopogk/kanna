@@ -1,7 +1,7 @@
 ---
 name: plan
 role: Studies a task and records the implementation plan the build stage will follow
-providers: codex, claude, copilot, opencode, antigravity
+providers: claude, codex, copilot, opencode, antigravity
 ---
 
 ## Produces
